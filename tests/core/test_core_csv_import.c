@@ -1680,6 +1680,337 @@ test_channel_import_row_key_columns(void) {
     return failed;
 }
 
+static int
+test_channel_import_accepts_hex_and_iden_chan_keys(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    char tmpl[] = "dsd-neo-test-channel-keys-XXXXXX";
+    int fd = -1;
+
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    // 0x2A46 == 10822 == iden 2, chan 0xA46 (2630); 3-100 == 0x3064 == 12388; 0X0A == 10.
+    // The rejected spellings must take no slot at all (chan -1), unlike a bad frequency.
+    if (write_text_file(tmpl, "channel,freq\n"
+                              "0x2A46,851000000\n"
+                              "3-100,852000000\n"
+                              "16-0,853000000\n"
+                              "0-4096,854000000\n"
+                              "2-,855000000\n"
+                              "-5,856000000\n"
+                              "15-4095,857000000\n"
+                              "0X0A,858000000\n"
+                              "2-2630,859000000\n")
+        != 0) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", tmpl);
+    if (csvChanImport(opts, state) != 0) {
+        DSD_FPRINTF(stderr, "chan key spellings: import failed\n");
+        failed = 1;
+    }
+    // The last row re-keys 10822 (2-2630 is the same key as 0x2A46), so it wins.
+    if (state->trunk_chan_map[10822] != 859000000L) {
+        DSD_FPRINTF(stderr, "chan key spellings: 0x2A46/2-2630 -> %ld\n", state->trunk_chan_map[10822]);
+        failed = 1;
+    }
+    if (state->trunk_chan_map[12388] != 852000000L) {
+        DSD_FPRINTF(stderr, "chan key spellings: 3-100 -> %ld\n", state->trunk_chan_map[12388]);
+        failed = 1;
+    }
+    if (state->trunk_chan_map[10] != 858000000L) {
+        DSD_FPRINTF(stderr, "chan key spellings: 0X0A -> %ld\n", state->trunk_chan_map[10]);
+        failed = 1;
+    }
+    if (state->trunk_chan_map_used_count != 3U) {
+        DSD_FPRINTF(stderr, "chan key spellings: used_count=%u want 3\n", state->trunk_chan_map_used_count);
+        failed = 1;
+    }
+    // Four accepted rows (two of them the same key) take four positional LCN slots; the rejected
+    // spellings and the sentinel 15-4095 take none.
+    if (state->lcn_freq_count != 4) {
+        DSD_FPRINTF(stderr, "chan key spellings: lcn_freq_count=%d want 4\n", state->lcn_freq_count);
+        failed = 1;
+    }
+
+    (void)remove(tmpl);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
+static int
+bandplan_row_matches(const p25_bandplan_row_t* row, int iden, int is_tdma, long base_5hz, int spac_125hz, int type,
+                     int trans_off, int bw_vu, unsigned long long wacn, unsigned long long sysid) {
+    return row->iden == iden && row->is_tdma == is_tdma && row->entry.base_freq == base_5hz
+           && row->entry.chan_spac == spac_125hz && row->entry.chan_type == type && row->entry.trans_off == trans_off
+           && row->entry.bw_vu == bw_vu && row->entry.wacn == wacn && row->entry.sysid == sysid && row->entry.trust == 1
+           && row->entry.populated == 1 && row->entry.rfss == 0 && row->entry.site == 0;
+}
+
+static int
+test_p25_bandplan_import_rows_units_and_seed(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    char tmpl[] = "dsd-neo-test-p25-bandplan-XXXXXX";
+    int fd = -1;
+
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    if (write_text_file(tmpl, "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n"
+                              "0,851006250,6250,1,-45000000,12500,,\n"
+                              "2,762006250,6250,3,-30000000,,BEE00,3A1\n"
+                              "1,851006251,6250,1,,,,\n"
+                              "3,851006250,6300,,,,,\n"
+                              "4,851006250,6250,1,,7000,,\n"
+                              "5,851006250,6250,1,,,BEE00,\n"
+                              "16,851006250,6250,,,,,\n"
+                              "6,851006250,6250,1,-45000001,,,\n"
+                              "\n"
+                              "7,851006250,6250\n"
+                              "8,851006250,6250,1,-30000000,,,\n")
+        != 0) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    DSD_SNPRINTF(opts->p25_bandplan_in_file, sizeof(opts->p25_bandplan_in_file), "%s", tmpl);
+    if (csvP25BandplanImport(opts, state) != 0) {
+        DSD_FPRINTF(stderr, "bandplan import: failed\n");
+        failed = 1;
+    }
+    if (state->p25_bandplan_row_count != 4) {
+        DSD_FPRINTF(stderr, "bandplan import: row_count=%d want 4\n", state->p25_bandplan_row_count);
+        failed = 1;
+    } else {
+        // 851006250 Hz / 5 = 170201250; 6250 Hz / 125 = 50; VU row: offset in spacing units
+        // (-45 MHz / 6250 = -7200); 12500 Hz -> bw_vu 5.
+        if (!bandplan_row_matches(&state->p25_bandplan_rows[0], 0, 0, 170201250L, 50, 1, -7200, 5, 0ULL, 0ULL)) {
+            DSD_FPRINTF(stderr, "bandplan import: row 0 wrong\n");
+            failed = 1;
+        }
+        // TDMA row: type 3 routes to the TDMA table and, like a VU row, its offset is in spacing
+        // units (-30 MHz / 6250 = -4800) -- IDEN_UP_TDMA carries the 13-bit VU offset field.
+        if (!bandplan_row_matches(&state->p25_bandplan_rows[1], 2, 1, 152401250L, 50, 3, -4800, 0, 0xBEE00ULL,
+                                  0x3A1ULL)) {
+            DSD_FPRINTF(stderr, "bandplan import: row 1 wrong\n");
+            failed = 1;
+        }
+        if (!bandplan_row_matches(&state->p25_bandplan_rows[2], 7, 0, 170201250L, 50, 1, 0, 0, 0ULL, 0ULL)) {
+            DSD_FPRINTF(stderr, "bandplan import: row 2 wrong\n");
+            failed = 1;
+        }
+        // Standard FDMA row: offset in 250 kHz units (-30 MHz -> -120).
+        if (!bandplan_row_matches(&state->p25_bandplan_rows[3], 8, 0, 170201250L, 50, 1, -120, 0, 0ULL, 0ULL)) {
+            DSD_FPRINTF(stderr, "bandplan import: row 3 wrong\n");
+            failed = 1;
+        }
+    }
+
+    // Import seeds the live tables: global rows land now, the system row waits for its WACN/SYS.
+    if (!state->p25_iden_fdma[0].populated || state->p25_iden_fdma[0].base_freq != 170201250L
+        || state->p25_iden_fdma[0].trust != 1 || state->p25_chan_tdma_explicit[0] != 1) {
+        DSD_FPRINTF(stderr, "bandplan import: fdma[0] not seeded\n");
+        failed = 1;
+    }
+    if (!state->p25_iden_fdma[7].populated || state->p25_chan_tdma_explicit[7] != 1
+        || !state->p25_iden_fdma[8].populated) {
+        DSD_FPRINTF(stderr, "bandplan import: fdma[7] not seeded\n");
+        failed = 1;
+    }
+    if (state->p25_iden_tdma[2].populated || state->p25_chan_tdma_explicit[2] != 0) {
+        DSD_FPRINTF(stderr, "bandplan import: system row seeded before identity known\n");
+        failed = 1;
+    }
+    state->p2_wacn = 0xBEE00ULL;
+    state->p2_sysid = 0x3A1ULL;
+    if (dsd_state_p25_bandplan_seed(state) != 1) {
+        DSD_FPRINTF(stderr, "bandplan import: seed after identity should add exactly one slot\n");
+        failed = 1;
+    }
+    if (!state->p25_iden_tdma[2].populated || state->p25_iden_tdma[2].chan_type != 3
+        || state->p25_chan_tdma_explicit[2] != 2) {
+        DSD_FPRINTF(stderr, "bandplan import: tdma[2] not seeded after identity\n");
+        failed = 1;
+    }
+
+    // A second import replaces the stored plan wholesale.
+    if (write_text_file(tmpl, "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz\n"
+                              "9,851006250,6250,1,0,0\n")
+        != 0) {
+        failed = 1;
+    } else if (csvP25BandplanImport(opts, state) != 0 || state->p25_bandplan_row_count != 1
+               || state->p25_bandplan_rows[0].iden != 9) {
+        DSD_FPRINTF(stderr, "bandplan import: re-import did not replace the plan\n");
+        failed = 1;
+    }
+
+    (void)remove(tmpl);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
+static int
+test_p25_bandplan_import_rejects_empty_and_missing(void) {
+    int failed = 0;
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    char tmpl[] = "dsd-neo-test-p25-bandplan-empty-XXXXXX";
+    if (!state) {
+        return 1;
+    }
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    state->p25_bandplan_row_count = 2;
+    state->p25_bandplan_rows[0].iden = 4;
+    if (write_text_file(tmpl, "iden,base_hz,spacing_hz\n"
+                              "16,851006250,6250\n")
+        != 0) {
+        (void)remove(tmpl);
+        free_test_state(state);
+        return 1;
+    }
+    if (csvP25BandplanImportPath(tmpl, state) == 0) {
+        DSD_FPRINTF(stderr, "bandplan import: accepted a file with no usable rows\n");
+        failed = 1;
+    }
+    if (state->p25_bandplan_row_count != 2 || state->p25_bandplan_rows[0].iden != 4) {
+        DSD_FPRINTF(stderr, "bandplan import: failed import touched the stored plan\n");
+        failed = 1;
+    }
+    if (csvP25BandplanImportPath("dsd-neo-test-missing-dir/none.csv", state) == 0) {
+        DSD_FPRINTF(stderr, "bandplan import: accepted a missing file\n");
+        failed = 1;
+    }
+    (void)remove(tmpl);
+    free_test_state(state);
+    return failed;
+}
+
+static int
+test_p25_bandplan_export_round_trip(void) {
+    int failed = 0;
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    dsd_state* back = (dsd_state*)calloc(1, sizeof(*back));
+    char tmpl[] = "dsd-neo-test-p25-bandplan-export-XXXXXX";
+    if (!state || !back) {
+        free_test_state(state);
+        free_test_state(back);
+        return 1;
+    }
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free_test_state(state);
+        free_test_state(back);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    // One VU FDMA entry and one TDMA entry (both carry the offset in spacing units),
+    // both learned on WACN BEE00 / SYS 3A1; an unready entry (no spacing) must not export.
+    p25_iden_entry_t* f0 = &state->p25_iden_fdma[0];
+    f0->base_freq = 170201250L;
+    f0->chan_spac = 50;
+    f0->chan_type = 1;
+    f0->trans_off = -7200;
+    f0->bw_vu = 5;
+    f0->trust = 2;
+    f0->populated = 1;
+    f0->wacn = 0xBEE00ULL;
+    f0->sysid = 0x3A1ULL;
+    f0->rfss = 1;
+    f0->site = 7;
+    p25_iden_entry_t* t2 = &state->p25_iden_tdma[2];
+    t2->base_freq = 152401250L;
+    t2->chan_spac = 50;
+    t2->chan_type = 3;
+    t2->trans_off = -4800;
+    t2->trust = 2;
+    t2->populated = 1;
+    t2->wacn = 0xBEE00ULL;
+    t2->sysid = 0x3A1ULL;
+    state->p25_iden_fdma[5].populated = 1;
+    state->p25_iden_fdma[5].base_freq = 170201250L;
+
+    p25_bandplan_row_t rows[DSD_P25_BANDPLAN_MAX_ROWS];
+    int count =
+        dsd_p25_bandplan_append_tables(rows, 0, DSD_P25_BANDPLAN_MAX_ROWS, state->p25_iden_fdma, state->p25_iden_tdma);
+    if (count != 2) {
+        DSD_FPRINTF(stderr, "bandplan export: collected %d rows want 2\n", count);
+        failed = 1;
+    }
+    // Appending the same tables again must not duplicate rows with the same iden/table/system.
+    count = dsd_p25_bandplan_append_tables(rows, count, DSD_P25_BANDPLAN_MAX_ROWS, state->p25_iden_fdma,
+                                           state->p25_iden_tdma);
+    if (count != 2) {
+        DSD_FPRINTF(stderr, "bandplan export: duplicate append gave %d rows want 2\n", count);
+        failed = 1;
+    }
+    if (csvP25BandplanExportRows(tmpl, rows, count) != 0) {
+        DSD_FPRINTF(stderr, "bandplan export: write failed\n");
+        failed = 1;
+    }
+    if (csvP25BandplanImportPath(tmpl, back) != 0 || back->p25_bandplan_row_count != 2) {
+        DSD_FPRINTF(stderr, "bandplan export: re-import failed (count=%d)\n", back->p25_bandplan_row_count);
+        failed = 1;
+    } else {
+        if (!bandplan_row_matches(&back->p25_bandplan_rows[0], 0, 0, 170201250L, 50, 1, -7200, 5, 0xBEE00ULL,
+                                  0x3A1ULL)) {
+            DSD_FPRINTF(stderr, "bandplan export: fdma row did not round-trip\n");
+            failed = 1;
+        }
+        if (!bandplan_row_matches(&back->p25_bandplan_rows[1], 2, 1, 152401250L, 50, 3, -4800, 0, 0xBEE00ULL,
+                                  0x3A1ULL)) {
+            DSD_FPRINTF(stderr, "bandplan export: tdma row did not round-trip\n");
+            failed = 1;
+        }
+    }
+    if (csvP25BandplanExportRows(tmpl, rows, 0) == 0) {
+        DSD_FPRINTF(stderr, "bandplan export: wrote a file with no rows\n");
+        failed = 1;
+    }
+
+    (void)remove(tmpl);
+    free_test_state(state);
+    free_test_state(back);
+    return failed;
+}
+
 int
 main(void) {
     if (test_group_import_missing_file() != 0) {
@@ -1718,6 +2049,18 @@ main(void) {
         return 1;
     }
     if (test_channel_import_extends_past_26_entries() != 0) {
+        return 1;
+    }
+    if (test_channel_import_accepts_hex_and_iden_chan_keys() != 0) {
+        return 1;
+    }
+    if (test_p25_bandplan_import_rows_units_and_seed() != 0) {
+        return 1;
+    }
+    if (test_p25_bandplan_import_rejects_empty_and_missing() != 0) {
+        return 1;
+    }
+    if (test_p25_bandplan_export_round_trip() != 0) {
         return 1;
     }
     if (test_channel_import_name_column_stores_names_by_row_index() != 0) {

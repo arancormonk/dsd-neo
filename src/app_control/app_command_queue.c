@@ -143,7 +143,7 @@ static const int k_ui_cmd_string_ids[] = {
     DSD_APP_CMD_IMPORT_GROUP_LIST, DSD_APP_CMD_IMPORT_KEYS_DEC,      DSD_APP_CMD_IMPORT_KEYS_HEX,
     DSD_APP_CMD_KEY_TYT_AP_SET,    DSD_APP_CMD_KEY_RETEVIS_RC2_SET,  DSD_APP_CMD_KEY_TYT_EP_SET,
     DSD_APP_CMD_KEY_KEN_SCR_SET,   DSD_APP_CMD_KEY_ANYTONE_BP_SET,   DSD_APP_CMD_KEY_XOR_SET,
-    DSD_APP_CMD_M17_USER_DATA_SET,
+    DSD_APP_CMD_M17_USER_DATA_SET, DSD_APP_CMD_IMPORT_P25_BANDPLAN,  DSD_APP_CMD_EXPORT_P25_BANDPLAN,
 };
 
 /* Setters where only the newest value matters, so a queued one may be overwritten
@@ -1501,6 +1501,43 @@ ui_cmd_handle_import_channel_map(dsd_opts* opts, dsd_state* state, const struct 
 }
 
 static int
+ui_cmd_handle_import_p25_bandplan(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    int result = UI_CMD_APPLY_COMPLETED;
+    if (state && c->n > 0) {
+        char path[1024] = {0};
+        if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
+            int rc = svc_import_p25_bandplan(opts, state, path);
+            result = ui_cmd_apply_status_from_service_rc(rc);
+            if (rc == 0) {
+                ui_set_toast(state, 3, "Applied: P25 band plan imported -> %s", path);
+            } else {
+                ui_set_toast(state, 4, "Failed: P25 band plan import -> %s", path);
+            }
+        }
+    }
+    return result;
+}
+
+static int
+// cppcheck-suppress constParameterCallback -- signature is fixed by the command handler table.
+ui_cmd_handle_export_p25_bandplan(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    int result = UI_CMD_APPLY_COMPLETED;
+    if (state && c->n > 0) {
+        char path[1024] = {0};
+        if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
+            int rows = svc_export_p25_bandplan(opts, state, path);
+            result = ui_cmd_apply_status_from_service_rc(rows > 0 ? 0 : -1);
+            if (rows > 0) {
+                ui_set_toast(state, 3, "Applied: %d P25 band plan row(s) exported -> %s", rows, path);
+            } else {
+                ui_set_toast(state, 4, "Failed: P25 band plan export -> %s", path);
+            }
+        }
+    }
+    return result;
+}
+
+static int
 ui_cmd_handle_import_group_list(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && c->n > 0) {
@@ -1623,6 +1660,8 @@ apply_cmd_io_and_import_imports(dsd_opts* opts, dsd_state* state, const struct d
         {DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR, ui_cmd_handle_import_channel_map_clear},
         {DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR, ui_cmd_handle_import_group_list_clear},
         {DSD_APP_CMD_IMPORT_KEYS_CLEAR, ui_cmd_handle_import_keys_clear},
+        {DSD_APP_CMD_IMPORT_P25_BANDPLAN, ui_cmd_handle_import_p25_bandplan},
+        {DSD_APP_CMD_EXPORT_P25_BANDPLAN, ui_cmd_handle_export_p25_bandplan},
     };
     if (!opts || !c) {
         return 0;

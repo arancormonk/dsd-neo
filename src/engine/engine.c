@@ -24,6 +24,7 @@
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
@@ -326,6 +327,27 @@ import_global_channel_map_if_needed(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* A user P25 band plan seeds the IDEN tables for any P25 decode, trunked or not, so this is not
+ * gated on trunk_enable. A store that is already filled means the CLI flag applied the file
+ * itself; only a path that arrived through the config file is still owed an import here. */
+static int
+import_global_p25_bandplan_if_needed(dsd_opts* opts, dsd_state* state) {
+    if (opts->p25_bandplan_in_file[0] == '\0') {
+        return 0;
+    }
+    if (opts->trunk_scan_enabled == 1) {
+        LOG_ERROR("Trunk scan does not allow a global P25 band plan; use per-target p25_bandplan_csv values.\n");
+        return -1;
+    }
+    if (state->p25_bandplan_row_count == 0) {
+        if (csvP25BandplanImport(opts, state) != 0) {
+            return -1;
+        }
+        LOG_INFO("NOTICE: Imported P25 band plan from %s\n", opts->p25_bandplan_in_file);
+    }
+    return 0;
+}
+
 static int
 import_group_csv_if_needed(dsd_opts* opts, dsd_state* state) {
     const int trunk_enabled = (opts->trunk_enable == 1) || (opts->trunk_scan_enabled == 1);
@@ -344,6 +366,9 @@ import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     if (import_global_channel_map_if_needed(opts, state) != 0) {
+        return -1;
+    }
+    if (import_global_p25_bandplan_if_needed(opts, state) != 0) {
         return -1;
     }
     return import_group_csv_if_needed(opts, state);
@@ -2684,6 +2709,15 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     dsd_engine_cleanup_close_radio(opts, state);
     dsd_engine_cleanup_close_net(opts);
     dsd_engine_cleanup_close_mbe(opts, state);
+    // Before the scan coordinator goes: the parked targets' IDEN tables live in its snapshots.
+    if (opts->p25_bandplan_export_file[0] != '\0') {
+        const int rows = dsd_engine_p25_bandplan_export(opts, state, opts->p25_bandplan_export_file);
+        if (rows > 0) {
+            LOG_INFO("NOTICE: Exported %d P25 band plan rows to %s\n", rows, opts->p25_bandplan_export_file);
+        } else {
+            LOG_WARN("WARNING: P25 band plan export to %s wrote nothing\n", opts->p25_bandplan_export_file);
+        }
+    }
     dsd_engine_trunk_scan_shutdown(opts, state);
     autosave_user_config(opts, state);
     dsd_engine_cleanup_print_stats(state);

@@ -173,6 +173,30 @@ cb_import_group(void* v, const char* p) {
 }
 
 void
+cb_import_p25_bandplan(void* v, const char* p) {
+    const UiCtx* c = mutable_ui_ctx_from_callback(v);
+    if (!c) {
+        return;
+    }
+    if (p && *p) {
+        (void)dsd_app_command_set_string(DSD_APP_CMD_IMPORT_P25_BANDPLAN, p);
+        ui_statusf("Importing P25 band plan...");
+    }
+}
+
+void
+cb_export_p25_bandplan(void* v, const char* p) {
+    const UiCtx* c = mutable_ui_ctx_from_callback(v);
+    if (!c) {
+        return;
+    }
+    if (p && *p) {
+        (void)dsd_app_command_set_string(DSD_APP_CMD_EXPORT_P25_BANDPLAN, p);
+        ui_statusf("Exporting P25 band plan...");
+    }
+}
+
+void
 cb_keys_dec(void* v, const char* p) {
     const UiCtx* c = mutable_ui_ctx_from_callback(v);
     if (!c) {

@@ -76,6 +76,7 @@ data = true
 enabled = true
 chan_csv = "~/dsd-neo/dmr_t3_chan.csv"   # path expansion supported
 group_csv = "$HOME/dsd-neo/group.csv"
+p25_bandplan_csv = "~/dsd-neo/p25_bandplan.csv"
 allow_list = true
 
 [mode]
@@ -101,6 +102,7 @@ Path expansion is applied to:
 - `[input] file_path`
 - `[trunking] chan_csv`
 - `[trunking] group_csv`
+- `[trunking] p25_bandplan_csv`
 - `[trunk_scan] targets_csv`
 - `[logging] event_log`
 - `[logging] frame_log`
@@ -331,6 +333,7 @@ small subset is exposed as config keys for convenience (for example
 | `enabled` | BOOL | Enable trunking | `false` |
 | `chan_csv` | PATH | Channel map CSV | (empty) |
 | `group_csv` | PATH | Group list CSV | (empty) |
+| `p25_bandplan_csv` | PATH | P25 band plan CSV (`--p25-bandplan`; see `docs/csv-formats.md`) | (empty) |
 | `allow_list` | BOOL | Use as allow list | `false` |
 | `tune_group_calls` | BOOL | Follow group calls | `true` |
 | `tune_private_calls` | BOOL | Follow private calls | `true` |
@@ -622,9 +625,9 @@ is rejected by Soapy metadata, or the driver rejects `writeSetting`.
 When `[trunking] enabled = true`:
 
 - Trunking is activated for the selected mode.
-- CSV paths (`chan_csv`, `group_csv`) are passed to the decoder.
-- CSV paths in the config are applied the same as passing `-C`/`-G` and are
-  loaded when trunking is enabled.
+- CSV paths (`chan_csv`, `group_csv`, `p25_bandplan_csv`) are passed to the decoder.
+- CSV paths in the config are applied the same as passing `-C`/`-G`/`--p25-bandplan` and are
+  loaded when trunking is enabled (`p25_bandplan_csv` loads whenever P25 can be decoded).
 - CSV formats and examples are documented in `docs/csv-formats.md` and `examples/`.
 - If you start DSD-neo with any CLI args and you do not explicitly set trunking
   or scan mode (`-T`/`-Y`), trunking inherited from the config is disabled for
@@ -633,7 +636,8 @@ When `[trunking] enabled = true`:
 When `[trunk_scan] enabled = true`:
 
 - `targets_csv` is required and must use the target format in `docs/csv-formats.md`.
-- Global `[trunking] chan_csv` is rejected; each trunk target must name its own `chan_csv` if it needs a channel map.
+- Global `[trunking] chan_csv` and `[trunking] p25_bandplan_csv` are rejected; each trunk target must name its own
+  `chan_csv` / `p25_bandplan_csv` if it needs a channel map or a band plan.
 - The group policy remains global, so `[trunking] group_csv`, `allow_list`, and tune controls apply uniformly across all
   scan targets.
 - One tuner is rotated across targets. Calls on systems that are not currently parked can be missed.

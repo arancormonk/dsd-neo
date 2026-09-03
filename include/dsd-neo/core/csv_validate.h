@@ -33,6 +33,7 @@ int dsd_csv_validate_group_file(const char* path, dsd_csv_validation* out);
 int dsd_csv_validate_chan_file(const char* path, dsd_csv_validation* out);
 int dsd_csv_validate_key_file_dec(const char* path, dsd_csv_validation* out);
 int dsd_csv_validate_key_file_hex(const char* path, dsd_csv_validation* out);
+int dsd_csv_validate_p25_bandplan_file(const char* path, dsd_csv_validation* out);
 
 #ifdef __cplusplus
 }

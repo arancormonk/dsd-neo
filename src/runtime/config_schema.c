@@ -75,6 +75,7 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"trunking", "enabled", "Enable trunking support", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
     {"trunking", "chan_csv", "Channel map CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
     {"trunking", "group_csv", "Group list CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"trunking", "p25_bandplan_csv", "P25 band plan CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
     {"trunking", "allow_list", "Use group.csv as allow list (vs block list)", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
     {"trunking", "tune_group_calls", "Tune to group voice calls", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0},
     {"trunking", "tune_private_calls", "Tune to private/individual calls", "true", NULL, DSDCFG_TYPE_BOOL, 0, 0},

@@ -414,6 +414,15 @@ dsd_user_config_default_path(void) {
     return g_default_config_path;
 }
 
+/* Where act_export_p25_bandplan() proposes to write; the real one resolves the
+ * user's imports directory. */
+static const char* g_imports_dir = "/imports";
+
+const char*
+dsd_user_imports_dir(void) {
+    return g_imports_dir;
+}
+
 int
 dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
     (void)path;
@@ -600,6 +609,18 @@ cb_import_chan(void* v, const char* p) {
 
 void
 cb_import_group(void* v, const char* p) {
+    (void)v;
+    (void)p;
+}
+
+void
+cb_import_p25_bandplan(void* v, const char* p) {
+    (void)v;
+    (void)p;
+}
+
+void
+cb_export_p25_bandplan(void* v, const char* p) {
     (void)v;
     (void)p;
 }
@@ -948,6 +969,59 @@ test_simple_commands_and_prompts(void) {
     reset_capture();
     act_slot_pref(&ctx);
     rc |= expect_int("slot pref initial", g_prompt.initial_int, 2);
+
+    return rc;
+}
+
+static int
+test_p25_bandplan_actions(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
+
+    // Import goes through the CSV picker (no band-plan sidecar kind yet, so it
+    // lands on the path prompt) and hands the path to the band plan callback.
+    reset_capture();
+    act_import_p25_bandplan(&ctx);
+    rc |= expect_int("bandplan import prompts once", g_prompt.calls, 1);
+    rc |= expect_str("bandplan import prompt title", g_prompt.title, "P25 band plan CSV");
+    rc |= expect_int("bandplan import prompt cap", (int)g_prompt.cap, 1024);
+    rc |= expect_int("bandplan import prompt callback", g_prompt.str_cb == cb_import_p25_bandplan, 1);
+
+    // Export defaults to a file named after the system on air...
+    state.p2_wacn = 0xBEE00ULL;
+    state.p2_sysid = 0x123ULL;
+    reset_capture();
+    act_export_p25_bandplan(&ctx);
+    rc |= expect_str("bandplan export prompt title", g_prompt.title, "Export P25 band plan to path");
+    rc |=
+        expect_str("bandplan export default names the system", g_prompt.prefill, "/imports/p25_bandplan_BEE00_123.csv");
+    rc |= expect_int("bandplan export prompt cap", (int)g_prompt.cap, 1024);
+    rc |= expect_int("bandplan export prompt callback", g_prompt.str_cb == cb_export_p25_bandplan, 1);
+
+    // ...but not under trunk scan, where the export merges every target's tables...
+    opts.trunk_scan_enabled = 1;
+    reset_capture();
+    act_export_p25_bandplan(&ctx);
+    rc |= expect_str("bandplan export default under trunk scan", g_prompt.prefill, "/imports/p25_bandplan.csv");
+    opts.trunk_scan_enabled = 0;
+
+    // ...nor before the identity is known.
+    state.p2_wacn = 0ULL;
+    reset_capture();
+    act_export_p25_bandplan(&ctx);
+    rc |= expect_str("bandplan export default without identity", g_prompt.prefill, "/imports/p25_bandplan.csv");
+
+    // No imports directory: a bare file name rather than "/p25_bandplan.csv".
+    g_imports_dir = NULL;
+    reset_capture();
+    act_export_p25_bandplan(&ctx);
+    rc |= expect_str("bandplan export default without imports dir", g_prompt.prefill, "p25_bandplan.csv");
+    g_imports_dir = "/imports";
 
     return rc;
 }
@@ -1743,6 +1817,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_simple_commands_and_prompts();
+    rc |= test_p25_bandplan_actions();
     rc |= test_config_profile_and_env_actions();
     rc |= test_io_actions_and_choosers();
     rc |= test_key_lrrp_and_display_actions();

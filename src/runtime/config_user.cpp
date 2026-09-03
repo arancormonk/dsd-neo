@@ -1011,6 +1011,9 @@ render_trunking_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->trunk_group_csv[0]) {
         DSD_FPRINTF(out, "group_csv = \"%s\"\n", cfg->trunk_group_csv);
     }
+    if (cfg->trunk_p25_bandplan_csv[0]) {
+        DSD_FPRINTF(out, "p25_bandplan_csv = \"%s\"\n", cfg->trunk_p25_bandplan_csv);
+    }
     DSD_FPRINTF(out, "allow_list = %s\n", ini_bool(cfg->trunk_use_allow_list));
     DSD_FPRINTF(out, "tune_group_calls = %s\n", ini_bool(cfg->trunk_tune_group_calls));
     DSD_FPRINTF(out, "tune_private_calls = %s\n", ini_bool(cfg->trunk_tune_private_calls));
@@ -1374,6 +1377,14 @@ apply_demod_config(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state
 }
 
 static void
+apply_trunking_path(char* dst, size_t dst_size, const char* src) {
+    if (src[0]) {
+        DSD_SNPRINTF(dst, dst_size, "%s", src);
+        dst[dst_size - 1] = '\0';
+    }
+}
+
+static void
 apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (!cfg || !opts || !cfg->has_trunking) {
         return;
@@ -1381,14 +1392,10 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (cfg->trunk_enabled) {
         opts->trunk_enable = 1;
     }
-    if (cfg->trunk_chan_csv[0]) {
-        DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", cfg->trunk_chan_csv);
-        opts->chan_in_file[sizeof opts->chan_in_file - 1] = '\0';
-    }
-    if (cfg->trunk_group_csv[0]) {
-        DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", cfg->trunk_group_csv);
-        opts->group_in_file[sizeof opts->group_in_file - 1] = '\0';
-    }
+    apply_trunking_path(opts->chan_in_file, sizeof opts->chan_in_file, cfg->trunk_chan_csv);
+    apply_trunking_path(opts->group_in_file, sizeof opts->group_in_file, cfg->trunk_group_csv);
+    /* Path only: the engine imports the band plan at start, once the CLI has had its say. */
+    apply_trunking_path(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file, cfg->trunk_p25_bandplan_csv);
     opts->trunk_use_allow_list = cfg->trunk_use_allow_list ? 1 : 0;
     opts->trunk_tune_group_calls = cfg->trunk_tune_group_calls ? 1 : 0;
     opts->trunk_tune_private_calls = cfg->trunk_tune_private_calls ? 1 : 0;
@@ -1744,6 +1751,8 @@ snapshot_trunking_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->trunk_chan_csv[sizeof cfg->trunk_chan_csv - 1] = '\0';
     DSD_SNPRINTF(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, "%s", opts->group_in_file);
     cfg->trunk_group_csv[sizeof cfg->trunk_group_csv - 1] = '\0';
+    DSD_SNPRINTF(cfg->trunk_p25_bandplan_csv, sizeof cfg->trunk_p25_bandplan_csv, "%s", opts->p25_bandplan_in_file);
+    cfg->trunk_p25_bandplan_csv[sizeof cfg->trunk_p25_bandplan_csv - 1] = '\0';
     cfg->trunk_use_allow_list = opts->trunk_use_allow_list ? 1 : 0;
     cfg->trunk_tune_group_calls = opts->trunk_tune_group_calls ? 1 : 0;
     cfg->trunk_tune_private_calls = opts->trunk_tune_private_calls ? 1 : 0;

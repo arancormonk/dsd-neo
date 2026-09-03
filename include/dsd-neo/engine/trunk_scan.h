@@ -16,6 +16,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+struct p25_bandplan_row;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -68,6 +70,9 @@ typedef struct {
      * Loaded into the target's key set at init; empty means the global keys. */
     char keys_hex_csv[1024];
     char keys_dec_csv[1024];
+    /* Per-target P25 band plan CSV (trunk targets only), resolved relative to the targets CSV at
+     * parse time and loaded into the target's own band-plan store at init; empty means none. */
+    char p25_bandplan_csv[1024];
     int dwell_ms;
     int activity_hold_ms;
     dsd_trunk_scan_modulation modulation;
@@ -166,6 +171,21 @@ int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* 
  *         parked target is P25.
  */
 int dsd_engine_trunk_scan_active_gfsk_symbol_rate(const dsd_state* state);
+/**
+ * @brief Append the parked targets' learned IDEN entries as band-plan rows.
+ *
+ * Walks every target except the active one (whose tables are live in @p state and are the
+ * caller's to collect) and appends each parked snapshot's ready FDMA/TDMA entries through
+ * dsd_p25_bandplan_append_tables(), which de-duplicates by identifier, table and WACN/SYS.
+ * Serves the band-plan export; a session without a coordinator returns @p count unchanged.
+ *
+ * @param state Decoder state owning the scan coordinator.
+ * @param rows  Row array of at least @p cap entries.
+ * @param count Rows already in @p rows.
+ * @param cap   Capacity of @p rows.
+ * @return The new row count.
+ */
+int dsd_engine_trunk_scan_append_p25_idens(const dsd_state* state, struct p25_bandplan_row* rows, int count, int cap);
 
 #ifdef __cplusplus
 }

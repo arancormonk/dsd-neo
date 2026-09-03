@@ -67,7 +67,10 @@ target_sources(
     dsd-neo_fuzz_core_csv_import
     PRIVATE
         ${PROJECT_SOURCE_DIR}/src/core/file/dsd_import.c
+        ${PROJECT_SOURCE_DIR}/src/core/file/p25_bandplan_csv.c
         ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
+        # p25_bandplan_csv.c seeds the live IDEN tables through this.
+        ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         # dsd_import.c owns the scan-list heap tail through these.
         ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c

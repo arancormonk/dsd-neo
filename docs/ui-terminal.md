@@ -154,6 +154,8 @@ Main Menu
 │   ├── Channels & groups
 │   │   ├── Import channel map CSV...
 │   │   ├── Import group list CSV...
+│   │   ├── Import P25 band plan CSV...
+│   │   ├── Export learned P25 band plan...
 │   │   ├── ─────                                    (RadioReference builds)
 │   │   ├── Import from RadioReference...            (RadioReference builds)
 │   │   ├── Imported RadioReference systems...       (RadioReference builds)
@@ -320,7 +322,16 @@ RadioReference import:
   files** (after a confirmation naming the system and the site).
 - **Trunking -> Channels & groups -> Import channel map CSV...** and **Import group list CSV...** open a
   chooser of the imports directory's files of that kind, with an **Enter a path...** row that falls back to
-  typing a path.
+  typing a path. **Import P25 band plan CSV...** loads a band plan (one row per identifier, `docs/csv-formats.md`)
+  into the running decoder for a P25 site that never broadcasts `IDEN_UP`; **Export learned P25 band plan...**
+  writes the identifier tables learned this session (every target's, under trunk scan) to a path you are asked
+  for, in the same format, so the next run can import them. Under trunk scan the import is refused with a
+  message (a target list's `p25_bandplan_csv` column is the way in) while the export still works and covers
+  every target. The export's suggested file name carries the WACN/SYS when they are known and trunk scan is
+  off; under trunk scan the merged multi-target file keeps the generic name.
+- P25 channels are shown as four hex digits followed by the same channel as `<identifier>-<channel>` in
+  parentheses (`Active Ch: 2A46 (2-2630)`, `CH:2A46 (2-2630)` in the secondary control channel list, and the
+  learned Channels panel), which is the spelling a channel map CSV accepts as its first column.
 - Messages from these flows are shown where you are looking: inside the prompt (a refused ZIP code or
   system ID), on the row under a chooser's title, in the `Fetching` box (which names the stage in progress),
   and on the system panel's status row. A message too long for one row wraps onto the next, borrowing the

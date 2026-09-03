@@ -7,7 +7,7 @@ import QtQuick
 // the same register as EncTag but deliberately neutral — a file's type is a
 // fact, not a warning.
 Rectangle {
-    // "chan" | "group" | "keysDec" | "keysHex", as ImportedFilesModel stores it.
+    // "chan" | "group" | "keysDec" | "keysHex" | "p25Bandplan", as ImportedFilesModel stores it.
     property string type: ""
 
     implicitWidth: tag.implicitWidth + 14
@@ -24,6 +24,7 @@ Rectangle {
               : parent.type === "group" ? qsTr("TALKGROUPS")
               : parent.type === "keysDec" ? qsTr("KEYS · DEC")
               : parent.type === "keysHex" ? qsTr("KEYS · HEX")
+              : parent.type === "p25Bandplan" ? qsTr("P25 BAND PLAN")
               : qsTr("FILE")
         font.family: Theme.mono
         font.pixelSize: 10

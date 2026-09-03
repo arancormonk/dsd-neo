@@ -1,0 +1,4 @@
+Liden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid
+0,851006250,6250,1,-45000000,12500,,
+2,762006250,6250,3,-30000000,,BEE00,3A1
+7,851006250,6250

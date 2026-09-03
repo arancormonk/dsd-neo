@@ -6,6 +6,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/keyring.h>
@@ -15,12 +16,14 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
@@ -425,6 +428,43 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     dsd_state_trunk_lcn_free(imported);
     free(imported);
     return (import_rc == 0 && mapped_any && adopt_rc == 0) ? 0 : -1;
+}
+
+int
+svc_import_p25_bandplan(dsd_opts* opts, dsd_state* state, const char* path) {
+    if (!opts || !state || !path || !*path) {
+        return -1;
+    }
+    // Same invariant the CLI enforces for --p25-bandplan: a trunk-scan run gets
+    // its band plans per target (p25_bandplan_csv), and a global one adopted
+    // here would be overwritten by the next target's anyway.
+    if (opts->trunk_scan_enabled == 1) {
+        LOG_WARN("P25 band plan import refused under trunk scan; set p25_bandplan_csv on the target instead.\n");
+        return -1;
+    }
+    // Dry run before touching the live plan: the importer replaces the stored
+    // rows wholesale, so a file that opens but carries no usable row (a
+    // talkgroup list, a header-only file) would otherwise empty it.
+    dsd_csv_validation stats = {0, 0, 0};
+    if (dsd_csv_validate_p25_bandplan_file(path, &stats) != 0 || stats.accepted == 0U) {
+        LOG_WARN("P25 band plan import refused: %s has no usable row.\n", path);
+        return -1;
+    }
+    if (csvP25BandplanImportPath(path, state) != 0) {
+        return -1;
+    }
+    DSD_SNPRINTF(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file, "%s", path);
+    // Announcements parked for want of an IDEN can resolve against the seeded tables now.
+    p25_resolve_pending_announcements(opts, state);
+    return 0;
+}
+
+int
+svc_export_p25_bandplan(const dsd_opts* opts, const dsd_state* state, const char* path) {
+    if (!opts || !state || !path || !*path) {
+        return -1;
+    }
+    return dsd_engine_p25_bandplan_export(opts, state, path);
 }
 
 int

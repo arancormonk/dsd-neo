@@ -79,10 +79,15 @@ behavior, the CSV columns, and the CLI/config options live in `docs/trunk-scan.m
   `dsd_engine_trunk_scan_nxdn_conventional_activity()`, reached from protocol code through the runtime hooks.
 
 Every parked target keeps its own snapshot of decoder state — channel map, trunking/LCN state, call and P25 identity
-metadata, the encrypted-target lockout ledger, and the NXDN missing-channel ledger from
-`<dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>` — so a channel number or learned control-channel state from one system is
-never reused on another. That is also why trunk scan rejects a global `-C` channel map and imports each target's
-`chan_csv` through throwaway options. The keyring is not snapshotted: each target instead carries a static
+metadata (the IDEN tables and the user band plan behind them), the encrypted-target lockout ledger, and the NXDN
+missing-channel ledger from `<dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>` — so a channel number or learned
+control-channel state from one system is never reused on another. That is also why trunk scan rejects a global `-C`
+channel map or `--p25-bandplan` and imports each target's `chan_csv` through throwaway options and its
+`p25_bandplan_csv` straight from the path, so neither touches the live options.
+The one deliberate crossing is by provenance: when the parked target's WACN/SYS is known and another target's
+snapshot holds a P25 IDEN entry learned on that same WACN/SYS, the coordinator copies it into an empty slot at
+trust 1 (`trunk_scan_share_peer_idens()`), and `dsd_engine_p25_bandplan_export()` in
+`src/engine/p25_bandplan_export.c` merges every target's tables into one band-plan CSV. The keyring is not snapshotted: each target instead carries a static
 `dsd_key_set` (`keys_hex_csv`/`keys_dec_csv` columns) that the switch installs through the scan key swap in
 `<dsd-neo/core/key_set.h>`, restoring the globals on unkeyed targets and at shutdown without touching the key epoch.
 
@@ -127,6 +132,16 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
   Windows CRT turns that failed conversion into an unbounded write of the stack. Semgrep blocks `%lc`/`%ls`
+- API note: the user-supplied P25 band plan (`--p25-bandplan`, `[trunking] p25_bandplan_csv`, a trunk-scan
+  target's `p25_bandplan_csv`, the terminal/Qt imports) lives in `dsd_state` as `p25_bandplan_rows[]` beside the
+  IDEN tables it seeds. `src/core/file/p25_bandplan_csv.c` parses and writes the CSV
+  (`csvP25BandplanImportPath()`/`csvP25BandplanExportRows()`, dry run `dsd_csv_validate_p25_bandplan_file()`);
+  `src/core/util/dsd_state_p25_bandplan.c` holds the seeding rule (`dsd_state_p25_bandplan_seed()`: only empty
+  slots, rows naming the current WACN/SYS before rows naming none, an over-the-air entry is never displaced) that
+  the importer and `p25_update_system_identity()` both apply, and `dsd_p25_bandplan_append_tables()`, the reverse
+  direction the export uses. Every core CSV importer shares its token helpers through the module-private
+  `src/core/file/csv_parse_internal.h`; the channel map's key column accepts decimal, `0x` hex and `<iden>-<chan>`
+  spellings there.
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -418,7 +433,8 @@ Qt Quick frontend (`src/ui/qt`):
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies
   picked documents into durable app storage through `DecoderHost::importDocument()` and dry-run validates them via
-  `<dsd-neo/core/csv_validate.h>` (`src/core/file/dsd_import.c`) for row-count feedback.
+  `<dsd-neo/core/csv_validate.h>` (`src/core/file/dsd_import.c`, and `src/core/file/p25_bandplan_csv.c` for the
+  P25 band plan kind) for row-count feedback.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. See

@@ -266,7 +266,9 @@ test_iden_rendering_restores_saved_attrs(void) {
     g_iden_match_iden = 3;
     ui_trunk_print_channel_freq(&state, 0x1234, 851012500L);
 
-    assert(strstr(g_output, "CH 1234[I3]: 851.012500 MHz") != NULL);
+    // #403: the IDEN-mapped channel shows its <iden>-<chan> key beside the hex.
+    assert(strstr(g_output, "CH 1234 (1-564): 851.012500 MHz") != NULL);
+    assert(strstr(g_output, "[I3]") == NULL);
     assert(g_attr_get_calls == 1);
     assert(g_attron_calls == 1);
     assert(PAIR_NUMBER(g_last_attron) == 24);

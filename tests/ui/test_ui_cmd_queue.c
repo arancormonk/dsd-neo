@@ -638,6 +638,68 @@ test_file_network_and_import_commands(void) {
 }
 
 static int
+test_p25_bandplan_commands(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    const char* plan_csv = "ui_cmd_queue_p25_bandplan.csv";
+    const char* export_csv = "ui_cmd_queue_p25_bandplan_export.csv";
+    const char* missing_csv = "ui_cmd_queue_p25_bandplan_missing.csv";
+    static const unsigned char plan_data[] =
+        "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n0,851006250,6250,1,-45000000,12500,,\n";
+
+    remove(plan_csv);
+    remove(export_csv);
+    remove(missing_csv);
+    init_test_context(&opts, &state);
+    rc |= write_file_bytes(plan_csv, plan_data, sizeof(plan_data) - 1U);
+
+    // A missing file fails the dry run: nothing recorded, failure toast.
+    post_string(DSD_APP_CMD_IMPORT_P25_BANDPLAN, missing_csv);
+    rc |= expect_int("bandplan import of missing file applied", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("bandplan import of missing file records no path", opts.p25_bandplan_in_file, "");
+    rc |= expect_int("bandplan import of missing file loads nothing", state.p25_bandplan_row_count, 0);
+    rc |= expect_contains("bandplan import failure toast", state.ui_msg, "Failed: P25 band plan import");
+
+    // A real plan lands in the live state, records its path and seeds IDEN 0.
+    post_string(DSD_APP_CMD_IMPORT_P25_BANDPLAN, plan_csv);
+    rc |= expect_int("bandplan import applied", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("bandplan import path recorded", opts.p25_bandplan_in_file, plan_csv);
+    rc |= expect_int("bandplan import stored one row", state.p25_bandplan_row_count, 1);
+    rc |= expect_true("bandplan import seeded IDEN 0 base", state.p25_iden_fdma[0].base_freq == 851006250L / 5);
+    rc |= expect_contains("bandplan import success toast", state.ui_msg, "Applied: P25 band plan imported");
+
+    // Under trunk scan the import is refused (per-target p25_bandplan_csv instead).
+    opts.trunk_scan_enabled = 1;
+    opts.p25_bandplan_in_file[0] = '\0';
+    post_string(DSD_APP_CMD_IMPORT_P25_BANDPLAN, plan_csv);
+    rc |= expect_int("bandplan import under trunk scan applied", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("bandplan import under trunk scan records no path", opts.p25_bandplan_in_file, "");
+    rc |= expect_contains("bandplan import under trunk scan toast", state.ui_msg, "Failed: P25 band plan import");
+    opts.trunk_scan_enabled = 0;
+
+    // Export writes the seeded table back out and reports the row count.
+    post_string(DSD_APP_CMD_EXPORT_P25_BANDPLAN, export_csv);
+    rc |= expect_int("bandplan export applied", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("bandplan export success toast", state.ui_msg, "Applied: 1 P25 band plan row(s) exported");
+    FILE* exported = dsd_fopen_existing_regular_file(export_csv, "rb");
+    rc |= expect_true("bandplan export wrote the file", exported != NULL);
+    if (exported) {
+        fclose(exported);
+    }
+
+    // An unwritable path fails through the same handler.
+    post_string(DSD_APP_CMD_EXPORT_P25_BANDPLAN, "ui_cmd_queue_no_such_dir/plan.csv");
+    rc |= expect_int("bandplan export to bad path applied", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("bandplan export failure toast", state.ui_msg, "Failed: P25 band plan export");
+
+    remove(plan_csv);
+    remove(export_csv);
+    freeState(&state);
+    return rc;
+}
+
+static int
 test_io_and_state_commands(void) {
     int rc = 0;
     static dsd_opts opts;
@@ -1956,6 +2018,7 @@ main(void) {
     rc |= test_visibility_and_queue_overflow();
     rc |= test_key_and_runtime_state_commands();
     rc |= test_file_network_and_import_commands();
+    rc |= test_p25_bandplan_commands();
     rc |= test_io_and_state_commands();
     rc |= test_compact_visualizer_toast();
     rc |= test_modulation_and_decode_mode_setters();

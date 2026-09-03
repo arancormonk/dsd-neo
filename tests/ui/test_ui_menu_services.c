@@ -18,12 +18,14 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/udp_socket_connect.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
@@ -228,6 +230,58 @@ csvKeyImportDecPath(const char* path, int show_keys, dsd_state* state, dsd_csv_v
     (void)state;
     (void)stats;
     return g_key_import_result;
+}
+
+/* P25 band plan: the service owes a dry run before the live import, the live
+ * import only when the dry run accepted a row, and the export a pass-through of
+ * the engine's row count. Each stub records what it was handed. */
+static int g_bandplan_validate_result = 0;
+static unsigned int g_bandplan_validate_accepted = 0;
+static int g_bandplan_validate_calls = 0;
+static int g_bandplan_import_result = -1;
+static int g_bandplan_import_calls = 0;
+static char g_bandplan_import_path[1024];
+static int g_bandplan_resolve_calls = 0;
+static int g_bandplan_export_result = -1;
+static int g_bandplan_export_calls = 0;
+static char g_bandplan_export_path[1024];
+
+int
+dsd_csv_validate_p25_bandplan_file(const char* path, dsd_csv_validation* out) {
+    (void)path;
+    g_bandplan_validate_calls++;
+    if (out) {
+        out->accepted = g_bandplan_validate_accepted;
+        out->skipped = 0U;
+        out->total = g_bandplan_validate_accepted;
+    }
+    return g_bandplan_validate_result;
+}
+
+int
+csvP25BandplanImportPath(const char* path, dsd_state* state) {
+    g_bandplan_import_calls++;
+    DSD_SNPRINTF(g_bandplan_import_path, sizeof g_bandplan_import_path, "%s", path ? path : "");
+    if (g_bandplan_import_result == 0 && state) {
+        state->p25_bandplan_row_count = 1;
+    }
+    return g_bandplan_import_result;
+}
+
+void
+p25_resolve_pending_announcements(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_bandplan_resolve_calls++;
+}
+
+int
+dsd_engine_p25_bandplan_export(const dsd_opts* opts, const dsd_state* state, const char* path) {
+    (void)opts;
+    (void)state;
+    g_bandplan_export_calls++;
+    DSD_SNPRINTF(g_bandplan_export_path, sizeof g_bandplan_export_path, "%s", path ? path : "");
+    return g_bandplan_export_result;
 }
 
 int
@@ -1080,6 +1134,77 @@ test_channel_map_keys_adopt_and_clear(void) {
     return rc;
 }
 
+static int
+test_p25_bandplan_import_and_export_services(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    // Refusals that never reach the importer: no path, and a trunk-scan run,
+    // whose band plans come per target (p25_bandplan_csv).
+    g_bandplan_validate_calls = 0;
+    g_bandplan_import_calls = 0;
+    g_bandplan_resolve_calls = 0;
+    rc |= expect_int("bandplan import null path", svc_import_p25_bandplan(&opts, &state, NULL), -1);
+    rc |= expect_int("bandplan import empty path", svc_import_p25_bandplan(&opts, &state, ""), -1);
+    opts.trunk_scan_enabled = 1;
+    g_bandplan_validate_accepted = 1U;
+    g_bandplan_import_result = 0;
+    rc |=
+        expect_int("bandplan import refused under trunk scan", svc_import_p25_bandplan(&opts, &state, "plan.csv"), -1);
+    rc |= expect_int("trunk scan refusal skips the dry run", g_bandplan_validate_calls, 0);
+    rc |= expect_int("trunk scan refusal skips the importer", g_bandplan_import_calls, 0);
+    rc |= expect_str("trunk scan refusal records no path", opts.p25_bandplan_in_file, "");
+    opts.trunk_scan_enabled = 0;
+
+    // Dry run gate: a file that opens but yields no usable row must not touch the live plan.
+    g_bandplan_validate_accepted = 0U;
+    g_bandplan_validate_result = 0;
+    rc |= expect_int("bandplan import empty dry run refused", svc_import_p25_bandplan(&opts, &state, "empty.csv"), -1);
+    rc |= expect_int("empty dry run consulted the validator", g_bandplan_validate_calls, 1);
+    rc |= expect_int("empty dry run skips the importer", g_bandplan_import_calls, 0);
+    rc |= expect_str("empty dry run records no path", opts.p25_bandplan_in_file, "");
+    g_bandplan_validate_result = -1;
+    g_bandplan_validate_accepted = 3U;
+    rc |= expect_int("bandplan import unreadable file refused", svc_import_p25_bandplan(&opts, &state, "gone.csv"), -1);
+    rc |= expect_int("unreadable file skips the importer", g_bandplan_import_calls, 0);
+    g_bandplan_validate_result = 0;
+
+    // Importer failure: no path recorded, no announcement pass.
+    g_bandplan_import_result = -1;
+    rc |= expect_int("bandplan import importer failure", svc_import_p25_bandplan(&opts, &state, "bad.csv"), -1);
+    rc |= expect_int("importer failure reached the importer", g_bandplan_import_calls, 1);
+    rc |= expect_str("importer failure handed the path through", g_bandplan_import_path, "bad.csv");
+    rc |= expect_str("importer failure records no path", opts.p25_bandplan_in_file, "");
+    rc |= expect_int("importer failure skips announcement resolve", g_bandplan_resolve_calls, 0);
+
+    // Success: imported into the live state, path recorded, pending announcements re-resolved.
+    g_bandplan_import_result = 0;
+    rc |= expect_int("bandplan import ok", svc_import_p25_bandplan(&opts, &state, "plan.csv"), 0);
+    rc |= expect_int("bandplan import loaded the live state", state.p25_bandplan_row_count, 1);
+    rc |= expect_str("bandplan import path recorded", opts.p25_bandplan_in_file, "plan.csv");
+    rc |= expect_int("bandplan import resolves pending announcements", g_bandplan_resolve_calls, 1);
+
+    // Export: an empty path is refused before the engine; otherwise the engine's row count comes back.
+    g_bandplan_export_calls = 0;
+    rc |= expect_int("bandplan export null path", svc_export_p25_bandplan(&opts, &state, NULL), -1);
+    rc |= expect_int("bandplan export empty path", svc_export_p25_bandplan(&opts, &state, ""), -1);
+    rc |= expect_int("empty export path skips the engine", g_bandplan_export_calls, 0);
+    g_bandplan_export_result = -1;
+    rc |= expect_int("bandplan export nothing to write", svc_export_p25_bandplan(&opts, &state, "out.csv"), -1);
+    g_bandplan_export_result = 4;
+    rc |= expect_int("bandplan export row count", svc_export_p25_bandplan(&opts, &state, "out.csv"), 4);
+    rc |= expect_str("bandplan export path handed through", g_bandplan_export_path, "out.csv");
+    rc |= expect_int("bandplan export reached the engine", g_bandplan_export_calls, 2);
+
+    g_bandplan_import_result = -1;
+    g_bandplan_export_result = -1;
+    g_bandplan_validate_accepted = 0U;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1096,5 +1221,6 @@ main(void) {
     rc |= test_channel_map_keys_adopt_and_clear();
     rc |= test_key_import_arms_keyloader();
     rc |= test_clear_services_unload_what_the_importers_loaded();
+    rc |= test_p25_bandplan_import_and_export_services();
     return rc ? 1 : 0;
 }

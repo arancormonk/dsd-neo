@@ -82,6 +82,7 @@ SavedSystemsModel::tuningRoleValue(const Row& row, int role) {
         case GroupCsvPathRole: return row.groupCsvPath;
         case KeyCsvPathRole: return row.keyCsvPath;
         case KeyCsvHexRole: return row.keyCsvHex;
+        case P25BandplanCsvPathRole: return row.p25BandplanCsvPath;
         default: return QVariant();
     }
 }
@@ -117,6 +118,7 @@ SavedSystemsModel::roleNames() const {
     roles.insert(GroupCsvPathRole, QByteArrayLiteral("groupCsvPath"));
     roles.insert(KeyCsvPathRole, QByteArrayLiteral("keyCsvPath"));
     roles.insert(KeyCsvHexRole, QByteArrayLiteral("keyCsvHex"));
+    roles.insert(P25BandplanCsvPathRole, QByteArrayLiteral("p25BandplanCsvPath"));
     return roles;
 }
 
@@ -176,6 +178,7 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     map_take_string(map, QStringLiteral("groupCsvPath"), &row.groupCsvPath);
     map_take_string(map, QStringLiteral("keyCsvPath"), &row.keyCsvPath);
     map_take_bool(map, QStringLiteral("keyCsvHex"), &row.keyCsvHex);
+    map_take_string(map, QStringLiteral("p25BandplanCsvPath"), &row.p25BandplanCsvPath);
     return row;
 }
 
@@ -200,6 +203,7 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     map.insert(QStringLiteral("groupCsvPath"), row.groupCsvPath);
     map.insert(QStringLiteral("keyCsvPath"), row.keyCsvPath);
     map.insert(QStringLiteral("keyCsvHex"), row.keyCsvHex);
+    map.insert(QStringLiteral("p25BandplanCsvPath"), row.p25BandplanCsvPath);
     return map;
 }
 
@@ -264,7 +268,8 @@ SavedSystemsModel::systemsReferencingPath(const QString& path) const {
         return names;
     }
     for (const Row& row : m_rows) {
-        if (row.chanCsvPath == path || row.groupCsvPath == path || row.keyCsvPath == path) {
+        if (row.chanCsvPath == path || row.groupCsvPath == path || row.keyCsvPath == path
+            || row.p25BandplanCsvPath == path) {
             names.append(row.name);
         }
     }
@@ -290,6 +295,10 @@ SavedSystemsModel::clearCsvPath(const QString& path) {
         }
         if (row.keyCsvPath == path) {
             row.keyCsvPath.clear();
+            rowChanged = true;
+        }
+        if (row.p25BandplanCsvPath == path) {
+            row.p25BandplanCsvPath.clear();
             rowChanged = true;
         }
         if (rowChanged) {

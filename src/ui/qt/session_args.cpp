@@ -119,6 +119,10 @@ append_csv_args(QStringList& args, const QVariantMap& system) {
         args << (system.value(QStringLiteral("keyCsvHex")).toBool() ? QStringLiteral("-K") : QStringLiteral("-k"))
              << key;
     }
+    const QString bandplan = system.value(QStringLiteral("p25BandplanCsvPath")).toString();
+    if (!bandplan.isEmpty()) {
+        args << QStringLiteral("--p25-bandplan") << bandplan;
+    }
 }
 
 /** @brief Append the decode chip, trunking, policy flags, and extra CLI args. */

@@ -318,6 +318,17 @@ validate_composed_trunk_scan_channel_map_conflict(const dsdneoUserConfig* cfg, c
                      "trunking.chan_csv cannot be combined with trunk_scan.enabled; use per-target chan_csv values");
 }
 
+static void
+validate_composed_trunk_scan_p25_bandplan_conflict(const dsdneoUserConfig* cfg, const char* section, const char* key,
+                                                   dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || !cfg->trunk_scan_enabled || cfg->trunk_p25_bandplan_csv[0] == '\0') {
+        return;
+    }
+    dsdcfg_diags_add(
+        diags, DSDCFG_DIAG_ERROR, 0, section ? section : "trunking", key ? key : "p25_bandplan_csv",
+        "trunking.p25_bandplan_csv cannot be combined with trunk_scan.enabled; use per-target p25_bandplan_csv values");
+}
+
 /* STRING keys get no format check from the schema walk, so the port list is checked here
    with the same parser the apply step uses. A bad entry is a warning: the good entries still
    load, matching how an unknown key is treated. */
@@ -344,6 +355,7 @@ static void
 validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t* diags) {
     validate_composed_trunk_scan_requirements(cfg, "trunk_scan", "targets_csv", diags);
     validate_composed_trunk_scan_channel_map_conflict(cfg, "trunking", "chan_csv", diags);
+    validate_composed_trunk_scan_p25_bandplan_conflict(cfg, "trunking", "p25_bandplan_csv", diags);
     validate_composed_lrrp_ports(cfg, "mode", "dmr_lrrp_ports", diags);
 }
 
@@ -354,6 +366,7 @@ validate_composed_profile_config(const char* profile_name, const dsdneoUserConfi
     section[sizeof section - 1] = '\0';
     validate_composed_trunk_scan_requirements(cfg, section, "trunk_scan.targets_csv", diags);
     validate_composed_trunk_scan_channel_map_conflict(cfg, section, "trunking.chan_csv", diags);
+    validate_composed_trunk_scan_p25_bandplan_conflict(cfg, section, "trunking.p25_bandplan_csv", diags);
     validate_composed_lrrp_ports(cfg, section, "mode.dmr_lrrp_ports", diags);
 }
 

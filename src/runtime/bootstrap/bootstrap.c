@@ -345,7 +345,8 @@ bootstrap_long_arg_disables_inherited_trunk_scan(const char* arg) {
         return 0;
     }
     return strcmp(arg, "--iq-replay") == 0 || strncmp(arg, "--iq-replay=", 12) == 0 || strcmp(arg, "--trunk-scan") == 0
-           || strncmp(arg, "--trunk-scan=", 13) == 0;
+           || strncmp(arg, "--trunk-scan=", 13) == 0 || strcmp(arg, "--p25-bandplan") == 0
+           || strncmp(arg, "--p25-bandplan=", 15) == 0;
 }
 
 static int

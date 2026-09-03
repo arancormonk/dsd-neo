@@ -564,6 +564,12 @@ Window {
                     else if ((was.keyCsvPath || "").length > 0)
                         commands.clearKeys()
                 }
+                // No clear counterpart: a band plan the session has already
+                // merged with what it heard off the air cannot be taken back,
+                // so "None" only takes effect at the next start.
+                if (sys.p25BandplanCsvPath !== (was.p25BandplanCsvPath || "")
+                    && sys.p25BandplanCsvPath.length > 0)
+                    commands.importP25Bandplan(sys.p25BandplanCsvPath)
                 // The monitor header reads sessionSystem; without this it keeps
                 // naming and metering the system as it was before the edit.
                 mainRoot.sessionSystem = sys

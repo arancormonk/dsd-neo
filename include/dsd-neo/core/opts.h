@@ -341,6 +341,8 @@ struct dsd_opts {
     char group_in_file[1024];
     char chan_in_file[1024];
     char trunk_scan_targets_csv[1024];
+    char p25_bandplan_in_file[1024];     // --p25-bandplan / [trunking] p25_bandplan_csv
+    char p25_bandplan_export_file[1024]; // --p25-bandplan-export: written once at clean shutdown
     char key_in_file[1024];
     char soapy_profile[32];
     char soapy_stream_format[16];

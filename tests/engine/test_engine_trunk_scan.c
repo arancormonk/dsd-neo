@@ -14,6 +14,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -972,6 +973,13 @@ expect_empty_target_p25_state(const dsd_state* state) {
         || state->p25_pending_announcement_count != 0 || state->p25_src_nid != 0) {
         DSD_FPRINTF(stderr, "target 0 P25 state leaked into empty target 1 snapshot\n");
         return 1;
+    }
+    for (int iden = 0; iden < 16; iden++) {
+        if (state->p25_iden_fdma[iden].populated != 0 || state->p25_iden_tdma[iden].populated != 0
+            || state->p25_chan_tdma_explicit[iden] != 0) {
+            DSD_FPRINTF(stderr, "target 0 IDEN %d leaked into empty target 1 snapshot\n", iden);
+            return 1;
+        }
     }
     return 0;
 }
@@ -5838,6 +5846,443 @@ test_target_keys_survive_failed_alternate_retune(void) {
     return test_rc;
 }
 
+/* --- P25 band plan: peer IDEN sharing, per-target plan column, snapshot, export (#402) --- */
+
+static const unsigned long long k_sys_a_wacn = 0xBEE00ULL;
+static const unsigned long long k_sys_a_sysid = 0x3A1ULL;
+static const unsigned long long k_sys_b_sysid = 0x3A2ULL;
+
+static void
+seed_iden_entry(p25_iden_entry_t* e, long int base_freq, int chan_type, unsigned long long wacn,
+                unsigned long long sysid, uint8_t trust) {
+    DSD_MEMSET(e, 0, sizeof *e);
+    e->base_freq = base_freq;
+    e->chan_type = chan_type;
+    e->chan_spac = 100;
+    e->trans_off = 0x8E;
+    e->bw_vu = 0;
+    e->trust = trust;
+    e->populated = 1;
+    e->wacn = wacn;
+    e->sysid = sysid;
+    e->rfss = 1ULL;
+    e->site = 5ULL;
+}
+
+static int
+expect_iden_entry(const char* stage, const p25_iden_entry_t* e, long int base_freq, unsigned long long wacn,
+                  unsigned long long sysid, uint8_t trust) {
+    if (e->populated != 1 || e->base_freq != base_freq || e->chan_spac != 100 || e->wacn != wacn || e->sysid != sysid
+        || e->rfss != 1ULL || e->site != 5ULL || e->trust != trust) {
+        DSD_FPRINTF(stderr,
+                    "%s: IDEN entry mismatch populated=%u base=%ld wacn=%llx sysid=%llx rfss=%llu site=%llu "
+                    "trust=%u\n",
+                    stage, e->populated, e->base_freq, e->wacn, e->sysid, e->rfss, e->site, e->trust);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+init_two_p25_targets(dsd_opts* opts, dsd_state* state, const char* body, char* dir, size_t dir_sz, char* target_path,
+                     size_t target_sz) {
+    if (make_runtime_targets(body, target_path, target_sz, dir, dir_sz) != 0) {
+        return -1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(state) != 0) {
+        DSD_FPRINTF(stderr, "scan init failed err=%s\n", err);
+        return -1;
+    }
+    return 0;
+}
+
+static int
+test_peer_idens_shared_by_system_identity(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (init_two_p25_targets(&opts, &state,
+                             "a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n"
+                             "c,p25-trunk,853000000,,250,,\n",
+                             dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+
+    /* Target a learns three identifiers over the air on system A. */
+    state.p2_wacn = k_sys_a_wacn;
+    state.p2_sysid = k_sys_a_sysid;
+    seed_iden_entry(&state.p25_iden_fdma[1], 170201250, 1, k_sys_a_wacn, k_sys_a_sysid, 2);
+    state.p25_chan_tdma_explicit[1] |= 0x01;
+    seed_iden_entry(&state.p25_iden_tdma[2], 152401250, 4, k_sys_a_wacn, k_sys_a_sysid, 2);
+    state.p25_chan_tdma_explicit[2] |= 0x02;
+    seed_iden_entry(&state.p25_iden_fdma[3], 160001250, 1, k_sys_a_wacn, k_sys_a_sysid, 2);
+    state.p25_chan_tdma_explicit[3] |= 0x01;
+    /* An entry with no provenance at all is never shared. */
+    seed_iden_entry(&state.p25_iden_fdma[4], 165001250, 1, 0ULL, 0ULL, 2);
+    state.p25_iden_fdma[4].rfss = 0ULL;
+    state.p25_iden_fdma[4].site = 0ULL;
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "peer share: scan did not rotate to b\n");
+        test_rc = 1;
+    }
+    /* b has no identity yet: nothing may be copied. */
+    test_rc |= expect_empty_target_p25_state(&state);
+
+    /* b already learned IDEN 3 itself before its identity resolved; that stays. */
+    seed_iden_entry(&state.p25_iden_fdma[3], 555, 1, k_sys_a_wacn, k_sys_a_sysid, 2);
+    state.p25_chan_tdma_explicit[3] |= 0x01;
+    state.p2_wacn = k_sys_a_wacn;
+    state.p2_sysid = k_sys_a_sysid;
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "peer share: b rotated early\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_iden_entry("b fdma[1]", &state.p25_iden_fdma[1], 170201250, k_sys_a_wacn, k_sys_a_sysid, 1);
+    test_rc |= expect_iden_entry("b tdma[2]", &state.p25_iden_tdma[2], 152401250, k_sys_a_wacn, k_sys_a_sysid, 1);
+    test_rc |= expect_iden_entry("b fdma[3]", &state.p25_iden_fdma[3], 555, k_sys_a_wacn, k_sys_a_sysid, 2);
+    if ((state.p25_chan_tdma_explicit[1] & 0x01) == 0 || (state.p25_chan_tdma_explicit[2] & 0x02) == 0) {
+        DSD_FPRINTF(stderr, "peer share: explicit table bits not set (%02x %02x)\n", state.p25_chan_tdma_explicit[1],
+                    state.p25_chan_tdma_explicit[2]);
+        test_rc = 1;
+    }
+    if (state.p25_iden_fdma[4].populated != 0 || state.p25_iden_tdma[1].populated != 0
+        || state.p25_iden_fdma[2].populated != 0) {
+        DSD_FPRINTF(stderr, "peer share: copied an entry it must not (fdma4=%u tdma1=%u fdma2=%u)\n",
+                    state.p25_iden_fdma[4].populated, state.p25_iden_tdma[1].populated,
+                    state.p25_iden_fdma[2].populated);
+        test_rc = 1;
+    }
+
+    /* c is a different system on the same WACN: nothing matches. */
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 2) {
+        DSD_FPRINTF(stderr, "peer share: scan did not rotate to c\n");
+        test_rc = 1;
+    }
+    state.p2_wacn = k_sys_a_wacn;
+    state.p2_sysid = k_sys_b_sysid;
+    trunk_scan_test_set_now(0.56);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    for (int iden = 0; iden < 16; iden++) {
+        if (state.p25_iden_fdma[iden].populated != 0 || state.p25_iden_tdma[iden].populated != 0) {
+            DSD_FPRINTF(stderr, "peer share: IDEN %d copied onto a different system\n", iden);
+            test_rc = 1;
+        }
+    }
+
+    /* Back on a: its own confirmed entries are untouched. */
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "peer share: scan did not rotate back to a\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_iden_entry("a fdma[1]", &state.p25_iden_fdma[1], 170201250, k_sys_a_wacn, k_sys_a_sysid, 2);
+    test_rc |= expect_iden_entry("a tdma[2]", &state.p25_iden_tdma[2], 152401250, k_sys_a_wacn, k_sys_a_sysid, 2);
+    test_rc |= expect_iden_entry("a fdma[3]", &state.p25_iden_fdma[3], 160001250, k_sys_a_wacn, k_sys_a_sysid, 2);
+    if (state.p2_wacn != k_sys_a_wacn || state.p2_sysid != k_sys_a_sysid) {
+        DSD_FPRINTF(stderr, "peer share: a lost its identity\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static const char k_bandplan_header[] = "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n";
+static const char k_bandplan_rows[] = "0,851006250,6250,1,-45000000,12500,,\n"
+                                      "2,762006250,6250,3,-30000000,,BEE00,3A1\n";
+
+static int
+write_bandplan_file(const char* dir, const char* leaf, char* out_path, size_t out_sz) {
+    if (dsd_test_path_join(out_path, out_sz, dir, leaf) != 0) {
+        return -1;
+    }
+    char content[512];
+    int n = DSD_SNPRINTF(content, sizeof content, "%s%s", k_bandplan_header, k_bandplan_rows);
+    if (n < 0 || (size_t)n >= sizeof content) {
+        return -1;
+    }
+    return write_text_file(out_path, content);
+}
+
+static int
+test_parser_accepts_p25_bandplan_csv_column(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,p25_bandplan_csv\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "a,p25-trunk,851000000,,250,,primary,plan.csv\n"
+                                       "b,dmr-trunk,452000000,,250,,tier iii,\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_scan_idle_dwell_ms = 3000;
+    opts.trunk_scan_activity_hold_ms = 1200;
+    dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
+    char err[256] = {0};
+    int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
+
+    int test_rc = 0;
+    char want[DSD_TEST_PATH_MAX] = {0};
+    if (rc != 0 || list.count != 2 || dsd_test_path_join(want, sizeof want, dir, "plan.csv") != 0) {
+        DSD_FPRINTF(stderr, "bandplan column parser rc=%d count=%zu err=%s\n", rc, list.count, err);
+        test_rc = 1;
+    }
+    if (test_rc == 0) {
+        if (strcmp(list.targets[0].p25_bandplan_csv, want) != 0) {
+            DSD_FPRINTF(stderr, "bandplan column path mismatch '%s' want '%s'\n", list.targets[0].p25_bandplan_csv,
+                        want);
+            test_rc = 1;
+        }
+        if (list.targets[1].p25_bandplan_csv[0] != '\0') {
+            DSD_FPRINTF(stderr, "target without a band plan carries a path\n");
+            test_rc = 1;
+        }
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+    cleanup_paths(dir, target_path, NULL);
+
+    test_rc |= expect_parser_rejects_with_header("conventional target with p25_bandplan_csv", header,
+                                                 "a,dmr-conventional,461000000,,250,,plant,plan.csv\n");
+    test_rc |= expect_parser_rejects_with_header(
+        "duplicate p25_bandplan_csv header",
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,p25_bandplan_csv,p25_bandplan_csv\n",
+        "a,p25-trunk,851000000,,250,,dup,plan.csv,plan.csv\n");
+    return test_rc;
+}
+
+static int
+test_trunk_scan_rejects_global_p25_bandplan(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n", target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_SNPRINTF(opts.p25_bandplan_in_file, sizeof opts.p25_bandplan_in_file, "%s", target_path);
+
+    char err[256] = {0};
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0) {
+        DSD_FPRINTF(stderr, "global P25 band plan accepted under trunk scan\n");
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        test_rc = 1;
+    } else if (strstr(err, "band plan") == NULL) {
+        DSD_FPRINTF(stderr, "global P25 band plan rejected for the wrong reason: %s\n", err);
+        test_rc = 1;
+    }
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_target_p25_bandplan_loads_and_survives_rotation(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char plan_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,p25_bandplan_csv\n";
+    if (write_bandplan_file(dir, "plan.csv", plan_path, sizeof plan_path) != 0
+        || write_targets_file_with_header(dir, header,
+                                          "a,p25-trunk,851000000,,250,,primary,plan.csv\n"
+                                          "b,p25-trunk,852000000,,250,,secondary,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    char err[512] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "band plan target init failed err=%s\n", err);
+        (void)remove(plan_path);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    /* a: the plan is stored and its global row already seeds IDEN 0. */
+    if (state.p25_bandplan_row_count != 2 || state.p25_iden_fdma[0].populated != 1 || state.p25_iden_fdma[0].trust != 1
+        || (state.p25_chan_tdma_explicit[0] & 0x01) == 0) {
+        DSD_FPRINTF(stderr, "band plan target a: rows=%d fdma0 populated=%u trust=%u explicit=%02x\n",
+                    state.p25_bandplan_row_count, state.p25_iden_fdma[0].populated, state.p25_iden_fdma[0].trust,
+                    state.p25_chan_tdma_explicit[0]);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "band plan target: scan did not rotate to b\n");
+        test_rc = 1;
+    }
+    if (state.p25_bandplan_row_count != 0 || state.p25_iden_fdma[0].populated != 0) {
+        DSD_FPRINTF(stderr, "band plan target a leaked into b: rows=%d fdma0=%u\n", state.p25_bandplan_row_count,
+                    state.p25_iden_fdma[0].populated);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "band plan target: scan did not rotate back to a\n");
+        test_rc = 1;
+    }
+    if (state.p25_bandplan_row_count != 2 || state.p25_bandplan_rows[1].entry.wacn != k_sys_a_wacn
+        || state.p25_iden_fdma[0].populated != 1) {
+        DSD_FPRINTF(stderr, "band plan target a did not survive rotation: rows=%d fdma0=%u\n",
+                    state.p25_bandplan_row_count, state.p25_iden_fdma[0].populated);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+
+    /* A plan that cannot be read fails init with a message naming the target. */
+    (void)remove(plan_path);
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    DSD_MEMSET(err, 0, sizeof err);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0) {
+        DSD_FPRINTF(stderr, "missing per-target band plan accepted\n");
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        test_rc = 1;
+    } else if (strstr(err, "p25_bandplan_csv") == NULL || strstr(err, "'a'") == NULL) {
+        DSD_FPRINTF(stderr, "missing per-target band plan error does not name the target: %s\n", err);
+        test_rc = 1;
+    }
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+count_bandplan_rows_for(const dsd_state* state, unsigned long long wacn, unsigned long long sysid) {
+    int n = 0;
+    for (int i = 0; i < state->p25_bandplan_row_count; i++) {
+        if (state->p25_bandplan_rows[i].entry.wacn == wacn && state->p25_bandplan_rows[i].entry.sysid == sysid) {
+            n++;
+        }
+    }
+    return n;
+}
+
+static int
+test_p25_bandplan_export_collects_every_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (init_two_p25_targets(&opts, &state,
+                             "a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    char out_path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(out_path, sizeof out_path, "dsdneo_bandplan_export");
+    if (fd < 0) {
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    int test_rc = 0;
+
+    /* Nothing learned anywhere: nothing to write. */
+    if (dsd_engine_p25_bandplan_export(&opts, &state, out_path) != -1) {
+        DSD_FPRINTF(stderr, "export with no ready entries did not fail\n");
+        test_rc = 1;
+    }
+
+    state.p2_wacn = k_sys_a_wacn;
+    state.p2_sysid = k_sys_a_sysid;
+    seed_iden_entry(&state.p25_iden_fdma[1], 170201250, 1, k_sys_a_wacn, k_sys_a_sysid, 2);
+    /* Incomplete entries are not rows. */
+    seed_iden_entry(&state.p25_iden_fdma[5], 0, 1, k_sys_a_wacn, k_sys_a_sysid, 2);
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "export: scan did not rotate to b\n");
+        test_rc = 1;
+    }
+    state.p2_wacn = k_sys_a_wacn;
+    state.p2_sysid = k_sys_b_sysid;
+    seed_iden_entry(&state.p25_iden_fdma[1], 851006250 / 5, 1, k_sys_a_wacn, k_sys_b_sysid, 2);
+    seed_iden_entry(&state.p25_iden_tdma[2], 762006250 / 5, 4, k_sys_a_wacn, k_sys_b_sysid, 1);
+
+    /* b is live, a is parked: both systems come out. */
+    int rows = dsd_engine_p25_bandplan_export(&opts, &state, out_path);
+    if (rows != 3) {
+        DSD_FPRINTF(stderr, "export under trunk scan wrote %d rows, want 3\n", rows);
+        test_rc = 1;
+    }
+    static dsd_state scratch;
+    DSD_MEMSET(&scratch, 0, sizeof scratch);
+    if (csvP25BandplanImportPath(out_path, &scratch) != 0 || scratch.p25_bandplan_row_count != 3
+        || count_bandplan_rows_for(&scratch, k_sys_a_wacn, k_sys_a_sysid) != 1
+        || count_bandplan_rows_for(&scratch, k_sys_a_wacn, k_sys_b_sysid) != 2) {
+        DSD_FPRINTF(stderr, "re-import of the export: rows=%d A=%d B=%d\n", scratch.p25_bandplan_row_count,
+                    count_bandplan_rows_for(&scratch, k_sys_a_wacn, k_sys_a_sysid),
+                    count_bandplan_rows_for(&scratch, k_sys_a_wacn, k_sys_b_sysid));
+        test_rc = 1;
+    }
+
+    /* Without the coordinator only the live tables are written. */
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    rows = dsd_engine_p25_bandplan_export(&opts, &state, out_path);
+    if (rows != 2) {
+        DSD_FPRINTF(stderr, "export without trunk scan wrote %d rows, want 2\n", rows);
+        test_rc = 1;
+    }
+    DSD_MEMSET(&scratch, 0, sizeof scratch);
+    if (csvP25BandplanImportPath(out_path, &scratch) != 0 || scratch.p25_bandplan_row_count != 2
+        || count_bandplan_rows_for(&scratch, k_sys_a_wacn, k_sys_b_sysid) != 2) {
+        DSD_FPRINTF(stderr, "re-import of the live-only export: rows=%d\n", scratch.p25_bandplan_row_count);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_clear_now();
+    (void)remove(out_path);
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 run_with_default_tune_hook(int (*test_fn)(void)) {
     dsd_trunk_tuning_hooks hooks = {0};
@@ -5939,5 +6384,10 @@ main(void) {
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_fixed_input_without_tuner);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_unopened_rtl_without_rigctl);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_iq_replay_input);
+    rc |= run_with_default_tune_hook(test_peer_idens_shared_by_system_identity);
+    rc |= run_with_default_tune_hook(test_parser_accepts_p25_bandplan_csv_column);
+    rc |= run_with_default_tune_hook(test_trunk_scan_rejects_global_p25_bandplan);
+    rc |= run_with_default_tune_hook(test_target_p25_bandplan_loads_and_survives_rotation);
+    rc |= run_with_default_tune_hook(test_p25_bandplan_export_collects_every_target);
     return rc;
 }

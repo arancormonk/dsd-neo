@@ -89,6 +89,10 @@ typedef struct {
     p25_pending_announcement_t p25_pending_announcements[P25_PENDING_ANNOUNCEMENT_MAX];
     p25_iden_entry_t p25_iden_fdma[16];
     p25_iden_entry_t p25_iden_tdma[16];
+    /* The target's own user band plan (its p25_bandplan_csv), re-seeded by
+     * p25_update_system_identity() once the target's WACN/SYS resolves. */
+    p25_bandplan_row_t p25_bandplan_rows[DSD_P25_BANDPLAN_MAX_ROWS];
+    int p25_bandplan_row_count;
     dsd_enc_lockout_entry enc_lockout_entries[DSD_ENC_LOCKOUT_MAX];
     time_t p25_aff_last_seen[256];
     time_t p25_ga_last_seen[512];
@@ -206,6 +210,11 @@ typedef struct {
     uint64_t tune_request_id;
     int tune_pending;
     int avoided; /* operator avoid for the session: skipped by the rotation (#380) */
+    /* Identity the peer IDEN share last ran against (#402): the tick re-runs it only when the
+     * live WACN/SYS differs, so a target that resolves its identity while parked gets its
+     * peers' plan without waiting for the next rotation. */
+    unsigned long long iden_share_wacn;
+    unsigned long long iden_share_sysid;
 } dsd_trunk_scan_target_runtime;
 
 /*
@@ -505,6 +514,7 @@ typedef struct {
     int rtl_gain_idx;
     int keys_hex_idx;
     int keys_dec_idx;
+    int p25_bandplan_idx;
     unsigned int row;
     char* err;
     size_t err_sz;
@@ -647,7 +657,21 @@ scan_target_list_reserve(dsd_trunk_scan_target_list* list, size_t needed) {
  */
 static int
 scan_parse_target_paths(dsd_trunk_scan_target* target, const dsd_trunk_scan_row_parse* parse, const char* chan_csv,
-                        const char* keys_hex_s, const char* keys_dec_s) {
+                        const char* keys_hex_s, const char* keys_dec_s, const char* p25_bandplan_s) {
+    if (p25_bandplan_s[0] != '\0') {
+        if (trunk_scan_type_is_conventional(target->type)) {
+            scan_set_error(parse->err, parse->err_sz, "row %u sets p25_bandplan_csv for a conventional target",
+                           parse->row);
+            return -1;
+        }
+        if (dsd_path_resolve_relative_to_file(parse->resolved_path, p25_bandplan_s, target->p25_bandplan_csv,
+                                              sizeof target->p25_bandplan_csv)
+            != 0) {
+            scan_set_error(parse->err, parse->err_sz, "row %u p25_bandplan_csv path is too long or invalid",
+                           parse->row);
+            return -1;
+        }
+    }
     if (chan_csv[0] != '\0') {
         if (trunk_scan_type_is_conventional(target->type)) {
             scan_set_error(parse->err, parse->err_sz, "row %u sets chan_csv for a conventional target", parse->row);
@@ -693,6 +717,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
     const char* rtl_gain_s = scan_optional_field(fields, field_count, parse->rtl_gain_idx);
     const char* keys_hex_s = scan_optional_field(fields, field_count, parse->keys_hex_idx);
     const char* keys_dec_s = scan_optional_field(fields, field_count, parse->keys_dec_idx);
+    const char* p25_bandplan_s = scan_optional_field(fields, field_count, parse->p25_bandplan_idx);
 
     dsd_trunk_scan_target target;
     DSD_MEMSET(&target, 0, sizeof(target));
@@ -708,7 +733,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         return -1;
     }
 
-    if (scan_parse_target_paths(&target, parse, chan_csv, keys_hex_s, keys_dec_s) != 0) {
+    if (scan_parse_target_paths(&target, parse, chan_csv, keys_hex_s, keys_dec_s, p25_bandplan_s) != 0) {
         return -1;
     }
     if (scan_parse_ms_field(dwell_s, parse->default_dwell_ms, &target.dwell_ms) != 0) {
@@ -733,6 +758,32 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         return -1;
     }
     parsed->targets[parsed->count++] = target;
+    return 0;
+}
+
+/* Optional columns are matched by header name; naming one twice rejects the file. */
+static int
+scan_match_optional_header(dsd_trunk_scan_row_parse* parse, const char* name, size_t index) {
+    const struct {
+        const char* name;
+        int* idx;
+    } cols[] = {
+        {"modulation", &parse->modulation_idx},         {"rtl_gain", &parse->rtl_gain_idx},
+        {"keys_hex_csv", &parse->keys_hex_idx},         {"keys_dec_csv", &parse->keys_dec_idx},
+        {"p25_bandplan_csv", &parse->p25_bandplan_idx},
+    };
+
+    for (size_t k = 0; k < sizeof cols / sizeof cols[0]; k++) {
+        if (strcmp(name, cols[k].name) != 0) {
+            continue;
+        }
+        if (*cols[k].idx >= 0) {
+            scan_set_error(parse->err, parse->err_sz, "trunk scan target CSV header duplicates '%s'", cols[k].name);
+            return -1;
+        }
+        *cols[k].idx = (int)index;
+        return 0;
+    }
     return 0;
 }
 
@@ -769,32 +820,10 @@ scan_read_target_csv_header(FILE* fp, char* line, size_t line_sz, dsd_trunk_scan
     parse->rtl_gain_idx = -1;
     parse->keys_hex_idx = -1;
     parse->keys_dec_idx = -1;
+    parse->p25_bandplan_idx = -1;
     for (size_t i = DSD_TRUNK_SCAN_REQUIRED_CSV_FIELDS; i < field_count; i++) {
-        const char* name = scan_unquote(fields[i]);
-        if (strcmp(name, "modulation") == 0) {
-            if (parse->modulation_idx >= 0) {
-                scan_set_error(parse->err, parse->err_sz, "trunk scan target CSV header duplicates 'modulation'");
-                return -1;
-            }
-            parse->modulation_idx = (int)i;
-        } else if (strcmp(name, "rtl_gain") == 0) {
-            if (parse->rtl_gain_idx >= 0) {
-                scan_set_error(parse->err, parse->err_sz, "trunk scan target CSV header duplicates 'rtl_gain'");
-                return -1;
-            }
-            parse->rtl_gain_idx = (int)i;
-        } else if (strcmp(name, "keys_hex_csv") == 0) {
-            if (parse->keys_hex_idx >= 0) {
-                scan_set_error(parse->err, parse->err_sz, "trunk scan target CSV header duplicates 'keys_hex_csv'");
-                return -1;
-            }
-            parse->keys_hex_idx = (int)i;
-        } else if (strcmp(name, "keys_dec_csv") == 0) {
-            if (parse->keys_dec_idx >= 0) {
-                scan_set_error(parse->err, parse->err_sz, "trunk scan target CSV header duplicates 'keys_dec_csv'");
-                return -1;
-            }
-            parse->keys_dec_idx = (int)i;
+        if (scan_match_optional_header(parse, scan_unquote(fields[i]), i) != 0) {
+            return -1;
         }
     }
     return 0;
@@ -1195,6 +1224,8 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     snapshot->p25_chan_iden = state->p25_chan_iden;
     DSD_MEMCPY(snapshot->p25_iden_fdma, state->p25_iden_fdma, sizeof(snapshot->p25_iden_fdma));
     DSD_MEMCPY(snapshot->p25_iden_tdma, state->p25_iden_tdma, sizeof(snapshot->p25_iden_tdma));
+    DSD_MEMCPY(snapshot->p25_bandplan_rows, state->p25_bandplan_rows, sizeof(snapshot->p25_bandplan_rows));
+    snapshot->p25_bandplan_row_count = state->p25_bandplan_row_count;
     snapshot->p25_cc_is_tdma = state->p25_cc_is_tdma;
     snapshot->p25_sys_is_tdma = state->p25_sys_is_tdma;
     snapshot->p25_vc_cqpsk_pref = state->p25_vc_cqpsk_pref;
@@ -1226,6 +1257,8 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     state->p25_chan_iden = snapshot->p25_chan_iden;
     DSD_MEMCPY(state->p25_iden_fdma, snapshot->p25_iden_fdma, sizeof(state->p25_iden_fdma));
     DSD_MEMCPY(state->p25_iden_tdma, snapshot->p25_iden_tdma, sizeof(state->p25_iden_tdma));
+    DSD_MEMCPY(state->p25_bandplan_rows, snapshot->p25_bandplan_rows, sizeof(state->p25_bandplan_rows));
+    state->p25_bandplan_row_count = snapshot->p25_bandplan_row_count;
     state->p25_cc_is_tdma = snapshot->p25_cc_is_tdma;
     state->p25_sys_is_tdma = snapshot->p25_sys_is_tdma;
     state->p25_vc_cqpsk_pref = snapshot->p25_vc_cqpsk_pref;
@@ -1936,6 +1969,21 @@ trunk_scan_import_target_chan_csv(const dsd_opts* opts, dsd_state* state, const 
     return 0;
 }
 
+/* The importer writes the store and seeds the live tables in place, and the build loop snapshots
+ * both right after, so each target's plan travels with its snapshot and never reaches a peer. */
+static int
+trunk_scan_import_target_p25_bandplan(dsd_state* state, const dsd_trunk_scan_target* target, char* err, size_t err_sz) {
+    if (!target->p25_bandplan_csv[0]) {
+        return 0;
+    }
+    if (csvP25BandplanImportPath(target->p25_bandplan_csv, state) != 0) {
+        scan_set_error(err, err_sz, "failed to import p25_bandplan_csv '%s' for trunk scan target '%s'",
+                       target->p25_bandplan_csv, target->id);
+        return -1;
+    }
+    return 0;
+}
+
 static int
 trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd_state* state,
                                 const dsd_trunk_scan_target_list* list, char* err, size_t err_sz) {
@@ -1954,6 +2002,9 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
         trunk_scan_apply_target_demod(opts, state, &rt->target);
         trunk_scan_seed_target_state(state, &rt->target, now_m);
         if (trunk_scan_import_target_chan_csv(opts, state, &rt->target, err, err_sz) != 0) {
+            return -1;
+        }
+        if (trunk_scan_import_target_p25_bandplan(state, &rt->target, err, err_sz) != 0) {
             return -1;
         }
         if (rt->target.keys_hex_csv[0] != '\0' || rt->target.keys_dec_csv[0] != '\0') {
@@ -2050,6 +2101,71 @@ trunk_scan_apply_target_keys(dsd_state* state, const dsd_trunk_scan_target_runti
     }
 }
 
+/*
+ * Peer IDEN sharing (#402). Two scan targets that are sites of one P25 system (same WACN/SYS)
+ * announce the same IDEN_UP tables, so an identifier one target has already learned is a valid
+ * seed for the other. Copy only into empty live slots, only from a parked peer's snapshot entry
+ * that carries this system's identity, and only at trust 1: the over-the-air announcement on
+ * this site confirms it, and an entry from a different system (or with no provenance at all)
+ * never crosses. Everything else in the snapshots stays isolated per target.
+ */
+static int
+trunk_scan_share_peer_iden_slot(const dsd_trunk_scan_coord* coord, size_t self, unsigned long long wacn,
+                                unsigned long long sysid, int iden, int is_tdma, p25_iden_entry_t* live) {
+    for (size_t j = 0; j < coord->count; j++) {
+        if (j == self) {
+            continue;
+        }
+        const dsd_trunk_scan_snapshot* peer = &coord->targets[j].snapshot;
+        const p25_iden_entry_t* src = is_tdma ? &peer->p25_iden_tdma[iden] : &peer->p25_iden_fdma[iden];
+        if (!src->populated || src->base_freq == 0 || src->chan_spac == 0) {
+            continue;
+        }
+        if ((src->wacn == 0ULL && src->sysid == 0ULL) || src->wacn != wacn || src->sysid != sysid) {
+            continue;
+        }
+        *live = *src;
+        live->trust = 1;
+        live->populated = 1;
+        return 1;
+    }
+    return 0;
+}
+
+static void
+trunk_scan_share_peer_idens(const dsd_trunk_scan_coord* coord, dsd_state* state, dsd_trunk_scan_target_runtime* rt) {
+    if (!coord || !state || !rt) {
+        return;
+    }
+    rt->iden_share_wacn = state->p2_wacn;
+    rt->iden_share_sysid = state->p2_sysid;
+    if (!trunk_scan_target_is_p25(&rt->target) || coord->count < 2
+        || (state->p2_wacn == 0ULL && state->p2_sysid == 0ULL)) {
+        return;
+    }
+    const size_t self = (size_t)(rt - coord->targets);
+    int shared = 0;
+    for (int iden = 0; iden < 16; iden++) {
+        if (!state->p25_iden_fdma[iden].populated
+            && trunk_scan_share_peer_iden_slot(coord, self, state->p2_wacn, state->p2_sysid, iden, 0,
+                                               &state->p25_iden_fdma[iden])) {
+            state->p25_chan_tdma_explicit[iden] |= 0x01;
+            shared++;
+        }
+        if (!state->p25_iden_tdma[iden].populated
+            && trunk_scan_share_peer_iden_slot(coord, self, state->p2_wacn, state->p2_sysid, iden, 1,
+                                               &state->p25_iden_tdma[iden])) {
+            state->p25_chan_tdma_explicit[iden] |= 0x02;
+            shared++;
+        }
+    }
+    if (shared > 0) {
+        LOG_INFO("NOTICE: Trunk scan target '%s' seeded %d P25 identifier(s) from peer targets on WACN %05llX SYS "
+                 "%03llX\n",
+                 rt->target.id, shared, state->p2_wacn, state->p2_sysid);
+    }
+}
+
 static int
 trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t next, int save_current) {
     if (!coord || next >= coord->count) {
@@ -2065,6 +2181,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     trunk_scan_publish_active_target(state, coord);
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     trunk_scan_restore_target_snapshot(coord, state, rt);
+    trunk_scan_share_peer_idens(coord, state, rt);
     trunk_scan_apply_target_opts(opts, coord, &rt->target);
     trunk_scan_apply_target_keys(state, rt);
     trunk_scan_apply_target_demod(opts, state, &rt->target);
@@ -2410,6 +2527,9 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
     trunk_scan_retry_active_if_due(opts, state, coord, now_m);
     rt = &coord->targets[coord->active];
     trunk_scan_tick_active_target_sm(opts, state, rt);
+    if (state->p2_wacn != rt->iden_share_wacn || state->p2_sysid != rt->iden_share_sysid) {
+        trunk_scan_share_peer_idens(coord, state, rt);
+    }
     if (trunk_scan_active_is_held(opts, coord)) {
         rt->idle_since_m = -1.0;
         return;
@@ -2675,6 +2795,11 @@ trunk_scan_init_validate(const dsd_opts* opts, const dsd_state* state, char* err
         scan_set_error(err, err_sz, "--trunk-scan cannot use a global channel map; use per-target chan_csv values");
         return -1;
     }
+    if (opts->p25_bandplan_in_file[0] != '\0') {
+        scan_set_error(err, err_sz,
+                       "--trunk-scan cannot use a global P25 band plan; use per-target p25_bandplan_csv values");
+        return -1;
+    }
     if (opts->trunk_scan_targets_csv[0] == '\0') {
         scan_set_error(err, err_sz, "--trunk-scan requires targets_csv");
         return -1;
@@ -2816,6 +2941,22 @@ size_t
 dsd_engine_trunk_scan_target_count(const dsd_state* state) {
     const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
     return coord ? coord->count : 0;
+}
+
+int
+dsd_engine_trunk_scan_append_p25_idens(const dsd_state* state, struct p25_bandplan_row* rows, int count, int cap) {
+    const dsd_trunk_scan_coord* coord = state ? trunk_scan_get_const(state) : NULL;
+    if (!coord || !rows) {
+        return count;
+    }
+    for (size_t i = 0; i < coord->count; i++) {
+        if (i == coord->active) {
+            continue; /* live in state: the caller collects those */
+        }
+        const dsd_trunk_scan_snapshot* snapshot = &coord->targets[i].snapshot;
+        count = dsd_p25_bandplan_append_tables(rows, count, cap, snapshot->p25_iden_fdma, snapshot->p25_iden_tdma);
+    }
+    return count;
 }
 
 int

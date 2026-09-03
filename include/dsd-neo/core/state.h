@@ -370,6 +370,22 @@ typedef struct {
     unsigned long long site;  // Site ID provenance
 } p25_iden_entry_t;
 
+/** Capacity of the user-supplied P25 band plan: four systems' worth of 16 identifiers. */
+#define DSD_P25_BANDPLAN_MAX_ROWS 64
+
+/**
+ * @brief One row of a user-supplied P25 band plan (docs/csv-formats.md, "P25 Band Plan CSV").
+ *
+ * `entry` is a ready-to-copy IDEN entry (trust 1, populated, rfss/site 0); `entry.wacn`/`sysid`
+ * are the system the row applies to, both 0 for a row that applies everywhere. `is_tdma`
+ * selects the table the row seeds, by the same rule p25_channel_type_slots_per_carrier() uses.
+ */
+typedef struct p25_bandplan_row {
+    uint8_t iden;    // identifier 0-15
+    uint8_t is_tdma; // 1 seeds p25_iden_tdma, 0 seeds p25_iden_fdma
+    p25_iden_entry_t entry;
+} p25_bandplan_row_t;
+
 // dsd_state is a C aggregate, not a C++ class: it is allocated once and zeroed by
 // initState() before anything reads it, and C code — which is most of its users —
 // has no constructors to write. A C++ TU that includes this header would otherwise
@@ -1099,6 +1115,14 @@ struct dsd_state {
     p25_iden_entry_t p25_iden_fdma[16]; // FDMA/non-TDMA frequency-band entries
     p25_iden_entry_t p25_iden_tdma[16]; // TDMA frequency-band entries
 
+    // User-supplied band plan (--p25-bandplan, [trunking] p25_bandplan_csv, a trunk-scan
+    // target's p25_bandplan_csv, or the terminal/Qt import). Rows seed empty IDEN slots at
+    // trust 1 through dsd_state_p25_bandplan_seed(); p25_update_system_identity() re-applies
+    // them after a WACN/SYS change wipes the tables, and an over-the-air IDEN_UP still
+    // overwrites a seeded slot. Under trunk scan each target's snapshot carries its own.
+    p25_bandplan_row_t p25_bandplan_rows[DSD_P25_BANDPLAN_MAX_ROWS];
+    int p25_bandplan_row_count;
+
     //p25 frequency storage for trunking and display in ncurses
     int p25_cc_is_tdma;  // control channel modulation: 0=FDMA (C4FM), 1=TDMA (QPSK)
     int p25_sys_is_tdma; // system hint: 1 when P25p2 voice observed (TDMA present)
@@ -1776,6 +1800,27 @@ int dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed);
  * DSD_TRUNK_LCN_EMBEDDED slots are part of dsd_state and need no release.
  */
 void dsd_state_trunk_lcn_free(dsd_state* state);
+
+/**
+ * Seed the live IDEN tables from the stored band plan (p25_bandplan_rows).
+ *
+ * Only empty slots are filled, never an over-the-air entry. Rows that name the
+ * current WACN/SYS go first and may take over a slot a global row of the same
+ * plan seeded earlier; rows that name another system are skipped, and rows that
+ * name any system wait until the identity is known. Each seeded slot gets trust
+ * 1, zero rfss/site, and its FDMA or TDMA bit in p25_chan_tdma_explicit[].
+ * Returns the number of slots written.
+ */
+int dsd_state_p25_bandplan_seed(dsd_state* state);
+
+/**
+ * Append every ready entry (populated, base and spacing set) of two IDEN tables
+ * to `rows` as band-plan rows, skipping an identifier/table/system already in
+ * the list, so several targets' tables can be merged into one export. Either
+ * table may be NULL. Returns the new row count (never above `cap`).
+ */
+int dsd_p25_bandplan_append_tables(p25_bandplan_row_t* rows, int count, int cap, const p25_iden_entry_t* fdma,
+                                   const p25_iden_entry_t* tdma);
 
 /**
  * Ensure name-store indices 0..count-1 are addressable: grows by doubling and

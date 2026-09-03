@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief Library of imported CSV files (channel maps, talkgroups, keys), persisted as JSON.
+ * @brief Library of imported CSV files (channel maps, talkgroups, keys, P25 band plans), persisted as JSON.
  *
  * The wizard's pickers and the imports screen share this model: importing copies
  * the picked document into durable app storage through DecoderHost::importDocument(),
@@ -41,7 +41,7 @@ class ImportedFilesModel : public QAbstractListModel {
     enum Roles {
         NameRole = Qt::UserRole + 1,
         PathRole,       // absolute stored path; the row's identity
-        TypeRole,       // "chan" | "group" | "keysDec" | "keysHex"
+        TypeRole,       // "chan" | "group" | "keysDec" | "keysHex" | "p25Bandplan"
         ImportedAtRole, // seconds since epoch
         AcceptedRole,   // usable rows at the last validation
         SkippedRole,    // malformed rows at the last validation
@@ -91,7 +91,7 @@ class ImportedFilesModel : public QAbstractListModel {
      *
      * @param sourcePath Absolute path of the generated file.
      * @param fileName   Display name to store it under.
-     * @param type       "chan" | "group" | "keysDec" | "keysHex".
+     * @param type       "chan" | "group" | "keysDec" | "keysHex" | "p25Bandplan".
      * @param origin     Provenance: {origin, rrSid, rrSiteIds, rrKind, rrPartialEnc}.
      * @return Same shape as importFile().
      */

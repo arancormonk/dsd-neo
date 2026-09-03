@@ -45,6 +45,8 @@ void act_enc_lockout_clear(void* v);
 void act_setmod_bw(void* v);
 void act_import_chan(void* v);
 void act_import_group(void* v);
+void act_import_p25_bandplan(void* v);
+void act_export_p25_bandplan(void* v);
 void act_allow_toggle(void* v);
 void act_tune_group(void* v);
 void act_tune_priv(void* v);

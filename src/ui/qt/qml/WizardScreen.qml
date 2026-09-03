@@ -49,8 +49,10 @@ Item {
     property string groupCsvPath: ""
     property string keyCsvPath: ""
     property bool keyCsvHex: false
+    property string p25BandplanCsvPath: ""
     // Which field the shared FileDialog is serving: "source" is the step-1
-    // audio/capture pick; "chan"/"group"/"keys" are the trunking-data picks.
+    // audio/capture pick; "chan"/"group"/"keys"/"p25Bandplan" are the
+    // trunking-data picks.
     property string pickerTarget: "source"
     // Dec/hex choice for a new key-file import from the picker sheet.
     property bool pickerKeyHex: false
@@ -110,6 +112,7 @@ Item {
         groupCsvPath = ""
         keyCsvPath = ""
         keyCsvHex = false
+        p25BandplanCsvPath = ""
         csvNotice = ""
         csvNoticeIsProblem = false
     }
@@ -148,6 +151,7 @@ Item {
         groupCsvPath = ""
         keyCsvPath = ""
         keyCsvHex = false
+        p25BandplanCsvPath = ""
         csvNotice = ""
         csvNoticeIsProblem = false
     }
@@ -176,6 +180,7 @@ Item {
         groupCsvPath = sys.groupCsvPath
         keyCsvPath = sys.keyCsvPath
         keyCsvHex = sys.keyCsvHex
+        p25BandplanCsvPath = sys.p25BandplanCsvPath
         csvNotice = ""
         csvNoticeIsProblem = false
     }
@@ -270,7 +275,8 @@ Item {
             chanCsvPath: chanCsvPath,
             groupCsvPath: groupCsvPath,
             keyCsvPath: keyCsvPath,
-            keyCsvHex: keyCsvHex
+            keyCsvHex: keyCsvHex,
+            p25BandplanCsvPath: p25BandplanCsvPath
         }
         if (editRow >= 0) {
             savedSystems.update(editRow, sys)
@@ -310,6 +316,8 @@ Item {
         } else if (target === "keys") {
             keyCsvPath = path
             keyCsvHex = hex
+        } else if (target === "p25Bandplan") {
+            p25BandplanCsvPath = path
         }
     }
 
@@ -831,6 +839,16 @@ Item {
                             title: qsTr("Encryption keys")
                             target: "keys"
                             path: wizard.keyCsvPath
+                            showDivider: true
+                        }
+
+                        // The operator-supplied IDEN table (--p25-bandplan) the
+                        // P25 tuner falls back on when the control channel has
+                        // not yet announced its own.
+                        CsvPickerRow {
+                            title: qsTr("P25 band plan")
+                            target: "p25Bandplan"
+                            path: wizard.p25BandplanCsvPath
                         }
 
                         Text {
@@ -1141,6 +1159,7 @@ Item {
 
         readonly property string currentPath: wizard.pickerTarget === "chan" ? wizard.chanCsvPath
                                               : wizard.pickerTarget === "group" ? wizard.groupCsvPath
+                                              : wizard.pickerTarget === "p25Bandplan" ? wizard.p25BandplanCsvPath
                                               : wizard.keyCsvPath
         readonly property var entries: {
             var n = importedFiles.count // dependency: recompute when the library changes
@@ -1156,7 +1175,9 @@ Item {
                        ? (entry.accepted === 1 ? qsTr("channel") : qsTr("channels"))
                        : wizard.pickerTarget === "group"
                          ? (entry.accepted === 1 ? qsTr("talkgroup") : qsTr("talkgroups"))
-                         : (entry.accepted === 1 ? qsTr("key") : qsTr("keys"))
+                         : wizard.pickerTarget === "p25Bandplan"
+                           ? (entry.accepted === 1 ? qsTr("identifier") : qsTr("identifiers"))
+                           : (entry.accepted === 1 ? qsTr("key") : qsTr("keys"))
             var line = entry.accepted + " " + noun
             if (wizard.pickerTarget === "keys")
                 line += " · " + (entry.type === "keysHex" ? qsTr("hex") : qsTr("decimal"))
@@ -1166,6 +1187,7 @@ Item {
         MicroLabel {
             text: wizard.pickerTarget === "chan" ? qsTr("Channel map")
                   : wizard.pickerTarget === "group" ? qsTr("Talkgroups")
+                  : wizard.pickerTarget === "p25Bandplan" ? qsTr("P25 band plan")
                   : qsTr("Encryption keys")
         }
 

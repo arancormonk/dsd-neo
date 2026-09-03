@@ -70,7 +70,11 @@ Purpose: Map a trunking channel number to an RF frequency.
 
 Required columns:
 
-1. `channel_number` (decimal integer, `0 <= channel_number < 65535`)
+1. `channel_number` (`0 <= channel_number < 65535`), in any of three spellings:
+   - decimal: `10822`
+   - hex with a `0x` prefix: `0x2A46` (what the P25 event history prints as `Active Ch: 2A46`)
+   - `<iden>-<chan>`: `2-2630` (identifier `0..15`, dash, decimal channel `0..4095`; the form DSDPlus uses and the
+     one printed in parentheses after every P25 channel in this program's event history)
 2. `frequency_hz` (integer Hz)
 
 Optional column:
@@ -112,6 +116,12 @@ Notes:
   air its id is the label instead, and the Scan Mode row shows no name.
 - Every column is positional, so an empty middle field is an empty frequency: `1,,851000000` is a row with no
   frequency and is skipped, not a channel at 851 MHz.
+- **P25 keys.** A P25 channel is a 16-bit number: the 4-bit band-plan identifier in the top nibble and the 12-bit
+  channel in the rest, `(iden << 12) | chan`. `2A46` hex, `2-2630`, and `10822` are the same channel. A row whose
+  key is a valid spelling but cannot be a channel (`16-0`, `2-4096`, `15-4095` = the `65535` sentinel) is skipped
+  like an unparsable one. Sites that broadcast their band plan (`IDEN_UP`) purge the map entries of a band the
+  moment the plan arrives; a map is the workaround for sites that never do, and a [P25 band plan CSV](#p25-band-plan-csv---p25-bandplan-file--trunking-p25_bandplan_csv)
+  replaces it with one row per identifier.
 - For EDACS-style workflows, DSD-neo also records the `frequency_hz` values in **row order** as an LCN frequency list,
   so keep rows in the LCN order you want. An imported LCN list has no length limit; it is bounded only by memory.
   Site broadcasts never write into an imported list or shorten it - the list is positional, so a skipped row's 0
@@ -175,6 +185,7 @@ Columns:
 | `rtl_gain` | No | Per-target RTL-family tuner gain. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. Ignored for non-RTL retuning paths. |
 | `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to this CSV. A row may fill both key columns; they load into one per-target key set. Empty uses the global keys. |
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to this CSV. Empty uses the global keys. |
+| `p25_bandplan_csv` | No | Per-target [P25 band plan CSV](#p25-band-plan-csv---p25-bandplan-file--trunking-p25_bandplan_csv) for a `p25-trunk` target, resolved relative to this CSV. The rows are parked in the target's snapshot, so one exported multi-system file can be named on every P25 row: each target seeds only the rows that carry its own WACN/SYS (and rows that carry none). |
 
 Validation notes:
 
@@ -183,8 +194,11 @@ Validation notes:
   parsing, with an error naming the budget.
 - Duplicate IDs and duplicate `(type, frequency_hz)` rows are rejected. `nxdn-conventional` and
   `nxdn48-conventional` are distinct types, so one frequency may appear once as each.
-- `chan_csv` on conventional (`dmr-conventional`/`nxdn-conventional`/`nxdn48-conventional`) rows is rejected.
-- Global `-C`/`[trunking] chan_csv` is rejected in trunk scan mode so channel maps do not leak across systems.
+- `chan_csv` and `p25_bandplan_csv` on conventional (`dmr-conventional`/`nxdn-conventional`/`nxdn48-conventional`)
+  rows are rejected; a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load fails
+  the whole import.
+- Global `-C`/`[trunking] chan_csv` and `--p25-bandplan`/`[trunking] p25_bandplan_csv` are rejected in trunk scan
+  mode so channel maps and band plans do not leak across systems.
 - One tuner can only monitor the active target; traffic on other targets can be missed.
 - This parser can handle a quoted `chan_csv` field containing a comma, but it is not a full RFC 4180 parser and does not
   support escaped quotes.
@@ -199,6 +213,61 @@ plant,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto
 site-nxdn,nxdn-trunk,461037500,,3000,,NXDN Type-C control channel,auto,
 field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96 channel,gfsk,
 field-nxdn48,nxdn48-conventional,461556250,,1500,1200,one-frequency NXDN48 (6.25 kHz) channel,gfsk,
+```
+
+## P25 Band Plan CSV (`--p25-bandplan <file>` / `[trunking] p25_bandplan_csv`)
+
+Purpose: Give the decoder a P25 site's band plan (its `IDEN_UP` identifier table) when the site never broadcasts
+one, so grants can be turned into frequencies without a per-channel map. The same file is what **Export learned
+P25 band plan...** and `--p25-bandplan-export` write, so a plan learned on one run (or one site of a system)
+can be loaded on the next.
+
+Required columns (positional):
+
+1. `iden` (`0..15`) - the band-plan identifier, the top hex digit of a P25 channel number
+2. `base_hz` (integer Hz, a multiple of 5)
+3. `spacing_hz` (integer Hz, a multiple of 125, at most 127875)
+
+Optional columns (matched by header name; the first three keep their positional meaning when unnamed):
+
+4. `type` - the P25 channel type as `IDEN_UP` carries it: `1` FDMA (default), `3` two-slot TDMA, `4` four-slot TDMA;
+   types `0..2` are treated as FDMA, anything else as TDMA
+5. `tx_offset_hz` (signed integer Hz, default `0`) - the mobile transmit offset; a multiple of `spacing_hz` on a row
+   that gives a `bandwidth_hz` or has a TDMA `type` (the `IDEN_UP_VU`/`IDEN_UP_TDMA` encoding), a multiple of 250000
+   on a standard FDMA row (the `IDEN_UP` encoding). Informational: the decoder tunes the repeater output
+6. `bandwidth_hz` - `6250` or `12500` for a VHF/UHF (`IDEN_UP_VU`) identifier, empty or `0` for the standard form
+7. `wacn` / `sysid` (hex, no prefix, as the UI prints them: `W:BEE00 S:3A1`) - both or neither. A row that names a
+   system applies only while the receiver is on that WACN/SYS; a row without applies everywhere
+
+Notes:
+
+- Rows seed the identifier table at trust `prov` (unconfirmed). A real `IDEN_UP` from the site replaces the row the
+  moment it arrives, and the table is re-seeded from the file whenever the receiver moves to another system (rows
+  for the new system and rows without a system). When a file has both a row that names the current system and a
+  row without one for the same identifier, the system's row wins.
+- A row with a bad value is skipped with a warning naming the row; a duplicate identifier (same `iden`, FDMA/TDMA
+  class and system) replaces the earlier row; a file with no usable row is refused and leaves the previous plan in
+  place. At most 64 rows are kept.
+- `--p25-bandplan` and `[trunking] p25_bandplan_csv` are refused with `--trunk-scan`; use the target list's
+  `p25_bandplan_csv` column instead (see above).
+- Under trunk scan, targets that turn out to be sites of the same system (same WACN/SYS) also share what one of
+  them learned over the air: an identifier the parked target is missing is copied from another target's table at
+  trust `prov` when the WACN/SYS match, and never otherwise.
+- Terminal: **Trunking -> Channels & groups -> Import P25 band plan CSV...** loads one into the running decoder and
+  **Export learned P25 band plan...** writes the current tables (every target's, under trunk scan) with their
+  WACN/SYS. `--p25-bandplan-export <file>` writes the same file once at clean shutdown, which suits a headless run.
+- Android: the imports library takes the file as the **P25 band plan** kind, and a saved system can name one; it is
+  passed to the session as `--p25-bandplan`.
+- Uniden Sentinel's custom band plan (base, spacing, offset, bandwidth per identifier) maps onto columns 1-6;
+  SDRTrunk's identifier table (type/slots, base, spacing, bandwidth, transmit offset) onto the same columns.
+
+Example (`examples/p25_bandplan.csv`):
+
+```csv
+iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid
+0,851006250,6250,1,-45000000,12500,,
+1,762006250,6250,1,-30000000,12500,,
+2,762006250,6250,3,-30000000,,BEE00,3A1
 ```
 
 ## Group List CSV (`-G <file>` / `[trunking] group_csv`)

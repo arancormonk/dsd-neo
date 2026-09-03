@@ -48,11 +48,12 @@ class SavedSystemsModel : public QAbstractListModel {
         BiasTeeRole,      // tri-state: -1 = follow the app-wide pref, 0 = off, 1 = on
         ExtraArgsRole,
         FilePathRole,
-        LastHeardRole,    // seconds since epoch; 0 = never
-        ChanCsvPathRole,  // imported channel map (-C); empty = none
-        GroupCsvPathRole, // imported group list (-G); empty = none
-        KeyCsvPathRole,   // imported key file (-k/-K); empty = none
-        KeyCsvHexRole     // true = hex keys (-K), false = decimal (-k)
+        LastHeardRole,         // seconds since epoch; 0 = never
+        ChanCsvPathRole,       // imported channel map (-C); empty = none
+        GroupCsvPathRole,      // imported group list (-G); empty = none
+        KeyCsvPathRole,        // imported key file (-k/-K); empty = none
+        KeyCsvHexRole,         // true = hex keys (-K), false = decimal (-k)
+        P25BandplanCsvPathRole // imported P25 band plan (--p25-bandplan); empty = none
     };
 
     explicit SavedSystemsModel(QObject* parent = nullptr);
@@ -135,6 +136,7 @@ class SavedSystemsModel : public QAbstractListModel {
         QString groupCsvPath;
         QString keyCsvPath;
         bool keyCsvHex = false;
+        QString p25BandplanCsvPath;
     };
 
     static Row rowFromMap(const QVariantMap& map, const Row& base);
