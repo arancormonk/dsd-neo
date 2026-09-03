@@ -199,8 +199,9 @@ During scanning:
   now, and "Clear avoids" puts every avoided target back. A hold only pauses the idle dwell: the parked target's
   trunking state machine keeps following calls, and `L` still moves while held (the hold then applies to the new
   target). Avoiding the last usable target is refused, as is `L` on a single-target list. Avoids are not written back
-  to the CSV. The Trunk Scan row shows `HOLD`, `Avoided: N`, and `[avoided]` when every alternate failed to retune and
-  the receiver fell back onto a target that was avoided.
+  to the CSV. The Trunk Scan row shows `HOLD`, then `[avoided]` when every alternate failed to retune and the
+  receiver fell back onto a target that was avoided, and last `Avoids: N`, the number of targets currently out of the
+  rotation.
 - A non-empty target `modulation` value overrides global CLI/config modulation locks for that target only.
 - A target `rtl_gain` value is applied at the retune boundary. Manual per-target gain temporarily suspends supervisory
   tuner autogain; `auto` and global-auto targets restore the saved autogain setting.
