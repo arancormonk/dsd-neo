@@ -864,16 +864,19 @@ ui_render_trunk_scan_status(const dsd_opts* opts, const dsd_state* state) {
         printw(" (%u/%u)", (unsigned int)state->trunk_scan_active_ordinal,
                (unsigned int)state->trunk_scan_target_count);
     }
-    // Why the rotation is not moving: an operator hold, or a receiver parked on a target the
-    // operator avoided because every alternate failed to retune.
+    // The target on air first: an operator hold, or a receiver parked on a target the operator
+    // avoided because every alternate failed to retune.
     if (state->trunk_scan_hold) {
         printw(" HOLD");
     }
     if (state->trunk_scan_active_avoided) {
         printw(" [avoided]");
     }
+    // Then the list: how many targets `b` has taken out of the rotation. A noun count, last, so
+    // it is not read as a second verdict on the parked target beside HOLD and [avoided]. Same
+    // word as the "Clear avoids" menu row and the Qt SCAN AVOIDS badge.
     if (state->trunk_scan_avoided_count != 0) {
-        printw(" Avoided: %u", (unsigned int)state->trunk_scan_avoided_count);
+        printw(" Avoids: %u", (unsigned int)state->trunk_scan_avoided_count);
     }
     printw("\n");
 }
@@ -897,10 +900,7 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
         if (state->lcn_scan_hold) {
             printw(" HOLD");
         }
-        if (state->lcn_avoid_count != 0) {
-            printw(" Avoided: %u", (unsigned int)state->lcn_avoid_count);
-        }
-        // The row's name goes last: it is the one field of operator-chosen length, so the fixed
+        // The row's name follows: it is the one field of operator-chosen length, so the fixed
         // fields keep their columns and a long name is what runs off a narrow terminal. The
         // resolver applies the placeholder-row rule (a 0 Hz row is stepped over without a retune,
         // so its name would credit the wrong channel) and yields to an active --trunk-scan target,
@@ -910,6 +910,15 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
             if (dsd_channel_label_current(opts, state, name, sizeof(name)) == 1) {
                 printw(" Channel: %s", name);
             }
+        }
+        // Last, the list: how many rows `b` has taken out of the rotation. Everything before it
+        // describes the channel on air, and under -Y that channel is never an avoided one (the
+        // avoid steps off the row in the same command, and the hangtime step and `L` skip avoided
+        // rows), so a participle beside HOLD read as a false verdict on the channel being heard
+        // (PR #463 feedback). A noun count after the name cannot. Same word as the "Clear avoids"
+        // menu row and the Qt SCAN AVOIDS badge.
+        if (state->lcn_avoid_count != 0) {
+            printw(" Avoids: %u", (unsigned int)state->lcn_avoid_count);
         }
         printw(" \n");
     }

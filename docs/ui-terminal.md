@@ -488,11 +488,12 @@ The name comes from the optional `name` column of the channel map (see `docs/csv
 renders exactly as it always did. The name goes last because it is the one field whose length you choose: the
 frequency and speed keep their columns, and on a narrow terminal it is the name that reaches the edge.
 
-When the rotation is not moving, the row says why, ahead of the name: `HOLD` while `Y` holds the scan, and
-`Avoided: N` while `b` has taken rows out of it for the session.
+While `Y` holds the scan, `HOLD` appears ahead of the name with the other facts about the channel on air. While
+`b` has taken rows out of the rotation for the session, `Avoids: N` closes the row: it counts the rows that are
+out of the list, and says nothing about the channel you are hearing, which under `-Y` is never an avoided one.
 
 ```
-| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec HOLD Avoided: 2 Channel: Marion
+| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec HOLD Channel: Marion Avoids: 2
 ```
 
 With `--trunk-scan` the same section names the target on air and its place in the rotation:
