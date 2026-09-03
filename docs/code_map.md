@@ -82,7 +82,8 @@ Every parked target keeps its own snapshot of decoder state — channel map, tru
 metadata (the IDEN tables and the user band plan behind them), the encrypted-target lockout ledger, and the NXDN
 missing-channel ledger from `<dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>` — so a channel number or learned
 control-channel state from one system is never reused on another. That is also why trunk scan rejects a global `-C`
-channel map or `--p25-bandplan` and imports each target's `chan_csv`/`p25_bandplan_csv` through throwaway options.
+channel map or `--p25-bandplan` and imports each target's `chan_csv` through throwaway options and its
+`p25_bandplan_csv` straight from the path, so neither touches the live options.
 The one deliberate crossing is by provenance: when the parked target's WACN/SYS is known and another target's
 snapshot holds a P25 IDEN entry learned on that same WACN/SYS, the coordinator copies it into an empty slot at
 trust 1 (`trunk_scan_share_peer_idens()`), and `dsd_engine_p25_bandplan_export()` in

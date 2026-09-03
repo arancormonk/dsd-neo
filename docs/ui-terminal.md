@@ -327,7 +327,8 @@ RadioReference import:
   writes the identifier tables learned this session (every target's, under trunk scan) to a path you are asked
   for, in the same format, so the next run can import them. Under trunk scan the import is refused with a
   message (a target list's `p25_bandplan_csv` column is the way in) while the export still works and covers
-  every target. The export's suggested file name carries the WACN/SYS when they are known.
+  every target. The export's suggested file name carries the WACN/SYS when they are known and trunk scan is
+  off; under trunk scan the merged multi-target file keeps the generic name.
 - P25 channels are shown as four hex digits followed by the same channel as `<identifier>-<channel>` in
   parentheses (`Active Ch: 2A46 (2-2630)`, `CH:2A46 (2-2630)` in the secondary control channel list, and the
   learned Channels panel), which is the spelling a channel map CSV accepts as its first column.
