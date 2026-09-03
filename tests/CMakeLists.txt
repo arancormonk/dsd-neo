@@ -673,6 +673,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_channel_label
+  HEADERS_PUBLIC_CORE_CHANNEL_LABEL
+  dsd-neo/core/channel_label.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_talkgroup_policy
   HEADERS_PUBLIC_CORE_TALKGROUP_POLICY
   dsd-neo/core/talkgroup_policy.h
@@ -1656,7 +1662,8 @@ add_executable(
     # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().
     ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c
     ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring_dmr_tg_map.c
-    # chan_map_adopt()/svc_clear_channel_map() own the scan-list heap tail.
+    # chan_map_adopt()/svc_clear_channel_map() own the scan-list heap tail and the
+    # per-row name store beside it.
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
 target_include_directories(
@@ -3290,6 +3297,23 @@ add_test(
 )
 
 add_executable(
+    dsd-neo_test_runtime_trunk_scan_hooks
+    runtime/test_runtime_trunk_scan_hooks.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_trunk_scan_hooks
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_trunk_scan_hooks
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_TRUNK_SCAN_HOOKS
+    COMMAND dsd-neo_test_runtime_trunk_scan_hooks
+)
+
+add_executable(
     dsd-neo_test_runtime_trunk_cc_candidates
     runtime/test_runtime_trunk_cc_candidates.c
 )
@@ -3534,7 +3558,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
     target_link_libraries(
         dsd-neo_test_core_call_alert_history
-        PRIVATE dsd-neo_core
+        PRIVATE dsd-neo_core dsd-neo_test_support
     )
     target_link_options(
         dsd-neo_test_core_call_alert_history
@@ -3558,7 +3582,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
     target_link_libraries(
         dsd-neo_test_core_call_alert_history_sndfile_alt_tag
-        PRIVATE dsd-neo_core
+        PRIVATE dsd-neo_core dsd-neo_test_support
     )
     target_link_options(
         dsd-neo_test_core_call_alert_history_sndfile_alt_tag
@@ -3675,6 +3699,28 @@ target_link_libraries(
     PRIVATE dsd-neo_core dsd-neo_proto_dmr
 )
 add_test(NAME CORE_CSV_VALIDATE COMMAND dsd-neo_test_core_csv_validate)
+
+add_executable(dsd-neo_test_core_channel_label core/test_core_channel_label.c)
+target_include_directories(
+    dsd-neo_test_core_channel_label
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_channel_label PRIVATE dsd-neo_core)
+add_test(NAME CORE_CHANNEL_LABEL COMMAND dsd-neo_test_core_channel_label)
+
+add_executable(
+    dsd-neo_test_core_state_trunk_lcn_avoid
+    core/test_core_state_trunk_lcn_avoid.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+)
+target_include_directories(
+    dsd-neo_test_core_state_trunk_lcn_avoid
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME CORE_STATE_TRUNK_LCN_AVOID
+    COMMAND dsd-neo_test_core_state_trunk_lcn_avoid
+)
 
 add_executable(
     dsd-neo_test_core_talkgroup_policy
@@ -7294,6 +7340,33 @@ add_test(
     COMMAND dsd-neo_test_dmr_lrrp_empty_payload_type
 )
 
+# DMR LRRP: a conformant document wrapped in a short fixed envelope decodes as itself (#453)
+add_executable(
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    protocol/dmr/test_dmr_lrrp_wrapped_document.c
+    test_support/data_event_gps_shim.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_include_directories(
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    SYSTEM
+    PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME DMR_LRRP_WRAPPED_DOCUMENT
+    COMMAND dsd-neo_test_dmr_lrrp_wrapped_document
+)
+
 # DMR SMS/TMS UTF-16 text: surrogate pairs combine, unpaired halves become U+FFFD
 add_executable(
     dsd-neo_test_dmr_pdu_utf16_text
@@ -9148,6 +9221,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_lrrp_time_fallback
     dsd-neo_test_dmr_lrrp_time_valid
     dsd-neo_test_dmr_lrrp_token_alignment
+    dsd-neo_test_dmr_lrrp_wrapped_document
     dsd-neo_test_dmr_pdu_utf16_text
     dsd-neo_test_dmr_relaxed_header_ip
     dsd-neo_test_dmr_t3_ann_wd_tscc

@@ -55,7 +55,8 @@ class CallHistoryModel : public QAbstractListModel {
         DayLabelRole, // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
         TimeTextRole, // "12:04"
         KindRole,     // RowKind: voice call or data/control notice
-        DetailRole    // notice payload: decoded text message or GPS string
+        DetailRole,   // notice payload: decoded text message or GPS string
+        ChannelRole   // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
     };
 
     /** @brief What a row logs; pinned values because rows persist as JSON. */
@@ -120,6 +121,11 @@ class CallHistoryModel : public QAbstractListModel {
         QString systemName;
         int kind = KindVoice;
         QString detail;
+        /* The scan channel the row was heard on: a -Y row name or a trunk-scan
+         * target id. Empty when the receiver was not scanning. It is not the
+         * system: the system is the saved entry the session runs, and stays so
+         * for every row of that session. */
+        QString channel;
         /* Ring identity, persisted with the row so keyFor() can reproduce the key
          * the ring scan used. slot is the TDMA slot; seq is the push-sequence stamp
          * the row was committed at (push_seq - index + 1), which is stable for the

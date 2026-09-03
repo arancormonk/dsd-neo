@@ -79,7 +79,7 @@ struct RingFixture {
     /** Commit a row the way push_event_history() does: shift, fill index 1. */
     Event_History*
     commit(int slot, uint32_t tg, uint32_t src, time_t start, time_t end, const char* tgt_str = "",
-           const char* t_name = "") {
+           const char* t_name = "", const char* channel_label = "") {
         Event_History_I* ring = &rings[slot];
         DSD_MEMMOVE(&ring->Event_History_Items[2], &ring->Event_History_Items[1],
                     sizeof(Event_History) * (DSD_EVENT_HISTORY_LEN - 2));
@@ -92,9 +92,22 @@ struct RingFixture {
         item->event_time = end;
         DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", tgt_str);
         DSD_SNPRINTF(item->t_name, sizeof(item->t_name), "%s", t_name);
+        DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", channel_label);
         ring->push_seq++;
         ring->commit_rev++;
         ring->revision++;
+        return item;
+    }
+
+    /** Commit a data notice the way dsd_event_emit_data_notice() does: the
+     *  emitter's rendered line (timestamp, optional "[label] " prefix, summary)
+     *  in event_string and the channel label the row was stamped with. */
+    Event_History*
+    commitNotice(int slot, time_t when, const char* event_string, const char* channel_label = "") {
+        Event_History* item = commit(slot, 0, 0, when, when);
+        item->category = DSD_EVENT_CATEGORY_DATA;
+        DSD_SNPRINTF(item->event_string, sizeof(item->event_string), "%s", event_string);
+        DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", channel_label);
         return item;
     }
 
@@ -161,6 +174,101 @@ test_alias_only_row_is_logged(void) {
            model.count() == 1
                && model.data(model.index(0), CallHistoryModel::NameRole).toString()
                       == QStringLiteral("County Dispatch"));
+}
+
+/* Encrypted traffic on a scanned conventional list decodes no talkgroup at
+ * all: tg 0, no textual target, no CSV name. Dropping those rows is right for
+ * a stray sync, but wrong once the channel the call was heard on names it —
+ * that name is the whole answer to "what was that?". */
+void
+test_channel_labelled_tg0_row_is_logged(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754500250;
+    ring.commit(0, 0, 0, when, when + 3, "", "", "Fire Dispatch");
+    model.refresh(ring.state);
+    expect("channel-labelled tg0 row is logged", model.count() == 1);
+    expect("channel-labelled row is named from the channel",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("Fire Dispatch"));
+
+    /* Nothing names this one at all — still the noise row the drop exists for. */
+    ring.commit(0, 0, 0, when + 10, when + 12);
+    model.refresh(ring.state);
+    expect("unlabelled tg0 row is still dropped", model.count() == 1);
+
+    /* A different channel is a different call, tg 0 on both notwithstanding. */
+    ring.commit(0, 0, 0, when + 20, when + 23, "", "", "PD Tac");
+    model.refresh(ring.state);
+    expect("a second channel keeps its own row", model.count() == 2);
+}
+
+/* The emitter renders a labelled notice as "[label] summary"; the history shows
+ * the label on the row's meta line from its channel role, so the name must be
+ * the bare summary. Only the row's own label is stripped: a summary that happens
+ * to start with a bracket keeps it. */
+void
+test_labelled_notice_name_drops_its_own_channel_prefix(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754500250;
+    ring.commitNotice(0, when, "2026-04-30 00:00:00 [SiteA] LRRP position", "SiteA");
+    model.refresh(ring.state);
+    expect("labelled notice is logged", model.count() == 1);
+    expect("labelled notice name is the bare summary",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("LRRP position"));
+    expect("labelled notice carries its channel in the channel role",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::ChannelRole).toString() == QStringLiteral("SiteA"));
+
+    ring.commitNotice(0, when + 5, "2026-04-30 00:00:05 [Not a label] SMS from 1234");
+    model.refresh(ring.state);
+    expect("a bracket that is not the row's label survives",
+           model.count() == 2
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString()
+                      == QStringLiteral("[Not a label] SMS from 1234"));
+}
+
+/* The scan channel a row was heard on rides its own role. The system stays the
+ * saved entry the session runs, for labelled and unlabelled rows alike, so the
+ * "All systems" pill keeps offering what the Home screen lists and never a
+ * channel name; and a talkgroup heard on two channels stays two rows. */
+void
+test_channel_label_is_its_own_role(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    model.setSessionLabel(QStringLiteral("Scan list"));
+    const time_t when = 1754500250;
+    ring.commit(0, 4001, 100, when, when + 3, "", "", "Fire Dispatch");
+    model.refresh(ring.state);
+    expect("labelled row carries the channel",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::ChannelRole).toString()
+                      == QStringLiteral("Fire Dispatch"));
+    expect("labelled row keeps the session as its system",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::SystemNameRole).toString()
+                      == QStringLiteral("Scan list"));
+
+    ring.commit(0, 4002, 101, when + 10, when + 12);
+    model.refresh(ring.state);
+    expect("unlabelled row has no channel",
+           model.count() == 2 && model.data(model.index(0), CallHistoryModel::ChannelRole).toString().isEmpty());
+    expect("unlabelled row keeps the session label",
+           model.count() == 2
+               && model.data(model.index(0), CallHistoryModel::SystemNameRole).toString()
+                      == QStringLiteral("Scan list"));
+    const QStringList labels = model.systemLabels();
+    expect("system filter lists only the session", labels == QStringList{QStringLiteral("Scan list")});
+
+    /* The same talkgroup and unit heard on another channel is another row. */
+    ring.commit(0, 4001, 100, when + 20, when + 22, "", "", "PD Tac");
+    model.refresh(ring.state);
+    expect("a different channel keeps the same talkgroup on its own row", model.count() == 3);
 }
 
 void
@@ -259,6 +367,9 @@ main(int argc, char** argv) {
     test_two_slots_same_second_same_talkgroup();
     test_textual_targets_stay_distinct();
     test_alias_only_row_is_logged();
+    test_channel_labelled_tg0_row_is_logged();
+    test_labelled_notice_name_drops_its_own_channel_prefix();
+    test_channel_label_is_its_own_role();
     test_reacquisition_merge_updates_in_place();
     test_ring_walk_gated_on_commit_rev();
     test_relaunch_does_not_reingest();

@@ -213,16 +213,26 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) {
         }
         *comma = '\0';
         char* freq_text = comma + 1;
-        char* freq_end = freq_text;
-        while (*freq_end && *freq_end != '\r' && *freq_end != '\n') {
-            freq_end++;
+        /* The optional third column the real importer reads as a row name. This stub keeps
+         * no scan-list rows, so every name it sees lands in row 0: enough to prove the store
+         * was allocated, which is what the trunk-scan import then has to release. */
+        char* name_text = strchr(freq_text, ',');
+        if (name_text) {
+            *name_text++ = '\0';
         }
-        *freq_end = '\0';
+        char* tail = name_text ? name_text : freq_text;
+        while (*tail && *tail != '\r' && *tail != '\n') {
+            tail++;
+        }
+        *tail = '\0';
         uint32_t channel = 0;
         long freq = 0;
         if (dsd_parse_uint32_strict(line, 10, 0xFFFFU, &channel) == 0
             && dsd_parse_long_strict(freq_text, 10, 0L, LONG_MAX, &freq) == 0) {
             dsd_state_set_trunk_chan_freq(state, channel, freq);
+            if (name_text && name_text[0] != '\0') {
+                (void)dsd_state_trunk_lcn_name_set(state, 0U, name_text);
+            }
         }
     }
     (void)fclose(fp);
@@ -378,6 +388,14 @@ test_parser_valid_mixed_targets_and_relative_chan_csv(void) {
             || list.targets[0].dwell_ms != 3000 || list.targets[0].activity_hold_ms != 1200
             || !strstr(list.targets[0].chan_csv, "chan.csv")) {
             DSD_FPRINTF(stderr, "parser target 0 mismatch\n");
+            test_rc = 1;
+        }
+        /* The id is what the coordinator publishes as the channel label, so the parser
+         * owes it verbatim rather than just "some non-empty string". */
+        if (strcmp(list.targets[0].id, "p25") != 0 || strcmp(list.targets[1].id, "dmr") != 0
+            || strcmp(list.targets[2].id, "conv") != 0) {
+            DSD_FPRINTF(stderr, "parser target ids mismatch: '%s' '%s' '%s'\n", list.targets[0].id, list.targets[1].id,
+                        list.targets[2].id);
             test_rc = 1;
         }
         if (list.targets[1].dwell_ms != 500 || list.targets[1].activity_hold_ms != 1500) {
@@ -1025,6 +1043,114 @@ test_coordinator_idle_rotation_and_state_restore(void) {
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Compare the whole publication at once: an id that survives a rotation with a stale ordinal
+ * beside it is as wrong as a stale id. */
+static int
+expect_published_target(const dsd_state* state, const char* stage, const char* id, unsigned ordinal, unsigned count) {
+    if (strcmp(state->trunk_scan_active_id, id) != 0 || state->trunk_scan_active_ordinal != ordinal
+        || state->trunk_scan_target_count != count) {
+        DSD_FPRINTF(stderr, "published target after %s: '%s' %u of %u, want '%s' %u of %u\n", stage,
+                    state->trunk_scan_active_id, (unsigned)state->trunk_scan_active_ordinal,
+                    (unsigned)state->trunk_scan_target_count, id, ordinal, count);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * The frontends label the channel being heard from the coordinator's publication in
+ * dsd_state rather than by reaching into the coordinator, so the rotation has to keep
+ * id/ordinal/count in step with the target actually on air, and shutdown has to take the
+ * label back down rather than leave the last target's name on screen.
+ */
+static int
+test_coordinator_publishes_active_target_label(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "publish scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    test_rc |= expect_published_target(&state, "init", "a", 1U, 2U);
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_published_target(&state, "rotation to b", "b", 2U, 2U);
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_published_target(&state, "rotation back to a", "a", 1U, 2U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    test_rc |= expect_published_target(&state, "shutdown", "", 0U, 0U);
+
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * A target's chan_csv may carry a name column, and the importer stores it. Trunk scan has
+ * to drop it: the per-target snapshot carries the positional scan list but no names, so the
+ * next target's list would land under the previous target's names.
+ */
+static int
+test_target_chan_csv_names_are_discarded(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char chan_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(chan_path, sizeof chan_path, dir, "chan.csv") != 0
+        || write_text_file(chan_path, "channel,frequency,name\n1,851012500,Dispatch\n") != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    if (write_targets_file(dir, "a,p25-trunk,851000000,chan.csv,250,,\n", target_path, sizeof target_path) != 0) {
+        cleanup_paths(dir, NULL, chan_path);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "chan_csv name scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    if (state.trunk_lcn_name != NULL) {
+        DSD_FPRINTF(stderr, "trunk scan kept a chan_csv name store: row 0 = '%s'\n",
+                    dsd_state_trunk_lcn_name_get(&state, 0U));
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, chan_path);
     return test_rc;
 }
 
@@ -3278,10 +3404,12 @@ static int g_counting_tune_to_cc_ted_sps = 0;
 static long int g_counting_tune_to_cc_freq = 0;
 static dsd_trunk_tune_result g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
+static uint64_t g_counting_tune_to_cc_last_request_id = 0U;
+
 static dsd_trunk_tune_result
 counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
-    (void)request_id;
     (void)opts;
+    g_counting_tune_to_cc_last_request_id = request_id;
     g_counting_tune_to_cc_calls++;
     g_counting_tune_to_cc_ted_sps = ted_sps;
     g_counting_tune_to_cc_freq = freq;
@@ -4639,6 +4767,58 @@ test_scan_does_not_retune_active_target_while_alternates_cool_down(void) {
     return test_rc;
 }
 
+/*
+ * trunk_scan_advance() puts the original target back when every candidate retune fails, and
+ * the last thing tried was an alternate: publishing only from the switch would leave that
+ * alternate's id on screen while the receiver sits on the target it never left. Two failures
+ * at init drive exactly that -- target "a" fails and starts cooling, the advance tries "b"
+ * and it fails too, and "a" is then skipped by its own cooldown, so the restore is the only
+ * thing that can put "a" back.
+ */
+static int
+test_failed_alternate_retune_republishes_restored_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_request = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_failures_remaining = 2;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "failed alternate scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 2) {
+        DSD_FPRINTF(stderr, "failed alternate did not restore target 0: active=%zu calls=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls);
+        test_rc = 1;
+    }
+    test_rc |= expect_published_target(&state, "failed alternate retune", "a", 1U, 2U);
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_dmr_targets_pass_sps_to_retune_paths(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -4864,6 +5044,436 @@ test_trunk_scan_rejects_iq_replay_input(void) {
     return test_rc;
 }
 
+/*
+ * On-the-fly scan controls (#380). The coordinator owns the truth for hold and avoid
+ * under --trunk-scan and publishes it beside the target id; app_control reaches it
+ * only through the control hook, so the hook install is checked once here too.
+ */
+static int
+scan_control_init(const char* body, dsd_opts* opts, dsd_state* state, char* dir, size_t dir_sz, char* target_path,
+                  size_t path_sz) {
+    if (make_runtime_targets(body, target_path, path_sz, dir, dir_sz) != 0) {
+        return -1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "scan control init failed err=%s\n", err);
+        return -1;
+    }
+    return 0;
+}
+
+static int
+expect_scan_control_publication(const dsd_state* state, const char* stage, unsigned hold, unsigned active_avoided,
+                                unsigned avoided_count) {
+    if (state->trunk_scan_hold != hold || state->trunk_scan_active_avoided != active_avoided
+        || state->trunk_scan_avoided_count != avoided_count) {
+        DSD_FPRINTF(stderr, "scan control publication after %s: hold=%u active_avoided=%u avoided=%u, want %u/%u/%u\n",
+                    stage, (unsigned)state->trunk_scan_hold, (unsigned)state->trunk_scan_active_avoided,
+                    (unsigned)state->trunk_scan_avoided_count, hold, active_avoided, avoided_count);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_active_target(const dsd_state* state, const char* stage, size_t want) {
+    const size_t got = dsd_engine_trunk_scan_active_index(state);
+    if (got != want) {
+        DSD_FPRINTF(stderr, "active target after %s: %zu, want %zu\n", stage, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_control_rc(const char* stage, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "scan control %s returned %d, want %d\n", stage, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_scan_control_unavailable_without_coordinator(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    int test_rc = expect_control_rc("without coordinator",
+                                    dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE),
+                                    DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    test_rc |= expect_control_rc("hook without coordinator",
+                                 dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE),
+                                 DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    return test_rc;
+}
+
+static int
+test_scan_hold_pauses_rotation_and_release_restarts_dwell(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+
+    /* Through the runtime hook once, to prove the coordinator installed it. */
+    test_rc |=
+        expect_control_rc("hold on", dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    test_rc |= expect_scan_control_publication(&state, "hold on", 1U, 0U, 0U);
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(3.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "held past the dwell", 0U);
+
+    test_rc |= expect_control_rc("hold off",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    test_rc |= expect_scan_control_publication(&state, "hold off", 0U, 0U, 0U);
+    /* The dwell restarts from the release: a full 250 ms before the rotation resumes. */
+    trunk_scan_test_set_now(3.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(3.24);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "release before a full dwell", 0U);
+    trunk_scan_test_set_now(3.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "release after a full dwell", 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_advance_moves_now_and_keeps_hold(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n"
+                          "c,p25-trunk,853000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |=
+        expect_control_rc("advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "advance", 1U);
+    test_rc |= expect_published_target(&state, "advance", "b", 2U, 3U);
+
+    test_rc |= expect_control_rc("hold on",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    test_rc |= expect_control_rc("advance while held",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "advance while held", 2U);
+    test_rc |= expect_scan_control_publication(&state, "advance while held", 1U, 0U, 0U);
+    trunk_scan_test_set_now(5.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(6.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "still held after manual advance", 2U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_avoid_steps_on_and_skips_the_target_thereafter(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n"
+                          "c,p25-trunk,853000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |= expect_control_rc("avoid a",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |= expect_active_target(&state, "avoid a", 1U);
+    test_rc |= expect_scan_control_publication(&state, "avoid a", 0U, 0U, 1U);
+    test_rc |= expect_published_target(&state, "avoid a", "b", 2U, 3U);
+
+    /* b -> c -> b: a never comes back. The switch arms the dwell, so each expired tick moves. */
+    trunk_scan_test_set_now(0.3);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation to c", 2U);
+    trunk_scan_test_set_now(0.56);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation skips a", 1U);
+    test_rc |= expect_scan_control_publication(&state, "rotation skips a", 0U, 0U, 1U);
+
+    /* Clear puts a back: the next rotation from b goes to c, then a. */
+    test_rc |=
+        expect_control_rc("clear", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 1);
+    test_rc |= expect_scan_control_publication(&state, "clear", 0U, 0U, 0U);
+    trunk_scan_test_set_now(0.9);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "after clear, to c", 2U);
+    trunk_scan_test_set_now(1.16);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "after clear, back to a", 0U);
+    test_rc |= expect_control_rc("clear with nothing avoided",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 0);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_avoid_refuses_the_last_usable_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |= expect_control_rc("avoid a",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |= expect_active_target(&state, "avoid a", 1U);
+    test_rc |=
+        expect_control_rc("avoid b", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE),
+                          DSD_TRUNK_SCAN_CONTROL_REFUSED);
+    test_rc |= expect_active_target(&state, "refused avoid", 1U);
+    test_rc |= expect_scan_control_publication(&state, "refused avoid", 0U, 0U, 1U);
+    /* With a alone avoided the rotation has nowhere to go and stays on b. */
+    trunk_scan_test_set_now(0.3);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(0.56);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation with one usable target", 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_avoid_falls_back_on_the_original_when_alternates_fail(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n"
+                          "c,p25-trunk,853000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    g_counting_tune_to_cc_failures_remaining = 2;
+    test_rc |= expect_control_rc("avoid with failing alternates",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 1);
+    g_counting_tune_to_cc_failures_remaining = 0;
+    test_rc |= expect_active_target(&state, "fallback", 0U);
+    test_rc |= expect_published_target(&state, "fallback", "a", 1U, 3U);
+    /* The row has to say the receiver is parked on a target the operator avoided. */
+    test_rc |= expect_scan_control_publication(&state, "fallback", 0U, 1U, 1U);
+
+    /* Once the alternates cool down the rotation leaves a. */
+    trunk_scan_test_set_now(2.5);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "leaves the avoided fallback", 1U);
+    test_rc |= expect_scan_control_publication(&state, "leaves the avoided fallback", 0U, 0U, 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_controls_on_a_single_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n", &opts, &state, dir, sizeof dir, target_path,
+                          sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |= expect_control_rc("single advance",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE),
+                                 DSD_TRUNK_SCAN_CONTROL_REFUSED);
+    test_rc |= expect_control_rc("single avoid",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE),
+                                 DSD_TRUNK_SCAN_CONTROL_REFUSED);
+    test_rc |= expect_control_rc("single hold",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    test_rc |= expect_scan_control_publication(&state, "single hold", 1U, 0U, 0U);
+    test_rc |= expect_active_target(&state, "single target", 0U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_controls_report_busy_while_p25_guard_held(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    g_p25_tick_guard_available = 0;
+    test_rc |=
+        expect_control_rc("busy advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE),
+                          DSD_TRUNK_SCAN_CONTROL_BUSY);
+    test_rc |= expect_control_rc("busy avoid",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE),
+                                 DSD_TRUNK_SCAN_CONTROL_BUSY);
+    /* Hold and clear only flip flags, so they never need the guard. */
+    test_rc |= expect_control_rc("hold under guard",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    test_rc |= expect_control_rc("clear under guard",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 0);
+    test_rc |= expect_active_target(&state, "busy controls", 0U);
+    test_rc |= expect_scan_control_publication(&state, "busy controls", 1U, 0U, 0U);
+    g_p25_tick_guard_available = 1;
+    if (g_p25_tick_guard_depth != 0) {
+        DSD_FPRINTF(stderr, "busy scan controls leaked the P25 guard depth=%d\n", g_p25_tick_guard_depth);
+        test_rc = 1;
+    }
+    test_rc |= expect_control_rc("advance after guard",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "advance after guard", 1U);
+    if (g_p25_tick_guard_depth != 0) {
+        DSD_FPRINTF(stderr, "scan advance left the P25 guard held depth=%d\n", g_p25_tick_guard_depth);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A retune that fails asynchronously normally moves the scan on; while held it retries
+ * the held target after the cooldown instead. DMR trunk targets take the asynchronous
+ * request path without the P25 recovery adoption on top of it. */
+static int
+test_scan_hold_retries_the_held_target_after_a_pending_retune_fails(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_trunk_tuning_requests_reset();
+    if (scan_control_init("a,dmr-trunk,461000000,,250,,\n"
+                          "b,dmr-trunk,462000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |= expect_control_rc("hold on",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+
+    /* Advance to b while held, with the retune left pending. */
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    g_counting_tune_to_cc_calls = 0;
+    trunk_scan_test_set_now(1.0);
+    test_rc |= expect_control_rc("advance pending",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "advance pending", 1U);
+    const uint64_t pending_id = g_counting_tune_to_cc_last_request_id;
+    if (g_counting_tune_to_cc_calls != 1 || pending_id == 0U) {
+        DSD_FPRINTF(stderr, "held advance did not leave a pending retune calls=%d id=%llu\n",
+                    g_counting_tune_to_cc_calls, (unsigned long long)pending_id);
+        test_rc = 1;
+    }
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    dsd_trunk_tuning_request_publish(pending_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    trunk_scan_test_set_now(1.1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "pending failure while held", 1U);
+    if (g_counting_tune_to_cc_calls != 1) {
+        DSD_FPRINTF(stderr, "pending failure while held retuned early calls=%d\n", g_counting_tune_to_cc_calls);
+        test_rc = 1;
+    }
+    /* After the cooldown the held target is retried in place. */
+    trunk_scan_test_set_now(3.2);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "retry while held", 1U);
+    if (g_counting_tune_to_cc_calls != 2 || g_counting_tune_to_cc_freq != 462000000L) {
+        DSD_FPRINTF(stderr, "held target was not retried calls=%d freq=%ld\n", g_counting_tune_to_cc_calls,
+                    g_counting_tune_to_cc_freq);
+        test_rc = 1;
+    }
+    test_rc |= expect_scan_control_publication(&state, "retry while held", 1U, 0U, 0U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    dsd_trunk_tuning_requests_reset();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_shutdown_clears_hold_and_avoid_publication(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |= expect_control_rc("avoid",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |=
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    test_rc |= expect_scan_control_publication(&state, "before shutdown", 1U, 0U, 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    test_rc |= expect_scan_control_publication(&state, "shutdown", 0U, 0U, 0U);
+    test_rc |= expect_control_rc("after shutdown",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE),
+                                 DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 run_with_default_tune_hook(int (*test_fn)(void)) {
     dsd_trunk_tuning_hooks hooks = {0};
@@ -4890,6 +5500,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_rejects_invalid_inputs);
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
+    rc |= run_with_default_tune_hook(test_coordinator_publishes_active_target_label);
+    rc |= run_with_default_tune_hook(test_target_chan_csv_names_are_discarded);
     rc |= run_with_default_tune_hook(test_coordinator_rotation_past_32_targets);
     rc |= run_with_default_tune_hook(test_coordinator_preserves_long_lcn_list_across_rotation);
     rc |= run_with_default_tune_hook(test_coordinator_preserves_large_chan_map_across_rotation);
@@ -4939,9 +5551,20 @@ main(void) {
     rc |= run_with_default_tune_hook(test_active_p25_cqpsk_request_tracks_target_modulation);
     rc |= run_with_default_tune_hook(test_per_target_rtl_gain_overrides_and_restores_global_default);
     rc |= run_with_default_tune_hook(test_scan_tick_skips_rotation_when_p25_guard_busy);
+    rc |= run_with_default_tune_hook(test_scan_control_unavailable_without_coordinator);
+    rc |= run_with_default_tune_hook(test_scan_hold_pauses_rotation_and_release_restarts_dwell);
+    rc |= run_with_default_tune_hook(test_scan_advance_moves_now_and_keeps_hold);
+    rc |= run_with_default_tune_hook(test_scan_avoid_steps_on_and_skips_the_target_thereafter);
+    rc |= run_with_default_tune_hook(test_scan_avoid_refuses_the_last_usable_target);
+    rc |= run_with_default_tune_hook(test_scan_avoid_falls_back_on_the_original_when_alternates_fail);
+    rc |= run_with_default_tune_hook(test_scan_controls_on_a_single_target);
+    rc |= run_with_default_tune_hook(test_scan_controls_report_busy_while_p25_guard_held);
+    rc |= run_with_default_tune_hook(test_scan_hold_retries_the_held_target_after_a_pending_retune_fails);
+    rc |= run_with_default_tune_hook(test_scan_shutdown_clears_hold_and_avoid_publication);
     rc |= run_with_default_tune_hook(test_single_target_retune_failure_retries_after_cooldown);
     rc |= run_with_default_tune_hook(test_retune_failure_cooldown);
     rc |= run_with_default_tune_hook(test_scan_does_not_retune_active_target_while_alternates_cool_down);
+    rc |= run_with_default_tune_hook(test_failed_alternate_retune_republishes_restored_target);
     rc |= run_with_default_tune_hook(test_dmr_targets_pass_sps_to_retune_paths);
     rc |= run_with_default_tune_hook(test_init_failure_restores_saved_trunk_opts);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_fixed_input_without_tuner);

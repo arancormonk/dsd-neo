@@ -211,6 +211,54 @@ main(int argc, char** argv) {
     expect("the scanner is not trunking", !model.trunkingEnabled());
     opts.scanner_mode = 0;
 
+    /* Scan hold and avoids (#380) read whichever rotation is running. Plain trunking
+     * follows one system and is not a rotation, so the controls have nothing to act on. */
+    model.refresh(&opts, &state);
+    expect("no rotation at rest", !model.scanRotationActive());
+    expect("no hold at rest", !model.scanHold());
+    expect("no avoids at rest", model.scanAvoidCount() == 0);
+    opts.trunk_enable = 1;
+    model.refresh(&opts, &state);
+    expect("plain trunking is not a rotation", !model.scanRotationActive());
+    opts.trunk_enable = 0;
+    state.lcn_scan_hold = 1;
+    state.lcn_avoid_count = 3;
+    state.trunk_scan_hold = 0;
+    state.trunk_scan_avoided_count = 7;
+    state.trunk_scan_active_avoided = 1;
+    opts.scanner_mode = 1;
+    model.refresh(&opts, &state);
+    expect("-Y is a rotation", model.scanRotationActive());
+    expect("-Y hold reads the scan-list flag", model.scanHold());
+    expect("-Y avoids read the scan-list count", model.scanAvoidCount() == 3);
+    expect("-Y never parks on an avoided row", !model.scanTargetAvoided());
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 1;
+    model.refresh(&opts, &state);
+    expect("trunk scan is a rotation", model.scanRotationActive());
+    expect("trunk scan hold reads the coordinator's flag", !model.scanHold());
+    expect("trunk scan avoids read the coordinator's count", model.scanAvoidCount() == 7);
+    expect("trunk scan reports the avoided fallback", model.scanTargetAvoided());
+    state.trunk_scan_hold = 1;
+    model.refresh(&opts, &state);
+    expect("trunk scan hold on", model.scanHold());
+    /* Both flags set: --trunk-scan owns the tuner and the routing prefers it, so the
+     * view reads the coordinator's fields, not the scan list's. */
+    opts.scanner_mode = 1;
+    state.trunk_scan_hold = 0;
+    model.refresh(&opts, &state);
+    expect("co-active rotations still count as one", model.scanRotationActive());
+    expect("co-active hold reads the coordinator's flag", !model.scanHold());
+    expect("co-active avoids read the coordinator's count", model.scanAvoidCount() == 7);
+    expect("co-active avoided fallback comes from trunk scan", model.scanTargetAvoided());
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 0;
+    state.lcn_scan_hold = 0;
+    state.lcn_avoid_count = 0;
+    state.trunk_scan_hold = 0;
+    state.trunk_scan_avoided_count = 0;
+    state.trunk_scan_active_avoided = 0;
+
     /* An epoch the decoder opened on a frame that synced and went no further has
      * nothing in it. Rendered, it becomes a call from talkgroup 0 by nobody —
      * and, with a stale crypto header on the slot, an encrypted one. A session
@@ -307,6 +355,29 @@ main(int argc, char** argv) {
         expect("width alone moves the tuner group", model.channelBandwidthHz() == 6250);
 
         g_stub_channel_bandwidth_hz = 0;
+    }
+
+    /* A call with no name of its own on a named scan channel: the hero must show
+     * the channel, the way the call history already does, and expose it on its own
+     * so the panel can also show it beside a call that has a name. */
+    {
+        dsd_call_observation unnamed = {};
+        unnamed.protocol = DSD_SYNC_NXDN_POS;
+        unnamed.slot = 0U;
+        unnamed.kind = DSD_CALL_KIND_GROUP_VOICE;
+        unnamed.ota_target_id = 0U;
+        unnamed.ota_source_id = 1U;
+        unnamed.observed_m = 50.0;
+        expect("a tg-0 call opens", dsd_call_state_observe(&state, &unnamed, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        expect("the state carries an event ring", state.event_history_s != nullptr);
+        if (state.event_history_s != nullptr) {
+            Event_History* staged = &state.event_history_s[0].Event_History_Items[0];
+            DSD_SNPRINTF(staged->channel_label, sizeof(staged->channel_label), "%s", "Fire Dispatch");
+            model.refresh(&opts, &state);
+            expect("the slot exposes its scan channel", model.slot1Channel() == QStringLiteral("Fire Dispatch"));
+            expect("a nameless call is named by its channel", model.slot1CallName() == QStringLiteral("Fire Dispatch"));
+            expect("the talkgroup text stays the number", model.slot1TgText() == QStringLiteral("0"));
+        }
     }
 
     if (g_failures != 0) {

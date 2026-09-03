@@ -152,6 +152,32 @@ class CommandRecorder : public QObject {
         return true;
     }
 
+    /* On-the-fly scan controls (#380). Counted, so a case can assert that the
+     * monitor's buttons send the command they are labelled with. */
+    Q_INVOKABLE bool
+    toggleScanHold() {
+        m_scan_hold_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    avoidCurrentChannel() {
+        m_scan_avoid_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    clearScanAvoids() {
+        m_scan_avoid_clear_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    nextChannel() {
+        m_next_channel_calls++;
+        return true;
+    }
+
     Q_INVOKABLE bool
     releaseTuner() {
         m_release_tuner_calls++;
@@ -225,6 +251,30 @@ class CommandRecorder : public QObject {
         m_last_modulation = -1;
         m_last_decode_mode = -1;
         m_last_ppm = 9999;
+        m_scan_hold_calls = 0;
+        m_scan_avoid_calls = 0;
+        m_scan_avoid_clear_calls = 0;
+        m_next_channel_calls = 0;
+    }
+
+    int
+    scanHoldCalls() const {
+        return m_scan_hold_calls;
+    }
+
+    int
+    scanAvoidCalls() const {
+        return m_scan_avoid_calls;
+    }
+
+    int
+    scanAvoidClearCalls() const {
+        return m_scan_avoid_clear_calls;
+    }
+
+    int
+    nextChannelCalls() const {
+        return m_next_channel_calls;
     }
 
     int
@@ -296,6 +346,10 @@ class CommandRecorder : public QObject {
     int m_set_trunking_calls = 0;
     bool m_last_set_trunking = false;
     int m_gain_calls = 0;
+    int m_scan_hold_calls = 0;
+    int m_scan_avoid_calls = 0;
+    int m_scan_avoid_clear_calls = 0;
+    int m_next_channel_calls = 0;
     int m_last_gain_db = -1;
     double m_last_squelch_db = 0.0;
     int m_squelch_calls = 0;
@@ -331,6 +385,7 @@ class CallLogStore : public QAbstractListModel {
         QString timeText;
         int kind = CallHistoryModel::KindVoice;
         QString detail;
+        QString channel;
     };
 
     int
@@ -380,6 +435,7 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::TimeTextRole: return row.timeText;
             case CallHistoryModel::KindRole: return row.kind;
             case CallHistoryModel::DetailRole: return row.detail;
+            case CallHistoryModel::ChannelRole: return row.channel;
             default: return {};
         }
     }
@@ -396,7 +452,8 @@ class CallLogStore : public QAbstractListModel {
                 {CallHistoryModel::DayLabelRole, "dayLabel"},
                 {CallHistoryModel::TimeTextRole, "timeText"},
                 {CallHistoryModel::KindRole, "kind"},
-                {CallHistoryModel::DetailRole, "detail"}};
+                {CallHistoryModel::DetailRole, "detail"},
+                {CallHistoryModel::ChannelRole, "channel"}};
     }
 
     /**
@@ -419,6 +476,36 @@ class CallLogStore : public QAbstractListModel {
         endInsertRows();
         Q_EMIT countChanged();
         return row.name;
+    }
+
+    /**
+     * @brief Prepend one clear voice call heard on scan channel @p channel.
+     * @return The row's name, so a test can find that one row.
+     */
+    Q_INVOKABLE QString
+    pushOnChannel(const QString& dayLabel, const QString& channel) {
+        const QString name = push(dayLabel);
+        m_rows[0].channel = channel;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::ChannelRole});
+        return name;
+    }
+
+    /**
+     * @brief Prepend a call that decoded no talkgroup, named by the scan channel it
+     * was heard on — encrypted traffic on a conventional list looks like this.
+     * @return The row's name (the channel).
+     */
+    Q_INVOKABLE QString
+    pushUnnamedOnChannel(const QString& dayLabel, const QString& channel) {
+        push(dayLabel);
+        m_rows[0].tg = 0;
+        m_rows[0].name = channel;
+        m_rows[0].channel = channel;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx,
+                           {CallHistoryModel::TgRole, CallHistoryModel::NameRole, CallHistoryModel::ChannelRole});
+        return channel;
     }
 
     /** @brief Prepend @p n calls, oldest first, so the list reads newest-first. */
@@ -604,6 +691,27 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->lastSetTrunking() : false;
     }
 
+    /** @brief What the monitor's scan controls asked the engine for. */
+    Q_INVOKABLE int
+    scanHoldCalls() const {
+        return (m_commands != nullptr) ? m_commands->scanHoldCalls() : -1;
+    }
+
+    Q_INVOKABLE int
+    scanAvoidCalls() const {
+        return (m_commands != nullptr) ? m_commands->scanAvoidCalls() : -1;
+    }
+
+    Q_INVOKABLE int
+    scanAvoidClearCalls() const {
+        return (m_commands != nullptr) ? m_commands->scanAvoidClearCalls() : -1;
+    }
+
+    Q_INVOKABLE int
+    nextChannelCalls() const {
+        return (m_commands != nullptr) ? m_commands->nextChannelCalls() : -1;
+    }
+
     /** @brief What the radio panel last asked the engine for. */
     Q_INVOKABLE int
     gainCalls() const {
@@ -776,6 +884,8 @@ class Setup : public QObject {
             const QString p = QStringLiteral("slot%1").arg(slot);
             metrics[p + QStringLiteral("CallState")] = 0;
             metrics[p + QStringLiteral("CallName")] = QString();
+            // The scan channel the slot's call was heard on; empty when not scanning.
+            metrics[p + QStringLiteral("Channel")] = QString();
             metrics[p + QStringLiteral("CallEnc")] = false;
             metrics[p + QStringLiteral("CallSeconds")] = 0;
             metrics[p + QStringLiteral("TgText")] = QString();
@@ -789,6 +899,11 @@ class Setup : public QObject {
         metrics[QStringLiteral("leadSlot")] = 0;
         // Targets the encrypted lockout is skipping; 0 is the at-rest value.
         metrics[QStringLiteral("encLockoutCount")] = 0;
+        // On-the-fly scan controls (#380): no rotation running at rest.
+        metrics[QStringLiteral("scanRotationActive")] = false;
+        metrics[QStringLiteral("scanHold")] = false;
+        metrics[QStringLiteral("scanAvoidCount")] = 0;
+        metrics[QStringLiteral("scanTargetAvoided")] = false;
         // Whether an automatic controller owns the tuner, which one, and where it
         // points. The two named owners word a message; tunerControlled is the gate.
         metrics[QStringLiteral("tunerControlled")] = false;

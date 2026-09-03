@@ -137,6 +137,9 @@ Main Menu
 │   ├── Conventional scanning [Off]              y
 │   ├── Return to control channel                C   (while trunking or scanning)
 │   ├── Next channel                             L   (while trunking or scanning)
+│   ├── Scan hold [Off]                          Y   (while scanning with -Y or --trunk-scan)
+│   ├── Avoid current channel                    b   (while scanning with -Y or --trunk-scan)
+│   ├── Clear avoids [0]                             (while scanning with -Y or --trunk-scan)
 │   ├── ─────
 │   ├── Follow
 │   │   ├── Group calls [On]                     g
@@ -388,7 +391,9 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `t` | Toggle trunking |
 | `y` | Toggle conventional scanning |
 | `C` | Return to control channel (when following a voice channel) |
-| `L` | Cycle active trunking channels |
+| `L` | Next channel: step the `-Y` scan list (skipping avoided rows), cycle trunking channels, or move to the next `--trunk-scan` target |
+| `Y` | Hold the scan on the channel or target on air; press again to resume (`L` still moves while held) |
+| `b` | Avoid the channel or target on air for the rest of the session and step to the next one |
 | `g` | Toggle follow group calls |
 | `w` | Toggle allow/white-list mode (uses imported group list) |
 | `u` | Toggle follow private calls |
@@ -461,6 +466,48 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `[` / `]` | Event history previous/next |
 | `\\` | Toggle event history slot (or toggle M17 TX in encoder mode) |
 
+## Channel Labels
+
+While scanning, the screen says which channel you are listening to.
+
+The Input Output section names the `-Y` scan list row the receiver is parked on, at the end of its row:
+
+```
+| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion
+```
+
+The name comes from the optional `name` column of the channel map (see `docs/csv-formats.md`); a row without one
+renders exactly as it always did. The name goes last because it is the one field whose length you choose: the
+frequency and speed keep their columns, and on a narrow terminal it is the name that reaches the edge.
+
+When the rotation is not moving, the row says why, ahead of the name: `HOLD` while `Y` holds the scan, and
+`Avoided: N` while `b` has taken rows out of it for the session.
+
+```
+| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec HOLD Avoided: 2 Channel: Marion
+```
+
+With `--trunk-scan` the same section names the target on air and its place in the rotation:
+
+```
+| Trunk Scan:  Target: county-p25 (3/6)
+```
+
+`county-p25` is the target's `id` column (see `docs/trunk-scan.md`), and `(3/6)` is its place in the rotation. The row
+shows no frequency: the protocol panels below it already carry the one being decoded. While a target is on air the
+Scan Mode row above it shows no name, so the screen never names two channels at once.
+
+Call Info repeats the answer on its own first line, because compact view hides the Input Output section:
+
+```
+| Target: county-p25
+```
+
+It reads `Target:` for the active `--trunk-scan` target, `Channel:` for the name of the `-Y` row on air when trunk
+scan is not running, and nothing at all when neither scanner is running or the row has no name. The word matches the
+Input Output row it repeats: a target is a whole system, and "channel" already means a channel number lower in Call
+Info. Event history rows carry the same label as a bracketed prefix — see "Event History Rows" below.
+
 ## Compact View
 
 Press `c` (or use Menu -> Display -> Compact view) to collapse the main screen to a scanner-style
@@ -469,7 +516,8 @@ layout. While active, the header shows a `Compact (c)` indicator and the frame r
 - the header banner and any transient status toast;
 - a condensed `Status` block: decoder mode, demod/symbol rate, tuner Busy/Free (when trunking), SNR meter,
   input level, output mute state, and slot on/off states;
-- the full Call Info section (per-slot TGT/SRC, active channels, tuned frequency, TG HOLD);
+- the full Call Info section (the `Channel:`/`Target:` line while scanning, per-slot TGT/SRC, active channels,
+  tuned frequency, TG HOLD);
 - the event history, which expands into the freed rows.
 
 Suppressed while compact: the Input Output section, visual aids (including any enabled visualizers — their
@@ -478,3 +526,17 @@ toggles are remembered and restored when leaving compact; switching one on while
 Channels list. The condensed Status block also omits the Voice Error counters and the `CRC/(RAS)` decoder
 indicator from the full Audio Decode section — leave compact view to inspect those. The setting is
 session-only and is not persisted to the config file.
+
+## Event History Rows
+
+While scanning, an event history row names the channel it was heard on: the channel name from a
+`-Y` scan list, or the active `--trunk-scan` target's id, in brackets between the row's timestamp
+and its protocol token — `2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: 00050061; ...`. It answers
+the question a bare `TGT: 00000000` row cannot, which is where encrypted traffic was heard. Data
+notices (SMS, LRRP, registrations) carry the same prefix. A receiver that is not scanning a named
+channel renders exactly what it always did, and Short mode (`h`) still drops only the date, so the
+prefix survives into the compact row. The channel is resolved once, when the transmission's first
+row renders, so a call that outlives a scan step keeps the channel it was actually heard on — and a
+call heard on a scan-list row with no name stays unlabelled rather than picking up the name of the
+next channel. The bracketed name is for reading, not for parsing: a channel name may itself contain
+`]`.

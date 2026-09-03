@@ -230,7 +230,7 @@ list — RadioReference adds rows over time.
 | NXDN 4800 / 9600 | `-fi` / `-fn` | When the site publishes channel numbers |
 | EDACS Standard / Networked / Narrowband | `-fh`, or `-fH` with ESK | Yes, strictly positional |
 | EDACS Extended Addressing | `-fe`, or `-fE` with ESK | Yes, strictly positional |
-| P25 / DMR / NXDN **Conventional Networked** | see below | Only with two or more repeaters |
+| P25 / DMR / NXDN **Conventional Networked** | see below | Only with two or more repeaters, each row named |
 | Everything else (LTR, Motorola, OpenSky, iDEN, TETRA, MPT-1327, SmarTrunk, EDACS SCAT, …) | — | Import is blocked with a message |
 
 `-^` rides with every P25 import on purpose. Supplying a channel map tells the decoder a user LCN
@@ -256,7 +256,12 @@ frequency**, so the unit of choice is the repeater, not the site — the picker 
 multi-select list, sorted by name, showing each repeater's frequency and colour code.
 
 - **Two or more repeaters** produce a scanner frequency list (`-C`) and add `-Y`, which walks it
-  after `trunk_hangtime` elapses with no sync.
+  after `trunk_hangtime` elapses with no sync. Each row's third column is that repeater's
+  RadioReference site description, sanitised and capped the same way a talkgroup name is (collapsed
+  whitespace, commas rewritten to `/`, control bytes dropped, 49 bytes) — this is what lets the
+  scan mode display and call history show which repeater is being heard. A name that sanitises away
+  to nothing is left off the row entirely rather than written empty, and shortening any name adds a
+  warning to the preview.
 - **Exactly one repeater** produces no file at all. The session simply tunes that frequency. This
   is deliberate: a one-entry scan list makes the scanner retune to the frequency it is already on
   at every hangtime expiry.

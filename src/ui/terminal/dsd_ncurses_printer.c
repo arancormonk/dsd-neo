@@ -22,6 +22,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -850,6 +851,33 @@ ui_render_forced_key_status(const dsd_state* state, int show_keys) {
     }
 }
 
+/* Which of the rotating --trunk-scan targets the receiver is parked on. The park
+   frequency has no snapshot field of its own; the protocol header lines already
+   carry the frequency being decoded. */
+static void
+ui_render_trunk_scan_status(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->trunk_scan_enabled != 1 || state->trunk_scan_active_id[0] == '\0') {
+        return;
+    }
+    printw("| Trunk Scan:  Target: %s", state->trunk_scan_active_id);
+    if (state->trunk_scan_active_ordinal != 0 && state->trunk_scan_target_count != 0) {
+        printw(" (%u/%u)", (unsigned int)state->trunk_scan_active_ordinal,
+               (unsigned int)state->trunk_scan_target_count);
+    }
+    // Why the rotation is not moving: an operator hold, or a receiver parked on a target the
+    // operator avoided because every alternate failed to retune.
+    if (state->trunk_scan_hold) {
+        printw(" HOLD");
+    }
+    if (state->trunk_scan_active_avoided) {
+        printw(" [avoided]");
+    }
+    if (state->trunk_scan_avoided_count != 0) {
+        printw(" Avoided: %u", (unsigned int)state->trunk_scan_avoided_count);
+    }
+    printw("\n");
+}
+
 static void
 ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* state) {
     if (opts->scanner_mode == 1) {
@@ -863,9 +891,30 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
             printw(" Frequency: %.06lf MHz",
                    (double)*dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) / 1000000);
         }
-        printw(" Speed: %.02lf sec \n",
+        printw(" Speed: %.02lf sec",
                opts->trunk_hangtime); // default aligned to OP25 (2.0s) unless overridden
+        // Why the scan stopped moving, ahead of the name so the fixed fields keep their columns.
+        if (state->lcn_scan_hold) {
+            printw(" HOLD");
+        }
+        if (state->lcn_avoid_count != 0) {
+            printw(" Avoided: %u", (unsigned int)state->lcn_avoid_count);
+        }
+        // The row's name goes last: it is the one field of operator-chosen length, so the fixed
+        // fields keep their columns and a long name is what runs off a narrow terminal. The
+        // resolver applies the placeholder-row rule (a 0 Hz row is stepped over without a retune,
+        // so its name would credit the wrong channel) and yields to an active --trunk-scan target,
+        // whose id the Trunk Scan row below and the Call Info line both carry: one screen, one answer.
+        if (dsd_channel_label_current_source(opts, state) == DSD_CHANNEL_LABEL_SOURCE_SCAN_LIST) {
+            char name[DSD_CHANNEL_LABEL_SIZE];
+            if (dsd_channel_label_current(opts, state, name, sizeof(name)) == 1) {
+                printw(" Channel: %s", name);
+            }
+        }
+        printw(" \n");
     }
+
+    ui_render_trunk_scan_status(opts, state);
 
     if (opts->reverse_mute == 1) {
         printw("| Reverse Mute - Muting Unencrypted Voice\n");
@@ -3078,9 +3127,31 @@ ui_render_call_info_p25_dmr(const dsd_opts* opts, dsd_state* state) {
     ui_render_p25_dmr_tuned_freq_line(opts, state);
 }
 
+/* The channel being listened to, spelled out at the top of Call Info. The Scan
+   Mode and Trunk Scan rows say the same thing, but they live in the Input Output
+   section, which compact view does not draw. The word matches the row it repeats:
+   a --trunk-scan target is a whole system, which the Trunk Scan row calls a
+   "Target", and "Channel" already means a P25/DMR channel number lower in this
+   section, so the id is not filed under it. */
+static void
+ui_render_call_info_channel_line(const dsd_opts* opts, const dsd_state* state) {
+    char label[DSD_CHANNEL_LABEL_SIZE];
+    const dsd_channel_label_source source = dsd_channel_label_current_source(opts, state);
+    if (source == DSD_CHANNEL_LABEL_SOURCE_NONE || dsd_channel_label_current(opts, state, label, sizeof(label)) != 1) {
+        return;
+    }
+    printw("| ");
+    attron(COLOR_PAIR(4));
+    printw("%s: %s", source == DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN ? "Target" : "Channel", label);
+    ui_restore_call_info_color(state);
+    printw("\n");
+}
+
 static void
 ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_print_header("Call Info");
+
+    ui_render_call_info_channel_line(opts, state);
 
     ui_render_call_info_dstar(state);
 

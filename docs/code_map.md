@@ -112,6 +112,13 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
   the others (`lpf`, `lpf_f`, `hpf_f`, `hpf_dL`, `hpf_dR`, `pbf`), so renaming them would break out-of-tree
   callers for no benefit. Out-of-tree callers of `hpf()` need updating
+- API note: `<dsd-neo/core/channel_label.h>`'s `dsd_channel_label_current()` resolves the one label a frontend
+  should show for the channel being listened to: the active `--trunk-scan` target id, else the name of the `-Y`
+  scan-list row the receiver is parked on; `dsd_channel_label_current_source()` says which of the two it is, so a
+  frontend words it as a target or a channel and never names both at once. Those names come from a channel-map CSV that opts in with a `name`
+  header column and live in a heap store beside the scan list, reached through
+  `dsd_state_trunk_lcn_name_get()`/`_set()`/`_reserve()`/`_free()` in `src/core/util/dsd_state_trunk_lcn.c` and
+  released by `dsd_state_trunk_lcn_free()`
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
@@ -188,6 +195,9 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   answer while scanning (`src/protocol/nxdn/nxdn_trunk_diag.c`)
 - `dsd_trunk_scan_hook_enc_lockout_clear_snapshots()` — scrub the encrypted-target lockout ledger parked in every
   target snapshot, so a user purge is not undone by the next rotation (`src/app_control/actions/actions_trunk.c`)
+- `dsd_trunk_scan_hook_control()` — operator scan controls on the parked target list, op-coded (hold toggle, avoid the
+  active target, clear avoids, advance now); answers "unavailable" when trunk scan is not installed
+  (`src/app_control/app_command_queue.c`)
 
 Retune requests use a sibling table, `include/dsd-neo/runtime/trunk_tuning_hooks.h`, whose implementations the engine
 installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_install.c`.

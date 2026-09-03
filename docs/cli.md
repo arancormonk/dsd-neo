@@ -208,7 +208,10 @@ Windows console runs:
   those captures are migrated or their support window ends. Neither stored format carries the NXDN symbol rate, so NXDN
   capture replay requires `-fi` or `-fn` instead of `-fa`.
 - `-d <dir>` Save raw MBE vocoder frames in this folder
-- `-J <file>` Append event log output
+- `-J <file>` Append event log output. While scanning a `-Y` list or rotating `--trunk-scan` targets, each
+  line names the channel it was heard on in brackets between the timestamp and the protocol token
+  (`2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: ...`); lines from a receiver that is not scanning a named
+  channel are unchanged.
 - `--frame-log <file>` Append frame-level one-line timestamped traces
 - `--p25-sm-log <file>` Append P25 state-machine health and frequency-decision traces. Grant traces identify initial
   assignments versus updates; post-call stale-update handling reports guard, validation-probe, and activity outcomes.
@@ -426,6 +429,11 @@ Notes
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`
 - Conventional scan mode: `-Y` (not trunking; scans for sync on enabled decoders). For NXDN the hold is refreshed
   only by frames whose content passed a CRC, so an open squelch on an empty channel no longer parks the scan.
+  A channel map with a `name` column (see `docs/csv-formats.md`) names the row being listened to in the Scan Mode
+  row, in Call Info, and on the event history rows recorded while it is tuned.
+  While scanning, the terminal's Trunking menu and hotkeys hold the scan on the channel on air (`Y`), avoid it for the
+  rest of the session (`b`), step to the next channel (`L`, skipping avoided rows) and clear all avoids; see
+  `docs/ui-terminal.md`.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
   - Rotates one tuner across CSV-defined P25 trunk, DMR trunk, DMR conventional, NXDN trunk, NXDN96 conventional
     (`nxdn-conventional`) and NXDN48 conventional (`nxdn48-conventional`) targets. Full guide: `docs/trunk-scan.md`.

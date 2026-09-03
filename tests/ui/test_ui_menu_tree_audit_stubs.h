@@ -74,6 +74,9 @@
     X(act_rr_account_user)                                                                                             \
     X(act_rr_import)                                                                                                   \
     X(act_rr_library)                                                                                                  \
+    X(act_scan_avoid)                                                                                                  \
+    X(act_scan_avoid_clear)                                                                                            \
+    X(act_scan_hold_toggle)                                                                                            \
     X(act_rt_sched)                                                                                                    \
     X(act_scan_toggle)                                                                                                 \
     X(act_set_audio_lpf)                                                                                               \
@@ -264,6 +267,8 @@
     X(lbl_rtl_tuner_autogain)                                                                                          \
     X(lbl_rtl_vol)                                                                                                     \
     X(lbl_scan)                                                                                                        \
+    X(lbl_scan_avoid_clear)                                                                                            \
+    X(lbl_scan_hold)                                                                                                   \
     X(lbl_slot1)                                                                                                       \
     X(lbl_slot2)                                                                                                       \
     X(lbl_slotpref)                                                                                                    \
@@ -310,6 +315,7 @@
     X(rr_feature_available)                                                                                            \
     X(rr_imports_available_and_feature)                                                                                \
     X(rr_key_prompt_offered_and_feature)                                                                               \
+    X(scan_rotation_active)                                                                                            \
     X(trunk_enabled)
 
 #endif /* DSD_NEO_TESTS_UI_TEST_UI_MENU_TREE_AUDIT_STUBS_H_ */

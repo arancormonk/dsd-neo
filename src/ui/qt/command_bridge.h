@@ -38,6 +38,20 @@ class CommandBridge : public QObject {
     /** @brief Forget every encrypted-target lockout. */
     Q_INVOKABLE bool clearEncLockouts() const;
 
+    /**
+     * @brief On-the-fly scan controls (#380), for the -Y scan list or the --trunk-scan
+     * target list, whichever is running. The engine answers with a message in
+     * MetricsModel::uiMessage when it declines (nothing on air, last usable entry).
+     */
+    /** @brief Pause or resume the rotation on the channel/target on air. */
+    Q_INVOKABLE bool toggleScanHold() const;
+    /** @brief Avoid the channel/target on air for the session and step to the next one. */
+    Q_INVOKABLE bool avoidCurrentChannel() const;
+    /** @brief Put every avoided channel/target back into the rotation. */
+    Q_INVOKABLE bool clearScanAvoids() const;
+    /** @brief Step to the next channel now (next trunk-scan target under --trunk-scan). */
+    Q_INVOKABLE bool nextChannel() const;
+
     /** @brief Retune the radio front end. */
     Q_INVOKABLE bool tuneHz(unsigned int hz) const;
 

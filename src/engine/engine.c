@@ -1304,10 +1304,24 @@ no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, t
     if (opts->scanner_mode != 1 || (now - state->last_cc_sync_time) <= opts->trunk_hangtime) {
         return 0;
     }
+    // An operator hold pauses the rotation where it stands. The dwell timer is left alone:
+    // the command that releases the hold restarts it, so the row gets a full hangtime.
+    if (state->lcn_scan_hold) {
+        return 0;
+    }
 
     no_carrier_reset_nxdn_scan_markers(state);
     if (state->lcn_freq_roll >= state->lcn_freq_count) {
         state->lcn_freq_roll = 0;
+    }
+    // Rows the operator avoided are stepped over in this same pass rather than costing a
+    // hangtime each, so a long run of avoids does not stall the scan.
+    if (state->lcn_avoid_count > 0) {
+        const int next = dsd_state_trunk_lcn_next_unavoided(state, state->lcn_freq_roll);
+        if (next < 0) {
+            return 0;
+        }
+        state->lcn_freq_roll = next;
     }
 
     long int freq = *dsd_state_trunk_lcn_slot(state, state->lcn_freq_roll);

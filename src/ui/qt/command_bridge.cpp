@@ -52,6 +52,30 @@ CommandBridge::clearEncLockouts() const {
 }
 
 bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::toggleScanHold() const {
+    return accepted(dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::avoidCurrentChannel() const {
+    return accepted(dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::clearScanAvoids() const {
+    return accepted(dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID_CLEAR));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::nextChannel() const {
+    return accepted(dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE));
+}
+
+bool
 CommandBridge::tuneHz(unsigned int hz) const {
     return accepted(dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, static_cast<uint32_t>(hz)));
 }

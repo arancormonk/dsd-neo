@@ -148,6 +148,12 @@ static int g_chan_import_result = -1;
 static int g_chan_import_count = 0;
 static uint32_t g_chan_import_chan[4];
 static long int g_chan_import_freq[4];
+/* Per-row names, NULL for a row the file leaves unnamed. */
+static const char* g_chan_import_name[4];
+/* A name stored with no row to go with it, so the refused-adopt path can be driven with a
+ * name store live in the throwaway import state: the service still owes exactly one free of
+ * it and no change to the live map. */
+static const char* g_chan_import_name_without_row = NULL;
 
 int
 csvChanImport(const dsd_opts* opts, dsd_state* state) {
@@ -155,9 +161,17 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) {
     if (g_chan_import_result != 0 || !state) {
         return g_chan_import_result;
     }
+    if (g_chan_import_name_without_row != NULL) {
+        (void)dsd_state_trunk_lcn_name_set(state, 0U, g_chan_import_name_without_row);
+    }
     for (int i = 0; i < g_chan_import_count; i++) {
         dsd_state_set_trunk_chan_freq(state, g_chan_import_chan[i], g_chan_import_freq[i]);
+        // Names are positional: the row index is the slot the frequency just took.
+        const size_t row = (size_t)state->lcn_freq_count;
         state->trunk_lcn_freq[state->lcn_freq_count++] = g_chan_import_freq[i];
+        if (g_chan_import_name[i] != NULL) {
+            (void)dsd_state_trunk_lcn_name_set(state, row, g_chan_import_name[i]);
+        }
     }
     return 0;
 }
@@ -772,17 +786,32 @@ test_channel_map_reimport_replaces_previous_map(void) {
     g_chan_import_freq[1] = 852000000L;
     g_chan_import_chan[2] = 103;
     g_chan_import_freq[2] = 853000000L;
+    g_chan_import_name[0] = "Dispatch";
+    g_chan_import_name[1] = NULL;
+    g_chan_import_name[2] = "Tac 3";
     rc |= expect_int("chan map first import ok", svc_import_channel_map(&opts, &state, "a.csv"), 0);
     rc |= expect_int("first import lcn count", state.lcn_freq_count, 3);
     rc |= expect_int("first import chan applied", (int)state.trunk_chan_map[101], 851000000);
     rc |= expect_int("first import used count", (int)state.trunk_chan_map_used_count, 3);
+    // The names ride with the map they belong to; dropping them here would leave the
+    // frontends nothing to label the scanned channel with.
+    rc |= expect_str("first import keeps row 0's name", dsd_state_trunk_lcn_name_get(&state, 0U), "Dispatch");
+    rc |= expect_str("first import leaves row 1 unnamed", dsd_state_trunk_lcn_name_get(&state, 1U), "");
+    rc |= expect_str("first import keeps row 2's name", dsd_state_trunk_lcn_name_get(&state, 2U), "Tac 3");
 
     g_chan_import_count = 2;
     g_chan_import_chan[0] = 201;
     g_chan_import_freq[0] = 860000000L;
     g_chan_import_chan[1] = 202;
     g_chan_import_freq[1] = 861000000L;
+    g_chan_import_name[0] = NULL;
+    g_chan_import_name[2] = NULL;
     rc |= expect_int("chan map reimport ok", svc_import_channel_map(&opts, &state, "b.csv"), 0);
+    // A file with no name column replaces the previous file's names with nothing, the same
+    // way it replaces its frequencies: a surviving "Dispatch" would now label row 0 of a
+    // map that never claimed it.
+    rc |= expect_int("nameless reimport drops the name store", (int)(state.trunk_lcn_name == NULL), 1);
+    rc |= expect_str("nameless reimport reads back empty", dsd_state_trunk_lcn_name_get(&state, 0U), "");
     rc |= expect_int("reimport replaces lcn count", state.lcn_freq_count, 2);
     rc |= expect_int("reimport clears stale chan", (int)state.trunk_chan_map[101], 0);
     rc |= expect_int("reimport applies new chan", (int)state.trunk_chan_map[201], 860000000);
@@ -818,13 +847,33 @@ test_channel_map_reimport_replaces_previous_map(void) {
     // only the new CSV asserts. lcn_freq_roll indexes the replaced LCN list.
     state.dmr_lcn_trust[201] = 2;
     state.lcn_freq_roll = 1;
+    // Session avoids and the scan hold index the rows being replaced, so they go too.
+    state.lcn_scan_hold = 1;
+    rc |= expect_int("adopt: seed avoid", dsd_state_trunk_lcn_avoid_set(&state, 0U, 1), 0);
     g_chan_import_count = 1;
     g_chan_import_chan[0] = 401;
     g_chan_import_freq[0] = 880000000L;
+    g_chan_import_name[0] = "Repeater 1";
     rc |= expect_int("adopt ok", svc_import_channel_map(&opts, &state, "c.csv"), 0);
     rc |= expect_int("adopt clears stale lcn trust", (int)state.dmr_lcn_trust[201], 0);
     rc |= expect_int("adopt restarts the lcn roll", state.lcn_freq_roll, 0);
+    rc |= expect_int("adopt releases the scan hold", state.lcn_scan_hold, 0);
+    rc |= expect_int("adopt drops session avoids", (int)state.lcn_avoid_count, 0);
+    rc |= expect_int("adopt releases the avoid store", (int)(state.trunk_lcn_avoid == NULL), 1);
+    // A named file after a nameless one repopulates the store the nameless one released.
+    rc |= expect_str("later named import repopulates", dsd_state_trunk_lcn_name_get(&state, 0U), "Repeater 1");
+    g_chan_import_name[0] = NULL;
 
+    // A refused adopt whose throwaway state carries names of its own: the live store keeps
+    // the names it had, and the imported one is still released exactly once. The count of
+    // frees is what ASan checks; a copy instead of a move would read back freed memory here.
+    g_chan_import_count = 0;
+    g_chan_import_name_without_row = "Orphan";
+    rc |= expect_int("named empty import refused", svc_import_channel_map(&opts, &state, "empty.csv"), -1);
+    rc |= expect_str("refused adopt keeps the live names", dsd_state_trunk_lcn_name_get(&state, 0U), "Repeater 1");
+    g_chan_import_name_without_row = NULL;
+
+    dsd_state_trunk_lcn_free(&state);
     return rc;
 }
 
@@ -876,9 +925,14 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     g_chan_import_freq[0] = 851000000L;
     g_chan_import_chan[1] = 102;
     g_chan_import_freq[1] = 852000000L;
+    g_chan_import_name[0] = "Dispatch";
     rc |= expect_int("clear: seed import ok", svc_import_channel_map(&opts, &state, "a.csv"), 0);
+    g_chan_import_name[0] = NULL;
+    rc |= expect_str("clear: seed import stores the name", dsd_state_trunk_lcn_name_get(&state, 0U), "Dispatch");
     state.dmr_lcn_trust[101] = 2;
     state.lcn_freq_roll = 1;
+    state.lcn_scan_hold = 1;
+    rc |= expect_int("clear: seed avoid", dsd_state_trunk_lcn_avoid_set(&state, 1U, 1), 0);
     const unsigned int seq_before = state.trunk_chan_map_seq;
 
     rc |= expect_int("chan map clear ok", svc_clear_channel_map(&opts, &state), 0);
@@ -887,6 +941,11 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     rc |= expect_int("chan map clear empties used count", (int)state.trunk_chan_map_used_count, 0);
     rc |= expect_int("chan map clear empties lcn list", state.lcn_freq_count, 0);
     rc |= expect_int("chan map clear restarts the lcn roll", state.lcn_freq_roll, 0);
+    // The names belong to the rows that just went away, so they go with them.
+    rc |= expect_int("chan map clear releases the name store", (int)(state.trunk_lcn_name == NULL), 1);
+    rc |= expect_int("chan map clear releases the scan hold", state.lcn_scan_hold, 0);
+    rc |= expect_int("chan map clear drops session avoids", (int)state.lcn_avoid_count, 0);
+    rc |= expect_int("chan map clear releases the avoid store", (int)(state.trunk_lcn_avoid == NULL), 1);
     // Provenance goes with the map for the same reason it does on an adopt: a
     // surviving trust byte authorizes an off-CC tune to a frequency now gone.
     rc |= expect_int("chan map clear drops lcn trust", (int)state.dmr_lcn_trust[101], 0);

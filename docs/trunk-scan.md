@@ -47,7 +47,7 @@ Column behavior:
 
 | Column | Required | Meaning |
 |--------|----------|---------|
-| `id` | Yes | Unique short name used in log messages. Keep it under 64 bytes. |
+| `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows, `-J` log lines and the rdio `talkgroup_tag` fallback, and in log messages. Keep it under 64 bytes. |
 | `type` | Yes | `p25-trunk`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk`, `nxdn-conventional` (NXDN96, 12.5 kHz), or `nxdn48-conventional` (NXDN48, 6.25 kHz). |
 | `frequency_hz` | Yes | Initial park/control frequency in decimal Hz. Suffixes such as `M` are not accepted in CSV. |
 | `chan_csv` | No | Channel map for a trunk target. Paths are resolved relative to the target CSV file. Leave empty for conventional DMR and both conventional NXDN types. |
@@ -56,6 +56,11 @@ Column behavior:
 | `notes` | No | Ignored by DSD-neo. Use it for local notes. |
 | `modulation` | No | Demod hint for this target. Empty preserves global/default handling. `auto` uses target defaults even when a global `-m` lock is set. P25 accepts `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. |
 | `rtl_gain` | No | RTL-family tuner gain for this target. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. |
+
+A target's `chan_csv` may carry the optional `name` column described in [csv-formats.md](csv-formats.md), and it
+parses, but trunk scan discards the names. Each target's channel map is parked in a per-target snapshot that carries
+the frequencies positionally and no names, so a name kept from one target would sit beside the next target's list.
+Under `--trunk-scan` the channel being heard is labelled by the target `id` instead.
 
 Target list limits and validation:
 
@@ -186,7 +191,16 @@ At startup DSD-neo:
 
 During scanning:
 
+- The terminal names the target on air: a `| Trunk Scan:  Target: county-p25 (3/6)` row in the Input Output section,
+  and a `| Target: county-p25` line at the top of Call Info, which is the one that survives compact view.
 - Idle targets rotate after their dwell time.
+- The rotation can be driven from the terminal (Trunking menu, or the hotkeys): `Y` holds the scan on the parked
+  target, `b` avoids the parked target for the rest of the session and moves on, `L` moves to the next eligible target
+  now, and "Clear avoids" puts every avoided target back. A hold only pauses the idle dwell: the parked target's
+  trunking state machine keeps following calls, and `L` still moves while held (the hold then applies to the new
+  target). Avoiding the last usable target is refused, as is `L` on a single-target list. Avoids are not written back
+  to the CSV. The Trunk Scan row shows `HOLD`, `Avoided: N`, and `[avoided]` when every alternate failed to retune and
+  the receiver fell back onto a target that was avoided.
 - A non-empty target `modulation` value overrides global CLI/config modulation locks for that target only.
 - A target `rtl_gain` value is applied at the retune boundary. Manual per-target gain temporarily suspends supervisory
   tuner autogain; `auto` and global-auto targets restore the saved autogain setting.
@@ -211,6 +225,7 @@ During scanning:
   symbol rate and channel filter even under a global `-m` modulation lock; the lock still governs symbol slicing, so
   DMR and NXDN rows under `-mc` or `-mq` need `modulation = gfsk` (or `auto`) to decode.
 - When a retune fails, DSD-neo logs a warning, briefly cools that target down, and tries another eligible target.
+  While held, a failed retune retries the held target after the cooldown instead of moving on.
 
 Expected log messages include:
 

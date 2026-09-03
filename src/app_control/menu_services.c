@@ -331,9 +331,18 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
  * what -C produces at startup, and dmr_learn_chan_map() re-earns trust for any
  * LCN the new map leaves empty. lcn_freq_roll indexes trunk_lcn_freq, so a
  * shorter list has to restart the hunt rather than resume mid-way.
+ *
+ * The per-row name store is part of the map for the same reason: names are
+ * positional, so keeping the old file's names beside the new file's frequencies
+ * would label a row with a channel it no longer holds. It is moved rather than
+ * copied -- src is the caller's throwaway import state, about to be freed -- so
+ * the adopt cannot fail for want of memory after it has already replaced the
+ * live map, and the caller's dsd_state_trunk_lcn_free(src) then has nothing left
+ * to release. A refused adopt returns before the move, leaving the live store
+ * untouched and the imported one for that same call to free exactly once.
  */
 static int
-chan_map_adopt(dsd_state* dst, const dsd_state* src) {
+chan_map_adopt(dsd_state* dst, dsd_state* src) {
     // src is an arbitrary dsd_state*, so the sign and the tail are checked here rather
     // than inherited from the importer: a negative count would become a huge size_t.
     const int src_count = src->lcn_freq_count > 0 ? src->lcn_freq_count : 0;
@@ -353,8 +362,17 @@ chan_map_adopt(dsd_state* dst, const dsd_state* src) {
         DSD_MEMCPY(dst->trunk_lcn_freq_ext, src->trunk_lcn_freq_ext,
                    (size_t)(src_count - DSD_TRUNK_LCN_EMBEDDED) * sizeof(dst->trunk_lcn_freq_ext[0]));
     }
+    dsd_state_trunk_lcn_name_free(dst);
+    dst->trunk_lcn_name = src->trunk_lcn_name;
+    dst->trunk_lcn_name_capacity = src->trunk_lcn_name_capacity;
+    src->trunk_lcn_name = NULL;
+    src->trunk_lcn_name_capacity = 0;
     dst->lcn_freq_count = src_count;
     dst->lcn_freq_roll = 0;
+    // Session avoids and the scan hold index rows that no longer exist.
+    dsd_state_trunk_lcn_avoid_free(dst);
+    dst->lcn_avoid_count = 0;
+    dst->lcn_scan_hold = 0;
     DSD_MEMSET(dst->dmr_lcn_trust, 0, sizeof dst->dmr_lcn_trust);
     dst->trunk_chan_map_seq++;
     return 0;
@@ -413,9 +431,12 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->trunk_chan_map_used, 0, sizeof state->trunk_chan_map_used);
     state->trunk_chan_map_used_count = 0;
     DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof state->trunk_lcn_freq);
+    // Releases the per-row name and avoid stores along with the scan-list heap tail.
     dsd_state_trunk_lcn_free(state);
     state->lcn_freq_count = 0;
     state->lcn_freq_roll = 0;
+    state->lcn_avoid_count = 0;
+    state->lcn_scan_hold = 0;
     // Provenance goes with the map, exactly as in chan_map_adopt(): a surviving
     // "learned on the control channel" byte would authorize an off-CC tune to a
     // frequency no longer in the map.

@@ -105,6 +105,22 @@ assert_render_fields(const dsd_state* snap) {
     assert(snap->p25_site_network_active_valid == 1U);
     assert(snap->p25_site_network_active == 1U);
     assert(snap->rkey_array[7] == 0ULL);
+    /* The scan-list name store is a second heap allocation beside the LCN tail, so it
+       needs the same explicit deep copy; a byte-range copy would publish nothing. */
+    assert(strcmp(dsd_state_trunk_lcn_name_get(snap, 0U), "Dispatch") == 0);
+    assert(strcmp(dsd_state_trunk_lcn_name_get(snap, 1U), "Fireground") == 0);
+    assert(strcmp(snap->trunk_scan_active_id, "county-p25") == 0);
+    assert(snap->trunk_scan_active_ordinal == 2U);
+    assert(snap->trunk_scan_target_count == 5U);
+    /* The scan-list avoid store is a third heap allocation with the same deep-copy need,
+       and the hold/avoid scalars ride the publication range beside the target id. */
+    assert(dsd_state_trunk_lcn_avoid_get(snap, 1U) == 1);
+    assert(dsd_state_trunk_lcn_avoid_get(snap, 0U) == 0);
+    assert(snap->lcn_scan_hold == 1U);
+    assert(snap->lcn_avoid_count == 1U);
+    assert(snap->trunk_scan_hold == 1U);
+    assert(snap->trunk_scan_active_avoided == 1U);
+    assert(snap->trunk_scan_avoided_count == 3U);
 }
 
 static void
@@ -183,6 +199,17 @@ main(void) {
     state->p25_site_network_active_valid = 1U;
     state->p25_site_network_active = 1U;
     state->rkey_array[7] = 0x12345678ULL;
+    state->lcn_freq_count = 2;
+    assert(dsd_state_trunk_lcn_name_set(state, 0U, "Dispatch") == 0);
+    assert(dsd_state_trunk_lcn_name_set(state, 1U, "Fireground") == 0);
+    DSD_SNPRINTF(state->trunk_scan_active_id, sizeof state->trunk_scan_active_id, "%s", "county-p25");
+    state->trunk_scan_active_ordinal = 2U;
+    state->trunk_scan_target_count = 5U;
+    assert(dsd_state_trunk_lcn_avoid_set(state, 1U, 1) == 0);
+    state->lcn_scan_hold = 1U;
+    state->trunk_scan_hold = 1U;
+    state->trunk_scan_active_avoided = 1U;
+    state->trunk_scan_avoided_count = 3U;
 
     assert(dsd_trunk_cc_candidates_add(state, 851006250L, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);
     assert(dsd_trunk_cc_candidates_add(state, 852006250L, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);
@@ -215,10 +242,18 @@ main(void) {
     cc->count = 1;
     cc->candidates[0] = 999999999L;
     cc->added = 99U;
+    assert(dsd_state_trunk_lcn_name_set(state, 0U, "MUTATED") == 0);
+    assert(dsd_state_trunk_lcn_avoid_set(state, 0U, 1) == 0);
 
     const dsd_state* snap = dsd_app_get_latest_snapshot();
     assert_slot_tail(snap, 123U, 456U);
     assert(strcmp(snap->event_history_s[0].Event_History_Items[1].src_str, "RADIO-123") == 0);
+    /* A shared pointer would let the next reserve() on either side realloc the other's
+       buffer, and would republish the live mutation above as if it had been snapshotted. */
+    assert(snap->trunk_lcn_name != NULL);
+    assert(snap->trunk_lcn_name != state->trunk_lcn_name);
+    assert(snap->trunk_lcn_avoid != NULL);
+    assert(snap->trunk_lcn_avoid != state->trunk_lcn_avoid);
     assert_render_fields(snap);
     assert_cc_candidates(snap);
     dsd_call_snapshot call;
@@ -301,6 +336,16 @@ main(void) {
     assert(lookup.match == DSD_TG_POLICY_MATCH_EXACT);
     assert(strcmp(lookup.entry.name, "POLICY-ONLY") == 0);
 
+    /* A cleared channel map must not leave the previous map's names in the snapshot. */
+    dsd_state_trunk_lcn_name_free(state);
+    dsd_state_trunk_lcn_avoid_free(state);
+    dsd_app_telemetry_publish_snapshot(state);
+    snap = dsd_app_get_latest_snapshot();
+    assert(strcmp(dsd_state_trunk_lcn_name_get(snap, 0U), "") == 0);
+    assert(strcmp(dsd_state_trunk_lcn_name_get(snap, 1U), "") == 0);
+    assert(snap->trunk_lcn_avoid == NULL);
+    assert(dsd_state_trunk_lcn_avoid_get(snap, 1U) == 0);
+
     /* This publisher also feeds the notification record the Android foreground service
        reads with no Qt in the picture. The fan-out sits at the tail of
        dsd_app_telemetry_publish_snapshot() and had no coverage anywhere: deleting the call
@@ -317,6 +362,7 @@ main(void) {
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");
     dsd_state_ext_free_all(state);
+    dsd_state_trunk_lcn_free(state);
     free(replacement);
     free(history);
     free(state);

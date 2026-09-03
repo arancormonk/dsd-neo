@@ -37,6 +37,21 @@ main(void) {
     assert(n == 4);
     assert(strcmp(tiny, "02:0") == 0);
 
+    /* A row heard while scanning names its channel after the timestamp, so compact view still
+     * drops exactly the date and the sort key still parses. Putting the label first would break
+     * both, silently: the row would keep its date in Short mode and sort by its fallback time. */
+    const char* labelled = "2026-01-21 02:05:13 [Fire Dispatch] DMR TGT: 00000014; SRC: 00300010; CC: 01; Group;";
+    n = dsd_app_frontend_history_compact_event_text(out, sizeof out, labelled, 1);
+    assert(n == strlen(out));
+    assert(strcmp(out, "02:05:13 [Fire Dispatch] DMR TGT: 00000014; SRC: 00300010; CC: 01; Group;") == 0);
+
+    n = dsd_app_frontend_history_compact_event_text(out, sizeof out, labelled, 2);
+    assert(n == strlen(out));
+    assert(strcmp(out, labelled) == 0);
+
+    assert(dsd_app_frontend_history_event_sort_time(labelled, (time_t)7)
+           == dsd_app_frontend_history_event_sort_time("2026-01-21 02:05:13 DMR TGT: 00000014;", (time_t)7));
+
     time_t newer = dsd_app_frontend_history_event_sort_time("2026-06-07 19:20:15 P25p2 TGT: 00050002;", (time_t)1);
     time_t older =
         dsd_app_frontend_history_event_sort_time("2026-06-07 19:20:07 P25p1 TGT: 00021001;", (time_t)2000000000);
