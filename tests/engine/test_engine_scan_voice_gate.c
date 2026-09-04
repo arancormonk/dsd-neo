@@ -133,6 +133,7 @@ probe_voice(const gate_fixture* fix) {
     dsd_scan_voice_probe_result result;
     const int rc = dsd_scan_voice_probe(fix ? fix->opts : NULL, fix ? fix->state : NULL, &result);
     CHECK("probe succeeds", rc >= 0);
+    CHECK("probe status matches retained media", rc == (result.retained_media_m >= 0.0 ? 1 : 0));
     return result;
 }
 
@@ -180,6 +181,7 @@ test_gate_off_never_steps(void) {
     dsd_scan_voice_gate_note_retune(fix.state, 100.0);
     dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.0);
     CHECK("phase off", fix.state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_OFF);
+    CHECK("gate off abstains", dsd_scan_voice_gate_owns_step(fix.opts, fix.state) == 0);
     CHECK("no step", dsd_scan_voice_gate_should_step(fix.opts, fix.state, 200.0) == 0);
     fixture_free(&fix);
 }
@@ -195,6 +197,7 @@ test_idle_only_steps_at_qualify(void) {
     dsd_scan_voice_gate_note_retune(fix.state, 100.0);
     dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.0);
     CHECK("qualify phase", fix.state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY);
+    CHECK("synced gate owns step", dsd_scan_voice_gate_owns_step(fix.opts, fix.state) != 0);
     CHECK("no early step", dsd_scan_voice_gate_should_step(fix.opts, fix.state, 100.9) == 0);
     CHECK("steps at qualify", dsd_scan_voice_gate_should_step(fix.opts, fix.state, 101.0) != 0);
     const dsd_scan_voice_probe_result media = probe_voice(&fix);
@@ -213,6 +216,7 @@ test_never_synced_falls_back(void) {
     }
     dsd_scan_voice_gate_note_retune(fix.state, 100.0);
     dsd_scan_voice_gate_tick(fix.opts, fix.state, 0, 100.0);
+    CHECK("unsynced gate abstains", dsd_scan_voice_gate_owns_step(fix.opts, fix.state) == 0);
     CHECK("no step without sync", dsd_scan_voice_gate_should_step(fix.opts, fix.state, 500.0) == 0);
     fixture_free(&fix);
 }
@@ -260,6 +264,7 @@ test_terminator_before_first_tick_holds(void) {
     dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.625);
     CHECK("ended media publishes tail", fix.state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_TAIL);
     CHECK("ended media arms last frame", fabs(fix.state->scan_voice_gate_voice_m - 100.375) < 1e-6);
+    CHECK("retained media owns step", dsd_scan_voice_gate_owns_step(fix.opts, fix.state) != 0);
     CHECK("custom hold remains before boundary", dsd_scan_voice_gate_should_step(fix.opts, fix.state, 105.374) == 0);
     CHECK("custom hold expires at boundary", dsd_scan_voice_gate_should_step(fix.opts, fix.state, 105.375) != 0);
     fixture_free(&fix);
@@ -282,6 +287,49 @@ test_span_debounce(void) {
     CHECK("long active span counts", media.active_media_m > 0.0);
     CHECK("long retained span counts", media.retained_media_m > 0.0);
     fixture_free(&fix);
+}
+
+static void
+test_reacquired_segment_reearns_span(void) {
+    static const dsd_call_end_reason reasons[] = {
+        DSD_CALL_END_SYNC_LOSS,
+        DSD_CALL_END_UNVERIFIED_TERMINATOR,
+    };
+    for (size_t i = 0U; i < sizeof(reasons) / sizeof(reasons[0]); i++) {
+        gate_fixture fix;
+        if (fixture_init(&fix) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+            g_failures++;
+            return;
+        }
+        dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+        open_voice_epoch(&fix, 100.1, 0.2, DSD_CALL_KIND_GROUP_VOICE, 11, 22, DSD_CALL_CRYPTO_CLEAR);
+        (void)dsd_call_state_end_ex(fix.state, 0U, 100.35, reasons[i]);
+
+        /* This is the vocoder's production reopen shape: identity-less BEGIN followed by one
+         * media mark. It must not borrow the prior segment's span and refresh a dead channel. */
+        dsd_call_observation observation;
+        DSD_MEMSET(&observation, 0, sizeof(observation));
+        observation.protocol = 1;
+        observation.slot = 0U;
+        observation.kind = DSD_CALL_KIND_VOICE;
+        observation.observed_m = 100.45;
+        CHECK("recoverable end reopens", dsd_call_state_observe(fix.state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        CHECK("first reacquired media marks", dsd_call_state_update_media(fix.state, 0U, 1, 100.45) == 1);
+        dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.45);
+        dsd_scan_voice_probe_result media = probe_voice(&fix);
+        CHECK("single reacquired frame is not voice", media.active_media_m < 0.0 && media.retained_media_m < 0.0);
+        CHECK("single reacquired frame does not arm hold", fix.state->scan_voice_gate_voice_m < 0.0);
+        CHECK("single reacquired frame stays qualify",
+              fix.state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY);
+
+        CHECK("reacquired media continues", dsd_call_state_update_media(fix.state, 0U, 1, 100.56) == 1);
+        dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.56);
+        media = probe_voice(&fix);
+        CHECK("reacquired span counts", fabs(media.active_media_m - 100.56) < 1e-6);
+        CHECK("reacquired span arms hold", fabs(fix.state->scan_voice_gate_voice_m - 100.56) < 1e-6);
+        fixture_free(&fix);
+    }
 }
 
 static void
@@ -502,6 +550,7 @@ main(void) {
     test_voice_holds_through_tail();
     test_terminator_before_first_tick_holds();
     test_span_debounce();
+    test_reacquired_segment_reearns_span();
     test_non_media_updates_do_not_extend_hold();
     test_probe_tracks_active_and_retained_slots_independently();
     test_policy_gating();

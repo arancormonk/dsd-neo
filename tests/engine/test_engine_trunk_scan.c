@@ -3356,10 +3356,15 @@ test_conventional_voice_gate_terminator_before_first_tick(void) {
         DSD_FPRINTF(stderr, "terminator-first target did not rotate after hold plus dwell\n");
         test_rc = 1;
     }
+    dsd_call_snapshot incoming_call;
+    if (dsd_call_state_get(&state, 0U, &incoming_call) != 0) {
+        DSD_FPRINTF(stderr, "retained media crossed into the next target's call snapshot\n");
+        test_rc = 1;
+    }
     trunk_scan_test_set_now(5.51);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (state.scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY) {
-        DSD_FPRINTF(stderr, "retained media crossed into the next target context\n");
+        DSD_FPRINTF(stderr, "incoming conventional target did not enter QUALIFY\n");
         test_rc = 1;
     }
 

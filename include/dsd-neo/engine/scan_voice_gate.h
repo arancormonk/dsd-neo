@@ -34,6 +34,8 @@ typedef struct {
 /**
  * Probe both call slots for policy-allowed decoded voice media.
  *
+ * The returned timestamps are raw call-state anchors and may predate the current
+ * scanner visit or hold window. Callers must apply their own freshness bound.
  * Both result fields are initialized to -1. Returns -1 for invalid arguments,
  * 0 when no qualifying media exists, and 1 when retained media exists.
  */
@@ -44,6 +46,9 @@ void dsd_scan_voice_gate_note_retune(dsd_state* state, double now_m);
 
 /** Per-frame tick while parked on a -Y row; a no-op unless scanner_mode is on. */
 void dsd_scan_voice_gate_tick(const dsd_opts* opts, dsd_state* state, int synced, double now_m);
+
+/** Non-zero when the gate has a visit anchor and owns the scanner's step timing. */
+int dsd_scan_voice_gate_owns_step(const dsd_opts* opts, const dsd_state* state);
 
 /** Non-zero when the gate says the -Y visit is over and the scan should step. */
 int dsd_scan_voice_gate_should_step(const dsd_opts* opts, const dsd_state* state, double now_m);

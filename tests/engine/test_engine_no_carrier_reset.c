@@ -872,6 +872,7 @@ main(void) {
     rc |= expect_true("voice-gate-voice-no-retune", g_rtl_tune_calls == 0);
     rc |= expect_true("voice-gate-voice-keeps-roll", state->lcn_freq_roll == 1);
     rc |= expect_true("voice-gate-voice-keeps-deadline", state->last_cc_sync_time == voice_hold_deadline);
+    opts->scan_voice_hold_ms = 2000;
 
     // Gate off: the retained gate anchor above is ignored and the hangtime rule decides alone.
     opts->scan_voice_only = 0;

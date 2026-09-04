@@ -45,9 +45,12 @@ scan_voice_snapshot_is_voice(const dsd_call_snapshot* call) {
     if (call->media_started_m <= 0.0 || call->media_updated_m <= 0.0) {
         return 0;
     }
-    double span_started_m = call->started_m;
-    if (span_started_m <= 0.0 || call->media_started_m < span_started_m) {
-        span_started_m = call->media_started_m;
+    double span_started_m = call->media_started_m;
+    /* A recoverable reopen retains the logical transmission's media clocks but
+     * starts a new segment. Qualify from the later boundary so one post-gap
+     * vocoder frame cannot borrow the pre-gap media span. */
+    if (call->started_m > span_started_m) {
+        span_started_m = call->started_m;
     }
     if ((call->media_updated_m - span_started_m) < DSD_SCAN_VOICE_MIN_SPAN_S) {
         return 0;
@@ -135,9 +138,7 @@ scan_voice_gate_track_visit(dsd_state* state, double now_m) {
      * legacy hangtime rule. */
     const uint8_t hold_now = state->lcn_scan_hold ? 1U : 0U;
     if (state->scan_voice_gate_hold_seen && !hold_now) {
-        state->scan_voice_gate_arrive_m = now_m;
-        state->scan_voice_gate_sync_m = -1.0;
-        state->scan_voice_gate_voice_m = -1.0;
+        dsd_scan_voice_gate_note_retune(state, now_m);
     }
     state->scan_voice_gate_hold_seen = hold_now;
 }
@@ -177,9 +178,8 @@ dsd_scan_voice_gate_tick(const dsd_opts* opts, dsd_state* state, int synced, dou
         state->scan_voice_gate_sync_m = now_m;
     }
     dsd_scan_voice_probe_result media;
-    (void)dsd_scan_voice_probe(opts, state, &media);
-    const int retained_in_visit =
-        media.retained_media_m >= 0.0 && media.retained_media_m >= state->scan_voice_gate_arrive_m;
+    const int probe_rc = dsd_scan_voice_probe(opts, state, &media);
+    const int retained_in_visit = probe_rc > 0 && media.retained_media_m >= state->scan_voice_gate_arrive_m;
     const int active_in_visit = media.active_media_m >= 0.0 && media.active_media_m >= state->scan_voice_gate_arrive_m;
     if (retained_in_visit && media.retained_media_m > state->scan_voice_gate_voice_m) {
         state->scan_voice_gate_voice_m = media.retained_media_m;
@@ -188,8 +188,14 @@ dsd_scan_voice_gate_tick(const dsd_opts* opts, dsd_state* state, int synced, dou
 }
 
 int
+dsd_scan_voice_gate_owns_step(const dsd_opts* opts, const dsd_state* state) {
+    return scan_voice_gate_enabled(opts) && state
+           && (state->scan_voice_gate_voice_m >= 0.0 || state->scan_voice_gate_sync_m >= 0.0);
+}
+
+int
 dsd_scan_voice_gate_should_step(const dsd_opts* opts, const dsd_state* state, double now_m) {
-    if (!scan_voice_gate_enabled(opts) || !state) {
+    if (!dsd_scan_voice_gate_owns_step(opts, state)) {
         return 0;
     }
     if (state->lcn_scan_hold) {

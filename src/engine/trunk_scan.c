@@ -2413,7 +2413,7 @@ trunk_scan_retry_active_if_due(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
 }
 
 static int
-trunk_scan_active_is_held(const dsd_opts* opts, const dsd_trunk_scan_coord* coord) {
+trunk_scan_active_is_held(const dsd_opts* opts, const dsd_trunk_scan_coord* coord, double now_m) {
     const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     if (rt->tune_pending) {
         return 1;
@@ -2428,7 +2428,6 @@ trunk_scan_active_is_held(const dsd_opts* opts, const dsd_trunk_scan_coord* coor
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK) {
         return opts->trunk_is_tuned == 1;
     }
-    double now_m = trunk_scan_now_m();
     double hold_s = (double)rt->target.activity_hold_ms / 1000.0;
     return rt->last_allowed_activity_m > 0.0 && (now_m - rt->last_allowed_activity_m) < hold_s;
 }
@@ -2645,12 +2644,9 @@ trunk_scan_refresh_voice_media_hold(const dsd_opts* opts, dsd_state* state, dsd_
     }
     const double hold_s = (double)rt->target.activity_hold_ms / 1000.0;
     dsd_scan_voice_probe_result media;
-    (void)dsd_scan_voice_probe(opts, state, &media);
-    if (media.retained_media_m > rt->last_allowed_activity_m) {
+    const int probe_rc = dsd_scan_voice_probe(opts, state, &media);
+    if (probe_rc > 0 && media.retained_media_m > rt->last_allowed_activity_m) {
         rt->last_allowed_activity_m = media.retained_media_m;
-        if ((now_m - media.retained_media_m) < hold_s) {
-            rt->idle_since_m = -1.0;
-        }
     }
     if (media.active_media_m >= 0.0 && (now_m - media.active_media_m) < hold_s) {
         state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
@@ -2682,7 +2678,7 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
         trunk_scan_share_peer_idens(coord, state, rt);
     }
     trunk_scan_refresh_voice_media_hold(opts, state, rt, now_m);
-    if (trunk_scan_active_is_held(opts, coord)) {
+    if (trunk_scan_active_is_held(opts, coord, now_m)) {
         rt->idle_since_m = -1.0;
         return;
     }

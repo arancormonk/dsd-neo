@@ -6,11 +6,17 @@
 #include <dsd-neo/core/synctype_ids.h>
 
 #include <assert.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+static int
+double_near(double actual, double expected) {
+    return fabs(actual - expected) < 1e-9;
+}
 
 static dsd_call_observation
 group_call(uint8_t slot, uint32_t target, uint32_t source, double observed_m) {
@@ -129,7 +135,7 @@ test_retained_crypto_update(void) {
     // re-describe it for as long as the receiver stays on the frequency, and
     // moving updated_m past ended_m makes a finished call look freshly updated
     // to consumers that order by recency.
-    assert(snapshot.ended_m == 2.0);
+    assert(double_near(snapshot.ended_m, 2.0));
     assert(snapshot.updated_m <= snapshot.ended_m);
 
     // Re-applying the identical crypto must not churn the revision: pollers
@@ -162,8 +168,8 @@ test_media_timestamps(void) {
 
     dsd_call_snapshot snapshot;
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
-    assert(snapshot.media_started_m == 0.0);
-    assert(snapshot.media_updated_m == 0.0);
+    assert(double_near(snapshot.media_started_m, 0.0));
+    assert(double_near(snapshot.media_updated_m, 0.0));
     assert(dsd_call_state_update_media(state, 0U, 1, 1.1) == 1);
     assert(dsd_call_state_update_media(state, 0U, 0, 1.2) == 1);
     assert(dsd_call_state_update_media(state, 0U, 1, 1.3) == 1);
@@ -178,20 +184,20 @@ test_media_timestamps(void) {
     assert(dsd_call_state_end_ex(state, 0U, 1.6, DSD_CALL_END_TERMINATOR) == 1);
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
     assert(snapshot.media_active == 0U);
-    assert(snapshot.media_started_m == 1.1);
-    assert(snapshot.media_updated_m == 1.3);
+    assert(double_near(snapshot.media_started_m, 1.1));
+    assert(double_near(snapshot.media_updated_m, 1.3));
 
     dsd_call_state_snapshot saved;
     assert(dsd_call_state_copy_snapshot(state, &saved) == 1);
     observation.observed_m = 2.0;
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
-    assert(snapshot.media_started_m == 0.0);
-    assert(snapshot.media_updated_m == 0.0);
+    assert(double_near(snapshot.media_started_m, 0.0));
+    assert(double_near(snapshot.media_updated_m, 0.0));
     assert(dsd_call_state_restore_snapshot(state, &saved) == 1);
     assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
-    assert(snapshot.media_started_m == 1.1);
-    assert(snapshot.media_updated_m == 1.3);
+    assert(double_near(snapshot.media_started_m, 1.1));
+    assert(double_near(snapshot.media_updated_m, 1.3));
 
     dsd_state_ext_free_all(state);
     free(state);
@@ -222,14 +228,14 @@ test_reacquisition_carries_media_timestamps(void) {
         dsd_call_snapshot snapshot;
         assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
         assert(snapshot.phase == DSD_CALL_PHASE_ACTIVE);
-        assert(snapshot.started_m == 10.3);
-        assert(snapshot.media_started_m == 10.05);
-        assert(snapshot.media_updated_m == 10.15);
+        assert(double_near(snapshot.started_m, 10.3));
+        assert(double_near(snapshot.media_started_m, 10.05));
+        assert(double_near(snapshot.media_updated_m, 10.15));
         assert(snapshot.media_active == 0U);
         assert(dsd_call_state_update_media(state, 0U, 1, 10.35) == 1);
         assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
-        assert(snapshot.media_started_m == 10.05);
-        assert(snapshot.media_updated_m == 10.35);
+        assert(double_near(snapshot.media_started_m, 10.05));
+        assert(double_near(snapshot.media_updated_m, 10.35));
 
         dsd_state_ext_free_all(state);
         free(state);
