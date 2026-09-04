@@ -105,7 +105,10 @@ static const NcMenuItem RTL_DSP_ITEMS[] = {
 };
 
 static const NcMenuItem RTL_MENU_ITEMS[] = {
-    {.id = "rtl.freq", .label_fn = lbl_rtl_freq, .help = "Set the center frequency in Hz.", .on_select = rtl_set_freq},
+    {.id = "rtl.freq",
+     .label_fn = lbl_rtl_freq,
+     .help = "Set frequency in Hz; selects a new CC during P25 trunking. Disabled during trunk scan.",
+     .on_select = rtl_set_freq},
     {.id = "rtl.gain",
      .label_fn = lbl_rtl_gain,
      .help = "Tuner gain in driver units; 0 hands gain to the AGC.",

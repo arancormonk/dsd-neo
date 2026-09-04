@@ -9,11 +9,15 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Accepted manual retunes end both epochs without another tune or resetting session counters. */
+void p25_sm_clear_manual_selection_calls(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state);
 
 void p25_sm_note_encrypted_call_typed(dsd_opts* opts, dsd_state* state, int target, int is_group, int algid, int keyid);
 

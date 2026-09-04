@@ -19,6 +19,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -337,6 +338,17 @@ void p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25
  * @param state Decoder state.
  */
 void p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief Select a new control channel during single-system P25 trunk following.
+ *
+ * Owns the watchdog guard; call on the decoder thread without holding it.
+ * FAILED/DEFERRED leave the old channel and calls intact. OK/PENDING end the
+ * old calls, forget site acquisition data, and retain the new CC through
+ * asynchronous completion/recovery. Network band plans and user settings
+ * survive. Requires an initialized context and a positive frequency in Hz.
+ */
+dsd_trunk_tune_result p25_sm_select_control_channel(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, long hz);
 
 /**
  * @brief Start CC acquisition after a completed external retune.

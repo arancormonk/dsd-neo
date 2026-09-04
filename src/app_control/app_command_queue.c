@@ -37,6 +37,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -1014,11 +1015,56 @@ apply_cmd_io_and_import_rtl_a(dsd_opts* opts, dsd_state* state, const struct dsd
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
+static int cc_has_active_p25_context(const dsd_opts* opts, const dsd_state* state);
+
+static int
+manual_frequency_selects_p25_cc(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->trunk_enable != 1) {
+        return 0;
+    }
+    if (cc_has_active_p25_context(opts, state)) {
+        return 1;
+    }
+    if (state->synctype != DSD_SYNC_NONE || state->lastsynctype != DSD_SYNC_NONE) {
+        return 0;
+    }
+    const dsdneoUserDecodeMode mode = dsd_infer_decode_mode_preset_exact(opts);
+    return mode == DSDCFG_MODE_P25P1 || mode == DSDCFG_MODE_P25P2;
+}
+
+static int
+ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    const dsd_trunk_tune_result result = p25_sm_select_control_channel(p25_sm_get_ctx(), opts, state, (long)hz);
+    if (dsd_trunk_tune_result_is_ok(result)) {
+        ui_set_toast(state, 3, "%s: P25 control channel -> %u Hz",
+                     result == DSD_TRUNK_TUNE_RESULT_PENDING ? "Accepted (pending)" : "Applied", hz);
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    ui_set_toast(state, 4, "%s: P25 control channel -> %u Hz",
+                 result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "Deferred; retry" : "Failed", hz);
+    return UI_CMD_APPLY_FAILED;
+}
+
 static int
 ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     uint32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_u32_payload(c, &v)) {
+        if (opts->trunk_scan_enabled) {
+            ui_set_toast(state, 3, "Trunk scan active: frequency control disabled");
+            return UI_CMD_APPLY_FAILED;
+        }
+        if (v == 0
+#if LONG_MAX < UINT32_MAX
+            || v > (uint32_t)LONG_MAX
+#endif
+        ) {
+            ui_set_toast(state, 3, "Invalid frequency");
+            return UI_CMD_APPLY_INVALID_PAYLOAD;
+        }
+        if (manual_frequency_selects_p25_cc(opts, state)) {
+            return ui_cmd_handle_p25_cc_selection(opts, state, v);
+        }
         int rc = svc_rtl_set_freq(opts, state, v);
         result = ui_cmd_apply_status_from_tune_rc(rc);
         if (rc == 0) {
@@ -1042,8 +1088,8 @@ static void reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trun
  * Live retune from a spectrum tap.
  *
  * Kept separate from ui_cmd_handle_rtl_set_freq() on purpose. That one is the
- * settings-menu tune and documents a no-bookkeeping contract; here the tune is
- * a navigation gesture, so it (a) evaluates the tuner-ownership gate at drain
+ * settings-menu tune, which selects a CC during P25 trunk following; here the
+ * tune is a navigation gesture, so it (a) evaluates the tuner-ownership gate at drain
  * time on the authoritative live opts rather than trusting the frontend's
  * affordance, and (b) drops the stale auto-modulation votes and per-slot call
  * state that would otherwise slow or corrupt re-acquisition in decode mode

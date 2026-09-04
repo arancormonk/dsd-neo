@@ -4637,7 +4637,7 @@ p25_release_return_to_cc_accepted(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
 }
 
 static void
-p25_release_clear_context(p25_sm_ctx_t* ctx) {
+p25_release_clear_context(p25_sm_ctx_t* ctx, int count_return) {
     p25_grant_clear_slot_state(ctx);
     p25_sm_clear_followed_history(ctx);
     ctx->vc_freq_hz = 0;
@@ -4651,12 +4651,14 @@ p25_release_clear_context(p25_sm_ctx_t* ctx) {
     ctx->t_voice_m = 0.0;
     ctx->vc_activity_seen = 0;
     p25_sm_reset_vc_reacquire_tracking(ctx);
-    ctx->release_count++;
-    ctx->cc_return_count++;
+    if (count_return) {
+        ctx->release_count++;
+        ctx->cc_return_count++;
+    }
 }
 
 static void
-p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
+p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state, int count_return) {
     if (state) {
         (void)dsd_tg_policy_clear_active_call(state, -1);
         state->p25_p2_audio_allowed[0] = 0;
@@ -4680,15 +4682,41 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
         state->dmr_soR = 0;
         p25_crypto_reset_slot(state, 0);
         p25_crypto_reset_slot(state, 1);
-        state->p25_sm_release_count++;
         // Mirror of ctx->cc_return_count for readers without the ctx (UI, NULL-ctx
         // diag lines); p25_release_clear_context() bumps the ctx side on the same
         // two release paths that call this helper.
-        state->p25_sm_cc_return_count++;
+        if (count_return) {
+            state->p25_sm_release_count++;
+            state->p25_sm_cc_return_count++;
+        }
     }
     if (opts) {
         opts->trunk_is_tuned = 0;
     }
+}
+
+void
+p25_sm_clear_manual_selection_calls(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+    const double ended_m = dsd_time_now_monotonic_s();
+    p25_call_end_slot(opts, state, 0, ended_m);
+    p25_call_end_slot(opts, state, 1, ended_m);
+    p25_release_clear_context(ctx, 0);
+    p25_release_clear_decoder_state(opts, state, 0);
+    ctx->vc_is_tdma = 0;
+    ctx->vc_cqpsk_retry_done = 0;
+    DSD_MEMSET(ctx->recent_call_ends, 0, sizeof(ctx->recent_call_ends));
+    state->p25_sm_force_release = 0;
+    state->trunk_sm_force_release = 0;
+    state->p25_sm_posthang_start = 0;
+    state->p25_sm_posthang_start_m = 0.0;
+    state->payload_mi = state->payload_miR = 0;
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+    state->p2_is_lcch = 0;
+    state->p25_vc_cqpsk_override = -1;
+    state->p25_p1_nid_evidence = 0;
+    state->p25_p1_nid_evidence_symbolcnt = 0;
+    (void)dsd_recent_activity_clear_all(state);
 }
 
 static void
@@ -4785,8 +4813,8 @@ p25_release_locked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const ch
     p25_call_end_slot(opts, state, 0, ended_m);
     p25_call_end_slot(opts, state, 1, ended_m);
 
-    p25_release_clear_context(ctx);
-    p25_release_clear_decoder_state(opts, state);
+    p25_release_clear_context(ctx, 1);
+    p25_release_clear_decoder_state(opts, state, 1);
     p25_sm_start_cc_acquisition_for_result(ctx, opts, state, tune_result, tune_request_id, tune_start_m, "release",
                                            P25_SM_CC_ACQUISITION_RETURN);
 
@@ -4822,7 +4850,7 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
         const double ended_m = dsd_time_now_monotonic_s();
         p25_call_end_slot(opts, state, 0, ended_m);
         p25_call_end_slot(opts, state, 1, ended_m);
-        p25_release_clear_context(ctx);
+        p25_release_clear_context(ctx, 1);
         const uint32_t release_count = ctx->release_count;
         const uint32_t cc_return_count = ctx->cc_return_count;
         // The reprobe backoff is session state, like the counters below: it
@@ -4832,7 +4860,7 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
         // next grant repeat.
         p25_sm_enc_reprobe_memo_t enc_reprobes[P25_SM_ENC_REPROBE_MEMO_MAX];
         DSD_MEMCPY(enc_reprobes, ctx->enc_reprobes, sizeof(enc_reprobes));
-        p25_release_clear_decoder_state(opts, state);
+        p25_release_clear_decoder_state(opts, state, 1);
         p25_sm_init_ctx(ctx, opts, state);
         DSD_MEMCPY(ctx->enc_reprobes, enc_reprobes, sizeof(ctx->enc_reprobes));
         ctx->tune_count = tune_count;

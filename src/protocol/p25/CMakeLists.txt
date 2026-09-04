@@ -13,6 +13,7 @@ target_sources(
         p25_lcw.c
         p25_trunk_sm.c
         p25_cc_candidates.c
+        p25_cc_selection.c
         p25_extended_function.c
         p25_mfid90_utils.c
         p25_response_reason.c

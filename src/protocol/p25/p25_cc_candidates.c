@@ -12,6 +12,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
@@ -24,6 +25,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_cc_selection.h"
 
 static int p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len);
 static void p25_cc_try_load_cache(const dsd_opts* opts, dsd_state* state);
@@ -77,6 +79,10 @@ p25_cc_build_cache_path(const dsd_state* state, char* out, size_t out_len) {
     }
     if (state->p2_wacn == 0 || state->p2_sysid == 0) {
         return 0; // require system identity
+    }
+    const p25_cc_selection* selection = dsd_state_ext_get_const(state, DSD_STATE_EXT_PROTO_P25_CC_SELECTION);
+    if (selection && selection->require_site_cache && (state->p2_rfssid == 0 || state->p2_siteid == 0)) {
+        return 0; // A manual selection must learn its site before loading any disk candidates.
     }
 
     char path[1024] = {0};

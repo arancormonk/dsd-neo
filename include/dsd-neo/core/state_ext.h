@@ -58,6 +58,7 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
     DSD_STATE_EXT_CORE_CALL_STATE = 4,
     DSD_STATE_EXT_PROTO_NXDN_TRUNK_DIAG = 24,
     DSD_STATE_EXT_PROTO_DMR_RC = 25,
+    DSD_STATE_EXT_PROTO_P25_CC_SELECTION = 26,
 } dsd_state_ext_id;
 
 typedef void (*dsd_state_ext_cleanup_fn)(void*);
