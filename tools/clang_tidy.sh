@@ -115,8 +115,12 @@ if command -v python3 > /dev/null 2>&1; then
   trap 'rm -rf "$TIDY_PDB_TEMP_DIR" 2>/dev/null || true' EXIT
   TIDY_PDB_DIR="$TIDY_PDB_TEMP_DIR"
 
-  mapfile -t FILES < <(
-    python3 - "$PDB_FILE" "$ROOT_DIR" "$TIDY_PDB_DIR" "$ALL_COMMANDS" "${REQUESTED_FILES[@]}" << 'PY'
+  # The rewritten database and the file list come from the same python run;
+  # a process substitution would hide its exit status behind mapfile's, and an
+  # empty list then reads as "nothing to analyze" and exits 0.
+  TIDY_TU_LIST="$TIDY_PDB_TEMP_DIR/translation-units.txt"
+  TU_LIST_RC=0
+  python3 - "$PDB_FILE" "$ROOT_DIR" "$TIDY_PDB_DIR" "$ALL_COMMANDS" "${REQUESTED_FILES[@]}" << 'PY' > "$TIDY_TU_LIST" || TU_LIST_RC=$?
 import json
 import pathlib
 import shlex
@@ -308,7 +312,11 @@ if out_dir:
 for path in selected_files:
     print(path)
 PY
-  )
+  if [[ $TU_LIST_RC -ne 0 ]]; then
+    echo "clang-tidy: failed to build the translation-unit list from $PDB_FILE (python exited ${TU_LIST_RC})." >&2
+    exit 1
+  fi
+  mapfile -t FILES < "$TIDY_TU_LIST"
 else
   if [[ ${#REQUESTED_FILES[@]} -gt 0 ]]; then
     echo "python3 not found; analyzing requested files without compilation database filtering." >&2
@@ -353,6 +361,7 @@ else
 fi
 
 EXPECT_SUMMARY=0
+FALLBACK_RC=0
 if command -v python3 > /dev/null 2>&1; then
   # One clang-tidy process per translation unit, JOBS at a time. A single
   # clang-tidy invocation works through its files one after another on one
@@ -397,30 +406,49 @@ unexplained = 0
 with open(log_file, "w", encoding="utf-8") as log:
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = [pool.submit(run_one, rel) for rel in order]
-        for future in concurrent.futures.as_completed(futures):
-            rel, output, rc = future.result()
-            analyzed += 1
-            log.write(f"===== clang-tidy: {rel} =====\n")
-            log.write(output)
-            if output and not output.endswith("\n"):
-                log.write("\n")
-            # A worker killed without saying why - the OOM killer at a few
-            # hundred MB per process, or a crash - would otherwise leave an
-            # empty section, which reads exactly like a clean translation unit.
-            if rc != 0 and "error:" not in output:
-                unexplained += 1
-                log.write(
-                    f"Error while processing {rel} (clang-tidy exited with status {rc} "
-                    "and no diagnostics; the translation unit was not analyzed).\n"
-                )
+        # Ctrl-C otherwise runs the whole queue out: leaving the executor's
+        # context waits for every already-submitted unit, which on a whole-tree
+        # run is minutes of work after the interrupt. Cancelling the pending
+        # futures leaves only the units already in flight, and re-raising skips
+        # the summary line below so the verdict sees an unfinished run.
+        try:
+            for future in concurrent.futures.as_completed(futures):
+                rel, output, rc = future.result()
+                analyzed += 1
+                log.write(f"===== clang-tidy: {rel} =====\n")
+                log.write(output)
+                if output and not output.endswith("\n"):
+                    log.write("\n")
+                # A worker killed without saying why - the OOM killer at a few
+                # hundred MB per process, or a crash - would otherwise leave an
+                # empty section, which reads exactly like a clean translation
+                # unit.
+                if rc != 0 and "error:" not in output:
+                    unexplained += 1
+                    log.write(
+                        f"Error while processing {rel} (clang-tidy exited with status {rc} "
+                        "and no diagnostics; the translation unit was not analyzed).\n"
+                    )
+                log.flush()
+                print(f"[{analyzed}/{len(order)}] {rel}", file=sys.stderr)
+        except KeyboardInterrupt:
+            for future in futures:
+                future.cancel()
+            log.write("clang-tidy: interrupted; the remaining translation units were not analyzed.\n")
             log.flush()
-            print(f"[{analyzed}/{len(order)}] {rel}", file=sys.stderr)
+            raise
     log.write(
         f"clang-tidy summary: analyzed={analyzed} of {len(order)} unexplained-failures={unexplained}\n"
     )
 PY
 else
-  clang-tidy -p "$TIDY_PDB_DIR" --config-file "$CONFIG_FILE" "${FILES[@]}" 2>&1 | tee "$LOG_FILE" > /dev/null || true
+  # No summary line to check here, so the one process's exit status is the only
+  # evidence that it finished: `|| true` alone let a killed or crashed run reach
+  # the greps below with a silent log and pass.
+  set +e
+  clang-tidy -p "$TIDY_PDB_DIR" --config-file "$CONFIG_FILE" "${FILES[@]}" 2>&1 | tee "$LOG_FILE" > /dev/null
+  FALLBACK_RC=${PIPESTATUS[0]}
+  set -e
 fi
 
 # Fail on error diagnostics (WarningsAsErrors) and on clang-tidy processing failures.
@@ -445,6 +473,11 @@ if [[ $EXPECT_SUMMARY -eq 1 ]]; then
     rg -n "^clang-tidy summary: " "$LOG_FILE" >&2 || echo "clang-tidy: the run did not finish (no summary line)." >&2
     exit 1
   fi
+elif [[ $FALLBACK_RC -ne 0 ]]; then
+  # The greps above already exited for real diagnostics, so a non-zero status
+  # here means the process died without saying why.
+  echo "clang-tidy exited with status ${FALLBACK_RC} and emitted no diagnostics; the run did not finish. See $LOG_FILE for details." >&2
+  exit 1
 fi
 
 echo "clang-tidy clean for error diagnostics. Full output in $LOG_FILE"
