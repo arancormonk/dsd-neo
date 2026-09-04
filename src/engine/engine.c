@@ -1494,6 +1494,7 @@ no_carrier_clear_stale_p25_return_hints_after_generic_activity(const dsd_opts* o
     state->p2_sysid = 0;
     state->p2_rfssid = 0;
     state->p2_siteid = 0;
+    state->p25_cc_is_tdma = 2; // The shared CC anchor no longer identifies a P25 session.
     state->p25_sys_is_tdma = 0;
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;

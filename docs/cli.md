@@ -535,6 +535,16 @@ Notes
     - `DSD_NEO_TG_PREEMPT_MIN_DWELL_MS=<ms>` — minimum active call dwell before displacement (default `750`)
     - `DSD_NEO_TG_PREEMPT_COOLDOWN_MS=<ms>` — cooldown between displacement attempts (default `1000`)
 
+During single-system P25 trunking, **Input > RTL-SDR > Frequency** selects a new control channel and keeps trunk
+following enabled. This also works in mixed `-ft` mode when P25 is active, including after sync loss on a learned
+P25 control channel. An accepted tune ends current calls and relearns the NAC and site, while preserving explicit
+identity/modulation overrides, same-network band plans (including `--p25-bandplan`), channel mappings, groups, and keys.
+Subsequent calls return to the newly selected channel.
+A failed or deferred request leaves the previous channel and calls intact; retry a deferred request. Pending tunes
+receive the configured CC acquisition grace after hardware completion. If completion fails, hunting retries the
+selected channel. Old site candidates are discarded; disk candidates require a freshly learned site and its own
+cache file. Direct frequency changes are disabled during `--trunk-scan`, whose target list controls tuning.
+
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
 - Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`.

@@ -198,7 +198,7 @@ int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);
 int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
 /** @brief Set RTL device index and mark stream for restart (applied immediately if active). */
 int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
-/** @brief Tune RTL center frequency (Hz), applying live when stream active. */
+/** @brief Tune receiver frequency (Hz); caller owns trunking and call bookkeeping. */
 int svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz);
 /** @brief Set RTL manual gain (0–49), clamping and restarting if needed. */
 int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);

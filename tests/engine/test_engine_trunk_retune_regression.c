@@ -1465,6 +1465,33 @@ main(void) {
     assert(g_rtl_symbol_rate_hz == 4800);
     assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
     rtl_stream_clear_pending_retune_profile();
+    /* Manual CC selection may interrupt P2 voice. CC type, including the
+     * unknown/4800 fallback, must win over the active voice slot and rate. */
+    for (int cc_type = -1; cc_type <= 1; cc_type++) {
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
+        opts->audio_in_type = AUDIO_IN_RTL;
+        opts->trunk_enable = 1;
+        opts->trunk_is_tuned = 1;
+        opts->frame_p25p1 = opts->frame_p25p2 = opts->frame_dmr = 1;
+        state->rtl_ctx = (RtlSdrContext*)state;
+        state->p25_cc_is_tdma = cc_type;
+        state->p25_p2_active_slot = 1;
+        state->synctype = state->lastsynctype = DSD_SYNC_P25P2_POS;
+        state->rf_mod = 1;
+        state->p25_p1_validated_rf_mod = -1;
+        g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+        g_rtl_symbol_rate_hz = 6000;
+        g_rtl_ted_sps = 8;
+        g_rtl_pending_active = 0;
+        const int sps = cc_type == 1 ? 8 : 10;
+        assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, sps, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+        assert(g_rtl_symbol_rate_hz == (cc_type == 1 ? 6000 : 4800));
+        assert(g_rtl_ted_sps == sps);
+        assert(g_rtl_channel_profile
+               == (cc_type == 1 ? RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK : RTL_STREAM_CHANNEL_PROFILE_P25_C4FM));
+        rtl_stream_clear_pending_retune_profile();
+    }
 #endif
 
     printf("ENGINE_TRUNK_RETUNE_REGRESSION: OK\n");

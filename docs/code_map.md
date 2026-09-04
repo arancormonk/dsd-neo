@@ -354,6 +354,13 @@ Notes:
 - Optional codec integrations are expressed via feature interface targets:
   - `dsd-neo_feature_codec2` → `USE_CODEC2` (used by M17 when available)
 
+P25 manual control-channel selection lives in `src/protocol/p25/p25_cc_selection.c`. The Frequency command routes
+active single-system P25 sessions here; the module holds the watchdog guard through the runtime CC tuning hook,
+call teardown, and acquisition restart. A learned CC type identifies quiet P25 sessions in mixed modes;
+`noCarrier()` clears that evidence after another trunking protocol takes over. Extension ID 26
+(`DSD_STATE_EXT_PROTO_P25_CC_SELECTION`) retains the site-specific cache requirement across no-carrier resets,
+while network band plans and user settings survive.
+
 Key public headers (selection):
 
 - DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`
