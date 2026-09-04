@@ -91,7 +91,7 @@ The one deliberate crossing is by provenance: when the parked target's WACN/SYS 
 snapshot holds a P25 IDEN entry learned on that same WACN/SYS, the coordinator copies it into an empty slot at
 trust 1 (`trunk_scan_share_peer_idens()`), and `dsd_engine_p25_bandplan_export()` in
 `src/engine/p25_bandplan_export.c` merges every target's tables into one band-plan CSV. The keyring is not snapshotted: each target instead carries a static
-`dsd_key_set` (`keys_hex_csv`/`keys_dec_csv` columns) that the switch installs through the scan key swap in
+`dsd_key_set` (key-file or direct-key columns) that the switch installs through the scan key swap in
 `<dsd-neo/core/key_set.h>`, restoring the globals on unkeyed targets and at shutdown without touching the key epoch.
 
 Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
@@ -128,8 +128,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   frontend words it as a target or a channel and never names both at once. Those names come from a channel-map CSV
   that opts in with a `name` header column and live in a heap store beside the scan list, reached through
   `dsd_state_trunk_lcn_name_get()`/`_set()`/`_reserve()`/`_free()` in `src/core/util/dsd_state_trunk_lcn.c` and
-  released by `dsd_state_trunk_lcn_free()`. Per-row key sets (`keys_hex_csv`/`keys_dec_csv` columns, `-Y` only) live
-  in a sibling store with the same shape (`dsd_state_trunk_lcn_keys_*`), swapped by `dsd_scan_keys_enter()`/
+  released by `dsd_state_trunk_lcn_free()`. Per-row key sets (key-file or direct-key columns, `-Y` only) live in a
+  sibling store with the same shape (`dsd_state_trunk_lcn_keys_*`), swapped by `dsd_scan_keys_enter()`/
   `dsd_scan_keys_leave()` in `src/core/util/key_set.c`, and are likewise never deep-copied into the UI snapshot.
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in

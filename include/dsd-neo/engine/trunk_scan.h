@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_ENGINE_TRUNK_SCAN_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_ENGINE_TRUNK_SCAN_H_
 
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stddef.h>
@@ -70,6 +71,10 @@ typedef struct {
      * Loaded into the target's key set at init; empty means the global keys. */
     char keys_hex_csv[1024];
     char keys_dec_csv[1024];
+    /* Parsed direct `-H`/`-b` equivalents. Kept as fixed metadata so raw key
+     * text never survives parsing or reaches a diagnostic. */
+    dsd_key_scalars single_key_scalars;
+    uint8_t single_keys_present;
     /* Per-target P25 band plan CSV (trunk targets only), resolved relative to the targets CSV at
      * parse time and loaded into the target's own band-plan store at init; empty means none. */
     char p25_bandplan_csv[1024];

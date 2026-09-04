@@ -754,14 +754,15 @@ test_parser_accepts_100_targets(void) {
     body[0] = '\0';
     for (int i = 0; i < 100; i++) {
         char row[128];
-        DSD_SNPRINTF(row, sizeof row, "id%d,dmr-conventional,%u,,,,\n", i, 461000000U + (unsigned)i);
+        DSD_SNPRINTF(row, sizeof row, "id%d,dmr-conventional,%u,,,,,%u\n", i, 461000000U + (unsigned)i, (unsigned)i);
         if (append_text(body, sizeof body, row) != 0) {
             cleanup_paths(dir, NULL, NULL);
             return 1;
         }
     }
     char target_path[DSD_TEST_PATH_MAX];
-    if (write_targets_file(dir, body, target_path, sizeof target_path) != 0) {
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,single_key_dec\n";
+    if (write_targets_file_with_header(dir, header, body, target_path, sizeof target_path) != 0) {
         cleanup_paths(dir, NULL, NULL);
         return 1;
     }
@@ -777,7 +778,9 @@ test_parser_accepts_100_targets(void) {
     int test_rc = 0;
     if (rc != 0 || list.count != 100 || list.targets == NULL || strcmp(list.targets[99].id, "id99") != 0
         || list.targets[99].frequency_hz != 461000099U || list.targets[99].dwell_ms != 3000
-        || list.targets[99].activity_hold_ms != 1200) {
+        || list.targets[99].activity_hold_ms != 1200 || list.targets[0].single_keys_present != 1U
+        || list.targets[0].single_key_scalars.K != 0ULL || list.targets[99].single_keys_present != 1U
+        || list.targets[99].single_key_scalars.K != 99ULL) {
         DSD_FPRINTF(stderr, "parser 100 targets rc=%d count=%zu err=%s\n", rc, list.count, err);
         test_rc = 1;
     }
@@ -5977,6 +5980,101 @@ test_parser_accepts_target_key_columns(void) {
 }
 
 static int
+test_parser_accepts_direct_target_key_columns(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] =
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,single_key_dec,single_key_hex\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "a,p25-trunk,851000000,,250,,primary,7,00112233445566778899AABBCCDDEEFF\n"
+                                       "b,dmr-trunk,452000000,,250,,plain,,\n"
+                                       "c,nxdn-conventional,461000000,,250,,zero,0,0000000000\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
+    char err[256] = {0};
+    const int load_rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
+    int test_rc = 0;
+    if (load_rc != 0 || list.count != 3U) {
+        DSD_FPRINTF(stderr, "direct target parser rc=%d count=%zu err=%s\n", load_rc, list.count, err);
+        test_rc = 1;
+    } else {
+        if (list.targets[0].single_keys_present != 1U || list.targets[0].single_key_scalars.K != 7ULL
+            || list.targets[0].single_key_scalars.K1 != 0x0011223344556677ULL
+            || list.targets[0].single_key_scalars.K2 != 0x8899AABBCCDDEEFFULL
+            || list.targets[0].single_key_scalars.aes_key[15] != 0xFFU) {
+            DSD_FPRINTF(stderr, "direct target parser lost combined key fields\n");
+            test_rc = 1;
+        }
+        if (list.targets[1].single_keys_present != 0U) {
+            DSD_FPRINTF(stderr, "blank direct target fields stored a key set\n");
+            test_rc = 1;
+        }
+        if (list.targets[2].single_keys_present != 1U || list.targets[2].single_key_scalars.K != 0ULL
+            || list.targets[2].single_key_scalars.K1 != 0ULL) {
+            DSD_FPRINTF(stderr, "explicit zero direct target key was not preserved\n");
+            test_rc = 1;
+        }
+    }
+
+    dsd_trunk_scan_target_list_reset(&list);
+
+    static const char duplicate_header[] =
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,single_key_dec,single_key_dec\n";
+    if (write_targets_file_with_header(dir, duplicate_header, "a,p25-trunk,851000000,,250,,dup,1,2\n", target_path,
+                                       sizeof target_path)
+            != 0
+        || dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err) == 0) {
+        DSD_FPRINTF(stderr, "duplicate direct target key header was accepted\n");
+        test_rc = 1;
+        dsd_trunk_scan_target_list_reset(&list);
+    }
+
+    static const char conflict_header[] =
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv,single_key_dec\n";
+    static const char conflict_value[] = "241";
+    if (write_targets_file_with_header(dir, conflict_header, "a,p25-trunk,851000000,,250,,mixed,private-keys.csv,241\n",
+                                       target_path, sizeof target_path)
+            != 0
+        || dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err) == 0) {
+        DSD_FPRINTF(stderr, "mixed direct/file target key sources were accepted\n");
+        test_rc = 1;
+        dsd_trunk_scan_target_list_reset(&list);
+    } else if (strstr(err, conflict_value) != NULL || strstr(err, "private-keys.csv") != NULL) {
+        DSD_FPRINTF(stderr, "mixed target key diagnostic exposed a supplied value\n");
+        test_rc = 1;
+    }
+
+    static const char invalid_header[] =
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,single_key_hex\n";
+    static const char invalid_value[] = "private-invalid-key";
+    if (write_targets_file_with_header(dir, invalid_header, "a,p25-trunk,851000000,,250,,invalid,private-invalid-key\n",
+                                       target_path, sizeof target_path)
+            != 0
+        || dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err) == 0) {
+        DSD_FPRINTF(stderr, "invalid direct target key was accepted\n");
+        test_rc = 1;
+        dsd_trunk_scan_target_list_reset(&list);
+    } else if (strstr(err, invalid_value) != NULL || strstr(err, "single_key_hex") == NULL) {
+        DSD_FPRINTF(stderr, "invalid direct target diagnostic was unsafe or imprecise: %s\n", err);
+        test_rc = 1;
+    }
+
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
 test_parser_rejects_duplicate_target_key_columns(void) {
     char dir[DSD_TEST_PATH_MAX];
     if (make_temp_dir(dir, sizeof dir) != 0) {
@@ -6086,6 +6184,98 @@ test_target_keys_install_and_restore_across_switches(void) {
 
     trunk_scan_test_clear_now();
     (void)remove(hex_path);
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_direct_target_keys_install_and_restore_across_switches(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] =
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,single_key_dec,single_key_hex\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "a,dmr-conventional,461000000,,250,,first,7,00112233445566778899AABBCCDDEEFF\n"
+                                       "b,dmr-conventional,461000001,,250,,global,,\n"
+                                       "c,dmr-conventional,461000002,,250,,second,9,0123456789\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.dmr_mute_encL = 1;
+    opts.dmr_mute_encR = 1;
+    state.K = 0xBEEFULL;
+    state.K1 = 0x1111111111111111ULL;
+    state.H = state.K1;
+    state.aes_key[0] = 0xCCU;
+    state.rkey_array[3] = 111ULL;
+    state.rkey_array_loaded[3] = 1U;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    const int init_rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (init_rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0U || state.K != 7ULL
+        || state.K1 != 0x0011223344556677ULL || state.K2 != 0x8899AABBCCDDEEFFULL || state.keyloader != 0
+        || state.aes_key[15] != 0xFFU || state.rkey_array[3] != 0ULL) {
+        DSD_FPRINTF(stderr, "direct target init mismatch rc=%d active=%zu err=%s\n", init_rc,
+                    dsd_engine_trunk_scan_active_index(&state), err);
+        test_rc = 1;
+    }
+    if (opts.dmr_mute_encL != 1 || opts.dmr_mute_encR != 1) {
+        DSD_FPRINTF(stderr, "direct target changed encrypted-audio mute preferences\n");
+        test_rc = 1;
+    }
+    for (size_t i = 0U; i < 3U; i++) {
+        if (!trunk_scan_test_target_embedded_keys_cleared(&state, i)) {
+            DSD_FPRINTF(stderr, "runtime target %zu retained embedded direct key metadata\n", i);
+            test_rc = 1;
+        }
+    }
+    const uint64_t epoch0 = state.enc_lockout_key_epoch;
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1U || state.K != 0xBEEFULL || state.K1 != 0x1111111111111111ULL
+        || state.aes_key[0] != 0xCCU || state.rkey_array[3] != 111ULL || state.enc_lockout_key_epoch != epoch0) {
+        DSD_FPRINTF(stderr, "unkeyed target did not restore direct-key baseline\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 2U || state.K != 9ULL || state.K1 != 0x0123456789ULL
+        || state.H != 0x0123456789ULL || state.aes_key[0] != 0U || state.aes_key_segments[0] != 0U
+        || state.enc_lockout_key_epoch != epoch0) {
+        DSD_FPRINTF(stderr, "second direct target did not install distinct scalar keys\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0U || state.K != 7ULL || state.K1 != 0x0011223344556677ULL
+        || state.enc_lockout_key_epoch != epoch0) {
+        DSD_FPRINTF(stderr, "first direct target did not reinstall\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (state.K != 0xBEEFULL || state.K1 != 0x1111111111111111ULL || state.aes_key[0] != 0xCCU
+        || state.rkey_array[3] != 111ULL || opts.dmr_mute_encL != 1 || opts.dmr_mute_encR != 1) {
+        DSD_FPRINTF(stderr, "direct target shutdown did not restore global key state\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -6665,6 +6855,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_quoted_chan_csv_with_comma);
     rc |= run_with_default_tune_hook(test_parser_accepts_optional_modulation_and_gain_columns);
     rc |= run_with_default_tune_hook(test_parser_accepts_target_key_columns);
+    rc |= run_with_default_tune_hook(test_parser_accepts_direct_target_key_columns);
     rc |= run_with_default_tune_hook(test_parser_rejects_duplicate_target_key_columns);
     rc |= run_with_default_tune_hook(test_parser_accepts_nxdn_targets);
     rc |= run_with_default_tune_hook(test_parser_rejects_invalid_inputs);
@@ -6675,6 +6866,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_coordinator_rotation_past_32_targets);
     rc |= run_with_default_tune_hook(test_coordinator_preserves_long_lcn_list_across_rotation);
     rc |= run_with_default_tune_hook(test_target_keys_install_and_restore_across_switches);
+    rc |= run_with_default_tune_hook(test_direct_target_keys_install_and_restore_across_switches);
     rc |= run_with_default_tune_hook(test_target_chan_csv_keys_are_discarded);
     rc |= run_with_default_tune_hook(test_target_keys_survive_failed_alternate_retune);
     rc |= run_with_default_tune_hook(test_coordinator_preserves_large_chan_map_across_rotation);

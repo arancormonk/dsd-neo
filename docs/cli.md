@@ -448,9 +448,10 @@ Notes
 - Conventional scan mode: `-Y` (not trunking; scans for sync on enabled decoders). For NXDN the hold is refreshed
   only by frames whose content passed a CRC, so an open squelch on an empty channel no longer parks the scan.
   A channel map with a `name` column (see `docs/csv-formats.md`) names the row being listened to in the Scan Mode
-  row, in Call Info, and on the event history rows recorded while it is tuned. A map with `keys_hex_csv`/`keys_dec_csv`
-  columns loads a per-row key set instead of the global keyring while that row is tuned; leaving `-Y` (scanner
-  toggle, trunk set, tuner release) hands the foreground keyring back to the global keys.
+  row, in Call Info, and on the event history rows recorded while it is tuned. A map can load a per-row key set from
+  `keys_hex_csv`/`keys_dec_csv`, or embed `-b`/`-H` equivalents in `single_key_dec`/`single_key_hex`; leaving `-Y`
+  (scanner toggle, trunk set, tuner release) hands the foreground keyring back to the global keys. A row may not mix
+  direct and file sources.
   While scanning, the terminal's Trunking menu and hotkeys hold the scan on the channel on air (`Y`), avoid it for the
   rest of the session (`b`), step to the next channel (`L`, skipping avoided rows) and clear all avoids; see
   `docs/ui-terminal.md`.
@@ -466,8 +467,9 @@ Notes
     are rejected in this mode. Targets that are sites of one P25 system (same WACN/SYS) share the band plan one of
     them learned over the air.
   - Optional per-target `modulation` and `rtl_gain` columns can override demod hints and RTL-family tuner gain for the
-    active target. Optional `keys_hex_csv`/`keys_dec_csv` columns load a per-target key set while the target is
-    parked; leaving the target restores the global keys.
+    active target. Optional `keys_hex_csv`/`keys_dec_csv` columns load a per-target key set, while
+    `single_key_dec`/`single_key_hex` embed `-b`/`-H` equivalents; a target cannot mix direct and file key sources.
+    Leaving the target restores the global keys.
   - Idle dwell: `--trunk-scan-dwell-ms <250..600000>` (default `3000`).
   - Conventional DMR/NXDN activity hold (both NXDN rates): `--trunk-scan-activity-hold-ms <250..600000>`
     (default `1200`).

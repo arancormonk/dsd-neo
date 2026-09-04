@@ -58,6 +58,8 @@ Column behavior:
 | `rtl_gain` | No | RTL-family tuner gain for this target. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. |
 | `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to the target CSV. Parking the target installs its set; leaving it restores the global keys. A row may fill both key columns; they load into one set. Empty uses the global keys. |
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to the target CSV. Empty uses the global keys. |
+| `single_key_dec` | No | Embedded `-b` Motorola Basic Privacy key number (`0..255`). Explicit `0` is an active override. It may be combined with `single_key_hex`, but not either key-file column. |
+| `single_key_hex` | No | Embedded `-H` key. It accepts an optional `0x`, ignores ASCII whitespace, and requires exactly 10, 32, or 64 hex digits. It may be combined with `single_key_dec`, but not either key-file column. |
 | `p25_bandplan_csv` | No | P25 band plan CSV for a `p25-trunk` target (format in [csv-formats.md](csv-formats.md)), resolved relative to the target CSV. Its rows are parked in the target's snapshot, so an exported multi-system plan can be named on every P25 row and each target keeps only the rows that carry its WACN/SYS (plus rows that carry none). |
 
 Targets that turn out to be sites of the same P25 system (same WACN/SYS) share what one of them learned over the
@@ -70,8 +72,8 @@ WACN/SYS into one file.
 A target's `chan_csv` may carry the optional `name` column described in [csv-formats.md](csv-formats.md), and it
 parses, but trunk scan discards the names. Each target's channel map is parked in a per-target snapshot that carries
 the frequencies positionally and no names, so a name kept from one target would sit beside the next target's list.
-Per-row `keys_hex_csv`/`keys_dec_csv` columns in a `chan_csv` are discarded the same way: keys arrive per
-trunk-scan target, not per channel-map row, and a kept set would install on the wrong target's hop.
+Per-row key-file and direct-key columns in a `chan_csv` are discarded the same way: keys arrive per trunk-scan
+target, not per channel-map row, and a kept set would install on the wrong target's hop.
 Under `--trunk-scan` the channel being heard is labelled by the target `id` instead.
 
 Target list limits and validation:
@@ -87,8 +89,8 @@ Target list limits and validation:
   values above `LONG_MAX`.
 - Duplicate `id` values are rejected.
 - Duplicate `(type, frequency_hz)` pairs are rejected.
-- A duplicated `keys_hex_csv` or `keys_dec_csv` header is rejected, and an unloadable key path fails the
-  whole import the way a bad `-K`/`-k` does.
+- A duplicated key header is rejected. An unloadable key path fails the whole import like a bad `-K`/`-k`; a malformed
+  direct key or a row mixing direct and file sources also fails, without repeating direct key material in the error.
 - `chan_csv` is only valid for `p25-trunk`, `dmr-trunk`, and `nxdn-trunk` targets; `p25_bandplan_csv` is refused
   on conventional targets, a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load
   fails the whole import. A global `--p25-bandplan`/`[trunking] p25_bandplan_csv` is rejected in this mode like
@@ -306,6 +308,16 @@ reference, keep the key file next to (or below) the target CSV.
 
 The key file could not be opened or parsed. Key files use the `-K` (hex) and `-k` (decimal) formats described
 in [csv-formats.md](csv-formats.md); check the header row and the delimiter.
+
+`row N has invalid single_key_dec value` (or `single_key_hex`)
+
+Use unsigned decimal `0..255` for `single_key_dec`, or 10, 32, or 64 hex digits for `single_key_hex`. Direct key
+values are intentionally omitted from error messages.
+
+`row N combines direct keys with keys_hex_csv/keys_dec_csv`
+
+Remove either the `single_key_dec`/`single_key_hex` values or the key-file paths from that row. Direct and file key
+sources cannot be mixed for one target.
 
 `N trunk scan target(s) have no enabled <NAME> decoder (first: '<id>'); use <flags> to decode them`
 

@@ -515,6 +515,8 @@ typedef struct {
     int rtl_gain_idx;
     int keys_hex_idx;
     int keys_dec_idx;
+    int single_key_hex_idx;
+    int single_key_dec_idx;
     int p25_bandplan_idx;
     unsigned int row;
     char* err;
@@ -643,9 +645,23 @@ scan_target_list_reserve(dsd_trunk_scan_target_list* list, size_t needed) {
     if (capacity > SIZE_MAX / sizeof(dsd_trunk_scan_target)) {
         return -1;
     }
-    dsd_trunk_scan_target* targets = (dsd_trunk_scan_target*)realloc(list->targets, capacity * sizeof *targets);
+    dsd_trunk_scan_target* targets = (dsd_trunk_scan_target*)calloc(capacity, sizeof *targets);
     if (!targets) {
         return -1;
+    }
+    /* Targets contain only fixed-size inline data. Move the populated structs,
+     * wipe the now-duplicate key metadata, and publish the new allocation last. */
+    dsd_trunk_scan_target* const old_targets = list->targets;
+    const size_t old_capacity = list->capacity;
+    if (old_targets != NULL && list->count > 0U) {
+        DSD_MEMCPY(targets, old_targets, list->count * sizeof(*targets));
+    }
+    if (old_targets != NULL) {
+        const size_t wipe_count = list->count < old_capacity ? list->count : old_capacity;
+        for (size_t i = 0U; i < wipe_count; i++) {
+            DSD_SECURE_ZERO(&old_targets[i].single_key_scalars, sizeof(old_targets[i].single_key_scalars));
+        }
+        free(old_targets);
     }
     list->targets = targets;
     list->capacity = capacity;
@@ -702,6 +718,46 @@ scan_parse_target_paths(dsd_trunk_scan_target* target, const dsd_trunk_scan_row_
 }
 
 static int
+scan_validate_target_key_sources(const dsd_trunk_scan_row_parse* parse, const char* keys_hex_s, const char* keys_dec_s,
+                                 const char* single_hex_s, const char* single_dec_s) {
+    const int have_files = keys_hex_s[0] != '\0' || keys_dec_s[0] != '\0';
+    const int have_direct = single_hex_s[0] != '\0' || single_dec_s[0] != '\0';
+    if (have_files && have_direct) {
+        scan_set_error(parse->err, parse->err_sz, "row %u combines direct keys with keys_hex_csv/keys_dec_csv",
+                       parse->row);
+        return -1;
+    }
+    return 0;
+}
+
+static int
+scan_parse_target_direct_keys(dsd_trunk_scan_target* target, const dsd_trunk_scan_row_parse* parse,
+                              const char* single_hex_s, const char* single_dec_s) {
+    if (single_hex_s[0] == '\0' && single_dec_s[0] == '\0') {
+        return 0;
+    }
+
+    dsd_key_set direct;
+    DSD_MEMSET(&direct, 0, sizeof(direct));
+    const dsd_key_direct_result rc = dsd_key_set_load_direct(&direct, single_hex_s[0] != '\0' ? single_hex_s : NULL,
+                                                             single_dec_s[0] != '\0' ? single_dec_s : NULL);
+    if (rc != DSD_KEY_DIRECT_OK) {
+        const char* field = "single_key_dec/single_key_hex";
+        if (rc == DSD_KEY_DIRECT_INVALID_DEC) {
+            field = "single_key_dec";
+        } else if (rc == DSD_KEY_DIRECT_INVALID_HEX) {
+            field = "single_key_hex";
+        }
+        scan_set_error(parse->err, parse->err_sz, "row %u has invalid %s value", parse->row, field);
+        return -1;
+    }
+    target->single_key_scalars = direct.scalars;
+    target->single_keys_present = 1U;
+    dsd_key_set_free(&direct);
+    return 0;
+}
+
+static int
 scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_trunk_scan_row_parse* parse) {
     char* fields[DSD_TRUNK_SCAN_MAX_CSV_FIELDS] = {0};
     size_t field_count = 0;
@@ -718,6 +774,8 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
     const char* rtl_gain_s = scan_optional_field(fields, field_count, parse->rtl_gain_idx);
     const char* keys_hex_s = scan_optional_field(fields, field_count, parse->keys_hex_idx);
     const char* keys_dec_s = scan_optional_field(fields, field_count, parse->keys_dec_idx);
+    const char* single_hex_s = scan_optional_field(fields, field_count, parse->single_key_hex_idx);
+    const char* single_dec_s = scan_optional_field(fields, field_count, parse->single_key_dec_idx);
     const char* p25_bandplan_s = scan_optional_field(fields, field_count, parse->p25_bandplan_idx);
 
     dsd_trunk_scan_target target;
@@ -734,7 +792,8 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         return -1;
     }
 
-    if (scan_parse_target_paths(&target, parse, chan_csv, keys_hex_s, keys_dec_s, p25_bandplan_s) != 0) {
+    if (scan_validate_target_key_sources(parse, keys_hex_s, keys_dec_s, single_hex_s, single_dec_s) != 0
+        || scan_parse_target_paths(&target, parse, chan_csv, keys_hex_s, keys_dec_s, p25_bandplan_s) != 0) {
         return -1;
     }
     if (scan_parse_ms_field(dwell_s, parse->default_dwell_ms, &target.dwell_ms) != 0) {
@@ -758,7 +817,13 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         scan_set_error(parse->err, parse->err_sz, "out of memory loading trunk scan targets");
         return -1;
     }
+    /* Parse secrets after every fallible non-secret row check. Once accepted,
+     * the list owns the only surviving copy. */
+    if (scan_parse_target_direct_keys(&target, parse, single_hex_s, single_dec_s) != 0) {
+        return -1;
+    }
     parsed->targets[parsed->count++] = target;
+    DSD_SECURE_ZERO(&target.single_key_scalars, sizeof(target.single_key_scalars));
     return 0;
 }
 
@@ -771,6 +836,7 @@ scan_match_optional_header(dsd_trunk_scan_row_parse* parse, const char* name, si
     } cols[] = {
         {"modulation", &parse->modulation_idx},         {"rtl_gain", &parse->rtl_gain_idx},
         {"keys_hex_csv", &parse->keys_hex_idx},         {"keys_dec_csv", &parse->keys_dec_idx},
+        {"single_key_hex", &parse->single_key_hex_idx}, {"single_key_dec", &parse->single_key_dec_idx},
         {"p25_bandplan_csv", &parse->p25_bandplan_idx},
     };
 
@@ -821,6 +887,8 @@ scan_read_target_csv_header(FILE* fp, char* line, size_t line_sz, dsd_trunk_scan
     parse->rtl_gain_idx = -1;
     parse->keys_hex_idx = -1;
     parse->keys_dec_idx = -1;
+    parse->single_key_hex_idx = -1;
+    parse->single_key_dec_idx = -1;
     parse->p25_bandplan_idx = -1;
     for (size_t i = DSD_TRUNK_SCAN_REQUIRED_CSV_FIELDS; i < field_count; i++) {
         if (scan_match_optional_header(parse, scan_unquote(fields[i]), i) != 0) {
@@ -893,15 +961,15 @@ dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trun
         scan_default_ms(opts ? opts->trunk_scan_activity_hold_ms : 0, DSD_TRUNK_SCAN_ACTIVITY_HOLD_DEFAULT_MS);
     parse.err = err;
     parse.err_sz = err_sz;
-    parse.modulation_idx = -1;
-    parse.rtl_gain_idx = -1;
 
     if (scan_read_target_csv_header(fp, line, sizeof line, &parse) != 0) {
+        DSD_SECURE_ZERO(line, sizeof(line));
         fclose(fp);
         return -1;
     }
 
     int rows_rc = scan_load_target_csv_rows(fp, line, sizeof line, &parsed, &parse);
+    DSD_SECURE_ZERO(line, sizeof(line));
     fclose(fp);
     if (rows_rc != 0) {
         dsd_trunk_scan_target_list_reset(&parsed);
@@ -913,6 +981,9 @@ dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trun
         return -1;
     }
     *out = parsed;
+    parsed.targets = NULL;
+    parsed.count = 0U;
+    parsed.capacity = 0U;
     return 0;
 }
 
@@ -921,10 +992,16 @@ dsd_trunk_scan_target_list_reset(dsd_trunk_scan_target_list* list) {
     if (!list) {
         return;
     }
-    free(list->targets);
+    if (list->targets != NULL) {
+        const size_t wipe_count = list->count < list->capacity ? list->count : list->capacity;
+        for (size_t i = 0U; i < wipe_count; i++) {
+            DSD_SECURE_ZERO(&list->targets[i].single_key_scalars, sizeof(list->targets[i].single_key_scalars));
+        }
+        free(list->targets);
+    }
     list->targets = NULL;
-    list->count = 0;
-    list->capacity = 0;
+    list->count = 0U;
+    list->capacity = 0U;
 }
 
 static int
@@ -1694,6 +1771,24 @@ trunk_scan_get_const(const dsd_state* state) {
     return (const dsd_trunk_scan_coord*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
 }
 
+#if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
+int
+trunk_scan_test_target_embedded_keys_cleared(const dsd_state* state, size_t index) {
+    const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
+    if (coord == NULL || index >= coord->count) {
+        return 0;
+    }
+    dsd_key_set probe;
+    dsd_key_set empty;
+    DSD_MEMSET(&probe, 0, sizeof(probe));
+    DSD_MEMSET(&empty, 0, sizeof(empty));
+    probe.scalars = coord->targets[index].target.single_key_scalars;
+    const int cleared = coord->targets[index].target.single_keys_present == 0U && dsd_key_set_equal(&probe, &empty);
+    DSD_SECURE_ZERO(&probe, sizeof(probe));
+    return cleared;
+}
+#endif
+
 static int
 trunk_scan_target_is_p25(const dsd_trunk_scan_target* target) {
     return target && target->type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK;
@@ -1998,6 +2093,19 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
     for (size_t i = 0; i < build_count; i++) {
         dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
         rt->target = list->targets[i];
+        const int have_key_files = rt->target.keys_hex_csv[0] != '\0' || rt->target.keys_dec_csv[0] != '\0';
+        if (rt->target.single_keys_present != 0U && have_key_files) {
+            scan_set_error(err, err_sz, "trunk scan target '%s' combines direct keys with key CSV files",
+                           rt->target.id);
+            return -1;
+        }
+        if (rt->target.single_keys_present != 0U) {
+            rt->keys.present = 1U;
+            rt->keys.keyloader = 0;
+            rt->keys.scalars = rt->target.single_key_scalars;
+            DSD_SECURE_ZERO(&rt->target.single_key_scalars, sizeof(rt->target.single_key_scalars));
+            rt->target.single_keys_present = 0U;
+        }
         trunk_scan_restore_snapshot(state, empty_snapshot);
         trunk_scan_apply_target_opts(opts, coord, &rt->target);
         trunk_scan_apply_target_demod(opts, state, &rt->target);
@@ -2008,7 +2116,7 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
         if (trunk_scan_import_target_p25_bandplan(state, &rt->target, err, err_sz) != 0) {
             return -1;
         }
-        if (rt->target.keys_hex_csv[0] != '\0' || rt->target.keys_dec_csv[0] != '\0') {
+        if (have_key_files) {
             const char* key_src =
                 rt->target.keys_hex_csv[0] != '\0' ? rt->target.keys_hex_csv : rt->target.keys_dec_csv;
             if (dsd_key_set_load_csv(&rt->keys, rt->target.keys_hex_csv[0] != '\0' ? rt->target.keys_hex_csv : NULL,
@@ -2802,11 +2910,15 @@ trunk_scan_coord_free(dsd_trunk_scan_coord* coord) {
         free(coord->targets[i].snapshot.chan_map_chan);
         free(coord->targets[i].snapshot.chan_map_freq);
         dsd_key_set_free(&coord->targets[i].keys);
+        DSD_SECURE_ZERO(&coord->targets[i].target.single_key_scalars,
+                        sizeof(coord->targets[i].target.single_key_scalars));
     }
     free(coord->scratch_snapshot.trunk_lcn_freq_ext);
     free(coord->scratch_snapshot.chan_map_chan);
     free(coord->scratch_snapshot.chan_map_freq);
-    free(coord->targets);
+    if (coord->targets != NULL) {
+        free(coord->targets);
+    }
     free(coord);
 }
 

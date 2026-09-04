@@ -11,8 +11,8 @@ If you want known-good starting points, see `examples/` in the repository.
 - Fields are split on literal commas (`,`). Quoting/escaping is **not supported**.
   - Do not include commas inside a field.
 - Avoid blank lines and comment-only lines (they may be parsed as data).
-- Extra columns after the required ones are ignored, except where a format names an optional column by header (the
-  channel map's `name`). Use the rest for notes/labels.
+- Extra columns after the required ones are ignored, except where a format names an optional column by header (such as
+  a channel map's `name` or key columns). Use the rest for notes/labels.
 - Imported text fields are copied into fixed-size runtime buffers. Keep short fields concise; long `mode` and `name`
   values are truncated in runtime display/policy state.
 
@@ -98,18 +98,28 @@ Notes:
   stores no name either.
 - A row skipped for an unusable frequency keeps its name in the file's numbering but is never shown, because the
   scanner parks on the frequency it is already on rather than tuning such a row.
-- Two more optional columns carry per-row keys for the `-Y` scanner: `keys_hex_csv` (loaded like `-K`) and
+- Two optional columns carry per-row key files for the `-Y` scanner: `keys_hex_csv` (loaded like `-K`) and
   `keys_dec_csv` (loaded like `-k`). They opt in by header name at any column position past the frequency (like
   `name`, matched case-insensitively); a duplicated key header rejects the file. A row may fill both columns;
   they load into one per-row key set.
 - Each key cell names a key file path, resolved relative to the channel map. Blank cells store nothing, and a row
-  whose channel number does not parse takes no slot and stores nothing. Paths cannot contain commas: the splitter
-  does no quote handling.
+  whose channel number does not parse takes no slot and stores nothing. A file-only key path on such a row is not
+  opened. Paths cannot contain commas: the splitter does no quote handling.
+- `single_key_dec` embeds the `-b` Motorola Basic Privacy key number directly in a row. It accepts unsigned decimal
+  `0..255`. `single_key_hex` embeds the `-H` key: an optional leading `0x`, embedded ASCII whitespace, and exactly
+  10, 32, or 64 hexadecimal digits are accepted. Both direct columns may be filled together. They are also matched
+  case-insensitively at any position past the frequency.
+- A row must choose one source family: any nonblank `single_key_dec`/`single_key_hex` value together with a nonblank
+  `keys_dec_csv`/`keys_hex_csv` path rejects the import. This source conflict and direct-key syntax are validated even
+  when the channel number does not parse, although that row still takes no slot. Blank direct cells are absent; an
+  explicit decimal `0` or an all-zero hex key is present. A direct-key row installs a complete replacement key set,
+  so scalar key families not supplied by that row and all file-backed keyring entries are cleared while it is active.
 - Row keys take effect only under `-Y`: hopping onto a keyed row installs its set, hopping back onto an unkeyed
   row restores the global keys. Under plain trunking `-C` they are stored but never applied (one warning); under
   trunk-scan per-target `chan_csv` they are discarded, like `name`.
-- Validation opens the key files, so an unloadable key path fails validation. The Qt/Android picker flow (which
-  copies files) does not support per-row key files.
+- Validation opens key files and validates direct values, so an unloadable path or malformed direct key fails the
+  import. Diagnostics name the field but never repeat a direct key value. The Qt/Android picker flow supports direct
+  values because they are embedded in the copied channel map; it does not copy companion per-row key files.
 - Where a name shows: the end of the `-Y` conventional scanner's **Scan Mode** row, a `Channel:` line at the top of
   the Call Info panel, and as a prefix on the event history rows recorded while that channel is tuned. Encrypted
   traffic that reports no talkgroup still says which channel it was heard on. While a `--trunk-scan` target is on
@@ -144,13 +154,13 @@ channel,frequency_hz,name
 2,462587500,GMRS 2
 ```
 
-Example with per-row keys (`examples/conventional_scan_keyed.csv`):
+Example with file-backed and direct per-row keys (`examples/conventional_scan_keyed.csv`):
 
 ```csv
-channel,frequency_hz,name,keys_hex_csv,keys_dec_csv
-1,462562500,System A,multi_key_hex.csv,
-2,462587500,System B,,multi_key.csv
-3,462612500,Shared,,
+channel,frequency_hz,name,keys_hex_csv,keys_dec_csv,single_key_dec,single_key_hex
+1,462562500,System A,multi_key_hex.csv,,,
+2,462587500,System B,,multi_key.csv,,
+3,462612500,Shared,,,1,0000001F00
 ```
 
 ## Trunk Scan Target CSV (`--trunk-scan <file>` / `[trunk_scan] targets_csv`)
@@ -185,6 +195,8 @@ Columns:
 | `rtl_gain` | No | Per-target RTL-family tuner gain. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. Ignored for non-RTL retuning paths. |
 | `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to this CSV. A row may fill both key columns; they load into one per-target key set. Empty uses the global keys. |
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to this CSV. Empty uses the global keys. |
+| `single_key_dec` | No | Embedded `-b` Motorola Basic Privacy key number (`0..255`). Explicit `0` is present and overrides the global key. May be combined with `single_key_hex`, but not either key-file column. |
+| `single_key_hex` | No | Embedded `-H` key: optional `0x`, whitespace ignored, exactly 10, 32, or 64 hex digits. May be combined with `single_key_dec`, but not either key-file column. |
 | `p25_bandplan_csv` | No | Per-target [P25 band plan CSV](#p25-band-plan-csv---p25-bandplan-file--trunking-p25_bandplan_csv) for a `p25-trunk` target, resolved relative to this CSV. The rows are parked in the target's snapshot, so one exported multi-system file can be named on every P25 row: each target seeds only the rows that carry its own WACN/SYS (and rows that carry none). |
 
 Validation notes:
@@ -194,6 +206,8 @@ Validation notes:
   parsing, with an error naming the budget.
 - Duplicate IDs and duplicate `(type, frequency_hz)` rows are rejected. `nxdn-conventional` and
   `nxdn48-conventional` are distinct types, so one frequency may appear once as each.
+- Optional column names are exact-case in this format. Duplicate direct-key headers, malformed direct values, and
+  rows that mix a direct value with a key-file path are rejected without echoing the key value.
 - `chan_csv` and `p25_bandplan_csv` on conventional (`dmr-conventional`/`nxdn-conventional`/`nxdn48-conventional`)
   rows are rejected; a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load fails
   the whole import.

@@ -1759,6 +1759,51 @@ main(void) {
                                                             && cc->candidates[1] == 852012500L);
     rc |= expect_true("trunk-scan-still-resets-p25-metrics", state->p25_p1_fec_ok == 0);
 
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    // Key-file sets arm keyloader and are transmission-scoped. Their canonical
+    // AES bytes must be erased with the scalar aliases on carrier loss.
+    state->keyloader = 1;
+    state->K = 7ULL;
+    state->K1 = state->H = 0x0011223344556677ULL;
+    state->A1[0] = state->A1[1] = state->K1;
+    state->aes_key_loaded[0] = state->aes_key_loaded[1] = 1;
+    state->aes_key_segments[0] = state->aes_key_segments[1] = 2U;
+    DSD_MEMSET(state->aes_key, 0xA5, sizeof(state->aes_key));
+    noCarrier(opts, state);
+    int aes_cleared = 1;
+    for (size_t i = 0U; i < sizeof(state->aes_key); i++) {
+        if (state->aes_key[i] != 0U) {
+            aes_cleared = 0;
+            break;
+        }
+    }
+    rc |= expect_true("keyloader-carrier-reset-clears-aes-bytes", aes_cleared && state->K == 0ULL && state->K1 == 0ULL
+                                                                      && state->H == 0ULL
+                                                                      && state->aes_key_loaded[0] == 0);
+
+    // Embedded direct keys deliberately use keyloader=0, matching -b/-H:
+    // noCarrier preserves them and must not alter the operator's mute policy.
+    dsd_key_set direct;
+    DSD_MEMSET(&direct, 0, sizeof(direct));
+    if (dsd_key_set_load_direct(&direct, "00112233445566778899AABBCCDDEEFF", "7") != DSD_KEY_DIRECT_OK) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    dsd_key_set_install(state, &direct);
+    dsd_key_set_free(&direct);
+    opts->dmr_mute_encL = 1;
+    opts->dmr_mute_encR = 1;
+    noCarrier(opts, state);
+    rc |= expect_true("direct-key-carrier-reset-persists", state->keyloader == 0 && state->K == 7ULL
+                                                               && state->K1 == 0x0011223344556677ULL
+                                                               && state->aes_key[15] == 0xFFU);
+    rc |= expect_true("direct-key-carrier-reset-preserves-mute-policy",
+                      opts->dmr_mute_encL == 1 && opts->dmr_mute_encR == 1);
+
 #ifdef USE_RADIO
     // Radio builds also exercise the RTL/FSK reacquisition counters. A recovered
     // sync must close the current gap and refresh the last-sync timer without

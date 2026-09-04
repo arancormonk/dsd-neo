@@ -245,11 +245,21 @@ dsd_state_trunk_lcn_keys_reserve(dsd_state* state, size_t count) {
     if (capacity > SIZE_MAX / sizeof(dsd_key_set)) {
         return -1;
     }
-    dsd_key_set* keys = (dsd_key_set*)realloc(state->trunk_lcn_keys, capacity * sizeof(*keys));
+    dsd_key_set* keys = (dsd_key_set*)calloc(capacity, sizeof(*keys));
     if (!keys) {
         return -1;
     }
-    DSD_MEMSET(keys + state->trunk_lcn_keys_capacity, 0, (capacity - state->trunk_lcn_keys_capacity) * sizeof(*keys));
+    /* Structural move: each entry pointer keeps its single owner in the new
+     * array. Deep-freeing the old structs would invalidate the moved sets. The
+     * decoder thread owns imports/growth, so no reader can observe the brief
+     * unpublished copy or retain a pointer across this call. */
+    dsd_key_set* const old_keys = state->trunk_lcn_keys;
+    const size_t old_capacity = state->trunk_lcn_keys_capacity;
+    if (old_keys != NULL && old_capacity > 0U) {
+        DSD_MEMCPY(keys, old_keys, old_capacity * sizeof(*keys));
+        DSD_SECURE_ZERO(old_keys, old_capacity * sizeof(*old_keys));
+        free(old_keys);
+    }
     state->trunk_lcn_keys = keys;
     state->trunk_lcn_keys_capacity = capacity;
     return 0;
@@ -263,6 +273,7 @@ dsd_state_trunk_lcn_keys_free(dsd_state* state) {
     for (size_t i = 0; i < state->trunk_lcn_keys_capacity; i++) {
         dsd_key_set_free(&state->trunk_lcn_keys[i]);
     }
+    DSD_SECURE_ZERO(state->trunk_lcn_keys, state->trunk_lcn_keys_capacity * sizeof(*state->trunk_lcn_keys));
     free(state->trunk_lcn_keys);
     state->trunk_lcn_keys = NULL;
     state->trunk_lcn_keys_capacity = 0;
@@ -278,7 +289,7 @@ dsd_state_trunk_lcn_keys_set(dsd_state* state, size_t index, dsd_key_set* ks) {
     }
     dsd_key_set_free(&state->trunk_lcn_keys[index]);
     state->trunk_lcn_keys[index] = *ks;
-    DSD_MEMSET(ks, 0, sizeof(*ks));
+    DSD_SECURE_ZERO(ks, sizeof(*ks));
     return 0;
 }
 

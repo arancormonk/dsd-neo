@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../util/key_set_internal.h"
 #include "csv_parse_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -674,6 +675,8 @@ typedef struct {
     int has_name;
     int keys_hex_idx;
     int keys_dec_idx;
+    int single_key_hex_idx;
+    int single_key_dec_idx;
 } chan_header_cols;
 
 static const char*
@@ -682,6 +685,11 @@ chan_key_cell(char** fields, size_t field_count, int idx) {
         return NULL;
     }
     return trim_ws(fields[idx]);
+}
+
+static int
+chan_key_cell_present(const char* cell) {
+    return cell != NULL && cell[0] != '\0';
 }
 
 static int
@@ -704,6 +712,8 @@ chan_parse_header(char* header_line, chan_header_cols* out) {
     out->has_name = 0;
     out->keys_hex_idx = -1;
     out->keys_dec_idx = -1;
+    out->single_key_hex_idx = -1;
+    out->single_key_dec_idx = -1;
     const size_t field_count = csv_split_preserve_empty(header_line, fields, sizeof(fields) / sizeof(fields[0]));
     if (field_count >= 3 && csv_ascii_casecmp(trim_ws(fields[2]), "name") == 0) {
         out->has_name = 1;
@@ -722,42 +732,113 @@ chan_parse_header(char* header_line, chan_header_cols* out) {
                 return -1;
             }
             out->keys_dec_idx = (int)i;
+        } else if (csv_ascii_casecmp(name, "single_key_hex") == 0) {
+            if (out->single_key_hex_idx >= 0) {
+                LOG_ERROR("channel map header duplicates 'single_key_hex'\n");
+                return -1;
+            }
+            out->single_key_hex_idx = (int)i;
+        } else if (csv_ascii_casecmp(name, "single_key_dec") == 0) {
+            if (out->single_key_dec_idx >= 0) {
+                LOG_ERROR("channel map header duplicates 'single_key_dec'\n");
+                return -1;
+            }
+            out->single_key_dec_idx = (int)i;
         }
     }
     return 0;
 }
 
 /**
- * @brief Load the key files named by a row's key cells into that row's key set.
+ * @brief Load the key source named by a row into that row's key set.
  *
  * Paths resolve against the map file, so a map and its key files relocate as a
  * unit. Key paths cannot contain commas: the splitter does no quote handling.
  *
- * @return 0 when the row named no key file or its keys loaded, -1 on an unusable
- *         path, a load failure or allocation failure.
+ * A row may use the two file columns or the two direct scalar columns, but not
+ * both source families. Direct values never appear in a diagnostic.
+ *
+ * @return 0 when the row named no key source or its keys loaded, -1 on invalid
+ *         input, an unusable path, a load failure or allocation failure.
  */
 static int
-chan_import_row_keys(dsd_state* state, char** fields, size_t field_count, const chan_header_cols* cols,
-                     const char* base_path, int row_number, int show_keys, size_t slot) {
-    const char* hex_cell = chan_key_cell(fields, field_count, cols->keys_hex_idx);
-    const char* dec_cell = chan_key_cell(fields, field_count, cols->keys_dec_idx);
-    const int have_hex = (hex_cell != NULL && hex_cell[0] != '\0');
-    const int have_dec = (dec_cell != NULL && dec_cell[0] != '\0');
-    if (!have_hex && !have_dec) {
-        return 0;
-    }
-    char hex_path[CSV_IMPORT_PATH_MAX] = "";
-    char dec_path[CSV_IMPORT_PATH_MAX] = "";
-    if (chan_resolve_key_cell(base_path, hex_cell, hex_path, sizeof(hex_path), row_number) != 0
-        || chan_resolve_key_cell(base_path, dec_cell, dec_path, sizeof(dec_path), row_number) != 0) {
+chan_import_direct_keys(dsd_key_set* ks, const char* single_hex_cell, const char* single_dec_cell,
+                        const char* base_path, int row_number) {
+    const dsd_key_direct_result direct_rc = dsd_key_set_load_direct(ks, single_hex_cell, single_dec_cell);
+    if (direct_rc != DSD_KEY_DIRECT_OK) {
+        char row_text[32] = "?";
+        const char* field = "single_key_dec/single_key_hex";
+        if (direct_rc == DSD_KEY_DIRECT_INVALID_DEC) {
+            field = "single_key_dec";
+        } else if (direct_rc == DSD_KEY_DIRECT_INVALID_HEX) {
+            field = "single_key_hex";
+        }
+        (void)DSD_SNPRINTF(row_text, sizeof(row_text), "%d", row_number);
+        LOG_ERROR("channel map file '%s' row %s: invalid %s value\n", base_path, row_text, field);
         return -1;
     }
-    dsd_key_set ks;
-    DSD_MEMSET(&ks, 0, sizeof(ks));
-    if (dsd_key_set_load_csv(&ks, have_hex ? hex_path : NULL, have_dec ? dec_path : NULL, show_keys) != 0) {
+    return 0;
+}
+
+static int
+chan_import_key_files(dsd_key_set* ks, const char* hex_cell, const char* dec_cell, const char* base_path,
+                      int row_number, int show_keys) {
+    char hex_path[CSV_IMPORT_PATH_MAX] = "";
+    char dec_path[CSV_IMPORT_PATH_MAX] = "";
+    if (chan_resolve_key_cell(base_path, hex_cell, hex_path, sizeof(hex_path), row_number) != 0) {
+        return -1;
+    }
+    if (chan_resolve_key_cell(base_path, dec_cell, dec_path, sizeof(dec_path), row_number) != 0) {
+        return -1;
+    }
+    const int have_hex = chan_key_cell_present(hex_cell);
+    const int have_dec = chan_key_cell_present(dec_cell);
+    if (dsd_key_set_load_csv(ks, have_hex ? hex_path : NULL, have_dec ? dec_path : NULL, show_keys) == 0) {
+        return 0;
+    }
+    char row_text[32] = "?";
+    (void)DSD_SNPRINTF(row_text, sizeof(row_text), "%d", row_number);
+    LOG_ERROR("channel map file '%s' row %s: failed to load row key file\n", base_path, row_text);
+    return -1;
+}
+
+static int
+chan_import_row_keys(dsd_state* state, char** fields, size_t field_count, const chan_header_cols* cols,
+                     const char* base_path, int row_number, int show_keys, int store, size_t slot) {
+    const char* hex_cell = chan_key_cell(fields, field_count, cols->keys_hex_idx);
+    const char* dec_cell = chan_key_cell(fields, field_count, cols->keys_dec_idx);
+    const char* single_hex_cell = chan_key_cell(fields, field_count, cols->single_key_hex_idx);
+    const char* single_dec_cell = chan_key_cell(fields, field_count, cols->single_key_dec_idx);
+    const int have_files = chan_key_cell_present(hex_cell) || chan_key_cell_present(dec_cell);
+    const int have_direct = chan_key_cell_present(single_hex_cell) || chan_key_cell_present(single_dec_cell);
+    if (!have_files && !have_direct) {
+        return 0;
+    }
+    if (have_files && have_direct) {
         char row_text[32] = "?";
         (void)DSD_SNPRINTF(row_text, sizeof(row_text), "%d", row_number);
-        LOG_ERROR("channel map file '%s' row %s: failed to load row key file\n", base_path, row_text);
+        LOG_ERROR("channel map file '%s' row %s: direct keys cannot be combined with key CSV files\n", base_path,
+                  row_text);
+        return -1;
+    }
+
+    /* A row whose channel number is invalid owns no scan-list slot. Its direct
+     * cells still need syntax validation, but a file-only row keeps the legacy
+     * behavior of not opening a key path that could never be activated. */
+    if (!store && !have_direct) {
+        return 0;
+    }
+
+    dsd_key_set ks;
+    DSD_MEMSET(&ks, 0, sizeof(ks));
+    if (have_direct && chan_import_direct_keys(&ks, single_hex_cell, single_dec_cell, base_path, row_number) != 0) {
+        return -1;
+    }
+    if (!store) {
+        dsd_key_set_free(&ks);
+        return 0;
+    }
+    if (have_files && chan_import_key_files(&ks, hex_cell, dec_cell, base_path, row_number, show_keys) != 0) {
         return -1;
     }
     if (dsd_state_trunk_lcn_keys_set(state, slot, &ks) != 0) {
@@ -774,10 +855,12 @@ chan_import_row_keys(dsd_state* state, char** fields, size_t field_count, const 
  * Empty fields are preserved rather than collapsed, so `1,,851000000` reads as a
  * blank frequency and is skipped instead of promoting column 3 into its place.
  *
- * When the header opted into per-row keys, a non-blank key cell on a row that
- * took a slot resolves its path against the map file and loads it into the
- * row's key set. Key paths cannot contain commas: the splitter does no quote
- * handling. A load failure fails the whole import, like a bad `-K`.
+ * When the header opts into per-row keys, a row that took a slot stores either
+ * its direct scalar values or a key file resolved against the map. Direct cells
+ * are still validated on a row that took no slot, while file-only paths on such
+ * a row are not opened. Key paths cannot contain commas: the splitter does no
+ * quote handling. Invalid direct input or a key-file load failure rejects the
+ * whole import.
  *
  * @return 1 when a frequency loaded, -1 on allocation failure or key load failure.
  */
@@ -803,8 +886,11 @@ chan_import_row(dsd_state* state, char* buffer, const chan_header_cols* cols, co
             return -1;
         }
     }
-    if ((cols->keys_hex_idx >= 0 || cols->keys_dec_idx >= 0) && state->lcn_freq_count > lcn_before) {
-        if (chan_import_row_keys(state, fields, field_count, cols, base_path, row_number, show_keys, (size_t)lcn_before)
+    const int row_has_slot = state->lcn_freq_count > lcn_before;
+    if (cols->keys_hex_idx >= 0 || cols->keys_dec_idx >= 0 || cols->single_key_hex_idx >= 0
+        || cols->single_key_dec_idx >= 0) {
+        const size_t slot = row_has_slot ? (size_t)lcn_before : 0U;
+        if (chan_import_row_keys(state, fields, field_count, cols, base_path, row_number, show_keys, row_has_slot, slot)
             != 0) {
             return -1;
         }
@@ -857,6 +943,9 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
     DSD_MEMSET(&cols, 0, sizeof(cols));
     cols.keys_hex_idx = -1;
     cols.keys_dec_idx = -1;
+    cols.single_key_hex_idx = -1;
+    cols.single_key_dec_idx = -1;
+    int rc = 0;
 
     while (fgets(buffer, BSIZE, fp)) {
         int field_count = 0;
@@ -865,8 +954,8 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
         if (row_count == 1) {
             // Split in place: the header is not needed again, and the next fgets refills the buffer.
             if (chan_parse_header(buffer, &cols) != 0) {
-                fclose(fp);
-                return -1;
+                rc = -1;
+                break;
             }
             continue; //don't want labels
         }
@@ -876,13 +965,14 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
         const int freq_parsed =
             chan_import_row(state, buffer, &cols, filename, row_count, show_keys, &field_count, &chan_number);
         if (freq_parsed < 0) {
-            fclose(fp);
-            return -1;
+            rc = -1;
+            break;
         }
         chan_import_row_report(state, stats, filename, row_count, freq_parsed, field_count, chan_number);
     }
+    DSD_SECURE_ZERO(buffer, sizeof(buffer));
     fclose(fp);
-    return 0;
+    return rc;
 }
 
 /* Dry-run entry for the validator: counts rows and never reveals key values. */
@@ -960,6 +1050,7 @@ key_import_dec_stats(int show_keys, const char* key_file_path, dsd_state* state,
         }
         LOG_INFO("\n");
     }
+    DSD_SECURE_ZERO(buffer, sizeof(buffer));
     fclose(fp);
     return 0;
 }
@@ -1214,6 +1305,7 @@ key_import_hex_stats(int show_keys, const char* key_file_path, dsd_state* state,
 
         LOG_INFO("\n");
     }
+    DSD_SECURE_ZERO(buffer, sizeof(buffer));
     fclose(fp);
     return 0;
 }
@@ -1255,6 +1347,7 @@ csv_validate_into_throwaway(const char* path, dsd_csv_validation* out, csv_valid
         dsd_state_ext_free_all(state);
     }
     dsd_state_trunk_lcn_free(state);
+    dsd_key_state_secure_wipe(state);
     free(state);
 
     if (rc != 0) {
