@@ -142,7 +142,7 @@ expect_label(const char* tag, uint8_t message_type, const char* want) {
         DSD_FPRINTF(stderr, "%s: got %s want %s\n", tag, got == NULL ? "(null)" : got, want == NULL ? "(null)" : want);
         return 1;
     }
-    if (got != NULL && strcmp(got, want) != 0) {
+    if (got != NULL && want != NULL && strcmp(got, want) != 0) {
         DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
         return 1;
     }

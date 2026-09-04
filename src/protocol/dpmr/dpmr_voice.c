@@ -513,69 +513,16 @@ dpmr_crc7(const uint8_t* input, uint32_t bit_length) {
  * "Mapping of dialled strings to the AI address space" */
 void
 dpmr_convert_air_interface_id(uint32_t ai_id, char id[8]) {
+    /* Place values from the standard's mapping table: the leading digits are
+     * decimal-spaced and the trailing ones base-11, which is what lets a dialled
+     * '*' ride in the same address space as the digits. */
+    static const uint32_t k_place_value[7] = {1464100U, 146410U, 14641U, 1331U, 121U, 11U, 1U};
     uint32_t remaining = ai_id;
-    uint32_t digit;
 
-    /* 1st digit */
-    digit = remaining / 1464100;
-    remaining = remaining % 1464100;
-    if (digit == 10) {
-        id[0] = '*';
-    } else {
-        id[0] = digit + '0';
-    }
-
-    /* 2nd digit */
-    digit = remaining / 146410;
-    remaining = remaining % 146410;
-    if (digit == 10) {
-        id[1] = '*';
-    } else {
-        id[1] = digit + '0';
-    }
-
-    /* 3rd digit */
-    digit = remaining / 14641;
-    remaining = remaining % 14641;
-    if (digit == 10) {
-        id[2] = '*';
-    } else {
-        id[2] = digit + '0';
-    }
-
-    /* 4th digit */
-    digit = remaining / 1331;
-    remaining = remaining % 1331;
-    if (digit == 10) {
-        id[3] = '*';
-    } else {
-        id[3] = digit + '0';
-    }
-
-    /* 5th digit */
-    digit = remaining / 121;
-    remaining = remaining % 121;
-    if (digit == 10) {
-        id[4] = '*';
-    } else {
-        id[4] = digit + '0';
-    }
-
-    /* 6th digit */
-    digit = remaining / 11;
-    remaining = remaining % 11;
-    if (digit == 10) {
-        id[5] = '*';
-    } else {
-        id[5] = digit + '0';
-    }
-
-    /* 7th digit */
-    digit = remaining;
-    if (digit == 10) {
-        id[6] = '*';
-    } else {
-        id[6] = digit + '0';
+    for (size_t i = 0U; i < 7U; i++) {
+        const uint32_t digit = remaining / k_place_value[i];
+        remaining = remaining % k_place_value[i];
+        id[i] = (digit == 10U) ? '*' : (char)(digit + '0');
     }
 
     /* Add the "end of string" */

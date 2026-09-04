@@ -57,7 +57,7 @@ test_silence_detection(const char silence[49]) {
 
     rc |= expect_eq_int("silence-detected", dmr_ambe49_is_default_silence(silence), 1);
 
-    char not_silence[49];
+    char not_silence[49] = {0};
     DSD_MEMCPY(not_silence, silence, sizeof(not_silence));
     not_silence[48] ^= 1;
     rc |= expect_eq_int("silence-rejected", dmr_ambe49_is_default_silence(not_silence), 0);
@@ -104,8 +104,8 @@ test_voice_stream_aes_keystream(void) {
 static int
 test_voice_stream_silence_skip(const char silence[49]) {
     uint8_t ks_bits[128] = {1};
-    char frame[49];
-    char original[49];
+    char frame[49] = {0};
+    char original[49] = {0};
     DSD_MEMCPY(frame, silence, sizeof(frame));
     DSD_MEMCPY(original, silence, sizeof(original));
 
@@ -153,8 +153,8 @@ test_basic_privacy_rejects_invalid_keys(void) {
 static int
 test_hytera_bp_silence_skip(const char silence[49]) {
     int rc = 0;
-    char frame[49];
-    char original[49];
+    char frame[49] = {0};
+    char original[49] = {0};
     DSD_MEMCPY(frame, silence, sizeof(frame));
     DSD_MEMCPY(original, silence, sizeof(original));
     int frame_counter = 0;

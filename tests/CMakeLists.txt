@@ -33,9 +33,11 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_support INTERFACE dsd-neo_platform)
 
 # Shell tools under tools/ run CI on our behalf; the ones with retry or give-up
-# logic get a bash-driven test that fakes the program they wrap. Bash only: the
-# scripts themselves are bash, so nothing is lost by skipping them where it is
-# missing.
+# logic get a bash-driven test that fakes the program they wrap, and
+# gcc_fanalyzer.sh one that drives the real compiler over a seeded defect, since
+# its failure mode was reporting a clean run over an empty analysis. Bash only:
+# the scripts themselves are bash, so nothing is lost by skipping them where it
+# is missing.
 if(NOT WIN32)
     find_program(DSD_NEO_BASH_EXECUTABLE bash)
     if(DSD_NEO_BASH_EXECUTABLE)
@@ -58,6 +60,13 @@ if(NOT WIN32)
             COMMAND
                 ${DSD_NEO_BASH_EXECUTABLE}
                 ${PROJECT_SOURCE_DIR}/tests/tools/test_check_runner.sh
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        add_test(
+            NAME TOOLS_GCC_FANALYZER
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_gcc_fanalyzer.sh
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
     endif()

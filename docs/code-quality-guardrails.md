@@ -55,6 +55,27 @@ to the verdict, and a change to any local check should use them rather than prin
   `runner_note_missing` instead). Either one makes the run report what it did not cover rather than "all checks passed",
   and is fatal under `DSD_HOOK_FAIL_ON_MISSING_TOOLS=1`, which `tools/quality_preflight.sh` sets.
 
+`tools/gcc_fanalyzer.sh` compiles each C translation unit with `-S -o /dev/null -fanalyzer`. Assembling is the point:
+`-fanalyzer` is an interprocedural pass that never runs under `-fsyntax-only`, which the script passed for as long as it
+existed, so the pre-push lane and the CI leg both reported a clean run over an empty analysis.
+`tests/tools/test_gcc_fanalyzer.sh` seeds a double free and fails if the script stops reporting or counting it.
+
+Two scope decisions keep that check worth reading:
+
+- **C only.** GCC's manual says the analyzer "is only suitable for use on C code in this release"; on C++ it walks
+  exception-unwind edges out of `extern "C"` callees that cannot throw and reports leaks no execution reaches. C++ units
+  are skipped, and the count is printed.
+- **`-Wanalyzer-null-dereference` is off.** `dsd_safe_memset_impl()` and its neighbours in `core/safe_api.h` compare
+  their destination against NULL, which teaches the analyzer that the caller's own pointer parameter may be NULL; every
+  `DSD_MEMSET(p, 0, sizeof *p)` followed by `p->field` then reads as a null dereference. That is how the project zeroes
+  a struct, so the class covered 91 reports and no reachable path.
+
+Every other analyzer diagnostic is fatal. Where the analyzer's model rather than the code is what fails, the suppression
+is a `#pragma GCC diagnostic ignored` guarded by `#if defined(__GNUC__) && !defined(__clang__)` at the site with its
+reason: the stderr and stdin capture helpers in tests, where `dup2()` returns a descriptor the process already owns and
+must not close, and `config_profile_free_context()`, where the analyzer loses the tie between `pctx->n` and the count
+that filled the array.
+
 The repository intentionally blocks or flags patterns that are easy to reintroduce during large edits:
 
 - Use the project safe API wrappers instead of raw C memory/string/formatting APIs in project-owned code.
