@@ -11,6 +11,7 @@ target_sources(
         config_user_validation.cpp
         config_schema.c
         decode_mode.c
+        scan_mode.c
         config_expand.c
         control_pump.c
         freq_parse.c

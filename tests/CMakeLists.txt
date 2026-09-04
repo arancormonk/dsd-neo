@@ -1658,6 +1658,17 @@ target_link_libraries(
     dsd-neo_test_app_control_actions
     PRIVATE dsd-neo_test_call_state_support
 )
+target_sources(
+    dsd-neo_test_app_control_actions
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/runtime/scan_mode.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+)
+
+target_sources(
+    dsd-neo_test_app_control_actions
+    PRIVATE test_support/channel_scan_stubs.c
+)
 add_test(NAME APP_CONTROL_ACTIONS COMMAND dsd-neo_test_app_control_actions)
 
 add_executable(
@@ -1674,6 +1685,10 @@ target_compile_definitions(
 target_include_directories(
     dsd-neo_test_app_control_actions_rtl
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_link_libraries(
+    dsd-neo_test_app_control_actions_rtl
+    PRIVATE dsd-neo_runtime
 )
 add_test(
     NAME APP_CONTROL_ACTIONS_RTL
@@ -1707,6 +1722,11 @@ target_link_libraries(
     dsd-neo_test_ui_menu_services
     PRIVATE ${DSD_NEO_TEST_MATH_LIB}
 )
+target_link_libraries(dsd-neo_test_ui_menu_services PRIVATE dsd-neo_runtime)
+target_sources(
+    dsd-neo_test_ui_menu_services
+    PRIVATE test_support/channel_scan_stubs.c
+)
 add_test(NAME UI_MENU_SERVICES COMMAND dsd-neo_test_ui_menu_services)
 
 if(DSD_ENABLE_TERMINAL_UI)
@@ -1722,6 +1742,10 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
             ${CURSES_INCLUDE_DIRS}
+    )
+    target_sources(
+        dsd-neo_test_ui_menu_labels
+        PRIVATE test_support/scan_mode_label_stubs.c
     )
     add_test(NAME UI_MENU_LABELS COMMAND dsd-neo_test_ui_menu_labels)
 
@@ -1741,6 +1765,10 @@ if(DSD_ENABLE_TERMINAL_UI)
     target_compile_definitions(
         dsd-neo_test_ui_menu_labels_radio
         PRIVATE USE_RADIO
+    )
+    target_sources(
+        dsd-neo_test_ui_menu_labels_radio
+        PRIVATE test_support/scan_mode_label_stubs.c
     )
     add_test(
         NAME UI_MENU_LABELS_RADIO
@@ -2067,6 +2095,10 @@ if(DSD_ENABLE_TERMINAL_UI)
     target_link_libraries(
         dsd-neo_test_ui_menu_actions
         PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    )
+    target_sources(
+        dsd-neo_test_ui_menu_actions
+        PRIVATE test_support/scan_mode_label_stubs.c
     )
     add_test(NAME UI_MENU_ACTIONS COMMAND dsd-neo_test_ui_menu_actions)
 
@@ -2980,6 +3012,10 @@ target_link_libraries(
     dsd-neo_test_app_control_snapshot_event_history
     PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
 )
+target_link_libraries(
+    dsd-neo_test_app_control_snapshot_event_history
+    PRIVATE dsd-neo_runtime
+)
 add_test(
     NAME APP_CONTROL_SNAPSHOT_EVENT_HISTORY
     COMMAND dsd-neo_test_app_control_snapshot_event_history
@@ -3717,6 +3753,13 @@ target_link_libraries(
 )
 add_test(NAME CORE_CSV_IMPORT COMMAND dsd-neo_test_core_csv_import)
 
+add_executable(dsd-neo_test_core_channel_modes core/test_core_channel_modes.c)
+target_link_libraries(
+    dsd-neo_test_core_channel_modes
+    PRIVATE dsd-neo_core dsd-neo_proto_dmr
+)
+add_test(NAME CORE_CHANNEL_MODES COMMAND dsd-neo_test_core_channel_modes)
+
 add_executable(dsd-neo_test_core_key_set core/test_core_key_set.c)
 target_include_directories(
     dsd-neo_test_core_key_set
@@ -3773,6 +3816,10 @@ add_executable(
 target_include_directories(
     dsd-neo_test_core_state_trunk_lcn_avoid
     PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_state_trunk_lcn_avoid
+    PRIVATE dsd-neo_runtime
 )
 add_test(
     NAME CORE_STATE_TRUNK_LCN_AVOID
@@ -4453,14 +4500,33 @@ target_link_libraries(
     dsd-neo_test_engine_trunk_retune_regression
     PRIVATE dsd-neo_feature_radio
 )
+target_sources(
+    dsd-neo_test_engine_trunk_retune_regression
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
+)
 add_test(
     NAME ENGINE_TRUNK_RETUNE_REGRESSION
     COMMAND dsd-neo_test_engine_trunk_retune_regression
 )
 
 add_executable(
+    dsd-neo_test_engine_channel_scan
+    engine/test_engine_channel_scan.c
+    ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+)
+target_link_libraries(
+    dsd-neo_test_engine_channel_scan
+    PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
+)
+add_test(NAME ENGINE_CHANNEL_SCAN COMMAND dsd-neo_test_engine_channel_scan)
+
+add_executable(
     dsd-neo_test_engine_trunk_scan
     engine/test_engine_trunk_scan.c
+    test_support/channel_scan_stubs.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/scan_voice_gate.c
     ${PROJECT_SOURCE_DIR}/src/engine/p25_bandplan_export.c
@@ -4530,6 +4596,16 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
 add_test(NAME RUNTIME_RR_PROVENANCE COMMAND dsd-neo_test_runtime_rr_provenance)
+
+add_executable(dsd-neo_test_runtime_scan_mode runtime/test_runtime_scan_mode.c)
+target_link_libraries(dsd-neo_test_runtime_scan_mode PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_SCAN_MODE COMMAND dsd-neo_test_runtime_scan_mode)
+
+add_executable(dsd-neo_test_scan_mode_replay engine/scan_mode_replay.c)
+target_link_libraries(
+    dsd-neo_test_scan_mode_replay
+    PRIVATE dsd-neo_engine ${LIBS}
+)
 
 add_executable(
     dsd-neo_test_runtime_decode_mode
@@ -9721,4 +9797,42 @@ if(DSD_HAS_RADIO)
     )
     add_test(NAME ENGINE_RESTART COMMAND dsd-neo_test_engine_restart)
     set_tests_properties(ENGINE_RESTART PROPERTIES TIMEOUT 240)
+endif()
+
+if(DSD_HAS_RADIO)
+    foreach(scan_case IN ITEMS nxdn48 p25p1_c4fm_vc p25p1_cqpsk_vc)
+        if(scan_case STREQUAL "nxdn48")
+            set(scan_class nxdn48)
+            set(scan_global "-f1")
+            set(scan_expected "Src=901")
+        elseif(scan_case STREQUAL "p25p1_c4fm_vc")
+            set(scan_class p25)
+            set(scan_global "-fi -mc")
+            set(scan_expected "Group Voice Channel User")
+        else()
+            set(scan_class p25)
+            set(scan_global "-fi -mq")
+            set(scan_expected "Group Voice Channel User")
+        endif()
+        set(scan_csv "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_${scan_case}.csv")
+        file(
+            WRITE "${scan_csv}"
+            "channel,frequency_hz,mode\n1,150000000,${scan_class}\n"
+        )
+        string(TOUPPER "${scan_case}" scan_test_suffix)
+        add_test(
+            NAME DECODE_IQ_SCAN_${scan_test_suffix}
+            COMMAND
+                ${CMAKE_COMMAND}
+                -DDSD_BIN=$<TARGET_FILE:dsd-neo_test_scan_mode_replay>
+                "-DMODE=${scan_global} -C ${scan_csv}"
+                -DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${scan_case}.iq.json
+                "-DEXPECTED=${scan_expected}" -P
+                ${PROJECT_SOURCE_DIR}/tests/iq_decode_check.cmake
+        )
+        set_tests_properties(
+            DECODE_IQ_SCAN_${scan_test_suffix}
+            PROPERTIES LABELS iq-decode TIMEOUT 120
+        )
+    endforeach()
 endif()

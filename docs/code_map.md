@@ -98,6 +98,23 @@ trust 1 (`trunk_scan_share_peer_idens()`), and `dsd_engine_p25_bandplan_export()
 Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
 `tests/engine/test_engine_synced_trunk_scan_tick.c` (`ENGINE_SYNCED_TRUNK_SCAN_TICK`).
 
+### Per-channel decoder modes
+
+- Core owns positional channel-map modes through `core/channel_mode.h`, implemented beside the LCN heap stores in
+  `core/util/dsd_state_trunk_lcn.c`. Extension slot 5 transfers with map adoption and is cleared on map teardown.
+- Runtime owns the exact configured decoder baseline and temporary class through `runtime/scan_mode.h` and
+  `runtime/scan_mode.c` (extension slot 6). It uses the existing preset definitions while keeping the audio sink fixed.
+  Suspend/update/resume supports global commands; scalar snapshot copies keep frontend state independent of live storage.
+- Engine `channel_scan.c` (extension slot 7) stages typed `-Y` entries for automatic, manual, and avoid stepping through
+  tracked tuning. It commits mode/keys only after success and retains generation protection across pending requests.
+  `trunk_scan.c` selects the same classes from target types while retaining target snapshots and modulation/gain ownership.
+- DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
+  and slicer windows at committed row boundaries. Conventional rows also discard learned P25 modulation; trunk targets
+  retain their own learned modulation. Normal no-carrier protocol confirmation resets remain in use.
+- Frontend snapshots deep-copy only scalar scope metadata. `dsd_app_snapshot_configured_mode()` exposes the baseline;
+  `dsd_scan_mode_active()` and `dsd_scan_mode_effective_profile()` distinguish combined P25 from global AUTO.
+
+
 ## Platform
 
 - Path: `src/platform`, `include/dsd-neo/platform`

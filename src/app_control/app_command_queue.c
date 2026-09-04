@@ -11,6 +11,7 @@
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -26,6 +27,7 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -43,6 +45,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -1073,6 +1076,12 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         }
         int rc = svc_rtl_set_freq(opts, state, v);
         result = ui_cmd_apply_status_from_tune_rc(rc);
+        if ((rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) && opts->scanner_mode == 1) {
+            dsd_engine_channel_scan_leave(opts, state);
+            dsd_scan_keys_leave(state);
+            opts->scanner_mode = 0;
+            state->lcn_freq_roll = 0;
+        }
         if (rc == 0) {
             ui_set_toast(state, 3, "Applied: RTL frequency -> %u Hz", v);
         } else if (rc == RTL_STREAM_TUNE_TIMEOUT) {
@@ -2012,7 +2021,7 @@ try_manual_candidate_cycle(dsd_opts* opts, dsd_state* state) {
 }
 
 static int
-apply_manual_lcn_cycle(dsd_opts* opts, dsd_state* state) {
+apply_manual_lcn_cycle_untyped(dsd_opts* opts, dsd_state* state) {
     int count = state->lcn_freq_count;
     if (count <= 0) {
         return UI_CMD_APPLY_COMPLETED;
@@ -2057,7 +2066,18 @@ apply_manual_lcn_cycle(dsd_opts* opts, dsd_state* state) {
 }
 
 static int
+apply_manual_lcn_cycle(dsd_opts* opts, dsd_state* state) {
+    if (opts->scanner_mode == 1 && dsd_channel_modes_present(state)) {
+        return dsd_engine_channel_scan_step(opts, state) < 0 ? UI_CMD_APPLY_FAILED : UI_CMD_APPLY_COMPLETED;
+    }
+    return apply_manual_lcn_cycle_untyped(opts, state);
+}
+
+static int
 apply_manual_channel_cycle(dsd_opts* opts, dsd_state* state) {
+    if (opts->scanner_mode == 1 && dsd_channel_modes_present(state)) {
+        return apply_manual_lcn_cycle(opts, state);
+    }
     const int candidate_status = try_manual_candidate_cycle(opts, state);
     if (candidate_status != UI_CMD_APPLY_UNHANDLED) {
         return candidate_status;
@@ -3162,6 +3182,7 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
     opts->trunk_enable = 0;
     opts->scanner_mode = 0;
     // Leaving -Y hands the foreground keyring back to the globals.
+    dsd_engine_channel_scan_leave(opts, state);
     dsd_scan_keys_leave(state);
     reset_call_tracking(opts, state, 1);
     ui_set_toast(state, 3, "Automatic tuning stopped");
@@ -3311,8 +3332,10 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     /* The decoder was hunting for a different protocol a moment ago: its
        modulation votes describe frames of the old kind, and any call open on the
        old protocol will never be closed by the new one. */
-    dsd_frame_sync_reset_mod_state();
-    reset_call_tracking(opts, state, 1);
+    if (!dsd_scan_mode_updating(state)) {
+        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+        reset_call_tracking(opts, state, 1);
+    }
     ui_set_toast(state, 3, "Decoding %s", dsd_decode_mode_display_name(mode));
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -3334,8 +3357,7 @@ apply_decode_mode_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
  * @brief Everything that can refuse a RadioReference apply before it mutates anything.
  *
  * After this returns COMPLETED the sequence is best-effort and cannot roll back;
- * svc_import_channel_map() in particular writes opts->chan_in_file before it
- * validates and never restores it.
+ * Each channel-map import validates before adoption and preserves its previous path on failure.
  */
 static int
 rr_apply_preflight(const dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
@@ -3419,6 +3441,7 @@ rr_apply_tuner_owner(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_pa
         opts->scanner_mode = 0;
     }
     if (!p->scanner) {
+        dsd_engine_channel_scan_leave(opts, state);
         dsd_scan_keys_leave(state);
     }
 }
@@ -3489,8 +3512,10 @@ rr_apply_reacquire(dsd_opts* opts, dsd_state* state) {
     state->last_cc_sync_time = 0;
     state->last_vc_sync_time = 0;
     state->last_vc_sync_time_m = 0.0;
-    dsd_frame_sync_reset_mod_state();
-    reset_call_tracking(opts, state, 1);
+    if (!dsd_scan_mode_updating(state)) {
+        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+        reset_call_tracking(opts, state, 1);
+    }
 }
 
 /**
@@ -3518,6 +3543,7 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
         return pre;
     }
     const dsdneoUserDecodeMode mode = (dsdneoUserDecodeMode)p.decode_mode;
+    dsd_engine_channel_scan_leave(opts, state);
     if (decode_mode_apply_value(opts, state, mode) != UI_CMD_APPLY_COMPLETED) {
         ui_set_toast(state, 4, "Failed: RR import -> decode mode");
         return UI_CMD_APPLY_FAILED;
@@ -4129,7 +4155,7 @@ apply_cmd_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
 }
 
 static int
-apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const dsd_app_command_handler_fn k_command_groups[] = {
         apply_cmd_basic_a,       apply_cmd_slot_controls,  apply_cmd_payload_filters,  apply_cmd_constellation,
         apply_cmd_eye_spectrum,  apply_cmd_trunk_controls, apply_cmd_lockout_slot,     apply_cmd_provoice_m17,
@@ -4178,6 +4204,21 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
         }
     }
     return UI_CMD_APPLY_UNSUPPORTED;
+}
+
+static int
+apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    const int mode_update = c
+                            && (c->id == DSD_APP_CMD_DECODE_MODE_SET || c->id == DSD_APP_CMD_MOD_SET
+                                || c->id == DSD_APP_CMD_MOD_TOGGLE || c->id == DSD_APP_CMD_CONFIG_APPLY);
+    const int scoped = mode_update && opts && state && dsd_scan_mode_suspend(opts, state);
+    const int result = apply_cmd_unscoped(opts, state, c);
+    if (scoped && dsd_scan_mode_resume(opts, state)) {
+        reset_call_tracking(opts, state, 1);
+        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
+        svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state));
+    }
+    return result;
 }
 
 int

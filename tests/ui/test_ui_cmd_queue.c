@@ -20,6 +20,8 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -613,7 +615,7 @@ test_file_network_and_import_commands(void) {
     post_string(DSD_APP_CMD_IMPORT_KEYS_DEC, missing_csv);
     post_string(DSD_APP_CMD_IMPORT_KEYS_HEX, missing_csv);
     rc |= expect_int("import failure group applied", dsd_app_drain_cmds(&opts, &state), 4);
-    rc |= expect_str("channel import path copied", opts.chan_in_file, missing_csv);
+    rc |= expect_str("failed channel import keeps path", opts.chan_in_file, "");
     rc |= expect_str("group import path copied", opts.group_in_file, missing_csv);
     rc |= expect_str("key import path copied", opts.key_in_file, missing_csv);
     rc |= expect_contains("key import failure toast", state.ui_msg, "Failed: Keys (HEX)");
@@ -2100,9 +2102,56 @@ test_scan_voice_gate_commands(void) {
     return rc;
 }
 
+static int
+test_scoped_mode_commands_and_config(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 96000;
+    int rc = 0;
+    rc |= expect_int("configured NXDN",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_NXDN48, DSD_DECODE_PRESET_PROFILE_CLI, opts, state), 0);
+    opts->scanner_mode = 1;
+    rc |= expect_int("enter scan P25", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25), 0);
+    state->sps_hunt_counter = 17;
+    rc |= expect_int("repeat configured mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_NXDN48),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("repeat configured mode drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("repeat keeps row P25", opts->frame_p25p1, 1);
+    rc |= expect_int("repeat keeps dwell", state->sps_hunt_counter, 17);
+    rc |= expect_int("change configured mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_M17),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("change configured mode drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("row still P25", opts->frame_p25p1, 1);
+    rc |= expect_int("row excludes M17", opts->frame_m17, 0);
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(opts, state, &saved);
+    rc |= expect_int("configuration saves baseline M17", saved.decode_mode, DSDCFG_MODE_M17);
+    rc |= expect_int("scanner toggle queued", dsd_app_command_action(DSD_APP_CMD_SCANNER_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("scanner toggle drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("exit restores M17", opts->frame_m17, 1);
+    rc |= expect_int("exit restores M17 filter", opts->use_cosine_filter, 0);
+    rc |= expect_int("exit restores configured timing at live input rate", state->samplesPerSymbol, 20);
+    rc |= expect_int("exit restores configured profile", state->sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_scoped_mode_commands_and_config();
     rc |= test_command_api();
     rc |= test_manual_tune_queue_semantics();
     rc |= test_setter_coalescing_preserves_fifo_boundaries();

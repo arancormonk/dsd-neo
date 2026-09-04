@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: ISC
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/key_set.h>
@@ -12,6 +13,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -666,18 +668,49 @@ csv_key_import_dec_apply_field(dsd_state* state, int field_count, const char* fi
 
 /*
  * The channel map's columns past the frequency have always been free-text notes
- * -- two shipped examples put commas in theirs -- so column 3 is a channel name
- * only when the header line says `name`. The per-row key columns opt in the
- * same way, by header name at any field index >= 2; a duplicated key header
- * rejects the file.
+ * -- two shipped examples put commas in theirs -- so metadata opts in by header
+ * name at any field index >= 2. Unknown fields stay notes; the first name wins,
+ * and duplicated mode/key headers reject the file.
  */
+enum {
+    CHAN_NUMBER,
+    CHAN_FREQUENCY,
+    CHAN_NAME,
+    CHAN_MODE,
+    CHAN_KEYS_HEX,
+    CHAN_KEYS_DEC,
+    CHAN_SINGLE_HEX,
+    CHAN_SINGLE_DEC,
+    CHAN_FIELD_COUNT
+};
+
 typedef struct {
-    int has_name;
-    int keys_hex_idx;
-    int keys_dec_idx;
-    int single_key_hex_idx;
-    int single_key_dec_idx;
+    int index[CHAN_FIELD_COUNT];
 } chan_header_cols;
+
+/* Walk every field, retaining only the named columns. No field-count truncation. */
+static size_t
+chan_select_fields(char* line, const chan_header_cols* cols, char** fields) {
+    size_t count = 0;
+    char* cell = line;
+    for (int i = 0; i < CHAN_FIELD_COUNT; i++) {
+        fields[i] = NULL;
+    }
+    while (cell) {
+        char* next = strchr(cell, ',');
+        if (next) {
+            *next++ = '\0';
+        }
+        for (int i = 0; i < CHAN_FIELD_COUNT; i++) {
+            if (cols->index[i] >= 0 && (size_t)cols->index[i] == count) {
+                fields[i] = cell;
+            }
+        }
+        count++;
+        cell = next;
+    }
+    return count;
+}
 
 static const char*
 chan_key_cell(char** fields, size_t field_count, int idx) {
@@ -708,43 +741,35 @@ chan_resolve_key_cell(const char* base_path, const char* cell, char* out, size_t
 
 static int
 chan_parse_header(char* header_line, chan_header_cols* out) {
-    char* fields[16];
-    out->has_name = 0;
-    out->keys_hex_idx = -1;
-    out->keys_dec_idx = -1;
-    out->single_key_hex_idx = -1;
-    out->single_key_dec_idx = -1;
-    const size_t field_count = csv_split_preserve_empty(header_line, fields, sizeof(fields) / sizeof(fields[0]));
-    if (field_count >= 3 && csv_ascii_casecmp(trim_ws(fields[2]), "name") == 0) {
-        out->has_name = 1;
+    static const char* const names[CHAN_FIELD_COUNT] = {
+        "", "", "name", "mode", "keys_hex_csv", "keys_dec_csv", "single_key_hex", "single_key_dec"};
+    for (int i = 0; i < CHAN_FIELD_COUNT; i++) {
+        out->index[i] = i < 2 ? i : -1;
     }
-    for (size_t i = 2; i < field_count; i++) {
-        const char* name = trim_ws(fields[i]);
-        if (csv_ascii_casecmp(name, "keys_hex_csv") == 0) {
-            if (out->keys_hex_idx >= 0) {
-                LOG_ERROR("channel map header duplicates 'keys_hex_csv'\n");
-                return -1;
-            }
-            out->keys_hex_idx = (int)i;
-        } else if (csv_ascii_casecmp(name, "keys_dec_csv") == 0) {
-            if (out->keys_dec_idx >= 0) {
-                LOG_ERROR("channel map header duplicates 'keys_dec_csv'\n");
-                return -1;
-            }
-            out->keys_dec_idx = (int)i;
-        } else if (csv_ascii_casecmp(name, "single_key_hex") == 0) {
-            if (out->single_key_hex_idx >= 0) {
-                LOG_ERROR("channel map header duplicates 'single_key_hex'\n");
-                return -1;
-            }
-            out->single_key_hex_idx = (int)i;
-        } else if (csv_ascii_casecmp(name, "single_key_dec") == 0) {
-            if (out->single_key_dec_idx >= 0) {
-                LOG_ERROR("channel map header duplicates 'single_key_dec'\n");
-                return -1;
-            }
-            out->single_key_dec_idx = (int)i;
+    char* cell = header_line;
+    int index = 0;
+    while (cell) {
+        char* next = strchr(cell, ',');
+        if (next) {
+            *next++ = '\0';
         }
+        const char* name = trim_ws(cell);
+        for (int i = CHAN_NAME; index >= 2 && i < CHAN_FIELD_COUNT; i++) {
+            if (csv_ascii_casecmp(name, names[i]) != 0) {
+                continue;
+            }
+            if (out->index[i] >= 0) {
+                if (i == CHAN_NAME) {
+                    break;
+                }
+                LOG_ERROR("channel map header duplicates '%s'\n", names[i]);
+                return -1;
+            }
+            out->index[i] = index;
+            break;
+        }
+        index++;
+        cell = next;
     }
     return 0;
 }
@@ -803,12 +828,12 @@ chan_import_key_files(dsd_key_set* ks, const char* hex_cell, const char* dec_cel
 }
 
 static int
-chan_import_row_keys(dsd_state* state, char** fields, size_t field_count, const chan_header_cols* cols,
-                     const char* base_path, int row_number, int show_keys, int store, size_t slot) {
-    const char* hex_cell = chan_key_cell(fields, field_count, cols->keys_hex_idx);
-    const char* dec_cell = chan_key_cell(fields, field_count, cols->keys_dec_idx);
-    const char* single_hex_cell = chan_key_cell(fields, field_count, cols->single_key_hex_idx);
-    const char* single_dec_cell = chan_key_cell(fields, field_count, cols->single_key_dec_idx);
+chan_import_row_keys(dsd_state* state, char** fields, size_t field_count, const char* base_path, int row_number,
+                     int show_keys, int store, size_t slot) {
+    const char* hex_cell = chan_key_cell(fields, field_count, CHAN_KEYS_HEX);
+    const char* dec_cell = chan_key_cell(fields, field_count, CHAN_KEYS_DEC);
+    const char* single_hex_cell = chan_key_cell(fields, field_count, CHAN_SINGLE_HEX);
+    const char* single_dec_cell = chan_key_cell(fields, field_count, CHAN_SINGLE_DEC);
     const int have_files = chan_key_cell_present(hex_cell) || chan_key_cell_present(dec_cell);
     const int have_direct = chan_key_cell_present(single_hex_cell) || chan_key_cell_present(single_dec_cell);
     if (!have_files && !have_direct) {
@@ -867,33 +892,33 @@ chan_import_row_keys(dsd_state* state, char** fields, size_t field_count, const 
 static int
 chan_import_row(dsd_state* state, char* buffer, const chan_header_cols* cols, const char* base_path, int row_number,
                 int show_keys, int* out_field_count, long int* out_chan_number) {
-    char* fields[16];
+    char* fields[CHAN_FIELD_COUNT];
     int freq_parsed = 0;
     long int chan_number = -1;
-    // The row's scan-list slot is the count before it: every row that takes one
-    // appends, so the name index and the slot index stay equal by construction.
     const int lcn_before = state->lcn_freq_count;
-
-    const size_t field_count = csv_split_preserve_empty(buffer, fields, sizeof(fields) / sizeof(fields[0]));
-    for (size_t i = 0; i < field_count && i < 2; i++) {
-        if (csv_chan_import_apply_field(state, (int)i, fields[i], &chan_number, &freq_parsed) != 0) {
-            return -1;
-        }
+    const size_t field_count = chan_select_fields(buffer, cols, fields);
+    dsd_scan_mode mode = DSD_SCAN_MODE_INHERIT;
+    if (dsd_scan_mode_parse(fields[CHAN_MODE], &mode) != 0) {
+        LOG_ERROR("channel map file '%s' row %d: invalid mode\n", base_path, row_number);
+        return -1;
     }
-    if (cols->has_name && field_count >= 3 && state->lcn_freq_count > lcn_before) {
-        if (dsd_state_trunk_lcn_name_set(state, (size_t)lcn_before, fields[2]) != 0) {
-            LOG_ERROR("channel map import out of memory\n");
+    for (int i = 0; i < 2 && fields[i]; i++) {
+        if (csv_chan_import_apply_field(state, i, fields[i], &chan_number, &freq_parsed) != 0) {
             return -1;
         }
     }
     const int row_has_slot = state->lcn_freq_count > lcn_before;
-    if (cols->keys_hex_idx >= 0 || cols->keys_dec_idx >= 0 || cols->single_key_hex_idx >= 0
-        || cols->single_key_dec_idx >= 0) {
-        const size_t slot = row_has_slot ? (size_t)lcn_before : 0U;
-        if (chan_import_row_keys(state, fields, field_count, cols, base_path, row_number, show_keys, row_has_slot, slot)
-            != 0) {
+    if (row_has_slot) {
+        if ((fields[CHAN_NAME] && dsd_state_trunk_lcn_name_set(state, (size_t)lcn_before, fields[CHAN_NAME]) != 0)
+            || dsd_channel_mode_set(state, (size_t)lcn_before, mode) != 0) {
+            LOG_ERROR("channel map import out of memory\n");
             return -1;
         }
+    }
+    if (chan_import_row_keys(state, fields, CHAN_FIELD_COUNT, base_path, row_number, show_keys, row_has_slot,
+                             row_has_slot ? (size_t)lcn_before : 0U)
+        != 0) {
+        return -1;
     }
     *out_field_count = (int)field_count;
     *out_chan_number = chan_number;
@@ -941,10 +966,6 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
     int row_count = 0;
     chan_header_cols cols;
     DSD_MEMSET(&cols, 0, sizeof(cols));
-    cols.keys_hex_idx = -1;
-    cols.keys_dec_idx = -1;
-    cols.single_key_hex_idx = -1;
-    cols.single_key_dec_idx = -1;
     int rc = 0;
 
     while (fgets(buffer, BSIZE, fp)) {

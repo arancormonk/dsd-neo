@@ -50,12 +50,15 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
     DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES = 1,
     /*
      * Cross-cutting core facilities live in the engine range (0-7) rather than
-     * expanding `dsd_state`. Engine owns 0-1; core owns the documented IDs 2
-     * and 4.
+     * expanding `dsd_state`. Engine owns 0, 1, 3 and 7; core owns IDs
+     * 2, 4 and 5; runtime owns 6.
      */
     DSD_STATE_EXT_CORE_TG_POLICY = 2,
     DSD_STATE_EXT_ENGINE_TRUNK_SCAN = 3,
     DSD_STATE_EXT_CORE_CALL_STATE = 4,
+    DSD_STATE_EXT_CORE_CHANNEL_MODES = 5,
+    DSD_STATE_EXT_RUNTIME_SCAN_MODE = 6,
+    DSD_STATE_EXT_ENGINE_CHANNEL_SCAN = 7,
     DSD_STATE_EXT_PROTO_NXDN_TRUNK_DIAG = 24,
     DSD_STATE_EXT_PROTO_DMR_RC = 25,
     DSD_STATE_EXT_PROTO_P25_CC_SELECTION = 26,

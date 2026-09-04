@@ -9,6 +9,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -17,6 +18,8 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <stdlib.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
@@ -2923,8 +2926,57 @@ test_p25_trunk_tick_recency(void) {
 }
 #endif
 
+static void
+test_scan_class_matchers_and_no_sync(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->ssize = 36;
+    opts->msize = 15;
+    for (int m = DSD_SCAN_MODE_P25; m <= DSD_SCAN_MODE_M17; m++) {
+        assert(dsd_scan_mode_enter(opts, state, (dsd_scan_mode)m) == 0);
+        const int expected = (int)dsd_scan_mode_profile((dsd_scan_mode)m).sps_profile_index;
+        dsd_frame_sync_reset_acquisition(opts, state, 1);
+        for (int p = 0; p < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; p++) {
+            const int allowed = p == expected || (m == DSD_SCAN_MODE_P25 && p == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+            assert(dsd_frame_sync_test_sps_hunt_profile_has_candidate(opts, p) == allowed);
+        }
+        for (int n = 0; n < 120; n++) {
+            state->sps_hunt_counter =
+                dsd_frame_sync_sps_hunt_dwell_passes(opts, state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+            (void)frame_sync_no_sync_sps_hunt(opts, state);
+            assert(state->sps_hunt_idx == expected
+                   || (m == DSD_SCAN_MODE_P25 && state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4));
+        }
+        state->sps_hunt_idx = expected;
+        if (m != DSD_SCAN_MODE_P25) {
+            assert(dsd_frame_sync_test_try_protocol_matches(opts, state, P25P1_SYNC, 24) == DSD_SYNC_NONE);
+            assert(dsd_frame_sync_test_try_protocol_matches(opts, state, P25P2_SYNC, 20) == DSD_SYNC_NONE);
+        }
+        if (m != DSD_SCAN_MODE_DMR) {
+            assert(dsd_frame_sync_test_try_protocol_matches(opts, state, DMR_MS_RC_SYNC, 24) == DSD_SYNC_NONE);
+        }
+        state->profile_proof_valid = 1;
+        state->symbol_history_count = 45;
+        state->sps_hunt_counter = 300;
+        state->p25_p1_validated_rf_mod = 1;
+        state->sbuf[0] = 123.0f;
+        dsd_frame_sync_reset_acquisition(opts, state, 1);
+        assert(!state->profile_proof_valid && !state->symbol_history_count && !state->sps_hunt_counter);
+        assert(state->p25_p1_validated_rf_mod == -1 && state->sidx == 0 && state->midx == 0);
+        assert(fabsf(state->sbuf[0] - state->min) < 0.01f);
+    }
+    dsd_scan_mode_leave(opts, state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
+    test_scan_class_matchers_and_no_sync();
     test_p25_vc_acquisition_hooks();
     test_sps_hunt_skips_disabled_protocol_rates();
     test_sps_hunt_profile_updates_timing();

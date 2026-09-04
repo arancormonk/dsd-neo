@@ -2166,7 +2166,7 @@ test_ui_import_and_dsp_output_commands_report_service_results(void) {
     dsd_app_command_submit(DSD_APP_CMD_IMPORT_CHANNEL_MAP, missing_chan, strlen(missing_chan) + 1U);
     applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("channel import command drains", applied, 1);
-    rc |= expect_true("channel import records requested path", strcmp(opts->chan_in_file, missing_chan) == 0);
+    rc |= expect_true("failed channel import preserves configured path", opts->chan_in_file[0] == '\0');
     rc |= expect_true("channel import failure toast", strstr(state->ui_msg, "Failed: Channel map import") != NULL);
 
     const char* missing_group = "./missing-group-list.csv";

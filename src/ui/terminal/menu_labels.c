@@ -19,6 +19,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <stdint.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -216,9 +217,14 @@ is_ted_allowed(const void* v) {
 const char*
 lbl_decode_mode(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    dsdneoUserDecodeMode mode = (c && c->opts) ? dsd_infer_decode_mode_preset(c->opts) : DSDCFG_MODE_AUTO;
+    dsdneoUserDecodeMode mode = (c && c->opts) ? dsd_scan_mode_configured_preset(c->opts, c->state) : DSDCFG_MODE_AUTO;
     /* "..." because the row opens a picker; without it the grammar promises a toggle. */
-    DSD_SNPRINTF(b, n, "Mode... [%s]", dsd_decode_mode_display_name(mode));
+    const dsd_scan_mode active = c ? dsd_scan_mode_active(c->state) : DSD_SCAN_MODE_INHERIT;
+    if (active != DSD_SCAN_MODE_INHERIT) {
+        DSD_SNPRINTF(b, n, "Mode... [%s; scan %s]", dsd_decode_mode_display_name(mode), dsd_scan_mode_name(active));
+    } else {
+        DSD_SNPRINTF(b, n, "Mode... [%s]", dsd_decode_mode_display_name(mode));
+    }
     return b;
 }
 

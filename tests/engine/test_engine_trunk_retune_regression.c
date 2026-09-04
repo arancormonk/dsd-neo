@@ -1503,3 +1503,9 @@ main(void) {
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic pop
 #endif
+
+void
+dsd_trunk_tuning_request_publish(uint64_t request_id, dsd_trunk_tune_result result) {
+    (void)request_id;
+    (void)result;
+}

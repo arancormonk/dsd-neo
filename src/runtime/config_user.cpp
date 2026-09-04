@@ -27,6 +27,7 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
@@ -1854,6 +1855,16 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
         return;
     }
 
+    dsd_opts* configured = nullptr;
+    if (dsd_scan_mode_active(state) != DSD_SCAN_MODE_INHERIT) {
+        configured = static_cast<dsd_opts*>(malloc(sizeof(*configured)));
+        if (!configured) {
+            return;
+        }
+        DSD_MEMCPY(configured, opts, sizeof(*configured));
+        dsd_scan_mode_configured_opts(state, configured);
+        opts = configured;
+    }
     user_cfg_reset(cfg);
     snapshot_input_config(opts, cfg);
     snapshot_output_config(opts, cfg);
@@ -1866,6 +1877,7 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     snapshot_alerts_config(opts, cfg);
     snapshot_recording_config(opts, cfg);
     snapshot_dsp_config(cfg);
+    free(configured);
 }
 
 // Template generation ---------------------------------------------------------

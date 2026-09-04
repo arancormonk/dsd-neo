@@ -17,6 +17,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/scan_mode.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -163,7 +164,8 @@ MetricsModel::fillScanControlView(View& next, const dsd_opts* opts_snapshot, con
 
 void
 MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) {
-    next.decode_mode = static_cast<int>(dsd_infer_decode_mode_preset(opts_snapshot));
+    next.scan_mode = QString::fromLatin1(dsd_scan_mode_name(dsd_scan_mode_active(snapshot)));
+    next.decode_mode = static_cast<int>(dsd_scan_mode_configured_preset(opts_snapshot, snapshot));
 
     /* Held for a moment after the last live sync, rather than latched until
      * something explicitly clears it.

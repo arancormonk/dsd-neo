@@ -384,7 +384,7 @@ static void
 dsd_cli_usage_section_trunking_and_tools(void) {
     printf("Trunking Options:\n");
     printf("  -C <file>     Import Channel to Frequency Map (channum, freq) from csv file. (Capital C)\n");
-    printf("                 (See channel_map.csv for example)\n");
+    printf("                 Optional name, mode and key columns; see examples/conventional_scan_modes.csv.\n");
     printf("  -G <file>     Import Group List Allow/Block and Label from csv file.\n");
     printf("                 (See group.csv for example)\n");
     printf("      --p25-bandplan <file>   P25 band plan CSV (IDEN table) for sites that never send IDEN_UP.\n");
@@ -392,9 +392,8 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("      --p25-bandplan-export <file>  Write the learned P25 band plan CSV once at clean shutdown.\n");
     printf("  -T            Enable Trunking Features (NXDN/P25/EDACS/DMR) with RIGCTL/TCP or RTL Input\n");
     printf("  -Y            Enable Scanning Mode with RIGCTL/TCP or RTL Input\n");
-    printf(
-        "                 Experimental -- Can only scan for sync with enabled decoders, don't mix NXDN and DMR/P25!\n");
-    printf("                 This is not a Trunking Feature, just scans through conventional frequencies fast!\n");
+    printf("                 Row mode: p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf or m17; blank inherits globals.\n");
+    printf("                 Scans conventional frequencies; use -T for trunking.\n");
     printf("      --trunk-scan <targets.csv>  Enable single-tuner trunk scan target rotation.\n");
     printf("                 Uses per-target chan_csv values; cannot be combined with global -C or IQ replay.\n");
     printf("      --trunk-scan-dwell-ms <ms>  Set default idle dwell per target (250..600000, default 3000).\n");

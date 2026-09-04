@@ -19,6 +19,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1499,7 +1500,8 @@ act_decode_mode(void* v) {
        and Auto is the one choice the command layer never treats as a no-op: it
        re-enables every protocol and resets the modulation, so a stray second Enter
        would drag a settled QPSK session back to C4FM. */
-    const dsdneoUserDecodeMode now = (c && c->opts) ? dsd_infer_decode_mode_preset(c->opts) : DSDCFG_MODE_AUTO;
+    const dsdneoUserDecodeMode now =
+        (c && c->opts) ? dsd_scan_mode_configured_preset(c->opts, c->state) : DSDCFG_MODE_AUTO;
     ui_chooser_start_at("Decoder mode", g_decode_mode_labels, (int)DECODE_MODE_CHOICE_COUNT,
                         decode_mode_choice_index(now), chooser_done_decode_mode, NULL);
 }

@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -57,6 +58,7 @@ ui_handle_trunk_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
         // ui_handle_scanner_toggle clears trunking for the same reason: whichever
         // one was asked for last is the one driving, not both at once.
         // Leaving -Y hands the foreground keyring back to the globals.
+        dsd_engine_channel_scan_leave(opts, state);
         dsd_scan_keys_leave(state);
         opts->scanner_mode = 0;
     }
@@ -70,6 +72,7 @@ ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     opts->scanner_mode = opts->scanner_mode ? 0 : 1;
     opts->trunk_enable = 0;
     if (was_scanner) {
+        dsd_engine_channel_scan_leave(opts, state);
         dsd_scan_keys_leave(state);
     }
     return 1;

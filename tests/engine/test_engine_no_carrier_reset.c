@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
@@ -12,6 +13,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -19,6 +21,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
@@ -280,6 +283,72 @@ free_test_runtime(dsd_opts* opts, dsd_state* state) {
     free(state);
     free(opts);
 }
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+static int
+test_typed_scan_tune_boundaries(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    state->trunk_lcn_freq[0] = state->trunk_lcn_freq[1] = 941012500;
+    rc |= expect_true("typed mode metadata", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_NXDN48) == 0);
+    rc |= expect_true("typed P25 metadata", dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_P25) == 0);
+    state->last_cc_sync_time = time(NULL);
+    noCarrier(opts, state);
+    rc |= expect_true("typed startup waits for scheduled entry", g_rtl_tune_calls == 0 && !opts->frame_nxdn48);
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("typed automatic mode and profile commit",
+                      opts->frame_nxdn48 && state->lcn_freq_roll == 1 && g_rtl_symbol_rate_hz == 2400
+                          && g_rtl_symbol_levels == 4 && g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_6K25);
+    state->lcn_scan_hold = 1;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("typed hold prevents automatic entry", g_rtl_tune_calls == 1 && state->lcn_freq_roll == 1);
+    state->lcn_scan_hold = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    noCarrier(opts, state);
+    const uint64_t pending = dsd_trunk_tuning_pending_request();
+    rc |= expect_true("typed timeout leaves outgoing mode", pending != 0 && opts->frame_nxdn48
+                                                                && state->lcn_freq_roll == 1
+                                                                && dsd_engine_channel_scan_pending(opts, state));
+    apply_pending_profile(941012500);
+    dsd_trunk_tuning_request_publish(pending, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("typed async completion commits",
+                      !dsd_engine_channel_scan_pending(opts, state) && opts->frame_p25p1 && opts->frame_p25p2
+                          && !opts->frame_dmr && state->lcn_freq_roll == 2 && g_rtl_symbol_rate_hz == 4800);
+    opts->use_rigctl = 1;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_true("typed dual-backend partial failure leaves row", state->lcn_freq_roll == 2 && opts->frame_p25p1);
+    rc |= expect_true("typed partial failure closes frame gate",
+                      !dsd_trunk_tuning_frame_is_dispatchable(dsd_trunk_tuning_generation(), 1));
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    noCarrier(opts, state);
+    rc |= expect_true("typed recovery commits new row", opts->frame_nxdn48 && state->lcn_freq_roll == 1);
+    rc |= expect_true("typed recovery reopens frame gate",
+                      dsd_trunk_tuning_frame_is_dispatchable(dsd_trunk_tuning_generation(), 1));
+    g_rigctl_setfreq_ok = 0;
+    dsd_engine_channel_scan_leave(opts, state);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+#endif
 
 int
 main(void) {
@@ -1952,6 +2021,10 @@ main(void) {
 #endif
 
     free_test_runtime(opts, state);
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+    rc |= test_typed_scan_tune_boundaries();
+#endif
 
     if (rc == 0) {
         printf("ENGINE_NO_CARRIER_RESET: OK\n");

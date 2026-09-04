@@ -78,6 +78,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
     Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
     Q_PROPERTY(int decodeMode READ decodeMode NOTIFY controlChanged)
+    Q_PROPERTY(QString scanMode READ scanMode NOTIFY controlChanged)
     Q_PROPERTY(int modulation READ modulation NOTIFY controlChanged)
     Q_PROPERTY(int tunerGainDb READ tunerGainDb NOTIFY controlChanged)
     Q_PROPERTY(double squelchDb READ squelchDb NOTIFY controlChanged)
@@ -248,6 +249,11 @@ class MetricsModel : public QObject {
      * decodeMode is a dsdneoUserDecodeMode; modulation is 0 for C4FM, 1 for QPSK
      * and 2 for GFSK, matching DSD_APP_CMD_MOD_SET's payload and dsd_state::rf_mod.
      */
+    QString
+    scanMode() const {
+        return m_view.scan_mode;
+    }
+
     int
     decodeMode() const {
         return m_view.decode_mode;
@@ -578,6 +584,7 @@ class MetricsModel : public QObject {
         QString sync_label;
         bool trunkable_sync = false;
         int decode_mode = 0;
+        QString scan_mode;
         int modulation = 0;
         int tuner_gain_db = 0;
         double squelch_db = 0.0;
@@ -626,9 +633,9 @@ class MetricsModel : public QObject {
             return audio_muted == other.audio_muted && held_tg == other.held_tg
                    && enc_lockout_count == other.enc_lockout_count && tuner_controlled == other.tuner_controlled
                    && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
-                   && scanControlEquals(other) && decode_mode == other.decode_mode && modulation == other.modulation
-                   && tuner_gain_db == other.tuner_gain_db && squelch_db == other.squelch_db
-                   && squelch_off == other.squelch_off && ppm == other.ppm;
+                   && scanControlEquals(other) && scan_mode == other.scan_mode && decode_mode == other.decode_mode
+                   && modulation == other.modulation && tuner_gain_db == other.tuner_gain_db
+                   && squelch_db == other.squelch_db && squelch_off == other.squelch_off && ppm == other.ppm;
         }
     };
 

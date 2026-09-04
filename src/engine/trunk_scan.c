@@ -5,6 +5,7 @@
 
 #include <ctype.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
@@ -13,8 +14,10 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -1980,7 +1983,7 @@ trunk_scan_apply_target_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord, 
     if (!opts || !coord || !target) {
         return;
     }
-    trunk_scan_restore_saved_mod_gain_opts(opts, coord);
+    opts->rtl_gain_value = coord->saved_rtl_gain_value;
     trunk_scan_apply_target_mod_opts(opts, target);
     trunk_scan_apply_target_gain_opts(opts, target);
     opts->trunk_is_tuned = 0;
@@ -2055,6 +2058,7 @@ trunk_scan_import_target_chan_csv(const dsd_opts* opts, dsd_state* state, const 
     dsd_state_trunk_lcn_name_free(state);
     /* Per-row key columns are likewise discarded: keys arrive per trunk-scan target, not
      * per chan_csv row, and a kept set would install on the wrong target's hop. */
+    dsd_channel_modes_clear(state);
     dsd_state_trunk_lcn_keys_free(state);
     free(tmp_opts);
     if (import_rc != 0) {
@@ -2106,8 +2110,10 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
             DSD_SECURE_ZERO(&rt->target.single_key_scalars, sizeof(rt->target.single_key_scalars));
             rt->target.single_keys_present = 0U;
         }
+        trunk_scan_restore_saved_mod_gain_opts(opts, coord);
         trunk_scan_restore_snapshot(state, empty_snapshot);
         trunk_scan_apply_target_opts(opts, coord, &rt->target);
+        dsd_scan_mode_target_modulation(state, (int)rt->target.modulation);
         trunk_scan_apply_target_demod(opts, state, &rt->target);
         trunk_scan_seed_target_state(state, &rt->target, now_m);
         if (trunk_scan_import_target_chan_csv(opts, state, &rt->target, err, err_sz) != 0) {
@@ -2275,6 +2281,19 @@ trunk_scan_share_peer_idens(const dsd_trunk_scan_coord* coord, dsd_state* state,
     }
 }
 
+static dsd_scan_mode
+trunk_scan_target_mode(dsd_trunk_scan_target_type type) {
+    switch (type) {
+        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK: return DSD_SCAN_MODE_P25;
+        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
+        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL: return DSD_SCAN_MODE_DMR;
+        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
+        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL: return DSD_SCAN_MODE_NXDN96;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return DSD_SCAN_MODE_NXDN48;
+    }
+    return DSD_SCAN_MODE_INHERIT;
+}
+
 static int
 trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t next, int save_current) {
     if (!coord || next >= coord->count) {
@@ -2289,12 +2308,17 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
      * here until the caller decides otherwise, and the label has to say so. */
     trunk_scan_publish_active_target(state, coord);
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (dsd_scan_mode_enter(opts, state, trunk_scan_target_mode(rt->target.type)) != 0) {
+        return -1;
+    }
     trunk_scan_restore_target_snapshot(coord, state, rt);
     trunk_scan_share_peer_idens(coord, state, rt);
     trunk_scan_apply_target_opts(opts, coord, &rt->target);
+    dsd_scan_mode_target_modulation(state, (int)rt->target.modulation);
     trunk_scan_apply_target_keys(state, rt);
     trunk_scan_apply_target_demod(opts, state, &rt->target);
     trunk_scan_sync_active_sm_mode(state, rt);
+    dsd_frame_sync_reset_acquisition(opts, state, 0);
 
     double now_m = trunk_scan_now_m();
     rt->parked_since_m = now_m;
@@ -2388,8 +2412,10 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
      * necessarily this one -- the original is skipped when its own retry cooldown is still
      * running. Republish, or the label names a target the receiver never reached. */
     trunk_scan_publish_active_target(state, coord);
+    (void)dsd_scan_mode_enter(opts, state, trunk_scan_target_mode(coord->targets[coord->active].target.type));
     trunk_scan_restore_snapshot(state, original_snapshot);
     trunk_scan_apply_target_opts(opts, coord, &coord->targets[coord->active].target);
+    dsd_scan_mode_target_modulation(state, (int)coord->targets[coord->active].target.modulation);
     trunk_scan_apply_target_keys(state, &coord->targets[coord->active]);
     trunk_scan_apply_target_demod(opts, state, &coord->targets[coord->active].target);
     trunk_scan_sync_active_sm_mode(state, &coord->targets[coord->active]);
@@ -2470,76 +2496,6 @@ trunk_scan_warn_ignored_target_gain(const dsd_opts* opts, const dsd_state* state
         return;
     }
     LOG_WARN("WARNING: Trunk scan rtl_gain target overrides require RTL-family input; ignoring target gain settings\n");
-}
-
-typedef enum {
-    TRUNK_SCAN_DECODER_P25 = 0,
-    TRUNK_SCAN_DECODER_DMR = 1,
-    TRUNK_SCAN_DECODER_NXDN96 = 2,
-    TRUNK_SCAN_DECODER_NXDN48 = 3,
-    TRUNK_SCAN_DECODER_COUNT = 4,
-} trunk_scan_decoder_class;
-
-/* Exhaustive switch with no default: adding a target type must fail the build here rather than
- * silently classing the new type as "always decodable". */
-static trunk_scan_decoder_class
-trunk_scan_target_decoder_class(dsd_trunk_scan_target_type type) {
-    switch (type) {
-        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK: return TRUNK_SCAN_DECODER_P25;
-        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL: return TRUNK_SCAN_DECODER_DMR;
-        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL: return TRUNK_SCAN_DECODER_NXDN96;
-        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return TRUNK_SCAN_DECODER_NXDN48;
-    }
-    return TRUNK_SCAN_DECODER_P25;
-}
-
-static void
-trunk_scan_warn_disabled_target_decoders(const dsd_opts* opts, const dsd_trunk_scan_target_list* list) {
-    if (!opts || !list) {
-        return;
-    }
-
-    static const struct {
-        const char* name;
-        const char* hint;
-    } k_decoders[TRUNK_SCAN_DECODER_COUNT] = {
-        {"P25", "-ft, -f1, -f2, or -fa"},
-        {"DMR", "-fs, -ft, or -fa"},
-        {"NXDN96", "-fn or -fa"},
-        {"NXDN48", "-fi or -fa"},
-    };
-
-    /* P25 mirrors the engine's own no_carrier_p25_frames_enabled(): a TDMA control channel is
-     * followed with -f2 alone, which leaves frame_p25p1 clear. The two NXDN variants are separate
-     * gates because -fn and -fi each enable only one of them; -fa enables both. */
-    const int enabled[TRUNK_SCAN_DECODER_COUNT] = {
-        (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1),
-        (opts->frame_dmr == 1),
-        (opts->frame_nxdn96 == 1),
-        (opts->frame_nxdn48 == 1),
-    };
-
-    /* One line per decoder class, not per target: scan lists are unbounded. */
-    size_t missing[TRUNK_SCAN_DECODER_COUNT] = {0};
-    const char* first_id[TRUNK_SCAN_DECODER_COUNT] = {0};
-    for (size_t i = 0; i < list->count; i++) {
-        const trunk_scan_decoder_class cls = trunk_scan_target_decoder_class(list->targets[i].type);
-        if (enabled[cls]) {
-            continue;
-        }
-        if (missing[cls]++ == 0) {
-            first_id[cls] = list->targets[i].id;
-        }
-    }
-    for (int cls = 0; cls < (int)TRUNK_SCAN_DECODER_COUNT; cls++) {
-        if (missing[cls] == 0) {
-            continue;
-        }
-        LOG_WARN("WARNING: %zu trunk scan target(s) have no enabled %s decoder (first: '%s'); use %s to decode them\n",
-                 missing[cls], k_decoders[cls].name, first_id[cls], k_decoders[cls].hint);
-    }
 }
 
 static void
@@ -3005,8 +2961,9 @@ trunk_scan_coord_create(const dsd_trunk_scan_target_list* list, const dsd_opts* 
 static void
 trunk_scan_init_release(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
                         dsd_trunk_scan_target_list* list) {
-    dsd_scan_keys_leave(state);
     trunk_scan_restore_saved_opts(opts, coord);
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_scan_keys_leave(state);
     trunk_scan_coord_free(coord);
     dsd_trunk_scan_target_list_reset(list);
 }
@@ -3025,7 +2982,6 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         return -1;
     }
     trunk_scan_warn_ignored_target_gain(opts, state, &list);
-    trunk_scan_warn_disabled_target_decoders(opts, &list);
 
     dsd_trunk_scan_coord* coord = trunk_scan_coord_create(&list, opts, err, err_sz);
     if (!coord) {
@@ -3033,7 +2989,8 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         return -1;
     }
 
-    if (trunk_scan_build_target_runtime(coord, opts, state, &list, err, err_sz) != 0) {
+    if (dsd_scan_mode_begin(opts, state) != 0
+        || trunk_scan_build_target_runtime(coord, opts, state, &list, err, err_sz) != 0) {
         trunk_scan_init_release(opts, state, coord, &list);
         return -1;
     }
@@ -3079,8 +3036,9 @@ dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state) {
         return;
     }
     trunk_scan_log_nxdn_diag_summaries(coord, state);
-    dsd_scan_keys_leave(state);
     trunk_scan_restore_saved_opts(opts, coord);
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_scan_keys_leave(state);
     trunk_scan_uninstall_runtime_hooks(coord);
     trunk_scan_clear_published_target(state);
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN, NULL, NULL);

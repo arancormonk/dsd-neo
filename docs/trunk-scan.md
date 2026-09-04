@@ -105,11 +105,10 @@ Target list limits and validation:
 
 ## CLI Usage
 
-For a mixed scan with an RTL-SDR (the shipped starter file contains P25, DMR, NXDN96 and NXDN48 rows, so use `-fa`;
-`-ft` is enough for a list with no NXDN targets):
+For a mixed scan with an RTL-SDR (each target selects its decoder class):
 
 ```sh
-dsd-neo -fa -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal
+dsd-neo -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal
 ```
 
 For an external receiver that sends PCM audio over TCP and is tuned through rigctl:
@@ -140,15 +139,15 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   `--scan-voice-qualify-ms` and `--scan-voice-hold-ms` timings apply to the `-Y` conventional scan only, not to
   trunk-scan targets.
 
-Use the `-fa` (AUTO) command-line mode for mixed scan lists that contain NXDN targets: `-ft` enables the P25/DMR
-decoders but neither NXDN rate, so NXDN rows would sit idle with a startup warning. The two NXDN rates are separate
-decoders with separate mode presets -- `-fn` enables NXDN96 only and `-fi` enables NXDN48 only -- so **a list mixing
-`nxdn-conventional` and `nxdn48-conventional` rows requires `-fa`**. Single-rate lists can use the narrower preset.
-DSD-neo logs a warning at scan start for any target whose decoder is not enabled by the selected mode; it does not
-silently flip mode-preset frame flags.
+Each target's `type` selects its decoder class regardless of the configured global preset. P25 targets enable
+both phases and exclude DMR and X2-TDMA; DMR and NXDN targets enable only their declared class and rate. Mixed
+lists, including both NXDN rates, work without `-fa`. The target's `modulation` column keeps its existing precedence:
+an explicit value, including `auto`, overrides global modulation handling. An empty value preserves an explicit
+global modulation lock. Modes declared in a target's `chan_csv` do not override its type.
 
-`mode.decode = "auto"` in a config file is equivalent to `-fa` for decoder selection, so it serves mixed lists too.
-Use `mode.decode = "nxdn96"` or `mode.decode = "nxdn48"` when a single-rate list is all you want enabled.
+Global mode/modulation commands update the configured settings while the parked target remains constrained.
+Stopping trunk scan restores those configured settings, and configuration saves record them rather than the parked
+target's decoder. Target gain, trunking state, and learned P25 modulation retain their existing coordinator ownership.
 
 ## Config Usage
 
@@ -270,8 +269,6 @@ Expected log messages include:
 ```text
 Trunk scan target 'county-p25' at 851012500 Hz
 Trunk scan enabled with 6 targets
-2 trunk scan target(s) have no enabled NXDN96 decoder (first: 'site-nxdn'); use -fn or -fa to decode them
-1 trunk scan target(s) have no enabled NXDN48 decoder (first: 'field-nxdn48'); use -fi or -fa to decode them
 Trunk scan target 'city-dmr' retune failed; cooling down briefly
 ```
 
@@ -320,14 +317,6 @@ values are intentionally omitted from error messages.
 
 Remove either the `single_key_dec`/`single_key_hex` values or the key-file paths from that row. Direct and file key
 sources cannot be mixed for one target.
-
-`N trunk scan target(s) have no enabled <NAME> decoder (first: '<id>'); use <flags> to decode them`
-
-The selected decode mode does not enable the decoder those targets need, so they park and dwell without ever
-decoding. One line is logged per decoder class, not per target, and NXDN96 and NXDN48 are separate classes. Use
-`-fa` for a mixed list, `-fn` for an NXDN96-only list, `-fi` for an NXDN48-only list, `-ft`/`-f1`/`-f2` for P25, or
-`-fs`/`-ft` for DMR. A list holding both NXDN rates needs `-fa`, or `mode.decode = "auto"` in a config file, which
-selects the same decoders. DSD-neo does not flip mode-preset frame flags for you.
 
 `--trunk-scan cannot be combined with global -C/channel-map config`
 
