@@ -20,7 +20,8 @@ Options:
                   clang-tidy may process it multiple times and its progress
                   counter can exceed the unique file count.
   --jobs N        Number of translation units analyzed at once. Overrides
-                  DSD_CLANG_TIDY_JOBS; without either, the detected CPU count.
+                  DSD_CLANG_TIDY_JOBS; without either, the CPU count, capped by
+                  the available memory at about 1 GB per worker.
 
 Arguments:
   files...        Optional list of translation units to analyze (e.g., src/foo.c).
@@ -80,8 +81,14 @@ if ! command -v rg > /dev/null 2>&1; then
   exit 1
 fi
 
+# Sized by memory as well as cores: a worker here holds a few hundred MB on an
+# ordinary translation unit and close to a gigabyte on the Qt ones, and a worker
+# the OOM killer takes now fails the run rather than passing quietly.
+# shellcheck source=tools/lib/jobs.sh
+source "$ROOT_DIR/tools/lib/jobs.sh"
 if [[ -z "$JOBS" ]]; then
-  JOBS=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
+  JOBS=$(dsd_default_jobs 1024)
+  dsd_report_jobs clang-tidy 1024 "$JOBS"
 fi
 if [[ ! "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
   echo "Invalid jobs value: $JOBS" >&2

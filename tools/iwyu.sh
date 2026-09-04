@@ -16,7 +16,8 @@ Usage: tools/iwyu.sh [--strict] [--all-commands] [--jobs N] [--] [files...]
 Options:
   --strict        Fail when IWYU suggests include changes.
   --all-commands  Analyze every compile command entry (including duplicates).
-  --jobs N        Number of parallel workers (default: detected CPU count).
+  --jobs N        Number of parallel workers (default: the CPU count, capped by
+                  the available memory at about 1 GB per worker).
 
 Arguments:
   files...        Optional list of translation units to analyze (e.g., src/foo.c).
@@ -92,8 +93,14 @@ if [[ ! -f "$PDB_FILE" ]]; then
   fi
 fi
 
+# Sized by memory as well as cores: a worker here holds a few hundred MB on an
+# ordinary translation unit and close to a gigabyte on the Qt ones, and a worker
+# the OOM killer takes now fails the run rather than passing quietly.
+# shellcheck source=tools/lib/jobs.sh
+source "$ROOT_DIR/tools/lib/jobs.sh"
 if [[ -z "$JOBS" ]]; then
-  JOBS=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
+  JOBS=$(dsd_default_jobs 1024)
+  dsd_report_jobs iwyu 1024 "$JOBS"
 fi
 
 LOG_FILE=".iwyu.local.out"
