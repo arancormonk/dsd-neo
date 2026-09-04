@@ -77,7 +77,7 @@ CI and local quality tools are tracked through:
 - `.github/requirements/*.txt`
 - `.github/dependabot.yml`
 - `.github/workflows/*.yml`
-- `tools/*.sh`
+- `tools/*.sh` and `tools/lib/*.sh`
 
 Hashed Python requirements are used where Python tooling is installed in CI.
 GitHub Actions are pinned to immutable commit SHAs by policy.

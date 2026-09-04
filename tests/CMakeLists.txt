@@ -53,6 +53,13 @@ if(NOT WIN32)
                 ${PROJECT_SOURCE_DIR}/tests/tools/test_ci_changed_files_header_expansion.sh
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
+        add_test(
+            NAME TOOLS_CHECK_RUNNER
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_check_runner.sh
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
     endif()
 endif()
 

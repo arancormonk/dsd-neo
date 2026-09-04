@@ -11,27 +11,40 @@
 #                printed when it finishes, and every failure is reported at the
 #                end. Nothing exits early, so one run shows everything to fix.
 #   1            checks run one after another in the foreground, streaming
-#                their output, and the first failure exits. This is the
-#                bisect/parity switch and matches the historical behaviour.
+#                their output, and the first failure stops the run. This is the
+#                bisect/parity switch: it reports the same failure list and
+#                exits 1 just as lane mode does, only sooner.
 #
 # Callers run `runner_init PREFIX SERIAL`, define lane functions made of
 # run_check calls, start them with runner_spawn, join them with
 # runner_wait_all and finish with runner_report.
 #
-# Interrupts: every lane is started under job control (set -m) so that it owns
-# its own process group. A background job of a non-interactive shell ignores
-# SIGINT, so the parent's INT/TERM trap forwards SIGTERM to each lane's group,
-# which reaches the analyzer processes underneath, then removes the log dir.
+# The verdict is the set of files under RUNNER_DIR, so every function that
+# reads or writes them refuses to run when that directory is missing: a runner
+# that cannot record a failure must never be able to report success.
 #
-# The functions and variables below are used by the sourcing scripts, not here.
-# shellcheck disable=SC2329,SC2034
+# Interrupts: every lane, and every check run outside a lane, is started as a
+# background job in its own process group, which the parent then waits for. A
+# background job of a non-interactive shell ignores SIGINT, so the parent's
+# INT/TERM trap forwards SIGTERM to each group, which reaches the analyzer
+# processes underneath, then removes the log dir. Waiting on a background job
+# rather than running the check in the foreground is what lets the trap run at
+# all: bash defers a trap until the foreground command returns.
 
-RUNNER_PREFIX="${RUNNER_PREFIX:-runner}"
-RUNNER_SERIAL="${RUNNER_SERIAL:-0}"
-RUNNER_STREAM="${RUNNER_STREAM:-0}"
-RUNNER_LANE="${RUNNER_LANE:-main}"
+# Set by runner_init; the defaults here only cover a caller that reads one
+# before calling it. None of them is read from the environment, so nothing a
+# check exports can change how the runner behaves.
+RUNNER_PREFIX="runner"
+RUNNER_SERIAL="0"
+RUNNER_LANE="main"
+RUNNER_IN_LANE=0
 RUNNER_DIR=""
 RUNNER_SEQ=0
+RUNNER_REPORTED=0
+RUNNER_CHILD_PID=""
+# Exit status of the last run_check that ran in this shell. Callers gate
+# follow-up work on it; a check started inside a lane cannot report back here.
+RUNNER_LAST_RC=0
 RUNNER_LANE_PIDS=()
 RUNNER_LANE_NAMES=()
 
@@ -48,20 +61,43 @@ runner_detect_jobs() {
   printf '%s\n' "$jobs"
 }
 
+# The recorded failures are the verdict. If the directory holding them is gone,
+# an empty failed.txt would read as "nothing failed", so say so and fail.
+runner_require_dir() {
+  if [[ -n "$RUNNER_DIR" && -d "$RUNNER_DIR" ]]; then
+    return 0
+  fi
+  echo "${RUNNER_PREFIX}: internal error: runner state directory is missing (${RUNNER_DIR:-unset});" \
+    "cannot record or report check results." >&2
+  return 1
+}
+
 runner_cleanup() {
+  # Something exited before runner_report ran: a missing tool under
+  # DSD_HOOK_FAIL_ON_MISSING_TOOLS=1, serial mode's fail-fast, or an errexit
+  # abort. Print what was recorded before the logs go away.
+  if [[ "$RUNNER_REPORTED" != "1" ]] && [[ -n "$RUNNER_DIR" && -d "$RUNNER_DIR" ]]; then
+    runner_report || true
+  fi
   if [[ -n "$RUNNER_DIR" && -d "$RUNNER_DIR" ]]; then
     rm -rf "$RUNNER_DIR"
   fi
+  RUNNER_DIR=""
 }
 
 runner_on_signal() {
   trap '' INT TERM
   local pid=""
+  if [[ -n "$RUNNER_CHILD_PID" ]]; then
+    kill -TERM -- "-${RUNNER_CHILD_PID}" 2> /dev/null || kill -TERM "$RUNNER_CHILD_PID" 2> /dev/null || true
+  fi
   for pid in "${RUNNER_LANE_PIDS[@]}"; do
     kill -TERM -- "-${pid}" 2> /dev/null || kill -TERM "$pid" 2> /dev/null || true
   done
   wait 2> /dev/null || true
   echo "${RUNNER_PREFIX}: interrupted." >&2
+  # A run the user stopped has no verdict to report, only half-finished checks.
+  RUNNER_REPORTED=1
   runner_cleanup
   exit 130
 }
@@ -71,6 +107,12 @@ runner_init() {
   RUNNER_PREFIX="${1:-runner}"
   RUNNER_SERIAL="${2:-0}"
   RUNNER_DIR=$(mktemp -d "${TMPDIR:-/tmp}/dsd-neo-${RUNNER_PREFIX}.XXXXXX")
+  RUNNER_LANE="main"
+  RUNNER_IN_LANE=0
+  RUNNER_SEQ=0
+  RUNNER_REPORTED=0
+  RUNNER_CHILD_PID=""
+  RUNNER_LAST_RC=0
   RUNNER_LANE_PIDS=()
   RUNNER_LANE_NAMES=()
   trap runner_cleanup EXIT
@@ -79,29 +121,46 @@ runner_init() {
 
 # Record a tool that is not installed; the report lists them once.
 runner_note_missing() {
+  runner_require_dir || exit 1
   printf '%s\n' "$1" >> "${RUNNER_DIR}/missing.txt"
 }
 
-# run_check LABEL COMMAND [ARGS...]
+# run_check [--stream] LABEL COMMAND [ARGS...]
 #
-# Serial mode streams the command and exits on failure, exactly as the
-# pre-push hook always did. Lane mode captures stdout+stderr to a per-check
-# log, prints one status line, and records failures for runner_report.
-# RUNNER_STREAM=1 keeps the output streaming in lane mode (for long builds
-# whose progress the user wants to see) while still recording the failure.
+# Serial mode streams the command, and the first failure stops the run after
+# the failure list has been printed. Lane mode captures stdout+stderr to a
+# per-check log, prints one status line, and records failures for
+# runner_report. --stream keeps a check's output on the terminal in lane mode
+# (for long builds whose progress the user wants to see) while still recording
+# the failure; it is a per-call argument rather than an environment variable so
+# that it cannot leak into the environment of the check itself.
+#
+# Either way RUNNER_LAST_RC holds the check's exit status afterwards.
 run_check() {
+  local stream=0
+  if [[ "${1:-}" == "--stream" ]]; then
+    stream=1
+    shift
+  fi
   local label="$1"
   shift
+  runner_require_dir || exit 1
   local rc=0
+
   if [[ "$RUNNER_SERIAL" == "1" ]]; then
     echo "==> ${label}"
     set +e
     "$@"
     rc=$?
     set -e
+    RUNNER_LAST_RC=$rc
     if [[ $rc -ne 0 ]]; then
-      echo "${RUNNER_PREFIX}: ${label} failed." >&2
-      exit "$rc"
+      echo "==> FAIL  ${label} (rc=${rc})"
+      printf '%s\t%s\t%s\n' "$rc" "$label" "" >> "${RUNNER_DIR}/failed.txt"
+      echo "${RUNNER_PREFIX}: stopping at the first failure (serial mode)." >&2
+      # The EXIT trap prints the recorded failures; exit 1 in both modes so the
+      # two can be compared by exit code.
+      exit 1
     fi
     return 0
   fi
@@ -112,16 +171,31 @@ run_check() {
   local log="${RUNNER_DIR}/${id}.log"
   local start=$SECONDS
   echo "--> ${label}"
-  set +e
-  if [[ "$RUNNER_STREAM" == "1" ]]; then
-    "$@"
-    rc=$?
-    log=""
-  else
-    "$@" > "$log" 2>&1
-    rc=$?
+  # Outside a lane the check gets its own process group, so the INT/TERM trap
+  # can take its whole process tree down with it. Inside a lane it must stay in
+  # the lane's group, which is what the trap already signals.
+  if [[ "$RUNNER_IN_LANE" != "1" ]]; then
+    set -m
   fi
+  if [[ $stream -eq 1 ]]; then
+    "$@" < /dev/null &
+  else
+    "$@" > "$log" 2>&1 < /dev/null &
+  fi
+  RUNNER_CHILD_PID=$!
+  if [[ "$RUNNER_IN_LANE" != "1" ]]; then
+    set +m
+  fi
+  set +e
+  wait "$RUNNER_CHILD_PID"
+  rc=$?
   set -e
+  RUNNER_CHILD_PID=""
+  # shellcheck disable=SC2034 # Read by the sourcing script once run_check returns.
+  RUNNER_LAST_RC=$rc
+  if [[ $stream -eq 1 ]]; then
+    log=""
+  fi
   local elapsed=$((SECONDS - start))
   if [[ $rc -eq 0 ]]; then
     echo "==> ok    ${label} (${elapsed}s)"
@@ -142,12 +216,14 @@ runner_spawn() {
   if [[ "$RUNNER_SERIAL" == "1" ]]; then
     RUNNER_LANE="$name"
     "$fn"
+    RUNNER_LANE="main"
     return 0
   fi
   set -m
   (
     set +m
     RUNNER_LANE="$name"
+    RUNNER_IN_LANE=1
     RUNNER_SEQ=0
     "$fn"
   ) < /dev/null &
@@ -160,6 +236,10 @@ runner_spawn() {
 # tool under DSD_HOOK_FAIL_ON_MISSING_TOOLS=1, or an unexpected error outside
 # run_check) is recorded as a failure so it can never pass silently.
 runner_wait_all() {
+  if [[ ${#RUNNER_LANE_PIDS[@]} -eq 0 ]]; then
+    return 0
+  fi
+  runner_require_dir || exit 1
   local i=0
   local rc=0
   for i in "${!RUNNER_LANE_PIDS[@]}"; do
@@ -174,8 +254,11 @@ runner_wait_all() {
   RUNNER_LANE_NAMES=()
 }
 
-# Print missing tools and every failed check's log. Returns 1 if anything failed.
+# Print missing tools and every failed check's log. Returns 1 if anything
+# failed, or if the recorded results are unreadable.
 runner_report() {
+  RUNNER_REPORTED=1
+  runner_require_dir || return 1
   local missing=""
   if [[ -s "${RUNNER_DIR}/missing.txt" ]]; then
     missing=$(sort -u "${RUNNER_DIR}/missing.txt" | tr '\n' ' ')
