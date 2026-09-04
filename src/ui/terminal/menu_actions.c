@@ -145,6 +145,13 @@ config_profile_copy_source_path(const UiCtx* c, char* path, size_t path_size) {
     return 1;
 }
 
+#if defined(__GNUC__) && !defined(__clang__)
+/* GCC's analyzer loses the tie between pctx->n and the count that filled
+ * pctx->names, so it walks a path where the names were allocated but this loop
+ * runs zero times and reports them as leaked. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
+#endif
 static void
 config_profile_free_context(ProfileSelCtx* pctx) {
     if (!pctx) {
@@ -159,6 +166,9 @@ config_profile_free_context(ProfileSelCtx* pctx) {
     free((void*)pctx->names);
     free(pctx);
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 static ProfileSelCtx*
 config_profile_create_context(dsd_state* state, const char* path, const char** names, int count) {
