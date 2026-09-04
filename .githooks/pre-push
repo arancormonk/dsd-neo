@@ -13,12 +13,12 @@ remote_url="${2:-}"
 # - DSD_HOOK_FAIL_ON_MISSING_TOOLS: 1|0 (default: 0)
 #   when 1, missing analyzers make the hook fail.
 # - DSD_HOOK_RUN_SCAN_BUILD: 1|0 (default: 0)
-#   when 1, also runs the heavier scan-build pass (incremental: the build tree
-#   is reused between runs).
-# - DSD_HOOK_SCAN_BUILD_FRESH: 1|0 (default: 0)
-#   when 1, scan-build starts from a clean build tree.
+#   when 1, also runs the heavier scan-build pass (a full rebuild).
+# - DSD_HOOK_SCAN_BUILD_REUSE: 1|0 (default: 0)
+#   when 1, scan-build reuses its build tree, which analyzes only the
+#   translation units the incremental build recompiles.
 # - DSD_HOOK_JOBS: N (default: detected CPU count)
-#   worker budget shared by the per-TU analyzers and used by every fan-out.
+#   worker budget for the whole run, split between the checks that fan out.
 # - DSD_HOOK_SERIAL: 1|0 (default: 0)
 #   when 1, run the checks one after another with streaming output and stop
 #   at the first failure instead of running them in concurrent lanes.
@@ -358,11 +358,11 @@ fi
 # --- Execution ---------------------------------------------------------------
 #
 # The checks run through tools/lib/check_runner.sh. By default they run in
-# concurrent lanes sized to the machine: three light lanes of single-process
-# checks, and one lane per heavy per-TU analyzer, the analyzers sharing one
-# worker budget split by the work each has to do. Every failure is reported at
-# the end. DSD_HOOK_SERIAL=1 runs the lanes one after another in the foreground
-# with streaming output and stops at the first failure.
+# concurrent lanes sized to the machine: three light lanes, and one lane per
+# heavy per-TU analyzer. Every check that fans out draws on one worker budget,
+# split below, so the lanes together stay inside the machine. Every failure is
+# reported at the end. DSD_HOOK_SERIAL=1 runs the lanes one after another in the
+# foreground with streaming output and stops at the first failure.
 
 # shellcheck disable=SC1091 # Sourced from the repo root at runtime; linted as its own file.
 source "$repo_root/tools/lib/check_runner.sh"
@@ -380,37 +380,31 @@ mark_missing_tool() {
   fi
 }
 
-# Worker budget for the per-TU analyzers. Each analyzer lane gets a share of
-# JOBS in proportion to the work it has: translation units times the measured
-# cost per unit, in tenths of a second (clang-tidy ~4.2 s, cppcheck strict
-# ~4 s cold but near zero once .cppcheck-build holds its result, GCC
-# -fanalyzer ~1.3 s, IWYU ~0.2 s), clamped to [1, its TU count]. The leftover
-# goes to clang-tidy, the largest. With 74 TUs and a warm cppcheck cache that
-# is 11/1/3/1 on 16 cores and 47/1/14/2 on 64. Serial mode lets every tool use
-# the whole budget, since nothing else runs beside it.
+# Worker budget. The four per-TU analyzer lanes and the two fan-out linters
+# (lizard and clang-format) all run at the same time, so JOBS is split once, up
+# front, rather than each tool helping itself to the whole machine: unsplit,
+# a 64-core box ran roughly 190 concurrent processes and clang-tidy alone held
+# more than 10 GB. DSD_HOOK_JOBS therefore bounds the run, not each consumer.
+#
+# The two linters take a small fixed reservation each. The rest is shared
+# between the analyzers by their measured cost per translation unit (clang-tidy
+# ~4.2 s, cppcheck strict ~4 s, GCC -fanalyzer ~1.3 s, IWYU ~0.2 s). That ratio
+# does not change with the size of the change, so it is written as fixed shares
+# rather than recomputed from the TU count; what the size of the change does
+# decide is the clamp, since no analyzer can use more workers than it has
+# translation units. clang-tidy, the largest, takes what rounding and the
+# clamps leave over. With 74 TUs that is 6/4/1/1 on 16 cores and 22/19/6/1 on
+# 64. Serial mode lets every tool use the whole machine, since nothing else
+# runs beside it.
 tu_count=${#analysis_tus[@]}
 cppcheck_count=${#cppcheck_sources[@]}
 
-cppcheck_cache_dir="${CPPCHECK_BUILD_DIR:-.cppcheck-build}"
-cppcheck_cached=0
-for p in "${cppcheck_sources[@]}"; do
-  if compgen -G "${cppcheck_cache_dir}/$(basename "$p").*nalyzerinfo" > /dev/null; then
-    cppcheck_cached=$((cppcheck_cached + 1))
-  fi
-done
-cppcheck_cost=40
-if [[ $cppcheck_count -gt 0 && $((cppcheck_cached * 2)) -ge $cppcheck_count ]]; then
-  cppcheck_cost=1
-fi
-
-share_for() {
-  local work="$1"
-  local cap="$2"
-  local total="$3"
-  local share=1
-  if [[ $total -gt 0 ]]; then
-    share=$((JOBS * work / total))
-  fi
+# analyzer_share BUDGET PERMILLE CAP -> workers, at least 1, at most CAP (0: uncapped)
+analyzer_share() {
+  local budget="$1"
+  local permille="$2"
+  local cap="$3"
+  local share=$((budget * permille / 1000))
   if [[ $share -lt 1 ]]; then
     share=1
   fi
@@ -420,18 +414,28 @@ share_for() {
   printf '%s\n' "$share"
 }
 
-work_tidy=$((tu_count * 42))
-work_cppcheck=$((cppcheck_count * cppcheck_cost))
-work_fanalyzer=$((tu_count * 13))
-work_iwyu=$((tu_count * 2))
-work_total=$((work_tidy + work_cppcheck + work_fanalyzer + work_iwyu))
+jobs_lizard=$((JOBS / 8))
+if [[ $jobs_lizard -lt 1 ]]; then
+  jobs_lizard=1
+fi
+jobs_format=$jobs_lizard
+analyzer_budget=$((JOBS - jobs_lizard - jobs_format))
+if [[ $analyzer_budget -lt 1 ]]; then
+  analyzer_budget=1
+fi
+if [[ "${DSD_HOOK_SERIAL:-0}" == "1" ]]; then
+  jobs_lizard=$JOBS
+  jobs_format=$JOBS
+  analyzer_budget=$JOBS
+fi
+
 jobs_cppcheck=0
 if [[ $cppcheck_count -gt 0 ]]; then
-  jobs_cppcheck=$(share_for "$work_cppcheck" "$cppcheck_count" "$work_total")
+  jobs_cppcheck=$(analyzer_share "$analyzer_budget" 410 "$cppcheck_count")
 fi
-jobs_fanalyzer=$(share_for "$work_fanalyzer" "$tu_count" "$work_total")
-jobs_iwyu=$(share_for "$work_iwyu" "$tu_count" "$work_total")
-jobs_tidy=$((JOBS - jobs_cppcheck - jobs_fanalyzer - jobs_iwyu))
+jobs_fanalyzer=$(analyzer_share "$analyzer_budget" 130 "$tu_count")
+jobs_iwyu=$(analyzer_share "$analyzer_budget" 30 "$tu_count")
+jobs_tidy=$((analyzer_budget - jobs_cppcheck - jobs_fanalyzer - jobs_iwyu))
 if [[ $jobs_tidy -lt 1 ]]; then
   jobs_tidy=1
 fi
@@ -439,10 +443,12 @@ if [[ $tu_count -gt 0 && $jobs_tidy -gt $tu_count ]]; then
   jobs_tidy=$tu_count
 fi
 if [[ "${DSD_HOOK_SERIAL:-0}" == "1" ]]; then
-  jobs_tidy=$JOBS
-  jobs_cppcheck=$JOBS
-  jobs_fanalyzer=$JOBS
-  jobs_iwyu=$JOBS
+  jobs_tidy=$(analyzer_share "$JOBS" 1000 "$tu_count")
+  jobs_fanalyzer=$(analyzer_share "$JOBS" 1000 "$tu_count")
+  jobs_iwyu=$(analyzer_share "$JOBS" 1000 "$tu_count")
+  if [[ $cppcheck_count -gt 0 ]]; then
+    jobs_cppcheck=$(analyzer_share "$JOBS" 1000 "$cppcheck_count")
+  fi
 fi
 
 # shellcheck disable=SC2329 # Invoked indirectly via run_check callback dispatch.
@@ -451,7 +457,7 @@ run_clang_format_check() {
   local f=""
   # Fast path: check every file in parallel. Only when something is off walk
   # the files one by one to name the offenders.
-  if printf '%s\0' "$@" | xargs -0 -P "$JOBS" -n 8 clang-format -n --Werror > /dev/null 2>&1; then
+  if printf '%s\0' "$@" | xargs -0 -P "$jobs_format" -n 8 clang-format -n --Werror > /dev/null 2>&1; then
     return 0
   fi
   for f in "$@"; do
@@ -529,7 +535,7 @@ lane_lint() {
   fi
 
   if command -v lizard > /dev/null 2>&1; then
-    run_check "Lizard complexity (src/include/apps)" tools/lizard.sh --strict --jobs "$JOBS"
+    run_check "Lizard complexity (src/include/apps)" tools/lizard.sh --strict --jobs "$jobs_lizard"
   else
     mark_missing_tool "lizard" "Lizard complexity analysis"
   fi
@@ -597,21 +603,33 @@ lane_fanalyzer() {
 }
 
 echo "pre-push: jobs=${JOBS} (clang-tidy=${jobs_tidy} cppcheck=${jobs_cppcheck}" \
-  "fanalyzer=${jobs_fanalyzer} iwyu=${jobs_iwyu}) serial=${DSD_HOOK_SERIAL:-0}"
+  "fanalyzer=${jobs_fanalyzer} iwyu=${jobs_iwyu} lizard=${jobs_lizard}" \
+  "clang-format=${jobs_format}) serial=${DSD_HOOK_SERIAL:-0}"
 
 # The per-TU analyzers all read build/dev-debug/compile_commands.json and each
 # would configure the preset itself if it were missing. Do that once, up front,
-# so concurrent lanes never race on the same build tree.
+# so concurrent lanes never race on the same build tree. If it fails there is no
+# database to analyze against, and letting the lanes start would have three of
+# them configure the same build directory at the same time, so they are skipped:
+# the recorded failure is the verdict.
+compile_db_ready=1
 if [[ $tu_count -gt 0 && ! -f build/dev-debug/compile_commands.json && ! -f compile_commands.json ]]; then
   if command -v cmake > /dev/null 2>&1; then
     run_check "CMake configure (dev-debug compile database)" cmake --preset dev-debug
+    if [[ "$RUNNER_LAST_RC" -ne 0 ]]; then
+      compile_db_ready=0
+      echo "pre-push: skipping the per-TU analyzers (no compile database)." >&2
+    fi
+  else
+    compile_db_ready=0
+    mark_missing_tool "cmake" "per-TU analyzers (no compile database)"
   fi
 fi
 
 runner_spawn guardrails lane_guardrails
 runner_spawn lint lane_lint
 runner_spawn scan lane_scan
-if [[ $tu_count -gt 0 ]]; then
+if [[ $tu_count -gt 0 && $compile_db_ready -eq 1 ]]; then
   runner_spawn clang-tidy lane_clang_tidy
   runner_spawn iwyu lane_iwyu
   runner_spawn fanalyzer lane_fanalyzer
@@ -622,16 +640,17 @@ fi
 runner_wait_all
 
 # scan-build is a full -j build and wants the whole machine, so it runs after
-# the lanes have joined. The build tree is reused between runs so that only
-# recompiled translation units are re-analyzed; the report directory is always
-# fresh, so stale reports never reach the verdict.
+# the lanes have joined. It rebuilds from scratch: the analyzer only sees a
+# translation unit the build actually recompiles, and the report directory is
+# wiped each run, so an incremental build would answer "nothing recompiled since
+# the last run produced a bug" where the verdict claims "the tree is clean".
+# DSD_HOOK_SCAN_BUILD_REUSE=1 takes the faster, narrower answer deliberately.
 if [[ "$RUN_SCAN_BUILD" == "1" ]]; then
   if command -v scan-build > /dev/null 2>&1; then
     scan_build_args=(--strict --jobs "$JOBS")
-    scan_build_label="scan-build strict (incremental; log in .scan-build.local.out)"
-    if [[ "${DSD_HOOK_SCAN_BUILD_FRESH:-0}" == "1" ]]; then
-      scan_build_label="scan-build strict (full rebuild; log in .scan-build.local.out)"
-    else
+    scan_build_label="scan-build strict (full rebuild; log in .scan-build.local.out)"
+    if [[ "${DSD_HOOK_SCAN_BUILD_REUSE:-0}" == "1" ]]; then
+      scan_build_label="scan-build strict (incremental: only recompiled TUs are analyzed)"
       scan_build_args+=(--reuse-build-dir)
     fi
     run_check "$scan_build_label" tools/scan_build.sh "${scan_build_args[@]}"

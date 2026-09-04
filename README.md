@@ -483,11 +483,11 @@ Quick examples
   (architecture rules, security guardrails including workflow source/download pins, install-destination checks, clang-format, CMake format,
   clang-tidy, cppcheck, IWYU, GCC fanalyzer, Lizard, Semgrep, zizmor, OSV scan, and shell/workflow lint) on changed
   paths. The checks run in concurrent lanes sized to the machine's core count and every failure is reported at the
-  end; `DSD_HOOK_JOBS=N` caps the worker budget and `DSD_HOOK_SERIAL=1` runs the checks one at a time with streaming
-  output, stopping at the first failure.
-- Optional full scan-build pre-push/preflight pass: set `DSD_HOOK_RUN_SCAN_BUILD=1`. The scan-build tree is reused
-  between runs so only recompiled translation units are re-analyzed; `DSD_HOOK_SCAN_BUILD_FRESH=1` forces a clean
-  full rebuild.
+  end; `DSD_HOOK_JOBS=N` caps the worker budget for the whole run and `DSD_HOOK_SERIAL=1` runs the checks one at a
+  time with streaming output, stopping at the first failure.
+- Optional full scan-build pre-push/preflight pass: set `DSD_HOOK_RUN_SCAN_BUILD=1`. It rebuilds from scratch, since
+  the analyzer only sees translation units the build recompiles; `DSD_HOOK_SCAN_BUILD_REUSE=1` takes the faster
+  incremental answer, which covers only what changed since the last run.
 - Manual preflight runner: `tools/preflight_ci.sh` runs the same CI-aligned checks as `pre-push` without pushing.
 - Full quality preflight: `tools/quality_preflight.sh` enables missing-tool failures, includes scan-build, and runs the full local guardrail set,
   overlapping gitleaks with the pre-push checks and the whole-tree lint with the fuzz build; every failure is reported at the end.
