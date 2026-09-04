@@ -489,7 +489,8 @@ Quick examples
   between runs so only recompiled translation units are re-analyzed; `DSD_HOOK_SCAN_BUILD_FRESH=1` forces a clean
   full rebuild.
 - Manual preflight runner: `tools/preflight_ci.sh` runs the same CI-aligned checks as `pre-push` without pushing.
-- Full quality preflight: `tools/quality_preflight.sh` enables missing-tool failures, includes scan-build, and runs the full local guardrail set.
+- Full quality preflight: `tools/quality_preflight.sh` enables missing-tool failures, includes scan-build, and runs the full local guardrail set,
+  overlapping gitleaks with the pre-push checks and the whole-tree lint with the fuzz build; every failure is reported at the end.
 - Review expectations and high-risk change checklist: `docs/code-quality-guardrails.md`.
 - Supply-chain update policy: `docs/supply-chain-guardrails.md`.
 
