@@ -124,17 +124,47 @@ refute_out serial "NOT REACHED" "serial mode continued past a failure"
 # run_check call, which exported it into the check's own environment: a nested
 # gate inherited it, streamed all of its lanes onto one terminal and recorded
 # every failure with an empty log.
-write_case stream '
+#
+# The check reports every RUNNER_ name it can see, but a CI runner exports its
+# own (RUNNER_OS, RUNNER_TEMP, ...) into the whole job, so only a name this test
+# was not itself started with counts as one the runner leaked.
+env | sed -n 's/^\(RUNNER_[A-Z_]*\)=.*/\1/p' | sort -u > "$WORK/runner_env_ambient.txt"
+
+# leaked_names CASE: the RUNNER_ names the check saw that the runner added.
+leaked_names() {
+  sed -n 's/^RUNNER_SEEN \(RUNNER_[A-Z_]*\)$/\1/p' "$WORK/${1}.out" | sort -u \
+    > "$WORK/${1}.seen.txt"
+  comm -13 "$WORK/runner_env_ambient.txt" "$WORK/${1}.seen.txt" | tr '\n' ' '
+}
+
+dump_runner_env='bash -c "echo STREAMED NOW; env | sed -n \"s/^\(RUNNER_[A-Z_]*\)=.*/RUNNER_SEEN \1/p\""'
+
+write_case stream "
 runner_init t 0
-run_check --stream "streamed check" bash -c "echo STREAMED NOW; env | sed -n \"s/^\(RUNNER_[A-Z_]*\)=.*/LEAKED \1/p\""
-run_check "captured check" bash -c "echo CAPTURED NOT STREAMED"
-if runner_report; then echo "VERDICT: passed"; else echo "VERDICT: failed"; fi
-'
+run_check --stream 'streamed check' ${dump_runner_env}
+run_check 'captured check' bash -c 'echo CAPTURED NOT STREAMED'
+if runner_report; then echo 'VERDICT: passed'; else echo 'VERDICT: failed'; fi
+"
 run_case stream
 expect_out stream "STREAMED NOW" "--stream did not stream the check's output"
-refute_out stream "LEAKED" "a RUNNER_ variable reached the check's environment"
+stream_leaked=$(leaked_names stream)
+[[ -z "$stream_leaked" ]] || fail "a RUNNER_ variable reached the check's environment: ${stream_leaked}"
 refute_out stream "CAPTURED NOT STREAMED" "--stream stayed on for the next check"
 expect_out stream "VERDICT: passed" "two passing checks did not pass"
+
+# --- ...and the check above only means something if a leak is still visible. ---
+#
+# An exported RUNNER_ variable in the runner's own scope is what the streaming
+# switch used to be, so it stands in for the regression: the same check has to
+# report it, or filtering out the CI runner's variables has blinded the case.
+write_case stream_leak "
+export RUNNER_LEAK_PROBE=1
+runner_init t 0
+run_check --stream 'streamed check' ${dump_runner_env}
+"
+run_case stream_leak
+[[ "$(leaked_names stream_leak)" == "RUNNER_LEAK_PROBE " ]] ||
+  fail "the leak check no longer sees a RUNNER_ variable exported into a check"
 
 # --- RUNNER_LAST_RC lets a caller gate follow-up work on the check it just ran. ---
 #
