@@ -103,15 +103,17 @@ Notes:
   `name`, matched case-insensitively); a duplicated key header rejects the file. A row may fill both columns;
   they load into one per-row key set.
 - Each key cell names a key file path, resolved relative to the channel map. Blank cells store nothing, and a row
-  whose channel number does not parse takes no slot and stores nothing. Paths cannot contain commas: the splitter
-  does no quote handling.
+  whose channel number does not parse takes no slot and stores nothing. A file-only key path on such a row is not
+  opened. Paths cannot contain commas: the splitter does no quote handling.
 - `single_key_dec` embeds the `-b` Motorola Basic Privacy key number directly in a row. It accepts unsigned decimal
   `0..255`. `single_key_hex` embeds the `-H` key: an optional leading `0x`, embedded ASCII whitespace, and exactly
   10, 32, or 64 hexadecimal digits are accepted. Both direct columns may be filled together. They are also matched
   case-insensitively at any position past the frequency.
 - A row must choose one source family: any nonblank `single_key_dec`/`single_key_hex` value together with a nonblank
-  `keys_dec_csv`/`keys_hex_csv` path rejects the import. Blank direct cells are absent; an explicit decimal `0` or an
-  all-zero hex key is present and clears the corresponding global keys while that row is active.
+  `keys_dec_csv`/`keys_hex_csv` path rejects the import. This source conflict and direct-key syntax are validated even
+  when the channel number does not parse, although that row still takes no slot. Blank direct cells are absent; an
+  explicit decimal `0` or an all-zero hex key is present. A direct-key row installs a complete replacement key set,
+  so scalar key families not supplied by that row and all file-backed keyring entries are cleared while it is active.
 - Row keys take effect only under `-Y`: hopping onto a keyed row installs its set, hopping back onto an unkeyed
   row restores the global keys. Under plain trunking `-C` they are stored but never applied (one warning); under
   trunk-scan per-target `chan_csv` they are discarded, like `name`.

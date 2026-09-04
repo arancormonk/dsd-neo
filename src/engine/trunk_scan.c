@@ -657,7 +657,10 @@ scan_target_list_reserve(dsd_trunk_scan_target_list* list, size_t needed) {
         DSD_MEMCPY(targets, old_targets, list->count * sizeof(*targets));
     }
     if (old_targets != NULL) {
-        DSD_SECURE_ZERO(old_targets, old_capacity * sizeof(*old_targets));
+        const size_t wipe_count = list->count < old_capacity ? list->count : old_capacity;
+        for (size_t i = 0U; i < wipe_count; i++) {
+            DSD_SECURE_ZERO(&old_targets[i].single_key_scalars, sizeof(old_targets[i].single_key_scalars));
+        }
         free(old_targets);
     }
     list->targets = targets;
@@ -739,7 +742,12 @@ scan_parse_target_direct_keys(dsd_trunk_scan_target* target, const dsd_trunk_sca
     const dsd_key_direct_result rc = dsd_key_set_load_direct(&direct, single_hex_s[0] != '\0' ? single_hex_s : NULL,
                                                              single_dec_s[0] != '\0' ? single_dec_s : NULL);
     if (rc != DSD_KEY_DIRECT_OK) {
-        const char* field = rc == DSD_KEY_DIRECT_INVALID_DEC ? "single_key_dec" : "single_key_hex";
+        const char* field = "single_key_dec/single_key_hex";
+        if (rc == DSD_KEY_DIRECT_INVALID_DEC) {
+            field = "single_key_dec";
+        } else if (rc == DSD_KEY_DIRECT_INVALID_HEX) {
+            field = "single_key_hex";
+        }
         scan_set_error(parse->err, parse->err_sz, "row %u has invalid %s value", parse->row, field);
         return -1;
     }
@@ -815,7 +823,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         return -1;
     }
     parsed->targets[parsed->count++] = target;
-    DSD_SECURE_ZERO(&target, sizeof(target));
+    DSD_SECURE_ZERO(&target.single_key_scalars, sizeof(target.single_key_scalars));
     return 0;
 }
 
@@ -953,20 +961,15 @@ dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trun
         scan_default_ms(opts ? opts->trunk_scan_activity_hold_ms : 0, DSD_TRUNK_SCAN_ACTIVITY_HOLD_DEFAULT_MS);
     parse.err = err;
     parse.err_sz = err_sz;
-    parse.modulation_idx = -1;
-    parse.rtl_gain_idx = -1;
-    parse.keys_hex_idx = -1;
-    parse.keys_dec_idx = -1;
-    parse.single_key_hex_idx = -1;
-    parse.single_key_dec_idx = -1;
-    parse.p25_bandplan_idx = -1;
 
     if (scan_read_target_csv_header(fp, line, sizeof line, &parse) != 0) {
+        DSD_SECURE_ZERO(line, sizeof(line));
         fclose(fp);
         return -1;
     }
 
     int rows_rc = scan_load_target_csv_rows(fp, line, sizeof line, &parsed, &parse);
+    DSD_SECURE_ZERO(line, sizeof(line));
     fclose(fp);
     if (rows_rc != 0) {
         dsd_trunk_scan_target_list_reset(&parsed);
@@ -978,7 +981,9 @@ dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trun
         return -1;
     }
     *out = parsed;
-    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+    parsed.targets = NULL;
+    parsed.count = 0U;
+    parsed.capacity = 0U;
     return 0;
 }
 
@@ -988,10 +993,15 @@ dsd_trunk_scan_target_list_reset(dsd_trunk_scan_target_list* list) {
         return;
     }
     if (list->targets != NULL) {
-        DSD_SECURE_ZERO(list->targets, list->capacity * sizeof(*list->targets));
+        const size_t wipe_count = list->count < list->capacity ? list->count : list->capacity;
+        for (size_t i = 0U; i < wipe_count; i++) {
+            DSD_SECURE_ZERO(&list->targets[i].single_key_scalars, sizeof(list->targets[i].single_key_scalars));
+        }
         free(list->targets);
     }
-    DSD_SECURE_ZERO(list, sizeof(*list));
+    list->targets = NULL;
+    list->count = 0U;
+    list->capacity = 0U;
 }
 
 static int
@@ -2900,15 +2910,15 @@ trunk_scan_coord_free(dsd_trunk_scan_coord* coord) {
         free(coord->targets[i].snapshot.chan_map_chan);
         free(coord->targets[i].snapshot.chan_map_freq);
         dsd_key_set_free(&coord->targets[i].keys);
+        DSD_SECURE_ZERO(&coord->targets[i].target.single_key_scalars,
+                        sizeof(coord->targets[i].target.single_key_scalars));
     }
     free(coord->scratch_snapshot.trunk_lcn_freq_ext);
     free(coord->scratch_snapshot.chan_map_chan);
     free(coord->scratch_snapshot.chan_map_freq);
     if (coord->targets != NULL) {
-        DSD_SECURE_ZERO(coord->targets, coord->count * sizeof(*coord->targets));
         free(coord->targets);
     }
-    DSD_SECURE_ZERO(coord, sizeof(*coord));
     free(coord);
 }
 

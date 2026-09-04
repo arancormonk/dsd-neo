@@ -468,7 +468,8 @@ Notes
     them learned over the air.
   - Optional per-target `modulation` and `rtl_gain` columns can override demod hints and RTL-family tuner gain for the
     active target. Optional `keys_hex_csv`/`keys_dec_csv` columns load a per-target key set, while
-    `single_key_dec`/`single_key_hex` embed `-b`/`-H` equivalents; leaving the target restores the global keys.
+    `single_key_dec`/`single_key_hex` embed `-b`/`-H` equivalents; a target cannot mix direct and file key sources.
+    Leaving the target restores the global keys.
   - Idle dwell: `--trunk-scan-dwell-ms <250..600000>` (default `3000`).
   - Conventional DMR/NXDN activity hold (both NXDN rates): `--trunk-scan-activity-hold-ms <250..600000>`
     (default `1200`).

@@ -17,10 +17,33 @@
 
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "key_set_internal.h"
 
 static size_t
 key_set_capacity(void) {
     return sizeof(((dsd_state*)0)->rkey_array) / sizeof(((dsd_state*)0)->rkey_array[0]);
+}
+
+void
+dsd_key_state_secure_wipe(dsd_state* state) {
+    if (state == NULL) {
+        return;
+    }
+    DSD_SECURE_ZERO(state->rkey_array, sizeof(state->rkey_array));
+    DSD_SECURE_ZERO(state->rkey_array_loaded, sizeof(state->rkey_array_loaded));
+    DSD_SECURE_ZERO(state->aes_key, sizeof(state->aes_key));
+    DSD_SECURE_ZERO(&state->K, sizeof(state->K));
+    DSD_SECURE_ZERO(&state->K1, sizeof(state->K1));
+    DSD_SECURE_ZERO(&state->K2, sizeof(state->K2));
+    DSD_SECURE_ZERO(&state->K3, sizeof(state->K3));
+    DSD_SECURE_ZERO(&state->K4, sizeof(state->K4));
+    DSD_SECURE_ZERO(&state->R, sizeof(state->R));
+    DSD_SECURE_ZERO(&state->RR, sizeof(state->RR));
+    DSD_SECURE_ZERO(&state->H, sizeof(state->H));
+    DSD_SECURE_ZERO(state->A1, sizeof(state->A1));
+    DSD_SECURE_ZERO(state->A2, sizeof(state->A2));
+    DSD_SECURE_ZERO(state->A3, sizeof(state->A3));
+    DSD_SECURE_ZERO(state->A4, sizeof(state->A4));
 }
 
 static void
@@ -323,7 +346,7 @@ key_set_parse_direct_hex(const char* text, dsd_key_scalars* scalars) {
     const size_t segment_count = nhex == 10U ? 1U : nhex / 16U;
     const size_t first_width = nhex == 10U ? 10U : 16U;
     for (size_t i = 0U; i < segment_count; i++) {
-        const size_t offset = (nhex == 10U) ? 0U : i * 16U;
+        const size_t offset = i * 16U;
         const size_t width = (i == 0U) ? first_width : 16U;
         if (dsd_parse_hex_u64_n(hex + offset, width, &segments[i]) != 0) {
             DSD_SECURE_ZERO(segments, sizeof(segments));
@@ -393,21 +416,7 @@ key_set_log_summary(const char* kind, const char* path, const dsd_csv_validation
 static void
 key_set_free_throwaway(dsd_state* tmp) {
     dsd_state_ext_free_all(tmp);
-    DSD_SECURE_ZERO(tmp->rkey_array, sizeof(tmp->rkey_array));
-    DSD_SECURE_ZERO(tmp->rkey_array_loaded, sizeof(tmp->rkey_array_loaded));
-    DSD_SECURE_ZERO(tmp->aes_key, sizeof(tmp->aes_key));
-    DSD_SECURE_ZERO(&tmp->K, sizeof(tmp->K));
-    DSD_SECURE_ZERO(&tmp->K1, sizeof(tmp->K1));
-    DSD_SECURE_ZERO(&tmp->K2, sizeof(tmp->K2));
-    DSD_SECURE_ZERO(&tmp->K3, sizeof(tmp->K3));
-    DSD_SECURE_ZERO(&tmp->K4, sizeof(tmp->K4));
-    DSD_SECURE_ZERO(&tmp->R, sizeof(tmp->R));
-    DSD_SECURE_ZERO(&tmp->RR, sizeof(tmp->RR));
-    DSD_SECURE_ZERO(&tmp->H, sizeof(tmp->H));
-    DSD_SECURE_ZERO(tmp->A1, sizeof(tmp->A1));
-    DSD_SECURE_ZERO(tmp->A2, sizeof(tmp->A2));
-    DSD_SECURE_ZERO(tmp->A3, sizeof(tmp->A3));
-    DSD_SECURE_ZERO(tmp->A4, sizeof(tmp->A4));
+    dsd_key_state_secure_wipe(tmp);
     free(tmp);
 }
 

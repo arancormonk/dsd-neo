@@ -312,8 +312,12 @@ in [csv-formats.md](csv-formats.md); check the header row and the delimiter.
 `row N has invalid single_key_dec value` (or `single_key_hex`)
 
 Use unsigned decimal `0..255` for `single_key_dec`, or 10, 32, or 64 hex digits for `single_key_hex`. Direct key
-values are intentionally omitted from error messages. Remove any `keys_hex_csv`/`keys_dec_csv` value from the same
-row: direct and file key sources cannot be mixed.
+values are intentionally omitted from error messages.
+
+`row N combines direct keys with keys_hex_csv/keys_dec_csv`
+
+Remove either the `single_key_dec`/`single_key_hex` values or the key-file paths from that row. Direct and file key
+sources cannot be mixed for one target.
 
 `N trunk scan target(s) have no enabled <NAME> decoder (first: '<id>'); use <flags> to decode them`
 
