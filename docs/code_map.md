@@ -45,6 +45,9 @@ Generated (do not edit/commit):
     depending on IO
   - Single-tuner trunk scan coordinator: `src/engine/trunk_scan.c` behind
     `include/dsd-neo/engine/trunk_scan.h` (see below)
+  - Voice-gated scan for -Y and trunk scan (issue #381): `src/engine/scan_voice_gate.c` behind
+    `include/dsd-neo/engine/scan_voice_gate.h` (tests: `ENGINE_SCAN_VOICE_GATE`, `ENGINE_NO_CARRIER_RESET`,
+    `ENGINE_TRUNK_SCAN`)
   - Installs runtime hook tables used by DSP/frame-sync code
     (`src/engine/frame_sync_hooks_install.c`, `include/dsd-neo/runtime/frame_sync_hooks.h`)
 - Build files: `src/engine/CMakeLists.txt`

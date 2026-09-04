@@ -4446,6 +4446,7 @@ add_executable(
     dsd-neo_test_engine_trunk_scan
     engine/test_engine_trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_voice_gate.c
     ${PROJECT_SOURCE_DIR}/src/engine/p25_bandplan_export.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
@@ -4467,6 +4468,24 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
 )
 add_test(NAME ENGINE_TRUNK_SCAN COMMAND dsd-neo_test_engine_trunk_scan)
+
+add_executable(
+    dsd-neo_test_engine_scan_voice_gate
+    engine/test_engine_scan_voice_gate.c
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_voice_gate.c
+)
+target_include_directories(
+    dsd-neo_test_engine_scan_voice_gate
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_engine_scan_voice_gate
+    PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
+)
+add_test(
+    NAME ENGINE_SCAN_VOICE_GATE
+    COMMAND dsd-neo_test_engine_scan_voice_gate
+)
 
 add_executable(
     dsd-neo_test_runtime_config_user

@@ -404,13 +404,13 @@ cli_parse_double_option(const char* option_name, const char* in, double* out, in
 }
 
 static int
-cli_parse_trunk_scan_ms_option(const char* option_name, const char* in, int* out, int* out_exit_rc) {
+cli_parse_ms_range_option(const char* option_name, const char* in, int min_ms, int max_ms, int* out, int* out_exit_rc) {
     long parsed = 0;
     if (!cli_parse_long_option(option_name, in, 10, &parsed, out_exit_rc)) {
         return 0;
     }
-    if (parsed < 250 || parsed > 600000) {
-        LOG_ERROR("Invalid %s value \"%s\" (expected 250..600000)\n", option_name, in ? in : "");
+    if (parsed < min_ms || parsed > max_ms) {
+        LOG_ERROR("Invalid %s value \"%s\" (expected %d..%d)\n", option_name, in ? in : "", min_ms, max_ms);
         cli_set_exit_rc(out_exit_rc, 1);
         return 0;
     }
@@ -830,15 +830,15 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            if (!cli_parse_trunk_scan_ms_option("--trunk-scan-dwell-ms", DSD_PARSE_ARGS_NEXT_ARG(),                    \
-                                                &opts->trunk_scan_idle_dwell_ms, out_exit_rc)) {                       \
+            if (!cli_parse_ms_range_option("--trunk-scan-dwell-ms", DSD_PARSE_ARGS_NEXT_ARG(), 250, 600000,            \
+                                           &opts->trunk_scan_idle_dwell_ms, out_exit_rc)) {                            \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--trunk-scan-dwell-ms=", 22) == 0) {                                                     \
-            if (!cli_parse_trunk_scan_ms_option("--trunk-scan-dwell-ms", argv[i] + 22,                                 \
-                                                &opts->trunk_scan_idle_dwell_ms, out_exit_rc)) {                       \
+            if (!cli_parse_ms_range_option("--trunk-scan-dwell-ms", argv[i] + 22, 250, 600000,                         \
+                                           &opts->trunk_scan_idle_dwell_ms, out_exit_rc)) {                            \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             continue;                                                                                                  \
@@ -849,15 +849,57 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            if (!cli_parse_trunk_scan_ms_option("--trunk-scan-activity-hold-ms", DSD_PARSE_ARGS_NEXT_ARG(),            \
-                                                &opts->trunk_scan_activity_hold_ms, out_exit_rc)) {                    \
+            if (!cli_parse_ms_range_option("--trunk-scan-activity-hold-ms", DSD_PARSE_ARGS_NEXT_ARG(), 250, 600000,    \
+                                           &opts->trunk_scan_activity_hold_ms, out_exit_rc)) {                         \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--trunk-scan-activity-hold-ms=", 30) == 0) {                                             \
-            if (!cli_parse_trunk_scan_ms_option("--trunk-scan-activity-hold-ms", argv[i] + 30,                         \
-                                                &opts->trunk_scan_activity_hold_ms, out_exit_rc)) {                    \
+            if (!cli_parse_ms_range_option("--trunk-scan-activity-hold-ms", argv[i] + 30, 250, 600000,                 \
+                                           &opts->trunk_scan_activity_hold_ms, out_exit_rc)) {                         \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--scan-voice-only") == 0) {                                                               \
+            opts->scan_voice_only = 1;                                                                                 \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--scan-voice-qualify-ms") == 0) {                                                         \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--scan-voice-qualify-ms requires a millisecond value\n");                                   \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (!cli_parse_ms_range_option("--scan-voice-qualify-ms", DSD_PARSE_ARGS_NEXT_ARG(), 100, 600000,          \
+                                           &opts->scan_voice_qualify_ms, out_exit_rc)) {                               \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--scan-voice-qualify-ms=", 24) == 0) {                                                   \
+            if (!cli_parse_ms_range_option("--scan-voice-qualify-ms", argv[i] + 24, 100, 600000,                       \
+                                           &opts->scan_voice_qualify_ms, out_exit_rc)) {                               \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--scan-voice-hold-ms") == 0) {                                                            \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--scan-voice-hold-ms requires a millisecond value\n");                                      \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (!cli_parse_ms_range_option("--scan-voice-hold-ms", DSD_PARSE_ARGS_NEXT_ARG(), 100, 600000,             \
+                                           &opts->scan_voice_hold_ms, out_exit_rc)) {                                  \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--scan-voice-hold-ms=", 21) == 0) {                                                      \
+            if (!cli_parse_ms_range_option("--scan-voice-hold-ms", argv[i] + 21, 100, 600000,                          \
+                                           &opts->scan_voice_hold_ms, out_exit_rc)) {                                  \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             continue;                                                                                                  \
@@ -2740,6 +2782,26 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     }
 // clang-format on
 
+/* Options that parsed fine but cannot act, given everything else on the command line.
+ * Checked once getopt has finished so the warnings do not depend on flag order. */
+static void
+dsd_warn_ineffective_short_opts(const dsd_opts* opts, const dsd_state* state) {
+    // --dmr-tg-key-csv is imported in the long-option pass, before -k/-K arm the keyring here, so the
+    // ordering has to be resolved once both have run. The map only picks which key id to use, so
+    // without a keyring it is a silent no-op.
+    if (state->dmr_tg_key_map_count > 0 && state->keyloader != 1 && !dsd_state_trunk_lcn_keys_present(state)) {
+        LOG_WARN("WARNING: --dmr-tg-key-csv has no effect without an imported key CSV (-K/-k).\n");
+    }
+    // Row keys ride the -Y scanner: a plain -C trunking map stores them but never applies them. Checked here
+    // rather than at the `-C` flag so a later `-Y` on the same command line counts.
+    if (opts->chan_in_file[0] != '\0') {
+        dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
+    }
+    if (opts->scan_voice_only && !opts->scanner_mode && !opts->trunk_scan_enabled) {
+        LOG_WARN("WARNING: --scan-voice-only has no effect without -Y or --trunk-scan.\n");
+    }
+}
+
 static int
 dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc,
                      int* out_chan_csv_cli_seen) {
@@ -2783,17 +2845,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
             }
         }
     }
-    // Checked after getopt completes: --dmr-tg-key-csv is imported in the long-option pass, before
-    // -k/-K arm the keyring here, so the ordering has to be resolved once both have run. The map
-    // only picks which key id to use, so without a keyring it is a silent no-op.
-    if (state->dmr_tg_key_map_count > 0 && state->keyloader != 1 && !dsd_state_trunk_lcn_keys_present(state)) {
-        LOG_WARN("WARNING: --dmr-tg-key-csv has no effect without an imported key CSV (-K/-k).\n");
-    }
-    // Row keys ride the -Y scanner: a plain -C trunking map stores them but never applies them. Checked here
-    // rather than at the `-C` flag so a later `-Y` on the same command line counts.
-    if (opts->chan_in_file[0] != '\0') {
-        dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
-    }
+    dsd_warn_ineffective_short_opts(opts, state);
     // Set after getopt completes so -r file ordering is independent of later options.
     if (opts->playfiles == 1) {
         state->optind = optind;

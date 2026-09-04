@@ -187,6 +187,13 @@ enum dsd_app_command_id {
     DSD_APP_CMD_HANGTIME_SET = 502,      // payload: double seconds
     DSD_APP_CMD_SLOT_PREF_SET = 503,     // payload: int32_t pref (0=slot 1, 1=slot 2, 2=auto)
     DSD_APP_CMD_SLOTS_ONOFF_SET = 504,   // payload: int32_t mask
+    // Voice-gated scan (-Y and --trunk-scan): hold on a signal only while it carries voice.
+    // The qualify window opens at sync; voice must appear before it lapses or
+    // the scan moves on. The hold window restarts on every voice frame and the
+    // scan leaves only after it lapses with no voice.
+    DSD_APP_CMD_SCAN_VOICE_ONLY_SET = 505,       // payload: int32_t on(0/1)
+    DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET = 506, // payload: int32_t ms (100..600000)
+    DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET = 507,    // payload: int32_t ms (100..600000)
 
     // Pulse audio device selection
     DSD_APP_CMD_PULSE_OUT_SET = 520, // payload: char name[]

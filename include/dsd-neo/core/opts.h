@@ -257,6 +257,9 @@ struct dsd_opts {
     int trunk_scan_enabled;
     int trunk_scan_idle_dwell_ms;
     int trunk_scan_activity_hold_ms;
+    int scan_voice_only;
+    int scan_voice_qualify_ms;
+    int scan_voice_hold_ms;
     int setmod_bw;
     int slot_preference;
     int slot1_on;

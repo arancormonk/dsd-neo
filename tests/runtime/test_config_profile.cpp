@@ -616,6 +616,39 @@ test_profile_invalid_int_preserves_inherited_value(void) {
 }
 
 static int
+test_profile_inherits_scan_voice_qualify_ms(void) {
+    static const char* ini = "[trunking]\n"
+                             "scan_voice_qualify_ms = 1500\n"
+                             "\n"
+                             "[profile.scan_voice]\n"
+                             "mode.decode = \"dmr\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+
+    int rc = dsd_user_config_load_profile(path, "scan_voice", &cfg);
+
+    int result = 0;
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "FAIL: load with scan_voice profile failed (rc=%d)\n", rc);
+        result = 1;
+    }
+    if (cfg.trunk_scan_voice_qualify_ms != 1500) {
+        DSD_FPRINTF(stderr, "FAIL: expected profile to inherit scan_voice_qualify_ms 1500, got %d\n",
+                    cfg.trunk_scan_voice_qualify_ms);
+        result = 1;
+    }
+
+    (void)remove(path);
+    return result;
+}
+
+static int
 test_profile_soapy_settings(void) {
     static const char* ini = "[input]\n"
                              "source = \"pulse\"\n"
@@ -1084,6 +1117,7 @@ main(void) {
     rc |= test_list_profiles_empty();
     rc |= test_profile_rtl_settings();
     rc |= test_profile_invalid_int_preserves_inherited_value();
+    rc |= test_profile_inherits_scan_voice_qualify_ms();
     rc |= test_profile_soapy_settings();
     rc |= test_include_directive();
     rc |= test_include_override();

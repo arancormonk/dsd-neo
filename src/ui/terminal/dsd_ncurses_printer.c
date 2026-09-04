@@ -851,6 +851,24 @@ ui_render_forced_key_status(const dsd_state* state, int show_keys) {
     }
 }
 
+/* Voice-gate phase for the -Y and --trunk-scan rows (issue #381). Nothing is printed
+   while the gate is off or the phase is OFF (a trunked --trunk-scan target, which the
+   gate leaves alone), so those rows stay byte-identical to what they always were. */
+static void
+ui_render_scan_voice_gate(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || opts->scan_voice_only != 1) {
+        return;
+    }
+    const char* phase;
+    switch (state->scan_voice_gate_phase) {
+        case DSD_SCAN_VOICE_GATE_QUALIFY: phase = "QUALIFY"; break;
+        case DSD_SCAN_VOICE_GATE_VOICE: phase = "VOICE"; break;
+        case DSD_SCAN_VOICE_GATE_TAIL: phase = "TAIL"; break;
+        default: return;
+    }
+    printw(" Voice: %s", phase);
+}
+
 /* Which of the rotating --trunk-scan targets the receiver is parked on. The park
    frequency has no snapshot field of its own; the protocol header lines already
    carry the frequency being decoded. */
@@ -864,6 +882,7 @@ ui_render_trunk_scan_status(const dsd_opts* opts, const dsd_state* state) {
         printw(" (%u/%u)", (unsigned int)state->trunk_scan_active_ordinal,
                (unsigned int)state->trunk_scan_target_count);
     }
+    ui_render_scan_voice_gate(opts, state);
     // The target on air first: an operator hold, or a receiver parked on a target the operator
     // avoided because every alternate failed to retune.
     if (state->trunk_scan_hold) {
@@ -896,6 +915,7 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
         }
         printw(" Speed: %.02lf sec",
                opts->trunk_hangtime); // default aligned to OP25 (2.0s) unless overridden
+        ui_render_scan_voice_gate(opts, state);
         // Why the scan stopped moving, ahead of the name so the fixed fields keep their columns.
         if (state->lcn_scan_hold) {
             printw(" HOLD");

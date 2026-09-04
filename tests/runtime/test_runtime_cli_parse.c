@@ -6896,6 +6896,209 @@ test_trunk_scan_rejects_ms_values_outside_range(void) {
 }
 
 static int
+test_scan_voice_long_options_parse(void) {
+    int test_rc = 0;
+    for (int shape = 0; shape < 2; shape++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg1[] = "--scan-voice-only";
+        char arg_space_qual[] = "--scan-voice-qualify-ms";
+        char arg_space_qual_val[] = "1500";
+        char arg_equals_qual[] = "--scan-voice-qualify-ms=1500";
+        char arg_space_hold[] = "--scan-voice-hold-ms";
+        char arg_space_hold_val[] = "2500";
+        char arg_equals_hold[] = "--scan-voice-hold-ms=2500";
+        /* Shape 0 exercises the space forms, shape 1 the equals forms. */
+        char* argv_space[] = {arg0, arg1, arg_space_qual, arg_space_qual_val, arg_space_hold, arg_space_hold_val, NULL};
+        char* argv_equals[] = {arg0, arg1, arg_equals_qual, arg_equals_hold, NULL};
+        char** argv = (shape == 0) ? argv_space : argv_equals;
+        const int argc = (shape == 0) ? 6 : 4;
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+
+        if (rc != DSD_PARSE_CONTINUE || opts->scan_voice_only != 1 || opts->scan_voice_qualify_ms != 1500
+            || opts->scan_voice_hold_ms != 2500) {
+            DSD_FPRINTF(stderr, "shape %d: scan voice long option parse mismatch rc=%d only=%d qualify=%d hold=%d\n",
+                        shape, rc, opts->scan_voice_only, opts->scan_voice_qualify_ms, opts->scan_voice_hold_ms);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+static int
+test_scan_voice_rejects_ms_values_outside_range(void) {
+    const char* argv_sets[][3] = {
+        {"dsd-neo", "--scan-voice-qualify-ms", "99"},
+        {"dsd-neo", "--scan-voice-qualify-ms=600001", NULL},
+        {"dsd-neo", "--scan-voice-hold-ms", "99"},
+        {"dsd-neo", "--scan-voice-hold-ms=600001", NULL},
+    };
+    const int argc_values[] = {3, 2, 3, 2};
+    int test_rc = 0;
+
+    for (size_t i = 0; i < sizeof(argc_values) / sizeof(argc_values[0]); i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[32];
+        char arg1[64];
+        char arg2[32];
+        DSD_SNPRINTF(arg0, sizeof arg0, "%s", argv_sets[i][0]);
+        DSD_SNPRINTF(arg1, sizeof arg1, "%s", argv_sets[i][1]);
+        if (argv_sets[i][2]) {
+            DSD_SNPRINTF(arg2, sizeof arg2, "%s", argv_sets[i][2]);
+        }
+        char* argv[] = {arg0, arg1, argv_sets[i][2] ? arg2 : NULL, NULL};
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(argc_values[i], argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+            DSD_FPRINTF(stderr, "expected scan-voice millisecond option %s to fail, got rc=%d exit_rc=%d\n", arg1, rc,
+                        exit_rc);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+
+    /* Both bounds of the 100..600000 window parse for both flags in both argument forms.
+     * The space and equals forms carry separate range constants in the parser, so every
+     * (flag, form, bound) combination is pinned: an off-by-one in any one of them fails. */
+    for (int shape = 0; shape < 4; shape++) {
+        const int high = (shape & 1);
+        const int equals = (shape & 2) != 0;
+        const int want = high ? 600000 : 100;
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char qualify_flag[] = "--scan-voice-qualify-ms";
+        char hold_flag[] = "--scan-voice-hold-ms";
+        char value[16];
+        char qualify_equals[48];
+        char hold_equals[48];
+        DSD_SNPRINTF(value, sizeof value, "%d", want);
+        DSD_SNPRINTF(qualify_equals, sizeof qualify_equals, "--scan-voice-qualify-ms=%d", want);
+        DSD_SNPRINTF(hold_equals, sizeof hold_equals, "--scan-voice-hold-ms=%d", want);
+        char* argv_space[] = {arg0, qualify_flag, value, hold_flag, value, NULL};
+        char* argv_equals[] = {arg0, qualify_equals, hold_equals, NULL};
+        char** argv = equals ? argv_equals : argv_space;
+        const int argc = equals ? 3 : 5;
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE || opts->scan_voice_qualify_ms != want || opts->scan_voice_hold_ms != want) {
+            DSD_FPRINTF(stderr,
+                        "%s form: expected scan-voice boundary %d to parse for both flags, got rc=%d exit=%d "
+                        "qualify=%d hold=%d\n",
+                        equals ? "equals" : "space", want, rc, exit_rc, opts->scan_voice_qualify_ms,
+                        opts->scan_voice_hold_ms);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+static int
+test_bootstrap_inherited_scan_voice_preserves_timing_overrides(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "[trunking]\n"
+                             "scan_voice_only = true\n"
+                             "scan_voice_qualify_ms = 3000\n"
+                             "scan_voice_hold_ms = 4000\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temp scan voice ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "--scan-voice-qualify-ms";
+    char arg4[] = "500";
+    char arg5[] = "--scan-voice-hold-ms=800";
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(6, argv, opts, state, &argc_effective, &exit_rc);
+
+    int test_rc = 0;
+    if (rc != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0) {
+        DSD_FPRINTF(stderr, "expected scan voice CLI override to continue, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        test_rc = 1;
+    }
+    if (opts->scan_voice_only != 1 || opts->scan_voice_qualify_ms != 500 || opts->scan_voice_hold_ms != 800) {
+        DSD_FPRINTF(stderr, "expected scan voice CLI override, got only=%d qualify=%d hold=%d\n", opts->scan_voice_only,
+                    opts->scan_voice_qualify_ms, opts->scan_voice_hold_ms);
+        test_rc = 1;
+    }
+
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 test_bootstrap_config_file_rate_rescales_manual_m3_override(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -7430,6 +7633,9 @@ main(void) {
     rc |= test_input_source_soapy_args_roundtrip();
     rc |= test_input_source_rtl_roundtrip();
     rc |= test_input_source_rtltcp_roundtrip();
+    rc |= test_scan_voice_long_options_parse();
+    rc |= test_scan_voice_rejects_ms_values_outside_range();
+    rc |= test_bootstrap_inherited_scan_voice_preserves_timing_overrides();
     rc |= test_input_source_tcp_ipv4_roundtrip();
     rc |= test_trunk_scan_long_options_parse();
     rc |= test_trunk_scan_conflicts_with_scanner_mode();

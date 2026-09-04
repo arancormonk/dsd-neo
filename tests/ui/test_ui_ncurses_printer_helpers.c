@@ -1811,6 +1811,89 @@ test_lockout_suppressed_companion_slot_renders_idle(void) {
     free(state);
 }
 
+/* Voice-gated scan (#381): with the gate on, both scan rows name the gate
+ * phase; with it off, both rows stay byte-identical to their ungated shape.
+ * Function-static fixtures keep the neighbour captures green on their own,
+ * and the gate is left off here as well so nothing leaks past this test. */
+static void
+test_scan_voice_gate_status_rendering(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_lcn_name_stub();
+
+    opts.scanner_mode = 1;
+    opts.trunk_hangtime = 2.0f;
+    state.lcn_freq_count = 1;
+    state.lcn_freq_roll = 1;
+    state.trunk_lcn_freq[0] = 462012500;
+
+    /* Gate off: the -Y row is exactly the ungated capture. */
+    opts.scan_voice_only = 0;
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n");
+
+    /* Gate on: each phase names itself after the fixed fields. */
+    opts.scan_voice_only = 1;
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Voice: QUALIFY \n");
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Voice: VOICE \n");
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_TAIL;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Voice: TAIL \n");
+    /* Gate on but the phase not yet published (OFF): nothing is printed. */
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n");
+
+    /* The trunk-scan row carries the same suffix, ahead of HOLD. */
+    opts.scanner_mode = 0;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
+    state.trunk_scan_active_ordinal = 3;
+    state.trunk_scan_target_count = 6;
+
+    opts.scan_voice_only = 0;
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6)\n");
+
+    opts.scan_voice_only = 1;
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) Voice: QUALIFY\n");
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) Voice: VOICE\n");
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_TAIL;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) Voice: TAIL\n");
+    /* A trunked target leaves the phase OFF: gate on, but no marker. */
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6)\n");
+
+    opts.scan_voice_only = 0;
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
+    reset_lcn_name_stub();
+}
+
 int
 main(void) {
     test_input_source_helpers();
@@ -1822,6 +1905,7 @@ main(void) {
     test_input_level_policy();
     test_compact_status_section_rendering();
     test_scanner_status_row_rendering();
+    test_scan_voice_gate_status_rendering();
     test_trunk_scan_status_row_rendering();
     test_call_info_channel_line_rendering();
     test_history_and_sort_helpers();

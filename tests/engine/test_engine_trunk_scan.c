@@ -3065,6 +3065,365 @@ test_nxdn48_conventional_activity_hold(void) {
     return test_rc;
 }
 
+/*
+ * Voice-gated scan (issue #381): seed an ACTIVE media-active voice epoch on slot 0 with
+ * explicit media times, so the gate's probe sees decoded voice without running a decoder.
+ * The span must reach DSD_SCAN_VOICE_MIN_SPAN_S (0.10 s) before the probe counts it.
+ */
+static int
+seed_voice_gate_media_epoch(dsd_state* state, double begin_m, double media_m, dsd_call_crypto_state crypto) {
+    if (dsd_call_state_ensure(state) <= 0) {
+        DSD_FPRINTF(stderr, "voice-gate seed: call-state ensure failed\n");
+        return -1;
+    }
+    dsd_call_observation obs;
+    DSD_MEMSET(&obs, 0, sizeof(obs));
+    obs.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    obs.slot = 0U;
+    obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+    obs.ota_target_id = 1001U;
+    obs.policy_target_id = 1001U;
+    obs.ota_source_id = 2002U;
+    obs.observed_m = begin_m;
+    if (dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) != 1) {
+        DSD_FPRINTF(stderr, "voice-gate seed: observe failed\n");
+        return -1;
+    }
+    if (crypto != DSD_CALL_CRYPTO_CLEAR && crypto != DSD_CALL_CRYPTO_UNKNOWN) {
+        dsd_call_crypto_update update;
+        DSD_MEMSET(&update, 0, sizeof(update));
+        update.classification = crypto;
+        update.observed_m = begin_m;
+        (void)dsd_call_state_update_crypto(state, 0U, &update);
+    }
+    if (dsd_call_state_update_media(state, 0U, 1, begin_m) != 1
+        || dsd_call_state_update_media(state, 0U, 1, media_m) != 1) {
+        DSD_FPRINTF(stderr, "voice-gate seed: media update failed\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* With the gate on, a header alone never holds a conventional target: not a data header
+ * even when data-call tuning is on, and not a policy-allowed voice header either. Only
+ * decoded voice media refreshes the hold. One case per conventional family, each through
+ * its own activity entry point. */
+static int
+run_voice_gate_header_case(const char* tag, const char* body, int data_call,
+                           void (*report)(const dsd_opts*, const dsd_state*, uint32_t, uint32_t, int, int, int)) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.scan_voice_only = 1;
+    opts.scan_voice_qualify_ms = 1000;
+    opts.scan_voice_hold_ms = 2000;
+    opts.trunk_tune_data_calls = 1;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: voice-gate data scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.10);
+    report(&opts, &state, 1001, 2002, 0, 0, data_call);
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "%s: %s header held conventional target with gate on\n", tag, data_call ? "data" : "voice");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_conventional_voice_gate_data_header_no_hold(void) {
+    static const char dmr_body[] = "a,dmr-conventional,461000000,,250,250,\n"
+                                   "b,dmr-conventional,462000000,,250,250,\n";
+    static const char nxdn_body[] = "a,nxdn-conventional,461000000,,250,250,\n"
+                                    "b,nxdn-conventional,462000000,,250,250,\n";
+    static const char nxdn48_body[] = "a,nxdn48-conventional,461556250,,250,250,\n"
+                                      "b,nxdn48-conventional,462556250,,250,250,\n";
+    int rc = 0;
+    rc |= run_voice_gate_header_case("dmr-data-gate-on", dmr_body, 1, dsd_engine_trunk_scan_dmr_conventional_activity);
+    rc |=
+        run_voice_gate_header_case("nxdn-data-gate-on", nxdn_body, 1, dsd_engine_trunk_scan_nxdn_conventional_activity);
+    rc |= run_voice_gate_header_case("nxdn48-data-gate-on", nxdn48_body, 1,
+                                     dsd_engine_trunk_scan_nxdn_conventional_activity);
+    return rc;
+}
+
+/* A policy-allowed voice header (DMR voice LC, NXDN VCALL) with no decoded voice media
+ * behind it must not hold either: that is exactly the header-only carrier the gate exists
+ * to skip, and holding on it would publish TAIL with no voice ever decoded. */
+static int
+test_conventional_voice_gate_voice_header_no_hold(void) {
+    static const char dmr_body[] = "a,dmr-conventional,461000000,,250,250,\n"
+                                   "b,dmr-conventional,462000000,,250,250,\n";
+    static const char nxdn_body[] = "a,nxdn-conventional,461000000,,250,250,\n"
+                                    "b,nxdn-conventional,462000000,,250,250,\n";
+    static const char nxdn48_body[] = "a,nxdn48-conventional,461556250,,250,250,\n"
+                                      "b,nxdn48-conventional,462556250,,250,250,\n";
+    int rc = 0;
+    rc |= run_voice_gate_header_case("dmr-voice-gate-on", dmr_body, 0, dsd_engine_trunk_scan_dmr_conventional_activity);
+    rc |= run_voice_gate_header_case("nxdn-voice-gate-on", nxdn_body, 0,
+                                     dsd_engine_trunk_scan_nxdn_conventional_activity);
+    rc |= run_voice_gate_header_case("nxdn48-voice-gate-on", nxdn48_body, 0,
+                                     dsd_engine_trunk_scan_nxdn_conventional_activity);
+    return rc;
+}
+
+/* With the gate on, decoded voice media holds a conventional target with no header ever
+ * reported: the 250 ms dwell would otherwise rotate at 0.25. Fresh media refreshes the
+ * hold, and the target rotates only after the hold lapses and the dwell re-elapses. */
+static int
+test_conventional_voice_gate_media_hold(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,250,\n"
+                             "b,dmr-conventional,462000000,,250,250,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.scan_voice_only = 1;
+    opts.scan_voice_qualify_ms = 1000;
+    opts.scan_voice_hold_ms = 2000;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "voice-gate media scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+
+    if (seed_voice_gate_media_epoch(&state, 0.10, 0.25, DSD_CALL_CRYPTO_CLEAR) != 0) {
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "voice media did not hold conventional target past dwell\n");
+        test_rc = 1;
+    }
+    if (state.scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_VOICE) {
+        DSD_FPRINTF(stderr, "fresh voice media did not publish the VOICE phase (got %u)\n",
+                    (unsigned)state.scan_voice_gate_phase);
+        test_rc = 1;
+    }
+
+    // Fresh media refreshes the hold: without it the 0.25 media would lapse at 0.50.
+    if (dsd_call_state_update_media(&state, 0U, 1, 0.49) != 1) {
+        DSD_FPRINTF(stderr, "voice-gate media refresh failed\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.49);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    // The call ends on sync loss at 0.50; the hold still runs from the 0.49 media until
+    // 0.74, so the target stays and the status line shows TAIL rather than VOICE.
+    if (dsd_call_state_end_ex(&state, 0U, 0.50, DSD_CALL_END_SYNC_LOSS) != 1) {
+        DSD_FPRINTF(stderr, "voice-gate media epoch end failed\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.70);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "refreshed voice media did not extend the hold\n");
+        test_rc = 1;
+    }
+    if (state.scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_TAIL) {
+        DSD_FPRINTF(stderr, "stale voice media did not publish the TAIL phase (got %u)\n",
+                    (unsigned)state.scan_voice_gate_phase);
+        test_rc = 1;
+    }
+    // The hold lapses at 0.74, re-arming the dwell; the rotation follows a dwell later.
+    trunk_scan_test_set_now(0.75);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "target rotated before the dwell re-elapsed\n");
+        test_rc = 1;
+    }
+    if (state.scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY) {
+        DSD_FPRINTF(stderr, "lapsed hold did not publish the QUALIFY phase (got %u)\n",
+                    (unsigned)state.scan_voice_gate_phase);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(1.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "target did not rotate after media hold and dwell\n");
+        test_rc = 1;
+    }
+    // The hop clears the phase; the next tick publishes it for the new conventional target.
+    if (state.scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_OFF) {
+        DSD_FPRINTF(stderr, "hop did not clear the voice-gate phase (got %u)\n", (unsigned)state.scan_voice_gate_phase);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(1.02);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (state.scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY) {
+        DSD_FPRINTF(stderr, "new target did not publish the QUALIFY phase (got %u)\n",
+                    (unsigned)state.scan_voice_gate_phase);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_state_ext_free_all(&state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Policy still gates the media hold: encrypted voice the operator locks out
+ * (trunk_tune_enc_calls=0) never refreshes it, so the target rotates on dwell. */
+static int
+test_conventional_voice_gate_enc_lockout_media_rotates(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,250,\n"
+                             "b,dmr-conventional,462000000,,250,250,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.scan_voice_only = 1;
+    opts.scan_voice_qualify_ms = 1000;
+    opts.scan_voice_hold_ms = 2000;
+    opts.trunk_tune_enc_calls = 0;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "voice-gate lockout scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+
+    if (seed_voice_gate_media_epoch(&state, 0.10, 0.25, DSD_CALL_CRYPTO_ENCRYPTED) != 0) {
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "locked-out encrypted media held conventional target\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_state_ext_free_all(&state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Trunked targets are unchanged by the gate: control-channel-only traffic carries no
+ * voice media, so a P25/DMR pair rotates after dwell; a tuned trunked target still
+ * holds while trunk_is_tuned says the receiver is following a call. */
+static int
+test_trunked_voice_gate_control_only_unchanged(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("p,p25-trunk,851000000,,250,,\n"
+                             "d,dmr-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.scan_voice_only = 1;
+    opts.scan_voice_qualify_ms = 1000;
+    opts.scan_voice_hold_ms = 2000;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "voice-gate trunked scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.24);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "trunked scan rotated before dwell with gate on\n");
+        test_rc = 1;
+    }
+    if (opts.trunk_is_tuned != 0) {
+        DSD_FPRINTF(stderr, "trunked tick disturbed trunk_is_tuned\n");
+        test_rc = 1;
+    }
+    if (state.scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_OFF) {
+        DSD_FPRINTF(stderr, "trunked target published a voice-gate phase (got %u)\n",
+                    (unsigned)state.scan_voice_gate_phase);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "control-only trunked target did not rotate after dwell with gate on\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+
+    reset_scan_opts_state(&opts, &state);
+    opts.scan_voice_only = 1;
+    opts.scan_voice_qualify_ms = 1000;
+    opts.scan_voice_hold_ms = 2000;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "voice-gate tuned scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    opts.trunk_is_tuned = 1;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "tuned trunked target rotated away with gate on\n");
+        test_rc = 1;
+    }
+    if (opts.trunk_is_tuned != 1) {
+        DSD_FPRINTF(stderr, "trunked tick cleared trunk_is_tuned while tuned\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_nxdn_trunk_target_holds_while_tuned(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -6342,6 +6701,11 @@ main(void) {
     rc |= run_with_default_tune_hook(test_conventional_activity_data_call_respects_tune_data_calls);
     rc |= run_with_default_tune_hook(test_conventional_activity_families_do_not_cross);
     rc |= run_with_default_tune_hook(test_nxdn48_conventional_activity_hold);
+    rc |= run_with_default_tune_hook(test_conventional_voice_gate_data_header_no_hold);
+    rc |= run_with_default_tune_hook(test_conventional_voice_gate_voice_header_no_hold);
+    rc |= run_with_default_tune_hook(test_conventional_voice_gate_media_hold);
+    rc |= run_with_default_tune_hook(test_conventional_voice_gate_enc_lockout_media_rotates);
+    rc |= run_with_default_tune_hook(test_trunked_voice_gate_control_only_unchanged);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_holds_while_tuned);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_follows_corrected_cc);
     rc |= run_with_default_tune_hook(test_nxdn_state_isolated_per_target);

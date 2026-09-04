@@ -131,6 +131,11 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
 - `--trunk-scan-activity-hold-ms <ms>` sets the default hold time after allowed conventional DMR/NXDN activity
   (NXDN96 and NXDN48 alike). Default: `1200`.
 - Per-target CSV values override these defaults.
+- `--scan-voice-only`: conventional targets hold only from decoded voice media (headers and data no longer hold),
+  with the per-target `dwell_ms` as the qualify window in which voice must appear and `activity_hold_ms` as the
+  hold after the last voice frame; trunked targets are unchanged (control-only rotates after dwell). The
+  `--scan-voice-qualify-ms` and `--scan-voice-hold-ms` timings apply to the `-Y` conventional scan only, not to
+  trunk-scan targets.
 
 Use the `-fa` (AUTO) command-line mode for mixed scan lists that contain NXDN targets: `-ft` enables the P25/DMR
 decoders but neither NXDN rate, so NXDN rows would sit idle with a startup warning. The two NXDN rates are separate
@@ -172,6 +177,10 @@ targets_csv = "~/radio/trunk_scan_targets.csv"
 idle_dwell_ms = 3000
 activity_hold_ms = 1200
 ```
+
+Voice-only scan from a config file lives in `[trunking]` (`scan_voice_only`, `scan_voice_qualify_ms`,
+`scan_voice_hold_ms`): conventional targets reuse `dwell_ms` as the qualify window and `activity_hold_ms` as the
+hold, refreshed only from decoded voice; trunked targets are unchanged.
 
 Set `tune_enc_calls = false` to enable key-aware encryption lockout. Otherwise eligible encrypted or
 encryption-unknown P25 voice grants are visited briefly and classified silently; only clear calls or calls with a
@@ -236,6 +245,10 @@ During scanning:
   NXDN48 and NXDN96 share a sync word and every decoded element, so one NXDN reporting path serves both. The allow/block list, private-call tuning,
   data-call tuning, and encrypted-call tuning controls all apply to that decision, so data headers refresh the hold
   only when data-call tuning is enabled (`-e`, or `tune_data_calls` in a config file); it is off by default.
+  With `--scan-voice-only`, headers alone never hold: the hold refreshes only from decoded voice media (stamped
+  with the media time, so LC-less voice holds), `dwell_ms` is the qualify window and `activity_hold_ms` the hold.
+  The terminal status line marks the parked conventional target `Voice: QUALIFY`, `VOICE` or `TAIL`. Trunked
+  targets are unchanged: control-only traffic rotates after dwell, and they carry no `Voice:` marker.
 - An `nxdn-trunk` target with a `chan_csv` reports channels it was granted but could not map, once per channel while
   it is parked (`NOTICE: NXDN trunking: grant: CH 12 has no frequency mapping in chan_csv (site.csv)`), and a summary
   for each such target at exit. Every target keeps its own list, so one target's gaps are never attributed to another.

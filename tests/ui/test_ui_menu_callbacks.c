@@ -632,6 +632,50 @@ test_typed_callbacks_clamp_and_cancel(void) {
     rc |= expect_int("slot pref command", g_cmd.id, DSD_APP_CMD_SLOT_PREF_SET);
     rc |= expect_int("slot pref clamped zero-based", cmd_i32(), 1);
 
+    reset_capture();
+    cb_scan_voice_qualify(&ctx, 0, 1500);
+    rc |= expect_int("canceled voice qualify no command", g_cmd.calls, 0);
+
+    reset_capture();
+    cb_scan_voice_qualify(&ctx, 1, 50);
+    rc |= expect_int("voice qualify command", g_cmd.id, DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET);
+    rc |= expect_int("voice qualify clamped low", cmd_i32(), 100);
+    rc |= expect_int("voice qualify adjusted status", strstr(g_status, "adjusted") != NULL, 1);
+
+    reset_capture();
+    cb_scan_voice_qualify(&ctx, 1, 9999999);
+    rc |= expect_int("voice qualify high command", g_cmd.id, DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET);
+    rc |= expect_int("voice qualify clamped high", cmd_i32(), 600000);
+    rc |= expect_int("voice qualify high adjusted status", strstr(g_status, "adjusted") != NULL, 1);
+
+    reset_capture();
+    cb_scan_voice_qualify(&ctx, 1, 1500);
+    rc |= expect_int("voice qualify kept command", g_cmd.id, DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET);
+    rc |= expect_int("voice qualify kept", cmd_i32(), 1500);
+    rc |= expect_int("voice qualify applying status", strstr(g_status, "Applying voice qualify") != NULL, 1);
+
+    reset_capture();
+    cb_scan_voice_hold(&ctx, 0, 2500);
+    rc |= expect_int("canceled voice hold no command", g_cmd.calls, 0);
+
+    reset_capture();
+    cb_scan_voice_hold(&ctx, 1, 50);
+    rc |= expect_int("voice hold command", g_cmd.id, DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET);
+    rc |= expect_int("voice hold clamped low", cmd_i32(), 100);
+    rc |= expect_int("voice hold adjusted status", strstr(g_status, "adjusted") != NULL, 1);
+
+    reset_capture();
+    cb_scan_voice_hold(&ctx, 1, 9999999);
+    rc |= expect_int("voice hold high command", g_cmd.id, DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET);
+    rc |= expect_int("voice hold clamped high", cmd_i32(), 600000);
+    rc |= expect_int("voice hold high adjusted status", strstr(g_status, "adjusted") != NULL, 1);
+
+    reset_capture();
+    cb_scan_voice_hold(&ctx, 1, 2500);
+    rc |= expect_int("voice hold kept command", g_cmd.id, DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET);
+    rc |= expect_int("voice hold kept", cmd_i32(), 2500);
+    rc |= expect_int("voice hold applying status", strstr(g_status, "Applying voice hold") != NULL, 1);
+
     return rc;
 }
 
