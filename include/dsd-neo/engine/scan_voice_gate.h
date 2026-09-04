@@ -23,8 +23,21 @@
 extern "C" {
 #endif
 
-/** Newest policy-allowed voice media time (monotonic s), or < 0 when none. */
-double dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state);
+/** Policy-allowed decoded voice media visible to a scanner tick. */
+typedef struct {
+    /** Newest media time on an active call with media latched, or < 0 when none. */
+    double active_media_m;
+    /** Newest media time on an active or ended call, or < 0 when none. */
+    double retained_media_m;
+} dsd_scan_voice_probe_result;
+
+/**
+ * Probe both call slots for policy-allowed decoded voice media.
+ *
+ * Both result fields are initialized to -1. Returns -1 for invalid arguments,
+ * 0 when no qualifying media exists, and 1 when retained media exists.
+ */
+int dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_voice_probe_result* out);
 
 /** Restart the per-visit gate memory on a scan hop. */
 void dsd_scan_voice_gate_note_retune(dsd_state* state, double now_m);

@@ -154,6 +154,89 @@ test_retained_crypto_update(void) {
 }
 
 static void
+test_media_timestamps(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    dsd_call_observation observation = group_call(0U, 500U, 600U, 1.0);
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    dsd_call_snapshot snapshot;
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.media_started_m == 0.0);
+    assert(snapshot.media_updated_m == 0.0);
+    assert(dsd_call_state_update_media(state, 0U, 1, 1.1) == 1);
+    assert(dsd_call_state_update_media(state, 0U, 0, 1.2) == 1);
+    assert(dsd_call_state_update_media(state, 0U, 1, 1.3) == 1);
+
+    observation.observed_m = 1.4;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    const dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_CLEAR,
+        .observed_m = 1.5,
+    };
+    assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
+    assert(dsd_call_state_end_ex(state, 0U, 1.6, DSD_CALL_END_TERMINATOR) == 1);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.media_active == 0U);
+    assert(snapshot.media_started_m == 1.1);
+    assert(snapshot.media_updated_m == 1.3);
+
+    dsd_call_state_snapshot saved;
+    assert(dsd_call_state_copy_snapshot(state, &saved) == 1);
+    observation.observed_m = 2.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.media_started_m == 0.0);
+    assert(snapshot.media_updated_m == 0.0);
+    assert(dsd_call_state_restore_snapshot(state, &saved) == 1);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.media_started_m == 1.1);
+    assert(snapshot.media_updated_m == 1.3);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+static void
+test_reacquisition_carries_media_timestamps(void) {
+    static const dsd_call_end_reason reasons[] = {
+        DSD_CALL_END_SYNC_LOSS,
+        DSD_CALL_END_UNVERIFIED_TERMINATOR,
+    };
+    for (size_t i = 0U; i < sizeof(reasons) / sizeof(reasons[0]); i++) {
+        dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+        assert(state != NULL);
+        dsd_call_observation observation = group_call(0U, 500U, 600U, 10.0);
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        assert(dsd_call_state_update_media(state, 0U, 1, 10.05) == 1);
+        assert(dsd_call_state_update_media(state, 0U, 1, 10.15) == 1);
+        assert(dsd_call_state_end_ex(state, 0U, 10.2, reasons[i]) == 1);
+
+        observation.observed_m = 10.3;
+        if (reasons[i] == DSD_CALL_END_UNVERIFIED_TERMINATOR) {
+            observation.ota_target_id = 0U;
+            observation.policy_target_id = 0U;
+            observation.ota_source_id = 0U;
+        }
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_call_snapshot snapshot;
+        assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+        assert(snapshot.phase == DSD_CALL_PHASE_ACTIVE);
+        assert(snapshot.started_m == 10.3);
+        assert(snapshot.media_started_m == 10.05);
+        assert(snapshot.media_updated_m == 10.15);
+        assert(snapshot.media_active == 0U);
+        assert(dsd_call_state_update_media(state, 0U, 1, 10.35) == 1);
+        assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+        assert(snapshot.media_started_m == 10.05);
+        assert(snapshot.media_updated_m == 10.35);
+
+        dsd_state_ext_free_all(state);
+        free(state);
+    }
+}
+
+static void
 test_recent_activity(dsd_state* state) {
     dsd_call_observation activity0 = group_call(0U, 100U, 9U, 1.0);
     dsd_call_observation activity1 = group_call(1U, 200U, 10U, 2.0);
@@ -512,6 +595,8 @@ main(void) {
     test_epochs_and_late_identity(state);
     test_crypto_and_slot_isolation(state);
     test_retained_crypto_update();
+    test_media_timestamps();
+    test_reacquisition_carries_media_timestamps();
     test_recent_activity(state);
     test_snapshot_clone(state);
     test_voice_specialization_and_sparse_metadata();

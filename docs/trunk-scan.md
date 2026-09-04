@@ -135,7 +135,8 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
 - Per-target CSV values override these defaults.
 - `--scan-voice-only`: conventional targets hold only from decoded voice media (headers and data no longer hold),
   with the per-target `dwell_ms` as the qualify window in which voice must appear and `activity_hold_ms` as the
-  hold after the last voice frame; trunked targets are unchanged (control-only rotates after dwell). The
+  hold after the last voice frame, including when a terminator closes the call before the next scan tick; trunked
+  targets are unchanged (control-only rotates after dwell). The
   `--scan-voice-qualify-ms` and `--scan-voice-hold-ms` timings apply to the `-Y` conventional scan only, not to
   trunk-scan targets.
 
@@ -248,8 +249,9 @@ During scanning:
   data-call tuning, and encrypted-call tuning controls all apply to that decision, so data headers refresh the hold
   only when data-call tuning is enabled (`-e`, or `tune_data_calls` in a config file); it is off by default.
   With `--scan-voice-only`, headers alone never hold: the hold refreshes only from decoded voice media (stamped
-  with the media time, so LC-less voice holds), `dwell_ms` is the qualify window and `activity_hold_ms` the hold.
-  The terminal status line marks the parked conventional target `Voice: QUALIFY`, `VOICE` or `TAIL`. Trunked
+  with a retained media time, so LC-less and just-ended voice hold), `dwell_ms` is the qualify window and
+  `activity_hold_ms` the hold. The terminal status line marks the parked conventional target `Voice: QUALIFY`,
+  `VOICE` while a media-bearing call is active, or `TAIL` after it ends while the hold runs. Trunked
   targets are unchanged: control-only traffic rotates after dwell, and they carry no `Voice:` marker.
 - An `nxdn-trunk` target with a `chan_csv` reports channels it was granted but could not map, once per channel while
   it is parked (`NOTICE: NXDN trunking: grant: CH 12 has no frequency mapping in chan_csv (site.csv)`), and a summary

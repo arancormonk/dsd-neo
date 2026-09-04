@@ -3296,6 +3296,80 @@ test_conventional_voice_gate_media_hold(void) {
     return test_rc;
 }
 
+/* A protocol terminator may end the canonical call before the coordinator gets its first
+ * post-dispatch tick. The retained last-media stamp must still start the target's full hold;
+ * otherwise this sequence rotates on dwell and makes activity_hold_ms appear ineffective. */
+static int
+test_conventional_voice_gate_terminator_before_first_tick(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,5000,\n"
+                             "b,dmr-conventional,462000000,,250,5000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.scan_voice_only = 1;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "terminator-first voice-gate scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    if (seed_voice_gate_media_epoch(&state, 0.10, 0.25, DSD_CALL_CRYPTO_CLEAR) != 0
+        || dsd_call_state_end_ex(&state, 0U, 0.26, DSD_CALL_END_TERMINATOR) != 1) {
+        DSD_FPRINTF(stderr, "terminator-first voice-gate media seed failed\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0
+        || state.scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_TAIL) {
+        DSD_FPRINTF(stderr, "terminator-first media did not enter TAIL on the original target\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(5.249);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "terminator-first target rotated before the five-second hold\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(5.25);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0
+        || state.scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY) {
+        DSD_FPRINTF(stderr, "terminator-first target did not leave TAIL at the hold boundary\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(5.501);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1
+        || state.scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_OFF) {
+        DSD_FPRINTF(stderr, "terminator-first target did not rotate after hold plus dwell\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(5.51);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (state.scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY) {
+        DSD_FPRINTF(stderr, "retained media crossed into the next target context\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_state_ext_free_all(&state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /* Policy still gates the media hold: encrypted voice the operator locks out
  * (trunk_tune_enc_calls=0) never refreshes it, so the target rotates on dwell. */
 static int
@@ -6896,6 +6970,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_data_header_no_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_voice_header_no_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_media_hold);
+    rc |= run_with_default_tune_hook(test_conventional_voice_gate_terminator_before_first_tick);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_enc_lockout_media_rotates);
     rc |= run_with_default_tune_hook(test_trunked_voice_gate_control_only_unchanged);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_holds_while_tuned);

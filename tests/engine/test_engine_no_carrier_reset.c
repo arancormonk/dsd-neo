@@ -835,12 +835,16 @@ main(void) {
     rc |= expect_true("voice-gate-idle-resets-voice", state->scan_voice_gate_voice_m < 0.0);
     rc |= expect_true("voice-gate-idle-restamps-arrive", fabs(state->scan_voice_gate_arrive_m - gate_now_m) < 5.0);
 
-    // Recent voice holds past qualify even though the hangtime (1 s, deadline 11 s old) is due.
+    // A terminator-ended call discovered on an unsynced tick still obeys a custom five-second
+    // voice hold even though the legacy hangtime (1 s, deadline 11 s old) is due. This is the
+    // post-dispatch shape of DMR BS: one processFrame() consumes the voice and terminator before
+    // the engine gets its first gate tick, so sync_m is not available to select the gate.
     opts->trunk_hangtime = 1;
+    opts->scan_voice_hold_ms = 5000;
     state->lcn_freq_roll = 1;
     state->last_cc_sync_time = time(NULL) - 11;
     gate_now_m = dsd_time_now_monotonic_s();
-    dsd_scan_voice_gate_note_retune(state, gate_now_m - 0.6);
+    dsd_scan_voice_gate_note_retune(state, gate_now_m - 3.0);
     dsd_call_observation gate_voice_call = {0};
     gate_voice_call.protocol = DSD_SYNC_NXDN_POS;
     gate_voice_call.slot = 0U;
@@ -848,14 +852,18 @@ main(void) {
     gate_voice_call.ota_target_id = 7202U;
     gate_voice_call.policy_target_id = 7202U;
     gate_voice_call.ota_source_id = 8202U;
-    gate_voice_call.observed_m = gate_now_m - 0.5;
+    gate_voice_call.observed_m = gate_now_m - 2.8;
     rc |= expect_true("voice-gate-voice-seeds-call",
                       dsd_call_state_observe(state, &gate_voice_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
     rc |= expect_true("voice-gate-voice-seeds-media",
-                      dsd_call_state_update_media(state, 0U, 1, gate_now_m - 0.5) == 1
-                          && dsd_call_state_update_media(state, 0U, 1, gate_now_m - 0.3) == 1);
-    dsd_scan_voice_gate_tick(opts, state, 1, gate_now_m);
-    rc |= expect_true("voice-gate-voice-phase", state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_VOICE);
+                      dsd_call_state_update_media(state, 0U, 1, gate_now_m - 2.8) == 1
+                          && dsd_call_state_update_media(state, 0U, 1, gate_now_m - 2.6) == 1);
+    rc |= expect_true("voice-gate-voice-terminates-before-tick",
+                      dsd_call_state_end_ex(state, 0U, gate_now_m - 2.5, DSD_CALL_END_TERMINATOR) == 1);
+    dsd_scan_voice_gate_tick(opts, state, 0, gate_now_m);
+    rc |= expect_true("voice-gate-tail-phase", state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_TAIL);
+    rc |= expect_true("voice-gate-sync-remains-unset", state->scan_voice_gate_sync_m < 0.0);
+    rc |= expect_true("voice-gate-retained-media-arms", state->scan_voice_gate_voice_m > 0.0);
     rc |= expect_true("voice-gate-voice-holds",
                       dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s()) == 0);
     const time_t voice_hold_deadline = state->last_cc_sync_time;
@@ -865,7 +873,7 @@ main(void) {
     rc |= expect_true("voice-gate-voice-keeps-roll", state->lcn_freq_roll == 1);
     rc |= expect_true("voice-gate-voice-keeps-deadline", state->last_cc_sync_time == voice_hold_deadline);
 
-    // Gate off: the stale gate anchors above are ignored and the hangtime rule decides alone.
+    // Gate off: the retained gate anchor above is ignored and the hangtime rule decides alone.
     opts->scan_voice_only = 0;
     state->last_cc_sync_time = time(NULL);
     g_rtl_tune_calls = 0;
@@ -889,7 +897,7 @@ main(void) {
 
     state->last_cc_sync_time = time(NULL) - 11;
     gate_now_m = dsd_time_now_monotonic_s();
-    dsd_scan_voice_gate_note_retune(state, gate_now_m - 5.0);
+    dsd_scan_voice_gate_note_retune(state, gate_now_m);
     dsd_scan_voice_gate_tick(opts, state, 0, gate_now_m);
     rc |= expect_true("voice-gate-unsynced-abstains",
                       dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s()) == 0);

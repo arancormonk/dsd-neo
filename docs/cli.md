@@ -458,7 +458,9 @@ Notes
   Voice-only scan: `--scan-voice-only` steps on unless decoded voice frames hold the row. `--scan-voice-qualify-ms
   <100..600000>` (default `1000`) is the window after sync in which voice must appear or the scan moves on;
   `--scan-voice-hold-ms <100..600000>` (default `2000`) is the time to stay after the last voice frame. Encrypted
-  voice without a key holds unless the talkgroup policy blocks it; unknown identity counts as voice.
+  voice without a key holds unless the talkgroup policy blocks it; unknown identity counts as voice. The last-media
+  time survives an over-the-air terminator, so the full hold still runs when a protocol closes the call before the
+  scanner's next tick.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
   - Rotates one tuner across CSV-defined P25 trunk, DMR trunk, DMR conventional, NXDN trunk, NXDN96 conventional
     (`nxdn-conventional`) and NXDN48 conventional (`nxdn48-conventional`) targets. Full guide: `docs/trunk-scan.md`.
@@ -475,7 +477,8 @@ Notes
     (default `1200`).
   - Voice-only scan (`--scan-voice-only` with the qualify/hold flags above): conventional targets hold only from
     decoded voice, with `dwell_ms` as the qualify window and `activity_hold_ms` as the hold; trunked targets are
-    unchanged (control-only rotates after dwell) and show no `Voice:` marker on the status line.
+    unchanged (control-only rotates after dwell) and show no `Voice:` marker on the status line. A conventional
+    target shows `VOICE` while its call is active and `TAIL` after the call ends while the hold remains.
   - Cannot be combined with conventional `-Y` scan mode or IQ replay.
   - Single-tuner limitation: systems not currently parked can be missed while another target is being monitored.
 - Channel map CSV: `-C <file>` (e.g., `connect_plus_chan.csv`). The channel column takes decimal, `0x2A46` hex, or

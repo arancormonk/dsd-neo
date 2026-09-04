@@ -2644,12 +2644,15 @@ trunk_scan_refresh_voice_media_hold(const dsd_opts* opts, dsd_state* state, dsd_
         return;
     }
     const double hold_s = (double)rt->target.activity_hold_ms / 1000.0;
-    const double media_m = dsd_scan_voice_probe(opts, state);
-    if (media_m > rt->last_allowed_activity_m) {
-        rt->last_allowed_activity_m = media_m;
-        rt->idle_since_m = -1.0;
+    dsd_scan_voice_probe_result media;
+    (void)dsd_scan_voice_probe(opts, state, &media);
+    if (media.retained_media_m > rt->last_allowed_activity_m) {
+        rt->last_allowed_activity_m = media.retained_media_m;
+        if ((now_m - media.retained_media_m) < hold_s) {
+            rt->idle_since_m = -1.0;
+        }
     }
-    if (media_m >= 0.0 && (now_m - media_m) < hold_s) {
+    if (media.active_media_m >= 0.0 && (now_m - media.active_media_m) < hold_s) {
         state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
     } else if (rt->last_allowed_activity_m > 0.0 && (now_m - rt->last_allowed_activity_m) < hold_s) {
         state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_TAIL;

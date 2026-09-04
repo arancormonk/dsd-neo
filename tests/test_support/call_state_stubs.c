@@ -176,7 +176,12 @@ dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, do
     }
     stub_select_state(state);
     g_stub_calls[slot].media_active = media_active != 0;
-    (void)observed_m;
+    if (media_active && observed_m > 0.0) {
+        if (g_stub_calls[slot].media_started_m <= 0.0) {
+            g_stub_calls[slot].media_started_m = observed_m;
+        }
+        g_stub_calls[slot].media_updated_m = observed_m;
+    }
     return 0;
 }
 

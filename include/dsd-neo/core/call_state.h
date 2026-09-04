@@ -170,6 +170,10 @@ typedef struct {
     double started_m;
     double updated_m;
     double ended_m;
+    /** First decoded-media update in this logical transmission (monotonic seconds), or 0. */
+    double media_started_m;
+    /** Most recent decoded-media update in this logical transmission (monotonic seconds), or 0. */
+    double media_updated_m;
     dsd_call_phase phase;
     int protocol; /**< DSD_SYNC_* value, or DSD_SYNC_NONE when unobserved. */
     dsd_call_kind kind;
