@@ -78,7 +78,10 @@ set +e
 # separately.
 {
   echo "shellcheck files: ${#FILTERED[@]}"
-  shellcheck "${FILTERED[@]}"
+  # -x follows the `# shellcheck source=` directives. Without it a script is
+  # clean only while whatever it sources happens to be in the same file list, so
+  # changing one of these scripts alone failed the lint on SC1091.
+  shellcheck -x "${FILTERED[@]}"
 } 2>&1 | tee "$LOG_FILE"
 shellcheck_rc=${PIPESTATUS[0]}
 {
