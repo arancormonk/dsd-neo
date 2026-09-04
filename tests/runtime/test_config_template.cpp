@@ -165,6 +165,48 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing commented voice_start key\n");
         rc = 1;
     }
+    if (!strstr(content, "# input_warn_db = -40.0")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing commented input_warn_db key\n");
+        rc = 1;
+    }
+    if (!strstr(content, "# Range: -200 to 0")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing input_warn_db range hint\n");
+        rc = 1;
+    }
+    if (!strstr(content, "# scan_voice_only")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing commented scan_voice_only key\n");
+        rc = 1;
+    }
+    if (!strstr(content, "# scan_voice_qualify_ms")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing commented scan_voice_qualify_ms key\n");
+        rc = 1;
+    }
+    if (!strstr(content, "# scan_voice_hold_ms")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing commented scan_voice_hold_ms key\n");
+        rc = 1;
+    }
+    /* The range hint sits directly above its key, so pin each key's own hint: a single
+     * search for the shared "100 to 600000" text would pass with either key's hint missing. */
+    if (!strstr(content, "# Range: 100 to 600000\n# scan_voice_qualify_ms = 1000\n")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing scan_voice_qualify_ms range hint or default\n");
+        rc = 1;
+    }
+    if (!strstr(content, "# Range: 100 to 600000\n# scan_voice_hold_ms = 2000\n")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing scan_voice_hold_ms range hint or default\n");
+        rc = 1;
+    }
+    if (strstr(content, "version =") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: template must not emit the persisted version marker\n");
+        rc = 1;
+    }
+    const char* compat_aliases[] = {"pulse_input",    "rtl_auto_ppm", "pulse_output", "ncurses_ui",
+                                    "event_log_file", "call_alert",   "# start =",    "# end ="};
+    for (size_t i = 0; i < sizeof compat_aliases / sizeof compat_aliases[0]; i++) {
+        if (strstr(content, compat_aliases[i]) != NULL) {
+            DSD_FPRINTF(stderr, "FAIL: template emitted read-only compatibility alias %s\n", compat_aliases[i]);
+            rc = 1;
+        }
+    }
 
     free(content);
     return rc;

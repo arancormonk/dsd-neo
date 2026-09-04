@@ -40,8 +40,7 @@ int low_pass_simple(float* signal2, int len, int step);
 void low_pass_real(struct demod_state* s);
 
 /**
- * Perform FM discriminator on interleaved low-passed I/Q to produce audio PCM.
- * Uses the active discriminator configured in fm->discriminator.
+ * Perform FM discrimination on interleaved low-passed I/Q to produce audio PCM.
  *
  * @param fm Demodulator state (uses lowpassed as input, writes to result).
  * @note Renamed to avoid collision with codec2's fm_demod symbol on Windows.
@@ -61,7 +60,7 @@ void raw_demod(struct demod_state* fm);
  * Converts each carrier-corrected differential phasor to a real symbol using
  * `atan2f(Q, I) * (4/pi)`, matching OP25's `multiply_const_ff(4.0/pi)` stage.
  * The output range maps nominal CQPSK decision points to approximately
- * `{-3, -1, +1, +3}` for legacy slicers.
+ * `{-3, -1, +1, +3}` for four-level slicers.
  *
  * @param fm Demodulator state (reads interleaved I/Q in lowpassed, writes phase deltas to result).
  */
@@ -100,12 +99,23 @@ float mean_power(const float* samples, int len, int step);
 
 /**
  * Full demodulation pipeline for one block.
- * Applies decimation via half-band cascade, optional FLL and timing
- * correction, followed by the configured discriminator and post-processing.
+ * Applies decimation via half-band cascade and the selected demodulation chain.
  *
  * @param d Demodulator state (consumes lowpassed, produces result).
  */
 void full_demod(struct demod_state* d);
+
+/**
+ * Channel edge (Hz) that the channel low-pass protects for a profile.
+ *
+ * The half-width of the nominal channel — 12.5 kHz modes return 6250. This is
+ * the channel, not the filter: DSD_CH_LPF_PROFILE_P25_CQPSK runs a roomier
+ * 7250 Hz cutoff and still protects a 12.5 kHz channel.
+ *
+ * @param profile DSD_CH_LPF_PROFILE_* value.
+ * @return Channel half-width in Hz; the wide/analog edge for unknown profiles.
+ */
+double dsd_channel_lpf_protected_edge_hz(int profile);
 
 #ifdef __cplusplus
 }

@@ -7,6 +7,7 @@ include(CheckSymbolExists)
 set(DSD_PLATFORM_WINDOWS OFF)
 set(DSD_PLATFORM_LINUX OFF)
 set(DSD_PLATFORM_MACOS OFF)
+set(DSD_PLATFORM_ANDROID OFF)
 
 if(WIN32)
     set(DSD_PLATFORM_WINDOWS ON)
@@ -21,6 +22,15 @@ if(WIN32)
 
     # Link Winsock2
     set(DSD_PLATFORM_LIBS ws2_32)
+
+elseif(ANDROID)
+    # The NDK toolchain sets both ANDROID and CMAKE_SYSTEM_NAME=Android, so this
+    # must precede the Linux branch. pthread lives inside Bionic; liblog carries
+    # __android_log_* for the logcat sink.
+    set(DSD_PLATFORM_ANDROID ON)
+    message(STATUS "Platform: Android")
+
+    set(DSD_PLATFORM_LIBS log)
 
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(DSD_PLATFORM_LINUX ON)
@@ -55,6 +65,12 @@ set(DSD_PLATFORM_MACOS
     "macOS platform detected"
     FORCE
 )
+set(DSD_PLATFORM_ANDROID
+    ${DSD_PLATFORM_ANDROID}
+    CACHE BOOL
+    "Android platform detected"
+    FORCE
+)
 set(DSD_PLATFORM_LIBS
     ${DSD_PLATFORM_LIBS}
     CACHE STRING
@@ -65,5 +81,6 @@ mark_as_advanced(
     DSD_PLATFORM_WINDOWS
     DSD_PLATFORM_LINUX
     DSD_PLATFORM_MACOS
+    DSD_PLATFORM_ANDROID
     DSD_PLATFORM_LIBS
 )

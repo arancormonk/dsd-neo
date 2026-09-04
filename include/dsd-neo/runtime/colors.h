@@ -7,7 +7,7 @@
  * @file
  * @brief ANSI terminal color escape macros.
  *
- * These macros are used across legacy code paths to colorize stderr/stdout
+ * These macros are used across terminal and log output to colorize stderr/stdout
  * output. Colorization can be toggled at build time via PRETTY_COLORS_LOGS.
  */
 

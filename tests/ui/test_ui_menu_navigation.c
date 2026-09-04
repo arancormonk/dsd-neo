@@ -13,6 +13,7 @@
 
 #include <assert.h>
 #include <curses.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -38,6 +39,22 @@ volatile uint8_t exitflag = 0; // NOLINT(misc-use-internal-linkage)
 
 static int g_action_calls = 0;
 static const char* g_last_action = NULL;
+static int g_fixture = 0;
+static int g_prompt_active = 0;
+static int g_prompt_key_calls = 0;
+static int g_prompt_render_calls = 0;
+static int g_help_active = 0;
+static int g_help_key_calls = 0;
+static int g_help_open_calls = 0;
+static int g_help_render_calls = 0;
+static char g_last_help[128];
+static int g_chooser_active = 0;
+static int g_chooser_key_calls = 0;
+static int g_chooser_render_calls = 0;
+static int g_rr_panel_active = 0;
+static int g_rr_panel_key_calls = 0;
+static int g_rr_panel_render_calls = 0;
+static int g_rr_panel_close_calls = 0;
 
 static void
 capture_action(const char* id) {
@@ -98,6 +115,46 @@ static const NcMenuItem SUB_ITEMS[] = {
     {.id = "sub1", .label = "Sub Item 2", .on_select = act_sub1},
 };
 
+static const NcMenuItem HELP_ONLY_ITEMS[] = {
+    {.id = "help0", .label = "Help Only", .help = "leaf help text"},
+};
+
+static void
+act_kind0(void* ctx) {
+    (void)ctx;
+    capture_action("kind0");
+}
+
+static void
+act_kind1(void* ctx) {
+    (void)ctx;
+    capture_action("kind1");
+}
+
+static void
+act_kind2(void* ctx) {
+    (void)ctx;
+    capture_action("kind2");
+}
+
+/* A status row first, a separator in the middle: neither may take the highlight. */
+static const NcMenuItem KIND_ITEMS[] = {
+    {.id = "status", .label = "Status row", .kind = NC_ITEM_STATUS},
+    {.id = "kind0", .label = "Kind 0", .on_select = act_kind0},
+    {.id = "sep", .kind = NC_ITEM_SEPARATOR},
+    {.id = "kind1", .label = "Kind 1", .on_select = act_kind1},
+    {.id = "kind2", .label = "Kind 2", .on_select = act_kind2},
+};
+
+/* The first and last rows opt out of the jump keys, the way the root menu's Quit
+   row does. Home and End must not park the highlight one Enter away from them. */
+static const NcMenuItem JUMP_GUARD_ITEMS[] = {
+    {.id = "jump0", .label = "Jump 0", .on_select = act_kind0, .no_jump = true},
+    {.id = "jump1", .label = "Jump 1", .on_select = act_kind1},
+    {.id = "jump.sep", .kind = NC_ITEM_SEPARATOR},
+    {.id = "jump2", .label = "Jump 2", .on_select = act_kind2, .no_jump = true},
+};
+
 static const NcMenuItem ROOT_ITEMS[] = {
     {.id = "root0", .label = "Root 0", .on_select = act_root0},
     {.id = "root1", .label = "Root 1", .is_enabled = item_disabled, .on_select = act_root0},
@@ -112,6 +169,25 @@ static void
 reset_capture(void) {
     g_action_calls = 0;
     g_last_action = NULL;
+}
+
+static void
+reset_modal_capture(void) {
+    g_prompt_active = 0;
+    g_prompt_key_calls = 0;
+    g_prompt_render_calls = 0;
+    g_help_active = 0;
+    g_help_key_calls = 0;
+    g_help_open_calls = 0;
+    g_help_render_calls = 0;
+    g_last_help[0] = '\0';
+    g_chooser_active = 0;
+    g_chooser_key_calls = 0;
+    g_chooser_render_calls = 0;
+    g_rr_panel_active = 0;
+    g_rr_panel_key_calls = 0;
+    g_rr_panel_render_calls = 0;
+    g_rr_panel_close_calls = 0;
 }
 
 static void
@@ -134,62 +210,113 @@ dsd_user_config_default_path(void) { // NOLINT(misc-use-internal-linkage)
 void
 ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) { // NOLINT(misc-use-internal-linkage)
     (void)ctx;
+    const NcMenuItem* items = ROOT_ITEMS;
+    size_t n = sizeof ROOT_ITEMS / sizeof ROOT_ITEMS[0];
+    if (g_fixture == 1) {
+        items = NULL;
+        n = 0;
+    } else if (g_fixture == 2) {
+        items = HELP_ONLY_ITEMS;
+        n = sizeof HELP_ONLY_ITEMS / sizeof HELP_ONLY_ITEMS[0];
+    } else if (g_fixture == 3) {
+        items = KIND_ITEMS;
+        n = sizeof KIND_ITEMS / sizeof KIND_ITEMS[0];
+    } else if (g_fixture == 4) {
+        items = JUMP_GUARD_ITEMS;
+        n = sizeof JUMP_GUARD_ITEMS / sizeof JUMP_GUARD_ITEMS[0];
+    }
     if (out_items) {
-        *out_items = ROOT_ITEMS;
+        *out_items = items;
     }
     if (out_n) {
-        *out_n = sizeof ROOT_ITEMS / sizeof ROOT_ITEMS[0];
+        *out_n = n;
     }
 }
 
 int
 ui_prompt_active(void) { // NOLINT(misc-use-internal-linkage)
-    return 0;
+    return g_prompt_active;
 }
 
 int
 ui_prompt_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
     (void)ch;
-    return 0;
+    g_prompt_key_calls++;
+    return 1;
 }
 
 void
 ui_prompt_render(void) { // NOLINT(misc-use-internal-linkage)
+    g_prompt_render_calls++;
 }
 
 int
 ui_help_active(void) { // NOLINT(misc-use-internal-linkage)
-    return 0;
+    return g_help_active;
 }
 
 int
 ui_help_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
     (void)ch;
-    return 0;
+    g_help_key_calls++;
+    return 1;
 }
 
 void
 ui_help_open(const char* help) { // NOLINT(misc-use-internal-linkage)
-    (void)help;
+    g_help_active = 1;
+    g_help_open_calls++;
+    DSD_SNPRINTF(g_last_help, sizeof g_last_help, "%s", help ? help : "");
 }
 
 void
 ui_help_render(void) { // NOLINT(misc-use-internal-linkage)
+    g_help_render_calls++;
 }
 
 int
 ui_chooser_active(void) { // NOLINT(misc-use-internal-linkage)
-    return 0;
+    return g_chooser_active;
 }
 
 int
 ui_chooser_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
     (void)ch;
-    return 0;
+    g_chooser_key_calls++;
+    return 1;
 }
 
 void
 ui_chooser_render(void) { // NOLINT(misc-use-internal-linkage)
+    g_chooser_render_calls++;
+}
+
+int
+rr_panel_active(void) { // NOLINT(misc-use-internal-linkage)
+    return g_rr_panel_active;
+}
+
+int
+rr_panel_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
+    (void)ch;
+    g_rr_panel_key_calls++;
+    return 1;
+}
+
+void
+rr_panel_render(void) { // NOLINT(misc-use-internal-linkage)
+    g_rr_panel_render_calls++;
+}
+
+void
+rr_panel_tick(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
+rr_panel_close(void) { // NOLINT(misc-use-internal-linkage)
+    g_rr_panel_close_calls++;
 }
 
 int
@@ -220,14 +347,19 @@ ui_is_enabled(const NcMenuItem* it, const void* ctx) {
 }
 
 int
-ui_next_enabled(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
+ui_is_selectable(const NcMenuItem* it, const void* ctx) {
+    return (it && it->kind == NC_ITEM_ACTION && ui_is_enabled(it, ctx)) ? 1 : 0;
+}
+
+int
+ui_next_selectable(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
     if (!items || n == 0) {
         return 0;
     }
     int idx = from;
     for (size_t i = 0; i < n; i++) {
         idx = (idx + ((dir > 0) ? 1 : -1) + (int)n) % (int)n;
-        if (ui_is_enabled(&items[idx], ctx)) {
+        if (ui_is_selectable(&items[idx], ctx)) {
             return idx;
         }
     }
@@ -319,11 +451,16 @@ resize_term(int lines, int columns) {
 
 int
 main(void) {
-    unsigned char opts_token = 0;
-    unsigned char state_token = 0;
+    static unsigned char opts_token;
+    static unsigned char state_token;
     dsd_opts* opts = (dsd_opts*)&opts_token;
     dsd_state* state = (dsd_state*)&state_token;
 
+    g_fixture = 1;
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_is_open() == 0);
+
+    g_fixture = 0;
     reset_capture();
     ui_menu_open_async(opts, state);
     assert(ui_menu_is_open() == 1);
@@ -403,6 +540,118 @@ main(void) {
     assert_last_action("root6");
 
     assert(ui_menu_handle_key(KEY_LEFT, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+
+    g_fixture = 2;
+    reset_capture();
+    reset_modal_capture();
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_is_open() == 1);
+    assert(ui_menu_handle_key(KEY_RIGHT, opts, state) == 1);
+    assert(g_action_calls == 0);
+    assert(g_help_open_calls == 1);
+    assert(strcmp(g_last_help, "leaf help text") == 0);
+    assert(g_help_active == 1);
+    assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);
+    assert(g_help_key_calls == 1);
+    ui_menu_tick(opts, state);
+    assert(g_help_render_calls == 1);
+    g_help_active = 0;
+
+    g_prompt_active = 1;
+    assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);
+    assert(g_prompt_key_calls == 1);
+    ui_menu_tick(opts, state);
+    assert(g_prompt_render_calls == 1);
+    g_prompt_active = 0;
+
+    g_chooser_active = 1;
+    assert(ui_menu_handle_key(KEY_UP, opts, state) == 1);
+    assert(g_chooser_key_calls == 1);
+    ui_menu_tick(opts, state);
+    assert(g_chooser_render_calls == 1);
+    g_chooser_active = 0;
+
+    assert(ui_menu_handle_key(KEY_LEFT, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+
+    /* Status rows and separators are drawn but never highlighted or activated. */
+    g_fixture = 3;
+    reset_capture();
+    reset_modal_capture();
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_is_open() == 1);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind0");
+
+    reset_capture();
+    assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind1");
+
+    reset_capture();
+    assert(ui_menu_handle_key(KEY_UP, opts, state) == 1);
+    assert(ui_menu_handle_key(KEY_UP, opts, state) == 1);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind2");
+
+    reset_capture();
+    assert(ui_menu_handle_key(KEY_HOME, opts, state) == 1);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind0");
+
+    reset_capture();
+    assert(ui_menu_handle_key(KEY_END, opts, state) == 1);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind2");
+
+    reset_capture();
+    assert(ui_menu_handle_key(KEY_PPAGE, opts, state) == 1);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind0");
+
+    /* 'q' quits the program from the main screen, so inside the menu it must be inert. */
+    assert(ui_menu_handle_key('q', opts, state) == 0);
+    assert(ui_menu_is_open() == 1);
+    assert(ui_menu_handle_key('Q', opts, state) == 0);
+    assert(ui_menu_is_open() == 1);
+    assert(ui_menu_handle_key(27, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+
+    /* A row that opted out of the jump keys is reachable only by stepping onto it. */
+    g_fixture = 4;
+    reset_capture();
+    reset_modal_capture();
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_is_open() == 1);
+
+    /* The frame does not even open on the guarded first row. */
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind1");
+
+    reset_capture();
+    assert(ui_menu_handle_key(KEY_END, opts, state) == 1);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind1");
+
+    reset_capture();
+    assert(ui_menu_handle_key(KEY_HOME, opts, state) == 1);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind1");
+
+    /* The guard is against a single keystroke, not against the row: arrows still
+       land on it, across the separator and around the wrap. */
+    reset_capture();
+    assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind2");
+
+    reset_capture();
+    assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind0");
+
+    assert(ui_menu_handle_key(27, opts, state) == 1);
     assert(ui_menu_is_open() == 0);
 
     printf("UI_MENU_NAVIGATION: OK\n");

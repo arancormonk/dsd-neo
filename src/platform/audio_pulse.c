@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include "dsd-neo/core/safe_api.h"
 #define DSD_NEO_AUDIO_BACKEND_PULSE 1
+#include "audio_error_internal.h"
 #include "audio_stream_internal.h"
 
 #if DSD_PLATFORM_POSIX
@@ -44,21 +45,10 @@
  *============================================================================*/
 
 static int s_initialized = 0;
-static char s_last_error[512] = "";
 
 /*============================================================================
  * Internal Helpers
  *============================================================================*/
-
-static void
-set_error(const char* msg) {
-    if (msg) {
-        DSD_STRNCPY(s_last_error, msg, sizeof(s_last_error) - 1);
-        s_last_error[sizeof(s_last_error) - 1] = '\0';
-    } else {
-        s_last_error[0] = '\0';
-    }
-}
 
 static void
 set_error_pa(int pa_errno) {
@@ -698,9 +688,9 @@ pulse_output_init_attr(const dsd_audio_params* params, pa_buffer_attr* attr) {
 }
 
 static void
-pulse_output_init_async_state(dsd_audio_stream* stream) {
+pulse_output_init_async_state(dsd_audio_stream* stream, int async_output) {
     /* Async output pump: decouple decode thread from Pulse writes. */
-    stream->use_async = 1;
+    stream->use_async = async_output ? 1 : 0;
     stream->thread_started = 0;
     stream->stop = 0;
     stream->drain_requested = 0;
@@ -828,7 +818,7 @@ dsd_audio_open_output(const dsd_audio_params* params) {
     stream->is_input = 0;
     stream->channels = params->channels;
     stream->sample_rate = params->sample_rate;
-    pulse_output_init_async_state(stream);
+    pulse_output_init_async_state(stream, params->async_output);
 
     if (stream->use_async) {
         int async_sync_inited = pulse_output_init_async_sync(stream);
@@ -1026,7 +1016,7 @@ dsd_audio_drain(dsd_audio_stream* stream) {
 
 const char*
 dsd_audio_get_error(void) {
-    return s_last_error;
+    return audio_error_get();
 }
 
 const char*

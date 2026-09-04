@@ -17,11 +17,6 @@ static const uint8_t scramble_t[182] = { // values are the position values we ne
     88,  89,  92,  95,  96,  98,  100, 103, 104, 107, 108, 116, 117, 121, 122, 125, 127, 131, 132, 134, 137, 139, 140,
     141, 142, 143, 144, 145, 147, 151, 153, 154, 158, 159, 160, 162, 164, 165, 168, 170, 171, 174, 175, 176, 177, 181};
 
-void
-nxdn_descramble(uint8_t dibits[], int len) {
-    nxdn_descramble_with_seed(dibits, len, 228U);
-}
-
 static uint16_t
 nxdn_pn95_normalized_seed(uint16_t seed) {
     if (seed == 0U) {

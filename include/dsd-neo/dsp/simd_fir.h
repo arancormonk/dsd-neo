@@ -44,7 +44,6 @@ void simd_fir_complex_apply(const float* in, int in_len, float* out, float* hist
 /**
  * Complex half-band decimator by 2.
  * Exploits zero-valued odd taps in half-band filters AND tap symmetry.
- * API matches hb_decim2_complex_interleaved_ex() exactly.
  *
  * @param in       Input interleaved I/Q samples.
  * @param in_len   Input length in floats (num_pairs * 2).
@@ -60,7 +59,6 @@ int simd_hb_decim2_complex(const float* in, int in_len, float* out, float* hist_
 
 /**
  * Real half-band decimator by 2.
- * API matches hb_decim2_real() exactly.
  *
  * @param in       Real input samples.
  * @param in_len   Number of input samples.

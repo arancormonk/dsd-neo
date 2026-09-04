@@ -57,6 +57,20 @@ main(void) {
     assert(ui_burst_has_p25_crypto_metadata(30) == 0);
     assert(ui_burst_has_p25_crypto_metadata(31) == 0);
 
+    /* A lockout-suppressed companion (no ACTIVE canonical call, crypto
+       suppressed) with a call-claiming burst hint renders idle. */
+    assert(ui_p25p2_lockout_suppressed_slot(1, 0, 1, 20) == 1); /* MAC_PTT repeat */
+    assert(ui_p25p2_lockout_suppressed_slot(1, 0, 1, 21) == 1); /* MAC_ACTIVE repeat */
+    assert(ui_p25p2_lockout_suppressed_slot(1, 0, 1, 22) == 1); /* MAC_HANGTIME */
+
+    /* Follow mode, an ACTIVE canonical call, an unsuppressed classification,
+       or a hint with no call/crypto claim all render as-is. */
+    assert(ui_p25p2_lockout_suppressed_slot(0, 0, 1, 21) == 0); /* lockout off */
+    assert(ui_p25p2_lockout_suppressed_slot(1, 1, 1, 21) == 0); /* call active */
+    assert(ui_p25p2_lockout_suppressed_slot(1, 0, 0, 21) == 0); /* crypto clear/unknown */
+    assert(ui_p25p2_lockout_suppressed_slot(1, 0, 1, 23) == 0); /* PTT END */
+    assert(ui_p25p2_lockout_suppressed_slot(1, 0, 1, 24) == 0); /* already idle */
+
     printf("UI_BURST_ACTIVE_CALL: OK\n");
     return 0;
 }

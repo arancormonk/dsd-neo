@@ -41,6 +41,11 @@
 #include <vector>
 #include "dsd-neo/core/safe_api.h"
 
+#if defined(__x86_64__) || defined(_M_X64)
+extern "C" int simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
+                                           const float* taps, int taps_len);
+#endif
+
 extern "C" int
 dsd_rtl_stream_should_exit(void) {
     return 0;
@@ -376,15 +381,35 @@ bench_input_ring(const BenchOptions& opts) {
     }
 
     ran += run_case(opts, "input_ring_read_block", "sample", (double)kBlock, [&]() -> float {
-        input_ring_clear(&ring);
-        input_ring_write(&ring, in.data(), kBlock);
+        ring.tail.store(0U);
+        ring.head.store(0U);
+        float* p1 = NULL;
+        float* p2 = NULL;
+        size_t n1 = 0U;
+        size_t n2 = 0U;
+        int grant = input_ring_reserve(&ring, kBlock, &p1, &n1, &p2, &n2);
+        if (grant != (int)kBlock || n1 != kBlock || n2 != 0U) {
+            return -1.0f;
+        }
+        DSD_MEMCPY(p1, in.data(), kBlock * sizeof(float));
+        input_ring_commit(&ring, kBlock);
         int got = input_ring_read_block(&ring, out.data(), kBlock);
         return out[0] + out[kBlock - 1] + (float)got;
     });
 
     ran += run_case(opts, "input_ring_read_reserve", "sample", (double)kBlock, [&]() -> float {
-        input_ring_clear(&ring);
-        input_ring_write(&ring, in.data(), kBlock);
+        ring.tail.store(0U);
+        ring.head.store(0U);
+        float* write_p1 = NULL;
+        float* write_p2 = NULL;
+        size_t write_n1 = 0U;
+        size_t write_n2 = 0U;
+        int grant = input_ring_reserve(&ring, kBlock, &write_p1, &write_n1, &write_p2, &write_n2);
+        if (grant != (int)kBlock || write_n1 != kBlock || write_n2 != 0U) {
+            return -1.0f;
+        }
+        DSD_MEMCPY(write_p1, in.data(), kBlock * sizeof(float));
+        input_ring_commit(&ring, kBlock);
         float* p1 = NULL;
         float* p2 = NULL;
         size_t n1 = 0;
@@ -426,22 +451,10 @@ bench_output_ring(const BenchOptions& opts) {
     ring.write_timeouts.store(0);
     ring.read_timeouts.store(0);
 
-    ran += run_case(opts, "output_ring_read_one", "sample", (double)kBlock, [&]() -> float {
-        ring_clear(&ring);
-        ring_write_no_signal(&ring, in.data(), kBlock);
-        float sum = 0.0f;
-        for (size_t i = 0; i < kBlock; i++) {
-            float sample = 0.0f;
-            if (ring_read_one(&ring, &sample) == 0) {
-                sum += sample;
-            }
-        }
-        return sum;
-    });
-
     ran += run_case(opts, "output_ring_read_batch", "sample", (double)kBlock, [&]() -> float {
         ring_clear(&ring);
-        ring_write_no_signal(&ring, in.data(), kBlock);
+        DSD_MEMCPY(ring.buffer, in.data(), kBlock * sizeof(float));
+        ring.head.store(kBlock);
         int got = ring_read_batch(&ring, out.data(), kBlock);
         return out[0] + out[(got > 0) ? (size_t)got - 1U : 0U] + (float)got;
     });
@@ -458,14 +471,12 @@ bench_u8_widen(const BenchOptions& opts) {
     int ran = 0;
     constexpr uint32_t kBytes = 16384;
     std::vector<unsigned char> in(kBytes);
-    std::vector<unsigned char> legacy(kBytes);
     std::vector<float> out(kBytes);
     uint32_t seed = 0x9e3779b9u;
     for (uint32_t i = 0; i < kBytes; i++) {
         seed = seed * 1664525u + 1013904223u;
         in[i] = (unsigned char)((seed >> 24) & 0xffu);
     }
-    legacy = in;
 
     ran += run_case(opts, "widen_u8_to_f32_bias127", "byte", (double)kBytes, [&]() -> float {
         widen_u8_to_f32_bias127(in.data(), out.data(), kBytes);
@@ -473,16 +484,9 @@ bench_u8_widen(const BenchOptions& opts) {
     });
 
     uint32_t combined_phase = 0;
-    ran += run_case(opts, "widen_rotate90_u8_to_f32_bias127", "byte", (double)kBytes, [&]() -> float {
+    ran += run_case(opts, "widen_rotate90_u8_to_f32_bias127_phase", "byte", (double)kBytes, [&]() -> float {
         combined_phase = widen_rotate90_u8_to_f32_bias127_phase(in.data(), out.data(), kBytes, combined_phase);
         return out[0] + out[kBytes - 1] + (float)combined_phase;
-    });
-
-    uint32_t legacy_phase = 0;
-    ran += run_case(opts, "rotate90_u8_then_widen_bias128", "byte", (double)kBytes, [&]() -> float {
-        legacy_phase = rotate90_u8_inplace_phase(legacy.data(), kBytes, legacy_phase);
-        widen_u8_to_f32_bias128_scalar(legacy.data(), out.data(), kBytes);
-        return out[0] + out[kBytes - 1] + (float)legacy_phase;
     });
 
     return ran;
@@ -604,13 +608,120 @@ bench_fir(const BenchOptions& opts) {
         return out[0] + out[kInLen - 1] + hist_i[0] + hist_q[0];
     });
 
-    std::vector<float> hb_hist_i(HB_TAPS - 1, 0.0f);
-    std::vector<float> hb_hist_q(HB_TAPS - 1, 0.0f);
-    ran += run_case(opts, "simd_hb_decim2_complex", "pair", (double)kPairs, [&]() -> float {
-        int got = simd_hb_decim2_complex(in.data(), kInLen, out.data(), hb_hist_i.data(), hb_hist_q.data(), hb_q15_taps,
-                                         HB_TAPS);
-        return out[0] + out[(got > 0) ? got - 1 : 0] + (float)got;
-    });
+    std::vector<float> hb15_hist_i(HB_TAPS - 1, 0.0f);
+    std::vector<float> hb15_hist_q(HB_TAPS - 1, 0.0f);
+    BenchMeta hb15_meta;
+    hb15_meta.tap_count = HB_TAPS;
+    hb15_meta.variant = "fixed";
+    ran += run_case(
+        opts, "simd_hb_decim2_complex_15tap", "pair", (double)kPairs,
+        [&]() -> float {
+            int got = simd_hb_decim2_complex(in.data(), kInLen, out.data(), hb15_hist_i.data(), hb15_hist_q.data(),
+                                             hb_q15_taps, HB_TAPS);
+            return out[0] + out[(got > 0) ? got - 1 : 0] + (float)got;
+        },
+        &hb15_meta);
+
+    std::vector<float> hb31_hist_i(30, 0.0f);
+    std::vector<float> hb31_hist_q(30, 0.0f);
+    BenchMeta hb31_meta;
+    hb31_meta.tap_count = 31;
+    hb31_meta.variant = "fixed";
+    ran += run_case(
+        opts, "simd_hb_decim2_complex_31tap", "pair", (double)kPairs,
+        [&]() -> float {
+            int got = simd_hb_decim2_complex(in.data(), kInLen, out.data(), hb31_hist_i.data(), hb31_hist_q.data(),
+                                             hb31_q15_taps, 31);
+            return out[0] + out[(got > 0) ? got - 1 : 0] + (float)got;
+        },
+        &hb31_meta);
+
+    constexpr int kCascadeStages = 5;
+    constexpr int kCascadePairs = 8192;
+    constexpr int kCascadeInLen = kCascadePairs * 2;
+    std::vector<float> cascade_in(kCascadeInLen);
+    std::vector<float> cascade_work_a(kCascadeInLen);
+    std::vector<float> cascade_work_b(kCascadeInLen);
+    std::vector<float> cascade_hist_i[kCascadeStages];
+    std::vector<float> cascade_hist_q[kCascadeStages];
+    fill_noise(&cascade_in, 0x5A17u);
+    for (int stage = 0; stage < kCascadeStages; stage++) {
+        const int hist_len = (stage == 0) ? 30 : HB_TAPS - 1;
+        cascade_hist_i[stage].resize((size_t)hist_len, 0.0f);
+        cascade_hist_q[stage].resize((size_t)hist_len, 0.0f);
+    }
+    BenchMeta cascade_meta;
+    cascade_meta.rate_hz = 1536000;
+    cascade_meta.profile = "rtl_1536k_to_48k";
+    cascade_meta.variant = "31/15/15/15/15";
+    ran += run_case(
+        opts, "simd_hb_decim2_complex_5stage_32x", "input_pair", (double)kCascadePairs,
+        [&]() -> float {
+            const float* src = cascade_in.data();
+            float* dst = cascade_work_a.data();
+            int in_len = kCascadeInLen;
+            for (int stage = 0; stage < kCascadeStages; stage++) {
+                const float* stage_taps = (stage == 0) ? hb31_q15_taps : hb_q15_taps;
+                const int taps_len = (stage == 0) ? 31 : HB_TAPS;
+                const int got = simd_hb_decim2_complex(src, in_len, dst, cascade_hist_i[stage].data(),
+                                                       cascade_hist_q[stage].data(), stage_taps, taps_len);
+                src = dst;
+                in_len = got;
+                dst = (dst == cascade_work_a.data()) ? cascade_work_b.data() : cascade_work_a.data();
+            }
+            return src[0] + src[(in_len > 0) ? in_len - 1 : 0] + cascade_hist_i[0][0] + (float)in_len;
+        },
+        &cascade_meta);
+
+#if defined(__x86_64__) || defined(_M_X64)
+    std::vector<float> sse15_hist_i(HB_TAPS - 1, 0.0f);
+    std::vector<float> sse15_hist_q(HB_TAPS - 1, 0.0f);
+    ran += run_case(
+        opts, "simd_hb_decim2_complex_sse2_15tap", "pair", (double)kPairs,
+        [&]() -> float {
+            int got = simd_hb_decim2_complex_sse2(in.data(), kInLen, out.data(), sse15_hist_i.data(),
+                                                  sse15_hist_q.data(), hb_q15_taps, HB_TAPS);
+            return out[0] + out[(got > 0) ? got - 1 : 0] + (float)got;
+        },
+        &hb15_meta);
+
+    std::vector<float> sse31_hist_i(30, 0.0f);
+    std::vector<float> sse31_hist_q(30, 0.0f);
+    ran += run_case(
+        opts, "simd_hb_decim2_complex_sse2_31tap", "pair", (double)kPairs,
+        [&]() -> float {
+            int got = simd_hb_decim2_complex_sse2(in.data(), kInLen, out.data(), sse31_hist_i.data(),
+                                                  sse31_hist_q.data(), hb31_q15_taps, 31);
+            return out[0] + out[(got > 0) ? got - 1 : 0] + (float)got;
+        },
+        &hb31_meta);
+
+    std::vector<float> sse_cascade_hist_i[kCascadeStages];
+    std::vector<float> sse_cascade_hist_q[kCascadeStages];
+    for (int stage = 0; stage < kCascadeStages; stage++) {
+        const int hist_len = (stage == 0) ? 30 : HB_TAPS - 1;
+        sse_cascade_hist_i[stage].resize((size_t)hist_len, 0.0f);
+        sse_cascade_hist_q[stage].resize((size_t)hist_len, 0.0f);
+    }
+    ran += run_case(
+        opts, "simd_hb_decim2_complex_sse2_5stage_32x", "input_pair", (double)kCascadePairs,
+        [&]() -> float {
+            const float* src = cascade_in.data();
+            float* dst = cascade_work_a.data();
+            int in_len = kCascadeInLen;
+            for (int stage = 0; stage < kCascadeStages; stage++) {
+                const float* stage_taps = (stage == 0) ? hb31_q15_taps : hb_q15_taps;
+                const int taps_len = (stage == 0) ? 31 : HB_TAPS;
+                const int got = simd_hb_decim2_complex_sse2(src, in_len, dst, sse_cascade_hist_i[stage].data(),
+                                                            sse_cascade_hist_q[stage].data(), stage_taps, taps_len);
+                src = dst;
+                in_len = got;
+                dst = (dst == cascade_work_a.data()) ? cascade_work_b.data() : cascade_work_a.data();
+            }
+            return src[0] + src[(in_len > 0) ? in_len - 1 : 0] + sse_cascade_hist_i[0][0] + (float)in_len;
+        },
+        &cascade_meta);
+#endif
 
     std::vector<float> real_in(kInLen);
     std::vector<float> real_out(kInLen / 2);
@@ -625,8 +736,8 @@ bench_fir(const BenchOptions& opts) {
 }
 
 static int
-bench_one_fsk_modem_variant(const BenchOptions& opts, const char* name, int sample_rate, int symbol_rate, int levels,
-                            int reset_each_call) {
+bench_one_fsk_discriminator_variant(const BenchOptions& opts, const char* name, int sample_rate, int symbol_rate,
+                                    int levels, int reset_each_call) {
     const int sps = sample_rate / symbol_rate;
     constexpr int kPairs = 4096;
     constexpr int kInLen = kPairs * 2;
@@ -643,7 +754,8 @@ bench_one_fsk_modem_variant(const BenchOptions& opts, const char* name, int samp
     dsd_fsk_modem_init(&fsk_state, &fsk_cfg);
 
     if (!reset_each_call) {
-        (void)dsd_fsk_modem_process(&fsk_state, fsk_iq.data(), kInLen, fsk_out.data(), (int)fsk_out.size());
+        (void)dsd_fsk_modem_discriminator_process(&fsk_state, fsk_iq.data(), kInLen, fsk_out.data(),
+                                                  (int)fsk_out.size());
     }
 
     BenchMeta meta;
@@ -657,7 +769,8 @@ bench_one_fsk_modem_variant(const BenchOptions& opts, const char* name, int samp
             if (reset_each_call) {
                 dsd_fsk_modem_reset(&fsk_state);
             }
-            int got = dsd_fsk_modem_process(&fsk_state, fsk_iq.data(), kInLen, fsk_out.data(), (int)fsk_out.size());
+            int got = dsd_fsk_modem_discriminator_process(&fsk_state, fsk_iq.data(), kInLen, fsk_out.data(),
+                                                          (int)fsk_out.size());
             return fsk_out[0] + fsk_out[(got > 0) ? got - 1 : 0] + (float)got;
         },
         &meta);
@@ -669,14 +782,14 @@ bench_one_fsk_modem_variant(const BenchOptions& opts, const char* name, int samp
 static int
 bench_fsk_modem_variants(const BenchOptions& opts) {
     int ran = 0;
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_4lvl_24k_acq", 24000, 4800, 4, 1);
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_4lvl_24k_steady", 24000, 4800, 4, 0);
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_4lvl_48k_acq", 48000, 4800, 4, 1);
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_4lvl_48k_steady", 48000, 4800, 4, 0);
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_2lvl_24k_acq", 24000, 2400, 2, 1);
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_2lvl_24k_steady", 24000, 2400, 2, 0);
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_2lvl_48k_acq", 48000, 2400, 2, 1);
-    ran += bench_one_fsk_modem_variant(opts, "fsk_modem_2lvl_48k_steady", 48000, 2400, 2, 0);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_4lvl_24k_reset", 24000, 4800, 4, 1);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_4lvl_24k_steady", 24000, 4800, 4, 0);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_4lvl_48k_reset", 48000, 4800, 4, 1);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_4lvl_48k_steady", 48000, 4800, 4, 0);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_2lvl_24k_reset", 24000, 2400, 2, 1);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_2lvl_24k_steady", 24000, 2400, 2, 0);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_2lvl_48k_reset", 48000, 2400, 2, 1);
+    ran += bench_one_fsk_discriminator_variant(opts, "fsk_discriminator_2lvl_48k_steady", 48000, 2400, 2, 0);
     return ran;
 }
 
@@ -703,7 +816,6 @@ bench_kernel_demods(const BenchOptions& opts) {
 
     fm_state.s->lowpassed = fm_iq.data();
     fm_state.s->lp_len = kInLen;
-    fm_state.s->fll_enabled = 0;
 
     ran += run_case(opts, "dsd_fm_demod", "pair", (double)kPairs, [&]() -> float {
         dsd_fm_demod(fm_state.s);
@@ -727,8 +839,9 @@ bench_kernel_demods(const BenchOptions& opts) {
     fsk_cfg.levels = 4;
     fsk_cfg.channel_profile = DSD_CH_LPF_PROFILE_P25_C4FM;
     dsd_fsk_modem_init(&fsk_state, &fsk_cfg);
-    ran += run_case(opts, "dsd_fsk_modem_process", "pair", (double)kPairs, [&]() -> float {
-        int got = dsd_fsk_modem_process(&fsk_state, fsk_iq.data(), kInLen, fsk_out.data(), (int)fsk_out.size());
+    ran += run_case(opts, "dsd_fsk_modem_discriminator_process", "pair", (double)kPairs, [&]() -> float {
+        int got =
+            dsd_fsk_modem_discriminator_process(&fsk_state, fsk_iq.data(), kInLen, fsk_out.data(), (int)fsk_out.size());
         return fsk_out[0] + fsk_out[(got > 0) ? got - 1 : 0] + (float)got;
     });
     dsd_fsk_modem_release(&fsk_state);
@@ -912,7 +1025,7 @@ configure_common_fsk_state(demod_state* s, int sample_rate, int symbol_rate, int
     s->rate_out2 = 0;
     s->lowpassed = s->input_cb_buf;
     s->mode_demod = &dsd_fm_demod;
-    s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_FSK;
+    s->output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     s->symbol_rate_hz = symbol_rate;
     s->symbol_levels = 4;
     s->ted_sps = sample_rate / symbol_rate;
@@ -953,11 +1066,6 @@ configure_common_c4fm_audio_state(demod_state* s, int sample_rate, int symbol_ra
     s->squelch_env_release = 0.03125f;
     s->iq_dc_block_enable = 1;
     s->iq_dc_shift = 11;
-    s->fm_agc_enable = 1;
-    s->fm_agc_target_rms = 0.30f;
-    s->fm_agc_min_rms = 0.06f;
-    s->fm_agc_alpha_up = 0.25f;
-    s->fm_agc_alpha_down = 0.75f;
     s->output_scale = 1.0f;
 }
 
@@ -1088,7 +1196,7 @@ bench_full_demod(const BenchOptions& opts) {
 int
 main(int argc, char** argv) {
     BenchOptions opts = parse_options(argc, argv);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     if (opts.format == OutputFormat::Text && !opts.list_cases) {
         std::printf("DSD-neo DSP benchmark\n");

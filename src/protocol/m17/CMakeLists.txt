@@ -2,13 +2,13 @@ add_library(dsd-neo_proto_m17)
 
 target_sources(
     dsd-neo_proto_m17
-    PRIVATE m17_algorithms.c m17_tables.c m17_parse.c m17.c
+    PRIVATE m17_algorithms.c m17_tables.c m17_parse.c m17_confirm.c m17.c
 )
 
 target_include_directories(
     dsd-neo_proto_m17
     PUBLIC ${PROJECT_SOURCE_DIR}/include
-    PRIVATE ${_PUBLIC_INCLUDES}
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp ${_PUBLIC_INCLUDES}
 )
 
 target_link_libraries(
@@ -23,7 +23,7 @@ target_link_libraries(
         dsd-neo_feature_codec2
 )
 
-target_link_libraries(dsd-neo_proto_m17 PRIVATE dsd-neo_warnings)
+target_link_libraries(dsd-neo_proto_m17 PRIVATE dsd-neo_dsp dsd-neo_warnings)
 
 install(
     TARGETS dsd-neo_proto_m17

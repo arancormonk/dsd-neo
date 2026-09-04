@@ -23,7 +23,7 @@ main(void) {
 
     rc |= expect_int("disabled suppresses default mask",
                      dsd_call_alert_event_enabled(0, 0, DSD_CALL_ALERT_EVENT_VOICE_START), 0);
-    rc |= expect_int("enabled zero mask means legacy all",
+    rc |= expect_int("enabled zero mask means all events",
                      dsd_call_alert_event_enabled(1, 0, DSD_CALL_ALERT_EVENT_DATA), 1);
     rc |= expect_int(
         "start-only allows start",

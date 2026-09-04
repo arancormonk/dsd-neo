@@ -15,6 +15,8 @@ target_sources(
         crypt-rc2.c
         crypt-rc4.c
         crypt-tyt.c
+        dmr_mi.c
+        md2ii.c
 )
 
 target_include_directories(

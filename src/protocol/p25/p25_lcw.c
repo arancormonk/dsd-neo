@@ -11,13 +11,19 @@
  * 2023-05 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
+
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/embedded_alias.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -25,22 +31,25 @@
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_cc_update.h"
 
-static inline void
-dsd_append(char* dst, size_t dstsz, const char* src) {
-    if (!dst || !src || dstsz == 0) {
-        return;
-    }
-    size_t len = strlen(dst);
-    if (len >= dstsz) {
-        return;
-    }
-    DSD_SNPRINTF(dst + len, dstsz - len, "%s", src);
+static void
+p25_lcw_publish_activity(dsd_state* state, uint8_t index, dsd_call_kind kind, uint64_t target, uint64_t source,
+                         uint16_t channel, const char* notice) {
+    dsd_call_observation observation = {
+        .protocol = state->lastsynctype,
+        .slot = index & 1U,
+        .kind = kind,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+        .channel = channel,
+        .frequency_hz = dsd_state_trunk_chan_valid(channel) ? state->trunk_chan_map[channel] : 0,
+    };
+    (void)dsd_recent_activity_publish(state, index, &observation, notice, 0U);
 }
 
 static inline int
@@ -63,41 +72,14 @@ p25_lcw_store_fdma_iden(const dsd_opts* opts, dsd_state* state, int iden, long i
     e->chan_spac = chan_spac;
     e->trans_off = trans_off;
     e->bw_vu = bw_vu;
-    e->trust = (state->p25_cc_freq != 0 && opts && opts->p25_is_tuned == 0) ? 2 : 1;
+    e->trust = (state->p25_cc_freq != 0 && opts && opts->trunk_is_tuned == 0) ? 2 : 1;
     e->populated = 1;
     e->wacn = state->p2_wacn;
     e->sysid = state->p2_sysid;
     e->rfss = state->p2_rfssid;
     e->site = state->p2_siteid;
     state->p25_chan_tdma_explicit[iden] |= 1;
-}
-
-/**
- * @brief Resolve a P25 Algorithm ID to a human-readable name.
- *
- * Common APCO P25 ALGIDs used by the voice/ESS paths:
- *   0x80 = unencrypted, 0x81 = DES-OFB, 0x84 = AES-256,
- *   0x89 = AES-128-OFB, 0x9F = DES-XL, 0xAA = ADP/RC4
- *
- * @param algid The 8-bit algorithm identifier.
- * @return Static string with algorithm name, or NULL if unrecognized.
- */
-static const char*
-p25_algid_name(uint8_t algid) {
-    switch (algid) {
-        case 0x80: return "UNENCRYPTED";
-        case 0x81: return "DES-OFB";
-        case 0x82: return "2-KEY 3DES";
-        case 0x83: return "3-KEY 3DES";
-        case 0x84: return "AES-256";
-        case 0x85: return "AES-128";
-        case 0x88: return "AES-CBC";
-        case 0x89: return "AES-128-OFB";
-        case 0x9F: return "DES-XL";
-        case 0xAA: return "ADP/RC4";
-        case 0xAF: return "AES-256-GCM";
-        default: return NULL;
-    }
+    p25_resolve_pending_announcements(opts, state);
 }
 
 //new p25_lcw function here -- TIA-102.AABF-D LCW Format Messages (if anybody wants to fill the rest out)
@@ -111,6 +93,7 @@ typedef struct p25_lcw_ctx {
     uint8_t lc_svcopt;
     uint8_t lc_pf;
     uint8_t lc_sf;
+    uint8_t allow_voice_start;
     int is_standard_mfid;
 } p25_lcw_ctx;
 
@@ -120,18 +103,6 @@ typedef struct p25_lcw_handler_entry {
     uint8_t key;
     p25_lcw_handler_fn fn;
 } p25_lcw_handler_entry;
-
-static void
-p25_lcw_set_call_string_prefix(dsd_state* state, const char* prefix, uint8_t svcopt) {
-    DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], "%s", prefix);
-    if (svcopt & 0x80) {
-        dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency  ");
-    } else if (svcopt & 0x40) {
-        dsd_append(state->call_string[0], sizeof state->call_string[0], " Encrypted  ");
-    } else {
-        dsd_append(state->call_string[0], sizeof state->call_string[0], "            ");
-    }
-}
 
 static int
 p25_lcw_format_has_service_options(uint8_t lc_format) {
@@ -172,118 +143,207 @@ p25_lcw_print_service_options(const p25_lcw_ctx* ctx) {
 }
 
 static void
+p25_lcw_mark_encrypted_voice_pending(p25_lcw_ctx* ctx, int talkgroup, int allow_regroup_clear_override) {
+    if (!ctx || !ctx->opts || !ctx->state || (ctx->lc_svcopt & 0x40) == 0) {
+        return;
+    }
+    if (allow_regroup_clear_override && talkgroup > 0
+        && (p25_patch_tg_key_is_clear(ctx->state, talkgroup) || p25_patch_sg_key_is_clear(ctx->state, talkgroup))) {
+        // An identity-bearing follow-up starts a clean crypto epoch and closes
+        // its media gate. KEY=0 is already authoritative clear classification,
+        // so reopen the Phase 1 gate immediately for this transmission.
+        ctx->state->p25_p2_audio_allowed[0] = 1;
+        return;
+    }
+    p25_sm_emit_crypto_pending(ctx->opts, ctx->state, 0);
+}
+
+static int
+p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t source) {
+    ctx->state->generic_talker_alias[0][0] = '\0';
+    ctx->state->dmr_so = ctx->lc_svcopt;
+
+    if (!ctx->allow_voice_start) {
+        return 0;
+    }
+    if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, 0, (int)target, (int)source, 0, ctx->lc_svcopt)) {
+        return 0;
+    }
+    p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
+    return 1;
+}
+
+static void
 p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Group Voice Channel User");
-    uint8_t res = (uint8_t)ConvertBitIntoBytes(&ctx->bits[24], 7);
+    uint8_t res = (uint8_t)convert_bits_into_output(&ctx->bits[24], 7);
     uint8_t explicit_src = ctx->bits[24];
-    uint16_t group = (uint16_t)ConvertBitIntoBytes(&ctx->bits[32], 16);
-    uint32_t source = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    uint16_t group = (uint16_t)convert_bits_into_output(&ctx->bits[32], 16);
+    uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " - Group %d Source %d", group, source);
     UNUSED2(res, explicit_src);
 
-    ctx->state->gi[0] = 0;
     ctx->state->dmr_so = ctx->lc_svcopt;
-    if (group != 0) {
-        ctx->state->lasttg = group;
-    }
-    if (source != 0) {
-        ctx->state->lastsrc = source;
-    }
     ctx->state->generic_talker_alias[0][0] = '\0';
-    ctx->state->generic_talker_alias_src[0] = 0;
 
     if (source != 0 && group != 0) {
         p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
     }
 
-    p25_lcw_set_call_string_prefix(ctx->state, "   Group ", ctx->lc_svcopt);
+    if (!ctx->allow_voice_start) {
+        return;
+    }
+    if (!p25_sm_emit_active_call(ctx->opts, ctx->state, 0, group, 0, (int)source, 1, ctx->lc_svcopt)) {
+        return;
+    }
+    p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
 }
 
 static void
 p25_lcw_handle_format_03(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Unit to Unit Voice Channel User");
-    uint32_t target = (uint32_t)ConvertBitIntoBytes(&ctx->bits[24], 24);
-    uint32_t source = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[24], 24);
+    uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " - Target %d Source %d", target, source);
 
-    if (target != 0) {
-        ctx->state->lasttg = target;
-    }
-    if (source != 0) {
-        ctx->state->lastsrc = source;
-    }
-    ctx->state->generic_talker_alias[0][0] = '\0';
-    ctx->state->generic_talker_alias_src[0] = 0;
-    ctx->state->gi[0] = 1;
-    ctx->state->dmr_so = ctx->lc_svcopt;
-
-    p25_lcw_set_call_string_prefix(ctx->state, " Private ", ctx->lc_svcopt);
+    (void)p25_lcw_accept_private_voice_user(ctx, target, source);
 }
 
 static void
 p25_lcw_handle_format_42(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Group Voice Channel Update - ");
-    uint16_t channel1 = (uint16_t)ConvertBitIntoBytes(&ctx->bits[8], 16);
-    uint16_t group1 = (uint16_t)ConvertBitIntoBytes(&ctx->bits[24], 16);
-    uint16_t channel2 = (uint16_t)ConvertBitIntoBytes(&ctx->bits[40], 16);
-    uint16_t group2 = (uint16_t)ConvertBitIntoBytes(&ctx->bits[56], 16);
+    uint16_t channel1 = (uint16_t)convert_bits_into_output(&ctx->bits[8], 16);
+    uint16_t group1 = (uint16_t)convert_bits_into_output(&ctx->bits[24], 16);
+    uint16_t channel2 = (uint16_t)convert_bits_into_output(&ctx->bits[40], 16);
+    uint16_t group2 = (uint16_t)convert_bits_into_output(&ctx->bits[56], 16);
 
     if (channel1 && group1) {
         DSD_FPRINTF(stderr, "Ch: %04X TG: %d; ", channel1, group1);
         char suf[32];
         p25_format_chan_suffix(ctx->state, channel1, -1, suf, sizeof suf);
-        DSD_SNPRINTF(ctx->state->active_channel[0], sizeof ctx->state->active_channel[0], "Active Ch: %04X%s TG: %d; ",
-                     channel1, suf, group1);
-        ctx->state->last_active_time = time(NULL);
+        char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", channel1, suf, group1);
+        p25_lcw_publish_activity(ctx->state, 0U, DSD_CALL_KIND_GROUP_VOICE, group1, 0U, channel1, notice);
+    } else {
+        (void)dsd_recent_activity_clear(ctx->state, 0U);
     }
 
     if (channel2 && group2 && group1 != group2) {
         DSD_FPRINTF(stderr, "Ch: %04X TG: %d; ", channel2, group2);
         char suf[32];
         p25_format_chan_suffix(ctx->state, channel2, -1, suf, sizeof suf);
-        DSD_SNPRINTF(ctx->state->active_channel[1], sizeof ctx->state->active_channel[1], "Active Ch: %04X%s TG: %d; ",
-                     channel2, suf, group2);
-        ctx->state->last_active_time = time(NULL);
+        char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", channel2, suf, group2);
+        p25_lcw_publish_activity(ctx->state, 1U, DSD_CALL_KIND_GROUP_VOICE, group2, 0U, channel2, notice);
+    } else {
+        (void)dsd_recent_activity_clear(ctx->state, 1U);
+    }
+}
+
+static int
+p25_lcw_trunk_cc_ready_for_grant(p25_lcw_ctx* ctx) {
+    if (ctx->opts->trunk_enable != 1) {
+        return 0;
+    }
+    return ctx->state->p25_cc_freq != 0 || ctx->state->trunk_cc_freq > 0;
+}
+
+static void
+p25_lcw_store_current_site_status(p25_lcw_ctx* ctx, uint8_t lra, int lra_valid, int network_active,
+                                  int network_active_valid, uint8_t rfssid, uint8_t siteid) {
+    if (!ctx || !ctx->state) {
+        return;
+    }
+    if (lra_valid) {
+        p25_store_site_lra(ctx->state, lra);
+    }
+    if (network_active_valid) {
+        p25_store_site_network_active(ctx->state, (uint8_t)(network_active ? 1U : 0U));
+    }
+    ctx->state->p2_rfssid = rfssid;
+    ctx->state->p2_siteid = siteid;
+    p25_confirm_idens_for_current_site(ctx->state);
+}
+
+static void
+p25_lcw_update_primary_control_channel(p25_lcw_ctx* ctx, uint32_t wacn, uint16_t sysid, uint16_t channel, int seed_lcn0,
+                                       const char* label) {
+    if (!ctx || !ctx->state) {
+        return;
+    }
+
+    long int cc_freq = process_channel_to_freq(ctx->opts, ctx->state, channel);
+    int accepted_cc = p25_cc_update_primary_from_network_status(ctx->opts, ctx->state, cc_freq);
+    const int metadata_allowed = accepted_cc || !p25_cc_update_is_voice_tuned(ctx->opts);
+    if (metadata_allowed) {
+        if (ctx->state->p2_hardset == 0) {
+            (void)p25_update_system_identity(ctx->state, (unsigned long long)wacn, (unsigned long long)sysid);
+        }
+        ctx->state->p25_cc_is_tdma = 0;
+    }
+    if (accepted_cc) {
+        const long neigh[1] = {ctx->state->p25_cc_freq};
+        p25_cc_record_neighbor_frequencies(ctx->opts, ctx->state, neigh, 1);
+        if (seed_lcn0
+            && (ctx->state->trunk_lcn_freq[0] == 0 || ctx->state->trunk_lcn_freq[0] != ctx->state->p25_cc_freq)) {
+            ctx->state->trunk_lcn_freq[0] = ctx->state->p25_cc_freq;
+        }
+        p25_confirm_idens_for_current_site(ctx->state);
+    } else if (cc_freq > 0) {
+        DSD_FPRINTF(stderr, "\n  %s: ignoring CC update while voice-tuned (freq=%ld)", label, cc_freq);
+    } else {
+        DSD_FPRINTF(stderr, "\n  %s: ignoring invalid channel->freq (CHAN-T=%04X)", label, channel);
+    }
+}
+
+static int
+p25_lcw_format_44_hold_blocks_grant(const p25_lcw_ctx* ctx, uint16_t group) {
+    return ctx->state->tg_hold != 0 && ctx->state->tg_hold != group;
+}
+
+static void
+p25_lcw_warn_format_44_retune_disabled(p25_lcw_ctx* ctx) {
+    if (ctx->state->p25_lcw_retune_disabled_warned != 0) {
+        return;
+    }
+    ctx->state->p25_lcw_retune_disabled_warned = 1;
+    DSD_FPRINTF(stderr,
+                " [WARN: P25 LCW explicit retune is disabled; 0x44 grants may not be followed. Enable it from the "
+                "terminal menu.] ");
+}
+
+static void
+p25_lcw_handle_format_44_trunking(p25_lcw_ctx* ctx, uint16_t channel, uint16_t group) {
+    if (!p25_lcw_trunk_cc_ready_for_grant(ctx)) {
+        return;
+    }
+    if (ctx->opts->p25_lcw_retune == 0) {
+        p25_lcw_warn_format_44_retune_disabled(ctx);
+        return;
+    }
+    if (ctx->opts->p25_lcw_retune == 1 && ctx->opts->trunk_tune_group_calls == 1
+        && !p25_lcw_format_44_hold_blocks_grant(ctx, group)) {
+        p25_sm_event_t ev = p25_sm_ev_group_grant_update(channel, 0, group, 0, ctx->lc_svcopt);
+        p25_sm_event(p25_sm_get_ctx(), ctx->opts, ctx->state, &ev);
     }
 }
 
 static void
 p25_lcw_handle_format_44(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Group Voice Channel Update %s Explicit", dsd_unicode_or_ascii("–", "-"));
-    uint16_t group1 = (uint16_t)ConvertBitIntoBytes(&ctx->bits[24], 16);
-    uint16_t channelt = (uint16_t)ConvertBitIntoBytes(&ctx->bits[40], 16);
-    uint16_t channelr = (uint16_t)ConvertBitIntoBytes(&ctx->bits[56], 16);
+    uint16_t group1 = (uint16_t)convert_bits_into_output(&ctx->bits[24], 16);
+    uint16_t channelt = (uint16_t)convert_bits_into_output(&ctx->bits[40], 16);
+    uint16_t channelr = (uint16_t)convert_bits_into_output(&ctx->bits[56], 16);
     DSD_FPRINTF(stderr, "Ch: %04X TG: %d; ", channelt, group1);
     UNUSED(channelr);
 
-    if (ctx->opts->p25_lcw_retune == 1 && ctx->opts->p25_trunk == 1 && ctx->state->p25_cc_freq != 0) {
-        if (ctx->opts->trunk_tune_group_calls == 1) {
-            int skip_grant = 0;
-            if (ctx->state->tg_hold != 0 && ctx->state->tg_hold != group1) {
-                skip_grant = 1;
-            }
-            if ((ctx->lc_svcopt & 0x40) && ctx->opts->trunk_tune_enc_calls == 0
-                && !p25_patch_tg_key_is_clear(ctx->state, group1)) {
-                skip_grant = 1;
-            }
-            if (!skip_grant) {
-                p25_sm_on_group_grant(ctx->opts, ctx->state, channelt, ctx->lc_svcopt, group1,
-                                      (int)ctx->state->lastsrc);
-            }
-        }
-    } else if (ctx->opts->p25_lcw_retune == 0 && ctx->opts->p25_trunk == 1 && ctx->state->p25_cc_freq != 0
-               && ctx->state->p25_lcw_retune_disabled_warned == 0) {
-        ctx->state->p25_lcw_retune_disabled_warned = 1;
-        DSD_FPRINTF(stderr,
-                    " [WARN: P25 LCW explicit retune is disabled; 0x44 grants may not be followed. Enable with -j or "
-                    "menu.] ");
-    }
+    p25_lcw_handle_format_44_trunking(ctx, channelt, group1);
 
     char suf[32];
     p25_format_chan_suffix(ctx->state, channelt, -1, suf, sizeof suf);
-    DSD_SNPRINTF(ctx->state->active_channel[0], sizeof ctx->state->active_channel[0], "Active Ch: %04X%s TG: %d; ",
-                 channelt, suf, group1);
-    ctx->state->last_active_time = time(NULL);
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", channelt, suf, group1);
+    p25_lcw_publish_activity(ctx->state, 0U, DSD_CALL_KIND_GROUP_VOICE, group1, 0U, channelt, notice);
 }
 
 static void
@@ -294,8 +354,18 @@ p25_lcw_handle_format_45(p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_handle_format_46(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
-    DSD_FPRINTF(stderr, " Telephone Interconnect Voice Channel User");
+    uint16_t timer = (uint16_t)convert_bits_into_output(&ctx->bits[32], 16);
+    uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
+    DSD_FPRINTF(stderr, " Telephone Interconnect Voice Channel User - Target %d Timer %.1fs", target,
+                (double)timer / 10.0);
+
+    int identity_accepted = p25_lcw_accept_private_voice_user(ctx, target, 0);
+    if (ctx->allow_voice_start && !identity_accepted) {
+        return;
+    }
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    DSD_SNPRINTF(notice, sizeof notice, "TELE Target: %d Timer: %.1fs; ", target, (double)timer / 10.0);
+    p25_lcw_publish_activity(ctx->state, 0U, DSD_CALL_KIND_PRIVATE_VOICE, target, 0U, 0U, notice);
 }
 
 static void
@@ -307,39 +377,55 @@ p25_lcw_handle_format_47(p25_lcw_ctx* ctx) {
 static void
 p25_lcw_handle_format_49(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Source ID Extension -");
-    uint32_t wacn = (uint32_t)ConvertBitIntoBytes(&ctx->bits[16], 20);
-    uint16_t sysid = (uint16_t)ConvertBitIntoBytes(&ctx->bits[36], 12);
-    uint32_t src = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    uint32_t wacn = (uint32_t)convert_bits_into_output(&ctx->bits[16], 20);
+    uint16_t sysid = (uint16_t)convert_bits_into_output(&ctx->bits[36], 12);
+    uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " Full SUID: WACN %05X SYSID %03X SRC %d", wacn, sysid, src);
     if (wacn != 0) {
         ctx->state->p25_src_nid = wacn;
     }
     if (src != 0) {
-        ctx->state->lastsrc = (int)src;
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(ctx->state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+            const dsd_call_observation observation = {
+                .protocol = call.protocol,
+                .slot = 0U,
+                .kind = call.kind,
+                .ota_target_id = call.ota_target_id,
+                .policy_target_id = call.policy_target_id,
+                .ota_source_id = src,
+                .channel = call.channel,
+                .frequency_hz = call.frequency_hz,
+                .service_options = call.service_options,
+                .emergency = call.emergency,
+                .priority = call.priority,
+                .has_service_metadata = call.has_service_metadata,
+            };
+            (void)dsd_call_state_observe(ctx->state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+            dsd_event_sync_slot(ctx->opts, ctx->state, 0U);
+        }
     }
 }
 
 static void
 p25_lcw_handle_format_4a(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Unit to Unit Voice Channel User %s Extended", dsd_unicode_or_ascii("–", "-"));
-    uint32_t target = (uint32_t)ConvertBitIntoBytes(&ctx->bits[16], 24);
-    uint32_t src = (uint32_t)ConvertBitIntoBytes(&ctx->bits[40], 24);
+    uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[24], 24);
+    uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, "TGT: %d; SRC: %d; ", target, src);
-    ctx->state->gi[0] = 1;
+    (void)p25_lcw_accept_private_voice_user(ctx, target, src);
 }
 
 static void
 p25_lcw_handle_format_50(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Group Affiliation Query");
-    uint16_t group = (uint16_t)ConvertBitIntoBytes(&ctx->bits[32], 16);
-    uint32_t source = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    uint16_t group = (uint16_t)convert_bits_into_output(&ctx->bits[32], 16);
+    uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     if (group) {
         DSD_FPRINTF(stderr, " - TG %u", group);
-        ctx->state->lasttg = group;
     }
     if (source) {
         DSD_FPRINTF(stderr, " SRC %u", source);
-        ctx->state->lastsrc = source;
     }
     if (group && source) {
         p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
@@ -390,12 +476,12 @@ p25_lcw_handle_format_57(p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_handle_format_58(p25_lcw_ctx* ctx) {
-    uint8_t iden = (uint8_t)ConvertBitIntoBytes(&ctx->bits[8], 4);
-    int bw = (int)ConvertBitIntoBytes(&ctx->bits[12], 9);
+    uint8_t iden = (uint8_t)convert_bits_into_output(&ctx->bits[8], 4);
+    int bw = (int)convert_bits_into_output(&ctx->bits[12], 9);
     int sign = ctx->bits[21] & 1;
-    int tx_raw = (int)ConvertBitIntoBytes(&ctx->bits[22], 8);
-    int chan_spac = (int)ConvertBitIntoBytes(&ctx->bits[30], 10);
-    uint32_t base = (uint32_t)ConvertBitIntoBytes(&ctx->bits[40], 32);
+    int tx_raw = (int)convert_bits_into_output(&ctx->bits[22], 8);
+    int chan_spac = (int)convert_bits_into_output(&ctx->bits[30], 10);
+    uint32_t base = (uint32_t)convert_bits_into_output(&ctx->bits[40], 32);
     int trans_off = p25_lcw_signed_offset_units(sign, tx_raw);
     DSD_FPRINTF(stderr, " Channel Identifier Update; Iden: %X; BW: %X; TX Offset: %d; Spacing: %X; Base: %ld;", iden,
                 bw, trans_off, chan_spac, (long)base * 5L);
@@ -404,12 +490,12 @@ p25_lcw_handle_format_58(p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_handle_format_59(p25_lcw_ctx* ctx) {
-    uint8_t iden = (uint8_t)ConvertBitIntoBytes(&ctx->bits[8], 4);
-    uint8_t bw_vu = (uint8_t)ConvertBitIntoBytes(&ctx->bits[12], 4);
+    uint8_t iden = (uint8_t)convert_bits_into_output(&ctx->bits[8], 4);
+    uint8_t bw_vu = (uint8_t)convert_bits_into_output(&ctx->bits[12], 4);
     int sign = ctx->bits[16] & 1;
-    int tx_raw = (int)ConvertBitIntoBytes(&ctx->bits[17], 13);
-    int chan_spac = (int)ConvertBitIntoBytes(&ctx->bits[30], 10);
-    uint32_t base = (uint32_t)ConvertBitIntoBytes(&ctx->bits[40], 32);
+    int tx_raw = (int)convert_bits_into_output(&ctx->bits[17], 13);
+    int chan_spac = (int)convert_bits_into_output(&ctx->bits[30], 10);
+    uint32_t base = (uint32_t)convert_bits_into_output(&ctx->bits[40], 32);
     int trans_off = p25_lcw_signed_offset_units(sign, tx_raw);
     DSD_FPRINTF(stderr, " Channel Identifier Update VU; Iden: %X; BW: %X; TX Offset: %d; Spacing: %X; Base: %ld;", iden,
                 bw_vu, trans_off, chan_spac, (long)base * 5L);
@@ -430,39 +516,88 @@ p25_lcw_handle_format_5c(p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_handle_format_60(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " System Service Broadcast");
+    uint8_t request_priority = (uint8_t)convert_bits_into_output(&ctx->bits[20], 4);
+    uint32_t available = (uint32_t)convert_bits_into_output(&ctx->bits[24], 24);
+    uint32_t supported = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
+    DSD_FPRINTF(stderr, " RPL [%X] SSA [%06X] SSS [%06X]", request_priority, available, supported);
+    p25_store_system_service_broadcast(ctx->state, available, supported, request_priority);
 }
 
 static void
 p25_lcw_handle_format_61(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " Secondary Control Channel Broadcast");
+    uint8_t rfssid = (uint8_t)convert_bits_into_output(&ctx->bits[8], 8);
+    uint8_t siteid = (uint8_t)convert_bits_into_output(&ctx->bits[16], 8);
+    uint16_t channel_a = (uint16_t)convert_bits_into_output(&ctx->bits[24], 16);
+    uint8_t ssc_a = (uint8_t)convert_bits_into_output(&ctx->bits[40], 8);
+    uint16_t channel_b = (uint16_t)convert_bits_into_output(&ctx->bits[48], 16);
+    uint8_t ssc_b = (uint8_t)convert_bits_into_output(&ctx->bits[64], 8);
+    DSD_FPRINTF(stderr, " - RFSS %d Site %d CH A %04X SSC %02X CH B %04X SSC %02X", rfssid, siteid, channel_a, ssc_a,
+                channel_b, ssc_b);
+    (void)p25_announce_secondary_cc_channel(ctx->opts, ctx->state, channel_a, rfssid, siteid, ssc_a);
+    if (channel_b != channel_a && channel_b != 0xFFFFU && ssc_b != 0U) {
+        (void)p25_announce_secondary_cc_channel(ctx->opts, ctx->state, channel_b, rfssid, siteid, ssc_b);
+    }
 }
 
 static void
 p25_lcw_handle_format_62(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " Adjacent Site Status Broadcast");
+    uint8_t lra = (uint8_t)convert_bits_into_output(&ctx->bits[8], 8);
+    uint8_t cfva = (uint8_t)convert_bits_into_output(&ctx->bits[16], 4);
+    uint16_t sysid = (uint16_t)convert_bits_into_output(&ctx->bits[20], 12);
+    uint8_t rfssid = (uint8_t)convert_bits_into_output(&ctx->bits[32], 8);
+    uint8_t siteid = (uint8_t)convert_bits_into_output(&ctx->bits[40], 8);
+    uint16_t channel = (uint16_t)convert_bits_into_output(&ctx->bits[48], 16);
+    uint8_t ssc = (uint8_t)convert_bits_into_output(&ctx->bits[64], 8);
+    DSD_FPRINTF(stderr, " - LRA %02X SYS %03X RFSS %d Site %d CH %04X SSC %02X", lra, sysid, rfssid, siteid, channel,
+                ssc);
+    const p25_neighbor_channel_announcement_t announcement = {
+        .channel = channel,
+        .sysid = sysid,
+        .rfss = rfssid,
+        .site = siteid,
+        .lra = lra,
+        .cfva = cfva,
+        .lra_valid = 1U,
+        .cfva_valid = 1U,
+    };
+    (void)p25_announce_neighbor_channel(ctx->opts, ctx->state, &announcement);
 }
 
 static void
 p25_lcw_handle_format_63(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " RFSS Status Broadcast");
+    uint8_t lra = (uint8_t)convert_bits_into_output(&ctx->bits[8], 8);
+    int network_active = ctx->bits[19] ? 1 : 0;
+    uint16_t sysid = (uint16_t)convert_bits_into_output(&ctx->bits[20], 12);
+    uint8_t rfssid = (uint8_t)convert_bits_into_output(&ctx->bits[32], 8);
+    uint8_t siteid = (uint8_t)convert_bits_into_output(&ctx->bits[40], 8);
+    uint16_t channel = (uint16_t)convert_bits_into_output(&ctx->bits[48], 16);
+    uint8_t ssc = (uint8_t)convert_bits_into_output(&ctx->bits[64], 8);
+    DSD_FPRINTF(stderr, " - LRA %02X SYS %03X RFSS %d Site %d CH %04X SSC %02X A %d", lra, sysid, rfssid, siteid,
+                channel, ssc, network_active);
+    (void)process_channel_to_freq(ctx->opts, ctx->state, channel);
+    p25_lcw_store_current_site_status(ctx, lra, 1, network_active, 1, rfssid, siteid);
 }
 
 static void
 p25_lcw_handle_format_64(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " Network Status Broadcast");
+    uint32_t wacn = (uint32_t)convert_bits_into_output(&ctx->bits[16], 20);
+    uint16_t sysid = (uint16_t)convert_bits_into_output(&ctx->bits[36], 12);
+    uint16_t channel = (uint16_t)convert_bits_into_output(&ctx->bits[48], 16);
+    uint8_t ssc = (uint8_t)convert_bits_into_output(&ctx->bits[64], 8);
+    DSD_FPRINTF(stderr, " - WACN %05X SYS %03X CH %04X SSC %02X", wacn, sysid, channel, ssc);
+    p25_lcw_update_primary_control_channel(ctx, wacn, sysid, channel, 1, "P25 LCW NET_STS");
 }
 
 static void
 p25_lcw_handle_format_65(p25_lcw_ctx* ctx) {
-    uint8_t algid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[24], 8);
-    uint16_t kid = (uint16_t)ConvertBitIntoBytes(&ctx->bits[32], 16);
-    uint32_t target = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    uint8_t algid = (uint8_t)convert_bits_into_output(&ctx->bits[24], 8);
+    uint16_t kid = (uint16_t)convert_bits_into_output(&ctx->bits[32], 16);
+    uint32_t target = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
 
     const char* alg_name = p25_algid_name(algid);
 
@@ -480,36 +615,67 @@ p25_lcw_handle_format_65(p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_handle_format_66(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " Secondary Control Channel Broadcast %s Explicit (LCSCBX)", dsd_unicode_or_ascii("–", "-"));
+    uint8_t rfssid = (uint8_t)convert_bits_into_output(&ctx->bits[8], 8);
+    uint8_t siteid = (uint8_t)convert_bits_into_output(&ctx->bits[16], 8);
+    uint16_t channelt = (uint16_t)convert_bits_into_output(&ctx->bits[24], 16);
+    uint16_t channelr = (uint16_t)convert_bits_into_output(&ctx->bits[40], 16);
+    uint8_t ssc = (uint8_t)convert_bits_into_output(&ctx->bits[56], 8);
+    DSD_FPRINTF(stderr, " - RFSS %d Site %d CH-T %04X CH-R %04X SSC %02X", rfssid, siteid, channelt, channelr, ssc);
+    (void)process_channel_to_freq(ctx->opts, ctx->state, channelr);
+    (void)p25_announce_secondary_cc_channel(ctx->opts, ctx->state, channelt, rfssid, siteid, ssc);
 }
 
 static void
 p25_lcw_handle_format_67(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Adjacent Site Status (LCASBX)");
-    uint8_t lra = (uint8_t)ConvertBitIntoBytes(&ctx->bits[8], 8);
-    uint16_t channelt = (uint16_t)ConvertBitIntoBytes(&ctx->bits[16], 16);
-    uint8_t rfssid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[32], 8);
-    uint8_t siteid = (uint8_t)ConvertBitIntoBytes(&ctx->bits[40], 8);
-    uint16_t channelr = (uint16_t)ConvertBitIntoBytes(&ctx->bits[48], 16);
-    uint8_t cfva = (uint8_t)ConvertBitIntoBytes(&ctx->bits[64], 4);
-    DSD_FPRINTF(stderr, " - RFSS %d Site %d CH %04X", rfssid, siteid, channelt);
-    UNUSED2(lra, channelr);
-    if (cfva & 0x1) {
-        DSD_FPRINTF(stderr, " - Connection Active");
-    }
+    uint8_t lra = (uint8_t)convert_bits_into_output(&ctx->bits[8], 8);
+    uint16_t channelt = (uint16_t)convert_bits_into_output(&ctx->bits[16], 16);
+    uint8_t rfssid = (uint8_t)convert_bits_into_output(&ctx->bits[32], 8);
+    uint8_t siteid = (uint8_t)convert_bits_into_output(&ctx->bits[40], 8);
+    uint16_t channelr = (uint16_t)convert_bits_into_output(&ctx->bits[48], 16);
+    uint8_t ssc = (uint8_t)convert_bits_into_output(&ctx->bits[64], 8);
+    DSD_FPRINTF(stderr, " - LRA %02X RFSS %d Site %d CH-T %04X CH-R %04X SSC %02X", lra, rfssid, siteid, channelt,
+                channelr, ssc);
+    (void)process_channel_to_freq(ctx->opts, ctx->state, channelr);
+    uint16_t sysid = ctx->state ? (uint16_t)ctx->state->p2_sysid : 0U;
+    const p25_neighbor_channel_announcement_t announcement = {
+        .channel = channelt,
+        .sysid = sysid,
+        .rfss = rfssid,
+        .site = siteid,
+        .lra = lra,
+        .lra_valid = 1U,
+    };
+    (void)p25_announce_neighbor_channel(ctx->opts, ctx->state, &announcement);
 }
 
 static void
 p25_lcw_handle_format_68(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " RFSS Status Broadcast %s Explicit (LCRSBX)", dsd_unicode_or_ascii("–", "-"));
+    uint8_t lra = (uint8_t)convert_bits_into_output(&ctx->bits[8], 8);
+    uint16_t channelr = (uint16_t)convert_bits_into_output(&ctx->bits[16], 16);
+    uint8_t rfssid = (uint8_t)convert_bits_into_output(&ctx->bits[32], 8);
+    uint8_t siteid = (uint8_t)convert_bits_into_output(&ctx->bits[40], 8);
+    uint16_t channelt = (uint16_t)convert_bits_into_output(&ctx->bits[48], 16);
+    uint8_t ssc = (uint8_t)convert_bits_into_output(&ctx->bits[64], 8);
+    DSD_FPRINTF(stderr, " - LRA %02X RFSS %d Site %d CH-T %04X CH-R %04X SSC %02X", lra, rfssid, siteid, channelt,
+                channelr, ssc);
+    (void)process_channel_to_freq(ctx->opts, ctx->state, channelt);
+    (void)process_channel_to_freq(ctx->opts, ctx->state, channelr);
+    p25_lcw_store_current_site_status(ctx, lra, 1, 0, 0, rfssid, siteid);
 }
 
 static void
 p25_lcw_handle_format_69(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
     DSD_FPRINTF(stderr, " Network Status Broadcast %s Explicit (LCNSBX)", dsd_unicode_or_ascii("–", "-"));
+    uint32_t wacn = (uint32_t)convert_bits_into_output(&ctx->bits[8], 20);
+    uint16_t sysid = (uint16_t)convert_bits_into_output(&ctx->bits[28], 12);
+    uint16_t channelt = (uint16_t)convert_bits_into_output(&ctx->bits[40], 16);
+    uint16_t channelr = (uint16_t)convert_bits_into_output(&ctx->bits[56], 16);
+    DSD_FPRINTF(stderr, " - WACN %05X SYS %03X CH-T %04X CH-R %04X", wacn, sysid, channelt, channelr);
+    (void)process_channel_to_freq(ctx->opts, ctx->state, channelr);
+    p25_lcw_update_primary_control_channel(ctx, wacn, sysid, channelt, 1, "P25 LCW NET_STS-EX");
 }
 
 static void
@@ -526,13 +692,14 @@ p25_lcw_handle_format_6b(p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_handle_call_termination(p25_lcw_ctx* ctx) {
-    uint32_t tgt = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    uint32_t tgt = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " Call Termination; TGT: %d;", tgt);
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
-    if (ctx->opts->p25_trunk == 1 && ctx->state->p25_cc_freq != 0 && ctx->opts->p25_is_tuned == 1) {
-        ctx->state->p25_sm_force_release = 1;
-        p25_sm_on_release(ctx->opts, ctx->state);
+    if (tgt == 0x000000U || tgt == 0xFFFFFDU || tgt == 0xFFFFFFU) {
+        p25_sm_release(p25_sm_get_ctx(), ctx->opts, ctx->state, "lcw-network-release");
+        return;
     }
+    p25_sm_emit_end(ctx->opts, ctx->state, 0);
 }
 
 static int
@@ -580,8 +747,8 @@ p25_lcw_handle_mfid90_opcode_06(p25_lcw_ctx* ctx) {
 static void
 p25_lcw_handle_mfid90_opcode_00(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " MFID90 (Moto) Group Regroup Channel User (LCGRGR)");
-    uint32_t sg = (uint32_t)ConvertBitIntoBytes(&ctx->bits[32], 16);
-    uint32_t src = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    uint32_t sg = (uint32_t)convert_bits_into_output(&ctx->bits[32], 16);
+    uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " SG: %d; SRC: %d;", sg, src);
     if (ctx->bits[16] == 1) {
         DSD_FPRINTF(stderr, " Res;");
@@ -592,19 +759,17 @@ p25_lcw_handle_mfid90_opcode_00(p25_lcw_ctx* ctx) {
     if (ctx->bits[31] == 1) {
         DSD_FPRINTF(stderr, " EXT;");
     }
-    ctx->state->lasttg = sg;
-    if (src != 0) {
-        ctx->state->lastsrc = src;
-    }
-    ctx->state->gi[0] = 0;
     p25_patch_update(ctx->state, (int)sg, 1, 1);
+    if (ctx->allow_voice_start) {
+        (void)p25_sm_emit_active_call(ctx->opts, ctx->state, 0, (int)sg, 0, (int)src, 1, ctx->lc_svcopt);
+    }
 }
 
 static void
 p25_lcw_handle_mfid90_opcode_01(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " MFID90 (Moto) Group Regroup Channel Update (LCGRGU)");
-    uint32_t sg = (uint32_t)ConvertBitIntoBytes(&ctx->bits[24], 16);
-    uint32_t ch = (uint32_t)ConvertBitIntoBytes(&ctx->bits[56], 16);
+    uint32_t sg = (uint32_t)convert_bits_into_output(&ctx->bits[24], 16);
+    uint32_t ch = (uint32_t)convert_bits_into_output(&ctx->bits[56], 16);
     DSD_FPRINTF(stderr, " SG: %d; CH: %04X;", sg, ch);
     if (ctx->bits[16] == 1) {
         DSD_FPRINTF(stderr, " Res;");
@@ -612,19 +777,58 @@ p25_lcw_handle_mfid90_opcode_01(p25_lcw_ctx* ctx) {
     if (ctx->bits[17] == 1) {
         DSD_FPRINTF(stderr, " ENC;");
     }
-    ctx->state->gi[0] = 0;
+
+    if (sg != 0U && ch != 0U) {
+        char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+        DSD_SNPRINTF(notice, sizeof notice, "Regroup Ch: %04X SG: %u; ", (unsigned)ch, (unsigned)sg);
+        p25_lcw_publish_activity(ctx->state, 0U, DSD_CALL_KIND_GROUP_VOICE, sg, 0U, (uint16_t)ch, notice);
+    } else {
+        (void)dsd_recent_activity_clear(ctx->state, 0U);
+    }
+}
+
+static void
+p25_lcw_handle_mfid90_opcode_02(p25_lcw_ctx* ctx) {
+    DSD_FPRINTF(stderr, " MFID90 (Moto) Failsoft");
+    DSD_FPRINTF(stderr, " Data:");
+    for (int bi = 16; bi + 8 <= 72; bi += 8) {
+        uint8_t b = (uint8_t)convert_bits_into_output(&ctx->bits[bi], 8);
+        DSD_FPRINTF(stderr, " %02X", b);
+    }
 }
 
 static void
 p25_lcw_handle_mfid90_opcode_03(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
+    uint32_t sg = (uint32_t)convert_bits_into_output(&ctx->bits[16], 16);
+    uint32_t ga1 = (uint32_t)convert_bits_into_output(&ctx->bits[32], 16);
+    uint32_t ga2 = (uint32_t)convert_bits_into_output(&ctx->bits[48], 16);
     DSD_FPRINTF(stderr, " MFID90 (Moto) Group Regroup Add");
+    DSD_FPRINTF(stderr, " SG: %u;", (unsigned)sg);
+    if (ga1 != 0 && ga1 != sg) {
+        DSD_FPRINTF(stderr, " GA1: %u;", (unsigned)ga1);
+        p25_patch_add_wgid(ctx->state, (int)sg, (int)ga1);
+    }
+    if (ga2 != 0 && ga2 != sg) {
+        DSD_FPRINTF(stderr, " GA2: %u;", (unsigned)ga2);
+        p25_patch_add_wgid(ctx->state, (int)sg, (int)ga2);
+    }
 }
 
 static void
 p25_lcw_handle_mfid90_opcode_04(p25_lcw_ctx* ctx) {
-    UNUSED(ctx);
+    uint32_t sg = (uint32_t)convert_bits_into_output(&ctx->bits[16], 16);
+    uint32_t ga1 = (uint32_t)convert_bits_into_output(&ctx->bits[32], 16);
+    uint32_t ga2 = (uint32_t)convert_bits_into_output(&ctx->bits[48], 16);
     DSD_FPRINTF(stderr, " MFID90 (Moto) Group Regroup Delete");
+    DSD_FPRINTF(stderr, " SG: %u;", (unsigned)sg);
+    if (ga1 != 0 && ga1 != sg) {
+        DSD_FPRINTF(stderr, " GA1: %u;", (unsigned)ga1);
+        p25_patch_remove_wgid(ctx->state, (int)sg, (int)ga1);
+    }
+    if (ga2 != 0 && ga2 != sg) {
+        DSD_FPRINTF(stderr, " GA2: %u;", (unsigned)ga2);
+        p25_patch_remove_wgid(ctx->state, (int)sg, (int)ga2);
+    }
 }
 
 static void
@@ -632,10 +836,11 @@ p25_lcw_handle_mfid90_opcode_05(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " MFID90 (Moto) System Information (BSI)");
     DSD_FPRINTF(stderr, " Data:");
     for (int bi = 16; bi + 8 <= 72; bi += 8) {
-        uint8_t b = (uint8_t)ConvertBitIntoBytes(&ctx->bits[bi], 8);
+        uint8_t b = (uint8_t)convert_bits_into_output(&ctx->bits[bi], 8);
         DSD_FPRINTF(stderr, " %02X", b);
     }
-    if (ctx->opts->show_p25_callsign_decode && (ctx->state->p2_wacn != 0 || ctx->state->p2_sysid != 0)) {
+    if (ctx->opts->frontend_display.show_p25_callsign_decode
+        && (ctx->state->p2_wacn != 0 || ctx->state->p2_sysid != 0)) {
         char callsign[7];
         p25_wacn_sysid_to_callsign((uint32_t)ctx->state->p2_wacn, (uint16_t)ctx->state->p2_sysid, callsign);
         DSD_FPRINTF(stderr, " [%s]", callsign);
@@ -644,13 +849,21 @@ p25_lcw_handle_mfid90_opcode_05(p25_lcw_ctx* ctx) {
 
 static void
 p25_lcw_handle_mfid90_opcode_0f(p25_lcw_ctx* ctx) {
-    uint32_t src = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+    uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " MFID90 (Moto) Talker EOT; SRC: %d;", src);
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
-    if (ctx->opts->p25_trunk == 1 && ctx->state->p25_cc_freq != 0 && ctx->opts->p25_is_tuned == 1) {
-        ctx->state->p25_sm_force_release = 1;
-        p25_sm_on_release(ctx->opts, ctx->state);
-    }
+    dsd_call_snapshot call;
+    const int target = dsd_call_state_get(ctx->state, 0U, &call) > 0 ? (int)call.ota_target_id : 0;
+    p25_sm_emit_end_call_at(ctx->opts, ctx->state, 0, target, (int)src, dsd_time_now_monotonic_s());
+}
+
+static void
+p25_lcw_handle_mfid90_opcode_0a(p25_lcw_ctx* ctx) {
+    uint16_t group = (uint16_t)convert_bits_into_output(&ctx->bits[32], 16);
+    uint32_t source = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
+    DSD_FPRINTF(stderr, " MFID90 (Moto) Emergency Alarm Activation");
+    DSD_FPRINTF(stderr, " Group: %u Source: %u;", group, source);
+    DSD_FPRINTF(stderr, " %s** EMERGENCY **%s", KRED, KYEL);
 }
 
 static void
@@ -669,8 +882,9 @@ static int
 p25_lcw_dispatch_mfid90(p25_lcw_ctx* ctx) {
     static const p25_lcw_handler_entry handlers[] = {
         {0x00, p25_lcw_handle_mfid90_opcode_00}, {0x01, p25_lcw_handle_mfid90_opcode_01},
-        {0x03, p25_lcw_handle_mfid90_opcode_03}, {0x04, p25_lcw_handle_mfid90_opcode_04},
-        {0x05, p25_lcw_handle_mfid90_opcode_05}, {0x06, p25_lcw_handle_mfid90_opcode_06},
+        {0x02, p25_lcw_handle_mfid90_opcode_02}, {0x03, p25_lcw_handle_mfid90_opcode_03},
+        {0x04, p25_lcw_handle_mfid90_opcode_04}, {0x05, p25_lcw_handle_mfid90_opcode_05},
+        {0x06, p25_lcw_handle_mfid90_opcode_06}, {0x0A, p25_lcw_handle_mfid90_opcode_0a},
         {0x0F, p25_lcw_handle_mfid90_opcode_0f}, {0x15, p25_lcw_handle_mfid90_opcode_15},
         {0x17, p25_lcw_handle_mfid90_opcode_17},
     };
@@ -703,9 +917,11 @@ p25_lcw_dispatch_mfid_a4(p25_lcw_ctx* ctx) {
     if (ctx->lc_opcode == 0x2B) {
         DSD_FPRINTF(stderr, " MFIDA4 (Harris) GPS Block 2");
         DSD_MEMCPY(ctx->state->dmr_pdu_sf[0] + 40 + 56, ctx->bits + 16, 56 * sizeof(uint8_t));
-        uint16_t check = (uint16_t)ConvertBitIntoBytes(&ctx->state->dmr_pdu_sf[0][0], 16);
+        uint16_t check = (uint16_t)convert_bits_into_output(&ctx->state->dmr_pdu_sf[0][0], 16);
         if (check == 0x2AA4) {
-            nmea_harris(ctx->opts, ctx->state, ctx->state->dmr_pdu_sf[0], (uint32_t)ctx->state->lastsrc, 0);
+            dsd_call_snapshot call;
+            const uint32_t source = dsd_call_state_get(ctx->state, 0U, &call) > 0 ? (uint32_t)call.ota_source_id : 0U;
+            nmea_harris(ctx->opts, ctx->state, ctx->state->dmr_pdu_sf[0], source, 0);
         } else {
             DSD_FPRINTF(stderr, " Missing GPS Block 1");
         }
@@ -714,9 +930,11 @@ p25_lcw_dispatch_mfid_a4(p25_lcw_ctx* ctx) {
     }
 
     if (ctx->lc_format == 0x0A) {
-        uint32_t src = (uint32_t)ConvertBitIntoBytes(&ctx->bits[24], 24);
-        uint32_t tgt = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
-        DSD_FPRINTF(stderr, " MFIDA4 (Harris) Data Channel; SRC: %d; TGT: %d;", src, tgt);
+        uint32_t unk = (uint32_t)convert_bits_into_output(&ctx->bits[16], 8);
+        uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[24], 24);
+        uint32_t tgt = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
+        DSD_FPRINTF(stderr, " MFIDA4 (Harris) 0x0A Data/Return-to-Control Indication; UNK: %02X; SRC: %u; TGT: %u;",
+                    (unsigned)unk, (unsigned)src, (unsigned)tgt);
         return 1;
     }
 
@@ -731,15 +949,33 @@ p25_lcw_dispatch_mfid_d8(p25_lcw_ctx* ctx) {
         return 1;
     }
     if (ctx->lc_format == 0x01) {
-        uint32_t wacn = (uint32_t)ConvertBitIntoBytes(&ctx->bits[16], 20);
-        uint16_t sysid = (uint16_t)ConvertBitIntoBytes(&ctx->bits[36], 12);
-        uint32_t src = (uint32_t)ConvertBitIntoBytes(&ctx->bits[48], 24);
+        uint32_t wacn = (uint32_t)convert_bits_into_output(&ctx->bits[16], 20);
+        uint16_t sysid = (uint16_t)convert_bits_into_output(&ctx->bits[36], 12);
+        uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
         DSD_FPRINTF(stderr, " MFIDD8 (Tait) Subscriber FQ-SUID: %05X.%03X.%d", wacn, sysid, src);
         if (wacn != 0) {
             ctx->state->p25_src_nid = wacn;
         }
         if (src != 0) {
-            ctx->state->lastsrc = (int)src;
+            dsd_call_snapshot call;
+            if (dsd_call_state_get(ctx->state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+                const dsd_call_observation observation = {
+                    .protocol = call.protocol,
+                    .slot = 0U,
+                    .kind = call.kind,
+                    .ota_target_id = call.ota_target_id,
+                    .policy_target_id = call.policy_target_id,
+                    .ota_source_id = src,
+                    .channel = call.channel,
+                    .frequency_hz = call.frequency_hz,
+                    .service_options = call.service_options,
+                    .emergency = call.emergency,
+                    .priority = call.priority,
+                    .has_service_metadata = call.has_service_metadata,
+                };
+                (void)dsd_call_state_observe(ctx->state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+                dsd_event_sync_slot(ctx->opts, ctx->state, 0U);
+            }
         }
         return 1;
     }
@@ -772,8 +1008,9 @@ p25_lcw_handle_unknown_vendor(const p25_lcw_ctx* ctx) {
     }
 }
 
-void
-p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
+static void
+p25_lcw_decode(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors,
+               uint8_t allow_voice_start) {
     UNUSED(irrecoverable_errors);
     if (opts == NULL || state == NULL || lcw_bits == NULL) {
         return;
@@ -784,12 +1021,14 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecovera
     ctx.opts = opts;
     ctx.state = state;
     ctx.bits = lcw_bits;
-    ctx.lc_format = (uint8_t)ConvertBitIntoBytes(&lcw_bits[0], 8);
-    ctx.lc_opcode = (uint8_t)ConvertBitIntoBytes(&lcw_bits[2], 6);
-    ctx.lc_mfid = (uint8_t)ConvertBitIntoBytes(&lcw_bits[8], 8);
-    ctx.lc_svcopt = (uint8_t)ConvertBitIntoBytes(&lcw_bits[16], 8);
+    ctx.lc_format = (uint8_t)convert_bits_into_output(&lcw_bits[0], 8);
+    ctx.lc_opcode = (uint8_t)convert_bits_into_output(&lcw_bits[2], 6);
+    ctx.lc_mfid = (uint8_t)convert_bits_into_output(&lcw_bits[8], 8);
+    const int svcopt_offset = ctx.lc_format == 0x4A ? 8 : 16;
+    ctx.lc_svcopt = (uint8_t)convert_bits_into_output(&lcw_bits[svcopt_offset], 8);
     ctx.lc_pf = lcw_bits[0];
     ctx.lc_sf = lcw_bits[1];
+    ctx.allow_voice_start = allow_voice_start;
     ctx.is_standard_mfid = (ctx.lc_sf == 1) || ctx.lc_mfid == 0 || ctx.lc_mfid == 1;
 
     if (ctx.lc_pf == 1) {
@@ -816,4 +1055,14 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecovera
     }
 
     DSD_FPRINTF(stderr, "\n");
+}
+
+void
+p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
+    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 1);
+}
+
+void
+p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
+    p25_lcw_decode(opts, state, lcw_bits, irrecoverable_errors, 0);
 }

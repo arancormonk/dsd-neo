@@ -25,6 +25,7 @@ Thumbs.db
 !/SECURITY.md
 !/CONTRIBUTING.md
 !/THIRD_PARTY.md
+!/PRIVACY_POLICY.md
 
 # GDB files
 *.gdb
@@ -45,3 +46,5 @@ Thumbs.db
 /.preflight-baseline*/
 /.scan-build.local/
 /.cppcheck-build/
+/.iq-fixture-cache/
+__pycache__/

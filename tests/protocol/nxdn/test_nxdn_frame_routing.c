@@ -1,0 +1,626 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/platform/timing.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
+
+#include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
+#include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/protocol/nxdn/nxdn_voice.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include "nxdn_confirm.h"
+
+static dsd_opts g_opts;
+static dsd_state g_state;
+static int g_lfsr_calls;
+static int g_sacch_calls;
+static int g_scch_calls;
+static int g_cac_calls;
+static int g_facch_calls;
+static int g_facch_part_mask;
+static int g_facch2_calls;
+static int g_udch_calls;
+static int g_facch3_calls;
+static int g_udch2_calls;
+static int g_sacch2_calls;
+static int g_pich_tch_calls;
+static int g_voice_calls;
+static int g_last_voice;
+static uint8_t g_dibit_stream[182];
+static uint8_t g_dibit_reliab_stream[182];
+static size_t g_dibit_stream_pos;
+static uint8_t g_last_sacch_bit;
+static uint8_t g_last_sacch_reliab;
+static uint8_t g_last_facch_bit;
+static uint8_t g_last_facch_reliab;
+static uint8_t g_last_cac_bit;
+static uint8_t g_last_cac_reliab;
+static dsd_nxdn_variant g_active_nxdn_variant;
+static char g_last_frame_type[16];
+
+static int
+expect_int(const char* label, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_u64(const char* label, unsigned long long got, unsigned long long want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %llu want %llu\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_string(const char* label, const char* got, const char* want) {
+    if (strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* What each stubbed channel decoder reports about its CRC, standing in for the real
+ * decoders' verdicts. A frame proves itself the same way here as on the air: one strong
+ * CRC, or two frames running of a short one (issue #398). */
+static int g_stub_sacch_ok;
+static int g_stub_scch_ok;
+static int g_stub_cac_ok;
+static int g_stub_facch_ok;
+
+static void
+nxdn_stub_note_crc(dsd_state* state, int crc_ok, nxdn_evidence evidence) {
+    if (crc_ok) {
+        nxdn_confirm_note_evidence(state, evidence);
+    }
+}
+
+static void
+reset_state(void) {
+    DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
+    DSD_MEMSET(&g_state, 0, sizeof(g_state));
+    g_lfsr_calls = 0;
+    g_sacch_calls = 0;
+    g_scch_calls = 0;
+    g_cac_calls = 0;
+    g_facch_calls = 0;
+    g_facch_part_mask = 0;
+    g_facch2_calls = 0;
+    g_udch_calls = 0;
+    g_facch3_calls = 0;
+    g_udch2_calls = 0;
+    g_sacch2_calls = 0;
+    g_pich_tch_calls = 0;
+    g_voice_calls = 0;
+    g_last_voice = 0;
+    /* Existing cases are about routing, not the confirmation gate: give them a frame whose
+     * FACCH checks out, which is what a real transmission looks like. */
+    g_stub_sacch_ok = 0;
+    g_stub_scch_ok = 0;
+    g_stub_cac_ok = 1;
+    g_stub_facch_ok = 1;
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    DSD_MEMSET(g_dibit_reliab_stream, 255, sizeof(g_dibit_reliab_stream));
+    g_dibit_stream_pos = 0U;
+    g_last_sacch_bit = 0;
+    g_last_sacch_reliab = 0;
+    g_last_facch_bit = 0;
+    g_last_facch_reliab = 0;
+    g_last_cac_bit = 0;
+    g_last_cac_reliab = 0;
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_NONE;
+    g_last_frame_type[0] = '\0';
+}
+
+void
+LFSRN(const char* buffer_in, char* buffer_out, dsd_state* state) {
+    (void)buffer_in;
+    (void)buffer_out;
+    g_lfsr_calls++;
+    state->payload_miN++;
+}
+
+void
+nxdn_descramble_with_seed(uint8_t dibits[], int len, uint16_t seed) {
+    (void)dibits;
+    (void)len;
+    (void)seed;
+}
+
+int
+getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
+    (void)opts;
+    (void)state;
+    uint8_t dibit = 0U;
+    uint8_t reliab = 255U;
+    if (g_dibit_stream_pos < (sizeof(g_dibit_stream) / sizeof(g_dibit_stream[0]))) {
+        dibit = g_dibit_stream[g_dibit_stream_pos];
+        reliab = g_dibit_reliab_stream[g_dibit_stream_pos];
+        g_dibit_stream_pos++;
+    }
+    if (out_soft != NULL) {
+        DSD_MEMSET(out_soft, 0, sizeof(*out_soft));
+        out_soft->reliability = reliab;
+    }
+    return dibit;
+}
+
+uint64_t
+dsd_time_monotonic_ns(void) {
+    return 42000000000ULL;
+}
+
+uint64_t
+dsd_time_monotonic_ms(void) {
+    return dsd_time_monotonic_ns() / 1000000U;
+}
+
+dsd_nxdn_variant
+dsd_frame_sync_active_nxdn_variant(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_active_nxdn_variant;
+}
+
+void
+printFrameSync(const dsd_opts* opts, const dsd_state* state, const char* frametype, int offset,
+               const char* modulation) {
+    (void)opts;
+    (void)state;
+    (void)offset;
+    (void)modulation;
+    DSD_SNPRINTF(g_last_frame_type, sizeof(g_last_frame_type), "%s", frametype);
+}
+
+void
+openMbeOutFile(dsd_opts* opts, dsd_state* state) {
+    (void)state;
+    opts->mbe_out_f = stdout;
+}
+
+void
+closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
+    (void)state;
+    opts->mbe_out_f = NULL;
+}
+
+void
+nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]) {
+    (void)opts;
+    nxdn_stub_note_crc(state, g_stub_sacch_ok, NXDN_EVIDENCE_WEAK);
+    g_sacch_calls++;
+    g_last_sacch_bit = bits[0];
+    g_last_sacch_reliab = reliab[0];
+}
+
+void
+nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60], uint8_t direction) {
+    (void)opts;
+    (void)state;
+    (void)bits;
+    (void)reliab;
+    nxdn_stub_note_crc(state, g_stub_scch_ok, NXDN_EVIDENCE_WEAK);
+    g_scch_calls++;
+    g_facch_part_mask |= (int)direction << 8;
+}
+
+void
+nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const uint8_t reliab[300]) {
+    (void)opts;
+    nxdn_stub_note_crc(state, g_stub_cac_ok, NXDN_EVIDENCE_STRONG);
+    g_cac_calls++;
+    g_last_cac_bit = bits[0];
+    g_last_cac_reliab = reliab[0];
+}
+
+void
+nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144], uint8_t part) {
+    (void)opts;
+    nxdn_stub_note_crc(state, g_stub_facch_ok, NXDN_EVIDENCE_STRONG);
+    g_facch_calls++;
+    g_facch_part_mask |= 1 << part;
+    g_last_facch_bit = bits[0];
+    g_last_facch_reliab = reliab[0];
+}
+
+void
+nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348], const uint8_t reliab[348],
+                             uint8_t is_facch2) {
+    (void)opts;
+    (void)state;
+    (void)bits;
+    (void)reliab;
+    if (is_facch2 != 0U) {
+        g_facch2_calls++;
+    } else {
+        g_udch_calls++;
+    }
+}
+
+void
+nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
+                              uint8_t is_facch3) {
+    (void)opts;
+    (void)state;
+    (void)bits;
+    (void)reliab;
+    if (is_facch3 != 0U) {
+        g_facch3_calls++;
+    } else {
+        g_udch2_calls++;
+    }
+}
+
+void
+nxdn_deperm_sacch2_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]) {
+    (void)opts;
+    (void)state;
+    (void)bits;
+    (void)reliab;
+    g_sacch2_calls++;
+}
+
+void
+nxdn_deperm_pich_tch_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144],
+                          uint8_t lich) {
+    (void)opts;
+    (void)state;
+    (void)bits;
+    (void)reliab;
+    (void)lich;
+    g_pich_tch_calls++;
+}
+
+void
+nxdn_cipher_force(dsd_state* state, uint8_t cipher) {
+    state->nxdn_cipher_type = cipher;
+}
+
+void
+nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182], const uint8_t* dbuf_reliab) {
+    (void)opts;
+    (void)state;
+    (void)dbuf;
+    (void)dbuf_reliab;
+    g_voice_calls++;
+    g_last_voice = voice;
+}
+
+static uint8_t
+encoded_lich_full(uint8_t lich) {
+    uint8_t full = (uint8_t)(lich << 1U);
+    uint8_t parity = (uint8_t)(((full >> 7U) + (full >> 6U) + (full >> 5U) + (full >> 4U)) & 1U);
+    if (lich == 0x08U || lich == 0x4AU || lich == 0x48U || lich == 0x46U) {
+        parity = (uint8_t)(((full >> 7U) + (full >> 6U) + (full >> 5U) + (full >> 4U) + (full >> 3U) + (full >> 2U)
+                            + (full >> 1U))
+                           & 1U);
+    }
+    return (uint8_t)(full | parity);
+}
+
+static void
+prepare_frame_stream(uint8_t lich, int force_bad_parity) {
+    const uint8_t full = (uint8_t)(encoded_lich_full(lich) ^ (force_bad_parity ? 1U : 0U));
+    for (size_t i = 0U; i < (sizeof(g_dibit_stream) / sizeof(g_dibit_stream[0])); i++) {
+        if (i < 8U) {
+            g_dibit_stream[i] = (uint8_t)((((full >> (7U - i)) & 1U) << 1U) | 1U);
+        } else {
+            g_dibit_stream[i] = (uint8_t)((((i * 3U) + 1U) & 0x3U));
+        }
+        g_dibit_reliab_stream[i] = (uint8_t)(240U - (i % 120U));
+    }
+    g_dibit_stream_pos = 0U;
+}
+
+static int
+route_frame(uint8_t lich) {
+    prepare_frame_stream(lich, 0);
+    nxdn_frame(&g_opts, &g_state);
+    return g_state.carrier != 0 ? 1 : 0;
+}
+
+static int
+test_control_channel_routes_and_reliability(void) {
+    int rc = 0;
+
+    reset_state();
+    rc |= expect_int("cac accepted", route_frame(0x01U), 1);
+    rc |= expect_int("cac route", g_cac_calls, 1);
+    rc |= expect_int("cac first bit", g_last_cac_bit, (g_dibit_stream[8] >> 1U) & 1U);
+    rc |= expect_int("cac first reliability", g_last_cac_reliab, g_dibit_reliab_stream[8]);
+
+    reset_state();
+    rc |= expect_int("sacch/facch accepted", route_frame(0x32U), 1);
+    rc |= expect_int("sacch route", g_sacch_calls, 1);
+    rc |= expect_int("facch route", g_facch_calls, 1);
+    rc |= expect_int("voice route", g_voice_calls, 1);
+    rc |= expect_int("voice mode", g_last_voice, 2);
+    rc |= expect_int("sacch first bit", g_last_sacch_bit, (g_dibit_stream[8] >> 1U) & 1U);
+    rc |= expect_int("sacch first reliability", g_last_sacch_reliab, g_dibit_reliab_stream[8]);
+    rc |= expect_int("facch first bit", g_last_facch_bit, (g_dibit_stream[38] >> 1U) & 1U);
+    rc |= expect_int("facch first reliability", g_last_facch_reliab, g_dibit_reliab_stream[38]);
+
+    reset_state();
+    rc |= expect_int("facch-both accepted", route_frame(0x20U), 1);
+    rc |= expect_int("facch both routes", g_facch_calls, 2);
+    rc |= expect_int("non-superframe sacch mode", g_state.nxdn_sacch_non_superframe, 1);
+
+    reset_state();
+    rc |= expect_int("scch accepted", route_frame(0x76U), 1);
+    rc |= expect_int("scch route", g_scch_calls, 1);
+
+    reset_state();
+    rc |= expect_int("facch2 accepted", route_frame(0x28U), 1);
+    rc |= expect_int("facch2 route", g_facch2_calls, 1);
+    rc |= expect_int("udch accepted", route_frame(0x2EU), 1);
+    rc |= expect_int("udch route", g_udch_calls, 1);
+
+    reset_state();
+    rc |= expect_int("facch3 accepted", route_frame(0x68U), 1);
+    rc |= expect_int("facch3 route", g_facch3_calls, 1);
+    reset_state();
+    rc |= expect_int("udch2 accepted", route_frame(0x6EU), 1);
+    rc |= expect_int("udch2 route", g_udch2_calls, 1);
+
+    reset_state();
+    rc |= expect_int("sacch2-pich accepted", route_frame(0x08U), 1);
+    rc |= expect_int("sacch2 route", g_sacch2_calls, 1);
+    rc |= expect_int("pich single route", g_pich_tch_calls, 1);
+    reset_state();
+    rc |= expect_int("sacch2-pich both accepted", route_frame(0x48U), 1);
+    rc |= expect_int("pich both routes", g_pich_tch_calls, 2);
+
+    return rc;
+}
+
+static int
+test_bad_frame_and_filter_gates(void) {
+    int rc = 0;
+
+    reset_state();
+    g_state.carrier = 1;
+    g_state.synctype = 99;
+    g_state.lastsynctype = 99;
+    rc |= expect_int("unsupported lich rejected", route_frame(0x7FU), 0);
+    rc |= expect_int("unsupported lich marks sync none", g_state.lastsynctype, DSD_SYNC_NONE);
+    rc |= expect_int("unsupported lich clears carrier after sync reject", g_state.carrier, 0);
+    rc |= expect_int("unsupported lich sacch reset", g_state.nxdn_sacch_frame_segment[0][0], 1);
+    rc |= expect_int("unsupported lich sacch crc reset", g_state.nxdn_sacch_frame_segcrc[0], 1);
+
+    reset_state();
+    g_opts.trunk_enable = 1;
+    rc |= expect_int("inbound trunk lich rejected", route_frame(0x38U), 0);
+    rc |= expect_int("inbound trunk marks sync none", g_state.lastsynctype, DSD_SYNC_NONE);
+
+    return rc;
+}
+
+static int
+test_public_frame_entry_lich_collection(void) {
+    int rc = 0;
+
+    reset_state();
+    g_opts.frame_nxdn48 = 1;
+    g_state.lastsynctype = DSD_SYNC_NXDN_POS;
+    prepare_frame_stream(0x01U, 0);
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_int("frame consumed dibits", (int)g_dibit_stream_pos, 182);
+    rc |= expect_int("frame cac route", g_cac_calls, 1);
+    rc |= expect_int("frame carrier active", g_state.carrier, 1);
+    rc |= expect_int("frame cc mono timestamp", g_state.last_cc_sync_time_m == 42.0, 1);
+    rc |= expect_int("frame cac reliability", g_last_cac_reliab, g_dibit_reliab_stream[8]);
+
+    reset_state();
+    g_opts.frame_nxdn48 = 1;
+    g_opts.frame_nxdn96 = 1;
+    g_state.lastsynctype = DSD_SYNC_NXDN_POS;
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_96;
+    prepare_frame_stream(0x01U, 0);
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_string("full-auto NXDN96 banner", g_last_frame_type, "NXDN96 ");
+
+    reset_state();
+    g_opts.frame_nxdn48 = 1;
+    g_opts.frame_nxdn96 = 1;
+    g_state.lastsynctype = DSD_SYNC_NXDN_POS;
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_48;
+    prepare_frame_stream(0x01U, 0);
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_string("full-auto NXDN48 banner", g_last_frame_type, "NXDN48 ");
+
+    reset_state();
+    g_opts.frame_nxdn48 = 1;
+    prepare_frame_stream(0x08U, 0);
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_int("frame special parity accepted", g_sacch2_calls, 1);
+    rc |= expect_int("frame special pich", g_pich_tch_calls, 1);
+
+    reset_state();
+    g_state.carrier = 1;
+    g_state.synctype = DSD_SYNC_NXDN_POS;
+    g_state.lastsynctype = DSD_SYNC_NXDN_POS;
+    prepare_frame_stream(0x01U, 1);
+    nxdn_frame(&g_opts, &g_state);
+    rc |= expect_int("frame parity consumed lich only", (int)g_dibit_stream_pos, 8);
+    rc |= expect_int("frame parity rejects sync", g_state.lastsynctype, DSD_SYNC_NONE);
+    rc |= expect_int("frame parity clears carrier", g_state.carrier, 0);
+
+    /* A frame rejected at the LICH never opens a frame of its own, so the per-frame evidence
+     * it would be graded on is still whatever the last frame to reach the body left behind.
+     * It must not be able to answer 2 off that: the caller reads the 2 as proof of the profile,
+     * and a run of these would go on proving one that nothing is decoding on (#445). */
+    reset_state();
+    g_state.carrier = 1;
+    g_state.synctype = DSD_SYNC_NXDN_POS;
+    g_state.lastsynctype = DSD_SYNC_NXDN_POS;
+    g_state.nxdn_confirmed = 1;
+    g_state.nxdn_confirm_frame_evidence = 2;
+    prepare_frame_stream(0x01U, 1);
+    rc |= expect_int("frame parity cannot prove the profile", nxdn_frame(&g_opts, &g_state), 1);
+    rc |= expect_int("frame parity still consumed lich only", (int)g_dibit_stream_pos, 8);
+
+    return rc;
+}
+
+static int
+test_lfsr_and_scanner_state(void) {
+    int rc = 0;
+
+    reset_state();
+    g_state.nxdn_cipher_type = 0x1;
+    g_state.R = 0x1234U;
+    rc |= expect_int("data frame accepted", route_frame(0x01U), 1);
+    rc |= expect_u64("data frame seeds mi", g_state.payload_miN, 0x1238ULL);
+    rc |= expect_int("data frame lfsr calls", g_lfsr_calls, 4);
+
+    reset_state();
+    g_state.nxdn_cipher_type = 0x2;
+    rc |= expect_int("data aes accepted", route_frame(0x01U), 1);
+    rc |= expect_u64("data aes bit counter", (unsigned long long)g_state.bit_counterL, 196ULL);
+
+    reset_state();
+    g_state.M = 1;
+    g_state.R = 0x2000U;
+    rc |= expect_int("voice facch accepted", route_frame(0x32U), 1);
+    rc |= expect_int("voice sets cipher type", g_state.nxdn_cipher_type, 1);
+    rc |= expect_int("pre voice lfsr calls", g_lfsr_calls, 2);
+    rc |= expect_u64("pre voice seeds mi", g_state.payload_miN, 0x2002ULL);
+
+    reset_state();
+    g_state.nxdn_cipher_type = 0x2;
+    rc |= expect_int("post voice facch2 accepted", route_frame(0x34U), 1);
+    rc |= expect_u64("post voice facch2 bit counter", (unsigned long long)g_state.bit_counterL, 98ULL);
+
+    reset_state();
+    DSD_SNPRINTF(g_opts.mbe_out_dir, sizeof(g_opts.mbe_out_dir), "%s", "mbe");
+    rc |= expect_int("voice opens mbe file route", route_frame(0x32U), 1);
+    rc |= expect_int("voice opened mbe file", g_opts.mbe_out_f == stdout, 1);
+    g_opts.frame_nxdn48 = 1;
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_48;
+    rc |= expect_int("nxdn48 data closes mbe file route", route_frame(0x01U), 1);
+    rc |= expect_int("nxdn48 data closed mbe file", g_opts.mbe_out_f == NULL, 1);
+
+    reset_state();
+    g_opts.mbe_out_f = stdout;
+    g_opts.frame_nxdn48 = 1;
+    g_opts.frame_nxdn96 = 1;
+    g_active_nxdn_variant = DSD_NXDN_VARIANT_96;
+    g_state.last_vc_sync_time = time(NULL);
+    rc |= expect_int("full-auto NXDN96 recent data keeps mbe file route", route_frame(0x01U), 1);
+    rc |= expect_int("full-auto NXDN96 recent data keeps mbe file", g_opts.mbe_out_f == stdout, 1);
+    g_state.last_vc_sync_time = 0;
+    rc |= expect_int("nxdn96 stale data closes mbe file route", route_frame(0x01U), 1);
+    rc |= expect_int("nxdn96 stale data closed mbe file", g_opts.mbe_out_f == NULL, 1);
+
+    reset_state();
+    g_opts.scanner_mode = 1;
+    rc |= expect_int("scanner accepted", route_frame(0x01U), 1);
+    rc |= expect_int("scanner extends cc sync", g_state.last_cc_sync_time > 0, 1);
+    rc |= expect_int("carrier active", g_state.carrier, 1);
+
+    return rc;
+}
+
+/*
+ * Issue #398: a sync word and a LICH are weak enough that receiver noise clears both, so a
+ * frame whose body proves nothing must not stop a scan, synthesize voice, or open a
+ * recording. What it may still do is set the carrier flag and print its diagnostic line.
+ */
+static int
+test_unconfirmed_frame_is_inert(void) {
+    int rc = 0;
+
+    reset_state();
+    g_opts.scanner_mode = 1;
+    g_stub_sacch_ok = g_stub_scch_ok = g_stub_cac_ok = g_stub_facch_ok = 0;
+    DSD_SNPRINTF(g_opts.mbe_out_dir, sizeof(g_opts.mbe_out_dir), "%s", "mbe");
+    g_state.last_cc_sync_time = 1000;
+    g_state.last_cc_sync_time_m = 7.0;
+
+    rc |= expect_int("unconfirmed voice frame routed", route_frame(0x32U), 1);
+    rc |= expect_int("unconfirmed synthesizes no voice", g_voice_calls, 0);
+    rc |= expect_int("unconfirmed opens no mbe file", g_opts.mbe_out_f == NULL, 1);
+    rc |= expect_int("unconfirmed leaves scanner hold", (int)g_state.last_cc_sync_time, 1000);
+    rc |= expect_int("unconfirmed leaves mono hold", g_state.last_cc_sync_time_m == 7.0, 1);
+    rc |= expect_int("unconfirmed leaves vc sync", (int)g_state.last_vc_sync_time, 0);
+
+    /* One strong CRC is proof on its own, and the frame acts normally from then on. */
+    g_stub_facch_ok = 1;
+    rc |= expect_int("confirmed voice frame routed", route_frame(0x32U), 1);
+    rc |= expect_int("confirmed synthesizes voice", g_voice_calls, 1);
+    rc |= expect_int("confirmed opens mbe file", g_opts.mbe_out_f == stdout, 1);
+    rc |= expect_int("confirmed extends scanner hold", g_state.last_cc_sync_time > 1000, 1);
+
+    return rc;
+}
+
+/* A short CRC has to repeat before it counts: one frame is pending, two running confirm. */
+static int
+test_short_crc_confirms_only_when_repeated(void) {
+    int rc = 0;
+
+    reset_state();
+    g_stub_sacch_ok = g_stub_scch_ok = g_stub_cac_ok = g_stub_facch_ok = 0;
+    g_stub_sacch_ok = 1;
+
+    rc |= expect_int("first weak frame routed", route_frame(0x30U), 1);
+    rc |= expect_int("first weak frame pending", nxdn_confirm_is_confirmed(&g_state), 0);
+    rc |= expect_int("first weak frame silent", g_voice_calls, 0);
+
+    rc |= expect_int("second weak frame routed", route_frame(0x30U), 1);
+    rc |= expect_int("second weak frame confirms", nxdn_confirm_is_confirmed(&g_state), 1);
+
+    /* A frame that proves nothing breaks the streak, so weak evidence has to be consecutive. */
+    reset_state();
+    g_stub_sacch_ok = g_stub_scch_ok = g_stub_cac_ok = g_stub_facch_ok = 0;
+    g_stub_sacch_ok = 1;
+    rc |= expect_int("streak first weak routed", route_frame(0x30U), 1);
+    g_stub_sacch_ok = 0;
+    rc |= expect_int("streak empty frame routed", route_frame(0x30U), 1);
+    g_stub_sacch_ok = 1;
+    rc |= expect_int("streak third weak routed", route_frame(0x30U), 1);
+    rc |= expect_int("broken streak stays pending", nxdn_confirm_is_confirmed(&g_state), 0);
+
+    /* The carrier going away forgets the evidence with it. */
+    reset_state();
+    g_stub_facch_ok = 1;
+    rc |= expect_int("confirming frame routed", route_frame(0x32U), 1);
+    rc |= expect_int("confirmed before reset", nxdn_confirm_is_confirmed(&g_state), 1);
+    nxdn_confirm_reset(&g_state);
+    rc |= expect_int("reset clears confirmation", nxdn_confirm_is_confirmed(&g_state), 0);
+
+    return rc;
+}
+
+int
+main(void) {
+    int rc = 0;
+
+    rc |= test_control_channel_routes_and_reliability();
+    rc |= test_bad_frame_and_filter_gates();
+    rc |= test_public_frame_entry_lich_collection();
+    rc |= test_lfsr_and_scanner_state();
+    rc |= test_unconfirmed_frame_is_inert();
+    rc |= test_short_crc_confirms_only_when_repeated();
+
+    if (rc == 0) {
+        DSD_FPRINTF(stdout, "NXDN_FRAME_ROUTING: OK\n");
+    }
+    return rc;
+}

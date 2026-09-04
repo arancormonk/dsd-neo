@@ -8,7 +8,7 @@
 
 /**
  * @file
- * @brief BCH(63,16,11) encoder/decoder for P25 NID.
+ * @brief BCH(63,16,11) decoder for P25 NID.
  *
  * Implements a binary BCH code that can correct up to 11 bit errors.
  * Used for P25 Phase 1 Network ID (NID) error correction.
@@ -27,7 +27,7 @@
  *
  * Returned by BCH_63_16_11::decode_with_result() to provide both the success/failure
  * indication and the number of bit errors that were corrected. This enables
- * callers (e.g., check_NID) to make confidence-based decisions using the
+ * callers (for example, the P25 NID decoder) to make confidence-based decisions using the
  * error count as a quality metric.
  */
 struct BCH_63_16_Result {
@@ -272,84 +272,8 @@ class BCH_63_16_11 {
         }
     }
 
-    /**
-     * Generator polynomial g(x) = 6331 1413 6723 5453 (octal), degree 47.
-     *
-     * This is the BCH(63,16,23) generator polynomial from TIA-102.BAAA-A section 8.5.2.
-     * Stored as 48 binary coefficients (MSB = x^47 coefficient, LSB = x^0 = 1).
-     * The polynomial has degree 47, so genpoly[0] is the x^47 coefficient (always 1)
-     * and genpoly[47] is the x^0 coefficient (always 1).
-     *
-     * Octal expansion:
-     *   6    3    3    1    1    4    1    3    6    7    2    3    5    4    5    3
-     *  110  011  011  001  001  100  001  011  110  111  010  011  101  100  101  011
-     */
-
   public:
     BCH_63_16_11() { generate_gf(); }
-
-    /**
-     * @brief Encode 16 information bits into a 63-bit systematic BCH codeword.
-     *
-     * Uses the generator polynomial g(x) = 6331 1413 6723 5453 (octal) from
-     * TIA-102.BAAA-A section 8.5.2. The encoding is systematic: information bits
-     * occupy positions 0-15 of the output, parity bits occupy positions 16-62.
-     *
-     * Implementation uses a feedback shift register (LFSR) division approach:
-     * multiply the information polynomial by x^47, divide by g(x), and append
-     * the remainder as parity bits.
-     *
-     * @param input  Array of 16 chars, each 0 or 1 (MSB first: input[0] = bit 15).
-     * @param output Array of 63 chars to receive the complete codeword.
-     *               output[0..15] = information bits (copied from input).
-     *               output[16..62] = parity bits computed from g(x).
-     */
-    static void
-    encode(const char* input, char* output) {
-        // Generator polynomial g(x) = 6331 1413 6723 5453 (octal), degree 47.
-        // 48 binary coefficients (MSB = x^47, LSB = x^0). Defined as a function-local
-        // static to avoid ODR-use linker issues with static constexpr class members in C++14.
-        static const char genpoly[48] = {1, 1, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 1,
-                                         1, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1};
-
-        // Number of parity bits = n - k = 63 - 16 = 47
-        static const int PARITY_BITS = NN - KK; // 47
-
-        // Step 1: Copy 16 information bits to output positions 0-15
-        for (int i = 0; i < KK; i++) {
-            output[i] = input[i];
-        }
-
-        // Step 2: Initialize a 47-bit shift register to zero.
-        // The shift register holds the running remainder of the polynomial
-        // division of the information polynomial (shifted by x^47) by g(x).
-        char sr[47] = {0};
-
-        // Step 3: Feed each information bit through the LFSR.
-        // For systematic encoding, we compute:
-        //   remainder = (info_polynomial * x^47) mod g(x)
-        // using a feedback shift register. The feedback bit is the XOR of the
-        // incoming data bit and the MSB of the shift register (the bit about
-        // to be shifted out).
-        for (int i = 0; i < KK; i++) {
-            // Feedback = input bit XOR the MSB of the shift register
-            char feedback = input[i] ^ sr[0];
-
-            // Shift the register left by one position, applying feedback
-            // at each tap position defined by g(x). The generator polynomial
-            // coefficients genpoly[1..47] define where feedback is XORed in.
-            for (int j = 0; j < PARITY_BITS - 1; j++) {
-                sr[j] = sr[j + 1] ^ (feedback & genpoly[j + 1]);
-            }
-            // The last position receives only the feedback (genpoly[47] = 1)
-            sr[PARITY_BITS - 1] = feedback & genpoly[PARITY_BITS];
-        }
-
-        // Step 4: Copy the 47 parity bits from the shift register to output[16..62]
-        for (int i = 0; i < PARITY_BITS; i++) {
-            output[KK + i] = sr[i];
-        }
-    }
 
     /**
      * @brief Decode a BCH(63,16,11) codeword with error count reporting.
@@ -402,21 +326,6 @@ class BCH_63_16_11 {
         correct_error_locations(recd, loc, count);
         extract_data_bits(recd, output);
         return BCH_63_16_Result{true, count};
-    }
-
-    /**
-     * @brief Decode a BCH(63,16,11) codeword.
-     *
-     * Thin wrapper around decode_with_result() that discards the error count
-     * and preserves the original public bool-returning API.
-     *
-     * @param input  Array of 63 chars, each containing a bit (0 or 1).
-     * @param output Array of 16 chars to receive corrected data bits.
-     * @return true if decoding succeeded, false otherwise.
-     */
-    bool
-    decode(const char* input, char* output) const {
-        return decode_with_result(input, output).success;
     }
 };
 

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- The logo (images/dsd-neo.png) is drawn on transparency for a dark backdrop,
+     so every opaque surface it lands on - the adaptive icon background, the
+     launch screen and the pre-first-frame window - uses this one near-black. -->
+<resources>
+    <color name="dsdneo_background">#0E1116</color>
+</resources>

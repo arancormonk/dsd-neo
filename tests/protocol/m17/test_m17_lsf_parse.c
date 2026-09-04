@@ -22,16 +22,7 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-// Minimal MSB-first bit-to-integer helper matching the DMR utils API.
-uint64_t
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) { // NOLINT(misc-use-internal-linkage)
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0; i < n; i++) {
-        v = (v << 1) | (uint64_t)(bits[i] & 1U);
-    }
-    return v;
-}
-
+// MSB-first test-vector writer.
 static void
 write_bits_from_u64(uint8_t* dst, uint64_t value, uint32_t nbits) {
     for (uint32_t i = 0; i < nbits; i++) {
@@ -132,10 +123,7 @@ test_parse_lsf_v2(void) {
     err |= expect_eq_u8("es", res.es, es);
     err |= expect_eq_u8("cn", res.cn, cn);
     err |= expect_eq_u8("rs", res.rs, 0U);
-    err |= expect_eq_u8("payload_contents", res.payload_contents, dt);
-    err |= expect_eq_u8("encryption_type", res.encryption_type, et);
     err |= expect_eq_u8("signature", res.signature, 1U);
-    err |= expect_eq_u8("meta_contents", res.meta_contents, es);
     err |= expect_eq_u8("meta_is_iv", res.meta_is_iv, 0U);
     err |= expect_eq_u8("dst kind", res.dst_address_kind, M17_ADDRESS_STANDARD);
     err |= expect_eq_u8("src kind", res.src_address_kind, M17_ADDRESS_STANDARD);
@@ -214,9 +202,6 @@ test_parse_lsf_spec_reserved_bits(void) {
     err |= expect_eq_u8("spec reserved cn", res.cn, 7U);
     err |= expect_eq_u8("spec reserved signature", res.signature, 1U);
     err |= expect_eq_u8("spec reserved rs", res.rs, 0xBU);
-    err |= expect_eq_u8("spec reserved payload_contents", res.payload_contents, res.dt);
-    err |= expect_eq_u8("spec reserved encryption_type", res.encryption_type, res.et);
-    err |= expect_eq_u8("spec reserved meta_contents", res.meta_contents, res.es);
     err |= expect_eq_u8("spec reserved meta_is_iv", res.meta_is_iv, 0U);
     err |= expect_eq_u8("spec reserved has_meta", res.has_meta, 1U);
     err |= expect_eq_u8("spec reserved type invalid", res.type_reserved_valid, 0U);
@@ -232,15 +217,24 @@ test_lsf_address_and_meta_helpers(void) {
     err |= expect_eq_u8("address standard", m17_address_classify(0x9FDD51ULL), M17_ADDRESS_STANDARD);
     err |= expect_eq_u8("address extended", m17_address_classify(M17_ADDRESS_EXTENDED_MIN), M17_ADDRESS_EXTENDED);
     err |= expect_eq_u8("address broadcast", m17_address_classify(M17_ADDRESS_BROADCAST), M17_ADDRESS_BROADCAST_KIND);
-    err |= expect_eq_u8("destination standard valid", (uint8_t)m17_address_is_valid_destination(0x9FDD51ULL), 1U);
-    err |= expect_eq_u8("destination extended valid",
-                        (uint8_t)m17_address_is_valid_destination(M17_ADDRESS_EXTENDED_MIN), 1U);
-    err |= expect_eq_u8("destination broadcast valid", (uint8_t)m17_address_is_valid_destination(M17_ADDRESS_BROADCAST),
-                        1U);
-    err |= expect_eq_u8("destination zero invalid", (uint8_t)m17_address_is_valid_destination(0ULL), 0U);
-    err |= expect_eq_u8("source standard valid", (uint8_t)m17_address_is_valid_source(0x9FDD51ULL), 1U);
-    err |= expect_eq_u8("source extended invalid", (uint8_t)m17_address_is_valid_source(M17_ADDRESS_EXTENDED_MIN), 0U);
-    err |= expect_eq_u8("source broadcast invalid", (uint8_t)m17_address_is_valid_source(M17_ADDRESS_BROADCAST), 0U);
+
+    uint8_t meta[M17_META_BYTES] = {0};
+    uint8_t lsf_bits[240];
+    struct m17_lsf_result res;
+    build_lsf_bits(lsf_bits, M17_ADDRESS_EXTENDED_MIN, 0x9FDD51ULL, 0U, meta);
+    err |= expect_eq_u64("extended destination parse", (uint64_t)m17_parse_lsf(lsf_bits, sizeof(lsf_bits), &res), 0ULL);
+    err |= expect_eq_u8("extended destination valid", res.dst_is_valid, 1U);
+    err |= expect_eq_u8("standard source valid", res.src_is_valid, 1U);
+    build_lsf_bits(lsf_bits, M17_ADDRESS_BROADCAST, M17_ADDRESS_EXTENDED_MIN, 0U, meta);
+    err |=
+        expect_eq_u64("broadcast destination parse", (uint64_t)m17_parse_lsf(lsf_bits, sizeof(lsf_bits), &res), 0ULL);
+    err |= expect_eq_u8("broadcast destination valid", res.dst_is_valid, 1U);
+    err |= expect_eq_u8("extended source invalid", res.src_is_valid, 0U);
+    build_lsf_bits(lsf_bits, 0ULL, M17_ADDRESS_BROADCAST, 0U, meta);
+    err |= expect_eq_u64("reserved destination parse", (uint64_t)m17_parse_lsf(lsf_bits, sizeof(lsf_bits), &res), 0ULL);
+    err |= expect_eq_u8("reserved destination invalid", res.dst_is_valid, 0U);
+    err |= expect_eq_u8("broadcast source invalid", res.src_is_valid, 0U);
+
     err |= expect_eq_u8("null meta text", m17_null_meta_protocol_for_subtype(0U), 0x80U);
     err |= expect_eq_u8("null meta gnss", m17_null_meta_protocol_for_subtype(1U), 0x81U);
     err |= expect_eq_u8("null meta ext", m17_null_meta_protocol_for_subtype(2U), 0x82U);
@@ -265,19 +259,18 @@ test_lsf_address_and_meta_helpers(void) {
 static int
 test_stream_signature_frame_numbers(void) {
     int err = 0;
-    err |= expect_eq_u8("stream signature below", (uint8_t)m17_stream_frame_is_signature(M17_STREAM_SIGNATURE_FN0 - 1U),
-                        0U);
-    err |= expect_eq_u8("stream signature first", (uint8_t)m17_stream_frame_is_signature(M17_STREAM_SIGNATURE_FN0), 1U);
-    err |=
-        expect_eq_u8("stream signature second", (uint8_t)m17_stream_frame_is_signature(M17_STREAM_SIGNATURE_FN1), 1U);
-    err |= expect_eq_u8("stream signature third", (uint8_t)m17_stream_frame_is_signature(M17_STREAM_SIGNATURE_FN2), 1U);
-    err |= expect_eq_u8("stream signature low 0x7fff",
-                        (uint8_t)m17_stream_frame_is_signature(M17_STREAM_FRAME_COUNTER_MAX), 0U);
-    err |= expect_eq_u8("stream signature eot non-signature",
-                        (uint8_t)m17_stream_frame_is_signature(M17_STREAM_FRAME_END_MASK), 0U);
-    err |= expect_eq_u8("stream signature final", (uint8_t)m17_stream_frame_is_signature(M17_STREAM_SIGNATURE_FN3), 1U);
+    err |= expect_eq_u64("stream signature below",
+                         (uint64_t)m17_stream_signature_frame_index(M17_STREAM_SIGNATURE_FN0 - 1U), (uint64_t)-1);
     err |= expect_eq_u64("stream signature index first",
                          (uint64_t)m17_stream_signature_frame_index(M17_STREAM_SIGNATURE_FN0), 0ULL);
+    err |= expect_eq_u64("stream signature index second",
+                         (uint64_t)m17_stream_signature_frame_index(M17_STREAM_SIGNATURE_FN1), 1ULL);
+    err |= expect_eq_u64("stream signature index third",
+                         (uint64_t)m17_stream_signature_frame_index(M17_STREAM_SIGNATURE_FN2), 2ULL);
+    err |= expect_eq_u64("stream signature low 0x7fff",
+                         (uint64_t)m17_stream_signature_frame_index(M17_STREAM_FRAME_COUNTER_MAX), (uint64_t)-1);
+    err |= expect_eq_u64("stream signature eot non-signature",
+                         (uint64_t)m17_stream_signature_frame_index(M17_STREAM_FRAME_END_MASK), (uint64_t)-1);
     err |= expect_eq_u64("stream signature index final",
                          (uint64_t)m17_stream_signature_frame_index(M17_STREAM_SIGNATURE_FN3), 3ULL);
     return err;
@@ -285,9 +278,8 @@ test_stream_signature_frame_numbers(void) {
 
 static int
 test_signature_digest(void) {
-    uint8_t digest[M17_SIGNATURE_DIGEST_BYTES];
+    uint8_t digest[M17_SIGNATURE_DIGEST_BYTES] = {0};
     uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
-    m17_signature_digest_init(digest);
     for (uint8_t i = 0U; i < M17_SIGNATURE_DIGEST_BYTES; i++) {
         payload[i] = (uint8_t)(i + 1U);
     }
@@ -308,9 +300,8 @@ test_signature_digest(void) {
 static int
 test_signature_collector(void) {
     int err = 0;
-    struct m17_signature_collector collector;
+    struct m17_signature_collector collector = {0};
     uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
-    m17_signature_collector_reset(&collector);
 
     for (uint8_t frame = 0U; frame < 4U; frame++) {
         for (uint8_t i = 0U; i < M17_SIGNATURE_DIGEST_BYTES; i++) {
@@ -331,7 +322,7 @@ test_signature_collector(void) {
         err |= expect_eq_u8("signature byte", collector.signature[i], i);
     }
 
-    m17_signature_collector_reset(&collector);
+    DSD_MEMSET(&collector, 0, sizeof collector);
     DSD_MEMSET(payload, 0xA5, sizeof(payload));
     err |= expect_eq_u64("signature invalid fn",
                          (uint64_t)m17_signature_collector_push(&collector, M17_STREAM_FRAME_COUNTER_MAX, payload),
@@ -494,7 +485,7 @@ static int
 test_text_meta_blocks(void) {
     uint8_t meta[M17_META_BYTES];
     struct m17_meta_text_block block;
-    struct m17_meta_text_assembler assembler;
+    struct m17_meta_text_assembler assembler = {0};
     char text[M17_TEXT_MAX_BYTES + 1U];
     uint8_t text_len = 0U;
     int err = 0;
@@ -504,7 +495,6 @@ test_text_meta_blocks(void) {
     err |= expect_eq_u64("text no-data parse", (uint64_t)m17_meta_text_parse_block(meta, &block), 0ULL);
     err |= expect_eq_u8("text no-data flag", block.has_text, 0U);
 
-    m17_meta_text_assembler_reset(&assembler);
     DSD_MEMSET(meta, ' ', sizeof(meta));
     meta[0] = 0x31U;
     DSD_MEMCPY(meta + 1, "ABCDEFGHIJKLM", M17_TEXT_BLOCK_BYTES);

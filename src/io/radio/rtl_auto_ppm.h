@@ -18,17 +18,14 @@ enum class RtlAutoPpmSource : uint8_t {
     None = 0,
     CarrierTotal = 1,
     PhaseResidual = 2,
-    SpectrumResidual = 3,
 };
 
 struct RtlAutoPpmSignalMetrics {
     int cqpsk_enable = 0;
     int tracking_enable = 0;
     int carrier_lock = 0;
-    int spectrum_valid = 0;
     double nco_cfo_hz = 0.0;
     double phase_cfo_hz = 0.0;
-    double spectrum_cfo_hz = 0.0;
 };
 
 struct RtlAutoPpmEstimate {
@@ -50,12 +47,10 @@ struct RtlAutoPpmConfig {
     double max_abs_ppm = 200.0;
     int carrier_observation_ms = 4000;
     int phase_observation_ms = 5000;
-    int spectrum_observation_ms = 8000;
     int settle_ms = 2500;
     int lock_hold_ms = 3000;
     int max_step_carrier_ppm = 25;
     int max_step_phase_ppm = 12;
-    int max_step_spectrum_ppm = 4;
 };
 
 struct RtlAutoPpmInputs {
@@ -88,6 +83,11 @@ struct RtlAutoPpmUpdate {
 };
 
 RtlAutoPpmEstimate rtl_auto_ppm_select_estimate(const RtlAutoPpmSignalMetrics& metrics);
+
+/* Convert the FSK modem's discriminator centering estimate into the RTL/Soapy
+ * frequency-correction sign used by auto-PPM. The result is intentionally
+ * opposite the raw dc_est phase-delta sign. */
+double rtl_auto_ppm_fsk_dc_est_to_cfo_hz(double dc_rad_per_sample, int sample_rate_hz);
 
 class RtlAutoPpmController {
   public:

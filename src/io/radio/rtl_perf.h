@@ -14,7 +14,6 @@ extern "C" {
 #endif
 
 int rtl_perf_enabled(void);
-uint64_t rtl_perf_now_ns(void);
 
 void rtl_perf_record_ingest(uint64_t elapsed_ns, size_t input_samples, uint64_t dropped_samples);
 void rtl_perf_record_demod_block(uint64_t full_demod_ns, uint64_t post_metrics_ns, uint64_t output_write_ns,

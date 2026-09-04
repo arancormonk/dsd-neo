@@ -4,7 +4,7 @@
  */
 
 /*
- * SlotType Golay(20,8) encode/decode tests.
+ * SlotType Golay(20,8) correction tests using fixed reference codewords.
  * - Verifies clean decode
  * - Verifies up to 2 bit error correction
  * - Verifies failure on 3 bit flips
@@ -15,13 +15,6 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
-
-static void
-bits_from_byte(unsigned char b, unsigned char out[8]) {
-    for (int i = 0; i < 8; i++) {
-        out[i] = (unsigned char)((b >> i) & 1U); // LSB-first to match fec.c encode/decode usage
-    }
-}
 
 static unsigned char
 byte_from_bits(const unsigned char in[8]) {
@@ -34,40 +27,36 @@ byte_from_bits(const unsigned char in[8]) {
 
 static void
 test_clean_decode(void) {
+    static const struct {
+        unsigned char value;
+        unsigned char codeword[20];
+    } fixtures[] = {
+        {0x00U, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+        {0x34U, {0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 0}},
+        {0xA5U, {1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 1, 0, 1, 1}},
+    };
+
     Golay_20_8_init();
-    for (unsigned msg = 0; msg < 16; msg++) { // small sample
-        unsigned char m[8] = {0};
-        bits_from_byte((unsigned char)msg, m);
-        unsigned char cw[20];
-        DSD_MEMSET(cw, 0, sizeof(cw));
-        Golay_20_8_encode(m, cw);
-        // decode
-        unsigned char cw2[20];
-        DSD_MEMCPY(cw2, cw, sizeof(cw));
-        assert(Golay_20_8_decode(cw2) == true);
-        unsigned char out = byte_from_bits(cw2);
-        assert(out == (unsigned char)msg);
+    for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
+        unsigned char received[20];
+        DSD_MEMCPY(received, fixtures[i].codeword, sizeof(received));
+        assert(Golay_20_8_decode(received) == true);
+        assert(byte_from_bits(received) == fixtures[i].value);
     }
 }
 
 static void
 test_two_bit_correction(void) {
+    static const unsigned char codeword[20] = {0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 0};
     Golay_20_8_init();
-    unsigned char m[8] = {1, 0, 1, 1, 0, 1, 0, 0};
-    unsigned char cw[20];
-    Golay_20_8_encode(m, cw);
     for (int i = 0; i < 20; i++) {
         for (int j = i + 1; j < 20; j++) {
             unsigned char tmp[20];
-            DSD_MEMCPY(tmp, cw, sizeof(tmp));
+            DSD_MEMCPY(tmp, codeword, sizeof(tmp));
             tmp[i] ^= 1U;
             tmp[j] ^= 1U;
-            if (Golay_20_8_decode(tmp)) {
-                // Should correct <=2 flips
-                unsigned char out = byte_from_bits(tmp);
-                unsigned char in = byte_from_bits(m);
-                assert(out == in);
-            }
+            assert(Golay_20_8_decode(tmp) == true);
+            assert(byte_from_bits(tmp) == 0x34U);
         }
     }
 }
@@ -75,12 +64,8 @@ test_two_bit_correction(void) {
 static void
 test_three_bit_failure(void) {
     Golay_20_8_init();
-    unsigned char m[8] = {0};
-    unsigned char cw[20];
-    Golay_20_8_encode(m, cw);
     // Flip three distinct positions
-    unsigned char tmp[20];
-    DSD_MEMCPY(tmp, cw, sizeof(tmp));
+    unsigned char tmp[20] = {0};
     tmp[0] ^= 1U;
     tmp[5] ^= 1U;
     tmp[13] ^= 1U;

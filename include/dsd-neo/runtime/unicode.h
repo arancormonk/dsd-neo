@@ -11,7 +11,9 @@
 #ifndef DSD_NEO_UNICODE_H
 #define DSD_NEO_UNICODE_H
 
-#include <stddef.h>
+#include <dsd-neo/core/utf16.h>
+#include <stdint.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,6 +21,33 @@ extern "C" {
 
 /** @brief Return 1 if UTF-8 output is likely supported, else 0 (cached). */
 int dsd_unicode_supported(void);
+
+/**
+ * @brief Print one Unicode scalar value without fprintf("%lc").
+ *
+ * UTF-8 output encodes the value itself (U+FFFD for anything that is not a scalar value); the
+ * ASCII fallback keeps the historical best effort of the printable low byte, else '?'. Radio
+ * text must come through here: %lc hands the C runtime a UTF-16 unit it may be unable to
+ * encode, and the Windows UCRT turns that into an unbounded write of the stack (issue #358).
+ */
+static inline void
+dsd_unicode_fput_scalar(uint32_t scalar, FILE* stream) {
+    if (stream == NULL) {
+        return;
+    }
+    if (dsd_unicode_supported()) {
+        char utf8[DSD_UTF8_MAX_BYTES + 1];
+        // Written by length, not as a string: U+0000 encodes to one NUL byte, which fputs()
+        // would silently drop while the ASCII fallback below still prints something.
+        const size_t n = dsd_utf8_encode_scalar(scalar, utf8, sizeof utf8);
+        if (n > 0U) {
+            (void)fwrite(utf8, 1U, n, stream);
+        }
+        return;
+    }
+    const unsigned char lo = (unsigned char)(scalar & 0xFFU);
+    (void)fputc((lo >= 0x20U && lo < 0x7FU) ? (int)lo : '?', stream);
+}
 
 /**
  * @brief Best-effort initialization to make UTF-8 output usable.

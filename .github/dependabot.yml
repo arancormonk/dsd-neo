@@ -9,6 +9,13 @@ updates:
       timezone: "America/Chicago"
     cooldown:
       default-days: 7
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action/*"
+      docker-actions:
+        patterns:
+          - "docker/*"
     open-pull-requests-limit: 10
     labels:
       - "dependencies"

@@ -19,6 +19,10 @@
 extern "C" {
 #endif
 
+/* Largest base decimation a replay chain may request. The demodulator keeps one half-band
+ * history buffer per pass (demod_state::hb_hist_i), so 2^10 is the hard ceiling. */
+#define DSD_IQ_REPLAY_MAX_BASE_DECIMATION 1024U
+
 typedef struct {
     uint32_t metadata_version;
     char data_path[2048];
@@ -37,13 +41,18 @@ typedef struct {
     uint32_t demod_rate_hz;
     int offset_tuning_enabled;
     int fs4_shift_enabled;
-    int combine_rotate_enabled;
+    /* Derived from persisted combine_rotate_enabled=false metadata. */
+    int historical_cu8_two_pass;
     int muted_bytes_excluded;
     int contains_retunes;
     uint32_t capture_retune_count;
     uint64_t capture_drops;
     uint64_t capture_drop_blocks;
     uint64_t input_ring_drops;
+    /* Capture stopped because it hit --iq-capture-max-mb rather than being cut
+     * short. Absent from metadata written before this field existed, in which
+     * case it reads back as 0. */
+    int size_limit_reached;
     char source_backend[32];
     char source_args[256];
     char capture_started_utc[64];

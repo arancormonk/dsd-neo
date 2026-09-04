@@ -47,9 +47,7 @@ main(void) {
     double pre_Q = mean_of(in + 1, s->lp_len - 1, 2);
     s->iq_dc_avg_r = (float)pre_I;
     s->iq_dc_avg_i = (float)pre_Q;
-    s->fm_agc_enable = 0;
     s->iqbal_enable = 0;
-    s->fll_enabled = 0;
     s->ted_enabled = 0;
 
     full_demod(s);

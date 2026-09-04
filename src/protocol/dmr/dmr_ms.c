@@ -11,6 +11,7 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
@@ -24,11 +25,11 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
-#include <dsd-neo/protocol/dmr/dmr_const.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -64,14 +65,15 @@ dmr_ms_apply_inversion(const dsd_opts* opts, int dibit, int mask_after_xor) {
 
 static int
 dmr_ms_read_dibit(dsd_opts* opts, dsd_state* state, int mask_after_xor) {
-    int dibit = getDibit(opts, state);
+    int dibit = get_dibit_and_analog_signal(opts, state, NULL);
     return dmr_ms_apply_inversion(opts, dibit, mask_after_xor);
 }
 
 static void
 dmr_ms_store_ambe_dibit(char ambe_fr[4][24], int index, int dibit) {
-    ambe_fr[dmr_ambe_interleave_w[index]][dmr_ambe_interleave_x[index]] = (1 & (dibit >> 1)); // bit 1
-    ambe_fr[dmr_ambe_interleave_y[index]][dmr_ambe_interleave_z[index]] = (1 & dibit);        // bit 0
+    const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[index];
+    ambe_fr[map->high_row][map->high_col] = (1 & (dibit >> 1)); // bit 1
+    ambe_fr[map->low_row][map->low_col] = (1 & dibit);          // bit 0
 }
 
 static void
@@ -193,18 +195,6 @@ dmr_ms_apply_keystream(dsd_state* state, dmr_ms_voice_frames* frames) {
 }
 
 static void
-dmr_ms_print_ambe72(dsd_opts* opts, dmr_ms_voice_frames* frames) {
-#ifdef PRINT_AMBE72
-    ambe2_codeword_print_i(opts, frames->ambe_fr);
-    ambe2_codeword_print_i(opts, frames->ambe_fr2);
-    ambe2_codeword_print_i(opts, frames->ambe_fr3);
-#else
-    UNUSED(opts);
-    UNUSED(frames);
-#endif
-}
-
-static void
 dmr_ms_process_single_mbe(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], size_t frame_idx) {
     processMbeFrame(opts, state, NULL, ambe_fr, NULL);
     DSD_MEMCPY(state->f_l4[frame_idx], state->audio_out_temp_buf, sizeof(state->audio_out_temp_buf));
@@ -221,10 +211,12 @@ dmr_ms_process_audio_frames(dsd_opts* opts, dsd_state* state, dmr_ms_voice_frame
 
 static void
 dmr_ms_play_voice(dsd_opts* opts, dsd_state* state) {
-    if (opts->floating_point == 0 && opts->pulse_digi_out_channels == 2) {
-        playSynthesizedVoiceSS3(opts, state);
+    if (opts->pulse_digi_out_channels != 1 && opts->pulse_digi_out_channels != 2) {
+        return;
     }
-    if (opts->floating_point == 1 && opts->pulse_digi_out_channels == 2) {
+    if (opts->floating_point == 0) {
+        playSynthesizedVoiceSS3(opts, state);
+    } else if (opts->floating_point == 1) {
         playSynthesizedVoiceFS3(opts, state);
     }
 }
@@ -234,7 +226,7 @@ dmr_ms_handle_vc6_ops(dsd_opts* opts, dsd_state* state, uint8_t power, uint8_t d
     if (state->payload_algid == 0x02) {
         hytera_enhanced_alg_refresh(state);
     }
-    dmr_data_burst_handler(opts, state, dummy_bits, 0xEB);
+    dmr_data_burst_handler(opts, state, dummy_bits, 0xEB, NULL);
     dmr_sbrc(opts, state, power);
     DSD_FPRINTF(stderr, "\n");
     dmr_alg_refresh(opts, state);
@@ -249,13 +241,12 @@ dmr_ms_advance_voice_cycle(dsd_opts* opts, dsd_state* state, uint8_t* vc) {
     }
 
     skipDibit(opts, state, 144); // skip to next TDMA channel
-    if (opts->use_ncurses_terminal == 1) {
-        ui_publish_both_and_redraw(opts, state);
+    if (dsd_telemetry_is_active()) {
+        dsd_telemetry_publish_both_and_redraw(opts, state);
     }
 
-    watchdog_event_history(opts, state, 0);
-    watchdog_event_current(opts, state, 0);
-    dmr_sm_tick(opts, state); // handle hangtime/release logic
+    dsd_event_sync_slot(opts, state, 0);
+    dmr_sm_tick_ctx(dmr_sm_get_ctx(), opts, state); // handle hangtime/release logic
     return 1;
 }
 
@@ -332,7 +323,7 @@ dmr_ms_print_bootstrap_sync(const dsd_opts* opts, dsd_state* state, const char t
 void
 dmrMS(dsd_opts* opts, dsd_state* state) {
     char timestr[9];
-    getTimeC_buf(timestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
     UNUSED(timestr);
 
     dmr_ms_voice_frames frames;
@@ -370,7 +361,6 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
         state->dmr_ms_mode = 1;
         dmr_ms_copy_frames_for_late_entry(&frames);
         dmr_ms_apply_keystream(state, &frames);
-        dmr_ms_print_ambe72(opts, &frames);
         dmr_ms_process_audio_frames(opts, state, &frames);
         dmr_ms_play_voice(opts, state);
 
@@ -394,7 +384,7 @@ dmrMS(dsd_opts* opts, dsd_state* state) {
 void
 dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
     char timestr[9];
-    getTimeC_buf(timestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
 
     dmr_ms_voice_frames frames;
     char cachdata[25];
@@ -415,7 +405,6 @@ dmrMSBootstrap(dsd_opts* opts, dsd_state* state) {
 
     dmr_ms_copy_frames_for_late_entry(&frames);
     dmr_ms_apply_keystream(state, &frames);
-    dmr_ms_print_ambe72(opts, &frames);
     dmr_ms_process_audio_frames(opts, state, &frames);
     dmr_ms_play_voice(opts, state);
 
@@ -432,11 +421,16 @@ void
 dmrMSData(dsd_opts* opts, dsd_state* state) {
 
     char timestr[9];
-    getTimeC_buf(timestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
 
     int i;
     int dibit;
     const int* dibit_p;
+    const dsd_dibit_soft_t* soft_p = NULL;
+
+    if (state->dmr_soft_buf != NULL && state->dmr_soft_p != NULL && state->dmr_soft_p >= state->dmr_soft_buf + 90) {
+        soft_p = state->dmr_soft_p - 90;
+    }
 
     //CACH + First Half Payload + Sync = 12 + 54 + 24
     dibit_p = state->dmr_payload_p - 90;
@@ -448,14 +442,17 @@ dmrMSData(dsd_opts* opts, dsd_state* state) {
             dibit = (dibit ^ 2) & 3;
         }
         state->dmr_stereo_payload[i] = dibit;
+        state->dmr_stereo_reliab[i] = soft_p != NULL ? soft_p[i].reliability : 200U;
     }
 
     for (i = 0; i < 54; i++) {
-        dibit = getDibit(opts, state);
+        dsd_dibit_soft_t soft;
+        dibit = getDibitSoft(opts, state, &soft);
         if (opts->inverted_dmr == 1) {
             dibit = (dibit ^ 2) & 3;
         }
         state->dmr_stereo_payload[i + 90] = dibit;
+        state->dmr_stereo_reliab[i + 90] = soft.reliability;
     }
 
     DSD_FPRINTF(stderr, "%s ", timestr);
@@ -484,14 +481,14 @@ dmrMSData(dsd_opts* opts, dsd_state* state) {
     state->directmode = 0; //flag off
 
     //should just be loaded in the dmr_payload_buffer instead now
-    //but we want to run getDibit so the buffer has actual good values in it
+    //but we want to read dibits so the buffer has actual good values in it
     for (i = 0; i < 144; i++) { // 66
-        (void)getDibit(opts, state);
+        (void)get_dibit_and_analog_signal(opts, state, NULL);
         state->dmr_stereo_payload[i] = 1; // set to one so first frame will fail intentionally instead of zero fill
     }
     //CACH + First Half Payload = 12 + 54
     for (i = 0; i < 66; i++) { // 66
-        (void)getDibit(opts, state);
+        (void)get_dibit_and_analog_signal(opts, state, NULL);
         state->dmr_stereo_payload[i + 66] =
             1; ////set to one so first frame will fail intentionally instead of zero fill
     }

@@ -18,10 +18,15 @@ permissions:
   contents: read
 
 jobs:
+  # Runs on every event, pull requests included. The `neither` variant is the
+  # only configuration in CI that leaves USE_RADIO undefined, so it is the only
+  # job that can catch a symbol referenced from outside its `#ifdef USE_RADIO`
+  # guard — and it has to do that on the pull request, not on the push that
+  # follows it. Every variant runs ctest as well as building, because a
+  # radio-off *test* failure is invisible to a build-only job.
   backend-matrix:
     name: backend-matrix (${{ matrix.variant }})
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -56,7 +61,7 @@ jobs:
             radio_available: OFF
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build dependencies
         run: |
@@ -65,7 +70,7 @@ jobs:
             build-essential cmake ninja-build pkg-config git \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev libexpat1-dev
 
       - name: Build and install mbelib-neo
         run: |
@@ -99,22 +104,27 @@ jobs:
         run: |
           cmake --build --preset dev-debug -j
 
-  backend-pr:
-    name: backend-pr (both)
+      - name: Test (${{ matrix.variant }})
+        run: ctest --preset dev-debug --output-on-failure
+
+  android-shape-host:
+    name: android shape (headless, forced radio pipeline)
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Deliberately no libpulse-dev, no libncurses-dev and no libcodec2-dev:
+      # this configuration is the Android build shape on the host, and it must
+      # not need any of them. The build-linux jobs above cover the codec2-present
+      # side, so leaving it out here keeps this the one job that proves the
+      # graceful-degradation path still configures, builds and passes ctest.
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config git \
-            libsndfile1-dev libpulse-dev libncurses-dev \
-            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
+            libsndfile1-dev libssl-dev
 
       - name: Build and install mbelib-neo
         run: |
@@ -135,31 +145,43 @@ jobs:
             echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
           } >> "$GITHUB_ENV"
 
-      - name: Configure
+      # Same option set the Android presets carry, minus the NDK: no audio
+      # library, no terminal UI, no SDR library, but the radio pipeline forced on
+      # so rtl_tcp and radio-path I/Q replay stay covered by ctest.
+      - name: Configure (android shape)
         run: |
           set -euxo pipefail
-          log="$RUNNER_TEMP/configure-both.log"
+          log="$RUNNER_TEMP/configure-android-shape.log"
           cmake --preset dev-debug \
-            -DDSD_ENABLE_RTLSDR=ON \
-            -DDSD_REQUIRE_RTLSDR=ON \
-            -DDSD_ENABLE_SOAPYSDR=ON \
-            -DDSD_REQUIRE_SOAPYSDR=ON \
+            -DDSD_AUDIO_BACKEND=none \
+            -DDSD_ENABLE_TERMINAL_UI=OFF \
+            -DDSD_ENABLE_RTLSDR=OFF \
+            -DDSD_ENABLE_SOAPYSDR=OFF \
+            -DDSD_FORCE_RADIO_PIPELINE=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_EXPAT=ON \
             2>&1 | tee "$log"
-          grep -F "RTL-SDR backend enabled: ON (available: ON)" "$log"
-          grep -F "SoapySDR backend enabled: ON (available: ON)" "$log"
+          grep -F "RTL-SDR backend enabled: OFF (available: OFF)" "$log"
+          grep -F "SoapySDR backend enabled: OFF (available: OFF)" "$log"
           grep -F "Radio pipeline available: ON" "$log"
+          # No libcodec2-dev on this runner: the Android presets require Codec2,
+          # but the degraded build must still work. libcurl is not asserted --
+          # the runner image ships it whether or not this job asks for it.
+          # expat is the same kind of transitive freebie, so this job disables
+          # detection outright rather than trusting the image to lack it.
+          grep -F "Codec2 available: OFF (M17 voice)" "$log"
+          grep -F "expat available: OFF (RadioReference import)" "$log"
 
-      - name: Build
+      - name: Build (android shape)
         run: cmake --build --preset dev-debug -j
 
-      - name: Test
+      - name: Test (android shape)
         run: ctest --preset dev-debug --output-on-failure
 
   build-linux:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Prepare dependency environment
         id: prep-env
@@ -184,7 +206,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.DEPS_PREFIX }}
           key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
@@ -215,7 +237,7 @@ jobs:
             build-essential cmake ninja-build pkg-config git ccache \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev \
-            gfortran libcurl4-openssl-dev
+            gfortran libcurl4-openssl-dev libexpat1-dev
 
       - name: Prepare ccache environment
         id: prep-ccache
@@ -241,7 +263,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ github.job }}-${{ steps.toolver.outputs.gcc_ver }}-${{ steps.toolver.outputs.cmake_ver }}-${{ github.sha }}
@@ -374,7 +396,7 @@ jobs:
     name: scan-build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run scan-build under Arch toolchain
         run: |
@@ -404,6 +426,75 @@ jobs:
           include-hidden-files: true
           retention-days: 7
 
+  avx512-lto-link:
+    # Reproduces the downstream AUR build failure from PR #261: GCC only emits the
+    # -Wstringop-overflow diagnostic when the target has AVX-512, and because it fires
+    # during LTO linking the full executable has to link, not just compile. Arch is used
+    # because it tracks the GCC release the reports come from.
+    #
+    # Required status check. -Wstringop-overflow is version- and vectorizer-sensitive and the
+    # container is a rolling tag, so a GCC point release can break this job on an unrelated PR;
+    # pin the image digest to the last good release when that happens rather than merging around it.
+    name: gcc lto link (x86-64-v4)
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel@sha256:25074821d28e54a0bbbd87a88d392f1489be9bd815ee5c60744be6e57fd500d8
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            cmake ninja git pkgconf \
+            libsndfile libpulse ncurses libusb fftw blas lapack gcc-fortran \
+            codec2 rtl-sdr soapysdr curl
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Mark workspace as safe
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Report compiler version
+        run: gcc --version
+
+      - name: Build and install mbelib-neo
+        run: |
+          set -euxo pipefail
+          source tools/ci-dependency-pins.env
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+          ldconfig
+
+      - name: Configure (Release + LTO + -march=x86-64-v4)
+        run: |
+          set -euxo pipefail
+          # HELP2MAN_FOUND is forced off: the man-page step runs the freshly built binary,
+          # which SIGILLs on a runner without AVX-512 and reads as a build failure.
+          cmake -S . -B build/avx512 -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-march=x86-64-v4" \
+            -DCMAKE_CXX_FLAGS="-march=x86-64-v4" \
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+            -DDSD_WARNINGS_AS_ERRORS=ON \
+            -DBUILD_TESTING=OFF \
+            -DHELP2MAN_FOUND=HELP2MAN_FOUND-NOTFOUND
+
+      - name: Build and link (never executed)
+        run: |
+          set -euxo pipefail
+          # The link is the point: the diagnostic appears when LTO widens the copy loops.
+          # The resulting binary targets an ISA the runner lacks, so it is never run.
+          cmake --build build/avx512 -j
+          test -x build/avx512/apps/dsd-cli/dsd-neo
+
   semgrep:
     name: semgrep
     runs-on: ubuntu-latest
@@ -411,7 +502,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -425,28 +516,31 @@ jobs:
             --no-header-expansion
 
       - name: Skip Semgrep
-        if: github.event_name == 'pull_request' && steps.changed.outputs.semgrep_targets == '0'
+        if: github.event_name == 'pull_request' && steps.changed.outputs.semgrep_targets == '0' && steps.changed.outputs.semgrep_full_scan != '1'
         run: echo "No changed paths for Semgrep."
 
       - name: Set up Python
-        if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0'
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0' || steps.changed.outputs.semgrep_full_scan == '1'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
           cache: pip
           cache-dependency-path: .github/requirements/semgrep.txt
 
       - name: Install Semgrep
-        if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0'
-        run: python -m pip install --require-hashes -r .github/requirements/semgrep.txt
+        if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0' || steps.changed.outputs.semgrep_full_scan == '1'
+        # Semgrep currently pins a vulnerable MCP SDK release. The hashed lock overrides that pin with the patched SDK.
+        run: python -m pip install --no-deps --require-hashes -r .github/requirements/semgrep.txt
 
       - name: Run Semgrep
-        if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0'
+        if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0' || steps.changed.outputs.semgrep_full_scan == '1'
         shell: bash
         env:
           DSD_SEMGREP_SARIF_OUT: .semgrep.sarif
+          SEMGREP_FULL_SCAN: ${{ steps.changed.outputs.semgrep_full_scan }}
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+          # A rule edit can change the verdict on any file, so scan the whole tree.
+          if [[ "${{ github.event_name }}" == "pull_request" && "${SEMGREP_FULL_SCAN}" != "1" ]]; then
             mapfile -t targets < .ci/changed-files/semgrep_targets.txt
             tools/semgrep.sh --strict -- "${targets[@]}"
           else
@@ -456,7 +550,7 @@ jobs:
       - name: Upload Semgrep SARIF
         if: always() && hashFiles('.semgrep.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
         with:
           sarif_file: .semgrep.sarif
 
@@ -476,9 +570,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
           cache: pip
@@ -505,7 +599,7 @@ jobs:
       archive_prefix: ${{ steps.verify.outputs.archive_prefix }}
       release_title: ${{ steps.verify.outputs.release_title }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Verify tag matches project version
@@ -527,7 +621,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -593,7 +687,7 @@ jobs:
 
       - name: Checkout repository
         if: steps.aur_key.outputs.has_key == 'true'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -613,8 +707,32 @@ jobs:
           chmod 600 "$HOME/.ssh/aur"
           ssh-keyscan -t ed25519 aur.archlinux.org >> "$HOME/.ssh/known_hosts"
 
-      - name: Clone AUR package
+      # aur.archlinux.org gates its SSH git endpoint behind a maintenance flag
+      # (e.g. the 2026 AUR supply-chain incident), which makes every clone fail
+      # with exit 128 and turns main red even though the build is fine. Probe
+      # git-serve first and skip the update when it reports maintenance; any
+      # other probe failure (auth, DNS, host key) still fails the job loudly.
+      - name: Check AUR availability
+        id: aur_up
         if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          ssh_opts=(-i "$HOME/.ssh/aur" -o IdentitiesOnly=yes -o "UserKnownHostsFile=$HOME/.ssh/known_hosts" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=30)
+          probe_out="$(ssh "${ssh_opts[@]}" aur@aur.archlinux.org help 2>&1)" && probe_rc=0 || probe_rc=$?
+          printf '%s\n' "$probe_out"
+          if [ "$probe_rc" -eq 0 ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s' "$probe_out" | grep -qi 'down due to maintenance'; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=AUR update skipped::aur.archlinux.org is in maintenance mode; the AUR package was not updated for this run."
+            exit 0
+          fi
+          echo "AUR SSH probe failed with exit $probe_rc for a reason other than maintenance." >&2
+          exit "$probe_rc"
+
+      - name: Clone AUR package
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           aur_ssh_command="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
           GIT_SSH_COMMAND="$aur_ssh_command" git clone ssh://aur@aur.archlinux.org/dsd-neo-git.git aur-package
@@ -622,7 +740,7 @@ jobs:
 
       - name: Compute new pkgver
         id: pkgver
-        if: steps.aur_key.outputs.has_key == 'true'
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           cd "$GITHUB_WORKSPACE"
           ref="origin/main"
@@ -637,7 +755,7 @@ jobs:
           echo "Computed pkgver from $ref ($(git rev-parse --short=7 "$ref")): $new_pkgver"
 
       - name: Validate AUR VCS metadata
-        if: steps.aur_key.outputs.has_key == 'true'
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           set -euo pipefail
           cd aur-package
@@ -664,7 +782,7 @@ jobs:
 
       - name: Check if update needed
         id: check
-        if: steps.aur_key.outputs.has_key == 'true'
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           cd aur-package
           current_pkgver=$(grep -E '^\s*pkgver=' PKGBUILD | sed 's/.*pkgver=//')
@@ -679,7 +797,7 @@ jobs:
           fi
 
       - name: Update PKGBUILD
-        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
           set -euo pipefail
           cd aur-package
@@ -689,7 +807,7 @@ jobs:
           runuser -u "$AUR_MAKEPKG_USER" -- bash -lc "cd '$PWD' && makepkg --printsrcinfo > .SRCINFO"
 
       - name: Commit and push to AUR
-        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
           cd aur-package
           git config user.name "github-actions[bot]"
@@ -744,7 +862,7 @@ jobs:
 
       - name: Checkout repository
         if: steps.aur_key.outputs.has_key == 'true'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -760,8 +878,30 @@ jobs:
           chmod 600 "$HOME/.ssh/aur"
           ssh-keyscan -t ed25519 aur.archlinux.org >> "$HOME/.ssh/known_hosts"
 
-      - name: Clone AUR package
+      # Same maintenance gate as update-aur-git. This skip is louder (warning,
+      # not notice) because a tagged release that never reaches the AUR needs
+      # to be pushed by hand once maintenance lifts.
+      - name: Check AUR availability
+        id: aur_up
         if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          ssh_opts=(-i "$HOME/.ssh/aur" -o IdentitiesOnly=yes -o "UserKnownHostsFile=$HOME/.ssh/known_hosts" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=30)
+          probe_out="$(ssh "${ssh_opts[@]}" aur@aur.archlinux.org help 2>&1)" && probe_rc=0 || probe_rc=$?
+          printf '%s\n' "$probe_out"
+          if [ "$probe_rc" -eq 0 ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s' "$probe_out" | grep -qi 'down due to maintenance'; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=AUR release update skipped::aur.archlinux.org is in maintenance mode; ${GITHUB_REF_NAME} was NOT published to the AUR. Re-run this job or update the package manually once maintenance lifts."
+            exit 0
+          fi
+          echo "AUR SSH probe failed with exit $probe_rc for a reason other than maintenance." >&2
+          exit "$probe_rc"
+
+      - name: Clone AUR package
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           aur_ssh_command="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
           GIT_SSH_COMMAND="$aur_ssh_command" git clone ssh://aur@aur.archlinux.org/dsd-neo.git aur-package
@@ -769,7 +909,7 @@ jobs:
 
       - name: Compute release metadata
         id: release_meta
-        if: steps.aur_key.outputs.has_key == 'true'
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           pkgver="${GITHUB_REF_NAME#v}"
           source_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
@@ -782,7 +922,7 @@ jobs:
           echo "Computed release metadata: pkgver=$pkgver sha256=$sha256"
 
       - name: Ensure PKGBUILD exists
-        if: steps.aur_key.outputs.has_key == 'true'
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           set -euo pipefail
           cd aur-package
@@ -831,7 +971,7 @@ jobs:
 
       - name: Check if update needed
         id: check
-        if: steps.aur_key.outputs.has_key == 'true'
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           cd aur-package
           current_pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)
@@ -850,7 +990,7 @@ jobs:
           fi
 
       - name: Update PKGBUILD
-        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
           set -euo pipefail
           cd aur-package
@@ -861,14 +1001,14 @@ jobs:
           runuser -u "$AUR_MAKEPKG_USER" -- bash -lc "cd '$PWD' && makepkg --printsrcinfo > .SRCINFO"
 
       - name: Validate AUR release source
-        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
           set -euo pipefail
           cd aur-package
           runuser -u "$AUR_MAKEPKG_USER" -- bash -lc "cd '$PWD' && makepkg --verifysource --nodeps --noconfirm"
 
       - name: Commit and push to AUR
-        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
           cd aur-package
           git config user.name "github-actions[bot]"
@@ -895,7 +1035,7 @@ jobs:
             cxx: clang++
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Prepare dependency environment
         run: |
@@ -919,7 +1059,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore dependency cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.DEPS_PREFIX }}
           key: deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}
@@ -950,7 +1090,7 @@ jobs:
             build-essential clang cmake ninja-build pkg-config git ccache \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev \
-            gfortran libcurl4-openssl-dev
+            gfortran libcurl4-openssl-dev libexpat1-dev
 
       - name: Prepare ccache environment
         run: |
@@ -975,7 +1115,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ github.job }}-${{ matrix.name }}-${{ steps.toolver-sanitize.outputs.compiler_ver }}-${{ steps.toolver-sanitize.outputs.cmake_ver }}-${{ github.sha }}
@@ -1089,6 +1229,7 @@ jobs:
             export TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${GITHUB_WORKSPACE}/tools/tsan.supp"
           else
             export ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:strict_string_checks=1"
+            export LSAN_OPTIONS="suppressions=${GITHUB_WORKSPACE}/tools/lsan.supp"
             export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
           ctest --preset ${{ matrix.preset }} --output-on-failure
@@ -1101,7 +1242,7 @@ jobs:
     name: cmake install rules
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check install(TARGETS) runtime destinations
         run: tools/check_install_runtime_destinations.sh
 
@@ -1109,7 +1250,7 @@ jobs:
     name: clang-format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -1165,7 +1306,7 @@ jobs:
     name: cppcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -1228,7 +1369,7 @@ jobs:
             artifact_name: gcc-fanalyzer-report
             artifact_path: .gcc-fanalyzer.local.out
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -1261,7 +1402,7 @@ jobs:
 
       - name: Restore dependency cache
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .deps
           key: arch-deps-${{ runner.os }}-${{ steps.dep-shas.outputs.mbe_sha }}
@@ -1286,7 +1427,7 @@ jobs:
 
       - name: Restore IWYU toolchain cache
         if: (github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0') && matrix.name == 'iwyu'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .deps-arch-toolchain
           key: arch-iwyu-${{ runner.os }}-${{ steps.dep-shas.outputs.iwyu_sha }}
@@ -1295,7 +1436,7 @@ jobs:
 
       - name: Restore ccache
         if: github.event_name != 'pull_request' || steps.changed.outputs.analysis_tus != '0'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ccache
           key: ccache-${{ runner.os }}-arch-${{ github.job }}-${{ matrix.name }}-${{ github.sha }}

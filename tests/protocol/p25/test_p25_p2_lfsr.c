@@ -6,9 +6,11 @@
 // Simple verification test for P25p2 TDMA frame scrambler LFSR taps/width
 //
 // Verifies that the keystream generated from a fixed seed (WACN|SYSID|NAC)
-// matches precomputed 128-bit vectors at two offsets:
+// matches precomputed 128-bit vectors at four offsets:
 //   - offset 0: start at index 20 (post-sync)
 //   - offset 1: start at index 20 + 360
+//   - offset 4: start at index 20 + 4*360
+//   - offset 8: start at index 20 + 8*360
 // The taps/width under test correspond to polynomial:
 //   x^44 + x^34 + x^20 + x^15 + x^9 + x^4 + 1 (MSB-first)
 
@@ -19,20 +21,7 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-static void
-gen_lfsr_keystream(uint32_t wacn, uint16_t sysid, uint16_t nac, uint8_t* out_bits, int nbits) {
-    // MSB→LSB seed: WACN[20] | SYSID[12] | NAC[12]
-    unsigned long long seed =
-        ((unsigned long long)wacn << 24) | ((unsigned long long)sysid << 12) | (unsigned long long)nac;
-    for (int i = 0; i < nbits; i++) {
-        unsigned long long out = (seed >> 43) & 0x1ULL;
-        out_bits[i] = (uint8_t)out;
-        unsigned long long bit =
-            ((seed >> 33) ^ (seed >> 19) ^ (seed >> 14) ^ (seed >> 8) ^ (seed >> 3) ^ (seed >> 43)) & 0x1ULL;
-        seed = (seed << 1) | bit;
-    }
-}
+#include "p25p2_frame_internal.h"
 
 static void
 pack_bits_msb8(const uint8_t* bits, int nbits, uint8_t* out_bytes) {
@@ -110,7 +99,7 @@ main(void) {
 
     uint8_t lbits[TOTAL_BITS];
     DSD_MEMSET(lbits, 0, sizeof lbits);
-    gen_lfsr_keystream(WACN, SYSID, NAC, lbits, TOTAL_BITS);
+    p25p2_generate_scramble_bits(WACN, SYSID, NAC, lbits, TOTAL_BITS);
 
     // Expected 128-bit segments packed MSB-first
     // start + 20 (offset 0): 0x12345695b0f9ee0bfdb7924533d86141

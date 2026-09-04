@@ -15,14 +15,14 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_DSD_TIME_H_H
 
 #include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/platform/timing.h>
+#include <dsd-neo/platform/timing.h> // IWYU pragma: keep
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
- * @brief Return monotonic time in seconds when available (wall clock fallback).
+ * @brief Return monotonic time in seconds.
  */
 static inline double
 dsd_time_now_monotonic_s(void) {
@@ -34,12 +34,6 @@ void dsd_mark_cc_sync(dsd_state* state);
 
 /** @brief Stamp current time as voice-channel sync (monotonic + wall clock). */
 void dsd_mark_vc_sync(dsd_state* state);
-
-/** @brief Clear control-channel sync timestamps. */
-void dsd_clear_cc_sync(dsd_state* state);
-
-/** @brief Clear voice-channel sync timestamps. */
-void dsd_clear_vc_sync(dsd_state* state);
 
 #ifdef __cplusplus
 }

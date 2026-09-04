@@ -11,12 +11,17 @@
  * results must leave voice-channel tune state untouched.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/des.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -29,6 +34,7 @@
 
 void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction);
+unsigned int dsd_call_state_stub_event_sync_count(uint8_t slot);
 
 typedef enum {
     NXDN_MATRIX_TYPE_C = 0,
@@ -74,37 +80,6 @@ static long g_last_tune_freq = 0;
  * Pulling focused grant handlers from nxdn_element.c requires auxiliary
  * symbols that are irrelevant to this matrix.
  */
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0U; i < n; i++) {
-        v = (v << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return v;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-convert_bits_into_output(const uint8_t* input, int len) {
-    if (!input || len <= 0) {
-        return 0ULL;
-    }
-    return ConvertBitIntoBytes(input, (uint32_t)len);
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    if (!input || !output || len <= 0) {
-        return;
-    }
-    DSD_MEMSET(output, 0, (size_t)len * sizeof(uint8_t));
-    for (int i = 0; i < len; i++) {
-        output[i] = (uint8_t)((input[i / 8] >> (7 - (i % 8))) & 1U);
-    }
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
@@ -113,30 +88,20 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     (void)MessageType;
 }
 
-uint32_t
+void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_message_crc32(const uint8_t* input, int len) {
-    (void)input;
-    (void)len;
-    return 0U;
+nxdn_alias_decode_arib(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits) {
+    (void)opts;
+    (void)state;
+    (void)message_bits;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_alias_decode_arib(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
+nxdn_alias_decode_prop(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits) {
     (void)opts;
     (void)state;
     (void)message_bits;
-    (void)crc_ok;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_alias_decode_prop(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
-    (void)opts;
-    (void)state;
-    (void)message_bits;
-    (void)crc_ok;
 }
 
 void
@@ -202,15 +167,17 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)slot;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
-    (void)src;
-    (void)dst;
-    (void)data_string;
+    (void)observation->ota_source_id;
+    (void)observation->ota_target_id;
+    (void)notice;
     (void)slot;
+    return 0;
 }
 
 void
@@ -221,22 +188,21 @@ LFSR128n(dsd_state* state) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-des_multi_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int type,
-                           int len) {
+des_ofb_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int nblocks) {
     (void)mi;
     (void)key_ulli;
     (void)output;
-    (void)type;
-    (void)len;
+    (void)nblocks;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, int type, int nblocks) {
+aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, dsd_aes_key_size key_size,
+                         int nblocks) {
     (void)iv;
     (void)key;
     (void)output;
-    (void)type;
+    (void)key_size;
     (void)nblocks;
 }
 
@@ -253,14 +219,20 @@ dsd_time_monotonic_ns(void) {
     return 1000000000ULL;
 }
 
+uint64_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_time_monotonic_ms(void) {
+    return dsd_time_monotonic_ns() / 1000000U;
+}
+
 static dsd_trunk_tune_result
-nxdn_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+nxdn_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     g_tune_count++;
     g_last_tune_freq = freq;
     if (dsd_trunk_tune_result_is_ok(g_tune_result)) {
         if (opts) {
-            opts->p25_is_tuned = 1;
             opts->trunk_is_tuned = 1;
         }
         if (state) {
@@ -276,7 +248,7 @@ nxdn_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_
 static void
 nxdn_install_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq_result = nxdn_hook_tune_to_freq;
+    hooks.tune_to_freq_request = nxdn_hook_tune_to_freq;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -331,11 +303,18 @@ build_scch(uint8_t* message_bits, const nxdn_case* test_case) {
 }
 
 static void
+build_scch_identity(uint8_t* message_bits, uint8_t sf, uint16_t id) {
+    DSD_MEMSET(message_bits, 0, 32);
+    write_bits_u32(message_bits, 0U, sf, 2U);
+    write_bits_u32(message_bits, 13U, id, 11U);
+}
+
+static void
 nxdn_setup_fixture(const nxdn_case* test_case) {
+    dsd_state_ext_free_all(&g_state);
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
 
-    g_opts.p25_trunk = 1;
     g_opts.trunk_enable = 1;
     g_opts.trunk_tune_group_calls = 1;
     g_opts.trunk_tune_private_calls = 1;
@@ -388,8 +367,7 @@ nxdn_run_tune_result_case(const nxdn_case* test_case, dsd_trunk_tune_result resu
                       "tune frequency matches map");
 
     if (accepted) {
-        rc |= nxdn_expect(g_opts.p25_is_tuned == 1 && g_opts.trunk_is_tuned == 1, test_case->name, result_name,
-                          "accepted tune set tuned flags");
+        rc |= nxdn_expect(g_opts.trunk_is_tuned == 1, test_case->name, result_name, "accepted tune set tuned flags");
         rc |= nxdn_expect(g_state.p25_vc_freq[0] == test_case->expected_freq
                               && g_state.trunk_vc_freq[0] == test_case->expected_freq,
                           test_case->name, result_name, "accepted tune set VC frequency state");
@@ -398,7 +376,7 @@ nxdn_run_tune_result_case(const nxdn_case* test_case, dsd_trunk_tune_result resu
         rc |= nxdn_expect(g_state.nxdn_sacch_frame_segment[0][0] == 1, test_case->name, result_name,
                           "accepted tune reset SACCH segments");
     } else {
-        rc |= nxdn_expect(g_opts.p25_is_tuned == 0 && g_opts.trunk_is_tuned == 0, test_case->name, result_name,
+        rc |= nxdn_expect(g_opts.trunk_is_tuned == 0, test_case->name, result_name,
                           "rejected tune left tuned flags clear");
         rc |= nxdn_expect(g_state.p25_vc_freq[0] == 0 && g_state.trunk_vc_freq[0] == 0, test_case->name, result_name,
                           "rejected tune left VC frequency state clear");
@@ -455,8 +433,7 @@ nxdn_run_no_tune_guard_case(const nxdn_case* base_case, nxdn_guard_kind guard, c
     int rc = 0;
     rc |= nxdn_expect(g_tune_count == 0, test_case.name, guard_name, "guard did not attempt tune");
     rc |= nxdn_expect(g_last_tune_freq == 0, test_case.name, guard_name, "guard left tune frequency clear");
-    rc |= nxdn_expect(g_opts.p25_is_tuned == 0 && g_opts.trunk_is_tuned == 0, test_case.name, guard_name,
-                      "guard left tuned flags clear");
+    rc |= nxdn_expect(g_opts.trunk_is_tuned == 0, test_case.name, guard_name, "guard left tuned flags clear");
     rc |= nxdn_expect(g_state.p25_vc_freq[0] == 0 && g_state.trunk_vc_freq[0] == 0, test_case.name, guard_name,
                       "guard left VC frequency state clear");
     rc |=
@@ -476,7 +453,7 @@ nxdn_run_retry_after_reject_case(const nxdn_case* test_case) {
 
     int rc = 0;
     rc |= nxdn_expect(g_tune_count == 1, test_case->name, "retry-after-deferred", "deferred tune attempted");
-    rc |= nxdn_expect(g_opts.p25_is_tuned == 0 && g_state.trunk_vc_freq[0] == 0, test_case->name,
+    rc |= nxdn_expect(g_opts.trunk_is_tuned == 0 && g_state.trunk_vc_freq[0] == 0, test_case->name,
                       "retry-after-deferred", "deferred tune left state clear");
 
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -485,7 +462,7 @@ nxdn_run_retry_after_reject_case(const nxdn_case* test_case) {
     rc |= nxdn_expect(g_tune_count == 2, test_case->name, "retry-after-deferred", "later grant retried tune");
     rc |= nxdn_expect(g_last_tune_freq == test_case->expected_freq, test_case->name, "retry-after-deferred",
                       "retried tune frequency matches map");
-    rc |= nxdn_expect(g_opts.p25_is_tuned == 1 && g_opts.trunk_is_tuned == 1, test_case->name, "retry-after-deferred",
+    rc |= nxdn_expect(g_opts.trunk_is_tuned == 1, test_case->name, "retry-after-deferred",
                       "retried tune set tuned flags");
     rc |= nxdn_expect(g_state.p25_vc_freq[0] == test_case->expected_freq
                           && g_state.trunk_vc_freq[0] == test_case->expected_freq,
@@ -500,7 +477,6 @@ nxdn_run_duplicate_no_tune_case(void) {
     };
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     nxdn_setup_fixture(&duplicate);
-    g_opts.p25_is_tuned = 1;
     g_opts.trunk_is_tuned = 1;
     g_state.last_vc_sync_time = time(NULL);
     g_state.p25_vc_freq[0] = duplicate.expected_freq;
@@ -512,8 +488,7 @@ nxdn_run_duplicate_no_tune_case(void) {
 
     int rc = 0;
     rc |= nxdn_expect(g_tune_count == 0, duplicate.name, "duplicate", "duplicate grant did not tune");
-    rc |= nxdn_expect(g_opts.p25_is_tuned == 1 && g_opts.trunk_is_tuned == 1, duplicate.name, "duplicate",
-                      "duplicate grant preserved tuned flags");
+    rc |= nxdn_expect(g_opts.trunk_is_tuned == 1, duplicate.name, "duplicate", "duplicate grant preserved tuned flags");
     rc |= nxdn_expect(g_state.p25_vc_freq[0] == duplicate.expected_freq, duplicate.name, "duplicate",
                       "duplicate grant preserved existing VC frequency");
     return rc;
@@ -540,7 +515,6 @@ nxdn_run_active_other_tg_no_tune_case(void) {
     const long existing_freq = 936912500L;
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     nxdn_setup_fixture(&active);
-    g_opts.p25_is_tuned = 1;
     g_opts.trunk_is_tuned = 1;
     g_state.p25_vc_freq[0] = existing_freq;
     g_state.trunk_vc_freq[0] = existing_freq;
@@ -550,7 +524,7 @@ nxdn_run_active_other_tg_no_tune_case(void) {
 
     int rc = 0;
     rc |= nxdn_expect(g_tune_count == 0, active.name, "active-other-tg", "active non-held call did not retune");
-    rc |= nxdn_expect(g_opts.p25_is_tuned == 1 && g_opts.trunk_is_tuned == 1, active.name, "active-other-tg",
+    rc |= nxdn_expect(g_opts.trunk_is_tuned == 1, active.name, "active-other-tg",
                       "active non-held call preserved tuned flags");
     rc |= nxdn_expect(g_state.p25_vc_freq[0] == existing_freq && g_state.trunk_vc_freq[0] == existing_freq, active.name,
                       "active-other-tg", "active non-held call preserved VC frequency");
@@ -565,7 +539,6 @@ nxdn_run_hold_match_retune_case(void) {
     const long existing_freq = 936912500L;
     g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     nxdn_setup_fixture(&hold);
-    g_opts.p25_is_tuned = 1;
     g_opts.trunk_is_tuned = 1;
     g_state.tg_hold = hold.target;
     g_state.last_vc_sync_time = time(NULL);
@@ -582,6 +555,150 @@ nxdn_run_hold_match_retune_case(void) {
     rc |= nxdn_expect(g_state.p25_vc_freq[0] == hold.expected_freq && g_state.trunk_vc_freq[0] == hold.expected_freq,
                       hold.name, "hold-match", "held duplicate updated VC frequency");
     rc |= nxdn_expect(g_state.lastsynctype == DSD_SYNC_NONE, hold.name, "hold-match", "held duplicate reset last sync");
+    return rc;
+}
+
+static int
+nxdn_run_scch_termination_case(void) {
+    const nxdn_case termination = {
+        "type-d-scch-termination", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 31U, 3U, 1400U, 935000000L,
+    };
+    nxdn_setup_fixture(&termination);
+    g_state.last_vc_sync_time = time(NULL);
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = termination.scch_id,
+    };
+    (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+
+    nxdn_run_case_decode(&termination);
+
+    dsd_call_snapshot call;
+    int rc = 0;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1, termination.name, "termination",
+                      "canonical call exists");
+    rc |= nxdn_expect(call.phase == DSD_CALL_PHASE_ENDED, termination.name, "termination", "canonical call ended");
+    rc |= nxdn_expect(dsd_call_state_stub_event_sync_count(0U) == 1U, termination.name, "termination",
+                      "ended slot synchronized");
+    return rc;
+}
+
+static int
+nxdn_run_scch_busy_enrich_case(void) {
+    const nxdn_case busy = {
+        "type-d-scch-busy-enrich", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 1400U, 938012500L,
+    };
+    nxdn_setup_fixture(&busy);
+    g_state.last_vc_sync_time = time(NULL);
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_update_media(&g_state, 0U, 1, 0.0);
+
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(&g_state, 0U, &call);
+    const uint64_t previous_epoch = call.epoch;
+
+    nxdn_install_hooks();
+    nxdn_run_case_decode(&busy);
+
+    int rc = 0;
+    rc |= nxdn_expect(g_tune_count == 0, busy.name, "recent-voice", "busy update did not retune");
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1, busy.name, "recent-voice", "canonical call exists");
+    rc |= nxdn_expect(call.phase == DSD_CALL_PHASE_ACTIVE, busy.name, "recent-voice", "canonical call remains active");
+    rc |= nxdn_expect(call.epoch == previous_epoch, busy.name, "recent-voice", "anonymous call enriched in place");
+    rc |= nxdn_expect(call.ota_target_id == busy.scch_id && call.policy_target_id == busy.scch_id, busy.name,
+                      "recent-voice", "busy target applied to canonical call");
+    rc |= nxdn_expect(call.media_active == 1U, busy.name, "recent-voice", "media state preserved");
+    return rc;
+}
+
+static int
+nxdn_run_scch_identity_context_case(void) {
+    const nxdn_case context = {
+        "type-d-scch-identity-context", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 0, 0, 0, 0,
+    };
+    nxdn_setup_fixture(&context);
+    g_state.last_vc_sync_time = time(NULL);
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1400U,
+        .policy_target_id = 1400U,
+        .ota_source_id = 1100U,
+        .channel = 7U,
+        .frequency_hz = 938012500L,
+        .service_options = 0x85U,
+        .emergency = 1U,
+        .priority = 5U,
+        .has_service_metadata = 1U,
+    };
+    DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "SOURCE 1100");
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "TARGET 1400");
+    DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", "RAN 7");
+    (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    const dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
+        .algid = 3U,
+        .kid = 42U,
+        .mi = 0x12345678U,
+        .audio_permitted = 0U,
+    };
+    (void)dsd_call_state_update_crypto(&g_state, 0U, &crypto);
+    (void)dsd_call_state_update_media(&g_state, 0U, 1, 0.0);
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(&g_state, 0U, &call);
+    uint64_t previous_epoch = call.epoch;
+
+    uint8_t message[32];
+    build_scch_identity(message, 2U, 1500U);
+    NXDN_decode_scch(&g_opts, &g_state, message, 1U);
+
+    int rc = 0;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1, context.name, "target-fragment",
+                      "canonical call exists");
+    rc |= nxdn_expect(call.ota_target_id == 1500U && call.policy_target_id == 1500U, context.name, "target-fragment",
+                      "target updated");
+    rc |= nxdn_expect(call.epoch != previous_epoch, context.name, "target-fragment", "replacement epoch started");
+    rc |= nxdn_expect(call.ota_source_id == 1100U, context.name, "target-fragment", "source preserved");
+    rc |= nxdn_expect(call.channel == 7U && call.frequency_hz == 938012500L, context.name, "target-fragment",
+                      "route preserved");
+    rc |= nxdn_expect(call.service_options == 0x85U && call.has_service_metadata == 1U && call.emergency == 1U
+                          && call.priority == 5U,
+                      context.name, "target-fragment", "service metadata preserved");
+    rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING && call.algid == 3U && call.kid == 42U
+                          && call.mi == 0x12345678U && call.audio_permitted == 0U,
+                      context.name, "target-fragment", "crypto preserved");
+    rc |= nxdn_expect(call.media_active == 1U, context.name, "target-fragment", "media state preserved");
+    rc |= nxdn_expect(strcmp(call.source_text, "SOURCE 1100") == 0, context.name, "target-fragment",
+                      "counterpart text preserved");
+    rc |=
+        nxdn_expect(strcmp(call.route_text[0], "RAN 7") == 0, context.name, "target-fragment", "route text preserved");
+    previous_epoch = call.epoch;
+
+    build_scch_identity(message, 1U, 1200U);
+    NXDN_decode_scch(&g_opts, &g_state, message, 1U);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1, context.name, "source-fragment",
+                      "canonical call exists");
+    rc |= nxdn_expect(call.ota_target_id == 1500U && call.policy_target_id == 1500U, context.name, "source-fragment",
+                      "target preserved");
+    rc |= nxdn_expect(call.ota_source_id == 1200U, context.name, "source-fragment", "source updated");
+    rc |= nxdn_expect(call.epoch != previous_epoch, context.name, "source-fragment", "replacement epoch started");
+    rc |= nxdn_expect(call.channel == 7U && call.frequency_hz == 938012500L, context.name, "source-fragment",
+                      "route preserved");
+    rc |= nxdn_expect(call.service_options == 0x85U && call.has_service_metadata == 1U && call.emergency == 1U
+                          && call.priority == 5U,
+                      context.name, "source-fragment", "service metadata preserved");
+    rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING && call.algid == 3U && call.kid == 42U
+                          && call.mi == 0x12345678U && call.audio_permitted == 0U,
+                      context.name, "source-fragment", "crypto preserved");
+    rc |= nxdn_expect(call.media_active == 1U, context.name, "source-fragment", "media state preserved");
     return rc;
 }
 
@@ -643,11 +760,15 @@ main(void) {
     rc |= nxdn_run_duplicate_no_tune_case();
     rc |= nxdn_run_active_other_tg_no_tune_case();
     rc |= nxdn_run_hold_match_retune_case();
+    rc |= nxdn_run_scch_termination_case();
+    rc |= nxdn_run_scch_busy_enrich_case();
+    rc |= nxdn_run_scch_identity_context_case();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     if (rc == 0) {
         printf("NXDN_GRANT_TUNE_MATRIX: OK\n");
     }
+    dsd_state_ext_free_all(&g_state);
     return rc;
 }
 

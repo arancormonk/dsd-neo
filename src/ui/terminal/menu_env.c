@@ -9,26 +9,27 @@
  */
 
 #include "menu_env.h"
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
-#include <errno.h>
+#include <float.h> // IWYU pragma: keep
 #include <limits.h>
-#include <stdlib.h>
+#include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+
+// IWYU pragma: no_include <__float_float.h>
 
 static int
 parse_int_with_default(const char* text, int defv) {
     if (!text || *text == '\0') {
         return defv;
     }
-    errno = 0;
-    char* end = NULL;
-    long v = strtol(text, &end, 10);
-    if (end == text || (end && *end != '\0') || errno == ERANGE || v < INT_MIN || v > INT_MAX) {
+    int value = 0;
+    if (dsd_parse_int_strict(text, 10, INT_MIN, INT_MAX, &value) != 0) {
         return 0;
     }
-    return (int)v;
+    return value;
 }
 
 static double
@@ -36,13 +37,11 @@ parse_double_with_default(const char* text, double defv) {
     if (!text || *text == '\0') {
         return defv;
     }
-    errno = 0;
-    char* end = NULL;
-    double v = strtod(text, &end);
-    if (end == text || (end && *end != '\0') || errno == ERANGE) {
+    double value = 0.0;
+    if (dsd_parse_double_strict(text, -DBL_MAX, DBL_MAX, &value) != 0) {
         return 0.0;
     }
-    return v;
+    return value;
 }
 
 int
@@ -74,20 +73,6 @@ env_set_double(const char* name, double v) {
 
 void
 env_reparse_runtime_cfg(dsd_opts* opts) {
-    dsd_neo_config_init(opts);
+    dsd_neo_config_init();
     dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), opts, NULL);
-}
-
-int
-parse_hex_u64(const char* s, unsigned long long* out) {
-    if (!s || !*s || !out) {
-        return 0;
-    }
-    char* end = NULL;
-    unsigned long long v = strtoull(s, &end, 16);
-    if (!end || *end != '\0') {
-        return 0;
-    }
-    *out = v;
-    return 1;
 }

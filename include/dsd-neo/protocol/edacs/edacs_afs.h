@@ -20,6 +20,15 @@ extern "C" {
 int getAfsString(const dsd_state* state, char* buffer, int a, int f, int s);
 int getAfsStringLength(const dsd_state* state);
 
+/**
+ * As above, but driven by explicit AFS bit widths instead of the live decoder state.
+ *
+ * Lets a caller that captured the widths earlier reproduce the exact string it rendered then,
+ * even if the decoder has since been reconfigured.
+ */
+int getAfsStringFromBits(int a_bits, int f_bits, int s_bits, char* buffer, int a, int f, int s);
+int getAfsStringLengthFromBits(int a_bits, int f_bits, int s_bits);
+
 #ifdef __cplusplus
 }
 #endif

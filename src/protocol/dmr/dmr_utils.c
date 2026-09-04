@@ -5,7 +5,7 @@
 
 //DMR CRC/Utility Functions
 //Original File - dmr_sync.c
-//ConvertBitIntoBytes, ComputeCrcCCITT, ComputeCrc5Bit, ComputeAndCorrectFullLinkControlCrc, CRC32, CRC9
+//ComputeCrcCCITT, ComputeCrc5Bit, ComputeAndCorrectFullLinkControlCrc, CRC32, CRC9
 //Original Source - https://github.com/LouisErigHerve/dsd
 
 //Additional Functions
@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/fec/rs_12_9.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -116,30 +117,41 @@ dmr_debug_dump_burst(const dsd_opts* opts, const dsd_state* state, uint8_t slot_
     DSD_FPRINTF(stderr, "%s\n", line);
 }
 
-uint16_t
-ComputeCrcCCITT16d(const uint8_t* buf, uint32_t len) {
-    uint32_t i;
-    uint16_t CRC = 0x0000; /* Initialization value = 0x0000 */
-    /* Polynomial x^16 + x^12 + x^5 + 1
-   * Normal     = 0x1021
-   * Reciprocal = 0x0811
-   * Reversed   = 0x8408
-   * Reversed reciprocal = 0x8810 */
-    uint16_t Polynome = 0x1021;
-    for (i = 0; i < len; i++) {
-        if (((CRC >> 15) & 1) ^ (buf[i] & 1)) {
-            CRC = (CRC << 1) ^ Polynome;
-        } else {
-            CRC <<= 1;
-        }
+size_t
+dmr_debug_format_rc_burst(char* out, size_t out_size, const int dibits[48]) {
+    if (out == NULL || out_size == 0U || dibits == NULL) {
+        return 0U;
     }
 
-    /* Invert the CRC */
-    CRC ^= 0xFFFF;
+    const int n = DSD_SNPRINTF(out, out_size, "Debug Demod +Sync RC: ");
+    if (n < 0) {
+        out[0] = '\0';
+        return 0U;
+    }
+    size_t pos = (size_t)n;
+    if (pos >= out_size) {
+        out[out_size - 1U] = '\0';
+        return pos;
+    }
 
-    /* Return the CRC */
-    return CRC;
-} /* End ComputeCrcCCITTd() */
+    /* Full 96-bit burst in over-the-air order, sync included: the visible
+     * 77 D5 5F 7D FD 77 centre doubles as a polarity/alignment check. */
+    return dmr_debug_append_dibit_bytes(out, out_size, pos, dibits, 48U);
+}
+
+const char*
+dmr_rc_command_name(uint8_t rc_command) {
+    /* ETSI TS 102 361-4 V1.12.1, table 6.32 (superset of TS 102 361-2
+     * table 7.27, which defines only the two cease-transmission values). */
+    static const char* names[] = {
+        "Increase Power By One Step", "Decrease Power By One Step", "Set Power To Highest",
+        "Set Power To Lowest",        "Cease Transmission Command", "Cease Transmission Request",
+    };
+    if (rc_command < (uint8_t)(sizeof(names) / sizeof(names[0]))) {
+        return names[rc_command];
+    }
+    return NULL;
+}
 
 // A Hamming (17,12,3) Check for completed SLC message
 bool
@@ -378,33 +390,6 @@ ComputeCrc5Bit(const uint8_t* DMRData) {
     /* Return the CRC */
     return CRC;
 } /* End ComputeCrc5Bit() */
-
-/* Pack 8 single-bit elements (MSB first) into a byte value */
-static inline uint64_t
-dsd_pack8_bits_msb(const uint8_t* b) {
-    return ((uint64_t)(b[0] & 1) << 7) | ((uint64_t)(b[1] & 1) << 6) | ((uint64_t)(b[2] & 1) << 5)
-           | ((uint64_t)(b[3] & 1) << 4) | ((uint64_t)(b[4] & 1) << 3) | ((uint64_t)(b[5] & 1) << 2)
-           | ((uint64_t)(b[6] & 1) << 1) | ((uint64_t)(b[7] & 1) << 0);
-}
-
-uint64_t
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t out = 0;
-    const uint8_t* p = BufferIn;
-    uint32_t n = BitLength;
-
-    /* Fast path: process full bytes (8 bits) at a time */
-    while (n >= 8) {
-        out = (out << 8) | dsd_pack8_bits_msb(p);
-        p += 8;
-        n -= 8;
-    }
-    /* Remainder bits */
-    while (n--) {
-        out = (out << 1) | (uint64_t)(*p++ & 1);
-    }
-    return out;
-} /* End ConvertBitIntoBytes() */
 
 /*
  * @brief : This function compute the CRC-9 of the DMR data

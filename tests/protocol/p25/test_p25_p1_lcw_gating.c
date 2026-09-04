@@ -9,10 +9,13 @@
  * disabled.
  */
 
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -25,74 +28,44 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
 // Strong stub to capture VC tuning attempts from the SM path
 static int g_tunes = 0;
+static int g_returns = 0;
 
-void
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
-    (void)opts;
-    (void)state;
-    (void)freq;
+trunk_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     g_tunes++;
+    opts->trunk_is_tuned = 1;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 // No-op stubs to satisfy link of LCW path helpers
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
 
-bool
+dsd_trunk_tune_result
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
+return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
+    g_returns++;
+    opts->trunk_is_tuned = 0;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
 install_trunk_tuning_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq = trunk_tune_to_freq;
-    hooks.return_to_cc = return_to_cc;
+    hooks.tune_to_freq_request = trunk_tune_to_freq;
+    hooks.return_to_cc_request = return_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
-// Minimal ConvertBitIntoBytes (MSB-first) and no-op alias/GPS helpers for LCW
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t out = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        out = (out << 1) | (uint64_t)(BufferIn[i] & 1);
-    }
-    return out;
-}
-
+// No-op alias/GPS helpers for LCW
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
@@ -167,6 +140,255 @@ expect_eq_int(const char* tag, int got, int want) {
 
 void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t LCW_bits[], uint8_t irrecoverable_errors);
 
+static int
+init_retained_p1_call(dsd_opts* opts, dsd_state* state, int tg, int src) {
+    const long freq = 851125000;
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_tune_private_calls = 1;
+    opts->trunk_tune_enc_calls = 1;
+    opts->trunk_hangtime = 2.0F;
+    state->p25_cc_freq = 851000000;
+    state->trunk_cc_freq = 851000000;
+    state->p25_iden_fdma[1].base_freq = 851000000 / 5;
+    state->p25_iden_fdma[1].chan_type = 0;
+    state->p25_iden_fdma[1].chan_spac = 100;
+    state->p25_iden_fdma[1].trust = 2;
+    state->p25_iden_fdma[1].populated = 1;
+    state->p25_chan_tdma_explicit[1] = 1;
+    g_tunes = 0;
+    g_returns = 0;
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, opts, state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x100A, freq, tg, src, 0);
+    p25_sm_event(sm, opts, state, &ev);
+    if (sm->state != P25_SM_TUNED || g_tunes != 1) {
+        return 0;
+    }
+    if (!p25_sm_emit_active_call(opts, state, 0, tg, 0, src, 1, 0)) {
+        return 0;
+    }
+    if (!p25_sm_emit_end_call_at(opts, state, 0, tg, src, dsd_time_now_monotonic_s())) {
+        return 0;
+    }
+    return sm->state == P25_SM_TUNED && sm->slots[0].grant_active && !sm->slots[0].voice_active;
+}
+
+static int
+test_mfid90_regroup_reassigns_retained_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    int rc = 0;
+
+    rc |= expect_eq_int("MFID90 retained fixture", init_retained_p1_call(&opts, &state, 0x1234, 0x010203), 1);
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    set_bits_msb(lcw, 0, 8, 0x00);
+    set_bits_msb(lcw, 8, 8, 0x90);
+    set_bits_msb(lcw, 32, 16, 0x3456);
+    set_bits_msb(lcw, 48, 24, 0x040506);
+
+    p25_lcw(&opts, &state, lcw, 0);
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    rc |= expect_eq_int("MFID90 regroup remains tuned", sm->state, P25_SM_TUNED);
+    rc |= expect_eq_int("MFID90 regroup no retune", g_tunes, 1);
+    rc |= expect_eq_int("MFID90 regroup no release", g_returns, 0);
+    rc |= expect_eq_int("MFID90 regroup SM target", sm->slots[0].ota_tg, 0x3456);
+    rc |= expect_eq_int("MFID90 regroup SM source", sm->slots[0].src, 0x040506);
+    rc |= expect_eq_int("MFID90 regroup voice active", sm->slots[0].voice_active, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_extended_private_resolves_retained_identity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    const int target = 0x034567;
+    const int source = 0x040506;
+    const int svc = 0x81;
+    int rc = 0;
+
+    rc |= expect_eq_int("extended private retained fixture", init_retained_p1_call(&opts, &state, 0x1234, 0x010203), 1);
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    set_bits_msb(lcw, 0, 8, 0x4A);
+    set_bits_msb(lcw, 8, 8, (unsigned)svc);
+    set_bits_msb(lcw, 16, 8, 0x40); // Reserved octet must not be treated as service options.
+    set_bits_msb(lcw, 24, 24, (unsigned)target);
+    set_bits_msb(lcw, 48, 24, (unsigned)source);
+
+    p25_lcw(&opts, &state, lcw, 0);
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    rc |= expect_eq_int("extended private remains tuned", sm->state, P25_SM_TUNED);
+    rc |= expect_eq_int("extended private no retune", g_tunes, 1);
+    rc |= expect_eq_int("extended private no release", g_returns, 0);
+    rc |= expect_eq_int("extended private identity accepted", state.p25_p1_identity_pending, 0);
+    rc |= expect_eq_int("extended private SM target", sm->slots[0].dst, target);
+    rc |= expect_eq_int("extended private SM source", sm->slots[0].src, source);
+    rc |= expect_eq_int("extended private SM call kind", sm->slots[0].is_group, 0);
+    rc |= expect_eq_int("extended private service options", state.dmr_so, svc);
+    rc |= expect_eq_int("extended private SM service options", sm->slots[0].svc_bits, svc);
+    dsd_call_snapshot call;
+    rc |= expect_eq_int("extended private canonical", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq_int("extended private canonical target", (int)call.ota_target_id, target);
+    rc |= expect_eq_int("extended private canonical source", (int)call.ota_source_id, source);
+    rc |= expect_eq_int("extended private canonical kind", call.kind, DSD_CALL_KIND_PRIVATE_VOICE);
+    rc |= expect_eq_int("extended private emergency classification", call.emergency, 1);
+    rc |= expect_eq_int("extended private canonical service options", call.service_options, svc);
+    rc |= expect_eq_int("extended private voice active", sm->slots[0].voice_active, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_extended_private_encrypted_service_lockout(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    const int target = 0x034567;
+    const int source = 0x040506;
+    int rc = 0;
+
+    rc |=
+        expect_eq_int("extended private encrypted fixture", init_retained_p1_call(&opts, &state, 0x1234, 0x010203), 1);
+    opts.trunk_tune_enc_calls = 0;
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    set_bits_msb(lcw, 0, 8, 0x4A);
+    set_bits_msb(lcw, 8, 8, 0x40);
+    set_bits_msb(lcw, 16, 8, 0x00); // Reserved octet must not make the call appear clear.
+    set_bits_msb(lcw, 24, 24, (unsigned)target);
+    set_bits_msb(lcw, 48, 24, (unsigned)source);
+
+    p25_lcw(&opts, &state, lcw, 0);
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    rc |= expect_eq_int("extended private encrypted remains tuned", sm->state, P25_SM_TUNED);
+    rc |= expect_eq_int("extended private encrypted no release", g_returns, 0);
+    rc |= expect_eq_int("extended private encrypted no follow-up retune", g_tunes, 1);
+    rc |= expect_eq_int("extended private encrypted service options", state.dmr_so, 0x40);
+    rc |= expect_eq_int("extended private encrypted SM service options", sm->slots[0].svc_bits, 0x40);
+    rc |= expect_eq_int("extended private encrypted classification", state.p25_crypto_state[0],
+                        DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq_int("extended private encrypted audio gate", state.p25_p2_audio_allowed[0], 0);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_telephone_resolves_retained_identity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    const int target = 0x034567;
+    const int timer = 125;
+    int rc = 0;
+
+    rc |= expect_eq_int("telephone retained fixture", init_retained_p1_call(&opts, &state, 0x1234, 0x010203), 1);
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    set_bits_msb(lcw, 0, 8, 0x46);
+    set_bits_msb(lcw, 16, 8, 0x00);
+    set_bits_msb(lcw, 32, 16, (unsigned)timer);
+    set_bits_msb(lcw, 48, 24, (unsigned)target);
+
+    p25_lcw(&opts, &state, lcw, 0);
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    rc |= expect_eq_int("telephone remains tuned", sm->state, P25_SM_TUNED);
+    rc |= expect_eq_int("telephone no retune", g_tunes, 1);
+    rc |= expect_eq_int("telephone no release", g_returns, 0);
+    rc |= expect_eq_int("telephone identity accepted", state.p25_p1_identity_pending, 0);
+    rc |= expect_eq_int("telephone SM target", sm->slots[0].dst, target);
+    rc |= expect_eq_int("telephone SM source unknown", sm->slots[0].src, 0);
+    rc |= expect_eq_int("telephone SM call kind", sm->slots[0].is_group, 0);
+    rc |= expect_eq_int("telephone voice active", sm->slots[0].voice_active, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_telephone_after_missed_boundary_drops_old_source(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    const int old_tg = 0x1234;
+    const int old_source = 0x010203;
+    const int target = 0x034567;
+    int rc = 0;
+
+    rc |=
+        expect_eq_int("telephone missed-boundary fixture", init_retained_p1_call(&opts, &state, old_tg, old_source), 1);
+    rc |= expect_eq_int("telephone prior epoch reopened",
+                        p25_sm_emit_active_call(&opts, &state, 0, old_tg, 0, old_source, 1, 0), 1);
+
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    set_bits_msb(lcw, 0, 8, 0x46);
+    set_bits_msb(lcw, 16, 8, 0x00);
+    set_bits_msb(lcw, 32, 16, 125);
+    set_bits_msb(lcw, 48, 24, (unsigned)target);
+    p25_lcw(&opts, &state, lcw, 0);
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    rc |= expect_eq_int("telephone missed-boundary remains tuned", sm->state, P25_SM_TUNED);
+    rc |= expect_eq_int("telephone missed-boundary no retune", g_tunes, 1);
+    rc |= expect_eq_int("telephone missed-boundary no release", g_returns, 0);
+    rc |= expect_eq_int("telephone missed-boundary target", sm->slots[0].dst, target);
+    rc |= expect_eq_int("telephone missed-boundary source unknown", sm->slots[0].src, 0);
+    dsd_call_snapshot call;
+    rc |= expect_eq_int("telephone missed-boundary canonical", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq_int("telephone missed-boundary canonical source cleared", (int)call.ota_source_id, 0);
+    rc |= expect_eq_int("telephone missed-boundary call kind", sm->slots[0].is_group, 0);
+    rc |= expect_eq_int("telephone missed-boundary voice active", sm->slots[0].voice_active, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_rejected_lcw_stops_post_processing(int format) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lcw[72];
+    const int old_tg = 0x1234;
+    int rc = 0;
+
+    rc |= expect_eq_int("rejected LCW retained fixture", init_retained_p1_call(&opts, &state, old_tg, 0x010203), 1);
+    if (format == 0x00) {
+        state.tg_hold = old_tg;
+    } else {
+        opts.trunk_tune_private_calls = 0;
+    }
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    set_bits_msb(lcw, 0, 8, (unsigned)format);
+    set_bits_msb(lcw, 16, 8, 0x40);
+    if (format == 0x00) {
+        set_bits_msb(lcw, 32, 16, 0x3456);
+    } else {
+        set_bits_msb(lcw, 24, 24, 0x034567);
+    }
+    set_bits_msb(lcw, 48, 24, 0x040506);
+
+    p25_lcw(&opts, &state, lcw, 0);
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    rc |= expect_eq_int("rejected LCW returned to CC", sm->state, P25_SM_ON_CC);
+    rc |= expect_eq_int("rejected LCW released once", g_returns, 1);
+    rc |= expect_eq_int("rejected LCW crypto remains reset", state.p25_crypto_state[0], DSD_P25_CRYPTO_UNKNOWN);
+    rc |= expect_eq_int("rejected LCW crypto timer remains reset", sm->slots[0].crypto_attempt_m > 0.0, 0);
+    dsd_call_snapshot call;
+    rc |= expect_eq_int("rejected LCW canonical retained", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq_int("rejected LCW canonical remains ended", call.phase, DSD_CALL_PHASE_ENDED);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -175,7 +397,7 @@ main(void) {
     install_trunk_tuning_hooks();
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.p25_lcw_retune = 1;
     opts.trunk_tune_group_calls = 1;
     opts.trunk_tune_enc_calls = 0;
@@ -206,16 +428,43 @@ main(void) {
     p25_lcw(&opts, &st, lcw, 0);
     rc |= expect_eq_int("clear->tune", g_tunes, 1);
 
-    // Failed-VC backoff must also apply to LCW 0x44 explicit grants.
-    st.p25_retune_block_freq = 851125000;
-    st.p25_retune_block_slot = -1;
-    st.p25_retune_block_until = time(NULL) + 60;
+    // Trunking disabled: a decoded 0x44 grant may update display state, but it
+    // must not be treated as a trunking grant.
+    opts.trunk_enable = 0;
     g_tunes = 0;
     p25_lcw(&opts, &st, lcw, 0);
-    rc |= expect_eq_int("clear blocked by backoff", g_tunes, 0);
-    st.p25_retune_block_freq = 0;
-    st.p25_retune_block_slot = -1;
-    st.p25_retune_block_until = 0;
+    rc |= expect_eq_int("no trunk->no-tune", g_tunes, 0);
+    opts.trunk_enable = 1;
+
+    // Retune disabled should warn only once and never dispatch a grant.
+    opts.p25_lcw_retune = 0;
+    st.p25_lcw_retune_disabled_warned = 0;
+    g_tunes = 0;
+    p25_lcw(&opts, &st, lcw, 0);
+    rc |= expect_eq_int("retune disabled no tune", g_tunes, 0);
+    rc |= expect_eq_int("retune disabled warned", st.p25_lcw_retune_disabled_warned, 1);
+    p25_lcw(&opts, &st, lcw, 0);
+    rc |= expect_eq_int("retune disabled warned once", st.p25_lcw_retune_disabled_warned, 1);
+    opts.p25_lcw_retune = 1;
+
+    // TG hold mismatch suppresses an otherwise tunable group grant.
+    st.tg_hold = tg + 1;
+    g_tunes = 0;
+    p25_lcw(&opts, &st, lcw, 0);
+    rc |= expect_eq_int("tg hold mismatch no tune", g_tunes, 0);
+    st.tg_hold = 0;
+
+    // An immediate reassignment remains eligible after an explicit release.
+    p25_sm_release(p25_sm_get_ctx(), &opts, &st, "test-explicit-release");
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    const double decoded_cc_m = sm->t_cc_tune_m + 0.01;
+    st.last_cc_sync_time = time(NULL);
+    st.last_cc_sync_time_m = decoded_cc_m;
+    st.p25_last_cc_msg_time = st.last_cc_sync_time;
+    st.p25_last_cc_msg_time_m = decoded_cc_m;
+    g_tunes = 0;
+    p25_lcw(&opts, &st, lcw, 0);
+    rc |= expect_eq_int("clear retunes after release", g_tunes, 1);
 
     // Packet bit set: tuning disabled by default policy (trunk_tune_data_calls=0)
     set_bits_msb(lcw, 16, 8, (unsigned)(svc | 0x10));
@@ -229,6 +478,97 @@ main(void) {
     p25_lcw(&opts, &st, lcw, 0);
     rc |= expect_eq_int("enc->no-tune", g_tunes, 0);
 
+    // A 0x44 LCW decoded on a VC must not learn that VC as the control channel.
+    {
+        static dsd_opts vc_opts;
+        static dsd_state vc_st;
+        DSD_MEMSET(&vc_opts, 0, sizeof vc_opts);
+        DSD_MEMSET(&vc_st, 0, sizeof vc_st);
+        vc_opts.trunk_enable = 1;
+        vc_opts.p25_lcw_retune = 0;
+        vc_opts.trunk_is_tuned = 1;
+        vc_opts.audio_in_type = AUDIO_IN_RTL;
+        vc_opts.rtlsdr_center_freq = 852112500U;
+        set_bits_msb(lcw, 16, 8, (unsigned)svc);
+
+        p25_lcw(&vc_opts, &vc_st, lcw, 0);
+        rc |= expect_eq_int("vc-lcw no p25 cc seed", (int)vc_st.p25_cc_freq, 0);
+        rc |= expect_eq_int("vc-lcw no trunk cc seed", (int)vc_st.trunk_cc_freq, 0);
+        rc |= expect_eq_int("vc-lcw no lcn0 seed", (int)vc_st.trunk_lcn_freq[0], 0);
+    }
+
+    // Some unmanaged VC monitoring paths have not set the tuned flags; LCW must
+    // still avoid treating the current tuner frequency as a control channel.
+    {
+        static dsd_opts vc_opts;
+        static dsd_state vc_st;
+        DSD_MEMSET(&vc_opts, 0, sizeof vc_opts);
+        DSD_MEMSET(&vc_st, 0, sizeof vc_st);
+        vc_opts.trunk_enable = 1;
+        vc_opts.p25_lcw_retune = 1;
+        vc_opts.trunk_tune_group_calls = 1;
+        vc_opts.audio_in_type = AUDIO_IN_RTL;
+        vc_opts.rtlsdr_center_freq = 852112500U;
+
+        g_tunes = 0;
+        p25_lcw(&vc_opts, &vc_st, lcw, 0);
+        rc |= expect_eq_int("unmanaged vc-lcw no tune", g_tunes, 0);
+        rc |= expect_eq_int("unmanaged vc-lcw no p25 cc seed", (int)vc_st.p25_cc_freq, 0);
+        rc |= expect_eq_int("unmanaged vc-lcw no trunk cc seed", (int)vc_st.trunk_cc_freq, 0);
+        rc |= expect_eq_int("unmanaged vc-lcw no lcn0 seed", (int)vc_st.trunk_lcn_freq[0], 0);
+    }
+
+    // In-band voice-user LCWs arrive before the next LDU's voice frames. An
+    // encrypted indication must revoke a grant-derived clear classification,
+    // except when an active regroup explicitly declares KEY=0.
+    {
+        uint8_t voice_lcw[72];
+        const int voice_tg = 0x3456;
+        opts.trunk_tune_private_calls = 1;
+        DSD_MEMSET(voice_lcw, 0, sizeof(voice_lcw));
+        set_bits_msb(voice_lcw, 0, 8, 0x00);
+        set_bits_msb(voice_lcw, 16, 8, 0x40);
+        set_bits_msb(voice_lcw, 32, 16, (unsigned)voice_tg);
+        set_bits_msb(voice_lcw, 48, 24, 0x123456U);
+
+        st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+        st.p25_p2_audio_allowed[0] = 1;
+        p25_lcw(&opts, &st, voice_lcw, 0);
+        rc |= expect_eq_int("encrypted group user revokes clear state", st.p25_crypto_state[0],
+                            DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+        rc |= expect_eq_int("encrypted group user closes audio gate", st.p25_p2_audio_allowed[0], 0);
+
+        p25_patch_update(&st, 69, 1, 1);
+        p25_patch_add_wgid(&st, 69, voice_tg);
+        p25_patch_set_kas(&st, 69, 0, 0x84, 17);
+        st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+        st.p25_p2_audio_allowed[0] = 1;
+        p25_lcw(&opts, &st, voice_lcw, 0);
+        rc |= expect_eq_int("regroup KEY=0 preserves group clear state", st.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+        rc |= expect_eq_int("regroup KEY=0 preserves group audio gate", st.p25_p2_audio_allowed[0], 1);
+
+        DSD_MEMSET(voice_lcw, 0, sizeof(voice_lcw));
+        set_bits_msb(voice_lcw, 0, 8, 0x03);
+        set_bits_msb(voice_lcw, 16, 8, 0x40);
+        set_bits_msb(voice_lcw, 24, 24, 0x234567U);
+        set_bits_msb(voice_lcw, 48, 24, 0x123456U);
+        st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+        st.p25_p2_audio_allowed[0] = 1;
+        p25_lcw(&opts, &st, voice_lcw, 0);
+        rc |= expect_eq_int("encrypted unit user revokes clear state", st.p25_crypto_state[0],
+                            DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+        rc |= expect_eq_int("encrypted unit user closes audio gate", st.p25_p2_audio_allowed[0], 0);
+    }
+
+    rc |= test_mfid90_regroup_reassigns_retained_call();
+    rc |= test_extended_private_resolves_retained_identity();
+    rc |= test_extended_private_encrypted_service_lockout();
+    rc |= test_telephone_resolves_retained_identity();
+    rc |= test_telephone_after_missed_boundary_drops_old_source();
+    rc |= test_rejected_lcw_stops_post_processing(0x00);
+    rc |= test_rejected_lcw_stops_post_processing(0x03);
+
+    dsd_state_ext_free_all(&st);
     return rc;
 }
 

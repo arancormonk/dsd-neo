@@ -127,7 +127,7 @@ dsd_neo_costas_default_max_freq(void) {
     return 1.0f;
 }
 
-/** @brief Default Costas loop bandwidth (legacy, for non-CQPSK modes). */
+/** @brief Default Costas loop bandwidth for non-CQPSK modes. */
 static inline float
 dsd_neo_costas_default_loop_bw(void) {
     return 6.28318530717958647692f / 100.0f;
@@ -138,20 +138,6 @@ static inline float
 dsd_neo_costas_default_damping(void) {
     return 0.70710678118654752440f; /* sqrt(2)/2 */
 }
-
-/**
- * @brief Reset Costas loop state for fresh carrier acquisition.
- *
- * Per OP25's costas_reset() in p25_demodulator_dev.py:574-576:
- *   self.costas.set_frequency(0)
- *   self.costas.set_phase(0)
- *
- * Call this on channel retunes to clear stale phase/frequency estimates
- * from the previous channel.
- *
- * @param c Costas loop state to reset.
- */
-void dsd_costas_reset(dsd_costas_loop_state_t* c);
 
 /**
  * @brief OP25-compatible Gardner timing recovery block.
@@ -228,15 +214,6 @@ void op25_diff_phasor_cc(struct demod_state* d);
  * @param d Demodulator state. Modifies lowpassed in-place with carrier correction.
  */
 void op25_costas_loop_cc(struct demod_state* d);
-
-/**
- * @brief Reset FLL band-edge state for fresh frequency acquisition.
- *
- * Call this on channel retunes to clear stale frequency estimates.
- *
- * @param f FLL state to reset.
- */
-void dsd_fll_band_edge_reset(dsd_fll_band_edge_state_t* f);
 
 /**
  * @brief Initialize FLL band-edge filter for a given samples-per-symbol.

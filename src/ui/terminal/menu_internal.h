@@ -166,12 +166,25 @@ ui_scroll_follow_selection(int total, int page_rows, int top, int sel_pos) {
 }
 
 // ---- Visibility helpers (from menu_render.c) ----
+// "Enabled" rows are drawn (actions, status rows, separators); "selectable" rows are
+// the enabled action rows, the only ones the highlight can rest on.
 int ui_is_enabled(const NcMenuItem* it, const void* ctx);
+int ui_is_selectable(const NcMenuItem* it, const void* ctx);
 int ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx);
-int ui_next_enabled(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir);
+int ui_next_selectable(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir);
 int ui_visible_index_for_item(const NcMenuItem* items, size_t n, const void* ctx, int idx);
 
 // ---- Render helpers (from menu_render.c) ----
+/**
+ * @brief Format one row exactly as it is drawn: label left, hotkey right-aligned.
+ *
+ * Pure (no curses). With a hotkey the row is exactly @p width columns and the
+ * label is truncated before the hotkey or its two-column gap ever is; without
+ * one it is the bare label, truncated to @p width. A separator formats as "".
+ *
+ * @return Characters written to @p out.
+ */
+int ui_menu_format_row(const NcMenuItem* it, const void* ctx, int width, char* out, size_t out_size);
 void ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, int* top_io, const char* title,
                   const void* ctx);
 void ui_overlay_layout(UiMenuFrame* f, const void* ctx);
@@ -181,6 +194,11 @@ int ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, const void* c
 
 #ifdef DSD_NEO_TEST_HOOKS
 const char* ui_menu_item_label_for_test(const NcMenuItem* it, const void* ctx, char* out, size_t out_size);
+int ui_overlay_cap_then_floor_for_test(int value, int max_value, int min_value);
+int ui_overlay_center_axis_for_test(int outer, int inner);
+int ui_overlay_compute_width_for_test(const UiMenuFrame* f, int maxlab);
+int ui_overlay_compute_height_for_test(int visible_items);
+void ui_overlay_layout_for_test(UiMenuFrame* f, const void* ctx, int term_h, int term_w);
 #endif
 
 // Chooser helpers are declared in menu_prompts.h

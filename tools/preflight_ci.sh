@@ -121,8 +121,6 @@ remote_url=$(git remote get-url "$REMOTE_NAME" 2> /dev/null || true)
 echo "preflight: local_ref=${local_ref} local_sha=${local_sha}"
 echo "preflight: remote=${REMOTE_NAME} remote_ref=${remote_ref} remote_sha=${remote_sha}"
 
-printf '%s %s %s %s\n' "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" | "$hook_path" "$REMOTE_NAME" "$remote_url"
-
 tmp_index="$(mktemp "${TMPDIR:-/tmp}/dsd-neo-preflight-index.XXXXXX")"
 cleanup() {
   rm -f "$tmp_index"
@@ -134,9 +132,10 @@ GIT_INDEX_FILE="$tmp_index" git add -A -- .
 
 worktree_tree=$(GIT_INDEX_FILE="$tmp_index" git write-tree)
 head_tree=$(git rev-parse "${local_sha}^{tree}")
+analysis_sha="$local_sha"
 
 if [[ "$worktree_tree" != "$head_tree" ]]; then
-  worktree_sha=$(
+  analysis_sha=$(
     printf 'preflight_ci synthetic worktree commit\n' |
       GIT_AUTHOR_NAME=dsd-neo-preflight \
         GIT_AUTHOR_EMAIL=preflight@local \
@@ -145,5 +144,11 @@ if [[ "$worktree_tree" != "$head_tree" ]]; then
         git commit-tree "$worktree_tree" -p "$local_sha"
   )
   echo "preflight: running checks for uncommitted local changes"
-  printf '%s %s %s %s\n' "$local_ref" "$worktree_sha" "$local_ref" "$local_sha" | "$hook_path" "$REMOTE_NAME" "$remote_url"
 fi
+
+# Analyze one tree that exactly matches the current checkout. When local changes
+# exist, the synthetic commit is a child of HEAD, so comparing it with the
+# remote base covers both the pushed commit range and every staged, unstaged,
+# untracked, or deleted worktree path without asking analyzers to read stale
+# content from HEAD.
+printf '%s %s %s %s\n' "$local_ref" "$analysis_sha" "$remote_ref" "$remote_sha" | "$hook_path" "$REMOTE_NAME" "$remote_url"

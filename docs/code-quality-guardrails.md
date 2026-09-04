@@ -34,6 +34,7 @@ Run the smallest useful set before opening a PR, then broaden it when the change
 - Sanitizer-sensitive code: `ctest --preset asan-ubsan-debug --output-on-failure` after configuring/building the matching preset.
 - Threading changes: `ctest --preset tsan-debug --output-on-failure` where the affected tests are supported by TSan.
 - Fuzz-facing changes: `tools/fuzz_smoke.sh`.
+- Cross-module includes or new headers: `tools/check_arch_rules.sh` (also run by pre-push and CI).
 - CMake changes: `tools/cmake_format_check.sh`.
 - Workflow changes: `tools/workflow_lint.sh` and `tools/zizmor.sh`.
 - Dependency input changes: `tools/osv_scan.sh`.
@@ -44,6 +45,8 @@ Run the smallest useful set before opening a PR, then broaden it when the change
 The repository intentionally blocks or flags patterns that are easy to reintroduce during large edits:
 
 - Use the project safe API wrappers instead of raw C memory/string/formatting APIs in project-owned code.
+- Write real control characters in format strings. `"\\n"` prints a literal `\` followed by `n` rather than breaking the line; this is easy to reintroduce when rewriting `fprintf` call sites in bulk, and has silently broken DMR console and structured-output dumps more than once. If a literal escape sequence is genuinely intended, emit it outside a format string or annotate the line with a narrow `nosemgrep` comment explaining why.
+- Do not use wide-character conversions (`%lc`, `%ls`, `%C`, `%S`) in format strings, in any of the printf-family or curses `printw`-family wrappers, and do not call the wide-character output functions (`fwprintf`, `wprintf`, `swprintf`, `fputws`, `fputwc`, `putwc`, `putwchar` and their `v` variants). They hand a code unit to the C runtime to encode, and off-air text regularly contains one that has no encoding — a lone surrogate. glibc drops it; the Windows UCRT reports the failed conversion as a string of length -1 and then writes the stack to the stream until the process faults. Decode with `<dsd-neo/core/utf16.h>` and print through `dsd_unicode_fput_scalar()`.
 - Do not execute shells or spawn processes from project-owned C/C++ without explicit design review.
 - Do not include bundled third-party headers directly outside approved wrappers and integration points.
 - Keep workflow scripts defensive: pass untrusted context through environment variables or action inputs, not direct expression interpolation in `run:` blocks.
@@ -52,3 +55,4 @@ The repository intentionally blocks or flags patterns that are easy to reintrodu
 - Do not print radio keys, keystreams, API keys, or derived key material in logs, terminal UI, or test diagnostics except for intentional radio key/keystream reveal through the CLI-only `--show-keys` flag. Successful radio key/keystream messages must use the redaction formatter helpers; API keys and derived key material remain non-printable.
 - Keep CI GitHub source dependencies pinned through `tools/ci-dependency-pins.env` and `tools/fetch-pinned-git.sh`.
 - Keep analyzer and linter output actionable. Prefer fixing root causes over widening suppressions.
+- Suppress a Semgrep match with a line-scoped `nosemgrep: <rule-id>` comment and a note saying why the rule does not apply. GitHub code scanning ignores the SARIF `suppressions` property Semgrep uses to mark those matches, so `tools/semgrep.sh` runs `cmake/sarif_drop_suppressed.cmake` over the SARIF before upload: without it every documented suppression arrives as an open alert that no change to the tree can close, and has to be dismissed by hand.

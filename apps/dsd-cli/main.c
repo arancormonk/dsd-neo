@@ -22,7 +22,6 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/engine/engine.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <stdio.h>
@@ -30,6 +29,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "frontend.h"
 
 int
 main(int argc, char** argv) {
@@ -44,7 +44,7 @@ main(int argc, char** argv) {
 
     initOpts(opts);
     initState(state);
-    if (exitflag != 0) {
+    if (dsd_exitflag_load() != 0) {
         freeState(state);
         free(opts);
         free(state);
@@ -59,7 +59,7 @@ main(int argc, char** argv) {
         free(state);
         return exit_rc;
     }
-    int rc = dsd_engine_run(opts, state);
+    int rc = dsd_cli_frontend_run(opts, state);
     freeState(state);
     free(opts);
     free(state);

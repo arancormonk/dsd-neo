@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(dsd-neo VERSION 2.1.0 LANGUAGES C CXX)
+project(dsd-neo VERSION 2.8.1 LANGUAGES C CXX)
 if(POLICY CMP0083)
     cmake_policy(SET CMP0083 NEW)
 endif()
@@ -74,6 +74,8 @@ option(
 )
 option(DSD_ENABLE_RTLSDR "Enable RTL-SDR backend support" ON)
 option(DSD_ENABLE_SOAPYSDR "Enable SoapySDR backend support" ON)
+option(DSD_ENABLE_TERMINAL_UI "Enable ncurses/PDCurses terminal frontend" ON)
+option(DSD_ENABLE_QT_UI "Enable the Qt Quick frontend (src/ui/qt)" OFF)
 set(DSD_SOAPYSDR_MIN_VERSION "0.8.1")
 option(
     DSD_REQUIRE_RTLSDR
@@ -85,6 +87,56 @@ option(
     "Fail configure when SoapySDR is enabled but not found"
     OFF
 )
+# Codec2, libcurl and expat are auto-detected, and a build that silently loses
+# one still links: M17 just stops emitting voice, rdio uploads disappear, and
+# RadioReference import goes unavailable. Cross builds cannot be smoke-tested on
+# the build host, so let them demand the dependency instead of degrading
+# quietly. Use CMAKE_DISABLE_FIND_PACKAGE_CODEC2/CURL/EXPAT to turn detection
+# off outright.
+option(DSD_REQUIRE_CODEC2 "Fail configure when Codec2 is not found" OFF)
+option(DSD_REQUIRE_CURL "Fail configure when libcurl is not found" OFF)
+option(DSD_REQUIRE_EXPAT "Fail configure when expat is not found" OFF)
+
+# RadioReference issues an application key per application. Bake it in when one
+# is supplied, otherwise the app prompts the user for their own. Prefer the
+# environment variable: -D writes the value into CMakeCache.txt in plaintext,
+# while the env-var route keeps it out of the build tree entirely.
+set(DSD_RR_APP_KEY
+    ""
+    CACHE STRING
+    "RadioReference application key baked into this build"
+)
+if(DSD_RR_APP_KEY STREQUAL "" AND DEFINED ENV{DSD_RR_APP_KEY})
+    set(DSD_RR_APP_KEY "$ENV{DSD_RR_APP_KEY}")
+endif()
+# Load-bearing: configure_file substitutes verbatim into a C string literal with
+# no escaping, so a quote or backslash here would emit a file that cannot
+# compile. Never echo the value in the message.
+if(
+    NOT DSD_RR_APP_KEY STREQUAL ""
+    AND NOT DSD_RR_APP_KEY MATCHES "^[A-Za-z0-9._~-]+$"
+)
+    message(
+        FATAL_ERROR
+        "DSD_RR_APP_KEY must match ^[A-Za-z0-9._~-]+$ (it is substituted verbatim into a C string literal)."
+    )
+endif()
+option(
+    DSD_FORCE_RADIO_PIPELINE
+    "Build the radio pipeline (rtl_tcp, radio-path IQ replay) without an SDR library"
+    OFF
+)
+option(
+    DSD_ANDROID_VENDORED_RTLSDR
+    "Build the vendored libusb + librtlsdr under android/third_party instead of searching for them"
+    OFF
+)
+if(DSD_ANDROID_VENDORED_RTLSDR AND NOT ANDROID)
+    message(
+        FATAL_ERROR
+        "DSD_ANDROID_VENDORED_RTLSDR=ON is Android-only; the vendored tree targets Bionic and usbfs via a wrapped descriptor."
+    )
+endif()
 
 # -----------------------------------------------------------------------------
 # Common warning flags (target-scoped)
@@ -99,7 +151,7 @@ target_include_directories(
     dsd-neo_safe_api
     INTERFACE ${PROJECT_SOURCE_DIR}/include
 )
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
     target_compile_definitions(dsd-neo_safe_api INTERFACE _GNU_SOURCE)
 endif()
 if(MSVC)
@@ -181,6 +233,24 @@ if(CMAKE_BUILD_TYPE MATCHES "Debug")
     if(DSD_ENABLE_TSAN)
         list(APPEND _dsd_san_cflags -fsanitize=thread -fno-omit-frame-pointer)
         list(APPEND _dsd_san_ldflags -fsanitize=thread)
+        # GCC's -Wtsan reports that ThreadSanitizer cannot model atomic_thread_fence.
+        # That is a statement about the sanitizer's coverage, not a defect: the wideband
+        # spectrum publisher (src/io/radio/rtl_wideband_spectrum.cpp) is a seqlock, and a
+        # seqlock needs standalone release/acquire fences to order its payload against the
+        # sequence counter. GCC raises the diagnostic from inside libstdc++'s <atomic>,
+        # where no pragma at our call site reaches it, so with -Werror it makes the whole
+        # preset unbuildable. CI runs this preset under clang, which has no such warning,
+        # which is why it only bites locally.
+        #
+        # Per-language, not per-configuration: the diagnostic comes out of libstdc++, so
+        # it is C++-only, and testing both compiler ids meant a mixed CC=clang CXX=g++
+        # tree withheld the flag from the very TU that needs it and stayed unbuildable.
+        # The genex also keeps clang from ever seeing -Wno-tsan, which it rejects as an
+        # unknown warning option under -Werror.
+        list(
+            APPEND _dsd_san_cflags
+            $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU>>:-Wno-tsan>
+        )
     endif()
 
     if(_dsd_san_cflags)
@@ -504,11 +574,15 @@ endif()
 find_package(LibSndFile REQUIRED)
 find_package(OpenSSL 3.0 REQUIRED)
 
-# Require mbelib-neo 2.x (no legacy mbelib fallback). The 2.x ABI provides the
+# Require mbelib-neo 2.x. Its ABI provides the
 # soft-decision frame decode and result-based processing APIs used by dsd-neo.
 set(_DSD_MBE_REQUIRED_VERSION 2.0)
 find_package(mbe-neo ${_DSD_MBE_REQUIRED_VERSION} CONFIG REQUIRED)
-if(TARGET mbe_neo::mbe_shared)
+if(ANDROID AND TARGET mbe_neo::mbe_static)
+    # Every shared library an Android app uses has to be bundled into the APK
+    # and loaded by name; link mbe-neo statically so there is one less.
+    set(MBE_LINK_TARGET mbe_neo::mbe_static)
+elseif(TARGET mbe_neo::mbe_shared)
     set(MBE_LINK_TARGET mbe_neo::mbe_shared)
 else()
     message(
@@ -516,37 +590,18 @@ else()
         "mbe-neo package found but exported targets are missing"
     )
 endif()
-# Ensure includes for legacy-style #include <mbelib.h>
-# by adding the directory that directly contains mbelib.h
+# Test and analyzer targets compile some mbe-consuming sources directly, so
+# retain the package include root independently of link propagation.
 get_target_property(
     _MBE_TARGET_INCLUDE_DIRS
     ${MBE_LINK_TARGET}
     INTERFACE_INCLUDE_DIRECTORIES
 )
 if(NOT _MBE_TARGET_INCLUDE_DIRS)
-    set(_MBE_TARGET_INCLUDE_DIRS "")
-endif()
-set(_MBE_INCLUDE_HINTS "")
-foreach(_MBE_TARGET_INCLUDE_DIR IN LISTS _MBE_TARGET_INCLUDE_DIRS)
-    if(
-        IS_ABSOLUTE "${_MBE_TARGET_INCLUDE_DIR}"
-        AND NOT _MBE_TARGET_INCLUDE_DIR MATCHES "^\\$<"
+    message(
+        FATAL_ERROR
+        "mbe-neo package found but its exported target has no include directories"
     )
-        list(
-            APPEND _MBE_INCLUDE_HINTS
-            "${_MBE_TARGET_INCLUDE_DIR}"
-            "${_MBE_TARGET_INCLUDE_DIR}/mbelib-neo"
-        )
-    endif()
-endforeach()
-find_path(
-    MBE_INCLUDE_DIR
-    NAMES mbelib.h
-    HINTS ${_MBE_INCLUDE_HINTS}
-    PATH_SUFFIXES mbelib-neo
-)
-if(NOT MBE_INCLUDE_DIR)
-    message(FATAL_ERROR "mbe-neo 2.x package found, but mbelib.h was not found")
 endif()
 
 include(CheckCSourceCompiles)
@@ -558,7 +613,7 @@ if(DEFINED CMAKE_TRY_COMPILE_TARGET_TYPE)
         "${CMAKE_TRY_COMPILE_TARGET_TYPE}"
     )
 endif()
-set(CMAKE_REQUIRED_INCLUDES "${MBE_INCLUDE_DIR}")
+set(CMAKE_REQUIRED_INCLUDES ${_MBE_TARGET_INCLUDE_DIRS})
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     string(APPEND CMAKE_REQUIRED_FLAGS " -Werror=implicit-function-declaration")
 endif()
@@ -568,7 +623,7 @@ check_c_source_compiles(
     [[
 #include <stddef.h>
 #include <stdint.h>
-#include <mbelib.h>
+#include <mbelib-neo/mbelib.h>
 
 int main(void) {
     const mbe_soft_bit imbe_soft[8][23] = {{{0}}};
@@ -626,7 +681,17 @@ if(NOT DSD_HAVE_MBE_NEO_SOFT_API)
     )
 endif()
 if(DSD_ENABLE_RTLSDR)
-    find_package(RTLSDR)
+    if(DSD_ANDROID_VENDORED_RTLSDR)
+        # Adds the libusb/librtlsdr static targets and publishes the same
+        # RTLSDR_* variables FindRTLSDR.cmake would have produced. It has to run
+        # here, ahead of the DSD_HAS_RTLSDR decision below.
+        add_subdirectory(
+            android/third_party
+            "${CMAKE_BINARY_DIR}/android-third-party"
+        )
+    else()
+        find_package(RTLSDR)
+    endif()
 endif()
 
 if(DSD_ENABLE_SOAPYSDR)
@@ -686,8 +751,13 @@ if(DSD_ENABLE_SOAPYSDR AND NOT DSD_HAS_SOAPYSDR AND NOT DSD_REQUIRE_SOAPYSDR)
     )
 endif()
 
+# The radio pipeline builds without an SDR library: rtl_device.cpp carries
+# complete rtlsdr_* stubs when USE_RTLSDR is undefined, so rtl_tcp (plain BSD
+# sockets) and radio-path I/Q replay still work while real USB opens fail
+# cleanly. Forcing it on is how targets with no SDR library (Android) keep
+# network SDR input.
 set(DSD_HAS_RADIO OFF)
-if(DSD_HAS_RTLSDR OR DSD_HAS_SOAPYSDR)
+if(DSD_HAS_RTLSDR OR DSD_HAS_SOAPYSDR OR DSD_FORCE_RADIO_PIPELINE)
     set(DSD_HAS_RADIO ON)
 endif()
 
@@ -699,115 +769,305 @@ message(
     STATUS
     "SoapySDR backend enabled: ${DSD_ENABLE_SOAPYSDR} (available: ${DSD_HAS_SOAPYSDR})"
 )
-message(STATUS "Radio pipeline available: ${DSD_HAS_RADIO}")
+message(
+    STATUS
+    "Radio pipeline available: ${DSD_HAS_RADIO} (forced: ${DSD_FORCE_RADIO_PIPELINE})"
+)
 
 # Curses library selection:
 # - Windows: PDCurses
 # - POSIX: ncurses via CMake's FindCurses
-if(WIN32)
-    find_package(PDCurses REQUIRED)
-    set(CURSES_LIBRARIES PDCurses::PDCurses)
-    set(CURSES_INCLUDE_DIRS ${PDCURSES_INCLUDE_DIRS})
-    add_compile_definitions(DSD_USE_PDCURSES)
-    include(CheckCSourceCompiles)
-    set(_CMAKE_REQUIRED_DEFINITIONS_SAVE "${CMAKE_REQUIRED_DEFINITIONS}")
-    set(_CMAKE_REQUIRED_INCLUDES_SAVE "${CMAKE_REQUIRED_INCLUDES}")
-    set(_CMAKE_REQUIRED_LIBRARIES_SAVE "${CMAKE_REQUIRED_LIBRARIES}")
-    set(CMAKE_REQUIRED_DEFINITIONS -DPDC_WIDE)
-    set(CMAKE_REQUIRED_INCLUDES ${PDCURSES_INCLUDE_DIRS})
-    set(CMAKE_REQUIRED_LIBRARIES PDCurses::PDCurses)
-    unset(DSD_HAS_PDCURSES_WIDE_API CACHE)
-    check_c_source_compiles(
+if(DSD_ENABLE_TERMINAL_UI)
+    if(WIN32)
+        find_package(PDCurses REQUIRED)
+        set(CURSES_LIBRARIES PDCurses::PDCurses)
+        set(CURSES_INCLUDE_DIRS ${PDCURSES_INCLUDE_DIRS})
+        add_compile_definitions(DSD_USE_PDCURSES)
+        include(CheckCSourceCompiles)
+        set(_CMAKE_REQUIRED_DEFINITIONS_SAVE "${CMAKE_REQUIRED_DEFINITIONS}")
+        set(_CMAKE_REQUIRED_INCLUDES_SAVE "${CMAKE_REQUIRED_INCLUDES}")
+        set(_CMAKE_REQUIRED_LIBRARIES_SAVE "${CMAKE_REQUIRED_LIBRARIES}")
+        set(CMAKE_REQUIRED_DEFINITIONS -DPDC_WIDE)
+        set(CMAKE_REQUIRED_INCLUDES ${PDCURSES_INCLUDE_DIRS})
+        set(CMAKE_REQUIRED_LIBRARIES PDCurses::PDCurses)
+        unset(DSD_HAS_PDCURSES_WIDE_API CACHE)
+        check_c_source_compiles(
+            "
+            #include <wchar.h>
+            #include <curses.h>
+            int main(void) {
+                static const wchar_t glyph[] = {0x2588, 0};
+                return addwstr(glyph);
+            }
         "
-        #include <wchar.h>
-        #include <curses.h>
-        int main(void) {
-            static const wchar_t glyph[] = {0x2588, 0};
-            return addwstr(glyph);
-        }
-    "
-        DSD_HAS_PDCURSES_WIDE_API
-    )
-    set(CMAKE_REQUIRED_DEFINITIONS "${_CMAKE_REQUIRED_DEFINITIONS_SAVE}")
-    set(CMAKE_REQUIRED_INCLUDES "${_CMAKE_REQUIRED_INCLUDES_SAVE}")
-    set(CMAKE_REQUIRED_LIBRARIES "${_CMAKE_REQUIRED_LIBRARIES_SAVE}")
-    unset(_CMAKE_REQUIRED_DEFINITIONS_SAVE)
-    unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
-    unset(_CMAKE_REQUIRED_LIBRARIES_SAVE)
-    if(DSD_HAS_PDCURSES_WIDE_API)
-        add_compile_definitions(DSD_HAS_PDCURSES_WIDE_API=1 PDC_WIDE)
-    endif()
-    message(STATUS "Curses backend: PDCurses")
-    message(STATUS "PDCurses wide-character API: ${DSD_HAS_PDCURSES_WIDE_API}")
-else()
-    find_package(Curses REQUIRED)
-    # Some ncurses installs do not provide a top-level curses.h shim in the
-    # include root. Our code includes <curses.h>, so add the ncursesw subdir
-    # when needed.
-    if(CURSES_NEED_WIDE)
-        foreach(_curses_inc IN LISTS CURSES_INCLUDE_DIRS)
-            if(
-                EXISTS "${_curses_inc}/ncursesw/curses.h"
-                AND NOT EXISTS "${_curses_inc}/curses.h"
-            )
-                list(APPEND CURSES_INCLUDE_DIRS "${_curses_inc}/ncursesw")
+            DSD_HAS_PDCURSES_WIDE_API
+        )
+        set(CMAKE_REQUIRED_DEFINITIONS "${_CMAKE_REQUIRED_DEFINITIONS_SAVE}")
+        set(CMAKE_REQUIRED_INCLUDES "${_CMAKE_REQUIRED_INCLUDES_SAVE}")
+        set(CMAKE_REQUIRED_LIBRARIES "${_CMAKE_REQUIRED_LIBRARIES_SAVE}")
+        unset(_CMAKE_REQUIRED_DEFINITIONS_SAVE)
+        unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
+        unset(_CMAKE_REQUIRED_LIBRARIES_SAVE)
+        if(DSD_HAS_PDCURSES_WIDE_API)
+            add_compile_definitions(DSD_HAS_PDCURSES_WIDE_API=1 PDC_WIDE)
+        endif()
+        message(STATUS "Curses backend: PDCurses")
+        message(
+            STATUS
+            "PDCurses wide-character API: ${DSD_HAS_PDCURSES_WIDE_API}"
+        )
+    else()
+        # macOS ships no libncursesw, so CURSES_NEED_WIDE makes FindCurses miss
+        # the wide library, fall through to its plain-curses branch, and skip
+        # the header search there - configure then fails with a bare "Could NOT
+        # find Curses (missing: CURSES_INCLUDE_PATH)". Point it at a wide
+        # ncurses when the host has one - Homebrew keeps its keg-only, so that
+        # prefix is not on any default search path - and otherwise drop the
+        # requirement and take the SDK's unified libncurses. See
+        # cmake/macos_curses.cmake for the whole story.
+        set(_dsd_curses_saved_prefix_path "${CMAKE_PREFIX_PATH}")
+        if(APPLE AND CURSES_NEED_WIDE)
+            include(macos_curses)
+            find_library(DSD_NCURSESW_LIBRARY NAMES ncursesw)
+            mark_as_advanced(DSD_NCURSESW_LIBRARY)
+
+            set(_dsd_curses_prefixes "")
+            find_program(DSD_BREW_EXECUTABLE brew)
+            mark_as_advanced(DSD_BREW_EXECUTABLE)
+            if(DSD_BREW_EXECUTABLE)
+                # Reports the keg for a custom Homebrew prefix too, and prints
+                # the path a formula would take even when it is not installed,
+                # which the plan then rejects for having no headers.
+                execute_process(
+                    COMMAND "${DSD_BREW_EXECUTABLE}" --prefix ncurses
+                    OUTPUT_VARIABLE _dsd_brew_ncurses
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET
+                )
+                if(_dsd_brew_ncurses)
+                    list(APPEND _dsd_curses_prefixes "${_dsd_brew_ncurses}")
+                endif()
+                unset(_dsd_brew_ncurses)
             endif()
-        endforeach()
-        list(REMOVE_DUPLICATES CURSES_INCLUDE_DIRS)
+            # brew is not always on PATH - IDE-driven and non-login shells lose
+            # it - so the standard prefixes are probed directly as well.
+            if(DEFINED ENV{HOMEBREW_PREFIX})
+                list(
+                    APPEND _dsd_curses_prefixes
+                    "$ENV{HOMEBREW_PREFIX}/opt/ncurses"
+                )
+            endif()
+            list(
+                APPEND _dsd_curses_prefixes
+                "/opt/homebrew/opt/ncurses"
+                "/usr/local/opt/ncurses"
+            )
+            list(REMOVE_DUPLICATES _dsd_curses_prefixes)
+
+            dsd_neo_macos_curses_plan(
+                NCURSESW_LIBRARY "${DSD_NCURSESW_LIBRARY}"
+                PREFIXES ${_dsd_curses_prefixes}
+                OUT_NEED_WIDE _dsd_curses_need_wide
+                OUT_PREFIX _dsd_curses_prefix
+                OUT_REASON _dsd_curses_reason
+            )
+            set(CURSES_NEED_WIDE ${_dsd_curses_need_wide})
+            if(_dsd_curses_prefix)
+                list(PREPEND CMAKE_PREFIX_PATH "${_dsd_curses_prefix}")
+            endif()
+            message(STATUS "Curses: ${_dsd_curses_reason}")
+            unset(_dsd_curses_prefixes)
+            unset(_dsd_curses_need_wide)
+            unset(_dsd_curses_prefix)
+            unset(_dsd_curses_reason)
+        endif()
+        find_package(Curses REQUIRED)
+        # A keg-only prefix is for curses alone; leaving it on CMAKE_PREFIX_PATH
+        # would offer it to every find_package below.
+        set(CMAKE_PREFIX_PATH "${_dsd_curses_saved_prefix_path}")
+        unset(_dsd_curses_saved_prefix_path)
+        # Some ncurses installs do not provide a top-level curses.h shim in the
+        # include root. Our code includes <curses.h>, so add the ncursesw subdir
+        # when needed.
+        if(CURSES_NEED_WIDE)
+            foreach(_curses_inc IN LISTS CURSES_INCLUDE_DIRS)
+                if(
+                    EXISTS "${_curses_inc}/ncursesw/curses.h"
+                    AND NOT EXISTS "${_curses_inc}/curses.h"
+                )
+                    list(APPEND CURSES_INCLUDE_DIRS "${_curses_inc}/ncursesw")
+                endif()
+            endforeach()
+            list(REMOVE_DUPLICATES CURSES_INCLUDE_DIRS)
+        endif()
+        message(STATUS "Curses backend: ncurses")
     endif()
-    message(STATUS "Curses backend: ncurses")
+else()
+    set(CURSES_INCLUDE_DIRS "")
+    set(CURSES_LIBRARIES "")
+    set(DSD_HAS_PDCURSES_WIDE_API OFF)
+    message(STATUS "Terminal UI disabled: curses discovery skipped")
 endif()
 
 find_package(CODEC2)
-find_package(CURL)
+find_package(CURL 7.56.0)
+find_package(EXPAT)
 
-# Audio backend selection
-option(
-    DSD_USE_PORTAUDIO
-    "Use PortAudio for cross-platform audio (required on Windows)"
-    OFF
-)
-
-# Windows requires PortAudio (no PulseAudio available)
-if(WIN32)
-    set(DSD_USE_PORTAUDIO ON CACHE BOOL "Use PortAudio on Windows" FORCE)
+# Catch the contradictory pair explicitly: CMAKE_DISABLE_FIND_PACKAGE_* is the
+# off switch (tools/install_linux.sh drives Codec2 that way), so pairing it with
+# a require option would otherwise fail below with a misleading "not found".
+if(DSD_REQUIRE_CODEC2 AND CMAKE_DISABLE_FIND_PACKAGE_CODEC2)
+    message(
+        FATAL_ERROR
+        "DSD_REQUIRE_CODEC2=ON conflicts with CMAKE_DISABLE_FIND_PACKAGE_CODEC2=ON."
+    )
 endif()
 
+if(DSD_REQUIRE_CURL AND CMAKE_DISABLE_FIND_PACKAGE_CURL)
+    message(
+        FATAL_ERROR
+        "DSD_REQUIRE_CURL=ON conflicts with CMAKE_DISABLE_FIND_PACKAGE_CURL=ON."
+    )
+endif()
+
+if(DSD_REQUIRE_EXPAT AND CMAKE_DISABLE_FIND_PACKAGE_EXPAT)
+    message(
+        FATAL_ERROR
+        "DSD_REQUIRE_EXPAT=ON conflicts with CMAKE_DISABLE_FIND_PACKAGE_EXPAT=ON."
+    )
+endif()
+
+# Normalize to ON/OFF so the status lines below stay greppable; the find modules
+# report found-ness in their own spellings.
+set(DSD_HAS_CODEC2 OFF)
+if(CODEC2_FOUND)
+    set(DSD_HAS_CODEC2 ON)
+endif()
+
+set(DSD_HAS_CURL OFF)
+if(CURL_FOUND)
+    set(DSD_HAS_CURL ON)
+endif()
+
+set(DSD_HAS_EXPAT OFF)
+if(EXPAT_FOUND)
+    set(DSD_HAS_EXPAT ON)
+endif()
+
+if(DSD_REQUIRE_CODEC2 AND NOT DSD_HAS_CODEC2)
+    message(
+        FATAL_ERROR
+        "Codec2 was required but not found. Install a Codec2 development package or disable DSD_REQUIRE_CODEC2."
+    )
+endif()
+
+if(DSD_REQUIRE_CURL AND NOT DSD_HAS_CURL)
+    message(
+        FATAL_ERROR
+        "libcurl >= 7.56.0 was required but not found. Install a libcurl development package or disable DSD_REQUIRE_CURL."
+    )
+endif()
+
+if(DSD_REQUIRE_EXPAT AND NOT DSD_HAS_EXPAT)
+    message(
+        FATAL_ERROR
+        "expat was required but not found. Install an expat development package or disable DSD_REQUIRE_EXPAT."
+    )
+endif()
+
+# All three degrade silently when absent and the binary still links: M17 simply
+# stops emitting voice, rdio uploads disappear, and RadioReference import
+# disappears. Report either way so a build that quietly lost one is visible in
+# the configure log.
+message(STATUS "Codec2 available: ${DSD_HAS_CODEC2} (M17 voice)")
+message(STATUS "libcurl available: ${DSD_HAS_CURL} (rdio API uploads)")
+message(STATUS "expat available: ${DSD_HAS_EXPAT} (RadioReference import)")
+
+# Audio backend selection
+set(DSD_AUDIO_BACKEND
+    "auto"
+    CACHE STRING
+    "Audio backend: auto|pulse|portaudio|aaudio|none"
+)
+set_property(
+    CACHE DSD_AUDIO_BACKEND
+    PROPERTY STRINGS auto pulse portaudio aaudio none
+)
+
+# Deprecated alias kept for existing scripts and CI invocations.
+option(DSD_USE_PORTAUDIO "Deprecated: use DSD_AUDIO_BACKEND=portaudio" OFF)
 if(DSD_USE_PORTAUDIO)
+    if(DSD_AUDIO_BACKEND STREQUAL "auto")
+        message(
+            WARNING
+            "DSD_USE_PORTAUDIO is deprecated; use -DDSD_AUDIO_BACKEND=portaudio instead."
+        )
+        set(DSD_AUDIO_BACKEND "portaudio")
+    else()
+        # Never silently: a stale -DDSD_USE_PORTAUDIO=ON in a caller's script would
+        # otherwise look honoured while a different backend was built.
+        message(
+            WARNING
+            "DSD_USE_PORTAUDIO=ON is ignored because DSD_AUDIO_BACKEND was set explicitly to "
+            "'${DSD_AUDIO_BACKEND}'. Drop the deprecated option."
+        )
+    endif()
+endif()
+
+# "auto": PortAudio on Windows (no PulseAudio available), PulseAudio elsewhere.
+if(DSD_AUDIO_BACKEND STREQUAL "auto")
+    if(WIN32)
+        set(DSD_AUDIO_BACKEND "portaudio")
+    else()
+        set(DSD_AUDIO_BACKEND "pulse")
+    endif()
+endif()
+
+if(NOT DSD_AUDIO_BACKEND MATCHES "^(pulse|portaudio|aaudio|none)$")
+    message(
+        FATAL_ERROR
+        "Unknown DSD_AUDIO_BACKEND '${DSD_AUDIO_BACKEND}' (expected auto|pulse|portaudio|aaudio|none)"
+    )
+endif()
+if(WIN32 AND DSD_AUDIO_BACKEND STREQUAL "pulse")
+    message(FATAL_ERROR "DSD_AUDIO_BACKEND=pulse is not supported on Windows")
+endif()
+if(DSD_AUDIO_BACKEND STREQUAL "aaudio" AND NOT ANDROID)
+    message(FATAL_ERROR "DSD_AUDIO_BACKEND=aaudio requires an Android build")
+endif()
+
+if(DSD_AUDIO_BACKEND STREQUAL "portaudio")
     find_package(PortAudio REQUIRED)
     add_compile_definitions(DSD_USE_PORTAUDIO)
     message(STATUS "Audio backend: PortAudio")
-else()
+elseif(DSD_AUDIO_BACKEND STREQUAL "pulse")
     find_package(PulseAudio REQUIRED)
     message(STATUS "Audio backend: PulseAudio")
+elseif(DSD_AUDIO_BACKEND STREQUAL "aaudio")
+    message(STATUS "Audio backend: AAudio")
+else()
+    message(STATUS "Audio backend: none (device audio is a no-op sink)")
 endif()
 
-# Aggregate include directories; when using the modern package, we still add
-# the mbelib-neo leaf include directory so #include <mbelib.h> continues to work.
-set(_PUBLIC_INCLUDES ${LIBSNDFILE_INCLUDE_DIR} ${CURSES_INCLUDE_DIRS})
-if(MBE_INCLUDE_DIR)
-    list(APPEND _PUBLIC_INCLUDES ${MBE_INCLUDE_DIR})
-endif()
+set(_PUBLIC_INCLUDES ${LIBSNDFILE_INCLUDE_DIR} ${_MBE_TARGET_INCLUDE_DIRS})
 
 # Audio backend includes and libraries
 set(AUDIO_SYSTEM_LIBS "")
-if(DSD_USE_PORTAUDIO)
+set(AUDIO_LIBS "")
+if(DSD_AUDIO_BACKEND STREQUAL "portaudio")
     list(APPEND _PUBLIC_INCLUDES ${PORTAUDIO_INCLUDE_DIRS})
     set(AUDIO_LIBS ${PORTAUDIO_LIBRARY})
     if(WIN32)
         list(APPEND AUDIO_SYSTEM_LIBS winmm ole32 uuid setupapi)
     endif()
-else()
+elseif(DSD_AUDIO_BACKEND STREQUAL "pulse")
     list(APPEND _PUBLIC_INCLUDES ${PULSEAUDIO_INCLUDE_DIRS})
     set(AUDIO_LIBS ${PULSEAUDIO_SIMPLE_LIBRARY} ${PULSEAUDIO_LIBRARY})
+elseif(DSD_AUDIO_BACKEND STREQUAL "aaudio")
+    set(AUDIO_LIBS aaudio)
 endif()
 
-set(LIBS
-    ${MBE_LINK_TARGET}
-    ${LIBSNDFILE_LIBRARIES}
-    ${AUDIO_LIBS}
-    ${CURSES_LIBRARIES}
-)
+set(LIBS ${MBE_LINK_TARGET} ${LIBSNDFILE_LIBRARIES} ${AUDIO_LIBS})
 
 # -----------------------------------------------------------------------------
 # Optional feature interface targets
@@ -880,22 +1140,62 @@ if(DSD_HAS_RTLSDR)
         INTERFACE ${RTLSDR_INCLUDE_DIRS}
     )
 
-    # Detect rtlsdr_set_bias_tee availability in the installed librtlsdr
-    include(CheckSymbolExists)
-    set(_CMAKE_REQUIRED_INCLUDES_SAVE "${CMAKE_REQUIRED_INCLUDES}")
-    set(_CMAKE_REQUIRED_LIBRARIES_SAVE "${CMAKE_REQUIRED_LIBRARIES}")
-    set(CMAKE_REQUIRED_INCLUDES ${RTLSDR_INCLUDE_DIRS})
-    set(CMAKE_REQUIRED_LIBRARIES ${RTLSDR_LIBRARIES})
-    unset(HAVE_RTLSDR_BIAS_TEE CACHE)
-    check_symbol_exists(rtlsdr_set_bias_tee "rtl-sdr.h" HAVE_RTLSDR_BIAS_TEE)
-    set(CMAKE_REQUIRED_INCLUDES "${_CMAKE_REQUIRED_INCLUDES_SAVE}")
-    set(CMAKE_REQUIRED_LIBRARIES "${_CMAKE_REQUIRED_LIBRARIES_SAVE}")
-    unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
-    unset(_CMAKE_REQUIRED_LIBRARIES_SAVE)
+    # Detect optional entry points in the librtlsdr being linked:
+    # - rtlsdr_set_bias_tee, absent from older releases
+    # - rtlsdr_open_fd, a project patch carried only by the vendored Android tree
+    if(DSD_ANDROID_VENDORED_RTLSDR)
+        # The vendored library is built from this tree, so it does not exist yet
+        # and a link probe cannot run. Header and implementation are the same
+        # snapshot, so the declaration is the answer.
+        unset(HAVE_RTLSDR_BIAS_TEE CACHE)
+        unset(HAVE_RTLSDR_OPEN_FD CACHE)
+        file(READ "${RTLSDR_INCLUDE_DIRS}/rtl-sdr.h" _DSD_RTLSDR_HEADER)
+        if(_DSD_RTLSDR_HEADER MATCHES "rtlsdr_set_bias_tee")
+            set(HAVE_RTLSDR_BIAS_TEE ON)
+        endif()
+        if(_DSD_RTLSDR_HEADER MATCHES "rtlsdr_open_fd")
+            set(HAVE_RTLSDR_OPEN_FD ON)
+        endif()
+        unset(_DSD_RTLSDR_HEADER)
+    else()
+        include(CheckSymbolExists)
+        set(_CMAKE_REQUIRED_INCLUDES_SAVE "${CMAKE_REQUIRED_INCLUDES}")
+        set(_CMAKE_REQUIRED_LIBRARIES_SAVE "${CMAKE_REQUIRED_LIBRARIES}")
+        set(CMAKE_REQUIRED_INCLUDES ${RTLSDR_INCLUDE_DIRS})
+        set(CMAKE_REQUIRED_LIBRARIES ${RTLSDR_LIBRARIES})
+        unset(HAVE_RTLSDR_BIAS_TEE CACHE)
+        unset(HAVE_RTLSDR_OPEN_FD CACHE)
+        check_symbol_exists(
+            rtlsdr_set_bias_tee
+            "rtl-sdr.h"
+            HAVE_RTLSDR_BIAS_TEE
+        )
+        check_symbol_exists(rtlsdr_open_fd "rtl-sdr.h" HAVE_RTLSDR_OPEN_FD)
+        set(CMAKE_REQUIRED_INCLUDES "${_CMAKE_REQUIRED_INCLUDES_SAVE}")
+        set(CMAKE_REQUIRED_LIBRARIES "${_CMAKE_REQUIRED_LIBRARIES_SAVE}")
+        unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
+        unset(_CMAKE_REQUIRED_LIBRARIES_SAVE)
+    endif()
     if(HAVE_RTLSDR_BIAS_TEE)
         target_compile_definitions(
             dsd-neo_feature_rtlsdr
             INTERFACE USE_RTLSDR_BIAS_TEE
+        )
+    endif()
+    if(HAVE_RTLSDR_OPEN_FD)
+        target_compile_definitions(
+            dsd-neo_feature_rtlsdr
+            INTERFACE USE_RTLSDR_OPEN_FD
+        )
+    elseif(ANDROID)
+        # USB-OTG descriptor injection is the only way an app can reach a dongle,
+        # so a librtlsdr without it makes the RTL-SDR backend dead weight. Fail
+        # here rather than at link time, or at runtime on the device.
+        message(
+            FATAL_ERROR
+            "librtlsdr on Android must provide rtlsdr_open_fd() for USB-OTG descriptor injection. "
+            "Build the vendored tree with -DDSD_ANDROID_VENDORED_RTLSDR=ON, or disable the backend "
+            "with -DDSD_ENABLE_RTLSDR=OFF (rtl_tcp still works via -DDSD_FORCE_RADIO_PIPELINE=ON)."
         )
     endif()
 else()
@@ -903,7 +1203,7 @@ else()
     add_library(dsd-neo_feature_rtlsdr INTERFACE)
 endif()
 
-if(CODEC2_FOUND)
+if(DSD_HAS_CODEC2)
     list(APPEND LIBS ${CODEC2_LIBRARIES})
 
     # Interface target for USE_CODEC2 compile definition
@@ -919,12 +1219,20 @@ else()
     add_library(dsd-neo_feature_codec2 INTERFACE)
 endif()
 
-if(CURL_FOUND)
+if(DSD_HAS_CURL)
     add_library(dsd-neo_feature_curl INTERFACE)
     target_compile_definitions(dsd-neo_feature_curl INTERFACE USE_CURL)
     target_link_libraries(dsd-neo_feature_curl INTERFACE CURL::libcurl)
 else()
     add_library(dsd-neo_feature_curl INTERFACE)
+endif()
+
+if(DSD_HAS_EXPAT)
+    add_library(dsd-neo_feature_expat INTERFACE)
+    target_compile_definitions(dsd-neo_feature_expat INTERFACE USE_EXPAT)
+    target_link_libraries(dsd-neo_feature_expat INTERFACE EXPAT::EXPAT)
+else()
+    add_library(dsd-neo_feature_expat INTERFACE)
 endif()
 
 if(AUDIO_SYSTEM_LIBS)
@@ -962,19 +1270,34 @@ install(
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
     RENAME pffft-FFTPACK.txt
 )
+# The Qt frontend compiles the IBM Plex faces into its resource bundle, so the
+# notice ships with whatever bundles the frontend rather than with a particular
+# platform.
+if(DSD_ENABLE_QT_UI)
+    install(
+        FILES src/ui/qt/fonts/IBMPlex-LICENSE.txt
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
+        RENAME ibm-plex-OFL-1.1.txt
+    )
+endif()
 
 add_subdirectory(src/platform)
 add_subdirectory(src/core)
 add_subdirectory(src/dsp)
 add_subdirectory(src/io)
 add_subdirectory(src/runtime)
-add_subdirectory(src/ui)
 add_subdirectory(src/protocol)
 add_subdirectory(src/crypto)
 add_subdirectory(src/fec)
 add_subdirectory(src/third_party)
 add_subdirectory(src/engine)
+add_subdirectory(src/app_control)
+add_subdirectory(src/ui)
 add_subdirectory(apps)
+# Android app shell (Qt Quick frontend + JNI lifecycle glue).
+if(ANDROID AND DSD_ENABLE_QT_UI)
+    add_subdirectory(android)
+endif()
 # Unit tests are built when BUILD_TESTING is enabled.
 if(BUILD_TESTING)
     add_subdirectory(tests)

@@ -7,9 +7,8 @@
  * @file
  * @brief Demodulator state shared across DSP modules and RTL-SDR front-end.
  *
- * Centralized definition of `struct demod_state`. Mirrors the legacy layout in
- * `src/rtl_sdr_fm.cpp` and is intended to remain ABI-stable during ongoing
- * refactoring.
+ * This is the canonical `struct demod_state` definition consumed by the DSP
+ * pipeline and radio front-end.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_DEMOD_STATE_H_
@@ -21,32 +20,17 @@
 #include <dsd-neo/core/safe_api.h>
 #endif
 #include <dsd-neo/dsp/costas.h>
-#include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
 
-/* Buffer sizing constants used throughout the demodulator. Keep consistent
-   with rtl_sdr_fm.cpp; guard to avoid redefinition across TUs. */
-#ifndef DEFAULT_BUF_LENGTH
-#define DEFAULT_BUF_LENGTH (1 * 16384)
-#endif
-#ifndef MAXIMUM_OVERSAMPLE
+/* Buffer sizing constants shared by the demodulator and radio front-end. */
+#define DEFAULT_BUF_LENGTH 16384
 #define MAXIMUM_OVERSAMPLE 16
-#endif
-#ifndef MAXIMUM_BUF_LENGTH
 #define MAXIMUM_BUF_LENGTH (MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
-#endif
 
-/* Half-band decimator taps (HB_TAPS) are defined where needed in DSP modules.
-   Here we dimension histories against the maximum half-band used by the
-   complex decimator cascade. */
-#ifndef HB_TAPS
-#define HB_TAPS 15
-#endif
-#ifndef HB_TAPS_MAX
-#define HB_TAPS_MAX 31
-#endif
+/* Maximum half-band tap count used to dimension complex-decimator histories. */
+#define HB_TAPS_MAX        31
 
 /* Channel LPF profile ids */
 enum DSD_ATTR_PACKED {
@@ -60,21 +44,24 @@ enum DSD_ATTR_PACKED {
 
 enum DSD_ATTR_PACKED dsd_demod_output_kind {
     DSD_DEMOD_OUTPUT_AUDIO_MONITOR = 0,
-    DSD_DEMOD_OUTPUT_SYMBOL_FSK = 1,
+    DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR = 1,
     DSD_DEMOD_OUTPUT_SYMBOL_CQPSK = 2,
+};
+
+enum DSD_ATTR_PACKED dsd_digital_resample_mode {
+    DSD_DIGITAL_RESAMPLE_AUTO = 0,
+    DSD_DIGITAL_RESAMPLE_ON = 1,
+    DSD_DIGITAL_RESAMPLE_OFF = 2,
 };
 
 /**
  * @brief Aggregate state container for the demodulator processing chain.
  *
  * Holds working buffers, configuration, and module states used by the DSP
- * pipeline (filters, resamplers, FLL/TED, etc.) and by the RTL-SDR front-end
+ * pipeline (filters, resamplers, CQPSK recovery, etc.) and by the RTL-SDR front-end
  * thread.
  *
- * @note Keep this definition synchronized with usages in:
- *  - src/rtl_sdr_fm.cpp
- *  - src/dsp/demod_pipeline.cpp
- *  - src/dsp/resampler.cpp
+ * Radio and DSP implementation units include this definition directly.
  */
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
 struct demod_state {
@@ -101,9 +88,7 @@ struct demod_state {
     double squelch_running_power;
     float* resamp_taps; /* normalized taps as L contiguous phase blocks, length = K*L */
     float* resamp_hist; /* mirrored history window, length = 2*K */
-    int (*discriminator)(int, int, int, int);
     void (*mode_demod)(struct demod_state*);
-    double fm_agc_ema_rms;      /* normalized RMS estimator (0..~1.0) */
     float* post_polydecim_taps; /* normalized taps length K */
     float* post_polydecim_hist; /* circular history length K */
     dsd_thread_t mt_threads[2];
@@ -133,8 +118,7 @@ struct demod_state {
     int rate_out2;
     float pre_r, pre_j;
     /* 1 once pre_r/pre_j hold a valid sample from a prior block; 0 before the
-       first sample has been observed. Replaces an older (prev==0) heuristic
-       that false-seeded on a genuinely-zero first sample. */
+       first sample has been observed, including when that sample is exactly zero. */
     int fm_demod_history_valid;
     int post_downsample;
     float output_scale;
@@ -181,6 +165,13 @@ struct demod_state {
 
     /* Polyphase rational resampler (L/M) */
     int resamp_enabled;
+    /* Whether the digital FSK discriminator stream may pass through the resampler:
+       0 = auto (only when a device-imposed rate gives a non-integer SPS), 1 = always, 2 = never. */
+    int digital_resample_mode;
+    /* Set when the capture rate came from the device's fixed rate grid rather than from the
+       requested DSP bandwidth. Auto-mode digital resampling only triggers in that case, so a
+       user-chosen bandwidth keeps its existing rate chain. */
+    int capture_rate_device_forced;
     int resamp_target_hz;      /* desired output sample rate */
     int resamp_L;              /* upsample factor */
     int resamp_M;              /* downsample factor */
@@ -189,29 +180,15 @@ struct demod_state {
     int resamp_taps_per_phase; /* K = ceil(taps_len/L) */
     int resamp_hist_head;      /* next write index into base history window [0..K-1] */
 
-    /* Legacy FM FLL state (for non-CQPSK FM/C4FM paths).
-     * Used by fll_update_error() and fll_mix_and_update() in demod_pipeline.cpp.
-     * For CQPSK paths, use fll_band_edge_state and costas_state instead. */
-    int fll_enabled;
-    float fll_alpha;    /* proportional gain (native float, ~0.002..0.02) */
-    float fll_beta;     /* integral gain (native float, ~0.0002..0.002) */
-    float fll_freq;     /* NCO frequency increment (rad/sample) - FM path only */
-    float fll_phase;    /* NCO phase accumulator (radians) - FM path only */
-    float fll_deadband; /* ignore small phase errors |err| <= deadband (radians) */
-    float fll_slew_max; /* max |delta freq| per update (rad/sample) */
-    float fll_prev_r;
-    float fll_prev_j;
-
-    /* OP25-compatible CQPSK carrier recovery (used instead of legacy FLL above).
+    /* OP25-compatible CQPSK carrier recovery.
      * Signal flow: FLL band-edge (coarse freq) -> Gardner TED -> diff_phasor -> Costas (fine freq)
      * Total CFO for metrics = fll_band_edge_state.freq + costas_state.freq/sps */
     dsd_costas_loop_state_t costas_state;          /* Symbol-rate Costas loop */
     dsd_fll_band_edge_state_t fll_band_edge_state; /* Sample-rate FLL band-edge */
-    dsd_fsk_modem_state fsk_modem_state;           /* Symbol-rate FSK modem */
+    dsd_fsk_modem_state fsk_modem_state;           /* FSK discriminator state */
 
     /* Timing error detector (Gardner) - native float */
     int ted_enabled;
-    int ted_force;            /* allow forcing TED even for FM/C4FM paths */
     float ted_gain;           /* loop gain, typically 0.01..0.1 */
     int ted_gain_is_set;      /* env/API/UI override; disables automatic mode-specific gain changes */
     float ted_effective_gain; /* loop gain actually used by mode-specific TED */
@@ -224,8 +201,7 @@ struct demod_state {
        Blocks like TED/FLL band-edge require integer SPS and auto-disable. */
     int sps_is_integer; /* 1 = integer SPS, 0 = non-integer (blocks disabled) */
 
-    /* FLL and TED module states */
-    fll_state_t fll_state;
+    /* TED module state */
     ted_state_t ted_state;
 
     /* Minimal 2-thread worker pool bookkeeping */
@@ -240,8 +216,8 @@ struct demod_state {
     /* CQPSK (H-DQPSK) path enable for P25 LSM/TDMA */
     int cqpsk_enable;
     int output_kind;    /* dsd_demod_output_kind */
-    int symbol_rate_hz; /* output symbol rate for SYMBOL_* paths */
-    int symbol_levels;  /* 2 or 4 for SYMBOL_FSK; 4 for SYMBOL_CQPSK */
+    int symbol_rate_hz; /* FSK/CQPSK protocol symbol rate */
+    int symbol_levels;  /* 2 or 4 for FSK; 4 for SYMBOL_CQPSK */
 
     /* CQPSK pre-Costas differential phasor history (previous raw sample) */
     float cqpsk_diff_prev_r;
@@ -260,17 +236,6 @@ struct demod_state {
     float iqbal_alpha_ema_r; /* EMA of alpha real (normalized) */
     float iqbal_alpha_ema_i; /* EMA of alpha imag (normalized) */
     float iqbal_alpha_ema_a; /* EMA smoothing alpha [0.0, 1.0] */
-
-    /* FM envelope AGC (pre-discriminator) */
-    int fm_agc_enable;       /* 0/1 gate; constant-envelope limiter/AGC for FM/C4FM */
-    float fm_agc_gain;       /* smoothed gain applied to I/Q */
-    float fm_agc_target_rms; /* target RMS magnitude for |z| (normalized float) */
-    float fm_agc_min_rms;    /* minimum RMS to engage AGC (avoid boosting noise) */
-    float fm_agc_alpha_up;   /* smoothing when increasing gain (signal got weaker) */
-    float fm_agc_alpha_down; /* smoothing when decreasing gain (signal got stronger) */
-
-    /* Optional constant-envelope limiter for FM/C4FM */
-    int fm_limiter_enable; /* 0/1 gate; per-sample normalize |z| to ~target */
 
     /* Complex DC blocker before discriminator */
     int iq_dc_block_enable; /* 0/1 gate */

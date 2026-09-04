@@ -9,7 +9,7 @@
  * timestamp should not be printed to stderr.
  */
 
-#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -37,50 +38,31 @@ dsd_degrees_glyph(void) {
     return ""; // no unicode in tests
 }
 
-void
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
-    (void)src;
-    (void)dst;
-    (void)data_string;
+    (void)observation->ota_source_id;
+    (void)observation->ota_target_id;
+    (void)notice;
     (void)slot;
+    return 0;
 }
 
-void
-getTimeC_buf(char out[9]) { // HH:MM:SS
-    // Not asserting exact value in this test; but keep deterministic if used
-    DSD_SNPRINTF(out, 9, "%s", "12:34:56");
-}
-
-void
-getDateS_buf(char out[11]) { // YYYY/MM/DD
-    DSD_SNPRINTF(out, 11, "%s", "2001/02/03");
+int
+dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out,
+                          size_t out_size) { // deterministic if used
+    (void)timestamp;
+    const char* value = (format == DSD_LOCAL_DATETIME_DATE_SLASH) ? "2001/02/03" : "12:34:56";
+    DSD_SNPRINTF(out, out_size, "%s", value);
+    return 1;
 }
 
 // Additional stubs to satisfy dmr_pdu.c when linked directly
 int
 dsd_unicode_supported(void) {
     return 0;
-}
-
-void
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    if (!input || !output || len <= 0) {
-        return;
-    }
-
-    int k = 0;
-    for (int i = 0; i < len; i++) {
-        output[k++] = (input[i] >> 7) & 1;
-        output[k++] = (input[i] >> 6) & 1;
-        output[k++] = (input[i] >> 5) & 1;
-        output[k++] = (input[i] >> 4) & 1;
-        output[k++] = (input[i] >> 3) & 1;
-        output[k++] = (input[i] >> 2) & 1;
-        output[k++] = (input[i] >> 1) & 1;
-        output[k++] = (input[i] >> 0) & 1;
-    }
 }
 
 void
@@ -206,7 +188,15 @@ main(void) {
         fclose(ef);
         return 105;
     }
-    fread(ebuf, 1, pesize, ef);
+    // The buffer is calloc'd one byte longer than the file and therefore
+    // already terminated; what the read owes is the count, since
+    // _FORTIFY_SOURCE declares fread __wur and a short read here means the
+    // capture never landed.
+    if (fread(ebuf, 1, pesize, ef) != pesize) {
+        fclose(ef);
+        free(ebuf);
+        return 107;
+    }
     fclose(ef);
 
     // Ensure decoded time was NOT printed (fallback path)
@@ -230,7 +220,11 @@ main(void) {
         fclose(of);
         return 106;
     }
-    fread(obuf, 1, posize, of);
+    if (fread(obuf, 1, posize, of) != posize) {
+        fclose(of);
+        free(obuf);
+        return 108;
+    }
     fclose(of);
 
     // Ensure the file has some content and does not contain the bogus decoded year "2038/"

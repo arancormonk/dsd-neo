@@ -50,11 +50,23 @@ main(void) {
     rc |= expect_int("init count", st.p25_sm_tag_count, 0);
     rc |= expect_int("init head", st.p25_sm_tag_head, 0);
 
+    /* Null opts/state should be accepted as no-op guards. */
+    p25_sm_log_status(NULL, &st, "ignored");
+    p25_sm_log_status(&opts, NULL, "ignored");
+    rc |= expect_int("guard count", st.p25_sm_tag_count, 0);
+    rc |= expect_int("guard head", st.p25_sm_tag_head, 0);
+
     /* Null/empty tags should not modify the ring. */
     p25_sm_log_status(&opts, &st, NULL);
     p25_sm_log_status(&opts, &st, "");
     rc |= expect_int("no-op count", st.p25_sm_tag_count, 0);
     rc |= expect_int("no-op head", st.p25_sm_tag_head, 0);
+
+    opts.verbose = 2;
+    p25_sm_log_status(&opts, &st, NULL);
+    opts.verbose = 0;
+    rc |= expect_int("verbose no-op count", st.p25_sm_tag_count, 0);
+    rc |= expect_int("verbose no-op head", st.p25_sm_tag_head, 0);
 
     /* Push more than capacity and verify that only the last 8 tags remain. */
     const int N = 10;

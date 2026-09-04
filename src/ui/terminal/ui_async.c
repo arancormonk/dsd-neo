@@ -4,32 +4,30 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
-#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ui_async.h>
-#include <dsd-neo/ui/ui_history.h>
-#include <dsd-neo/ui/ui_opts_snapshot.h>
 #include <dsd-neo/ui/ui_prims.h>
-#include <dsd-neo/ui/ui_snapshot.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
-#include "telemetry_hooks_impl.h"
+#include "rr_panel.h"
 
 // Minimal thread state.
 static dsd_thread_t g_ui_thread;
 static atomic_int g_ui_running = 0;
 static atomic_int g_ui_stop = 0;
-static atomic_int g_ui_dirty = 0; // notifier for redraw requests
 static dsd_opts* g_ui_opts = NULL;
 static dsd_state* g_ui_state = NULL;
 static int g_ui_curses_cfg_done = 0;
@@ -40,14 +38,9 @@ ui_is_thread_context(void) {
     return atomic_load(&g_ui_in_context);
 }
 
-static void
-ui_control_pump(dsd_opts* opts, dsd_state* state) {
-    (void)ui_drain_cmds(opts, state);
-}
-
 static const dsd_opts*
 ui_get_opts_snapshot_or_default(void) {
-    const dsd_opts* osnap = ui_get_latest_opts_snapshot();
+    const dsd_opts* osnap = dsd_app_get_latest_opts_snapshot();
     if (!osnap) {
         osnap = g_ui_opts;
     }
@@ -56,7 +49,7 @@ ui_get_opts_snapshot_or_default(void) {
 
 static int
 ui_curses_is_active(const dsd_opts* osnap) {
-    return (osnap && osnap->use_ncurses_terminal == 1 && stdscr != NULL);
+    return (dsd_opts_frontend_is_terminal(osnap) && stdscr != NULL);
 }
 
 static void
@@ -96,11 +89,11 @@ ui_handle_normal_input(int ch) {
         resize_term(0, 0);
 #endif
         clearok(stdscr, TRUE);
-        ui_terminal_telemetry_request_redraw();
+        dsd_app_request_redraw();
         return;
     }
     if (ch != ERR) {
-        (void)ncurses_input_handler(g_ui_opts, g_ui_state, ch);
+        (void)dsd_terminal_handle_input(g_ui_opts, g_ui_state, ch);
     }
 }
 
@@ -115,14 +108,30 @@ ui_process_input_frame(const dsd_opts* osnap) {
     ui_handle_normal_input(ch);
 }
 
+static int
+ui_open_curses_if_needed(void) {
+    if (!dsd_opts_frontend_is_terminal(g_ui_opts)) {
+        return 0;
+    }
+    dsd_terminal_open(g_ui_opts, g_ui_state);
+    return 1;
+}
+
+static void
+ui_close_curses_if_opened(int curses_opened) {
+    if (curses_opened) {
+        dsd_terminal_close();
+    }
+}
+
 static void
 ui_draw_frame(const dsd_opts* osnap) {
     /* Draw using a state snapshot when available */
-    const dsd_state* snap = ui_get_latest_snapshot();
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
     if (snap) {
-        ncursesPrinter((dsd_opts*)osnap, (dsd_state*)snap);
+        dsd_terminal_render((dsd_opts*)osnap, (dsd_state*)snap);
     } else {
-        ncursesPrinter((dsd_opts*)osnap, g_ui_state);
+        dsd_terminal_render((dsd_opts*)osnap, g_ui_state);
     }
 }
 
@@ -130,7 +139,7 @@ static void
 ui_draw_if_needed(const dsd_opts* osnap, uint64_t* last_draw_ns, uint64_t frame_ns) {
     uint64_t now_ns = dsd_time_monotonic_ns();
     uint64_t dt_ns = now_ns - *last_draw_ns;
-    if (!(atomic_exchange(&g_ui_dirty, 0) || dt_ns >= frame_ns)) {
+    if (!(dsd_app_frontend_redraw_consume() || dt_ns >= frame_ns)) {
         return;
     }
     atomic_store(&g_ui_in_context, 1);
@@ -139,6 +148,55 @@ ui_draw_if_needed(const dsd_opts* osnap, uint64_t* last_draw_ns, uint64_t frame_
     ui_commit_frame();
     *last_draw_ns = now_ns;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_neo_ui_async_test_set_context(dsd_opts* opts, dsd_state* state) {
+    g_ui_opts = opts;
+    g_ui_state = state;
+    g_ui_curses_cfg_done = 0;
+    (void)dsd_app_frontend_redraw_consume();
+    atomic_store(&g_ui_in_context, 0);
+}
+
+const dsd_opts*
+dsd_neo_ui_async_test_opts_snapshot_or_default(void) {
+    return ui_get_opts_snapshot_or_default();
+}
+
+int
+dsd_neo_ui_async_test_curses_is_active(const dsd_opts* opts) {
+    return ui_curses_is_active(opts);
+}
+
+int
+dsd_neo_ui_async_test_read_key_nonblocking(const dsd_opts* opts) {
+    return ui_read_key_nonblocking(opts);
+}
+
+void
+dsd_neo_ui_async_test_process_input_frame(const dsd_opts* opts) {
+    ui_process_input_frame(opts);
+}
+
+int
+dsd_neo_ui_async_test_open_curses_if_needed(void) {
+    return ui_open_curses_if_needed();
+}
+
+void
+dsd_neo_ui_async_test_close_curses_if_opened(int curses_opened) {
+    ui_close_curses_if_opened(curses_opened);
+}
+
+void
+dsd_neo_ui_async_test_draw_if_needed(const dsd_opts* opts, uint64_t* last_draw_ns, uint64_t frame_ns) {
+    if (last_draw_ns == NULL) {
+        return;
+    }
+    ui_draw_if_needed(opts, last_draw_ns, frame_ns);
+}
+#endif
 
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
@@ -150,9 +208,7 @@ static DSD_THREAD_RETURN_TYPE
     const unsigned int sleep_ms = 15; // ~15 ms sleep cadence
 
     // Initialize ncurses lifecycle in UI thread
-    if (g_ui_opts && g_ui_opts->use_ncurses_terminal == 1) {
-        ncursesOpen(g_ui_opts, g_ui_state);
-    }
+    int curses_opened = ui_open_curses_if_needed();
 
     uint64_t last_draw_ns = dsd_time_monotonic_ns();
     const uint64_t frame_ns = 66ULL * 1000ULL * 1000ULL; // ~15 FPS cap
@@ -168,9 +224,8 @@ static DSD_THREAD_RETURN_TYPE
         dsd_sleep_ms(sleep_ms);
     }
 
-    if (g_ui_opts && g_ui_opts->use_ncurses_terminal == 1) {
-        ncursesClose();
-    }
+    rr_panel_shutdown();
+    ui_close_curses_if_opened(curses_opened);
 
     DSD_THREAD_RETURN;
 }
@@ -181,19 +236,19 @@ ui_start(dsd_opts* opts, dsd_state* state) {
         return 0; // already running
     }
 
-    ui_terminal_install_telemetry_hooks();
+    dsd_app_frontend_runtime_start(opts, state);
     g_ui_opts = opts;
     g_ui_state = state;
-    ui_history_set_mode(opts ? opts->ncurses_history : 1);
+    dsd_app_frontend_history_set_mode(opts ? opts->frontend_terminal_display.terminal_history : 1);
     atomic_store(&g_ui_stop, 0);
 
     if (dsd_thread_create(&g_ui_thread, ui_thread_main, NULL) != 0) {
+        dsd_app_frontend_runtime_stop();
         g_ui_opts = NULL;
         g_ui_state = NULL;
         return -1;
     }
 
-    dsd_runtime_set_control_pump(ui_control_pump);
     atomic_store(&g_ui_running, 1);
     return 0;
 }
@@ -203,15 +258,10 @@ ui_stop(void) {
     if (!atomic_load(&g_ui_running)) {
         return;
     }
-    dsd_runtime_set_control_pump(NULL);
+    dsd_app_frontend_runtime_stop();
     atomic_store(&g_ui_stop, 1);
     dsd_thread_join(g_ui_thread);
     atomic_store(&g_ui_running, 0);
     g_ui_opts = NULL;
     g_ui_state = NULL;
-}
-
-void
-ui_terminal_telemetry_request_redraw(void) {
-    atomic_store(&g_ui_dirty, 1);
 }

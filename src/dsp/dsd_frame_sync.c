@@ -19,30 +19,33 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <dsd-neo/core/cleanup.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/dsp/symbol_timing_debug.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/dsp/sync_hamming.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/colors.h>
-#include <dsd-neo/runtime/comp.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,12 +55,20 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/timing.h"
+#include "frame_sync_internal.h"
 #include "frame_sync_level.h"
+#ifdef DSD_NEO_TEST_HOOKS
+#include "frame_sync_test_support.h"
+#endif
 
 #ifdef USE_RADIO
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
+
+enum {
+    FRAME_SYNC_HISTORY_CAPACITY = 48,
+};
 
 static int
 frame_sync_opts_has_4800_four_level_mode(const dsd_opts* opts) {
@@ -67,6 +78,8 @@ frame_sync_opts_has_4800_four_level_mode(const dsd_opts* opts) {
     return (opts->frame_p25p1 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1
             || opts->frame_m17 == 1);
 }
+
+static int frame_sync_current_demod_rate(const dsd_opts* opts, const dsd_state* state);
 
 #ifdef USE_RADIO
 static int
@@ -110,131 +123,55 @@ dmr_best_sync_hamming(const char* window, const char** out_name) {
 }
 
 static int
-rtl_opts_has_any_four_level_mode(const dsd_opts* opts) {
-    if (!opts) {
-        return 0;
+rtl_profile_for_sps_profile(const dsd_opts* opts, const dsd_state* state, const frame_sync_sps_profile* profile) {
+    if (!profile) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE;
     }
-    return (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn48 == 1
-            || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1 || opts->frame_dpmr == 1
-            || opts->frame_m17 == 1);
+    /* Shared with the operator-facing modulation control, which reaches the same
+     * front end by a different route: two copies of this drift, and then the
+     * filter changes under the user every time the hunt re-runs. */
+    return dsd_rtl_channel_profile_for(opts, profile->symbol_rate_hz, profile->levels, state ? state->rf_mod : 0);
 }
 
-static int
-rtl_opts_has_4800_wide_four_level_mode(const dsd_opts* opts) {
-    if (!opts) {
-        return 0;
-    }
-    return (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1);
-}
-
-static int
-rtl_p25_profile_for_state(const dsd_state* state) {
-    return (state && state->rf_mod == 1) ? DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK
-                                         : DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
-}
-
-static int
-rtl_fallback_profile_for_symbol_rate(int sym_rate_hz) {
-    if (sym_rate_hz == 2400) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
-    }
-    if (sym_rate_hz == 9600) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
-    }
-    return DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE;
-}
-
-static int
-rtl_profile_for_explicit_symbol_rate(const dsd_opts* opts, int sym_rate_hz, int preferred_levels) {
-    if (sym_rate_hz == 4800 && preferred_levels == 2 && opts->frame_dstar == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
-    }
-    if (sym_rate_hz == 9600 && opts->frame_provoice == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
-    }
-    if (sym_rate_hz == 2400 && (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1)) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
-    }
-    if (sym_rate_hz == 6000 && opts->frame_p25p2 == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
-    }
-    if (sym_rate_hz == 6000 && opts->frame_x2tdma == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
-    }
-    return -1;
-}
-
-static int
-rtl_profile_for_enabled_protocols(const dsd_opts* opts, const dsd_state* state) {
-    if (rtl_opts_has_4800_wide_four_level_mode(opts)) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
-    }
-    if (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) {
-        return rtl_p25_profile_for_state(state);
-    }
-    if (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
-    }
-    if (opts->frame_x2tdma == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
-    }
-    if (opts->frame_provoice == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
-    }
-    return -1;
-}
-
-static int
-rtl_profile_for_symbol_rate(const dsd_opts* opts, const dsd_state* state, int sym_rate_hz, int preferred_levels) {
-    if (opts) {
-        int profile = rtl_profile_for_explicit_symbol_rate(opts, sym_rate_hz, preferred_levels);
-        if (profile >= 0) {
-            return profile;
-        }
-        profile = rtl_profile_for_enabled_protocols(opts, state);
-        if (profile >= 0) {
-            return profile;
-        }
-    }
-    return rtl_fallback_profile_for_symbol_rate(sym_rate_hz);
-}
-
-static int
-rtl_levels_for_symbol_rate(const dsd_opts* opts, int sym_rate_hz, int preferred_levels) {
-    if (preferred_levels == 2 || preferred_levels == 4) {
-        return preferred_levels;
-    }
-    if (!opts) {
-        return 4;
-    }
-    if (sym_rate_hz == 9600 && opts->frame_provoice == 1) {
-        return 2;
-    }
-    if (sym_rate_hz == 4800 && opts->frame_dstar == 1 && !frame_sync_opts_has_4800_four_level_mode(opts)) {
-        return 2;
-    }
-    if ((opts->frame_dstar == 1 || opts->frame_provoice == 1) && !rtl_opts_has_any_four_level_mode(opts)) {
-        return 2;
-    }
-    return 4;
-}
-
-static void
-rtl_maybe_update_symbol_profile_with_hint(const dsd_opts* opts, const dsd_state* state, int sym_rate_hz,
-                                          int preferred_levels) {
-    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx || sym_rate_hz <= 0) {
-        return;
-    }
-    (void)dsd_rtl_stream_metrics_hook_set_symbol_profile(
-        sym_rate_hz, rtl_levels_for_symbol_rate(opts, sym_rate_hz, preferred_levels),
-        rtl_profile_for_symbol_rate(opts, state, sym_rate_hz, preferred_levels));
-}
-
-static void
-rtl_maybe_update_symbol_profile(const dsd_opts* opts, const dsd_state* state, int sym_rate_hz) {
-    rtl_maybe_update_symbol_profile_with_hint(opts, state, sym_rate_hz, 0);
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_frame_sync_test_rtl_profile_for_sps_index(const dsd_opts* opts, const dsd_state* state, int profile_index) {
+    return rtl_profile_for_sps_profile(opts, state, frame_sync_sps_profile_for_index(profile_index));
 }
 #endif
+
+static void
+rtl_maybe_apply_demod_profile(const dsd_opts* opts, const dsd_state* state, const frame_sync_sps_profile* profile) {
+    if (!opts || !state || !profile || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
+        return;
+    }
+    const int ted_sps =
+        dsd_opts_compute_sps_rate(opts, profile->symbol_rate_hz, frame_sync_current_demod_rate(opts, state));
+    (void)dsd_rtl_stream_metrics_hook_apply_demod_profile(state->rf_mod == 1, profile->symbol_rate_hz, profile->levels,
+                                                          rtl_profile_for_sps_profile(opts, state, profile), ted_sps);
+}
+
+static void
+rtl_maybe_apply_active_demod_profile(const dsd_opts* opts, const dsd_state* state) {
+    rtl_maybe_apply_demod_profile(opts, state, frame_sync_sps_profile_for_index(state->sps_hunt_idx));
+}
+#endif
+
+static int
+frame_sync_current_demod_rate(const dsd_opts* opts, const dsd_state* state) {
+    int demod_rate = dsd_opts_current_input_timing_rate(opts);
+#ifdef USE_RADIO
+    if (opts && state && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
+        int rtl_demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
+        if (rtl_demod_rate > 0) {
+            demod_rate = rtl_demod_rate;
+        }
+    }
+#else
+    UNUSED(state);
+#endif
+    return demod_rate;
+}
 
 static inline void
 dmr_set_symbol_timing(const dsd_opts* opts, dsd_state* state) {
@@ -242,23 +179,17 @@ dmr_set_symbol_timing(const dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    int demod_rate = 0;
-#ifdef USE_RADIO
-    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
-        demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
-    }
-#endif
-
+    int demod_rate = frame_sync_current_demod_rate(opts, state);
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, demod_rate);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
 #ifdef USE_RADIO
-    rtl_maybe_update_symbol_profile(opts, state, 4800);
+    rtl_maybe_apply_active_demod_profile(opts, state);
 #endif
 }
 
 /* Modulation auto-detect state (file scope for reset access).
  * Vote counters and Hamming distance tracking for C4FM/QPSK/GFSK switching.
- * These are atomic because trunk_tune_to_freq() resets them from the tuning
+ * These are atomic because engine retune requests reset them from the tuning
  * thread while getFrameSync() reads/writes them on the DSP thread. */
 static atomic_int g_vote_qpsk = 0;
 static atomic_int g_vote_c4fm = 0;
@@ -273,7 +204,7 @@ enum { DSD_FRAME_SYNC_UI_PUBLISH_INTERVAL_MS = 50 };
 
 static void
 frame_sync_publish_ui_throttled(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || opts->use_ncurses_terminal != 1) {
+    if (!dsd_telemetry_is_active()) {
         return;
     }
 
@@ -284,16 +215,15 @@ frame_sync_publish_ui_throttled(const dsd_opts* opts, const dsd_state* state) {
     }
 
     dsd_atomic_u64_store_relaxed(&g_frame_sync_ui_last_publish_ms, now_ms);
-    ui_publish_both_and_redraw(opts, state);
+    dsd_telemetry_publish_both_and_redraw(opts, state);
 }
 
 static void
-p25p2_note_sync_activity(const dsd_opts* opts, dsd_state* state) {
+p25p2_note_sync_activity(dsd_opts* opts, dsd_state* state) {
     if (!state) {
         return;
     }
-    const int voice_tuned =
-        (opts && opts->p25_trunk == 1 && (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1)) ? 1 : 0;
+    const int voice_tuned = (opts && opts->trunk_enable == 1 && (opts->trunk_is_tuned == 1)) ? 1 : 0;
 
     /*
      * Exact P25P2 sync means the channel is present, but while following a VC it
@@ -301,8 +231,9 @@ p25p2_note_sync_activity(const dsd_opts* opts, dsd_state* state) {
      * LCCH/idle after a call ends; refreshing last_vc_sync_time here holds the
      * trunk release path open and delays return to the CC. Voice/MAC handlers
      * update last_vc_sync_time when the call is actually active.
-     */
+    */
     if (voice_tuned) {
+        dsd_frame_sync_hook_p25_sm_vc_sync(opts, state);
         return;
     }
 
@@ -324,16 +255,10 @@ dsd_frame_sync_reset_mod_state(void) {
 }
 
 /*
- * P25 CQPSK handling - matches OP25 exactly.
- *
- * OP25 does NOT use constellation permutation tables. It only uses:
- * 1. Normal sync detection (P25_FRAME_SYNC_MAGIC)
- * 2. Polarity reversal detection (reverse_p ^= 0x02)
- * 3. Tuning error detection (log only, no dibit remapping)
- *
- * The Costas loop handles legitimate 90° phase ambiguity via PT_45 rotation.
- * Tuning errors (±1200Hz, ±2400Hz) cannot be fixed by dibit remapping - they
- * require RF correction.
+ * P25 CQPSK handling follows OP25's frame-sync dibit maps. OP25 detects raw
+ * sync variants and applies the selected map at slicer output; dsd-neo also
+ * keeps a separate center estimate for RTL symbol streams, so rotated sync
+ * acceptance must calibrate that center from the raw symbol window.
  */
 
 void
@@ -342,7 +267,7 @@ printFrameSync(const dsd_opts* opts, const dsd_state* state, const char* framety
     UNUSED3(state, offset, modulation);
 
     char timestr[9];
-    getTimeC_buf(timestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
     if (opts->verbose > 0) {
         DSD_FPRINTF(stderr, "%s ", timestr);
         DSD_FPRINTF(stderr, "Sync: %s ", frametype);
@@ -361,6 +286,17 @@ printFrameSync(const dsd_opts* opts, const dsd_state* state, const char* framety
     /* stack buffer; no free */
 }
 
+enum {
+    FRAME_SYNC_WINDOW_8 = 1u << 0,
+    FRAME_SYNC_WINDOW_10 = 1u << 1,
+    FRAME_SYNC_WINDOW_12 = 1u << 2,
+    FRAME_SYNC_WINDOW_16 = 1u << 3,
+    FRAME_SYNC_WINDOW_20 = 1u << 4,
+    FRAME_SYNC_WINDOW_24 = 1u << 5,
+    FRAME_SYNC_WINDOW_32 = 1u << 6,
+    FRAME_SYNC_WINDOW_48 = 1u << 7,
+};
+
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;
@@ -369,8 +305,8 @@ typedef struct {
     int synctest_pos;
     float lmax;
     float lmin;
+    unsigned int ready_windows;
     char* modulation;
-    char* synctest_p;
     char* synctest;
     char* synctest8;
     char* synctest10;
@@ -380,6 +316,55 @@ typedef struct {
     char* synctest32;
     char* synctest48;
 } frame_sync_match_ctx;
+
+static unsigned int
+frame_sync_window_flag(int length) {
+    switch (length) {
+        case 8: return FRAME_SYNC_WINDOW_8;
+        case 10: return FRAME_SYNC_WINDOW_10;
+        case 12: return FRAME_SYNC_WINDOW_12;
+        case 16: return FRAME_SYNC_WINDOW_16;
+        case 20: return FRAME_SYNC_WINDOW_20;
+        case 24: return FRAME_SYNC_WINDOW_24;
+        case 32: return FRAME_SYNC_WINDOW_32;
+        case 48: return FRAME_SYNC_WINDOW_48;
+        default: return 0;
+    }
+}
+
+static int
+frame_sync_match_window_ready(const frame_sync_match_ctx* ctx, int length) {
+    const unsigned int flag = frame_sync_window_flag(length);
+    return ctx && flag != 0 && (ctx->ready_windows & flag) != 0;
+}
+
+static int
+frame_sync_match_profile_active(const frame_sync_match_ctx* ctx, int profile_index) {
+    if (!ctx || !ctx->opts || !ctx->state) {
+        return 0;
+    }
+    /* Stored symbols cannot be revisited after an SPS hunt profile advances. */
+    if (ctx->opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || ctx->opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
+        return 1;
+    }
+    return ctx->state->sps_hunt_idx == profile_index;
+}
+
+static int
+frame_sync_p25p2_profile_active(const frame_sync_match_ctx* ctx) {
+    if (frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4)) {
+        return 1;
+    }
+    if (!ctx || !ctx->opts || !ctx->state) {
+        return 0;
+    }
+    /* -m3 deliberately retains 10-SPS C4FM timing, which otherwise maps to profile 0. */
+    return ctx->opts->mod_p25p2_c4fm == 1 && ctx->opts->mod_cli_lock && ctx->opts->mod_c4fm == 1
+           && ctx->opts->mod_qpsk == 0 && ctx->opts->mod_gfsk == 0 && ctx->state->rf_mod == 0;
+}
+
+static int frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state);
+static int frame_sync_profile_uses_gfsk_exclusively(const dsd_opts* opts, int profile_index);
 
 static inline void
 frame_sync_set_basic_lock(frame_sync_match_ctx* ctx) {
@@ -396,6 +381,201 @@ frame_sync_note_cc_sync(frame_sync_match_ctx* ctx) {
     ctx->state->last_cc_sync_time_m = ctx->nowm;
 }
 
+static void
+frame_sync_set_p25_cqpsk_dibit_map(frame_sync_match_ctx* ctx, uint8_t map_idx) {
+    if (!ctx || !ctx->state) {
+        return;
+    }
+    ctx->state->p25_cqpsk_dibit_map_idx = dsd_p25_cqpsk_dibit_map_index(map_idx);
+}
+
+typedef enum {
+    FRAME_SYNC_P25_CENTER_AUTO = 0,
+    FRAME_SYNC_P25_CENTER_FORCE = 1,
+    FRAME_SYNC_P25_CENTER_SKIP = 2,
+} frame_sync_p25_center_mode_t;
+
+#ifdef USE_RADIO
+typedef struct {
+    float center;
+    float gain;
+} frame_sync_p25_cqpsk_raw_fit_t;
+
+static int
+frame_sync_cqpsk_raw_level_unit(uint8_t raw_dibit) {
+    static const int units[4] = {1, 3, -1, -3};
+    return units[raw_dibit & 0x3u];
+}
+
+static dsd_warm_start_result_t
+frame_sync_accumulate_p25_cqpsk_raw_sync(const dsd_state* state, const char* raw_window, int sync_len, float sum[4],
+                                         int count[4]) {
+    for (int i = 0; i < sync_len; i++) {
+        char c = raw_window[i];
+        if (c < '0' || c > '3') {
+            return DSD_WARM_START_DEGENERATE;
+        }
+        int raw_dibit = c - '0';
+        int back = sync_len - 1 - i;
+        sum[raw_dibit] += dsd_symbol_history_get_back(state, back);
+        count[raw_dibit]++;
+    }
+    return DSD_WARM_START_OK;
+}
+
+static dsd_warm_start_result_t
+frame_sync_fit_p25_cqpsk_raw_levels(const float sum[4], const int count[4], frame_sync_p25_cqpsk_raw_fit_t* out_fit) {
+    float sum_x = 0.0f;
+    float sum_y = 0.0f;
+    float sum_xx = 0.0f;
+    float sum_xy = 0.0f;
+    int n = 0;
+    for (uint8_t raw = 0; raw < 4u; raw++) {
+        if (count[raw] == 0) {
+            continue;
+        }
+        float x = (float)frame_sync_cqpsk_raw_level_unit(raw);
+        float y = sum[raw] / (float)count[raw];
+        sum_x += x;
+        sum_y += y;
+        sum_xx += x * x;
+        sum_xy += x * y;
+        n++;
+    }
+    if (n < 2) {
+        return DSD_WARM_START_DEGENERATE;
+    }
+
+    float denom = ((float)n * sum_xx) - (sum_x * sum_x);
+    if (fabsf(denom) < 1.0e-6f) {
+        return DSD_WARM_START_DEGENERATE;
+    }
+    float gain = (((float)n * sum_xy) - (sum_x * sum_y)) / denom;
+    if (fabsf(gain) * 2.0f < DSD_WARM_START_MIN_SPAN) {
+        return DSD_WARM_START_DEGENERATE;
+    }
+    if (!out_fit) {
+        return DSD_WARM_START_NULL_STATE;
+    }
+    out_fit->center = (sum_y - (gain * sum_x)) / (float)n;
+    out_fit->gain = gain;
+    return DSD_WARM_START_OK;
+}
+
+static dsd_warm_start_result_t
+frame_sync_fit_p25_cqpsk_raw_sync(const frame_sync_match_ctx* ctx, const char* raw_window, int sync_len,
+                                  frame_sync_p25_cqpsk_raw_fit_t* out_fit) {
+    if (!dsd_sync_warm_start_enabled()) {
+        return DSD_WARM_START_DISABLED;
+    }
+    if (!ctx || !ctx->state || !raw_window) {
+        return DSD_WARM_START_NULL_STATE;
+    }
+    const dsd_state* state = ctx->state;
+    if (sync_len <= 1 || strlen(raw_window) < (size_t)sync_len) {
+        return DSD_WARM_START_DEGENERATE;
+    }
+    if (state->symbol_history == NULL || dsd_symbol_history_count(state) < sync_len) {
+        return DSD_WARM_START_NO_HISTORY;
+    }
+
+    float sum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    int count[4] = {0, 0, 0, 0};
+    dsd_warm_start_result_t result = frame_sync_accumulate_p25_cqpsk_raw_sync(state, raw_window, sync_len, sum, count);
+    if (result != DSD_WARM_START_OK) {
+        return result;
+    }
+    return frame_sync_fit_p25_cqpsk_raw_levels(sum, count, out_fit);
+}
+
+static void
+frame_sync_seed_p25_cqpsk_level_windows(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+
+    int minmax_count = dsd_state_minmax_window_size(opts->msize);
+    for (int i = 0; i < minmax_count; i++) {
+        state->minbuf[i] = state->min;
+        state->maxbuf[i] = state->max;
+    }
+    dsd_state_invalidate_minmax_sums(state);
+
+    int symbol_count = opts->ssize;
+    if (symbol_count < 0) {
+        symbol_count = 0;
+    }
+    if (symbol_count > (int)(sizeof(state->sbuf) / sizeof(state->sbuf[0]))) {
+        symbol_count = (int)(sizeof(state->sbuf) / sizeof(state->sbuf[0]));
+    }
+    for (int i = 0; i < symbol_count; i++) {
+        state->sbuf[i] = (i & 1) ? state->max : state->min;
+    }
+}
+
+static void
+frame_sync_apply_p25_cqpsk_raw_fit(frame_sync_match_ctx* ctx, const frame_sync_p25_cqpsk_raw_fit_t* fit) {
+    if (!ctx || !ctx->state || !fit) {
+        return;
+    }
+
+    dsd_state* state = ctx->state;
+    float half_span = fabsf(fit->gain) * 3.0f;
+    state->center = fit->center;
+    state->min = fit->center - half_span;
+    state->max = fit->center + half_span;
+    state->umid = state->center + (state->max - state->center) * DSD_WARM_START_MID_FRACTION;
+    state->lmid = state->center + (state->min - state->center) * DSD_WARM_START_MID_FRACTION;
+    state->maxref = state->max * 0.80f;
+    state->minref = state->min * 0.80f;
+    frame_sync_seed_p25_cqpsk_level_windows(ctx->opts, state);
+}
+
+static int
+frame_sync_p25_cqpsk_map_requires_center_fit(uint8_t map_idx) {
+    map_idx = dsd_p25_cqpsk_dibit_map_index(map_idx);
+    return map_idx == DSD_P25_CQPSK_DIBIT_MAP_N1200 || map_idx == DSD_P25_CQPSK_DIBIT_MAP_P1200;
+}
+
+static int
+frame_sync_cqpsk_window_matches_map(const char* raw_window, const char* expected, uint8_t map_idx) {
+    if (!raw_window || !expected) {
+        return 0;
+    }
+
+    size_t expected_len = strlen(expected);
+    for (size_t i = 0; i < expected_len; i++) {
+        if (raw_window[i] < '0' || raw_window[i] > '3') {
+            return 0;
+        }
+        uint8_t raw_dibit = (uint8_t)(raw_window[i] - '0');
+        uint8_t corrected = dsd_p25_cqpsk_correct_dibit(map_idx, raw_dibit);
+        if ((char)('0' + corrected) != expected[i]) {
+            return 0;
+        }
+    }
+    return raw_window[expected_len] == '\0';
+}
+
+static int
+frame_sync_find_rotated_p25_cqpsk_map(const char* raw_window, const char* expected, uint8_t* out_map_idx) {
+    static const uint8_t rotation_maps[] = {
+        DSD_P25_CQPSK_DIBIT_MAP_X2400,
+        DSD_P25_CQPSK_DIBIT_MAP_N1200,
+        DSD_P25_CQPSK_DIBIT_MAP_P1200,
+    };
+    for (size_t i = 0; i < sizeof(rotation_maps) / sizeof(rotation_maps[0]); i++) {
+        if (frame_sync_cqpsk_window_matches_map(raw_window, expected, rotation_maps[i])) {
+            if (out_map_idx) {
+                *out_map_idx = rotation_maps[i];
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+#endif
+
 static inline void
 frame_sync_maybe_force_dmr_gfsk(const dsd_opts* opts, dsd_state* state) {
     if (!opts->mod_cli_lock || opts->mod_gfsk) {
@@ -403,105 +583,189 @@ frame_sync_maybe_force_dmr_gfsk(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
-static int
-frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
+static void
+frame_sync_accept_p25p1(frame_sync_match_ctx* ctx, int synctype, const char* label,
+                        frame_sync_p25_center_mode_t center_mode) {
+    const dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+#ifdef USE_RADIO
+    /* Hold the CQPSK chain the way P25p2 does, without claiming it: a P25p1 sync word is the
+     * same on both modulations, so it can only re-assert a decision already made, never make
+     * one. Re-pushing on every sync corrects front-end drift left by an engine retune. */
+    if (!opts->mod_cli_lock && state->rf_mod == 1) {
+        rtl_maybe_apply_active_demod_profile(opts, state);
+    }
+#endif
+    frame_sync_set_basic_lock(ctx);
+    /* Open the span this frame owns, or close any span still standing, according to which chain
+     * carried the sync. Only CQPSK closes it: there the NID is sliced by the QPSK chain and the
+     * NXDN matcher's blend is the wideband level tracker that chain leans on. GFSK opens it like
+     * C4FM does, because a P25p1 sync arriving under rf_mod 2 means the modulation votes have
+     * flapped off a C4FM signal -- which the loose NXDN window is itself what does here -- and
+     * that is precisely when the frame behind the sync most needs the profile to itself (#388). */
+    if (state->rf_mod == 1) {
+        state->p25_p1_c4fm_frame_valid = 0;
+    } else {
+        state->p25_p1_c4fm_frame_symbolcnt = state->symbolcnt;
+        state->p25_p1_c4fm_frame_valid = 1;
+    }
+    state->dmrburstR = 17;
+    state->payload_algidR = 0;
+    state->dmr_stereo = 1;
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "P25 Phase 1");
+    if (opts->errorbars == 1) {
+        printFrameSync(opts, state, label, ctx->synctest_pos + 1, ctx->modulation);
+    }
+    state->lastsynctype = synctype;
+    frame_sync_note_cc_sync(ctx);
+    if (center_mode != FRAME_SYNC_P25_CENTER_SKIP
+        && (center_mode == FRAME_SYNC_P25_CENTER_FORCE || state->rf_mod == 1)) {
+        dsd_sync_warm_start_center_outer_only(state, 24);
+    } else if (state->rf_mod == 0) {
+        dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
+    }
+}
+
+static void
+frame_sync_report_p25p2_params(dsd_opts* opts, dsd_state* state) {
+    if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0) {
+        printFrameInfo(opts, state);
+    } else {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, " P2 Missing Parameters            ");
+        DSD_FPRINTF(stderr, "%s", KNRM);
+    }
+}
+
+static void
+frame_sync_accept_p25p2(frame_sync_match_ctx* ctx, int synctype, int inverted, const char* label,
+                        int set_last_before_info, frame_sync_p25_center_mode_t center_mode) {
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (opts->frame_p25p1 != 1) {
+    if (!opts->mod_cli_lock) {
+        state->rf_mod = 1;
+#ifdef USE_RADIO
+        rtl_maybe_apply_active_demod_profile(opts, state);
+#endif
+    }
+    frame_sync_set_basic_lock(ctx);
+    opts->inverted_p2 = inverted;
+    if (set_last_before_info) {
+        state->lastsynctype = synctype;
+    }
+    if (opts->errorbars == 1) {
+        printFrameSync(opts, state, label, ctx->synctest_pos + 1, ctx->modulation);
+    }
+    frame_sync_report_p25p2_params(opts, state);
+    if (!set_last_before_info) {
+        state->lastsynctype = synctype;
+    }
+    p25p2_note_sync_activity(opts, state);
+    if (center_mode != FRAME_SYNC_P25_CENTER_SKIP
+        && (center_mode == FRAME_SYNC_P25_CENTER_FORCE || state->rf_mod == 1)) {
+        dsd_sync_warm_start_center_outer_only(state, 20);
+    }
+}
+
+#ifdef USE_RADIO
+static int
+frame_sync_try_rotated_p25(frame_sync_match_ctx* ctx, const char* symbols, const char* pattern, int pattern_len,
+                           int synctype, int inverted, const char* label, int phase2, int set_last_before_info) {
+    const dsd_opts* opts = ctx->opts;
+    const dsd_state* state = ctx->state;
+    uint8_t map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
+    if (!frame_sync_cqpsk_4level_enabled(opts, state)
+        || !frame_sync_find_rotated_p25_cqpsk_map(symbols, pattern, &map_idx)) {
+        return DSD_SYNC_NONE;
+    }
+
+    frame_sync_p25_cqpsk_raw_fit_t fit = {0.0f, 0.0f};
+    dsd_warm_start_result_t center_result = frame_sync_fit_p25_cqpsk_raw_sync(ctx, symbols, pattern_len, &fit);
+    if (frame_sync_p25_cqpsk_map_requires_center_fit(map_idx) && center_result != DSD_WARM_START_OK) {
+        return DSD_SYNC_NONE;
+    }
+
+    frame_sync_set_p25_cqpsk_dibit_map(ctx, map_idx);
+    if (phase2) {
+        frame_sync_accept_p25p2(ctx, synctype, inverted, label, set_last_before_info, FRAME_SYNC_P25_CENTER_SKIP);
+    } else {
+        frame_sync_accept_p25p1(ctx, synctype, label, FRAME_SYNC_P25_CENTER_SKIP);
+    }
+    if (center_result == DSD_WARM_START_OK) {
+        frame_sync_apply_p25_cqpsk_raw_fit(ctx, &fit);
+    }
+    return synctype;
+}
+#endif
+
+static int
+frame_sync_try_p25p1(frame_sync_match_ctx* ctx) {
+    if (ctx->opts->frame_p25p1 != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
+        || !frame_sync_match_window_ready(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
 
     if (strcmp(ctx->synctest, P25P1_SYNC) == 0) {
-        frame_sync_set_basic_lock(ctx);
-        state->dmrburstR = 17;
-        state->payload_algidR = 0;
-        state->dmr_stereo = 1;
-        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "P25 Phase 1");
-        if (opts->errorbars == 1) {
-            printFrameSync(opts, state, "+P25p1", ctx->synctest_pos + 1, ctx->modulation);
-        }
-        state->lastsynctype = DSD_SYNC_P25P1_POS;
-        frame_sync_note_cc_sync(ctx);
-        if (state->rf_mod == 0) {
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-        } else if (state->rf_mod == 1) {
-            dsd_sync_warm_start_center_outer_only(opts, state, 24);
-        }
+        frame_sync_set_p25_cqpsk_dibit_map(ctx, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY);
+        frame_sync_accept_p25p1(ctx, DSD_SYNC_P25P1_POS, "+P25p1", FRAME_SYNC_P25_CENTER_AUTO);
         return DSD_SYNC_P25P1_POS;
     }
 
     if (strcmp(ctx->synctest, INV_P25P1_SYNC) == 0) {
-        frame_sync_set_basic_lock(ctx);
-        state->dmrburstR = 17;
-        state->payload_algidR = 0;
-        state->dmr_stereo = 1;
-        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "P25 Phase 1");
-        if (opts->errorbars == 1) {
-            printFrameSync(opts, state, "-P25p1 ", ctx->synctest_pos + 1, ctx->modulation);
-        }
-        state->lastsynctype = DSD_SYNC_P25P1_NEG;
-        frame_sync_note_cc_sync(ctx);
-        if (state->rf_mod == 0) {
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-        } else if (state->rf_mod == 1) {
-            dsd_sync_warm_start_center_outer_only(opts, state, 24);
-        }
+        frame_sync_set_p25_cqpsk_dibit_map(ctx, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY);
+        frame_sync_accept_p25p1(ctx, DSD_SYNC_P25P1_NEG, "-P25p1 ", FRAME_SYNC_P25_CENTER_AUTO);
         return DSD_SYNC_P25P1_NEG;
     }
 
+#ifdef USE_RADIO
+    int sync_type =
+        frame_sync_try_rotated_p25(ctx, ctx->synctest, P25P1_SYNC, 24, DSD_SYNC_P25P1_POS, 0, "+P25p1", 0, 0);
+    if (sync_type != DSD_SYNC_NONE) {
+        return sync_type;
+    }
+    return frame_sync_try_rotated_p25(ctx, ctx->synctest, INV_P25P1_SYNC, 24, DSD_SYNC_P25P1_NEG, 0, "-P25p1 ", 0, 0);
+#else
     return DSD_SYNC_NONE;
+#endif
+}
+
+static int
+frame_sync_accept_x2tdma(frame_sync_match_ctx* ctx, int synctype, const char* label, int marks_first_frame) {
+    const dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    frame_sync_set_basic_lock(ctx);
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "X2-TDMA");
+    if (opts->errorbars == 1) {
+        printFrameSync(opts, state, label, ctx->synctest_pos + 1, ctx->modulation);
+    }
+    if (marks_first_frame && state->lastsynctype != synctype) {
+        state->firstframe = 1;
+    }
+    state->lastsynctype = synctype;
+    dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
+    return synctype;
 }
 
 static int
 frame_sync_try_x2tdma(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
-    dsd_state* state = ctx->state;
-    if (opts->frame_x2tdma != 1) {
+    if (opts->frame_x2tdma != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4)
+        || !frame_sync_match_window_ready(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
 
     if ((strcmp(ctx->synctest, X2TDMA_BS_DATA_SYNC) == 0) || (strcmp(ctx->synctest, X2TDMA_MS_DATA_SYNC) == 0)) {
-        frame_sync_set_basic_lock(ctx);
-        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "X2-TDMA");
         if (opts->inverted_x2tdma == 0) {
-            if (opts->errorbars == 1) {
-                printFrameSync(opts, state, "+X2-TDMA ", ctx->synctest_pos + 1, ctx->modulation);
-            }
-            state->lastsynctype = DSD_SYNC_X2TDMA_DATA_POS;
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-            return DSD_SYNC_X2TDMA_DATA_POS;
+            return frame_sync_accept_x2tdma(ctx, DSD_SYNC_X2TDMA_DATA_POS, "+X2-TDMA ", 0);
         }
-        if (opts->errorbars == 1) {
-            printFrameSync(opts, state, "-X2-TDMA ", ctx->synctest_pos + 1, ctx->modulation);
-        }
-        if (state->lastsynctype != DSD_SYNC_X2TDMA_VOICE_NEG) {
-            state->firstframe = 1;
-        }
-        state->lastsynctype = DSD_SYNC_X2TDMA_VOICE_NEG;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-        return DSD_SYNC_X2TDMA_VOICE_NEG;
+        return frame_sync_accept_x2tdma(ctx, DSD_SYNC_X2TDMA_VOICE_NEG, "-X2-TDMA ", 1);
     }
 
     if ((strcmp(ctx->synctest, X2TDMA_BS_VOICE_SYNC) == 0) || (strcmp(ctx->synctest, X2TDMA_MS_VOICE_SYNC) == 0)) {
-        frame_sync_set_basic_lock(ctx);
-        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "X2-TDMA");
         if (opts->inverted_x2tdma == 0) {
-            if (opts->errorbars == 1) {
-                printFrameSync(opts, state, "+X2-TDMA ", ctx->synctest_pos + 1, ctx->modulation);
-            }
-            if (state->lastsynctype != DSD_SYNC_X2TDMA_VOICE_POS) {
-                state->firstframe = 1;
-            }
-            state->lastsynctype = DSD_SYNC_X2TDMA_VOICE_POS;
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-            return DSD_SYNC_X2TDMA_VOICE_POS;
+            return frame_sync_accept_x2tdma(ctx, DSD_SYNC_X2TDMA_VOICE_POS, "+X2-TDMA ", 1);
         }
-        if (opts->errorbars == 1) {
-            printFrameSync(opts, state, "-X2-TDMA ", ctx->synctest_pos + 1, ctx->modulation);
-        }
-        state->lastsynctype = DSD_SYNC_X2TDMA_DATA_NEG;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 24);
-        return DSD_SYNC_X2TDMA_DATA_NEG;
+        return frame_sync_accept_x2tdma(ctx, DSD_SYNC_X2TDMA_DATA_NEG, "-X2-TDMA ", 0);
     }
 
     return DSD_SYNC_NONE;
@@ -511,8 +775,8 @@ static int
 frame_sync_try_ysf(frame_sync_match_ctx* ctx) {
     dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    dsd_strncpy_s(ctx->synctest20, 21, (ctx->synctest_p - 19), 20);
-    if (opts->frame_ysf != 1 || dsd_frame_sync_suppress_p25_alt_sync(opts, state)) {
+    if (opts->frame_ysf != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
+        || !frame_sync_match_window_ready(ctx, 20) || dsd_frame_sync_suppress_p25_alt_sync(opts, state)) {
         return DSD_SYNC_NONE;
     }
 
@@ -539,70 +803,60 @@ frame_sync_try_ysf(frame_sync_match_ctx* ctx) {
 
 static int
 frame_sync_try_p25p2(frame_sync_match_ctx* ctx) {
-    dsd_opts* opts = ctx->opts;
-    dsd_state* state = ctx->state;
-    dsd_strncpy_s(ctx->synctest20, 21, (ctx->synctest_p - 19), 20);
-    if (opts->frame_p25p2 != 1) {
+    if (ctx->opts->frame_p25p2 != 1 || !frame_sync_p25p2_profile_active(ctx)
+        || !frame_sync_match_window_ready(ctx, 20)) {
         return DSD_SYNC_NONE;
     }
 
     if (strcmp(ctx->synctest20, P25P2_SYNC) == 0) {
-        frame_sync_set_basic_lock(ctx);
-        opts->inverted_p2 = 0;
-        state->lastsynctype = DSD_SYNC_P25P2_POS;
-        if (opts->errorbars == 1) {
-            printFrameSync(opts, state, "+P25p2", ctx->synctest_pos + 1, ctx->modulation);
-        }
-        if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0) {
-            printFrameInfo(opts, state);
-        } else {
-            DSD_FPRINTF(stderr, "%s", KRED);
-            DSD_FPRINTF(stderr, " P2 Missing Parameters            ");
-            DSD_FPRINTF(stderr, "%s", KNRM);
-        }
-        p25p2_note_sync_activity(opts, state);
-        if (state->rf_mod == 1) {
-            dsd_sync_warm_start_center_outer_only(opts, state, 20);
-        }
+        frame_sync_set_p25_cqpsk_dibit_map(ctx, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY);
+        frame_sync_accept_p25p2(ctx, DSD_SYNC_P25P2_POS, 0, "+P25p2", 1, FRAME_SYNC_P25_CENTER_AUTO);
         return DSD_SYNC_P25P2_POS;
     }
 
     if (strcmp(ctx->synctest20, INV_P25P2_SYNC) == 0) {
-        frame_sync_set_basic_lock(ctx);
-        opts->inverted_p2 = 1;
-        if (opts->errorbars == 1) {
-            printFrameSync(opts, state, "-P25p2", ctx->synctest_pos + 1, ctx->modulation);
-        }
-        if (state->p2_wacn != 0 && state->p2_cc != 0 && state->p2_sysid != 0) {
-            printFrameInfo(opts, state);
-        } else {
-            DSD_FPRINTF(stderr, "%s", KRED);
-            DSD_FPRINTF(stderr, " P2 Missing Parameters            ");
-            DSD_FPRINTF(stderr, "%s", KNRM);
-        }
-        state->lastsynctype = DSD_SYNC_P25P2_NEG;
-        p25p2_note_sync_activity(opts, state);
-        if (state->rf_mod == 1) {
-            dsd_sync_warm_start_center_outer_only(opts, state, 20);
-        }
+        frame_sync_set_p25_cqpsk_dibit_map(ctx, DSD_P25_CQPSK_DIBIT_MAP_IDENTITY);
+        frame_sync_accept_p25p2(ctx, DSD_SYNC_P25P2_NEG, 1, "-P25p2", 0, FRAME_SYNC_P25_CENTER_AUTO);
         return DSD_SYNC_P25P2_NEG;
     }
 
+#ifdef USE_RADIO
+    int sync_type =
+        frame_sync_try_rotated_p25(ctx, ctx->synctest20, P25P2_SYNC, 20, DSD_SYNC_P25P2_POS, 0, "+P25p2", 1, 1);
+    if (sync_type != DSD_SYNC_NONE) {
+        return sync_type;
+    }
+    return frame_sync_try_rotated_p25(ctx, ctx->synctest20, INV_P25P2_SYNC, 20, DSD_SYNC_P25P2_NEG, 1, "-P25p2", 1, 0);
+#else
     return DSD_SYNC_NONE;
+#endif
+}
+
+/**
+ * @brief Record that an FS2 sync just opened a dPMR frame on the 2400/4 profile.
+ *
+ * The stamp is what dsd_frame_sync_suppress_nxdn48_sync() measures the frame's span from, so it
+ * is taken on every accepted FS2 -- including one arriving inside the previous frame's span,
+ * which re-arms the window rather than extending it indefinitely.
+ */
+static void
+frame_sync_note_dpmr_fs2_frame(dsd_state* state) {
+    state->dpmr_fs2_frame_symbolcnt = state->symbolcnt;
+    state->dpmr_fs2_frame_valid = 1;
 }
 
 static int
 frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    dsd_strncpy_s(ctx->synctest, 25, (ctx->synctest_p - 23), 24);
-    dsd_strncpy_s(ctx->synctest12, 13, (ctx->synctest_p - 11), 12);
-    if (opts->frame_dpmr != 1) {
+    if (opts->frame_dpmr != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4)
+        || !frame_sync_match_window_ready(ctx, 12)) {
         return DSD_SYNC_NONE;
     }
 
     if (opts->inverted_dpmr == 0 && strcmp(ctx->synctest12, DPMR_FRAME_SYNC_2) == 0) {
         frame_sync_set_basic_lock(ctx);
+        frame_sync_note_dpmr_fs2_frame(state);
         DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "dPMR ");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "+dPMR ", ctx->synctest_pos + 1, ctx->modulation);
@@ -614,6 +868,7 @@ frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
 
     if (opts->inverted_dpmr == 1 && strcmp(ctx->synctest12, INV_DPMR_FRAME_SYNC_2) == 0) {
         frame_sync_set_basic_lock(ctx);
+        frame_sync_note_dpmr_fs2_frame(state);
         DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "dPMR ");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "-dPMR ", ctx->synctest_pos + 1, ctx->modulation);
@@ -626,32 +881,86 @@ frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
     return DSD_SYNC_NONE;
 }
 
-static int
-frame_sync_try_m17_preamble(frame_sync_match_ctx* ctx, int ham_pre, int ham_piv) {
-    const dsd_opts* opts = ctx->opts;
+/**
+ * @brief Latch an M17 preamble as a candidate rather than accepting it as a sync.
+ *
+ * M17's preamble is `31313131` -- a pure alternating run with no structure to check. Any signal
+ * that alternates at 4800 baud presents one: D-STAR's bit sync does, and so does noise on an
+ * open squelch. Accepting it as a sync therefore said nothing about the signal, while demanding
+ * more of it -- an exact marker, or two exact markers in a row -- did not discriminate either,
+ * because doubling an alternating run leaves an alternating run. What that rule did do was
+ * reject real M17, whose markers arrive with the odd symbol error, and M17 has no other way into
+ * its sync chain: everything downstream is gated on `lastsynctype` (issue #399).
+ *
+ * So a preamble is treated as what it is -- a hint that a sync word may be about to arrive --
+ * and the decision waits for the LSF or BERT word behind it, which is eight symbols of real
+ * structure. Nothing is printed, no lock is taken and no thresholds move here; a signal that
+ * never produces the sync word costs a lapsed candidate and nothing else.
+ */
+static void
+frame_sync_note_m17_pre_candidate(frame_sync_match_ctx* ctx, int ham_pre, int ham_piv) {
     dsd_state* state = ctx->state;
 
-    if (ham_pre <= 1) {
-        state->m17_polarity = 1;
-        printFrameSync(opts, state, "+M17 PREAMBLE", ctx->synctest_pos + 1, ctx->modulation);
-        frame_sync_set_basic_lock(ctx);
-        state->lastsynctype = DSD_SYNC_M17_PRE_POS;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-        DSD_FPRINTF(stderr, "\n");
-        return DSD_SYNC_M17_PRE_POS;
+    if (ham_pre > 1 && ham_piv > 1) {
+        state->m17_pre_run = 0;
+        return;
     }
 
-    if (ham_piv <= 1) {
-        state->m17_polarity = 2;
-        printFrameSync(opts, state, "-M17 PREAMBLE", ctx->synctest_pos + 1, ctx->modulation);
-        frame_sync_set_basic_lock(ctx);
-        state->lastsynctype = DSD_SYNC_M17_PRE_NEG;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-        DSD_FPRINTF(stderr, "\n");
-        return DSD_SYNC_M17_PRE_NEG;
+    /* One matching window is not a preamble. A preamble is 192 symbols of alternating outer
+     * rails, so every window across it matches -- at one polarity or the other, since the run
+     * reads as its own inversion one symbol over -- and a real transmission has some 180 of
+     * them to spare. Noise supplies a single window at this tolerance often enough to matter,
+     * and supplies eight in a row essentially never. Counting the run is what separates the two
+     * without asking any single window to be cleaner than real M17 delivers (#399). */
+    if (state->m17_pre_run < DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS) {
+        state->m17_pre_run++;
+    }
+    if (state->m17_pre_run < DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS) {
+        return;
     }
 
-    return DSD_SYNC_NONE;
+    /* The other half of what the old accept did here, and the half worth keeping: a run of
+     * symbols alternating between the outer rails is the best level reference M17 ever offers,
+     * and the sync word behind it cannot be sliced without it. Carrier is deliberately not
+     * raised and nothing is printed -- an alternating run is not yet a lock. */
+    state->offset = ctx->synctest_pos;
+    state->max = ((state->max) + ctx->lmax) / 2;
+    state->min = ((state->min) + ctx->lmin) / 2;
+    dsd_sync_warm_start_thresholds_outer_only(ctx->opts, state, 8);
+
+    state->m17_pre_candidate = (ham_pre <= 1) ? 1 : 2;
+    state->m17_pre_candidate_ttl = DSD_FRAME_SYNC_M17_CANDIDATE_TTL;
+}
+
+/** @brief Age a latched candidate by one evaluation, dropping it when it lapses. */
+static void
+frame_sync_age_m17_pre_candidate(dsd_state* state) {
+    if (state->m17_pre_candidate == 0) {
+        return;
+    }
+    if (state->m17_pre_candidate_ttl > 0) {
+        state->m17_pre_candidate_ttl--;
+    }
+    if (state->m17_pre_candidate_ttl == 0) {
+        state->m17_pre_candidate = 0;
+    }
+}
+
+/**
+ * @brief Whether the M17 chain in progress has produced anything that checked out.
+ *
+ * Frame sync reads the protocol layer's evidence rather than re-deriving any of it. A chain that
+ * has proved nothing is not allowed to keep extending itself frame after frame, which is how a
+ * single false sync used to occupy the profile for the rest of a capture (#399).
+ *
+ * A pending weak streak counts, not just full confirmation: a real stream whose LSF arrived too
+ * damaged to clear its CRC rebuilds the link setup from the LICH carried by six consecutive
+ * stream frames, and demanding confirmation before the second of them would stop the chain that
+ * produces it. One clean LICH is enough to earn the next frame; noise does not supply even that.
+ */
+static int
+frame_sync_m17_chain_has_evidence(const dsd_state* state) {
+    return state->m17_confirmed != 0 || state->m17_confirm_weak_streak != 0;
 }
 
 static int
@@ -667,7 +976,8 @@ frame_sync_try_m17_eot(frame_sync_match_ctx* ctx, int ham_eot, int ham_eot_inv, 
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
     const int ham = is_inverted ? ham_eot_inv : ham_eot;
-    if (ham > 1 || !frame_sync_m17_eot_allowed_after(state->lastsynctype)) {
+    if (ham > 1 || !frame_sync_m17_eot_allowed_after(state->lastsynctype)
+        || !frame_sync_m17_chain_has_evidence(state)) {
         return DSD_SYNC_NONE;
     }
 
@@ -690,7 +1000,8 @@ frame_sync_try_m17_packet(frame_sync_match_ctx* ctx, int ham_pkt, int ham_brt, i
     dsd_state* state = ctx->state;
 
     if (ham_pkt <= 1 && !is_inverted) {
-        if (state->lastsynctype != DSD_SYNC_M17_LSF_POS && state->lastsynctype != DSD_SYNC_M17_PKT_POS) {
+        if (state->lastsynctype != DSD_SYNC_M17_LSF_POS
+            && !(state->lastsynctype == DSD_SYNC_M17_PKT_POS && frame_sync_m17_chain_has_evidence(state))) {
             return DSD_SYNC_NONE;
         }
         printFrameSync(opts, state, "+M17 PKT", ctx->synctest_pos + 1, ctx->modulation);
@@ -701,7 +1012,8 @@ frame_sync_try_m17_packet(frame_sync_match_ctx* ctx, int ham_pkt, int ham_brt, i
     }
 
     if (ham_brt <= 1 && is_inverted) {
-        if (state->lastsynctype != DSD_SYNC_M17_LSF_NEG && state->lastsynctype != DSD_SYNC_M17_PKT_NEG) {
+        if (state->lastsynctype != DSD_SYNC_M17_LSF_NEG
+            && !(state->lastsynctype == DSD_SYNC_M17_PKT_NEG && frame_sync_m17_chain_has_evidence(state))) {
             return DSD_SYNC_NONE;
         }
         printFrameSync(opts, state, "-M17 PKT", ctx->synctest_pos + 1, ctx->modulation);
@@ -720,7 +1032,8 @@ frame_sync_try_m17_stream(frame_sync_match_ctx* ctx, int ham_str, int ham_lsf, i
     dsd_state* state = ctx->state;
 
     if (ham_str <= 1 && !is_inverted) {
-        if (state->lastsynctype != DSD_SYNC_M17_LSF_POS && state->lastsynctype != DSD_SYNC_M17_STR_POS) {
+        if (state->lastsynctype != DSD_SYNC_M17_LSF_POS
+            && !(state->lastsynctype == DSD_SYNC_M17_STR_POS && frame_sync_m17_chain_has_evidence(state))) {
             return DSD_SYNC_NONE;
         }
         printFrameSync(opts, state, "+M17 STR", ctx->synctest_pos + 1, ctx->modulation);
@@ -731,7 +1044,8 @@ frame_sync_try_m17_stream(frame_sync_match_ctx* ctx, int ham_str, int ham_lsf, i
     }
 
     if (ham_lsf <= 1 && is_inverted) {
-        if (state->lastsynctype != DSD_SYNC_M17_LSF_NEG && state->lastsynctype != DSD_SYNC_M17_STR_NEG) {
+        if (state->lastsynctype != DSD_SYNC_M17_LSF_NEG
+            && !(state->lastsynctype == DSD_SYNC_M17_STR_NEG && frame_sync_m17_chain_has_evidence(state))) {
             return DSD_SYNC_NONE;
         }
         printFrameSync(opts, state, "-M17 STR", ctx->synctest_pos + 1, ctx->modulation);
@@ -753,27 +1067,28 @@ frame_sync_accept_m17(frame_sync_match_ctx* ctx, const char* label, int synctype
     return synctype;
 }
 
-static int
-frame_sync_after_m17_preamble(const dsd_state* state, int is_inverted) {
-    return (!is_inverted && state->lastsynctype == DSD_SYNC_M17_PRE_POS)
-           || (is_inverted && state->lastsynctype == DSD_SYNC_M17_PRE_NEG);
+/**
+ * @brief Spend a candidate on the sync word that confirmed it, at the polarity that word named.
+ */
+static void
+frame_sync_consume_m17_pre_candidate(dsd_state* state, int polarity) {
+    state->m17_polarity = (uint8_t)polarity;
+    state->m17_pre_candidate = 0;
+    state->m17_pre_candidate_ttl = 0;
 }
 
 static int
 frame_sync_after_m17_bert(const dsd_state* state, int is_inverted) {
+    /* A BERT frame carries no CRC and its sync word is eight symbols, so one accepted on noise
+     * used to hand the next frame the same permission and the chain sustained itself for the
+     * rest of the capture, crowding out every other protocol on the profile. Continuing it
+     * costs a PRBS9 lock -- the one thing a real bit-error-rate test has and noise does not.
+     * The session's first frame still arrives on a preamble candidate (#399). */
+    if (state->m17_bert_locked == 0) {
+        return 0;
+    }
     return (!is_inverted && state->lastsynctype == DSD_SYNC_M17_BRT_POS)
            || (is_inverted && state->lastsynctype == DSD_SYNC_M17_BRT_NEG);
-}
-
-static int
-frame_sync_try_m17_lsf_after_preamble(frame_sync_match_ctx* ctx, int ham_lsf, int ham_str, int is_inverted) {
-    const int hamming = is_inverted ? ham_str : ham_lsf;
-    if (hamming > 1) {
-        return DSD_SYNC_NONE;
-    }
-
-    return is_inverted ? frame_sync_accept_m17(ctx, "-M17 LSF", DSD_SYNC_M17_LSF_NEG)
-                       : frame_sync_accept_m17(ctx, "+M17 LSF", DSD_SYNC_M17_LSF_POS);
 }
 
 static int
@@ -790,33 +1105,68 @@ frame_sync_try_m17_bert_after_context(frame_sync_match_ctx* ctx, int ham_brt, in
 static int
 frame_sync_try_m17_lsf_or_bert(frame_sync_match_ctx* ctx, int ham_lsf, int ham_str, int ham_brt, int ham_pkt,
                                int is_inverted) {
-    const dsd_state* state = ctx->state;
-    const int after_preamble = frame_sync_after_m17_preamble(state, is_inverted);
-    const int after_bert = frame_sync_after_m17_bert(state, is_inverted);
-    if (!after_preamble && !after_bert) {
-        return DSD_SYNC_NONE;
-    }
+    dsd_state* state = ctx->state;
 
-    if (after_preamble) {
-        const int lsf_sync = frame_sync_try_m17_lsf_after_preamble(ctx, ham_lsf, ham_str, is_inverted);
-        if (lsf_sync != DSD_SYNC_NONE) {
-            return lsf_sync;
+    if (state->m17_pre_candidate != 0) {
+        /* An alternating run is symmetric: read one symbol later, the marker is its own
+         * inversion, so a preamble can never say which polarity the transmission has -- the old
+         * code's answer was whichever phase it happened to accept on. The sync word behind it
+         * can say, because M17_LSF and M17_STR are not shifts of each other. Try both readings
+         * and let the one that matches name the polarity the rest of the chain locks to. */
+        for (int pass = 0; pass < 2; pass++) {
+            const int inverted = (ctx->opts->inverted_m17 == 0) ? pass : !pass;
+            if ((inverted ? ham_str : ham_lsf) <= 1) {
+                frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1);
+                return inverted ? frame_sync_accept_m17(ctx, "-M17 LSF", DSD_SYNC_M17_LSF_NEG)
+                                : frame_sync_accept_m17(ctx, "+M17 LSF", DSD_SYNC_M17_LSF_POS);
+            }
+        }
+        for (int pass = 0; pass < 2; pass++) {
+            const int inverted = (ctx->opts->inverted_m17 == 0) ? pass : !pass;
+            if ((inverted ? ham_pkt : ham_brt) <= 1) {
+                frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1);
+                return inverted ? frame_sync_accept_m17(ctx, "-M17 BRT", DSD_SYNC_M17_BRT_NEG)
+                                : frame_sync_accept_m17(ctx, "+M17 BRT", DSD_SYNC_M17_BRT_POS);
+            }
         }
     }
 
-    return frame_sync_try_m17_bert_after_context(ctx, ham_brt, ham_pkt, is_inverted);
+    /* A BERT session repeats its own sync word without a fresh preamble between frames. */
+    if (frame_sync_after_m17_bert(state, is_inverted)) {
+        return frame_sync_try_m17_bert_after_context(ctx, ham_brt, ham_pkt, is_inverted);
+    }
+
+    return DSD_SYNC_NONE;
 }
 
 static int
 frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
-    const dsd_state* state = ctx->state;
-    if (opts->frame_m17 != 1) {
+    dsd_state* state = ctx->state;
+    if (opts->frame_m17 != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
+        || !frame_sync_match_window_ready(ctx, 8)) {
         return DSD_SYNC_NONE;
     }
 
-    dsd_strncpy_s(ctx->synctest16, 17, (ctx->synctest_p - 15), 16);
-    dsd_strncpy_s(ctx->synctest8, 9, (ctx->synctest_p - 7), 8);
+    /* The frame an accepted P25p1 sync opened is not this matcher's to read either. An M17
+     * preamble is an alternating run, which P25 payload supplies readily, and the candidate it
+     * latches is spendable on any sync word within one error -- so the run is dropped and a
+     * candidate already in hand is aged out rather than left to spend the moment the span
+     * lapses. Unlike the NXDN window below, this one stands down completely: what it would
+     * contribute is not a blend but a hard rewrite of every threshold from eight symbols of
+     * whatever is in hand, which is worth having from a real preamble and worth nothing from
+     * P25 payload (#388).
+     *
+     * A transmission the hunt has just stepped away from supplies the same thing: 2400-baud
+     * payload sliced at 4800 is as ready a source of alternating runs as P25's is, and it is
+     * still on air (#445). */
+    if (dsd_frame_sync_suppress_4800_4_for_p25p1_frame(opts, state)
+        || dsd_frame_sync_suppress_4800_4_for_2400_4_transmission(opts, state)) {
+        state->m17_pre_run = 0;
+        frame_sync_age_m17_pre_candidate(state);
+        return DSD_SYNC_NONE;
+    }
+
     int ham_pre = dsd_sync_hamming_distance(ctx->synctest8, M17_PRE, 8);
     int ham_piv = dsd_sync_hamming_distance(ctx->synctest8, M17_PIV, 8);
     int ham_lsf = dsd_sync_hamming_distance(ctx->synctest8, M17_LSF, 8);
@@ -826,15 +1176,19 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     int ham_eot = dsd_sync_hamming_distance(ctx->synctest8, M17_EOT, 8);
     int ham_eot_inv = dsd_sync_hamming_distance(ctx->synctest8, M17_EOT_INV, 8);
     int is_inverted = opts->inverted_m17;
-    if (!opts->inverted_m17 && state->m17_polarity == 2) {
-        is_inverted = 1;
+    if (!opts->inverted_m17) {
+        /* Before any frame has been accepted the polarity of the run in hand is all there is to
+         * go on, so a pending candidate speaks for it. */
+        const int polarity = state->m17_polarity != 0 ? state->m17_polarity : state->m17_pre_candidate;
+        if (polarity == 2) {
+            is_inverted = 1;
+        }
     }
 
-    int sync_type = frame_sync_try_m17_preamble(ctx, ham_pre, ham_piv);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
-    }
-    sync_type = frame_sync_try_m17_eot(ctx, ham_eot, ham_eot_inv, is_inverted);
+    frame_sync_age_m17_pre_candidate(state);
+    frame_sync_note_m17_pre_candidate(ctx, ham_pre, ham_piv);
+
+    int sync_type = frame_sync_try_m17_eot(ctx, ham_eot, ham_eot_inv, is_inverted);
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
     }
@@ -852,8 +1206,8 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
 static inline void
 frame_sync_prepare_dmr_sync(frame_sync_match_ctx* ctx) {
     frame_sync_set_basic_lock(ctx);
-    dmr_set_symbol_timing(ctx->opts, ctx->state);
     frame_sync_maybe_force_dmr_gfsk(ctx->opts, ctx->state);
+    dmr_set_symbol_timing(ctx->opts, ctx->state);
 }
 
 static int
@@ -1066,8 +1420,28 @@ frame_sync_try_dmr_dm_ts2_voice(frame_sync_match_ctx* ctx) {
 }
 
 static int
+frame_sync_try_dmr_rc_data(frame_sync_match_ctx* ctx) {
+    dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    /* The RC sync has no voice/data complement partner: its symbol-wise
+     * complement is the ETSI-reserved pattern, so it maps to RC only when the
+     * input polarity is inverted and is never claimed at normal polarity. */
+    const char* pattern = (opts->inverted_dmr == 0) ? DMR_MS_RC_SYNC : DMR_MS_RC_SYNC_INV;
+    if (strcmp(ctx->synctest, pattern) != 0) {
+        return DSD_SYNC_NONE;
+    }
+
+    frame_sync_prepare_dmr_sync(ctx);
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR RC");
+    state->lastsynctype = DSD_SYNC_DMR_RC_DATA;
+    dmr_resample_on_sync(opts, state);
+    return DSD_SYNC_DMR_RC_DATA;
+}
+
+static int
 frame_sync_try_dmr(frame_sync_match_ctx* ctx) {
-    if (ctx->opts->frame_dmr != 1) {
+    if (ctx->opts->frame_dmr != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
+        || !frame_sync_match_window_ready(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
 
@@ -1099,63 +1473,80 @@ frame_sync_try_dmr(frame_sync_match_ctx* ctx) {
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
     }
-    return frame_sync_try_dmr_dm_ts2_voice(ctx);
+    sync_type = frame_sync_try_dmr_dm_ts2_voice(ctx);
+    if (sync_type != DSD_SYNC_NONE) {
+        return sync_type;
+    }
+    return frame_sync_try_dmr_rc_data(ctx);
+}
+
+static int
+frame_sync_symbols_match_either(const char* symbols, const char* pattern_a, const char* pattern_b) {
+    return strcmp(symbols, pattern_a) == 0 || strcmp(symbols, pattern_b) == 0;
+}
+
+static int
+frame_sync_accept_provoice(frame_sync_match_ctx* ctx, int synctype, const char* label, int always_print) {
+    const dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    frame_sync_note_cc_sync(ctx);
+    frame_sync_set_basic_lock(ctx);
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "ProVoice ");
+    if (always_print || opts->errorbars == 1) {
+        printFrameSync(opts, state, label, ctx->synctest_pos + 1, ctx->modulation);
+    }
+    state->lastsynctype = synctype;
+    dsd_sync_warm_start_thresholds_outer_only(opts, state, 32);
+    return synctype;
+}
+
+static int
+frame_sync_accept_edacs(frame_sync_match_ctx* ctx, int synctype, const char* label) {
+    const dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    dsd_mark_cc_sync(state);
+    frame_sync_set_basic_lock(ctx);
+    printFrameSync(opts, state, label, ctx->synctest_pos + 1, ctx->modulation);
+    state->lastsynctype = synctype;
+    dsd_sync_warm_start_thresholds_outer_only(opts, state, 48);
+    return synctype;
+}
+
+static void
+frame_sync_handle_edacs_dotting(frame_sync_match_ctx* ctx) {
+    dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    if (opts->trunk_enable == 1 && opts->trunk_is_tuned == 1) {
+        printFrameSync(opts, state, " EDACS  DOTTING SEQUENCE: ", ctx->synctest_pos + 1, ctx->modulation);
+        dsd_frame_sync_hook_eot_cc(opts, state);
+    }
 }
 
 static int
 frame_sync_try_provoice(frame_sync_match_ctx* ctx) {
-    dsd_opts* opts = ctx->opts;
-    dsd_state* state = ctx->state;
-    if (opts->frame_provoice != 1) {
+    const dsd_opts* opts = ctx->opts;
+    if (opts->frame_provoice != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_9600_2)) {
         return DSD_SYNC_NONE;
     }
 
-    dsd_strncpy_s(ctx->synctest32, 33, (ctx->synctest_p - 31), 32);
-    dsd_strncpy_s(ctx->synctest48, 49, (ctx->synctest_p - 47), 48);
-    if ((strcmp(ctx->synctest32, PROVOICE_SYNC) == 0) || (strcmp(ctx->synctest32, PROVOICE_EA_SYNC) == 0)) {
-        frame_sync_note_cc_sync(ctx);
-        frame_sync_set_basic_lock(ctx);
-        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "ProVoice ");
-        if (opts->errorbars == 1) {
-            printFrameSync(opts, state, "+PV   ", ctx->synctest_pos + 1, ctx->modulation);
+    if (frame_sync_match_window_ready(ctx, 32)) {
+        if (frame_sync_symbols_match_either(ctx->synctest32, PROVOICE_SYNC, PROVOICE_EA_SYNC)) {
+            return frame_sync_accept_provoice(ctx, DSD_SYNC_PROVOICE_POS, "+PV   ", 0);
         }
-        state->lastsynctype = DSD_SYNC_PROVOICE_POS;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 32);
-        return DSD_SYNC_PROVOICE_POS;
+        if (frame_sync_symbols_match_either(ctx->synctest32, INV_PROVOICE_SYNC, INV_PROVOICE_EA_SYNC)) {
+            return frame_sync_accept_provoice(ctx, DSD_SYNC_PROVOICE_NEG, "-PV   ", 1);
+        }
     }
 
-    if ((strcmp(ctx->synctest32, INV_PROVOICE_SYNC) == 0) || (strcmp(ctx->synctest32, INV_PROVOICE_EA_SYNC) == 0)) {
-        frame_sync_note_cc_sync(ctx);
-        frame_sync_set_basic_lock(ctx);
-        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "ProVoice ");
-        printFrameSync(opts, state, "-PV   ", ctx->synctest_pos + 1, ctx->modulation);
-        state->lastsynctype = DSD_SYNC_PROVOICE_NEG;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 32);
-        return DSD_SYNC_PROVOICE_NEG;
-    }
-
-    if (strcmp(ctx->synctest48, EDACS_SYNC) == 0) {
-        dsd_mark_cc_sync(state);
-        frame_sync_set_basic_lock(ctx);
-        printFrameSync(opts, state, "-EDACS", ctx->synctest_pos + 1, ctx->modulation);
-        state->lastsynctype = DSD_SYNC_EDACS_NEG;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 48);
-        return DSD_SYNC_EDACS_NEG;
-    }
-
-    if (strcmp(ctx->synctest48, INV_EDACS_SYNC) == 0) {
-        dsd_mark_cc_sync(state);
-        frame_sync_set_basic_lock(ctx);
-        printFrameSync(opts, state, "+EDACS", ctx->synctest_pos + 1, ctx->modulation);
-        state->lastsynctype = DSD_SYNC_EDACS_POS;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 48);
-        return DSD_SYNC_EDACS_POS;
-    }
-
-    if ((strcmp(ctx->synctest48, DOTTING_SEQUENCE_A) == 0) || (strcmp(ctx->synctest48, DOTTING_SEQUENCE_B) == 0)) {
-        if (opts->p25_trunk == 1 && opts->p25_is_tuned == 1) {
-            printFrameSync(opts, state, " EDACS  DOTTING SEQUENCE: ", ctx->synctest_pos + 1, ctx->modulation);
-            dsd_frame_sync_hook_eot_cc(opts, state);
+    if (frame_sync_match_window_ready(ctx, 48)) {
+        if (strcmp(ctx->synctest48, EDACS_SYNC) == 0) {
+            return frame_sync_accept_edacs(ctx, DSD_SYNC_EDACS_NEG, "-EDACS");
+        }
+        if (strcmp(ctx->synctest48, INV_EDACS_SYNC) == 0) {
+            return frame_sync_accept_edacs(ctx, DSD_SYNC_EDACS_POS, "+EDACS");
+        }
+        if (frame_sync_symbols_match_either(ctx->synctest48, DOTTING_SEQUENCE_A, DOTTING_SEQUENCE_B)) {
+            frame_sync_handle_edacs_dotting(ctx);
         }
     }
 
@@ -1166,7 +1557,8 @@ static int
 frame_sync_try_dstar(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (opts->frame_dstar != 1 || dsd_frame_sync_suppress_p25_alt_sync(opts, state)) {
+    if (opts->frame_dstar != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_2)
+        || !frame_sync_match_window_ready(ctx, 24) || dsd_frame_sync_suppress_p25_alt_sync(opts, state)) {
         return DSD_SYNC_NONE;
     }
 
@@ -1218,43 +1610,77 @@ frame_sync_try_dstar(frame_sync_match_ctx* ctx) {
 }
 
 static int
+frame_sync_nxdn_sync_type(const char* symbols) {
+    static const char* const positive_patterns[] = {"3131331131", "3331331131", "3131331111", "3331331111",
+                                                    "3131311131"};
+    static const char* const negative_patterns[] = {"1313113313", "1113113313", "1313113333", "1113113333",
+                                                    "1313133313"};
+    for (size_t i = 0; i < sizeof(positive_patterns) / sizeof(positive_patterns[0]); i++) {
+        if (strcmp(symbols, positive_patterns[i]) == 0) {
+            return DSD_SYNC_NXDN_POS;
+        }
+        if (strcmp(symbols, negative_patterns[i]) == 0) {
+            return DSD_SYNC_NXDN_NEG;
+        }
+    }
+    return DSD_SYNC_NONE;
+}
+
+static int
 frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if ((opts->frame_nxdn96 != 1) && (opts->frame_nxdn48 != 1)) {
+    int nxdn_profile_enabled = 0;
+    if (opts->audio_in_type == AUDIO_IN_SYMBOL_BIN || opts->audio_in_type == AUDIO_IN_SYMBOL_FLT) {
+        /* Symbol captures carry no rate metadata, so an enabled variant must be unambiguous. */
+        nxdn_profile_enabled = (opts->frame_nxdn48 == 1) != (opts->frame_nxdn96 == 1);
+    } else {
+        /* The 2400/4 term yields to dPMR outright: that is the profile the two share, and the
+         * frame a 12-symbol FS2 opened is not this matcher's to re-open (#374). */
+        nxdn_profile_enabled =
+            (opts->frame_nxdn96 == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4))
+            || (opts->frame_nxdn48 == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4)
+                && !dsd_frame_sync_suppress_nxdn48_sync(opts, state));
+    }
+    if (!nxdn_profile_enabled || !frame_sync_match_window_ready(ctx, 10)) {
         return DSD_SYNC_NONE;
     }
 
-    dsd_strncpy_s(ctx->synctest10, 11, (ctx->synctest_p - 9), 10);
-    if ((strcmp(ctx->synctest10, "3131331131") == 0) || (strcmp(ctx->synctest10, "3331331131") == 0)
-        || (strcmp(ctx->synctest10, "3131331111") == 0) || (strcmp(ctx->synctest10, "3331331111") == 0)
-        || (strcmp(ctx->synctest10, "3131311131") == 0)) {
-        state->offset = ctx->synctest_pos;
-        state->max = ((state->max) + ctx->lmax) / 2;
-        state->min = ((state->min) + ctx->lmin) / 2;
-        if (state->lastsynctype == DSD_SYNC_NXDN_POS) {
-            frame_sync_note_cc_sync(ctx);
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
-            return DSD_SYNC_NXDN_POS;
-        }
-        state->lastsynctype = DSD_SYNC_NXDN_POS;
+    const int synctype = frame_sync_nxdn_sync_type(ctx->synctest10);
+    if (synctype == DSD_SYNC_NONE) {
         return DSD_SYNC_NONE;
     }
 
-    if ((strcmp(ctx->synctest10, "1313113313") == 0) || (strcmp(ctx->synctest10, "1113113313") == 0)
-        || (strcmp(ctx->synctest10, "1313113333") == 0) || (strcmp(ctx->synctest10, "1113113333") == 0)
-        || (strcmp(ctx->synctest10, "1313133313") == 0)) {
-        state->offset = ctx->synctest_pos;
-        state->max = ((state->max) + ctx->lmax) / 2;
-        state->min = ((state->min) + ctx->lmin) / 2;
-        if (state->lastsynctype == DSD_SYNC_NXDN_NEG) {
-            frame_sync_note_cc_sync(ctx);
-            dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
-            return DSD_SYNC_NXDN_NEG;
-        }
-        state->lastsynctype = DSD_SYNC_NXDN_NEG;
+    state->max = ((state->max) + ctx->lmax) / 2;
+    state->min = ((state->min) + ctx->lmin) / 2;
+
+    /* 4800/4 is the one profile where this matcher cannot simply stand down inside the frame it
+     * is intruding on. The blend above is the wideband level estimate the other protocols there
+     * lean on -- withdraw it for the span and the CQPSK voice capture stops decoding its HDU
+     * altogether -- so what the span withholds is the sync, not the levels. Refusing here rather
+     * than at the profile gate keeps the estimate flowing while denying the accept everything it
+     * costs P25p1: the symbols the handler would read, a slicer warm-started from P25 payload,
+     * the control-channel timestamp, and the lastsynctype that keeps use_symbol()'s C4FM
+     * threshold tracker engaged between one P25p1 sync and the next (#388). The offset is left
+     * alone for the same reason -- inside this span it belongs to the frame P25p1 opened.
+     *
+     * The second span withholds it for a transmission proved on 2400/4 that the hunt has since
+     * stepped off, which this matcher would otherwise read at twice its rate and accept as
+     * NXDN96 (#445). The profile term above is what keeps that guard off the NXDN48 arm on
+     * 2400/4: the transmission it protects is the one it must never mute. */
+    if (frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
+        && (dsd_frame_sync_suppress_4800_4_for_p25p1_frame(opts, state)
+            || dsd_frame_sync_suppress_4800_4_for_2400_4_transmission(opts, state))) {
+        return DSD_SYNC_NONE;
     }
 
+    state->offset = ctx->synctest_pos;
+    if (state->lastsynctype == synctype) {
+        frame_sync_note_cc_sync(ctx);
+        dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
+        return synctype;
+    }
+    state->lastsynctype = synctype;
     return DSD_SYNC_NONE;
 }
 
@@ -1266,10 +1692,10 @@ frame_sync_pvconv_decode_addrs(const frame_sync_match_ctx* ctx, char one_symbol,
     for (int bit = 0; bit < 8; bit++) {
         *tx_addr = (uint8_t)(*tx_addr << 1);
         *rx_addr = (uint8_t)(*rx_addr << 1);
-        if (*(ctx->synctest_p - 15 + bit) == one_symbol) {
+        if (ctx->synctest16[bit] == one_symbol) {
             *tx_addr = (uint8_t)(*tx_addr + 1);
         }
-        if (*(ctx->synctest_p - 7 + bit) == one_symbol) {
+        if (ctx->synctest16[8 + bit] == one_symbol) {
             *rx_addr = (uint8_t)(*rx_addr + 1);
         }
     }
@@ -1279,13 +1705,12 @@ static int
 frame_sync_try_provoice_conventional(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
-    if (opts->frame_provoice != 1) {
+    if (opts->frame_provoice != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_9600_2)
+        || !frame_sync_match_window_ready(ctx, 32)) {
         return DSD_SYNC_NONE;
     }
 
-    DSD_MEMSET(ctx->synctest32, 0, 33);
-    dsd_strncpy_s(ctx->synctest32, 33, (ctx->synctest_p - 31), 16);
-    if (strcmp(ctx->synctest32, INV_PROVOICE_CONV_SHORT) == 0) {
+    if (strncmp(ctx->synctest32, INV_PROVOICE_CONV_SHORT, 16) == 0) {
         if (state->lastsynctype == DSD_SYNC_PROVOICE_NEG) {
             frame_sync_set_basic_lock(ctx);
             DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "ProVoice ");
@@ -1306,7 +1731,7 @@ frame_sync_try_provoice_conventional(frame_sync_match_ctx* ctx) {
         return DSD_SYNC_NONE;
     }
 
-    if (strcmp(ctx->synctest32, PROVOICE_CONV_SHORT) == 0) {
+    if (strncmp(ctx->synctest32, PROVOICE_CONV_SHORT, 16) == 0) {
         if (state->lastsynctype == DSD_SYNC_PROVOICE_POS) {
             frame_sync_set_basic_lock(ctx);
             DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "ProVoice ");
@@ -1337,7 +1762,7 @@ frame_sync_try_provoice_conventional(frame_sync_match_ctx* ctx) {
 #endif
 
 static int
-frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
+frame_sync_try_protocol_matches_inner(frame_sync_match_ctx* ctx) {
     int sync_type = frame_sync_try_p25p1(ctx);
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
@@ -1373,13 +1798,17 @@ frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
         return sync_type;
     }
 
-    if (ctx->opts->frame_provoice == 1) {
-        sync_type = frame_sync_try_provoice(ctx);
-    } else if (ctx->opts->frame_dstar == 1) {
-        sync_type = frame_sync_try_dstar(ctx);
-    } else if (ctx->opts->frame_nxdn96 == 1 || ctx->opts->frame_nxdn48 == 1) {
-        sync_type = frame_sync_try_nxdn(ctx);
+    sync_type = frame_sync_try_provoice(ctx);
+    if (sync_type != DSD_SYNC_NONE) {
+        return sync_type;
     }
+
+    sync_type = frame_sync_try_dstar(ctx);
+    if (sync_type != DSD_SYNC_NONE) {
+        return sync_type;
+    }
+
+    sync_type = frame_sync_try_nxdn(ctx);
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
     }
@@ -1387,25 +1816,51 @@ frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
     return frame_sync_try_provoice_conventional(ctx);
 }
 
-static void
+/* Every accept the sync hunt makes passes through here, which is where the symbol-timing
+ * diagnostic measures the phase the grid settled on. The template is the trailing
+ * DSD_SYMBOL_TIMING_TEMPLATE_SYMS decided dibits rather than the matched sync word: those
+ * are inside the sync word whatever matched -- no protocol's word is shorter -- so no
+ * per-protocol window table has to be kept in step with the matchers above.
+ *
+ * In-frame resyncs a protocol handler does privately do not come through here. */
+static int
+frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
+    const int sync_type = frame_sync_try_protocol_matches_inner(ctx);
+    if (sync_type != DSD_SYNC_NONE && frame_sync_match_window_ready(ctx, DSD_SYMBOL_TIMING_TEMPLATE_SYMS)) {
+        dsd_symbol_timing_report_sync(ctx->state, sync_type, ctx->synctest8);
+    }
+    return sync_type;
+}
+
+static time_t g_p25_trunk_tick_last_tick = 0;
+static time_t g_p25_trunk_tick_last_p25_seen = 0;
+
+void
 frame_sync_maybe_tick_p25_trunk_sm(dsd_opts* opts, dsd_state* state, time_t now) {
-    static time_t last_tick = 0;
-    static time_t last_p25_seen = 0;
-    if (now == last_tick) {
+    if (now == g_p25_trunk_tick_last_tick) {
         return;
     }
 
     int p25_by_sync = DSD_SYNC_IS_P25(state->lastsynctype) ? 1 : 0;
     if (p25_by_sync) {
-        last_p25_seen = now;
+        g_p25_trunk_tick_last_p25_seen = now;
     }
-    int p25_recent = (last_p25_seen != 0 && (now - last_p25_seen) <= 3) ? 1 : 0;
+    int p25_recent = (g_p25_trunk_tick_last_p25_seen != 0 && (now - g_p25_trunk_tick_last_p25_seen) <= 3) ? 1 : 0;
     int p25_active = p25_by_sync || p25_recent || (state->p25_p2_active_slot != -1);
-    if (opts->p25_trunk == 1 && p25_active) {
+    if (opts->trunk_enable == 1 && p25_active) {
         dsd_frame_sync_hook_p25_sm_try_tick(opts, state);
     }
-    last_tick = now;
+    g_p25_trunk_tick_last_tick = now;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_frame_sync_test_reset_p25_trunk_tick_state(void) {
+    g_p25_trunk_tick_last_tick = 0;
+    g_p25_trunk_tick_last_p25_seen = 0;
+}
+
+#endif
 
 static inline void
 frame_sync_apply_cli_mod_lock(const dsd_opts* opts, dsd_state* state) {
@@ -1417,27 +1872,29 @@ frame_sync_apply_cli_mod_lock(const dsd_opts* opts, dsd_state* state) {
 
 static int
 frame_sync_select_t_max(const dsd_opts* opts, const dsd_state* state) {
-    if (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1) {
-        return 10;
+    switch (state->sps_hunt_idx) {
+        case DSD_FRAME_SYNC_SPS_PROFILE_2400_4: return 12;
+        case DSD_FRAME_SYNC_SPS_PROFILE_6000_4:
+            if (state->rf_mod == 1 && opts->frame_p25p2 == 1) {
+                return 19;
+            }
+            return 24;
+        case DSD_FRAME_SYNC_SPS_PROFILE_4800_4:
+            if (DSD_SYNC_IS_YSF(state->lastsynctype)) {
+                return 20;
+            }
+            return 24;
+        default: return 24;
     }
-    if (opts->frame_dpmr == 1) {
-        return 12;
-    }
-    if (opts->frame_m17 == 1) {
-        return 8;
-    }
-    if (DSD_SYNC_IS_YSF(state->lastsynctype)) {
-        return 20;
-    }
-    if (DSD_SYNC_IS_P25P2(state->lastsynctype) || (state->p25_p2_active_slot >= 0 && opts->frame_p25p2 == 1)) {
-        return 19;
-    }
-    return 24;
 }
 
 static inline void
-frame_sync_update_symbol_ring(const dsd_opts* opts, dsd_state* state, float symbol, float* lbuf, int* lidx, int t_max) {
+frame_sync_update_symbol_ring(const dsd_opts* opts, dsd_state* state, float symbol, float* lbuf, int* lidx,
+                              int* level_count, int t_max) {
     lbuf[*lidx] = symbol;
+    if (*level_count < t_max) {
+        (*level_count)++;
+    }
     state->sbuf[state->sidx] = symbol;
     if (*lidx == (t_max - 1)) {
         *lidx = 0;
@@ -1451,9 +1908,19 @@ frame_sync_update_symbol_ring(const dsd_opts* opts, dsd_state* state, float symb
     }
 }
 
-static int
-frame_sync_bias_want_mod_with_snr(const dsd_state* state, int want_mod) {
 #ifdef USE_RADIO
+static int
+frame_sync_should_bypass_c4fm_qpsk_snr_bias(const dsd_opts* opts, const dsd_state* state, int want_mod) {
+    return want_mod == 2 && frame_sync_profile_uses_gfsk_exclusively(opts, state->sps_hunt_idx);
+}
+#endif
+
+static int
+frame_sync_bias_want_mod_with_snr(const dsd_opts* opts, const dsd_state* state, int want_mod) {
+#ifdef USE_RADIO
+    if (frame_sync_should_bypass_c4fm_qpsk_snr_bias(opts, state, want_mod)) {
+        return want_mod;
+    }
     double snr_c = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
     double snr_q = dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
     if (snr_c <= -50.0) {
@@ -1490,6 +1957,7 @@ frame_sync_bias_want_mod_with_snr(const dsd_state* state, int want_mod) {
         return 1;
     }
 #else
+    UNUSED(opts);
     UNUSED(state);
 #endif
     return want_mod;
@@ -1517,23 +1985,42 @@ frame_sync_ham_for_mod(int mod, int ham_c4fm, int ham_qpsk, int ham_gfsk) {
 }
 
 static int
-frame_sync_override_want_mod_with_hamming(const dsd_opts* opts, int want_mod) {
+frame_sync_c4fm_ham_candidate_enabled(const dsd_opts* opts, const dsd_state* state) {
+    return state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && opts->frame_p25p1 == 1;
+}
+
+static int
+frame_sync_qpsk_ham_candidate_enabled(const dsd_opts* opts, const dsd_state* state) {
+    return (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && opts->frame_p25p1 == 1)
+           || (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4 && opts->frame_p25p2 == 1);
+}
+
+static int
+frame_sync_gfsk_ham_candidate_enabled(const dsd_opts* opts, const dsd_state* state) {
+    return (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4
+            && (opts->frame_dmr == 1 || opts->frame_nxdn96 == 1))
+           || (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4
+               && (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1))
+           || frame_sync_sps_profile_for_index(state->sps_hunt_idx)->levels == 2;
+}
+
+static int
+frame_sync_override_want_mod_with_hamming(const dsd_opts* opts, const dsd_state* state, int want_mod) {
     int ham_c4fm = frame_sync_decay_recent_ham(&g_ham_c4fm_recent);
     int ham_qpsk = frame_sync_decay_recent_ham(&g_ham_qpsk_recent);
     int ham_gfsk = frame_sync_decay_recent_ham(&g_ham_gfsk_recent);
 
     int best_mod = want_mod;
     int best_ham = frame_sync_ham_for_mod(want_mod, ham_c4fm, ham_qpsk, ham_gfsk);
-    if (ham_c4fm < best_ham) {
+    if (frame_sync_c4fm_ham_candidate_enabled(opts, state) && ham_c4fm < best_ham) {
         best_ham = ham_c4fm;
         best_mod = 0;
     }
-    int qpsk_enabled = (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1);
-    if (qpsk_enabled && ham_qpsk < best_ham) {
+    if (frame_sync_qpsk_ham_candidate_enabled(opts, state) && ham_qpsk < best_ham) {
         best_ham = ham_qpsk;
         best_mod = 1;
     }
-    if (ham_gfsk < best_ham) {
+    if (frame_sync_gfsk_ham_candidate_enabled(opts, state) && ham_gfsk < best_ham) {
         best_ham = ham_gfsk;
         best_mod = 2;
     }
@@ -1549,6 +2036,41 @@ frame_sync_override_want_mod_with_hamming(const dsd_opts* opts, int want_mod) {
         return best_mod;
     }
     return want_mod;
+}
+
+/**
+ * @brief Keep the CQPSK chain while it is the one decoding P25p1 frames.
+ *
+ * Both inputs to the modulation vote are indirect: the SNR bias compares an estimate the
+ * inactive chain cannot make honestly, and the sync-hamming candidates score patterns a strong
+ * signal matches on more than one modulation. A P25p1 frame whose 63-bit NID BCH decoded is
+ * direct evidence instead -- it says this demodulator is working right now -- so while such
+ * frames keep arriving the guesses do not get to move off it.
+ *
+ * This matters because CQPSK is the side that cannot defend itself. C4FM is the profile
+ * default and what every rotation falls back to, whereas entering GFSK costs a single vote, so
+ * without a hold the chain is taken back within a few dozen symbols and an LSM control channel
+ * never gets to keep the demodulator that decodes it. The hold lapses as soon as the frames
+ * stop, so it can never strand a profile on a modulation that has gone quiet.
+ */
+static int
+frame_sync_hold_validated_p25p1_modulation(const dsd_opts* opts, const dsd_state* state, int want_mod) {
+    if (opts->frame_p25p1 != 1 || state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
+        return want_mod;
+    }
+    /* A trial the votes can revoke before it has decoded a single frame is not a trial, so the
+     * probe's own dwell is protected whichever chain it selected. */
+    if (state->p25_p1_mod_probe_active && (state->rf_mod == 0 || state->rf_mod == 1)) {
+        return state->rf_mod;
+    }
+    if (state->rf_mod != 1 || state->p25_p1_validated_rf_mod != 1) {
+        return want_mod;
+    }
+    if ((uint32_t)(state->symbolcnt - state->p25_p1_validated_symbolcnt)
+        >= DSD_FRAME_SYNC_P25P1_VALIDATED_HOLD_SYMBOLS) {
+        return want_mod;
+    }
+    return 1;
 }
 
 static void
@@ -1590,7 +2112,7 @@ frame_sync_decide_mod_switch(const dsd_state* state, int want_mod) {
 }
 
 static void
-frame_sync_apply_mod_switch(dsd_state* state, int do_switch) {
+frame_sync_apply_mod_switch(const dsd_opts* opts, dsd_state* state, int do_switch) {
     if (do_switch < 0) {
         return;
     }
@@ -1600,39 +2122,72 @@ frame_sync_apply_mod_switch(dsd_state* state, int do_switch) {
         atomic_store(&g_qpsk_dwell_enter_ms, 0);
     }
     state->rf_mod = do_switch;
+#ifdef USE_RADIO
+    rtl_maybe_apply_active_demod_profile(opts, state);
+#else
+    UNUSED(opts);
+#endif
     atomic_store(&g_ham_c4fm_recent, 24);
     atomic_store(&g_ham_qpsk_recent, 24);
     atomic_store(&g_ham_gfsk_recent, 24);
 }
 
-static void
+void
 frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, int t_max, int* lastt) {
-    if (*lastt != t_max) {
+    if (*lastt < t_max) {
         (*lastt)++;
+    }
+    if (*lastt < t_max) {
         return;
     }
 
     *lastt = 0;
-    if (state->carrier == 1) {
-        state->sps_hunt_counter = 0;
-    }
     if (opts->mod_cli_lock) {
         return;
     }
 
-    int want_mod = state->rf_mod;
-    want_mod = frame_sync_bias_want_mod_with_snr(state, want_mod);
-    want_mod = frame_sync_override_want_mod_with_hamming(opts, want_mod);
+    int want_mod = frame_sync_active_profile_modulation(opts, state);
+    want_mod = frame_sync_bias_want_mod_with_snr(opts, state, want_mod);
+    want_mod = frame_sync_override_want_mod_with_hamming(opts, state, want_mod);
+    want_mod = frame_sync_hold_validated_p25p1_modulation(opts, state, want_mod);
     frame_sync_update_mod_votes(want_mod);
-    frame_sync_apply_mod_switch(state, frame_sync_decide_mod_switch(state, want_mod));
+    frame_sync_apply_mod_switch(opts, state, frame_sync_decide_mod_switch(state, want_mod));
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_frame_sync_test_set_recent_hamming(int ham_c4fm, int ham_qpsk, int ham_gfsk) {
+    atomic_store(&g_ham_c4fm_recent, ham_c4fm);
+    atomic_store(&g_ham_qpsk_recent, ham_qpsk);
+    atomic_store(&g_ham_gfsk_recent, ham_gfsk);
+}
+
+int
+dsd_frame_sync_test_qpsk_dwell_armed(void) {
+    return atomic_load(&g_qpsk_dwell_enter_ms) != 0;
+}
+
+void
+dsd_frame_sync_test_get_mod_votes(int* out_c4fm, int* out_qpsk, int* out_gfsk) {
+    if (out_c4fm) {
+        *out_c4fm = atomic_load(&g_vote_c4fm);
+    }
+    if (out_qpsk) {
+        *out_qpsk = atomic_load(&g_vote_qpsk);
+    }
+    if (out_gfsk) {
+        *out_gfsk = atomic_load(&g_vote_gfsk);
+    }
+}
+
+#endif
+
 static void
-frame_sync_debug_symbol_stats(const dsd_opts* opts, float symbol) {
+frame_sync_debug_symbol_stats(float symbol) {
 #ifdef USE_RADIO
     const dsdneoRuntimeConfig* cfg_dbg = dsd_neo_get_config();
     if (!cfg_dbg) {
-        dsd_neo_config_init(opts);
+        dsd_neo_config_init();
         cfg_dbg = dsd_neo_get_config();
     }
     if (cfg_dbg && cfg_dbg->debug_sync_enable) {
@@ -1663,7 +2218,7 @@ frame_sync_debug_symbol_stats(const dsd_opts* opts, float symbol) {
         }
     }
 #else
-    UNUSED2(opts, symbol);
+    UNUSED(symbol);
 #endif
 }
 
@@ -1672,9 +2227,10 @@ frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state) {
 #ifdef USE_RADIO
     if (state->rf_mod == 1 && opts->audio_in_type == AUDIO_IN_RTL
         && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
-        int dsp_cqpsk = 0, dsp_fll = 0, dsp_ted = 0;
-        dsd_rtl_stream_metrics_hook_dsp_get(&dsp_cqpsk, &dsp_fll, &dsp_ted);
-        if (dsp_cqpsk && dsp_ted) {
+        int dsp_cqpsk = 0;
+        int dsp_timing = 0;
+        dsd_rtl_stream_metrics_hook_cqpsk_status(&dsp_cqpsk, &dsp_timing);
+        if (dsp_cqpsk && dsp_timing) {
             return 1;
         }
     }
@@ -1685,7 +2241,7 @@ frame_sync_cqpsk_4level_enabled(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static int
-frame_sync_slice_cqpsk_dibit(const dsd_opts* opts, const dsd_state* state, float symbol) {
+frame_sync_slice_cqpsk_dibit(const dsd_state* state, float symbol) {
     float sym = symbol - state->center;
     int d = 0;
     if (sym >= 2.0f) {
@@ -1701,7 +2257,7 @@ frame_sync_slice_cqpsk_dibit(const dsd_opts* opts, const dsd_state* state, float
 #ifdef USE_RADIO
     const dsdneoRuntimeConfig* cfg_dbg = dsd_neo_get_config();
     if (!cfg_dbg) {
-        dsd_neo_config_init(opts);
+        dsd_neo_config_init();
         cfg_dbg = dsd_neo_get_config();
     }
     if (cfg_dbg && cfg_dbg->debug_cqpsk_enable) {
@@ -1730,16 +2286,14 @@ frame_sync_slice_cqpsk_dibit(const dsd_opts* opts, const dsd_state* state, float
             sym_max = -1000.0f;
         }
     }
-#else
-    UNUSED(opts);
 #endif
     return d;
 }
 
 static int
-frame_sync_symbol_to_dibit(const dsd_opts* opts, dsd_state* state, float symbol, int cqpsk_4level) {
+frame_sync_symbol_to_dibit(dsd_state* state, float symbol, int cqpsk_4level) {
     if (cqpsk_4level) {
-        int d = frame_sync_slice_cqpsk_dibit(opts, state, symbol);
+        int d = frame_sync_slice_cqpsk_dibit(state, symbol);
         *state->dibit_buf_p = d;
         state->dibit_buf_p++;
         return '0' + d;
@@ -1774,16 +2328,13 @@ frame_sync_capture_symbol(dsd_opts* opts, dsd_state* state, int dibit, float sym
     } else if (dibit == '3') {
         csymbol = 3;
     }
-    write_symbol_capture_record(opts, state, csymbol, symbol);
+    write_symbol_capture_record(opts, state, csymbol, symbol, NULL);
 }
 
 static void
 frame_sync_reset_dmr_payload_ptrs(dsd_state* state) {
     if (state->dmr_payload_p > state->dmr_payload_buf + 900000) {
         state->dmr_payload_p = state->dmr_payload_buf + 200;
-    }
-    if (state->dmr_reliab_p && state->dmr_reliab_p > state->dmr_reliab_buf + 900000) {
-        state->dmr_reliab_p = state->dmr_reliab_buf + 200;
     }
     if (state->dmr_soft_p && state->dmr_soft_p > state->dmr_soft_buf + 900000) {
         state->dmr_soft_p = state->dmr_soft_buf + 200;
@@ -1812,10 +2363,6 @@ frame_sync_store_dmr_payload_symbol(dsd_state* state, float symbol, int cqpsk_4l
 
     *state->dmr_payload_p = d;
     uint8_t rel = dmr_compute_reliability(state, symbol);
-    if (state->dmr_reliab_p) {
-        *state->dmr_reliab_p = rel;
-        state->dmr_reliab_p++;
-    }
     if (state->dmr_soft_p) {
         state->dmr_soft_p->reliability = rel;
         state->dmr_soft_p->llr[0] = (int16_t)(((d >> 1) & 1) ? rel : -(int)rel);
@@ -1830,9 +2377,9 @@ frame_sync_process_dibit_and_payload(dsd_opts* opts, dsd_state* state, float sym
     if (state->dibit_buf_p > state->dibit_buf + 900000) {
         state->dibit_buf_p = state->dibit_buf + 200;
     }
-    frame_sync_debug_symbol_stats(opts, symbol);
+    frame_sync_debug_symbol_stats(symbol);
     int cqpsk_4level = frame_sync_cqpsk_4level_enabled(opts, state);
-    int dibit = frame_sync_symbol_to_dibit(opts, state, symbol, cqpsk_4level);
+    int dibit = frame_sync_symbol_to_dibit(state, symbol, cqpsk_4level);
     frame_sync_capture_symbol(opts, state, dibit, symbol, cqpsk_4level);
     frame_sync_reset_dmr_payload_ptrs(state);
     frame_sync_store_dmr_payload_symbol(state, symbol, cqpsk_4level);
@@ -1845,7 +2392,11 @@ typedef struct {
     int synctest_pos;
     int lastt;
     int lidx;
+    int level_count;
     int t_max;
+    int history_head;
+    int history_count;
+    unsigned int ready_windows;
     float symbol;
     float lmin;
     float lmax;
@@ -1858,21 +2409,20 @@ typedef struct {
     char synctest8[9];
     char synctest16[17];
     char modulation[8];
-    char* synctest_p;
-    char synctest_buf[10240];
+    char symbol_history[FRAME_SYNC_HISTORY_CAPACITY];
     float lbuf[48];
     float lbuf2[48];
 } frame_sync_runtime_ctx;
 
 static void
 frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const dsd_state* state) {
-    rt->t = 0;
-    rt->synctest_pos = 0;
-    rt->lastt = 0;
-    rt->lidx = 0;
+    DSD_MEMSET(rt, 0, sizeof(*rt));
     rt->t_max = frame_sync_select_t_max(opts, state);
-    DSD_MEMSET(rt->lbuf, 0, sizeof(rt->lbuf));
-    DSD_MEMSET(rt->lbuf2, 0, sizeof(rt->lbuf2));
+    if (rt->t_max < 1 || rt->t_max > (int)(sizeof(rt->lbuf) / sizeof(rt->lbuf[0]))) {
+        rt->t_max = 24;
+    }
+    rt->lmin = state->min;
+    rt->lmax = state->max;
     rt->synctest[24] = 0;
     rt->synctest12[12] = 0;
     rt->synctest10[10] = 0;
@@ -1882,19 +2432,82 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
     rt->synctest8[8] = 0;
     rt->synctest16[16] = 0;
     rt->modulation[7] = 0;
-    rt->synctest_p = rt->synctest_buf + 10;
+}
+
+static void
+frame_sync_history_push(frame_sync_runtime_ctx* rt, char symbol) {
+    rt->symbol_history[rt->history_head] = symbol;
+    rt->history_head = (rt->history_head + 1) % FRAME_SYNC_HISTORY_CAPACITY;
+    if (rt->history_count < FRAME_SYNC_HISTORY_CAPACITY) {
+        rt->history_count++;
+    }
+}
+
+static int
+frame_sync_history_materialize(const frame_sync_runtime_ctx* rt, int length, char* out, size_t out_size) {
+    if (!rt || !out || length <= 0 || length > FRAME_SYNC_HISTORY_CAPACITY || out_size <= (size_t)length
+        || rt->history_count < length) {
+        return 0;
+    }
+
+    int index = rt->history_head - length;
+    if (index < 0) {
+        index += FRAME_SYNC_HISTORY_CAPACITY;
+    }
+    for (int i = 0; i < length; i++) {
+        out[i] = rt->symbol_history[index];
+        index = (index + 1) % FRAME_SYNC_HISTORY_CAPACITY;
+    }
+    out[length] = '\0';
+    return 1;
+}
+
+static void
+frame_sync_materialize_ready_windows(frame_sync_runtime_ctx* rt) {
+    rt->ready_windows = 0;
+    if (frame_sync_history_materialize(rt, 8, rt->synctest8, sizeof(rt->synctest8))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_8;
+    }
+    if (frame_sync_history_materialize(rt, 10, rt->synctest10, sizeof(rt->synctest10))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_10;
+    }
+    if (frame_sync_history_materialize(rt, 12, rt->synctest12, sizeof(rt->synctest12))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_12;
+    }
+    if (frame_sync_history_materialize(rt, 16, rt->synctest16, sizeof(rt->synctest16))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_16;
+    }
+    if (frame_sync_history_materialize(rt, 20, rt->synctest20, sizeof(rt->synctest20))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_20;
+    }
+    if (frame_sync_history_materialize(rt, 24, rt->synctest, sizeof(rt->synctest))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_24;
+    }
+    if (frame_sync_history_materialize(rt, 32, rt->synctest32, sizeof(rt->synctest32))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_32;
+    }
+    if (frame_sync_history_materialize(rt, 48, rt->synctest48, sizeof(rt->synctest48))) {
+        rt->ready_windows |= FRAME_SYNC_WINDOW_48;
+    }
+}
+
+static int
+frame_sync_compare_float(const void* left, const void* right) {
+    const float a = *(const float*)left;
+    const float b = *(const float*)right;
+    return (a > b) - (a < b);
 }
 
 static void
 frame_sync_window_levels(const dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt) {
-    int i;
-    for (i = 0; i < rt->t_max; i++) {
+    const int level_count = rt->level_count;
+    for (int i = 0; i < level_count; i++) {
         rt->lbuf2[i] = rt->lbuf[i];
     }
-    qsort(rt->lbuf2, rt->t_max, sizeof(float), comp);
-    dsd_frame_sync_estimate_sorted_window_levels(rt->lbuf2, rt->t_max, &rt->lmin, &rt->lmax);
+    qsort(rt->lbuf2, level_count, sizeof(float), frame_sync_compare_float);
+    dsd_frame_sync_estimate_sorted_window_levels(rt->lbuf2, level_count, &rt->lmin, &rt->lmax);
 
-    if (state->rf_mod == 1) {
+    if (frame_sync_active_profile_modulation(opts, state) == 1) {
         dsd_state_push_minmax_window(state, opts->msize, rt->lmin, rt->lmax);
         state->center = ((state->max) + (state->min)) / 2.0f;
         state->maxref = (state->max) * 0.80F;
@@ -1906,34 +2519,75 @@ frame_sync_window_levels(const dsd_opts* opts, dsd_state* state, frame_sync_runt
 }
 
 static int
-frame_sync_should_skip_snr_or_power_gate(const dsd_opts* opts) {
-    int is_gfsk_mode =
-        (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1);
+frame_sync_profile_uses_gfsk_exclusively(const dsd_opts* opts, int profile_index) {
+    if (dsd_frame_sync_profile_levels_force_gfsk(frame_sync_sps_profile_for_index(profile_index)->levels)) {
+        return 1;
+    }
+    if (!opts) {
+        return 0;
+    }
+
+    switch (profile_index) {
+        case DSD_FRAME_SYNC_SPS_PROFILE_4800_4: {
+            const int has_gfsk = opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_m17 == 1;
+            const int has_other_modulation = opts->frame_p25p1 == 1 || opts->frame_ysf == 1;
+            return has_gfsk && !has_other_modulation;
+        }
+        case DSD_FRAME_SYNC_SPS_PROFILE_2400_4: return opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1;
+        default: return 0;
+    }
+}
+
+int
+frame_sync_active_profile_modulation(const dsd_opts* opts, const dsd_state* state) {
+    int profile_index = state ? state->sps_hunt_idx : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    if (profile_index < 0 || profile_index >= DSD_FRAME_SYNC_SPS_PROFILE_COUNT) {
+        profile_index = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    }
+    if ((!opts || !opts->mod_cli_lock) && frame_sync_profile_uses_gfsk_exclusively(opts, profile_index)) {
+        return 2;
+    }
+    if (state && state->rf_mod == 1) {
+        return 1;
+    }
+    if (state && state->rf_mod == 2) {
+        return 2;
+    }
+    return 0;
+}
+
 #ifdef USE_RADIO
-    {
+double
+frame_sync_active_profile_snr_db(const dsd_opts* opts, const dsd_state* state) {
+    switch (frame_sync_active_profile_modulation(opts, state)) {
+        case 1: return dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
+        case 2: return dsd_rtl_stream_metrics_hook_snr_gfsk_db();
+        default: return dsd_rtl_stream_metrics_hook_snr_c4fm_db();
+    }
+}
+#endif
+
+int
+frame_sync_should_skip_snr_or_power_gate(const dsd_opts* opts, const dsd_state* state) {
+    const int active_modulation = frame_sync_active_profile_modulation(opts, state);
+#ifdef USE_RADIO
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
         const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
         if (cfg && cfg->snr_sql_is_set) {
-            double snr_db = -200.0;
-            if (opts->frame_p25p1 == 1) {
-                snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
-            } else if (opts->frame_p25p2 == 1) {
-                snr_db = dsd_rtl_stream_metrics_hook_snr_cqpsk_db();
-            } else if (is_gfsk_mode) {
-                snr_db = dsd_rtl_stream_metrics_hook_snr_gfsk_db();
-            }
+            double snr_db = frame_sync_active_profile_snr_db(opts, state);
             if (snr_db > -150.0 && snr_db < (double)cfg->snr_sql_db) {
                 return 1;
             }
         }
     }
 #endif
-    if (opts->audio_in_type == AUDIO_IN_RTL && opts->rtl_pwr < opts->rtl_squelch_level && is_gfsk_mode) {
+    if (opts->audio_in_type == AUDIO_IN_RTL && opts->rtl_pwr < opts->rtl_squelch_level && active_modulation == 2) {
         return 1;
     }
     return 0;
 }
 
-static int
+int
 frame_sync_hamming_distance_pattern(const char* symbols, const char* pattern, int len) {
     int ham = 0;
     for (int k = 0; k < len; k++) {
@@ -1947,14 +2601,15 @@ frame_sync_hamming_distance_pattern(const char* symbols, const char* pattern, in
 }
 
 static void
-frame_sync_update_c4fm_hamming(const dsd_opts* opts, const char* synctest) {
-    if (!(opts->frame_p25p1 == 1 && !opts->mod_cli_lock)) {
+frame_sync_update_c4fm_hamming(const dsd_opts* opts, const dsd_state* state, const frame_sync_runtime_ctx* rt) {
+    if (!(opts->frame_p25p1 == 1 && !opts->mod_cli_lock) || state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4
+        || (rt->ready_windows & FRAME_SYNC_WINDOW_24) == 0) {
         return;
     }
     int ham_norm = 0;
     int ham_inv = 0;
     for (int k = 0; k < 24; k++) {
-        int d = (unsigned char)synctest[k] - '0';
+        int d = (unsigned char)rt->synctest[k] - '0';
         int expect_n = P25P1_SYNC[k] - '0';
         int expect_i = INV_P25P1_SYNC[k] - '0';
         if (d != expect_n) {
@@ -1972,21 +2627,29 @@ frame_sync_update_c4fm_hamming(const dsd_opts* opts, const char* synctest) {
 }
 
 static void
-frame_sync_update_qpsk_hamming(const dsd_opts* opts, const char* synctest, const char* synctest20) {
+frame_sync_update_qpsk_hamming(const dsd_opts* opts, const dsd_state* state, const frame_sync_runtime_ctx* rt) {
     if (!((opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) && !opts->mod_cli_lock)) {
         return;
     }
 
     int best_qpsk_ham = 24;
-    if (opts->frame_p25p1 == 1) {
-        best_qpsk_ham = dsd_qpsk_sync_hamming_with_remaps(synctest, P25P1_SYNC, INV_P25P1_SYNC, 24);
+    int compared = 0;
+    if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && opts->frame_p25p1 == 1
+        && (rt->ready_windows & FRAME_SYNC_WINDOW_24) != 0) {
+        best_qpsk_ham = dsd_qpsk_sync_hamming_with_remaps(rt->synctest, P25P1_SYNC, INV_P25P1_SYNC, 24);
+        compared = 1;
     }
-    if (opts->frame_p25p2 == 1) {
-        int ham_p2 = dsd_qpsk_sync_hamming_with_remaps(synctest20, P25P2_SYNC, INV_P25P2_SYNC, 20);
+    if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4 && opts->frame_p25p2 == 1
+        && (rt->ready_windows & FRAME_SYNC_WINDOW_20) != 0) {
+        int ham_p2 = dsd_qpsk_sync_hamming_with_remaps(rt->synctest20, P25P2_SYNC, INV_P25P2_SYNC, 20);
         int ham_p2_scaled = (ham_p2 * 24 + 19) / 20;
-        if (ham_p2_scaled < best_qpsk_ham || opts->frame_p25p1 == 0) {
+        if (ham_p2_scaled < best_qpsk_ham || !compared) {
             best_qpsk_ham = ham_p2_scaled;
         }
+        compared = 1;
+    }
+    if (!compared) {
+        return;
     }
     int ham_qpsk_cur = atomic_load(&g_ham_qpsk_recent);
     if (best_qpsk_ham < ham_qpsk_cur) {
@@ -1994,8 +2657,8 @@ frame_sync_update_qpsk_hamming(const dsd_opts* opts, const char* synctest, const
     }
 }
 
-static int
-frame_sync_best_ham_for_patterns(const char* symbols, const char* patterns[], int pattern_count, int pattern_len,
+int
+frame_sync_best_ham_for_patterns(const char* symbols, const char* const patterns[], int pattern_count, int pattern_len,
                                  int best_start) {
     int best = best_start;
     for (int p = 0; p < pattern_count; p++) {
@@ -2007,13 +2670,12 @@ frame_sync_best_ham_for_patterns(const char* symbols, const char* patterns[], in
     return best;
 }
 
-static int
-frame_sync_best_nxdn_scaled_ham(frame_sync_runtime_ctx* rt, int best_start) {
-    DSD_STRNCPY(rt->synctest10, (rt->synctest_p - 9), 10);
+int
+frame_sync_best_nxdn_scaled_ham(const char* symbols10, int best_start) {
     const char* nxdn_patterns[] = {"3131331131", "1313113313"};
     int best = best_start;
     for (int p = 0; p < 2; p++) {
-        int ham = frame_sync_hamming_distance_pattern(rt->synctest10, nxdn_patterns[p], 10);
+        int ham = frame_sync_hamming_distance_pattern(symbols10, nxdn_patterns[p], 10);
         int scaled_ham = (ham * 24 + 9) / 10;
         if (scaled_ham < best) {
             best = scaled_ham;
@@ -2022,25 +2684,65 @@ frame_sync_best_nxdn_scaled_ham(frame_sync_runtime_ctx* rt, int best_start) {
     return best;
 }
 
+static int
+frame_sync_dmr_gfsk_ham(const dsd_opts* opts, const dsd_state* state, const frame_sync_runtime_ctx* rt) {
+    if (state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4 || opts->frame_dmr != 1
+        || (rt->ready_windows & FRAME_SYNC_WINDOW_24) == 0) {
+        return 24;
+    }
+    const char* dmr_patterns[] = {DMR_BS_DATA_SYNC, DMR_BS_VOICE_SYNC, DMR_MS_DATA_SYNC, DMR_MS_VOICE_SYNC};
+    return frame_sync_best_ham_for_patterns(rt->synctest, dmr_patterns, 4, 24, 24);
+}
+
+static int
+frame_sync_dpmr_gfsk_ham(const dsd_opts* opts, const dsd_state* state, const frame_sync_runtime_ctx* rt) {
+    if (state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_2400_4 || opts->frame_dpmr != 1
+        || (rt->ready_windows & FRAME_SYNC_WINDOW_24) == 0) {
+        return 24;
+    }
+    const char* dpmr_patterns[] = {DPMR_FRAME_SYNC_1, DPMR_FRAME_SYNC_4, INV_DPMR_FRAME_SYNC_1, INV_DPMR_FRAME_SYNC_4};
+    return frame_sync_best_ham_for_patterns(rt->synctest, dpmr_patterns, 4, 24, 24);
+}
+
+static int
+frame_sync_nxdn_gfsk_ham(const dsd_opts* opts, const dsd_state* state, const frame_sync_runtime_ctx* rt) {
+    if ((rt->ready_windows & FRAME_SYNC_WINDOW_10) == 0) {
+        return 24;
+    }
+    if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && opts->frame_nxdn96 == 1) {
+        /* Silent inside a P25p1 frame for the same reason the matcher is. Ten sign-sliced
+         * symbols one error from an NXDN word score 3 on the 24-symbol axis these votes are
+         * compared on, which is enough to carry the GFSK vote outright -- so P25 payload read
+         * through this window walks the demodulator off the chain that is decoding it (#388).
+         * Silent for a proved 2400/4 transmission too, whose payload read at 4800 supplies the
+         * same misleading score (#445). The 2400/4 branch below is left alone: there the vote
+         * is NXDN48's own, cast on the profile its transmission proved. */
+        if (dsd_frame_sync_suppress_4800_4_for_p25p1_frame(opts, state)
+            || dsd_frame_sync_suppress_4800_4_for_2400_4_transmission(opts, state)) {
+            return 24;
+        }
+        return frame_sync_best_nxdn_scaled_ham(rt->synctest10, 24);
+    }
+    if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4 && opts->frame_nxdn48 == 1) {
+        return frame_sync_best_nxdn_scaled_ham(rt->synctest10, 24);
+    }
+    return 24;
+}
+
 static void
-frame_sync_update_gfsk_hamming(const dsd_opts* opts, frame_sync_runtime_ctx* rt) {
-    if (!((opts->frame_dmr == 1 || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_dpmr == 1)
-          && !opts->mod_cli_lock)) {
+frame_sync_update_gfsk_hamming(const dsd_opts* opts, const dsd_state* state, const frame_sync_runtime_ctx* rt) {
+    if (opts->mod_cli_lock) {
         return;
     }
 
-    int best_gfsk_ham = 24;
-    if (opts->frame_dmr == 1) {
-        const char* dmr_patterns[] = {DMR_BS_DATA_SYNC, DMR_BS_VOICE_SYNC, DMR_MS_DATA_SYNC, DMR_MS_VOICE_SYNC};
-        best_gfsk_ham = frame_sync_best_ham_for_patterns(rt->synctest, dmr_patterns, 4, 24, best_gfsk_ham);
+    int best_gfsk_ham = frame_sync_dmr_gfsk_ham(opts, state, rt);
+    int candidate_ham = frame_sync_dpmr_gfsk_ham(opts, state, rt);
+    if (candidate_ham < best_gfsk_ham) {
+        best_gfsk_ham = candidate_ham;
     }
-    if (opts->frame_dpmr == 1) {
-        const char* dpmr_patterns[] = {DPMR_FRAME_SYNC_1, DPMR_FRAME_SYNC_4, INV_DPMR_FRAME_SYNC_1,
-                                       INV_DPMR_FRAME_SYNC_4};
-        best_gfsk_ham = frame_sync_best_ham_for_patterns(rt->synctest, dpmr_patterns, 4, 24, best_gfsk_ham);
-    }
-    if (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1) {
-        best_gfsk_ham = frame_sync_best_nxdn_scaled_ham(rt, best_gfsk_ham);
+    candidate_ham = frame_sync_nxdn_gfsk_ham(opts, state, rt);
+    if (candidate_ham < best_gfsk_ham) {
+        best_gfsk_ham = candidate_ham;
     }
     int ham_gfsk_cur = atomic_load(&g_ham_gfsk_recent);
     if (best_gfsk_ham < ham_gfsk_cur) {
@@ -2107,7 +2809,7 @@ frame_sync_debug_sync_window(dsd_opts* opts, dsd_state* state, const frame_sync_
     static int debug_count = 0;
     const dsdneoRuntimeConfig* cfg_dbg = dsd_neo_get_config();
     if (!cfg_dbg) {
-        dsd_neo_config_init(opts);
+        dsd_neo_config_init();
         cfg_dbg = dsd_neo_get_config();
     }
     int debug_sync = (cfg_dbg && cfg_dbg->debug_sync_enable) ? 1 : 0;
@@ -2128,18 +2830,22 @@ frame_sync_debug_sync_window(dsd_opts* opts, dsd_state* state, const frame_sync_
 
 static int
 frame_sync_eval_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt, time_t now, double nowm) {
-    frame_sync_window_levels(opts, state, rt);
-    if (frame_sync_should_skip_snr_or_power_gate(opts)) {
+    /* Some matchers accept windows shorter than the profile's level ring. Estimate
+     * from every sample gathered so far before one of those matchers can return. */
+    if (rt->level_count > 0) {
+        frame_sync_window_levels(opts, state, rt);
+    }
+    frame_sync_materialize_ready_windows(rt);
+    if (frame_sync_should_skip_snr_or_power_gate(opts, state)) {
         return DSD_SYNC_NONE;
     }
 
-    DSD_STRNCPY(rt->synctest, (rt->synctest_p - 23), 24);
-    DSD_STRNCPY(rt->synctest20, (rt->synctest_p - 19), 20);
-
-    frame_sync_debug_sync_window(opts, state, rt);
-    frame_sync_update_c4fm_hamming(opts, rt->synctest);
-    frame_sync_update_qpsk_hamming(opts, rt->synctest, rt->synctest20);
-    frame_sync_update_gfsk_hamming(opts, rt);
+    if ((rt->ready_windows & FRAME_SYNC_WINDOW_24) != 0) {
+        frame_sync_debug_sync_window(opts, state, rt);
+    }
+    frame_sync_update_c4fm_hamming(opts, state, rt);
+    frame_sync_update_qpsk_hamming(opts, state, rt);
+    frame_sync_update_gfsk_hamming(opts, state, rt);
 
     frame_sync_match_ctx match_ctx = {
         .opts = opts,
@@ -2149,8 +2855,8 @@ frame_sync_eval_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx*
         .synctest_pos = rt->synctest_pos,
         .lmax = rt->lmax,
         .lmin = rt->lmin,
+        .ready_windows = rt->ready_windows,
         .modulation = rt->modulation,
-        .synctest_p = rt->synctest_p,
         .synctest = rt->synctest,
         .synctest8 = rt->synctest8,
         .synctest10 = rt->synctest10,
@@ -2163,96 +2869,624 @@ frame_sync_eval_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx*
     return frame_sync_try_protocol_matches(&match_ctx);
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_frame_sync_test_history_window(const char* symbols, int symbol_count, int window_length, char* out, int out_size) {
+    if (!symbols || symbol_count < 0 || !out || out_size < 0) {
+        return 0;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    frame_sync_runtime_ctx rt;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    frame_sync_runtime_init(&rt, &opts, &state);
+    for (int i = 0; i < symbol_count; i++) {
+        frame_sync_history_push(&rt, symbols[i]);
+    }
+    return frame_sync_history_materialize(&rt, window_length, out, (size_t)out_size);
+}
+
+int
+dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const char* symbols, int symbol_count) {
+    if (!opts || !state || !symbols || symbol_count < 0) {
+        return DSD_SYNC_NONE;
+    }
+    frame_sync_runtime_ctx rt;
+    frame_sync_runtime_init(&rt, opts, state);
+    for (int i = 0; i < symbol_count; i++) {
+        frame_sync_history_push(&rt, symbols[i]);
+    }
+    frame_sync_materialize_ready_windows(&rt);
+    frame_sync_match_ctx match_ctx = {
+        .opts = opts,
+        .state = state,
+        .now = 0,
+        .nowm = 0.0,
+        .synctest_pos = symbol_count > 0 ? symbol_count - 1 : 0,
+        .lmax = state->max,
+        .lmin = state->min,
+        .ready_windows = rt.ready_windows,
+        .modulation = rt.modulation,
+        .synctest = rt.synctest,
+        .synctest8 = rt.synctest8,
+        .synctest10 = rt.synctest10,
+        .synctest12 = rt.synctest12,
+        .synctest16 = rt.synctest16,
+        .synctest20 = rt.synctest20,
+        .synctest32 = rt.synctest32,
+        .synctest48 = rt.synctest48,
+    };
+    return frame_sync_try_protocol_matches(&match_ctx);
+}
+
+int
+dsd_frame_sync_test_eval_window(dsd_opts* opts, dsd_state* state, const char* symbols, const float* levels,
+                                int symbol_count) {
+    if (!opts || !state || !symbols || !levels || symbol_count < 0) {
+        return DSD_SYNC_NONE;
+    }
+
+    frame_sync_runtime_ctx rt;
+    frame_sync_runtime_init(&rt, opts, state);
+    for (int i = 0; i < symbol_count; i++) {
+        rt.lbuf[rt.lidx] = levels[i];
+        if (rt.level_count < rt.t_max) {
+            rt.level_count++;
+        }
+        rt.lidx = (rt.lidx + 1) % rt.t_max;
+        frame_sync_history_push(&rt, symbols[i]);
+    }
+    rt.synctest_pos = symbol_count > 0 ? symbol_count - 1 : 0;
+    return frame_sync_eval_window(opts, state, &rt, 0, 0.0);
+}
+
+#endif
+
 static void
 frame_sync_advance_sync_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt) {
+    /* One more symbol spent looking for a sync on this profile. Unlike synctest_pos this
+     * lives in dsd_state, so returning a sync does not hand the profile a fresh budget. */
+    if (state->sps_hunt_counter < INT_MAX) {
+        state->sps_hunt_counter++;
+    }
     if (rt->synctest_pos < 10200) {
         rt->synctest_pos++;
-        rt->synctest_p++;
         return;
     }
     rt->synctest_pos = 0;
-    rt->synctest_p = rt->synctest_buf;
     dsd_frame_sync_hook_no_carrier(opts, state);
 }
 
 static int
-frame_sync_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state, const int* sym_rate_cycle,
-                               const int* levels_cycle, int cycle_count) {
-    int has_4800_four_level = frame_sync_opts_has_4800_four_level_mode(opts);
-    int has_4800_binary = (opts->frame_dstar == 1);
-    int has_2400 = (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1);
-    int has_9600 = (opts->frame_provoice == 1);
-    int has_6000 = (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1);
-
-    int next_idx = (state->sps_hunt_idx + 1) % cycle_count;
-    for (int tries = 0; tries < cycle_count; tries++) {
-        int sym_rate = sym_rate_cycle[next_idx];
-        int skip =
-            (sym_rate == 2400 && !has_2400) || (sym_rate == 9600 && !has_9600) || (sym_rate == 6000 && !has_6000);
-        if (sym_rate == 4800) {
-            int levels = levels_cycle[next_idx];
-            skip = skip || ((levels == 2) ? !has_4800_binary : !has_4800_four_level);
-        }
-        if (!skip) {
-            break;
-        }
-        next_idx = (next_idx + 1) % cycle_count;
+frame_sync_sps_profile_has_candidate(const dsd_opts* opts, int profile_index) {
+    if (!opts) {
+        return 0;
     }
-    return next_idx;
+    switch (profile_index) {
+        case DSD_FRAME_SYNC_SPS_PROFILE_4800_4: return frame_sync_opts_has_4800_four_level_mode(opts);
+        case DSD_FRAME_SYNC_SPS_PROFILE_2400_4: return opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1;
+        case DSD_FRAME_SYNC_SPS_PROFILE_9600_2: return opts->frame_provoice == 1;
+        case DSD_FRAME_SYNC_SPS_PROFILE_6000_4: return opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1;
+        case DSD_FRAME_SYNC_SPS_PROFILE_4800_2: return opts->frame_dstar == 1;
+        default: return 0;
+    }
 }
 
+int
+frame_sync_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    }
+    int current = state->sps_hunt_idx;
+    if (current < 0 || current >= DSD_FRAME_SYNC_SPS_PROFILE_COUNT) {
+        current = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    }
+    int next_idx = (current + 1) % DSD_FRAME_SYNC_SPS_PROFILE_COUNT;
+    for (int tries = 0; tries < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; tries++) {
+        if (frame_sync_sps_profile_has_candidate(opts, next_idx)) {
+            return next_idx;
+        }
+        next_idx = (next_idx + 1) % DSD_FRAME_SYNC_SPS_PROFILE_COUNT;
+    }
+    return current;
+}
+
+static int
+frame_sync_sps_hunt_next_index_matching_timing(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    }
+
+    int current = state->sps_hunt_idx;
+    if (current < 0 || current >= DSD_FRAME_SYNC_SPS_PROFILE_COUNT) {
+        current = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    }
+    if (state->samplesPerSymbol <= 0) {
+        return current;
+    }
+
+    const int demod_rate = frame_sync_current_demod_rate(opts, state);
+    int next_idx = (current + 1) % DSD_FRAME_SYNC_SPS_PROFILE_COUNT;
+    for (int tries = 0; tries < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; tries++) {
+        const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(next_idx);
+        const int expected_sps = dsd_opts_compute_sps_rate(opts, profile->symbol_rate_hz, demod_rate);
+        if (frame_sync_sps_profile_has_candidate(opts, next_idx) && expected_sps == state->samplesPerSymbol) {
+            return next_idx;
+        }
+        next_idx = (next_idx + 1) % DSD_FRAME_SYNC_SPS_PROFILE_COUNT;
+    }
+    return current;
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_frame_sync_test_sps_hunt_profile_count(void) {
+    return DSD_FRAME_SYNC_SPS_PROFILE_COUNT;
+}
+
+int
+dsd_frame_sync_test_sps_hunt_profile_rate(int profile_index) {
+    return frame_sync_sps_profile_for_index(profile_index)->symbol_rate_hz;
+}
+
+int
+dsd_frame_sync_test_sps_hunt_profile_levels(int profile_index) {
+    return frame_sync_sps_profile_for_index(profile_index)->levels;
+}
+
+int
+dsd_frame_sync_test_sps_hunt_profile_has_candidate(const dsd_opts* opts, int profile_index) {
+    return frame_sync_sps_profile_has_candidate(opts, profile_index);
+}
+
+#endif
+
 static void
-frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx, const int* sym_rate_cycle,
-                                  const int* levels_cycle) {
-    if (next_idx == state->sps_hunt_idx) {
+frame_sync_apply_sps_profile_timing(const dsd_opts* opts, dsd_state* state, const frame_sync_sps_profile* profile) {
+    /* Locked modulation modes may also carry manual timing, notably the experimental -m3 path. */
+    if (opts->mod_cli_lock && state->samplesPerSymbol > 0 && state->symbolCenter >= 0
+        && state->symbolCenter < state->samplesPerSymbol) {
         return;
     }
-    state->sps_hunt_idx = next_idx;
 
-#ifdef USE_RADIO
-    int demod_rate = 0;
-    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx) {
-        demod_rate = (int)dsd_rtl_stream_metrics_hook_output_rate_hz();
-    }
-    if (demod_rate <= 0) {
-        demod_rate = dsd_opts_current_input_timing_rate(opts);
-    }
-#else
-    UNUSED(levels_cycle);
-    int demod_rate = dsd_opts_current_input_timing_rate(opts);
-#endif
-
-    int sym_rate = sym_rate_cycle[next_idx];
+    int demod_rate = frame_sync_current_demod_rate(opts, state);
+    int sym_rate = profile->symbol_rate_hz;
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, demod_rate);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
-#ifdef USE_RADIO
-    rtl_maybe_update_symbol_profile_with_hint(opts, state, sym_rate, levels_cycle[next_idx]);
-#endif
     if (opts->verbose > 1 && !dsd_frame_sync_suppress_tcp_no_signal_console(opts, state)) {
         DSD_FPRINTF(stderr, "SPS hunt: trying %d sps (sym=%d, demod=%d)\n", state->samplesPerSymbol, sym_rate,
                     demod_rate);
     }
 }
 
+/**
+ * @brief Modulation a profile comes up on when the hunt normalises it.
+ *
+ * Four-level profiles default to C4FM, which is the right guess for a profile the hunt has
+ * learned nothing about. Once a P25p1 NID has decoded through the CQPSK chain, though, the
+ * 4800/4-level profile has been told which modulation the signal actually uses, and rotating
+ * away and back must not throw that away -- otherwise an LSM control channel loses the chain
+ * it just decoded on every time the hunt visits another protocol's profile.
+ */
+static int
+frame_sync_sps_profile_normalized_modulation(const dsd_opts* opts, const dsd_state* state,
+                                             const frame_sync_sps_profile* profile, int profile_index) {
+    const int requested = (profile_index == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && opts->frame_p25p1 == 1
+                           && state->p25_p1_validated_rf_mod == 1)
+                              ? 1
+                              : 0;
+    return dsd_frame_sync_profile_modulation(profile->levels, requested);
+}
+
+/**
+ * @brief Adopt a profile's modulation and start the vote state over for it.
+ *
+ * The votes and hamming counters belong to the acquisition that just ended, so they are always
+ * cleared. The QPSK dwell is different: it is the grace period a modulation gets before the
+ * votes may argue with it, and clearing it under a restored CQPSK would let the SNR bias and
+ * the three-vote C4FM re-entry evict that modulation before the first sync of the new dwell
+ * could even arrive.
+ */
 static void
-frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
-    if (!(state->carrier == 0 && !opts->mod_cli_lock)) {
+frame_sync_normalize_profile_modulation(dsd_state* state, int normalize, int modulation) {
+    if (normalize) {
+        state->rf_mod = modulation;
+    }
+    dsd_frame_sync_reset_mod_state();
+    if (normalize && modulation == 1) {
+        atomic_store(&g_qpsk_dwell_enter_ms, (int)(uint32_t)dsd_time_monotonic_ms());
+    }
+}
+
+void
+frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx, int preserve_modulation) {
+    if (!opts || !state || next_idx < 0 || next_idx >= DSD_FRAME_SYNC_SPS_PROFILE_COUNT) {
         return;
     }
-    state->sps_hunt_counter++;
-    if (state->sps_hunt_counter < dsd_frame_sync_sps_hunt_dwell_passes(opts, state)) {
+
+    const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(next_idx);
+    const int profile_changed = next_idx != state->sps_hunt_idx;
+    const int profile_default_modulation = frame_sync_sps_profile_normalized_modulation(opts, state, profile, next_idx);
+    const int normalize_profile_modulation = !preserve_modulation && !opts->mod_cli_lock
+                                             && state->rf_mod != profile_default_modulation
+                                             && (profile_changed || profile->levels == 2);
+    if (!profile_changed && !normalize_profile_modulation) {
+        return;
+    }
+
+    state->sps_hunt_idx = next_idx;
+    if (profile_changed) {
+        /* The dwell belongs to the profile, so adopting one starts its budget over. That is
+         * the defect: left alone, the incoming profile inherits whatever the outgoing one had
+         * already spent, and one that arrives a symbol short of the dwell is stepped off again
+         * on the very next symbol, because frame_sync_advance_sync_window() bills one symbol
+         * per symbol (#394).
+         *
+         * The measurement anchor moves with the budget so the pair stays consistent, not
+         * because it is stale today: every path that reaches here already has a current mark.
+         * getFrameSync() runs frame_sync_sps_hunt_note_handler_consumption() -- which
+         * re-anchors -- immediately before frame_sync_ensure_enabled_sps_profile(), and the
+         * hunt's own call site leaves getFrameSync() through frame_sync_sps_hunt_mark_return()
+         * at the same symbolcnt. A fresh budget paired with an anchor taken under the outgoing
+         * profile is what would let frame_sync_sps_hunt_note_handler_consumption() credit the
+         * new profile for symbols a handler consumed before it was selected, so the two are
+         * written together rather than left to each caller to keep in step.
+         *
+         * This sits here rather than at the call sites so it covers every path through the
+         * helper: the hunt itself (which zeroes the counter just before calling), both adopt
+         * paths in frame_sync_ensure_enabled_sps_profile(), and any future caller. The guard is
+         * load-bearing -- a call that leaves the index alone can still get past the early-out
+         * above to normalise a two-level profile's modulation, and that is the same profile
+         * spending the same dwell, so its budget must survive. */
+        state->sps_hunt_counter = 0;
+        state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+        /* The refund snapshot belongs to the budget it was taken against. This helper can run
+         * after the snapshot has been stamped for the cycle in progress -- both adopt paths in
+         * frame_sync_ensure_enabled_sps_profile() do, immediately after
+         * frame_sync_sps_hunt_note_handler_consumption() -- so leaving it would let a withheld
+         * frame refund the incoming profile to a figure the outgoing one had. */
+        state->sps_hunt_counter_at_entry = 0;
+    }
+    frame_sync_normalize_profile_modulation(state, normalize_profile_modulation, profile_default_modulation);
+
+    if (profile_changed) {
+        frame_sync_apply_sps_profile_timing(opts, state, profile);
+    }
+
+#ifdef USE_RADIO
+    rtl_maybe_apply_demod_profile(opts, state, profile);
+#endif
+}
+
+static int
+frame_sync_sps_profile_matching_timing(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || state->samplesPerSymbol <= 0) {
+        return -1;
+    }
+
+    const int demod_rate = frame_sync_current_demod_rate(opts, state);
+    int matching_profile = -1;
+    int matching_level_profile = -1;
+    const int current_levels = frame_sync_sps_profile_for_index(state->sps_hunt_idx)->levels;
+    for (int profile_index = 0; profile_index < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; profile_index++) {
+        if (!frame_sync_sps_profile_has_candidate(opts, profile_index)) {
+            continue;
+        }
+        const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(profile_index);
+        const int expected_sps = dsd_opts_compute_sps_rate(opts, profile->symbol_rate_hz, demod_rate);
+        if (expected_sps != state->samplesPerSymbol) {
+            continue;
+        }
+        if (profile_index == state->sps_hunt_idx) {
+            return profile_index;
+        }
+        if (matching_profile < 0) {
+            matching_profile = profile_index;
+        }
+        if (matching_level_profile < 0 && profile->levels == current_levels) {
+            /* Shared-rate profiles can have identical timing; retain the current symbol-level selection. */
+            matching_level_profile = profile_index;
+        }
+    }
+    return matching_level_profile >= 0 ? matching_level_profile : matching_profile;
+}
+
+void
+frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+
+    const int timing_profile = frame_sync_sps_profile_matching_timing(opts, state);
+    if (timing_profile >= 0 && timing_profile != state->sps_hunt_idx) {
+        /* Presets may select both timing and modulation before frame sync starts. */
+        frame_sync_apply_sps_hunt_profile(opts, state, timing_profile, 1);
+    }
+    if (frame_sync_sps_profile_has_candidate(opts, state->sps_hunt_idx)) {
+        frame_sync_apply_sps_hunt_profile(opts, state, state->sps_hunt_idx, 0);
+        return;
+    }
+    for (int profile_index = 0; profile_index < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; profile_index++) {
+        if (frame_sync_sps_profile_has_candidate(opts, profile_index)) {
+            frame_sync_apply_sps_hunt_profile(opts, state, profile_index, 0);
+            return;
+        }
+    }
+}
+
+/** @brief Symbols a profile is owed before the hunt may leave it. */
+static int
+frame_sync_sps_hunt_dwell_symbols(const dsd_opts* opts, const dsd_state* state) {
+    int passes = dsd_frame_sync_sps_hunt_dwell_passes(opts, state);
+    if (passes < 1) {
+        passes = 1;
+    }
+    return passes * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+}
+
+/**
+ * @brief Debit what the last frame handler consumed from the hunt's budget.
+ *
+ * Called on entry to getFrameSync(), where dsd_state::symbolcnt has advanced by exactly the
+ * symbols one protocol handler took since the previous return. The budget is a net count of
+ * symbols the search burned that no frame handler claimed. A profile carrying traffic sits
+ * at zero -- its handlers take a frame's worth between syncs that arrive a few symbols
+ * apart -- while a profile matching nothing spends its dwell at one symbol per symbol.
+ *
+ * Credit is per sync and floored at DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS. A handler that returns
+ * inside that did not decode a frame; it recognised a marker and bailed, and buys nothing.
+ * The floor is what keeps the rule independent of how often an unproductive matcher fires.
+ * Crediting an accumulator instead made the dwell a function of that cadence -- a matcher
+ * firing every few symbols, the shape an alternating bit-sync run on any other protocol
+ * presents, banked a refund faster than the search could spend the budget and pinned the
+ * profile for good (#388).
+ *
+ * Size alone cannot separate a decoded frame from a block skipped on a sync no CRC would
+ * accept, so a handler that ran a check and failed it says so: processFrame() leaves its
+ * dsd_frame_verdict in dsd_state::sps_hunt_last_frame_verdict, and an unproductive one is
+ * refused the debit however much it took (#391). Where the check is per transmission rather
+ * than per frame the protocol reports a sticky verdict instead, so a frame that fails its own
+ * check inside a confirmed transmission still counts -- D-STAR voice and ProVoice were the
+ * last two with no verdict at any point and now confirm this way (#421). The verdict is
+ * default-productive, so every handler that still reports nothing -- DMR, P25 Phase 2, dPMR
+ * and X2-TDMA, which is the whole of the set that does not -- buys dwell in proportion to
+ * what it swallowed, as before.
+ *
+ * Consumption credit answers "how much of this profile's time went somewhere", which is not
+ * the same question as "is this the right profile". A P25p1 control channel reads 134
+ * symbols of a ~180-symbol TSDU slot -- it stops on the standard's last-block bit, not on a
+ * budget -- so a decoded frame cannot get ahead of the slot it sat in, and the floor at zero
+ * denies it a reserve to spend on the failures between. Runs of failing NIDs then rotated
+ * the hunt off a control channel it was decoding (#400). A handler whose own check proves
+ * the profile says so with DSD_FRAME_VERDICT_PROFILE_PROVEN, and the dwell restarts outright
+ * -- the same thing a profile change does (#415), and for the same reason: this profile is
+ * starting its dwell over, not being paid for a frame.
+ *
+ * Restarting cannot re-open #388 the way an accumulator did. Zero is the floor the credit
+ * path already has, so nothing banks: holding a profile takes evidence recurring inside every
+ * dwell, and one false proof buys exactly one dwell. Values are compared as literals because
+ * the DSP layer includes no engine headers; anything this does not recognise is refused
+ * credit, so an unhandled verdict degrades toward rotating rather than toward pinning.
+ *
+ * A withheld frame is measured by neither rule, because the engine declined to run the
+ * handler at all: trunked DMR skips the MS paths, and a frame the retune generation makes
+ * undispatchable skips processFrame(). Consumption is zero on both, so the credit path
+ * refuses the debit at its size floor and the search that found the sync stands charged --
+ * which is what rotated the hunt off channels the engine had just tuned (#392). The cycle is
+ * made neutral instead: the counter goes back to what it was when the cycle began. Not
+ * credit, because the reason for declining is about the engine's state and says nothing
+ * about the profile; and not a reserve, because a refund can only reach the value it
+ * started from.
+ */
+static void
+frame_sync_sps_hunt_note_handler_consumption(dsd_state* state) {
+    /* DSD_FRAME_VERDICT_* (engine/protocol_dispatch.h): 0 productive, 1 unproductive,
+     * 2 profile proven, 3 withheld. Kept in step by FRAME_SYNC_SPS_HUNT_FALSE_SYNC, which
+     * drives this through getFrameSync() with the enumerators themselves. */
+    const int verdict = state->sps_hunt_last_frame_verdict;
+    const int proven = verdict == 2;
+    const int withheld = verdict == 3;
+    const int unproductive = verdict != 0 && !proven && !withheld;
+    /* One verdict answers for one handler call. processFrame() already re-stamps the field
+     * on every dispatch, so this is belt and braces for the entries no handler precedes --
+     * a no-sync return, or a frame the retune generation made undispatchable -- where a
+     * stale verdict would be read against consumption that is not the handler's. */
+    state->sps_hunt_last_frame_verdict = 0;
+
+    /* Both operands wrap at 2^32, so this modular difference stays exact when the free-running
+     * symbol counter rolls over mid-measurement. */
+    uint32_t consumed = state->symbolcnt - state->sps_hunt_symbolcnt_mark;
+    if (consumed > (uint32_t)INT_MAX) {
+        /* symbolcnt went backwards, so an unrelated subsystem zeroed it rather than a
+         * handler having consumed 4 billion symbols: nxdn_reset_after_cac_fail(),
+         * initState() on an in-process restart, and print_datascope() on each refresh.
+         * Credit nothing; the mark below re-anchors the measurement on the next call.
+         *
+         * The datascope is the only one of the three that can zero it faster than handlers
+         * consume -- once every opts->ssize symbols after the count passes
+         * 4800/opts->scoperate, so a few hundred symbols apart -- which means an interval
+         * that really did decode a frame can straddle a reset and be credited nothing.
+         * That is accepted here rather than worked around: nothing in the tree ever sets
+         * opts->datascope to 1, so the display is unreachable and the overlap is latent,
+         * and a missed credit costs only the debit, leaving the hunt on the undebited
+         * dwell it had before #390 rather than mis-crediting anything. Wiring the
+         * datascope back to a switch means giving its reset a form this can tell apart
+         * from a rollover. */
+        consumed = 0;
+    }
+    if (proven) {
+        /* The handler's check, not the measurement, is what carries this: a proof holds
+         * however few symbols the frame took to read, so the size floor and the backwards-
+         * jump guard above -- both of which exist to keep consumption honest -- have no say
+         * in it. */
+        state->sps_hunt_counter = 0;
+    } else if (withheld) {
+        /* Hand back this cycle's search and nothing else. Charging happens only inside
+         * frame_sync_advance_sync_window(), between the snapshot below being stamped and
+         * this read, so the snapshot is exactly what the counter held before the search
+         * that produced the withheld frame.
+         *
+         * Clamped rather than assigned, because the counter can legitimately be lower than
+         * the snapshot by now: a profile change, a retune, or a trunk-scan target switch
+         * inside dsd_trunk_scan_hook_tick() can zero it in between, and the last of those
+         * can even leave this stamp landing on a different target's budget. Every one of
+         * those is a reset this has no business undoing, so the refund is only ever allowed
+         * to lower the counter -- worst case it does nothing. */
+        if (state->sps_hunt_counter > state->sps_hunt_counter_at_entry) {
+            state->sps_hunt_counter = state->sps_hunt_counter_at_entry;
+        }
+    } else if (!unproductive && consumed >= (uint32_t)DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS) {
+        /* dsd_state::sps_hunt_counter only ever counts up from zero, so this is exact.
+         * Sites outside the hunt park a profile by zeroing it; the floor at zero means
+         * consumption measured across such a reset cannot drive it negative. */
+        const uint32_t counter = (uint32_t)state->sps_hunt_counter;
+        state->sps_hunt_counter = (int)(consumed >= counter ? 0U : counter - consumed);
+    }
+    state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+    state->sps_hunt_counter_at_entry = state->sps_hunt_counter;
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_frame_sync_test_sps_hunt_note_handler_consumption(dsd_state* state) {
+    frame_sync_sps_hunt_note_handler_consumption(state);
+}
+#endif
+
+/** @brief Remember where the handler starts consuming, so the next call can measure it. */
+static void
+frame_sync_sps_hunt_mark_return(dsd_state* state) {
+    state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+}
+
+void
+dsd_frame_sync_sps_hunt_restart_dwell(dsd_state* state) {
+    if (!state) {
         return;
     }
     state->sps_hunt_counter = 0;
-
-    static const int sym_rate_cycle[] = {4800, 2400, 9600, 6000, 4800};
-    static const int levels_cycle[] = {4, 4, 2, 4, 2};
-    const int cycle_count = (int)(sizeof(sym_rate_cycle) / sizeof(sym_rate_cycle[0]));
-    int next_idx = frame_sync_sps_hunt_next_index(opts, state, sym_rate_cycle, levels_cycle, cycle_count);
-    frame_sync_apply_sps_hunt_profile(opts, state, next_idx, sym_rate_cycle, levels_cycle);
+    state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+    state->sps_hunt_counter_at_entry = 0;
 }
 
-static double
+/**
+ * @brief Spend alternate 4800/4-level dwells watching for P25p1 on the CQPSK chain.
+ *
+ * A P25p1 FDMA signal cannot argue its way onto CQPSK passively. Both passive routes are
+ * structurally closed: while the CQPSK chain is off the front end runs the FM discriminator, so
+ * the QPSK SNR estimate comes from a constellation ring fed raw un-derotated, un-timed IQ and
+ * never clears the entry margin; and the sync-hamming candidate scores a superset of the C4FM
+ * hypotheses, so an LSM signal -- which decodes its sync words unrotated through the
+ * discriminator -- ties rather than wins, and the override only moves on a strict improvement.
+ *
+ * So the decision is made by trying it. This runs only where a dwell has already expired with
+ * nothing productive decoded, which is exactly where the hunt was going to leave this profile
+ * anyway: a control channel that is decoding never gets here, because its handlers keep the
+ * dwell counter spent. Whichever chain then starts decoding P25p1 frames keeps the profile,
+ * because frame_sync_hold_validated_p25p1_modulation() stops the votes from arguing with it.
+ */
+static void
+frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int preserve_modulation,
+                                   int expired_dwell_idx, int expired_dwell_rf_mod) {
+    if (preserve_modulation || opts->mod_cli_lock || opts->frame_p25p1 != 1) {
+        return;
+    }
+    if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
+        return;
+    }
+    /* The dwell that just expired decoded nothing. If that dwell was this profile running on
+     * the CQPSK chain then whatever evidence put it there has been disproved, so withdraw it
+     * rather than let the restore keep handing the profile back to a chain producing nothing.
+     * This judges the dwell that ended, not the one about to start. */
+    if (expired_dwell_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && expired_dwell_rf_mod == 1
+        && state->p25_p1_validated_rf_mod == 1) {
+        state->p25_p1_validated_rf_mod = -1;
+    }
+    if (state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
+        return;
+    }
+    if (state->p25_p1_validated_rf_mod == 1) {
+        return;
+    }
+
+    /* Own both directions. A profile the hunt re-enters at its own index is not normalised --
+     * frame_sync_apply_sps_hunt_profile() returns early when neither the index nor a binary
+     * profile forces its hand -- so without handing the chain back here a probe that decoded
+     * nothing would keep it for good. */
+    const int probe_qpsk = state->p25_p1_mod_probe_next_qpsk ? 1 : 0;
+    state->p25_p1_mod_probe_next_qpsk = !probe_qpsk;
+    if (state->rf_mod == probe_qpsk) {
+        return;
+    }
+
+    state->rf_mod = probe_qpsk;
+    state->p25_p1_mod_probe_active = 1;
+    if (probe_qpsk) {
+        atomic_store(&g_qpsk_dwell_enter_ms, (int)(uint32_t)dsd_time_monotonic_ms());
+    }
+#ifdef USE_RADIO
+    rtl_maybe_apply_active_demod_profile(opts, state);
+#endif
+}
+
+int
+frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
+    if (state->sps_hunt_counter < frame_sync_sps_hunt_dwell_symbols(opts, state)) {
+        return 0;
+    }
+    state->sps_hunt_counter = 0;
+    /* Reaching here is the trial's verdict: its dwell expired with nothing decoded. That is
+     * true whether or not the profile then rotates, and this is the only place the flag is
+     * cleared, so it must be cleared before the hold below returns -- a probe left active
+     * across a grant would pin rf_mod against the modulation votes for the whole call. */
+    state->p25_p1_mod_probe_active = 0;
+
+    /* The hunt does not get to second-guess a channel the engine chose. On a trunked voice
+     * channel the profile came from the grant that tuned it, so rotating it is wrong however
+     * the budget reads: a call fading toward the noise floor credits less than the search
+     * between its syncs burns, and reaches the dwell while it is still decoding (#392).
+     *
+     * This holds the profile, not the channel, so it returns non-zero like any other dwell
+     * expiry. The caller owes the P25 SM the same no-sync accounting either way (#393) --
+     * VC no-sync pass, release check, no-carrier -- and that accounting is the only thing
+     * that gives a dead voice channel up when false syncs keep arriving often enough to
+     * stop the in-call timeout ever arming. Suppressing it here would leave nothing to drop
+     * trunk_is_tuned, which is the flag this reads: the hold would never end.
+     *
+     * Control channels are not tuned in this sense -- the CC tune path deliberately leaves
+     * the flag alone -- so the hunt still rotates and still probes there. */
+    if (opts->trunk_enable == 1 && opts->trunk_is_tuned == 1) {
+        return 1;
+    }
+    const int preserve_modulation = opts->mod_cli_lock ? 1 : 0;
+
+    /* Generic modulation locks retain their demodulator while rotating equal-timing protocol gates. A P25p2-specific
+     * lock retains whichever P25 profile was selected explicitly by the helper or by a CC retune. This keeps a known
+     * FDMA return on profile 0 even when 4800 and 6000 symbols/s round to the same timing. */
+    const int pin_selected_p25_profile = preserve_modulation && opts->mod_p25p2_profile_lock == 1
+                                         && opts->frame_p25p2 == 1
+                                         && (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4
+                                             || state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4)
+                                         && frame_sync_sps_profile_has_candidate(opts, state->sps_hunt_idx);
+    int next_idx = pin_selected_p25_profile
+                       ? state->sps_hunt_idx
+                       : (preserve_modulation ? frame_sync_sps_hunt_next_index_matching_timing(opts, state)
+                                              : frame_sync_sps_hunt_next_index(opts, state));
+    const int previous_idx = state->sps_hunt_idx;
+    const int previous_mod = state->rf_mod;
+    frame_sync_apply_sps_hunt_profile(opts, state, next_idx, preserve_modulation);
+    frame_sync_maybe_probe_p25p1_cqpsk(opts, state, preserve_modulation, previous_idx, previous_mod);
+    /* A repeated binary profile is a step too: frame_sync_apply_sps_hunt_profile() normalises
+     * dsd_state::rf_mod and resets the modulation vote state without the index moving, and the
+     * caller's sync window -- its level ring, its min/max, its history -- was captured under the
+     * old modulation. Say so, so the window is rebuilt rather than matched across the change.
+     * The two comparisons are exact: the helper mutates nothing else once it is past its own
+     * no-op guard. */
+    return state->sps_hunt_idx != previous_idx || state->rf_mod != previous_mod;
+}
+
+double
 frame_sync_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wall_stamp) {
     if (mono_stamp > 0.0) {
         return nowm - mono_stamp;
@@ -2263,7 +3497,7 @@ frame_sync_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wa
     return 1e9;
 }
 
-static void
+void
 frame_sync_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_t now, double nowm, double mac_hold,
                              double ring_hold, double dt, int* left_active, int* right_active) {
     double l_dmac =
@@ -2284,7 +3518,7 @@ frame_sync_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_
 
 static void
 frame_sync_no_sync_try_p25_release(dsd_opts* opts, dsd_state* state, time_t now) {
-    if (!(opts->p25_trunk == 1 && opts->p25_is_tuned == 1)) {
+    if (!(opts->trunk_enable == 1 && opts->trunk_is_tuned == 1)) {
         return;
     }
     double fallback_nowm = dsd_time_now_monotonic_s();
@@ -2294,7 +3528,7 @@ frame_sync_no_sync_try_p25_release(dsd_opts* opts, dsd_state* state, time_t now)
 
     const dsdneoRuntimeConfig* cfg_hold = dsd_neo_get_config();
     if (!cfg_hold) {
-        dsd_neo_config_init(opts);
+        dsd_neo_config_init();
         cfg_hold = dsd_neo_get_config();
     }
     double vc_grace = cfg_hold ? cfg_hold->p25_vc_grace_s : 0.75;
@@ -2307,13 +3541,37 @@ frame_sync_no_sync_try_p25_release(dsd_opts* opts, dsd_state* state, time_t now)
     int both_slots_idle = (!is_p2_vc) ? 1 : !(left_active || right_active);
     if (dt >= opts->trunk_hangtime && both_slots_idle && dt_since_tune >= vc_grace) {
         state->p25_sm_force_release = 1;
-        dsd_frame_sync_hook_p25_sm_on_release(opts, state);
+        dsd_frame_sync_hook_p25_sm_release(opts, state);
     }
 }
 
+/**
+ * @brief The accounting every no-sync return from getFrameSync() owes, in contract order.
+ *
+ * The P25 trunk SM counts VC no-sync passes and decides releases off these, and expects
+ * the VC no-sync note before the no-carrier teardown (the ordering is asserted in
+ * tests/dsp/test_frame_sync_internal_helpers.c). Both no-sync exits -- the timeout and
+ * the SPS hunt's budget exit -- go through here so they cannot drift apart (#393).
+ */
+static void
+frame_sync_no_sync_run_hooks(dsd_opts* opts, dsd_state* state, time_t now) {
+    dsd_frame_sync_hook_p25_sm_vc_no_sync(opts, state);
+    frame_sync_no_sync_try_p25_release(opts, state, now);
+    dsd_frame_sync_hook_no_carrier(opts, state);
+}
+
+/**
+ * @brief Give up on this call once a whole matchless pass has gone by.
+ *
+ * The dwell is the only gate: no protocol gets a carve-out here. A
+ * `lastsynctype == DSD_SYNC_P25P1_NEG` term used to short-circuit the whole timeout,
+ * inherited unexplained from upstream DSD, which let an inverted P25p1 sync hold off
+ * this exit -- and only this one -- until the sync window's 10200-symbol wrap fired
+ * no_carrier and cleared lastsynctype (#389).
+ */
 static int
 frame_sync_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, const frame_sync_runtime_ctx* rt, time_t now) {
-    if (state->lastsynctype == DSD_SYNC_P25P1_NEG || rt->synctest_pos < 1800) {
+    if (rt->synctest_pos < DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
         return 0;
     }
 
@@ -2322,10 +3580,52 @@ frame_sync_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, const frame_
         DSD_FPRINTF(stderr, "Sync: no sync\n");
     }
 
-    frame_sync_no_sync_sps_hunt(opts, state);
-    frame_sync_no_sync_try_p25_release(opts, state, now);
-    dsd_frame_sync_hook_no_carrier(opts, state);
+    (void)frame_sync_no_sync_sps_hunt(opts, state);
+    frame_sync_no_sync_run_hooks(opts, state, now);
     return 1;
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_frame_sync_test_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, int synctest_pos) {
+    frame_sync_runtime_ctx rt = {0};
+    rt.synctest_pos = synctest_pos;
+    return frame_sync_handle_no_sync_timeout(opts, state, &rt, time(NULL));
+}
+#endif
+
+/* Symbols seen since the last sync or unsynced dump; only the DSP thread
+ * touches it (same pattern as the g_vote_* diagnostics). */
+static unsigned int g_unsynced_dmr_dump_symbols = 0;
+
+/* --dmr-debug-unsynced: while hunting, print the trailing 144 dibits from the
+ * rolling DMR payload buffer as non-overlapping "Debug Demod -Sync" chunks.
+ * Chunk boundaries are arbitrary and thresholds may be uncalibrated; this is a
+ * best-effort raw view of demod output that never achieved sync. The first
+ * chunk after the rolling buffer rewinds its write pointer can also span
+ * stale pre-rewind dibits. */
+static void
+frame_sync_maybe_dump_unsynced_dmr(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->dmr_debug_unsynced == 0 || opts->frame_dmr != 1) {
+        return;
+    }
+    if (opts->audio_in_type != AUDIO_IN_SYMBOL_BIN && opts->audio_in_type != AUDIO_IN_SYMBOL_FLT
+        && state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
+        return;
+    }
+    if (++g_unsynced_dmr_dump_symbols < 144U) {
+        return;
+    }
+    g_unsynced_dmr_dump_symbols = 0;
+
+    if (state->dmr_payload_buf == NULL || state->dmr_payload_p == NULL
+        || state->dmr_payload_p - state->dmr_payload_buf < 144) {
+        return;
+    }
+    char line[192];
+    if (dmr_debug_format_unsynced(line, sizeof(line), state->dmr_payload_p - 144, 144U) != 0U) {
+        DSD_FPRINTF(stderr, "%s\n", line);
+    }
 }
 
 int
@@ -2338,15 +3638,15 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     const double nowm = dsd_time_now_monotonic_s();
     frame_sync_maybe_tick_p25_trunk_sm(opts, state, now);
     frame_sync_apply_cli_mod_lock(opts, state);
+    frame_sync_sps_hunt_note_handler_consumption(state);
+    frame_sync_ensure_enabled_sps_profile(opts, state);
 
     frame_sync_runtime_ctx rt;
     frame_sync_runtime_init(&rt, opts, state);
 
     frame_sync_publish_ui_throttled(opts, state);
-    watchdog_event_history(opts, state, 0);
-    watchdog_event_current(opts, state, 0);
-    watchdog_event_history(opts, state, 1);
-    watchdog_event_current(opts, state, 1);
+    dsd_event_sync_slot(opts, state, 0);
+    dsd_event_sync_slot(opts, state, 1);
 
     for (;;) {
         rt.t++;
@@ -2355,25 +3655,48 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         }
 
         rt.symbol = getSymbol(opts, state, 0);
-        frame_sync_update_symbol_ring(opts, state, rt.symbol, rt.lbuf, &rt.lidx, rt.t_max);
+        frame_sync_update_symbol_ring(opts, state, rt.symbol, rt.lbuf, &rt.lidx, &rt.level_count, rt.t_max);
         frame_sync_maybe_auto_switch_modulation(opts, state, rt.t_max, &rt.lastt);
         rt.dibit = frame_sync_process_dibit_and_payload(opts, state, rt.symbol);
-        *rt.synctest_p = (char)('0' + (rt.dibit & 0x3));
+        frame_sync_history_push(&rt, (char)('0' + (rt.dibit & 0x3)));
 
-        if (rt.t >= rt.t_max) {
+        if (rt.history_count >= 8) {
             int sync_type = frame_sync_eval_window(opts, state, &rt, now, nowm);
             if (sync_type != DSD_SYNC_NONE) {
+                g_unsynced_dmr_dump_symbols = 0;
+                frame_sync_sps_hunt_mark_return(state);
                 return sync_type;
             }
         }
+        frame_sync_maybe_dump_unsynced_dmr(opts, state);
 
-        if (exitflag == 1) {
-            cleanupAndExit(opts, state);
+        if (dsd_exitflag_load() == 1) {
+            dsd_request_shutdown(opts, state);
+            frame_sync_sps_hunt_mark_return(state);
             return DSD_SYNC_NONE;
         }
 
         frame_sync_advance_sync_window(opts, state, &rt);
         if (frame_sync_handle_no_sync_timeout(opts, state, &rt, now)) {
+            frame_sync_sps_hunt_mark_return(state);
+            return -1;
+        }
+
+        /* The timeout above is the usual trigger, but it needs a whole matchless pass
+         * inside one call. Syncs arriving more often than that -- the permissive 4800/4
+         * matchers do, on signals belonging to another profile entirely -- would otherwise
+         * keep the hunt from ever running. The budget spans calls, so they cannot.
+         *
+         * One pass is the smallest dwell frame_sync_sps_hunt_dwell_symbols() can return, so
+         * the compare below is a necessary condition for the step and keeps the policy call
+         * out of the per-symbol path.
+         *
+         * This is a no-sync exit like the timeout above and owes the P25 SM the same
+         * accounting, in the same order. */
+        if (state->sps_hunt_counter >= DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS
+            && frame_sync_no_sync_sps_hunt(opts, state)) {
+            frame_sync_no_sync_run_hooks(opts, state, now);
+            frame_sync_sps_hunt_mark_return(state);
             return -1;
         }
     }

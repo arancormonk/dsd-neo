@@ -4,14 +4,16 @@
  */
 
 #include <assert.h>
+#include <curses.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/ncurses_snr.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
-#include "dsd-neo/core/safe_api.h"
 
-int ui_unicode_supported(void);      // NOLINT(misc-use-internal-linkage)
-int ui_block_glyphs_supported(void); // NOLINT(misc-use-internal-linkage)
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 
 #if defined(DSD_NEO_FAST_MATH) || defined(__FAST_MATH__) || defined(_M_FP_FAST)
 #define DSD_NEO_TEST_FAST_MATH 1
@@ -21,14 +23,109 @@ int ui_block_glyphs_supported(void); // NOLINT(misc-use-internal-linkage)
 #define DSD_NEO_TEST_FAST_MATH 0
 #endif
 
+struct render_capture {
+    char out[128];
+    size_t len;
+    int attr_get_calls;
+    int attr_set_calls;
+    int attron_count;
+    int attroff_count;
+    unsigned long attron_values[64];
+    unsigned long attroff_values[64];
+    unsigned long saved_attrs;
+    short saved_pair;
+    unsigned long last_attr_set_attrs;
+    short last_attr_set_pair;
+};
+
+static struct render_capture g_capture;
+
 int
-ui_unicode_supported(void) { // NOLINT(misc-use-internal-linkage)
+dsd_unicode_block_glyphs_supported(void) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
-int
-ui_block_glyphs_supported(void) { // NOLINT(misc-use-internal-linkage)
+static void
+capture_reset(struct render_capture* cap) {
+    DSD_MEMSET(cap, 0, sizeof(*cap));
+    cap->saved_attrs = 0x1234UL;
+    cap->saved_pair = 5;
+}
+
+static int
+capture_ch(unsigned long ch) {
+    struct render_capture* cap = &g_capture;
+    if (cap->len + 1 < sizeof(cap->out)) {
+        cap->out[cap->len++] = (char)(ch & A_CHARTEXT);
+        cap->out[cap->len] = '\0';
+    }
     return 0;
+}
+
+static int
+capture_str(const char* text) {
+    struct render_capture* cap = &g_capture;
+    if (!text) {
+        return 0;
+    }
+    while (*text && cap->len + 1 < sizeof(cap->out)) {
+        cap->out[cap->len++] = *text++;
+    }
+    cap->out[cap->len] = '\0';
+    return 0;
+}
+
+static int
+capture_attron(unsigned long attrs) {
+    struct render_capture* cap = &g_capture;
+    if (cap->attron_count < (int)(sizeof(cap->attron_values) / sizeof(cap->attron_values[0]))) {
+        cap->attron_values[cap->attron_count] = attrs;
+    }
+    cap->attron_count++;
+    return 0;
+}
+
+static int
+capture_attroff(unsigned long attrs) {
+    struct render_capture* cap = &g_capture;
+    if (cap->attroff_count < (int)(sizeof(cap->attroff_values) / sizeof(cap->attroff_values[0]))) {
+        cap->attroff_values[cap->attroff_count] = attrs;
+    }
+    cap->attroff_count++;
+    return 0;
+}
+
+static int
+capture_attr_get(unsigned long* attrs, short* pair) {
+    struct render_capture* cap = &g_capture;
+    cap->attr_get_calls++;
+    if (attrs) {
+        *attrs = cap->saved_attrs;
+    }
+    if (pair) {
+        *pair = cap->saved_pair;
+    }
+    return 0;
+}
+
+static int
+capture_attr_set(unsigned long attrs, short pair) {
+    struct render_capture* cap = &g_capture;
+    cap->attr_set_calls++;
+    cap->last_attr_set_attrs = attrs;
+    cap->last_attr_set_pair = pair;
+    return 0;
+}
+
+static void
+install_capture(void) {
+    dsd_ncurses_snr_set_emit_hooks_for_test(capture_ch, capture_str, capture_attron, capture_attroff, capture_attr_get,
+                                            capture_attr_set);
+}
+
+static void
+clear_capture_hooks(void) {
+    dsd_ncurses_snr_set_emit_hooks_for_test(NULL, NULL, NULL, NULL, NULL, NULL);
 }
 
 static void
@@ -50,6 +147,29 @@ assert_ascii(double snr_db, const char* expected) {
     }
     assert(strcmp(actual, expected) == 0);
     assert(actual[9] == '\0');
+}
+
+static void
+test_snr_public_meter_rendering_ascii_and_color_restore(void) {
+    struct render_capture* cap = &g_capture;
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+
+    capture_reset(cap);
+    install_capture();
+    print_snr_meter(&opts, 12.0, 0);
+    assert(strcmp(cap->out, "| | | |  ") == 0);
+    assert(cap->attr_get_calls == 1);
+    assert(cap->attron_count == 4);
+    assert(cap->attroff_count == 4);
+    for (int i = 0; i < cap->attron_count; i++) {
+        assert(cap->attron_values[i] == (unsigned long)COLOR_PAIR(6));
+        assert(cap->attroff_values[i] == (unsigned long)COLOR_PAIR(6));
+    }
+    assert(cap->attr_set_calls == 5);
+    assert(cap->last_attr_set_attrs == cap->saved_attrs);
+    assert(cap->last_attr_set_pair == cap->saved_pair);
+    clear_capture_hooks();
 }
 
 int
@@ -93,6 +213,8 @@ main(void) {
         assert(strcmp(tiny, "| ") == 0);
         assert(tiny[2] == '\0');
     }
+
+    test_snr_public_meter_rendering_ascii_and_color_restore();
 
     printf("UI_SNR_METER: OK\n");
     return 0;

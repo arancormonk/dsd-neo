@@ -23,7 +23,16 @@
 extern "C" {
 #endif
 
+/** Decode an LCW carried by an active-call data unit such as LDU1. */
 void p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors);
+
+/**
+ * Decode an LCW carried by a TDULC terminator.
+ *
+ * Voice-user metadata is retained, but cannot emit a new voice-start event
+ * after the terminator has ended the current transmission.
+ */
+void p25_lcw_from_tdulc(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors);
 
 #ifdef __cplusplus
 }

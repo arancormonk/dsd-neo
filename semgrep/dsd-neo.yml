@@ -5,12 +5,14 @@ rules:
     message: Use the dsd-neo safe API wrapper instead of the raw C memory/string API.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
         - /tests/**
       exclude:
         - /include/dsd-neo/core/safe_api.h
+        - /android/third_party/**
         - /src/third_party/**
     pattern-either:
       - pattern: memcpy(...)
@@ -31,11 +33,13 @@ rules:
     message: Do not invoke shells or spawn processes from project-owned C/C++ code without explicit design review.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
         - /tests/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
     pattern-either:
       - pattern: system(...)
@@ -57,11 +61,13 @@ rules:
       declarator for portable project-owned C/C++ declarations.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
         - /tests/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
     pattern-regex: '\[\s*static\b'
 
@@ -73,11 +79,13 @@ rules:
       large decoder objects never consume stack space.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
         - /tests/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
     pattern-regex: '^\s*(?!(?:static|thread_local)\b)(?:(?:const\s+)?(?:struct\s+)?(?:dsd_state|dsd_opts)\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:=|\{|,|\[|;)|(?:const\s+)?auto\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:dsd_state|dsd_opts)\s*(?:\{|\())'
 
@@ -89,12 +97,53 @@ rules:
       out under NDEBUG.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
     pattern: assert(...)
+
+  - id: dsd-neo.no-floating-point-equality-in-tests
+    languages: [c, cpp]
+    severity: ERROR
+    message: Compare floating-point test values with an explicit tolerance instead of == or !=.
+    paths:
+      include:
+        - /tests/**
+    pattern-either:
+      - patterns:
+          - pattern-inside: |
+              $RET $FUNC(...) {
+                ...
+                double $FLOAT_VALUE = ...;
+                ...
+              }
+          - pattern-either:
+              - pattern: $OTHER == $FLOAT_VALUE
+              - pattern: $OTHER != $FLOAT_VALUE
+              - pattern: $FLOAT_VALUE == $OTHER
+              - pattern: $FLOAT_VALUE != $OTHER
+          - metavariable-regex:
+              metavariable: $OTHER
+              regex: '^[A-Za-z_]'
+      - patterns:
+          - pattern-inside: |
+              $RET $FUNC(...) {
+                ...
+                float $FLOAT_VALUE = ...;
+                ...
+              }
+          - pattern-either:
+              - pattern: $OTHER == $FLOAT_VALUE
+              - pattern: $OTHER != $FLOAT_VALUE
+              - pattern: $FLOAT_VALUE == $OTHER
+              - pattern: $FLOAT_VALUE != $OTHER
+          - metavariable-regex:
+              metavariable: $OTHER
+              regex: '^[A-Za-z_]'
 
   - id: dsd-neo.no-weak-process-rng
     languages: [c, cpp]
@@ -103,10 +152,12 @@ rules:
       Do not use process-global rand()/srand(); use a purpose-specific RNG, nonce, or unique-name helper.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
     pattern-either:
       - pattern: rand(...)
@@ -118,10 +169,12 @@ rules:
     message: Use checked strto* parsing or a project parse helper instead of atoi/atol/atoll/atof.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
     pattern-either:
       - pattern: atoi(...)
@@ -139,10 +192,12 @@ rules:
     message: Check the strto* end pointer and range instead of passing NULL for endptr.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
     pattern-either:
       - pattern: strtol($S, NULL, $B)
@@ -176,10 +231,12 @@ rules:
     message: Use project file/path compatibility helpers instead of raw file open/temp APIs in project-owned code.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
         - /src/platform/file_compat_posix.c
         - /src/platform/file_compat_win32.c
@@ -197,20 +254,38 @@ rules:
       - pattern: mkstemp(...)
       - pattern: mkstemps(...)
 
-  - id: dsd-neo.no-deprecated-dsd-sprintf
+  # Tests sit outside dsd-neo.no-raw-file-open above (its paths.include omits
+  # /tests/**), and mostly for good reason: they legitimately read fixtures with
+  # fopen(..., "rb") and use tmpfile()/mkstemp(), none of which can produce a
+  # world-writable file. Adding /tests/** to that rule wholesale flags 115 such
+  # benign sites across 55 files. What tests must NOT do is CREATE a file with a
+  # umask-dependent mode - CodeQL reports that as cpp/world-writable-file-creation,
+  # and it is the one variant of this rule that has actually reached a PR here
+  # (twice: a fixture seeder, then a refresh-test helper), because no local gate
+  # covered it.
+  - id: dsd-neo.no-raw-file-create-in-tests
     languages: [c, cpp]
     severity: ERROR
-    message: Use DSD_SNPRINTF with an explicit destination size instead of deprecated DSD_SPRINTF.
+    message: >-
+      Create files in tests with dsd_fopen_private() (0600) or dsd_test_mkstemp(), never a raw
+      write-mode open: fopen(path, "w") honours the umask and can leave a 0666 world-writable
+      file, which CodeQL reports as cpp/world-writable-file-creation. Read-mode opens are fine.
     paths:
       include:
-        - /apps/**
-        - /include/**
-        - /src/**
         - /tests/**
       exclude:
-        - /include/dsd-neo/core/safe_api.h
-        - /src/third_party/**
-    pattern: DSD_SPRINTF(...)
+        - /tests/**/third_party/**
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: fopen($PATH, $MODE)
+              - pattern: freopen($PATH, $MODE, $STREAM)
+          - metavariable-regex:
+              metavariable: $MODE
+              regex: '^"[wa]'
+      - pattern: creat(...)
+      - pattern: mktemp(...)
+      - pattern: tmpnam(...)
 
   - id: dsd-neo.no-sizeof-function-parameter-in-dsd-snprintf
     languages: [c, cpp]
@@ -218,12 +293,14 @@ rules:
     message: Function parameters have pointer size in C; pass the explicit destination capacity to DSD_SNPRINTF.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
         - /tests/**
       exclude:
         - /include/dsd-neo/core/safe_api.h
+        - /android/third_party/**
         - /src/third_party/**
     pattern-either:
       - patterns:
@@ -239,22 +316,182 @@ rules:
               }
           - pattern: DSD_SNPRINTF($DST, sizeof($DST), ...)
 
+  - id: dsd-neo.no-escaped-control-char-in-format-string
+    languages: [c, cpp]
+    severity: ERROR
+    message: >-
+      Format string emits a literal backslash escape instead of the control character. "\\n" prints the two
+      characters '\' and 'n', gluing the next output onto the current line; write "\n" for a real newline
+      (likewise "\t" and "\r"). This is refactor fallout from mechanically rewriting fprintf call sites, and
+      it has silently regressed DMR console and structured-output dumps more than once. If a literal escape
+      sequence really is intended, emit it outside a format string or annotate the line with a narrow
+      nosemgrep comment explaining why.
+    paths:
+      include:
+        - /android/**
+        - /apps/**
+        - /include/**
+        - /src/**
+      exclude:
+        - /android/third_party/**
+        - /src/third_party/**
+    patterns:
+      - pattern-either:
+          - pattern: DSD_FPRINTF($STREAM, $FMT, ...)
+          - pattern: DSD_SNPRINTF($DST, $SZ, $FMT, ...)
+          - pattern: DSD_VSNPRINTF($DST, $SZ, $FMT, $AP)
+          - pattern: LOG_ERROR($FMT, ...)
+          - pattern: LOG_WARN($FMT, ...)
+          - pattern: LOG_INFO($FMT, ...)
+          - pattern: LOG_DEBUG($FMT, ...)
+          - pattern: printf($FMT, ...)
+      - metavariable-regex:
+          metavariable: $FMT
+          regex: '.*\\\\[ntr].*'
+
+  - id: dsd-neo.no-wide-char-conversion-in-format-string
+    languages: [c, cpp]
+    severity: ERROR
+    message: >-
+      Format string uses a wide-character conversion (%lc or %ls). It asks the C runtime to encode a wide
+      character in the current locale, and text taken off the air regularly contains a UTF-16 code unit that
+      has no encoding of its own: a lone surrogate, which is one unit in 32 of a garbage payload and half of
+      every emoji. glibc drops it; the Windows UCRT reports the failed conversion as a string of length -1
+      and then writes the stack to the stream until the process faults, which is how a DMR UDT crashed the
+      Windows build. Decode with <dsd-neo/core/utf16.h> and print through dsd_unicode_fput_scalar().
+      The %C and %S aliases reach the same runtime conversion and are blocked too.
+    paths:
+      include:
+        - /android/**
+        - /apps/**
+        - /include/**
+        - /src/**
+        - /tests/**
+      exclude:
+        - /android/third_party/**
+        - /src/third_party/**
+    patterns:
+      - pattern-either:
+          - pattern: DSD_FPRINTF($STREAM, $FMT, ...)
+          - pattern: DSD_SNPRINTF($DST, $SZ, $FMT, ...)
+          - pattern: DSD_VSNPRINTF($DST, $SZ, $FMT, $AP)
+          - pattern: LOG_ERROR($FMT, ...)
+          - pattern: LOG_WARN($FMT, ...)
+          - pattern: LOG_INFO($FMT, ...)
+          - pattern: LOG_DEBUG($FMT, ...)
+          - pattern: printf($FMT, ...)
+          # The terminal UI renders off-air alias and text fields through these.
+          - pattern: printw($FMT, ...)
+          - pattern: mvprintw($Y, $X, $FMT, ...)
+          - pattern: wprintw($WIN, $FMT, ...)
+          - pattern: mvwprintw($WIN, $Y, $X, $FMT, ...)
+          - pattern: vw_printw($WIN, $FMT, $AP)
+          - pattern: vwprintw($WIN, $FMT, $AP)
+      - metavariable-regex:
+          metavariable: $FMT
+          # The %C/%S branch omits the space flag so that a "%% Sxx" literal is not a match.
+          regex: '.*(%[-+ #0-9.*]*l[cs]|%[-+#0-9.*]*[CS]).*'
+
+  - id: dsd-neo.no-wide-character-output
+    languages: [c, cpp]
+    severity: ERROR
+    message: >-
+      Wide-character output function. These hand a wchar_t to the C runtime to encode in the current
+      locale, which is the same conversion %lc performs and fails at: off-air UTF-16 regularly carries a
+      lone surrogate, which has no encoding, and the Windows UCRT turns that failure into an unbounded
+      write of the stack (issue #358). Decode with <dsd-neo/core/utf16.h> and print the scalar values
+      through dsd_unicode_fput_scalar(), which emits UTF-8 bytes and never consults the runtime.
+    paths:
+      include:
+        - /android/**
+        - /apps/**
+        - /include/**
+        - /src/**
+        - /tests/**
+      exclude:
+        - /android/third_party/**
+        - /src/third_party/**
+    pattern-either:
+      - pattern: fwprintf(...)
+      - pattern: wprintf(...)
+      - pattern: swprintf(...)
+      - pattern: vfwprintf(...)
+      - pattern: vwprintf(...)
+      - pattern: vswprintf(...)
+      - pattern: fputws(...)
+      - pattern: fputwc(...)
+      - pattern: putwc(...)
+      - pattern: putwchar(...)
+      # The curses wide API reaches the same conversion (PDCurses goes through wcrtomb).
+      - pattern: addwstr(...)
+      - pattern: waddwstr(...)
+      - pattern: mvaddwstr(...)
+      - pattern: mvwaddwstr(...)
+      - pattern: addnwstr(...)
+      - pattern: waddnwstr(...)
+      - pattern: add_wch(...)
+      - pattern: wadd_wch(...)
+      - pattern: mvadd_wch(...)
+      - pattern: mvwadd_wch(...)
+      - pattern: echo_wchar(...)
+      - pattern: wecho_wchar(...)
+
+  - id: dsd-neo.no-unbounded-byte-to-bit-unpack
+    languages: [c, cpp]
+    severity: ERROR
+    message: >-
+      Unbounded bit/byte conversion. A three-argument helper trusts the length against both buffers,
+      which is how the P25 phase 2 talker alias and DMR type-1 assembly overflows reached the stack.
+      Use dsd_unpack_bytes_to_bits()/dsd_pack_bits_to_bytes() (or the DSD_UNPACK_ARRAY_TO_BITS /
+      DSD_PACK_ARRAY_TO_BYTES macros) so the span of both buffers is stated at the call.
+    paths:
+      # Production code only. Test fixtures build their inputs with local helpers whose
+      # bounds are compile-time constants, and a reintroduced removed helper is a link
+      # error there anyway.
+      include:
+        - /android/**
+        - /apps/**
+        - /include/**
+        - /src/**
+      exclude:
+        - /android/third_party/**
+        - /src/third_party/**
+        - /include/dsd-neo/core/bit_packing.h
+        - /src/core/util/bit_packing.c
+    pattern-either:
+      # The removed helpers, in case they are reintroduced by a copy-paste from upstream DSD.
+      - pattern: unpack_byte_array_into_bit_array(...)
+      - pattern: pack_bit_array_into_byte_array(...)
+      # The same shape under any name: source, destination, single length. A literal length is
+      # still unbounded with respect to the destination, so constant calls are rejected too.
+      - patterns:
+          - pattern-regex: \b\w*unpack_(byte|bytes)\w*\s*\(\s*[^;()]+,\s*[^;()]+,\s*[^;(),]+\s*\)
+          - pattern-not: dsd_unpack_bytes_to_bits(...)
+          - pattern-not: dsd_unpack_bytes_to_bits_truncating(...)
+      - patterns:
+          - pattern-regex: \b\w*pack_bit(s)?_\w*\s*\(\s*[^;()]+,\s*[^;()]+,\s*[^;(),]+\s*\)
+          - pattern-not: dsd_pack_bits_to_bytes(...)
+          - pattern-not: dsd_pack_bits_to_bytes_truncating(...)
+
   - id: dsd-neo.no-direct-third-party-include
     languages: [c, cpp]
     severity: ERROR
     message: Use a project-owned wrapper/target instead of directly including bundled third-party headers.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
         - /tests/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
         - /src/fec/ez.cpp
-        - /src/io/radio/rtl_metrics.cpp
+        # The project-owned pffft wrapper. The two spectrum producers go through it
+        # and are deliberately not listed here.
+        - /src/io/radio/rtl_fft_cache.h
         - /tests/protocol/p25/test_p25_p2_rs28_limits.cpp
-        - /tests/protocol/p25/test_p25_p2_rs28_wrappers.cpp
     pattern-either:
       - pattern: '#include "src/third_party/..."'
       - pattern: '#include <src/third_party/...>'

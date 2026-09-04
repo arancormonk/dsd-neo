@@ -4,11 +4,11 @@
  */
 
 /*
- * P25 Phase 2 RS(63,35) correction limit tests using FACCH/SACCH wrappers.
+ * P25 Phase 2 RS(63,35) FACCH/SACCH correction limit tests.
  *
  * Valid shortened codewords are constructed via ezpwd::RS<63,35> then symbol
- * errors are injected to test t=14 correction capacity. The wrapper mappers
- * are used to feed payload/parity bit arrays.
+ * errors are injected to test t=14 correction capacity through the canonical
+ * erasure-aware decoders.
  */
 
 #include <exception>
@@ -19,9 +19,12 @@
 #include "ezpwd/rs"
 
 extern "C" {
-int ez_rs28_facch(int payload[156], int parity[114]);
-int ez_rs28_sacch(int payload[180], int parity[132]);
+int ez_rs28_facch(int payload[156], int parity[114], const int* erasures, int n_erasures);
+int ez_rs28_sacch(int payload[180], int parity[132], const int* erasures, int n_erasures);
 }
+
+static const int FACCH_FIXED_ERASURES[18] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 54, 55, 56, 57, 58, 59, 60, 61, 62};
+static const int SACCH_FIXED_ERASURES[11] = {0, 1, 2, 3, 4, 57, 58, 59, 60, 61, 62};
 
 static void
 sym_to_bits6(uint8_t s, int* out6) {
@@ -48,6 +51,43 @@ expect_lt(const char* tag, int got, int maxv) {
     return 0;
 }
 
+static int
+decode_sacch(const std::vector<uint8_t>& codeword, int payload[180]) {
+    int parity_bits[132] = {0};
+    int payload_offset = 0;
+    int parity_offset = 0;
+    for (int i = 0; i <= 29; i++) {
+        int bits[6];
+        sym_to_bits6(codeword[(size_t)i], bits);
+        for (int bit : bits) {
+            payload[payload_offset++] = bit;
+        }
+    }
+    for (int i = 30; i <= 51; i++) {
+        int bits[6];
+        sym_to_bits6(codeword[(size_t)i], bits);
+        for (int bit : bits) {
+            parity_bits[parity_offset++] = bit;
+        }
+    }
+    return ez_rs28_sacch(payload, parity_bits, SACCH_FIXED_ERASURES, 11);
+}
+
+static int
+expect_sacch_payload(const char* tag, const int payload[180], const std::vector<uint8_t>& codeword) {
+    for (int symbol = 0; symbol <= 29; symbol++) {
+        int expected[6];
+        sym_to_bits6(codeword[(size_t)symbol], expected);
+        for (int bit = 0; bit < 6; bit++) {
+            if (payload[(symbol * 6) + bit] != expected[bit]) {
+                DSD_FPRINTF(stderr, "%s: mismatch at symbol %d bit %d\n", tag, symbol, bit);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 int
 main(void) try {
     int rc = 0;
@@ -67,6 +107,14 @@ main(void) try {
     // Make working copies to inject symbol errors within the used ranges
     std::vector<uint8_t> cw_facch = cw;
     std::vector<uint8_t> cw_sacch = cw;
+
+    // A clean nonzero SACCH vector catches shortened-codeword index and bit-order regressions.
+    {
+        int payload[180] = {0};
+        int ec = decode_sacch(cw, payload);
+        rc |= expect_ge("SACCH clean nonzero codeword", ec, 0);
+        rc |= expect_sacch_payload("SACCH clean payload", payload, cw);
+    }
 
     // Inject 5 symbol errors across the FACCH used portion (0..44)
     for (int i = 0; i < 5; i++) {
@@ -99,30 +147,14 @@ main(void) try {
                 parity_bits[qbits++] = b6[b];
             }
         }
-        int ec = ez_rs28_facch(payload, parity_bits);
+        int ec = ez_rs28_facch(payload, parity_bits, FACCH_FIXED_ERASURES, 18);
         rc |= expect_ge("FACCH t<=14", ec, 0);
     }
 
     // SACCH mapping: payload ← cw[0..29], parity ← cw[30..51]
     {
         int payload[180] = {0};
-        int parity_bits[132] = {0};
-        int pbits = 0, qbits = 0;
-        for (int i = 0; i <= 29; i++) {
-            int b6[6];
-            sym_to_bits6(cw_sacch[i], b6);
-            for (int b = 0; b < 6; b++) {
-                payload[pbits++] = b6[b];
-            }
-        }
-        for (int i = 30; i <= 51; i++) {
-            int b6[6];
-            sym_to_bits6(cw_sacch[i], b6);
-            for (int b = 0; b < 6; b++) {
-                parity_bits[qbits++] = b6[b];
-            }
-        }
-        int ec = ez_rs28_sacch(payload, parity_bits);
+        int ec = decode_sacch(cw_sacch, payload);
         rc |= expect_lt("SACCH t>=15 fails", ec, 0);
     }
 

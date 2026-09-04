@@ -61,25 +61,6 @@ expect_u64(const char* label, uint64_t got, uint64_t want) {
 }
 
 /**
- * @brief Compute the expected attenuated sample for repeat k.
- */
-static int16_t
-expected_sample(int16_t original, int k) {
-    float gain = 1.0f;
-    for (int i = 0; i < k; i++) {
-        gain *= AUDIO_CONCEAL_ATTEN_PER_REPEAT;
-    }
-    float sample = (float)original * gain;
-    if (sample > 32767.0f) {
-        sample = 32767.0f;
-    }
-    if (sample < -32768.0f) {
-        sample = -32768.0f;
-    }
-    return (int16_t)sample;
-}
-
-/**
  * @brief Verify that every sample in a buffer matches an expected value.
  */
 static int
@@ -101,9 +82,87 @@ verify_silence(const char* label, const int16_t* buf) {
     return verify_buffer_constant(label, buf, 0);
 }
 
+static int
+test_guard_paths_and_no_last_good_silence(void) {
+    int rc = 0;
+    int16_t out[8];
+    for (int i = 0; i < 8; i++) {
+        out[i] = (int16_t)(100 + i);
+    }
+
+    rc |= expect_int("guard: null state writes zero frames", (int)audio_conceal_on_underrun(NULL, out, 4), 0);
+    rc |= expect_int("guard: null output writes zero frames", (int)audio_conceal_on_underrun(NULL, NULL, 4), 0);
+
+    struct audio_conceal_state cs;
+    DSD_MEMSET(&cs, 0, sizeof(cs));
+    cs.buffer_frames = 4;
+    cs.channels = 2;
+    cs.underrun_total = 41;
+
+    rc |= expect_int("guard: zero frames writes zero frames", (int)audio_conceal_on_underrun(&cs, out, 0), 0);
+    rc |= expect_i16("guard: zero frames leaves sample", out[0], 100);
+
+    for (int i = 0; i < 8; i++) {
+        out[i] = (int16_t)(200 + i);
+    }
+    rc |= expect_int("no last-good returns requested bounded frames", (int)audio_conceal_on_underrun(&cs, out, 3), 3);
+    for (int i = 0; i < 6; i++) {
+        rc |= expect_i16("no last-good zero-fills written sample", out[i], 0);
+    }
+    rc |= expect_i16("no last-good leaves unwritten tail", out[6], 206);
+    rc |= expect_i16("no last-good leaves final tail", out[7], 207);
+    rc |= expect_u64("no last-good increments underrun total", cs.underrun_total, 42U);
+    return rc;
+}
+
+static int
+test_short_good_buffer_tail_padding_and_custom_gain_clamps(void) {
+    int rc = 0;
+    struct audio_conceal_state cs;
+    DSD_MEMSET(&cs, 0, sizeof(cs));
+    rc |= expect_int("tail/clamp: init", audio_conceal_init(&cs, 4, 2), 0);
+
+    int16_t good[4] = {1000, -1000, 32767, -32768};
+    audio_conceal_on_good_buffer(&cs, good, 2);
+
+    rc |= expect_i16("tail/clamp: copied first sample", cs.last_good_buffer[0], 1000);
+    rc |= expect_i16("tail/clamp: copied second sample", cs.last_good_buffer[1], -1000);
+    rc |= expect_i16("tail/clamp: copied positive clamp seed", cs.last_good_buffer[2], 32767);
+    rc |= expect_i16("tail/clamp: copied negative clamp seed", cs.last_good_buffer[3], -32768);
+    for (int i = 4; i < 8; i++) {
+        rc |= expect_i16("tail/clamp: short good buffer zero-pads tail", cs.last_good_buffer[i], 0);
+    }
+
+    cs.repeat_count = 3;
+    audio_conceal_on_good_buffer(&cs, NULL, 2);
+    rc |= expect_int("tail/clamp: null good buffer does not reset repeat count", cs.repeat_count, 3);
+    audio_conceal_on_good_buffer(&cs, good, 0);
+    rc |= expect_int("tail/clamp: zero-frame good buffer does not reset repeat count", cs.repeat_count, 3);
+    cs.repeat_count = 0;
+    cs.atten_per_repeat = 2.0f;
+
+    int16_t out[8];
+    DSD_MEMSET(out, 0x7F, sizeof(out));
+    rc |= expect_int("tail/clamp: underrun writes full frame count", (int)audio_conceal_on_underrun(&cs, out, 4), 4);
+    rc |= expect_i16("tail/clamp: custom gain scales positive", out[0], 2000);
+    rc |= expect_i16("tail/clamp: custom gain scales negative", out[1], -2000);
+    rc |= expect_i16("tail/clamp: positive sample clamps", out[2], 32767);
+    rc |= expect_i16("tail/clamp: negative sample clamps", out[3], -32768);
+    for (int i = 4; i < 8; i++) {
+        rc |= expect_i16("tail/clamp: padded tail stays silent", out[i], 0);
+    }
+    rc |= expect_int("tail/clamp: underrun increments repeat", cs.repeat_count, 1);
+
+    audio_conceal_destroy(&cs);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+
+    rc |= test_guard_paths_and_no_last_good_silence();
+    rc |= test_short_good_buffer_tail_padding_and_custom_gain_clamps();
 
     /* --- Step 1: Init concealment --- */
     struct audio_conceal_state cs;
@@ -126,11 +185,12 @@ main(void) {
     }
 
     /* --- Step 3: Trigger 4 underruns → progressive attenuation --- */
+    static const int16_t expected_repeats[4] = {5000, 2500, 1250, 625};
     for (int k = 1; k <= 4; k++) {
         DSD_MEMSET(out, 0xAA, sizeof(out));
         audio_conceal_on_underrun(&cs, out, FRAMES);
 
-        int16_t want = expected_sample(GOOD_VAL, k);
+        int16_t want = expected_repeats[k - 1];
         char label[64];
         DSD_SNPRINTF(label, sizeof(label), "step3: underrun k=%d sample[0]", k);
         rc |= expect_i16(label, out[0], want);
@@ -162,9 +222,8 @@ main(void) {
     DSD_MEMSET(out, 0xAA, sizeof(out));
     audio_conceal_on_underrun(&cs, out, FRAMES);
 
-    int16_t want_fresh = expected_sample(GOOD_VAL2, 1);
-    rc |= expect_i16("step6: fresh k=1 sample[0]", out[0], want_fresh);
-    rc |= expect_i16("step6: fresh k=1 sample[255]", out[255], want_fresh);
+    rc |= expect_i16("step6: fresh k=1 sample[0]", out[0], 10000);
+    rc |= expect_i16("step6: fresh k=1 sample[255]", out[255], 10000);
 
     /* --- Step 7: Verify underrun_total == 6 (4 + 1 + 1) --- */
     rc |= expect_u64("step7: underrun_total", cs.underrun_total, 6U);

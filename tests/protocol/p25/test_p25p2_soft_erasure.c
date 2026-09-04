@@ -37,7 +37,7 @@ set_p25p2_threshold(int threshold) {
     char value[16];
     DSD_SNPRINTF(value, sizeof(value), "%d", threshold);
     dsd_setenv("DSD_NEO_P25P2_SOFT_ERASURE_THRESHOLD", value, 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 }
 
 int
@@ -250,8 +250,8 @@ main(void) {
         failures++;
     }
 
-    /* Test 12: legacy ESS helper preserves payload/parity grouped ordering */
-    printf("Test 12: ESS ranked erasure ordering... ");
+    /* Test 12: production ESS erasures are globally ranked across payload and parity */
+    printf("Test 12: ESS global erasure ordering... ");
     int16_t payload_llr[96];
     int16_t parity_llr[168];
     fill_llr(payload_llr, 96, 200);
@@ -263,17 +263,6 @@ main(void) {
         parity_llr[(27 * 6) + bit] = 5; /* position 43 */
     }
     DSD_MEMSET(erasures, 0, sizeof(erasures));
-    n_total = p25p2_ess_soft_erasures_from_llr(payload_llr, parity_llr, erasures, 2, 2);
-    if (n_total == 4 && erasures[0] == 4 && erasures[1] == 0 && erasures[2] == 43 && erasures[3] == 19) {
-        printf("PASS\n");
-    } else {
-        printf("FAIL (got total=%d order=%d,%d,%d,%d)\n", n_total, erasures[0], erasures[1], erasures[2], erasures[3]);
-        failures++;
-    }
-
-    /* Test 13: production ESS erasures are globally ranked across payload and parity */
-    printf("Test 13: ESS global erasure ordering... ");
-    DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_total = p25p2_ess_soft_erasures_ranked(payload_llr, parity_llr, erasures, 4);
     if (n_total == 4 && erasures[0] == 43 && erasures[1] == 19 && erasures[2] == 4 && erasures[3] == 0) {
         printf("PASS\n");
@@ -282,8 +271,8 @@ main(void) {
         failures++;
     }
 
-    /* Test 14: Threshold 0 keeps balanced minimum only */
-    printf("Test 14: FACCH threshold 0 uses minimum prefix... ");
+    /* Test 13: Threshold 0 keeps balanced minimum only */
+    printf("Test 13: FACCH threshold 0 uses minimum prefix... ");
     set_p25p2_threshold(0);
     fill_llr(p2llr, 1400, 200);
     DSD_MEMSET(erasures, 0, sizeof(erasures));
@@ -302,8 +291,8 @@ main(void) {
         failures++;
     }
 
-    /* Test 15: Threshold 255 expands to max depth */
-    printf("Test 15: FACCH threshold 255 uses max prefix... ");
+    /* Test 14: Threshold 255 expands to max depth */
+    printf("Test 14: FACCH threshold 255 uses max prefix... ");
     set_p25p2_threshold(255);
     fill_llr(p2llr, 1400, 200);
     DSD_MEMSET(erasures, 0, sizeof(erasures));

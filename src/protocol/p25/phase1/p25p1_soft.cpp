@@ -10,7 +10,7 @@
 
 #include <cstring>
 #include <dsd-neo/fec/Golay24.hpp>
-#include <dsd-neo/fec/Hamming.hpp>
+#include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/config.h>
@@ -24,7 +24,7 @@ extern "C" int
 p25p1_get_erasure_threshold(void) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(nullptr);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
     if (cfg) {
@@ -42,7 +42,7 @@ extern "C" int
 p25_soft_hard_override_enabled(void) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(nullptr);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
     if (cfg && cfg->p25_soft_hard_override_is_set) {
@@ -138,28 +138,6 @@ p25p1_collect_rs_candidates(const uint8_t* data_reliab, int data_symbols, const 
 } // namespace
 
 extern "C" int
-p25p1_build_rs_erasures(const uint8_t* data_reliab, int data_symbols, const uint8_t* parity_reliab, int parity_symbols,
-                        int* erasures, int max_erasures) {
-    if (data_reliab == nullptr || parity_reliab == nullptr || erasures == nullptr || data_symbols < 0
-        || parity_symbols < 0 || max_erasures <= 0) {
-        return 0;
-    }
-
-    P25P1RsErasureCandidate candidates[64];
-    int threshold = p25p1_get_erasure_threshold();
-    int candidate_count =
-        p25p1_collect_rs_candidates(data_reliab, data_symbols, parity_reliab, parity_symbols, threshold,
-                                    /*include_all*/ 0, candidates, 64, nullptr);
-    p25p1_sort_erasure_candidates(candidates, candidate_count);
-
-    int out_count = candidate_count < max_erasures ? candidate_count : max_erasures;
-    for (int i = 0; i < out_count; i++) {
-        erasures[i] = candidates[i].position;
-    }
-    return out_count;
-}
-
-extern "C" int
 p25p1_build_rs_ranked_erasures(const uint8_t* data_reliab, int data_symbols, const uint8_t* parity_reliab,
                                int parity_symbols, int min_erasures, int* erasures, int max_erasures) {
     if (data_reliab == nullptr || parity_reliab == nullptr || erasures == nullptr || data_symbols < 0
@@ -227,21 +205,12 @@ find_k_least_reliable(const int* reliab, int n, int k, int* out_indices) {
     }
 }
 
-/* Helper: compute syndrome for Hamming(10,6,3) */
-static int
-hamming_syndrome(const char* bits) {
-    /* Syndrome bits from parity check matrix H:
-     * h0 = 1110011000 -> bits 9,8,7,4,3
-     * h1 = 1101010100 -> bits 9,8,6,4,2
-     * h2 = 1011100010 -> bits 9,7,6,5,1
-     * h3 = 0111100001 -> bits 8,7,6,5,0
-     * bits[0]=bit9 (MSB), bits[9]=bit0 (LSB)
-     */
-    int s0 = bits[0] ^ bits[1] ^ bits[2] ^ bits[5] ^ bits[6];
-    int s1 = bits[0] ^ bits[1] ^ bits[3] ^ bits[5] ^ bits[7];
-    int s2 = bits[0] ^ bits[2] ^ bits[3] ^ bits[4] ^ bits[8];
-    int s3 = bits[1] ^ bits[2] ^ bits[3] ^ bits[4] ^ bits[9];
-    return (s0 << 3) | (s1 << 2) | (s2 << 1) | s3;
+static void
+hamming_encode_parity(const char data[6], char parity[4]) {
+    parity[0] = data[0] ^ data[1] ^ data[2] ^ data[5];
+    parity[1] = data[0] ^ data[1] ^ data[3] ^ data[5];
+    parity[2] = data[0] ^ data[2] ^ data[3] ^ data[4];
+    parity[3] = data[1] ^ data[2] ^ data[3] ^ data[4];
 }
 
 /* Compute penalty for flipping bits: confident bits are expensive to flip. */
@@ -283,20 +252,19 @@ struct P25P1SoftHammingState {
 } // namespace
 
 static void
-p25p1_hamming_seed_from_hard(const char* bits, const int* reliab, Hamming_10_6_3_TableImpl* hamming,
-                             P25P1SoftHammingState* st) {
+p25p1_hamming_seed_from_hard(const char* bits, const int* reliab, P25P1SoftHammingState* st) {
     char hex[6], parity[4];
     DSD_MEMCPY(hex, bits, 6);
     DSD_MEMCPY(parity, bits + 6, 4);
 
-    int hard_result = hamming->decode(hex, parity);
+    int hard_result = hamming_10_6_3_decode(hex, parity);
     if (hard_result != 0 && hard_result != 1) {
         return;
     }
 
     char hard_parity[4];
     DSD_MEMCPY(st->hard_candidate, hex, 6);
-    hamming->encode(hex, hard_parity);
+    hamming_encode_parity(hex, hard_parity);
     DSD_MEMCPY(st->hard_candidate + 6, hard_parity, 4);
 
     st->hard_valid = 1;
@@ -322,7 +290,7 @@ p25p1_hamming_search_masked_candidates(const char* bits, const int* reliab, cons
                 num_flips++;
             }
         }
-        if (num_flips > 2 || hamming_syndrome(candidate) != 0) {
+        if (num_flips > 2 || hamming_10_6_3_decode(candidate, candidate + 6) != 0) {
             continue;
         }
 
@@ -484,8 +452,7 @@ hamming_10_6_3_soft(const char* bits, const int* reliab, char* out_bits) {
 
     P25P1SoftHammingState st = {999999, 99, 0, {0}, 0, 0, 999999, {0}};
 
-    Hamming_10_6_3_TableImpl hamming;
-    p25p1_hamming_seed_from_hard(bits, reliab, &hamming, &st);
+    p25p1_hamming_seed_from_hard(bits, reliab, &st);
 
     int least_rel[5];
     find_k_least_reliable(reliab, 10, 5, least_rel);

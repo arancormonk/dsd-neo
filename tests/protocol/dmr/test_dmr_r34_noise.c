@@ -11,6 +11,7 @@
 #include <dsd-neo/protocol/dmr/r34_viterbi.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dmr_r34_reference_vectors.h"
 #include "dsd-neo/core/safe_api.h"
 
 static uint32_t rng_state = 0xC0FFEEU;
@@ -35,13 +36,6 @@ bit_errors_144(const uint8_t ref[18], const uint8_t got[18]) {
         e += popcnt8((uint8_t)(ref[i] ^ got[i]));
     }
     return e;
-}
-
-static void
-gen_payload(uint8_t out[18]) {
-    for (int i = 0; i < 18; i++) {
-        out[i] = (uint8_t)(xrng() & 0xFFu);
-    }
 }
 
 static void
@@ -72,17 +66,11 @@ main(void) {
     int total_err_soft = 0;
 
     for (int t = 0; t < trials; t++) {
-        uint8_t payload[18];
-        gen_payload(payload);
-
-        // Encode to dibits
-        uint8_t clean[98];
-        int erc = dmr_r34_encode(payload, clean);
-        assert(erc == 0);
+        const dmr_r34_reference_vector* reference = &k_dmr_r34_reference_vectors[t % DMR_R34_REFERENCE_VECTOR_COUNT];
 
         // Create noisy copies + reliabilities
         uint8_t noisy[98];
-        DSD_MEMCPY(noisy, clean, sizeof(noisy));
+        DSD_MEMCPY(noisy, reference->dibits, sizeof(noisy));
         uint8_t reliab[98];
         inject_noise_dibits(noisy, reliab, noise);
 
@@ -99,8 +87,8 @@ main(void) {
         assert(rc_s == 0);
 
         // Compare to truth
-        total_err_hard += bit_errors_144(payload, dec_hard);
-        total_err_soft += bit_errors_144(payload, dec_soft);
+        total_err_hard += bit_errors_144(reference->payload, dec_hard);
+        total_err_soft += bit_errors_144(reference->payload, dec_soft);
     }
 
     printf("DMR R3/4 noise trials=%d hard_err=%d soft_err=%d\n", trials, total_err_hard, total_err_soft);

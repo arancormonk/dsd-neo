@@ -15,6 +15,7 @@
 #include <cstring>
 #include <dsd-neo/dsp/simd_fir.h>
 #include "dsd-neo/core/safe_api.h"
+#include "simd_fir_internal.h"
 #include "simd_x86_cpu.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -51,7 +52,7 @@ extern "C" int simd_hb_decim2_real_neon(const float* in, int in_len, float* out,
  * Scalar complex symmetric FIR filter (no decimation).
  * Exploits tap symmetry: acc += tap[k] * (x[center-d] + x[center+d]).
  */
-static void
+void
 simd_fir_complex_apply_scalar(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
                               int taps_len) {
     if (taps_len < 3 || (taps_len & 1) == 0 || in_len < 2) {
@@ -135,7 +136,7 @@ simd_fir_complex_apply_scalar(const float* in, int in_len, float* out, float* hi
  * Scalar complex half-band decimator by 2.
  * Exploits zero-valued odd taps (except center) AND tap symmetry.
  */
-static int
+int
 simd_hb_decim2_complex_scalar(const float* in, int in_len, float* out, float* hist_i, float* hist_q, const float* taps,
                               int taps_len) {
     if (taps_len < 3 || (taps_len & 1) == 0) {
@@ -224,7 +225,7 @@ simd_hb_decim2_complex_scalar(const float* in, int in_len, float* out, float* hi
  * Scalar real half-band decimator by 2.
  * Exploits zero-valued odd taps (except center) AND tap symmetry.
  */
-static int
+int
 simd_hb_decim2_real_scalar(const float* in, int in_len, float* out, float* hist, const float* taps, int taps_len) {
     if (taps_len < 3 || (taps_len & 1) == 0) {
         return 0;

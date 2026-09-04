@@ -1,32 +1,47 @@
 add_library(dsd-neo_core)
 
+target_compile_definitions(
+    dsd-neo_core
+    PUBLIC DSD_NEO_EVENT_HISTORY_TRANSACTIONS
+)
+
 target_sources(
     dsd-neo_core
     PRIVATE
         audio/dsd_audio.c
         audio/dsd_audio2.c
+        audio/dispatch.c
         audio/dsd_audio_gate.c
         audio/gain.c
         audio/mix.c
         audio/convert.c
         audio/dsd_upsample.c
+        vocoder/keyring.c
+        vocoder/keyring_dmr_tg_map.c
         vocoder/dsd_mbe.c
-        vocoder/dsd_mbe2.c
+        vocoder/dsd_mbe_purge.c
         frames/dsd_frame.c
         frames/dsd_dibit.c
         time/dsd_time.c
         time/dsd_time_state.c
-        util/dsd_cleanup.c
         util/dsd_misc.c
+        util/bit_packing.c
         util/dsd_init.c
+        util/dsd_state_trunk_lcn.c
+        util/dsd_state_p25_bandplan.c
+        util/key_set.c
+        util/channel_label.c
+        util/enc_lockout.c
         util/dsd_events.c
+        util/call_state.c
         util/edacs_afs.c
         util/dsd_alias.c
-        util/dsd_reset.c
         util/talkgroup_policy.c
         util/synctype.c
         file/dsd_file.c
         file/dsd_import.c
+        file/p25_bandplan_csv.c
+        file/p25_sm_log.c
         gps/dsd_gps.c
 )
 

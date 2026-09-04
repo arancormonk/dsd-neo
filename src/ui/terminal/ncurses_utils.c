@@ -7,9 +7,9 @@
  * Shared utility functions for ncurses UI modules
  */
 
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <math.h>
 #include <stdint.h>
@@ -18,18 +18,8 @@
 
 #include "dsd-neo/core/state_fwd.h"
 
-/* Shared state: last sync type seen by the UI (updated by ncursesPrinter) */
+/* Shared state: last sync type seen by the terminal renderer. */
 int ncurses_last_synctype = DSD_SYNC_NONE;
-
-int
-ui_unicode_supported(void) {
-    return dsd_unicode_supported();
-}
-
-int
-ui_block_glyphs_supported(void) {
-    return dsd_unicode_block_glyphs_supported();
-}
 
 /* Quickselect helpers for int arrays (k-th smallest in O(n)) */
 
@@ -113,37 +103,40 @@ compute_percentiles_u8(const uint8_t* src, int len, double* p50, double* p95) {
 }
 
 /* Determine if an Active Channel label refers to a locked-out target.
- * Supports both "TG:" (group) and "TGT:" (target/private/data) fields.
+ * Supports "TG:" (group), "TGT:" (target/private/data), and "SG:" (regroup
+ * supergroup) fields.
  * Returns 1 when the referenced ID is marked with groupMode "DE" or "B". */
 int
 ui_is_locked_from_label(const dsd_state* state, const char* label) {
-    if (!state || !label || !*label) {
+    if (!state) {
         return 0;
     }
-    /* Try group first ("TG:") */
-    const char* pos = strstr(label, "TG:");
-    if (!pos) {
-        /* Fallback to generic target ("TGT:") often used for private/data */
-        pos = strstr(label, "TGT:");
-    }
-    if (!pos) {
-        return 0;
-    }
-    pos += 3; /* skip TG: or TGT: prefix; both are 3 chars before ':' */
-    if (*pos == ':') {
-        pos++;
-    }
-    while (*pos == ' ') {
-        pos++;
-    }
-    char* endp = NULL;
-    long id = strtol(pos, &endp, 10);
-    if (endp == pos || id <= 0 || id > UINT32_MAX) {
-        return 0;
-    }
-    char mode[8];
-    if (dsd_tg_policy_lookup_label(state, (uint32_t)id, mode, sizeof(mode), NULL, 0)) {
+    size_t cursor = 0U;
+    ui_target_token token;
+    while (ui_target_token_next(label, &cursor, &token)) {
+        char mode[8];
+        if (!dsd_tg_policy_lookup_label(state, token.id, mode, sizeof(mode), NULL, 0)) {
+            continue;
+        }
         if (strcmp(mode, "DE") == 0 || strcmp(mode, "B") == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
+ui_is_enc_locked_from_label(const dsd_state* state, const char* label) {
+    if (!state) {
+        return 0;
+    }
+    if (label && strstr(label, "Data") != NULL) {
+        return 0;
+    }
+    size_t cursor = 0U;
+    ui_target_token token;
+    while (ui_target_token_next(label, &cursor, &token)) {
+        if (dsd_enc_lockout_entry_active(state, token.id, token.is_group)) {
             return 1;
         }
     }

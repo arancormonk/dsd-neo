@@ -5,10 +5,10 @@
 
 /**
  * @file
- * @brief CLI usage/help text implementation - moved from apps/dsd-cli/main.c
- *        to make runtime CLI self-contained.
+ * @brief CLI usage/help text implementation.
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/cli.h>
 
 #include <stdio.h>
@@ -31,17 +31,18 @@ dsd_cli_usage_section_intro(void) {
     printf("      --strict-config        Treat --validate-config warnings as errors\n");
     printf("\n");
     printf("Display Options:\n");
-    printf("  -N            Use NCurses Terminal\n");
-    printf("                 dsd-neo -N 2> console_log.txt\n");
+    printf("      --frontend <none|terminal|native>  Select frontend implementation\n");
+    printf("                 native is accepted as a headless alias for the retired non-rendering scaffold\n");
+    printf("                 dsd-neo --frontend terminal 2> console_log.txt\n");
+    printf("  -N            Enable terminal frontend (alias for --frontend terminal)\n");
     printf("  -Z            Log MBE/PDU Payloads to console\n");
     printf("      --frame-log <file>    Append one-line timestamped frame trace output\n");
-    printf("      --symbol-capture-format <fmt>  Symbol capture format (soft|legacy; default soft)\n");
-    printf("  -j            Force-enable P25 LCW explicit retune (format 0x44; default is enabled)\n");
+    printf("      --p25-sm-log <file>   Append P25 state-machine decision diagnostics\n");
     printf("  -^            Prefer P25 CC candidates (RFSS/Adjacent/Network) during hunt\n");
+    printf("  -j            Force-enable P25 LCW explicit retune (enabled by default)\n");
     printf("      --p25-vc-grace <s>     P25: Seconds after VC tune before eligible to return to CC\n");
     printf("      --p25-min-follow-dwell <s>  P25: Minimum follow dwell after first voice\n");
     printf("      --p25-grant-voice-timeout <s>  P25: Max seconds from grant to voice before returning\n");
-    printf("      --p25-retune-backoff <s>  P25: Block immediate re-tune to same VC for N seconds after return\n");
     printf("      --p25-mac-hold <s>     P25: Seconds to keep MAC activity eligible for audio after last MAC\n");
     printf("      --p25-ring-hold <s>    P25: Ring gate window for slot audio activity\n");
     printf("      --p25-cc-grace <s>     P25: CC hunt grace window before treating CC as lost\n");
@@ -99,7 +100,7 @@ dsd_cli_usage_section_io(void) {
     printf("  -g <float>    Audio Digital Output Gain  (Default: 0 = Auto;        )\n");
     printf("                                           (Manual:  1 = 2%%; 50 = 100%%)\n");
     printf("  -n <float>    Audio Analog  Output Gain  (Default: 0 = Auto; 0-100%%  )\n");
-    printf("  -nm           Enable legacy DMR mono audio path (same as -n m)\n");
+    printf("  -nm           Enable the DMR single-slot mono decoder\n");
     printf("  -6 <file>     Output raw audio .wav file (48K/1). (WARNING! Large File Sizes 1 Hour ~= 360 MB)\n");
     printf("  -7 <dir>      Create/Use Custom directory for Per Call decoded .wav file saving.\n");
     printf("                 (Use ./folder for Nested Directory!)\n");
@@ -111,7 +112,7 @@ dsd_cli_usage_section_io(void) {
            "Switch)\n");
     printf(
         "  -P            Enable Per Call WAV file saving. (Do not use with -w filename.wav single wav file switch)\n");
-    printf("                 (Per Call works with everything now and doesn't require ncurses terminal!)\n");
+    printf("                 (Per Call works with everything now and doesn't require terminal frontend!)\n");
     printf("      --rdio-mode <off|dirwatch|api|both>  Export per-call WAV metadata for rdio-scanner\n");
     printf("      --rdio-system-id <N>  rdio-scanner numeric system ID (required for API uploads)\n");
     printf("      --rdio-api-url <url>  rdio-scanner API base URL (default http://127.0.0.1:3000)\n");
@@ -123,9 +124,12 @@ dsd_cli_usage_section_io(void) {
     printf("                 (Warning! Might be annoying.)\n");
     printf("  -J <file>     Specify Filename for Event Log Output.\n");
     printf("  -L <file>     Specify Filename for LRRP Data Output.\n");
+    printf("      --lrrp-extra-port <n>  Also decode UDP port <n> as LRRP (repeatable, max %d).\n",
+           DSD_LRRP_EXTRA_PORT_MAX);
     printf("  -Q <file>     Specify Filename for OK-DMRlib Structured File Output. (placed in DSP folder)\n");
     printf("  -Q <file>     Specify Filename for M17 Float Stream Output. (placed in DSP folder)\n");
     printf("  -c <file>     Output symbol capture to .bin file\n");
+    printf("      --symbol-capture-format <soft|legacy>  Select soft/v2 output (legacy is an alias)\n");
     printf("  -q            Reverse Mute - Mute Unencrypted Voice and Unmute Encrypted Voice\n");
     printf("  -V <num>      TDMA Voice Synthesis: 0=Off, 1=Slot1, 2=Slot2, 3=Both; Default is 3\n");
     printf("  -z <num>      TDMA slot preference: 0=Slot1, 1=Slot2, 2=Auto; default is 2\n");
@@ -148,7 +152,7 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("                   Note: This is the DSP baseband used to derive capture rate;\n");
     printf("                         it is NOT the tuner IF filter.\n");
     printf("  sq   <val>    RTL-SDR Squelch Threshold (Optional)\n");
-    printf("                 (Negative = dB; Positive/Zero = linear mean power)\n");
+    printf("                 (Negative = dB; 0 = off; Positive = linear mean power)\n");
     printf("  vol  <num>    RTL-SDR Sample 'Volume' Multiplier (default = 2)(1,2,3)\n");
     printf("  bias [on|off] Enable 5V bias tee on compatible dongles (default off)\n");
     printf(" Example: dsd-neo -fs -i rtl -C cap_plus_channel.csv -T\n");
@@ -158,7 +162,7 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf(" Usage: rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]\n");
     printf("  host: default 127.0.0.1; port: default 1234\n");
     printf("  Remaining fields mirror rtl: string semantics.\n");
-    printf(" Example: dsd-neo -i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2 -N\n");
+    printf(" Example: dsd-neo -i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2 --frontend terminal\n");
     printf("\n");
     printf("SoapySDR options:\n");
     printf(" Usage: soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]]\n");
@@ -167,9 +171,9 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("  If omitted, Soapy uses existing/default rtl_* tuning values from config/CLI.\n");
     printf("\n");
     printf("UDP examples:\n");
-    printf(" Example: dsd-neo -i udp -o pulse -N\n");
+    printf(" Example: dsd-neo -i udp -o pulse --frontend terminal\n");
     printf("   Listen for UDP audio on 127.0.0.1:7355 and play to PulseAudio.\n");
-    printf(" Example: dsd-neo -i udp:0.0.0.0:7355 -o pulse -N\n");
+    printf(" Example: dsd-neo -i udp:0.0.0.0:7355 -o pulse --frontend terminal\n");
     printf("   Bind all interfaces; point GQRX/SDR++ UDP audio to this host:port.\n");
     printf("\n");
     printf("Encoder options:\n");
@@ -182,17 +186,20 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("      --rtl-udp-control <port>  Enable external RTL retune control on 127.0.0.1:<port>\n");
     printf("      --rtl-udp-control-bind <ipv4>  Bind RTL retune control to this numeric IPv4 address\n");
     printf("      --iq-capture <path>    Write I/Q capture data + metadata sidecar\n");
+    printf("                             (.iq is added when <path> has no extension)\n");
     printf("      --iq-capture-format <fmt>  Capture format (cu8|cf32)\n");
     printf("      --iq-capture-max-mb <n>  Capture size limit in MiB (0 = unlimited)\n");
     printf("      --iq-replay <path>     Replay I/Q capture metadata/data through RTL path (requires radio)\n");
     printf("      --iq-replay-rate <mode>  Replay pacing mode (fast|realtime)\n");
     printf("      --iq-loop              Loop I/Q replay at EOF\n");
     printf("      --iq-info <path>       Print metadata/alignment summary and exit\n");
-    printf(" Example: dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i pulse -6 m17signal.wav -8 -N 2> m17encoderlog.txt\n");
+    printf(" Example: dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i pulse -6 m17signal.wav -8 --frontend terminal 2> "
+           "m17encoderlog.txt\n");
     printf("   Run M17 Encoding, listening to pulse audio server, with internal decode/playback and output to 48k/1 "
            "wav file\n");
     printf("\n");
-    printf(" Example: dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i tcp -o pulse -8 -N 2> m17encoderlog.txt\n");
+    printf(" Example: dsd-neo -fZ -M M17:9:DSD-NEO:ARANCORMO -i tcp -o pulse -8 --frontend terminal 2> "
+           "m17encoderlog.txt\n");
     printf("   Run M17 Encoding, listening to default tcp input, without internal decode/playback and output to 48k/1 "
            "analog output device\n");
     printf("\n");
@@ -218,7 +225,7 @@ dsd_cli_usage_section_decode(void) {
     printf("  -fA           Passive Analog Audio Monitor\n");
     printf("  -ft           TDMA Trunking P25p1 Control and Voice, P25p2 Trunked Channels, and DMR\n");
     printf("  -fs           DMR TDMA BS and MS Simplex\n");
-    printf("  -fr           DMR TDMA BS/MS Simplex (legacy mono alias; same as -fs -nm)\n");
+    printf("  -fr           DMR TDMA BS and MS Simplex using the single-slot mono decoder\n");
     printf("  -f1           Decode only P25 Phase 1\n");
     printf("  -f2           Decode only P25 Phase 2 (6000 sps) **\n");
     printf("  -fd           Decode only DSTAR\n");
@@ -272,18 +279,21 @@ dsd_cli_usage_section_advanced_decoder_options(void) {
     printf("  -F            Relax DMR RAS/CRC CSBK/DATA Pass/Fail\n");
     printf("                 Enabling on some systems could lead to bad channel assignments/site data decoding if bad "
            "or marginal signal\n");
-    printf("  -F            Relax NXDN SACCH/FACCH/CAC/F2U CRC Pass/Fail\n");
     printf("  -F            Relax M17 LSF/PKT CRC Error Checking\n");
     printf("\n");
     printf("      --show-keys  Reveal radio keys and keystream material in CLI/status output for this run.\n");
     printf("                   Default output remains redacted.\n");
+    printf("\n");
+    printf("      --dmr-debug-burst     Dump each synced DMR burst payload to stderr as hex\n");
+    printf("                            ('Debug Demod +Sync' lines; RC bursts dump all 12 bytes incl. sync).\n");
+    printf("      --dmr-debug-unsynced  While hunting for sync with DMR enabled, dump raw demod output\n");
+    printf("                            to stderr in 36-byte chunks ('Debug Demod -Sync' lines).\n");
     printf("\n");
 }
 
 static void
 dsd_cli_usage_section_advanced_key_options(void) {
     printf("  -b <dec>      Manually Enter Basic Privacy Key (Decimal Value of Key Number)\n");
-    printf("                 (NOTE: This used to be the 'K' option!)\n");
     printf("\n");
     printf("  -H <hex>      Manually Enter Hytera 10/32/64 Char Basic Privacy Hex Key (see example below)\n");
     printf("                 Encapulate in Single Quotation Marks; Space every 16 chars.\n");
@@ -325,6 +335,8 @@ dsd_cli_usage_section_advanced_key_options(void) {
     printf("      --dmr-csi-ee72 <hex>     Force Connect Systems EE72 key (18 hex chars).\n");
     printf("      --dmr-vertex-ks-csv <file>  Vertex ALG 0x07 key->keystream map CSV (key_hex, "
            "bits:hex[:offset[:step]]).\n");
+    printf("      --dmr-tg-key-csv <file>  DMR talkgroup->key ID map CSV (tg_dec, keyid_hex); a mapped talkgroup\n");
+    printf("                               selects that key ID from -K/-k instead of the signaled one.\n");
     printf("\n");
     printf("  -9 <dec>      Manually Enter and Enforce Kenwood 15-bit Scrambler Key Value (DMR) (Dec Value)\n");
     printf("\n");
@@ -375,6 +387,9 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("                 (See channel_map.csv for example)\n");
     printf("  -G <file>     Import Group List Allow/Block and Label from csv file.\n");
     printf("                 (See group.csv for example)\n");
+    printf("      --p25-bandplan <file>   P25 band plan CSV (IDEN table) for sites that never send IDEN_UP.\n");
+    printf("                 Cannot be combined with --trunk-scan; use per-target p25_bandplan_csv.\n");
+    printf("      --p25-bandplan-export <file>  Write the learned P25 band plan CSV once at clean shutdown.\n");
     printf("  -T            Enable Trunking Features (NXDN/P25/EDACS/DMR) with RIGCTL/TCP or RTL Input\n");
     printf("  -Y            Enable Scanning Mode with RIGCTL/TCP or RTL Input\n");
     printf(
@@ -383,16 +398,20 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("      --trunk-scan <targets.csv>  Enable single-tuner trunk scan target rotation.\n");
     printf("                 Uses per-target chan_csv values; cannot be combined with global -C or IQ replay.\n");
     printf("      --trunk-scan-dwell-ms <ms>  Set default idle dwell per target (250..600000, default 3000).\n");
-    printf(
-        "      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR activity hold (250..600000, default 1200).\n");
+    printf("      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR/NXDN activity hold (250..600000, default "
+           "1200).\n");
+    printf("      --scan-voice-only  Only stop scan on channels carrying voice.\n");
+    printf("      --scan-voice-qualify-ms <ms>  Window after sync in which voice must appear or the scan moves on "
+           "(100..600000, default 1000).\n");
+    printf("      --scan-voice-hold-ms <ms>  Time to stay after the last voice frame (100..600000, default 2000).\n");
     printf("  -W            Use Imported Group List as a Trunking Allow/White List -- Only Tune with Mode A\n");
     printf("  -p            Disable Tune to Private Calls (DMR TIII, P25, NXDN Type-C and Type-D)\n");
     printf("  -E            Disable Tune to Group Calls (DMR TIII, Con+, Cap+, P25, NXDN Type-C, and Type-D)\n");
     printf("  -e            Enable Tune to Data Calls (DMR TIII, Cap+, NXDN Type-C)\n");
     printf("                 (NOTE: No Clear Distinction between Cap+ Private Voice Calls and Data Calls -- Both "
            "enabled with Data Calls)\n");
-    printf("      --enc-lockout          P25: Do not tune encrypted calls (ENC lockout On)\n");
-    printf("      --enc-follow           P25: Allow encrypted calls (ENC lockout Off; default)\n");
+    printf("      --enc-lockout          P25: Silently classify voice; follow only calls with usable keys\n");
+    printf("      --enc-follow           P25: Follow encrypted grants without key lockout (default)\n");
     printf("  -I <dec>      Specify TG to Hold During Trunking (DMR, P25, NXDN Type-C Trunking)\n");
     printf("  -U <port>     Enable RIGCTL/TCP; Set TCP Port for RIGCTL. (4532 on SDR++)\n");
     printf("  -B <Hertz>    Set RIGCTL Setmod Bandwidth in Hertz (0 - default - Off)\n");
@@ -400,8 +419,10 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("                 May vary based on system stregnth, etc.\n");
     printf("  -t <secs>     Set Trunking or Scan Speed VC/sync loss hangtime in seconds. (default = 2 seconds)\n");
     printf("\n");
-    printf(" Trunking Example TCP: dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N 2> log.txt\n");
-    printf(" Trunking Example RTL: dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv -N 2> "
+    printf(" Trunking Example TCP: dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv --frontend terminal "
+           "2> log.txt\n");
+    printf(" Trunking Example RTL: dsd-neo -fs -i rtl:0:450M:26:-2:8 -T -C connect_plus_chan.csv -G group.csv "
+           "--frontend terminal 2> "
            "log.txt\n");
     printf("\n");
     printf("DMR TIII Tools:\n");

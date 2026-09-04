@@ -19,16 +19,19 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/bit_packing.h>
+
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
@@ -38,26 +41,24 @@
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/colors.h>
-#include <dsd-neo/runtime/p25_optional_hooks.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/dsp/p25p1_heuristics.h"
 
 static void
-build_ldu2_rs_reliability(const AnalogSignal* analog_signal_array, uint8_t data_reliab[16], uint8_t parity_reliab[8]) {
+build_ldu2_rs_reliability(const P25P1SoftDibit* soft_dibits, uint8_t data_reliab[16], uint8_t parity_reliab[8]) {
     for (int i = 0; i < 16; i++) {
-        int analog_index = (15 - i) * (3 + 2);
-        data_reliab[i] = p25p1_hamming_rs_symbol_reliability(analog_signal_array + analog_index);
+        int soft_index = (15 - i) * (3 + 2);
+        data_reliab[i] = p25p1_hamming_rs_symbol_reliability(soft_dibits + soft_index);
     }
     for (int i = 0; i < 8; i++) {
-        int analog_index = (16 * (3 + 2)) + ((7 - i) * (3 + 2));
-        parity_reliab[i] = p25p1_hamming_rs_symbol_reliability(analog_signal_array + analog_index);
+        int soft_index = (16 * (3 + 2)) + ((7 - i) * (3 + 2));
+        parity_reliab[i] = p25p1_hamming_rs_symbol_reliability(soft_dibits + soft_index);
     }
 }
 
@@ -98,8 +99,8 @@ typedef struct {
     int irrecoverable_errors;
     char hex_data[16][6];
     char hex_parity[8][6];
-    AnalogSignal analog_signal_array[16 * (3 + 2) + 8 * (3 + 2)];
-    int analog_signal_index;
+    P25P1SoftDibit soft_dibits[16 * (3 + 2) + 8 * (3 + 2)];
+    int soft_dibit_index;
     int status_count;
 } Ldu2Frame;
 
@@ -117,14 +118,11 @@ ldu2_refresh_hold_hysteresis(const dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-ldu2_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, char debug_prefix, int emit_active) {
-#ifdef TRACE_DSD
-    state->debug_prefix_2 = debug_prefix;
-#else
-    UNUSED(debug_prefix);
-#endif
+ldu2_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, int emit_active) {
     process_IMBE(opts, state, status_count);
-    p25p1_play_imbe_audio(opts, state);
+    if (p25_crypto_audio_permitted(opts, state, 0)) {
+        dsd_play_synthesized_voice(opts, state);
+    }
     if (emit_active != 0) {
         p25_sm_emit_active(opts, state, 0);
     }
@@ -132,14 +130,10 @@ ldu2_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, cha
 
 static void
 ldu2_read_hex_word_block(dsd_opts* opts, dsd_state* state, char words[][6], int start_index, int word_count,
-                         Ldu2Frame* frame, int sequence_break_word) {
+                         Ldu2Frame* frame) {
     for (int i = 0; i < word_count; i++) {
-        read_and_correct_hex_word(opts, state, &(words[start_index - i][0]), &frame->status_count,
-                                  frame->analog_signal_array, &frame->analog_signal_index);
-    }
-    if (sequence_break_word >= 0) {
-        size_t idx = (size_t)sequence_break_word * ((size_t)3 + 2);
-        frame->analog_signal_array[idx].sequence_broken = 1;
+        read_and_correct_hex_word(opts, state, &(words[start_index - i][0]), &frame->status_count, frame->soft_dibits,
+                                  &frame->soft_dibit_index);
     }
 }
 
@@ -174,37 +168,12 @@ ldu2_extract_ess_fields(const char hex_data[16][6], uint8_t mi[73], char algid[9
 }
 
 static void
-ldu2_maybe_apply_early_unmute(dsd_opts* opts, const dsd_state* state, const char hex_data[16][6]) {
-    if (state->payload_algid != 0) {
-        return;
-    }
-
-    uint8_t mi_bits[73];
-    char algid_bits[9];
-    char kid_bits[17];
-    ldu2_extract_ess_fields(hex_data, mi_bits, algid_bits, kid_bits);
-    uint32_t algid_early_bits = 0;
-    int algid_early = (dsd_parse_binary_u32_n(algid_bits, 8, &algid_early_bits) == 0) ? (int)algid_early_bits : 0;
-
-    if (state->R != 0 && (algid_early == 0xAA || algid_early == 0x81 || algid_early == 0x9F)) {
-        opts->unmute_encrypted_p25 = 1;
-        return;
-    }
-    if (algid_early == 0x84 || algid_early == 0x89) {
-        return;
-    }
-    if (algid_early != 0 && algid_early != 0x80) {
-        opts->unmute_encrypted_p25 = 0;
-    }
-}
-
-static void
 ldu2_read_soft_octet(dsd_opts* opts, dsd_state* state, int* status_count, char bits[8], int16_t llr_bits[8]) {
     for (int i = 0; i <= 6; i += 2) {
-        int16_t llr[2];
-        read_dibit_soft(opts, state, bits + i, status_count, NULL, NULL, NULL, llr);
-        llr_bits[i + 0] = llr[0];
-        llr_bits[i + 1] = llr[1];
+        P25P1SoftDibit soft_dibit;
+        read_dibit_soft(opts, state, bits + i, status_count, &soft_dibit);
+        llr_bits[i + 0] = soft_dibit.llr[0];
+        llr_bits[i + 1] = soft_dibit.llr[1];
     }
 }
 
@@ -241,29 +210,23 @@ ldu2_capture_lsd(dsd_opts* opts, dsd_state* state, Ldu2Frame* frame) {
 
 static void
 ldu2_collect_voice_symbols(dsd_opts* opts, dsd_state* state, Ldu2Frame* frame) {
-    static const char trace_prefix[9] = {'0', '1', '2', '3', '4', '5', '6', '7', '8'};
-
     frame->status_count = 21;
-    frame->analog_signal_index = 0;
+    frame->soft_dibit_index = 0;
     state->p25vc = 9;
 
     for (int imbe = 0; imbe < 9; imbe++) {
-        ldu2_process_imbe_frame(opts, state, &frame->status_count, trace_prefix[imbe], (imbe == 0));
+        ldu2_process_imbe_frame(opts, state, &frame->status_count, (imbe == 0));
         if (imbe >= 1 && imbe <= 4) {
             int start = 15 - ((imbe - 1) * 4);
-            int break_word = (imbe - 1) * 4;
-            ldu2_read_hex_word_block(opts, state, frame->hex_data, start, 4, frame, break_word);
-            if (imbe == 4) {
-                ldu2_maybe_apply_early_unmute(opts, state, (const char (*)[6])frame->hex_data);
-            }
+            ldu2_read_hex_word_block(opts, state, frame->hex_data, start, 4, frame);
             continue;
         }
         if (imbe == 5) {
-            ldu2_read_hex_word_block(opts, state, frame->hex_parity, 7, 4, frame, 16);
+            ldu2_read_hex_word_block(opts, state, frame->hex_parity, 7, 4, frame);
             continue;
         }
         if (imbe == 6) {
-            ldu2_read_hex_word_block(opts, state, frame->hex_parity, 3, 4, frame, 20);
+            ldu2_read_hex_word_block(opts, state, frame->hex_parity, 3, 4, frame);
             continue;
         }
         if (imbe == 7) {
@@ -288,17 +251,17 @@ ldu2_consume_trailing_status(dsd_opts* opts, dsd_state* state) {
     dsd_dibit_soft_t status_soft;
     int ss = getDibitSoft(opts, state, &status_soft);
     p25_status_accum_add(state, ss);
-    p25_status_accum_classify(state, opts);
+    p25_status_accum_classify(state);
 }
 
 static int
-ldu2_run_fec_and_heuristics(dsd_state* state, P25Heuristics* heur, char hex_data[16][6], char hex_parity[8][6],
-                            AnalogSignal analog_signal_array[16 * (3 + 2) + 8 * (3 + 2)]) {
+ldu2_run_fec(dsd_state* state, char hex_data[16][6], char hex_parity[8][6],
+             P25P1SoftDibit soft_dibits[16 * (3 + 2) + 8 * (3 + 2)]) {
     int irrecoverable_errors = check_and_fix_reedsolomon_24_16_9((char*)hex_data, (char*)hex_parity);
     if (irrecoverable_errors == 1) {
         uint8_t data_reliab[16];
         uint8_t parity_reliab[8];
-        build_ldu2_rs_reliability(analog_signal_array, data_reliab, parity_reliab);
+        build_ldu2_rs_reliability(soft_dibits, data_reliab, parity_reliab);
         if (p25p1_rs_24_16_9_soft_reliability((char*)hex_data, (char*)hex_parity, data_reliab, parity_reliab) == 0) {
             state->p25_p1_soft_rs_ok++;
             irrecoverable_errors = 0;
@@ -307,7 +270,6 @@ ldu2_run_fec_and_heuristics(dsd_state* state, P25Heuristics* heur, char hex_data
     if (irrecoverable_errors == 1) {
         state->p25_p1_voice_fec_err++;
         state->debug_header_critical_errors++;
-        update_error_stats(heur, 12 * 6 + 12 * 6, 5 * 2);
         return 1;
     }
 
@@ -315,11 +277,6 @@ ldu2_run_fec_and_heuristics(dsd_state* state, P25Heuristics* heur, char hex_data
     state->last_vc_sync_time = time(NULL);
     state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
 
-    char fixed_parity[8 * 6];
-    correct_hamming_dibits((char*)hex_data, 16, analog_signal_array);
-    encode_reedsolomon_24_16_9((char*)hex_data, fixed_parity);
-    correct_hamming_dibits(fixed_parity, 8, analog_signal_array + ((size_t)16) * (3 + 2));
-    contribute_to_heuristics(state->rf_mod, heur, analog_signal_array, 16 * (3 + 2) + 8 * (3 + 2));
     return 0;
 }
 
@@ -330,9 +287,9 @@ ldu2_decode_post_fec_fields(const dsd_state* state, Ldu2Frame* frame) {
     uint32_t kidhex = 0;
     frame->algidhex = (dsd_parse_binary_u32_n(frame->algid, 8, &algidhex) == 0) ? (int)algidhex : 0;
     frame->kidhex = (dsd_parse_binary_u32_n(frame->kid, 16, &kidhex) == 0) ? (int)kidhex : 0;
-    frame->mihex1 = (unsigned long long)ConvertBitIntoBytes(&frame->mi[0], 32);
-    frame->mihex2 = (unsigned long long)ConvertBitIntoBytes(&frame->mi[32], 32);
-    frame->mihex3 = (unsigned long long)ConvertBitIntoBytes(&frame->mi[64], 8);
+    frame->mihex1 = (unsigned long long)convert_bits_into_output(&frame->mi[0], 32);
+    frame->mihex2 = (unsigned long long)convert_bits_into_output(&frame->mi[32], 32);
+    frame->mihex3 = (unsigned long long)convert_bits_into_output(&frame->mi[64], 8);
 
     frame->lsd1_okay = p25_lsd_fec_16x8_soft(frame->lowspeeddata + 0, frame->lowspeed_llr + 0);
     frame->lsd2_okay = p25_lsd_fec_16x8_soft(frame->lowspeeddata + 16, frame->lowspeed_llr + 16);
@@ -346,35 +303,32 @@ ldu2_decode_post_fec_fields(const dsd_state* state, Ldu2Frame* frame) {
 }
 
 static void
-ldu2_apply_unmute_policy(dsd_opts* opts, const dsd_state* state) {
-    if (state->R != 0
+ldu2_report_decryption_key(const dsd_opts* opts, const dsd_state* state) {
+    if (state->p25_crypto_state[0] == DSD_P25_CRYPTO_DECRYPTABLE
         && (state->payload_algid == 0xAA || state->payload_algid == 0x81 || state->payload_algid == 0x9F)) {
         const unsigned int key_width = (state->payload_algid == 0xAA) ? 10U : 16U;
         char key_text[17];
         DSD_FPRINTF(stderr, " Key: %s",
                     dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, key_width, 0));
-        opts->unmute_encrypted_p25 = 1;
         return;
     }
-    if ((state->payload_algid == 0x84 || state->payload_algid == 0x89) && state->aes_key_loaded[0] == 1) {
+    if (state->p25_crypto_state[0] == DSD_P25_CRYPTO_DECRYPTABLE
+        && (state->payload_algid == 0x83 || state->payload_algid == 0x84 || state->payload_algid == 0x89)) {
         DSD_FPRINTF(stderr, "\n ");
         DSD_FPRINTF(stderr, "%s", KYEL);
         const unsigned long long segments[4] = {state->A1[0], state->A2[0], state->A3[0], state->A4[0]};
         char key_text[68];
-        DSD_FPRINTF(stderr, "Key: %s ",
-                    dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments,
-                                                   (state->payload_algid == 0x84) ? 4U : 2U));
+        const unsigned int segment_count =
+            (state->payload_algid == 0x83) ? 3U : ((state->payload_algid == 0x84) ? 4U : 2U);
+        DSD_FPRINTF(
+            stderr, "Key: %s ",
+            dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments, segment_count));
         DSD_FPRINTF(stderr, "%s ", KNRM);
-        opts->unmute_encrypted_p25 = 1;
-        return;
-    }
-    if (state->payload_algid != 0 && state->payload_algid != 0x80) {
-        opts->unmute_encrypted_p25 = 0;
     }
 }
 
 static void
-ldu2_print_decode_result(dsd_opts* opts, dsd_state* state, const Ldu2Frame* frame) {
+ldu2_print_decode_result(const Ldu2Frame* frame) {
     if (frame->irrecoverable_errors != 0) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " LDU2 FEC ERR ");
@@ -385,17 +339,11 @@ ldu2_print_decode_result(dsd_opts* opts, dsd_state* state, const Ldu2Frame* fram
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " LDU2 ALG ID: 0x%02X KEY ID: 0x%04X MI: 0x%08llX%08llX", frame->algidhex, frame->kidhex,
                 frame->mihex1, frame->mihex2);
-    state->payload_algid = frame->algidhex;
-    state->payload_keyid = frame->kidhex;
     if (frame->mihex3 != 0ULL) {
         DSD_FPRINTF(stderr, "-%02llX", frame->mihex3);
     }
 
-    ldu2_apply_unmute_policy(opts, state);
-    DSD_FPRINTF(stderr, "%s", KNRM);
-
-    state->payload_miP = (frame->mihex1 << 32) | frame->mihex2;
-    if (state->payload_algid != 0x80 && state->payload_algid != 0) {
+    if (frame->algidhex != 0x80 && frame->algidhex != 0) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " ENC");
         DSD_FPRINTF(stderr, "%s", KNRM);
@@ -461,6 +409,13 @@ ldu2_maybe_begin_lsd_alias(dsd_state* state, const Ldu2Frame* frame) {
 }
 
 static void
+ldu2_enrich_lsd_alias_if_call(dsd_state* state, const dsd_call_snapshot* call, int has_call, const char* alias) {
+    if (has_call) {
+        (void)dsd_event_enrich_alias(state, 0U, call->epoch, alias);
+    }
+}
+
+static void
 ldu2_maybe_finalize_lsd_alias(const dsd_opts* opts, dsd_state* state) {
     int k = state->data_block_counter[0];
     if (state->dmr_alias_format[0] != 0x02 || k < state->dmr_alias_block_len[0]) {
@@ -468,7 +423,9 @@ ldu2_maybe_finalize_lsd_alias(const dsd_opts* opts, dsd_state* state) {
     }
 
     char str[16];
-    int tsrc = state->lastsrc;
+    dsd_call_snapshot call;
+    const int has_call = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    int tsrc = has_call && call.ota_source_id <= UINT32_MAX ? (int)call.ota_source_id : 0;
     int str_pos = 0;
     DSD_MEMSET(str, 0, sizeof(str));
 
@@ -483,11 +440,12 @@ ldu2_maybe_finalize_lsd_alias(const dsd_opts* opts, dsd_state* state) {
             }
         }
     }
+    ldu2_enrich_lsd_alias_if_call(state, &call, has_call, str);
 
     if (tsrc != 0) {
         const char* mode = "D";
         dsd_tg_policy_entry alias_entry;
-        if (state->payload_algid != 0x80 && opts->trunk_tune_enc_calls == 0 && state->R == 0) {
+        if (p25_crypto_metadata_is_confirmed_encrypted(state, 0) && opts->trunk_tune_enc_calls == 0 && state->R == 0) {
             mode = "DE";
         }
         if (dsd_tg_policy_make_exact_entry((uint32_t)tsrc, mode, str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias_entry)
@@ -512,79 +470,21 @@ ldu2_handle_lsd_alias(const dsd_opts* opts, dsd_state* state, const Ldu2Frame* f
 }
 
 static void
-ldu2_record_enc_lockout(dsd_opts* opts, dsd_state* state, int talkgroup) {
-    if (talkgroup == 0) {
+ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, const Ldu2Frame* frame) {
+    const uint64_t mi = (frame->mihex1 << 32) | frame->mihex2;
+
+    if (frame->irrecoverable_errors != 0) {
         return;
     }
-
-    int enc_existing = 0;
-    char lockout_name_buf[50];
-    const char* lockout_name = "ENC LO";
-    dsd_tg_policy_entry lockout_entry;
-    if (dsd_tg_policy_lookup_label(state, (uint32_t)talkgroup, NULL, 0, lockout_name_buf, sizeof(lockout_name_buf))) {
-        enc_existing = 1;
-        lockout_name = lockout_name_buf;
-    }
-
-    if (dsd_tg_policy_make_exact_entry((uint32_t)talkgroup, "DE", lockout_name, DSD_TG_POLICY_SOURCE_ENC_LOCKOUT,
-                                       &lockout_entry)
-            != 0
-        || dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) != 0
-        || enc_existing != 0) {
-        return;
-    }
-
-    DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
-                 sizeof state->event_history_s[0].Event_History_Items[0].internal_str,
-                 "Target: %d; has been locked out; Encryption Lock Out Enabled.", talkgroup);
-    dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
-    Event_History_I* eh = &state->event_history_s[0];
-    if (strncmp(eh->Event_History_Items[1].internal_str, eh->Event_History_Items[0].internal_str,
-                sizeof eh->Event_History_Items[0].internal_str)
-        != 0) {
-        if (opts->event_out_file[0] != '\0') {
-            dsd_p25_optional_hook_write_event_to_log_file(opts, state, 0, /*swrite*/ 0,
-                                                          eh->Event_History_Items[0].event_string);
-        }
-        dsd_p25_optional_hook_push_event_history(eh);
-        dsd_p25_optional_hook_init_event_history(eh, 0, 1);
-    }
-}
-
-static int
-ldu2_payload_has_decrypt_key(const dsd_state* state) {
-    int alg = state->payload_algid;
-    if ((alg == 0xAA || alg == 0x81 || alg == 0x9F) && state->R != 0) {
-        return 1;
-    }
-    if ((alg == 0x84 || alg == 0x89) && state->aes_key_loaded[0] == 1) {
-        return 1;
-    }
-    return 0;
-}
-
-static void
-ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int irrecoverable_errors) {
-    if (irrecoverable_errors != 0 || state->payload_algid == 0x80 || state->payload_algid == 0) {
-        return;
-    }
-    if (!(opts->p25_trunk == 1 && opts->p25_is_tuned == 1 && opts->trunk_tune_enc_calls == 0)) {
-        return;
-    }
-
-    if (ldu2_payload_has_decrypt_key(state) || state->lasttg == 0) {
-        return;
-    }
-
-    ldu2_record_enc_lockout(opts, state, state->lasttg);
-    DSD_FPRINTF(stderr, " No Enc Following on P25p1 Trunking; Return to CC; \n");
-    p25_sm_on_release(opts, state);
+    dsd_call_snapshot call;
+    const int target =
+        dsd_call_state_get(state, 0U, &call) > 0 && call.ota_target_id <= INT_MAX ? (int)call.ota_target_id : 0;
+    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, frame->algidhex, frame->kidhex, mi, target);
 }
 
 void
 processLDU2(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_ldu2++;
-    P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
 
     ldu2_refresh_hold_hysteresis(opts, state);
     p25_status_accum_ensure_started(state);
@@ -593,20 +493,19 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     Ldu2Frame frame = {0};
     ldu2_collect_voice_symbols(opts, state, &frame);
     ldu2_consume_trailing_status(opts, state);
-    frame.irrecoverable_errors =
-        ldu2_run_fec_and_heuristics(state, heur, frame.hex_data, frame.hex_parity, frame.analog_signal_array);
-
-#ifdef HEURISTICS_DEBUG
-    DSD_FPRINTF(stderr, "(audio errors, header errors, critical header errors) (%i,%i,%i)\n", state->debug_audio_errors,
-                state->debug_header_errors, state->debug_header_critical_errors);
-#endif
+    frame.irrecoverable_errors = ldu2_run_fec(state, frame.hex_data, frame.hex_parity, frame.soft_dibits);
 
     ldu2_decode_post_fec_fields(state, &frame);
-    ldu2_print_decode_result(opts, state, &frame);
+    ldu2_print_decode_result(&frame);
+    ldu2_maybe_enc_lockout(opts, state, &frame);
     ldu2_print_payload_lsd(opts, &frame);
     DSD_FPRINTF(stderr, "\n");
 
     ldu2_handle_lsd_alias(opts, state, &frame);
+
+    state->xl_is_hdu = 0;
+    ldu2_report_decryption_key(opts, state);
+    DSD_FPRINTF(stderr, "%s", KNRM);
 
     if (frame.irrecoverable_errors != 0 && state->payload_algid != 0x80 && state->payload_keyid != 0
         && state->payload_miP != 0) {
@@ -618,7 +517,4 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
         LFSR128(state);
         DSD_FPRINTF(stderr, "\n");
     }
-
-    state->xl_is_hdu = 0;
-    ldu2_maybe_enc_lockout(opts, state, frame.irrecoverable_errors);
 }

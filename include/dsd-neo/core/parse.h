@@ -15,6 +15,77 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+/**
+ * @brief Convert one ASCII hexadecimal digit to its numeric value.
+ * @return A value in `[0, 15]`, or `-1` when @p c is not a hexadecimal digit.
+ */
+static inline int
+dsd_hex_nibble_value(int c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return 10 + (c - 'a');
+    }
+    if (c >= 'A' && c <= 'F') {
+        return 10 + (c - 'A');
+    }
+    return -1;
+}
+
+/**
+ * @brief Parse an exact, contiguous hexadecimal digit span into a 64-bit value.
+ *
+ * The span must contain one to sixteen digits. Prefixes, signs, whitespace, and
+ * separators are rejected; callers that support those forms must handle them
+ * before selecting the exact digit span.
+ *
+ * @return `0` on success, `-1` on invalid input.
+ */
+static inline int
+dsd_parse_hex_u64_n(const char* hex, size_t hex_count, uint64_t* out) {
+    if (!hex || !out || hex_count == 0U || hex_count > 16U) {
+        return -1;
+    }
+
+    uint64_t value = 0U;
+    for (size_t i = 0U; i < hex_count; i++) {
+        const int nibble = dsd_hex_nibble_value((unsigned char)hex[i]);
+        if (nibble < 0) {
+            return -1;
+        }
+        value = (value << 4U) | (uint64_t)nibble;
+    }
+    *out = value;
+    return 0;
+}
+
+/**
+ * @brief Parse exact, contiguous hexadecimal byte pairs.
+ *
+ * @p hex_count must be non-zero, even, and exactly twice @p out_len. Prefixes,
+ * whitespace, separators, odd-nibble padding, and truncation are intentionally
+ * outside this primitive so each input boundary can enforce its own contract.
+ *
+ * @return `0` on success, `-1` on invalid input.
+ */
+static inline int
+dsd_parse_hex_bytes_exact(const char* hex, size_t hex_count, uint8_t* out, size_t out_len) {
+    if (!hex || !out || hex_count == 0U || (hex_count & 1U) != 0U || out_len != (hex_count / 2U)) {
+        return -1;
+    }
+
+    for (size_t i = 0U; i < out_len; i++) {
+        const int hi = dsd_hex_nibble_value((unsigned char)hex[i * 2U]);
+        const int lo = dsd_hex_nibble_value((unsigned char)hex[(i * 2U) + 1U]);
+        if (hi < 0 || lo < 0) {
+            return -1;
+        }
+        out[i] = (uint8_t)(((uint8_t)hi << 4U) | (uint8_t)lo);
+    }
+    return 0;
+}
+
 static inline int
 dsd_parse_base_is_valid(int base) {
     return base == 0 || (base >= 2 && base <= 36);

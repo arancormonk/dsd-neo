@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <errno.h>
@@ -15,6 +16,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
 #include "dsd-neo/platform/platform.h"
+#include "dsd-neo/platform/posix_compat.h"
 
 struct dsd_iq_replay_source {
     FILE* fp;
@@ -86,7 +88,9 @@ has_suffix(const char* s, const char* suffix) {
     if (s_len < suf_len) {
         return 0;
     }
-    return strcmp(s + (s_len - suf_len), suffix) == 0;
+    /* Case-insensitive to match Windows, where "capture.iq.JSON" is the same file
+       as "capture.iq.json" and must be recognised as the sidecar. */
+    return dsd_strcasecmp(s + (s_len - suf_len), suffix) == 0;
 }
 
 static int
@@ -175,19 +179,27 @@ resolve_metadata_path(const char* path, char* out_metadata_path, size_t out_meta
     }
 
     size_t n = strlen(path);
-    if (n + 6U > out_metadata_path_size) {
+    if (n + 9U > out_metadata_path_size) {
         set_error(err_buf, err_buf_size, "metadata path too long");
         return DSD_IQ_ERR_INVALID_ARG;
     }
-    DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s.json", path);
 
+    /* Try the sidecar for the path exactly as given first, so captures written before
+       the ".iq" default still resolve and a data path like "mycap.iq" is found. Only
+       then try the name a bare capture now produces. */
     dsd_stat_t st;
-    if (dsd_stat_path(out_metadata_path, &st) != 0) {
-        set_error(err_buf, err_buf_size, "metadata sidecar not found for '%s' (expected '%s')", path,
-                  out_metadata_path);
-        return DSD_IQ_ERR_IO;
+    DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s.json", path);
+    if (dsd_stat_path(out_metadata_path, &st) == 0) {
+        return DSD_IQ_OK;
     }
-    return DSD_IQ_OK;
+    DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s.iq.json", path);
+    if (dsd_stat_path(out_metadata_path, &st) == 0) {
+        return DSD_IQ_OK;
+    }
+
+    set_error(err_buf, err_buf_size, "metadata sidecar not found for '%s' (tried '%s.json' and '%s.iq.json')", path,
+              path, path);
+    return DSD_IQ_ERR_IO;
 }
 
 static int
@@ -265,20 +277,6 @@ tokenizer_set_error(json_tokenizer* tk, const char* msg, size_t pos) {
     }
 }
 
-static int
-hex_value(char c) {
-    if (c >= '0' && c <= '9') {
-        return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-        return 10 + (c - 'a');
-    }
-    if (c >= 'A' && c <= 'F') {
-        return 10 + (c - 'A');
-    }
-    return -1;
-}
-
 static json_token
 make_simple_token(json_token_type type, size_t offset) {
     json_token tok;
@@ -316,21 +314,18 @@ tokenizer_parse_unicode_escape(json_tokenizer* tk, unsigned char* out_ch) {
         tokenizer_set_error(tk, "truncated unicode escape", tk->pos);
         return 0;
     }
-    int h0 = hex_value(tk->src[tk->pos + 0]);
-    int h1 = hex_value(tk->src[tk->pos + 1]);
-    int h2 = hex_value(tk->src[tk->pos + 2]);
-    int h3 = hex_value(tk->src[tk->pos + 3]);
-    if (h0 < 0 || h1 < 0 || h2 < 0 || h3 < 0) {
+    uint64_t parsed = 0U;
+    if (dsd_parse_hex_u64_n(tk->src + tk->pos, 4U, &parsed) != 0) {
         tokenizer_set_error(tk, "invalid unicode escape", tk->pos);
         return 0;
     }
-    unsigned int codepoint = (unsigned int)((h0 << 12) | (h1 << 8) | (h2 << 4) | h3);
+    const unsigned int codepoint = (unsigned int)parsed;
     if (codepoint == 0U) {
         tokenizer_set_error(tk, "embedded NUL is not allowed", tk->pos);
         return 0;
     }
     if (codepoint > 0x7FU) {
-        tokenizer_set_error(tk, "unicode codepoint > 0x7f is unsupported in metadata v1", tk->pos);
+        tokenizer_set_error(tk, "unicode codepoint > 0x7f is unsupported in IQ metadata", tk->pos);
         return 0;
     }
     *out_ch = (unsigned char)codepoint;
@@ -703,6 +698,13 @@ validate_replay_semantics(const dsd_iq_replay_config* cfg, char* err_buf, size_t
     }
     if (cfg->base_decimation == 0 || (cfg->base_decimation & (cfg->base_decimation - 1U)) != 0) {
         set_error(err_buf, err_buf_size, "base_decimation must be a power of two");
+        return DSD_IQ_ERR_RATE_CHAIN;
+    }
+    /* The half-band cascade keeps one history buffer per pass, so the replay chain must not
+       ask for more passes than the demodulator state has room for. */
+    if (cfg->base_decimation > DSD_IQ_REPLAY_MAX_BASE_DECIMATION) {
+        set_error(err_buf, err_buf_size, "base_decimation (%u) exceeds the maximum of %u", cfg->base_decimation,
+                  (unsigned)DSD_IQ_REPLAY_MAX_BASE_DECIMATION);
         return DSD_IQ_ERR_RATE_CHAIN;
     }
     if (cfg->post_downsample == 0) {
@@ -1416,7 +1418,11 @@ metadata_parse_field_group_b2(metadata_parse_state* st, const char* key, const j
         st->seen.fs4_shift_enabled = 1;
         *handled = 1;
     } else if (strcmp(key, "combine_rotate_enabled") == 0) {
-        rc = token_to_bool(val_tok, &st->cfg.combine_rotate_enabled, err_buf, err_buf_size, "combine_rotate_enabled");
+        int combine_rotate = 0;
+        rc = token_to_bool(val_tok, &combine_rotate, err_buf, err_buf_size, "combine_rotate_enabled");
+        if (rc == DSD_IQ_OK) {
+            st->cfg.historical_cu8_two_pass = combine_rotate ? 0 : 1;
+        }
         st->seen.combine_rotate_enabled = 1;
         *handled = 1;
     } else if (strcmp(key, "muted_bytes_excluded") == 0) {
@@ -1519,6 +1525,11 @@ metadata_parse_field_group_c2(metadata_parse_state* st, const char* key, const j
             rc = token_to_u64(val_tok, &st->cfg.input_ring_drops, err_buf, err_buf_size, "input_ring_drops");
             st->seen.input_ring_drops = 1;
         }
+        *handled = 1;
+    } else if (strcmp(key, "size_limit_reached") == 0) {
+        /* Optional: metadata written before this field existed is still valid,
+         * so it is deliberately absent from the required-field list. */
+        rc = token_to_bool(val_tok, &st->cfg.size_limit_reached, err_buf, err_buf_size, "size_limit_reached");
         *handled = 1;
     }
     return rc;
@@ -2088,7 +2099,7 @@ dsd_iq_info_print_summary(const dsd_iq_replay_config* cfg, const char* display_p
                 cfg->source_args[0] ? cfg->source_args : "none");
     DSD_FPRINTF(out, "  Capture stage:       %s\n", cfg->capture_stage);
     DSD_FPRINTF(out, "  FS/4 shift:          %s\n", cfg->fs4_shift_enabled ? "enabled" : "disabled");
-    DSD_FPRINTF(out, "  Combine-rotate:      %s\n", cfg->combine_rotate_enabled ? "enabled" : "disabled");
+    DSD_FPRINTF(out, "  CU8 transform:       %s\n", cfg->historical_cu8_two_pass ? "historical two-pass" : "combined");
     DSD_FPRINTF(out, "  Offset tuning:       %s\n", cfg->offset_tuning_enabled ? "enabled" : "disabled");
     DSD_FPRINTF(out, "  Tuner gain:          %.1f dB\n", (double)cfg->tuner_gain_tenth_db / 10.0);
     DSD_FPRINTF(out, "  PPM correction:      %d\n", cfg->ppm);
@@ -2100,6 +2111,7 @@ dsd_iq_info_print_summary(const dsd_iq_replay_config* cfg, const char* display_p
     DSD_FPRINTF(out, "  Capture drops:       %" PRIu64 " (%" PRIu64 " blocks)\n", cfg->capture_drops,
                 cfg->capture_drop_blocks);
     DSD_FPRINTF(out, "  Input ring drops:    %" PRIu64 "\n", cfg->input_ring_drops);
+    DSD_FPRINTF(out, "  Size limit reached:  %s\n", cfg->size_limit_reached ? "yes" : "no");
     DSD_FPRINTF(out, "  Contains retunes:    %s (%u retune events)\n", cfg->contains_retunes ? "yes" : "no",
                 cfg->capture_retune_count);
     DSD_FPRINTF(out, "  Event timeline:      %u event(s)\n", cfg->event_count);

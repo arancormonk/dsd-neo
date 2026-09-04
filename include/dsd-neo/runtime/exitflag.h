@@ -17,11 +17,40 @@
 
 #include <stdint.h>
 
+#if defined(_MSC_VER) && !defined(__GNUC__) && !defined(__clang__)
+#include <intrin.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 extern volatile uint8_t exitflag;
+
+static inline uint8_t
+dsd_exitflag_load(void) {
+#if defined(__GNUC__) || defined(__clang__)
+    return __atomic_load_n(&exitflag, __ATOMIC_ACQUIRE);
+#elif defined(_MSC_VER)
+    /* Atomic load with full barrier (or-with-zero leaves the value intact). */
+    /* cppcheck-suppress cstyleCast -- shared C/C++ header, C++ casts unavailable. */
+    return (uint8_t)_InterlockedOr8((volatile char*)&exitflag, 0);
+#else
+    return exitflag;
+#endif
+}
+
+static inline void
+dsd_exitflag_store(uint8_t value) {
+#if defined(__GNUC__) || defined(__clang__)
+    __atomic_store_n(&exitflag, value, __ATOMIC_RELEASE);
+#elif defined(_MSC_VER)
+    /* cppcheck-suppress cstyleCast -- shared C/C++ header, C++ casts unavailable. */
+    (void)_InterlockedExchange8((volatile char*)&exitflag, (char)value);
+#else
+    exitflag = value;
+#endif
+}
 
 #ifdef __cplusplus
 }

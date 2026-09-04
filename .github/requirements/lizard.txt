@@ -4,10 +4,10 @@
 #
 #    pip-compile --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file=.github/requirements/lizard.txt --strip-extras .github/requirements/lizard.in
 #
-lizard==1.22.2 \
-    --hash=sha256:39f6a44fb04b8d5edb9c4b95194fd3f8a7d29b2ec4ef30c6774a68f3561bd362 \
-    --hash=sha256:9a640e35103fbad7aeb6bb7ba5a58419054c2f4d347453a93728ccc3ac14bde1
-    # via -r .github/requirements/lizard.in
+lizard==1.24.0 \
+    --hash=sha256:2e88a7af9d23a98d3f4a30767134361bd4b7dde02c410209c6c72732a43bbb65 \
+    --hash=sha256:a688bc607a891ff4a7836826f25742dc9c1bf648da3075dbd495e199e8848602
+    # via -r lizard.in
 pathspec==1.1.1 \
     --hash=sha256:17db5ecd524104a120e173814c90367a96a98d07c45b2e10c2f3919fff91bf5a \
     --hash=sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189

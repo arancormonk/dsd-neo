@@ -37,10 +37,10 @@ main(void) {
     uint16_t ch = (uint16_t)((id << 12) | 0x0007); // raw 7 -> fdma 1, slot 3 (S4)
     char buf[32] = {0};
     p25_format_chan_suffix(&st, ch, -1, buf, sizeof buf);
-    rc |= expect_eq_str("denom4 suffix", buf, " (FDMA 0001 S4)");
+    rc |= expect_eq_str("denom4 suffix", buf, " (5-7) (FDMA 0001 S4)");
     // Hint override to slot 0 -> S1
     DSD_MEMSET(buf, 0, sizeof buf);
     p25_format_chan_suffix(&st, ch, 0, buf, sizeof buf);
-    rc |= expect_eq_str("denom4 hint", buf, " (FDMA 0001 S1)");
+    rc |= expect_eq_str("denom4 hint", buf, " (5-7) (FDMA 0001 S1)");
     return rc;
 }

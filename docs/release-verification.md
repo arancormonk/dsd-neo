@@ -33,18 +33,19 @@ Inspect the tag and commit:
 git show --show-signature vX.Y.Z
 ```
 
-Verify the signature with the trusted DSD-neo release key checked into the repository:
+Verify the signature with the trusted DSD-neo release keys checked into the repository:
 
 ```sh
-gpg --import release-keys/arancormonk-2026.pgp
+gpg --import release-keys/arancormonk-desktop-2026.pgp release-keys/arancormonk-laptop-2026.pgp
 git tag -v vX.Y.Z
 ```
 
-The release workflow pins this exact primary key fingerprint before trusting the
-checked-in key file:
+The release workflow pins these exact primary key fingerprints before trusting the
+checked-in key files:
 
 ```text
-5FAF 0C47 C8E1 F95D 33CD 83B1 E42E 43AD D853 F280
+5FAF 0C47 C8E1 F95D 33CD 83B1 E42E 43AD D853 F280  (desktop)
+3561 9AC5 0DF5 FB9E A053 296E 5C77 FAD4 4C3E 67A7  (laptop)
 ```
 
 `DSD_Author.pgp` is retained only for upstream attribution and is not a
@@ -59,12 +60,23 @@ verification remains mandatory even when repository rulesets are enabled.
 
 Release assets are distributed over GitHub HTTPS. Tag release workflows generate
 SBOMs and GitHub artifact attestations for packaged Linux AppImage, macOS DMG,
-and Windows ZIP assets when the corresponding workflow completes successfully.
+Windows ZIP, and Android APK assets when the corresponding workflow completes
+successfully. The Android App Bundle handed to the Play Console is a workflow
+artifact rather than a release asset, but a tag attests it the same way — verify
+it with `gh attestation verify` (below) before uploading it to a Play track.
 Release publication jobs use `contents: write` only in trusted upstream
 release/nightly paths and publish with the workflow `GITHUB_TOKEN`.
 Packaging workflows also verify release hardening before upload: Linux ELF
 PIE/RELRO/BIND_NOW, macOS Mach-O PIE and staged dylib `@rpath` install names,
-and Windows PE ASLR/NX/high-entropy virtual addresses.
+and Windows PE ASLR/NX/high-entropy virtual addresses. The Android APK is signed
+with the project release key before upload; an unsigned APK is never published.
+Confirm the signer of a downloaded APK against the fingerprint printed by the
+`android-ci` run that published it, and check that it does not change between
+releases:
+
+```sh
+apksigner verify --print-certs dsd-neo-android-arm64-app-<version>.apk
+```
 
 Download assets from the release page, then verify an artifact attestation with
 GitHub CLI when available:

@@ -121,7 +121,6 @@ uint16_t m17_prbs9_next_bit(uint16_t* lfsr);
 void m17_prbs9_fill_bits(uint16_t* lfsr, uint8_t* out_bits, uint16_t bit_count);
 void m17_prbs9_rx_init(m17_prbs9_rx_state* rx, uint16_t initial_state);
 int m17_prbs9_rx_push_bit(m17_prbs9_rx_state* rx, uint8_t bit);
-uint8_t m17_scrambler_key_bits_for_subtype(uint8_t subtype);
 uint32_t m17_scrambler_mask_for_subtype(uint8_t subtype);
 uint8_t m17_scrambler_next_bit(uint8_t subtype, uint32_t* lfsr);
 int m17_scrambler_advance_state(uint8_t subtype, uint32_t seed, uint32_t bit_count, uint32_t* out_state);
@@ -130,8 +129,9 @@ int m17_scrambler_apply_bits(uint8_t subtype, uint32_t seed, uint16_t frame_numb
 uint8_t m17_aes_key_bytes_for_subtype(uint8_t subtype);
 void m17_aes_build_counter(const uint8_t nonce[M17_AES_NONCE_BYTES], uint16_t frame_number,
                            uint8_t counter[M17_AES_COUNTER_BYTES]);
-uint32_t m17_aes_nonce_timestamp(const uint8_t nonce[M17_AES_NONCE_BYTES]);
 int m17_packet_frame_count_for_app_bytes(uint16_t app_bytes, uint8_t* last_frame_bytes);
+int m17_packet_prepare_sms_payload(const char* text, uint8_t* packed, uint8_t* full_bits, uint16_t* app_len,
+                                   int* frame_count, uint8_t* last_frame_bytes, uint16_t* crc);
 int m17_packet_app_bytes_from_eof(uint8_t full_frames, uint8_t last_frame_bytes, uint16_t* app_bytes);
 int m17_packet_metadata_byte(uint8_t eof, uint8_t value, uint8_t* metadata_byte);
 int m17_packet_parse_metadata_byte(uint8_t metadata_byte, uint8_t* eof, uint8_t* value);
@@ -155,19 +155,16 @@ uint16_t m17_lsf_encode_type1_bits(const uint8_t type1_flush_bits[M17_LSF_TYPE1_
 void m17_stream_build_type1_bits(uint16_t frame_number, const uint8_t* payload_bits, uint8_t* type1_flush_bits);
 int m17_stream_parse_type1_bits(const uint8_t* type1_bits, uint16_t* frame_number, uint8_t* payload_bits);
 uint16_t m17_stream_next_frame_counter(uint16_t frame_counter);
-void m17_stream_copy_payload_chunk(const uint8_t* input_bits, uint16_t valid_bits, uint8_t* payload_bits);
 void m17_stream_pack_payload_halves(const uint8_t* first_half_bits, const uint8_t* second_half_bits,
                                     uint8_t* payload_bits);
 void m17_stream_encode_type1_bits(const uint8_t* type1_flush_bits, uint8_t* punctured_bits);
 void m17_stream_combine_frame_bits(const uint8_t* lich_bits, const uint8_t* stream_punctured_bits,
                                    uint8_t* combined_bits);
-void m17_bert_build_type1_bits(const uint8_t* bert_payload_bits, uint8_t* type1_flush_bits);
 uint16_t m17_bert_encode_type1_bits(const uint8_t* type1_flush_bits, uint8_t* randomized_bits, uint16_t* consumed_bits);
 void m17_packet_build_type1_bits(const uint8_t* chunk_bits, uint8_t metadata_byte, uint8_t* type1_flush_bits);
 uint16_t m17_packet_encode_type1_bits(const uint8_t* type1_flush_bits, uint8_t* randomized_bits,
                                       uint16_t* consumed_bits);
 int m17_symbol_from_dibit(uint8_t dibit);
-int m17_deviation_hz_from_dibit(uint8_t dibit);
 void m17_fill_repeating_16bit_dibits(uint16_t pattern, uint8_t output_dibits[M17_FRAME_SYMBOLS]);
 void m17_fill_sync_dibits_from_word(uint16_t sync_word, uint8_t output_dibits[M17_SYNC_SYMBOLS]);
 void m17_frame_build_dibits(uint16_t sync_word, const uint8_t randomized_bits[M17_PAYLOAD_BITS],

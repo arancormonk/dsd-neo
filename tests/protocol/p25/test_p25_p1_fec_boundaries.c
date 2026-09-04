@@ -10,8 +10,10 @@
  * - RS(24,16,9): correct up to 4 symbol errors; fail on 5.
  */
 
+#include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/p25/p25p1_check_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
@@ -20,6 +22,13 @@ static void
 bits_from_u(int value, int n_bits, char* out_bits) {
     for (int i = 0; i < n_bits; i++) {
         out_bits[i] = (char)((value >> (n_bits - 1 - i)) & 1);
+    }
+}
+
+static void
+symbols_from_u6(const uint8_t* values, int count, char* out_bits) {
+    for (int i = 0; i < count; i++) {
+        bits_from_u(values[i], 6, &out_bits[(size_t)i * 6U]);
     }
 }
 
@@ -52,17 +61,17 @@ main(void) {
 
     // Hamming(10,6,3): single-bit correction
     {
-        char hex[6], parity[4], orig[6];
+        char hex[6], orig[6];
+        const char parity[4] = {0, 1, 1, 0};
         bits_from_u(0x2A /* 101010 */, 6, hex);
         DSD_MEMCPY(orig, hex, 6);
-        encode_hamming_10_6_3(hex, parity);
 
         // Flip one data bit
         char h1[6], p1[4];
         DSD_MEMCPY(h1, orig, 6);
         DSD_MEMCPY(p1, parity, 4);
         flip_bit(h1, 3);
-        int est1 = check_and_fix_hamming_10_6_3(h1, p1);
+        int est1 = hamming_10_6_3_decode(h1, p1);
         rc |= expect_eq_hex("Hamming single data-bit fix", h1, orig, 6);
         // est1 should be >=1, but we don't assert the exact value.
         if (est1 <= 0) {
@@ -75,7 +84,7 @@ main(void) {
         DSD_MEMCPY(h2, orig, 6);
         DSD_MEMCPY(p2, parity, 4);
         flip_bit(p2, 1);
-        int est2 = check_and_fix_hamming_10_6_3(h2, p2);
+        int est2 = hamming_10_6_3_decode(h2, p2);
         rc |= expect_eq_hex("Hamming single parity-bit fix (data unchanged)", h2, orig, 6);
         if (est2 <= 0) {
             DSD_FPRINTF(stderr, "Hamming estimated errors not positive for parity flip (%d)\n", est2);
@@ -85,10 +94,10 @@ main(void) {
 
     // Golay(24,12,8): up to 3 bit errors corrected; 4 becomes irrecoverable
     {
-        char dodeca[12], parity[12], orig[12];
+        char dodeca[12], orig[12];
+        const char parity[12] = {0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 1};
         bits_from_u(0xACE /* 12 bits */, 12, dodeca);
         DSD_MEMCPY(orig, dodeca, 12);
-        encode_golay_24_12(dodeca, parity);
 
         // 3 random flips across data+parity
         char d1[12], p1[12];
@@ -123,8 +132,9 @@ main(void) {
             int sym = (i * 7 + 3) & 0x3F;
             bits_from_u(sym, 6, &data_bits[(size_t)i * 6]);
         }
+        static const uint8_t parity_symbols[8] = {0x3D, 0x18, 0x3B, 0x29, 0x16, 0x08, 0x13, 0x20};
         char parity_bits[8 * 6];
-        encode_reedsolomon_24_16_9(data_bits, parity_bits);
+        symbols_from_u6(parity_symbols, 8, parity_bits);
 
         // Make a working copy and flip 4 entire symbols (invert all 6 bits)
         char w1[16 * 6];

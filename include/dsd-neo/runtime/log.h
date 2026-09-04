@@ -12,8 +12,7 @@
  * @file
  * @brief Runtime logging interface used across DSD-neo components.
  *
- * Declares log severity levels, the core logging write routine, and convenience
- * macros. The implementation currently forwards messages to `stderr`.
+ * Declares log severity levels, the core write routine, and convenience macros.
  */
 
 /**
@@ -32,19 +31,50 @@ typedef enum DSD_ATTR_PACKED {
 #endif
 
 /**
- * @brief Write a formatted log message to the logging sink.
+ * @brief Destination for messages written through dsd_neo_log_write().
  *
- * Currently forwards to `stderr`. The `level` parameter is reserved for future
- * runtime gating and may be used to filter messages at runtime.
+ * `STDERR` is the default everywhere and keeps log output on the process's
+ * standard error stream. `PLATFORM` selects the host platform's native logging
+ * facility when one exists (Android: logcat, with severities mapped from
+ * ::dsd_neo_log_level_t); on platforms without one it behaves like `STDERR`.
  *
- * @param level  Log severity level (currently not used for filtering).
- * @param format printf-style format string.
- * @param ...    Variadic arguments corresponding to `format`.
+ * Embedders that run the decoder inside an application process (where stderr is
+ * discarded) should select `PLATFORM` during initialization.
  */
+typedef enum DSD_ATTR_PACKED { DSD_NEO_LOG_SINK_STDERR = 0, DSD_NEO_LOG_SINK_PLATFORM = 1 } dsd_neo_log_sink_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * @brief Write a formatted log message to the active log sink.
+ *
+ * @param level  Log severity for the message.
+ * @param format printf-style format string.
+ * @param ...    Variadic arguments corresponding to `format`.
+ */
 void dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) DSD_ATTR_FORMAT(printf, 2, 3);
+
+/**
+ * @brief Select the destination for subsequent log writes.
+ *
+ * Thread-safe and callable at any time. When never called, the sink resolves
+ * once from the `DSD_NEO_LOG_SINK` environment variable (`platform`/`logcat`
+ * select ::DSD_NEO_LOG_SINK_PLATFORM; anything else, including unset, selects
+ * ::DSD_NEO_LOG_SINK_STDERR).
+ *
+ * @param sink Destination to use.
+ */
+void dsd_neo_log_set_sink(dsd_neo_log_sink_t sink);
+
+/**
+ * @brief Report the active log sink, resolving the environment default if needed.
+ *
+ * @return Currently selected destination.
+ */
+dsd_neo_log_sink_t dsd_neo_log_get_sink(void);
+
 #ifdef __cplusplus
 }
 #endif
@@ -81,16 +111,5 @@ void dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) DSD_A
         /* Debug logging disabled */                                                                                   \
     } while (0)
 #endif
-
-/* Convenience macros for specific message types */
-
-/* For warnings with WARNING: prefix */
-#define LOG_WARNING(...)  LOG_WARN("WARNING: " __VA_ARGS__)
-
-/* For notices with NOTICE: prefix */
-#define LOG_NOTICE(...)   LOG_INFO("NOTICE: " __VA_ARGS__)
-
-/* For critical errors that may exit */
-#define LOG_CRITICAL(...) LOG_ERROR(__VA_ARGS__)
 
 #endif /* DSD_NEO_LOG_H */

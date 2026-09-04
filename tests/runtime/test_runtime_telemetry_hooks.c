@@ -36,10 +36,10 @@ fake_request_redraw(void) {
 int
 main(void) {
     dsd_telemetry_hooks_set((dsd_telemetry_hooks){0});
-    ui_publish_snapshot(NULL);
-    ui_publish_opts_snapshot(NULL);
-    ui_request_redraw();
-    ui_publish_both_and_redraw(NULL, NULL);
+    dsd_telemetry_publish_snapshot(NULL);
+    dsd_telemetry_publish_opts_snapshot(NULL);
+    dsd_telemetry_request_redraw();
+    dsd_telemetry_publish_both_and_redraw(NULL, NULL);
 
     dsd_opts* opts = (dsd_opts*)calloc(1, 1);
     dsd_state* state = (dsd_state*)calloc(1, 1);
@@ -58,24 +58,24 @@ main(void) {
         .request_redraw = fake_request_redraw,
     });
 
-    ui_publish_snapshot(state);
+    dsd_telemetry_publish_snapshot(state);
     assert(g_publish_snapshot_calls == 1);
     assert(g_publish_opts_snapshot_calls == 0);
     assert(g_request_redraw_calls == 0);
     assert(g_last_state == state);
 
-    ui_publish_opts_snapshot(opts);
+    dsd_telemetry_publish_opts_snapshot(opts);
     assert(g_publish_snapshot_calls == 1);
     assert(g_publish_opts_snapshot_calls == 1);
     assert(g_request_redraw_calls == 0);
     assert(g_last_opts == opts);
 
-    ui_request_redraw();
+    dsd_telemetry_request_redraw();
     assert(g_publish_snapshot_calls == 1);
     assert(g_publish_opts_snapshot_calls == 1);
     assert(g_request_redraw_calls == 1);
 
-    ui_publish_both_and_redraw(opts, state);
+    dsd_telemetry_publish_both_and_redraw(opts, state);
     assert(g_publish_snapshot_calls == 2);
     assert(g_publish_opts_snapshot_calls == 2);
     assert(g_request_redraw_calls == 2);

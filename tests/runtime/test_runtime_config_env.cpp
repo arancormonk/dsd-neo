@@ -85,8 +85,6 @@ unset_all_runtime_env(void) {
         "DSD_NEO_AUTO_PPM_SNR_DB",
         "DSD_NEO_AUTO_PPM_ZEROLOCK_HZ",
         "DSD_NEO_AUTO_PPM_ZEROLOCK_PPM",
-        "DSD_NEO_C4FM_CLK",
-        "DSD_NEO_C4FM_CLK_SYNC",
         "DSD_NEO_CACHE_DIR",
         "DSD_NEO_CC_CACHE",
         "DSD_NEO_CHANNEL_LPF",
@@ -101,6 +99,7 @@ unset_all_runtime_env(void) {
         "DSD_NEO_CQPSK_SYNC_INV",
         "DSD_NEO_CQPSK_SYNC_NEG",
         "DSD_NEO_DEBUG_CQPSK",
+        "DSD_NEO_DEBUG_SYMBOL_TIMING",
         "DSD_NEO_DEBUG_SYNC",
         "DSD_NEO_DEEMPH",
         "DSD_NEO_DISABLE_FS4_SHIFT",
@@ -112,17 +111,6 @@ unset_all_runtime_env(void) {
         "DSD_NEO_DMR_T3_HEUR",
         "DSD_NEO_DMR_T3_START_LCN",
         "DSD_NEO_DMR_T3_STEP_HZ",
-        "DSD_NEO_FLL",
-        "DSD_NEO_FLL_ALPHA",
-        "DSD_NEO_FLL_BETA",
-        "DSD_NEO_FLL_DEADBAND",
-        "DSD_NEO_FLL_SLEW",
-        "DSD_NEO_FM_AGC",
-        "DSD_NEO_FM_AGC_ALPHA_DOWN",
-        "DSD_NEO_FM_AGC_ALPHA_UP",
-        "DSD_NEO_FM_AGC_MIN",
-        "DSD_NEO_FM_AGC_TARGET",
-        "DSD_NEO_FM_LIMITER",
         "DSD_NEO_FTZ_DAZ",
         "DSD_NEO_INPUT_VOLUME",
         "DSD_NEO_INPUT_WARN_DB",
@@ -142,7 +130,6 @@ unset_all_runtime_env(void) {
         "DSD_NEO_P25_MIN_FOLLOW_DWELL",
         "DSD_NEO_P25P1_ERR_HOLD_PCT",
         "DSD_NEO_P25P1_ERR_HOLD_S",
-        "DSD_NEO_P25_RETUNE_BACKOFF",
         "DSD_NEO_P25_RING_HOLD",
         "DSD_NEO_P25_SOFT_ERASURE_THRESHOLD",
         "DSD_NEO_P25_SOFT_HARD_OVERRIDE",
@@ -161,6 +148,8 @@ unset_all_runtime_env(void) {
         "DSD_NEO_RTL_IF_GAINS",
         "DSD_NEO_RTL_OFFSET_TUNING",
         "DSD_NEO_RTL_TESTMODE",
+        "DSD_NEO_RTL_VERIFY",
+        "DSD_NEO_RTL_VERIFY_ATTEMPTS",
         "DSD_NEO_RTL_XTAL_HZ",
         "DSD_NEO_RT_PRIO_DEMOD",
         "DSD_NEO_RT_PRIO_DONGLE",
@@ -177,8 +166,6 @@ unset_all_runtime_env(void) {
         "DSD_NEO_TCP_RCVTIMEO",
         "DSD_NEO_TCP_STATS",
         "DSD_NEO_TCP_WAITALL",
-        "DSD_NEO_TED",
-        "DSD_NEO_TED_FORCE",
         "DSD_NEO_TED_GAIN",
         "DSD_NEO_TUNER_AUTOGAIN",
         "DSD_NEO_TUNER_AUTOGAIN_INBAND_RATIO",
@@ -189,7 +176,6 @@ unset_all_runtime_env(void) {
         "DSD_NEO_TUNER_AUTOGAIN_UP_STEP_DB",
         "DSD_NEO_TUNER_BW_HZ",
         "DSD_NEO_TUNER_XTAL_HZ",
-        "DSD_NEO_UPSAMPLE_FP",
         "DSD_NEO_WINDOW_FREEZE",
         NULL,
     };
@@ -221,7 +207,7 @@ expect_backoff(int is_set, int value, int rc_base) {
 static int
 test_tcp_rcvtimeo_ms(void) {
     unsetenv("DSD_NEO_TCP_RCVTIMEO");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 100, "cfg NULL");
     if (rc != 0) {
@@ -237,7 +223,7 @@ test_tcp_rcvtimeo_ms(void) {
     }
 
     setenv("DSD_NEO_TCP_RCVTIMEO", "100", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->tcp_rcvtimeo_is_set, 1, 110, "tcp_rcvtimeo_is_set (100)");
     if (rc != 0) {
@@ -249,7 +235,7 @@ test_tcp_rcvtimeo_ms(void) {
     }
 
     setenv("DSD_NEO_TCP_RCVTIMEO", "99", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->tcp_rcvtimeo_is_set, 0, 120, "tcp_rcvtimeo_is_set (99)");
     if (rc != 0) {
@@ -267,7 +253,7 @@ test_tcp_rcvtimeo_ms(void) {
 static int
 test_tcp_rcvbuf_bytes(void) {
     unsetenv("DSD_NEO_TCP_RCVBUF");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 200, "cfg NULL");
     if (rc != 0) {
@@ -283,7 +269,7 @@ test_tcp_rcvbuf_bytes(void) {
     }
 
     setenv("DSD_NEO_TCP_RCVBUF", "12345", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->tcp_rcvbuf_is_set, 1, 210, "tcp_rcvbuf_is_set (12345)");
     if (rc != 0) {
@@ -301,7 +287,7 @@ test_tcp_rcvbuf_bytes(void) {
 static int
 test_tcp_autotune_enable(void) {
     unsetenv("DSD_NEO_TCP_AUTOTUNE");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 300, "cfg NULL");
     if (rc != 0) {
@@ -317,7 +303,7 @@ test_tcp_autotune_enable(void) {
     }
 
     setenv("DSD_NEO_TCP_AUTOTUNE", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->tcp_autotune_is_set, 1, 310, "tcp_autotune_is_set (1)");
     if (rc != 0) {
@@ -329,7 +315,7 @@ test_tcp_autotune_enable(void) {
     }
 
     setenv("DSD_NEO_TCP_AUTOTUNE", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->tcp_autotune_is_set, 1, 320, "tcp_autotune_is_set (0)");
     if (rc != 0) {
@@ -347,7 +333,7 @@ test_tcp_autotune_enable(void) {
 static int
 test_rtl_direct_mode(void) {
     unsetenv("DSD_NEO_RTL_DIRECT");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 400, "cfg NULL");
     if (rc != 0) {
@@ -359,7 +345,7 @@ test_rtl_direct_mode(void) {
     }
 
     setenv("DSD_NEO_RTL_DIRECT", "I", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->rtl_direct_is_set, 1, 410, "rtl_direct_is_set (I)");
     if (rc != 0) {
@@ -371,7 +357,7 @@ test_rtl_direct_mode(void) {
     }
 
     setenv("DSD_NEO_RTL_DIRECT", "Q", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->rtl_direct_is_set, 1, 420, "rtl_direct_is_set (Q)");
     if (rc != 0) {
@@ -383,7 +369,7 @@ test_rtl_direct_mode(void) {
     }
 
     setenv("DSD_NEO_RTL_DIRECT", "bogus", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->rtl_direct_is_set, 1, 430, "rtl_direct_is_set (bogus)");
     if (rc != 0) {
@@ -401,7 +387,7 @@ test_rtl_direct_mode(void) {
 static int
 test_tuner_bw_hz(void) {
     unsetenv("DSD_NEO_TUNER_BW_HZ");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 500, "cfg NULL");
     if (rc != 0) {
@@ -413,7 +399,7 @@ test_tuner_bw_hz(void) {
     }
 
     setenv("DSD_NEO_TUNER_BW_HZ", "auto", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->tuner_bw_hz_is_set, 1, 510, "tuner_bw_hz_is_set (auto)");
     if (rc != 0) {
@@ -425,7 +411,7 @@ test_tuner_bw_hz(void) {
     }
 
     setenv("DSD_NEO_TUNER_BW_HZ", "20000000", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->tuner_bw_hz_is_set, 1, 520, "tuner_bw_hz_is_set (20000000)");
     if (rc != 0) {
@@ -437,7 +423,7 @@ test_tuner_bw_hz(void) {
     }
 
     setenv("DSD_NEO_TUNER_BW_HZ", "20000001", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->tuner_bw_hz_is_set, 0, 530, "tuner_bw_hz_is_set (20000001)");
     if (rc != 0) {
@@ -451,7 +437,7 @@ test_tuner_bw_hz(void) {
 static int
 test_p25_watchdog_ms(void) {
     unsetenv("DSD_NEO_P25_WD_MS");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 600, "cfg NULL");
     if (rc != 0) {
@@ -467,7 +453,7 @@ test_p25_watchdog_ms(void) {
     }
 
     setenv("DSD_NEO_P25_WD_MS", "20", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->p25_wd_ms_is_set, 1, 610, "p25_wd_ms_is_set (20)");
     if (rc != 0) {
@@ -479,7 +465,7 @@ test_p25_watchdog_ms(void) {
     }
 
     setenv("DSD_NEO_P25_WD_MS", "19", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->p25_wd_ms_is_set, 0, 620, "p25_wd_ms_is_set (19)");
     if (rc != 0) {
@@ -501,7 +487,7 @@ test_dmr_t3_heur_apply(void) {
     opts.dmr_t3_heuristic_fill = 7; /* sentinel */
 
     unsetenv("DSD_NEO_DMR_T3_HEUR");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), &opts, NULL);
     int rc = expect_int_eq(opts.dmr_t3_heuristic_fill, 7, 700, "dmr_t3_heuristic_fill unchanged when unset");
     if (rc != 0) {
@@ -509,7 +495,7 @@ test_dmr_t3_heur_apply(void) {
     }
 
     setenv("DSD_NEO_DMR_T3_HEUR", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), &opts, NULL);
     rc = expect_int_eq(opts.dmr_t3_heuristic_fill, 1, 710, "dmr_t3_heuristic_fill (1)");
     if (rc != 0) {
@@ -517,7 +503,7 @@ test_dmr_t3_heur_apply(void) {
     }
 
     setenv("DSD_NEO_DMR_T3_HEUR", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), &opts, NULL);
     rc = expect_int_eq(opts.dmr_t3_heuristic_fill, 0, 720, "dmr_t3_heuristic_fill (0)");
     if (rc != 0) {
@@ -535,7 +521,7 @@ test_p25_afc_status_gate_apply(void) {
     opts.p25_afc_status_gate_enable = 7; /* sentinel */
 
     unsetenv("DSD_NEO_P25_AFC_STATUS_GATE");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), &opts, NULL);
     int rc = expect_int_eq(opts.p25_afc_status_gate_enable, 7, 730, "p25_afc_status_gate unchanged when unset");
     if (rc != 0) {
@@ -543,7 +529,7 @@ test_p25_afc_status_gate_apply(void) {
     }
 
     setenv("DSD_NEO_P25_AFC_STATUS_GATE", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->p25_afc_status_gate_is_set, 1, 731, "p25_afc_status_gate_is_set (1)");
     if (rc != 0) {
@@ -560,7 +546,7 @@ test_p25_afc_status_gate_apply(void) {
     }
 
     setenv("DSD_NEO_P25_AFC_STATUS_GATE", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->p25_afc_status_gate_is_set, 1, 734, "p25_afc_status_gate_is_set (0)");
     if (rc != 0) {
@@ -592,7 +578,7 @@ test_cache_dir_default(void) {
 
     setenv("HOME", "/tmp/dsdneo_test_home", 1);
     unsetenv("DSD_NEO_CACHE_DIR");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 800, "cfg NULL");
     if (rc != 0) {
@@ -616,7 +602,7 @@ static int
 test_cache_dir_override(void) {
     unsetenv("DSD_NEO_CACHE_DIR");
     setenv("DSD_NEO_CACHE_DIR", "/tmp/dsdneo_cache_override", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 900, "cfg NULL");
@@ -639,7 +625,7 @@ test_cache_dir_override(void) {
 static int
 test_config_path_env(void) {
     unsetenv("DSD_NEO_CONFIG");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 910, "cfg NULL");
@@ -652,7 +638,7 @@ test_config_path_env(void) {
     }
 
     setenv("DSD_NEO_CONFIG", "/tmp/dsdneo_test.ini", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->config_path_is_set, 1, 912, "config_path_is_set");
     if (rc != 0) {
@@ -670,7 +656,7 @@ test_config_path_env(void) {
 static int
 test_cc_cache_env(void) {
     unsetenv("DSD_NEO_CC_CACHE");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 920, "cfg NULL");
@@ -687,7 +673,7 @@ test_cc_cache_env(void) {
     }
 
     setenv("DSD_NEO_CC_CACHE", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->cc_cache_is_set, 1, 930, "cc_cache_is_set (0)");
     if (rc != 0) {
@@ -699,7 +685,7 @@ test_cc_cache_env(void) {
     }
 
     setenv("DSD_NEO_CC_CACHE", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->cc_cache_is_set, 1, 940, "cc_cache_is_set (1)");
     if (rc != 0) {
@@ -728,7 +714,7 @@ test_rt_sched_affinity_env(void) {
     setenv("DSD_NEO_CPU_USB", "1", 1);
     setenv("DSD_NEO_CPU_DONGLE", "2", 1);
     setenv("DSD_NEO_CPU_DEMOD", "3", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 950, "cfg NULL");
@@ -793,7 +779,7 @@ test_rt_sched_affinity_env(void) {
     }
 
     setenv("DSD_NEO_RT_SCHED", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->rt_sched_enable, 0, 970, "rt_sched_enable (0)");
     if (rc != 0) {
@@ -801,7 +787,7 @@ test_rt_sched_affinity_env(void) {
     }
 
     setenv("DSD_NEO_RT_PRIO_USB", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->rt_prio_usb_is_set, 0, 971, "rt_prio_usb_is_set (0)");
     if (rc != 0) {
@@ -809,7 +795,7 @@ test_rt_sched_affinity_env(void) {
     }
 
     setenv("DSD_NEO_CPU_USB", "-1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->cpu_usb_is_set, 0, 972, "cpu_usb_is_set (-1)");
     if (rc != 0) {
@@ -832,7 +818,7 @@ test_bootstrap_debug_env(void) {
     setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
     setenv("DSD_NEO_DEBUG_SYNC", "1", 1);
     setenv("DSD_NEO_DEBUG_CQPSK", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 980, "cfg NULL");
@@ -876,7 +862,7 @@ test_bootstrap_debug_env(void) {
     setenv("DSD_NEO_NO_BOOTSTRAP", "0", 1);
     setenv("DSD_NEO_DEBUG_SYNC", "0", 1);
     setenv("DSD_NEO_DEBUG_CQPSK", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->ftz_daz_enable, 0, 990, "ftz_daz_enable (0)");
     if (rc != 0) {
@@ -902,10 +888,65 @@ test_bootstrap_debug_env(void) {
     return 0;
 }
 
+/* A level, not a toggle: 1 is one line per accepted sync, 2 adds the per-sample trace. */
+static int
+test_symbol_timing_debug_env(void) {
+    unsetenv("DSD_NEO_DEBUG_SYMBOL_TIMING");
+    dsd_neo_config_init();
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int rc = expect(cfg != NULL, 1400, "cfg NULL");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->debug_symbol_timing_is_set, 0, 1401, "debug_symbol_timing_is_set (default)");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->debug_symbol_timing, 0, 1402, "debug_symbol_timing (default)");
+    if (rc != 0) {
+        return rc;
+    }
+
+    static const struct {
+        const char* value;
+        int expect_is_set;
+        int expect_level;
+        int code;
+    } cases[] = {
+        {"1", 1, 1, 1403},
+        {"2", 1, 2, 1404},
+        {"0", 1, 0, 1405},
+        /* Truthy words select the quiet level rather than the firehose. */
+        {"true", 1, 1, 1406},
+        {"no", 1, 0, 1407},
+        /* Out of range and unparseable values are ignored, as the CQPSK toggle does. */
+        {"3", 0, 0, 1408},
+        {"banana", 0, 0, 1409},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        setenv("DSD_NEO_DEBUG_SYMBOL_TIMING", cases[i].value, 1);
+        dsd_neo_config_init();
+        cfg = dsd_neo_get_config();
+        rc = expect_int_eq(cfg->debug_symbol_timing_is_set, cases[i].expect_is_set, cases[i].code,
+                           "debug_symbol_timing_is_set");
+        if (rc != 0) {
+            return rc;
+        }
+        rc = expect_int_eq(cfg->debug_symbol_timing, cases[i].expect_level, cases[i].code, "debug_symbol_timing");
+        if (rc != 0) {
+            return rc;
+        }
+    }
+
+    unsetenv("DSD_NEO_DEBUG_SYMBOL_TIMING");
+    return 0;
+}
+
 static int
 test_cqpsk_sync_env(void) {
     unsetenv("DSD_NEO_CQPSK");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 1000, "cfg NULL");
     if (rc != 0) {
@@ -917,7 +958,7 @@ test_cqpsk_sync_env(void) {
     }
 
     setenv("DSD_NEO_CQPSK", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->cqpsk_is_set, 1, 1010, "cqpsk_is_set (1)");
     if (rc != 0) {
@@ -929,7 +970,7 @@ test_cqpsk_sync_env(void) {
     }
 
     setenv("DSD_NEO_CQPSK", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->cqpsk_is_set, 1, 1020, "cqpsk_is_set (0)");
     if (rc != 0) {
@@ -941,7 +982,7 @@ test_cqpsk_sync_env(void) {
     }
 
     setenv("DSD_NEO_CQPSK", "bogus", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->cqpsk_is_set, 0, 1030, "cqpsk_is_set (bogus)");
     if (rc != 0) {
@@ -950,7 +991,7 @@ test_cqpsk_sync_env(void) {
 
     setenv("DSD_NEO_CQPSK_SYNC_INV", "1", 1);
     setenv("DSD_NEO_CQPSK_SYNC_NEG", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->cqpsk_sync_inv_is_set, 1, 1040, "cqpsk_sync_inv_is_set");
     if (rc != 0) {
@@ -976,50 +1017,46 @@ test_cqpsk_sync_env(void) {
 }
 
 static int
-test_sync_warmstart_env(void) {
+test_compat_runtime_switches(void) {
     unsetenv("DSD_NEO_SYNC_WARMSTART");
-    dsd_neo_config_init(NULL);
+    unsetenv("DSD_NEO_COMBINE_ROT");
+    dsd_neo_config_init();
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 1050, "cfg NULL");
     if (rc != 0) {
         return rc;
     }
-    rc = expect_int_eq(cfg->sync_warmstart_is_set, 0, 1051, "sync_warmstart_is_set (default)");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->sync_warmstart_enable, 1, 1052, "sync_warmstart_enable (default)");
+    rc = expect_int_eq(cfg->sync_warmstart_is_set, 0, 1051, "sync warm-start default source");
+    rc |= expect_int_eq(cfg->sync_warmstart_enable, 1, 1052, "sync warm-start default enabled");
+    rc |= expect_int_eq(cfg->combine_rot_is_set, 0, 1053, "combine rotation default source");
+    rc |= expect_int_eq(cfg->combine_rot, 1, 1054, "combine rotation default enabled");
     if (rc != 0) {
         return rc;
     }
 
     setenv("DSD_NEO_SYNC_WARMSTART", "0", 1);
-    dsd_neo_config_init(NULL);
+    setenv("DSD_NEO_COMBINE_ROT", "0", 1);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
-    rc = expect_int_eq(cfg->sync_warmstart_is_set, 1, 1060, "sync_warmstart_is_set (0)");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->sync_warmstart_enable, 0, 1061, "sync_warmstart_enable (0)");
+    rc = expect_int_eq(cfg->sync_warmstart_is_set, 1, 1060, "sync warm-start disabled source");
+    rc |= expect_int_eq(cfg->sync_warmstart_enable, 0, 1061, "sync warm-start disabled");
+    rc |= expect_int_eq(cfg->combine_rot_is_set, 1, 1062, "combine rotation disabled source");
+    rc |= expect_int_eq(cfg->combine_rot, 0, 1063, "combine rotation disabled");
     if (rc != 0) {
         return rc;
     }
 
     setenv("DSD_NEO_SYNC_WARMSTART", "1", 1);
-    dsd_neo_config_init(NULL);
+    setenv("DSD_NEO_COMBINE_ROT", "1", 1);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
-    rc = expect_int_eq(cfg->sync_warmstart_is_set, 1, 1070, "sync_warmstart_is_set (1)");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->sync_warmstart_enable, 1, 1071, "sync_warmstart_enable (1)");
-    if (rc != 0) {
-        return rc;
-    }
+    rc = expect_int_eq(cfg->sync_warmstart_enable, 1, 1070, "sync warm-start enabled");
+    rc |= expect_int_eq(cfg->combine_rot, 1, 1071, "combine rotation enabled");
 
     unsetenv("DSD_NEO_SYNC_WARMSTART");
-    return 0;
+    unsetenv("DSD_NEO_COMBINE_ROT");
+    return rc;
 }
 
 static int
@@ -1042,7 +1079,6 @@ test_protocol_env_knobs(void) {
 
     setenv("DSD_NEO_P25_MIN_FOLLOW_DWELL", "1.0", 1);
     setenv("DSD_NEO_P25_GRANT_VOICE_TO", "2.0", 1);
-    setenv("DSD_NEO_P25_RETUNE_BACKOFF", "3.0", 1);
     setenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA", "4.0", 1);
     setenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN", "5.0", 1);
     setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", "6.0", 1);
@@ -1055,7 +1091,7 @@ test_protocol_env_knobs(void) {
     setenv("DSD_NEO_INPUT_VOLUME", "2", 1);
     setenv("DSD_NEO_INPUT_WARN_DB", "-10.0", 1);
 
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 1100, "cfg NULL");
     if (rc != 0) {
@@ -1149,14 +1185,6 @@ test_protocol_env_knobs(void) {
         return rc;
     }
     rc = expect_double_close(cfg->p25_grant_voice_to_s, 2.0, 1e-9, 1133, "p25_grant_voice_to_s");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->p25_retune_backoff_is_set, 1, 1134, "p25_retune_backoff_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_double_close(cfg->p25_retune_backoff_s, 3.0, 1e-9, 1135, "p25_retune_backoff_s");
     if (rc != 0) {
         return rc;
     }
@@ -1255,7 +1283,6 @@ test_protocol_env_knobs(void) {
 
     unsetenv("DSD_NEO_P25_MIN_FOLLOW_DWELL");
     unsetenv("DSD_NEO_P25_GRANT_VOICE_TO");
-    unsetenv("DSD_NEO_P25_RETUNE_BACKOFF");
     unsetenv("DSD_NEO_P25_FORCE_RELEASE_EXTRA");
     unsetenv("DSD_NEO_P25_FORCE_RELEASE_MARGIN");
     unsetenv("DSD_NEO_P25P1_ERR_HOLD_PCT");
@@ -1273,7 +1300,7 @@ test_protocol_env_knobs(void) {
      * runtime snapshot.
      */
     setenv("DSD_NEO_DMR_HANGTIME", "10.1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->dmr_hangtime_is_set, 0, 1200, "dmr_hangtime_is_set (10.1)");
     if (rc != 0) {
@@ -1286,7 +1313,7 @@ test_protocol_env_knobs(void) {
     unsetenv("DSD_NEO_DMR_HANGTIME");
 
     setenv("DSD_NEO_INPUT_VOLUME", "17", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->input_volume_is_set, 0, 1202, "input_volume_is_set (17)");
     if (rc != 0) {
@@ -1299,7 +1326,7 @@ test_protocol_env_knobs(void) {
     unsetenv("DSD_NEO_INPUT_VOLUME");
 
     setenv("DSD_NEO_INPUT_WARN_DB", "-20junk", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->input_warn_db_is_set, 0, 1204, "input_warn_db_is_set trailing junk");
     if (rc != 0) {
@@ -1321,7 +1348,7 @@ test_dmr_t3_tools_env(void) {
     setenv("DSD_NEO_DMR_T3_CC_LCN", "10", 1);
     setenv("DSD_NEO_DMR_T3_START_LCN", "11", 1);
     setenv("DSD_NEO_DMR_T3_CC_FREQ", "851.0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 1250, "cfg NULL");
@@ -1377,7 +1404,7 @@ test_dmr_t3_tools_env(void) {
 
     setenv("DSD_NEO_DMR_T3_STEP_HZ", "0", 1);
     setenv("DSD_NEO_DMR_T3_CC_FREQ", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->dmr_t3_step_hz_is_set, 0, 1270, "dmr_t3_step_hz_is_set (0)");
     if (rc != 0) {
@@ -1401,7 +1428,7 @@ test_dmr_t3_tools_env(void) {
 
     setenv("DSD_NEO_DMR_T3_STEP_HZ", "12500junk", 1);
     setenv("DSD_NEO_DMR_T3_CC_FREQ", "851.0junk", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->dmr_t3_step_hz_is_set, 0, 1274, "dmr_t3_step_hz_is_set trailing junk");
     if (rc != 0) {
@@ -1429,7 +1456,7 @@ test_tcp_misc_env(void) {
     setenv("DSD_NEO_TCP_MAX_TIMEOUTS", "7", 1);
     setenv("DSD_NEO_RIGCTL_RCVTIMEO", "2500", 1);
     setenv("DSD_NEO_TCP_PREBUF_MS", "500", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 1300, "cfg NULL");
@@ -1496,7 +1523,7 @@ test_tcp_misc_env(void) {
     setenv("DSD_NEO_TCP_MAX_TIMEOUTS", "0", 1);
     setenv("DSD_NEO_RIGCTL_RCVTIMEO", "99", 1);
     setenv("DSD_NEO_TCP_PREBUF_MS", "4", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->tcp_bufsz_is_set, 0, 1320, "tcp_bufsz_is_set (4096)");
     if (rc != 0) {
@@ -1533,7 +1560,7 @@ test_tcp_misc_env(void) {
     unsetenv("DSD_NEO_TCP_PREBUF_MS");
 
     setenv("DSD_NEO_TCP_BUFSZ", "8192junk", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->tcp_bufsz_is_set, 0, 1327, "tcp_bufsz_is_set trailing junk");
     if (rc != 0) {
@@ -1551,7 +1578,7 @@ test_rtl_misc_env(void) {
     setenv("DSD_NEO_TUNER_XTAL_HZ", "28800001", 1);
     setenv("DSD_NEO_RTL_TESTMODE", "1", 1);
     setenv("DSD_NEO_RTL_IF_GAINS", "20,30", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 1350, "cfg NULL");
@@ -1615,13 +1642,78 @@ test_rtl_misc_env(void) {
     unsetenv("DSD_NEO_RTL_IF_GAINS");
 
     setenv("DSD_NEO_RTL_XTAL_HZ", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->rtl_xtal_hz_is_set, 0, 1370, "rtl_xtal_hz_is_set (0)");
     if (rc != 0) {
         return rc;
     }
     unsetenv("DSD_NEO_RTL_XTAL_HZ");
+    return 0;
+}
+
+static int
+test_rtl_verify_env(void) {
+    unsetenv("DSD_NEO_RTL_VERIFY");
+    unsetenv("DSD_NEO_RTL_VERIFY_ATTEMPTS");
+    dsd_neo_config_init();
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int rc = expect(cfg != NULL, 1380, "cfg NULL");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_is_set, 0, 1381, "rtl_verify_is_set default");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_enable, 1, 1382, "rtl_verify_enable default");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_attempts_is_set, 0, 1383, "rtl_verify_attempts_is_set default");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_attempts, 10, 1384, "rtl_verify_attempts default");
+    if (rc != 0) {
+        return rc;
+    }
+
+    setenv("DSD_NEO_RTL_VERIFY", "0", 1);
+    setenv("DSD_NEO_RTL_VERIFY_ATTEMPTS", "4", 1);
+    dsd_neo_config_init();
+    cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->rtl_verify_is_set, 1, 1385, "rtl_verify_is_set disabled");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_enable, 0, 1386, "rtl_verify_enable disabled");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_attempts_is_set, 1, 1387, "rtl_verify_attempts_is_set 4");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_attempts, 4, 1388, "rtl_verify_attempts 4");
+    if (rc != 0) {
+        return rc;
+    }
+
+    setenv("DSD_NEO_RTL_VERIFY_ATTEMPTS", "11", 1);
+    dsd_neo_config_init();
+    cfg = dsd_neo_get_config();
+    rc = expect_int_eq(cfg->rtl_verify_attempts_is_set, 0, 1389, "rtl_verify_attempts_is_set 11");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->rtl_verify_attempts, 10, 1390, "rtl_verify_attempts invalid defaults");
+    if (rc != 0) {
+        return rc;
+    }
+
+    unsetenv("DSD_NEO_RTL_VERIFY");
+    unsetenv("DSD_NEO_RTL_VERIFY_ATTEMPTS");
     return 0;
 }
 
@@ -1639,7 +1731,7 @@ test_tuner_autogain_env(void) {
     setenv("DSD_NEO_TUNER_AUTOGAIN_INBAND_RATIO", "0.5", 1);
     setenv("DSD_NEO_TUNER_AUTOGAIN_UP_STEP_DB", "2.0", 1);
     setenv("DSD_NEO_TUNER_AUTOGAIN_UP_PERSIST", "3", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 1400, "cfg NULL");
@@ -1714,7 +1806,7 @@ test_tuner_autogain_env(void) {
     setenv("DSD_NEO_TUNER_AUTOGAIN_PROBE_MS", "-1", 1);
     setenv("DSD_NEO_TUNER_AUTOGAIN_INBAND_RATIO", "0.05", 1);
     setenv("DSD_NEO_TUNER_AUTOGAIN_UP_STEP_DB", "0.5", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->tuner_autogain_probe_ms_is_set, 0, 1420, "tuner_autogain_probe_ms_is_set (-1)");
     if (rc != 0) {
@@ -1761,7 +1853,7 @@ test_auto_ppm_env(void) {
     setenv("DSD_NEO_AUTO_PPM_ZEROLOCK_PPM", "1.0", 1);
     setenv("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ", "100", 1);
     setenv("DSD_NEO_AUTO_PPM_FREEZE", "0", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 1450, "cfg NULL");
@@ -1826,7 +1918,7 @@ test_auto_ppm_env(void) {
 
     setenv("DSD_NEO_AUTO_PPM_PWR_DB", "1.0", 1);
     setenv("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ", "9", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->auto_ppm_pwr_db_is_set, 0, 1470, "auto_ppm_pwr_db_is_set (1.0)");
     if (rc != 0) {
@@ -1849,7 +1941,7 @@ test_auto_ppm_env(void) {
     unsetenv("DSD_NEO_AUTO_PPM_ZEROLOCK_HZ");
 
     setenv("DSD_NEO_AUTO_PPM_PWR_DB", "-20junk", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->auto_ppm_pwr_db_is_set, 0, 1474, "auto_ppm_pwr_db_is_set trailing junk");
     if (rc != 0) {
@@ -1863,27 +1955,16 @@ static int
 test_dsp_misc_env(void) {
     /*
      * This covers DSP and demodulator environment knobs that interact during RTL
-     * startup: resampling, FLL, Costas, timing recovery, clocking, audio filters,
-     * retune handling, squelch, FM AGC, limiter, and channel LPF.
+     * startup: resampling, Costas, CQPSK timing recovery, audio filters, retune
+     * handling, squelch, IQ DC, and channel LPF.
      * Values are loaded in one config snapshot to catch field overlap in the
      * runtime parser. The invalid-value section later reloads a fresh snapshot so
      * each rejected knob can be checked against its documented default.
      */
-    setenv("DSD_NEO_COMBINE_ROT", "0", 1);
-    setenv("DSD_NEO_UPSAMPLE_FP", "0", 1);
     setenv("DSD_NEO_RESAMP", "96000", 1);
-    setenv("DSD_NEO_FLL", "1", 1);
-    setenv("DSD_NEO_FLL_ALPHA", "0.01", 1);
-    setenv("DSD_NEO_FLL_BETA", "0.001", 1);
-    setenv("DSD_NEO_FLL_DEADBAND", "0.004", 1);
-    setenv("DSD_NEO_FLL_SLEW", "0.003", 1);
     setenv("DSD_NEO_COSTAS_BW", "0.02", 1);
     setenv("DSD_NEO_COSTAS_DAMPING", "0.7", 1);
-    setenv("DSD_NEO_TED", "1", 1);
     setenv("DSD_NEO_TED_GAIN", "0.06", 1);
-    setenv("DSD_NEO_TED_FORCE", "1", 1);
-    setenv("DSD_NEO_C4FM_CLK", "mm", 1);
-    setenv("DSD_NEO_C4FM_CLK_SYNC", "1", 1);
     setenv("DSD_NEO_DEEMPH", "75", 1);
     setenv("DSD_NEO_AUDIO_LPF", "5000", 1);
     setenv("DSD_NEO_MT", "1", 1);
@@ -1894,16 +1975,10 @@ test_dsp_misc_env(void) {
     setenv("DSD_NEO_WINDOW_FREEZE", "1", 1);
     setenv("DSD_NEO_PDU_JSON", "1", 1);
     setenv("DSD_NEO_SNR_SQL_DB", "15", 1);
-    setenv("DSD_NEO_FM_AGC", "1", 1);
-    setenv("DSD_NEO_FM_AGC_TARGET", "0.5", 1);
-    setenv("DSD_NEO_FM_AGC_MIN", "0.1", 1);
-    setenv("DSD_NEO_FM_AGC_ALPHA_UP", "0.2", 1);
-    setenv("DSD_NEO_FM_AGC_ALPHA_DOWN", "0.8", 1);
-    setenv("DSD_NEO_FM_LIMITER", "1", 1);
     setenv("DSD_NEO_IQ_DC_BLOCK", "1", 1);
     setenv("DSD_NEO_IQ_DC_SHIFT", "13", 1);
     setenv("DSD_NEO_CHANNEL_LPF", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 1500, "cfg NULL");
@@ -1911,22 +1986,6 @@ test_dsp_misc_env(void) {
         return rc;
     }
 
-    rc = expect_int_eq(cfg->combine_rot_is_set, 1, 1501, "combine_rot_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->combine_rot, 0, 1502, "combine_rot");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->upsample_fp_is_set, 1, 1503, "upsample_fp_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->upsample_fp, 0, 1504, "upsample_fp");
-    if (rc != 0) {
-        return rc;
-    }
     rc = expect_int_eq(cfg->resamp_is_set, 1, 1505, "resamp_is_set");
     if (rc != 0) {
         return rc;
@@ -1939,47 +1998,6 @@ test_dsp_misc_env(void) {
     if (rc != 0) {
         return rc;
     }
-    rc = expect_int_eq(cfg->fll_is_set, 1, 1508, "fll_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->fll_enable, 1, 1509, "fll_enable");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->fll_alpha_is_set, 1, 1510, "fll_alpha_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_double_close(cfg->fll_alpha, 0.01, 1e-6, 1511, "fll_alpha");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->fll_beta_is_set, 1, 1512, "fll_beta_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_double_close(cfg->fll_beta, 0.001, 1e-6, 1513, "fll_beta");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->fll_deadband_is_set, 1, 1514, "fll_deadband_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_double_close(cfg->fll_deadband, 0.004, 1e-6, 1515, "fll_deadband");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->fll_slew_is_set, 1, 1516, "fll_slew_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_double_close(cfg->fll_slew_max, 0.003, 1e-6, 1517, "fll_slew_max");
-    if (rc != 0) {
-        return rc;
-    }
-
     rc = expect_int_eq(cfg->costas_bw_is_set, 1, 1520, "costas_bw_is_set");
     if (rc != 0) {
         return rc;
@@ -1997,14 +2015,6 @@ test_dsp_misc_env(void) {
         return rc;
     }
 
-    rc = expect_int_eq(cfg->ted_is_set, 1, 1530, "ted_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->ted_enable, 1, 1531, "ted_enable");
-    if (rc != 0) {
-        return rc;
-    }
     rc = expect_int_eq(cfg->ted_gain_is_set, 1, 1532, "ted_gain_is_set");
     if (rc != 0) {
         return rc;
@@ -2013,32 +2023,6 @@ test_dsp_misc_env(void) {
     if (rc != 0) {
         return rc;
     }
-    rc = expect_int_eq(cfg->ted_force_is_set, 1, 1534, "ted_force_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->ted_force, 1, 1535, "ted_force");
-    if (rc != 0) {
-        return rc;
-    }
-
-    rc = expect_int_eq(cfg->c4fm_clk_is_set, 1, 1550, "c4fm_clk_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->c4fm_clk_mode, 2, 1541, "c4fm_clk_mode");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->c4fm_clk_sync_is_set, 1, 1542, "c4fm_clk_sync_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->c4fm_clk_sync, 1, 1543, "c4fm_clk_sync");
-    if (rc != 0) {
-        return rc;
-    }
-
     rc = expect_int_eq(cfg->deemph_is_set, 1, 1550, "deemph_is_set");
     if (rc != 0) {
         return rc;
@@ -2128,56 +2112,6 @@ test_dsp_misc_env(void) {
         return rc;
     }
 
-    rc = expect_int_eq(cfg->fm_agc_is_set, 1, 1600, "fm_agc_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->fm_agc_enable, 1, 1601, "fm_agc_enable");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->fm_agc_target_is_set, 1, 1602, "fm_agc_target_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_double_close(cfg->fm_agc_target_rms, 0.5, 1e-6, 1603, "fm_agc_target_rms");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->fm_agc_min_is_set, 1, 1604, "fm_agc_min_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_double_close(cfg->fm_agc_min_rms, 0.1, 1e-6, 1605, "fm_agc_min_rms");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->fm_agc_alpha_up_is_set, 1, 1606, "fm_agc_alpha_up_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_double_close(cfg->fm_agc_alpha_up, 0.2, 1e-6, 1607, "fm_agc_alpha_up");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->fm_agc_alpha_down_is_set, 1, 1608, "fm_agc_alpha_down_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_double_close(cfg->fm_agc_alpha_down, 0.8, 1e-6, 1609, "fm_agc_alpha_down");
-    if (rc != 0) {
-        return rc;
-    }
-
-    rc = expect_int_eq(cfg->fm_limiter_is_set, 1, 1610, "fm_limiter_is_set");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(cfg->fm_limiter_enable, 1, 1611, "fm_limiter_enable");
-    if (rc != 0) {
-        return rc;
-    }
-
     rc = expect_int_eq(cfg->iq_dc_block_is_set, 1, 1620, "iq_dc_block_is_set");
     if (rc != 0) {
         return rc;
@@ -2209,21 +2143,10 @@ test_dsp_misc_env(void) {
      * Each second-pass assertion should see parser defaults, not leftovers from
      * the valid snapshot above.
      */
-    unsetenv("DSD_NEO_COMBINE_ROT");
-    unsetenv("DSD_NEO_UPSAMPLE_FP");
     unsetenv("DSD_NEO_RESAMP");
-    unsetenv("DSD_NEO_FLL");
-    unsetenv("DSD_NEO_FLL_ALPHA");
-    unsetenv("DSD_NEO_FLL_BETA");
-    unsetenv("DSD_NEO_FLL_DEADBAND");
-    unsetenv("DSD_NEO_FLL_SLEW");
     unsetenv("DSD_NEO_COSTAS_BW");
     unsetenv("DSD_NEO_COSTAS_DAMPING");
-    unsetenv("DSD_NEO_TED");
     unsetenv("DSD_NEO_TED_GAIN");
-    unsetenv("DSD_NEO_TED_FORCE");
-    unsetenv("DSD_NEO_C4FM_CLK");
-    unsetenv("DSD_NEO_C4FM_CLK_SYNC");
     unsetenv("DSD_NEO_DEEMPH");
     unsetenv("DSD_NEO_AUDIO_LPF");
     unsetenv("DSD_NEO_MT");
@@ -2234,12 +2157,6 @@ test_dsp_misc_env(void) {
     unsetenv("DSD_NEO_WINDOW_FREEZE");
     unsetenv("DSD_NEO_PDU_JSON");
     unsetenv("DSD_NEO_SNR_SQL_DB");
-    unsetenv("DSD_NEO_FM_AGC");
-    unsetenv("DSD_NEO_FM_AGC_TARGET");
-    unsetenv("DSD_NEO_FM_AGC_MIN");
-    unsetenv("DSD_NEO_FM_AGC_ALPHA_UP");
-    unsetenv("DSD_NEO_FM_AGC_ALPHA_DOWN");
-    unsetenv("DSD_NEO_FM_LIMITER");
     unsetenv("DSD_NEO_IQ_DC_BLOCK");
     unsetenv("DSD_NEO_IQ_DC_SHIFT");
     unsetenv("DSD_NEO_CHANNEL_LPF");
@@ -2251,7 +2168,7 @@ test_dsp_misc_env(void) {
      */
     setenv("DSD_NEO_RESAMP", "off", 1);
     setenv("DSD_NEO_AUDIO_LPF", "off", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     cfg = dsd_neo_get_config();
     rc = expect_int_eq(cfg->resamp_is_set, 1, 1650, "resamp_is_set (off)");
     if (rc != 0) {
@@ -2293,7 +2210,7 @@ static DSD_THREAD_RETURN_TYPE
 
 static int
 test_config_pointer_process_stable(void) {
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int rc = expect(cfg != NULL, 1660, "cfg NULL");
     if (rc != 0) {
@@ -2326,75 +2243,75 @@ test_config_pointer_process_stable(void) {
 static int
 test_config_snapshot_republish_reuse(void) {
     unset_all_runtime_env();
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* base = dsd_neo_get_config();
     int rc = expect(base != NULL, 1670, "base cfg NULL");
     if (rc != 0) {
         return rc;
     }
 
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* base_repeat = dsd_neo_get_config();
     rc = expect(base_repeat == base, 1671, "identical reparse should reuse snapshot");
     if (rc != 0) {
         return rc;
     }
 
-    setenv("DSD_NEO_C4FM_CLK", "1", 1);
-    dsd_neo_config_init(NULL);
-    const dsdneoRuntimeConfig* clk1 = dsd_neo_get_config();
-    rc = expect(clk1 != NULL, 1672, "clk1 cfg NULL");
+    setenv("DSD_NEO_CHANNEL_LPF", "1", 1);
+    dsd_neo_config_init();
+    const dsdneoRuntimeConfig* lpf1 = dsd_neo_get_config();
+    rc = expect(lpf1 != NULL, 1672, "lpf1 cfg NULL");
     if (rc != 0) {
         return rc;
     }
-    rc = expect(clk1 != base, 1673, "changed env should publish new snapshot");
+    rc = expect(lpf1 != base, 1673, "changed env should publish new snapshot");
     if (rc != 0) {
         return rc;
     }
-    rc = expect_int_eq(clk1->c4fm_clk_is_set, 1, 1674, "c4fm_clk_is_set (1)");
+    rc = expect_int_eq(lpf1->channel_lpf_is_set, 1, 1674, "channel_lpf_is_set (1)");
     if (rc != 0) {
         return rc;
     }
-    rc = expect_int_eq(clk1->c4fm_clk_mode, 1, 1675, "c4fm_clk_mode (1)");
-    if (rc != 0) {
-        return rc;
-    }
-
-    dsd_neo_config_init(NULL);
-    const dsdneoRuntimeConfig* clk1_repeat = dsd_neo_get_config();
-    rc = expect(clk1_repeat == clk1, 1676, "repeat parse should reuse c4fm=1 snapshot");
+    rc = expect_int_eq(lpf1->channel_lpf_enable, 1, 1675, "channel_lpf_enable (1)");
     if (rc != 0) {
         return rc;
     }
 
-    setenv("DSD_NEO_C4FM_CLK", "2", 1);
-    dsd_neo_config_init(NULL);
-    const dsdneoRuntimeConfig* clk2 = dsd_neo_get_config();
-    rc = expect(clk2 != clk1, 1677, "c4fm=2 should publish distinct snapshot");
-    if (rc != 0) {
-        return rc;
-    }
-    rc = expect_int_eq(clk2->c4fm_clk_mode, 2, 1678, "c4fm_clk_mode (2)");
+    dsd_neo_config_init();
+    const dsdneoRuntimeConfig* lpf1_repeat = dsd_neo_get_config();
+    rc = expect(lpf1_repeat == lpf1, 1676, "repeat parse should reuse channel_lpf=1 snapshot");
     if (rc != 0) {
         return rc;
     }
 
-    setenv("DSD_NEO_C4FM_CLK", "1", 1);
-    dsd_neo_config_init(NULL);
-    const dsdneoRuntimeConfig* clk1_again = dsd_neo_get_config();
-    rc = expect(clk1_again == clk1, 1679, "reused prior c4fm=1 snapshot");
+    setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    dsd_neo_config_init();
+    const dsdneoRuntimeConfig* lpf0 = dsd_neo_get_config();
+    rc = expect(lpf0 != lpf1, 1677, "channel_lpf=0 should publish distinct snapshot");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(lpf0->channel_lpf_enable, 0, 1678, "channel_lpf_enable (0)");
     if (rc != 0) {
         return rc;
     }
 
-    unsetenv("DSD_NEO_C4FM_CLK");
-    dsd_neo_config_init(NULL);
+    setenv("DSD_NEO_CHANNEL_LPF", "1", 1);
+    dsd_neo_config_init();
+    const dsdneoRuntimeConfig* lpf1_again = dsd_neo_get_config();
+    rc = expect(lpf1_again == lpf1, 1679, "reused prior channel_lpf=1 snapshot");
+    if (rc != 0) {
+        return rc;
+    }
+
+    unsetenv("DSD_NEO_CHANNEL_LPF");
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* base_again = dsd_neo_get_config();
     rc = expect(base_again == base, 1680, "reused prior default snapshot");
     if (rc != 0) {
         return rc;
     }
-    rc = expect_int_eq(base_again->c4fm_clk_is_set, 0, 1681, "c4fm_clk_is_set (unset)");
+    rc = expect_int_eq(base_again->channel_lpf_is_set, 0, 1681, "channel_lpf_is_set (unset)");
     if (rc != 0) {
         return rc;
     }
@@ -2407,7 +2324,7 @@ test_config_snapshot_republish_reuse_with_nan(void) {
     unset_all_runtime_env();
 
     setenv("DSD_NEO_DMR_HANGTIME", "nan", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* nan_cfg = dsd_neo_get_config();
     int rc = expect(nan_cfg != NULL, 1682, "nan cfg NULL");
     if (rc != 0) {
@@ -2422,7 +2339,7 @@ test_config_snapshot_republish_reuse_with_nan(void) {
         return rc;
     }
 
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     const dsdneoRuntimeConfig* nan_repeat = dsd_neo_get_config();
     rc = expect(nan_repeat == nan_cfg, 1685, "nan-valued config should reuse snapshot");
     if (rc != 0) {
@@ -2439,7 +2356,7 @@ main(void) {
 
     /* Default: unset -> 300ms */
     unsetenv("DSD_NEO_TCPIN_BACKOFF_MS");
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     int rc = expect_backoff(0, 300, 10);
     if (rc != 0) {
         return rc;
@@ -2447,21 +2364,21 @@ main(void) {
 
     /* In range -> accepted */
     setenv("DSD_NEO_TCPIN_BACKOFF_MS", "1000", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     rc = expect_backoff(1, 1000, 20);
     if (rc != 0) {
         return rc;
     }
 
     setenv("DSD_NEO_TCPIN_BACKOFF_MS", "50", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     rc = expect_backoff(1, 50, 30);
     if (rc != 0) {
         return rc;
     }
 
     setenv("DSD_NEO_TCPIN_BACKOFF_MS", "5000", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     rc = expect_backoff(1, 5000, 40);
     if (rc != 0) {
         return rc;
@@ -2469,14 +2386,14 @@ main(void) {
 
     /* Out of range -> ignored (default) */
     setenv("DSD_NEO_TCPIN_BACKOFF_MS", "49", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     rc = expect_backoff(0, 300, 50);
     if (rc != 0) {
         return rc;
     }
 
     setenv("DSD_NEO_TCPIN_BACKOFF_MS", "5001", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     rc = expect_backoff(0, 300, 60);
     if (rc != 0) {
         return rc;
@@ -2484,7 +2401,7 @@ main(void) {
 
     /* Empty string -> treated as unset */
     setenv("DSD_NEO_TCPIN_BACKOFF_MS", "", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
     rc = expect_backoff(0, 300, 70);
     if (rc != 0) {
         return rc;
@@ -2505,6 +2422,10 @@ main(void) {
         return rc;
     }
     rc = test_rtl_direct_mode();
+    if (rc != 0) {
+        return rc;
+    }
+    rc = test_rtl_verify_env();
     if (rc != 0) {
         return rc;
     }
@@ -2544,11 +2465,15 @@ main(void) {
     if (rc != 0) {
         return rc;
     }
+    rc = test_symbol_timing_debug_env();
+    if (rc != 0) {
+        return rc;
+    }
     rc = test_cqpsk_sync_env();
     if (rc != 0) {
         return rc;
     }
-    rc = test_sync_warmstart_env();
+    rc = test_compat_runtime_switches();
     if (rc != 0) {
         return rc;
     }

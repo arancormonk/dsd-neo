@@ -9,6 +9,8 @@
  * information bits plus DBSN (7 bits), MSB-first.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <assert.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <stdint.h>
@@ -65,7 +67,7 @@ test_r12_confirmed_crc9(void) {
     append_bits(bits, 7, masked & 0x1FF, 9);
 
     // Emulate extraction/compare performed in handler
-    uint32_t ext = (uint32_t)ConvertBitIntoBytes(&bits[7], 9);
+    uint32_t ext = (uint32_t)convert_bits_into_output(&bits[7], 9);
     ext ^= 0x0F0;
     // Rebuild span for CRC (payload + DBSN)
     for (unsigned i = 0; i < 80; i++) {
@@ -133,7 +135,7 @@ test_r1_confirmed_crc9(void) {
     append_bits(info, 7, masked & 0x1FF, 9);
 
     // Emulate extraction/compare performed in handler
-    uint32_t ext = (uint32_t)ConvertBitIntoBytes(&info[7], 9);
+    uint32_t ext = (uint32_t)convert_bits_into_output(&info[7], 9);
     ext ^= 0x10F;
 
     // Rebuild contiguous span for CRC: info bits + DBSN
@@ -197,7 +199,7 @@ test_r34_confirmed_crc9(void) {
     uint16_t masked = (uint16_t)(crc9 ^ 0x1FF);
     append_bits(bits, 7, masked & 0x1FF, 9);
     // emulate extraction and compare
-    uint32_t ext = (uint32_t)ConvertBitIntoBytes(&bits[7], 9);
+    uint32_t ext = (uint32_t)convert_bits_into_output(&bits[7], 9);
     ext ^= 0x1FF;
     for (unsigned i = 0; i < 128; i++) {
         span[i] = bits[16 + i];

@@ -19,6 +19,7 @@
 //Originally found at - https://github.com/LouisErigHerve/dsd
 //Modified for use in DSD-FME
 
+#include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -29,18 +30,6 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-static const int nW[36] = {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
-                           0, 1, 0, 1, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2};
-
-static const int nX[36] = {23, 10, 22, 9, 21, 8,  20, 7, 19, 6, 18, 5, 17, 4, 16, 3, 15, 2,
-                           14, 1,  13, 0, 12, 10, 11, 9, 10, 8, 9,  7, 8,  6, 7,  5, 6,  4};
-
-static const int nY[36] = {0, 2, 0, 2, 0, 2, 0, 2, 0, 3, 0, 3, 1, 3, 1, 3, 1, 3,
-                           1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3};
-
-static const int nZ[36] = {5,  3, 4,  2, 3,  1, 2,  0, 1,  13, 0,  12, 22, 11, 21, 10, 20, 9,
-                           19, 8, 18, 7, 17, 6, 16, 5, 15, 4,  14, 3,  13, 2,  12, 1,  11, 0};
 
 void
 nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182], const uint8_t* dbuf_reliab) {
@@ -65,31 +54,23 @@ nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182], const
     }
 
     for (; start < stop; start++) {
-        const int* w = nW;
-        const int* x = nX;
-        const int* y = nY;
-        const int* z = nZ;
         DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
         DSD_MEMSET(ambe_soft_fr, 0, sizeof(ambe_soft_fr));
 
-        for (i = 0; i < 36; i++) {
+        for (i = 0; i < DSD_AMBE_2450_DIBITS; i++) {
+            const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[i];
             int buf_idx = i + 38 + start * 36;
 
             //skip 8 lich and 30 sacch dibits already in buffer plus 36 times start position
-            ambe_fr[*w][*x] = dbuf[buf_idx] >> 1;
-            ambe_fr[*y][*z] = dbuf[buf_idx] & 1;
+            ambe_fr[map->high_row][map->high_col] = dbuf[buf_idx] >> 1;
+            ambe_fr[map->low_row][map->low_col] = dbuf[buf_idx] & 1;
 
             if (dbuf_reliab != NULL) {
-                ambe_soft_fr[*w][*x].bit = (uint8_t)(ambe_fr[*w][*x] & 1);
-                ambe_soft_fr[*w][*x].reliability = dbuf_reliab[buf_idx];
-                ambe_soft_fr[*y][*z].bit = (uint8_t)(ambe_fr[*y][*z] & 1);
-                ambe_soft_fr[*y][*z].reliability = dbuf_reliab[buf_idx];
+                ambe_soft_fr[map->high_row][map->high_col].bit = (uint8_t)(ambe_fr[map->high_row][map->high_col] & 1);
+                ambe_soft_fr[map->high_row][map->high_col].reliability = dbuf_reliab[buf_idx];
+                ambe_soft_fr[map->low_row][map->low_col].bit = (uint8_t)(ambe_fr[map->low_row][map->low_col] & 1);
+                ambe_soft_fr[map->low_row][map->low_col].reliability = dbuf_reliab[buf_idx];
             }
-
-            w++;
-            x++;
-            y++;
-            z++;
         }
         if (dbuf_reliab != NULL) {
             processMbeFrameSoft(opts, state, NULL, ambe_soft_fr, NULL);

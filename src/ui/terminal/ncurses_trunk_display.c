@@ -104,7 +104,10 @@ ui_trunk_print_channel_freq(const dsd_state* state, int channel, long int freq) 
     int is_iden = ui_match_iden_channel(state, channel, freq, &iden);
     if (is_iden) {
         attron(COLOR_PAIR(ui_iden_color_pair(iden)));
-        printw("CH %04X[I%d]: %.06lf MHz", channel & 0xFFFF, iden & 0xF, (double)freq / 1000000.0);
+        // #403: the <iden>-<chan> key beside the raw hex; the identifier colour
+        // already says which IDEN the row belongs to.
+        printw("CH %04X (%d-%d): %.06lf MHz", channel & 0xFFFF, (channel >> 12) & 0xF, channel & 0xFFF,
+               (double)freq / 1000000.0);
         attr_set(saved_attrs, saved_pair, NULL);
     } else {
         printw("CH %04X: %.06lf MHz", channel & 0xFFFF, (double)freq / 1000000.0);
@@ -206,7 +209,7 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    if (opts->p25_trunk != 1) {
+    if (opts->trunk_enable != 1) {
         return;
     }
 

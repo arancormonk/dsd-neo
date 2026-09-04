@@ -24,16 +24,32 @@
 extern "C" {
 #endif
 
+#define P25P2_MAC_MAX_SEGMENTS 3
+
+struct p25p2_mac_segment {
+    /* Offset, in octets, from MAC[1] to the segment opcode. */
+    int offset;
+    /* Segment length in octets, including opcode/vendor/length octets. */
+    int length;
+};
+
 struct p25p2_mac_result {
     /* Channel type: 0 = FACCH, 1 = SACCH. */
     int type;
     /* MFID and opcode from the MAC header. */
     uint8_t mfid;
     uint8_t opcode;
-    /* Message-carrying octet lengths (excluding opcode byte). */
-    int len_a;
-    int len_b;
-    int len_c;
+    int segment_count;
+    struct p25p2_mac_segment segments[P25P2_MAC_MAX_SEGMENTS];
+};
+
+struct p25p2_mac_voice_identity {
+    int tg;
+    int dst;
+    int src;
+    int is_group;
+    int svc_bits;
+    int source_optional;
 };
 
 struct p25p2_iden_update {
@@ -59,6 +75,14 @@ struct p25p2_iden_update {
  * @return 0 on success, negative on error.
  */
 int p25p2_mac_parse(int type, const unsigned long long mac[24], struct p25p2_mac_result* out);
+/**
+ * Decode the last standard Group Voice, Unit-to-Unit Voice, Telephone Interconnect Voice, or Group Regroup Voice
+ * structure in a MAC PDU.
+ *
+ * @return 1 when an identity was decoded, 0 when no voice structure is present,
+ *         or a negative value on invalid input.
+ */
+int p25p2_mac_decode_voice_identity(int type, const unsigned long long mac[24], struct p25p2_mac_voice_identity* out);
 int p25p2_mac_decode_iden_standard(const unsigned long long mac[24], int pos, struct p25p2_iden_update* out);
 int p25p2_mac_decode_iden_vuhf(const unsigned long long mac[24], int pos, struct p25p2_iden_update* out);
 int p25p2_mac_decode_iden_tdma(const unsigned long long mac[24], int pos, struct p25p2_iden_update* out);

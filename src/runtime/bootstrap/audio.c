@@ -56,7 +56,7 @@ dsd_bootstrap_choose_audio_output(dsd_opts* opts) {
     int n_out = 0;
 
     if (dsd_audio_enumerate_devices(ins, outs, 16) < 0) {
-        LOG_WARNING("Audio device query failed; using default output.\n");
+        LOG_WARN("WARNING: Audio device query failed; using default output.\n");
         DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
         return;
     }
@@ -89,7 +89,7 @@ dsd_bootstrap_choose_audio_input(dsd_opts* opts) {
     int n_in = 0;
 
     if (dsd_audio_enumerate_devices(ins, outs, 16) < 0) {
-        LOG_WARNING("Audio device query failed; using default input.\n");
+        LOG_WARN("WARNING: Audio device query failed; using default input.\n");
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
         return;
     }

@@ -20,7 +20,7 @@ test_aes128_ofb(void) {
     const uint8_t expect[16] = {0x69, 0xC4, 0xE0, 0xD8, 0x6A, 0x7B, 0x04, 0x30,
                                 0xD8, 0xCD, 0xB7, 0x80, 0x70, 0xB4, 0xC5, 0x5A};
     uint8_t out[16] = {0};
-    aes_ofb_keystream_output(iv, key, out, /*AES-128*/ 0, 1);
+    aes_ofb_keystream_output(iv, key, out, DSD_AES_KEY_128, 1);
     if (memcmp(out, expect, 16) != 0) {
         DSD_FPRINTF(stderr, "AES-128 OFB: mismatch\n");
         return 1;
@@ -40,7 +40,7 @@ test_aes128_ofb_multiblock(void) {
         0xD9, 0xA4, 0xDA, 0xDA, 0x08, 0x92, 0x23, 0x9F, 0x6B, 0x8B, 0x3D, 0x76, 0x80, 0xE1, 0x56, 0x74,
     };
     uint8_t out[32] = {0};
-    aes_ofb_keystream_output(iv, key, out, /*AES-128*/ 0, 2);
+    aes_ofb_keystream_output(iv, key, out, DSD_AES_KEY_128, 2);
     if (memcmp(out, expect, sizeof(expect)) != 0) {
         DSD_FPRINTF(stderr, "AES-128 OFB multiblock: mismatch\n");
         return 1;
@@ -61,28 +61,9 @@ test_aes256_ofb(void) {
                                 0xEA, 0xFC, 0x49, 0x90, 0x4B, 0x49, 0x60, 0x89};
     uint8_t out[16] = {0};
     // The keystream block equals AES-encrypt(IV)
-    aes_ofb_keystream_output(iv, key, out, /*AES-256*/ 2, 1);
+    aes_ofb_keystream_output(iv, key, out, DSD_AES_KEY_256, 1);
     if (memcmp(out, expect, 16) != 0) {
         DSD_FPRINTF(stderr, "AES-256 OFB: mismatch\n");
-        return 1;
-    }
-    return 0;
-}
-
-static int
-test_aes_ofb_unknown_type_falls_back_to_256(void) {
-    const uint8_t key[32] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
-                             0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
-                             0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F};
-    const uint8_t iv[16] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-                            0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    const uint8_t expect[16] = {0x8E, 0xA2, 0xB7, 0xCA, 0x51, 0x67, 0x45, 0xBF,
-                                0xEA, 0xFC, 0x49, 0x90, 0x4B, 0x49, 0x60, 0x89};
-    uint8_t out[16] = {0};
-
-    aes_ofb_keystream_output(iv, key, out, /*legacy fallback*/ 99, 1);
-    if (memcmp(out, expect, 16) != 0) {
-        DSD_FPRINTF(stderr, "AES OFB unknown-type fallback: mismatch\n");
         return 1;
     }
     return 0;
@@ -97,7 +78,7 @@ test_aes192_ofb(void) {
     const uint8_t expect[16] = {0xDD, 0xA9, 0x7C, 0xA4, 0x86, 0x4C, 0xDF, 0xE0,
                                 0x6E, 0xAF, 0x70, 0xA0, 0xEC, 0x0D, 0x71, 0x91};
     uint8_t out[16] = {0};
-    aes_ofb_keystream_output(iv, key, out, /*AES-192*/ 1, 1);
+    aes_ofb_keystream_output(iv, key, out, DSD_AES_KEY_192, 1);
     if (memcmp(out, expect, 16) != 0) {
         DSD_FPRINTF(stderr, "AES-192 OFB: mismatch\n");
         return 1;
@@ -114,7 +95,7 @@ test_aes128_ecb_decrypt(void) {
     const uint8_t expect[16] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
                                 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
     uint8_t out[16] = {0};
-    aes_ecb_decrypt_blocks(input, key, out, /*AES-128*/ 0, 1);
+    aes_ecb_decrypt_blocks(input, key, out, DSD_AES_KEY_128, 1);
     if (memcmp(out, expect, 16) != 0) {
         DSD_FPRINTF(stderr, "AES-128 ECB decrypt: mismatch\n");
         return 1;
@@ -131,7 +112,7 @@ test_aes192_ecb_decrypt(void) {
     const uint8_t expect[16] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
                                 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
     uint8_t out[16] = {0};
-    aes_ecb_decrypt_blocks(input, key, out, /*AES-192*/ 1, 1);
+    aes_ecb_decrypt_blocks(input, key, out, DSD_AES_KEY_192, 1);
     if (memcmp(out, expect, 16) != 0) {
         DSD_FPRINTF(stderr, "AES-192 ECB decrypt: mismatch\n");
         return 1;
@@ -149,28 +130,9 @@ test_aes256_ecb_decrypt(void) {
     const uint8_t expect[16] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
                                 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
     uint8_t out[16] = {0};
-    aes_ecb_decrypt_blocks(input, key, out, /*AES-256*/ 2, 1);
+    aes_ecb_decrypt_blocks(input, key, out, DSD_AES_KEY_256, 1);
     if (memcmp(out, expect, 16) != 0) {
         DSD_FPRINTF(stderr, "AES-256 ECB decrypt: mismatch\n");
-        return 1;
-    }
-    return 0;
-}
-
-static int
-test_aes_ecb_decrypt_unknown_type_falls_back_to_256(void) {
-    const uint8_t key[32] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A,
-                             0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
-                             0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F};
-    const uint8_t input[16] = {0x8E, 0xA2, 0xB7, 0xCA, 0x51, 0x67, 0x45, 0xBF,
-                               0xEA, 0xFC, 0x49, 0x90, 0x4B, 0x49, 0x60, 0x89};
-    const uint8_t expect[16] = {0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
-                                0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    uint8_t out[16] = {0};
-
-    aes_ecb_decrypt_blocks(input, key, out, /*legacy fallback*/ -7, 1);
-    if (memcmp(out, expect, 16) != 0) {
-        DSD_FPRINTF(stderr, "AES ECB unknown-type fallback: mismatch\n");
         return 1;
     }
     return 0;
@@ -190,7 +152,7 @@ test_aes_ecb_in_place_multiblock(void) {
     DSD_MEMCPY(expect, expect_block, sizeof(expect_block));
     DSD_MEMCPY(expect + sizeof(expect_block), expect_block, sizeof(expect_block));
 
-    aes_ecb_decrypt_blocks(in_out, key, in_out, /*AES-128*/ 0, 2);
+    aes_ecb_decrypt_blocks(in_out, key, in_out, DSD_AES_KEY_128, 2);
     if (memcmp(in_out, expect, sizeof(expect)) != 0) {
         DSD_FPRINTF(stderr, "AES ECB in-place multiblock decrypt: mismatch\n");
         return 1;
@@ -217,12 +179,12 @@ test_aes128_ctr_xcrypt_nist_vector(void) {
         0xAE, 0x2D, 0x8A, 0x57, 0x1E, 0x03, 0xAC, 0x9C, 0x9E, 0xB7, 0x6F, 0xAC, 0x45, 0xAF, 0x8E, 0x51,
     };
 
-    aes_ctr_xcrypt_bytes(counter, key, data, /*AES-128*/ 0, sizeof(data));
+    aes_ctr_xcrypt_bytes(counter, key, data, DSD_AES_KEY_128, sizeof(data));
     if (memcmp(data, expect, sizeof(expect)) != 0) {
         DSD_FPRINTF(stderr, "AES-128 CTR encrypt: mismatch\n");
         return 1;
     }
-    aes_ctr_xcrypt_bytes(counter, key, data, /*AES-128*/ 0, sizeof(data));
+    aes_ctr_xcrypt_bytes(counter, key, data, DSD_AES_KEY_128, sizeof(data));
     if (memcmp(data, plain, sizeof(plain)) != 0) {
         DSD_FPRINTF(stderr, "AES-128 CTR decrypt: mismatch\n");
         return 1;
@@ -231,7 +193,7 @@ test_aes128_ctr_xcrypt_nist_vector(void) {
 }
 
 static int
-test_aes128_ctr_keystream_counter_wrap(void) {
+test_aes128_ctr_xcrypt_counter_wrap(void) {
     const uint8_t key[16] = {0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6,
                              0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C};
     const uint8_t counter[16] = {0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7,
@@ -240,11 +202,11 @@ test_aes128_ctr_keystream_counter_wrap(void) {
         0xEC, 0x8C, 0xDF, 0x73, 0x98, 0x60, 0x7C, 0xB0, 0xF2, 0xD2, 0x16, 0x75, 0xEA, 0x9E, 0xA1, 0xE4,
         0x36, 0x2B, 0x7C, 0x3C, 0x67, 0x73, 0x51, 0x63, 0x18, 0xA0, 0x77, 0xD7, 0xFC, 0x50, 0x73, 0xAE,
     };
-    uint8_t out[32] = {0};
+    uint8_t data[32] = {0};
 
-    aes_ctr_keystream_output(counter, key, out, /*AES-128*/ 0, 2);
-    if (memcmp(out, expect, sizeof(expect)) != 0) {
-        DSD_FPRINTF(stderr, "AES-128 CTR keystream counter wrap: mismatch\n");
+    aes_ctr_xcrypt_bytes(counter, key, data, DSD_AES_KEY_128, sizeof(data));
+    if (memcmp(data, expect, sizeof(expect)) != 0) {
+        DSD_FPRINTF(stderr, "AES-128 CTR xcrypt counter wrap: mismatch\n");
         return 1;
     }
     return 0;
@@ -257,14 +219,12 @@ main(void) {
     rc |= test_aes128_ofb_multiblock();
     rc |= test_aes192_ofb();
     rc |= test_aes256_ofb();
-    rc |= test_aes_ofb_unknown_type_falls_back_to_256();
     rc |= test_aes128_ecb_decrypt();
     rc |= test_aes192_ecb_decrypt();
     rc |= test_aes256_ecb_decrypt();
-    rc |= test_aes_ecb_decrypt_unknown_type_falls_back_to_256();
     rc |= test_aes_ecb_in_place_multiblock();
     rc |= test_aes128_ctr_xcrypt_nist_vector();
-    rc |= test_aes128_ctr_keystream_counter_wrap();
+    rc |= test_aes128_ctr_xcrypt_counter_wrap();
     if (rc == 0) {
         DSD_FPRINTF(stderr, "AES tests: OK\n");
     }

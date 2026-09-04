@@ -56,7 +56,9 @@ target_sources(
     PRIVATE
         engine.c
         frame_sync_hooks_install.c
+        p25_bandplan_export.c
         p25_optional_hooks_install.c
+        scan_voice_gate.c
         trunk_scan.c
         trunk_tuning.c
         trunk_tuning_hooks_install.c

@@ -70,16 +70,6 @@ int tcp_input_read_sample(tcp_input_ctx* ctx, int16_t* out);
  */
 int tcp_input_is_valid(const tcp_input_ctx* ctx);
 
-/**
- * @brief Get the underlying socket from a TCP input context.
- *
- * Useful for reconnection logic that needs to close/reopen the socket.
- *
- * @param ctx TCP input context.
- * @return Socket handle, or DSD_INVALID_SOCKET if ctx is NULL.
- */
-dsd_socket_t tcp_input_get_socket(const tcp_input_ctx* ctx);
-
 #ifdef __cplusplus
 }
 #endif

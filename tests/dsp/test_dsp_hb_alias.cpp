@@ -5,7 +5,7 @@
 
 /*
  * Quantify alias rejection of cascaded half-band decimation using the
- * real-valued hb_decim2_real() function. We compare RMS of a low-frequency
+ * canonical real-valued SIMD half-band decimator. We compare RMS of a low-frequency
  * tone (in passband) against a high-frequency tone near Nyquist (stopband)
  * after 1 and 2 cascaded stages. Thresholds are conservative to avoid
  * platform variability.
@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <dsd-neo/dsp/halfband.h>
+#include <dsd-neo/dsp/simd_fir.h>
 #include <vector>
 #include "dsd-neo/core/safe_api.h"
 
@@ -56,7 +57,7 @@ stage_atten_db(int stages, double fs, double f_pass, double f_stop) {
     const float* src = in.data();
     float* dst = buf.data();
     for (int s = 0; s < stages; s++) {
-        int out_len = hb_decim2_real(src, in_len, dst, hist_i[s]);
+        int out_len = simd_hb_decim2_real(src, in_len, dst, hist_i[s], hb_q15_taps, HB_TAPS);
         src = dst;
         in_len = out_len;
         dst = (src == buf.data()) ? out.data() : buf.data();
@@ -78,7 +79,7 @@ stage_atten_db(int stages, double fs, double f_pass, double f_stop) {
     src = in.data();
     dst = buf.data();
     for (int s = 0; s < stages; s++) {
-        int out_len = hb_decim2_real(src, in_len, dst, hist_i[s]);
+        int out_len = simd_hb_decim2_real(src, in_len, dst, hist_i[s], hb_q15_taps, HB_TAPS);
         src = dst;
         in_len = out_len;
         dst = (src == buf.data()) ? out.data() : buf.data();

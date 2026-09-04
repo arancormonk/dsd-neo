@@ -23,7 +23,6 @@
 extern "C" {
 #endif
 
-void nxdn_descramble(uint8_t dibits[], int len);
 void nxdn_descramble_with_seed(uint8_t dibits[], int len, uint16_t seed);
 
 void nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144],
@@ -51,18 +50,29 @@ const char* nxdn_message_type_label(uint8_t message_type);
 void nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType);
 
 void NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state);
-void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, const uint8_t* ElementsContent,
+
+/**
+ * @brief Decode an NXDN element content block and dispatch it by message type.
+ *
+ * Carries no CRC verdict of its own: callers pass CRC-verified content only. Every channel
+ * decoder in `nxdn_deperm.c` checks its own CRC -- SACCH CRC-6, FACCH1 CRC-12, FACCH2/UDCH
+ * CRC-15, CAC CRC-16, FACCH3/UDCH2 -- and reports it to `nxdn_confirm_note_evidence()` before
+ * calling here, as does `NXDN_SACCH_Full_decode()` for an assembled superframe. The gate lives
+ * in those callers; `nxdn_confirm_is_confirmed()` is the frame-level check at the sites that
+ * publish a call or refresh a scan hold. The one deliberate exception is the synthesized
+ * disconnect in `nxdn_vcall_run_enc_lockout()`, which fabricates a DISC element locally to drive
+ * the same teardown a received one would.
+ */
+void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* ElementsContent,
                                   size_t elements_bits);
 void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction);
 void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 
-int load_i(const uint8_t val[], int len);
 uint8_t crc6(const uint8_t buf[], int len);
 uint16_t crc12f(const uint8_t buf[], int len);
 uint16_t crc15(const uint8_t buf[], int len);
 uint16_t crc16cac(const uint8_t buf[], int len);
 uint8_t crc7_scch(const uint8_t bits[], int len);
-uint32_t nxdn_message_crc32(const uint8_t* input, int len);
 
 /**
  * Read the 7-bit SCCH CRC check field from decoded trellis bits.

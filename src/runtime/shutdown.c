@@ -13,5 +13,5 @@ void
 dsd_request_shutdown(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    exitflag = 1;
+    dsd_exitflag_store(1);
 }

@@ -31,12 +31,36 @@ typedef void (*ui_chooser_done_fn)(void* user, int selected);
  * @param prefill  Optional prefilled text (may be NULL).
  * @param cap      Max buffer capacity for input.
  * @param on_done  Callback invoked when user completes (text may be NULL on cancel).
- * @param user     User context passed to callback.
+ * @param user_ctx User context passed to callback.
  */
-void ui_prompt_open_string_async_impl(const char* title, const char* prefill, size_t cap, void* user,
-                                      ui_prompt_string_done_fn on_done);
-#define ui_prompt_open_string_async(title, prefill, cap, on_done, user)                                                \
-    ui_prompt_open_string_async_impl((title), (prefill), (cap), (user), (on_done))
+void ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
+                                 void* user_ctx);
+
+/**
+ * @brief Open a masked (secret) string prompt asynchronously.
+ *
+ * Identical to ui_prompt_open_string_async() except that the field renders one
+ * '*' per typed byte, the input buffer is overwritten with zeroes before it is
+ * freed, and the copy handed to @p on_done is overwritten after the callback
+ * returns. There is no prefill parameter on purpose: a secret is never
+ * redisplayed.
+ *
+ * The visible length of the secret is still disclosed by the cursor column;
+ * that is accepted.
+ *
+ * @param title    Title shown in prompt window. NOT copied: the widget stores
+ *                 the pointer, so it must outlive the prompt.
+ * @param cap      Buffer capacity, as passed to calloc(). The longest secret
+ *                 that survives is cap - 1 bytes (characters plus the NUL), so
+ *                 pass max_secret_len + 1; further typing is silently dropped.
+ *                 Values below 2 are clamped to 2.
+ * @param on_done  Callback invoked when the user completes. The text is freed
+ *                 immediately after the callback returns, so a caller that
+ *                 keeps it must copy it (and scrub its own copy). NULL text
+ *                 means cancel; "" means Enter on an empty field.
+ * @param user_ctx User context passed to callback.
+ */
+void ui_prompt_open_secret_async(const char* title, size_t cap, ui_prompt_string_done_fn on_done, void* user_ctx);
 
 /**
  * @brief Open an integer prompt asynchronously.
@@ -44,11 +68,9 @@ void ui_prompt_open_string_async_impl(const char* title, const char* prefill, si
  * @param title    Title shown in prompt window.
  * @param initial  Initial integer value shown.
  * @param cb       Callback invoked with (user, ok, value).
- * @param user     User context passed to callback.
+ * @param user_ctx User context passed to callback.
  */
-void ui_prompt_open_int_async_impl(const char* title, int initial, void* user, ui_prompt_int_done_fn cb);
-#define ui_prompt_open_int_async(title, initial, cb, user)                                                             \
-    ui_prompt_open_int_async_impl((title), (initial), (user), (cb))
+void ui_prompt_open_int_async(const char* title, int initial, ui_prompt_int_done_fn cb, void* user_ctx);
 
 /**
  * @brief Open a double prompt asynchronously.
@@ -56,11 +78,9 @@ void ui_prompt_open_int_async_impl(const char* title, int initial, void* user, u
  * @param title    Title shown in prompt window.
  * @param initial  Initial double value shown.
  * @param cb       Callback invoked with (user, ok, value).
- * @param user     User context passed to callback.
+ * @param user_ctx User context passed to callback.
  */
-void ui_prompt_open_double_async_impl(const char* title, double initial, void* user, ui_prompt_double_done_fn cb);
-#define ui_prompt_open_double_async(title, initial, cb, user)                                                          \
-    ui_prompt_open_double_async_impl((title), (initial), (user), (cb))
+void ui_prompt_open_double_async(const char* title, double initial, ui_prompt_double_done_fn cb, void* user_ctx);
 
 /**
  * @brief Close all active prompts (forcefully).
@@ -126,12 +146,22 @@ void ui_help_render(void);
  * @param items    Array of string labels.
  * @param count    Number of items in the array.
  * @param on_done  Callback invoked with selected index (or -1 on cancel).
- * @param user     User context passed to callback.
+ * @param user_ctx User context passed to callback.
  */
-void ui_chooser_start_impl(const char* title, const char* const* items, int count, void* user,
-                           ui_chooser_done_fn on_done);
-#define ui_chooser_start(title, items, count, on_done, user)                                                           \
-    ui_chooser_start_impl((title), (items), (count), (user), (on_done))
+void ui_chooser_start(const char* title, const char* const* items, int count, ui_chooser_done_fn on_done,
+                      void* user_ctx);
+
+/**
+ * @brief Start a chooser overlay with the bar already on one item.
+ *
+ * For pickers that show a setting's current value: opening on index 0 means the
+ * next Enter picks whatever happens to be first, which for a destructive first
+ * entry turns a double-tap into a state change nobody asked for.
+ *
+ * @param initial_sel Item to open on; out-of-range values fall back to 0.
+ */
+void ui_chooser_start_at(const char* title, const char* const* items, int count, int initial_sel,
+                         ui_chooser_done_fn on_done, void* user_ctx);
 
 /**
  * @brief Close the chooser overlay.
@@ -165,8 +195,50 @@ typedef struct {
     int page_rows;
 } UiChooserTestSnapshot;
 
+typedef struct {
+    int active;
+    int scroll;
+    int line_count;
+    int page_rows;
+} UiHelpTestSnapshot;
+
+typedef struct {
+    size_t start;
+    size_t cursor;
+    int show_left_ellipsis;
+    int cursor_x;
+} UiPromptViewTestSnapshot;
+
 void ui_chooser_test_set_page_rows(int page_rows);
 UiChooserTestSnapshot ui_chooser_test_snapshot(void);
+void ui_help_test_set_metrics(int line_count, int page_rows, int scroll);
+UiHelpTestSnapshot ui_help_test_snapshot(void);
+int ui_help_wrap_line_for_test(const char* text, int width, int index, char* out, size_t out_size);
+int ui_chooser_max_item_width_for_test(const char* const* items, int count);
+int ui_chooser_layout_for_test(const char* title, const char* footer, int max_item, int count, int screen_h,
+                               int screen_w, int* h, int* w, int* wy, int* wx);
+int ui_prompt_center_axis_for_test(int screen_extent, int window_extent);
+int ui_prompt_fit_width_for_test(int desired_width, int screen_width);
+int ui_prompt_fit_height_for_test(int desired_height, int screen_height);
+void ui_prompt_rows_for_test(int height, int* title_y, int* input_y, int* footer_y);
+void ui_prompt_field_geometry_for_test(int width, int* field_col, int* field_right, int* field_width);
+UiPromptViewTestSnapshot ui_prompt_view_for_test(const char* text, size_t cursor, int field_col, int field_right,
+                                                 int field_width);
+
+/** @brief Test hook: 1 when the active prompt masks its input, 0 otherwise. */
+int ui_prompt_mask_active_for_test(void);
+
+/**
+ * @brief Test hook: the text ui_prompt_render() would draw for the whole buffer.
+ *
+ * Masking applied, horizontal scroll window NOT applied (that window depends on
+ * the curses screen geometry). Truncated to @p out_size - 1 bytes.
+ *
+ * @param out      Destination buffer; set to "" on every failure path.
+ * @param out_size Size of @p out in bytes.
+ * @return 1 when a prompt is active and @p out was filled, 0 otherwise.
+ */
+int ui_prompt_display_text_for_test(char* out, size_t out_size);
 #endif
 
 #endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_PROMPTS_H_ */

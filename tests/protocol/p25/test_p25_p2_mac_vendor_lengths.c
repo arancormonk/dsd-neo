@@ -5,16 +5,14 @@
 
 /*
  * P25 Phase 2 MAC vendor opcode length checks (table overrides):
- * - Motorola: MFID 0x90 with op 0x91 and 0x95 → lenB=17
- * - Harris:   MFID 0xB0 generic op → lenB=17
- * - Tait:     MFID 0xB5 generic op → lenB=5
- * - Harris extra: MFID 0x81 → lenB=7
- * All cases evaluated on SACCH (capacity 19) to avoid fallback clamp.
+ * - Motorola: MFID 0x90 with op 0x91 and 0x95 -> lenB=17
+ * - Harris:   MFID 0xA4 with fixed grant/location opcodes
+ * - Tait:     MFID 0xD8 op 0xB5 observed with a five-octet structure
+ * All cases evaluated on SACCH (capacity 19) to avoid capacity fallback.
  */
 
 #include <errno.h>
 #include <limits.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,20 +31,12 @@ typedef struct dsd_opts dsd_opts;
 typedef struct dsd_state dsd_state;
 
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
-void dsd_neo_config_init(const dsd_opts* opts);
+void dsd_neo_config_init(void);
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 
-void p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len);
+void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot);
 
-// Stubs for alias helpers and rigctl/rtl hooks referenced in linked objects
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
-}
-
+// Alias helpers referenced by linked objects.
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
@@ -83,39 +73,6 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)input;
     (void)src;
     (void)slot;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
 }
 
 static int
@@ -165,10 +122,10 @@ expect_eq_int(const char* tag, int got, int want) {
 }
 
 static int
-run_one(uint8_t mfid, uint8_t opcode, int want_lenB) {
+run_one(uint8_t mfid, uint8_t opcode, uint8_t len_octet, int want_lenB) {
     // Enable JSON
     setenv("DSD_NEO_PDU_JSON", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "p25_mac_json_vendor") != 0) {
@@ -180,7 +137,8 @@ run_one(uint8_t mfid, uint8_t opcode, int want_lenB) {
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = opcode;
     mac[2] = mfid;
-    p25_test_process_mac_vpdu(1 /* SACCH */, mac, 24);
+    mac[3] = len_octet;
+    p25_test_process_mac_vpdu_ex(1 /* SACCH */, mac, 24, 0, 0);
 
     dsd_test_capture_stderr_end(&cap);
 
@@ -221,11 +179,13 @@ run_one(uint8_t mfid, uint8_t opcode, int want_lenB) {
 int
 main(void) {
     int rc = 0;
-    rc |= run_one(0x90, 0x91, 17); // Motorola
-    rc |= run_one(0x90, 0x95, 17); // Motorola
-    rc |= run_one(0xB0, 0x12, 17); // Harris generic
-    rc |= run_one(0xB5, 0x34, 5);  // Tait generic
-    rc |= run_one(0x81, 0x20, 7);  // Harris extra
+    rc |= run_one(0x90, 0x85, 0x09, 9);  // Motorola BSI, MCO 0x05
+    rc |= run_one(0x90, 0x91, 0x00, 17); // Motorola
+    rc |= run_one(0x90, 0x95, 0x00, 17); // Motorola
+    rc |= run_one(0xA4, 0xA0, 0x2A, 9);  // Harris private data grant
+    rc |= run_one(0xA4, 0xAA, 0x21, 17); // Harris GPS
+    rc |= run_one(0xA4, 0xAC, 0x2C, 12); // Harris unit-to-unit data grant
+    rc |= run_one(0xD8, 0xB5, 0x00, 5);  // Tait
     return rc;
 }
 

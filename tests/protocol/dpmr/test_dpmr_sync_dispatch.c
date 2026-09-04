@@ -8,30 +8,51 @@
 
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 int dsd_dispatch_matches_dpmr(int synctype);
+dsd_frame_verdict dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state);
+
+static int g_close_calls;
+static int g_open_calls;
+static int g_voice_calls;
+
+/* How many CCH halves the next processdPMRvoice() reports passing their CRC-7. */
+static int g_voice_crc_halves = 2;
 
 void
 closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    g_close_calls++;
 }
 
 void
 openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    g_open_calls++;
 }
 
-void
+int
 processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
+    g_voice_calls++;
+    /* The real decoder confirms the transmission from the same evidence it returns. */
+    if (g_voice_crc_halves > 0) {
+        state->dpmr_confirmed = 1;
+    }
+    return g_voice_crc_halves;
 }
 
 static void
@@ -67,11 +88,171 @@ test_synctype_helpers(void) {
     assert(!dsd_dispatch_matches_dpmr(DSD_SYNC_NXDN_POS));
 }
 
+static void
+test_dispatch_close_only_syncs(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.mbe_out_f = stdout;
+    state.synctype = DSD_SYNC_DPMR_FS1_POS;
+    dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(g_close_calls == 1);
+    assert(g_voice_calls == 0);
+
+    state.synctype = DSD_SYNC_DPMR_FS3_NEG;
+    dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(g_close_calls == 2);
+
+    state.synctype = DSD_SYNC_DPMR_FS4_POS;
+    dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(g_close_calls == 3);
+}
+
+static void
+test_dispatch_voice_sync_continues_a_confirmed_call_and_processes_voice(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "captures");
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state.nac = 123;
+    /* A transmission that has already proved itself; an unconfirmed one opens no row,
+       which test_dispatch_voice_sync_alone_opens_no_call covers. */
+    state.dpmr_confirmed = 1;
+
+    dsd_dispatch_handle_dpmr(&opts, &state);
+
+    assert(g_open_calls == 1);
+    assert(g_voice_calls == 1);
+    assert(state.nac == 0);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.kind == DSD_CALL_KIND_VOICE);
+    assert(call.ota_source_id == 0U);
+    assert(call.ota_target_id == 0U);
+    assert(strcmp(state.fsubtype, " VOICE        ") == 0);
+}
+
+// An FS3 end frame decoding after a sync-loss end must still reach the canonical retract path:
+// the recoverable end tightens to TERMINATOR, so the event layer can keep the audible epoch's
+// row and the reacquisition window closes. A phase guard in the dispatch would make the retract
+// path unreachable for dPMR alone among the converted protocols.
+static void
+test_dispatch_end_sync_tightens_sync_loss_end(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state.dpmr_confirmed = 1;
+    dsd_dispatch_handle_dpmr(&opts, &state);
+
+    assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) > 0);
+
+    state.synctype = DSD_SYNC_DPMR_FS3_POS;
+    dsd_dispatch_handle_dpmr(&opts, &state);
+
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ENDED);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+}
+
+// A passing CCH CRC-7 is the only thing dPMR can offer the SPS hunt as proof its profile is
+// right, and it has to keep offering it: 372 symbols read behind a 12-symbol matcher is more
+// than noise can be allowed to buy (#391, #407).
+static void
+test_dispatch_voice_verdicts_follow_the_cch_crc(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+
+    // A frame whose CCH decodes proves the profile, and stamps when it did.
+    g_voice_crc_halves = 2;
+    state.symbolcnt = 1000U;
+    assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(state.dpmr_cch_evidence == 1);
+    assert(state.dpmr_cch_evidence_symbolcnt == 1000U);
+
+    // One half is still a decode.
+    g_voice_crc_halves = 1;
+    state.symbolcnt = 1400U;
+    assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(state.dpmr_cch_evidence_symbolcnt == 1400U);
+
+    // A frame that decodes nothing still rides the window a recent decode opened, and
+    // must not extend it -- otherwise a single decode could hold the profile forever.
+    g_voice_crc_halves = 0;
+    state.symbolcnt = 1400U + 4799U;
+    assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(state.dpmr_cch_evidence_symbolcnt == 1400U);
+
+    // Past the window, the profile is given up.
+    state.symbolcnt = 1400U + 4800U;
+    assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+
+    // And with no evidence at all, a sync alone never proves anything -- including at
+    // symbol zero, where a stamp-only test would read as evidence.
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DPMR_FS2_NEG;
+    g_voice_crc_halves = 0;
+    assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+
+    // FS1/FS3/FS4 run no check, so they report the default rather than a failure they
+    // never measured (protocol_dispatch.h).
+    state.synctype = DSD_SYNC_DPMR_FS1_POS;
+    assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+    state.synctype = DSD_SYNC_DPMR_FS3_POS;
+    assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+    state.synctype = DSD_SYNC_DPMR_FS4_NEG;
+    assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+
+    g_voice_crc_halves = 2;
+}
+
+// The sync word alone used to open a call row before the voice path ran at all, so noise
+// clearing the 12-symbol matcher put rows on the air with no decode behind them (#407).
+static void
+test_dispatch_voice_sync_alone_opens_no_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+
+    g_voice_crc_halves = 0;
+    dsd_dispatch_handle_dpmr(&opts, &state);
+
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) <= 0);
+
+    // Once the transmission has proved itself, the next sync is a call again.
+    state.dpmr_confirmed = 1;
+    dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+
+    g_voice_crc_halves = 2;
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
     test_sync_pattern_pairs();
     test_synctype_helpers();
+    test_dispatch_close_only_syncs();
+    test_dispatch_voice_sync_continues_a_confirmed_call_and_processes_voice();
+    test_dispatch_end_sync_tightens_sync_loss_end();
+    test_dispatch_voice_verdicts_follow_the_cch_crc();
+    test_dispatch_voice_sync_alone_opens_no_call();
     printf("DPMR_SYNC_DISPATCH: OK\n");
     return 0;
 }

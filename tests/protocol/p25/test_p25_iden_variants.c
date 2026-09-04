@@ -26,14 +26,6 @@ typedef struct dsd_state dsd_state;
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
     (void)opts;
     (void)state;
@@ -70,23 +62,6 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)slot;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
 static int
 expect_eq_long(const char* tag, long got, long want) {
     if (got != want) {
@@ -114,6 +89,40 @@ main(void) {
     }
     if (expect_eq_long("TDMA denom eq", f10, f11)) {
         return 3;
+    }
+
+    for (int type = 0; type <= 2; type++) {
+        long f_even = 0, f_odd = 0;
+        if (p25_test_frequency_for(/*iden*/ type, type, /*tdma*/ 1, /*base*/ 1000, /*spac*/ 1,
+                                   /*chan16*/ (type << 12) | 10, /*map_override*/ 0, &f_even)
+            != 0) {
+            return 12 + type;
+        }
+        if (p25_test_frequency_for(/*iden*/ type, type, /*tdma*/ 1, /*base*/ 1000, /*spac*/ 1,
+                                   /*chan16*/ (type << 12) | 11, /*map_override*/ 0, &f_odd)
+            != 0) {
+            return 15 + type;
+        }
+        if (expect_eq_long("TDMA opcode FDMA type delta", f_odd - f_even, 125L)) {
+            return 18 + type;
+        }
+    }
+
+    for (int type = 3; type <= 15; type++) {
+        long f_even = 0, f_odd = 0;
+        if (p25_test_frequency_for(/*iden*/ type, type, /*tdma*/ 1, /*base*/ 1000, /*spac*/ 1,
+                                   /*chan16*/ (type << 12) | 10, /*map_override*/ 0, &f_even)
+            != 0) {
+            return 21 + type;
+        }
+        if (p25_test_frequency_for(/*iden*/ type, type, /*tdma*/ 1, /*base*/ 1000, /*spac*/ 1,
+                                   /*chan16*/ (type << 12) | 11, /*map_override*/ 0, &f_odd)
+            != 0) {
+            return 24 + type;
+        }
+        if (expect_eq_long("TDMA opcode TDMA type same carrier", f_odd, f_even)) {
+            return 27 + type;
+        }
     }
 
     // FDMA spacing: adjacent channels differ by spac*125 units.
@@ -145,6 +154,22 @@ main(void) {
     }
     if (expect_eq_long("override", fC, override)) {
         return 8;
+    }
+
+    long invalid = 777;
+    int invalid_rc = p25_test_frequency_for(/*iden*/ 16, /*type*/ 0, /*tdma*/ 0, /*base*/ 1000, /*spac*/ 1,
+                                            /*chan16*/ (1 << 12) | 1, /*map_override*/ 0, &invalid);
+    if (invalid_rc != -1) {
+        return 9;
+    }
+    if (expect_eq_long("invalid iden preserves output", invalid, 777)) {
+        return 10;
+    }
+
+    int null_out_rc = p25_test_frequency_for(/*iden*/ 1, /*type*/ 0, /*tdma*/ 0, /*base*/ 1000, /*spac*/ 1,
+                                             /*chan16*/ (1 << 12) | 1, /*map_override*/ 0, NULL);
+    if (null_out_rc != 0) {
+        return 11;
     }
 
     DSD_FPRINTF(stderr, "P25 IDEN variant checks passed\n");

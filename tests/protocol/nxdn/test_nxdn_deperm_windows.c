@@ -111,7 +111,7 @@ test_descramble_default_seed(void) {
 
     uint8_t dibits[32];
     DSD_MEMSET(dibits, 0, sizeof(dibits));
-    nxdn_descramble(dibits, (int)sizeof(dibits));
+    nxdn_descramble_with_seed(dibits, (int)sizeof(dibits), 228U);
     for (size_t i = 0U; i < sizeof(dibits); i++) {
         rc |= expect_u8_at("pn95-default-seed", i, dibits[i], expected_default[i]);
     }

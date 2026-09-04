@@ -91,33 +91,5 @@ main(void) {
     p25_wacn_sysid_to_callsign(0x92493, 0x796, callsign);
     rc |= expect_eq_str("WACN 0x92493 SysID 0x796 (MPSCS)", callsign, "WPIH50");
 
-    // Test: Format function with generic WACN (should NOT include callsign)
-    char buf[64];
-    int n = p25_format_wacn_sysid(0xBEE00, 0x001, buf, sizeof(buf));
-    rc |= (n <= 0);
-    if (n <= 0) {
-        DSD_FPRINTF(stderr, "p25_format_wacn_sysid returned %d\n", n);
-    }
-    // Should contain the WACN and SysID but NOT a callsign in parentheses
-    rc |= (strstr(buf, "BEE00") == NULL);
-    rc |= (strstr(buf, "001") == NULL);
-    // Should NOT contain the meaningless "0UX" decode
-    if (strstr(buf, "0UX") != NULL) {
-        DSD_FPRINTF(stderr, "format_wacn_sysid should not include callsign for BEE00: got '%s'\n", buf);
-        rc |= 1;
-    }
-
-    // Test: Format function with callsign-derived WACN (should include callsign)
-    n = p25_format_wacn_sysid(0x92493, 0x796, buf, sizeof(buf));
-    rc |= (n <= 0);
-    if (n <= 0) {
-        DSD_FPRINTF(stderr, "p25_format_wacn_sysid returned %d\n", n);
-    }
-    rc |= (strstr(buf, "92493") == NULL);
-    rc |= (strstr(buf, "WPIH50") == NULL);
-    if (strstr(buf, "WPIH50") == NULL) {
-        DSD_FPRINTF(stderr, "format_wacn_sysid should include WPIH50: got '%s'\n", buf);
-    }
-
     return rc;
 }

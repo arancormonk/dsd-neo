@@ -10,9 +10,13 @@ Usage: tools/docker_linux_install_matrix.sh (--all | --distro ID [--distro ID ..
 
 Validate tools/install_linux.sh in pinned Linux container images.
 
+Each distro runs the Release install path, then configures a separate Debug
+build with BUILD_TESTING=ON and runs the CTest suite.
+
 Options:
   --all          Run every distro in the matrix.
   --distro ID   Run one distro. Repeat for multiple distros.
+  --no-tests    Skip the Debug build and CTest run (install validation only).
   --list        Print supported distro IDs.
   --jobs N      Build parallelism inside containers.
   -h, --help    Show this help.
@@ -28,7 +32,7 @@ DISTROS=(
   rocky-9
   almalinux-9
   centos-stream-9
-  opensuse-leap-15.6
+  opensuse-leap-16.0
   opensuse-tumbleweed
   alpine-3.24
   arch
@@ -52,11 +56,21 @@ image_for_distro() {
     rocky-9) printf '%s\n' "${INSTALL_ROCKY_9_IMAGE:?}" ;;
     almalinux-9) printf '%s\n' "${INSTALL_ALMALINUX_9_IMAGE:?}" ;;
     centos-stream-9) printf '%s\n' "${INSTALL_CENTOS_STREAM_9_IMAGE:?}" ;;
-    opensuse-leap-15.6) printf '%s\n' "${INSTALL_OPENSUSE_LEAP_156_IMAGE:?}" ;;
+    opensuse-leap-16.0) printf '%s\n' "${INSTALL_OPENSUSE_LEAP_160_IMAGE:?}" ;;
     opensuse-tumbleweed) printf '%s\n' "${INSTALL_OPENSUSE_TUMBLEWEED_IMAGE:?}" ;;
     alpine-3.24) printf '%s\n' "${INSTALL_ALPINE_324_IMAGE:?}" ;;
     arch) printf '%s\n' "${ARCHLINUX_BASE_DEVEL_IMAGE:?}" ;;
     *) return 1 ;;
+  esac
+}
+
+# Most distros must prove both radio backends are installable. openSUSE Leap
+# 16.0 ships rtl-sdr but has no SoapySDR package in its repositories, so it
+# validates with whichever backends are available.
+radio_mode_for_distro() {
+  case "$1" in
+    opensuse-leap-16.0) printf '%s\n' auto ;;
+    *) printf '%s\n' required ;;
   esac
 }
 
@@ -80,6 +94,7 @@ list_archive_paths() {
 
 SELECTED=()
 JOBS=${DSD_NEO_BUILD_JOBS:-}
+RUN_TESTS=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -102,6 +117,10 @@ while [[ $# -gt 0 ]]; do
       fi
       JOBS=$2
       shift 2
+      ;;
+    --no-tests)
+      RUN_TESTS=0
+      shift
       ;;
     --list)
       list_distros
@@ -146,13 +165,16 @@ run_one() {
     exit 2
   }
   validate_image_pin "$image"
+  radio_mode=$(radio_mode_for_distro "$distro")
 
-  echo "==> Validating $distro with $image"
+  echo "==> Validating $distro with $image (radio: $radio_mode)"
 
   list_archive_paths |
     tar --null -T - -cf - |
     docker run --rm -i \
       --env "DSD_NEO_BUILD_JOBS=$JOBS" \
+      --env "DSD_NEO_MATRIX_TESTS=$RUN_TESTS" \
+      --env "DSD_NEO_MATRIX_RADIO=$radio_mode" \
       "$image" \
       sh -lc '
         set -eu
@@ -185,10 +207,26 @@ run_one() {
           --deps-prefix /usr/local \
           --build-dir /tmp/dsd-neo-build \
           --destdir /tmp/dsd-neo-root \
-          --radio required \
+          --radio "$DSD_NEO_MATRIX_RADIO" \
           --codec2 auto
         test -x /tmp/dsd-neo-root/usr/local/bin/dsd-neo
         /tmp/dsd-neo-root/usr/local/bin/dsd-neo -h > /dev/null
+
+        if [ "${DSD_NEO_MATRIX_TESTS:-1}" -eq 0 ]; then
+          exit 0
+        fi
+
+        echo "==> Debug test build"
+        cmake -S /workspace -B /tmp/dsd-neo-build-debug -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DBUILD_TESTING=ON \
+          -DDSD_ENABLE_LTO=OFF \
+          -DDSD_ENABLE_FAST_MATH=OFF \
+          -DDSD_WARNINGS_AS_ERRORS=OFF \
+          -DDSD_ENABLE_RTLSDR=ON \
+          -DDSD_ENABLE_SOAPYSDR=ON
+        cmake --build /tmp/dsd-neo-build-debug -j "$DSD_NEO_BUILD_JOBS"
+        ctest --test-dir /tmp/dsd-neo-build-debug -j "$DSD_NEO_BUILD_JOBS" --output-on-failure
       '
 }
 

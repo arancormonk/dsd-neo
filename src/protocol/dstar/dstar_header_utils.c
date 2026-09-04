@@ -17,15 +17,6 @@ dstar_fill_scrambler_sequence(int* seq) {
     }
 }
 
-void
-dstar_scramble_header_bits(const int* in, int* out, size_t bit_count) {
-    int scrambler[DSD_DSTAR_SCRAMBLER_PERIOD];
-    dstar_fill_scrambler_sequence(scrambler);
-    for (size_t i = 0; i < bit_count; i++) {
-        out[i] = in[i] ^ scrambler[i % DSD_DSTAR_SCRAMBLER_PERIOD];
-    }
-}
-
 // Scramble soft costs with PN sequence.
 // XOR with scrambler bit inverts the soft cost: 0x0000 <-> 0xFFFF
 void
@@ -38,28 +29,6 @@ dstar_scramble_soft_costs(const uint16_t* in, uint16_t* out, size_t bit_count) {
             out[i] = (uint16_t)(0xFFFF - in[i]);
         } else {
             out[i] = in[i];
-        }
-    }
-}
-
-// Header interleave uses a 24-column diagonal with wrap rules defined by the D-STAR spec.
-// This is the receive-side deinterleave (inverse). For transmit, use the same mapping but
-// write into the input order instead of reading from it.
-void
-dstar_deinterleave_header_bits(const int* in, int* out, size_t bit_count) {
-    // The spec fixes the header to 660 coded bits; guard against misuse.
-    if (bit_count != DSD_DSTAR_HEADER_CODED_BITS) {
-        return;
-    }
-
-    size_t k = 0;
-    for (size_t i = 0; i < bit_count; i++) {
-        out[k] = in[i];
-        k += 24;
-        if (k >= 672) {
-            k -= 671; // wrap after the 27th column
-        } else if (k >= 660) {
-            k -= 647; // wrap after the last full column
         }
     }
 }
@@ -83,58 +52,7 @@ dstar_deinterleave_soft_costs(const uint16_t* in, uint16_t* out, size_t bit_coun
     }
 }
 
-static inline int
-branch_metric(int sym1, int sym0, int ref1, int ref0) {
-    return (sym1 ^ ref1) + (sym0 ^ ref0);
-}
-
 #define DSTAR_VITERBI_STATE_COUNT 4
-
-static inline void
-dstar_select_survivor_int(int metric_a, int metric_b, int* decision, int* survivor_metric) {
-    if (metric_a <= metric_b) {
-        *decision = 0;
-        *survivor_metric = metric_a;
-        return;
-    }
-    *decision = 1;
-    *survivor_metric = metric_b;
-}
-
-static void
-dstar_viterbi_step_hard(int s1, int s0, const int path_metric[DSTAR_VITERBI_STATE_COUNT],
-                        int temp_metric[DSTAR_VITERBI_STATE_COUNT],
-                        int path_memory[DSTAR_VITERBI_STATE_COUNT][DSD_DSTAR_HEADER_INFO_BITS], size_t step_idx) {
-    int m_from_s0 = branch_metric(s1, s0, 0, 0) + path_metric[0];
-    int m_from_s2 = branch_metric(s1, s0, 1, 1) + path_metric[2];
-    dstar_select_survivor_int(m_from_s0, m_from_s2, &path_memory[0][step_idx], &temp_metric[0]);
-
-    m_from_s0 = branch_metric(s1, s0, 1, 1) + path_metric[0];
-    m_from_s2 = branch_metric(s1, s0, 0, 0) + path_metric[2];
-    dstar_select_survivor_int(m_from_s0, m_from_s2, &path_memory[1][step_idx], &temp_metric[1]);
-
-    int m_from_s1 = branch_metric(s1, s0, 1, 0) + path_metric[1];
-    int m_from_s3 = branch_metric(s1, s0, 0, 1) + path_metric[3];
-    dstar_select_survivor_int(m_from_s1, m_from_s3, &path_memory[2][step_idx], &temp_metric[2]);
-
-    m_from_s1 = branch_metric(s1, s0, 0, 1) + path_metric[1];
-    m_from_s3 = branch_metric(s1, s0, 1, 0) + path_metric[3];
-    dstar_select_survivor_int(m_from_s1, m_from_s3, &path_memory[3][step_idx], &temp_metric[3]);
-}
-
-static int
-dstar_select_best_state_int(const int path_metric[DSTAR_VITERBI_STATE_COUNT]) {
-    int state = 0;
-    int best_metric = path_metric[0];
-
-    for (int s = 1; s < DSTAR_VITERBI_STATE_COUNT; s++) {
-        if (path_metric[s] < best_metric) {
-            best_metric = path_metric[s];
-            state = s;
-        }
-    }
-    return state;
-}
 
 static void
 dstar_traceback_header_bits(int path_memory[DSTAR_VITERBI_STATE_COUNT][DSD_DSTAR_HEADER_INFO_BITS], int state,
@@ -150,33 +68,6 @@ dstar_traceback_header_bits(int path_memory[DSTAR_VITERBI_STATE_COUNT][DSD_DSTAR
         out_bits[i] = decoded_bit[state];
         state = prev_state[decision][state];
     }
-}
-
-// Rate 1/2, K=3, generator polynomials (7,5)_octal.
-size_t
-dstar_header_viterbi_decode(const int* symbols, size_t symbol_count, int* out_bits, size_t out_capacity) {
-    if (symbol_count != DSD_DSTAR_HEADER_CODED_BITS || out_capacity < DSD_DSTAR_HEADER_INFO_BITS) {
-        return 0;
-    }
-
-    int path_metric[DSTAR_VITERBI_STATE_COUNT] = {0, 0, 0, 0};
-    int path_memory[DSTAR_VITERBI_STATE_COUNT][DSD_DSTAR_HEADER_INFO_BITS];
-
-    for (size_t i = 0, n = 0; i < symbol_count; i += 2, n++) {
-        int s1 = symbols[i];
-        int s0 = symbols[i + 1];
-        int temp_metric[DSTAR_VITERBI_STATE_COUNT];
-        dstar_viterbi_step_hard(s1, s0, path_metric, temp_metric, path_memory, n);
-        path_metric[0] = temp_metric[0];
-        path_metric[1] = temp_metric[1];
-        path_metric[2] = temp_metric[2];
-        path_metric[3] = temp_metric[3];
-    }
-
-    int state = dstar_select_best_state_int(path_metric);
-    dstar_traceback_header_bits(path_memory, state, out_bits);
-
-    return DSD_DSTAR_HEADER_INFO_BITS;
 }
 
 // Soft-decision branch metric: compute distance from expected soft cost.

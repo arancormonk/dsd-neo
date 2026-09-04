@@ -35,7 +35,7 @@ jobs:
       APPIMAGE_CCACHE_DIR: ${{ github.workspace }}/.ccache/appimage-${{ matrix.arch }}
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Validate release tag
@@ -49,7 +49,7 @@ jobs:
         # Only run on trusted contexts (not forked PRs), otherwise the
         # `secrets` context is unavailable and would error.
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -58,7 +58,7 @@ jobs:
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
       - name: Enable QEMU for cross-arch containers
-        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
         with:
           platforms: all
       - name: Ensure binfmt for aarch64 is registered
@@ -132,7 +132,7 @@ jobs:
           mkdir -p "${APPIMAGE_DEPS_DIR}" "${APPIMAGE_CCACHE_DIR}"
 
       - name: Restore AppImage dependency cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.APPIMAGE_DEPS_DIR }}
           key: deps-appimage-${{ runner.os }}-${{ matrix.arch }}-${{ steps.dep-shas.outputs.image_pin }}-${{ steps.dep-shas.outputs.cmake_sha }}-${{ steps.dep-shas.outputs.openssl_sha }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}-${{ steps.dep-shas.outputs.soapy_sdr_sha }}-${{ steps.dep-shas.outputs.soapy_sdr_root_key }}
@@ -163,7 +163,7 @@ jobs:
           mkdir -p "${APPIMAGE_DEPS_DIR}"
 
       - name: Restore AppImage ccache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.APPIMAGE_CCACHE_DIR }}
           key: ccache-${{ runner.os }}-appimage-${{ matrix.arch }}-${{ github.sha }}
@@ -214,7 +214,7 @@ jobs:
                 ca-certificates wget git build-essential cmake ninja-build pkg-config ccache perl \
                 libsndfile1-dev libpulse-dev libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
                 libncurses-dev patchelf file squashfs-tools desktop-file-utils doxygen graphviz imagemagick \
-                libboost-all-dev libarchive-dev libcurl4-openssl-dev zsync libglib2.0-dev \
+                libboost-all-dev libarchive-dev libcurl4-openssl-dev libexpat1-dev zsync libglib2.0-dev \
                 libzstd-dev liblzma-dev libgpgme-dev libgcrypt20-dev gnupg \
                 libpng-dev libjpeg-dev cimg-dev
 
@@ -486,12 +486,12 @@ jobs:
           upload-release-assets: false
       - name: Attest artifact provenance
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: ${{ steps.names.outputs.OUT }}
       - name: Attest artifact SBOM
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: ${{ steps.names.outputs.OUT }}
           sbom-path: ${{ steps.names.outputs.OUT }}.spdx.json
@@ -515,7 +515,7 @@ jobs:
     steps:
       - name: Checkout release helpers
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -593,7 +593,7 @@ jobs:
         if: >-
           (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
           (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           tag_name: nightly
           name: nightly

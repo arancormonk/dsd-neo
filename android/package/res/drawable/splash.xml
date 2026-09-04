@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Qt's own launch screen (android.app.splash_screen_drawable). API 29-30 have
+     no platform SplashScreen API, and on 31+ this covers the gap between the
+     system splash tearing down and Qt Quick painting its first frame. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/dsdneo_background" />
+    <item
+        android:drawable="@drawable/splash_logo"
+        android:gravity="center" />
+</layer-list>

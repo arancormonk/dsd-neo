@@ -6,11 +6,15 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <stddef.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static dsd_telemetry_hooks g_telemetry_hooks = {0};
+/* Mirrors "any hook installed" so decoder threads can gate on it without taking
+ * the mutex on every frame. */
+static atomic_int g_telemetry_active = 0;
 static dsd_mutex_t g_telemetry_hooks_mu;
 static atomic_int g_telemetry_hooks_mu_state = 0; // 0=uninit, 1=initing, 2=init
 
@@ -27,7 +31,9 @@ ensure_hooks_mu_init(void) {
         return;
     }
 
-    while (atomic_load(&g_telemetry_hooks_mu_state) != 2) {}
+    while (atomic_load(&g_telemetry_hooks_mu_state) != 2) {
+        dsd_thread_yield();
+    }
 }
 
 static dsd_telemetry_hooks
@@ -41,14 +47,22 @@ dsd_telemetry_hooks_snapshot(void) {
 
 void
 dsd_telemetry_hooks_set(dsd_telemetry_hooks hooks) {
+    const int active =
+        (hooks.publish_snapshot != NULL || hooks.publish_opts_snapshot != NULL || hooks.request_redraw != NULL) ? 1 : 0;
     ensure_hooks_mu_init();
     dsd_mutex_lock(&g_telemetry_hooks_mu);
     g_telemetry_hooks = hooks;
+    atomic_store(&g_telemetry_active, active);
     dsd_mutex_unlock(&g_telemetry_hooks_mu);
 }
 
+int
+dsd_telemetry_is_active(void) {
+    return atomic_load(&g_telemetry_active);
+}
+
 void
-ui_publish_snapshot(const dsd_state* state) {
+dsd_telemetry_publish_snapshot(const dsd_state* state) {
     dsd_telemetry_hooks hooks = dsd_telemetry_hooks_snapshot();
     if (!hooks.publish_snapshot) {
         return;
@@ -57,7 +71,7 @@ ui_publish_snapshot(const dsd_state* state) {
 }
 
 void
-ui_publish_opts_snapshot(const dsd_opts* opts) {
+dsd_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
     dsd_telemetry_hooks hooks = dsd_telemetry_hooks_snapshot();
     if (!hooks.publish_opts_snapshot) {
         return;
@@ -66,7 +80,7 @@ ui_publish_opts_snapshot(const dsd_opts* opts) {
 }
 
 void
-ui_request_redraw(void) {
+dsd_telemetry_request_redraw(void) {
     dsd_telemetry_hooks hooks = dsd_telemetry_hooks_snapshot();
     if (!hooks.request_redraw) {
         return;
@@ -75,7 +89,7 @@ ui_request_redraw(void) {
 }
 
 void
-ui_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
+dsd_telemetry_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
     dsd_telemetry_hooks hooks = dsd_telemetry_hooks_snapshot();
     if (opts) {
         if (hooks.publish_opts_snapshot) {

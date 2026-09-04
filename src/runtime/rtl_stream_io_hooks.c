@@ -23,10 +23,10 @@ dsd_rtl_stream_io_hook_read(dsd_state* state, float* out, size_t count, int* out
     *out_got_ptr = 0;
 
     if (!state || !state->rtl_ctx) {
-        return 0;
+        return -1;
     }
     if (!g_rtl_stream_io_hooks.read || !out || count == 0) {
-        return 0;
+        return -1;
     }
 
     return g_rtl_stream_io_hooks.read((void*)state->rtl_ctx, out, count, out_got_ptr);

@@ -38,6 +38,8 @@ udp_socket_connectM17(dsd_opts* opts, dsd_state* state) {
         dsd_socket_setsockopt(opts->m17_udp_sock, SOL_SOCKET, SO_BROADCAST, &broadcastEnable, sizeof(broadcastEnable));
     if (err != 0) {
         DSD_FPRINTF(stderr, " UDP Broadcast Set Error %d\n", err);
+        dsd_socket_close(opts->m17_udp_sock);
+        opts->m17_udp_sock = DSD_INVALID_SOCKET;
         return err;
     }
 
@@ -45,6 +47,8 @@ udp_socket_connectM17(dsd_opts* opts, dsd_state* state) {
     addressM17.sin_family = AF_INET;
     if (dsd_socket_resolve(opts->m17_hostname, opts->m17_portno, &addressM17) != 0) {
         DSD_FPRINTF(stderr, " UDP address resolve error for %s\n", opts->m17_hostname);
+        dsd_socket_close(opts->m17_udp_sock);
+        opts->m17_udp_sock = DSD_INVALID_SOCKET;
         return -1;
     }
 

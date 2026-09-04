@@ -24,20 +24,14 @@ ui_panel_header_render(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     // header banner
-    if (opts->ncurses_compact == 1) {
-        ui_print_hr();
-        printw("| Digital Speech Decoder: DSD-neo %s (%s)  | Enter=Menu  q=Quit\n", GIT_TAG, GIT_HASH);
-        ui_print_hr();
+    attron(COLOR_PAIR(6));
+    ui_print_hr();
+    if (opts->frontend_terminal_display.terminal_compact == 1) {
+        printw("| Digital Speech Decoder: DSD-neo %s (%s)  | Enter=Menu  q=Quit  | Compact (c)\n", GIT_TAG, GIT_HASH);
     } else {
-        attron(COLOR_PAIR(6));
-        ui_print_hr();
         printw("| Digital Speech Decoder: DSD-neo %s (%s)  | Enter=Menu  q=Quit\n", GIT_TAG, GIT_HASH);
-        ui_print_hr();
-        attroff(COLOR_PAIR(6));
-        attron(COLOR_PAIR(4));
     }
-    // fix color/pair issue when compact and trunking enabled
-    if (opts->ncurses_compact == 1 && opts->p25_trunk == 1) {
-        attron(COLOR_PAIR(4));
-    }
+    ui_print_hr();
+    attroff(COLOR_PAIR(6));
+    attron(COLOR_PAIR(4));
 }

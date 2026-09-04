@@ -3,6 +3,19 @@ name: "DSD-neo CodeQL config"
 queries:
   - uses: security-and-quality
 
+# Keep quality coverage enabled, but do not publish repo-specific noise as
+# security alerts. These rules are covered by local review/CI practices or are
+# known false positives for this test-heavy C/C++ codebase.
+query-filters:
+  - exclude:
+      id: cpp/poorly-documented-function
+  - exclude:
+      id: cpp/unused-static-function
+  - exclude:
+      id: cpp/include-non-header
+  - exclude:
+      id: cpp/useless-expression
+
 # Keep vendored upstream libraries out of project-owned CodeQL results.
 paths-ignore:
   - "src/third_party/**"

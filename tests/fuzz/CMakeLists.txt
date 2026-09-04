@@ -67,7 +67,19 @@ target_sources(
     dsd-neo_fuzz_core_csv_import
     PRIVATE
         ${PROJECT_SOURCE_DIR}/src/core/file/dsd_import.c
+        ${PROJECT_SOURCE_DIR}/src/core/file/p25_bandplan_csv.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
+        # p25_bandplan_csv.c seeds the live IDEN tables through this.
+        ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+        # dsd_import.c owns the scan-list heap tail through these.
+        ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+        # A channel-map row's key cells load through the key-set helpers.
+        ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
         ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+        # csvDmrTgKeyImport() clears the live map through keyring_dmr_tg_map_reset().
+        ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c
+        ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring_dmr_tg_map.c
 )
 
 dsd_neo_add_fuzzer(
@@ -83,5 +95,35 @@ dsd_neo_add_fuzzer(
   FUZZ_PROTOCOL_P25P2_MAC
   fuzz_protocol_p25p2_mac.c
   protocol_p25p2_mac
-  dsd-neo_proto_p25
+)
+# Running the real VPDU path reaches core GPS decoding, which resolves utf8_to_text
+# back in proto_dmr, so these archives are mutually dependent and need a link group.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_fuzz_protocol_p25p2_mac
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_test_p25_shims
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            "-Wl,--end-group"
+    )
+else()
+    target_link_libraries(
+        dsd-neo_fuzz_protocol_p25p2_mac
+        PRIVATE
+            dsd-neo_test_p25_shims
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+    )
+endif()
+
+dsd_neo_add_fuzzer(
+  dsd-neo_fuzz_protocol_dmr_block
+  FUZZ_PROTOCOL_DMR_BLOCK
+  fuzz_protocol_dmr_block.c
+  protocol_dmr_block
+  dsd-neo_proto_dmr
 )

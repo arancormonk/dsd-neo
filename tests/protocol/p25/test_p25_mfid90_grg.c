@@ -13,11 +13,9 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <errno.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -25,42 +23,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-struct RtlSdrContext;
-
-// Stubs for external hooks referenced in the linked library
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
 
 static int
 expect_eq(const char* tag, int got, int want) {

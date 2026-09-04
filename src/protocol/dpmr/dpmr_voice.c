@@ -16,9 +16,14 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
+#include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
@@ -26,25 +31,17 @@
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/platform/platform.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
-#include <dsd-neo/protocol/dpmr/dpmr_const.h>
 #include <dsd-neo/protocol/dpmr/dpmr_data.h>
 #include <dsd-neo/runtime/colors.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dpmr_confirm.h"
+#include "dpmr_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
-
-static void DeInterleave6x12DPmrBit(const uint8_t* BufferIn, uint8_t* BufferOut);
-static uint8_t CRC7BitdPMR(const uint8_t* BufferIn, uint32_t BitLength);
-static void ConvertAirInterfaceID(uint32_t AI_ID, char ID[8]);
-#ifdef DSD_NEO_TEST_HOOKS
-void dsd_test_dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state,
-                                     char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]);
-#endif
 
 typedef struct {
     uint8_t CCH[NB_OF_DPMR_VOICE_FRAME_TO_DECODE][72];
@@ -69,7 +66,7 @@ typedef struct {
 
 static uint32_t
 dpmr_read_dibit(dsd_opts* opts, dsd_state* state) {
-    uint32_t dibit = getDibit(opts, state);
+    uint32_t dibit = get_dibit_and_analog_signal(opts, state, NULL);
     if (opts->inverted_dpmr == 1) {
         dibit ^= 2U;
     }
@@ -92,22 +89,15 @@ dpmr_read_first_cch(dsd_opts* opts, dsd_state* state, dpmr_voice_ctx_t* ctx) {
 static void DSD_ATTR_USED
 dpmr_read_tch_group(dsd_opts* opts, dsd_state* state, dpmr_voice_ctx_t* ctx, uint32_t frame_base) {
     for (uint32_t j = 0; j < 4; j++) {
-        const int* w = dpmr_ambe_interleave_w;
-        const int* x = dpmr_ambe_interleave_x;
-        const int* y = dpmr_ambe_interleave_y;
-        const int* z = dpmr_ambe_interleave_z;
         uint32_t k = 0;
-        for (uint32_t i = 0; i < 36; i++) {
+        for (uint32_t i = 0; i < DSD_AMBE_2450_DIBITS; i++) {
+            const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[i];
             uint32_t dibit = dpmr_read_dibit(opts, state);
-            ctx->ambe_fr[frame_base + j][*w][*x] = (char)(1U & (dibit >> 1)); // bit 1
-            ctx->ambe_fr[frame_base + j][*y][*z] = (char)(1U & dibit);        // bit 0
+            ctx->ambe_fr[frame_base + j][map->high_row][map->high_col] = (char)(1U & (dibit >> 1)); // bit 1
+            ctx->ambe_fr[frame_base + j][map->low_row][map->low_col] = (char)(1U & dibit);          // bit 0
             state->dPMRVoiceFS2Frame.RawVoiceBit[frame_base + j][k] = (uint8_t)(1U & (dibit >> 1));
             state->dPMRVoiceFS2Frame.RawVoiceBit[frame_base + j][k + 1] = (uint8_t)(1U & dibit);
             k += 2;
-            w++;
-            x++;
-            y++;
-            z++;
         }
     }
 }
@@ -133,7 +123,7 @@ dpmr_read_second_cch(dsd_opts* opts, dsd_state* state, dpmr_voice_ctx_t* ctx) {
     }
 }
 
-static uint8_t
+uint8_t
 dpmr_extract_cch_crc(const uint8_t cch_bits[48]) {
     uint8_t crc = 0;
     crc |= (uint8_t)(cch_bits[41] << 6);
@@ -151,7 +141,7 @@ dpmr_decode_cch_frames(dsd_state* state, dpmr_voice_ctx_t* ctx) {
     for (uint32_t i = 0; i < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; i++) {
         uint32_t scrambler_lfsr = 0x1FF;
         dpmr_scrambled_pmr_bits(&scrambler_lfsr, ctx->CCH[i], ctx->CCHDescrambled[i], 72);
-        DeInterleave6x12DPmrBit(ctx->CCHDescrambled[i], ctx->CCHDeInterleaved[i]);
+        dpmr_deinterleave_6x12(ctx->CCHDescrambled[i], ctx->CCHDeInterleaved[i]);
 
         bool correctable = true;
         for (uint32_t j = 0; j < 6; j++) {
@@ -164,16 +154,16 @@ dpmr_decode_cch_frames(dsd_state* state, dpmr_voice_ctx_t* ctx) {
 
         ctx->HammingOk[i] = correctable ? 1U : 0U;
         ctx->CCHDataCRC[i] = dpmr_extract_cch_crc(ctx->CCHDataHammingCorrected[i]);
-        ctx->CCHDataCRCComputed[i] = CRC7BitdPMR(ctx->CCHDataHammingCorrected[i], 41);
+        ctx->CCHDataCRCComputed[i] = dpmr_crc7(ctx->CCHDataHammingCorrected[i], 41);
         ctx->CrcOk[i] = (ctx->CCHDataCRC[i] == ctx->CCHDataCRCComputed[i]) ? 1U : 0U;
 
-        ctx->CCH_FrameNumber[i] = ConvertBitIntoBytes(&ctx->CCHDataHammingCorrected[i][0], 2);
-        ctx->CCH_CommunicationMode[i] = ConvertBitIntoBytes(&ctx->CCHDataHammingCorrected[i][14], 3);
-        ctx->CCH_Version[i] = ConvertBitIntoBytes(&ctx->CCHDataHammingCorrected[i][17], 2);
-        ctx->CCH_CommsFormat[i] = ConvertBitIntoBytes(&ctx->CCHDataHammingCorrected[i][19], 2);
+        ctx->CCH_FrameNumber[i] = convert_bits_into_output(&ctx->CCHDataHammingCorrected[i][0], 2);
+        ctx->CCH_CommunicationMode[i] = convert_bits_into_output(&ctx->CCHDataHammingCorrected[i][14], 3);
+        ctx->CCH_Version[i] = convert_bits_into_output(&ctx->CCHDataHammingCorrected[i][17], 2);
+        ctx->CCH_CommsFormat[i] = convert_bits_into_output(&ctx->CCHDataHammingCorrected[i][19], 2);
         ctx->CCH_EmergencyPriority[i] = (uint32_t)ctx->CCHDataHammingCorrected[i][21];
         ctx->CCH_Reserved[i] = (uint32_t)ctx->CCHDataHammingCorrected[i][22];
-        ctx->CCH_SlowData[i] = ConvertBitIntoBytes(&ctx->CCHDataHammingCorrected[i][23], 18);
+        ctx->CCH_SlowData[i] = convert_bits_into_output(&ctx->CCHDataHammingCorrected[i][23], 18);
 
         DSD_MEMCPY(state->dPMRVoiceFS2Frame.CCHData[i], ctx->CCHDataHammingCorrected[i], 48);
         state->dPMRVoiceFS2Frame.CCHDataHammingOk[i] = ctx->HammingOk[i];
@@ -190,53 +180,94 @@ dpmr_decode_cch_frames(dsd_state* state, dpmr_voice_ctx_t* ctx) {
 }
 
 static void DSD_ATTR_USED
-dpmr_extract_previous_ids(const dsd_state* state, char called_id[8], char calling_id[8]) {
-    dsd_strncpy_s(called_id, 8, (const char*)state->dPMRVoiceFS2Frame.CalledID, 7);
-    called_id[7] = '\0';
-    dsd_strncpy_s(calling_id, 8, (const char*)state->dPMRVoiceFS2Frame.CallingID, 7);
-    calling_id[7] = '\0';
+dpmr_extract_superframe_part(const dpmr_voice_ctx_t* ctx, dpmr_superframe_part* part) {
+    uint32_t first_half = convert_bits_into_output(&ctx->CCHDataHammingCorrected[0][2], 12);
+    uint32_t second_half = convert_bits_into_output(&ctx->CCHDataHammingCorrected[1][2], 12);
+
+    part->frame_number[0] = ctx->CCH_FrameNumber[0];
+    part->frame_number[1] = ctx->CCH_FrameNumber[1];
+    part->id_value = ((first_half << 12U) & 0x00FFF000U) | (second_half & 0x00000FFFU);
+    part->crc_ok[0] = ctx->CrcOk[0] != 0U;
+    part->crc_ok[1] = ctx->CrcOk[1] != 0U;
+    part->hamming_ok[0][0] = ctx->HammingCorrectable[0][0];
+    part->hamming_ok[0][1] = ctx->HammingCorrectable[0][1];
+    part->hamming_ok[1][0] = ctx->HammingCorrectable[1][0];
+    part->hamming_ok[1][1] = ctx->HammingCorrectable[1][1];
 }
 
 static int
-dpmr_ids_are_strong(const dpmr_voice_ctx_t* ctx) {
-    return (ctx->CrcOk[0] || (ctx->HammingCorrectable[0][0] && ctx->HammingCorrectable[0][1]))
-           && (ctx->CrcOk[1] || (ctx->HammingCorrectable[1][0] && ctx->HammingCorrectable[1][1]));
+dpmr_ids_are_strong(const dpmr_superframe_part* part) {
+    return (part->crc_ok[0] || (part->hamming_ok[0][0] && part->hamming_ok[0][1]))
+           && (part->crc_ok[1] || (part->hamming_ok[1][0] && part->hamming_ok[1][1]));
+}
+
+/*
+ * Report what this frame's CCH CRC-7 proved. Both halves passing is one chance in 16384
+ * and confirms at once; one half is one in 128 and has to repeat. The Hamming flags are
+ * deliberately not evidence at any strength: the CRC covers the bits they produced.
+ */
+static void
+dpmr_note_cch_evidence(dsd_state* state, const dpmr_voice_ctx_t* ctx) {
+    const int passing = (ctx->CrcOk[0] != 0U ? 1 : 0) + (ctx->CrcOk[1] != 0U ? 1 : 0);
+    if (passing == 2) {
+        dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_STRONG);
+    } else if (passing == 1) {
+        dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_WEAK);
+    }
 }
 
 static void
-dpmr_update_called_id(dpmr_voice_ctx_t* ctx, dsd_opts* opts, dsd_state* state, char called_id[8]) {
-    uint32_t temp = ConvertBitIntoBytes(&ctx->CCHDataHammingCorrected[0][2], 12);
-    uint32_t cch_called_id = ((temp << 12) & 0x00FFF000);
-    temp = ConvertBitIntoBytes(&ctx->CCHDataHammingCorrected[1][2], 12);
-    cch_called_id |= (temp & 0x00000FFF);
-    ConvertAirInterfaceID(cch_called_id, called_id);
-    called_id[7] = '\0';
-    state->dPMRVoiceFS2Frame.CalledIDOk = dpmr_ids_are_strong(ctx) ? 1U : 0U;
-    dsd_strncpy_s((char*)state->dPMRVoiceFS2Frame.CalledID, sizeof(state->dPMRVoiceFS2Frame.CalledID), called_id,
-                  sizeof(state->dPMRVoiceFS2Frame.CalledID) - 1);
-    state->dPMRVoiceFS2Frame.CalledID[sizeof(state->dPMRVoiceFS2Frame.CalledID) - 1] = '\0';
+dpmr_publish_identity_fragment(dsd_state* state, uint32_t id_value, int target) {
+    char identity[8];
+    if (!dpmr_confirm_is_confirmed(state)) {
+        /* Nothing has decoded on this transmission yet, so there is no identity here to
+         * publish -- only whatever the Hamming fallback made of the bits (#407). */
+        return;
+    }
+    dpmr_convert_air_interface_id(id_value, identity);
+    int protocol = DSD_SYNC_IS_DPMR(state->synctype) ? state->synctype : state->lastsynctype;
+    if (!DSD_SYNC_IS_DPMR(protocol)) {
+        protocol = DSD_SYNC_DPMR_FS2_POS;
+    }
+    dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    if (target) {
+        dsd_strncpy_s(observation.target_text, sizeof(observation.target_text), identity,
+                      sizeof(observation.target_text) - 1U);
+    } else {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+            && DSD_SYNC_IS_DPMR(call.protocol)) {
+            dsd_strncpy_s(observation.target_text, sizeof(observation.target_text), call.target_text,
+                          sizeof(observation.target_text) - 1U);
+        }
+        dsd_strncpy_s(observation.source_text, sizeof(observation.source_text), identity,
+                      sizeof(observation.source_text) - 1U);
+    }
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+}
+
+static void
+dpmr_update_called_id(dsd_opts* opts, dsd_state* state, uint32_t id_value, int id_is_strong) {
+    if (id_is_strong) {
+        dpmr_publish_identity_fragment(state, id_value, 1);
+    }
     opts->dPMR_next_part_of_superframe = 2;
 }
 
 static void
-dpmr_update_calling_id(dpmr_voice_ctx_t* ctx, dsd_opts* opts, dsd_state* state, char calling_id[8]) {
-    uint32_t temp = ConvertBitIntoBytes(&ctx->CCHDataHammingCorrected[0][2], 12);
-    uint32_t cch_calling_id = ((temp << 12) & 0x00FFF000);
-    temp = ConvertBitIntoBytes(&ctx->CCHDataHammingCorrected[1][2], 12);
-    cch_calling_id |= (temp & 0x00000FFF);
-    ConvertAirInterfaceID(cch_calling_id, calling_id);
-    calling_id[7] = '\0';
-    state->dPMRVoiceFS2Frame.CallingIDOk = dpmr_ids_are_strong(ctx) ? 1U : 0U;
-    dsd_strncpy_s((char*)state->dPMRVoiceFS2Frame.CallingID, sizeof(state->dPMRVoiceFS2Frame.CallingID), calling_id,
-                  sizeof(state->dPMRVoiceFS2Frame.CallingID) - 1);
-    state->dPMRVoiceFS2Frame.CallingID[sizeof(state->dPMRVoiceFS2Frame.CallingID) - 1] = '\0';
+dpmr_update_calling_id(dsd_opts* opts, dsd_state* state, uint32_t id_value, int id_is_strong) {
+    if (id_is_strong) {
+        dpmr_publish_identity_fragment(state, id_value, 0);
+    }
     opts->dPMR_next_part_of_superframe = 1;
 }
 
 static void
-dpmr_mark_unknown_superframe_part(dsd_opts* opts, dsd_state* state) {
-    state->dPMRVoiceFS2Frame.CalledIDOk = 0;
-    state->dPMRVoiceFS2Frame.CallingIDOk = 0;
+dpmr_mark_unknown_superframe_part(dsd_opts* opts) {
     if (opts->dPMR_next_part_of_superframe == 1) {
         opts->dPMR_next_part_of_superframe = 2;
     } else if (opts->dPMR_next_part_of_superframe == 2) {
@@ -246,50 +277,47 @@ dpmr_mark_unknown_superframe_part(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-static void DSD_ATTR_USED
-dpmr_update_superframe_part(dpmr_voice_ctx_t* ctx, dsd_opts* opts, dsd_state* state, char called_id[8],
-                            char calling_id[8]) {
-    if (((ctx->CrcOk[0] || ctx->HammingCorrectable[0][0]) && (ctx->CCH_FrameNumber[0] == 0))
-        || ((ctx->CrcOk[1] || ctx->HammingCorrectable[1][0]) && (ctx->CCH_FrameNumber[1] == 1))) {
-        dpmr_update_called_id(ctx, opts, state, called_id);
+void
+dpmr_update_superframe_part(dsd_opts* opts, dsd_state* state, const dpmr_superframe_part* part) {
+    int id_is_strong = dpmr_ids_are_strong(part);
+    if (((part->crc_ok[0] || part->hamming_ok[0][0]) && (part->frame_number[0] == 0))
+        || ((part->crc_ok[1] || part->hamming_ok[1][0]) && (part->frame_number[1] == 1))) {
+        dpmr_update_called_id(opts, state, part->id_value, id_is_strong);
         return;
     }
-    if (((ctx->CrcOk[0] || ctx->HammingCorrectable[0][0]) && (ctx->CCH_FrameNumber[0] == 2))
-        || ((ctx->CrcOk[1] || ctx->HammingCorrectable[1][0]) && (ctx->CCH_FrameNumber[1] == 3))) {
-        dpmr_update_calling_id(ctx, opts, state, calling_id);
+    if (((part->crc_ok[0] || part->hamming_ok[0][0]) && (part->frame_number[0] == 2))
+        || ((part->crc_ok[1] || part->hamming_ok[1][0]) && (part->frame_number[1] == 3))) {
+        dpmr_update_calling_id(opts, state, part->id_value, id_is_strong);
         return;
     }
-    dpmr_mark_unknown_superframe_part(opts, state);
+    dpmr_mark_unknown_superframe_part(opts);
 }
 
-static void DSD_ATTR_USED
-dpmr_print_ids(dsd_state* state, char called_id[8], char calling_id[8]) {
+void
+dpmr_print_ids(dsd_state* state) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    (void)dsd_call_state_get(state, 0U, &call);
     DSD_FPRINTF(stderr, "\n");
-    if (state->dPMRVoiceFS2Frame.CalledIDOk) {
+    if (call.target_text[0] != '\0') {
         DSD_FPRINTF(stderr, "%s", KGRN);
-        DSD_FPRINTF(stderr, " TG=%s", called_id);
+        DSD_FPRINTF(stderr, " TG=%s", call.target_text);
         DSD_FPRINTF(stderr, "%s", KNRM);
-        DSD_SNPRINTF(state->dpmr_target_id, sizeof state->dpmr_target_id, "%s", called_id);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " TG=(CRC ERR)");
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
 
-    if (state->dPMRVoiceFS2Frame.CallingIDOk) {
+    if (call.source_text[0] != '\0') {
         DSD_FPRINTF(stderr, "%s", KGRN);
-        DSD_FPRINTF(stderr, " Src=%s", calling_id);
+        DSD_FPRINTF(stderr, " Src=%s", call.source_text);
         DSD_FPRINTF(stderr, "%s", KNRM);
-        if (state->dPMRVoiceFS2Frame.CalledIDOk) {
-            DSD_SNPRINTF(state->dpmr_caller_id, sizeof state->dpmr_caller_id, "%s", calling_id);
-        }
         if (state->dPMRVoiceFS2Frame.ColorCode[0] != (unsigned int)(-1)) {
             DSD_FPRINTF(stderr, "%s", KGRN);
             DSD_FPRINTF(stderr, " Channel Code=%02d", (int)state->dPMRVoiceFS2Frame.ColorCode[0]);
             DSD_FPRINTF(stderr, "%s", KNRM);
-            if (state->dPMRVoiceFS2Frame.CalledIDOk) {
-                state->dpmr_color_code = (int)state->dPMRVoiceFS2Frame.ColorCode[0];
-            }
+            state->dpmr_color_code = (int)state->dPMRVoiceFS2Frame.ColorCode[0];
         }
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
@@ -315,7 +343,40 @@ dpmr_print_scrambler_state(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
-static void DSD_ATTR_USED
+void
+dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
+    if (!dpmr_confirm_is_confirmed(state)) {
+        /* Service options, colour code and emergency all come out of a CCH that has not
+         * proved itself; publishing them would put a call row on the air alone (#407). */
+        return;
+    }
+    dsd_call_observation observation = {
+        .protocol = state->synctype,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .channel =
+            state->dPMRVoiceFS2Frame.ColorCode[0] == (unsigned int)(-1) ? 0U : state->dPMRVoiceFS2Frame.ColorCode[0],
+        .service_options = (uint16_t)((state->dPMRVoiceFS2Frame.Version[0] << 8U)
+                                      | (state->dPMRVoiceFS2Frame.CommunicationMode[0] << 4U)
+                                      | state->dPMRVoiceFS2Frame.CommsFormat[0]),
+        .emergency = (uint8_t)(state->dPMRVoiceFS2Frame.EmergencyPriority[0] != 0U),
+        .has_service_metadata = 1U,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+
+    dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_CLEAR,
+        .audio_permitted = 1U,
+    };
+    if (state->dPMRVoiceFS2Frame.Version[0] == 3U) {
+        crypto.classification = state->R != 0U ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED;
+        crypto.audio_permitted = state->R != 0U;
+    }
+    (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    dsd_event_sync_slot(opts, state, 0U);
+}
+
+void
 dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]) {
     uint32_t start = 0;
     uint32_t end = 4;
@@ -358,44 +419,15 @@ dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR
     }
 }
 
-#ifdef DSD_NEO_TEST_HOOKS
-void
-dsd_test_dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state,
-                                char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]) {
-    dpmr_play_voice_frames(opts, state, ambe_fr);
-}
-#endif
-
-#ifdef dPMR_PRINT_DEBUG_INFO
-static void
-dpmr_print_debug_cch(const dpmr_voice_ctx_t* ctx, const dsd_state* state) {
-    for (uint32_t i = 0; i < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; i++) {
-        DSD_FPRINTF(stderr, "i = %u - ", i);
-        DSD_FPRINTF(stderr, "Comm Mode = %01u - ", state->dPMRVoiceFS2Frame.CommunicationMode[i]);
-        DSD_FPRINTF(stderr, "Version = %01u - ", state->dPMRVoiceFS2Frame.Version[i]);
-        DSD_FPRINTF(stderr, "Comms Format = %01u - ", state->dPMRVoiceFS2Frame.CommsFormat[i]);
-        DSD_FPRINTF(stderr, "Emergency = %01u - ", state->dPMRVoiceFS2Frame.EmergencyPriority[i]);
-        DSD_FPRINTF(stderr, "Reserved = %01u - ", state->dPMRVoiceFS2Frame.Reserved[i]);
-        DSD_FPRINTF(stderr, "Slow Data = 0x%05X - ", state->dPMRVoiceFS2Frame.SlowData[i]);
-        if (ctx->HammingOk[i] && ctx->CrcOk[i]) {
-            DSD_FPRINTF(stderr, "Valid");
-        } else {
-            DSD_FPRINTF(stderr, "CRC ERROR");
-        }
-        DSD_FPRINTF(stderr, "\n");
-    }
-}
-#endif
-
-void
+int
 processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_voice_ctx_t ctx;
+    dpmr_superframe_part part;
     uint32_t PartOfSuperFrame = 0;
-    char CalledID[8] = {0};
-    char CallingID[8] = {0};
     UNUSED(PartOfSuperFrame);
 
     DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    DSD_MEMSET(&part, 0, sizeof(part));
     DSD_MEMSET(ctx.CCHDataHammingCorrected, 1, sizeof(ctx.CCHDataHammingCorrected));
     DSD_MEMSET(ctx.CCHDataCRC, 1, sizeof(ctx.CCHDataCRC));
 
@@ -406,33 +438,43 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_read_second_cch(opts, state, &ctx);
 
     dpmr_read_tch_group(opts, state, &ctx, 4);
+
+    /* Evidence is noted before anything is published, so the frame that completes a weak
+     * streak still publishes itself rather than waiting for the next one. */
+    dpmr_confirm_begin_frame(state);
     dpmr_decode_cch_frames(state, &ctx);
-    dpmr_extract_previous_ids(state, CalledID, CallingID);
-    dpmr_update_superframe_part(&ctx, opts, state, CalledID, CallingID);
-    dpmr_print_ids(state, CalledID, CallingID);
+    dpmr_note_cch_evidence(state, &ctx);
+
+    dpmr_extract_superframe_part(&ctx, &part);
+    dpmr_update_superframe_part(opts, state, &part);
+    dpmr_print_ids(state);
     dpmr_print_scrambler_state(opts, state);
-    dpmr_play_voice_frames(opts, state, ctx.ambe_fr);
+    dpmr_publish_call(opts, state);
+    if (dpmr_confirm_is_confirmed(state)) {
+        dpmr_play_voice_frames(opts, state, ctx.ambe_fr);
+    }
     DSD_FPRINTF(stderr, "\n");
 
-#ifdef dPMR_PRINT_DEBUG_INFO
-    dpmr_print_debug_cch(&ctx, state);
-#endif
+    dpmr_confirm_end_frame(state);
+
+    /* How many of the two CCH halves passed their CRC-7, for the caller's verdict. */
+    return (int)((ctx.CrcOk[0] != 0U ? 1U : 0U) + (ctx.CrcOk[1] != 0U ? 1U : 0U));
 } //End processdPMRvoice()
 
 /* Scrambler used for dPMR scrambling / descrambling,
  * see ETSI TS 102 658 chapter 7.4 for the
  * polynomial description.
  * It is a X^9 + X^5 + 1 polynomial. */
-static void
-DeInterleave6x12DPmrBit(const uint8_t* BufferIn, uint8_t* BufferOut) {
-    uint8_t Matrix[12][6] = {0};
+void
+dpmr_deinterleave_6x12(const uint8_t* input, uint8_t* output) {
+    uint8_t matrix[12][6] = {0};
     uint32_t i, j, k;
 
     /* Step 1 : Filling the 12 x 6 bit matrix */
     k = 0;
     for (i = 0; i < 12; i++) {
         for (j = 0; j < 6; j++) {
-            Matrix[i][j] = BufferIn[k++];
+            matrix[i][j] = input[k++];
         }
     }
 
@@ -440,105 +482,104 @@ DeInterleave6x12DPmrBit(const uint8_t* BufferIn, uint8_t* BufferOut) {
     k = 0;
     for (j = 0; j < 6; j++) {
         for (i = 0; i < 12; i++) {
-            BufferOut[k++] = Matrix[i][j];
+            output[k++] = matrix[i][j];
         }
     }
-} /* End DeInterleave6x12DPmrBit() */
+}
 
 /* CRC 7 bit computation with the following
  * polynomial : X^7 + X^3 + 1 */
-static uint8_t
-CRC7BitdPMR(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint8_t ShiftRegister = 0x00; /* All bit to '0' (7 LSBit only used) */
-    uint8_t Polynome = 0x09;      /* X^7 + X^3 + 1 */
+uint8_t
+dpmr_crc7(const uint8_t* input, uint32_t bit_length) {
+    uint8_t shift_register = 0x00; /* All bit to '0' (7 LSBit only used) */
+    uint8_t polynomial = 0x09;     /* X^7 + X^3 + 1 */
     uint32_t i;
 
-    for (i = 0; i < BitLength; i++) {
-        if (((ShiftRegister >> 6) & 1) ^ BufferIn[i]) {
-            ShiftRegister = ((ShiftRegister << 1) ^ Polynome) & 0x7F;
+    for (i = 0; i < bit_length; i++) {
+        if (((shift_register >> 6) & 1) ^ input[i]) {
+            shift_register = ((shift_register << 1) ^ polynomial) & 0x7F;
         } else {
-            ShiftRegister = (ShiftRegister << 1) & 0x7F;
+            shift_register = (shift_register << 1) & 0x7F;
         }
     }
 
-    return ShiftRegister;
-} /* End CRC7BitdPMR() */
+    return shift_register;
+}
 
 /* Convert an air interface identifier (AI ID) into
  * a 7 ASCII digit string.
  *
  * See dPMR standard chapter A.1.2.1.1.6
  * "Mapping of dialled strings to the AI address space" */
-static void
-ConvertAirInterfaceID(uint32_t AI_ID, char ID[8]) {
-    uint32_t AI_ID_Temp = AI_ID;
-    uint32_t Digit;
+void
+dpmr_convert_air_interface_id(uint32_t ai_id, char id[8]) {
+    uint32_t remaining = ai_id;
+    uint32_t digit;
 
     /* 1st digit */
-    Digit = AI_ID_Temp / 1464100;
-    AI_ID_Temp = AI_ID_Temp % 1464100;
-    if (Digit == 10) {
-        ID[0] = '*';
+    digit = remaining / 1464100;
+    remaining = remaining % 1464100;
+    if (digit == 10) {
+        id[0] = '*';
     } else {
-        ID[0] = Digit + '0';
+        id[0] = digit + '0';
     }
 
     /* 2nd digit */
-    Digit = AI_ID_Temp / 146410;
-    AI_ID_Temp = AI_ID_Temp % 146410;
-    if (Digit == 10) {
-        ID[1] = '*';
+    digit = remaining / 146410;
+    remaining = remaining % 146410;
+    if (digit == 10) {
+        id[1] = '*';
     } else {
-        ID[1] = Digit + '0';
+        id[1] = digit + '0';
     }
 
     /* 3rd digit */
-    Digit = AI_ID_Temp / 14641;
-    AI_ID_Temp = AI_ID_Temp % 14641;
-    if (Digit == 10) {
-        ID[2] = '*';
+    digit = remaining / 14641;
+    remaining = remaining % 14641;
+    if (digit == 10) {
+        id[2] = '*';
     } else {
-        ID[2] = Digit + '0';
+        id[2] = digit + '0';
     }
 
     /* 4th digit */
-    Digit = AI_ID_Temp / 1331;
-    AI_ID_Temp = AI_ID_Temp % 1331;
-    if (Digit == 10) {
-        ID[3] = '*';
+    digit = remaining / 1331;
+    remaining = remaining % 1331;
+    if (digit == 10) {
+        id[3] = '*';
     } else {
-        ID[3] = Digit + '0';
+        id[3] = digit + '0';
     }
 
     /* 5th digit */
-    Digit = AI_ID_Temp / 121;
-    AI_ID_Temp = AI_ID_Temp % 121;
-    if (Digit == 10) {
-        ID[4] = '*';
+    digit = remaining / 121;
+    remaining = remaining % 121;
+    if (digit == 10) {
+        id[4] = '*';
     } else {
-        ID[4] = Digit + '0';
+        id[4] = digit + '0';
     }
 
     /* 6th digit */
-    Digit = AI_ID_Temp / 11;
-    AI_ID_Temp = AI_ID_Temp % 11;
-    if (Digit == 10) {
-        ID[5] = '*';
+    digit = remaining / 11;
+    remaining = remaining % 11;
+    if (digit == 10) {
+        id[5] = '*';
     } else {
-        ID[5] = Digit + '0';
+        id[5] = digit + '0';
     }
 
     /* 7th digit */
-    Digit = AI_ID_Temp;
-    if (Digit == 10) {
-        ID[6] = '*';
+    digit = remaining;
+    if (digit == 10) {
+        id[6] = '*';
     } else {
-        ID[6] = Digit + '0';
+        id[6] = digit + '0';
     }
 
     /* Add the "end of string" */
-    ID[7] = '\0';
-
-} /* End convertAirInterfaceID() */
+    id[7] = '\0';
+}
 
 /* End of file */

@@ -1,2 +1,2 @@
-add_subdirectory(ezpwd OPTIONAL)
+add_subdirectory(ezpwd)
 add_subdirectory(pffft)

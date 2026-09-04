@@ -22,7 +22,7 @@ jobs:
     name: repository guardrails
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install guardrail dependencies
         run: sudo apt-get update && sudo apt-get install -y ripgrep
@@ -34,11 +34,14 @@ jobs:
           tools/check_workflow_download_pins.sh
           tools/check_vcpkg_overlay_pins.sh
 
+      - name: Check architecture rules
+        run: tools/check_arch_rules.sh
+
   script-lint:
     name: shell/workflow lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run shell and workflow lint
         env:
@@ -65,7 +68,7 @@ jobs:
     name: cmake format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -84,7 +87,7 @@ jobs:
 
       - name: Set up Python
         if: github.event_name != 'pull_request' || steps.changed.outputs.cmake_format_files != '0'
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
           cache: pip
@@ -121,7 +124,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -131,7 +134,7 @@ jobs:
       - name: Upload Gitleaks SARIF
         if: always() && hashFiles('.gitleaks.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
         with:
           sarif_file: .gitleaks.sarif
 
@@ -153,7 +156,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -172,7 +175,7 @@ jobs:
 
       - name: Set up Python
         if: github.event_name != 'pull_request' || steps.changed.outputs.workflow_security_targets != '0'
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
           cache: pip
@@ -198,7 +201,7 @@ jobs:
       - name: Upload zizmor SARIF
         if: always() && hashFiles('.zizmor.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
         with:
           sarif_file: .zizmor.sarif
 
@@ -221,7 +224,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -247,7 +250,7 @@ jobs:
       - name: Upload OSV SARIF
         if: always() && hashFiles('.osv-scanner.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
         with:
           sarif_file: .osv-scanner.sarif
 
@@ -267,7 +270,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Review dependency changes
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v4
         with:
@@ -278,7 +281,7 @@ jobs:
     name: warnings as errors
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build dependencies
         run: |
@@ -287,7 +290,7 @@ jobs:
             build-essential cmake ninja-build pkg-config git \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev libexpat1-dev
 
       - name: Build and install mbelib-neo
         run: |
@@ -329,7 +332,7 @@ jobs:
       ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
       UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build dependencies
         run: |
@@ -338,7 +341,7 @@ jobs:
             build-essential clang cmake ninja-build pkg-config git \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev libexpat1-dev
 
       - name: Build and install mbelib-neo
         run: |
@@ -384,7 +387,7 @@ jobs:
       DSD_FUZZ_TIMEOUT: 20
       DSD_FUZZ_RSS_LIMIT_MB: 2048
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build dependencies
         run: |
@@ -393,7 +396,7 @@ jobs:
             build-essential clang cmake ninja-build pkg-config git \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev libexpat1-dev
 
       - name: Build and install mbelib-neo
         run: |

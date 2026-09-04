@@ -23,6 +23,8 @@
  * Boston, MA 02110-1301, USA.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -31,8 +33,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
+
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/nxdn/nxdn_voice.h>
@@ -43,18 +45,12 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "nxdn_confirm.h"
 
 #ifdef LIMAZULUTWEAKS
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include "dsd-neo/core/secret_redaction.h"
 #endif
-
-// #define NXDN_DEBUG_LICH         //print LICH debug info on err on payload == 1
-// #define NXDN_LICH_OFFBITS_CHECK //optional strict filter for encoded LICH "off bits"
-// NOTE:
-// The offbits check was observed to reject otherwise-decodable NXDN frames on
-// marginal signals (notably NXDN96 trunking). Keep it disabled by default and
-// rely on parity/LICH-type validation below for robust sync handling.
 
 typedef struct {
     uint8_t dbuf[182];
@@ -186,9 +182,9 @@ nxdn_frame_ctx_init(nxdn_frame_ctx* ctx) {
 static void
 nxdn_collect_lich(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
     for (int i = 0; i < 8; i++) {
-        uint8_t rel = 255;
-        ctx->lich_dibits[i] = ctx->dbuf[i] = (uint8_t)getDibitWithReliability(opts, state, &rel);
-        ctx->dbuf_reliab[i] = rel;
+        dsd_dibit_soft_t soft = {.reliability = 255};
+        ctx->lich_dibits[i] = ctx->dbuf[i] = (uint8_t)getDibitSoft(opts, state, &soft);
+        ctx->dbuf_reliab[i] = soft.reliability;
     }
 
     nxdn_descramble_with_seed(ctx->lich_dibits, 8, state->nxdn_pn95_seed);
@@ -202,28 +198,8 @@ nxdn_collect_lich(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
         ctx->lich_bits[(i * 2) + 0] = (ctx->lich_dibits[i] >> 1) & 1;
         ctx->lich_bits[(i * 2) + 1] = (ctx->lich_dibits[i] >> 0) & 1;
     }
-    ctx->lich_bits_hex = (uint16_t)ConvertBitIntoBytes(ctx->lich_bits, 16);
+    ctx->lich_bits_hex = (uint16_t)convert_bits_into_output(ctx->lich_bits, 16);
 }
-
-#ifdef NXDN_LICH_OFFBITS_CHECK
-static int
-nxdn_validate_lich_offbits(const dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
-    uint8_t lich_off_hex = 0;
-    for (int i = 0; i < 8; i++) {
-        lich_off_hex += ctx->lich_bits[(i * 2) + 1];
-    }
-    if (lich_off_hex < 7) {
-#ifdef NXDN_DEBUG_LICH
-        if (opts->payload == 1) {
-            DSD_FPRINTF(stderr, "  Lich Off Bit Fill Error: %d / 8; \n", lich_off_hex);
-        }
-#endif
-        nxdn_mark_bad_sync(state);
-        return 0;
-    }
-    return 1;
-}
-#endif
 
 static void
 nxdn_prepare_lich_parity(nxdn_frame_ctx* ctx) {
@@ -242,37 +218,25 @@ nxdn_prepare_lich_parity(nxdn_frame_ctx* ctx) {
 }
 
 static int
-nxdn_validate_lich_parity(const dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
+nxdn_validate_lich_parity(dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->lich_parity_received == ctx->lich_parity_computed) {
         return 1;
     }
-#ifdef NXDN_DEBUG_LICH
-    if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, "  Lich Parity Error %02X / %04X\n", ctx->lich_full, ctx->lich_bits_hex);
-    }
-#else
-    UNUSED(opts);
-#endif
     nxdn_mark_bad_sync(state);
     return 0;
 }
 
 static int
 nxdn_validate_lich_direction(const dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
-    if ((ctx->lich % 2) != 0 || opts->p25_trunk != 1) {
+    if ((ctx->lich % 2) != 0 || opts->trunk_enable != 1) {
         return 1;
     }
-#ifdef NXDN_DEBUG_LICH
-    if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, "  Simplex/Inbound NXDN lich on trunking system - type 0x%02X\n", ctx->lich);
-    }
-#endif
     nxdn_mark_bad_sync(state);
     return 0;
 }
 
 static int
-nxdn_apply_lich_profile(const dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
+nxdn_apply_lich_profile(dsd_state* state, nxdn_frame_ctx* ctx) {
     for (size_t i = 0; i < (sizeof(k_nxdn_lich_profiles) / sizeof(k_nxdn_lich_profiles[0])); i++) {
         const nxdn_lich_profile* profile = &k_nxdn_lich_profiles[i];
         if (profile->lich != ctx->lich) {
@@ -294,90 +258,65 @@ nxdn_apply_lich_profile(const dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* 
         return 1;
     }
 
-#ifdef NXDN_DEBUG_LICH
-    if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, "  false sync or unsupported NXDN lich type L: %02X / LH: %04X\n", ctx->lich,
-                    ctx->lich_bits_hex);
-    }
-#else
-    UNUSED(opts);
-#endif
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
     nxdn_mark_bad_sync(state);
     return 0;
 }
 
+/**
+ * @brief Refresh the sync clock a conventional scan and the trunking SMs read.
+ *
+ * Held behind nxdn_confirm_is_confirmed(): this timestamp is what stops a `-Y` scan on a
+ * channel, and a sync word plus a LICH is not enough to believe there is a transmission
+ * here (issue #398).
+ */
 static void
 nxdn_mark_carrier_sync_active(dsd_state* state) {
-    state->carrier = 1;
     state->last_cc_sync_time = time(NULL);
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
 }
 
 static void
-nxdn_print_lich_debug_payload(const dsd_opts* opts, const nxdn_frame_ctx* ctx) {
-#ifdef NXDN_DEBUG_LICH
-    if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, "L: %02X / LH: %04X; ", ctx->lich, ctx->lich_bits_hex);
-    }
-#else
-    UNUSED(opts);
-    UNUSED(ctx);
-#endif
-}
-
-static void
-nxdn_print_idas_sync_banner(const dsd_opts* opts, const dsd_state* state, const nxdn_frame_ctx* ctx) {
-    if (opts->frame_nxdn48 == 1) {
+nxdn_print_idas_sync_banner(const dsd_opts* opts, const dsd_state* state) {
+    if (dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48) {
         printFrameSync(opts, state, "IDAS D ", 0, "-");
     }
-    nxdn_print_lich_debug_payload(opts, ctx);
 }
 
 static void
-nxdn_print_dcr_sync_banner(const dsd_opts* opts, const dsd_state* state, const nxdn_frame_ctx* ctx) {
-    if (opts->frame_nxdn48 == 1) {
+nxdn_print_dcr_sync_banner(const dsd_opts* opts, const dsd_state* state) {
+    if (dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48) {
         printFrameSync(opts, state, "JPN DCR", 0, "-");
     }
-    nxdn_print_lich_debug_payload(opts, ctx);
 }
 
 static void
-nxdn_print_normal_sync_banner(const dsd_opts* opts, const dsd_state* state, const nxdn_frame_ctx* ctx) {
-    if (opts->frame_nxdn48 == 1) {
+nxdn_print_normal_sync_banner(const dsd_opts* opts, const dsd_state* state) {
+    if (dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48) {
         printFrameSync(opts, state, "NXDN48 ", 0, "-");
     } else {
         printFrameSync(opts, state, "NXDN96 ", 0, "-");
     }
-    nxdn_print_lich_debug_payload(opts, ctx);
 }
 
 static void
 nxdn_print_sync_banner(const dsd_opts* opts, const dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->idas) {
-        nxdn_print_idas_sync_banner(opts, state, ctx);
+        nxdn_print_idas_sync_banner(opts, state);
         return;
     }
     if (ctx->sacch2) {
-        nxdn_print_dcr_sync_banner(opts, state, ctx);
+        nxdn_print_dcr_sync_banner(opts, state);
         return;
     }
     if (ctx->voice || ctx->facch || ctx->sacch || ctx->facch2 || ctx->udch || ctx->cac) {
-        nxdn_print_normal_sync_banner(opts, state, ctx);
+        nxdn_print_normal_sync_banner(opts, state);
     }
 }
 
 static void
-nxdn_collect_payload_and_unpack(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
-    for (int i = 0; i < 174; i++) {
-        uint8_t rel = 255;
-        ctx->dbuf[i + 8] = (uint8_t)getDibitWithReliability(opts, state, &rel);
-        ctx->dbuf_reliab[i + 8] = rel;
-    }
-
-    nxdn_descramble_with_seed(ctx->dbuf, 182, state->nxdn_pn95_seed);
-
+nxdn_unpack_payload_fields(nxdn_frame_ctx* ctx) {
     for (size_t i = 0; i < 182; i++) {
         size_t idx = i * 2;
         ctx->nxdn_bit_buffer[idx] = ctx->dbuf[i] >> 1;
@@ -457,7 +396,7 @@ nxdn_apply_limazulu_voice_tweak(const dsd_opts* opts, dsd_state* state, const nx
     }
 
     if (freq) {
-        limazulu = ComputeCrcCCITT16d(hash_bits, 24);
+        limazulu = dsd_crc_ccitt16_bits(hash_bits, 24U);
     }
     limazulu = limazulu & 0xFFFF;
 
@@ -478,7 +417,7 @@ nxdn_apply_limazulu_voice_tweak(const dsd_opts* opts, dsd_state* state, const nx
     }
 
     if (state->R != 0 && state->M == 1) {
-        state->nxdn_cipher_type = 0x1;
+        nxdn_cipher_force(state, 0x1);
     }
 
     state->last_cc_sync_time = time(NULL) + 2;
@@ -518,7 +457,7 @@ nxdn_apply_data_frame_lfsr(dsd_state* state) {
 static void
 nxdn_apply_pre_voice_facch1_lfsr(dsd_state* state) {
     if (state->M == 1 && state->R != 0) {
-        state->nxdn_cipher_type = 0x1;
+        nxdn_cipher_force(state, 0x1);
     }
     if (state->nxdn_cipher_type == 0x1 && state->R != 0) {
         if (state->payload_miN == 0) {
@@ -611,14 +550,18 @@ nxdn_decode_control_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_
 
 static void
 nxdn_process_voice_and_mbe(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
-    if (ctx->voice) {
+    /* The LICH alone decides whether a frame claims to carry voice, and noise clears the
+     * LICH often enough that acting on that claim is what put fictional speech on a dead
+     * channel. Synthesize only once the frame body has passed a CRC; a real call confirms
+     * on its first FACCH, or within two frames of SACCH (issue #398). */
+    if (ctx->voice && nxdn_confirm_is_confirmed(state)) {
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
             openMbeOutFile(opts, state);
         }
         state->last_vc_sync_time = time(NULL);
         state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         if (state->M == 1 && state->R != 0) {
-            state->nxdn_cipher_type = 0x1;
+            nxdn_cipher_force(state, 0x1);
         }
         nxdn_voice(opts, state, ctx->voice, (uint8_t*)ctx->dbuf, (uint8_t*)ctx->dbuf_reliab);
         return;
@@ -627,10 +570,11 @@ nxdn_process_voice_and_mbe(dsd_opts* opts, dsd_state* state, const nxdn_frame_ct
     if (opts->mbe_out_f == NULL) {
         return;
     }
-    if (opts->frame_nxdn96 == 1 && (time(NULL) - state->last_vc_sync_time) > 1) {
+    const dsd_nxdn_variant variant = dsd_frame_sync_active_nxdn_variant(opts, state);
+    if (variant == DSD_NXDN_VARIANT_96 && (time(NULL) - state->last_vc_sync_time) > 1) {
         closeMbeOutFile(opts, state);
     }
-    if (opts->frame_nxdn48 == 1) {
+    if (variant == DSD_NXDN_VARIANT_48) {
         closeMbeOutFile(opts, state);
     }
 }
@@ -658,34 +602,39 @@ nxdn_finalize_sync_reject(dsd_state* state) {
     }
 }
 
-void
+int
 nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_frame_ctx ctx;
+    /* Declared out here so every goto END path below carries the "proved nothing" answer:
+     * those bail before the frame body is read, so there is no CRC of this frame's own to
+     * report however much the transmission has proved before now (#445). */
+    int frame_proved = 0;
 
     nxdn_frame_ctx_init(&ctx);
     nxdn_collect_lich(opts, state, &ctx);
 
-#ifdef NXDN_LICH_OFFBITS_CHECK
-    if (!nxdn_validate_lich_offbits(opts, state, &ctx)) {
-        goto END;
-    }
-#endif
-
     nxdn_prepare_lich_parity(&ctx);
-    if (!nxdn_validate_lich_parity(opts, state, &ctx)) {
+    if (!nxdn_validate_lich_parity(state, &ctx)) {
         goto END;
     }
     if (!nxdn_validate_lich_direction(opts, state, &ctx)) {
         goto END;
     }
-    if (!nxdn_apply_lich_profile(opts, state, &ctx)) {
+    if (!nxdn_apply_lich_profile(state, &ctx)) {
         goto END;
     }
 
-    nxdn_mark_carrier_sync_active(state);
+    state->carrier = 1;
     nxdn_print_sync_banner(opts, state, &ctx);
 
-    nxdn_collect_payload_and_unpack(opts, state, &ctx);
+    for (int i = 0; i < 174; i++) {
+        dsd_dibit_soft_t soft = {.reliability = 255};
+        ctx.dbuf[i + 8] = (uint8_t)getDibitSoft(opts, state, &soft);
+        ctx.dbuf_reliab[i + 8] = soft.reliability;
+    }
+
+    nxdn_descramble_with_seed(ctx.dbuf, 182, state->nxdn_pn95_seed);
+    nxdn_unpack_payload_fields(&ctx);
 
     ctx.lich_rf = (ctx.lich >> 5) & 0x3;
     ctx.direction = (ctx.lich % 2 == 0) ? 0 : 1;
@@ -693,13 +642,22 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_print_rf_channel_type(&ctx);
     nxdn_apply_limazulu_voice_tweak(opts, state, &ctx);
 
-    if (opts->scanner_mode == 1) {
-        state->last_cc_sync_time = time(NULL) + 2;
-    }
-
+    nxdn_confirm_begin_frame(state);
     nxdn_print_voice_or_data_and_sync_lfsr(state, &ctx);
     nxdn_update_sacch_mode(state, ctx.lich);
     nxdn_decode_control_channels(opts, state, &ctx);
+    nxdn_confirm_end_frame(state);
+    frame_proved = nxdn_confirm_frame_proved(state);
+
+    if (nxdn_confirm_is_confirmed(state)) {
+        nxdn_mark_carrier_sync_active(state);
+        if (opts->scanner_mode == 1) {
+            /* Hold the scanner a little past this frame so the gap to the next one does
+             * not read as loss of signal. */
+            state->last_cc_sync_time = time(NULL) + 2;
+        }
+    }
+
     nxdn_process_voice_and_mbe(opts, state, &ctx);
     nxdn_handle_post_voice_facch2_lfsr(state, &ctx);
 
@@ -709,4 +667,13 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
 
 END:
     nxdn_finalize_sync_reject(state);
+    /* The sticky flag, not this frame's evidence: a confirmed transmission whose current
+     * frame happens to carry no CRC still decoded, and reporting it unproductive would let
+     * the SPS hunt rotate off a live call.
+     *
+     * This frame's own evidence is reported alongside it as the 2, because the caller needs
+     * both answers: the sticky one says the call is live, and the per-frame one is what proves
+     * the profile the frame was read on -- a standing that the syncs between transmissions must
+     * not inherit, however confirmed the last call was (#445). */
+    return frame_proved ? 2 : nxdn_confirm_is_confirmed(state);
 }

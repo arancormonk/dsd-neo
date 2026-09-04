@@ -22,7 +22,7 @@ void dmr_confidence_reset(dsd_state* state);
 void dmr_confidence_reset_slot(dsd_state* state, unsigned int slot);
 void dmr_confidence_note_voice_sync(dsd_state* state, unsigned int slot);
 dmr_confidence_result dmr_confidence_note_voice_burst(dsd_state* state, unsigned int slot, unsigned int color_code);
-dmr_confidence_result dmr_confidence_note_data_burst(dsd_state* state, unsigned int color_code, unsigned int burst);
+dmr_confidence_result dmr_confidence_note_data_burst(dsd_state* state, unsigned int color_code);
 int dmr_confidence_voice_slot_open(const dsd_state* state, unsigned int slot);
 int dmr_confidence_any_voice_open(const dsd_state* state);
 

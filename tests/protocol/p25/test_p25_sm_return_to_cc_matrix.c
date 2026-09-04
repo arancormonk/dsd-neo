@@ -20,6 +20,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -156,7 +157,8 @@ matrix_pop_result(dsd_trunk_tune_result* results, int count, int* pos) {
 }
 
 static dsd_trunk_tune_result
-matrix_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+matrix_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     dsd_trunk_tune_result result = matrix_pop_result(g_hooks.vc_results, g_hooks.vc_count, &g_hooks.vc_pos);
     g_hooks.vc_calls++;
     g_hooks.last_vc_freq = freq;
@@ -165,7 +167,6 @@ matrix_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
     if (dsd_trunk_tune_result_is_ok(result)) {
         double now_m = dsd_time_now_monotonic_s();
         if (opts) {
-            opts->p25_is_tuned = 1;
             opts->trunk_is_tuned = 1;
         }
         if (state) {
@@ -183,7 +184,8 @@ matrix_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
 }
 
 static dsd_trunk_tune_result
-matrix_return_to_cc(dsd_opts* opts, dsd_state* state) {
+matrix_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     g_hooks.return_calls++;
@@ -191,7 +193,8 @@ matrix_return_to_cc(dsd_opts* opts, dsd_state* state) {
 }
 
 static dsd_trunk_tune_result
-matrix_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+matrix_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     dsd_trunk_tune_result result = matrix_pop_result(g_hooks.cc_results, g_hooks.cc_count, &g_hooks.cc_pos);
     g_hooks.cc_calls++;
@@ -209,9 +212,9 @@ matrix_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) 
 static void
 matrix_install_hooks(void) {
     dsd_trunk_tuning_hooks hooks = {0};
-    hooks.tune_to_freq_result = matrix_tune_to_freq;
-    hooks.return_to_cc_result = matrix_return_to_cc;
-    hooks.tune_to_cc_result = matrix_tune_to_cc;
+    hooks.tune_to_freq_request = matrix_tune_to_freq;
+    hooks.return_to_cc_request = matrix_return_to_cc;
+    hooks.tune_to_cc_request = matrix_tune_to_cc;
     dsd_trunk_tuning_hooks_set(hooks);
 }
 
@@ -270,7 +273,6 @@ matrix_setup_fixture(matrix_fixture* fixture, const matrix_mode_case* mode) {
     DSD_MEMSET(fixture->state, 0, sizeof(*fixture->state));
     DSD_MEMSET(&fixture->ctx, 0, sizeof(fixture->ctx));
 
-    fixture->opts->p25_trunk = 1;
     fixture->opts->trunk_enable = 1;
     fixture->opts->trunk_tune_group_calls = 1;
     fixture->opts->trunk_tune_private_calls = 1;
@@ -285,14 +287,21 @@ matrix_setup_fixture(matrix_fixture* fixture, const matrix_mode_case* mode) {
     fixture->state->trunk_cc_freq = MATRIX_BASE_CC_HZ;
     fixture->state->last_cc_sync_time = time(NULL);
     fixture->state->last_cc_sync_time_m = now_m;
+    fixture->state->p25_last_cc_msg_time = fixture->state->last_cc_sync_time;
+    fixture->state->p25_last_cc_msg_time_m = now_m;
     fixture->state->nac = 0x293;
     fixture->state->p2_cc = 0x293;
+    // The SM defers TDMA grants until the descrambler seed (WACN/SYSID/NAC)
+    // has been decoded from the control channel.
+    fixture->state->p2_wacn = 0xBEE00;
+    fixture->state->p2_sysid = 0x1A2;
     fixture->state->synctype = mode->synctype;
     fixture->state->lastsynctype = mode->synctype;
     fixture->state->p25_cc_is_tdma = mode->cc_is_tdma;
     fixture->state->p25_sys_is_tdma = mode->sys_is_tdma;
     fixture->state->p25_chan_tdma_explicit[mode->iden] = mode->tdma_hint;
     fixture->state->p25_vc_cqpsk_pref = -1;
+    fixture->state->p25_p1_validated_rf_mod = -1;
     fixture->state->p25_vc_cqpsk_override = -1;
     fixture->state->rf_mod = mode->initial_rf_mod;
     fixture->state->p25_p2_active_slot = -1;
@@ -337,8 +346,7 @@ matrix_send_initial_grant(matrix_fixture* fixture, const matrix_mode_case* mode,
     int rc = 0;
     rc |= matrix_expect(g_hooks.vc_calls == 1, mode->name, flow, script, "initial grant called tune once");
     rc |= matrix_expect(fixture->ctx.state == P25_SM_TUNED, mode->name, flow, script, "grant reached TUNED");
-    rc |= matrix_expect(fixture->opts->p25_is_tuned == 1 && fixture->opts->trunk_is_tuned == 1, mode->name, flow,
-                        script, "grant set tuned flags");
+    rc |= matrix_expect(fixture->opts->trunk_is_tuned == 1, mode->name, flow, script, "grant set tuned flags");
     rc |= matrix_expect(g_hooks.last_vc_sps == matrix_expected_sps(fixture, mode), mode->name, flow, script,
                         "grant sps matches mode");
     rc |= matrix_expect(fixture->state->samplesPerSymbol == matrix_expected_sps(fixture, mode), mode->name, flow,
@@ -354,15 +362,60 @@ matrix_send_initial_grant(matrix_fixture* fixture, const matrix_mode_case* mode,
     return rc;
 }
 
+/*
+ * Force the derived hangtime countdown to have started at @p started_m. The
+ * deadline is the most recent moment any slot carried followed traffic, so one
+ * slot carries the forced value and the other is cleared.
+ */
+static void
+set_hangtime_started(p25_sm_ctx_t* ctx, double started_m) {
+    ctx->slots[0].last_followed_m = started_m;
+    ctx->slots[1].last_followed_m = 0.0;
+}
+
 static void
 matrix_age_tuned_timers(matrix_fixture* fixture) {
     double now_m = dsd_time_now_monotonic_s();
-    fixture->ctx.t_tune_m = now_m - 1.0;
-    fixture->ctx.t_voice_m = now_m - 1.0;
+    double stale_m = now_m - 1.0;
+    fixture->ctx.t_tune_m = stale_m;
+    fixture->ctx.t_voice_m = stale_m;
+    if (p25_sm_hangtime_started_m(&fixture->ctx) > 0.0) {
+        set_hangtime_started(&fixture->ctx, stale_m);
+    }
     fixture->state->last_vc_sync_time = time(NULL) - 1;
-    fixture->state->last_vc_sync_time_m = now_m - 1.0;
+    fixture->state->last_vc_sync_time_m = stale_m;
     fixture->state->p25_last_vc_tune_time = time(NULL) - 1;
-    fixture->state->p25_last_vc_tune_time_m = now_m - 1.0;
+    fixture->state->p25_last_vc_tune_time_m = stale_m;
+    for (int s = 0; s < 2; s++) {
+        if (fixture->ctx.slots[s].last_grant_m > 0.0) {
+            fixture->ctx.slots[s].last_grant_m = stale_m;
+        }
+    }
+}
+
+static void
+matrix_stale_cc_timers(matrix_fixture* fixture) {
+    double now_m = dsd_time_now_monotonic_s();
+    fixture->ctx.t_cc_sync_m = now_m - 10.0;
+    fixture->state->last_cc_sync_time = time(NULL) - 10;
+    fixture->state->last_cc_sync_time_m = now_m - 10.0;
+    fixture->state->p25_last_cc_msg_time = fixture->state->last_cc_sync_time;
+    fixture->state->p25_last_cc_msg_time_m = now_m - 10.0;
+}
+
+static void
+matrix_mark_cc_reacquired(matrix_fixture* fixture) {
+    if (!fixture || !fixture->state) {
+        return;
+    }
+    double now_m = dsd_time_now_monotonic_s();
+    if (now_m <= fixture->state->last_cc_sync_time_m) {
+        now_m = fixture->state->last_cc_sync_time_m + 0.001;
+    }
+    fixture->state->last_cc_sync_time = time(NULL);
+    fixture->state->last_cc_sync_time_m = now_m;
+    fixture->state->p25_last_cc_msg_time = fixture->state->last_cc_sync_time;
+    fixture->state->p25_last_cc_msg_time_m = now_m;
 }
 
 static int
@@ -374,9 +427,20 @@ matrix_drive_to_cc(matrix_fixture* fixture, const matrix_mode_case* mode, const 
     }
 
     int rc = 0;
+    if (fixture->ctx.cc_tune_pending) {
+        const uint64_t request_id = fixture->ctx.cc_tune_request_id;
+        rc |= matrix_expect(request_id != 0U && fixture->ctx.t_cc_tune_m == 0.0, mode->name, flow->name, script->name,
+                            "pending return holds acquisition timer");
+        dsd_trunk_tuning_request_complete(request_id, DSD_TRUNK_TUNE_RESULT_OK);
+        p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
+        rc |= matrix_expect(fixture->ctx.cc_tune_pending == 0 && fixture->ctx.t_cc_tune_m > 0.0, mode->name, flow->name,
+                            script->name, "completed return starts acquisition timer");
+    }
     rc |= matrix_expect(fixture->ctx.state == P25_SM_ON_CC, mode->name, flow->name, script->name, "returned to ON_CC");
-    rc |= matrix_expect(fixture->opts->p25_is_tuned == 0 && fixture->opts->trunk_is_tuned == 0, mode->name, flow->name,
-                        script->name, "tuned flags cleared");
+    rc |= matrix_expect(fixture->ctx.cc_acquisition_origin == P25_SM_CC_ACQUISITION_RETURN, mode->name, flow->name,
+                        script->name, "return uses full-grace acquisition origin");
+    rc |=
+        matrix_expect(fixture->opts->trunk_is_tuned == 0, mode->name, flow->name, script->name, "tuned flags cleared");
     rc |= matrix_expect(fixture->state->p25_vc_freq[0] == 0 && fixture->state->p25_vc_freq[1] == 0, mode->name,
                         flow->name, script->name, "p25 vc frequencies cleared");
     rc |= matrix_expect(fixture->state->trunk_vc_freq[0] == 0 && fixture->state->trunk_vc_freq[1] == 0, mode->name,
@@ -390,6 +454,13 @@ matrix_drive_to_cc(matrix_fixture* fixture, const matrix_mode_case* mode, const 
                         mode->name, flow->name, script->name, "ctx vc state cleared");
     rc |= matrix_expect(g_hooks.return_calls == script->count, mode->name, flow->name, script->name,
                         "return-to-cc call count matches script");
+    const int cc_calls_before_post_return_tick = g_hooks.cc_calls;
+    p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
+    rc |= matrix_expect(fixture->ctx.state == P25_SM_ON_CC, mode->name, flow->name, script->name,
+                        "post-return tick remains ON_CC");
+    rc |= matrix_expect(g_hooks.cc_calls == cc_calls_before_post_return_tick, mode->name, flow->name, script->name,
+                        "post-return tick does not hunt CC");
+    matrix_mark_cc_reacquired(fixture);
     return rc;
 }
 
@@ -416,6 +487,8 @@ matrix_flow_vc_sync_hang(matrix_fixture* fixture, int event_slot) {
     p25_sm_event_t ev = {0};
     ev.type = P25_SM_EV_VC_SYNC;
     ev.slot = event_slot;
+    matrix_send_event(fixture, &ev);
+    ev = p25_sm_ev_idle(event_slot);
     matrix_send_event(fixture, &ev);
     matrix_tick_expired_voice(fixture);
 }
@@ -490,6 +563,7 @@ matrix_flow_enc_lockout(matrix_fixture* fixture, int event_slot) {
     p25_sm_event_t ev = p25_sm_ev_ptt(event_slot);
     matrix_send_event(fixture, &ev);
     fixture->state->p25_p2_audio_allowed[event_slot] = 1;
+    fixture->state->p25_crypto_state[event_slot] = DSD_P25_CRYPTO_BLOCKED;
     ev = p25_sm_ev_enc(event_slot, 0x84, 0x1234, 2000);
     matrix_send_event(fixture, &ev);
 }
@@ -539,6 +613,7 @@ matrix_run_terminal_case(const matrix_mode_case* mode, const matrix_flow_case* f
     if (rc != 0) {
         return rc;
     }
+    matrix_stale_cc_timers(fixture);
     return matrix_apply_terminal_flow(fixture, mode, flow, script);
 }
 
@@ -558,8 +633,8 @@ matrix_run_initial_tune_reject_case(const matrix_mode_case* mode, dsd_trunk_tune
     rc |= matrix_expect(g_hooks.vc_calls == 1, mode->name, "initial-tune", name, "vc tune attempted");
     rc |= matrix_expect(fixture->ctx.state == P25_SM_ON_CC, mode->name, "initial-tune", name,
                         "failed/deferred vc tune stays ON_CC");
-    rc |= matrix_expect(fixture->opts->p25_is_tuned == 0 && fixture->opts->trunk_is_tuned == 0, mode->name,
-                        "initial-tune", name, "failed/deferred vc tune leaves tuned flags clear");
+    rc |= matrix_expect(fixture->opts->trunk_is_tuned == 0, mode->name, "initial-tune", name,
+                        "failed/deferred vc tune leaves tuned flags clear");
     rc |= matrix_expect(fixture->state->p25_vc_freq[0] == 0 && fixture->state->trunk_vc_freq[0] == 0, mode->name,
                         "initial-tune", name, "failed/deferred vc tune leaves vc frequencies clear");
     rc |= matrix_expect(fixture->state->p25_sm_tune_count == 0, mode->name, "initial-tune", name,
@@ -596,7 +671,7 @@ matrix_run_active_no_terminal_case(const matrix_mode_case* mode) {
 
     rc |= matrix_expect(fixture->ctx.state == P25_SM_TUNED, mode->name, flow, "no-return",
                         "active call remains tuned without terminal signal");
-    rc |= matrix_expect(fixture->opts->p25_is_tuned == 1 && g_hooks.return_calls == 0, mode->name, flow, "no-return",
+    rc |= matrix_expect(fixture->opts->trunk_is_tuned == 1 && g_hooks.return_calls == 0, mode->name, flow, "no-return",
                         "active call did not spuriously return");
     return rc;
 }
@@ -673,9 +748,11 @@ matrix_run_cc_hunt_case(const matrix_mode_case* mode, dsd_trunk_tune_result firs
 
     long candidate = MATRIX_BASE_CC_HZ + 1000000;
     double now_m = dsd_time_now_monotonic_s();
-    (void)dsd_trunk_cc_candidates_add(fixture->state, candidate, 0);
+    (void)dsd_trunk_cc_candidates_add(fixture->state, candidate, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     fixture->state->last_cc_sync_time = time(NULL) - 10;
     fixture->state->last_cc_sync_time_m = now_m - 10.0;
+    fixture->state->p25_last_cc_msg_time = fixture->state->last_cc_sync_time;
+    fixture->state->p25_last_cc_msg_time_m = now_m - 10.0;
     fixture->ctx.t_cc_sync_m = now_m - 10.0;
 
     p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
@@ -687,8 +764,20 @@ matrix_run_cc_hunt_case(const matrix_mode_case* mode, dsd_trunk_tune_result firs
     if (dsd_trunk_tune_result_is_ok(first_result)) {
         rc |= matrix_expect(fixture->ctx.state == P25_SM_ON_CC, mode->name, "cc-hunt", result_name,
                             "accepted cc hunt returns ON_CC");
+        rc |= matrix_expect(fixture->ctx.cc_acquisition_origin == P25_SM_CC_ACQUISITION_HUNT_PROBE, mode->name,
+                            "cc-hunt", result_name, "accepted cc hunt uses probe acquisition origin");
         rc |= matrix_expect(fixture->state->p25_cc_eval_freq == candidate, mode->name, "cc-hunt", result_name,
                             "accepted candidate is under evaluation");
+        if (first_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+            const uint64_t request_id = fixture->ctx.cc_tune_request_id;
+            rc |=
+                matrix_expect(fixture->ctx.cc_tune_pending == 1 && request_id != 0U && fixture->ctx.t_cc_tune_m == 0.0,
+                              mode->name, "cc-hunt", result_name, "pending hunt holds acquisition timer");
+            dsd_trunk_tuning_request_complete(request_id, DSD_TRUNK_TUNE_RESULT_OK);
+            p25_sm_tick_ctx(&fixture->ctx, fixture->opts, fixture->state);
+            rc |= matrix_expect(fixture->ctx.cc_tune_pending == 0 && fixture->ctx.t_cc_tune_m > 0.0, mode->name,
+                                "cc-hunt", result_name, "completed hunt starts acquisition timer");
+        }
         return rc;
     }
 

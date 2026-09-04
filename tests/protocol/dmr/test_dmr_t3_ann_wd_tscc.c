@@ -8,21 +8,20 @@
  * cleanup semantics, and deferred switches must not advance the CC anchor.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
-#include <dsd-neo/io/rigctl_client.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/sockets.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -42,16 +41,6 @@ expect_true(const char* tag, int cond) {
     return 0;
 }
 
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        v = (v << 1) | (uint64_t)(BufferIn[i] & 1U);
-    }
-    return v;
-}
-
 void
 watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
@@ -66,14 +55,16 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)slot;
 }
 
-void
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
-    (void)src;
-    (void)dst;
-    (void)data_string;
+    (void)observation->ota_source_id;
+    (void)observation->ota_target_id;
+    (void)notice;
     (void)slot;
+    return 0;
 }
 
 void
@@ -81,39 +72,6 @@ void
 rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-}
-
-bool
-SetFreq(dsd_socket_t sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-SetModulation(dsd_socket_t sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-long int
-GetCurrentFreq(dsd_socket_t sockfd) {
-    (void)sockfd;
-    return 0;
-}
-
-struct RtlSdrContext;
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
 }
 
 void
@@ -139,24 +97,21 @@ dsd_drain_audio_output(dsd_opts* opts) {
 }
 
 static dsd_trunk_tune_result
-test_return_to_cc(dsd_opts* opts, dsd_state* state) {
+test_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     g_return_to_cc_calls++;
     if (g_return_to_cc_result != DSD_TRUNK_TUNE_RESULT_OK) {
         return g_return_to_cc_result;
     }
 
     if (opts) {
-        opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
     }
     if (state) {
-        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
         state->trunk_vc_freq[0] = 0;
         state->trunk_vc_freq[1] = 0;
-        state->lasttg = 0;
-        state->lasttgR = 0;
-        state->lastsrc = 0;
-        state->lastsrcR = 0;
+        (void)dsd_call_state_end(state, 0U, 0.0);
+        (void)dsd_call_state_end(state, 1U, 0.0);
     }
     dmr_reset_blocks(opts, state);
     return DSD_TRUNK_TUNE_RESULT_OK;
@@ -217,9 +172,12 @@ build_c_aloha_small(uint8_t* bits, uint8_t* bytes, uint16_t net, uint16_t site) 
 }
 
 static int
-expect_active_channel_contains(const char* tag, const char* actual, const char* expected) {
-    if (strstr(actual, expected) == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: %s: expected '%s' in '%s'\n", tag, expected, actual);
+expect_recent_activity(const char* tag, const dsd_state* state, uint8_t index, dsd_call_kind kind,
+                       const char* expected) {
+    dsd_recent_activity_snapshot recent;
+    if (dsd_recent_activity_copy_snapshot(state, &recent) <= 0 || recent.entries[index].observation.kind != kind
+        || strstr(recent.entries[index].notice, expected) == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: %s: missing structured activity '%s'\n", tag, expected);
         return 1;
     }
     return 0;
@@ -240,7 +198,7 @@ main(void) {
     const long next_cc = 852000000L;
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
-        .return_to_cc_result = test_return_to_cc,
+        .return_to_cc_request = test_return_to_cc,
     });
 
     init_env(&opts, &state);
@@ -248,9 +206,16 @@ main(void) {
     state.trunk_chan_map[next_ch] = next_cc;
     state.trunk_vc_freq[0] = 853000000L;
     state.trunk_vc_freq[1] = 853000000L;
-    state.lasttg = 1001;
-    state.lastsrc = 2002;
-    DSD_SNPRINTF(state.active_channel[0], sizeof(state.active_channel[0]), "%s", "stale");
+    dsd_call_observation active_call = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1001U,
+        .policy_target_id = 1001U,
+        .ota_source_id = 2002U,
+    };
+    rc |=
+        expect_true("seed active DMR call", dsd_call_state_observe(&state, &active_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
     g_return_to_cc_calls = 0;
     g_dmr_reset_blocks_calls = 0;
     g_return_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -261,8 +226,9 @@ main(void) {
     rc |= expect_true("tscc switch resets DMR blocks", g_dmr_reset_blocks_calls == 1);
     rc |= expect_true("tscc switch advances CC", state.trunk_cc_freq == next_cc);
     rc |= expect_true("tscc switch clears stale VC", state.trunk_vc_freq[0] == 0 && state.trunk_vc_freq[1] == 0);
-    rc |= expect_true("tscc switch clears active channel", state.active_channel[0][0] == '\0');
-    rc |= expect_true("tscc switch clears last call", state.lasttg == 0 && state.lastsrc == 0);
+    dsd_call_snapshot ended_call;
+    rc |= expect_true("tscc switch ends canonical call",
+                      dsd_call_state_get(&state, 0U, &ended_call) == 1 && ended_call.phase == DSD_CALL_PHASE_ENDED);
 
     dsd_state_ext_free_all(&state);
     init_env(&opts, &state);
@@ -283,20 +249,20 @@ main(void) {
     build_t3_grant(bits, bytes, 49U, 0x0123U, 0U, 1001U, 2002U);
     dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
     rc |=
-        expect_active_channel_contains("group grant active-channel kind", state.active_channel[0], "Active Group Ch:");
+        expect_recent_activity("group grant activity kind", &state, 0U, DSD_CALL_KIND_GROUP_VOICE, "Active Group Ch:");
 
     dsd_state_ext_free_all(&state);
     init_env(&opts, &state);
     build_t3_grant(bits, bytes, 52U, 0x0124U, 1U, 1002U, 2003U);
     dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
-    rc |= expect_active_channel_contains("data grant active-channel kind", state.active_channel[1], "Active Data Ch:");
+    rc |= expect_recent_activity("data grant activity kind", &state, 1U, DSD_CALL_KIND_DATA, "Active Data Ch:");
 
     dsd_state_ext_free_all(&state);
     init_env(&opts, &state);
     build_t3_grant(bits, bytes, 48U, 0x0125U, 0U, 1003U, 2004U);
     dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
-    rc |= expect_active_channel_contains("private grant active-channel kind", state.active_channel[0],
-                                         "Active Private Ch:");
+    rc |= expect_recent_activity("private grant activity kind", &state, 0U, DSD_CALL_KIND_PRIVATE_VOICE,
+                                 "Active Private Ch:");
 
     dsd_state_ext_free_all(&state);
     init_env(&opts, &state);

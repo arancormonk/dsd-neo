@@ -68,28 +68,6 @@ double dsd_window_max_attenuation(dsd_window_type_t window_type);
 void dsd_window_build(dsd_window_type_t window_type, int ntaps, float* taps_out);
 
 /**
- * @brief Build a Hamming window.
- *
- * Direct port of GNU Radio's fft::window::hamming().
- * Formula: w[n] = 0.54 - 0.46 * cos(2*pi*n / (M-1))
- *
- * @param ntaps    Number of taps
- * @param taps_out Output buffer
- */
-void dsd_window_hamming(int ntaps, float* taps_out);
-
-/**
- * @brief Build a Hann window.
- *
- * Direct port of GNU Radio's fft::window::hann().
- * Formula: w[n] = 0.5 - 0.5 * cos(2*pi*n / (M-1))
- *
- * @param ntaps    Number of taps
- * @param taps_out Output buffer
- */
-void dsd_window_hann(int ntaps, float* taps_out);
-
-/**
  * @brief Design a low-pass FIR filter using the window method.
  *
  * Direct port of GNU Radio's firdes::low_pass().

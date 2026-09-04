@@ -6,7 +6,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
-#include <string.h>
+#include <stddef.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -15,19 +15,15 @@
 static const dsd_protocol_handler*
 dsd_find_protocol_handler(int synctype) {
     const dsd_protocol_handler* handler = dsd_protocol_handlers;
-    const dsd_protocol_handler* fallback = NULL;
 
     while (handler->name != NULL) {
         if (handler->matches_synctype != NULL && handler->matches_synctype(synctype)) {
             return handler;
         }
-        if (fallback == NULL && strcmp(handler->name, "P25P1") == 0) {
-            fallback = handler;
-        }
         handler++;
     }
 
-    return fallback;
+    return NULL;
 }
 
 void
@@ -41,9 +37,14 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         state->minref = state->min;
     }
 
+    /* Default-productive, and set before the call so an early return inside a handler
+     * cannot leave the previous frame's verdict standing. A synctype no handler claims
+     * consumed nothing, so crediting it changes nothing either way. */
+    state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
+
     const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
     if (handler != NULL && handler->handle_frame != NULL) {
-        handler->handle_frame(opts, state);
+        state->sps_hunt_last_frame_verdict = (int)handler->handle_frame(opts, state);
     }
 }
 

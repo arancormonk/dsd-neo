@@ -97,7 +97,7 @@ dsd_trunk_cc_candidates_peek(const dsd_state* state) {
 }
 
 int
-dsd_trunk_cc_candidates_add_with_flags(dsd_state* state, long freq_hz, int bump_added, uint8_t flags) {
+dsd_trunk_cc_candidates_add(dsd_state* state, long freq_hz, int bump_added, uint8_t flags) {
     if (!state || freq_hz == 0) {
         return 0;
     }
@@ -137,13 +137,7 @@ dsd_trunk_cc_candidates_add_with_flags(dsd_state* state, long freq_hz, int bump_
 }
 
 int
-dsd_trunk_cc_candidates_add(dsd_state* state, long freq_hz, int bump_added) {
-    return dsd_trunk_cc_candidates_add_with_flags(state, freq_hz, bump_added, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
-}
-
-int
-dsd_trunk_cc_candidates_next_with_flags(dsd_state* state, double now_monotonic_s, uint8_t required_flags,
-                                        long* out_freq_hz) {
+dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, uint8_t required_flags, long* out_freq_hz) {
     if (!state || !out_freq_hz) {
         return 0;
     }
@@ -173,11 +167,6 @@ dsd_trunk_cc_candidates_next_with_flags(dsd_state* state, double now_monotonic_s
     return 0;
 }
 
-int
-dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, long* out_freq_hz) {
-    return dsd_trunk_cc_candidates_next_with_flags(state, now_monotonic_s, 0, out_freq_hz);
-}
-
 void
 dsd_trunk_cc_candidates_set_cooldown(const dsd_state* state, long freq_hz, double until_monotonic_s) {
     if (!state || freq_hz == 0) {
@@ -196,4 +185,23 @@ dsd_trunk_cc_candidates_set_cooldown(const dsd_state* state, long freq_hz, doubl
             return;
         }
     }
+}
+
+void
+dsd_trunk_cc_candidates_reset(const dsd_state* state) {
+    if (!state) {
+        return;
+    }
+
+    dsd_trunk_cc_candidates* cc =
+        DSD_STATE_EXT_GET_AS(dsd_trunk_cc_candidates, state, DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES);
+    if (!cc) {
+        return;
+    }
+
+    dsd_trunk_cc_candidates_clear(cc);
+    /* The file-local clear leaves the counters alone because it is also the
+       corruption-recovery path; a deliberate reset must zero them too. */
+    cc->added = 0;
+    cc->used = 0;
 }

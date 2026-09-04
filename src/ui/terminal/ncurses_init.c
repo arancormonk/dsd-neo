@@ -15,10 +15,7 @@
 #include <dsd-neo/ui/ncurses.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-unsigned long long int edacs_channel_tree[33][6];
 
 /* When ncurses UI is active, we temporarily suppress stderr to avoid stdio
  * mixed with the curses screen. Keep track so we can restore on close. */
@@ -26,7 +23,7 @@ static int s_stderr_suppressed = 0;
 static int s_saved_stderr_fd = -1;
 
 void
-ncursesOpen(dsd_opts* opts, dsd_state* state) {
+dsd_terminal_open(dsd_opts* opts, dsd_state* state) {
 
     UNUSED(opts);
     UNUSED(state);
@@ -57,7 +54,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
         init_pair(8, COLOR_BLACK, COLOR_WHITE);   // Black on White
         init_pair(9, COLOR_RED, COLOR_WHITE);     // Red on White
         init_pair(10, COLOR_BLUE, COLOR_WHITE);   // Blue on White
-        /* Quality bands for SNR sparkline and RTL spectrum visualizers */
+        /* Quality bands for RTL spectrum visualizers */
         init_pair(11, COLOR_GREEN, COLOR_BLACK);  // good/high
         init_pair(12, COLOR_YELLOW, COLOR_BLACK); // moderate/mid
         init_pair(13, COLOR_RED, COLOR_BLACK);    // poor/low
@@ -96,9 +93,6 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
     noecho();
     cbreak();
 
-    // initialize EDACS channel tree
-    DSD_MEMSET(edacs_channel_tree, 0, sizeof(edacs_channel_tree));
-
     // When ncurses UI is active, suppress direct stderr logging to prevent
     // screen corruption from background fprintf calls in protocol paths.
     // This avoids mixed ncurses/stdio output overwriting the UI until resize.
@@ -124,7 +118,7 @@ ncursesOpen(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-ncursesClose(void) {
+dsd_terminal_close(void) {
     // Restore stderr so exit-time logs (e.g., ring stats) are visible.
     if (s_stderr_suppressed) {
         fflush(stderr);

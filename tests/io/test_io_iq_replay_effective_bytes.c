@@ -6,6 +6,7 @@
 #include <dsd-neo/io/iq_replay.h>
 #include <inttypes.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
 
@@ -27,11 +28,53 @@ expect_int(const char* label, int got, int want) {
     return 0;
 }
 
+static int
+expect_double(const char* label, double got, double want) {
+    double delta = got - want;
+    if (delta < 0.0) {
+        delta = -delta;
+    }
+    if (delta > 0.000001) {
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%f want=%f\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_cstr(const char* label, const char* got, const char* want) {
+    const char* actual = got ? got : "(null)";
+    if (strcmp(actual, want) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: got=%s want=%s\n", label, actual, want);
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
     uint64_t effective = 0;
     int mismatch = 0;
+
+    rc |= expect_u64("cu8 alignment", dsd_iq_sample_format_alignment_bytes(DSD_IQ_FORMAT_CU8), 2);
+    rc |= expect_u64("cf32 alignment", dsd_iq_sample_format_alignment_bytes(DSD_IQ_FORMAT_CF32), 8);
+    rc |= expect_u64("cs16 alignment", dsd_iq_sample_format_alignment_bytes(DSD_IQ_FORMAT_CS16), 4);
+    rc |= expect_u64("unknown alignment", dsd_iq_sample_format_alignment_bytes(DSD_IQ_FORMAT_UNKNOWN), 0);
+    rc |= expect_cstr("cu8 name", dsd_iq_sample_format_name(DSD_IQ_FORMAT_CU8), "cu8");
+    rc |= expect_cstr("cf32 name", dsd_iq_sample_format_name(DSD_IQ_FORMAT_CF32), "cf32");
+    rc |= expect_cstr("cs16 name", dsd_iq_sample_format_name(DSD_IQ_FORMAT_CS16), "cs16");
+    rc |= expect_cstr("unknown name", dsd_iq_sample_format_name(DSD_IQ_FORMAT_UNKNOWN), "unknown");
+
+    rc |= expect_double("duration zero sample rate", dsd_iq_replay_estimate_duration_seconds(16, DSD_IQ_FORMAT_CU8, 0),
+                        0.0);
+    rc |= expect_double("duration unknown format",
+                        dsd_iq_replay_estimate_duration_seconds(16, DSD_IQ_FORMAT_UNKNOWN, 48000), 0.0);
+    rc |= expect_double("duration cu8", dsd_iq_replay_estimate_duration_seconds(96000, DSD_IQ_FORMAT_CU8, 48000), 1.0);
+    rc |=
+        expect_double("duration cf32", dsd_iq_replay_estimate_duration_seconds(384000, DSD_IQ_FORMAT_CF32, 48000), 1.0);
+    rc |=
+        expect_double("duration cs16", dsd_iq_replay_estimate_duration_seconds(192000, DSD_IQ_FORMAT_CS16, 48000), 1.0);
 
     rc |= expect_int("data_bytes=0 actual=10 cu8",
                      dsd_iq_replay_compute_effective_bytes(0, 10, DSD_IQ_FORMAT_CU8, &effective, &mismatch), DSD_IQ_OK);

@@ -5,7 +5,10 @@
 
 /**
  * @file
- * @brief Menu item array declarations for each submenu.
+ * @brief Menu item array declarations, one per root entry.
+ *
+ * The root itself is composed in menus/menu_defs.c (ui_menu_get_main_items()),
+ * in the order below: the receiver's signal chain, then housekeeping.
  *
  * This header is internal to src/ui/terminal/ and should NOT be installed.
  */
@@ -15,51 +18,40 @@
 #include <dsd-neo/ui/menu_core.h>
 #include <stddef.h>
 
-// ---- IO Menu ----
-extern const NcMenuItem IO_MENU_ITEMS[];
-extern const size_t IO_MENU_ITEMS_LEN;
+// ---- Input: source, input level, RTL-SDR tuning ----
+extern const NcMenuItem INPUT_MENU_ITEMS[];
+extern const size_t INPUT_MENU_ITEMS_LEN;
 
-// ---- Logging Menu ----
-extern const NcMenuItem LOGGING_MENU_ITEMS[];
-extern const size_t LOGGING_MENU_ITEMS_LEN;
+// ---- Decoder: protocol mode, modulation, filters, DMR/TDMA ----
+extern const NcMenuItem DECODER_MENU_ITEMS[];
+extern const size_t DECODER_MENU_ITEMS_LEN;
 
-// ---- Trunking Menu ----
+// ---- Trunking: on/off, follow rules, imports, P25, rig control ----
 extern const NcMenuItem TRUNK_MENU_ITEMS[];
 extern const size_t TRUNK_MENU_ITEMS_LEN;
 
-// ---- Keys Menu ----
-extern const NcMenuItem KEYS_MENU_ITEMS[];
-extern const size_t KEYS_MENU_ITEMS_LEN;
+// ---- Encryption: keys, key import, keystreams, encrypted-call policy ----
+extern const NcMenuItem ENC_MENU_ITEMS[];
+extern const size_t ENC_MENU_ITEMS_LEN;
 
-// ---- UI Display Menu ----
-extern const NcMenuItem UI_DISPLAY_MENU_ITEMS[];
-extern const size_t UI_DISPLAY_MENU_ITEMS_LEN;
+// ---- Audio: output sink, mute, gains, tone shaping, call alerts ----
+extern const NcMenuItem AUDIO_MENU_ITEMS[];
+extern const size_t AUDIO_MENU_ITEMS_LEN;
 
-// ---- LRRP Menu ----
-extern const NcMenuItem LRRP_MENU_ITEMS[];
-extern const size_t LRRP_MENU_ITEMS_LEN;
+// ---- Recording & logs: symbol capture, WAV, event log, LRRP, DSP dumps ----
+extern const NcMenuItem REC_MENU_ITEMS[];
+extern const size_t REC_MENU_ITEMS_LEN;
 
-// ---- Config Menu ----
+// ---- Display: compact view, sections, visualizers, event history ----
+extern const NcMenuItem DISPLAY_MENU_ITEMS[];
+extern const size_t DISPLAY_MENU_ITEMS_LEN;
+
+// ---- Config: load/save settings and profiles ----
 extern const NcMenuItem CONFIG_MENU_ITEMS[];
 extern const size_t CONFIG_MENU_ITEMS_LEN;
 
-// ---- Advanced Menu ----
+// ---- Advanced: scheduling, threads, diagnostics, environment ----
 extern const NcMenuItem ADV_MENU_ITEMS[];
 extern const size_t ADV_MENU_ITEMS_LEN;
-
-// ---- DSP Menu (USE_RADIO only) ----
-#ifdef USE_RADIO
-extern const NcMenuItem DSP_MENU_ITEMS[];
-extern const size_t DSP_MENU_ITEMS_LEN;
-
-// RTL-SDR menu (required for IO_INPUT_ITEMS submenu reference)
-extern const NcMenuItem RTL_MENU_ITEMS[];
-
-// DSP submenu arrays (needed by menu_labels.c predicates)
-extern const NcMenuItem DSP_AGC_ITEMS[];
-extern const size_t DSP_AGC_ITEMS_LEN;
-extern const NcMenuItem DSP_TED_ITEMS[];
-extern const size_t DSP_TED_ITEMS_LEN;
-#endif
 
 #endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_ITEMS_H_ */

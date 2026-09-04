@@ -18,7 +18,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -29,43 +28,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-struct RtlSdrContext;
-
-/* Stubs for external hooks referenced by the frequency module */
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
 
 /* Helper: compare long values and print diagnostic on mismatch */
 static int
@@ -489,8 +451,6 @@ test_full_multimode_pattern(void) {
         {850500000L / 5, 850500000L / 5, 100, 3600, 3, 100, 2200, 1},
     };
 
-    static const int slots_per_carrier[16] = {1, 1, 1, 2, 4, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
-
     for (int cycle = 0; cycle < 3; cycle++) {
         for (int slot = 0; slot < 4; slot++) {
             write_tdma_iden(&st, slot, slot_params[slot].tdma_base, slot_params[slot].tdma_spac,
@@ -520,7 +480,7 @@ test_full_multimode_pattern(void) {
             /* Resolve TDMA grant */
             st.p25_chan_tdma_explicit[slot] = 2;
             int tdma_type = slot_params[slot].tdma_type;
-            int denom = slots_per_carrier[tdma_type & 0xF];
+            int denom = p25_channel_type_slots_per_carrier(tdma_type);
             int chan_num = 0x0010;
             int step = chan_num / denom;
             int chan_tdma = (slot << 12) | chan_num;
@@ -577,11 +537,6 @@ test_no_cache_collision_for_dual_mode_slot(void) {
     long want_tdma = 850000000L + (6L * 50 * 125);
     rc |= expect_eq_long("dual cache: tdma auto", f_tdma_auto, want_tdma);
     rc |= expect_eq_long("dual cache: ambiguous map still empty", st.trunk_chan_map[chan], 0);
-
-    long f_fdma_explicit = process_channel_to_freq_with_mode(&opts, &st, chan, 0);
-    long f_tdma_explicit = process_channel_to_freq_with_mode(&opts, &st, chan, 1);
-    rc |= expect_eq_long("dual cache: fdma explicit", f_fdma_explicit, want_fdma);
-    rc |= expect_eq_long("dual cache: tdma explicit", f_tdma_explicit, want_tdma);
 
     if (rc == 0) {
         DSD_FPRINTF(stderr, "PASS test_no_cache_collision_for_dual_mode_slot\n");

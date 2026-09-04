@@ -7,7 +7,7 @@
  * @file
  * @brief DSP demodulation pipeline (FM/complex baseband) implementation.
  *
- * Provides decimation, optional FLL/TED, discrimination, deemphasis, DC block,
+ * Provides decimation, CQPSK recovery, discrimination, deemphasis, DC block,
  * and audio filtering. Public APIs are declared in `dsp/demod_pipeline.h`.
  */
 
@@ -15,7 +15,6 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/firdes.h>
-#include <dsd-neo/dsp/fll.h>
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/math_utils.h>
 #include <dsd-neo/dsp/simd_fir.h>
@@ -28,20 +27,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/fsk_modem.h"
 
-#ifndef MAXIMUM_OVERSAMPLE
-#define MAXIMUM_OVERSAMPLE 16
-#endif
-#ifndef DEFAULT_BUF_LENGTH
-#define DEFAULT_BUF_LENGTH 16384
-#endif
-#ifndef MAXIMUM_BUF_LENGTH
-#define MAXIMUM_BUF_LENGTH (MAXIMUM_OVERSAMPLE * DEFAULT_BUF_LENGTH)
-#endif
-
-#ifndef DSD_NEO_ALIGN
-#define DSD_NEO_ALIGN 64
-#endif
-
 #ifndef DSD_NEO_RESTRICT
 #if defined(_MSC_VER)
 #define DSD_NEO_RESTRICT __restrict
@@ -52,15 +37,11 @@
 #endif
 #endif
 
-#ifndef DSD_NEO_IVDEP
-#define DSD_NEO_IVDEP
-#endif
-
 static inline int
 debug_cqpsk_enabled(void) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(NULL);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
     return (cfg && cfg->debug_cqpsk_enable) ? 1 : 0;
@@ -142,7 +123,7 @@ clamp_float(float value, float lo, float hi) {
  * below include half of the transition width as guard so nominal channel edges
  * do not sit on the filter skirt.
  *
- * Legacy 63-tap Blackman prototypes are kept as fallback; preferred taps are
+ * Fixed 63-tap Blackman prototypes provide the allocation/design fallback; preferred taps are
  * generated per sample rate to preserve the intended spectral shape at any Fs.
  *
  * At 48 kHz with 1200 Hz transition width:
@@ -152,13 +133,21 @@ clamp_float(float value, float lo, float hi) {
 static const int kChannelLpfTaps = 144;
 static const double kChannelLpfTransitionHz = 1200.0;
 static const double kChannelLpfGuardHz = kChannelLpfTransitionHz * 0.5;
-static const double kChannelLpfWideCutoffHz = 8000.0 + kChannelLpfGuardHz;
-static const double kChannelLpf6k25CutoffHz = 3125.0 + kChannelLpfGuardHz;
-static const double kChannelLpf12k5CutoffHz = 6250.0 + kChannelLpfGuardHz;
-static const double kChannelLpfProvoiceCutoffHz = 6250.0 + kChannelLpfGuardHz;
-static const double kChannelLpfP25C4fmCutoffHz = 6250.0 + kChannelLpfGuardHz;
+/* Protected channel edges: the highest frequency each profile's channel LPF is
+ * designed to pass unattenuated. The cutoff constants below are these plus
+ * design guard, and dsd_channel_lpf_protected_edge_hz() reports these — see its
+ * doc comment for why P25 CQPSK reports 6250 while its cutoff is 7250. */
+static const double kChannelEdgeWideHz = 8000.0;
+static const double kChannelEdge6k25Hz = 3125.0;
+static const double kChannelEdge12k5Hz = 6250.0;
+
+static const double kChannelLpfWideCutoffHz = kChannelEdgeWideHz + kChannelLpfGuardHz;
+static const double kChannelLpf6k25CutoffHz = kChannelEdge6k25Hz + kChannelLpfGuardHz;
+static const double kChannelLpf12k5CutoffHz = kChannelEdge12k5Hz + kChannelLpfGuardHz;
+static const double kChannelLpfProvoiceCutoffHz = kChannelEdge12k5Hz + kChannelLpfGuardHz;
+static const double kChannelLpfP25C4fmCutoffHz = kChannelEdge12k5Hz + kChannelLpfGuardHz;
 static const double kChannelLpfP25CqpskCutoffHz = 7250.0;
-/* Legacy fallback filters are 63 taps (designed for 24 kHz). Only used when
+/* Fixed fallback filters are 63 taps (designed for 24 kHz). Only used when
  * dynamic filter generation fails; prefer dynamically generated taps. */
 static const int kChannelLpfFallbackTaps = 63;
 static const float channel_lpf_wide[kChannelLpfFallbackTaps] = {
@@ -227,7 +216,19 @@ static const float channel_lpf_wide[kChannelLpfFallbackTaps] = {
     0.0f,
 };
 
-/* Legacy digital profile taps (fc≈5 kHz @ 24 kHz, 63 taps). Designed as
+double
+dsd_channel_lpf_protected_edge_hz(int profile) {
+    switch (profile) {
+        case DSD_CH_LPF_PROFILE_6K25: return kChannelEdge6k25Hz;
+        case DSD_CH_LPF_PROFILE_12K5:
+        case DSD_CH_LPF_PROFILE_PROVOICE:
+        case DSD_CH_LPF_PROFILE_P25_C4FM:
+        case DSD_CH_LPF_PROFILE_P25_CQPSK: return kChannelEdge12k5Hz;
+        default: return kChannelEdgeWideHz;
+    }
+}
+
+/* Fixed digital-profile taps (fc≈5 kHz @ 24 kHz, 63 taps). Designed as
    Blackman-windowed sinc and normalized to unity DC gain. */
 static const float channel_lpf_digital[kChannelLpfFallbackTaps] = {
     0.0f,
@@ -437,43 +438,6 @@ audio_polydecim_process(struct demod_state* d, const float* in, int in_len, floa
     return out_len;
 }
 
-static inline float
-fm_agc_target_rms(const struct demod_state* d) {
-    const float target = (d->fm_agc_target_rms > 0.0f) ? d->fm_agc_target_rms : 0.30f;
-    return clamp_float(target, 0.05f, 2.5f);
-}
-
-static inline float
-fm_agc_alpha(float configured, float fallback) {
-    const float alpha = (configured > 0.0f) ? configured : fallback;
-    return clamp_float(alpha, 0.0f, 1.0f);
-}
-
-static inline float
-fm_agc_gain_from_rms(float target, float rms) {
-    const float kEps = 1e-6f;
-    return clamp_float(target / (rms + kEps), 0.125f, 8.0f);
-}
-
-static inline double
-fm_limiter_gain_for_mag2(float target, float m2) {
-    if (m2 <= 0.0f) {
-        return 0.0;
-    }
-    const double mag = sqrt((double)m2);
-    if (mag < 1e-6) {
-        return 0.0;
-    }
-    const double gain = (double)target / mag;
-    if (gain < 0.125) {
-        return 0.125;
-    }
-    if (gain > 8.0) {
-        return 8.0;
-    }
-    return gain;
-}
-
 /* ---------------- Fixed channel LPF (complex, no decimation) ----------------- */
 
 static int
@@ -591,28 +555,6 @@ channel_lpf_apply(struct demod_state* d) {
 }
 
 /**
- * @brief Half-band decimator for complex interleaved I/Q data.
- *
- * Decimates by 2:1 using symmetric FIR filter. Uses SIMD-dispatched implementation.
- *
- * @param in      Input complex samples (interleaved I/Q).
- * @param in_len  Number of complex samples (total elements = 2 * in_len).
- * @param out     Output buffer for decimated complex samples.
- * @param hist_i  Persistent I-channel history of length HB_TAPS-1.
- * @param hist_q  Persistent Q-channel history of length HB_TAPS-1.
- * @param taps_q15 Half-band filter taps (odd count, odd indices zero except center).
- * @param taps_len Number of taps.
- * @return Number of output floats (decimated complex samples * 2).
- */
-static int
-hb_decim2_complex_interleaved_ex(const float* DSD_NEO_RESTRICT in, int in_len, float* DSD_NEO_RESTRICT out,
-                                 float* DSD_NEO_RESTRICT hist_i, float* DSD_NEO_RESTRICT hist_q,
-                                 const float* DSD_NEO_RESTRICT taps_q15, int taps_len) {
-    /* Use SIMD-dispatched complex half-band decimator */
-    return simd_hb_decim2_complex(in, in_len, out, hist_i, hist_q, taps_q15, taps_len);
-}
-
-/**
  * @brief Boxcar low-pass and decimate by step (no wraparound).
  *
  * Length must be a multiple of step.
@@ -663,7 +605,6 @@ low_pass_real(struct demod_state* s) {
         decim = 1;
     }
     float recip = 1.0f / (float)decim;
-    DSD_NEO_IVDEP
     while (i < s->result_len) {
         s->now_lpr += r[i];
         i++;
@@ -680,9 +621,7 @@ low_pass_real(struct demod_state* s) {
 }
 
 /**
- * @brief Perform FM discriminator on interleaved low-passed I/Q to produce audio PCM.
- *
- * Uses the active discriminator configured in fm->discriminator.
+ * @brief Perform FM discrimination on interleaved low-passed I/Q to produce audio PCM.
  *
  * @param fm Demodulator state (uses lowpassed as input, writes to result).
  */
@@ -716,23 +655,6 @@ dsd_fm_demod(struct demod_state* fm) {
         float re = cr * prev_r + cj * prev_j;
         float im = cj * prev_r - cr * prev_j;
         float angle = phase_delta_small_angle_or_atan2(im, re);
-        if (fm->fll_enabled) {
-            /* Restore the per-sample phase advance that the upstream FLL mixer
-               subtracted from the I/Q. fll_mix_and_update() applies
-               y_n = x_n * exp(-j*(phase_0 + n*freq)), so the atan2 above yields
-               phase(x_n*conj(x_{n-1})) - freq. Adding fll_freq back makes the
-               discriminator output equal the absolute instantaneous frequency
-               of the unmixed signal and therefore invariant to FLL state.
-
-               Note: an earlier Q-format implementation used
-               `angle_q14 += (fll_freq_q15 >> 1)` under the mistaken belief that
-               Q15 (2*pi==1<<15) and Q14 (pi==1<<14) needed a scale conversion.
-               They have identical raw counts per radian, so `>> 1` silently
-               halved the physical value. The 0.5f multiplier in the float port
-               preserved that bug; full-scale addition restores the original
-               intent documented in the scaffold commit. */
-            angle += fm->fll_freq;
-        }
         out[n] = angle;
         prev_r = cr;
         prev_j = cj;
@@ -799,8 +721,8 @@ cqpsk_diff_phasor(struct demod_state* d) {
  * @brief QPSK helper demodulator: copy I channel from interleaved complex baseband.
  *
  * Assumes fm->lowpassed holds interleaved I/Q samples that have already passed
- * through CQPSK processing (front-end filtering, optional acquisition FLL/TED, Costas).
- * Produces a single real stream (I only) to feed the legacy symbol sampler path.
+ * through CQPSK processing (front-end filtering, OP25 Gardner timing, Costas).
+ * Produces a single real stream (I only) for the symbol sampler path.
  */
 /**
  * @brief Phase extractor for CQPSK differential phasors (OP25-compatible).
@@ -936,7 +858,6 @@ deemph_filter(struct demod_state* fm) {
         alpha = 1.0f;
     }
     /* Single-pole IIR: avg += (x - avg) * alpha */
-    DSD_NEO_IVDEP
     for (int i = 0; i < fm->result_len; i++) {
         float d = res[i] - avg;
         avg += d * alpha;
@@ -957,7 +878,6 @@ dc_block_filter(struct demod_state* fm) {
     const int k = 11; /* cutoff ~ Fs / (2π * 2^k) for small alpha=2^-k (k in 10..12) */
     float k_scale = 1.0f / (float)(1 << k);
     float* res = assume_aligned_ptr(fm->result, DSD_NEO_ALIGN);
-    DSD_NEO_IVDEP
     for (int i = 0; i < fm->result_len; i++) {
         float x = res[i];
         dc += (x - dc) * k_scale;
@@ -986,7 +906,6 @@ audio_lpf_filter(struct demod_state* fm) {
     if (alpha > 1.0f) {
         alpha = 1.0f;
     }
-    DSD_NEO_IVDEP
     for (int i = 0; i < fm->result_len; i++) {
         float x = res[i];
         float d = x - y;
@@ -1025,141 +944,6 @@ mean_power(const float* samples, int len, int step) {
     return (float)(energy / (double)(len > 0 ? len : 1));
 }
 
-/**
- * @brief Estimate frequency error using the configured discriminator and update the
- * FLL loop control variables (native float).
- *
- * Mirrors the modular FLL path used by the RTL front-end.
- *
- * @param d Demodulator state (syncs to/from `fll_state`, updates loop vars).
- */
-static void
-fll_update_error(struct demod_state* d) {
-    if (!d->fll_enabled) {
-        return;
-    }
-    d->fll_state.freq = d->fll_freq;
-    d->fll_state.phase = d->fll_phase;
-    d->fll_state.prev_r = d->fll_prev_r;
-    d->fll_state.prev_j = d->fll_prev_j;
-
-    fll_config_t cfg;
-    cfg.enabled = d->fll_enabled;
-    cfg.alpha = d->fll_alpha;
-    cfg.beta = d->fll_beta;
-    cfg.deadband = d->fll_deadband;
-    cfg.slew_max = d->fll_slew_max;
-
-    fll_update_error(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
-
-    d->fll_freq = d->fll_state.freq;
-    d->fll_phase = d->fll_state.phase;
-    d->fll_prev_r = d->fll_state.prev_r;
-    d->fll_prev_j = d->fll_state.prev_j;
-}
-
-/**
- * @brief Mix low-passed I/Q by the FLL NCO and advance the loop accumulators.
- *
- * Rotates the complex baseband to reduce residual CFO and synchronizes the
- * demod state with the modular FLL implementation.
- *
- * @param d Demodulator state (reads/writes `lowpassed`, updates `fll_state`).
- */
-static void
-fll_mix_and_update(struct demod_state* d) {
-    if (!d->fll_enabled) {
-        return;
-    }
-
-    /* Sync from demod_state to module state */
-    d->fll_state.freq = d->fll_freq;
-    d->fll_state.phase = d->fll_phase;
-    d->fll_state.prev_r = d->fll_prev_r;
-    d->fll_state.prev_j = d->fll_prev_j;
-
-    fll_config_t cfg;
-    cfg.enabled = d->fll_enabled;
-    cfg.alpha = d->fll_alpha;
-    cfg.beta = d->fll_beta;
-    cfg.deadband = d->fll_deadband;
-    cfg.slew_max = d->fll_slew_max;
-
-    fll_mix_and_update(&cfg, &d->fll_state, d->lowpassed, d->lp_len);
-
-    /* Sync back to demod_state */
-    d->fll_freq = d->fll_state.freq;
-    d->fll_phase = d->fll_state.phase;
-    d->fll_prev_r = d->fll_state.prev_r;
-    d->fll_prev_j = d->fll_state.prev_j;
-}
-
-/*
- * FM envelope AGC/limiter (per-sample)
- *
- * Normalizes complex I/Q magnitude toward a target RMS to reduce amplitude
- * bounce from low-cost front-ends (e.g., RTL-SDR). Matches the OP25/GNU Radio
- * style of per-sample RMS tracking and gain update (attack/decay), rather than
- * a block-stepped gain. Disabled for CQPSK paths to leave constellation
- * amplitude untouched.
- */
-static inline void
-fm_envelope_agc(struct demod_state* d) {
-    if (!d || !d->fm_agc_enable || d->cqpsk_enable || !d->lowpassed || d->lp_len < 2) {
-        return;
-    }
-    const int pairs = d->lp_len >> 1;
-    if (pairs <= 0) {
-        return;
-    }
-    /* Guard: avoid boosting pure noise when input is below configured minimum */
-    double acc = 0.0;
-    const float* iq_pre = d->lowpassed;
-    for (int n = 0; n < pairs; n++) {
-        double I = (double)iq_pre[(size_t)(n << 1) + 0];
-        double Q = (double)iq_pre[(size_t)(n << 1) + 1];
-        acc += I * I + Q * Q;
-    }
-    if (acc == 0) {
-        return;
-    }
-    double rms_pre = sqrt(acc / (double)pairs);
-    float min_rms = (d->fm_agc_min_rms > 0.0f) ? d->fm_agc_min_rms : 0.06f;
-    if (rms_pre < (double)min_rms) {
-        return;
-    }
-    const float target = fm_agc_target_rms(d);
-    const float alpha_up = fm_agc_alpha(d->fm_agc_alpha_up, 0.25f);
-    const float alpha_dn = fm_agc_alpha(d->fm_agc_alpha_down, 0.75f);
-
-    float rms = (float)d->fm_agc_ema_rms;
-    if (rms <= 0.0f) {
-        rms = target; /* seed estimator near target */
-    }
-    float rms2 = rms * rms;
-
-    float* out = d->lowpassed;
-    float last_g = 1.0f;
-    for (int n = 0; n < pairs; n++) {
-        float I = (float)out[(size_t)(n << 1)];
-        float Q = (float)out[(size_t)(n << 1) + 1];
-        float mag2 = I * I + Q * Q;
-
-        /* Faster update when we need to back off gain; slower when ramping up. */
-        const float alpha = (mag2 > rms2) ? alpha_dn : alpha_up;
-        rms2 = fmaxf((1.0f - alpha) * rms2 + alpha * mag2, 0.0f);
-        rms = sqrtf(rms2);
-
-        const float g = fm_agc_gain_from_rms(target, rms);
-        last_g = g;
-
-        out[(size_t)(n << 1)] = I * g;
-        out[(size_t)(n << 1) + 1] = Q * g;
-    }
-    d->fm_agc_gain = last_g;
-    d->fm_agc_ema_rms = (double)rms;
-}
-
 /* Optional complex DC blocker prior to FM discrimination (per-sample leaky integrator) */
 static inline void
 iq_dc_block(struct demod_state* d) {
@@ -1193,92 +977,6 @@ iq_dc_block(struct demod_state* d) {
     d->iq_dc_avg_i = dcQ;
 }
 
-/* Optional constant-envelope limiter: per-sample normalization around target magnitude */
-static inline void
-fm_constant_envelope_limiter(struct demod_state* d) {
-    if (!d || !d->fm_limiter_enable || d->cqpsk_enable || !d->lowpassed || d->lp_len < 2) {
-        return;
-    }
-    const float target = fm_agc_target_rms(d);
-    const float t2 = target * target;
-    const float lo2 = t2 * 0.25f; /* 0.5^2 */
-    const float hi2 = t2 * 4.0f;  /* 2.0^2 */
-    float* iq = d->lowpassed;
-    const int pairs = d->lp_len >> 1;
-    for (int n = 0; n < pairs; n++) {
-        float I = iq[(size_t)(n << 1) + 0];
-        float Q = iq[(size_t)(n << 1) + 1];
-        float m2 = I * I + Q * Q;
-        if (m2 <= 0.0f || (m2 >= lo2 && m2 <= hi2)) {
-            /* within tolerance, leave unchanged */
-            continue;
-        }
-        double g = fm_limiter_gain_for_mag2(target, m2);
-        if (g == 0.0) {
-            continue;
-        }
-        float yI = (float)((double)I * g);
-        float yQ = (float)((double)Q * g);
-        iq[(size_t)(n << 1) + 0] = yI;
-        iq[(size_t)(n << 1) + 1] = yQ;
-    }
-}
-
-/**
- * @brief Apply a lightweight Gardner timing correction to complex baseband.
- *
- * When enabled, this may adjust `lowpassed` and `lp_len` via the modular TED API.
- * Intended primarily for digital modes; typically disabled for analog FM.
- *
- * @param d Demodulator state (syncs `ted_state`, may modify samples/length).
- */
-static void
-gardner_timing_adjust(struct demod_state* d) {
-    if (!d->ted_enabled || d->ted_sps <= 1) {
-        return;
-    }
-
-    /* Sync from demod_state to module state */
-    d->ted_state.mu = d->ted_mu;
-
-    ted_config_t cfg = {}; /* Zero-initialize for safety if struct grows */
-    cfg.enabled = d->ted_enabled;
-    cfg.force = d->ted_force;
-    cfg.sps = d->ted_sps;
-    /* Map runtime ted_gain to loop gain parameter.
-     * If ted_gain > 0, use it; otherwise let ted.cpp use defaults. */
-    cfg.gain_mu = d->ted_gain;
-    cfg.gain_omega = 0.0f; /* 0 = use defaults (0.1 * gain_mu^2) */
-    cfg.omega_rel = 0.0f;  /* 0 = use defaults (0.002) */
-
-    /* For CQPSK paths, use OP25-compatible decimating Gardner; for FM/C4FM
-       paths, use the legacy non-decimating Farrow-based TED to preserve the
-       expected sample-rate interface for downstream processing. */
-    if (d->cqpsk_enable) {
-        gardner_timing_adjust(&cfg, &d->ted_state, d->lowpassed, &d->lp_len, d->timing_buf);
-    } else if (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
-        if (!d->channel_squelched) {
-            iq_dc_block(d);
-        }
-    } else {
-        gardner_timing_adjust_farrow(&cfg, &d->ted_state, d->lowpassed, &d->lp_len, d->timing_buf);
-    }
-
-    /* Sync back to demod_state */
-    d->ted_mu = d->ted_state.mu;
-
-    /* Debug: TED state when DSD_NEO_DEBUG_CQPSK=1 */
-    {
-        static int call_count = 0;
-        if (debug_cqpsk_enabled() && d->cqpsk_enable && (++call_count % 50) == 0) {
-            float lock_norm =
-                (d->ted_state.lock_count > 0) ? d->ted_state.lock_accum / (float)d->ted_state.lock_count : 0.0f;
-            DSD_FPRINTF(stderr, "[TED] omega:%.3f mu:%.3f e_ema:%.4f lock:%.2f in:%d out:%d\n", d->ted_state.omega,
-                        d->ted_state.mu, d->ted_state.e_ema, lock_norm, d->lp_len, d->lp_len);
-        }
-    }
-}
-
 /**
  * @brief Apply stage-wise half-band decimation for complex baseband.
  */
@@ -1293,8 +991,7 @@ full_demod_apply_halfband_decimation(struct demod_state* d) {
     for (int i = 0; i < d->downsample_passes; i++) {
         const float* taps = (i == 0) ? hb31_q15_taps : hb_q15_taps;
         int taps_len = (i == 0) ? 31 : HB_TAPS;
-        int out_len =
-            hb_decim2_complex_interleaved_ex(src, in_len, dst, d->hb_hist_i[i], d->hb_hist_q[i], taps, taps_len);
+        int out_len = simd_hb_decim2_complex(src, in_len, dst, d->hb_hist_i[i], d->hb_hist_q[i], taps, taps_len);
         src = dst;
         in_len = out_len;
         dst = (src == d->hb_workbuf) ? d->lowpassed : d->hb_workbuf;
@@ -1376,14 +1073,14 @@ full_demod_debug_op25_state(const struct demod_state* d, int pre_len) {
     const dsd_fll_band_edge_state_t* f = &d->fll_band_edge_state;
     const ted_state_t* ted = &d->ted_state;
     const float kTwoPi = 6.28318530717958647692f;
-    float fll_freq_hz = f->freq * ((float)d->rate_out / kTwoPi);
+    float fll_be_freq_hz = f->freq * ((float)d->rate_out / kTwoPi);
     int sym_rate = (d->ted_sps > 0 && d->rate_out > 0) ? (d->rate_out / d->ted_sps) : 4800;
     float costas_freq_hz = c->freq * ((float)sym_rate / kTwoPi);
     float ted_lock = (ted->lock_count > 0) ? (ted->lock_accum / (float)ted->lock_count) : 0.0f;
     DSD_FPRINTF(stderr,
-                "[OP25] in:%d out:%d omega:%.3f ted_gain:%.3f ted_lock:%.3f fll_freq:%.1fHz "
+                "[OP25] in:%d out:%d omega:%.3f ted_gain:%.3f ted_lock:%.3f fll_be_freq:%.1fHz "
                 "costas_freq:%.1fHz phase:%.3f\n",
-                pre_len / 2, d->lp_len / 2, ted->omega, d->ted_effective_gain, ted_lock, fll_freq_hz, costas_freq_hz,
+                pre_len / 2, d->lp_len / 2, ted->omega, d->ted_effective_gain, ted_lock, fll_be_freq_hz, costas_freq_hz,
                 c->phase);
     if (d->lp_len < 8) {
         return;
@@ -1424,21 +1121,10 @@ full_demod_run_non_cqpsk_chain(struct demod_state* d) {
     if (d->cqpsk_enable || d->channel_squelched) {
         return;
     }
-    int fsk_symbol_output = (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK);
+    int fsk_direct_output = (d->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
     iq_dc_block(d);
-    if (fsk_symbol_output) {
+    if (fsk_direct_output) {
         return;
-    }
-    if (d->fm_agc_enable) {
-        fm_envelope_agc(d);
-    } else if (d->fm_limiter_enable) {
-        fm_constant_envelope_limiter(d);
-    }
-    if (d->fll_enabled) {
-        if (d->squelch_gate_open) {
-            fll_update_error(d);
-        }
-        fll_mix_and_update(d);
     }
 }
 
@@ -1484,26 +1170,21 @@ full_demod_apply_iq_balance(struct demod_state* d) {
     }
 }
 
-static void
-full_demod_maybe_apply_farrow_ted(struct demod_state* d) {
-    if (!d->ted_enabled || d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_FSK || d->cqpsk_enable || d->channel_squelched
-        || !d->sps_is_integer || (d->mode_demod == &dsd_fm_demod && !d->ted_force)) {
-        return;
-    }
-    gardner_timing_adjust(d);
-}
-
 static int
 full_demod_handle_fsk_output(struct demod_state* d) {
-    if (d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_FSK) {
+    if (d->output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         return 0;
     }
     int in_pairs = d->lp_len >> 1;
     if (d->channel_squelched) {
-        d->result_len = dsd_fsk_modem_zero_symbols(&d->fsk_modem_state, in_pairs, d->result, MAXIMUM_BUF_LENGTH);
+        dsd_fsk_modem_reset(&d->fsk_modem_state);
+        d->result_len = in_pairs < MAXIMUM_BUF_LENGTH ? in_pairs : MAXIMUM_BUF_LENGTH;
+        for (int i = 0; i < d->result_len; i++) {
+            d->result[i] = 0.0f;
+        }
     } else {
-        d->result_len =
-            dsd_fsk_modem_process(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result, MAXIMUM_BUF_LENGTH);
+        d->result_len = dsd_fsk_modem_discriminator_process(&d->fsk_modem_state, d->lowpassed, d->lp_len, d->result,
+                                                            MAXIMUM_BUF_LENGTH);
     }
     return 1;
 }
@@ -1656,7 +1337,6 @@ full_demod(struct demod_state* d) {
     full_demod_run_cqpsk_chain(d);
     full_demod_run_non_cqpsk_chain(d);
     full_demod_apply_iq_balance(d);
-    full_demod_maybe_apply_farrow_ted(d);
     if (full_demod_handle_fsk_output(d)) {
         return;
     }

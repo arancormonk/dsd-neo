@@ -1,26 +1,45 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Coverage fixtures intentionally use private-source inclusion, synthetic sentinels,
+// invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
+// NOLINTBEGIN(bugprone-implicit-widening-of-multiplication-result)
 /*
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/enc_lockout.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
 
 int
-getAfsString(const dsd_state* state, char* buffer, int a, int f, int s) {
-    (void)state;
+getAfsStringFromBits(int a_bits, int f_bits, int s_bits, char* buffer, int a, int f, int s) {
+    (void)a_bits;
+    (void)f_bits;
+    (void)s_bits;
     return DSD_SNPRINTF(buffer, 16, "%02d-%03d", a, (f * 8) + s);
 }
 
@@ -41,21 +60,155 @@ write_bits_u64(uint8_t* bits, size_t start, uint64_t value, size_t nbits) {
 }
 
 static void
+seed_voice_call(dsd_state* state, uint8_t slot, dsd_call_kind kind, uint64_t target, uint64_t source) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = slot,
+        .kind = kind,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+}
+
+static void
+assert_call(const dsd_state* state, uint8_t slot, dsd_call_phase phase, dsd_call_kind kind, uint64_t target,
+            uint64_t source) {
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, slot, &call) > 0);
+    assert(call.phase == phase);
+    assert(call.kind == kind);
+    assert(call.ota_target_id == target);
+    assert(call.policy_target_id == target);
+    assert(call.ota_source_id == source);
+}
+
+static void
+assert_no_active_call(const dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
+}
+
+static void
 bytes_to_bits(uint8_t* bits, const uint8_t* bytes, size_t nbytes) {
     for (size_t i = 0; i < nbytes; i++) {
         write_bits_u64(bits, i * 8U, bytes[i], 8U);
     }
 }
 
-static uint8_t
-hytera_checksum(const uint8_t bytes[8]) {
-    uint8_t checksum = 0;
-    for (size_t i = 0; i < 8; i++) {
-        checksum = (uint8_t)((checksum + bytes[i]) & 0xFFU);
+static void
+build_tact(uint8_t out[7], uint8_t lcss) {
+    static const uint8_t codewords[4][7] = {
+        {0, 0, 0, 0, 0, 0, 0},
+        {0, 0, 0, 1, 0, 1, 1},
+        {0, 0, 1, 0, 1, 1, 0},
+        {0, 0, 1, 1, 1, 0, 1},
+    };
+    assert(lcss < 4U);
+    DSD_MEMCPY(out, codewords[lcss], 7U);
+}
+
+static void
+build_cach_fragment(uint8_t cach_bits[25], uint8_t lcss, const uint8_t slc[17]) {
+    DSD_MEMSET(cach_bits, 0, 25U);
+    build_tact(cach_bits, lcss);
+    for (int i = 0; i < 17; i++) {
+        cach_bits[i + 7] = slc[i] & 1U;
     }
-    checksum = (uint8_t)(~checksum & 0xFFU);
-    checksum++;
-    return checksum;
+}
+
+static void
+build_slc17(uint8_t slc[17], uint8_t slco, uint8_t ts1_act, uint8_t ts2_act) {
+    DSD_MEMSET(slc, 0, 17U);
+    write_bits_u64(slc, 0U, slco, 4U);
+    write_bits_u64(slc, 4U, ts1_act, 4U);
+    write_bits_u64(slc, 8U, ts2_act, 4U);
+    slc[12] = slc[0] ^ slc[1] ^ slc[2] ^ slc[3] ^ slc[6] ^ slc[7] ^ slc[9];
+    slc[13] = slc[0] ^ slc[1] ^ slc[2] ^ slc[3] ^ slc[4] ^ slc[7] ^ slc[8] ^ slc[10];
+    slc[14] = slc[1] ^ slc[2] ^ slc[3] ^ slc[4] ^ slc[5] ^ slc[8] ^ slc[9] ^ slc[11];
+    slc[15] = slc[0] ^ slc[1] ^ slc[4] ^ slc[5] ^ slc[7] ^ slc[10];
+    slc[16] = slc[0] ^ slc[1] ^ slc[2] ^ slc[5] ^ slc[6] ^ slc[8] ^ slc[11];
+}
+
+static void
+build_hamming17123_payload(uint8_t out[17], const uint8_t payload[12]) {
+    DSD_MEMSET(out, 0, 17U);
+    for (int i = 0; i < 12; i++) {
+        out[i] = payload[i] & 1U;
+    }
+    out[12] = out[0] ^ out[1] ^ out[2] ^ out[3] ^ out[6] ^ out[7] ^ out[9];
+    out[13] = out[0] ^ out[1] ^ out[2] ^ out[3] ^ out[4] ^ out[7] ^ out[8] ^ out[10];
+    out[14] = out[1] ^ out[2] ^ out[3] ^ out[4] ^ out[5] ^ out[8] ^ out[9] ^ out[11];
+    out[15] = out[0] ^ out[1] ^ out[4] ^ out[5] ^ out[7] ^ out[10];
+    out[16] = out[0] ^ out[1] ^ out[2] ^ out[5] ^ out[6] ^ out[8] ^ out[11];
+}
+
+static void
+make_slco_crc_residue_zero(uint8_t slco_bits[36]) {
+    for (uint32_t nonce = 0; nonce <= 0xFFU; nonce++) {
+        write_bits_u64(slco_bits, 28U, nonce, 8U);
+        if (crc8(slco_bits, 36U) == 0U) {
+            return;
+        }
+    }
+    assert(!"unable to derive zero-residue SLC payload");
+}
+
+static void
+build_completed_slco_cach(uint8_t cach[4][25], uint8_t slco_bits[36]) {
+    uint8_t expanded[68];
+    uint8_t raw[68];
+
+    make_slco_crc_residue_zero(slco_bits);
+    DSD_MEMSET(expanded, 0, sizeof(expanded));
+    DSD_MEMSET(raw, 0, sizeof(raw));
+    for (int word = 0; word < 3; word++) {
+        build_hamming17123_payload(&expanded[word * 17], &slco_bits[word * 12]);
+    }
+
+    for (int i = 0; i < 67; i++) {
+        raw[(i * 4) % 67] = expanded[i];
+    }
+    raw[67] = expanded[67];
+
+    build_cach_fragment(cach[0], 1U, &raw[0]);
+    build_cach_fragment(cach[1], 3U, &raw[17]);
+    build_cach_fragment(cach[2], 3U, &raw[34]);
+    build_cach_fragment(cach[3], 2U, &raw[51]);
+}
+
+static void
+build_completed_slco_cach_without_crc_fixup(uint8_t cach[4][25], const uint8_t slco_bits[36]) {
+    uint8_t expanded[68];
+    uint8_t raw[68];
+
+    DSD_MEMSET(expanded, 0, sizeof(expanded));
+    DSD_MEMSET(raw, 0, sizeof(raw));
+    for (int word = 0; word < 3; word++) {
+        build_hamming17123_payload(&expanded[word * 17], &slco_bits[word * 12]);
+    }
+
+    for (int i = 0; i < 67; i++) {
+        raw[(i * 4) % 67] = expanded[i];
+    }
+    raw[67] = expanded[67];
+
+    build_cach_fragment(cach[0], 1U, &raw[0]);
+    build_cach_fragment(cach[1], 3U, &raw[17]);
+    build_cach_fragment(cach[2], 3U, &raw[34]);
+    build_cach_fragment(cach[3], 2U, &raw[51]);
+}
+
+static void
+run_completed_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[36]) {
+    uint8_t cach[4][25];
+
+    build_completed_slco_cach(cach, slco_bits);
+    assert(dmr_cach(opts, state, cach[0]) == 0U);
+    assert(dmr_cach(opts, state, cach[1]) == 0U);
+    assert(dmr_cach(opts, state, cach[2]) == 0U);
+    assert(dmr_cach(opts, state, cach[3]) == 0U);
 }
 
 static int s_scan_activity_calls = 0;
@@ -64,6 +217,9 @@ static uint32_t s_scan_activity_source = 0;
 static int s_scan_activity_is_private = 0;
 static int s_scan_activity_encrypted = 0;
 static int s_scan_activity_data_call = 0;
+static int s_tune_to_cc_calls = 0;
+static long int s_tune_to_cc_freq = 0;
+static int s_return_to_cc_calls = 0;
 
 static void
 capture_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
@@ -82,6 +238,28 @@ static void
 clear_scan_hooks(void) {
     dsd_trunk_scan_hooks hooks = {0};
     dsd_trunk_scan_hooks_set(hooks);
+}
+
+static dsd_trunk_tune_result
+capture_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    s_tune_to_cc_calls++;
+    s_tune_to_cc_freq = freq;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static dsd_trunk_tune_result
+capture_return_to_cc_ending_calls(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
+    s_return_to_cc_calls++;
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        (void)dsd_call_state_end(state, (uint8_t)slot, 0.0);
+    }
+    opts->trunk_is_tuned = 0;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
@@ -140,11 +318,54 @@ capture_regular_flco(uint8_t type, char* out, size_t out_size) {
     int rc = dsd_test_capture_stderr_end(&cap);
     if (rc != 0) {
         (void)remove(cap.path);
+        dsd_state_ext_free_all(&state);
         return -1;
     }
 
     rc = read_file_to_buffer(cap.path, out, out_size);
     (void)remove(cap.path);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+capture_ms_direct_flco(char* out, size_t out_size) {
+    if (out == NULL || out_size == 0U) {
+        return -1;
+    }
+    out[0] = '\0';
+
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.dmr_ms_mode = 1;
+
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_ms_direct_flco") != 0) {
+        return -1;
+    }
+
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    int rc = dsd_test_capture_stderr_end(&cap);
+    if (rc != 0) {
+        (void)remove(cap.path);
+        dsd_state_ext_free_all(&state);
+        return -1;
+    }
+
+    rc = read_file_to_buffer(cap.path, out, out_size);
+    (void)remove(cap.path);
+    if (irr != 0U) {
+        dsd_state_ext_free_all(&state);
+        return -1;
+    }
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -183,14 +404,17 @@ capture_hytera_basic_key_output(unsigned int slot, uint8_t segment_count, char* 
     int rc = dsd_test_capture_stderr_end(&cap);
     if (rc != 0) {
         (void)remove(cap.path);
+        dsd_state_ext_free_all(&state);
         return -1;
     }
 
     rc = read_file_to_buffer(cap.path, out, out_size);
     (void)remove(cap.path);
     if (irr != 0U) {
+        dsd_state_ext_free_all(&state);
         return -1;
     }
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -200,6 +424,60 @@ test_flco_output_uses_real_newlines(void) {
     assert(capture_regular_flco(1U, out, sizeof(out)) == 0);
     assert(strchr(out, '\n') != NULL);
     assert(strstr(out, "\\n") == NULL);
+}
+
+static void
+test_ms_direct_flco_reports_internal_slot_one(void) {
+    char out[2048];
+    assert(capture_ms_direct_flco(out, sizeof(out)) == 0);
+    assert(strstr(out, " SLOT 1 ") != NULL);
+    assert(strstr(out, " SLOT ?") == NULL);
+}
+
+static void
+test_single_slot_flco_forces_slot_one_context(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.dmr_mono = 1;
+    state.dmr_stereo = 0;
+    state.currentslot = 1;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    assert(irr == 0U);
+    assert(state.currentslot == 0);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1001U, 2002U);
+    assert_no_active_call(&state, 1U);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
+test_trunked_mono_bs_fallback_preserves_slot_context(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.dmr_mono = 1;
+    state.dmr_stereo = 1;
+    state.currentslot = 1;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    assert(irr == 0U);
+    assert(state.currentslot == 1);
+    assert_no_active_call(&state, 0U);
+    assert_call(&state, 1U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1001U, 2002U);
+    dsd_state_ext_free_all(&state);
 }
 
 static void
@@ -254,6 +532,67 @@ test_kirisun_flco_sets_late_entry_mode(void) {
 }
 
 static void
+test_flco_canonical_crypto_uses_algorithm_aware_keys(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0U;
+    dsd_call_snapshot call;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.payload_algid = 0x24;
+    state.payload_keyid = 0x12;
+    state.aes_key_loaded[0] = 1;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.payload_algid = 0x24;
+    state.payload_keyid = 0x13;
+    state.R = 0x123456789AULL;
+    irr = 0U;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    assert(call.audio_permitted == 0U);
+
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.K = 42U;
+    irr = 0U;
+    build_regular_flco(bits, 0x00U, 0x10U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.K1 = 0x12345U;
+    irr = 0U;
+    build_regular_flco(bits, 0x00U, 0x68U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
 test_hytera_enhanced_flco_uses_secondary_checksum(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -261,7 +600,7 @@ test_hytera_enhanced_flco_uses_secondary_checksum(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
 
     uint8_t bytes[9] = {0x02U, 0x68U, 0x34U, 0x01U, 0x23U, 0x45U, 0x67U, 0x89U, 0x00U};
-    bytes[8] = hytera_checksum(bytes);
+    bytes[8] = 0x09U;
 
     uint8_t bits[80];
     DSD_MEMSET(bits, 0, sizeof(bits));
@@ -321,7 +660,6 @@ test_hytera_flco_scan_hook_uses_final_call_type(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
-    state.gi[0] = 0;
 
     s_scan_activity_calls = 0;
     s_scan_activity_is_private = 0;
@@ -337,19 +675,1908 @@ test_hytera_flco_scan_hook_uses_final_call_type(void) {
     clear_scan_hooks();
 
     assert(irr == 0);
-    assert(state.gi[0] == 1);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_PRIVATE_VOICE, 1001U, 2002U);
     assert(s_scan_activity_calls == 1);
     assert(s_scan_activity_is_private == 1);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
+seed_td_lc_slot(dsd_opts* opts, dsd_state* state, unsigned int slot) {
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+
+    opts->floating_point = 1;
+    opts->audio_gain = 6.25f;
+    state->currentslot = slot;
+    if (slot == 0U) {
+        state->dmr_fid = 0x68;
+        state->dmr_so = 0x40;
+        state->payload_algid = 0x22;
+        state->payload_keyid = 0x33;
+        state->payload_mi = 0x123456789AULL;
+        state->aout_gain = 1.0f;
+    } else {
+        state->dmr_fidR = 0x68;
+        state->dmr_soR = 0x40;
+        state->payload_algidR = 0x44;
+        state->payload_keyidR = 0x55;
+        state->payload_miR = 0xABCDEF0123ULL;
+        state->aout_gainR = 2.0f;
+    }
+    seed_voice_call(state, (uint8_t)slot, DSD_CALL_KIND_GROUP_VOICE, slot == 0U ? 1001U : 3003U,
+                    slot == 0U ? 2002U : 4004U);
+
+    state->dmr_alias_block_len[slot] = 7;
+    state->dmr_alias_char_size[slot] = 1;
+    state->dmr_alias_format[slot] = 2;
+    DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "alias");
+    DSD_MEMSET(state->dmr_pdu_sf[slot], 0x5A, sizeof(state->dmr_pdu_sf[slot]));
+    DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof(state->dmr_embedded_gps[slot]), "gps");
+    DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "lrrp");
+}
+
+static void
+assert_td_lc_slot_reset(const dsd_state* state, unsigned int slot) {
+    if (slot == 0U) {
+        assert(state->dmr_fid == 0);
+        assert(state->dmr_so == 0);
+        assert(state->payload_algid == 0);
+        assert(state->payload_keyid == 0);
+        assert(state->payload_mi == 0);
+        assert(state->aout_gain == 6.25f);
+    } else {
+        assert(state->dmr_fidR == 0);
+        assert(state->dmr_soR == 0);
+        assert(state->payload_algidR == 0);
+        assert(state->payload_keyidR == 0);
+        assert(state->payload_miR == 0);
+        assert(state->aout_gainR == 6.25f);
+    }
+
+    assert(state->dmr_alias_block_len[slot] == 0);
+    assert(state->dmr_alias_char_size[slot] == 0);
+    assert(state->dmr_alias_format[slot] == 0);
+    assert(strcmp(state->generic_talker_alias[slot], "") == 0);
+    assert(state->dmr_pdu_sf[slot][0] == 0);
+    assert(strcmp(state->dmr_embedded_gps[slot], "") == 0);
+    assert(strcmp(state->dmr_lrrp_gps[slot], "") == 0);
+    assert_call(state, (uint8_t)slot, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, slot == 0U ? 1001U : 3003U,
+                slot == 0U ? 2002U : 4004U);
+}
+
+// A terminator whose LC could not be read (FEC-failed or protected) may really be a mid-call
+// voice burst mis-typed as a terminator. Its crypto reset is stashed for the heal, but the
+// alias/GPS/superframe metadata has no stash -- so the handler must leave it in place, or a
+// healed epoch would print "Invalid Header" for every remaining alias block.
+static void
+assert_td_lc_slot_crypto_reset_metadata_retained(const dsd_state* state, unsigned int slot) {
+    if (slot == 0U) {
+        assert(state->dmr_fid == 0);
+        assert(state->dmr_so == 0);
+        assert(state->payload_algid == 0);
+        assert(state->payload_keyid == 0);
+        assert(state->payload_mi == 0);
+        assert(state->aout_gain == 6.25f);
+    } else {
+        assert(state->dmr_fidR == 0);
+        assert(state->dmr_soR == 0);
+        assert(state->payload_algidR == 0);
+        assert(state->payload_keyidR == 0);
+        assert(state->payload_miR == 0);
+        assert(state->aout_gainR == 6.25f);
+    }
+
+    assert(state->dmr_alias_block_len[slot] == 7);
+    assert(state->dmr_alias_char_size[slot] == 1);
+    assert(state->dmr_alias_format[slot] == 2);
+    assert(strcmp(state->generic_talker_alias[slot], "alias") == 0);
+    assert(state->dmr_pdu_sf[slot][0] == 0x5A);
+    assert(strcmp(state->dmr_embedded_gps[slot], "gps") == 0);
+    assert(strcmp(state->dmr_lrrp_gps[slot], "lrrp") == 0);
+    assert_call(state, (uint8_t)slot, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, slot == 0U ? 1001U : 3003U,
+                slot == 0U ? 2002U : 4004U);
+}
+
+static void
+test_td_lc_resets_slot_call_privacy_and_alias_state(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+    assert_td_lc_slot_reset(&state, 0U);
+
+    irr = 0;
+    seed_td_lc_slot(&opts, &state, 1U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 3003U, 4004U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+    assert_td_lc_slot_reset(&state, 1U);
+    dsd_state_ext_free_all(&state);
+}
+
+// A terminator whose link control failed RS(12,9) still ends the call -- on
+// RAS systems under the aggressive default every LC fails the masked CRC, so
+// gating the end on the CRC would leave those calls active forever -- but with
+// the recoverable unverified-terminator reason, so a voice burst mis-typed as
+// a terminator mid-call is healed by the next identity-less media mark
+// reacquiring the epoch instead of splitting the transmission in two. The
+// slot's payload crypto resets either way (stashed first, so the heal can
+// restore it); the alias/GPS metadata is cleared only when the LC itself was
+// readable, since an unreadable "terminator" may be a mis-typed voice burst
+// whose half-built alias the healed epoch still needs.
+static void
+test_unverified_terminator_ends_call_recoverably(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(irr == 0);
+    assert_td_lc_slot_reset(&state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
+
+    // A repeated unverified terminator corroborates the unverified end -- two
+    // independently mis-typed bursts in a row is not a plausible fade -- so the
+    // reason tightens to the final terminator reason, which retracts the
+    // reacquisition permission and releases the held VOICE_END alert where the
+    // hangtime repeat runs.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(irr == 0);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ENDED);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+
+    // The verified terminator ends with the final terminator reason in one
+    // step -- not EXPLICIT, which is the engine's retune/teardown reason and
+    // says nothing about the air.
+    irr = 0;
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+    assert_td_lc_slot_reset(&state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+    dsd_state_ext_free_all(&state);
+}
+
+// After an unverified terminator ends the call, what may reopen its epoch
+// depends on what the next observation carries. The identity-less media mark
+// the vocoder emits when a voice burst was mis-typed as a terminator heals the
+// epoch -- same transmission, one row. A same-identity voice LC header inside
+// the reacquisition gap is the next PTT's preamble and must open its own
+// epoch: the terminator was positive evidence the previous transmission
+// ended, and folding the header in would merge two calls into one row.
+static void
+test_unverified_terminator_reopen_depends_on_identity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    // Identity-less media mark: heals the epoch in place.
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
+    const uint64_t ended_epoch = call.epoch;
+
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch != ended_epoch);
+    // Reacquired, not new: the healed epoch keeps the terminated call's identity.
+    assert(call.ota_source_id == 2002U);
+    assert(call.ota_target_id == 1001U);
+
+    // Same-identity header after the unverified end: the next transmission.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
+    const uint64_t second_ended_epoch = call.epoch;
+
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch != second_ended_epoch);
+    assert(call.ota_source_id == 2002U);
+    // A fresh epoch, not a reacquisition: the new PTT does not merge into the
+    // terminated call's row.
+    dsd_call_context_snapshot context;
+    assert(dsd_call_context_copy_snapshot(&state, &context) > 0);
+    assert(context.events[0].reacquired_epoch != call.epoch);
+    dsd_state_ext_free_all(&state);
+}
+
+// An unverified terminator arriving after a sync loss already ended the epoch
+// is the same fallible evidence the recoverable end exists to distrust: it
+// must not tighten the reason to explicit, or a single corrupt burst mis-typed
+// as a terminator during a fade would retract the reacquisition permission and
+// split the resuming transmission in two.
+static void
+test_unverified_terminator_does_not_tighten_sync_loss_end(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    seed_td_lc_slot(&opts, &state, 0U);
+    assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) == 1);
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ENDED);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS);
+
+    // A verified terminator is trustworthy evidence and does retract it.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+    dsd_state_ext_free_all(&state);
+}
+
+// The terminator's burst type is FEC-protected separately from its LC payload,
+// so a terminator whose LC cannot be read -- irrecoverable FEC errors, a
+// protected LC, or an unknown vendor FID whose dispatch returns early -- still
+// ends the slot's call instead of leaving it to fade into a sync-loss end the
+// next same-identity transmission could merge into.
+static void
+test_terminator_ends_call_despite_unreadable_lc(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    // Irrecoverable LC FEC errors: the burst type alone ends the call, with
+    // the recoverable unverified reason since the CRC could not vouch for it.
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    irr = 1;
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(irr == 1);
+    assert_td_lc_slot_crypto_reset_metadata_retained(&state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
+
+    // Protected LC, even with a verified CRC: the FLCO is hidden, so the burst
+    // cannot rule out being a TD_LC that terminates a data session rather than
+    // the slot's voice call. It ends the call only recoverably, so a data
+    // terminator arriving mid-voice-call heals on the next media mark instead
+    // of hard-ending the voice call.
+    irr = 0;
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    bits[0] = 1U;
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+    assert_td_lc_slot_crypto_reset_metadata_retained(&state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
+
+    // Unknown vendor FID: the no-error dispatch returns early for the LC, but
+    // the terminator transition has already run, and the clean unprotected CRC
+    // makes it a verified end.
+    irr = 0;
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x2AU, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+    assert_td_lc_slot_reset(&state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+    dsd_state_ext_free_all(&state);
+}
+
+// A cleanly read TD_LC terminates a data session, not the slot's voice call:
+// the voice call state and its live crypto stay untouched, with or without a
+// verified CRC (RAS masks the CRC on every LC).
+static void
+test_data_terminator_does_not_end_voice_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x30U, 0x00U, 0x00U, 0U, 0U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1001U, 2002U);
+    assert(state.payload_algid == 0x22);
+    assert(state.dmr_so == 0x40U);
+    assert(state.data_header_format[0] == 7);
+
+    irr = 0;
+    build_regular_flco(bits, 0x30U, 0x00U, 0x00U, 0U, 0U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(irr == 0);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1001U, 2002U);
+    assert(state.payload_algid == 0x22);
+    dsd_state_ext_free_all(&state);
+}
+
+// A protected LC hides its own FLCO -- the payload bits are ciphertext -- so a protected
+// terminator burst whose scrambled FLCO happens to decode as 0x30 must not be trusted as a
+// TD_LC: the slot's voice call still ends (recoverably, like every unreadable terminator
+// shape), but a live data session's reassembly state stays intact instead of being wiped on
+// ciphertext.
+static void
+test_protected_td_lc_shape_does_not_wipe_data_session(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    seed_td_lc_slot(&opts, &state, 0U);
+    state.data_header_format[0] = 2;
+    state.data_header_sap[0] = 4;
+    state.data_header_valid[0] = 1;
+    state.data_conf_data[0] = 1;
+    state.data_block_poc[0] = 3;
+    state.data_byte_ctr[0] = 42;
+    state.data_ks_start[0] = 5;
+
+    build_regular_flco(bits, 0x30U, 0x00U, 0x00U, 0U, 0U);
+    bits[0] = 1; /* pf: the LC payload, including its FLCO, is ciphertext */
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ENDED);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
+    assert(state.data_header_format[0] == 2);
+    assert(state.data_header_sap[0] == 4);
+    assert(state.data_header_valid[0] == 1);
+    assert(state.data_conf_data[0] == 1);
+    assert(state.data_block_poc[0] == 3);
+    assert(state.data_byte_ctr[0] == 42);
+    assert(state.data_ks_start[0] == 5);
+    dsd_state_ext_free_all(&state);
+}
+
+// A voice burst mis-typed as a terminator clears the slot's live crypto before
+// the identity-less media mark reopens the epoch, but the terminator handler
+// stashed the live fields first. The heal restores them so the encrypted
+// continuation keeps decrypting; an epoch that ends for real starts the next
+// call from cleared crypto as before.
+static void
+test_reacquired_epoch_restores_cleared_slot_crypto(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    // An encrypted call whose crypto reached the canonical snapshot.
+    seed_td_lc_slot(&opts, &state, 0U);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.algid == 0x22U);
+    assert(call.mi == 0x123456789AULL);
+
+    // A CRC-failed terminator -- possibly a mis-typed voice burst -- ends the
+    // call recoverably and runs the slot reset.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(state.dmr_so == 0U);
+    assert(state.payload_algid == 0);
+    assert(state.payload_mi == 0ULL);
+
+    // The healing media mark reacquires the epoch and restores the decoder's
+    // live slot crypto from the retained snapshot.
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(state.dmr_so == 0x40U);
+    assert(state.payload_algid == 0x22);
+    assert(state.payload_keyid == 0x33);
+    assert(state.payload_mi == 0x123456789AULL);
+
+    // A corroborated end is not recoverable: the media mark opens a fresh
+    // epoch and nothing is restored.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(state.dmr_so == 0U);
+    assert(state.payload_algid == 0);
+    assert(state.payload_mi == 0ULL);
+
+    // Slot 1 restores through the R-side fields.
+    irr = 0;
+    seed_td_lc_slot(&opts, &state, 1U);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 3003U, 4004U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 3003U, 4004U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(state.dmr_soR == 0U);
+    assert(state.payload_algidR == 0);
+    const dsd_call_observation media_mark_r = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 1U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark_r, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(state.dmr_soR == 0x40U);
+    assert(state.payload_algidR == 0x44);
+    assert(state.payload_keyidR == 0x55);
+    assert(state.payload_miR == 0xABCDEF0123ULL);
+    dsd_state_ext_free_all(&state);
+}
+
+// The heal must put back what the vocoder was actually decrypting with, not what the canonical
+// snapshot last recorded. The superframe machinery (the PI/LE LFSR advances) rolls the live MI
+// forward without publishing a canonical crypto update, and the Basic Privacy decrypt gates in
+// dsd_mbe.c key on the slot FID -- which the canonical snapshot never carried at all. A restore
+// sourced from the snapshot resumed with a stale MI (wrong keystream: still noise) and a zero
+// FID (Basic Privacy never re-applied); the stash of the live fields carries both.
+static void
+test_heal_restores_live_mi_and_basic_privacy_fid(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    // Motorola Basic Privacy shape: enc service option set, algid/keyid zero, FID 0x10 gating
+    // the keystream application, and a live MI the superframe machinery has advanced past
+    // whatever crypto signaling last published.
+    seed_td_lc_slot(&opts, &state, 0U);
+    state.dmr_fid = 0x10;
+    state.dmr_so = 0x40;
+    state.payload_algid = 0;
+    state.payload_keyid = 0;
+    state.payload_mi = 0xDEADBEEFULL;
+
+    // A CRC-failed terminator -- possibly a mis-typed voice burst -- ends the call recoverably
+    // and the reset clears every live field, FID included.
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(state.dmr_fid == 0U);
+    assert(state.dmr_so == 0U);
+    assert(state.payload_mi == 0ULL);
+
+    // The healing media mark restores the live capture: advanced MI, gate-bearing FID.
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(state.dmr_fid == 0x10U);
+    assert(state.dmr_so == 0x40U);
+    assert(state.payload_algid == 0);
+    assert(state.payload_keyid == 0);
+    assert(state.payload_mi == 0xDEADBEEFULL);
+    dsd_state_ext_free_all(&state);
+}
+
+// A lingering stash from one call must never be applied to another epoch's heal: the stash is
+// tied to the epoch whose terminator captured it. A later call on the slot that fades into a
+// sync-loss end and heals -- with its live crypto simply never signaled -- gets nothing
+// restored, rather than the previous call's crypto.
+static void
+test_stale_heal_stash_does_not_leak_into_later_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    // Call A: encrypted, ends on an unverified terminator, stashing its crypto.
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(state.dmr_heal_valid[0] == 1U);
+
+    // Call B: a new clear call on the slot (identity-bearing, so it can never heal A's
+    // unverified end), which then fades into a sync-loss end and heals identity-lessly.
+    const dsd_call_observation call_b = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 7007U,
+        .policy_target_id = 7007U,
+        .ota_source_id = 8008U,
+    };
+    assert(dsd_call_state_observe(&state, &call_b, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) == 1);
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.ota_target_id == 7007U);
+    // A's stash did not leak into B's healed epoch.
+    assert(state.dmr_so == 0U);
+    assert(state.payload_algid == 0);
+    assert(state.payload_mi == 0ULL);
+    assert(state.dmr_fid == 0U);
+    dsd_state_ext_free_all(&state);
+}
+
+// The terminator that explains a fade usually arrives after the fade already ended the epoch by
+// sync loss. It cannot tighten that end, but its reset still clears the slot, so the stash must
+// cover a recoverably-ended epoch and not only an active one: otherwise a resumption inside the
+// window comes back with the snapshot claiming encryption and the vocoder holding nothing.
+static void
+test_terminator_after_sync_loss_end_still_stashes_crypto(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    // An encrypted call whose crypto reached the canonical snapshot, then a fade.
+    seed_td_lc_slot(&opts, &state, 0U);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) == 1);
+
+    // The FEC-failed terminator that explains the fade: the sync-loss end stands, the slot
+    // resets, and the stash is taken against the still-reacquirable epoch.
+    irr = 1;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS);
+    assert(state.payload_algid == 0);
+    assert(state.payload_mi == 0ULL);
+    assert(state.dmr_heal_valid[0] == 1U);
+
+    // Voice resumes inside the window: the healed epoch decrypts again.
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(state.dmr_so == 0x40U);
+    assert(state.payload_algid == 0x22);
+    assert(state.payload_keyid == 0x33);
+    assert(state.payload_mi == 0x123456789AULL);
+    dsd_state_ext_free_all(&state);
+}
+
+// A stash outlives its usefulness the moment the end becomes final. A verified terminator says
+// so outright; a corroborating repeat tightens an unverified end into TERMINATOR after the stash
+// was already taken, so the stash has to be dropped on the settled reason rather than on the
+// burst that was just read.
+static void
+test_corroborated_terminator_drops_the_heal_stash(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(state.dmr_heal_valid[0] == 1U);
+
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+    assert(state.dmr_heal_valid[0] == 0U);
+    dsd_state_ext_free_all(&state);
+}
+
+// A Hytera-Enhanced-shaped LC (fid 0x68, flco 0x02, valid vendor checksum) arriving as an
+// FEC-failed terminator burst: the terminator transition has already ended the call, stashed
+// the live crypto, and reset the slot, so the Hytera Enhanced handler must not run afterward
+// and re-populate payload_algid/keyid/mi -- that would leave dmr_fid=0 beside a non-zero ALGID,
+// make dmr_flco_slot_crypto_is_clear() refuse the restore, and strand the stash forever.
+static void
+test_irrecoverable_hytera_terminator_does_not_repopulate_crypto(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 1;
+
+    seed_td_lc_slot(&opts, &state, 0U);
+    uint8_t bytes[9] = {0x02U, 0x68U, 0x77U, 0x12U, 0x34U, 0x56U, 0x78U, 0x9AU, 0x00U};
+    uint8_t sum = 0U;
+    for (size_t i = 0U; i < 8U; i++) {
+        sum = (uint8_t)(sum + bytes[i]);
+    }
+    bytes[8] = (uint8_t)(0U - sum);
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    for (size_t i = 0U; i < 9U; i++) {
+        write_bits_u64(bits, i * 8U, bytes[i], 8U);
+    }
+
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+
+    assert_td_lc_slot_crypto_reset_metadata_retained(&state, 0U);
+    assert(state.dmr_heal_valid[0] == 1U);
+
+    // And the heal still restores the stashed crypto when the epoch reopens.
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(state.dmr_fid == 0x68U);
+    assert(state.dmr_so == 0x40U);
+    assert(state.payload_mi == 0x123456789AULL);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
+test_capacity_plus_rest_channel_and_call_class_are_packed_fields(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    build_regular_flco(bits, 0x04U, 0x10U, 0x00U, 0x123456U, 0xA5BEEFU);
+    write_bits_u64(bits, 52U, 9U, 4U);
+    write_bits_u64(bits, 56U, 0xBEEFU, 16U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(irr == 0);
+    assert(state.dmr_rest_channel == 9);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 0x123456U, 0xBEEFU);
+
+    irr = 0;
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 1;
+    build_regular_flco(bits, 0x07U, 0x10U, 0x00U, 0x654321U, 0xC0DEU);
+    write_bits_u64(bits, 52U, 3U, 4U);
+    write_bits_u64(bits, 56U, 0xC0DEU, 16U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(irr == 0);
+    assert(state.dmr_rest_channel == 3);
+    assert_call(&state, 1U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_PRIVATE_VOICE, 0x654321U, 0xC0DEU);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
+test_hytera_xpt_alert_records_free_lcn_and_targets(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    build_regular_flco(bits, 0x09U, 0x68U, 0x00U, 0U, 0U);
+    bits[1] = 1U;
+    write_bits_u64(bits, 16U, 4U, 4U);
+    write_bits_u64(bits, 24U, 6U, 4U);
+    write_bits_u64(bits, 28U, 2U, 4U);
+    write_bits_u64(bits, 32U, 0x00FEU, 16U);
+    write_bits_u64(bits, 56U, 0xCAFEU, 16U);
+
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    assert(irr == 0);
+    assert(strcmp(state.dmr_branding, "  Hytera") == 0);
+    assert(strcmp(state.dmr_branding_sub, "XPT ") == 0);
+    assert(strcmp(state.dmr_site_parms, "Free LCN - 6 ") == 0);
+    assert_no_active_call(&state, 0U);
+}
+
+static void
+test_cach_single_fragment_throttle_and_reject_paths(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slc[17];
+    uint8_t cach[25];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    build_slc17(slc, 0x1U, 0x8U, 0x0U);
+    build_cach_fragment(cach, 0U, slc);
+
+    assert(dmr_cach(&opts, &state, cach) == 0U);
+    assert(state.slco_sfrag_last[0] != 0);
+    time_t first_seen = state.slco_sfrag_last[0];
+
+    assert(dmr_cach(&opts, &state, cach) == 0U);
+    assert(state.slco_sfrag_last[0] == first_seen);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 1;
+    build_slc17(slc, 0x1U, 0x8U, 0x0U);
+    slc[0] ^= 1U;
+    slc[1] ^= 1U;
+    slc[2] ^= 1U;
+    build_cach_fragment(cach, 0U, slc);
+
+    assert(dmr_cach(&opts, &state, cach) == 1U);
+    assert(state.slco_sfrag_last[1] == 0);
+}
+
+static void
+test_cach_single_fragment_labels_cover_known_and_reserved_codes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slc[17];
+    uint8_t cach[25];
+    char out[2048];
+
+    const uint8_t cases[] = {0x0U, 0x2U, 0x3U, 0x8U, 0x9U, 0xAU, 0xEU};
+    const char* labels[] = {"SLCO NULL",       "SLC C_SYS_PARMS",           "SLC P_SYS_PARMS",
+                            "SLCO Hytera XPT", "SLCO Connect Plus Traffic", "SLCO Connect Plus Control",
+                            "OPC=0xE"};
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.currentslot = 0;
+        build_slc17(slc, cases[i], 0x8U, 0xDU);
+        build_cach_fragment(cach, 0U, slc);
+
+        dsd_test_capture_stderr cap;
+        assert(dsd_test_capture_stderr_begin(&cap, "dmr_cach_single_labels") == 0);
+        assert(dmr_cach(&opts, &state, cach) == 0U);
+        assert(dsd_test_capture_stderr_end(&cap) == 0);
+        assert(read_file_to_buffer(cap.path, out, sizeof(out)) == 0);
+        (void)remove(cap.path);
+        assert(strstr(out, labels[i]) != NULL);
+    }
+}
+
+static void
+test_cach_completed_fragment_crc_error_reports_voice_payload_context(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slco[36];
+    uint8_t cach[4][25];
+    char out[2048];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(slco, 0, sizeof(slco));
+    opts.payload = 1;
+    state.currentslot = 0;
+    state.dmrburstL = 16;
+    write_bits_u64(slco, 0U, 0x1U, 4U);
+    write_bits_u64(slco, 4U, 0xCU, 4U);
+    write_bits_u64(slco, 8U, 0xFU, 4U);
+    build_completed_slco_cach_without_crc_fixup(cach, slco);
+
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_cach_crc_error") == 0);
+    assert(dmr_cach(&opts, &state, cach[0]) == 0U);
+    assert(dmr_cach(&opts, &state, cach[1]) == 0U);
+    assert(dmr_cach(&opts, &state, cach[2]) == 0U);
+    assert(dmr_cach(&opts, &state, cach[3]) == 0U);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(read_file_to_buffer(cap.path, out, sizeof(out)) == 0);
+    (void)remove(cap.path);
+    assert(strstr(out, "SLCO CRC ERR") != NULL);
+}
+
+static void
+test_cach_fragment_counter_overflow_resets_fragments(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slc[17];
+    uint8_t cach[25];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    build_slc17(slc, 0x0U, 0x0U, 0x0U);
+
+    build_cach_fragment(cach, 1U, slc);
+    assert(dmr_cach(&opts, &state, cach) == 0U);
+    assert(state.dmr_cach_counter == 0);
+
+    build_cach_fragment(cach, 3U, slc);
+    assert(dmr_cach(&opts, &state, cach) == 0U);
+    assert(state.dmr_cach_counter == 1);
+    assert(dmr_cach(&opts, &state, cach) == 0U);
+    assert(state.dmr_cach_counter == 2);
+    assert(dmr_cach(&opts, &state, cach) == 0U);
+    assert(state.dmr_cach_counter == 3);
+    assert(dmr_cach(&opts, &state, cach) == 1U);
+    assert(state.dmr_cach_counter == 0);
+    assert(state.dmr_cach_fragment[0][0] == 1U);
+}
+
+static void
+test_encrypted_flco_lockout_inserts_policy_and_event_history(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_tg_policy_lookup lookup;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    assert(irr == 0);
+    // The lockout lives in the session ledger and never aliases the user's
+    // talkgroup policy table.
+    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
+    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+    dsd_enc_lockout_entry ledger_entry;
+    assert(dsd_enc_lockout_lookup(&state, 1234U, 1, &ledger_entry) == 1);
+    // The privacy type never resolved (service-option bit only), so the entry
+    // must carry the unknown sentinel, not ALGID 0 (which reads as clear).
+    assert(ledger_entry.algid == DSD_ENC_LOCKOUT_ALGID_UNKNOWN);
+    assert(strstr(history[0].Event_History_Items[0].internal_str, "Target: 1234; has been locked out;") != NULL);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
+test_encrypted_flco_lockout_return_keeps_canonical_calls_ended(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0U;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    opts.trunk_is_tuned = 1;
+    state.currentslot = 0;
+    state.trunk_cc_freq = 851250000L;
+    state.trunk_vc_freq[0] = 852000000L;
+    state.trunk_vc_freq[1] = 852000000L;
+    state.dmrburstL = 16;
+    state.dmrburstR = 9;
+    seed_voice_call(&state, 0U, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U);
+    // The companion slot's call already ended: a companion whose canonical
+    // epoch is still ACTIVE now blocks the forced release (covered by the
+    // preserves-active-companion matrix below).
+    seed_voice_call(&state, 1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U);
+    assert(dsd_call_state_end(&state, 1U, 0.0) > 0);
+
+    dmr_sm_init(&opts, &state);
+    dmr_sm_get_ctx()->state = DMR_SM_TUNED;
+    s_return_to_cc_calls = 0;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .return_to_cc_request = capture_return_to_cc_ending_calls,
+    });
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+
+    assert(irr == 0U);
+    assert(s_return_to_cc_calls == 1);
+    assert(opts.trunk_is_tuned == 0);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U);
+    assert_call(&state, 1U, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U);
+    dsd_state_ext_free_all(&state);
+}
+
+// The lockout's stay-or-release decision must read the companion's canonical
+// call state, not its burst hint: a clear call keeps the canonical epoch
+// ACTIVE while the hint walks through PI (0), VLC (1), TLC (2), DATA (6),
+// IDLE (9), NULL (15), VOICE (16) and the ERR init value (17), and the action
+// retries on every corroborated LC, so any hint misread as "no call" would
+// synthesize a P_CLEAR that tears the clear companion call down.
+static void
+test_encrypted_flco_lockout_preserves_active_companion_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const unsigned int companion_hints[] = {0U, 1U, 2U, 6U, 9U, 15U, 16U, 17U};
+    uint8_t bits[80];
+
+    for (int eslot = 0; eslot < 2; eslot++) {
+        for (size_t h = 0; h < sizeof(companion_hints) / sizeof(companion_hints[0]); h++) {
+            const int other = eslot ^ 1;
+            uint32_t irr = 0U;
+
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&state, 0, sizeof(state));
+            DSD_MEMSET(history, 0, sizeof(history));
+            init_event_history(&history[0], 0, 1);
+            init_event_history(&history[1], 0, 1);
+            state.event_history_s = history;
+            opts.trunk_enable = 1;
+            opts.trunk_tune_enc_calls = 0;
+            opts.trunk_is_tuned = 1;
+            state.dmr_stereo = 1;
+            state.currentslot = eslot;
+            state.trunk_cc_freq = 851250000L;
+            state.trunk_vc_freq[0] = 852000000L;
+            state.trunk_vc_freq[1] = 852000000L;
+            if (eslot == 0) {
+                state.dmrburstL = 16;
+                state.dmrburstR = companion_hints[h];
+            } else {
+                state.dmrburstR = 16;
+                state.dmrburstL = companion_hints[h];
+            }
+            seed_voice_call(&state, (uint8_t)eslot, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U);
+            seed_voice_call(&state, (uint8_t)other, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U);
+
+            dmr_sm_init(&opts, &state);
+            dmr_sm_get_ctx()->state = DMR_SM_TUNED;
+            s_return_to_cc_calls = 0;
+            dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+                .return_to_cc_request = capture_return_to_cc_ending_calls,
+            });
+
+            build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+            dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+            dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+
+            assert(irr == 0U);
+            // The lockout still arms the session ledger...
+            assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+            // ...but the channel is retained for the companion's clear call.
+            assert(s_return_to_cc_calls == 0);
+            assert(opts.trunk_is_tuned == 1);
+            assert_call(&state, (uint8_t)other, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U);
+            dsd_state_ext_free_all(&state);
+        }
+    }
+}
+
+static void
+test_encrypted_flco_allowed_tuning_skips_lockout_policy(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_tg_policy_lookup lookup;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 1;
+    state.currentslot = 0;
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 4321U, 8765U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    assert(irr == 0);
+    assert(dsd_tg_policy_lookup_id(&state, 4321U, &lookup) == 0);
+    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    assert(!dsd_enc_lockout_lookup(&state, 4321U, 1, NULL));
+    assert(history[0].Event_History_Items[0].internal_str[0] == '\0');
+    dsd_state_ext_free_all(&state);
+}
+
+// The embedded LC's 5-bit checksum passes a miscorrected payload roughly one time in 32, so a
+// lone embedded observation of the privacy bit classifies only tentatively: the slot mutes,
+// but the session-permanent blocking entry and the forced release wait for the matching repeat
+// one superframe (~360 ms) later.
+static void
+test_embedded_lc_enc_requires_corroboration_for_lockout(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_tg_policy_lookup lookup;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(irr == 0);
+    assert((state.dmr_so & 0x40U) != 0U);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
+
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(irr == 0);
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
+    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    dsd_state_ext_free_all(&state);
+}
+
+// The ledger is suspended -- not erased -- while the user follows encrypted calls, so clear
+// voice observed in follow mode must leave existing entries alone. Erasing them there would
+// make a temporary toggle cost a fresh classification probe per target once lockout returns.
+static void
+test_clear_voice_in_follow_mode_keeps_lockout_entry(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+
+    // Arm the entry under lockout policy (corroborated encrypted embedded LCs).
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+
+    // Follow encrypted calls: corroborated clear voice must not erase the entry.
+    opts.trunk_tune_enc_calls = 1;
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(dmr_enc_class_established_clear(&state, 0U));
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+
+    // Back under lockout policy the same clear evidence releases it.
+    opts.trunk_tune_enc_calls = 0;
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
+    dsd_state_ext_free_all(&state);
+}
+
+// A CRC-verified voice LC header established the call clear; one contradicting embedded LC --
+// the exact shape a miscorrected BPTC payload takes -- must not mute the audio, demote the
+// published classification, or arm the lockout. A corroborated contradiction is a real
+// mid-call change and does all three.
+static void
+test_lone_contradicting_emb_does_not_flap_established_clear(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(irr == 0);
+    assert((state.dmr_so & 0x40U) == 0U);
+
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(irr == 0);
+    assert((state.dmr_so & 0x40U) == 0U);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_CLEAR);
+    assert(call.audio_permitted == 1U);
+
+    // The repeat corroborates: the classification flips and the lockout acts.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(irr == 0);
+    assert((state.dmr_so & 0x40U) != 0U);
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+    dsd_state_ext_free_all(&state);
+}
+
+// A terminator's privacy bit describes a transmission that already ended; it may print, but it
+// must not block the talkgroup or force a release for whatever follows on the channel.
+static void
+test_terminator_privacy_bit_does_not_lock_out(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
+    dsd_state_ext_free_all(&state);
+}
+
+// On RAS systems under the aggressive default every LC arrives with the masked CRC failed, so
+// the header is weak evidence too: the first encrypted observation classifies tentatively and
+// the lockout waits for the repeat -- which a real encrypted call supplies within one embedded
+// LC cadence.
+static void
+test_crc_failed_header_enc_requires_repeat_for_lockout(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 1U);
+    assert(irr == 0);
+    assert((state.dmr_so & 0x40U) != 0U);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
+
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 3U);
+    assert(irr == 0);
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+    dsd_state_ext_free_all(&state);
+}
+
+#define MAPPED_TG_TARGET       123U
+#define MAPPED_TG_SOURCE       4567U
+#define MAPPED_TG_KID          0x7B
+#define MAPPED_TG_SIGNALED_KID 0x03
+
+typedef struct {
+    uint8_t slot;              /* 0 drives payload_algid/keyid/R; 1 drives the ...R twins */
+    int install_map_row;       /* whether a --dmr-tg-key-csv row exists at all */
+    uint32_t map_tg;           /* 0 -> the row names MAPPED_TG_TARGET (a hit); else a deliberate miss */
+    int kirisun;               /* non-zero: ALG 0x36, whose verdict is the four-segment quartet */
+    int decoy_other_slot;      /* seed decrypting material on the companion slot -- see below */
+    int row_material_mismatch; /* mapped kid holds AES segments but no scalar, while the ALG is
+                                  RC4 and the SLOT already carries a working RC4 key */
+    int forced_algid;          /* non-zero: no OTA ALG ID on the slot (payload_algid stays 0, as a
+                                  trunk tune leaves it); --dmr-force-algid 0x21 supplies it */
+} mapped_tg_fixture;
+
+// An encrypted group call on TG 123 whose signaled key id has nothing imported behind it and
+// whose mapped key id does. The slot itself carries no usable material either way -- no R/RR, no
+// quartet -- so a decryptable verdict can only come from resolving the map.
+static void
+seed_mapped_tg_state(dsd_state* state, const mapped_tg_fixture* fx) {
+    static const int kAesOffsets[4] = {0x000, 0x101, 0x201, 0x301};
+
+    state->currentslot = fx->slot;
+    state->keyloader = 1;
+    const int ota_algid = fx->forced_algid ? 0 : (fx->kirisun ? 0x36 : 0x21); /* RC4 keys off the scalar */
+    if (fx->forced_algid) {
+        state->M = 0x21;
+    }
+    if (fx->slot == 0U) {
+        state->payload_algid = ota_algid;
+        state->payload_keyid = MAPPED_TG_SIGNALED_KID;
+    } else {
+        state->payload_algidR = ota_algid;
+        state->payload_keyidR = MAPPED_TG_SIGNALED_KID;
+    }
+
+    if (fx->row_material_mismatch) {
+        // Segments 1..3 only. Segment 0 shares the scalar's cell, so leaving it zero is what makes
+        // this key id AES-shaped and scalar-empty. The call runs RC4 (0x21), which keys off the
+        // scalar, and the slot already carries a working one -- so applying this row makes the
+        // call strictly worse off. That is precisely the case "has any material at all" could not
+        // see: it looked at the AES segments and said yes.
+        for (int i = 1; i < 4; i++) {
+            state->rkey_array[MAPPED_TG_KID + kAesOffsets[i]] = 0xC0FFEE00ULL + (unsigned long long)i;
+            state->rkey_array_loaded[MAPPED_TG_KID + kAesOffsets[i]] = 1U;
+        }
+        if (fx->slot == 0U) {
+            state->R = 0xAAAAAULL;
+        } else {
+            state->RR = 0xAAAAAULL;
+        }
+    } else if (fx->kirisun) {
+        // A complete quartet behind the mapped key id only. The slot's own aes_key_segments and
+        // A1..A4 stay zero, so dsd_dmr_kirisun_slot_key_complete() reports 0 for it until the
+        // voice path activates this key -- which is exactly the window the lockout acts in.
+        for (int i = 0; i < 4; i++) {
+            state->rkey_array[MAPPED_TG_KID + kAesOffsets[i]] = 0xC0FFEE00ULL + (unsigned long long)i;
+            state->rkey_array_loaded[MAPPED_TG_KID + kAesOffsets[i]] = 1U;
+        }
+    } else {
+        state->rkey_array[MAPPED_TG_KID] = 0xBBBBBULL;
+        state->rkey_array_loaded[MAPPED_TG_KID] = 1U;
+    }
+
+    if (fx->decoy_other_slot) {
+        // Decrypting material on the COMPANION slot, never on fx->slot. Without this the two slots
+        // hold identical (empty) material and a resolution that read the wrong one would be
+        // invisible -- which is exactly what a mutation to slot-0-only reads proved. With it, any
+        // site that reads R instead of RR, aes_key_loaded[0] instead of [1], or the wrong slot's
+        // quartet turns a deliberate map miss into a false "decryptable" and fails.
+        const int other = fx->slot == 0U ? 1 : 0;
+        if (other == 0) {
+            state->R = 0xDEC0DEULL;
+        } else {
+            state->RR = 0xDEC0DEULL;
+        }
+        state->aes_key_loaded[other] = 1;
+        state->aes_key_segments[other] = 4U;
+        state->A1[other] = 0xA1ULL;
+        state->A2[other] = 0xA2ULL;
+        state->A3[other] = 0xA3ULL;
+        state->A4[other] = 0xA4ULL;
+    }
+
+    if (fx->install_map_row) {
+        state->dmr_tg_key_map_tg[0] = fx->map_tg != 0U ? fx->map_tg : MAPPED_TG_TARGET;
+        state->dmr_tg_key_map_kid[0] = MAPPED_TG_KID;
+        state->dmr_tg_key_map_count = 1;
+    }
+}
+
+static void
+assert_mapped_tg_classification(const mapped_tg_fixture* fx, dsd_call_crypto_state want_crypto,
+                                uint8_t want_audio_permitted) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_mapped_tg_state(&state, fx);
+
+    /* FLCO 0x00 is group voice; SO bit 0x40 is the privacy bit. */
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, MAPPED_TG_TARGET, MAPPED_TG_SOURCE);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    assert(irr == 0U);
+    assert(dsd_call_state_get(&state, fx->slot, &call) > 0);
+    assert(call.crypto == want_crypto);
+    assert(call.audio_permitted == want_audio_permitted);
+    /* The published key id is still the OTA one, never the override. */
+    assert(call.kid == MAPPED_TG_SIGNALED_KID);
+    if (fx->forced_algid) {
+        /* Classification borrowed the forced ALG without installing it: the slot and the
+         * published ALG ID are still the OTA value (none). Installing it is the voice path's job
+         * (dsd_dmr_apply_forced_algid), and only there is the 0xFF key-id sentinel ever written. */
+        assert((fx->slot == 0U ? state.payload_algid : state.payload_algidR) == 0);
+        assert((fx->slot == 0U ? state.payload_keyid : state.payload_keyidR) == MAPPED_TG_SIGNALED_KID);
+        assert(call.algid == 0U);
+    }
+    dsd_state_ext_free_all(&state);
+}
+
+// A mapped talkgroup whose signaled key id has nothing imported, but whose mapped key id does,
+// must classify as decryptable. Before the effective-KID seam this classified as encrypted and
+// --enc-lockout could synthesize a P_CLEAR and retune away from a call the map decrypts fine --
+// which cannot self-heal once the channel is dropped.
+static void
+test_mapped_tg_classifies_decryptable(void) {
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1}, DSD_CALL_CRYPTO_DECRYPTABLE,
+                                    1U);
+    // Slot 1 drives payload_algidR / payload_keyidR / state->RR -- the branch of all three changed
+    // sites that no other test reaches, and the one that drops channels when it is wrong.
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1}, DSD_CALL_CRYPTO_DECRYPTABLE,
+                                    1U);
+    // Kirisun 0x36 decides on the four-segment quartet rather than on R/aes_loaded, and activation
+    // overwrites that quartet per slot -- so the mapped key id's quartet, not the slot's empty one,
+    // has to decide here too.
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .kirisun = 1},
+                                    DSD_CALL_CRYPTO_DECRYPTABLE, 1U);
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .kirisun = 1},
+                                    DSD_CALL_CRYPTO_DECRYPTABLE, 1U);
+
+    // Only a real map hit may change the classification: a row naming a different talkgroup still
+    // resolves from the slot's own key material and stays encrypted. The companion slot is loaded
+    // with material that would decrypt, so these also pin that the resolution reads *this* slot.
+    assert_mapped_tg_classification(
+        &(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .map_tg = 456U, .decoy_other_slot = 1},
+        DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U);
+    assert_mapped_tg_classification(
+        &(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .map_tg = 456U, .decoy_other_slot = 1},
+        DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U);
+    assert_mapped_tg_classification(
+        &(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .map_tg = 456U, .kirisun = 1, .decoy_other_slot = 1},
+        DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U);
+    assert_mapped_tg_classification(
+        &(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .map_tg = 456U, .kirisun = 1, .decoy_other_slot = 1},
+        DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U);
+}
+
+// Trunk tuning zeroes payload_algid on every voice-channel tune and the forced ALG ID is only
+// installed on the first voice frame, so on a --dmr-force-algid system every trunked call's first
+// LC arrives with no ALG ID. Classifying that LC as "ALG unknown" judged it against whatever key
+// the slot last carried -- R is 0 on a fresh session -- instead of against the key the forced ALG
+// and the map row will actually select, so the very call the map exists to decrypt published
+// ENCRYPTED and, under --enc-lockout, could be locked out before its first voice frame. The LC
+// path now classifies under dsd_dmr_classify_algid(), the read-only twin of the voice-path
+// fallback.
+static void
+test_forced_algid_lc_classifies_against_the_map(void) {
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .forced_algid = 1},
+                                    DSD_CALL_CRYPTO_DECRYPTABLE, 1U);
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .forced_algid = 1},
+                                    DSD_CALL_CRYPTO_DECRYPTABLE, 1U);
+    // Negative control: same fixture, the row names another talkgroup, and the companion slot
+    // carries a decoy key -- the forced ALG alone must not make this decryptable.
+    assert_mapped_tg_classification(
+        &(mapped_tg_fixture){
+            .slot = 0U, .install_map_row = 1, .map_tg = 456U, .decoy_other_slot = 1, .forced_algid = 1},
+        DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U);
+    assert_mapped_tg_classification(
+        &(mapped_tg_fixture){
+            .slot = 1U, .install_map_row = 1, .map_tg = 456U, .decoy_other_slot = 1, .forced_algid = 1},
+        DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U);
+}
+
+// Drives a corroborated encrypted group voice header through the real lockout gate and reports
+// whether the ledger armed.
+static int
+run_mapped_tg_lockout_probe(const mapped_tg_fixture* fx) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    seed_mapped_tg_state(&state, fx);
+
+    // The lockout is quarantined behind hysteresis: a lone corrupt LC must not arm it. Two
+    // corroborating observations establish the encrypted class -- see tests/protocol/dmr/
+    // test_dmr_enc_class.c:39-46 for the same sequence.
+    (void)dmr_enc_class_observe(&state, fx->slot, 0x40U, 0);
+    (void)dmr_enc_class_observe(&state, fx->slot, 0x40U, 0);
+    assert(dmr_enc_class_established_enc(&state, fx->slot) == 1);
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, MAPPED_TG_TARGET, MAPPED_TG_SOURCE);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(irr == 0U);
+
+    const int locked = dsd_enc_lockout_entry_active(&state, MAPPED_TG_TARGET, 1);
+    dsd_state_ext_free_all(&state);
+    return locked;
+}
+
+// The same call must never reach the lockout ledger. dmr_flco_slot_can_decrypt() gates
+// dmr_flco_arm_enc_lockout(), which synthesizes a P_CLEAR and drops the channel.
+//
+// Every "not locked" assertion is preceded by its own positive control -- the identical fixture
+// with no map row, which does arm -- so a 0 can never be a lockout path the fixture failed to
+// reach.
+// Each control also carries decrypting material on the *companion* slot, so it fails both ways: 0
+// means the arm path was never reached, and a gate that read the wrong slot would see the decoy,
+// decide it can decrypt, and also fail to arm.
+static void
+test_mapped_tg_is_not_locked_out(void) {
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .decoy_other_slot = 1}) == 1);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1}) == 0);
+
+    // Slot 1 gates on payload_algidR / state->RR and drops the channel just as hard.
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .decoy_other_slot = 1}) == 1);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1}) == 0);
+
+    // Kirisun 0x36: dsd_dmr_voice_kid_can_decrypt() answered this family from the slot's own
+    // quartet regardless of the key material handed to it, so a mapped talkgroup whose mapped key
+    // id holds a complete quartet the slot does not yet carry was still locked out and still had a
+    // synthesized P_CLEAR drop the channel. mbe_prepare_frame_state() activates the mapped key id
+    // for 0x36/0x37 like any other, so that quartet was always going to arrive.
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .kirisun = 1, .decoy_other_slot = 1}) == 1);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .kirisun = 1}) == 0);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .kirisun = 1, .decoy_other_slot = 1}) == 1);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .kirisun = 1}) == 0);
+
+    // No OTA ALG ID yet (first LC after a trunk tune) with --dmr-force-algid: the lockout gate has
+    // to read the forced ALG and the map row the voice path is about to use. Before, this armed --
+    // and the synthesized P_CLEAR dropped the channel before the first voice frame could decrypt.
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .decoy_other_slot = 1, .forced_algid = 1})
+           == 1);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .forced_algid = 1}) == 0);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .decoy_other_slot = 1, .forced_algid = 1})
+           == 1);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .forced_algid = 1}) == 0);
+}
+
+// The failure this whole change exists to prevent. TG 123 runs ALG 0x21 (RC4, which keys off the
+// scalar) and the slot already carries a working RC4 key. A map row points TG 123 at key id 0x7B,
+// which holds AES segments and no scalar. Before the alg-need gate the row applied -- "has any
+// material at all" saw the AES segments -- so activation zeroed the slot scalar, the call
+// published ENCRYPTED, and dsd_enc_lockout_note() armed the session-permanent ledger, forcing a
+// P_CLEAR that dropped the channel for a call the SIGNALED key decrypts. Nothing printed either,
+// because from the resolver's view the row applied.
+static void
+test_row_with_wrong_material_is_not_applied(void) {
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .row_material_mismatch = 1},
+                                    DSD_CALL_CRYPTO_DECRYPTABLE, 1U);
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .row_material_mismatch = 1},
+                                    DSD_CALL_CRYPTO_DECRYPTABLE, 1U);
+
+    // And the lockout must not arm. The probe returns 1 when it did.
+    assert(
+        run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .row_material_mismatch = 1})
+        == 0);
+    assert(
+        run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .row_material_mismatch = 1})
+        == 0);
+}
+
+static void
+test_completed_slco_tier3_site_parameters_update_state(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slco[36];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(slco, 0, sizeof(slco));
+    write_bits_u64(slco, 0U, 0x2U, 4U);
+    write_bits_u64(slco, 4U, 1U, 2U);
+    write_bits_u64(slco, 6U, 17U, 7U);
+    write_bits_u64(slco, 13U, 3U, 5U);
+    slco[18] = 1U;
+    write_bits_u64(slco, 19U, 0x12U, 9U);
+
+    run_completed_slco(&opts, &state, slco);
+
+    assert(strncmp(state.dmr_site_parms, "TIII Small:", 11U) == 0);
+    assert(strstr(state.dmr_site_parms, ";") != NULL);
+}
+
+static void
+test_completed_slco_activity_uses_each_slot_value(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slco[36];
+    char out[2048];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(slco, 0, sizeof(slco));
+    write_bits_u64(slco, 0U, 0x1U, 4U);
+    write_bits_u64(slco, 4U, 0x4U, 4U);
+    write_bits_u64(slco, 8U, 0x5U, 4U);
+
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_slco_slot_activity") == 0);
+    run_completed_slco(&opts, &state, slco);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(read_file_to_buffer(cap.path, out, sizeof(out)) == 0);
+    (void)remove(cap.path);
+    assert(strstr(out, "TS1: Res 4") != NULL);
+    assert(strstr(out, "TS2: Res 5") != NULL);
+}
+
+static void
+test_completed_slco_connect_plus_and_xpt_update_site_state(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slco[36];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(slco, 0, sizeof(slco));
+    write_bits_u64(slco, 0U, 0x9U, 4U);
+    write_bits_u64(slco, 8U, 0x12U, 8U);
+    write_bits_u64(slco, 16U, 0x34U, 8U);
+    run_completed_slco(&opts, &state, slco);
+    assert(strcmp(state.dmr_site_parms, "18-52 ") == 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(slco, 0, sizeof(slco));
+    write_bits_u64(slco, 0U, 0xAU, 4U);
+    write_bits_u64(slco, 8U, 0x56U, 8U);
+    write_bits_u64(slco, 16U, 0x78U, 8U);
+    state.last_vc_sync_time = time(NULL);
+    run_completed_slco(&opts, &state, slco);
+    assert(strcmp(state.dmr_site_parms, "86-120 ") == 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(slco, 0, sizeof(slco));
+    write_bits_u64(slco, 0U, 0x8U, 4U);
+    write_bits_u64(slco, 12U, 6U, 4U);
+    write_bits_u64(slco, 16U, 2U, 4U);
+    write_bits_u64(slco, 20U, 0x5AU, 8U);
+    run_completed_slco(&opts, &state, slco);
+    assert(strcmp(state.dmr_branding_sub, "XPT ") == 0);
+    assert(strcmp(state.dmr_site_parms, "Free LCN - 6 ") == 0);
+}
+
+static void
+test_completed_slco_capacity_plus_hold_returns_to_rest_channel(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slco[36];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(slco, 0, sizeof(slco));
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    state.tg_hold = 99U;
+    seed_voice_call(&state, 0U, DSD_CALL_KIND_GROUP_VOICE, 11U, 101U);
+    seed_voice_call(&state, 1U, DSD_CALL_KIND_GROUP_VOICE, 22U, 202U);
+    state.dmrburstL = 16;
+    state.dmrburstR = 16;
+    state.trunk_vc_freq[0] = 852000000L;
+    state.trunk_vc_freq[1] = 852000000L;
+    state.p25_vc_freq[0] = 853000000L;
+    state.p25_vc_freq[1] = 853000000L;
+    state.trunk_chan_map[4] = 851250000L;
+    s_tune_to_cc_calls = 0;
+    s_tune_to_cc_freq = 0;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_cc_request = capture_tune_to_cc,
+    });
+
+    write_bits_u64(slco, 0U, 0xFU, 4U);
+    write_bits_u64(slco, 16U, 4U, 4U);
+    write_bits_u64(slco, 20U, 2U, 2U);
+    write_bits_u64(slco, 22U, 5U, 3U);
+    run_completed_slco(&opts, &state, slco);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+
+    assert(s_tune_to_cc_calls == 1);
+    assert(s_tune_to_cc_freq == 851250000L);
+    assert(opts.trunk_is_tuned == 0);
+    assert(state.trunk_vc_freq[0] == 0);
+    assert(state.p25_vc_freq[0] == 0);
+    dsd_state_ext_free_all(&state);
+}
+
+// The voice LC header repeats through the start of a transmission for late
+// entry, always before the first voice superframe. Repeats that re-describe the
+// running call stay in its epoch; a second epoch would commit the first one's
+// freshly built row as a duplicate event. Once voice media has run, an
+// identical header is a same-identity re-key after a missed terminator and
+// marks a transmission boundary. Embedded LCs re-describe the active call and
+// must remain in its epoch.
+static void
+test_repeated_voice_lc_header_keeps_one_epoch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_flco_repeated_header") == 0);
+
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    const uint64_t first_epoch = call.epoch;
+
+    // An embedded LC continues the transmission described by the header.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.epoch == first_epoch);
+
+    // A header repeat before any voice media is the same transmission.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.epoch == first_epoch);
+    assert(call.ota_source_id == 2002U);
+
+    // A header naming a different talker is the next transmission, not a repeat.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 5005U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.epoch != first_epoch);
+    assert(call.ota_source_id == 5005U);
+    const uint64_t talker_epoch = call.epoch;
+
+    // Once the epoch has carried voice media, an identical header is a
+    // same-identity re-key after a missed terminator: a new transmission.
+    assert(dsd_call_state_update_media(&state, 0U, 1, 0.0) > 0);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 5005U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.epoch != talker_epoch);
+    assert(call.ota_source_id == 5005U);
+    const uint64_t second_epoch = call.epoch;
+
+    // A header after the terminator opens the following transmission.
+    assert(dsd_call_state_end(&state, 0U, 0.0) > 0);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch != second_epoch);
+    const uint64_t third_epoch = call.epoch;
+
+    // The same header replayed after a sync-loss end is that transmission being reacquired,
+    // not a new one, so the reopened epoch is tagged for the event layer to merge. The header
+    // passes BEGIN, which is exactly why the tagging cannot depend on the boundary token.
+    assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) > 0);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch != third_epoch);
+    assert(call.ota_target_id == 1001U);
+    assert(call.ota_source_id == 2002U);
+    dsd_call_context_snapshot context;
+    assert(dsd_call_context_copy_snapshot(&state, &context) > 0);
+    assert(context.events[0].reacquired_epoch == call.epoch);
+
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    (void)remove(cap.path);
+    dsd_state_ext_free_all(&state);
+}
+
+// Header repeats only precede the transmission's first voice superframe, so an
+// active epoch that has gone longer than the repeat window without a single
+// decodable voice frame stops absorbing same-identity headers: the next
+// identical header is a new transmission, not a preamble repeat. Without the
+// bound, a header-only epoch whose voice bursts all failed to decode would
+// swallow a PTT on the same talkgroup minutes later as a continuation.
+static void
+test_stale_headerless_epoch_does_not_absorb_next_header(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+
+    // A header-shaped epoch whose start predates the repeat window, with no
+    // voice media ever marked on it.
+    const dsd_call_observation stale = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1001U,
+        .policy_target_id = 1001U,
+        .ota_source_id = 2002U,
+        .observed_m = dsd_time_now_monotonic_s() - 10.0,
+    };
+    assert(dsd_call_state_observe(&state, &stale, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    const uint64_t stale_epoch = call.epoch;
+
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_flco_stale_header") == 0);
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    (void)remove(cap.path);
+
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch != stale_epoch);
+    assert(call.ota_source_id == 2002U);
+    dsd_state_ext_free_all(&state);
+}
+
+// One transmission whose voice LC header repeats must leave exactly one row in
+// event history: the repeats stay in the first epoch instead of each minting an
+// epoch whose change commits the previous epoch's freshly built row again.
+// Reported in discussion #152.
+static void
+test_repeated_voice_lc_headers_commit_one_history_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(event_history, 0, sizeof(event_history));
+    state.event_history_s = event_history;
+    init_event_history(&event_history[0], 0, 255);
+    init_event_history(&event_history[1], 0, 255);
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_flco_one_row") == 0);
+
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    for (int header = 0; header < 3; header++) {
+        irr = 0;
+        build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+        dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    }
+    for (int emb = 0; emb < 3; emb++) {
+        irr = 0;
+        build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+        dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    }
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    (void)remove(cap.path);
+
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ENDED);
+
+    int rows = 0;
+    for (int i = 1; i < 255; i++) {
+        if (event_history[0].Event_History_Items[i].event_string[0] != '\0') {
+            rows++;
+        }
+    }
+    assert(rows == 1);
+    assert(event_history[0].Event_History_Items[1].target_id == 1001U);
+    assert(event_history[0].Event_History_Items[1].source_id == 2002U);
+    dsd_state_ext_free_all(&state);
 }
 
 int
 main(void) {
+    InitAllFecFunction();
+
+    test_repeated_voice_lc_header_keeps_one_epoch();
+    test_stale_headerless_epoch_does_not_absorb_next_header();
+    test_repeated_voice_lc_headers_commit_one_history_row();
+    test_unverified_terminator_ends_call_recoverably();
+    test_unverified_terminator_reopen_depends_on_identity();
+    test_unverified_terminator_does_not_tighten_sync_loss_end();
+    test_terminator_ends_call_despite_unreadable_lc();
+    test_data_terminator_does_not_end_voice_call();
+    test_protected_td_lc_shape_does_not_wipe_data_session();
+    test_reacquired_epoch_restores_cleared_slot_crypto();
+    test_heal_restores_live_mi_and_basic_privacy_fid();
+    test_stale_heal_stash_does_not_leak_into_later_call();
+    test_terminator_after_sync_loss_end_still_stashes_crypto();
+    test_corroborated_terminator_drops_the_heal_stash();
+    test_irrecoverable_hytera_terminator_does_not_repopulate_crypto();
     test_flco_output_uses_real_newlines();
+    test_ms_direct_flco_reports_internal_slot_one();
+    test_single_slot_flco_forces_slot_one_context();
+    test_trunked_mono_bs_fallback_preserves_slot_context();
     test_hytera_basic_key_output_uses_segment_count();
     test_kirisun_flco_sets_late_entry_mode();
+    test_flco_canonical_crypto_uses_algorithm_aware_keys();
     test_hytera_enhanced_flco_uses_secondary_checksum();
     test_flco_scan_hook_reports_encrypted_service_option();
     test_hytera_flco_scan_hook_uses_final_call_type();
+    test_td_lc_resets_slot_call_privacy_and_alias_state();
+    test_capacity_plus_rest_channel_and_call_class_are_packed_fields();
+    test_hytera_xpt_alert_records_free_lcn_and_targets();
+    test_cach_single_fragment_throttle_and_reject_paths();
+    test_cach_single_fragment_labels_cover_known_and_reserved_codes();
+    test_cach_completed_fragment_crc_error_reports_voice_payload_context();
+    test_cach_fragment_counter_overflow_resets_fragments();
+    test_encrypted_flco_lockout_inserts_policy_and_event_history();
+    test_encrypted_flco_lockout_return_keeps_canonical_calls_ended();
+    test_encrypted_flco_lockout_preserves_active_companion_call();
+    test_encrypted_flco_allowed_tuning_skips_lockout_policy();
+    test_embedded_lc_enc_requires_corroboration_for_lockout();
+    test_clear_voice_in_follow_mode_keeps_lockout_entry();
+    test_lone_contradicting_emb_does_not_flap_established_clear();
+    test_terminator_privacy_bit_does_not_lock_out();
+    test_crc_failed_header_enc_requires_repeat_for_lockout();
+    test_mapped_tg_classifies_decryptable();
+    test_forced_algid_lc_classifies_against_the_map();
+    test_mapped_tg_is_not_locked_out();
+    test_row_with_wrong_material_is_not_applied();
+    test_completed_slco_tier3_site_parameters_update_state();
+    test_completed_slco_activity_uses_each_slot_value();
+    test_completed_slco_connect_plus_and_xpt_update_site_state();
+    test_completed_slco_capacity_plus_hold_returns_to_rest_channel();
     printf("DMR FLCO privacy modes: OK\n");
     return 0;
 }
+
+// NOLINTEND(bugprone-implicit-widening-of-multiplication-result)

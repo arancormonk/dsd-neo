@@ -18,18 +18,9 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-uint64_t
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) { // NOLINT(misc-use-internal-linkage)
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0; i < n; i++) {
-        v = (v << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return v;
-}
-
 static int
 expect_name(const char* tag, uint8_t protocol, const char* want) {
-    const char* got = m17_packet_protocol_name(protocol);
+    const char* got = m17_packet_protocol_name_u32(protocol);
     if (want == NULL && got == NULL) {
         return 0;
     }

@@ -30,7 +30,6 @@ uint8_t nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint
                               int len_bytes);
 void nxdn_gps_report(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32_t src);
 void nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32_t src, int slot);
-void harris_gps(const dsd_opts* opts, dsd_state* state, int slot, const uint8_t* input);
 
 #ifdef __cplusplus
 }

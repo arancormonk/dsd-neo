@@ -105,6 +105,7 @@ tools/quality_preflight.sh
 
 Additional focused checks:
 
+- Cross-module includes or new headers: `tools/check_arch_rules.sh`
 - CMake changes: `tools/cmake_format_check.sh`
 - Workflow changes: `tools/workflow_lint.sh` and `tools/zizmor.sh`
 - Dependency input changes: `tools/osv_scan.sh`
@@ -135,7 +136,7 @@ Every pull request is reviewed for:
 
 - correctness and compatibility with surrounding module design
 - security impact, including untrusted input handling and dependency changes
-- API and CLI compatibility
+- API and CLI change impact
 - licensing and attribution
 - test coverage and documentation coverage
 - packaging and release impact

@@ -9,12 +9,14 @@
  * This drives p25_decode_extended_address and p25_decode_es_header paths.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_pdu.h>
 #include <errno.h>
 #include <limits.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,8 +26,6 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
 
-struct RtlSdrContext;
-
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
@@ -34,22 +34,41 @@ struct RtlSdrContext;
 #define setenv dsd_test_setenv
 
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
-void dsd_neo_config_init(const dsd_opts* opts);
+void dsd_neo_config_init(void);
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 
 // Shim to invoke real decoder
 void p25_test_p1_pdu_data_decode(const unsigned char* input, int len);
 
+static int g_datacall_count;
+static int g_history_count;
+static uint32_t g_datacall_src;
+static uint32_t g_datacall_dst;
+static dsd_event_category g_datacall_category;
+static char g_datacall_text[256];
+
 // Stubs required by linked decoder units
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* str, uint8_t slot) {
+dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                      const dsd_call_observation* observation, dsd_event_category category,
+                                      const char* notice) {
     (void)opts;
     (void)state;
-    (void)src;
-    (void)dst;
-    (void)str;
     (void)slot;
+    g_datacall_count++;
+    g_datacall_src = observation->ota_source_id;
+    g_datacall_dst = observation->ota_target_id;
+    g_datacall_category = category;
+    DSD_SNPRINTF(g_datacall_text, sizeof(g_datacall_text), "%s", notice ? notice : "");
+    return 0;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
+    return dsd_event_emit_data_notice_classified(opts, state, slot, observation, DSD_EVENT_CATEGORY_DATA, notice);
 }
 
 void
@@ -58,6 +77,7 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
+    g_history_count++;
 }
 
 void
@@ -70,33 +90,20 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    g_history_count++;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
     (void)state;
     (void)wr;
     (void)len;
     (void)input;
-}
-
-// Bit helpers expected by p25p1_pdu_data.c implementation
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    // MSB-first bit unpack
-    for (int i = 0; i < len * 8; i++) {
-        int byte = i / 8;
-        int bit = 7 - (i % 8);
-        output[i] = (input[byte] >> bit) & 1;
-    }
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t v = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        v = (v << 1) | (BufferIn[i] & 1);
-    }
-    return v;
 }
 
 uint8_t
@@ -110,46 +117,13 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
     return 0;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
     (void)len;
     (void)input;
-}
-
-// Additional stubs for rigctl path
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
     return 0;
 }
 
@@ -222,6 +196,33 @@ expect_u8(const char* label, uint8_t got, uint8_t want) {
         return 1;
     }
     return 0;
+}
+
+static int
+expect_u32(const char* label, uint32_t got, uint32_t want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got 0x%08X want 0x%08X\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_contains(const char* label, const char* got, const char* needle) {
+    if (got == NULL || strstr(got, needle) == NULL) {
+        DSD_FPRINTF(stderr, "%s: missing '%s' in '%s'\n", label, needle, got ? got : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
+static void
+reset_watchdog_counters(void) {
+    g_datacall_count = 0;
+    g_history_count = 0;
+    g_datacall_src = 0;
+    g_datacall_dst = 0;
+    g_datacall_text[0] = '\0';
 }
 
 static int
@@ -315,13 +316,164 @@ test_p25_pdu_missing_keys_stay_encrypted(void) {
     return rc;
 }
 
+static int
+test_p25_pdu_label_helpers(void) {
+    char label[48];
+    int rc = 0;
+
+    label[0] = 'x';
+    p25_decode_sap(0, label, sizeof(label));
+    rc |= expect_contains("SAP user-data label", label, "User Data");
+
+    p25_decode_sap(0xFE, label, sizeof(label));
+    rc |= expect_contains("SAP unknown label", label, "Unknown SAP");
+
+    label[0] = 'x';
+    p25_decode_rsp(0, 0, 0, label, sizeof(label));
+    rc |= expect_contains("RSP ACK label", label, "ACK");
+
+    p25_decode_rsp(1, 4, 0, label, sizeof(label));
+    rc |= expect_contains("RSP NACK undeliverable label", label, "Undeliverable");
+
+    p25_decode_rsp(2, 0, 0, label, sizeof(label));
+    rc |= expect_contains("RSP SACK label", label, "SACK");
+
+    p25_decode_rsp(3, 0, 0, label, sizeof(label));
+    rc |= expect_contains("RSP unknown label", label, "Unknown RSP");
+
+    p25_decode_sap(0, NULL, sizeof(label));
+    p25_decode_rsp(0, 0, 0, NULL, sizeof(label));
+    p25_decode_sap(0, label, 0);
+    p25_decode_rsp(0, 0, 0, label, 0);
+    return rc;
+}
+
+static int
+seed_voice_call(dsd_state* state, uint64_t target, uint64_t source) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+        .observed_m = 1.0,
+    };
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
+}
+
+static int
+same_voice_identity(const dsd_call_snapshot* before, const dsd_call_snapshot* after) {
+    return before->epoch == after->epoch && before->phase == after->phase && before->protocol == after->protocol
+           && before->kind == after->kind && before->ota_target_id == after->ota_target_id
+           && before->policy_target_id == after->policy_target_id && before->ota_source_id == after->ota_source_id;
+}
+
+static int
+test_p25_pdu_header_state_updates(void) {
+    static dsd_opts opts;
+    static dsd_state st;
+    uint8_t header[12];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    DSD_MEMSET(header, 0, sizeof(header));
+
+    header[0] = 0x30; // io=1, fmt=16
+    header[1] = 4;    // Packet Data
+    header[3] = 0x12;
+    header[4] = 0x34;
+    header[5] = 0x56;
+    header[6] = 0x82; // FMF plus two blocks
+    header[7] = 0x05; // pad
+    header[8] = 0x21; // NS/FSNF
+    header[9] = 0x07; // offset
+
+    reset_watchdog_counters();
+    p25_decode_pdu_header(&opts, &st, header);
+    int rc = 0;
+    dsd_call_snapshot call;
+    rc |= expect_u32("header does not start voice call", (uint32_t)(dsd_call_state_get(&st, 0U, &call) > 0), 0);
+    rc |= expect_contains("header data-call summary", st.dmr_lrrp_gps[0], "Packet Data");
+    rc |= expect_u32("header non-response no datacall", (uint32_t)g_datacall_count, 0);
+
+    DSD_MEMSET(&st, 0, sizeof(st));
+    DSD_MEMSET(header, 0, sizeof(header));
+    header[0] = 0x03; // response format
+    header[1] = (uint8_t)((1U << 6) | (4U << 3) | 2U);
+    header[3] = 0x00;
+    header[4] = 0x01;
+    header[5] = 0x23;
+    reset_watchdog_counters();
+    p25_decode_pdu_header(&opts, &st, header);
+    rc |= expect_u32("response does not start voice call", (uint32_t)(dsd_call_state_get(&st, 0U, &call) > 0), 0);
+    rc |= expect_u32("response datacall count", (uint32_t)g_datacall_count, 1);
+    rc |= expect_u32("response datacall src", g_datacall_src, 0x000123);
+    rc |= expect_u32("response datacall dst", g_datacall_dst, 0);
+    rc |= expect_contains("response datacall text", g_datacall_text, "Undeliverable");
+
+    dsd_state_ext_free_all(&st);
+    DSD_MEMSET(&st, 0, sizeof(st));
+    st.lastsynctype = DSD_SYNC_P25P1_POS;
+    rc |= expect_u32("trunking header seed voice", (uint32_t)seed_voice_call(&st, 0x222222, 0x111111), 1);
+    dsd_call_snapshot before;
+    dsd_call_snapshot after;
+    rc |= expect_u32("trunking header get before", (uint32_t)(dsd_call_state_get(&st, 0U, &before) > 0), 1);
+    DSD_MEMSET(header, 0, sizeof(header));
+    header[0] = 0x10;
+    header[1] = 61; // trunking-control SAP is intentionally skipped
+    header[3] = 0xAA;
+    header[4] = 0xBB;
+    header[5] = 0xCC;
+    reset_watchdog_counters();
+    p25_decode_pdu_header(&opts, &st, header);
+    rc |= expect_u32("trunking header get after", (uint32_t)(dsd_call_state_get(&st, 0U, &after) > 0), 1);
+    rc |= expect_u32("trunking header preserves voice", (uint32_t)same_voice_identity(&before, &after), 1);
+    rc |= expect_u32("trunking header no datacall", (uint32_t)g_datacall_count, 0);
+    dsd_state_ext_free_all(&st);
+    return rc;
+}
+
+static int
+test_p25_pdu_es_header_decrypt_and_advance(void) {
+    static const uint8_t des_expect[] = {0x67, 0xAE, 0x7A, 0x29, 0x61, 0xDF, 0xA3, 0x45};
+    static dsd_opts opts;
+    static dsd_state st;
+    uint8_t es[13 + sizeof(des_expect)];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    DSD_MEMSET(es, 0, sizeof(es));
+    st.R = 0x133457799BBCDFF1ULL;
+
+    es[0] = 0x01;
+    es[1] = 0x23;
+    es[2] = 0x45;
+    es[3] = 0x67;
+    es[4] = 0x89;
+    es[5] = 0xAB;
+    es[6] = 0xCD;
+    es[7] = 0xEF;
+    es[9] = 0x81;  // DES
+    es[12] = 0xE0; // aux_res=3, aux_sap=32
+
+    uint8_t sap = 0;
+    int ptr = 0;
+    uint8_t encrypted = p25_decode_es_header(&opts, &st, es, &sap, &ptr, (int)sizeof(es));
+    int rc = 0;
+    rc |= expect_u8("ES header decrypt flag", encrypted, 0);
+    rc |= expect_u8("ES header aux SAP", sap, 32);
+    rc |= expect_u32("ES header ptr", (uint32_t)ptr, 13);
+    rc |= expect_bytes("ES header DES payload", es + 13, des_expect, sizeof(des_expect));
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
 
     // Enable JSON emission
     setenv("DSD_NEO_PDU_JSON", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "p25_p1_pdu_es_ext") != 0) {
@@ -413,11 +565,18 @@ main(void) {
         DSD_FPRINTF(stderr, "expected SAP 32 after ES header, got %d\n", sap);
         rc = 1;
     }
+    if (g_datacall_category != DSD_EVENT_CATEGORY_CONTROL) {
+        DSD_FPRINTF(stderr, "expected SAP 32 control category, got %d\n", (int)g_datacall_category);
+        rc = 1;
+    }
     (void)remove(cap.path);
     rc |= test_p25_pdu_des_decrypt_vector();
     rc |= test_p25_pdu_rc4_decrypt_vector();
     rc |= test_p25_pdu_aes128_decrypt_vector();
     rc |= test_p25_pdu_missing_keys_stay_encrypted();
+    rc |= test_p25_pdu_label_helpers();
+    rc |= test_p25_pdu_header_state_updates();
+    rc |= test_p25_pdu_es_header_decrypt_and_advance();
     return rc;
 }
 

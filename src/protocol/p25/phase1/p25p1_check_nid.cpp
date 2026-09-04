@@ -14,8 +14,7 @@ p25p1_bch_instance(void) {
     return bch;
 }
 
-static int decode_nid_codeword(const char* bch_code, int* new_nac, char* new_duid, unsigned char parity,
-                               int* error_count, bool* bch_decode_failed);
+static struct p25p1_nid_result decode_nid_codeword(const char* bch_code, unsigned char parity, bool* bch_decode_failed);
 
 /**
  * @brief Valid DUID values from TIA-102.BAAA-A Table 8-4.
@@ -164,10 +163,7 @@ namespace {
 
 struct SoftNidCandidate {
     int found;
-    int result;
-    int nac;
-    char duid[3];
-    int error_count;
+    struct p25p1_nid_result decoded;
     int score;
     int changes;
 };
@@ -177,31 +173,25 @@ struct SoftNidCandidate {
 static void
 soft_nid_consider_candidate(const char* scoring_code, const char* candidate, const uint8_t* reliab,
                             unsigned char parity, uint8_t parity_reliab, SoftNidCandidate* best) {
-    int decoded_nac = 0;
-    char decoded_duid[3] = {0};
-    int decoded_errors = 0;
-    int result = decode_nid_codeword(candidate, &decoded_nac, decoded_duid, parity, &decoded_errors, 0);
-    if (result <= 0) {
+    struct p25p1_nid_result decoded = decode_nid_codeword(candidate, parity, 0);
+    if (decoded.status <= 0) {
         return;
     }
 
     int score = score_bit_changes(scoring_code, candidate, reliab, 63);
-    if (result == NID_PARITY_OVERRIDE) {
+    if (decoded.status == NID_PARITY_OVERRIDE) {
         score += (int)parity_reliab;
     }
     int changes = count_bit_changes(scoring_code, candidate, 63);
 
-    if (!best->found || score < best->score || (score == best->score && result == NID_OK && best->result != NID_OK)
-        || (score == best->score && result == best->result && decoded_errors < best->error_count)
-        || (score == best->score && result == best->result && decoded_errors == best->error_count
-            && changes < best->changes)) {
+    if (!best->found || score < best->score
+        || (score == best->score && decoded.status == NID_OK && best->decoded.status != NID_OK)
+        || (score == best->score && decoded.status == best->decoded.status
+            && decoded.error_count < best->decoded.error_count)
+        || (score == best->score && decoded.status == best->decoded.status
+            && decoded.error_count == best->decoded.error_count && changes < best->changes)) {
         best->found = 1;
-        best->result = result;
-        best->nac = decoded_nac;
-        best->duid[0] = decoded_duid[0];
-        best->duid[1] = decoded_duid[1];
-        best->duid[2] = decoded_duid[2];
-        best->error_count = decoded_errors;
+        best->decoded = decoded;
         best->score = score;
         best->changes = changes;
     }
@@ -249,16 +239,12 @@ soft_nid_search_from_base(const char* scoring_code, const char* base_code, const
  * DUID. The caller still receives NID_PARITY_OVERRIDE for diagnostics.
  *
  * @param bch_code    Input: 63 bytes, each containing one bit of the NID.
- * @param new_nac     Output: decoded 12-bit NAC value after error correction.
- * @param new_duid    Output: 3-char buffer for the decoded DUID string (e.g., "11").
  * @param parity      Input: the 64th parity bit read from the air interface.
- * @param error_count Output: number of BCH errors corrected (valid when result > 0).
- * @return NidResult code: NID_OK (1), NID_PARITY_OVERRIDE (2),
- *         or NID_DECODE_FAIL (0).
+ * @return Typed NID status, numeric NAC/DUID, and correction count.
  */
-static int
-decode_nid_codeword(const char* bch_code, int* new_nac, char* new_duid, unsigned char parity, int* error_count,
-                    bool* bch_decode_failed) {
+static struct p25p1_nid_result
+decode_nid_codeword(const char* bch_code, unsigned char parity, bool* bch_decode_failed) {
+    struct p25p1_nid_result result = {NID_DECODE_FAIL, 0, 0, 0};
     if (bch_decode_failed != 0) {
         *bch_decode_failed = false;
     }
@@ -269,15 +255,14 @@ decode_nid_codeword(const char* bch_code, int* new_nac, char* new_duid, unsigned
 
     if (!bch_result.success) {
         // BCH decode failed (>11 errors or Chien search mismatch)
-        *error_count = 0;
         if (bch_decode_failed != 0) {
             *bch_decode_failed = true;
         }
-        return NID_DECODE_FAIL;
+        return result;
     }
 
     // Report the number of corrected errors to the caller
-    *error_count = bch_result.error_count;
+    result.error_count = bch_result.error_count;
 
     // Extract the NAC from the decoded output. It's a 12-bit number
     // starting from position 0 (MSB first).
@@ -286,22 +271,18 @@ decode_nid_codeword(const char* bch_code, int* new_nac, char* new_duid, unsigned
         nac <<= 1;
         nac |= (int)decoded[i];
     }
-    *new_nac = nac;
+    result.nac = nac;
 
-    // Extract the DUID from positions 12-15. The DUID is represented as
-    // two dibit characters for compatibility with the dispatch layer.
+    // Extract the numeric DUID from positions 12-15.
     unsigned char new_duid_0 = (((int)decoded[12]) << 1) + ((int)decoded[13]);
     unsigned char new_duid_1 = (((int)decoded[14]) << 1) + ((int)decoded[15]);
-    new_duid[0] = new_duid_0 + '0';
-    new_duid[1] = new_duid_1 + '0';
-    new_duid[2] = 0; // Null terminate
+    result.duid = (uint8_t)((new_duid_0 << 2) | new_duid_1);
 
     // Validate the decoded DUID against the set of defined frame types.
     // A DUID not in the valid set indicates a BCH miscorrection artifact.
-    unsigned char duid_value = (new_duid_0 << 2) | new_duid_1;
-    if (!DUID_VALID[duid_value]) {
-        *error_count = 0;
-        return NID_DECODE_FAIL;
+    if (!DUID_VALID[result.duid]) {
+        result.error_count = 0;
+        return result;
     }
 
     // Check the parity bit against the expected value for this DUID.
@@ -311,26 +292,22 @@ decode_nid_codeword(const char* bch_code, int* new_nac, char* new_duid, unsigned
 
     if (expected_parity == parity) {
         // BCH decoded, valid DUID, parity matches - full success
-        return NID_OK;
+        result.status = NID_OK;
+        return result;
     }
 
     // Parity disagrees. The final parity bit is outside the BCH-protected
     // codeword, so accept the corrected NID and expose the condition to the
     // caller for diagnostics.
-    return NID_PARITY_OVERRIDE;
+    result.status = NID_PARITY_OVERRIDE;
+    return result;
 }
 
-int
-check_NID_with_error_count(const char* bch_code, int* new_nac, char* new_duid, unsigned char parity, int* error_count) {
-    return decode_nid_codeword(bch_code, new_nac, new_duid, parity, error_count, 0);
-}
-
-int
-check_NID_with_observed_nac(const char* bch_code, int observed_nac, int* new_nac, char* new_duid, unsigned char parity,
-                            int* error_count) {
+static struct p25p1_nid_result
+decode_nid_hard(const char* bch_code, int observed_nac, unsigned char parity) {
     bool bch_decode_failed = false;
-    int result = decode_nid_codeword(bch_code, new_nac, new_duid, parity, error_count, &bch_decode_failed);
-    if (result != NID_DECODE_FAIL || !bch_decode_failed || !valid_observed_nac(observed_nac)
+    struct p25p1_nid_result result = decode_nid_codeword(bch_code, parity, &bch_decode_failed);
+    if (result.status != NID_DECODE_FAIL || !bch_decode_failed || !valid_observed_nac(observed_nac)
         || received_nac(bch_code) == observed_nac) {
         return result;
     }
@@ -341,14 +318,14 @@ check_NID_with_observed_nac(const char* bch_code, int observed_nac, int* new_nac
     }
     set_received_nac(retry_code, observed_nac);
 
-    return decode_nid_codeword(retry_code, new_nac, new_duid, parity, error_count, 0);
+    return decode_nid_codeword(retry_code, parity, 0);
 }
 
-int
-check_NID_with_observed_nac_soft(const char* bch_code, const uint8_t* reliab63, int observed_nac, int* new_nac,
-                                 char* new_duid, unsigned char parity, uint8_t parity_reliab, int* error_count) {
-    int hard_result = check_NID_with_observed_nac(bch_code, observed_nac, new_nac, new_duid, parity, error_count);
-    if (hard_result > 0 || reliab63 == 0) {
+struct p25p1_nid_result
+p25p1_nid_decode(const char bch_code[63], const uint8_t reliab63[63], int observed_nac, unsigned char parity,
+                 uint8_t parity_reliab) {
+    struct p25p1_nid_result hard_result = decode_nid_hard(bch_code, observed_nac, parity);
+    if (hard_result.status > 0 || reliab63 == 0) {
         return hard_result;
     }
 
@@ -358,7 +335,7 @@ check_NID_with_observed_nac_soft(const char* bch_code, const uint8_t* reliab63, 
         return hard_result;
     }
 
-    SoftNidCandidate best = {0, NID_DECODE_FAIL, 0, {0, 0, 0}, 0, 0, 0};
+    SoftNidCandidate best = {0, {NID_DECODE_FAIL, 0, 0, 0}, 0, 0};
     soft_nid_search_from_base(bch_code, bch_code, reliab63, pool, pool_count, parity, parity_reliab, &best);
 
     if (valid_observed_nac(observed_nac) && received_nac(bch_code) != observed_nac) {
@@ -373,27 +350,5 @@ check_NID_with_observed_nac_soft(const char* bch_code, const uint8_t* reliab63, 
         return hard_result;
     }
 
-    *new_nac = best.nac;
-    new_duid[0] = best.duid[0];
-    new_duid[1] = best.duid[1];
-    new_duid[2] = best.duid[2];
-    *error_count = best.error_count;
-    return best.result;
-}
-
-/**
- * @brief Backward-compatible 4-parameter wrapper for check_NID_with_error_count().
- *
- * Calls the full 5-parameter version with a local dummy error_count variable.
- *
- * @param bch_code Input: 63 bytes, each containing one bit of the NID.
- * @param new_nac  Output: decoded 12-bit NAC value.
- * @param new_duid Output: 3-char buffer for the decoded DUID string.
- * @param parity   Input: the 64th parity bit.
- * @return NidResult code (same semantics as the 5-parameter version).
- */
-int
-check_NID(const char* bch_code, int* new_nac, char* new_duid, unsigned char parity) {
-    int dummy_error_count;
-    return check_NID_with_error_count(bch_code, new_nac, new_duid, parity, &dummy_error_count);
+    return best.decoded;
 }

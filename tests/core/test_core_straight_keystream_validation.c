@@ -78,22 +78,6 @@ fill_zero_tail(char frame[49]) {
     }
 }
 
-static void
-apply_expected_static_bits(const uint8_t* bits, int mod, int start, char frame[49]) {
-    for (int i = 0; i < 49; i++) {
-        frame[i] ^= (char)(bits[(start + i) % mod] & 1U);
-    }
-}
-
-static uint16_t
-anytone_expected_perm(uint16_t key) {
-    const uint16_t nib1 = (uint16_t)((~(key >> 12)) & 0xFU);
-    const uint16_t nib2 = (uint16_t)((((key >> 8) & 0xFU) + 8U) % 16U);
-    const uint16_t nib3 = (uint16_t)((~(key >> 4)) & 0xFU);
-    const uint16_t nib4 = (uint16_t)((((key >> 0) & 0xFU) + 8U) % 16U);
-    return (uint16_t)((nib1 << 12U) | (nib2 << 8U) | (nib3 << 4U) | nib4);
-}
-
 /*
  * Provide a local parser stub required by straight_mod_xor_keystream_creation.
  * This test only needs uppercase/lowercase contiguous hex parsing.
@@ -119,22 +103,6 @@ parse_raw_user_string(const char* input, uint8_t* output, size_t out_cap) {
     return (uint16_t)out_idx;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    int k = 0;
-    for (int i = 0; i < len; i++) {
-        output[k++] = (uint8_t)((input[i] >> 7) & 1U);
-        output[k++] = (uint8_t)((input[i] >> 6) & 1U);
-        output[k++] = (uint8_t)((input[i] >> 5) & 1U);
-        output[k++] = (uint8_t)((input[i] >> 4) & 1U);
-        output[k++] = (uint8_t)((input[i] >> 3) & 1U);
-        output[k++] = (uint8_t)((input[i] >> 2) & 1U);
-        output[k++] = (uint8_t)((input[i] >> 1) & 1U);
-        output[k++] = (uint8_t)((input[i] >> 0) & 1U);
-    }
-}
-
 int
 main(void) {
     int rc = 0;
@@ -146,12 +114,11 @@ main(void) {
 
     {
         char arg[] = "0x12345";
-        const uint16_t expect = anytone_expected_perm(0x2345U);
         anytone_bp_keystream_creation(st, arg, 0);
         rc |= expect_eq_int("anytone-enabled", st->any_bp, 1);
-        rc |= expect_eq_u8("anytone-truncated-byte0", bits_to_u8(st->static_ks_bits[0], 0), (expect >> 8U) & 0xFFU);
-        rc |= expect_eq_u8("anytone-truncated-byte1", bits_to_u8(st->static_ks_bits[0], 8), expect & 0xFFU);
-        rc |= expect_eq_u8("anytone-slot1-byte0", bits_to_u8(st->static_ks_bits[1], 0), (expect >> 8U) & 0xFFU);
+        rc |= expect_eq_u8("anytone-truncated-byte0", bits_to_u8(st->static_ks_bits[0], 0), 0xDBU);
+        rc |= expect_eq_u8("anytone-truncated-byte1", bits_to_u8(st->static_ks_bits[0], 8), 0xBDU);
+        rc |= expect_eq_u8("anytone-slot1-byte0", bits_to_u8(st->static_ks_bits[1], 0), 0xDBU);
     }
 
     {
@@ -169,12 +136,9 @@ main(void) {
             active[i] = (char)(i & 1U);
         }
         active[24] = 1;
-        char expected[49];
-        DSD_MEMCPY(expected, active, sizeof(expected));
-        apply_expected_static_bits(st->static_ks_bits[1], 16, 56 % 16, expected);
         rc |= expect_eq_int("anytone active applied", anytone_bp_apply_frame49(st, 1, active), 1);
         rc |= expect_eq_int("anytone active counter", st->static_ks_counter[1], 105);
-        rc |= expect_eq_frame("anytone active frame", active, expected);
+        rc |= expect_eq_frame("anytone active frame", active, "1110100010001110111010000000111011101000100011101");
     }
 
     DSD_MEMSET(st->static_ks_bits, 0, sizeof(st->static_ks_bits));
@@ -201,12 +165,9 @@ main(void) {
             active[i] = (char)(i & 1U);
         }
         active[24] = 1;
-        char expected[49];
-        DSD_MEMCPY(expected, active, sizeof(expected));
-        apply_expected_static_bits(st->static_ks_bits[0], 882, 49, expected);
         rc |= expect_eq_int("kenwood active applied", ken_dmr_scrambler_apply_frame49(st, 0, active), 1);
         rc |= expect_eq_int("kenwood active counter", st->static_ks_counter[0], 98);
-        rc |= expect_eq_frame("kenwood active frame", active, expected);
+        rc |= expect_eq_frame("kenwood active frame", active, "0101010110100101010101111111010101011001100101010");
     }
 
     st->straight_ks = 1;
@@ -319,7 +280,7 @@ main(void) {
         rc |= expect_eq_int("extra-fields-mod", st->straight_mod, 0);
     }
 
-    // Legacy mode: continuous modulo-N stream across frames.
+    // Continuous mode: modulo-N stream across frames.
     {
         char arg[] = "8:F0";
         char frame0[49];
@@ -331,17 +292,17 @@ main(void) {
         straight_mod_xor_keystream_creation(st, arg, 0);
         straight_mod_xor_apply_frame49(st, 0, frame0);
         straight_mod_xor_apply_frame49(st, 0, frame1);
-        rc |= expect_eq_u8("legacy-frame0-byte0", bits_to_u8((const uint8_t*)frame0, 0), 0xF0U);
-        rc |= expect_eq_u8("legacy-frame1-byte0", bits_to_u8((const uint8_t*)frame1, 0), 0xE1U);
-        rc |= expect_eq_int("legacy-counter", st->static_ks_counter[0], 98);
+        rc |= expect_eq_u8("continuous-frame0-byte0", bits_to_u8((const uint8_t*)frame0, 0), 0xF0U);
+        rc |= expect_eq_u8("continuous-frame1-byte0", bits_to_u8((const uint8_t*)frame1, 0), 0xE1U);
+        rc |= expect_eq_int("continuous-counter", st->static_ks_counter[0], 98);
 
         char silence[49];
         fill_default_silence(silence);
         char original_silence[49];
         DSD_MEMCPY(original_silence, silence, sizeof(original_silence));
         straight_mod_xor_apply_frame49(st, 0, silence);
-        rc |= expect_eq_frame("legacy-skip-silence-frame", silence, original_silence);
-        rc |= expect_eq_int("legacy-skip-silence-counter", st->static_ks_counter[0], 147);
+        rc |= expect_eq_frame("continuous-skip-silence-frame", silence, original_silence);
+        rc |= expect_eq_int("continuous-skip-silence-counter", st->static_ks_counter[0], 147);
     }
 
     // Frame mode: each AMBE frame starts at offset + n*step (mod len).
@@ -391,13 +352,7 @@ main(void) {
         st->static_ks_counter[0] = 1000000000;
         straight_mod_xor_apply_frame49(st, 0, frame0);
 
-        const uint64_t frame_ctr = 1000000000ULL;
-        const uint64_t mod = (uint64_t)st->straight_mod;
-        const uint64_t off = (uint64_t)st->straight_frame_off;
-        const uint64_t step = (uint64_t)st->straight_frame_step;
-        const int expected_base = (int)((off + ((frame_ctr * step) % mod)) % mod);
-        rc |= expect_eq_u8("frame-mode-overflow-safe", bits_to_u8((const uint8_t*)frame0, 0),
-                           bits_to_u8(st->static_ks_bits[0], expected_base));
+        rc |= expect_eq_frame("frame-mode-overflow-safe", frame0, "1010111100100010010001100000101011001111000100110");
         rc |= expect_eq_int("frame-mode-overflow-counter", st->static_ks_counter[0], 1000000001);
     }
 

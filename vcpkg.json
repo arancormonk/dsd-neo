@@ -1,16 +1,20 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "dsd-neo",
-  "version-string": "2.1.0",
-  "builtin-baseline": "f3e10653cc27d62a37a3763cd84b38bca07c6075",
+  "version-string": "2.8.1",
+  "builtin-baseline": "9e593bb18ea69cc5095e012465dcd675a822ed0d",
   "description": "Digital Speech Decoder: DSD-neo",
   "homepage": "https://github.com/arancormonk/dsd-neo",
   "dependencies": [
     "mbe-neo",
     "openssl",
-    "curl",
     "libsndfile",
-    "portaudio",
+    "curl",
+    "expat",
+    {
+      "name": "portaudio",
+      "platform": "!android"
+    },
     {
       "name": "rtlsdr",
       "platform": "windows",
@@ -24,7 +28,7 @@
     },
     {
       "name": "codec2",
-      "platform": "windows"
+      "platform": "windows | android"
     },
     {
       "name": "pdcurses",

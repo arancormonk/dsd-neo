@@ -8,6 +8,7 @@
  */
 
 #include <curses.h>
+#include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
@@ -19,10 +20,6 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
 #include "ncurses_dsp_status_format.h"
-
-#ifdef USE_RTLSDR
-#include <dsd-neo/io/rtl_stream_c.h>
-#endif
 
 #ifdef USE_RADIO
 
@@ -75,22 +72,13 @@ dsp_status_print_squelch(const dsd_opts* opts) {
 #ifdef USE_RTLSDR
 
 typedef struct {
+    dsd_frontend_metrics metrics;
     int cq;
-    int fll;
-    int ted;
+    int cq_timing;
     int iqb;
     int dc_k;
     int dc_on;
-    int ted_force;
-    int clk_mode;
-    int clk_sync;
-    int agc_on;
-    int lim_on;
     int mod;
-    float agc_tgt;
-    float agc_min;
-    float agc_up;
-    float agc_down;
     const char* modlab;
 } dsp_status_snapshot;
 
@@ -108,26 +96,20 @@ dsp_status_mod_label(int mod) {
 static void
 dsp_status_capture(dsp_status_snapshot* snap, const dsd_state* state) {
     DSD_MEMSET(snap, 0, sizeof(*snap));
-    rtl_stream_dsp_get(&snap->cq, &snap->fll, &snap->ted);
-    snap->iqb = rtl_stream_get_iq_balance();
-    snap->dc_on = rtl_stream_get_iq_dc(&snap->dc_k);
-    snap->ted_force = rtl_stream_get_ted_force();
-    snap->clk_mode = rtl_stream_get_c4fm_clk();
-    snap->clk_sync = rtl_stream_get_c4fm_clk_sync();
-    snap->agc_on = rtl_stream_get_fm_agc();
-    rtl_stream_get_fm_agc_params(&snap->agc_tgt, &snap->agc_min, &snap->agc_up, &snap->agc_down);
-    snap->lim_on = rtl_stream_get_fm_limiter();
+    (void)dsd_app_frontend_get_metrics(&snap->metrics);
+    snap->cq = snap->metrics.cqpsk_enable;
+    snap->cq_timing = snap->metrics.cqpsk_timing_active;
+    snap->iqb = snap->metrics.iq_balance;
+    snap->dc_on = snap->metrics.iq_dc_enabled;
+    snap->dc_k = snap->metrics.iq_dc_shift_k;
     snap->mod = state ? state->rf_mod : (snap->cq ? 1 : 0);
     snap->modlab = dsp_status_mod_label(snap->mod);
 }
 
 static void
 dsp_status_print_ted(const dsp_status_snapshot* snap) {
-    int ted_sps = rtl_stream_get_ted_sps();
-    float ted_gain = rtl_stream_get_ted_gain();
-    int ted_bias = rtl_stream_ted_bias(NULL);
-    ui_print_kv_line("TED", "[%s] sps:%d g:%.3f bias:%d%s", snap->ted ? "On" : "Off", ted_sps, ted_gain, ted_bias,
-                     snap->ted_force ? " force" : "");
+    ui_print_kv_line("CQPSK Timing", "[%s] sps:%d g:%.3f bias:%d", snap->cq_timing ? "On" : "Off",
+                     snap->metrics.ted_sps, snap->metrics.ted_gain, snap->metrics.cqpsk_timing_bias);
 }
 
 static void
@@ -135,7 +117,6 @@ dsp_status_print_front_and_path(const dsp_status_snapshot* snap) {
     ui_print_kv_line("Front", "IQBal:%s  IQ-DC:%s k:%d", snap->iqb ? "On" : "Off", snap->dc_on ? "On" : "Off",
                      snap->dc_k);
     ui_print_kv_line("Path", "Mod:%s  CQ:%s", snap->modlab, snap->cq ? "On" : "Off");
-    ui_print_kv_line("FLL", "[%s]", snap->fll ? "On" : "Off");
     dsp_status_print_ted(snap);
     if (snap->mod == 1 || snap->cq) {
         ui_print_kv_line("CQPSK Path", "[%s]", snap->cq ? "On" : "Off");
@@ -143,49 +124,15 @@ dsp_status_print_front_and_path(const dsp_status_snapshot* snap) {
 }
 
 static void
-dsp_status_print_cqpsk_metrics(void) {
-    double cfo = rtl_stream_get_cfo_hz();
-    int clk = rtl_stream_get_carrier_lock();
-    rtl_stream_costas_metrics cm;
-    DSD_MEMSET(&cm, 0, sizeof(cm));
-    int e14 = rtl_stream_get_costas_err_q14();
-    if (rtl_stream_get_costas_metrics(&cm) == 0) {
-        e14 = cm.err_smooth_avg_q14;
-    }
-    int nco_q15 = rtl_stream_get_nco_q15();
-    int Fs = rtl_stream_get_demod_rate_hz();
-    double fll_be_hz = rtl_stream_get_fll_band_edge_freq_hz();
-    ui_print_kv_line("FLL BE", "Freq=%+0.1f Hz", fll_be_hz);
-    ui_print_kv_line("Carrier", "NCO=%+0.1f Hz  %s", cfo, clk ? "Locked" : "Acq");
-    ui_print_kv_line("Costas/NCO", "ErrS=%d ErrR=%d Conf=%0.2f Fade=%d%% NCO(q15)=%d Fs=%d Hz", e14, cm.err_raw_avg_q14,
-                     (double)cm.confidence_avg_q14 / 16384.0, cm.zero_conf_pct, nco_q15, Fs);
+dsp_status_print_cqpsk_metrics(const dsp_status_snapshot* snap) {
+    const dsd_frontend_metrics* metrics = &snap->metrics;
+    ui_print_kv_line("FLL BE", "Freq=%+0.1f Hz", metrics->fll_band_edge_freq_hz);
+    ui_print_kv_line("Carrier", "NCO=%+0.1f Hz  %s", metrics->cfo_hz, metrics->carrier_lock ? "Locked" : "Acq");
+    ui_print_kv_line("Costas/NCO", "ErrS=%d ErrR=%d Conf=%0.2f Fade=%d%% NCO(q15)=%d Fs=%d Hz", metrics->costas_err_q14,
+                     metrics->costas.err_raw_avg_q14, (double)metrics->costas.confidence_avg_q14 / 16384.0,
+                     metrics->costas.zero_conf_pct, metrics->nco_q15, metrics->demod_rate_hz);
 }
 
-static void
-dsp_status_print_fsk_metrics(void) {
-    rtl_stream_fsk_metrics fm;
-    DSD_MEMSET(&fm, 0, sizeof(fm));
-    if (rtl_stream_get_fsk_metrics(&fm) != 0 || !fm.valid) {
-        return;
-    }
-    ui_print_kv_line("FSK Soft", "rel:%u min:%u low:%4.1f%% clip:%4.1f%% err:%.3f snr:%4.1f dB", fm.mean_reliability,
-                     fm.min_reliability, fm.low_reliability_pct, fm.clip_pct, fm.rms_error, fm.evm_snr_db);
-    ui_print_kv_line("FSK Track", "acq:%s e:%.2f score:%.4f upd:%llu skip:%llu", fm.timing_acquired ? "Y" : "N",
-                     fm.track_last_error, fm.track_last_score, (unsigned long long)fm.track_updates,
-                     (unsigned long long)fm.track_skips);
-}
-
-static void
-dsp_status_print_mode_tail(const dsp_status_snapshot* snap) {
-    if (snap->mod == 0 || snap->clk_mode != 0) {
-        const char* clk = (snap->clk_mode == 1) ? "EL" : (snap->clk_mode == 2) ? "MM" : "Off";
-        ui_print_kv_line("C4FM", "CLK:%s%s", clk, (snap->clk_mode && snap->clk_sync) ? " (sync)" : "");
-    }
-    if (snap->mod != 1 || snap->agc_on || snap->lim_on) {
-        ui_print_kv_line("FM AGC", "[%s] tgt:%.3f min:%.3f up:%.2f dn:%.2f | LIM:%s", snap->agc_on ? "On" : "Off",
-                         snap->agc_tgt, snap->agc_min, snap->agc_up, snap->agc_down, snap->lim_on ? "On" : "Off");
-    }
-}
 #endif
 
 /* Print a compact DSP status summary (which blocks are active). */
@@ -214,10 +161,8 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
     dsp_status_print_squelch(opts);
 #ifdef USE_RTLSDR
     if (snap.cq) {
-        dsp_status_print_cqpsk_metrics();
+        dsp_status_print_cqpsk_metrics(&snap);
     }
-    dsp_status_print_fsk_metrics();
-    dsp_status_print_mode_tail(&snap);
 #endif
     attroff(COLOR_PAIR(14));
     attron(COLOR_PAIR(4));

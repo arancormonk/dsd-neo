@@ -27,78 +27,12 @@ reed_solomon_36_20_17_instance(void) {
 
 int
 check_and_fix_golay_24_6(char* hex, const char* parity, int* fixed_errors) {
-#ifdef CHECK_HDU_DEBUG
-    DSD_FPRINTF(stderr, "[");
-    for (unsigned int i = 0; i < 6; i++) {
-        DSD_FPRINTF(stderr, "%c", (hex[i] != 0) ? 'X' : ' ');
-    }
-    DSD_FPRINTF(stderr, "]  [");
-    for (unsigned int i = 12; i < 24; i++) {
-        DSD_FPRINTF(stderr, "%c", (parity[i - 12] != 0) ? 'X' : ' ');
-    }
-    DSD_FPRINTF(stderr, "]");
-#endif
-
-    int irrecoverable_errors = golay24.decode_6(hex, parity, fixed_errors);
-
-#ifdef CHECK_HDU_DEBUG
-    DSD_FPRINTF(stderr, " -> [");
-    for (unsigned int i = 0; i < 6; i++) {
-        DSD_FPRINTF(stderr, "%c", (hex[i] != 0) ? 'X' : ' ');
-    }
-    DSD_FPRINTF(stderr, "]");
-    if (irrecoverable_errors) {
-        DSD_FPRINTF(stderr, "  Errors: >4");
-    } else {
-        DSD_FPRINTF(stderr, "  Errors: %i", *fixed_errors);
-    }
-    DSD_FPRINTF(stderr, "\n");
-#endif
-
-    return irrecoverable_errors;
+    return golay24.decode_6(hex, parity, fixed_errors);
 }
 
 int
 check_and_fix_golay_24_12(char* dodeca, const char* parity, int* fixed_errors) {
-#ifdef CHECK_HDU_DEBUG
-    DSD_FPRINTF(stderr, "[");
-    for (unsigned int i = 0; i < 12; i++) {
-        DSD_FPRINTF(stderr, "%c", (dodeca[i] != 0) ? 'X' : ' ');
-    }
-    DSD_FPRINTF(stderr, "]  [");
-    for (unsigned int i = 12; i < 24; i++) {
-        DSD_FPRINTF(stderr, "%c", (parity[i - 12] != 0) ? 'X' : ' ');
-    }
-    DSD_FPRINTF(stderr, "]");
-#endif
-
-    int irrecoverable_errors = golay24.decode_12(dodeca, parity, fixed_errors);
-
-#ifdef CHECK_HDU_DEBUG
-    DSD_FPRINTF(stderr, " -> [");
-    for (unsigned int i = 0; i < 12; i++) {
-        DSD_FPRINTF(stderr, "%c", (dodeca[i] != 0) ? 'X' : ' ');
-    }
-    DSD_FPRINTF(stderr, "]");
-    if (irrecoverable_errors) {
-        DSD_FPRINTF(stderr, "  Errors: >4");
-    } else {
-        DSD_FPRINTF(stderr, "  Errors: %i", *fixed_errors);
-    }
-    DSD_FPRINTF(stderr, "\n");
-#endif
-
-    return irrecoverable_errors;
-}
-
-void
-encode_golay_24_6(const char* hex, char* out_parity) {
-    golay24.encode_6(hex, out_parity);
-}
-
-void
-encode_golay_24_12(const char* dodeca, char* out_parity) {
-    golay24.encode_12(dodeca, out_parity);
+    return golay24.decode_12(dodeca, parity, fixed_errors);
 }
 
 int
@@ -107,47 +41,7 @@ check_and_fix_redsolomon_36_20_17(char* data, const char* parity) {
     if (rs == nullptr) {
         return 1;
     }
-#ifdef CHECK_HDU_DEBUG
-    char original[20][6];
-    for (int i = 0; i < 20; i++) {
-        for (int j = 0; j < 6; j++) {
-            original[i][j] = data[i * 6 + j];
-        }
-    }
-#endif
-
-    int irrecoverable_errors = rs->decode(data, parity);
-
-#ifdef CHECK_HDU_DEBUG
-    DSD_FPRINTF(stderr, "Results for Reed-Solomon code (36,20,17)\n\n");
-    if (irrecoverable_errors == 0) {
-        DSD_FPRINTF(stderr, "  i  original fixed\n");
-        for (int i = 0; i < 20; i++) {
-            DSD_FPRINTF(stderr, "%3d  [", i);
-            for (int j = 0; j < 6; j++) {
-                DSD_FPRINTF(stderr, "%c", (original[i][j] == 1) ? 'X' : ' ');
-            }
-            DSD_FPRINTF(stderr, "] [");
-            for (int j = 0; j < 6; j++) {
-                DSD_FPRINTF(stderr, "%c", (data[i * 6 + j] == 1) ? 'X' : ' ');
-            }
-            DSD_FPRINTF(stderr, "]\n");
-        }
-    } else {
-        DSD_FPRINTF(stderr, "Irrecoverable errors found\n");
-        DSD_FPRINTF(stderr, "  i  original fixed\n");
-        for (int i = 0; i < 20; i++) {
-            DSD_FPRINTF(stderr, "%3d  [", i);
-            for (int j = 0; j < 6; j++) {
-                DSD_FPRINTF(stderr, "%c", (original[i][j] == 1) ? 'X' : ' ');
-            }
-            DSD_FPRINTF(stderr, "]\n");
-        }
-    }
-    DSD_FPRINTF(stderr, "\n");
-#endif
-
-    return irrecoverable_errors;
+    return rs->decode(data, parity);
 }
 
 int
@@ -180,13 +74,4 @@ p25p1_rs_36_20_17_soft_reliability(char* data, const char* parity, const uint8_t
         }
     }
     return 1;
-}
-
-void
-encode_reedsolomon_36_20_17(const char* hex_data, char* fixed_parity) {
-    const DSDReedSolomon_36_20_17* rs = reed_solomon_36_20_17_instance();
-    if (rs == nullptr) {
-        return;
-    }
-    rs->encode(hex_data, fixed_parity);
 }

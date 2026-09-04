@@ -63,7 +63,8 @@ fill_pattern(int16_t* buf, char pattern) {
 /**
  * @brief Compute the expected attenuated sample value.
  *
- * Mirrors the implementation: (float)original × gain, then truncate to int16.
+ * Derived from the documented attenuation contract: multiply by the configured
+ * gain once per repeat, clamp to int16, and truncate fractional samples.
  */
 static int16_t
 expected_sample(int16_t original, int k) {
@@ -144,50 +145,6 @@ test_pattern(const char* name, char pattern) {
 }
 
 /**
- * @brief Test that re-feeding a good buffer and triggering underruns again
- *        restarts the attenuation curve from k=1.
- */
-static int
-test_reset_and_re_attenuate(void) {
-    int rc = 0;
-    struct audio_conceal_state cs;
-    DSD_MEMSET(&cs, 0, sizeof(cs));
-
-    rc |= expect_int("init", audio_conceal_init(&cs, FRAMES, CHANNELS), 0);
-
-    /* Use a ramp pattern. */
-    int16_t original[SAMPLES];
-    fill_pattern(original, 'R');
-    audio_conceal_on_good_buffer(&cs, original, FRAMES);
-
-    /* Trigger 2 underruns (k=1, k=2). */
-    int16_t out[SAMPLES];
-    audio_conceal_on_underrun(&cs, out, FRAMES);
-    audio_conceal_on_underrun(&cs, out, FRAMES);
-
-    /* Feed a new good buffer (max positive). */
-    int16_t new_buf[SAMPLES];
-    fill_pattern(new_buf, 'P');
-    audio_conceal_on_good_buffer(&cs, new_buf, FRAMES);
-
-    /* Next underrun should use k=1 attenuation on the NEW buffer. */
-    DSD_MEMSET(out, 0xAA, sizeof(out));
-    audio_conceal_on_underrun(&cs, out, FRAMES);
-
-    for (int i = 0; i < SAMPLES; i++) {
-        int16_t want = expected_sample(new_buf[i], 1);
-        if (out[i] != want) {
-            DSD_FPRINTF(stderr, "FAIL: reset_re_attenuate sample[%d]: got=%d want=%d\n", i, (int)out[i], (int)want);
-            rc = 1;
-            break;
-        }
-    }
-
-    audio_conceal_destroy(&cs);
-    return rc;
-}
-
-/**
  * @brief Test that multiple consecutive silence outputs (past max_repeats)
  *        remain silent and don't produce stale data.
  */
@@ -239,9 +196,6 @@ main(void) {
     rc |= test_pattern("max_neg", 'N');
     rc |= test_pattern("alternating", 'A');
     rc |= test_pattern("ramp", 'R');
-
-    /* Test reset-and-re-attenuate behaviour. */
-    rc |= test_reset_and_re_attenuate();
 
     /* Test extended silence past max_repeats. */
     rc |= test_extended_silence();

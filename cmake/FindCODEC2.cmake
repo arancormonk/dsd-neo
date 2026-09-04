@@ -2,9 +2,15 @@
 # Once done this will define
 
 if(NOT CODEC2_FOUND)
-    find_package(PkgConfig)
-    pkg_check_modules(CODEC2_PKG codec2)
-    set(CODEC2_DEFINITIONS ${PC_CODEC2_CFLAGS_OTHER})
+    # pkg-config answers for the build host, so its hints are actively wrong when
+    # cross compiling: an Android configure otherwise picks up /usr/include/codec2
+    # and /usr/lib from the x86-64 host and feeds them to an arm64 search. Only
+    # the toolchain's CMAKE_FIND_ROOT_PATH_MODE_* settings keep that from being
+    # used. Skip it and let find_path/find_library search the sysroot alone.
+    if(NOT CMAKE_CROSSCOMPILING)
+        find_package(PkgConfig)
+        pkg_check_modules(CODEC2_PKG codec2)
+    endif()
 
     find_path(
         CODEC2_INCLUDE_DIR

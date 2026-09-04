@@ -33,9 +33,11 @@ provoice_skip_dibits(dsd_provoice_next_dibit_fn next_dibit, void* user, int coun
     return count;
 }
 
+// Cppcheck 2.21 loses names after callback and adjusted-array typedef parameters in the matching declaration.
+// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 int
-dsd_provoice_load_imbe_frame_pair_impl(void* user, dsd_provoice_imbe_frame frame1, dsd_provoice_imbe_frame frame2,
-                                       dsd_provoice_next_dibit_fn next_dibit) {
+dsd_provoice_load_imbe_frame_pair(dsd_provoice_next_dibit_fn next_dibit, void* user_ctx, dsd_provoice_imbe_frame frame1,
+                                  dsd_provoice_imbe_frame frame2) {
     int consumed = 0;
     int i;
     const int* w = provoice_interleave_w;
@@ -58,45 +60,47 @@ dsd_provoice_load_imbe_frame_pair_impl(void* user, dsd_provoice_imbe_frame frame
     } while (0)
 
     for (i = 0; i < 11; i++) {
-        DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user, frame1, &w, &x, 6));
+        DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user_ctx, frame1, &w, &x, 6));
         w -= 6;
         x -= 6;
-        DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user, frame2, &w, &x, 6));
+        DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user_ctx, frame2, &w, &x, 6));
     }
 
-    DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user, frame1, &w, &x, 6));
+    DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user_ctx, frame1, &w, &x, 6));
     w -= 6;
     x -= 6;
-    DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user, frame2, &w, &x, 4));
+    DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user_ctx, frame2, &w, &x, 4));
 
-    DSD_PROVOICE_LOAD_OR_FAIL(provoice_skip_dibits(next_dibit, user, 2));
-    DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user, frame2, &w, &x, 2));
+    DSD_PROVOICE_LOAD_OR_FAIL(provoice_skip_dibits(next_dibit, user_ctx, 2));
+    DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user_ctx, frame2, &w, &x, 2));
 
     for (i = 0; i < 3; i++) {
-        DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user, frame1, &w, &x, 6));
+        DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user_ctx, frame1, &w, &x, 6));
         w -= 6;
         x -= 6;
-        DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user, frame2, &w, &x, 6));
+        DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user_ctx, frame2, &w, &x, 6));
     }
 
-    DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user, frame1, &w, &x, 5));
+    DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user_ctx, frame1, &w, &x, 5));
     w -= 5;
     x -= 5;
-    DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user, frame2, &w, &x, 5));
+    DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user_ctx, frame2, &w, &x, 5));
 
     for (i = 0; i < 7; i++) {
-        DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user, frame1, &w, &x, 6));
+        DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user_ctx, frame1, &w, &x, 6));
         w -= 6;
         x -= 6;
-        DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user, frame2, &w, &x, 6));
+        DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user_ctx, frame2, &w, &x, 6));
     }
 
-    DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user, frame1, &w, &x, 5));
+    DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user_ctx, frame1, &w, &x, 5));
     w -= 5;
     x -= 5;
-    DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user, frame2, &w, &x, 5));
+    DSD_PROVOICE_LOAD_OR_FAIL(provoice_load_interleave_segment(next_dibit, user_ctx, frame2, &w, &x, 5));
 
 #undef DSD_PROVOICE_LOAD_OR_FAIL
 
     return consumed;
 }
+
+// cppcheck-suppress-end funcArgNamesDifferentUnnamed

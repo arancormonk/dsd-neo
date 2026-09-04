@@ -16,7 +16,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -27,52 +26,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-struct RtlSdrContext;
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    uint64_t out = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        out = (out << 1) | (uint64_t)(BufferIn[i] & 1);
-    }
-    return out;
-}
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -257,6 +210,87 @@ test_lcw_vuhf_populates_fdma(void) {
 }
 
 static int
+test_lcw_control_channel_provenance_promotes_trust(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state st;
+    uint8_t bits[96];
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
+
+    opts.trunk_is_tuned = 0;
+    st.p25_cc_freq = 851000000;
+    st.p2_wacn = 0xABCDE;
+    st.p2_sysid = 0x123;
+    st.p2_rfssid = 0x45;
+    st.p2_siteid = 0x67;
+
+    int iden = 5;
+    long base = 851000000L / 5L;
+    build_lcw_standard(bits, iden, 0x24, 1, 12, 100, (unsigned long)base);
+
+    p25_lcw(&opts, &st, bits, 0);
+
+    rc |= expect_eq_u8("cc trust promoted", st.p25_iden_fdma[iden].trust, 2);
+    rc |= expect_eq_long("cc provenance wacn", (long)st.p25_iden_fdma[iden].wacn, 0xABCDE);
+    rc |= expect_eq_long("cc provenance sysid", (long)st.p25_iden_fdma[iden].sysid, 0x123);
+    rc |= expect_eq_long("cc provenance rfss", (long)st.p25_iden_fdma[iden].rfss, 0x45);
+    rc |= expect_eq_long("cc provenance site", (long)st.p25_iden_fdma[iden].site, 0x67);
+    rc |= expect_eq_int("cc positive offset", st.p25_iden_fdma[iden].trans_off, 12);
+
+    if (rc == 0) {
+        DSD_FPRINTF(stderr, "PASS test_lcw_control_channel_provenance_promotes_trust\n");
+    }
+    return rc;
+}
+
+static int
+test_lcw_rejects_incomplete_fdma_updates(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state st;
+    uint8_t bits[96];
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&st, 0, sizeof st);
+
+    int iden = 6;
+    st.p25_iden_fdma[iden].base_freq = 12345678L;
+    st.p25_iden_fdma[iden].chan_type = 1;
+    st.p25_iden_fdma[iden].chan_spac = 25;
+    st.p25_iden_fdma[iden].trans_off = -3;
+    st.p25_iden_fdma[iden].bw_vu = 2;
+    st.p25_iden_fdma[iden].trust = 2;
+    st.p25_iden_fdma[iden].populated = 1;
+    st.p25_chan_tdma_explicit[iden] = 3;
+    st.trunk_chan_map[(iden << 12) | 0x0010] = 987654321L;
+
+    build_lcw_standard(bits, iden, 0x55, 0, 7, 0, 850000000UL / 5UL);
+    p25_lcw(&opts, &st, bits, 0);
+
+    rc |= expect_eq_long("zero spacing preserves base", st.p25_iden_fdma[iden].base_freq, 12345678L);
+    rc |= expect_eq_int("zero spacing preserves spacing", st.p25_iden_fdma[iden].chan_spac, 25);
+    rc |= expect_eq_int("zero spacing preserves offset", st.p25_iden_fdma[iden].trans_off, -3);
+    rc |= expect_eq_u8("zero spacing preserves bw", st.p25_iden_fdma[iden].bw_vu, 2);
+    rc |= expect_eq_u8("zero spacing preserves bitmask", st.p25_chan_tdma_explicit[iden], 3);
+    rc |= expect_eq_long("zero spacing preserves cache", st.trunk_chan_map[(iden << 12) | 0x0010], 987654321L);
+
+    build_lcw_vuhf(bits, iden, 4, 1, 88, 100, 0);
+    p25_lcw(&opts, &st, bits, 0);
+
+    rc |= expect_eq_long("zero base preserves base", st.p25_iden_fdma[iden].base_freq, 12345678L);
+    rc |= expect_eq_int("zero base preserves spacing", st.p25_iden_fdma[iden].chan_spac, 25);
+    rc |= expect_eq_int("zero base preserves offset", st.p25_iden_fdma[iden].trans_off, -3);
+    rc |= expect_eq_u8("zero base preserves bw", st.p25_iden_fdma[iden].bw_vu, 2);
+    rc |= expect_eq_u8("zero base preserves bitmask", st.p25_chan_tdma_explicit[iden], 3);
+    rc |= expect_eq_long("zero base preserves cache", st.trunk_chan_map[(iden << 12) | 0x0010], 987654321L);
+
+    if (rc == 0) {
+        DSD_FPRINTF(stderr, "PASS test_lcw_rejects_incomplete_fdma_updates\n");
+    }
+    return rc;
+}
+
+static int
 test_lcw_replaces_existing_fdma(void) {
     int rc = 0;
     static dsd_opts opts;
@@ -320,6 +354,8 @@ main(void) {
 
     rc |= test_lcw_standard_populates_fdma();
     rc |= test_lcw_vuhf_populates_fdma();
+    rc |= test_lcw_control_channel_provenance_promotes_trust();
+    rc |= test_lcw_rejects_incomplete_fdma_updates();
     rc |= test_lcw_replaces_existing_fdma();
     rc |= test_iden_cache_invalidation_covers_last_channel();
 

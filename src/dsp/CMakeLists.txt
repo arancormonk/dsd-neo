@@ -6,10 +6,11 @@ target_sources(
     PRIVATE
         demod_pipeline.cpp
         snr_bias.cpp
+        snr_estimator.cpp
         costas.cpp
         resampler.cpp
         halfband.cpp
-        fll.cpp
+        mmse_interp.cpp
         ted.cpp
         fsk_modem.c
         firdes.cpp
@@ -19,13 +20,14 @@ target_sources(
         pcm_input_staging.c
         symbol_levels.c
         dsd_symbol.c
-        p25p1_heuristics.c
         frame_sync_level.c
         dsd_frame_sync.c
+        frame_sync_profile.c
         frame_sync_policy.c
         sync_hamming.c
         dmr_sync.c
         sync_calibration.c
+        symbol_timing_debug.c
 )
 
 set(_dsd_neo_dsp_target_arch "${CMAKE_SYSTEM_PROCESSOR}")
@@ -102,6 +104,37 @@ target_link_libraries(
 )
 
 target_link_libraries(dsd-neo_dsp PRIVATE dsd-neo_warnings dsd-neo_feature_pvc)
+
+if(BUILD_TESTING)
+    # Test seams are compiled into a private archive so the shipped DSP archive
+    # never exposes hook-only symbols or depends on a test preprocessor mode.
+    get_target_property(_dsd_neo_dsp_private_sources dsd-neo_dsp SOURCES)
+    add_library(dsd-neo_dsp_private_test_support STATIC)
+    target_sources(
+        dsd-neo_dsp_private_test_support
+        PRIVATE ${_dsd_neo_dsp_private_sources}
+    )
+    target_include_directories(
+        dsd-neo_dsp_private_test_support
+        PUBLIC ${PROJECT_SOURCE_DIR}/include
+        PRIVATE ${_PUBLIC_INCLUDES}
+    )
+    target_compile_definitions(
+        dsd-neo_dsp_private_test_support
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    if(_avx2_flags)
+        target_compile_definitions(
+            dsd-neo_dsp_private_test_support
+            PRIVATE $<$<COMPILE_LANGUAGE:CXX>:DSD_NEO_DSP_HAVE_AVX2_IMPL=1>
+        )
+    endif()
+    target_link_libraries(
+        dsd-neo_dsp_private_test_support
+        PUBLIC dsd-neo_runtime dsd-neo_feature_radio dsd-neo_feature_rtlsdr
+        PRIVATE dsd-neo_warnings dsd-neo_feature_pvc
+    )
+endif()
 
 install(
     TARGETS dsd-neo_dsp

@@ -236,10 +236,6 @@ test_dibit_symbol_mapping(void) {
     err |= expect_int("dibit 01", m17_symbol_from_dibit(1U), +3);
     err |= expect_int("dibit 10", m17_symbol_from_dibit(2U), -1);
     err |= expect_int("dibit 11", m17_symbol_from_dibit(3U), -3);
-    err |= expect_int("dibit 00 deviation", m17_deviation_hz_from_dibit(0U), +800);
-    err |= expect_int("dibit 01 deviation", m17_deviation_hz_from_dibit(1U), +2400);
-    err |= expect_int("dibit 10 deviation", m17_deviation_hz_from_dibit(2U), -800);
-    err |= expect_int("dibit 11 deviation", m17_deviation_hz_from_dibit(3U), -2400);
 
     const uint8_t byte = 0xB4U;
     const int want_symbols[4] = {-1, -3, +3, +1};
@@ -338,6 +334,57 @@ test_packet_layout_helpers(void) {
     err |= expect_int("packet metadata eof1 zero rejected", m17_packet_metadata_byte(1U, 0U, &metadata), -1);
     err |= expect_int("packet metadata eof1 high rejected", m17_packet_metadata_byte(1U, 26U, &metadata), -1);
     err |= expect_int("packet parse flush bits rejected", m17_packet_parse_metadata_byte(0xE5U, &eof, &value), -1);
+    return err;
+}
+
+static int
+test_packet_sms_payload_layout(void) {
+    uint8_t packed[M17_PACKET_MAX_TOTAL_BYTES];
+    uint8_t full_bits[M17_PACKET_MAX_FRAMES * M17_PACKET_CHUNK_BITS];
+    uint16_t app_len = 0U;
+    uint16_t crc = 0U;
+    int frames = 0;
+    uint8_t last = 0U;
+    int err = 0;
+
+    err |= expect_int("packet SMS null text",
+                      m17_packet_prepare_sms_payload(NULL, packed, full_bits, &app_len, &frames, &last, &crc), -1);
+    err |= expect_int("packet SMS null output",
+                      m17_packet_prepare_sms_payload("x", NULL, full_bits, &app_len, &frames, &last, &crc), -1);
+
+    DSD_MEMSET(packed, 0xA5, sizeof(packed));
+    DSD_MEMSET(full_bits, 0xA5, sizeof(full_bits));
+    err |= expect_int("packet SMS short layout",
+                      m17_packet_prepare_sms_payload("hi", packed, full_bits, &app_len, &frames, &last, &crc), 0);
+    err |= expect_int("packet SMS short app length", app_len, 4);
+    err |= expect_int("packet SMS short frame count", frames, 1);
+    err |= expect_int("packet SMS short last bytes", last, 6);
+    err |= expect_u32("packet SMS protocol", packed[0], 0x05U);
+    err |= expect_u32("packet SMS text h", packed[1], 'h');
+    err |= expect_u32("packet SMS text i", packed[2], 'i');
+    err |= expect_u32("packet SMS terminator", packed[3], 0U);
+    err |= expect_u32("packet SMS CRC", crc, m17_crc16(packed, app_len));
+    err |= expect_u32("packet SMS CRC high", packed[app_len], (uint8_t)(crc >> 8U));
+    err |= expect_u32("packet SMS CRC low", packed[app_len + 1U], (uint8_t)(crc & 0xFFU));
+    for (size_t bit = 0U; bit < 32U; bit++) {
+        const uint8_t expected = (uint8_t)((packed[bit / 8U] >> (7U - (bit % 8U))) & 1U);
+        err |= expect_u32("packet SMS bit packing", full_bits[bit], expected);
+    }
+
+    char long_text[M17_PACKET_MAX_APPLICATION_BYTES + 64U];
+    for (size_t i = 0U; i < sizeof(long_text) - 1U; i++) {
+        long_text[i] = (char)('A' + (i % 26U));
+    }
+    long_text[sizeof(long_text) - 1U] = '\0';
+    err |= expect_int("packet SMS maximum layout",
+                      m17_packet_prepare_sms_payload(long_text, packed, full_bits, &app_len, &frames, &last, &crc), 0);
+    err |= expect_int("packet SMS maximum app length", app_len, M17_PACKET_MAX_APPLICATION_BYTES);
+    err |= expect_int("packet SMS maximum frame count", frames, M17_PACKET_MAX_FRAMES);
+    err |= expect_int("packet SMS maximum last bytes", last, M17_PACKET_CHUNK_BYTES);
+    err |= expect_u32("packet SMS maximum last text", packed[M17_PACKET_MAX_APPLICATION_BYTES - 2U],
+                      (uint8_t)long_text[M17_PACKET_MAX_APPLICATION_BYTES - 3U]);
+    err |= expect_u32("packet SMS maximum terminator", packed[M17_PACKET_MAX_APPLICATION_BYTES - 1U], 0U);
+    err |= expect_u32("packet SMS maximum CRC", crc, m17_crc16(packed, app_len));
     return err;
 }
 
@@ -657,16 +704,6 @@ test_stream_content_helpers(void) {
     err |= expect_u32("stream next max wraps", m17_stream_next_frame_counter(M17_STREAM_FRAME_COUNTER_MAX), 0U);
     err |= expect_u32("stream next masks EoT", m17_stream_next_frame_counter(M17_STREAM_FRAME_END_MASK), 1U);
 
-    uint8_t short_chunk[M17_STREAM_PAYLOAD_BITS];
-    for (int i = 0; i < M17_STREAM_PAYLOAD_BITS; i++) {
-        short_chunk[i] = (uint8_t)((i + 1) & 1U);
-    }
-    m17_stream_copy_payload_chunk(short_chunk, 97U, payload);
-    for (int i = 0; i < M17_STREAM_PAYLOAD_BITS; i++) {
-        const uint8_t want = (i < 97) ? short_chunk[i] : 0U;
-        err |= expect_u32("stream short chunk padding", payload[i], want);
-    }
-
     uint8_t lich[M17_LICH_CONTENT_BITS];
     uint8_t lich_encoded[M17_LICH_BITS];
     uint8_t stream_punctured[M17_STREAM_PUNCTURED_BITS];
@@ -710,12 +747,7 @@ test_packet_and_bert_frame_helpers(void) {
     DSD_MEMSET(bert_type3, 0, sizeof(bert_type3));
     DSD_MEMSET(bert_type2, 0, sizeof(bert_type2));
     DSD_MEMSET(bert_expected_type3, 0, sizeof(bert_expected_type3));
-
-    m17_bert_build_type1_bits(bert_payload, bert_type1);
-    for (int i = 0; i < M17_BERT_PAYLOAD_BITS; i++) {
-        err |= expect_u32("BERT type1 payload", bert_type1[i], bert_payload[i]);
-    }
-    err |= expect_int("BERT flush bits", count_ones(&bert_type1[M17_BERT_PAYLOAD_BITS], M17_BERT_FLUSH_BITS), 0);
+    DSD_MEMCPY(bert_type1, bert_payload, sizeof(bert_payload));
 
     uint16_t consumed = 0U;
     uint16_t out = m17_bert_encode_type1_bits(bert_type1, bert_frame, &consumed);
@@ -844,10 +876,6 @@ static int
 test_scrambler_helpers(void) {
     int err = 0;
 
-    err |= expect_int("scrambler subtype 0 key bits", m17_scrambler_key_bits_for_subtype(0U), 8);
-    err |= expect_int("scrambler subtype 1 key bits", m17_scrambler_key_bits_for_subtype(1U), 16);
-    err |= expect_int("scrambler subtype 2 key bits", m17_scrambler_key_bits_for_subtype(2U), 24);
-    err |= expect_int("scrambler reserved key bits", m17_scrambler_key_bits_for_subtype(3U), 0);
     err |= expect_u32("scrambler subtype 0 mask", m17_scrambler_mask_for_subtype(0U), M17_SCRAMBLER_8BIT_MASK);
     err |= expect_u32("scrambler subtype 1 mask", m17_scrambler_mask_for_subtype(1U), M17_SCRAMBLER_16BIT_MASK);
     err |= expect_u32("scrambler subtype 2 mask", m17_scrambler_mask_for_subtype(2U), M17_SCRAMBLER_24BIT_MASK);
@@ -947,8 +975,6 @@ test_aes_helpers(void) {
     m17_aes_build_counter(nonce, 0xFFFFU, counter);
     err |= expect_u32("AES final FN counter high masks EoT", counter[14], 0x7FU);
     err |= expect_u32("AES final FN counter low", counter[15], 0xFFU);
-    err |= expect_u32("AES nonce timestamp", m17_aes_nonce_timestamp(nonce), 0x00010203U);
-
     return err;
 }
 
@@ -960,6 +986,7 @@ main(void) {
     err |= test_dibit_symbol_mapping();
     err |= test_physical_words();
     err |= test_packet_layout_helpers();
+    err |= test_packet_sms_payload_layout();
     err |= test_base40_encode();
     err |= test_randomizer_and_puncturing_tables();
     err |= test_fec_stage_helpers();

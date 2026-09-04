@@ -321,23 +321,3 @@ rs_12_9_correct_errors(rs_12_9_codeword_t* codeword, const rs_12_9_poly_t* syndr
 
     return RS_12_9_CORRECT_ERRORS_RESULT_ERRORS_CANT_BE_CORRECTED;
 }
-
-// Simulates an LFSR with the generator polynomial and calculates checksum bytes for the given data.
-rs_12_9_checksum_t*
-rs_12_9_calc_checksum(const rs_12_9_codeword_t* codeword) {
-    // See DMR AI. spec. page 136 for these coefficients.
-    static const uint8_t genpoly[] = {0x40, 0x38, 0x0e, 0x01};
-    static rs_12_9_checksum_t rs_12_9_checksum;
-    uint8_t i;
-
-    rs_12_9_checksum.bytes[0] = rs_12_9_checksum.bytes[1] = rs_12_9_checksum.bytes[2] = 0;
-
-    for (i = 0; i < 9; i++) {
-        uint8_t feedback = codeword->data[i] ^ rs_12_9_checksum.bytes[0];
-
-        rs_12_9_checksum.bytes[0] = rs_12_9_checksum.bytes[1] ^ rs_12_9_galois_multiplication(genpoly[2], feedback);
-        rs_12_9_checksum.bytes[1] = rs_12_9_checksum.bytes[2] ^ rs_12_9_galois_multiplication(genpoly[1], feedback);
-        rs_12_9_checksum.bytes[2] = rs_12_9_galois_multiplication(genpoly[0], feedback);
-    }
-    return &rs_12_9_checksum;
-}

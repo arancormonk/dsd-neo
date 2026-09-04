@@ -17,6 +17,7 @@
 #include <dsd-neo/platform/platform.h>
 
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -24,18 +25,111 @@
 #include <time.h>
 
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/enc_lockout.h>
+#include <dsd-neo/core/key_set.h>
 
-#include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 
+/* Buffer size for a human-readable channel label. Sized to hold a trunk-scan
+ * target id (dsd_trunk_scan_target.id[64]) unchanged; a channel-map CSV name is
+ * truncated to 63 characters plus the terminator. */
+#define DSD_CHANNEL_LABEL_SIZE 64
+
 enum DSD_ATTR_PACKED {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
-    DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH = 8,
+    DSD_P25_MAC_FRAGMENT_MAX_OCTETS = 256,
     DSD_TRUNK_CHAN_MAP_SIZE = 0xFFFF,
+    /* Scan-list slots stored inline in dsd_state. Protocol fixed-slot writers raw-index
+     * trunk_lcn_freq[] below this; longer lists spill into the trunk_lcn_freq_ext heap
+     * tail behind dsd_state_trunk_lcn_slot(). */
+    DSD_TRUNK_LCN_EMBEDDED = 26,
     DSD_VERTEX_KS_MAP_MAX = 64,
+    DSD_DMR_TG_KEY_MAP_MAX = 256,
     DSD_RTL_SYMBOL_CACHE_CAP = 512,
 };
+
+/** Authoritative per-slot P25 voice crypto classification. */
+typedef enum DSD_ATTR_PACKED {
+    DSD_P25_CRYPTO_UNKNOWN = 0,
+    DSD_P25_CRYPTO_CLEAR = 1,
+    DSD_P25_CRYPTO_ENCRYPTED_PENDING = 2,
+    DSD_P25_CRYPTO_DECRYPTABLE = 3,
+    DSD_P25_CRYPTO_BLOCKED = 4,
+} dsd_p25_crypto_state;
+
+/** Phase 1 traffic crypto tuple awaiting corroboration against clear service options. */
+typedef struct {
+    uint16_t keyid;
+    uint8_t algid;
+    uint8_t active;
+} dsd_p25_p1_crypto_conflict_state;
+
+/** Phase 2 per-slot ESS crypto tuple awaiting corroboration against clear service context. */
+typedef struct {
+    uint16_t keyid;
+    uint8_t algid;
+    uint8_t active;
+} dsd_p25_p2_crypto_conflict_state;
+
+/** Phase 1 carrier/call epoch whose post-lockout ESS repeats may be ignored. */
+typedef struct {
+    uint64_t call_epoch;
+    int64_t frequency_hz;
+    double recorded_m;
+    uint32_t grant_generation;
+    uint8_t valid;
+} dsd_p25_p1_lockout_epoch_state;
+
+/** Phase 2 ESS identity change held until boundary voice has drained. */
+typedef struct {
+    uint64_t mi;
+    uint16_t keyid;
+    uint8_t algid;
+    uint8_t pending;
+} dsd_p25_p2_rekey_state;
+
+typedef struct {
+    uint8_t active;
+    uint8_t opcode;
+    uint8_t data_len;
+    uint8_t collected;
+    uint8_t data[DSD_P25_MAC_FRAGMENT_MAX_OCTETS];
+} p25_mac_fragment_state_t;
+
+typedef struct {
+    uint8_t valid;
+    uint8_t sequence;
+    uint8_t block_count;
+    uint8_t next_block;
+} p25_apx_alias_rx_state_t;
+
+typedef struct {
+    uint8_t mask;
+    char last_alias[40];
+    char last_saved_alias[40];
+    uint32_t src;
+    uint32_t tg;
+    uint64_t epoch; //call epoch that was ACTIVE when block 0 keyed this fragment set; 0 when none was
+    uint8_t fragment[4][8];
+} p25_l3h_alias_phase1_state_t;
+
+typedef enum DSD_ATTR_PACKED {
+    DSD_EVENT_SEVERITY_UNKNOWN = 0,
+    DSD_EVENT_SEVERITY_DEBUG = 1,
+    DSD_EVENT_SEVERITY_INFO = 2,
+    DSD_EVENT_SEVERITY_WARNING = 3,
+    DSD_EVENT_SEVERITY_ERROR = 4
+} dsd_event_severity;
+
+typedef enum DSD_ATTR_PACKED {
+    DSD_EVENT_CATEGORY_UNKNOWN = 0,
+    DSD_EVENT_CATEGORY_STATUS = 1,
+    DSD_EVENT_CATEGORY_VOICE = 2,
+    DSD_EVENT_CATEGORY_DATA = 3,
+    DSD_EVENT_CATEGORY_CONTROL = 4,
+    DSD_EVENT_CATEGORY_SYSTEM = 5
+} dsd_event_category;
 
 //event history (each item)
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
@@ -47,6 +141,8 @@ enum DSD_ATTR_PACKED {
 typedef struct {
     uint8_t write;      // If this event needs to be written to a log file
     uint8_t color_pair; //this value corresponds to which color pair the line should be in ncurses
+    uint8_t severity;   // neutral event severity for non-terminal frontends
+    uint8_t category;   // neutral event category for non-terminal frontends
     int8_t systype;     //indentifier of which decoded system type this is from (P25, DMR, etc)
     int8_t subtype;     //subtype of systpe (VLC, TLC, PDU data, System Event, etc)
     uint32_t sys_id1;   //sys_id1 through 5 will be a hierarchy of system identifiers
@@ -68,8 +164,21 @@ typedef struct {
     char s_name[200];   //same as above, but if loaded from a src value and not tg value
     char t_mode[200];   //mode, or A,B,D,DE from csv group import file
     char s_mode[200];   //mode, or A,B,D,DE from csv group import file
-    uint32_t channel;   // If this occurs on a trunking channel, which channel
-    time_t event_time;  //time event occurred
+    // Name of the scan channel this transmission was heard on, or "" when the receiver was not
+    // scanning a named channel. Resolved once per call epoch, on the epoch's first render, and
+    // rendered as a bracketed prefix between the row's timestamp and its protocol token.
+    char channel_label[DSD_CHANNEL_LABEL_SIZE];
+    // Whether channel_label above has been resolved for this row. An unnamed channel resolves to
+    // an empty label, which is an answer and not a missing one -- a -Y list with only some rows
+    // named is ordinary -- so the emptiness alone cannot serve as "ask again", or a later render
+    // of the same epoch would stamp whichever channel the scanner has since hopped to.
+    uint8_t channel_label_resolved;
+    uint32_t channel;  // If this occurs on a trunking channel, which channel
+    time_t event_time; //time event occurred
+    // Wall-clock time the transmission this row describes began, or 0 when unknown.
+    // event_time is restamped as last-activity on every render pass, so by commit it
+    // reads as the call's end; the pair is what gives a frontend a real duration.
+    time_t event_start_time;
 
     uint8_t pdu[128 * 24];   //relevant link control, or full PDU if data call (in bytes)
     char sysid_string[200];  //string comprised of system unique identifiers
@@ -81,8 +190,25 @@ typedef struct {
 } Event_History;
 
 //event history for number of each items above
+// Ring length, shared with every consumer that walks the items: index 0 is the
+// staged (still-active) row, indexes 1..DSD_EVENT_HISTORY_LEN-1 are committed rows.
+#define DSD_EVENT_HISTORY_LEN 255
+
 typedef struct Event_History_I {
-    Event_History Event_History_Items[255];
+    Event_History Event_History_Items[DSD_EVENT_HISTORY_LEN];
+    uint64_t revision;
+    // Count of push_event_history() calls on this slot. Every push -- call commits,
+    // data and system notices, the startup banner -- shifts the ring by one, so a
+    // row's depth can be recovered as 1 + (push_seq - the push_seq it was pushed at),
+    // and a committed row's push stamp as push_seq - (its index - 1). That stamp is
+    // stable for the row's whole life in the ring, which makes it the identity
+    // frontends key their own mirrors on.
+    uint64_t push_seq;
+    // Count of mutations to the committed rows (indexes >= 1): pushes, reacquisition
+    // merges, late enrichment, and full resets. Staged-row renders bump only
+    // `revision`, so a consumer that mirrors committed rows only (the Qt call
+    // history) can skip rescanning the ring while this is unchanged.
+    uint64_t commit_rev;
 } Event_History_I;
 
 //new audio filter stuff from: https://github.com/NedSimao/FilteringLibrary
@@ -115,6 +241,55 @@ typedef struct {
 
 //end new filters
 
+/**
+ * @brief Post-filter sample trace used only by the symbol-timing diagnostic.
+ *
+ * `samples` holds the samples the symbol grid consumed, in order; `spans` holds
+ * how many of them each completed symbol took, so a reader can walk real symbol
+ * boundaries rather than assume a fixed samplesPerSymbol stride (the pre-sync
+ * timing nudge makes symbols consume samplesPerSymbol +/- 1). Decoder-state setup
+ * and teardown own both buffers, as they do the symbol history's; nothing is
+ * written to them unless DSD_NEO_DEBUG_SYMBOL_TIMING is on.
+ */
+typedef struct {
+    float* samples;
+    uint8_t* spans;
+    int sample_head;
+    int sample_count;
+    int span_head;
+    int span_count;
+} dsd_symbol_timing_trace;
+
+/** Raw samples the symbol grid keeps behind it: enough to prime the longest
+ *  matched filter (DSD_SPS_FILTER_MAX_TAPS) after a switch-off has handed back
+ *  the samples the previous filter still had in flight. */
+#define DSD_MATCHED_FILTER_HISTORY 2048
+
+/**
+ * The matched filter the symbol grid is reading through, and what it takes to
+ * change it without moving the grid (issue #444).
+ *
+ * The grid reads the raw discriminator until a sync names a protocol and the
+ * filter's output afterwards, which describes the signal one group delay in the
+ * past. A change of `kind` or `sps` is therefore a discontinuity in the content
+ * the grid samples, and `src/dsp/dsd_symbol.c` pays for it here: a filter
+ * switching on is primed from `raw` and fed its delay's worth of samples whose
+ * outputs are discarded; one switching off hands back the samples it still had
+ * in flight, which the grid re-reads from `raw` (`replay` of them) before live
+ * input resumes. Zeroed by initState() and again by
+ * dsd_symbol_matched_filter_reset() alongside init_rrc_filter_memory(), since a
+ * cleared filter with this saying it is primed would be the transient all over.
+ */
+typedef struct {
+    int kind;  /**< A dsd_sps_filter_kind; an int because core does not see dsp headers. 0 is unfiltered. */
+    int sps;   /**< Samples per symbol `kind` was designed for. */
+    int delay; /**< Group delay of `kind` at `sps`, in samples; 0 when unfiltered. */
+    float raw[DSD_MATCHED_FILTER_HISTORY]; /**< Raw samples the grid consumed, newest last; a ring. */
+    int raw_head;                          /**< Next write index into `raw`. */
+    int raw_count;                         /**< Samples held, saturating at the ring size. */
+    int replay;                            /**< Samples still to be re-read from `raw` before live input. */
+} dsd_matched_filter_seam;
+
 typedef struct {
     uint8_t F1;
     uint8_t F2;
@@ -130,21 +305,15 @@ typedef struct {
     uint16_t DestinationID; /* May be a Group ID or a Unit ID */
     uint8_t CipherType;
     uint8_t KeyID;
-    uint8_t VCallCrcIsGood;
 
     /*******************************/
     /***** VCALL_IV parameters *****/
     /*******************************/
     uint8_t IV[8];
-    uint8_t VCallIvCrcIsGood;
 
     /*****************************/
     /***** Custom parameters *****/
     /*****************************/
-
-    /* Specifies if the "CipherType" and the "KeyID" parameter are valid
-   * 1 = Valid ; 0 = CRC error */
-    uint8_t CipherParameterValidity;
 
     /* Used on DES and AES encrypted frames */
     uint8_t PartOfCurrentEncryptedFrame; /* Could be 1 or 2 */
@@ -168,10 +337,6 @@ typedef struct {
     unsigned int CCHDataHammingOk[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned char CCHDataCRC[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int CCHDataCrcOk[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
-    unsigned char CalledID[8];
-    unsigned int CalledIDOk;
-    unsigned char CallingID[8];
-    unsigned int CallingIDOk;
     unsigned int FrameNumbering[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int CommunicationMode[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int Version[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
@@ -205,14 +370,49 @@ typedef struct {
     unsigned long long site;  // Site ID provenance
 } p25_iden_entry_t;
 
+/** Capacity of the user-supplied P25 band plan: four systems' worth of 16 identifiers. */
+#define DSD_P25_BANDPLAN_MAX_ROWS 64
+
+/**
+ * @brief One row of a user-supplied P25 band plan (docs/csv-formats.md, "P25 Band Plan CSV").
+ *
+ * `entry` is a ready-to-copy IDEN entry (trust 1, populated, rfss/site 0); `entry.wacn`/`sysid`
+ * are the system the row applies to, both 0 for a row that applies everywhere. `is_tdma`
+ * selects the table the row seeds, by the same rule p25_channel_type_slots_per_carrier() uses.
+ */
+typedef struct p25_bandplan_row {
+    uint8_t iden;    // identifier 0-15
+    uint8_t is_tdma; // 1 seeds p25_iden_tdma, 0 seeds p25_iden_fdma
+    p25_iden_entry_t entry;
+} p25_bandplan_row_t;
+
+/** Voice-gated scan phase for -Y (issue #381). OFF = gate disabled; QUALIFY = synced
+ * but no policy-allowed voice yet; VOICE = voice media active; TAIL = holding past
+ * the last voice frame. */
+typedef enum {
+    DSD_SCAN_VOICE_GATE_OFF = 0,
+    DSD_SCAN_VOICE_GATE_QUALIFY = 1,
+    DSD_SCAN_VOICE_GATE_VOICE = 2,
+    DSD_SCAN_VOICE_GATE_TAIL = 3,
+} dsd_scan_voice_gate_phase;
+
+// dsd_state is a C aggregate, not a C++ class: it is allocated once and zeroed by
+// initState() before anything reads it, and C code — which is most of its users —
+// has no constructors to write. A C++ TU that includes this header would otherwise
+// report every one of its ~600 members, one finding per field of a struct nobody
+// default-constructs. Scoped to this struct rather than to the file, which is what
+// a --suppress on the command line could only do: the seventeen other types
+// declared here, and every real C++ class in the tree, still get checked.
+//
+// Inert on cppcheck 2.21 — the check does not fire on a struct with no member
+// functions at all — so this is insurance against a version that does, not a live
+// carve-out. Unmatched suppressions are already suppressed tree-wide.
+// cppcheck-suppress-begin uninitMemberVarNoCtor
 struct dsd_state {
     int* dibit_buf;
     int* dibit_buf_p;
     int* dmr_payload_buf;
     int* dmr_payload_p;
-    // Per-dibit reliability buffer (0..255). Aligned with dmr_payload_buf.
-    uint8_t* dmr_reliab_buf;
-    uint8_t* dmr_reliab_p;
     // Per-dibit signed soft metrics. Aligned with dmr_payload_buf.
     dsd_dibit_soft_t* dmr_soft_buf;
     dsd_dibit_soft_t* dmr_soft_p;
@@ -256,30 +456,28 @@ struct dsd_state {
     unsigned long long int p2_cc; //p1 NAC
     unsigned long long int p2_siteid;
     unsigned long long int p2_rfssid;
-    long int p25_cc_freq;   //cc freq from net_stat
-    long int trunk_cc_freq; //protocol-agnostic alias (kept in sync with p25_cc_freq)
+    long int p25_cc_freq;   // P25 control-channel frequency from network status
+    long int trunk_cc_freq; // generic trunk-owner control-channel frequency
     unsigned long long int edacs_site_id;
-    time_t last_cc_sync_time; //use this to start hunting for CC after signal lost
-    time_t last_vc_sync_time; //flag for voice activity bursts, tune back on con+ after more than x seconds no voice
+    time_t last_cc_sync_time;    //use this to start hunting for CC after signal lost
+    time_t p25_last_cc_msg_time; //last decoded P25 control-channel message
+    time_t last_vc_sync_time;    //flag for voice activity bursts, tune back on con+ after more than x seconds no voice
     // Timestamp of last tune to a VC (used to provide a short startup grace
     // window so we don't bounce back to CC before MAC_PTT/ACTIVE/audio arrives)
     time_t p25_last_vc_tune_time;
     // Monotonic twins for SM timing (seconds)
     double last_cc_sync_time_m;
+    double p25_last_cc_msg_time_m;
     double last_vc_sync_time_m;
     double p25_last_vc_tune_time_m;
     time_t rtl_fsk_reacquire_last_sync_time;
     double rtl_fsk_reacquire_last_sync_m;
     double rtl_fsk_reacquire_gap_start_m;
     double rtl_fsk_reacquire_last_request_m;
-    time_t
-        last_active_time; //time the a 'call grant' was received, used to clear the active_channel strings after x seconds
     time_t last_t3_tune_time;   // last time a DMR T3 grant was received (wall clock)
     double last_t3_tune_time_m; // same as above, monotonic seconds
     // DMR: rate-limit for single-fragment SLCO logging per slot
     time_t slco_sfrag_last[2];
-    unsigned long long int m17_dst;
-    unsigned long long int m17_src;
     //event history itemized per slot
     Event_History_I* event_history_s;
     // Codec2 contexts (NULL when codec2 unavailable; unconditional for ABI stability)
@@ -296,15 +494,53 @@ struct dsd_state {
     // DMR LRRP 64-bit values
     unsigned long long int dmr_lrrp_source[2];
     unsigned long long int dmr_lrrp_target[2];
+    // 1 when the slot's last data header addressed a talkgroup (G/I bit set). The header's G/I
+    // bit is gone by the time the assembled PDU decrypts, and DMR radio ids share the
+    // talkgroup's 24-bit space, so the --dmr-tg-key-csv lookup needs this recorded alongside
+    // the target it qualifies.
+    uint8_t dmr_data_target_is_group[2];
     // P25 trunking freq storage
     long int p25_vc_freq[2];
-    long int trunk_vc_freq[2]; //protocol-agnostic alias (kept in sync with p25_vc_freq)
+    long int trunk_vc_freq[2]; // generic trunk-owner voice-channel frequencies
     // Trunking LCNs and maps
-    long int trunk_lcn_freq[26];
+    long int trunk_lcn_freq[DSD_TRUNK_LCN_EMBEDDED];
     long int trunk_chan_map[DSD_TRUNK_CHAN_MAP_SIZE];
     uint16_t trunk_chan_map_used[DSD_TRUNK_CHAN_MAP_SIZE];
     uint32_t trunk_chan_map_used_count;
     uint64_t trunk_chan_map_seq;
+    /* Scan-list tail beyond the DSD_TRUNK_LCN_EMBEDDED inline slots (NULL until a longer list is
+     * imported). dsd_state_trunk_lcn_slot() abstracts both segments. Never inside
+     * a UI_SNAPSHOT_COPY_RANGE: the first range ends at trunk_lcn_freq and members
+     * from trunk_chan_map on are copied explicitly. */
+    long int* trunk_lcn_freq_ext;
+    size_t trunk_lcn_freq_ext_capacity;
+    /* Optional operator-supplied name per scan-list row, indexed by LCN row index the
+     * way dsd_state_trunk_lcn_slot() indexes the frequencies. NULL until a channel-map
+     * CSV opts in with a `name` header column, and shorter than the list when only the
+     * first rows are named -- read it through dsd_state_trunk_lcn_name_get(). Never
+     * inside a UI_SNAPSHOT_COPY_RANGE, for the same reason as trunk_lcn_freq_ext above:
+     * a byte copy of the pointer would alias the decoder's buffer into the snapshot. */
+    char (*trunk_lcn_name)[DSD_CHANNEL_LABEL_SIZE];
+    size_t trunk_lcn_name_capacity;
+    /* Session-only "avoid" flag per scan-list row, indexed like trunk_lcn_name. NULL until
+     * the operator avoids a row, and shorter than the list is normal -- read it through
+     * dsd_state_trunk_lcn_avoid_get(). Never persisted; chan_map_adopt(),
+     * svc_clear_channel_map() and DSD_APP_CMD_SCAN_AVOID_CLEAR drop it. Never inside a
+     * UI_SNAPSHOT_COPY_RANGE, for the same reason as the two stores above. */
+    uint8_t* trunk_lcn_avoid;
+    size_t trunk_lcn_avoid_capacity;
+    /* Sparse per-row key set per scan-list row, indexed like trunk_lcn_name. NULL until a
+     * channel-map CSV opts in with a `keys_hex_csv`/`keys_dec_csv` header column. Read it
+     * through dsd_state_trunk_lcn_keys_get(). Never inside a UI_SNAPSHOT_COPY_RANGE, for the
+     * same reason as the stores above -- and additionally because key material is never
+     * deep-copied into the snapshot. */
+    dsd_key_set* trunk_lcn_keys;
+    size_t trunk_lcn_keys_capacity;
+    /* Scan key swap state: the lazily captured global keys plus the active row set copy.
+     * Sits in the same uncopied gap as the stores above. */
+    dsd_key_set scan_keys_baseline;
+    dsd_key_set scan_keys_active;
+    uint8_t scan_keys_active_set;
     // DMR Tier III: simple provenance/trust for learned LCN->freq mappings
     // 0=unset, 1=learned (unconfirmed), 2=trusted (confirmed on-current-site CC)
     uint8_t dmr_lcn_trust[0x1000];
@@ -313,6 +549,24 @@ struct dsd_state {
     // Multi-key array
     unsigned long long int rkey_array[0x1FFFF];
     unsigned char rkey_array_loaded[0x1FFFF];
+    // DMR talkgroup -> key ID override map (--dmr-tg-key-csv): a mapped talkgroup
+    // selects its key id in place of the OTA-signaled one at key-activation time.
+    // payload_keyid* stay the OTA truth; the map only steers the keyring lookup.
+    //
+    // Declared beside the keyring it indexes rather than beside the other DMR crypto state, for the
+    // same reason rkey_array lives here: ui_snapshot.c copies positional byte ranges of dsd_state on
+    // every telemetry publish and consume, and this write-once CLI table is not something the UI
+    // renders. This region falls between two of those ranges, so it costs the snapshot nothing.
+    uint32_t dmr_tg_key_map_tg[DSD_DMR_TG_KEY_MAP_MAX];
+    uint8_t dmr_tg_key_map_kid[DSD_DMR_TG_KEY_MAP_MAX];
+    int dmr_tg_key_map_count;
+    // Per-slot applied-notice latch: one notice per call epoch. Epoch 0 is never a live call
+    // (dsd_call_state_get only reports a hit for a non-zero epoch), so it doubles as "never noted".
+    uint64_t dmr_tg_key_note_epoch[2];
+    /* Own latch, not shared with dmr_tg_key_note_epoch: the applied and skipped notices report
+       opposite outcomes, so one latch let whichever fired first silence the other for the whole
+       epoch -- even after the situation changed (a key imported mid-call, for instance). */
+    uint64_t dmr_tg_key_skip_epoch[2];
     // Temporary audio buffers
     float audio_out_temp_buf[160];
     float* audio_out_temp_buf_p;
@@ -320,7 +574,7 @@ struct dsd_state {
     float* audio_out_temp_buf_pR;
     //analog/raw signal audio buffers (float path for better SNR, convert to int16 at output)
     float analog_out_f[960]; // float buffer for analog monitor path
-    short analog_out[960];   // int16 buffer for output and legacy paths
+    short analog_out[960];   // int16 buffer for analog monitor output
     int analog_sample_counter;
     //new stereo float sample storage
     float f_l[160];     //single sample left
@@ -365,7 +619,11 @@ struct dsd_state {
     char err_bufR[64];
     char fsubtype[16];
     char ftype[16];
-    int symbolcnt;
+    /* Free-running count of symbols getSymbol() has produced. Unsigned because it is only
+     * ever incremented and differenced modulo 2^32: a signed counter overflowed after about
+     * 5.2 days at 4800 symbols/s, which is undefined behaviour and aborts a UBSan build
+     * (#395). Readers must treat it as wrapping -- compare differences, never magnitudes. */
+    uint32_t symbolcnt;
     int symbolc;
     uint8_t symbol_replay_format;         /* DSD_SYMBOL_REPLAY_FORMAT_* */
     uint8_t symbol_replay_header_checked; /* header probe already done for current symbol file */
@@ -375,9 +633,8 @@ struct dsd_state {
     unsigned int symbol_replay_soft_records;
     unsigned int symbol_capture_soft_records;
 
-    /* RTL DSP symbol-output cache. The RTL demod thread already produces
-       symbol-rate floats in blocks; this lets legacy getSymbol() consume them
-       without one ring read per dibit. */
+    /* RTL DSP direct-output cache. The RTL demod thread produces direct FSK/CQPSK
+       blocks; this lets getSymbol() consume them without one ring read per sample. */
     float rtl_symbol_cache[DSD_RTL_SYMBOL_CACHE_CAP];
     int rtl_symbol_cache_pos;
     int rtl_symbol_cache_len;
@@ -387,36 +644,143 @@ struct dsd_state {
     int rtl_symbol_cache_levels;
     uint32_t rtl_symbol_cache_generation;
     int rtl_symbol_cache_published_pending;
+    int rtl_fsk_sps_num;
+    int rtl_fsk_sps_den;
+    int rtl_fsk_sps_accum;
 
     /* C4FM timing assist (clock loop hinting). Lightweight EL/M&M error drives
        occasional ±1 nudges of symbolCenter; disabled by default. */
-    int c4fm_clk_mode;     /* 0=off, 1=Early-Late, 2=M&M */
-    int c4fm_clk_prev_dec; /* last sliced level for M&M (-3,-1,1,3; 0 if unknown) */
-    int c4fm_clk_run_dir;  /* last run direction (-1,0,+1) */
-    int c4fm_clk_run_len;  /* consecutive runs in same direction */
-    int c4fm_clk_cooldown; /* cooldown countdown to avoid rapid flips */
-
     int rf_mod;
     /* M17 polarity auto-detection: 0=unknown, 1=normal, 2=inverted.
      * Set when preamble detected; overridden if user specifies -xz. */
     int m17_polarity;
     /* Multi-rate sync hunting: cycle through symbol-rate candidates when no sync found.
-     * sps_hunt_counter: symbols searched without valid sync
+     * The hunt spends a symbol budget rather than counting sync attempts, because an
+     * isolated sync that no protocol turns into a frame must not buy the profile more
+     * time (see frame_sync_no_sync_sps_hunt()).
+     * sps_hunt_counter: symbols the search burned that no frame handler claimed. Symbols
+     *   spent looking for a sync count up; symbols a handler consumed on one sync are
+     *   debited back, floored at zero, so a profile carrying traffic sits at zero and a
+     *   profile matching nothing reaches its dwell. The budget belongs to the profile, so
+     *   zeroing this alone is not a complete reset: a profile change owes this and
+     *   sps_hunt_symbolcnt_mark together. frame_sync_apply_sps_hunt_profile() does both
+     *   whenever it moves the index, so its callers need not -- but it is not the only way
+     *   sps_hunt_idx moves, and the sites that assign the index directly still owe both
+     *   themselves (#394). Most of them still do not: the app-control and engine
+     *   retune paths (svc_publish_symbol_profile(), set_cc_symbol_timing(),
+     *   dsd_engine_select_p25_sps_profile(), no_carrier_apply_p25_cc_symbolrate() and the
+     *   two trunk-scan target helpers) zero the counter and leave the anchor where it was,
+     *   which is harmless only because whatever that anchor then credits is debited from the
+     *   counter they just zeroed and floored there; the -m2/-m3/-m4 branches of the CLI 'm'
+     *   case do neither, and are benign only because they run before the first
+     *   getFrameSync(). dsd_frame_sync_sps_hunt_restart_dwell() is the one that pays in
+     *   full, and is what a new direct assigner should call.
+     * sps_hunt_counter_at_entry: sps_hunt_counter as this search cycle began, so a frame
+     *   the engine declined to dispatch can hand back exactly what that cycle's search
+     *   charged and nothing else (DSD_FRAME_VERDICT_WITHHELD, #392). Restoring to a
+     *   snapshot rather than subtracting a count keeps it exact without a second counter:
+     *   charging happens only inside frame_sync_advance_sync_window(), between this being
+     *   stamped and the verdict being read. The restore is clamped so it can only lower the
+     *   counter, which is what makes it safe against the resets that fire in between -- a
+     *   profile change, a retune, a trunk-scan target switch -- none of which this can undo.
+     * sps_hunt_symbolcnt_mark: dsd_state::symbolcnt as getFrameSync() last returned, so
+     *   the next call can measure what the handler consumed in between. It shares that
+     *   field's unsigned wrapping type, so the difference stays exact across the counter's
+     *   2^32 rollover. Credit is per sync and only counts once it reaches a frame's worth,
+     *   which is what keeps the dwell independent of how often an unproductive matcher fires.
+     *   Re-anchored alongside the counter whenever frame_sync_apply_sps_hunt_profile() moves
+     *   the index, so a fresh budget is never paired with an anchor taken under the outgoing
+     *   profile. Inside getFrameSync() the mark is already current at every such call, so that
+     *   half is contract rather than repair; it is what a direct assigner would have to do for
+     *   itself.
+     * sps_hunt_last_frame_verdict: what the last frame handler made of what it consumed,
+     *   as a dsd_frame_verdict (engine/protocol_dispatch.h). A field rather than a return
+     *   value because frame sync reads it at the next getFrameSync() entry, not at the
+     *   call site. Zero is DSD_FRAME_VERDICT_PRODUCTIVE, so a handler that reports nothing
+     *   -- and a zeroed dsd_state -- is credited as having decoded a frame; only a
+     *   protocol that ran a check and failed it debits nothing (#391), and only one whose
+     *   check proves the profile restarts the dwell outright (#400). A frame the engine
+     *   declined to dispatch at all is neither, and refunds its own search instead (#392).
+     *   Strictly per frame,
+     *   so unlike the two fields above it owes a profile change nothing: processFrame()
+     *   re-stamps it on every dispatch and
+     *   frame_sync_sps_hunt_note_handler_consumption() clears it on every read, so it
+     *   cannot survive into the profile that follows.
      * sps_hunt_idx: current rate/profile index
      * (0=4800/4-level, 1=2400/4-level, 2=9600/binary, 3=6000/4-level, 4=4800/binary) */
     int sps_hunt_counter;
+    uint32_t sps_hunt_symbolcnt_mark;
+    int sps_hunt_last_frame_verdict;
+    int sps_hunt_counter_at_entry;
     int sps_hunt_idx;
+    /* Parity toggle for the P25p1 modulation probe: which modulation the next hunt re-entry
+     * into the 4800/4-level profile watches. Zero-init keeps the first re-entry on C4FM.
+     * p25_p1_mod_probe_active marks the one dwell a probe is on trial for, so the modulation
+     * votes cannot take the demodulator back before the trial has had a chance to decode
+     * anything -- entering GFSK needs a single vote, which is a few dozen symbols. */
+    int p25_p1_mod_probe_next_qpsk;
+    int p25_p1_mod_probe_active;
+    /* Where the last accepted dPMR FS2 sync sat in dsd_state::symbolcnt, and whether one has
+     * been seen at all. dPMR and NXDN48 are the two candidates on the 2400/4 profile, and their
+     * matchers are not comparable: FS2 is one exact 12-symbol pattern, while the NXDN matcher
+     * takes five variants per polarity over ten sign-sliced symbols and so fires on about 1% of
+     * arbitrary windows. The 372 dibits behind an accepted FS2 are dPMR's frame, and an NXDN
+     * accept inside them consumes symbols that frame needed and warm-starts the slicer from ten
+     * symbols of dPMR payload -- which is what left AUTO decoding corrupted dPMR identities that
+     * the native preset reads cleanly (#374). The span is read by src/dsp only, through
+     * dsd_frame_sync_suppress_nxdn48_sync(); the stamp wraps with symbolcnt and is compared as a
+     * modular difference, so a rollover mid-frame stays exact. */
+    uint32_t dpmr_fs2_frame_symbolcnt;
+    uint8_t dpmr_fs2_frame_valid;
+    /* The same idea one profile up, where 4800/4 carries P25p1, DMR, NXDN96, YSF and M17 at once.
+     * P25p1's sync is one of two exact 24-symbol patterns, so it fires on noise about once per
+     * 8.4 million windows; NXDN96's takes five variants per polarity over ten sign-sliced symbols
+     * and fires on roughly 1%, and M17's preamble is any alternating run at all. Inside the frame
+     * a P25p1 sync opened, those two are wrong by construction, and what they cost is measurable:
+     * on tests/fixtures/iq/p25p1_c4fm_cc.iq.json the native preset decodes 26 NIDs and AUTO
+     * decoded none, every sync reading NAC 000 duid:EE, because the false accepts consume the
+     * symbols the frame needed, warm-start the slicer from P25 payload, and clobber the
+     * lastsynctype that keeps use_symbol()'s C4FM threshold tracker engaged between syncs (#388).
+     * Stamped only when the C4FM chain carried the sync: on CQPSK the NID is sliced by the QPSK
+     * chain and the NXDN matcher's level blend is the wideband tracker that chain relies on, so a
+     * CQPSK accept clears the span instead of opening one. A GFSK vote landing mid-span leaves it
+     * standing -- the flap is what the span exists to survive. Read by src/dsp only, through
+     * dsd_frame_sync_suppress_4800_4_for_p25p1_frame(); compared as a modular difference, so a
+     * symbolcnt rollover mid-frame stays exact. */
+    uint32_t p25_p1_c4fm_frame_symbolcnt;
+    uint8_t p25_p1_c4fm_frame_valid;
+    /* Which SPS profile a protocol last passed a content check on, when, and whether any has
+     * been recorded at all. The two spans above cover a frame another protocol is in the middle
+     * of; this one covers the transmission a protocol has been decoding, which is the case
+     * neither of them reaches: under AUTO the hunt rotates off 2400/4 while an NXDN48 call is
+     * still on air, and by the time it comes round to 4800/4 the NXDN96 and M17 matchers there
+     * claim the transmission that never stopped (#445).
+     *
+     * The flag, not the index, says whether anything is armed -- profile index 0 is 4800/4, so a
+     * zeroed state would otherwise read as a proof on that profile at symbol zero. Protocol-blind
+     * on purpose: dPMR's CCH CRC-7 and NXDN's confirmation CRCs both prove 2400/4, and a live
+     * transmission of either faces the same claimants on the profile the hunt steps to.
+     *
+     * Written by the protocol handlers through dsd_frame_sync_note_profile_proof(), deliberately
+     * not derived from DSD_FRAME_VERDICT_PROFILE_PROVEN: that verdict restarts the hunt's dwell,
+     * and measurement on the #445 capture showed doing so for NXDN costs more decoded calls than
+     * it wins (see src/engine/dispatch/dispatch_nxdn.c). Recording the proof is separable from
+     * acting on it, and only the recording is wanted here.
+     *
+     * Not cleared with the carrier, and must not be: every step of the hunt runs noCarrier(), so
+     * clearing it there would erase the stamp exactly when the transmission it vouches for is
+     * still on air. It expires on its own instead. Read by src/dsp only, through
+     * dsd_frame_sync_suppress_4800_4_for_2400_4_transmission(); compared as a modular difference,
+     * so a symbolcnt rollover stays exact. */
+    int profile_proof_idx;
+    uint32_t profile_proof_symbolcnt;
+    uint8_t profile_proof_valid;
     int lastsynctype;
     int lastp25type;
     int offset;
     int carrier;
     char tg[25][16];
     int tgcount;
-    int lasttg;
-    int lasttgR;
-    int lastsrc;
-    int lastsrcR;
-    int8_t gi[2]; //group, or private call, per slot
     uint8_t eh_index;
     uint8_t eh_slot;
     int nac;
@@ -479,12 +843,7 @@ struct dsd_state {
 
     // Last dibit read
     int last_dibit;
-
-    // Heuristics state data for +P25 signals
-    P25Heuristics p25_heuristics;
-
-    // Heuristics state data for -P25 signals
-    P25Heuristics inv_p25_heuristics;
+    uint8_t p25_cqpsk_dibit_map_idx; // OP25-compatible CQPSK orientation map
 
     //input sample buffer for monitoring Input
     short input_sample_buffer;  //HERE HERE
@@ -493,11 +852,31 @@ struct dsd_state {
     unsigned int dmr_color_code;
     unsigned int dmr_t3_syscode;
     unsigned int nxdn_last_ran;
-    unsigned int nxdn_last_rid;
-    unsigned int nxdn_last_tg;
     unsigned int nxdn_cipher_type;
     unsigned int nxdn_key;
-    char nxdn_call_type[1024];
+
+    /* NXDN cipher-classification hysteresis (src/protocol/nxdn/nxdn_enc_class.c). The cipher
+     * field reaches the decoder from several channels (VCALL, SACCH-2, SCCH) whose FEC/CRC can
+     * accept a miscorrected payload, and under --enc-lockout a single non-clear observation
+     * used to write a session-permanent blocking talkgroup entry and force the channel
+     * released. Observations apply tentatively and must repeat before they can flip an
+     * established classification or arm the lockout; user-forced scrambler modes and the
+     * keyloader apply as authoritative. Values are the observed cipher plus one; 0 = none. */
+    uint8_t nxdn_cipher_class;         /* applied cipher observation + 1; 0 = unclassified */
+    uint8_t nxdn_cipher_class_est;     /* classification corroborated (authoritative or repeat) */
+    uint8_t nxdn_cipher_class_pending; /* quarantined contradicting candidate + 1; 0 = none */
+
+    /* NXDN frame-content confirmation (src/protocol/nxdn/nxdn_confirm.c). A sync word plus
+     * a LICH is not enough to believe a frame: both are weak enough that receiver noise
+     * clears them regularly. Until the frame body passes a CRC, the decoder holds back
+     * everything a listener would read as a real transmission -- the scanner hold, voice,
+     * the RAN, the call record. See issue #398.
+     * nxdn_confirmed: this transmission has produced CRC-verified content.
+     * nxdn_confirm_weak_streak: consecutive frames carrying only short-CRC evidence.
+     * nxdn_confirm_frame_evidence: strongest nxdn_evidence seen since begin_frame(). */
+    uint8_t nxdn_confirmed;
+    uint8_t nxdn_confirm_weak_streak;
+    uint8_t nxdn_confirm_frame_evidence;
 
     NxdnElementsContent_t NxdnElementsContent;
 
@@ -527,6 +906,33 @@ struct dsd_state {
     unsigned int dmr_soR;
     unsigned int dmr_flcoR;
 
+    /* Live slot crypto captured by the DMR terminator handler just before its reset, so the
+     * heal of a voice burst mis-typed as a terminator can restore exactly what the vocoder was
+     * decrypting with. Deliberately limited to what the canonical dsd_call_snapshot cannot
+     * supply -- the FID and service options the Basic Privacy gates require, and the MI as the
+     * superframe machinery last advanced it (the snapshot's MI can lag it); ALGID and key id
+     * are read back from the snapshot the reacquire hook receives, so they have one source of
+     * truth. Indexed by slot; epoch ties each capture to the ended epoch it belongs to, so a
+     * stale stash can never be applied to a later call, and the engine's retune/no-carrier
+     * resets clear dmr_heal_valid alongside the payload crypto so no stash outlives the channel
+     * it was captured on. Owned by src/protocol/dmr; the canonical layer never touches it. */
+    unsigned long long int dmr_heal_mi[2];
+    unsigned long long int dmr_heal_epoch[2];
+    unsigned int dmr_heal_fid[2];
+    unsigned int dmr_heal_so[2];
+    uint8_t dmr_heal_valid[2];
+
+    /* Per-slot DMR encryption-classification hysteresis (src/protocol/dmr/dmr_enc_class.c).
+     * The service-option privacy bit arrives through channels of very different reliability --
+     * a voice LC header behind a 16-bit masked CRC, an embedded LC behind a 5-bit checksum, and
+     * on RAS systems no verifiable CRC at all -- so the classification the enc lockout and the
+     * audio gate act on is corroborated here: strong evidence applies at once, weak evidence
+     * applies tentatively and must repeat before it can flip an established classification or
+     * arm the lockout. Indexed by slot. */
+    uint8_t dmr_enc_class[2];         /* applied classification: 0 none, 1 clear, 2 encrypted */
+    uint8_t dmr_enc_class_est[2];     /* classification corroborated (strong LC or matching repeat) */
+    uint8_t dmr_enc_class_pending[2]; /* quarantined contradicting candidate (0 none, 1 clear, 2 enc) */
+
     char slot1light[8];
     char slot2light[8];
     int directmode;
@@ -540,6 +946,8 @@ struct dsd_state {
     uint8_t data_header_format[2];  //collect format of data header (conf or unconf) per slot
     uint8_t data_header_sap[2];     //collect sap info per slot
     uint8_t data_p_head[2];         //flag for dmr proprietary header to follow
+    uint8_t data_header_dd_format[2];   //transient per-slot DMR Defined Data format
+    uint8_t data_header_bit_padding[2]; //transient per-slot DMR short-data padding in bits
 
     //new stuff below here
     uint8_t data_conf_data[2];   //flag for confirmed data blocks per slot
@@ -571,16 +979,30 @@ struct dsd_state {
     char dmr_embedded_gps[2][600];    //2 slots by 99 char string for string embedded gps
     char dmr_lrrp_gps[2][600];        //2 slots by 99 char string for string lrrp gps
     char dmr_site_parms[200];         //string for site/net info depending on type of DMR system (TIII or Con+)
-    char call_string[2][200];         //string for call information
-    char active_channel[31][200];     //string for storing and displaying active trunking channels
 
     //Generic Talker Alias String
     char generic_talker_alias[2][500];
-    // Source unit ID that last populated generic_talker_alias per slot
-    // Used to suppress stale alias across protocol/call transitions
-    uint32_t generic_talker_alias_src[2];
 
     dPMRVoiceFS2Frame_t dPMRVoiceFS2Frame;
+
+    /* dPMR frame-content confirmation (src/protocol/dpmr/dpmr_confirm.c). The 12-symbol
+     * FS2 word matches about one noise window in 2048, and what stood behind it was not a
+     * check: identity publishing accepted a CCH whose two leading Hamming(12,8) blocks
+     * merely reported correctable, which 44% of noise superframes do. Until a CCH half
+     * passes its CRC-7 the decoder publishes no identity, no call row and no voice.
+     * See issue #407.
+     * dpmr_confirmed: this transmission has produced a CRC-verified CCH.
+     * dpmr_confirm_weak_streak: consecutive frames carrying one passing half only.
+     * dpmr_confirm_frame_evidence: strongest dpmr_evidence seen since begin_frame(). */
+    uint8_t dpmr_confirmed;
+    uint8_t dpmr_confirm_weak_streak;
+    uint8_t dpmr_confirm_frame_evidence;
+
+    /* How recently a dPMR CCH CRC-7 passed, for the SPS hunt's profile accounting
+     * (src/engine/dispatch/dispatch_dpmr.c). The flag, not the stamp, opens the window,
+     * so a zeroed state reads as no evidence rather than evidence at symbol zero. */
+    int dpmr_cch_evidence;
+    uint32_t dpmr_cch_evidence_symbolcnt;
 
     //new audio filter structs
     LPFilter RCFilter;
@@ -592,12 +1014,10 @@ struct dsd_state {
     LPFilter RCFilterR;
     HPFilter HRCFilterR;
 
-    char dpmr_caller_id[20];
-    char dpmr_target_id[20];
-
     int dpmr_color_code;
 
-    short int dmr_stereo; //need state variable for upsample function
+    short int dmr_stereo;    //need state variable for upsample function
+    short int dmr_mono_slot; //mono output slot: -1=unknown, 0=TS1/left, 1=TS2/right
     short int dmr_ms_mode;
     unsigned int dmrburstL;
     unsigned int dmrburstR;
@@ -634,10 +1054,26 @@ struct dsd_state {
     int fourv_counter[2]; //external reference counter for ESS_B fragment collection
     int voice_counter[2]; //external reference counter for 18V x 2 P25p2 Superframe
     int p2_is_lcch;       //flag to tell us when a frame is lcch and not sacch
+    // Authoritative P25 voice crypto classification. Slot 0 is also used by P25 Phase 1.
+    dsd_p25_crypto_state p25_crypto_state[2];
+    // Retained Phase 1 carrier requires the next transmission's LCW identity before media or lockout.
+    int p25_p1_identity_pending;
+    // Canonical anonymous epoch opened for the retained-carrier transmission awaiting identity.
+    int p25_p1_identity_epoch_started;
+    // Definitive Phase 1 HDU crypto arrived after the last authoritative LCW identity.
+    int p25_p1_hdu_crypto_fresh;
+    // One non-clear HDU/LDU2 tuple contradicted explicit-clear Phase 1 service options.
+    dsd_p25_p1_crypto_conflict_state p25_p1_crypto_conflict;
+    // One non-clear Phase 2 ESS tuple contradicted explicit-clear service context.
+    dsd_p25_p2_crypto_conflict_state p25_p2_crypto_conflict[2];
+    // Exact carrier/canonical epoch ended by Phase 1 encryption lockout.
+    dsd_p25_p1_lockout_epoch_state p25_p1_lockout_epoch;
+    // Sticky Phase 2 media rejection, cleared only after the slot receives an accepted assignment/activity.
+    int p25_p2_media_rejected[2];
+    // ESS identity changes staged until the paired-timeslot audio drain completes.
+    dsd_p25_p2_rekey_state p25_p2_rekey[2];
     // P25p2 per-slot audio gating (set on MAC_PTT/ACTIVE, cleared on MAC_END/IDLE/SIGNAL)
     int p25_p2_audio_allowed[2];
-    // P25p2 per-slot encrypted lockout mute marker for mixer suppression after service bits are cleared.
-    uint8_t p25_p2_enc_lockout_muted[2];
     // P25p2 small output jitter buffers (per-slot ring of decoded 20 ms frames)
     // Depth DSD_P25_P2_AUDIO_RING_DEPTH to match drain behavior (~80 ms max at depth=4)
     float p25_p2_audio_ring[2][DSD_P25_P2_AUDIO_RING_DEPTH][160];
@@ -650,12 +1086,10 @@ struct dsd_state {
     time_t p25_p2_last_mac_active[2];
     // Monotonic twins for last MAC_ACTIVE/PTT per slot
     double p25_p2_last_mac_active_m[2];
-    // P25p2 recent MAC_END_PTT timestamps per slot (enables early teardown
-    // once per-slot jitter/audio has drained)
+    // P25p2 recent MAC_END_PTT timestamps per slot (transmission boundaries)
     time_t p25_p2_last_end_ptt[2];
-    // P25p1 recent TDU/TDULC timestamps (enables early teardown on Phase 1)
-    time_t p25_p1_last_tdu;   // wall clock (legacy)
-    double p25_p1_last_tdu_m; // monotonic seconds (preferred)
+    // P25p1 recent TDU/TDULC transmission-boundary timestamp
+    double p25_p1_last_tdu_m;
 
     // P25 Phase 2 RS(63,35) metrics (hexbits, t=14)
     unsigned int p25_p2_rs_facch_ok;
@@ -675,12 +1109,6 @@ struct dsd_state {
     unsigned int p25_p2_soft_ess_ok;     // soft ESS corrections
     unsigned int p25_p2_soft_ess_max_depth;
     unsigned int p25_p1_soft_combined_ok;
-    // P25p2 early ENC lockout counter (MAC_PTT-driven)
-    unsigned int p25_p2_enc_lo_early;
-    // P25p2 early ENC lockout hardening: require confirmation across two indications
-    uint8_t p25_p2_enc_pending[2];
-    uint32_t p25_p2_enc_pending_ttg[2];
-
     //iden freq storage for frequency calculations
     // Bitmask per IDEN slot indicating which modulation classes have been seen:
     //   bit 0x01 marks an FDMA/non-TDMA entry
@@ -697,6 +1125,14 @@ struct dsd_state {
     p25_iden_entry_t p25_iden_fdma[16]; // FDMA/non-TDMA frequency-band entries
     p25_iden_entry_t p25_iden_tdma[16]; // TDMA frequency-band entries
 
+    // User-supplied band plan (--p25-bandplan, [trunking] p25_bandplan_csv, a trunk-scan
+    // target's p25_bandplan_csv, or the terminal/Qt import). Rows seed empty IDEN slots at
+    // trust 1 through dsd_state_p25_bandplan_seed(); p25_update_system_identity() re-applies
+    // them after a WACN/SYS change wipes the tables, and an over-the-air IDEN_UP still
+    // overwrites a seeded slot. Under trunk scan each target's snapshot carries its own.
+    p25_bandplan_row_t p25_bandplan_rows[DSD_P25_BANDPLAN_MAX_ROWS];
+    int p25_bandplan_row_count;
+
     //p25 frequency storage for trunking and display in ncurses
     int p25_cc_is_tdma;  // control channel modulation: 0=FDMA (C4FM), 1=TDMA (QPSK)
     int p25_sys_is_tdma; // system hint: 1 when P25p2 voice observed (TDMA present)
@@ -706,13 +1142,45 @@ struct dsd_state {
      * - p25_vc_cqpsk_pref: learned preference (-1=unknown/auto,
      *   1=prefer OP25-style CQPSK+TED chain). Value 0 is treated as no learned
      *   TDMA preference so automatic retry logic does not force P25p2 through
-     *   the legacy FM/QPSK slicer.
+     *   the FM/QPSK slicer.
      * - p25_vc_cqpsk_override: one-shot retry override applied on next VC tune (-1=none).
      *
      * These are ignored when the user explicitly forces CQPSK via env/config (DSD_NEO_CQPSK).
      */
     int p25_vc_cqpsk_pref;
     int p25_vc_cqpsk_override;
+
+    /* Which demodulator last carried a P25p1 frame whose 63-bit NID BCH decoded, and when:
+     * -1 never validated, 0 the C4FM path, 1 the CQPSK path. A validated frame is the only
+     * direct evidence of what the signal actually is -- the SNR and sync-hamming heuristics
+     * that drive the modulation votes are indirect -- so this outranks them while it is fresh.
+     * System knowledge like p25_cc_is_tdma rather than acquisition state, so
+     * dsd_frame_sync_reset_mod_state(), retunes and no-carrier resets leave it alone; only
+     * initState(), the trunk-scan per-target snapshot and a CQPSK dwell that decodes nothing
+     * reset it. Freshness is measured in symbols because the hold it feeds only applies on the
+     * fixed-rate 4800/4-level profile. Ignored whenever opts->mod_cli_lock is set. */
+    int p25_p1_validated_rf_mod;
+    uint32_t p25_p1_validated_symbolcnt;
+
+    /* That the signal on the current SPS profile is P25p1 at all, and when it last proved it:
+     * a decoded 63-bit NID BCH, whatever the DUID turned out to be. A separate stamp from the
+     * pair above rather than a reuse of it, because that pair answers a different question and
+     * is scoped to it -- it is gated on opts->mod_cli_lock and on the frame having arrived
+     * through the C4FM or CQPSK path, and a CQPSK dwell that decodes nothing withdraws it --
+     * and none of that applies to a profile that has demonstrably carried P25p1. Stamped
+     * unconditionally by every decoded NID, never by a failing one.
+     *
+     * What it buys is a bounded benefit of the doubt for the failures around a reception
+     * (dsd_dispatch_handle_p25p1()): a P25p1 sync whose NID fails inside a window of one that
+     * decoded is still evidence the profile is right, and the SPS hunt takes it as such (#400).
+     * p25_p1_nid_evidence is what opens the window, not the stamp, so a zeroed dsd_state reads
+     * as no evidence rather than as evidence at symbol zero. Acquisition state, so noCarrier()
+     * clears it: evidence is per transmission, and the next carrier proves itself again. Left
+     * alone by retunes, unlike a confirm module's flag, because a retune zeroes the hunt's
+     * budget anyway -- the most a stale window can do there is re-zero a counter already at
+     * zero, for at most the window's length. */
+    int p25_p1_nid_evidence;
+    uint32_t p25_p1_nid_evidence_symbolcnt;
 
     // Candidate evaluation tracking (current freq and start time in monotonic seconds)
     long p25_cc_eval_freq;
@@ -726,11 +1194,11 @@ struct dsd_state {
     unsigned int p25_sm_cc_return_count; // number of actual returns to CC via SM
     unsigned int p25_sm_queued_count;    ///< number of Queued Response (QUE_RSP) messages received
     unsigned int p25_sm_deny_count;      ///< number of Deny Response (DENY_RSP) messages received
-    // One-shot flag to force immediate return-to-CC on explicit MAC_END/IDLE
-    // or policy events; cleared by the SM after handling
+    // One-shot flag to force immediate return-to-CC on physical/policy release;
+    // cleared by the SM after handling.
     int p25_sm_force_release;
-    int trunk_sm_force_release; // protocol-agnostic alias (kept in sync with p25_sm_force_release)
-    // Timestamp of last p25_sm_on_release() (0 when none yet)
+    int trunk_sm_force_release; // protocol-agnostic force-release latch
+    // Timestamp of last p25_sm_release() (0 when none yet)
     time_t p25_sm_last_release_time;
     // Last SM status/reason tag (e.g., "after-tune", "release-deferred-gated") and timestamp
     char p25_sm_last_reason[32];
@@ -745,34 +1213,19 @@ struct dsd_state {
     // Monotonic twin for post-hang watchdog (seconds)
     double p25_sm_posthang_start_m;
 
-    // High-level SM mode for UI/telemetry (distinct from minimal P25p2 follower)
-    // 0=unknown, 1=on CC, 2=on VC (grant-following or armed), 3=hang, 4=hunting CC
+    // High-level SM mode for UI/telemetry. A retained traffic carrier is ARMED
+    // before first voice, FOLLOW while either slot is active, and HANG between
+    // transmissions until the inactivity timer expires.
     int p25_sm_mode;
 
-    // Retune backoff bookkeeping
-    // Blocks immediate re-tune to failed VC/slot pairs after recent no-voice returns
-    time_t p25_retune_block_until;
-    long p25_retune_block_freq;
-    int p25_retune_block_slot; // -1 when N/A
-    unsigned int p25_retune_block_next;
-    time_t p25_retune_block_history_until[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
-    long p25_retune_block_history_freq[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH];
-    int p25_retune_block_history_slot[DSD_P25_RETUNE_BLOCK_HISTORY_DEPTH]; // -1 when N/A
-    // Cached P25 SM tunables (seconds), resolved once at p25_sm_init()
-    double p25_cfg_vc_grace_s;
-    double p25_cfg_grant_voice_to_s;
-    double p25_cfg_min_follow_dwell_s;
-    double p25_cfg_retune_backoff_s;
-    double p25_cfg_mac_hold_s;
-    double p25_cfg_cc_grace_s;
-    double p25_cfg_ring_hold_s;        // seconds to honor audio ring after recent MAC
-    double p25_cfg_force_rel_extra_s;  // safety-net extra seconds beyond hang
-    double p25_cfg_force_rel_margin_s; // safety-net hard margin seconds beyond extra
-    double p25_cfg_tail_ms;            // P2 tail wait in ms before early release
-    double p25_cfg_p1_tail_ms;         // P1 tail wait in ms before early release
-    double p25_cfg_p1_err_hold_pct;    // P1 elevated-error threshold percentage
-    double p25_cfg_p1_err_hold_s;      // P1 elevated-error additional hold seconds
-
+    // Encrypted-target lockout ledger (session-permanent; core/enc_lockout.h).
+    // Entries at the current key epoch block encrypted voice-grant tuning;
+    // key imports bump the epoch so each target re-verifies with one probe.
+    dsd_enc_lockout_entry enc_lockout_entries[DSD_ENC_LOCKOUT_MAX];
+    uint64_t enc_lockout_key_epoch;
+    // Monotonic confirmation ticket handed to each armed/refreshed entry; the
+    // eviction LRU orders on this rather than on one-second wall clock.
+    uint64_t enc_lockout_seq;
     // P25 Phase 1 control/data channel FEC/CRC telemetry (for BER display)
     // NOTE: This does not reflect IMBE voice quality. Voice frames have their own
     // Golay/Hamming/RS protection and IMBE ECC; see P1 Voice metrics and
@@ -796,6 +1249,15 @@ struct dsd_state {
     int p25_p1_voice_err_hist_len;          // window length (<=64), default 50
     int p25_p1_voice_err_hist_pos;          // ring head
     unsigned int p25_p1_voice_err_hist_sum; // sum of values in window
+
+    // P25 Phase 1 session-lifetime voice telemetry (not reset on retune/no-carrier)
+    uint64_t p25_p1_accepted_frames;
+    uint64_t p25_p1_clean_frames;
+    uint64_t p25_p1_corrected_frames;
+    uint64_t p25_p1_concealed_frames;
+    uint64_t p25_p1_accepted_corrections;
+    uint64_t p25_p1_suppressed_tail_frames;
+    uint64_t p25_p1_excluded_tail_corrections;
 
     /*
      * P25 status symbol classification.
@@ -836,6 +1298,14 @@ struct dsd_state {
     uint16_t p25_prot_kid;  ///< Active encryption Key ID (0 = none received)
 
     /*
+     * P25 protected-control-channel state (from MBT 0x3E Protection Parameter
+     * Broadcast). This is intentionally separate from voice/call protection
+     * state above.
+     */
+    uint8_t p25_cc_prot_valid; ///< 1 once a protected CC broadcast has been received
+    uint8_t p25_cc_prot_algid; ///< Control-channel protection Algorithm ID
+
+    /*
      * P25 Time and Date Announcement state (TSBK 0x35 bridged as MAC-like 0x75)
      *
      * Stores the most recently decoded system UTC time and local time offset.
@@ -844,6 +1314,18 @@ struct dsd_state {
     time_t p25_sys_time;               ///< Decoded UTC time
     uint8_t p25_sys_time_offset_valid; ///< 1 once a local time offset has been received
     int16_t p25_sys_time_offset;       ///< Local time offset in minutes from UTC
+
+    /*
+     * P25 System Service Broadcast and current-site status metadata.
+     */
+    uint8_t p25_sys_services_valid;
+    uint32_t p25_sys_services_available;
+    uint32_t p25_sys_services_supported;
+    uint8_t p25_sys_services_request_priority;
+    uint8_t p25_site_lra_valid;
+    uint8_t p25_site_lra;
+    uint8_t p25_site_network_active_valid;
+    uint8_t p25_site_network_active;
 
     // P25 Phase 2 voice error moving average per slot (errs2 from AMBE decode)
     uint8_t p25_p2_voice_err_hist[2][64];
@@ -890,47 +1372,61 @@ struct dsd_state {
     int p25_nb_count;                          // number of active neighbor entries
     p25_nb_entry_t p25_nb_entries[P25_NB_MAX]; // neighbor entries with metadata
 
+    // P25 current-site secondary control channels seen via SCCB.
+    int p25_secondary_cc_count;
+    p25_secondary_cc_entry_t p25_secondary_cc_entries[P25_SECONDARY_CC_MAX];
+
+    // P25 channel announcements that arrived before their IDEN table.
+    int p25_pending_announcement_count;
+    p25_pending_announcement_t p25_pending_announcements[P25_PENDING_ANNOUNCEMENT_MAX];
+
     // P25 source unit WACN from LCW 0x49 (Source ID Extension)
     uint32_t p25_src_nid; // 20-bit WACN from SUID extension
 
-    // P25 current-call flags (per logical slot; FDMA uses slot 0)
-    uint8_t p25_call_emergency[2]; // 1 if current call is emergency
-    uint8_t p25_call_priority[2];  // 0..7 call priority (0 if unknown)
-    uint8_t p25_call_is_packet[2]; // 1 if call/service marked as packet (data), else 0
+    // P25 Phase 2 standard MAC multi-fragment assembly, one in-flight message per TDMA slot.
+    p25_mac_fragment_state_t p25_mac_frag[2];
+    // P25 OTA alias receive sequencing, kept with decoder state to avoid cross-instance mixing.
+    p25_apx_alias_rx_state_t p25_apx_alias_rx[2];
+    p25_l3h_alias_phase1_state_t p25_l3h_alias_phase1[2];
 
     //experimental symbol file capture read throttle
-    int symbol_throttle;                     //throttle speed
     int use_throttle;                        //only use throttle if set to 1
     uint64_t symbol_replay_next_deadline_ns; //0 when uninitialized
 
     //dmr trunking stuff
     int dmr_rest_channel;
-    int dmr_mfid; //just when 'fid' is used as a manufacturer ID and not a feature set id
-    int dmr_vc_lcn;
-    int dmr_vc_lsn;
-    int dmr_tuned_lcn;
-    uint16_t dmr_cc_lpcn; //dmr t3 logical physical channel number
-    uint32_t tg_hold;     //single TG to hold on when enabled
+    int dmr_mfid;     //just when 'fid' is used as a manufacturer ID and not a feature set id
+    uint32_t tg_hold; //single TG to hold on when enabled
 
     //edacs
     int ea_mode;
 
+    /* ProVoice frame-content confirmation (src/protocol/provoice/provoice_confirm.c). Nothing
+     * in a ProVoice frame can fail a check -- no CRC, no BCH, no parity -- so the evidence is
+     * that the stream keeps arriving: each frame sits behind its own exact 32-symbol sync
+     * word, and two in a row confirm the transmission (issues #391, #421).
+     *
+     * provoice_confirmed: this transmission has produced verified content.
+     * provoice_confirm_weak_streak: consecutive frames decoded behind their own sync word.
+     * provoice_confirm_frame_evidence: strongest provoice_evidence seen since begin_frame(). */
+    uint8_t provoice_confirmed;
+    uint8_t provoice_confirm_weak_streak;
+    uint8_t provoice_confirm_frame_evidence;
+
     unsigned short esk_mask;
     uint32_t edacs_sys_id;
     uint32_t edacs_area_code;
-    int edacs_lcn_count;    //running tally of lcn's observed on edacs system
-    int edacs_cc_lcn;       //current lcn for the edacs control channel
-    int edacs_vc_lcn;       //current lcn for any active vc (not the one we are tuned/tuning to)
-    int edacs_tuned_lcn;    //the vc we are currently tuned to...above variable is for updating all in the matrix
-    int edacs_vc_call_type; //the type of call on the given VC - see defines below
-    int edacs_a_bits;       //  Agency Significant Bits
-    int edacs_f_bits;       //   Fleet Significant Bits
-    int edacs_s_bits;       //Subfleet Significant Bits
-    int edacs_a_shift;      //Calculated Shift for A Bits
-    int edacs_f_shift;      //Calculated Shift for F Bits
-    int edacs_a_mask;       //Calculated Mask for A Bits
-    int edacs_f_mask;       //Calculated Mask for F Bits
-    int edacs_s_mask;       //Calculated Mask for S Bits
+    int edacs_lcn_count; //running tally of lcn's observed on edacs system
+    int edacs_cc_lcn;    //current lcn for the edacs control channel
+    int edacs_tuned_lcn; //the vc we are currently tuned to...above variable is for updating all in the matrix
+    int edacs_a_bits;    //  Agency Significant Bits
+    int edacs_f_bits;    //   Fleet Significant Bits
+    int edacs_s_bits;    //Subfleet Significant Bits
+    int edacs_a_shift;   //Calculated Shift for A Bits
+    int edacs_f_shift;   //Calculated Shift for F Bits
+    int edacs_a_mask;    //Calculated Mask for A Bits
+    int edacs_f_mask;    //Calculated Mask for F Bits
+    int edacs_s_mask;    //Calculated Mask for S Bits
 
     //trunking lcn freq list
     int lcn_freq_count;
@@ -977,9 +1473,6 @@ struct dsd_state {
     char dmr_branding[20];
     char dmr_branding_sub[80];
 
-    //Remus DMR End Call Alert Beep
-    int dmr_end_alert[2]; //dmr TLC end call alert beep has already played once flag
-
     //Bitmap Filtering Options
     int audio_smoothing;
 
@@ -987,10 +1480,11 @@ struct dsd_state {
     uint8_t ysf_dt; //data type -- VD1, VD2, Full Rate, etc.
     uint8_t ysf_fi; //frame information -- HC, CC, TC
     uint8_t ysf_cm; //group or private call
-    char ysf_tgt[11];
-    char ysf_src[11];
-    char ysf_upl[11];
-    char ysf_dnl[11];
+    /* Sticky for the transmission: set once a FICH passes its Golay+CRC-16, cleared with the
+     * rest of the YSF strings on noCarrier(). A later FICH failure still lays the payload out
+     * from the previous frame's dt/fi and still synthesizes voice from it, so once one FICH
+     * has confirmed the transmission those frames are decoding, not validating nothing (#391). */
+    uint8_t ysf_fich_confirmed;
     char ysf_rm1[6];
     char ysf_rm2[6];
     char ysf_rm3[6];
@@ -998,12 +1492,21 @@ struct dsd_state {
     char ysf_txt[21][21]; //text storage blocks
 
     //DSTAR Call Strings and Info
-    char dstar_rpt1[9];
-    char dstar_rpt2[9];
-    char dstar_dst[9];
-    char dstar_src[13];
     char dstar_txt[60];
     char dstar_gps[60];
+
+    /* D-STAR frame-content confirmation (src/protocol/dstar/dstar_confirm.c). A voice sync
+     * commits 1992 symbols, and nothing inside them is checkable on its own: the AMBE error
+     * counts are soft corrections, not a verdict. A CRC-16/X.25 -- the RF header, or the
+     * header rebroadcast in slow data -- proves the transmission; a superframe that carries
+     * only filler has to repeat instead (issues #391, #421).
+     *
+     * dstar_confirmed: this transmission has produced verified content.
+     * dstar_confirm_weak_streak: consecutive superframes carrying no check of their own.
+     * dstar_confirm_frame_evidence: strongest dstar_evidence seen since begin_frame(). */
+    uint8_t dstar_confirmed;
+    uint8_t dstar_confirm_weak_streak;
+    uint8_t dstar_confirm_frame_evidence;
 
     //M17 Storage
     uint8_t m17_lsf[360];
@@ -1025,16 +1528,33 @@ struct dsd_state {
     uint32_t m17_bert_errors;
     uint32_t m17_bert_resyncs;
 
+    /* M17 preamble candidate (src/dsp/dsd_frame_sync.c). A preamble is an alternating symbol
+     * run and nothing more, so matching one only latches a candidate here; the LSF or BERT sync
+     * word that must follow it within DSD_FRAME_SYNC_M17_CANDIDATE_TTL evaluations is what the
+     * decoder acts on (issue #399).
+     *
+     * m17_pre_run: consecutive windows that matched a preamble marker at either polarity.
+     * m17_pre_candidate: 0 none, 1 normal polarity, 2 inverted.
+     * m17_pre_candidate_ttl: M17 evaluations left before the candidate lapses. */
+    uint8_t m17_pre_run;
+    uint8_t m17_pre_candidate;
+    uint8_t m17_pre_candidate_ttl;
+
+    /* M17 frame-content confirmation (src/protocol/m17/m17_confirm.c). The preamble that opens
+     * the sync chain is only an alternating symbol run, so the frame body has to prove itself
+     * before the decoder acts on it (issue #399).
+     *
+     * m17_confirmed: this transmission has produced CRC-verified content.
+     * m17_confirm_weak_streak: consecutive frames carrying only a clean LICH.
+     * m17_confirm_frame_evidence: strongest m17_evidence seen since begin_frame(). */
+    uint8_t m17_confirmed;
+    uint8_t m17_confirm_weak_streak;
+    uint8_t m17_confirm_frame_evidence;
+
     uint8_t m17_can; //can value that was decoded from signal
     int m17_can_en;  //can value supplied to the encoding side
     int m17_rate;    //sampling rate for audio input
     int m17_vox;     //vox enabled via PWR value
-
-    char m17_dst_csd[20];
-    char m17_src_csd[20];
-
-    char m17_src_str[50];
-    char m17_dst_str[50];
 
     uint8_t m17_meta[16]; //packed meta
     uint8_t m17_text_meta_control_or;
@@ -1082,7 +1602,7 @@ struct dsd_state {
     //generic ks
     int straight_ks;
     int straight_mod;
-    int straight_frame_mode; //0=legacy continuous bitstream, 1=frame-aligned (offset/step)
+    int straight_frame_mode; // 0=continuous bitstream, 1=frame-aligned (offset/step)
     int straight_frame_off;  //frame-aligned start offset (bits)
     int straight_frame_step; //frame-aligned per-frame step (bits)
 
@@ -1105,7 +1625,7 @@ struct dsd_state {
     uint8_t dmr_emb_err[2];
 
     /* ─────────────────────────────────────────────────────────────────────────
-     * DMR Resample-on-Sync Support
+     * Symbol History and DMR Resample-on-Sync Support
      *
      * Implements SDRTrunk-style threshold calibration and CACH resampling to
      * improve first-frame decode accuracy. See dmr_sync.h for details.
@@ -1113,16 +1633,55 @@ struct dsd_state {
 
     /** Symbol history circular buffer for retrospective resampling.
      *  Stores symbol-rate floats (one per dibit decision), not raw audio samples. */
-    float* dmr_sample_history;
-    int dmr_sample_history_size;  /**< Buffer size (DMR_SAMPLE_HISTORY_SIZE) */
-    int dmr_sample_history_head;  /**< Write index into circular buffer */
-    int dmr_sample_history_count; /**< Symbols written (for underflow check) */
+    float* symbol_history;
+    int symbol_history_size;  /**< Circular-buffer size in symbols */
+    int symbol_history_head;  /**< Write index into circular buffer */
+    int symbol_history_count; /**< Symbols written (for underflow check) */
+
+    /** Post-filter sample trace backing the symbol-timing diagnostic;
+     *  written only while DSD_NEO_DEBUG_SYMBOL_TIMING is on.
+     *  See dsp/symbol_timing_debug.h. */
+    dsd_symbol_timing_trace timing_trace;
+
+    /** The matched filter the symbol grid reads through and the raw history a
+     *  switch is paid from; see dsd_matched_filter_seam. */
+    dsd_matched_filter_seam matched_filter;
 
     // Advisory-only input level health for ncurses/status snapshots.
     dsd_input_level_snapshot input_level;
     time_t input_level_last_toast_time;
     dsd_input_level_status input_level_last_toast_status;
     dsd_input_level_source input_level_last_toast_source;
+
+    /* Which --trunk-scan target the receiver is parked on, published for the frontends.
+     * Zeroed while trunk scan is off or before the first target is selected. */
+    char trunk_scan_active_id[DSD_CHANNEL_LABEL_SIZE];
+    uint16_t trunk_scan_active_ordinal; /**< 1-based position in the target list; 0 = none */
+    uint16_t trunk_scan_target_count;   /**< Targets in the list, for an "n of m" readout */
+
+    /* On-the-fly scan controls (issue #380), published beside the target id so they ride
+     * the same snapshot range. lcn_scan_hold is authoritative for -Y: app_control writes
+     * it and the scanner rotation reads it. lcn_avoid_count mirrors the avoid store for the
+     * status line and is maintained by dsd_state_trunk_lcn_avoid_set()/_clear(). The
+     * trunk_scan_* trio is written by the trunk-scan coordinator, which owns the truth. */
+    uint8_t lcn_scan_hold;             /**< 1 = -Y rotation paused on the row on air */
+    uint16_t lcn_avoid_count;          /**< Avoided -Y rows within lcn_freq_count */
+    uint8_t trunk_scan_hold;           /**< 1 = --trunk-scan dwell paused on the active target */
+    uint8_t trunk_scan_active_avoided; /**< 1 = the parked target is itself avoided (fallback) */
+    uint16_t trunk_scan_avoided_count; /**< Avoided --trunk-scan targets */
+    /* Voice-gated scan (issue #381): per-visit gate memory for -Y. Arrive/sync/voice
+     * anchors are monotonic seconds (-1 = unset this visit); roll_seen restarts the
+     * visit on external lcn_freq_roll changes; hold_seen is lcn_scan_hold as of the
+     * previous tick, so a release can restart the qualify window; phase is a
+     * dsd_scan_voice_gate_phase for the status line, owned by the -Y tick or, under
+     * --trunk-scan, by the coordinator (OFF on trunked targets). Rides the
+     * vertex_ks_count..ui_msg snapshot range (see ui_snapshot.c static assert). */
+    double scan_voice_gate_arrive_m;
+    double scan_voice_gate_sync_m;
+    double scan_voice_gate_voice_m;
+    int scan_voice_gate_roll_seen;
+    uint8_t scan_voice_gate_hold_seen;
+    uint8_t scan_voice_gate_phase;
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];
@@ -1131,6 +1690,8 @@ struct dsd_state {
     void* state_ext[DSD_STATE_EXT_MAX];
     dsd_state_ext_cleanup_fn state_ext_cleanup[DSD_STATE_EXT_MAX];
 };
+
+// cppcheck-suppress-end uninitMemberVarNoCtor
 
 // NOLINTEND(clang-analyzer-optin.performance.Padding)
 
@@ -1227,6 +1788,163 @@ dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq)
     }
     state->trunk_chan_map_seq++;
 }
+
+/**
+ * Address the scan-list LCN slot at index i. The first DSD_TRUNK_LCN_EMBEDDED slots
+ * live in the embedded trunk_lcn_freq array (protocol fixed-slot writers keep
+ * raw-indexing those); higher slots live in the heap tail trunk_lcn_freq_ext. Callers
+ * must guarantee 0 <= i < lcn_freq_count for reads, or that the index is addressable
+ * (trunk_lcn_freq_ext_capacity > i - DSD_TRUNK_LCN_EMBEDDED) for writes into the tail.
+ */
+static inline long int*
+dsd_state_trunk_lcn_slot(dsd_state* state, int i) {
+    return i < DSD_TRUNK_LCN_EMBEDDED ? &state->trunk_lcn_freq[i]
+                                      : &state->trunk_lcn_freq_ext[i - DSD_TRUNK_LCN_EMBEDDED];
+}
+
+/** Const-qualified dsd_state_trunk_lcn_slot() for read-only contexts. */
+static inline const long int*
+dsd_state_trunk_lcn_slot_const(const dsd_state* state, int i) {
+    return i < DSD_TRUNK_LCN_EMBEDDED ? &state->trunk_lcn_freq[i]
+                                      : &state->trunk_lcn_freq_ext[i - DSD_TRUNK_LCN_EMBEDDED];
+}
+
+/**
+ * Ensure scan-list indices 0..count_needed-1 are addressable via
+ * dsd_state_trunk_lcn_slot(): grows the heap tail by doubling and zero-fills
+ * the new tail; no-op when count_needed <= DSD_TRUNK_LCN_EMBEDDED. Returns 0 on
+ * success, -1 on allocation failure (state left valid, contents preserved).
+ */
+int dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed);
+
+/**
+ * Free the scan-list heap tail, the per-row name, avoid and key stores, and the
+ * scan key swap state, and zero their pointers/capacities. The embedded
+ * DSD_TRUNK_LCN_EMBEDDED slots are part of dsd_state and need no release.
+ */
+void dsd_state_trunk_lcn_free(dsd_state* state);
+
+/**
+ * Seed the live IDEN tables from the stored band plan (p25_bandplan_rows).
+ *
+ * Only empty slots are filled, never an over-the-air entry. Rows that name the
+ * current WACN/SYS go first and may take over a slot a global row of the same
+ * plan seeded earlier; rows that name another system are skipped, and rows that
+ * name any system wait until the identity is known. Each seeded slot gets trust
+ * 1, zero rfss/site, and its FDMA or TDMA bit in p25_chan_tdma_explicit[].
+ * Returns the number of slots written.
+ */
+int dsd_state_p25_bandplan_seed(dsd_state* state);
+
+/**
+ * Append every ready entry (populated, base and spacing set) of two IDEN tables
+ * to `rows` as band-plan rows, skipping an identifier/table/system already in
+ * the list, so several targets' tables can be merged into one export. Either
+ * table may be NULL. Returns the new row count (never above `cap`).
+ */
+int dsd_p25_bandplan_append_tables(p25_bandplan_row_t* rows, int count, int cap, const p25_iden_entry_t* fdma,
+                                   const p25_iden_entry_t* tdma);
+
+/**
+ * Ensure name-store indices 0..count-1 are addressable: grows by doubling and
+ * zero-fills the new entries. Returns 0 on success, -1 on allocation failure
+ * (state left valid, existing names preserved).
+ */
+int dsd_state_trunk_lcn_name_reserve(dsd_state* state, size_t count);
+
+/** Free the per-row name store and zero its pointer/capacity. */
+void dsd_state_trunk_lcn_name_free(dsd_state* state);
+
+/**
+ * Store the name of scan-list row @p index. The name is truncated to
+ * DSD_CHANNEL_LABEL_SIZE - 1 bytes without splitting a UTF-8 character, has
+ * control characters replaced with spaces (so a stray tab or CR never reaches
+ * the terminal), and is trimmed of leading and trailing ASCII whitespace --
+ * including whatever that substitution and truncation leave at either end. A
+ * NULL or blank name clears the entry, allocating nothing when the store does
+ * not already reach @p index. Returns 0 on success, -1 on allocation failure or
+ * a NULL state.
+ */
+int dsd_state_trunk_lcn_name_set(dsd_state* state, size_t index, const char* name);
+/**
+ * Name of scan-list row @p index, or "" when the row is unnamed, the store is
+ * shorter than @p index, or no name column was ever imported. Never NULL.
+ */
+const char* dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index);
+
+/**
+ * Ensure avoid-store indices 0..count-1 are addressable: grows by doubling and
+ * zero-fills the new entries. Returns 0 on success, -1 on allocation failure
+ * (state left valid, existing flags preserved).
+ */
+int dsd_state_trunk_lcn_avoid_reserve(dsd_state* state, size_t count);
+
+/** Free the per-row avoid store and zero its pointer/capacity. lcn_avoid_count is not touched. */
+void dsd_state_trunk_lcn_avoid_free(dsd_state* state);
+
+/**
+ * Ensure key-store indices 0..count-1 are addressable: grows by doubling and
+ * zero-fills the new entries. Returns 0 on success, -1 on allocation failure
+ * (state left valid, existing sets preserved).
+ */
+int dsd_state_trunk_lcn_keys_reserve(dsd_state* state, size_t count);
+
+/** Free the per-row key store and zero its pointer/capacity. */
+void dsd_state_trunk_lcn_keys_free(dsd_state* state);
+
+/**
+ * Move @p ks into the store at @p index, freeing any previous entry there.
+ * Takes ownership of the entries pointer; the caller must not free it after a
+ * successful call. Returns 0 on success, -1 on allocation failure or NULL state.
+ */
+int dsd_state_trunk_lcn_keys_set(dsd_state* state, size_t index, dsd_key_set* ks);
+
+/** Key set of scan-list row @p index, or NULL when the row carries no keys. */
+const dsd_key_set* dsd_state_trunk_lcn_keys_get(const dsd_state* state, size_t index);
+
+/** Non-zero when any row in the store carries a key set. */
+int dsd_state_trunk_lcn_keys_present(const dsd_state* state);
+
+/**
+ * Flag scan-list row @p index as avoided (@p avoided != 0) or put it back. Setting a
+ * flag grows the store on demand; clearing a row the store does not reach allocates
+ * nothing. Recounts lcn_avoid_count over the rows within lcn_freq_count. Returns 0 on
+ * success, -1 on allocation failure or a NULL state.
+ */
+int dsd_state_trunk_lcn_avoid_set(dsd_state* state, size_t index, int avoided);
+
+/** 1 when row @p index is avoided; 0 otherwise, including past the store or with no store. */
+int dsd_state_trunk_lcn_avoid_get(const dsd_state* state, size_t index);
+
+/**
+ * Put every avoided row back. Returns how many rows within lcn_freq_count were
+ * avoided; the store keeps its capacity. lcn_avoid_count is zeroed.
+ */
+int dsd_state_trunk_lcn_avoid_clear(dsd_state* state);
+
+/** Rows below lcn_freq_count that carry a frequency and are not avoided. */
+int dsd_state_trunk_lcn_usable_count(const dsd_state* state);
+
+/**
+ * First row index at or after @p from (wrapping through the list) that is not avoided.
+ * A @p from outside 0..lcn_freq_count-1 starts at row 0. Placeholder (0 Hz) rows are
+ * not skipped: the scanner parks on them deliberately. Returns -1 when the list is
+ * empty or every row is avoided.
+ */
+int dsd_state_trunk_lcn_next_unavoided(const dsd_state* state, int from);
+
+/**
+ * Whether the scan list is operator-supplied rather than learned over the air.
+ *
+ * A `-C`/`-Y` channel map, or a per-target chan_csv under trunk scan, is
+ * positional: index i is LCN i+1, and an unparseable row deliberately stores 0
+ * to keep that numbering. Protocol site broadcasts must therefore neither write
+ * into such a list nor lower lcn_freq_count to the handful of slots they know
+ * about. Trunk scan rejects a global chan_in_file at init and seeds slot 0 with
+ * the target's park frequency, so under -Y a count above 1 is the only evidence
+ * a per-target map was imported.
+ */
+int dsd_state_trunk_lcn_user_list_present(const dsd_opts* opts, const dsd_state* state);
 
 static inline int
 dsd_state_minmax_window_size(int requested) {

@@ -7,16 +7,11 @@
  * 2023-10 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/fec/trellis34.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <stdint.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
-
-static const uint8_t p25_interleave[98] = {
-    0,  1,  8,  9,  16, 17, 24, 25, 32, 33, 40, 41, 48, 49, 56, 57, 64, 65, 72, 73, 80, 81, 88, 89, 96,
-    97, 2,  3,  10, 11, 18, 19, 26, 27, 34, 35, 42, 43, 50, 51, 58, 59, 66, 67, 74, 75, 82, 83, 90, 91,
-    4,  5,  12, 13, 20, 21, 28, 29, 36, 37, 44, 45, 52, 53, 60, 61, 68, 69, 76, 77, 84, 85, 92, 93, 6,
-    7,  14, 15, 22, 23, 30, 31, 38, 39, 46, 47, 54, 55, 62, 63, 70, 71, 78, 79, 86, 87, 94, 95};
 
 //this is a dibit-pair to trellis dibit transition matrix (SDRTrunk and Ossmann)
 //when evaluating hamming distance, we want to use this xor the dibit-pair nib,
@@ -31,17 +26,14 @@ p25_llr_bit_cost(int16_t llr, int expected_bit) {
     return (llr > 0) ? (uint32_t)llr : 0U;
 }
 
-typedef struct {
-    uint8_t valid;
-    uint32_t metric;
-    uint8_t states[49];
-} p25_12_path_t;
+enum { P25_12_N_SYMS = 49, P25_12_N_ST = 4 };
 
 static void
-p25_12_insert_path(p25_12_path_t paths[P25_12_MAX_CANDIDATES], const p25_12_path_t* candidate) {
+p25_12_insert_survivor(uint32_t metrics[P25_12_MAX_CANDIDATES], uint8_t backptrs[P25_12_MAX_CANDIDATES],
+                       uint32_t candidate_metric, uint8_t candidate_backptr) {
     int insert_at = -1;
     for (int i = 0; i < P25_12_MAX_CANDIDATES; i++) {
-        if (!paths[i].valid || candidate->metric < paths[i].metric) {
+        if (candidate_metric < metrics[i]) {
             insert_at = i;
             break;
         }
@@ -50,13 +42,24 @@ p25_12_insert_path(p25_12_path_t paths[P25_12_MAX_CANDIDATES], const p25_12_path
         return;
     }
     for (int i = P25_12_MAX_CANDIDATES - 1; i > insert_at; i--) {
-        paths[i] = paths[i - 1];
+        metrics[i] = metrics[i - 1];
+        backptrs[i] = backptrs[i - 1];
     }
-    paths[insert_at] = *candidate;
+    metrics[insert_at] = candidate_metric;
+    backptrs[insert_at] = candidate_backptr;
 }
 
 static void
-p25_12_pack_path_bytes(const uint8_t states[49], uint8_t out[12]) {
+p25_12_reset_metrics(uint32_t metrics[P25_12_N_ST][P25_12_MAX_CANDIDATES]) {
+    for (int state = 0; state < P25_12_N_ST; state++) {
+        for (int rank = 0; rank < P25_12_MAX_CANDIDATES; rank++) {
+            metrics[state][rank] = UINT32_MAX;
+        }
+    }
+}
+
+static void
+p25_12_pack_path_bytes(const uint8_t states[P25_12_N_SYMS], uint8_t out[12]) {
     for (int i = 0; i < 12; i++) {
         out[i] = (uint8_t)((states[(i * 4) + 0] << 6) | (states[(i * 4) + 1] << 4) | (states[(i * 4) + 2] << 2)
                            | states[(i * 4) + 3]);
@@ -106,28 +109,41 @@ p25_12_symbol_cost(const int16_t* llr_dei, int base, uint8_t expect) {
 }
 
 static void
-p25_12_expand_paths_for_symbol(p25_12_path_t curr[P25_12_MAX_CANDIDATES], p25_12_path_t prev[P25_12_MAX_CANDIDATES],
-                               const int16_t* llr_dei, int sym_idx, int st_prev, int st_next) {
+p25_12_expand_survivors_for_symbol(uint32_t curr_metric[P25_12_MAX_CANDIDATES],
+                                   uint8_t curr_backptr[P25_12_MAX_CANDIDATES],
+                                   const uint32_t prev_metric[P25_12_MAX_CANDIDATES], const int16_t* llr_dei,
+                                   int sym_idx, int st_prev, int st_next) {
     int base = sym_idx * 4;
     uint8_t expect = p25_dtm[(st_prev << 2) | st_next] & 0xF;
     uint32_t cost = p25_12_symbol_cost(llr_dei, base, expect);
 
     for (int rank = 0; rank < P25_12_MAX_CANDIDATES; rank++) {
-        if (!prev[rank].valid) {
+        if (prev_metric[rank] == UINT32_MAX) {
             continue;
         }
-        p25_12_path_t candidate = prev[rank];
-        candidate.metric += cost;
-        candidate.states[sym_idx] = (uint8_t)st_next;
-        p25_12_insert_path(curr, &candidate);
+        uint32_t candidate_metric = prev_metric[rank] + cost;
+        uint8_t candidate_backptr = (uint8_t)((st_prev << 3) | rank);
+        p25_12_insert_survivor(curr_metric, curr_backptr, candidate_metric, candidate_backptr);
+    }
+}
+
+static void
+p25_12_traceback(uint8_t backptr[P25_12_N_SYMS][P25_12_N_ST][P25_12_MAX_CANDIDATES], int final_state, int final_rank,
+                 uint8_t states[P25_12_N_SYMS]) {
+    int state = final_state;
+    int rank = final_rank;
+    for (int sym_idx = P25_12_N_SYMS; sym_idx > 0;) {
+        sym_idx--;
+        states[sym_idx] = (uint8_t)state;
+        uint8_t predecessor = backptr[sym_idx][state][rank];
+        state = (predecessor >> 3) & 0x3;
+        rank = predecessor & 0x7;
     }
 }
 
 int
 p25_12_soft_llr_list(const uint8_t* input, const int16_t* bit_llr196, p25_12_candidate_t* candidates,
                      int max_candidates) {
-    enum { N_SYMS = 49, N_ST = 4 };
-
     (void)input;
     if (bit_llr196 == NULL || candidates == NULL || max_candidates <= 0) {
         return 0;
@@ -139,38 +155,47 @@ p25_12_soft_llr_list(const uint8_t* input, const int16_t* bit_llr196, p25_12_can
     int16_t llr_dei[196];
     DSD_MEMSET(llr_dei, 0, sizeof(llr_dei));
     for (int i = 0; i < 98; i++) {
-        int p = p25_interleave[i];
+        int p = dsd_trellis_interleave_98[i];
         llr_dei[(p * 2) + 0] = bit_llr196[(i * 2) + 0];
         llr_dei[(p * 2) + 1] = bit_llr196[(i * 2) + 1];
     }
 
-    p25_12_path_t prev[N_ST][P25_12_MAX_CANDIDATES];
-    p25_12_path_t curr[N_ST][P25_12_MAX_CANDIDATES];
-    DSD_MEMSET(prev, 0, sizeof(prev));
-    for (int st = 0; st < N_ST; st++) {
-        prev[st][0].valid = 1;
-        prev[st][0].metric = (st == 0) ? 0U : 256U;
+    uint32_t metric_a[P25_12_N_ST][P25_12_MAX_CANDIDATES];
+    uint32_t metric_b[P25_12_N_ST][P25_12_MAX_CANDIDATES];
+    p25_12_reset_metrics(metric_a);
+    p25_12_reset_metrics(metric_b);
+    uint32_t (*prev_metric)[P25_12_MAX_CANDIDATES] = metric_a;
+    uint32_t (*curr_metric)[P25_12_MAX_CANDIDATES] = metric_b;
+    uint8_t backptr[P25_12_N_SYMS][P25_12_N_ST][P25_12_MAX_CANDIDATES];
+    DSD_MEMSET(backptr, 0, sizeof(backptr));
+    for (int st = 0; st < P25_12_N_ST; st++) {
+        prev_metric[st][0] = (st == 0) ? 0U : 256U;
     }
 
-    for (int i = 0; i < N_SYMS; i++) {
-        DSD_MEMSET(curr, 0, sizeof(curr));
-        for (int st_prev = 0; st_prev < N_ST; st_prev++) {
-            for (int st_next = 0; st_next < N_ST; st_next++) {
-                p25_12_expand_paths_for_symbol(curr[st_next], prev[st_prev], llr_dei, i, st_prev, st_next);
+    for (int i = 0; i < P25_12_N_SYMS; i++) {
+        p25_12_reset_metrics(curr_metric);
+        for (int st_prev = 0; st_prev < P25_12_N_ST; st_prev++) {
+            for (int st_next = 0; st_next < P25_12_N_ST; st_next++) {
+                p25_12_expand_survivors_for_symbol(curr_metric[st_next], backptr[i][st_next], prev_metric[st_prev],
+                                                   llr_dei, i, st_prev, st_next);
             }
         }
-        DSD_MEMCPY(prev, curr, sizeof(prev));
+        uint32_t (*swap_metric)[P25_12_MAX_CANDIDATES] = prev_metric;
+        prev_metric = curr_metric;
+        curr_metric = swap_metric;
     }
 
     int out_count = 0;
-    for (int st = 0; st < N_ST; st++) {
+    for (int st = 0; st < P25_12_N_ST; st++) {
         for (int rank = 0; rank < P25_12_MAX_CANDIDATES; rank++) {
-            if (!prev[st][rank].valid) {
+            if (prev_metric[st][rank] == UINT32_MAX) {
                 continue;
             }
+            uint8_t states[P25_12_N_SYMS];
             uint8_t bytes[12];
-            p25_12_pack_path_bytes(prev[st][rank].states, bytes);
-            p25_12_insert_candidate(candidates, &out_count, max_candidates, bytes, prev[st][rank].metric);
+            p25_12_traceback(backptr, st, rank, states);
+            p25_12_pack_path_bytes(states, bytes);
+            p25_12_insert_candidate(candidates, &out_count, max_candidates, bytes, prev_metric[st][rank]);
         }
     }
     return out_count;
@@ -186,7 +211,7 @@ p25_12_soft_llr(const uint8_t* input, const int16_t* bit_llr196, uint8_t treturn
     int16_t llr_dei[196];
     DSD_MEMSET(llr_dei, 0, sizeof(llr_dei));
     for (i = 0; i < 98; i++) {
-        int p = p25_interleave[i];
+        int p = dsd_trellis_interleave_98[i];
         llr_dei[(p * 2) + 0] = bit_llr196[(i * 2) + 0];
         llr_dei[(p * 2) + 1] = bit_llr196[(i * 2) + 1];
     }

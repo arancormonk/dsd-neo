@@ -133,11 +133,6 @@ rtl_perf_enabled(void) {
     return g_perf_state.load(std::memory_order_acquire) == 2 ? 1 : 0;
 }
 
-extern "C" uint64_t
-rtl_perf_now_ns(void) {
-    return dsd_time_monotonic_ns();
-}
-
 extern "C" void
 rtl_perf_record_ingest(uint64_t elapsed_ns, size_t input_samples, uint64_t dropped_samples) {
     if (!rtl_perf_enabled()) {

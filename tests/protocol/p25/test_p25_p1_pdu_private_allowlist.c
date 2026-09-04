@@ -5,14 +5,19 @@
 
 /* Verify private-grant allow-list behavior in the P25p1 PDU helper path. */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#include "dsd-neo/core/enc_lockout.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -23,33 +28,13 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
+static int g_seed_count;
+static int g_group_grant_count;
+static int g_enc_lockout_count;
+static int g_last_group_channel;
+static int g_last_group_svc;
+static int g_last_group_tg;
+static int g_last_group_src;
 
 static int
 expect_true(const char* tag, int cond) {
@@ -58,6 +43,28 @@ expect_true(const char* tag, int cond) {
         return 1;
     }
     return 0;
+}
+
+static int
+recent_activity(dsd_state* state, dsd_recent_activity_entry* entry) {
+    dsd_recent_activity_snapshot recent;
+    if (dsd_recent_activity_copy_snapshot(state, &recent) <= 0) {
+        DSD_MEMSET(entry, 0, sizeof(*entry));
+        return 0;
+    }
+    *entry = recent.entries[0];
+    return entry->notice[0] != '\0';
+}
+
+static void
+reset_calls(void) {
+    g_seed_count = 0;
+    g_group_grant_count = 0;
+    g_enc_lockout_count = 0;
+    g_last_group_channel = 0;
+    g_last_group_svc = 0;
+    g_last_group_tg = 0;
+    g_last_group_src = 0;
 }
 
 static int
@@ -82,7 +89,7 @@ process_channel_to_freq(dsd_opts* opts, dsd_state* state, int channel) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
+p25_cc_record_neighbor_frequencies(const dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
     (void)opts;
     (void)state;
     (void)freqs;
@@ -104,13 +111,39 @@ p25_cc_add_candidate(dsd_state* state, long freq_hz, int bump_added) {
 }
 
 void
-p25_nb_add_ex(dsd_state* state, long freq, uint16_t sysid, uint8_t rfss, uint8_t site, uint8_t cfva) {
+p25_store_site_lra(dsd_state* state, uint8_t lra) {
     (void)state;
-    (void)freq;
-    (void)sysid;
-    (void)rfss;
-    (void)site;
+    (void)lra;
+}
+
+void
+p25_store_site_network_active(dsd_state* state, uint8_t network_active) {
+    (void)state;
+    (void)network_active;
+}
+
+void
+p25_store_protected_control_channel(dsd_state* state, uint8_t algid) {
+    (void)state;
+    (void)algid;
+}
+
+size_t
+p25_format_adjacent_cfva(uint8_t cfva, char* out, size_t out_len) {
     (void)cfva;
+    if (out && out_len > 0) {
+        out[0] = '\0';
+    }
+    return 0;
+}
+
+int
+p25_announce_neighbor_channel(const dsd_opts* opts, dsd_state* state,
+                              const p25_neighbor_channel_announcement_t* announcement) {
+    (void)opts;
+    (void)state;
+    (void)announcement;
+    return 0;
 }
 
 void
@@ -119,12 +152,28 @@ p25_reset_iden_tables(dsd_state* state) {
     (void)state;
 }
 
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned long long sysid) {
+    if (!state || (wacn == 0 && sysid == 0)) {
+        return 0;
+    }
+    if ((state->p2_wacn != 0 || state->p2_sysid != 0) && (state->p2_wacn != wacn || state->p2_sysid != sysid)) {
+        p25_reset_iden_tables(state);
+    }
+    state->p2_wacn = wacn;
+    state->p2_sysid = sysid;
+    return 1;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]) {
+process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
+                 unsigned long long int MAC[24]) {
     (void)opts;
     (void)state;
     (void)type;
+    (void)pdu_type;
     (void)MAC;
 }
 
@@ -146,37 +195,79 @@ p25_patch_sg_key_is_clear(const dsd_state* state, int group) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_emit_enc_lockout_once(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc_bits) {
+p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc_bits, int is_group,
+                                int algid, int keyid) {
     (void)opts;
     (void)state;
     (void)slot;
     (void)tg;
     (void)svc_bits;
+    (void)is_group;
+    (void)algid;
+    (void)keyid;
+    g_enc_lockout_count++;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_sm_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)tg;
-    (void)src;
+    g_seed_count++;
+}
+
+static p25_sm_ctx_t g_sm_ctx;
+
+p25_sm_ctx_t*
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_get_ctx(void) {
+    return &g_sm_ctx;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_sm_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
-    (void)channel;
-    (void)svc_bits;
-    (void)dst;
-    (void)src;
-    if (!opts || !state) {
+p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+    (void)ctx;
+    if (!ev || ev->type != P25_SM_EV_GRANT) {
         return;
     }
-    state->p25_sm_tune_count++;
-    opts->p25_is_tuned = 1;
+    if (!ev->is_group) {
+        if (opts && state) {
+            state->p25_sm_tune_count++;
+            opts->trunk_is_tuned = 1;
+        }
+        return;
+    }
+    g_group_grant_count++;
+    g_last_group_channel = ev->channel;
+    g_last_group_svc = ev->svc_bits;
+    g_last_group_tg = ev->tg;
+    g_last_group_src = ev->src;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
+    (void)channel;
+    (void)src;
+    if (opts && state && opts->trunk_enable == 1 && opts->trunk_tune_enc_calls == 0 && (svc_bits & 0x40) && tg > 0) {
+        p25_emit_enc_lockout_once_typed(opts, state, 0, tg, svc_bits, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
+    }
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_aff_register(dsd_state* state, uint32_t rid) {
+    (void)state;
+    (void)rid;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+p25_ga_add(dsd_state* state, uint32_t rid, uint16_t tg) {
+    (void)state;
+    (void)rid;
+    (void)tg;
 }
 
 void
@@ -201,7 +292,7 @@ main(void) {
     DSD_MEMSET(&st, 0, sizeof st);
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
 
-    opts.p25_trunk = 1;
+    opts.trunk_enable = 1;
     opts.trunk_tune_private_calls = 1;
     opts.trunk_tune_data_calls = 1;
     opts.trunk_tune_enc_calls = 1;
@@ -220,8 +311,9 @@ main(void) {
     st.p25_chan_tdma_explicit[id] = 1; // FDMA known
 
     // Build ALT MBT Unit-to-Unit Voice Channel Grant - Extended (opcode 0x06).
-    mpdu[0] = 0x17; // ALT MBT format
+    mpdu[0] = 0x37; // outbound ALT MBT format
     mpdu[2] = 0x00; // MFID standard
+    mpdu[6] = 0x02; // header plus two data blocks
     mpdu[7] = 0x06; // opcode: UU Voice Channel Grant Extended
     mpdu[8] = 0x00; // svc clear
     mpdu[3] = 0x00;
@@ -236,15 +328,164 @@ main(void) {
     mpdu[25] = 0x0A; // channelr
 
     unsigned before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
-    p25_decode_pdu_trunking(&opts, &st, mpdu);
+    opts.trunk_is_tuned = 0;
+    (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
     rc |= expect_true("p1 pdu private unknown blocked in allow-list", st.p25_sm_tune_count == before);
 
     rc |= expect_true("policy seed private target", seed_policy_group(&st, 1u, "A", "UU-ALLOW") == 0);
     before = st.p25_sm_tune_count;
-    opts.p25_is_tuned = 0;
-    p25_decode_pdu_trunking(&opts, &st, mpdu);
+    opts.trunk_is_tuned = 0;
+    (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
     rc |= expect_true("p1 pdu private known target tunes", st.p25_sm_tune_count == before + 1);
+
+    // The parser's private-call allow-list prefilter must not consume the
+    // centralized state machine's encrypted-voice classification probe.
+    mpdu[8] = 0x40;
+    opts.trunk_tune_enc_calls = 0;
+    before = st.p25_sm_tune_count;
+    opts.trunk_is_tuned = 0;
+    (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
+    rc |= expect_true("p1 pdu encrypted private grant reaches probe policy", st.p25_sm_tune_count == before + 1);
+    mpdu[8] = 0x00;
+    opts.trunk_tune_enc_calls = 1;
+
+    rc |= expect_true("policy seed group grant", seed_policy_group(&st, 0x1234u, "A", "TG-ALLOW") == 0);
+    DSD_MEMSET(mpdu, 0, sizeof mpdu);
+    mpdu[0] = 0x37; // outbound ALT MBT
+    mpdu[2] = 0x00;
+    mpdu[6] = 0x01; // header plus one data block
+    mpdu[7] = 0x00; // Group Voice Channel Grant Update - Extended
+    mpdu[8] = 0x00; // clear voice service
+    mpdu[3] = 0x01;
+    mpdu[4] = 0x02;
+    mpdu[5] = 0x03; // source
+    mpdu[14] = 0x10;
+    mpdu[15] = 0x0A;
+    mpdu[16] = 0x10;
+    mpdu[17] = 0x0A;
+    mpdu[18] = 0x12;
+    mpdu[19] = 0x34; // group
+    opts.trunk_enable = 1;
+    opts.trunk_use_allow_list = 0;
+    opts.trunk_tune_enc_calls = 1;
+    opts.payload = 0;
+    opts.trunk_is_tuned = 0;
+    reset_calls();
+    (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
+    dsd_recent_activity_entry activity;
+    rc |= expect_true("p1 pdu group activity", recent_activity(&st, &activity));
+    rc |= expect_true("p1 pdu group activity kind", activity.observation.kind == DSD_CALL_KIND_GROUP_VOICE);
+    rc |= expect_true("p1 pdu group emergency state", activity.observation.emergency == 0U);
+    rc |= expect_true("p1 pdu group priority state", activity.observation.priority == 0U);
+    rc |= expect_true("p1 pdu group activity target", activity.observation.ota_target_id == 0x1234U);
+    rc |= expect_true("p1 pdu group activity notice", strstr(activity.notice, "TG: 4660") != NULL);
+
+    DSD_MEMSET(mpdu, 0, sizeof mpdu);
+    mpdu[0] = 0x37;
+    mpdu[2] = 0x00;
+    mpdu[6] = 0x01; // header plus one data block
+    mpdu[7] = 0x08; // Telephone Interconnect Voice Channel Grant
+    mpdu[3] = 0x01;
+    mpdu[4] = 0x02;
+    mpdu[5] = 0x03; // target
+    mpdu[12] = 0x10;
+    mpdu[13] = 0x0A;
+    mpdu[16] = 0x00;
+    mpdu[17] = 0x20; // timer
+    opts.trunk_enable = 0;
+    opts.trunk_use_allow_list = 0;
+    opts.payload = 0;
+    opts.trunk_is_tuned = 0;
+    st.synctype = DSD_SYNC_P25P1_POS;
+    st.p25_vc_freq[0] = 0;
+    st.p25_vc_freq[1] = 0;
+    dsd_call_observation telephone_call = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_PRIVATE_VOICE,
+        .ota_target_id = 0x010203U,
+        .policy_target_id = 0x010203U,
+    };
+    rc |= expect_true("seed telephone canonical call",
+                      dsd_call_state_observe(&st, &telephone_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    reset_calls();
+    (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
+    rc |= expect_true("p1 pdu telephone nontrunk p1 vc freq", st.p25_vc_freq[0] == 851125000);
+    rc |= expect_true("p1 pdu telephone p1 leaves slot 2 freq", st.p25_vc_freq[1] == 0);
+    rc |= expect_true("p1 pdu telephone no trunk tune hook",
+                      g_group_grant_count == 0 && st.p25_sm_tune_count == before + 1);
+    rc |= expect_true("p1 pdu telephone activity", recent_activity(&st, &activity));
+    rc |= expect_true("p1 pdu telephone activity kind", activity.observation.kind == DSD_CALL_KIND_PRIVATE_VOICE);
+    rc |= expect_true("p1 pdu telephone activity notice", strstr(activity.notice, "Active Tele Ch: 100A") != NULL);
+
+    rc |= expect_true("policy seed mfid90 sg", seed_policy_group(&st, 0x2222u, "A", "SG-ALLOW") == 0);
+    DSD_MEMSET(mpdu, 0, sizeof mpdu);
+    mpdu[0] = 0x37;
+    mpdu[2] = 0x90;
+    mpdu[6] = 0x01; // header plus one data block
+    mpdu[7] = 0x02; // MFID90 Group Regroup Channel Grant - Explicit
+    mpdu[3] = 0x04;
+    mpdu[4] = 0x05;
+    mpdu[5] = 0x06; // source
+    mpdu[12] = 0x10;
+    mpdu[13] = 0x0A;
+    mpdu[14] = 0x10;
+    mpdu[15] = 0x0A;
+    mpdu[16] = 0x22;
+    mpdu[17] = 0x22; // supergroup
+    opts.trunk_enable = 1;
+    opts.trunk_use_allow_list = 0;
+    opts.trunk_tune_enc_calls = 1;
+    opts.trunk_is_tuned = 0;
+    reset_calls();
+    (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
+    rc |= expect_true("p1 pdu mfid90 activity", recent_activity(&st, &activity));
+    rc |= expect_true("p1 pdu mfid90 activity kind", activity.observation.kind == DSD_CALL_KIND_GROUP_VOICE);
+    rc |= expect_true("p1 pdu mfid90 activity notice", strstr(activity.notice, "SG: 8738") != NULL);
+
+    DSD_MEMSET(mpdu, 0, sizeof mpdu);
+    mpdu[0] = 0x17; // inbound ALT MBT ISP
+    mpdu[2] = 0x00;
+    mpdu[6] = 0x01; // header plus one data block
+    mpdu[7] = 0x04; // inbound UU voice service request, not an outbound grant
+    mpdu[8] = 0x00;
+    mpdu[14] = 0x10;
+    mpdu[15] = 0x0A;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 0;
+    reset_calls();
+    before = st.p25_sm_tune_count;
+    (void)dsd_recent_activity_clear_all(&st);
+    (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
+    rc |= expect_true("inbound ambtc uu no tune", st.p25_sm_tune_count == before);
+    rc |= expect_true("inbound ambtc uu no recent grant", !recent_activity(&st, &activity));
+    rc |= expect_true("inbound ambtc uu no group callback", g_group_grant_count == 0);
+
+    DSD_MEMSET(mpdu, 0, sizeof mpdu);
+    mpdu[0] = 0x15; // inbound UMBTC ISP
+    mpdu[2] = 0x00;
+    mpdu[6] = 0x01;  // header plus one data block
+    mpdu[12] = 0x08; // explicit telephone dial request
+    opts.trunk_is_tuned = 0;
+    reset_calls();
+    before = st.p25_sm_tune_count;
+    (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
+    rc |= expect_true("inbound umbtc dial no tune", st.p25_sm_tune_count == before);
+    rc |= expect_true("inbound umbtc dial no group callback", g_group_grant_count == 0);
+
+    DSD_MEMSET(mpdu, 0, sizeof mpdu);
+    mpdu[0] = 0x17; // inbound Motorola protected ISP
+    mpdu[2] = 0x90;
+    mpdu[6] = 0x01; // header plus one data block
+    mpdu[7] = 0x00; // group regroup voice request, not MFID90 grant
+    mpdu[16] = 0x22;
+    mpdu[17] = 0x22;
+    opts.trunk_is_tuned = 0;
+    reset_calls();
+    (void)dsd_recent_activity_clear_all(&st);
+    (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
+    rc |= expect_true("inbound mfid90 regroup no group callback", g_group_grant_count == 0);
+    rc |= expect_true("inbound mfid90 regroup no recent grant", !recent_activity(&st, &activity));
 
     dsd_state_ext_free_all(&st);
 

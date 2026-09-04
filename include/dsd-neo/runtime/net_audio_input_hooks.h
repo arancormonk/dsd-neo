@@ -27,8 +27,6 @@ typedef struct {
     tcp_input_ctx* (*tcp_open)(dsd_socket_t sockfd, int samplerate);
     void (*tcp_close)(tcp_input_ctx* ctx);
     int (*tcp_read_sample)(tcp_input_ctx* ctx, int16_t* out);
-    int (*tcp_is_valid)(const tcp_input_ctx* ctx);
-    dsd_socket_t (*tcp_get_socket)(const tcp_input_ctx* ctx);
 
     int (*udp_start)(dsd_opts* opts, const char* bindaddr, int port, int samplerate);
     void (*udp_stop)(dsd_opts* opts);
@@ -40,8 +38,6 @@ void dsd_net_audio_input_hooks_set(dsd_net_audio_input_hooks hooks);
 tcp_input_ctx* dsd_net_audio_input_hook_tcp_open(dsd_socket_t sockfd, int samplerate);
 void dsd_net_audio_input_hook_tcp_close(tcp_input_ctx* ctx);
 int dsd_net_audio_input_hook_tcp_read_sample(tcp_input_ctx* ctx, int16_t* out);
-int dsd_net_audio_input_hook_tcp_is_valid(tcp_input_ctx* ctx);
-dsd_socket_t dsd_net_audio_input_hook_tcp_get_socket(tcp_input_ctx* ctx);
 
 int dsd_net_audio_input_hook_udp_start(dsd_opts* opts, const char* bindaddr, int port, int samplerate);
 void dsd_net_audio_input_hook_udp_stop(dsd_opts* opts);

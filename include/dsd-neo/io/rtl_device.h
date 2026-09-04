@@ -15,7 +15,6 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_
 
-#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -32,9 +31,11 @@ struct dsd_iq_capture_writer;
  *
  * String pointers may be NULL or empty. bandwidth_hz uses -1 for profile/default
  * behavior, 0 for driver automatic/no explicit bandwidth request, and positive
- * values for a requested hardware bandwidth in Hz. Fields appended after
- * bandwidth_hz are read only by rtl_device_configure_soapy_sized() when the
- * supplied config_size includes them.
+ * values for a requested hardware bandwidth in Hz.
+ *
+ * center_freq_hz is the intended startup center frequency. Configuration runs before the
+ * tuner is programmed, so profiles that pick an antenna per band (for example the SDDC
+ * HF/VHF ports) need it here; 0 disables antenna auto-selection.
  */
 struct rtl_soapy_config {
     const char* profile;
@@ -44,20 +45,74 @@ struct rtl_soapy_config {
     const char* stream_format;
     int bandwidth_hz;
     const char* settings;
+    uint32_t center_freq_hz;
 };
-
-#define RTL_SOAPY_CONFIG_LEGACY_SIZE offsetof(struct rtl_soapy_config, settings)
-#define RTL_SOAPY_CONFIG_SIZE        sizeof(struct rtl_soapy_config)
 
 /**
  * @brief Create and initialize a local RTL-SDR device over USB (librtlsdr).
  *
  * @param dev_index Device index to open.
  * @param input_ring Pointer to input ring for incoming I/Q data.
- * @param use_combine_rotate Whether to use combined rotate+widen when offset tuning is disabled.
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
-struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* input_ring, int use_combine_rotate);
+struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* input_ring);
+
+/**
+ * @brief Hand the next USB open an already-open device file descriptor.
+ *
+ * Android applications cannot open `/dev/bus/usb` nodes themselves: the descriptor
+ * comes from `UsbDeviceConnection.getFileDescriptor()` in Java. While one is set,
+ * USB device discovery is bypassed — the engine skips enumeration (which would
+ * report no devices) and rtl_device_create() wraps this descriptor instead of
+ * opening by index. The caller keeps ownership and must keep it open for the
+ * lifetime of the device.
+ *
+ * Recording the descriptor and bypassing enumeration are platform-uniform, which
+ * keeps the engine's decision reachable from a host test. Actually opening from it
+ * is not: only builds where rtl_device_preopened_fd_supported() is true can, and
+ * anywhere else the open falls through to opening by index — which, with
+ * enumeration bypassed, means opening whichever device sits at the configured
+ * index. Callers that can be built either way must check support first.
+ *
+ * @param sys_fd Open USB file descriptor, or -1 to clear.
+ */
+void rtl_device_set_preopened_fd(int sys_fd);
+
+/**
+ * @brief Whether a pre-opened USB descriptor is currently set.
+ *
+ * @return 1 when set, 0 otherwise.
+ */
+int rtl_device_preopened_fd_is_set(void);
+
+/**
+ * @brief Whether the engine currently has the pre-opened descriptor wrapped.
+ *
+ * Distinct from rtl_device_preopened_fd_is_set(), which only reports that one was
+ * recorded. This is what the descriptor's owner must poll before closing the
+ * connection behind it: the engine takes the descriptor part way into a run and
+ * gives it back before the run ends, so neither "a descriptor is set" nor "the
+ * engine is running" brackets the period during which closing it would pull the
+ * file out from under an in-flight USB transfer.
+ *
+ * Raised before the wrap is attempted and lowered only after the device is closed,
+ * so it is never clear while libusb still holds the descriptor. Clearing the slot
+ * with rtl_device_set_preopened_fd(-1) does not lower it -- a device already open
+ * keeps working, by design.
+ *
+ * @return 1 while the descriptor is in use, 0 otherwise.
+ */
+int rtl_device_preopened_fd_in_use(void);
+
+/**
+ * @brief Whether this build can open a device from a pre-opened descriptor.
+ *
+ * Requires Android and a librtlsdr providing `rtlsdr_open_fd()`. Where this is 0,
+ * rtl_device_set_preopened_fd() records a descriptor that nothing will consume.
+ *
+ * @return 1 when supported, 0 otherwise.
+ */
+int rtl_device_preopened_fd_supported(void);
 
 /**
  * @brief Create and initialize a remote RTL-SDR stream via rtl_tcp.
@@ -69,42 +124,28 @@ struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* inp
  * @param host Remote hostname or IP (e.g., "127.0.0.1").
  * @param port Remote TCP port (e.g., 1234).
  * @param input_ring Pointer to input ring for incoming I/Q data.
- * @param use_combine_rotate Whether to use combined rotate+widen when offset tuning is disabled.
  * @param autotune_enabled Enable rtl_tcp adaptive buffering/autotune at startup (1=on, 0=off).
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
 struct rtl_device* rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring,
-                                         int use_combine_rotate, int autotune_enabled);
+                                         int autotune_enabled);
 
 /**
  * @brief Create and initialize an RX source through SoapySDR.
  *
  * @param soapy_args Opaque Soapy device arguments string (may be empty).
  * @param input_ring Pointer to input ring for incoming I/Q data.
- * @param use_combine_rotate Whether to use combined rotate+widen where applicable.
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
-struct rtl_device* rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring,
-                                           int use_combine_rotate);
+struct rtl_device* rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring);
 
 /**
  * @brief Apply SoapySDR-specific profile and capability-aware startup options.
  *
  * Must be called after rtl_device_create_soapy() and before rtl_device_start_async().
- * Preserves compatibility with callers built against the legacy six-field
- * rtl_soapy_config layout and ignores fields appended after bandwidth_hz.
  * Returns 0 for success, negative for failure/unsupported backend.
  */
 int rtl_device_configure_soapy(struct rtl_device* dev, const struct rtl_soapy_config* config);
-
-/**
- * @brief Apply SoapySDR-specific startup options with an explicit config size.
- *
- * Pass sizeof(struct rtl_soapy_config), or RTL_SOAPY_CONFIG_SIZE, to opt in to
- * appended fields such as settings. Smaller sizes are accepted and only fields
- * fully contained by config_size are read.
- */
-int rtl_device_configure_soapy_sized(struct rtl_device* dev, const struct rtl_soapy_config* config, size_t config_size);
 
 /**
  * @brief Destroy an RTL-SDR device and free resources.
@@ -130,6 +171,20 @@ int rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency);
  * @return 0 on success, negative on failure.
  */
 int rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate);
+
+/**
+ * @brief Report the sample rate the backend would deliver for a requested rate.
+ *
+ * Pure query; the device is not reconfigured. Backends with a fixed rate grid answer
+ * with the nearest supported entry, so the rate chain can choose decimation for the
+ * rate that will actually arrive instead of the one that was asked for.
+ *
+ * @param dev RTL-SDR device handle.
+ * @param requested Desired rate in Hz.
+ * @param out_actual Receives the deliverable rate in Hz.
+ * @return 0 on success, negative when the backend cannot answer.
+ */
+int rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual);
 
 /**
  * @brief Query the current device sample rate.
@@ -187,6 +242,18 @@ int rtl_device_is_auto_gain(const struct rtl_device* dev);
  * @return 0 on success, negative on failure.
  */
 int rtl_device_set_ppm(struct rtl_device* dev, int ppm_error);
+
+/**
+ * @brief Report whether the backend can apply a frequency (PPM) correction.
+ *
+ * RTL USB/TCP always can. SoapySDR devices are asked via `hasFrequencyCorrection`,
+ * and IQ replay never can. Callers use this to skip auto-PPM on hardware where the
+ * correction would be silently discarded.
+ *
+ * @param dev RTL-SDR device handle.
+ * @return 1 when supported, 0 otherwise.
+ */
+int rtl_device_supports_ppm(struct rtl_device* dev);
 
 /**
  * @brief Set direct sampling mode.
@@ -292,16 +359,6 @@ void rtl_device_print_offset_capability(struct rtl_device* dev);
  */
 int rtl_device_set_tcp_autotune(struct rtl_device* dev, int onoff);
 /**
- * @brief Query the rtl_tcp adaptive buffering enable flag.
- *
- * Returns 0 when not applicable (USB backend or null handle).
- *
- * @param dev RTL-SDR device handle.
- * @return 1 if autotune is enabled; 0 otherwise.
- */
-int rtl_device_get_tcp_autotune(const struct rtl_device* dev);
-
-/**
  * @brief Attach or detach an optional IQ capture writer.
  *
  * The stream/orchestrator owns the writer lifetime. The device stores only a
@@ -395,20 +452,6 @@ int rtl_device_set_testmode(struct rtl_device* dev, int on);
  * @return 0 on success; negative on failure.
  */
 int rtl_device_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db);
-
-/**
- * @brief Get a snapshot of TCP connection quality metrics.
- *
- * Returns a copy of the latest metrics collected by the TCP reader thread.
- * Safe to call from a different thread (e.g., UI poll thread).
- * Returns a zeroed snapshot if the device is NULL or not a TCP backend.
- *
- * @param dev RTL-SDR device handle.
- * @param out Pointer to snapshot struct to fill.
- * @return 0 on success; -1 if dev is NULL or metrics unavailable.
- */
-struct tcp_quality_snapshot;
-int rtl_device_get_tcp_quality_snapshot(struct rtl_device* dev, struct tcp_quality_snapshot* out);
 
 #ifdef __cplusplus
 }

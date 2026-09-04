@@ -20,6 +20,7 @@
 #include <dsd-neo/ui/ui_prims.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/ui/menu_core.h"
@@ -36,6 +37,7 @@ typedef struct {
     size_t cursor;                        // cursor position within buf [0..len]
     ui_prompt_string_done_fn on_done_str; // NULL text indicates cancel
     void* user;
+    int mask; // 1: render '*' per byte, and scrub buf + the submit copy
 } UiPrompt;
 
 static UiPrompt g_prompt = {0};
@@ -241,6 +243,30 @@ ui_prompt_curs_set(int visibility) {
 
 // ---- Prompt implementations ----
 
+/**
+ * @brief Overwrite a buffer in a way the optimizer may not discard.
+ *
+ * DSD_MEMSET is __builtin_memset and is a dead store here by definition, so a
+ * compiler is free to delete it; this tree has no explicit_bzero or memset_s.
+ * The volatile pointer is what makes the writes observable. This mirrors
+ * rr_secure_zero() in src/runtime/radioreference/rr_client.c, which is static
+ * to that translation unit and cannot be shared.
+ *
+ * @param p Buffer to clear.
+ * @param n Length in bytes.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
+static void
+ui_prompt_secure_zero(void* p, size_t n) {
+    volatile unsigned char* v = (volatile unsigned char*)p;
+    while (n-- > 0U) {
+        *v = 0;
+        v++;
+    }
+}
+
 void
 ui_prompt_close_all(void) {
     // If an active prompt is being closed without an explicit completion,
@@ -257,6 +283,9 @@ ui_prompt_close_all(void) {
         g_prompt.win = NULL;
     }
     if (g_prompt.buf) {
+        if (g_prompt.mask) {
+            ui_prompt_secure_zero(g_prompt.buf, g_prompt.cap);
+        }
         free(g_prompt.buf);
         g_prompt.buf = NULL;
     }
@@ -264,14 +293,16 @@ ui_prompt_close_all(void) {
     DSD_MEMSET(&g_prompt, 0, sizeof(g_prompt));
 }
 
+// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
+// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
-ui_prompt_open_string_async_impl(const char* title, const char* prefill, size_t cap, void* user,
-                                 ui_prompt_string_done_fn on_done) {
+ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, ui_prompt_string_done_fn on_done,
+                            void* user_ctx) {
     ui_prompt_close_all();
     g_prompt.active = 1;
     g_prompt.title = title;
     g_prompt.on_done_str = on_done;
-    g_prompt.user = user;
+    g_prompt.user = user_ctx;
     if (cap < 2) {
         cap = 2;
     }
@@ -281,7 +312,7 @@ ui_prompt_open_string_async_impl(const char* title, const char* prefill, size_t 
     if (!g_prompt.buf) {
         // Allocation failed: immediately signal cancel to ensure user context can be freed.
         if (on_done) {
-            on_done(user, NULL);
+            on_done(user_ctx, NULL);
         }
         g_prompt.active = 0;
         return;
@@ -293,6 +324,23 @@ ui_prompt_open_string_async_impl(const char* title, const char* prefill, size_t 
         g_prompt.cursor = g_prompt.len;
     }
 }
+
+// cppcheck-suppress-end funcArgNamesDifferentUnnamed
+
+// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
+// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
+void
+ui_prompt_open_secret_async(const char* title, size_t cap, ui_prompt_string_done_fn on_done, void* user_ctx) {
+    // No prefill: a secret is never redisplayed. The open zeroes g_prompt first
+    // (ui_prompt_open_string_async starts with ui_prompt_close_all), so setting
+    // mask afterwards is what survives.
+    ui_prompt_open_string_async(title, NULL, cap, on_done, user_ctx);
+    if (ui_prompt_active()) {
+        g_prompt.mask = 1;
+    }
+}
+
+// cppcheck-suppress-end funcArgNamesDifferentUnnamed
 
 static void
 ui_prompt_int_finish(void* u, const char* text) {
@@ -350,39 +398,47 @@ ui_prompt_double_finish(void* u, const char* text) {
     free(pdc);
 }
 
+// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
+// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
-ui_prompt_open_int_async_impl(const char* title, int initial, void* user, ui_prompt_int_done_fn cb) {
+ui_prompt_open_int_async(const char* title, int initial, ui_prompt_int_done_fn cb, void* user_ctx) {
     char pre[64];
     DSD_SNPRINTF(pre, sizeof pre, "%d", initial);
     PromptIntCtx* pic = (PromptIntCtx*)calloc(1, sizeof(PromptIntCtx));
     if (!pic) {
         // Allocation failed: immediately signal cancel so caller can clean up.
         if (cb) {
-            cb(user, 0, 0);
+            cb(user_ctx, 0, 0);
         }
         return;
     }
     pic->cb = cb;
-    pic->user = user;
+    pic->user = user_ctx;
     ui_prompt_open_string_async(title, pre, 64, ui_prompt_int_finish, pic);
 }
 
+// cppcheck-suppress-end funcArgNamesDifferentUnnamed
+
+// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
+// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
-ui_prompt_open_double_async_impl(const char* title, double initial, void* user, ui_prompt_double_done_fn cb) {
+ui_prompt_open_double_async(const char* title, double initial, ui_prompt_double_done_fn cb, void* user_ctx) {
     char pre[64];
     DSD_SNPRINTF(pre, sizeof pre, "%.6f", initial);
     PromptDblCtx* pdc = (PromptDblCtx*)calloc(1, sizeof(PromptDblCtx));
     if (!pdc) {
         // Allocation failed: immediately signal cancel so caller can clean up.
         if (cb) {
-            cb(user, 0, 0.0);
+            cb(user_ctx, 0, 0.0);
         }
         return;
     }
     pdc->cb = cb;
-    pdc->user = user;
+    pdc->user = user_ctx;
     ui_prompt_open_string_async(title, pre, 64, ui_prompt_double_finish, pdc);
 }
+
+// cppcheck-suppress-end funcArgNamesDifferentUnnamed
 
 // ---- Prompt active/handle_key/render for menu_core delegation ----
 
@@ -462,6 +518,9 @@ ui_prompt_submit(void) {
     void (*cb)(void*, const char*) = g_prompt.on_done_str;
     void* up = g_prompt.user;
     const int have_text = (g_prompt.len > 0 && g_prompt.buf != NULL);
+    // Captured before close_all() zeroes g_prompt: the heap copy below outlives it.
+    const int masked = g_prompt.mask;
+    const size_t copy_len = g_prompt.len;
     char* text_copy = NULL;
     if (have_text) {
         text_copy = (char*)malloc(g_prompt.len + 1);
@@ -474,6 +533,9 @@ ui_prompt_submit(void) {
     ui_prompt_close_all();
     if (cb) {
         cb(up, have_text ? text_copy : "");
+    }
+    if (masked && text_copy) {
+        ui_prompt_secure_zero(text_copy, copy_len + 1);
     }
     free(text_copy);
 }
@@ -711,6 +773,58 @@ ui_prompt_compute_cursor_x(int field_col, int field_right, const UiPromptViewSta
     return cursor_x;
 }
 
+#define UI_PROMPT_MASK_MAX 512 /* asterisks drawn in one field; cosmetic ceiling, never a leak */
+
+/**
+ * @brief Write min(n, out_size - 1) '*' bytes plus a NUL into @p out.
+ */
+static void
+ui_prompt_fill_mask(char* out, size_t out_size, size_t n) {
+    if (!out || out_size == 0) {
+        return;
+    }
+    if (n > out_size - 1) {
+        n = out_size - 1;
+    }
+    for (size_t i = 0; i < n; i++) {
+        out[i] = '*';
+    }
+    out[n] = '\0';
+}
+
+/**
+ * @brief Pick the string ui_prompt_render() draws into the input field.
+ *
+ * The view state is computed from the REAL buffer by the caller, so start,
+ * ellipsis and cursor column are identical masked or not; only the glyphs
+ * change here.
+ *
+ * @param text        Real prompt text (never NULL).
+ * @param view        View state computed from @p text.
+ * @param field_width Field width in columns.
+ * @param masked      Scratch buffer used only when masking is active.
+ * @param masked_size Size of @p masked in bytes.
+ * @return Pointer to draw from: either into @p text or into @p masked.
+ */
+static const char*
+ui_prompt_display_slice(const char* text, const UiPromptViewState* view, int field_width, char* masked,
+                        size_t masked_size) {
+    const char* shown = text + view->start;
+    if (!g_prompt.mask) {
+        return shown;
+    }
+    int width = view->show_left_ellipsis ? (field_width - 3) : field_width;
+    if (width < 0) {
+        width = 0;
+    }
+    size_t n = strlen(shown);
+    if (n > (size_t)width) {
+        n = (size_t)width;
+    }
+    ui_prompt_fill_mask(masked, masked_size, n);
+    return masked;
+}
+
 void
 ui_prompt_render(void) {
     if (!g_prompt.active) {
@@ -741,6 +855,8 @@ ui_prompt_render(void) {
     UiPromptViewState view = ui_prompt_compute_view_state(text, g_prompt.cursor, field_width);
     int cursor_x = ui_prompt_compute_cursor_x(field_col, field_right, &view);
     int body_w = (w > 4) ? (w - 4) : 1;
+    char masked[UI_PROMPT_MASK_MAX];
+    const char* shown = ui_prompt_display_slice(text, &view, field_width, masked, sizeof masked);
 
     (void)ui_prompt_curs_set(1); // show cursor while editing prompt text
     werase(win);
@@ -751,12 +867,21 @@ ui_prompt_render(void) {
     mvwaddnstr(win, input_y, 2, "> ", (w > 5) ? 2 : 1);
     if (view.show_left_ellipsis) {
         mvwaddnstr(win, input_y, field_col, "...", 3);
-        mvwaddnstr(win, input_y, field_col + 3, text + view.start, field_width - 3);
+        mvwaddnstr(win, input_y, field_col + 3, shown, field_width - 3);
     } else {
-        mvwaddnstr(win, input_y, field_col, text + view.start, field_width);
+        mvwaddnstr(win, input_y, field_col, shown, field_width);
     }
     if (footer_y > 0 && footer_y != input_y) {
         mvwaddnstr(win, footer_y, 2, "Enter=OK  Esc=Cancel", body_w);
+    }
+    // The toast, in the blank rows between the field and the footer. A prompt
+    // that re-opens after refusing its input ("Enter a ZIP code (digits only).")
+    // is the only thing on screen, so this is the one place the refusal can be
+    // read; anchored above the footer so a blank row still separates it from
+    // the field.
+    if (footer_y > input_y + 1) {
+        (void)ui_status_draw(win, input_y + 1, 2, body_w, footer_y - input_y - 1,
+                             UI_STATUS_FLAG_ANCHOR_BOTTOM | UI_STATUS_FLAG_BOLD, time(NULL));
     }
     // Footer/title writes also move the curses cursor; place it last so input editing stays visible.
     wmove(win, input_y, cursor_x);
@@ -817,8 +942,10 @@ ui_help_max_scroll(void) {
 
 static int
 ui_help_is_close_key(int ch) {
-    return (ch == DSD_KEY_ESC || ch == 'q' || ch == 'Q' || ch == 'h' || ch == 'H' || ch == 10 || ch == KEY_ENTER
-            || ch == '\r' || ch == KEY_LEFT);
+    /* Esc, Left, Enter and h close help; 'q' is deliberately not a close key
+       anywhere inside the menu, because it quits the program from the main
+       screen and the habit carried over. */
+    return (ch == DSD_KEY_ESC || ch == 'h' || ch == 'H' || ch == 10 || ch == KEY_ENTER || ch == '\r' || ch == KEY_LEFT);
 }
 
 static int
@@ -971,9 +1098,9 @@ ui_help_draw_footer(WINDOW* hw, int h, int body_w, int max_scroll) {
         return;
     }
     if (max_scroll > 0) {
-        mvwaddnstr(hw, h - 2, 2, "Up/Down/PgUp/PgDn: scroll  Esc/q: close", body_w);
+        mvwaddnstr(hw, h - 2, 2, "Up/Down/PgUp/PgDn: scroll  Esc/h: close", body_w);
     } else {
-        mvwaddnstr(hw, h - 2, 2, "Esc/q/Enter: close", body_w);
+        mvwaddnstr(hw, h - 2, 2, "Esc/h/Enter: close", body_w);
     }
 }
 
@@ -1037,29 +1164,47 @@ ui_chooser_finish(int sel) {
     }
 }
 
+// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
+// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
-ui_chooser_start_impl(const char* title, const char* const* items, int count, void* user, ui_chooser_done_fn on_done) {
+ui_chooser_start_at(const char* title, const char* const* items, int count, int initial_sel, ui_chooser_done_fn on_done,
+                    void* user_ctx) {
     if (!items || count <= 0) {
+        // An empty list cancels straight away, but it still leaves by the one
+        // door every other chooser result uses: publish the callback into
+        // g_chooser and let ui_chooser_finish() deliver it. That keeps the
+        // reentry guard (on_done cleared before the callback runs) on this path
+        // too, and it keeps the callback's context reachable only through the
+        // chooser state that pairs it with its callback - never handed straight
+        // from one caller's argument list to whatever function pointer the
+        // caller passed in.
         ui_chooser_close();
-        if (on_done) {
-            on_done(user, -1);
-        }
+        g_chooser.on_done = on_done;
+        g_chooser.user = user_ctx;
+        ui_chooser_finish(-1);
         return;
     }
     g_chooser.active = 1;
     g_chooser.title = title;
     g_chooser.items = items;
     g_chooser.count = count;
-    g_chooser.sel = 0;
+    g_chooser.sel = (initial_sel > 0 && initial_sel < count) ? initial_sel : 0;
     g_chooser.top = 0;
     g_chooser.page_rows = 0;
     g_chooser.on_done = on_done;
-    g_chooser.user = user;
+    g_chooser.user = user_ctx;
     if (g_chooser.win) {
         delwin(g_chooser.win);
         g_chooser.win = NULL;
     }
 }
+
+void
+ui_chooser_start(const char* title, const char* const* items, int count, ui_chooser_done_fn on_done, void* user_ctx) {
+    ui_chooser_start_at(title, items, count, 0, on_done, user_ctx);
+}
+
+// cppcheck-suppress-end funcArgNamesDifferentUnnamed
 
 void
 ui_chooser_close(void) {
@@ -1141,7 +1286,8 @@ ui_chooser_handle_navigation_key(int ch) {
 
 static int
 ui_chooser_is_cancel_key(int ch) {
-    return (ch == 'q' || ch == 'Q' || ch == DSD_KEY_ESC || ch == KEY_LEFT);
+    /* Esc and Left only -- see ui_help_is_close_key() for why 'q' is not. */
+    return (ch == DSD_KEY_ESC || ch == KEY_LEFT);
 }
 
 static int
@@ -1236,34 +1382,41 @@ ui_chooser_fit_height(int desired_height, int screen_height) {
 }
 
 static int
-ui_chooser_compute_window_rect(const char* title, const char* footer, int max_item, int* h, int* w, int* wy, int* wx) {
+ui_chooser_compute_window_rect_for_terminal(const char* title, const char* footer, int max_item, int count,
+                                            int screen_h, int screen_w, int* h, int* w, int* wy, int* wx) {
     if (!title || !footer || !h || !w || !wy || !wx) {
         return 0;
     }
     int local_w = ui_chooser_initial_width(title, footer, max_item);
-    int local_h = g_chooser.count + 5;
+    int local_h = count + 5;
     if (local_h < 7) {
         local_h = 7;
     }
 
-    int scr_h = 0, scr_w = 0;
-    getmaxyx(stdscr, scr_h, scr_w);
-    if (scr_h < 4 || scr_w < 8) {
+    if (screen_h < 4 || screen_w < 8) {
         return 0;
     }
-    local_w = ui_chooser_fit_width(local_w, scr_w);
-    local_h = ui_chooser_fit_height(local_h, scr_h);
+    local_w = ui_chooser_fit_width(local_w, screen_w);
+    local_h = ui_chooser_fit_height(local_h, screen_h);
     if (local_w <= 0 || local_h <= 0) {
         return 0;
     }
 
-    int local_wy = ui_center_axis(scr_h, local_h);
-    int local_wx = ui_center_axis(scr_w, local_w);
+    int local_wy = ui_center_axis(screen_h, local_h);
+    int local_wx = ui_center_axis(screen_w, local_w);
     *h = local_h;
     *w = local_w;
     *wy = local_wy;
     *wx = local_wx;
     return 1;
+}
+
+static int
+ui_chooser_compute_window_rect(const char* title, const char* footer, int max_item, int* h, int* w, int* wy, int* wx) {
+    int scr_h = 0, scr_w = 0;
+    getmaxyx(stdscr, scr_h, scr_w);
+    return ui_chooser_compute_window_rect_for_terminal(title, footer, max_item, g_chooser.count, scr_h, scr_w, h, w, wy,
+                                                       wx);
 }
 
 static void
@@ -1329,7 +1482,7 @@ ui_chooser_render(void) {
         return;
     }
     const char* title = g_chooser.title ? g_chooser.title : "Select";
-    const char* footer = "Arrows/PgUp/PgDn  Right/Enter: select  Esc/q/Left";
+    const char* footer = "Arrows/PgUp/PgDn  Right/Enter: select  Esc/Left: back";
     int max_item = ui_chooser_max_item_width();
     int h = 0, w = 0, wy = 0, wx = 0;
     if (!ui_chooser_compute_window_rect(title, footer, max_item, &h, &w, &wy, &wx)) {
@@ -1356,6 +1509,10 @@ ui_chooser_render(void) {
     g_chooser.page_rows = page_rows;
     ui_chooser_clamp_selection();
     ui_chooser_draw_title(win, title, body_w, page_rows);
+    // Row 2 is the spacer under the title: the toast goes there, so a notice
+    // raised just before this list opened ("No systems there. Try another
+    // search.") is read on the list it explains rather than lost behind it.
+    (void)ui_status_draw(win, 2, 2, body_w, 1, UI_STATUS_FLAG_BOLD, time(NULL));
     ui_chooser_draw_items(win, w, body_w, page_rows);
     mvwaddnstr(win, h - 2, 2, footer, body_w);
     wnoutrefresh(win);
@@ -1380,5 +1537,119 @@ ui_chooser_test_snapshot(void) {
     snapshot.top = g_chooser.top;
     snapshot.page_rows = g_chooser.page_rows;
     return snapshot;
+}
+
+void
+ui_help_test_set_metrics(int line_count, int page_rows, int scroll) {
+    if (line_count < 0) {
+        line_count = 0;
+    }
+    if (page_rows < 0) {
+        page_rows = 0;
+    }
+    g_help.line_count = line_count;
+    g_help.page_rows = page_rows;
+    g_help.scroll = scroll;
+    ui_help_clamp_scroll(ui_help_max_scroll());
+}
+
+UiHelpTestSnapshot
+ui_help_test_snapshot(void) {
+    UiHelpTestSnapshot snapshot;
+    snapshot.active = g_help.active;
+    snapshot.scroll = g_help.scroll;
+    snapshot.line_count = g_help.line_count;
+    snapshot.page_rows = g_help.page_rows;
+    return snapshot;
+}
+
+int
+ui_help_wrap_line_for_test(const char* text, int width, int index, char* out, size_t out_size) {
+    char lines[UI_HELP_MAX_LINES][UI_HELP_MAX_LINE_CHARS];
+    int count = ui_help_wrap_text(text, width, lines, UI_HELP_MAX_LINES);
+    if (out && out_size > 0) {
+        out[0] = '\0';
+        if (index >= 0 && index < count && index < UI_HELP_MAX_LINES) {
+            DSD_SNPRINTF(out, out_size, "%s", lines[index]);
+        }
+    }
+    return count;
+}
+
+int
+ui_chooser_max_item_width_for_test(const char* const* items, int count) {
+    const char* const* saved_items = g_chooser.items;
+    int saved_count = g_chooser.count;
+    g_chooser.items = items;
+    g_chooser.count = count;
+    int max_item = ui_chooser_max_item_width();
+    g_chooser.items = saved_items;
+    g_chooser.count = saved_count;
+    return max_item;
+}
+
+int
+ui_chooser_layout_for_test(const char* title, const char* footer, int max_item, int count, int screen_h, int screen_w,
+                           int* h, int* w, int* wy, int* wx) {
+    return ui_chooser_compute_window_rect_for_terminal(title, footer, max_item, count, screen_h, screen_w, h, w, wy,
+                                                       wx);
+}
+
+int
+ui_prompt_center_axis_for_test(int screen_extent, int window_extent) {
+    return ui_center_axis(screen_extent, window_extent);
+}
+
+int
+ui_prompt_fit_width_for_test(int desired_width, int screen_width) {
+    return ui_prompt_fit_width(desired_width, screen_width);
+}
+
+int
+ui_prompt_fit_height_for_test(int desired_height, int screen_height) {
+    return ui_prompt_fit_height(desired_height, screen_height);
+}
+
+void
+ui_prompt_rows_for_test(int height, int* title_y, int* input_y, int* footer_y) {
+    ui_prompt_compute_row_positions(height, title_y, input_y, footer_y);
+}
+
+void
+ui_prompt_field_geometry_for_test(int width, int* field_col, int* field_right, int* field_width) {
+    ui_prompt_compute_field_geometry(width, field_col, field_right, field_width);
+}
+
+UiPromptViewTestSnapshot
+ui_prompt_view_for_test(const char* text, size_t cursor, int field_col, int field_right, int field_width) {
+    UiPromptViewState view = ui_prompt_compute_view_state(text, cursor, field_width);
+    UiPromptViewTestSnapshot snapshot;
+    snapshot.start = view.start;
+    snapshot.cursor = view.cursor;
+    snapshot.show_left_ellipsis = view.show_left_ellipsis;
+    snapshot.cursor_x = ui_prompt_compute_cursor_x(field_col, field_right, &view);
+    return snapshot;
+}
+
+int
+ui_prompt_mask_active_for_test(void) {
+    return g_prompt.mask;
+}
+
+int
+ui_prompt_display_text_for_test(char* out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (!g_prompt.active) {
+        return 0;
+    }
+    if (g_prompt.mask) {
+        ui_prompt_fill_mask(out, out_size, g_prompt.len);
+        return 1;
+    }
+    DSD_SNPRINTF(out, out_size, "%s", g_prompt.buf ? g_prompt.buf : "");
+    return 1;
 }
 #endif

@@ -29,7 +29,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     dsdcfg_diagnostics_t diags;
     (void)dsd_user_config_validate(path, &diags);
-    dsd_user_config_diags_free(&diags);
+    dsdcfg_diags_free(&diags);
 
     (void)remove(path);
     return 0;

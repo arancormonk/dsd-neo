@@ -19,14 +19,17 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h> // IWYU pragma: keep - private-source tests need the enrichment declaration
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_lsd.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
@@ -43,21 +46,20 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/dsp/p25p1_heuristics.h"
 
 #ifdef SOFTID
 #include <dsd-neo/core/talkgroup_policy.h>
 #endif
 
 static void
-build_ldu1_rs_reliability(const AnalogSignal* analog_signal_array, uint8_t data_reliab[12], uint8_t parity_reliab[12]) {
+build_ldu1_rs_reliability(const P25P1SoftDibit* soft_dibits, uint8_t data_reliab[12], uint8_t parity_reliab[12]) {
     for (int i = 0; i < 12; i++) {
-        int analog_index = (11 - i) * (3 + 2);
-        data_reliab[i] = p25p1_hamming_rs_symbol_reliability(analog_signal_array + analog_index);
+        int soft_index = (11 - i) * (3 + 2);
+        data_reliab[i] = p25p1_hamming_rs_symbol_reliability(soft_dibits + soft_index);
     }
     for (int i = 0; i < 12; i++) {
-        int analog_index = (12 * (3 + 2)) + ((11 - i) * (3 + 2));
-        parity_reliab[i] = p25p1_hamming_rs_symbol_reliability(analog_signal_array + analog_index);
+        int soft_index = (12 * (3 + 2)) + ((11 - i) * (3 + 2));
+        parity_reliab[i] = p25p1_hamming_rs_symbol_reliability(soft_dibits + soft_index);
     }
 }
 
@@ -90,8 +92,8 @@ typedef struct {
     uint8_t lsd_hex2;
     int lsd1_okay;
     int lsd2_okay;
-    AnalogSignal analog_signal_array[12 * (3 + 2) + 12 * (3 + 2)];
-    int analog_signal_index;
+    P25P1SoftDibit soft_dibits[12 * (3 + 2) + 12 * (3 + 2)];
+    int soft_dibit_index;
 } ldu1_decode_ctx_t;
 
 static void
@@ -122,27 +124,23 @@ p25p1_ldu1_init_decode_ctx(dsd_state* state, ldu1_decode_ctx_t* ctx) {
 }
 
 static void
-p25p1_ldu1_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, char trace_digit, int emit_active) {
-#ifdef TRACE_DSD
-    state->debug_prefix_2 = trace_digit;
-#else
-    UNUSED(trace_digit);
-#endif
+p25p1_ldu1_process_imbe_frame(dsd_opts* opts, dsd_state* state, int* status_count, int emit_active) {
     process_IMBE(opts, state, status_count);
     if (emit_active) {
         // SM event: ACTIVE (P1 uses slot 0).
         p25_sm_emit_active(opts, state, 0);
     }
-    p25p1_play_imbe_audio(opts, state);
+    if (p25_crypto_audio_permitted(opts, state, 0)) {
+        dsd_play_synthesized_voice(opts, state);
+    }
 }
 
 static void
 p25p1_ldu1_read_hex_block(dsd_opts* opts, dsd_state* state, char words[12][6], int start_word, int* status_count,
-                          AnalogSignal analog_signal_array[], int* analog_signal_index, int sequence_break_word) {
+                          P25P1SoftDibit soft_dibits[], int* soft_dibit_index) {
     for (int w = start_word; w > (start_word - 4); w--) {
-        read_and_correct_hex_word(opts, state, &(words[w][0]), status_count, analog_signal_array, analog_signal_index);
+        read_and_correct_hex_word(opts, state, &(words[w][0]), status_count, soft_dibits, soft_dibit_index);
     }
-    analog_signal_array[(size_t)sequence_break_word * (3 + 2)].sequence_broken = 1;
 }
 
 static uint8_t
@@ -152,16 +150,16 @@ p25p1_ldu1_read_lsd_codeword(dsd_opts* opts, dsd_state* state, int* status_count
     char cyclic_parity[8];
 
     for (int i = 0; i <= 6; i += 2) {
-        int16_t llr[2];
-        read_dibit_soft(opts, state, lsd + i, status_count, NULL, NULL, NULL, llr);
-        lowspeed_llr[llr_offset + i + 0] = llr[0];
-        lowspeed_llr[llr_offset + i + 1] = llr[1];
+        P25P1SoftDibit soft_dibit;
+        read_dibit_soft(opts, state, lsd + i, status_count, &soft_dibit);
+        lowspeed_llr[llr_offset + i + 0] = soft_dibit.llr[0];
+        lowspeed_llr[llr_offset + i + 1] = soft_dibit.llr[1];
     }
     for (int i = 0; i <= 6; i += 2) {
-        int16_t llr[2];
-        read_dibit_soft(opts, state, cyclic_parity + i, status_count, NULL, NULL, NULL, llr);
-        lowspeed_llr[llr_offset + 8 + i + 0] = llr[0];
-        lowspeed_llr[llr_offset + 8 + i + 1] = llr[1];
+        P25P1SoftDibit soft_dibit;
+        read_dibit_soft(opts, state, cyclic_parity + i, status_count, &soft_dibit);
+        lowspeed_llr[llr_offset + 8 + i + 0] = soft_dibit.llr[0];
+        lowspeed_llr[llr_offset + 8 + i + 1] = soft_dibit.llr[1];
     }
 
     uint8_t lsd_hex = 0;
@@ -190,35 +188,35 @@ p25p1_ldu1_collect_lsd(dsd_opts* opts, dsd_state* state, ldu1_decode_ctx_t* ctx)
 
 static void
 p25p1_ldu1_collect_voice_and_data(dsd_opts* opts, dsd_state* state, ldu1_decode_ctx_t* ctx) {
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '0', 1);
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '1', 0);
-    p25p1_ldu1_read_hex_block(opts, state, ctx->hex_data, 11, &ctx->status_count, ctx->analog_signal_array,
-                              &ctx->analog_signal_index, 0);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 1);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
+    p25p1_ldu1_read_hex_block(opts, state, ctx->hex_data, 11, &ctx->status_count, ctx->soft_dibits,
+                              &ctx->soft_dibit_index);
 
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '2', 0);
-    p25p1_ldu1_read_hex_block(opts, state, ctx->hex_data, 7, &ctx->status_count, ctx->analog_signal_array,
-                              &ctx->analog_signal_index, 4);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
+    p25p1_ldu1_read_hex_block(opts, state, ctx->hex_data, 7, &ctx->status_count, ctx->soft_dibits,
+                              &ctx->soft_dibit_index);
 
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '3', 0);
-    p25p1_ldu1_read_hex_block(opts, state, ctx->hex_data, 3, &ctx->status_count, ctx->analog_signal_array,
-                              &ctx->analog_signal_index, 8);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
+    p25p1_ldu1_read_hex_block(opts, state, ctx->hex_data, 3, &ctx->status_count, ctx->soft_dibits,
+                              &ctx->soft_dibit_index);
 
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '4', 0);
-    p25p1_ldu1_read_hex_block(opts, state, ctx->hex_parity, 11, &ctx->status_count, ctx->analog_signal_array,
-                              &ctx->analog_signal_index, 12);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
+    p25p1_ldu1_read_hex_block(opts, state, ctx->hex_parity, 11, &ctx->status_count, ctx->soft_dibits,
+                              &ctx->soft_dibit_index);
 
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '5', 0);
-    p25p1_ldu1_read_hex_block(opts, state, ctx->hex_parity, 7, &ctx->status_count, ctx->analog_signal_array,
-                              &ctx->analog_signal_index, 16);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
+    p25p1_ldu1_read_hex_block(opts, state, ctx->hex_parity, 7, &ctx->status_count, ctx->soft_dibits,
+                              &ctx->soft_dibit_index);
 
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '6', 0);
-    p25p1_ldu1_read_hex_block(opts, state, ctx->hex_parity, 3, &ctx->status_count, ctx->analog_signal_array,
-                              &ctx->analog_signal_index, 20);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
+    p25p1_ldu1_read_hex_block(opts, state, ctx->hex_parity, 3, &ctx->status_count, ctx->soft_dibits,
+                              &ctx->soft_dibit_index);
 
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '7', 0);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
     p25p1_ldu1_collect_lsd(opts, state, ctx);
 
-    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, '8', 0);
+    p25p1_ldu1_process_imbe_frame(opts, state, &ctx->status_count, 0);
 }
 
 static void
@@ -229,17 +227,16 @@ p25p1_ldu1_finalize_status(dsd_opts* opts, dsd_state* state) {
     p25_status_accum_add(state, ss);
 
     // Classify accumulated status symbols and set advisory AFC gate flag.
-    p25_status_accum_classify(state, opts);
+    p25_status_accum_classify(state);
 }
 
 static int
-p25p1_ldu1_apply_rs_and_heuristics(dsd_state* state, P25Heuristics* heur, char hex_data[12][6], char hex_parity[12][6],
-                                   AnalogSignal analog_signal_array[]) {
+p25p1_ldu1_apply_rs_fec(dsd_state* state, char hex_data[12][6], char hex_parity[12][6], P25P1SoftDibit soft_dibits[]) {
     int irrecoverable_errors = check_and_fix_reedsolomon_24_12_13((char*)hex_data, (char*)hex_parity);
     if (irrecoverable_errors == 1) {
         uint8_t data_reliab[12];
         uint8_t parity_reliab[12];
-        build_ldu1_rs_reliability(analog_signal_array, data_reliab, parity_reliab);
+        build_ldu1_rs_reliability(soft_dibits, data_reliab, parity_reliab);
         if (p25p1_rs_24_12_13_soft_reliability((char*)hex_data, (char*)hex_parity, data_reliab, parity_reliab) == 0) {
             state->p25_p1_soft_rs_ok++;
             irrecoverable_errors = 0;
@@ -249,9 +246,6 @@ p25p1_ldu1_apply_rs_and_heuristics(dsd_state* state, P25Heuristics* heur, char h
     if (irrecoverable_errors == 1) {
         state->p25_p1_voice_fec_err++;
         state->debug_header_critical_errors++;
-        // We can correct (13-1)/2 = 6 errors. If we failed, there were more
-        // than 6 word errors post-Hamming stage. Approximate as 7x2 bit errs.
-        update_error_stats(heur, 12 * 6 + 12 * 6, 7 * 2);
         return irrecoverable_errors;
     }
 
@@ -261,12 +255,6 @@ p25p1_ldu1_apply_rs_and_heuristics(dsd_state* state, P25Heuristics* heur, char h
     state->last_vc_sync_time = time(NULL);
     state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
 
-    char fixed_parity[12 * 6];
-    correct_hamming_dibits((char*)hex_data, 12, analog_signal_array);
-    encode_reedsolomon_24_12_13((char*)hex_data, fixed_parity);
-    ptrdiff_t hoff = (ptrdiff_t)12 * (3 + 2);
-    correct_hamming_dibits(fixed_parity, 12, analog_signal_array + hoff);
-    contribute_to_heuristics(state->rf_mod, heur, analog_signal_array, 12 * (3 + 2) + 12 * (3 + 2));
     return irrecoverable_errors;
 }
 
@@ -303,23 +291,14 @@ p25p1_ldu1_build_lcw_buffers(const uint8_t lcformat[9], const uint8_t mfid[9], c
     DSD_MEMSET(LCW_bytes, 0, 9);
     DSD_MEMSET(LCW_bits, 0, 72);
 
-    LCW_bytes[0] = (uint8_t)ConvertBitIntoBytes(&lcformat[0], 8);
-    LCW_bytes[1] = (uint8_t)ConvertBitIntoBytes(&mfid[0], 8);
+    LCW_bytes[0] = (uint8_t)convert_bits_into_output(&lcformat[0], 8);
+    LCW_bytes[1] = (uint8_t)convert_bits_into_output(&mfid[0], 8);
     for (int i = 0; i < 7; i++) {
         ptrdiff_t o = (ptrdiff_t)i * 8;
-        LCW_bytes[i + 2] = (uint8_t)ConvertBitIntoBytes(&lcinfo[o], 8);
+        LCW_bytes[i + 2] = (uint8_t)convert_bits_into_output(&lcinfo[o], 8);
     }
 
-    for (int i = 0, j = 0; i < 9; i++, j += 8) {
-        LCW_bits[j + 0] = (LCW_bytes[i] >> 7) & 0x01;
-        LCW_bits[j + 1] = (LCW_bytes[i] >> 6) & 0x01;
-        LCW_bits[j + 2] = (LCW_bytes[i] >> 5) & 0x01;
-        LCW_bits[j + 3] = (LCW_bytes[i] >> 4) & 0x01;
-        LCW_bits[j + 4] = (LCW_bytes[i] >> 3) & 0x01;
-        LCW_bits[j + 5] = (LCW_bytes[i] >> 2) & 0x01;
-        LCW_bits[j + 6] = (LCW_bytes[i] >> 1) & 0x01;
-        LCW_bits[j + 7] = (LCW_bytes[i] >> 0) & 0x01;
-    }
+    dsd_unpack_bytes_to_bits(LCW_bytes, 9U, LCW_bits, 72U, 9U);
 }
 
 static void
@@ -425,7 +404,9 @@ p25p1_ldu1_softid_finalize_alias(const dsd_opts* opts, dsd_state* state, int k) 
     }
 
     char str[16];
-    int tsrc = state->lastsrc;
+    dsd_call_snapshot call;
+    const int has_call = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    int tsrc = has_call && call.ota_source_id <= UINT32_MAX ? (int)call.ota_source_id : 0;
     k = 0;
     for (int i = 0; i < 16; i++) {
         str[i] = 0;
@@ -445,7 +426,7 @@ p25p1_ldu1_softid_finalize_alias(const dsd_opts* opts, dsd_state* state, int k) 
     if (tsrc != 0) {
         const char* mode = "D";
         dsd_tg_policy_entry alias_entry;
-        if (state->payload_algid != 0x80 && opts->trunk_tune_enc_calls == 0 && state->R == 0) {
+        if (p25_crypto_metadata_is_confirmed_encrypted(state, 0) && opts->trunk_tune_enc_calls == 0 && state->R == 0) {
             mode = "DE";
         }
         if (dsd_tg_policy_make_exact_entry((uint32_t)tsrc, mode, str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias_entry)
@@ -453,6 +434,7 @@ p25p1_ldu1_softid_finalize_alias(const dsd_opts* opts, dsd_state* state, int k) 
             (void)dsd_tg_policy_upsert_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY);
             (void)dsd_tg_policy_upsert_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
         }
+        (void)dsd_event_enrich_alias(state, 0U, call.epoch, str);
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);
@@ -470,7 +452,6 @@ p25p1_ldu1_handle_softid(const dsd_opts* opts, dsd_state* state, const ldu1_deco
 void
 processLDU1(dsd_opts* opts, dsd_state* state) {
     state->p25_p1_duid_ldu1++;
-    P25Heuristics* heur = (state->synctype == DSD_SYNC_P25P1_NEG) ? &state->inv_p25_heuristics : &state->p25_heuristics;
 
     p25p1_ldu1_refresh_vc_hysteresis(opts, state);
     // Do not refresh last_vc_sync_time again until FEC passes below.
@@ -493,13 +474,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     }
 
     p25p1_ldu1_finalize_status(opts, state);
-    int irrecoverable_errors =
-        p25p1_ldu1_apply_rs_and_heuristics(state, heur, ctx.hex_data, ctx.hex_parity, ctx.analog_signal_array);
-
-#ifdef HEURISTICS_DEBUG
-    DSD_FPRINTF(stderr, "(audio errors, header errors, critical header errors) (%i,%i,%i)\n", state->debug_audio_errors,
-                state->debug_header_errors, state->debug_header_critical_errors);
-#endif
+    int irrecoverable_errors = p25p1_ldu1_apply_rs_fec(state, ctx.hex_data, ctx.hex_parity, ctx.soft_dibits);
 
     uint8_t lcformat[9];
     uint8_t mfid[9];

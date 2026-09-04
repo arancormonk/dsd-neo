@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: ISC
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/rc2.h>
@@ -8,7 +9,10 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "md2ii.h"
 #include "vendor_ap_key_parse.h"
+
+enum { RC2_MD2_BLOCK_SIZE = 264 };
 
 static inline uint64_t
 rol64(uint64_t x, int n) {
@@ -22,69 +26,6 @@ swapbit(uint64_t* internalstate, uint8_t bit) {
         *internalstate |= bitB;
     } else {
         *internalstate &= (~bitB ^ 1);
-    }
-}
-
-// MD2 functions
-static void
-md2_init(MD2State* state) {
-    state->x1 = 0;
-    state->x2 = 0;
-    DSD_MEMSET(state->h2, 0, (size_t)n1);
-    DSD_MEMSET(state->h1, 0, (size_t)n1 * 3);
-}
-
-static void
-md2_hashing(MD2State* state, const unsigned char t1[], size_t b6) {
-    static const unsigned char s4[256] = {
-        13,  199, 11,  67,  237, 193, 164, 77,  115, 184, 141, 222, 73,  38,  147, 36,  150, 87,  21,  104, 12,  61,
-        156, 101, 111, 145, 119, 22,  207, 35,  198, 37,  171, 167, 80,  30,  219, 28,  213, 121, 86,  29,  214, 242,
-        6,   4,   89,  162, 110, 175, 19,  157, 3,   88,  234, 94,  144, 118, 159, 239, 100, 17,  182, 173, 238, 68,
-        16,  79,  132, 54,  163, 52,  9,   58,  57,  55,  229, 192, 170, 226, 56,  231, 187, 158, 70,  224, 233, 245,
-        26,  47,  32,  44,  247, 8,   251, 20,  197, 185, 109, 153, 204, 218, 93,  178, 212, 137, 84,  174, 24,  120,
-        130, 149, 72,  180, 181, 208, 255, 189, 152, 18,  143, 176, 60,  249, 27,  227, 128, 139, 243, 253, 59,  123,
-        172, 108, 211, 96,  138, 10,  215, 42,  225, 40,  81,  65,  90,  25,  98,  126, 154, 64,  124, 116, 122, 5,
-        1,   168, 83,  190, 131, 191, 244, 240, 235, 177, 155, 228, 125, 66,  43,  201, 248, 220, 129, 188, 230, 62,
-        75,  71,  78,  34,  31,  216, 254, 136, 91,  114, 106, 46,  217, 196, 92,  151, 209, 133, 51,  236, 33,  252,
-        127, 179, 69,  7,   183, 105, 146, 97,  39,  15,  205, 112, 200, 166, 223, 45,  48,  246, 186, 41,  148, 140,
-        107, 76,  85,  95,  194, 142, 50,  49,  134, 23,  135, 169, 221, 210, 203, 63,  165, 82,  161, 202, 53,  14,
-        206, 232, 103, 102, 195, 117, 250, 99,  0,   74,  160, 241, 2,   113};
-
-    int b4 = 0;
-
-    while (b6) {
-        for (; b6 && state->x2 < n1; b6--, state->x2++) {
-            int b5 = t1[b4++];
-            state->h1[state->x2 + n1] = b5;
-            state->h1[state->x2 + ((size_t)n1 * 2)] = b5 ^ state->h1[state->x2];
-            state->x1 = state->h2[state->x2] ^= s4[b5 ^ state->x1];
-        }
-
-        if (state->x2 == n1) {
-            int b2 = 0;
-            state->x2 = 0;
-
-            for (int b3 = 0; b3 < (n1 + 2); b3++) {
-                for (int b1 = 0; b1 < (n1 * 3); b1++) {
-                    b2 = state->h1[b1] ^= s4[b2];
-                }
-                b2 = (b2 + b3) % 256;
-            }
-        }
-    }
-}
-
-static void
-md2_end(MD2State* state, unsigned char h4[n1]) {
-    unsigned char h3[n1] = {0};
-    int n4 = n1 - state->x2;
-    for (int i = 0; i < n4; i++) {
-        h3[i] = n4;
-    }
-    md2_hashing(state, h3, n4);
-    md2_hashing(state, state->h2, sizeof(state->h2));
-    for (int i = 0; i < n1; i++) {
-        h4[i] = state->h1[i];
     }
 }
 
@@ -201,12 +142,9 @@ rc2_encrypt(RC2State* state) {
 // Main cryptographic functions
 void
 create_keys_rc2(CryptoContext* ctx, const unsigned char key1[], size_t size1) {
-    unsigned char h4[n1];
+    unsigned char h4[RC2_MD2_BLOCK_SIZE];
 
-    // Initialize MD2 and hash the key
-    md2_init(&ctx->md2);
-    md2_hashing(&ctx->md2, key1, size1);
-    md2_end(&ctx->md2, h4);
+    (void)dsd_md2ii_hash(key1, size1, RC2_MD2_BLOCK_SIZE, h4, RC2_MD2_BLOCK_SIZE);
 
     // Copy first 16 bytes to keys
     for (int i = 0; i < 16; i++) {
@@ -256,37 +194,6 @@ create_keys_rc2(CryptoContext* ctx, const unsigned char key1[], size_t size1) {
 }
 
 void
-encryption_rc2(CryptoContext* ctx, uint8_t bits[49]) {
-    ctx->internal_state = ctx->internal_zero;
-
-    for (int sso = 0; sso < 49; sso++) {
-        // Prepare plaintext from internal state
-        ctx->rc2.plain[0] = (ctx->internal_state >> 56) & 0xff;
-        ctx->rc2.plain[1] = (ctx->internal_state >> 48) & 0xff;
-        ctx->rc2.plain[2] = (ctx->internal_state >> 40) & 0xff;
-        ctx->rc2.plain[3] = (ctx->internal_state >> 32) & 0xff;
-        ctx->rc2.plain[4] = (ctx->internal_state >> 24) & 0xff;
-        ctx->rc2.plain[5] = (ctx->internal_state >> 16) & 0xff;
-        ctx->rc2.plain[6] = (ctx->internal_state >> 8) & 0xff;
-        ctx->rc2.plain[7] = ctx->internal_state & 0xff;
-
-        // Encrypt with RC2
-        rc2_encrypt(&ctx->rc2);
-
-        // Reconstruct internal state from ciphertext
-        ctx->internal_state = 0;
-        for (int i = 0; i < 8; i++) {
-            ctx->internal_state = (ctx->internal_state << 8) + (ctx->rc2.cipher[i] & 0xff);
-        }
-
-        // XOR the bit and update internal state
-        bits[48 - sso] = bits[48 - sso] ^ (ctx->internal_state & 1);
-        ctx->internal_state = rol64(ctx->internal_state, 1);
-        swapbit(&ctx->internal_state, bits[48 - sso]);
-    }
-}
-
-void
 decrypt_rc2(CryptoContext* ctx, uint8_t bits[49]) {
     ctx->internal_state = ctx->internal_zero;
 
@@ -323,7 +230,7 @@ retevis_rc2_apply_frame49(dsd_state* state, char ambe_d[49]) {
     if (state == NULL || ambe_d == NULL || state->retevis_ap != 1 || state->rc2_context == NULL) {
         return 0;
     }
-    if (dmr_ambe49_is_default_silence(ambe_d) == 1 || dmr_ambe49_has_zero_tail(ambe_d) == 1) {
+    if (dmr_ambe49_should_skip_crypto(ambe_d) == 1) {
         return 0;
     }
 
@@ -363,7 +270,7 @@ retevis_rc2_keystream_creation(dsd_state* state, const char* input, int show_key
         uint8_t key_bytes[32];
         char key_text[65];
         DSD_MEMSET(key_bytes, 0, sizeof(key_bytes));
-        (void)dsd_vendor_ap_key_hex_to_bytes(parsed.hex, parsed.nhex, key_bytes, sizeof(key_bytes));
+        (void)dsd_parse_hex_bytes_exact((const char*)parsed.hex, parsed.nhex, key_bytes, sizeof(key_bytes));
         DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) 256-bit key loaded with forced application: %s\n",
                     dsd_secret_format_byte_hex(key_text, sizeof key_text, show_keys, key_bytes, sizeof(key_bytes)));
     } else {
@@ -372,7 +279,7 @@ retevis_rc2_keystream_creation(dsd_state* state, const char* input, int show_key
         unsigned char key2[16];
         DSD_MEMSET(key2, 0, sizeof(key2));
 
-        if (dsd_vendor_ap_key_hex_to_bytes(parsed.hex, parsed.nhex, key1, sizeof(key1)) != 0) {
+        if (dsd_parse_hex_bytes_exact((const char*)parsed.hex, parsed.nhex, key1, sizeof(key1)) != 0) {
             DSD_FPRINTF(stderr, "DMR RETEVIS AP (RC2) key parse failed: invalid 128-bit key\n");
             free(state->rc2_context);
             state->rc2_context = NULL;

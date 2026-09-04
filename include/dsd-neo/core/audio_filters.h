@@ -22,7 +22,15 @@ extern "C" {
 void init_audio_filters(dsd_state* state, int sample_rate_hz);
 void lpf(dsd_state* state, short* input, int len);
 void lpf_f(dsd_state* state, float* input, int len);
-void hpf(dsd_state* state, short* input, int len);
+/**
+ * @note Renamed from `hpf()` to avoid a collision with codec2, which exports a
+ *  symbol of that name; Android links codec2 statically, so the duplicate is a
+ *  link error rather than something the dynamic loader papers over. Only this one
+ *  filter is prefixed on purpose -- codec2 exports none of the others below, and
+ *  renaming symbols that do not collide would break out-of-tree callers for
+ *  nothing. Out-of-tree callers of `hpf()` need updating; see docs/code_map.md.
+ */
+void dsd_hpf(dsd_state* state, short* input, int len);
 void hpf_f(dsd_state* state, float* input, int len);
 void hpf_dL(dsd_state* state, short* input, int len);
 void hpf_dR(dsd_state* state, short* input, int len);

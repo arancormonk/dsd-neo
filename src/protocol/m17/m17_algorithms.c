@@ -12,6 +12,7 @@
 
 #include <stddef.h>
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/m17/m17_tables.h>
 
@@ -165,16 +166,6 @@ m17_prbs9_rx_push_bit(m17_prbs9_rx_state* rx, uint8_t bit) {
     return 0;
 }
 
-uint8_t
-m17_scrambler_key_bits_for_subtype(uint8_t subtype) {
-    switch (subtype) {
-        case 0U: return 8U;
-        case 1U: return 16U;
-        case 2U: return 24U;
-        default: return 0U;
-    }
-}
-
 uint32_t
 m17_scrambler_mask_for_subtype(uint8_t subtype) {
     switch (subtype) {
@@ -277,14 +268,6 @@ m17_aes_build_counter(const uint8_t nonce[M17_AES_NONCE_BYTES], uint16_t frame_n
     counter[15] = (uint8_t)(fn & 0xFFU);
 }
 
-uint32_t
-m17_aes_nonce_timestamp(const uint8_t nonce[M17_AES_NONCE_BYTES]) {
-    if (nonce == NULL) {
-        return 0U;
-    }
-    return ((uint32_t)nonce[0] << 24U) | ((uint32_t)nonce[1] << 16U) | ((uint32_t)nonce[2] << 8U) | (uint32_t)nonce[3];
-}
-
 int
 m17_packet_frame_count_for_app_bytes(uint16_t app_bytes, uint8_t* last_frame_bytes) {
     if (app_bytes > M17_PACKET_MAX_APPLICATION_BYTES) {
@@ -308,6 +291,42 @@ m17_packet_frame_count_for_app_bytes(uint16_t app_bytes, uint8_t* last_frame_byt
         *last_frame_bytes = last;
     }
     return (int)frames;
+}
+
+int
+m17_packet_prepare_sms_payload(const char* text, uint8_t* packed, uint8_t* full_bits, uint16_t* app_len,
+                               int* frame_count, uint8_t* last_frame_bytes, uint16_t* crc) {
+    if (text == NULL || packed == NULL || full_bits == NULL || app_len == NULL || frame_count == NULL
+        || last_frame_bytes == NULL || crc == NULL) {
+        return -1;
+    }
+
+    const size_t max_text = M17_PACKET_MAX_APPLICATION_BYTES - 2U;
+    size_t text_len = 0U;
+    while (text_len < max_text && text[text_len] != '\0') {
+        text_len++;
+    }
+
+    DSD_MEMSET(packed, 0, M17_PACKET_MAX_TOTAL_BYTES);
+    DSD_MEMSET(full_bits, 0, (size_t)M17_PACKET_MAX_FRAMES * M17_PACKET_CHUNK_BITS);
+    packed[0] = 0x05U;
+    DSD_MEMCPY(packed + 1U, text, text_len);
+    *app_len = (uint16_t)(1U + text_len + 1U);
+    *crc = m17_crc16(packed, *app_len);
+    packed[*app_len] = (uint8_t)(*crc >> 8U);
+    packed[*app_len + 1U] = (uint8_t)(*crc & 0xFFU);
+
+    *frame_count = m17_packet_frame_count_for_app_bytes(*app_len, last_frame_bytes);
+    if (*frame_count < 0) {
+        return -1;
+    }
+    const size_t padded_bytes = (size_t)*frame_count * M17_PACKET_CHUNK_BYTES;
+    for (size_t byte = 0U; byte < padded_bytes; byte++) {
+        for (size_t bit = 0U; bit < 8U; bit++) {
+            full_bits[(byte * 8U) + bit] = (uint8_t)((packed[byte] >> (7U - bit)) & 1U);
+        }
+    }
+    return 0;
 }
 
 _Static_assert((((M17_PACKET_MAX_FRAMES - 1U) * M17_PACKET_CHUNK_BYTES) + M17_PACKET_CHUNK_BYTES - M17_PACKET_CRC_BYTES)
@@ -667,20 +686,6 @@ m17_stream_next_frame_counter(uint16_t frame_counter) {
 }
 
 void
-m17_stream_copy_payload_chunk(const uint8_t* input_bits, uint16_t valid_bits, uint8_t* payload_bits) {
-    if (payload_bits == NULL) {
-        return;
-    }
-
-    if (valid_bits > M17_STREAM_PAYLOAD_BITS) {
-        valid_bits = M17_STREAM_PAYLOAD_BITS;
-    }
-    for (uint16_t i = 0U; i < M17_STREAM_PAYLOAD_BITS; i++) {
-        payload_bits[i] = (input_bits != NULL && i < valid_bits) ? (uint8_t)(input_bits[i] & 1U) : 0U;
-    }
-}
-
-void
 m17_stream_pack_payload_halves(const uint8_t* first_half_bits, const uint8_t* second_half_bits, uint8_t* payload_bits) {
     if (payload_bits == NULL) {
         return;
@@ -719,23 +724,6 @@ m17_stream_combine_frame_bits(const uint8_t* lich_bits, const uint8_t* stream_pu
     }
     for (int i = 0; i < M17_STREAM_PUNCTURED_BITS; i++) {
         combined_bits[M17_LICH_BITS + i] = (uint8_t)(stream_punctured_bits[i] & 1U);
-    }
-}
-
-void
-m17_bert_build_type1_bits(const uint8_t* bert_payload_bits, uint8_t* type1_flush_bits) {
-    if (type1_flush_bits == NULL) {
-        return;
-    }
-
-    for (int i = 0; i < M17_BERT_TYPE1_FLUSH_BITS; i++) {
-        type1_flush_bits[i] = 0U;
-    }
-    if (bert_payload_bits == NULL) {
-        return;
-    }
-    for (int i = 0; i < M17_BERT_PAYLOAD_BITS; i++) {
-        type1_flush_bits[i] = (uint8_t)(bert_payload_bits[i] & 1U);
     }
 }
 
@@ -814,11 +802,6 @@ int
 m17_symbol_from_dibit(uint8_t dibit) {
     static const int symbol_map[4] = {+1, +3, -1, -3};
     return symbol_map[dibit & 0x3U];
-}
-
-int
-m17_deviation_hz_from_dibit(uint8_t dibit) {
-    return m17_symbol_from_dibit(dibit) * M17_DEVIATION_STEP_HZ;
 }
 
 static uint8_t

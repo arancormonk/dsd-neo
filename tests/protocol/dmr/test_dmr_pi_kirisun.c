@@ -3,37 +3,86 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+/* Strong stub: dmr_le.o references the RC notice emitter via dmr_rc_notify.o;
+ * satisfying it here keeps the real dsd_events.o (and its call-state
+ * dependencies, stubbed in this binary) out of the link. The recorded call
+ * count doubles as proof that the RC-command branch ran. */
+static unsigned g_rc_notice_calls;
+static char g_rc_notice_last_text[128];
+
+int
+dsd_event_emit_data_notice_classified_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                               const dsd_call_observation* observation, dsd_event_category category,
+                                               const char* notice, const char* gps) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)observation;
+    (void)category;
+    (void)gps;
+    g_rc_notice_calls++;
+    DSD_SNPRINTF(g_rc_notice_last_text, sizeof(g_rc_notice_last_text), "%s", notice ? notice : "");
+    return 0;
+}
+
 static void
-load_single_burst_value(dsd_state* state, uint8_t slot, uint16_t sb_value) {
-    uint8_t info[11];
-    uint8_t encoded[16];
+load_sbrc_codeword(dsd_state* state, uint8_t slot, uint16_t sb_value, int odd_parity) {
+    static const struct {
+        uint16_t value;
+        uint8_t codeword[16];
+    } fixtures[] = {
+        {0x008U, {0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0}},
+        {0x023U, {0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1}},
+        {0x094U, {0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 1, 0}},
+        {0x109U, {0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0}},
+        {0x112U, {0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1}},
+        {0x124U, {0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1}},
+        {0x12DU, {0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0}},
+        {0x133U, {0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1}},
+        {0x225U, {0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1}},
+        {0x2E6U, {0, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1}},
+        {0x30FU, {0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0}},
+        {0x313U, {0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0}},
+        {0x428U, {1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0}},
+        {0x643U, {1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 1, 1, 0, 1}},
+    };
+
+    const uint8_t* encoded = NULL;
     uint8_t data_matrix[32];
     uint8_t interleaved[32];
-    DSD_MEMSET(info, 0, sizeof(info));
-    DSD_MEMSET(encoded, 0, sizeof(encoded));
     DSD_MEMSET(data_matrix, 0, sizeof(data_matrix));
     DSD_MEMSET(interleaved, 0, sizeof(interleaved));
 
-    for (int i = 0; i < 11; i++) {
-        info[i] = (uint8_t)((sb_value >> (10 - i)) & 1U);
+    for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
+        if (fixtures[i].value == sb_value) {
+            encoded = fixtures[i].codeword;
+            break;
+        }
     }
+    assert(encoded != NULL);
 
-    Hamming_16_11_4_encode(info, encoded);
     for (int i = 0; i < 16; i++) {
-        data_matrix[i] = encoded[i] & 1U;
-        data_matrix[16 + i] = data_matrix[i];
+        data_matrix[i] = encoded[i];
+        data_matrix[16 + i] = (uint8_t)(data_matrix[i] ^ (odd_parity ? 1U : 0U));
     }
 
     for (int i = 0; i < 32; i++) {
@@ -45,15 +94,248 @@ load_single_burst_value(dsd_state* state, uint8_t slot, uint16_t sb_value) {
     }
 }
 
-static uint8_t
-hytera_pi_checksum(const uint8_t pi[10]) {
-    uint8_t checksum = 0;
-    for (int i = 0; i < 9; i++) {
-        checksum = (uint8_t)((checksum + pi[i]) & 0xFFU);
+/* SB variant: duplicated (even-parity) second row. */
+static void
+load_single_burst_value(dsd_state* state, uint8_t slot, uint16_t sb_value) {
+    load_sbrc_codeword(state, slot, sb_value, 0);
+}
+
+/* RC variant: complemented (odd-parity) second row, as the RC single-burst
+ * BPTC expects when dmr_sbrc runs with power=1. */
+static void
+load_reverse_channel_value(dsd_state* state, uint8_t slot, uint16_t sb_value) {
+    load_sbrc_codeword(state, slot, sb_value, 1);
+}
+
+static uint16_t
+build_rc_command_value(uint8_t rc_value) {
+    uint8_t rc_bits[4];
+    for (int i = 0; i < 4; i++) {
+        rc_bits[i] = (uint8_t)((rc_value >> (3 - i)) & 1U);
     }
-    checksum = (uint8_t)(~checksum & 0xFFU);
-    checksum++;
-    return checksum;
+    const uint8_t masked_crc = (uint8_t)(crc7(rc_bits, 4U) ^ 0x7AU);
+    return (uint16_t)(((uint16_t)(rc_value & 0xFU) << 7U) | masked_crc);
+}
+
+static uint16_t
+build_txi_value(uint8_t opcode, uint8_t delay) {
+    const uint8_t low8 = (uint8_t)(((delay & 0x1FU) << 3U) | (opcode & 0x7U));
+    uint8_t low_bits[8];
+    for (int i = 0; i < 8; i++) {
+        low_bits[i] = (uint8_t)((low8 >> (7 - i)) & 1U);
+    }
+    return (uint16_t)(((uint16_t)crc3(low_bits, 8U) << 8U) | low8);
+}
+
+// NOTE: this binary links tests/test_support/call_state_stubs.c, not the real call-state store.
+// dmr_pi_publish_crypto() reaches --dmr-tg-key-csv through dsd_call_state_get(), and the map's
+// mappability rule (keyring_dmr_tg_map_call_is_mappable()) reads exactly four snapshot fields:
+// phase, kind, protocol and ota_target_id. The stub populates all four faithfully, so the decision
+// under test here is the real one -- but if the real store ever diverges on any of those four, the
+// mapped-TG cases below would keep passing against a stub that no longer models it.
+static void
+seed_active_voice_call_on_slot(dsd_state* state, uint8_t slot, uint64_t target) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = slot,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = 2002U,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+}
+
+static void
+seed_active_voice_call(dsd_state* state) {
+    seed_active_voice_call_on_slot(state, 0U, 1001U);
+}
+
+static void
+test_pi_canonical_crypto_uses_algorithm_aware_keys(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_active_voice_call(&state);
+    state.currentslot = 0;
+    state.aes_key_segments[0] = 4U;
+    state.A1[0] = 1U;
+    state.A2[0] = 2U;
+    state.A3[0] = 3U;
+    state.A4[0] = 4U;
+    uint8_t kirisun_pi[10] = {0x36, 0x0A, 0x40, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x01};
+    dmr_pi(&opts, &state, kirisun_pi, 1U, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_active_voice_call(&state);
+    state.currentslot = 0;
+    state.R = 0x123456789AULL;
+    uint8_t aes_pi[10] = {0x04, 0x10, 0x12, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x00};
+    dmr_pi(&opts, &state, aes_pi, 1U, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED);
+    assert(call.audio_permitted == 0U);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_active_voice_call(&state);
+    state.currentslot = 0;
+    state.aes_key_loaded[0] = 1;
+    dmr_pi(&opts, &state, aes_pi, 1U, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+}
+
+// The PI header classifies before any voice frame has applied a --dmr-tg-key-csv override, so it
+// must resolve the effective key id from the slot's own call snapshot. A mapped talkgroup whose
+// signaled key id has nothing imported still decrypts, and the published key id stays the OTA one.
+static void
+test_pi_mapped_tg_classifies_decryptable(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+    /* MFID 0x10 (DMRA); byte 0 low bits 0x01 normalize to ALGID 0x21 (RC4, keys off the scalar);
+     * byte 2 is the signaled key id, deliberately not imported. */
+    uint8_t rc4_pi[10] = {0x01, 0x10, 0x03, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x00};
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_active_voice_call(&state);
+    state.currentslot = 0;
+    state.keyloader = 1;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    state.dmr_tg_key_map_tg[0] = 1001U; /* seed_active_voice_call()'s talkgroup */
+    state.dmr_tg_key_map_kid[0] = 0x7B;
+    state.dmr_tg_key_map_count = 1;
+
+    dmr_pi(&opts, &state, rc4_pi, 1U, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+    /* The published key id is still the OTA one, never the override. */
+    assert(call.kid == 0x03);
+
+    // Only a real map hit may change the classification: the same PI header with the row naming a
+    // different talkgroup resolves from the slot's own key material and stays encrypted.
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_active_voice_call(&state);
+    state.currentslot = 0;
+    state.keyloader = 1;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    state.dmr_tg_key_map_tg[0] = 4321U;
+    state.dmr_tg_key_map_kid[0] = 0x7B;
+    state.dmr_tg_key_map_count = 1;
+
+    dmr_pi(&opts, &state, rc4_pi, 1U, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED);
+    assert(call.audio_permitted == 0U);
+
+    // Slot 1 resolves payload_algidR / payload_keyidR / state->RR -- otherwise uncovered.
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_active_voice_call_on_slot(&state, 1U, 3003U);
+    state.currentslot = 1;
+    state.keyloader = 1;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    state.dmr_tg_key_map_tg[0] = 3003U;
+    state.dmr_tg_key_map_kid[0] = 0x7B;
+    state.dmr_tg_key_map_count = 1;
+
+    dmr_pi(&opts, &state, rc4_pi, 1U, 0U);
+    assert(dsd_call_state_get(&state, 1U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+    assert(call.kid == 0x03);
+    assert(state.payload_algidR == 0x21); /* the R twins were the ones written */
+    assert(state.payload_algid == 0);
+}
+
+// dmr_pi_publish_crypto() publishes the same verdict as the LC for the same call, so it has to gate
+// on the same thing: a row whose key id cannot serve the call's ALG must not steer the
+// PI-published classification either.
+static void
+test_pi_row_with_wrong_material_is_not_applied(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+    /* MFID 0x10 (DMRA); byte 0 low bits 0x01 normalize to ALGID 0x21 (RC4, keys off the scalar);
+     * byte 2 is the signaled key id. */
+    uint8_t rc4_pi[10] = {0x01, 0x10, 0x03, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x00};
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_active_voice_call(&state);
+    state.currentslot = 0;
+    state.keyloader = 1;
+    /* The slot carries a working RC4 key, as it would once the signaled id was activated. */
+    state.R = 0xAAAAAULL;
+    /* Key id 0x7B holds AES segments 1..3 and no scalar: nothing RC4 can use. */
+    state.rkey_array[0x7B + 0x101] = 0x1111ULL;
+    state.rkey_array_loaded[0x7B + 0x101] = 1U;
+    state.rkey_array[0x7B + 0x201] = 0x2222ULL;
+    state.rkey_array_loaded[0x7B + 0x201] = 1U;
+    state.rkey_array[0x7B + 0x301] = 0x3333ULL;
+    state.rkey_array_loaded[0x7B + 0x301] = 1U;
+    state.dmr_tg_key_map_tg[0] = 1001U; /* seed_active_voice_call()'s talkgroup */
+    state.dmr_tg_key_map_kid[0] = 0x7B;
+    state.dmr_tg_key_map_count = 1;
+
+    dmr_pi(&opts, &state, rc4_pi, 1U, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    /* The row cannot serve RC4, so the slot's own key decides -- and it decrypts. */
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+    assert(call.kid == 0x03);
+}
+
+// Kirisun 0x36/0x37 decides on the four-segment quartet rather than on R/aes_loaded. Activation
+// (keyring_activate_slot_with_kid) overwrites that quartet per slot for these ALG IDs like any
+// other, so classification has to judge the mapped key id's quartet -- not the slot's, which is
+// still empty when the PI header arrives.
+static void
+test_pi_mapped_kirisun_tg_classifies_decryptable(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const int kAesOffsets[4] = {0x000, 0x101, 0x201, 0x301};
+    dsd_call_snapshot call;
+    /* Kirisun MFID 0x0A, ALG 0x36; byte 9 non-zero so the key-hash target is usable. */
+    uint8_t kirisun_pi[10] = {0x36, 0x0A, 0x40, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x01};
+
+    for (int mapped = 0; mapped < 2; mapped++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        seed_active_voice_call(&state);
+        state.currentslot = 0;
+        state.keyloader = 1;
+        for (int i = 0; i < 4; i++) {
+            state.rkey_array[0x7B + kAesOffsets[i]] = 0xC0FFEE00ULL + (unsigned long long)i;
+            state.rkey_array_loaded[0x7B + kAesOffsets[i]] = 1U;
+        }
+        // The slot itself has no quartet, so only the mapped key id can make this decryptable.
+        state.dmr_tg_key_map_tg[0] = mapped ? 1001U : 4321U;
+        state.dmr_tg_key_map_kid[0] = 0x7B;
+        state.dmr_tg_key_map_count = 1;
+
+        dmr_pi(&opts, &state, kirisun_pi, 1U, 0U);
+        assert(dsd_call_state_get(&state, 0U, &call) > 0);
+        // The row naming a different talkgroup is the control: it must stay encrypted, so the
+        // decryptable verdict below can only have come from resolving the map.
+        assert(call.crypto == (mapped ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED));
+        assert(call.audio_permitted == (mapped ? 1U : 0U));
+    }
 }
 
 static void
@@ -93,6 +375,63 @@ test_pi_kirisun_requires_crc_ok(void) {
 }
 
 static void
+test_pi_kirisun_slot1_sets_fields_and_le_mode(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 1;
+    uint8_t pi[10] = {0x37, 0x0A, 0x55, 0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x00, 0x09};
+    dmr_pi(&opts, &state, pi, 1, 0);
+
+    assert(state.dmr_soR == 0x55);
+    assert(state.payload_algidR == 0x37);
+    assert(state.payload_miR == 0xAABBCCDDULL);
+    assert(state.payload_keyidR == (uint8_t)((0x37U * 0x000009U) & 0xFFU));
+    assert(opts.dmr_le == 3);
+}
+
+static void
+test_pi_kirisun_generic_alg_sets_fields(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 0;
+    uint8_t pi[10] = {0x38, 0x0A, 0x66, 0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x05};
+    dmr_pi(&opts, &state, pi, 1, 0);
+
+    assert(state.dmr_so == 0x66);
+    assert(state.payload_algid == 0x38);
+    assert(state.payload_mi == 0x01020304ULL);
+    assert(state.payload_keyid == (uint8_t)((0x38U * 0x000005U) & 0xFFU));
+    assert(opts.dmr_le == 3);
+}
+
+static void
+test_pi_irrecoverable_error_is_noop(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.trunk_is_tuned = 1;
+    opts.dmr_le = 1;
+    state.currentslot = 0;
+    uint8_t pi[10] = {0x36, 0x0A, 0x40, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x01};
+    dmr_pi(&opts, &state, pi, 1, 1);
+
+    assert(state.payload_algid == 0);
+    assert(state.payload_keyid == 0);
+    assert(state.payload_mi == 0);
+    assert(state.last_vc_sync_time == 0);
+    assert(state.last_cc_sync_time == 0);
+    assert(opts.dmr_le == 1);
+}
+
+static void
 test_pi_dmra_normalizes_aes128_and_expands_iv(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -119,6 +458,40 @@ test_pi_dmra_normalizes_aes128_and_expands_iv(void) {
 }
 
 static void
+test_pi_dmra_normalizes_rc4_without_iv_expansion(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 0;
+    state.DMRvcL = 9;
+    uint8_t pi[10] = {0x01, 0x10, 0x45, 0x10, 0x20, 0x30, 0x40, 0x00, 0x00, 0x00};
+    dmr_pi(&opts, &state, pi, 1, 0);
+
+    assert(state.payload_algid == 0x21);
+    assert(state.payload_keyid == 0x45);
+    assert(state.payload_mi == 0x10203040ULL);
+    assert(state.DMRvcL == 9);
+}
+
+static void
+test_pi_dmra_native_family_algid_preserves_rc4_id(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 0;
+    uint8_t pi[10] = {0x21, 0x10, 0x46, 0x55, 0x66, 0x77, 0x88, 0x00, 0x00, 0x00};
+    dmr_pi(&opts, &state, pi, 1, 0);
+
+    assert(state.payload_algid == 0x21);
+    assert(state.payload_keyid == 0x46);
+    assert(state.payload_mi == 0x55667788ULL);
+}
+
+static void
 test_pi_dmra_normalizes_des_on_slot1_and_expands_iv(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -135,6 +508,58 @@ test_pi_dmra_normalizes_des_on_slot1_and_expands_iv(void) {
     assert((uint32_t)(state.payload_miN >> 32ULL) == 0xCAFEBABEU);
     assert((uint32_t)state.payload_miR == (uint32_t)state.payload_miN);
     assert(state.DMRvcR == 0);
+}
+
+static void
+test_pi_dmra_normalizes_aes256_on_slot1_and_expands_iv(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 1;
+    state.DMRvcR = 8;
+    uint8_t pi[10] = {0x05, 0x10, 0x78, 0x22, 0x33, 0x44, 0x55, 0x00, 0x00, 0x00};
+    dmr_pi(&opts, &state, pi, 1, 0);
+
+    const unsigned long long next_mi =
+        ((unsigned long long)state.aes_ivR[4] << 24ULL) | ((unsigned long long)state.aes_ivR[5] << 16ULL)
+        | ((unsigned long long)state.aes_ivR[6] << 8ULL) | ((unsigned long long)state.aes_ivR[7] << 0ULL);
+
+    assert(state.payload_algidR == 0x25);
+    assert(state.payload_keyidR == 0x78);
+    assert(state.aes_ivR[0] == 0x22);
+    assert(state.aes_ivR[1] == 0x33);
+    assert(state.aes_ivR[2] == 0x44);
+    assert(state.aes_ivR[3] == 0x55);
+    assert(state.payload_miR == next_mi);
+    assert(state.DMRvcR == 0);
+}
+
+static void
+test_pi_dmra_normalizes_aes256_on_slot0_and_expands_iv(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 0;
+    state.DMRvcL = 8;
+    uint8_t pi[10] = {0x05, 0x10, 0x79, 0x33, 0x44, 0x55, 0x66, 0x00, 0x00, 0x00};
+    dmr_pi(&opts, &state, pi, 1, 0);
+
+    const unsigned long long next_mi =
+        ((unsigned long long)state.aes_iv[4] << 24ULL) | ((unsigned long long)state.aes_iv[5] << 16ULL)
+        | ((unsigned long long)state.aes_iv[6] << 8ULL) | ((unsigned long long)state.aes_iv[7] << 0ULL);
+
+    assert(state.payload_algid == 0x25);
+    assert(state.payload_keyid == 0x79);
+    assert(state.aes_iv[0] == 0x33);
+    assert(state.aes_iv[1] == 0x44);
+    assert(state.aes_iv[2] == 0x55);
+    assert(state.aes_iv[3] == 0x66);
+    assert(state.payload_mi == next_mi);
+    assert(state.DMRvcL == 0);
 }
 
 static void
@@ -161,9 +586,11 @@ test_pi_hytera_enhanced_checksum_sets_slot1_fields(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
 
     opts.dmr_le = 1;
+    opts.show_keys = 0;
     state.currentslot = 1;
+    state.RR = 0x123456789AULL;
     uint8_t pi[10] = {0x02, 0x68, 0x34, 0x01, 0x23, 0x45, 0x67, 0x89, 0x00, 0x00};
-    pi[9] = hytera_pi_checksum(pi);
+    pi[9] = 0x09U;
     dmr_pi(&opts, &state, pi, 1, 0);
 
     assert((state.dmr_soR & 0x40U) != 0U);
@@ -171,6 +598,44 @@ test_pi_hytera_enhanced_checksum_sets_slot1_fields(void) {
     assert(state.payload_keyidR == 0x34);
     assert(state.payload_miR == 0x0123456789ULL);
     assert(opts.dmr_le == 2);
+}
+
+static void
+test_pi_hytera_slot0_checksum_key_and_error_paths(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.dmr_le = 1;
+    opts.show_keys = 1;
+    state.currentslot = 0;
+    state.R = 0x0102030405ULL;
+    uint8_t pi[10] = {0x02, 0x68, 0x21, 0x10, 0x32, 0x54, 0x76, 0x98, 0x00, 0x00};
+    pi[9] = 0xD1U;
+    dmr_pi(&opts, &state, pi, 1, 0);
+
+    assert((state.dmr_so & 0x40U) != 0U);
+    assert(state.payload_algid == 0x02);
+    assert(state.payload_keyid == 0x21);
+    assert(state.payload_mi == 0x1032547698ULL);
+    assert(opts.dmr_le == 2);
+
+    // A checksum-failed Hytera-shaped PI is one corrupt burst away from muting a clear call
+    // with a fabricated ALGID/MI -- the caller dispatches on the MFID byte alone -- so the
+    // failure path may print, but nothing may reach the live crypto.
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.dmr_le = 1;
+    state.currentslot = 0;
+    pi[9] ^= 0x7FU;
+    dmr_pi(&opts, &state, pi, 1, 0);
+
+    assert((state.dmr_so & 0x40U) == 0U);
+    assert(state.payload_algid == 0);
+    assert(state.payload_keyid == 0);
+    assert(state.payload_mi == 0ULL);
+    assert(opts.dmr_le == 1);
 }
 
 static void
@@ -210,6 +675,44 @@ test_alg_refresh_advances_kirisun_mi(void) {
     assert((uint32_t)state.payload_mi == expected);
     assert(state.DMRvcL == 0);
     assert(state.dropL == 256);
+}
+
+static void
+test_alg_refresh_updates_slot1_variants(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 1;
+    state.payload_algidR = 0x21;
+    state.payload_keyidR = 0x66;
+    state.payload_miR = 0x89ABCDEFULL;
+    dmr_alg_refresh(&opts, &state);
+    assert(state.payload_miR != 0x89ABCDEFULL);
+
+    state.payload_algidR = 0x24;
+    state.payload_keyidR = 0x77;
+    state.payload_miR = 0x11223344ULL;
+    state.DMRvcR = 6;
+    LFSR128d(&state);
+    assert(state.aes_ivR[0] == 0x11);
+    assert(state.aes_ivR[1] == 0x22);
+    assert(state.aes_ivR[2] == 0x33);
+    assert(state.aes_ivR[3] == 0x44);
+    assert(state.payload_miR != 0x11223344ULL);
+    assert(state.DMRvcR == 0);
+}
+
+static void
+test_hytera_refresh_advances_feedback_branch(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.currentslot = 0;
+    state.payload_mi = 0x8000000000ULL;
+    hytera_enhanced_alg_refresh(&state);
+    assert(state.payload_mi != 0x8000000000ULL);
 }
 
 static void
@@ -271,21 +774,151 @@ test_sbrc_kirisun_gate_ignores_stale_kirisun_alg(void) {
     assert(state.payload_keyidR == 0x12);
 }
 
+static void
+test_sbrc_standard_slot0_encryption_identifiers(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const uint8_t algs[] = {1U, 2U, 4U, 5U};
+
+    for (size_t i = 0; i < sizeof(algs) / sizeof(algs[0]); i++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+
+        const uint8_t alg = algs[i];
+        const uint8_t key = (uint8_t)(0x20U + alg);
+        opts.dmr_le = 1;
+        opts.payload = 1;
+        state.currentslot = 0;
+        state.dmr_so = 0x40U;
+        load_single_burst_value(&state, 0, (uint16_t)(((uint16_t)key << 3U) | alg));
+
+        dmr_sbrc(&opts, &state, 0);
+
+        assert(state.payload_algid == (int)(alg + 0x20U));
+        assert(state.payload_keyid == key);
+        assert(state.payload_algidR == 0);
+    }
+}
+
+static void
+test_sbrc_standard_slot1_encryption_identifier_guards(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.dmr_le = 1;
+    state.currentslot = 1;
+    state.dmr_soR = 0x40U;
+    state.M = 1;
+    load_single_burst_value(&state, 1, (uint16_t)((0x44U << 3U) | 5U));
+    dmr_sbrc(&opts, &state, 0);
+    assert(state.payload_algidR == 0);
+    assert(state.payload_keyidR == 0);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.dmr_le = 1;
+    state.currentslot = 1;
+    state.dmr_soR = 0x40U;
+    load_single_burst_value(&state, 1, (uint16_t)((0x44U << 3U) | 5U));
+    dmr_sbrc(&opts, &state, 0);
+    assert(state.payload_algidR == 0x25);
+    assert(state.payload_keyidR == 0x44);
+}
+
+static void
+test_sbrc_reverse_channel_commands(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* A valid RC command must reach the RC-command branch (observed via the
+     * notice stub) and must not be misread as an encryption identifier. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    g_rc_notice_calls = 0;
+    g_rc_notice_last_text[0] = '\0';
+    opts.dmr_le = 1;
+    state.currentslot = 0;
+    load_reverse_channel_value(&state, 0, build_rc_command_value(5U));
+    dmr_sbrc(&opts, &state, 1);
+    assert(state.payload_algid == 0);
+    assert(g_rc_notice_calls == 1U);
+    assert(strcmp(g_rc_notice_last_text, "DMR RC: Cease Transmission Request;") == 0);
+    dsd_state_ext_free_all(&state);
+
+    /* Reserved commands decode but never surface a notice. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    g_rc_notice_calls = 0;
+    opts.dmr_le = 1;
+    state.currentslot = 0;
+    load_reverse_channel_value(&state, 0, build_rc_command_value(6U));
+    dmr_sbrc(&opts, &state, 1);
+    assert(state.payload_algid == 0);
+    assert(g_rc_notice_calls == 0U);
+}
+
+static void
+test_sbrc_txi_commands(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const uint8_t delays[] = {2U, 4U, 6U, 8U};
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.dmr_le = 1;
+    opts.payload = 1;
+    state.currentslot = 0;
+    load_single_burst_value(&state, 0, build_txi_value(0U, 5U));
+    dmr_sbrc(&opts, &state, 0);
+    assert(state.payload_algid == 0);
+
+    for (size_t i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.dmr_le = 1;
+        opts.payload = 1;
+        state.currentslot = 0;
+        load_single_burst_value(&state, 0, build_txi_value(3U, delays[i]));
+        dmr_sbrc(&opts, &state, 0);
+        assert(state.payload_algid == 0);
+    }
+}
+
 int
 main(void) {
     InitAllFecFunction();
 
     test_pi_kirisun_slot0_sets_fields_and_le_mode();
+    test_pi_canonical_crypto_uses_algorithm_aware_keys();
+    test_pi_mapped_tg_classifies_decryptable();
+    test_pi_row_with_wrong_material_is_not_applied();
+    test_pi_mapped_kirisun_tg_classifies_decryptable();
     test_pi_kirisun_requires_crc_ok();
+    test_pi_kirisun_slot1_sets_fields_and_le_mode();
+    test_pi_kirisun_generic_alg_sets_fields();
+    test_pi_irrecoverable_error_is_noop();
     test_pi_dmra_normalizes_aes128_and_expands_iv();
+    test_pi_dmra_normalizes_rc4_without_iv_expansion();
+    test_pi_dmra_native_family_algid_preserves_rc4_id();
     test_pi_dmra_normalizes_des_on_slot1_and_expands_iv();
+    test_pi_dmra_normalizes_aes256_on_slot1_and_expands_iv();
+    test_pi_dmra_normalizes_aes256_on_slot0_and_expands_iv();
     test_pi_dmra_rejects_algid_outside_dmra_range();
     test_pi_hytera_enhanced_checksum_sets_slot1_fields();
+    test_pi_hytera_slot0_checksum_key_and_error_paths();
     test_pi_refreshes_sync_time_when_trunk_tuned();
     test_alg_refresh_advances_kirisun_mi();
+    test_alg_refresh_updates_slot1_variants();
+    test_hytera_refresh_advances_feedback_branch();
     test_sbrc_kirisun_gate_rejects_non_kirisun_calls();
     test_sbrc_kirisun_gate_accepts_kirisun_calls();
     test_sbrc_kirisun_gate_ignores_stale_kirisun_alg();
+    test_sbrc_standard_slot0_encryption_identifiers();
+    test_sbrc_standard_slot1_encryption_identifier_guards();
+    test_sbrc_reverse_channel_commands();
+    test_sbrc_txi_commands();
     printf("DMR PI Kirisun: OK\n");
     return 0;
 }

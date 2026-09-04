@@ -12,27 +12,6 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_DSP_MATH_UTILS_H_
 
 #include <math.h>
-#include <stdint.h>
-
-/**
- * @brief Saturate a 32-bit integer to the 16-bit signed range.
- *
- * Clamps the provided 32-bit value to the inclusive range [-32768, 32767]
- * and returns it as a 16-bit signed integer.
- *
- * @param x 32-bit integer input value.
- * @return Clamped 16-bit signed integer.
- */
-static inline int16_t
-sat16(int32_t x) {
-    if (x > 32767) {
-        return 32767;
-    }
-    if (x < -32768) {
-        return -32768;
-    }
-    return (int16_t)x;
-}
 
 /**
  * @brief Compute the greatest common divisor using the Euclidean algorithm.

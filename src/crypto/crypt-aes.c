@@ -93,15 +93,18 @@ static const uint8_t Rcon[11] = {0x8d, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40,
 #define getSBoxValue(num)  (sbox[(num)])
 #define getSBoxInvert(num) (rsbox[(num)])
 
-static aes_params_t
-aes_params_for_type(int type) {
-    if (type == 0) {
-        return (aes_params_t){4U, 10U};
+static int
+aes_params_for_key_size(dsd_aes_key_size key_size, aes_params_t* params) {
+    if (params == NULL) {
+        return 0;
     }
-    if (type == 1) {
-        return (aes_params_t){6U, 12U};
+
+    switch (key_size) {
+        case DSD_AES_KEY_128: *params = (aes_params_t){4U, 10U}; return 1;
+        case DSD_AES_KEY_192: *params = (aes_params_t){6U, 12U}; return 1;
+        case DSD_AES_KEY_256: *params = (aes_params_t){8U, 14U}; return 1;
+        default: return 0;
     }
-    return (aes_params_t){8U, 14U};
 }
 
 static int
@@ -380,36 +383,15 @@ InvCipher(state_t* state, const uint8_t* RoundKey, uint8_t Nr) {
 }
 
 void
-aes_ctr_keystream_output(const uint8_t* counter, const uint8_t* key, uint8_t* output, int type, int nblocks) {
-    if (counter == NULL || key == NULL || output == NULL || nblocks <= 0) {
-        return;
-    }
-
-    aes_params_t params = aes_params_for_type(type);
-    struct AES_ctx ctx;
-    uint8_t counter_block[AES_BLOCKLEN];
-
-    DSD_MEMSET(ctx.RoundKey, 0, ((size_t)AES_ROUND_KEY_BYTES) * sizeof(uint8_t));
-    KeyExpansion(ctx.RoundKey, key, params.nk, params.nr);
-    DSD_MEMCPY(counter_block, counter, sizeof(counter_block));
-
-    for (int i = 0; i < nblocks; i++) {
-        uint8_t stream[AES_BLOCKLEN];
-        const size_t offset = (size_t)i * AES_BLOCKLEN;
-        DSD_MEMCPY(stream, counter_block, sizeof(stream));
-        Cipher((state_t*)stream, ctx.RoundKey, params.nr);
-        DSD_MEMCPY(output + offset, stream, sizeof(stream));
-        aes_increment_counter_be(counter_block);
-    }
-}
-
-void
-aes_ctr_xcrypt_bytes(const uint8_t* counter, const uint8_t* key, uint8_t* data, int type, size_t len) {
+aes_ctr_xcrypt_bytes(const uint8_t* counter, const uint8_t* key, uint8_t* data, dsd_aes_key_size key_size, size_t len) {
     if (counter == NULL || key == NULL || data == NULL || len == 0U) {
         return;
     }
 
-    aes_params_t params = aes_params_for_type(type);
+    aes_params_t params;
+    if (!aes_params_for_key_size(key_size, &params)) {
+        return;
+    }
     struct AES_ctx ctx;
     uint8_t counter_block[AES_BLOCKLEN];
 
@@ -436,17 +418,25 @@ aes_ctr_xcrypt_bytes(const uint8_t* counter, const uint8_t* key, uint8_t* data, 
 //byte-wise output of AES OFB Keystream
 //input iv is a 16-byte uint8_t array of initialization vector
 //input key is up to 32-byte uint8_t array of key value
-//input type is the type/key len of AES required (0-128, 1-192, 2-256)
+//input key_size is the AES key length
 //input nblocks is the number of rounds of 16-byte keystream output blocks requried
 //output is a uint8_t bytewise array, each round filled with 16-bytes from aes keystream output
 void
-aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, int type, int nblocks) {
+aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, dsd_aes_key_size key_size,
+                         int nblocks) {
+
+    if (iv == NULL || key == NULL || output == NULL || nblocks <= 0) {
+        return;
+    }
 
     int i;
     uint8_t input_register[16]; //OFB Input Register
     DSD_MEMSET(input_register, 0, sizeof(input_register));
 
-    aes_params_t params = aes_params_for_type(type);
+    aes_params_t params;
+    if (!aes_params_for_key_size(key_size, &params)) {
+        return;
+    }
 
     struct AES_ctx ctx;
 
@@ -467,12 +457,16 @@ aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output,
 }
 
 void
-aes_ecb_decrypt_blocks(const uint8_t* input, const uint8_t* key, uint8_t* output, int type, int nblocks) {
+aes_ecb_decrypt_blocks(const uint8_t* input, const uint8_t* key, uint8_t* output, dsd_aes_key_size key_size,
+                       int nblocks) {
     if (input == NULL || key == NULL || output == NULL || nblocks <= 0) {
         return;
     }
 
-    aes_params_t params = aes_params_for_type(type);
+    aes_params_t params;
+    if (!aes_params_for_key_size(key_size, &params)) {
+        return;
+    }
     struct AES_ctx ctx;
     DSD_MEMSET(ctx.RoundKey, 0, ((size_t)AES_ROUND_KEY_BYTES) * sizeof(uint8_t));
     KeyExpansion(ctx.RoundKey, key, params.nk, params.nr);

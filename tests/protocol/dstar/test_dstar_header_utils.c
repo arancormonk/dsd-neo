@@ -4,13 +4,17 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
+#include <dsd-neo/protocol/dstar/dstar_header.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -19,8 +23,23 @@ static const uint8_t k_slow_data_scrambler[24] = {
     0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1,
 };
 
+uint16_t
+gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state) {
+    (void)state;
+    return symbol > 0.0F ? 0xF000U : 0x1000U;
+}
+
 static void pack_slow_data_bytes(const uint8_t bytes[60], uint8_t bits[480]);
+static void build_encoded_header_fixture(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS], uint8_t flags);
 static void set_compacted_slow_data_bytes(uint8_t bytes[60], const uint8_t compact[51]);
+
+static dsd_call_snapshot
+get_dstar_call(const dsd_state* state) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    return call;
+}
 
 static void
 convolution_encode(const int* bits, size_t bit_count, int* symbols) {
@@ -35,7 +54,7 @@ convolution_encode(const int* bits, size_t bit_count, int* symbols) {
     }
 }
 
-// Inverse of dstar_deinterleave_header_bits: map payload order -> on-air order.
+// Map payload order to the on-air interleave order defined by the D-STAR specification.
 static void
 dstar_interleave_header_bits(const int* in, int* out, size_t bit_count) {
     size_t k = 0;
@@ -51,84 +70,11 @@ dstar_interleave_header_bits(const int* in, int* out, size_t bit_count) {
 }
 
 static void
-test_scrambler_roundtrip(void) {
-    int original[DSD_DSTAR_HEADER_CODED_BITS];
-    int scrambled[DSD_DSTAR_HEADER_CODED_BITS];
-    int recovered[DSD_DSTAR_HEADER_CODED_BITS];
-
-    for (size_t i = 0; i < DSD_DSTAR_HEADER_CODED_BITS; i++) {
-        original[i] = (int)((i * 3 + 1) & 0x1);
-    }
-
-    dstar_scramble_header_bits(original, scrambled, DSD_DSTAR_HEADER_CODED_BITS);
-    dstar_scramble_header_bits(scrambled, recovered, DSD_DSTAR_HEADER_CODED_BITS);
-
-    assert(memcmp(original, recovered, sizeof(original)) == 0);
-}
-
-static void
-test_scrambler_reference_prefix(void) {
-    static const int expected[32] = {
-        0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0,
-    };
-    int zeroes[DSD_DSTAR_HEADER_CODED_BITS];
-    int scrambled[DSD_DSTAR_HEADER_CODED_BITS];
-
-    DSD_MEMSET(zeroes, 0, sizeof(zeroes));
-    dstar_scramble_header_bits(zeroes, scrambled, DSD_DSTAR_HEADER_CODED_BITS);
-
-    assert(memcmp(expected, scrambled, sizeof(expected)) == 0);
-}
-
-static void
-test_interleave_roundtrip(void) {
-    int coded[DSD_DSTAR_HEADER_CODED_BITS];
-    int on_air[DSD_DSTAR_HEADER_CODED_BITS];
-    int recovered[DSD_DSTAR_HEADER_CODED_BITS];
-
-    for (size_t i = 0; i < DSD_DSTAR_HEADER_CODED_BITS; i++) {
-        coded[i] = (int)((i + 5) & 0x1);
-    }
-
-    dstar_interleave_header_bits(coded, on_air, DSD_DSTAR_HEADER_CODED_BITS);
-    dstar_deinterleave_header_bits(on_air, recovered, DSD_DSTAR_HEADER_CODED_BITS);
-
-    assert(memcmp(coded, recovered, sizeof(coded)) == 0);
-}
-
-static void
-test_decode_pipeline(void) {
-    int info_bits[DSD_DSTAR_HEADER_INFO_BITS];
-    int coded[DSD_DSTAR_HEADER_CODED_BITS];
-    int interleaved[DSD_DSTAR_HEADER_CODED_BITS];
-    int scrambled[DSD_DSTAR_HEADER_CODED_BITS];
-    int rx_buf[DSD_DSTAR_HEADER_CODED_BITS];
-    int decoded[DSD_DSTAR_HEADER_INFO_BITS];
-
-    for (size_t i = 0; i < DSD_DSTAR_HEADER_INFO_BITS; i++) {
-        info_bits[i] = (int)((i * 7 + 3) & 0x1);
-    }
-
-    convolution_encode(info_bits, DSD_DSTAR_HEADER_INFO_BITS, coded);
-    dstar_interleave_header_bits(coded, interleaved, DSD_DSTAR_HEADER_CODED_BITS);
-    dstar_scramble_header_bits(interleaved, scrambled, DSD_DSTAR_HEADER_CODED_BITS);
-
-    // Receiver path
-    dstar_scramble_header_bits(scrambled, rx_buf, DSD_DSTAR_HEADER_CODED_BITS);
-    dstar_deinterleave_header_bits(rx_buf, interleaved, DSD_DSTAR_HEADER_CODED_BITS);
-    size_t out_len =
-        dstar_header_viterbi_decode(interleaved, DSD_DSTAR_HEADER_CODED_BITS, decoded, DSD_DSTAR_HEADER_INFO_BITS);
-
-    assert(out_len == DSD_DSTAR_HEADER_INFO_BITS);
-    assert(memcmp(info_bits, decoded, sizeof(info_bits)) == 0);
-}
-
-static void
 test_soft_decode_pipeline(void) {
     int info_bits[DSD_DSTAR_HEADER_INFO_BITS];
     int coded[DSD_DSTAR_HEADER_CODED_BITS];
     int interleaved[DSD_DSTAR_HEADER_CODED_BITS];
-    int scrambled[DSD_DSTAR_HEADER_CODED_BITS];
+    uint16_t soft_interleaved[DSD_DSTAR_HEADER_CODED_BITS];
     uint16_t soft_rx[DSD_DSTAR_HEADER_CODED_BITS];
     uint16_t soft_descrambled[DSD_DSTAR_HEADER_CODED_BITS];
     uint16_t soft_deinterleaved[DSD_DSTAR_HEADER_CODED_BITS];
@@ -140,11 +86,10 @@ test_soft_decode_pipeline(void) {
 
     convolution_encode(info_bits, DSD_DSTAR_HEADER_INFO_BITS, coded);
     dstar_interleave_header_bits(coded, interleaved, DSD_DSTAR_HEADER_CODED_BITS);
-    dstar_scramble_header_bits(interleaved, scrambled, DSD_DSTAR_HEADER_CODED_BITS);
-
     for (size_t i = 0; i < DSD_DSTAR_HEADER_CODED_BITS; i++) {
-        soft_rx[i] = scrambled[i] ? 0xF000U : 0x1000U;
+        soft_interleaved[i] = interleaved[i] ? 0xF000U : 0x1000U;
     }
+    dstar_scramble_soft_costs(soft_interleaved, soft_rx, DSD_DSTAR_HEADER_CODED_BITS);
 
     dstar_scramble_soft_costs(soft_rx, soft_descrambled, DSD_DSTAR_HEADER_CODED_BITS);
     dstar_deinterleave_soft_costs(soft_descrambled, soft_deinterleaved, DSD_DSTAR_HEADER_CODED_BITS);
@@ -153,6 +98,113 @@ test_soft_decode_pipeline(void) {
 
     assert(out_len == DSD_DSTAR_HEADER_INFO_BITS);
     assert(memcmp(info_bits, decoded, sizeof(info_bits)) == 0);
+}
+
+static void
+build_encoded_header_fixture_ex(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS], uint8_t flags, int corrupt_crc) {
+    uint8_t header[41];
+    int info_bits[DSD_DSTAR_HEADER_INFO_BITS];
+    int coded[DSD_DSTAR_HEADER_CODED_BITS];
+    int interleaved[DSD_DSTAR_HEADER_CODED_BITS];
+    uint16_t soft_interleaved[DSD_DSTAR_HEADER_CODED_BITS];
+    uint16_t soft_scrambled[DSD_DSTAR_HEADER_CODED_BITS];
+
+    DSD_MEMSET(header, 0, sizeof header);
+    header[0] = flags;
+    DSD_MEMCPY(header + 3, "RPT2TST ", 8);
+    DSD_MEMCPY(header + 11, "RPT1TST ", 8);
+    DSD_MEMCPY(header + 19, "CQCQCQ  ", 8);
+    DSD_MEMCPY(header + 27, "N0CALL  /TST", 12);
+    const uint16_t crc = (uint16_t)(dstar_crc16(header, 39U) ^ (corrupt_crc ? 0xFFFFU : 0x0000U));
+    header[39] = (uint8_t)(crc >> 8U);
+    header[40] = (uint8_t)crc;
+
+    DSD_MEMSET(info_bits, 0, sizeof info_bits);
+    for (int byte_idx = 0; byte_idx < 41; byte_idx++) {
+        for (int bit = 0; bit < 8; bit++) {
+            info_bits[(byte_idx * 8) + bit] = (header[byte_idx] >> bit) & 0x1;
+        }
+    }
+
+    convolution_encode(info_bits, DSD_DSTAR_HEADER_INFO_BITS, coded);
+    dstar_interleave_header_bits(coded, interleaved, DSD_DSTAR_HEADER_CODED_BITS);
+
+    for (size_t i = 0; i < DSD_DSTAR_HEADER_CODED_BITS; i++) {
+        soft_interleaved[i] = interleaved[i] ? 0xF000U : 0x1000U;
+    }
+    dstar_scramble_soft_costs(soft_interleaved, soft_scrambled, DSD_DSTAR_HEADER_CODED_BITS);
+    for (size_t i = 0; i < DSD_DSTAR_HEADER_CODED_BITS; i++) {
+        soft_rx[i] = soft_scrambled[i] > 0x7FFFU ? 1.0F : -1.0F;
+    }
+}
+
+static void
+build_encoded_header_fixture(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS], uint8_t flags) {
+    build_encoded_header_fixture_ex(soft_rx, flags, 0);
+}
+
+static void
+test_soft_header_decode_extracts_callsigns(void) {
+    static dsd_state state;
+    float soft_rx[DSD_DSTAR_HEADER_CODED_BITS];
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.min = -1.0F;
+    state.center = 0.0F;
+    state.max = 1.0F;
+    build_encoded_header_fixture(soft_rx, 0x78U);
+
+    assert(dstar_header_decode_soft(&state, soft_rx) == 1);
+
+    const dsd_call_snapshot call = get_dstar_call(&state);
+    assert(call.kind == DSD_CALL_KIND_VOICE);
+    assert(strcmp(call.route_text[1], "RPT2TST") == 0);
+    assert(strcmp(call.route_text[0], "RPT1TST") == 0);
+    assert(strcmp(call.target_text, "CQCQCQ") == 0);
+    assert(strcmp(call.source_text, "N0CALL /TST") == 0);
+}
+
+static void
+test_soft_data_header_preserves_callsigns(void) {
+    static dsd_state state;
+    float soft_rx[DSD_DSTAR_HEADER_CODED_BITS];
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.min = -1.0F;
+    state.center = 0.0F;
+    state.max = 1.0F;
+    build_encoded_header_fixture(soft_rx, 0x80U);
+
+    assert(dstar_header_decode_soft(&state, soft_rx) == 1);
+
+    const dsd_call_snapshot call = get_dstar_call(&state);
+    assert(call.kind == DSD_CALL_KIND_DATA);
+    assert(strcmp(call.route_text[1], "RPT2TST") == 0);
+    assert(strcmp(call.route_text[0], "RPT1TST") == 0);
+    assert(strcmp(call.target_text, "CQCQCQ") == 0);
+    assert(strcmp(call.source_text, "N0CALL /TST") == 0);
+}
+
+/* #391: the header CRC-16/X.25 is the D-STAR data path's only real check, and the SPS hunt
+ * now spends it. Corrupt one soft bit's worth of the CRC field and the decode must say so
+ * rather than publishing the callsigns it recovered anyway. */
+static void
+test_soft_header_decode_reports_a_failed_crc(void) {
+    static dsd_state state;
+    float soft_rx[DSD_DSTAR_HEADER_CODED_BITS];
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.min = -1.0F;
+    state.center = 0.0F;
+    state.max = 1.0F;
+    build_encoded_header_fixture_ex(soft_rx, 0x78U, 1);
+
+    assert(dstar_header_decode_soft(&state, soft_rx) == 0);
+
+    /* Nothing was published either: a header whose CRC failed is not a call observation. */
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    assert(dsd_call_state_get(&state, 0U, &call) != 1);
 }
 
 static void
@@ -190,10 +242,11 @@ test_slow_data_header_accepts_wire_crc_order(void) {
     pack_slow_data_bytes(bytes, bits);
     processDSTAR_SD(&opts, &state, bits);
 
-    assert(strcmp(state.dstar_rpt2, "RPT2TST ") == 0);
-    assert(strcmp(state.dstar_rpt1, "RPT1TST ") == 0);
-    assert(strcmp(state.dstar_dst, "CQCQCQ  ") == 0);
-    assert(strcmp(state.dstar_src, "N0CALL  /TST") == 0);
+    const dsd_call_snapshot call = get_dstar_call(&state);
+    assert(strcmp(call.route_text[1], "RPT2TST") == 0);
+    assert(strcmp(call.route_text[0], "RPT1TST") == 0);
+    assert(strcmp(call.target_text, "CQCQCQ") == 0);
+    assert(strcmp(call.source_text, "N0CALL /TST") == 0);
 }
 
 static void
@@ -247,11 +300,13 @@ test_slow_data_text_keeps_byte_after_marker(void) {
     bytes[7] = 'G';
 
     pack_slow_data_bytes(bytes, bits);
+    const uint64_t revision = history[0].revision;
     processDSTAR_SD(&opts, &state, bits);
 
     assert(state.dstar_txt[5] == 'E');
     assert(state.dstar_txt[6] == ' ');
     assert(state.dstar_txt[7] == 'G');
+    assert(history[0].revision == revision + 1U);
     free(history);
 }
 
@@ -300,21 +355,22 @@ test_slow_data_aprs_latitude_uses_compacted_direction(void) {
     set_compacted_slow_data_bytes(bytes, compact);
 
     pack_slow_data_bytes(bytes, bits);
+    const uint64_t revision = history[0].revision;
     processDSTAR_SD(&opts, &state, bits);
 
     assert(strstr(state.dstar_gps, "Lat: 41d 30m 59s N ") != NULL);
     assert(strstr(state.dstar_gps, "Lon: 087d 30m 15s W ") != NULL);
     assert(strcmp(state.event_history_s[0].Event_History_Items[0].gps_s, state.dstar_gps) == 0);
+    assert(history[0].revision == revision + 1U);
     free(history);
 }
 
 int
 main(void) {
-    test_scrambler_roundtrip();
-    test_scrambler_reference_prefix();
-    test_interleave_roundtrip();
-    test_decode_pipeline();
     test_soft_decode_pipeline();
+    test_soft_header_decode_extracts_callsigns();
+    test_soft_data_header_preserves_callsigns();
+    test_soft_header_decode_reports_a_failed_crc();
     test_crc16();
     test_slow_data_header_accepts_wire_crc_order();
     test_slow_data_text_keeps_byte_after_marker();

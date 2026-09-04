@@ -36,18 +36,18 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Initialize CodeQL
         if: matrix.build-mode == ''
-        uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+        uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
         with:
           languages: ${{ matrix.language }}
           config-file: ./.github/codeql/codeql-config.yml
 
       - name: Initialize CodeQL with build mode
         if: matrix.build-mode != ''
-        uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+        uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
@@ -61,7 +61,7 @@ jobs:
             build-essential cmake ninja-build pkg-config git \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev libexpat1-dev
 
       - name: Build and install mbelib-neo
         if: matrix.language == 'c-cpp'
@@ -98,4 +98,4 @@ jobs:
         run: cmake --build --preset dev-debug -j
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+        uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4

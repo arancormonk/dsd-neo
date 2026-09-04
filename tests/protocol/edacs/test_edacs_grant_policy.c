@@ -4,7 +4,7 @@
  */
 
 /*
- * EDACS grant-policy compatibility profile test.
+ * EDACS grant-policy behavior test.
  *
  * This is a focused evaluator-level regression for the hold/private allow-list
  * settings used by EDACS grant paths. A direct EDACS parser/tuning harness is
@@ -68,46 +68,36 @@ main(void) {
     opts->trunk_tune_data_calls = 1;
     opts->trunk_tune_enc_calls = 1;
 
-    rc |= expect_true(
-        "group unknown blocked in allow-list",
-        dsd_tg_policy_evaluate_group_call(opts, st, 1100U, 2100U, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision) == 0
-            && decision.tune_allowed == 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0);
+    rc |=
+        expect_true("group unknown blocked in allow-list",
+                    dsd_tg_policy_evaluate_group_call(opts, st, 1100U, 2100U, 0, 0, &decision) == 0
+                        && decision.tune_allowed == 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0);
 
     rc |= expect_true("seed group allow", seed_exact(st, 1100U, "A", "ALLOW-GRP") == 0);
-    rc |= expect_true(
-        "group known allowed",
-        dsd_tg_policy_evaluate_group_call(opts, st, 1100U, 2100U, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision) == 0
-            && decision.tune_allowed == 1);
+    rc |= expect_true("group known allowed",
+                      dsd_tg_policy_evaluate_group_call(opts, st, 1100U, 2100U, 0, 0, &decision) == 0
+                          && decision.tune_allowed == 1);
 
     rc |= expect_true("seed group block", seed_exact(st, 1200U, "B", "BLOCK-GRP") == 0);
     st->tg_hold = 1200U;
-    rc |= expect_true(
-        "hold match still blocked by mode in compat profile",
-        dsd_tg_policy_evaluate_group_call(opts, st, 1200U, 2200U, 0, 0, DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision) == 0
-            && decision.tune_allowed == 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0);
+    rc |= expect_true("hold match still blocked by mode",
+                      dsd_tg_policy_evaluate_group_call(opts, st, 1200U, 2200U, 0, 0, &decision) == 0
+                          && decision.tune_allowed == 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0);
     st->tg_hold = 0;
 
-    rc |= expect_true(
-        "private unknown blocked in allow-list",
-        dsd_tg_policy_evaluate_private_call(opts, st, 9002U, 9001U, 0, 0, DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                            DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                == 0
-            && decision.tune_allowed == 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0);
+    rc |=
+        expect_true("private unknown blocked in allow-list",
+                    dsd_tg_policy_evaluate_private_call(opts, st, 9002U, 9001U, 0, 0, &decision) == 0
+                        && decision.tune_allowed == 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0);
 
     rc |= expect_true("seed private allow source", seed_exact(st, 9002U, "A", "ALLOW-SRC") == 0);
     rc |= expect_true("private known source allowed",
-                      dsd_tg_policy_evaluate_private_call(opts, st, 9002U, 9001U, 0, 0,
-                                                          DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                          DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                              == 0
+                      dsd_tg_policy_evaluate_private_call(opts, st, 9002U, 9001U, 0, 0, &decision) == 0
                           && decision.tune_allowed == 1);
 
     rc |= expect_true("seed private block dst", seed_exact(st, 9001U, "DE", "ENC-LOCKOUT") == 0);
     rc |= expect_true("private explicit mode block",
-                      dsd_tg_policy_evaluate_private_call(opts, st, 9002U, 9001U, 0, 0,
-                                                          DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                          DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision)
-                              == 0
+                      dsd_tg_policy_evaluate_private_call(opts, st, 9002U, 9001U, 0, 0, &decision) == 0
                           && decision.tune_allowed == 0 && (decision.block_reasons & DSD_TG_POLICY_BLOCK_MODE) != 0);
 
     if (rc == 0) {

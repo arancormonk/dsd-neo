@@ -1,10 +1,39 @@
 // SPDX-License-Identifier: ISC
-#include <dsd-neo/crypto/pc4.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "md2ii.h"
+#include "pc4_internal.h"
 
-/* Global PC4 context instance */
-PC4Context g_pc4_context;
+#define nbround 254
+#define n1      264
+
+typedef struct {
+    short bits[49], temp[49];
+    uint8_t ptconvert;
+    uint8_t convert[7];
+    uint8_t perm[16][256];
+    uint8_t new1[256];
+    uint8_t array[49];
+    uint8_t array2[49];
+    uint8_t decal[nbround];
+    uint8_t rngxor[nbround][3];
+    uint8_t rngxor2[nbround][3];
+    uint8_t rounds;
+    uint8_t tab[256];
+    uint8_t inv[256];
+    uint8_t permut[3][3];
+    uint64_t bb;
+    uint64_t x;
+    uint8_t tot[3];
+    uint8_t l[2][3], r[2][3];
+    uint8_t y, totb;
+    uint32_t result;
+    uint8_t xyz, count;
+    unsigned char array_arc4[256];
+    int i_arc4, j_arc4;
+} PC4Context;
+
+static PC4Context g_tyt_pc4_context;
 
 /* ---------------------------------
    Internal utility functions
@@ -86,73 +115,6 @@ arc4_output(PC4Context* pc4_ctx) {
     return rndbyte;
 }
 
-/* Initialize MD2-II state */
-static void
-md2_init(PC4Context* pc4_ctx) {
-    pc4_ctx->x1 = 0;
-    pc4_ctx->x2 = 0;
-    for (pc4_ctx->i = 0; pc4_ctx->i < n1; pc4_ctx->i++) {
-        pc4_ctx->h2[pc4_ctx->i] = 0;
-    }
-    for (pc4_ctx->i = 0; pc4_ctx->i < n1; pc4_ctx->i++) {
-        pc4_ctx->h1[pc4_ctx->i] = 0;
-    }
-}
-
-/* MD2-II hashing */
-static void
-md2_hashing(PC4Context* pc4_ctx, const unsigned char t1[], size_t b6) {
-    static const unsigned char s4[256] = {
-        13,  199, 11,  67,  237, 193, 164, 77,  115, 184, 141, 222, 73,  38,  147, 36,  150, 87,  21,  104, 12,  61,
-        156, 101, 111, 145, 119, 22,  207, 35,  198, 37,  171, 167, 80,  30,  219, 28,  213, 121, 86,  29,  214, 242,
-        6,   4,   89,  162, 110, 175, 19,  157, 3,   88,  234, 94,  144, 118, 159, 239, 100, 17,  182, 173, 238, 68,
-        16,  79,  132, 54,  163, 52,  9,   58,  57,  55,  229, 192, 170, 226, 56,  231, 187, 158, 70,  224, 233, 245,
-        26,  47,  32,  44,  247, 8,   251, 20,  197, 185, 109, 153, 204, 218, 93,  178, 212, 137, 84,  174, 24,  120,
-        130, 149, 72,  180, 181, 208, 255, 189, 152, 18,  143, 176, 60,  249, 27,  227, 128, 139, 243, 253, 59,  123,
-        172, 108, 211, 96,  138, 10,  215, 42,  225, 40,  81,  65,  90,  25,  98,  126, 154, 64,  124, 116, 122, 5,
-        1,   168, 83,  190, 131, 191, 244, 240, 235, 177, 155, 228, 125, 66,  43,  201, 248, 220, 129, 188, 230, 62,
-        75,  71,  78,  34,  31,  216, 254, 136, 91,  114, 106, 46,  217, 196, 92,  151, 209, 133, 51,  236, 33,  252,
-        127, 179, 69,  7,   183, 105, 146, 97,  39,  15,  205, 112, 200, 166, 223, 45,  48,  246, 186, 41,  148, 140,
-        107, 76,  85,  95,  194, 142, 50,  49,  134, 23,  135, 169, 221, 210, 203, 63,  165, 82,  161, 202, 53,  14,
-        206, 232, 103, 102, 195, 117, 250, 99,  0,   74,  160, 241, 2,   113};
-
-    size_t t1_len = b6;
-    size_t idx = 0;
-    while (idx < t1_len) {
-        for (; idx < t1_len && pc4_ctx->x2 < n1; pc4_ctx->x2++) {
-            int b5 = t1[idx++];
-            pc4_ctx->h1[pc4_ctx->x2 + n1] = (unsigned char)b5;
-            pc4_ctx->h1[pc4_ctx->x2 + (n1 * 2)] = (unsigned char)(b5 ^ pc4_ctx->h1[pc4_ctx->x2]);
-            pc4_ctx->x1 = pc4_ctx->h2[pc4_ctx->x2] ^= s4[b5 ^ pc4_ctx->x1];
-        }
-        if (pc4_ctx->x2 == n1) {
-            int b2 = 0;
-            pc4_ctx->x2 = 0;
-            for (int b3 = 0; b3 < (n1 + 2); b3++) {
-                for (int b1 = 0; b1 < (n1 * 3); b1++) {
-                    b2 = pc4_ctx->h1[b1] ^= s4[b2];
-                }
-                b2 = (b2 + b3) % 256;
-            }
-        }
-    }
-}
-
-/* Finalize MD2-II */
-static void
-md2_end(PC4Context* pc4_ctx, unsigned char h4[n1]) {
-    unsigned char h3[n1];
-    int i, n4 = n1 - pc4_ctx->x2;
-    for (i = 0; i < n4; i++) {
-        h3[i] = (unsigned char)n4;
-    }
-    md2_hashing(pc4_ctx, h3, (size_t)n4);
-    md2_hashing(pc4_ctx, pc4_ctx->h2, sizeof(pc4_ctx->h2));
-    for (i = 0; i < n1; i++) {
-        h4[i] = pc4_ctx->h1[i];
-    }
-}
-
 /* Generate a random index */
 static int
 mixy(PC4Context* pc4_ctx, int nn2) {
@@ -197,13 +159,8 @@ pc4_shuffle_into(PC4Context* pc4_ctx, uint8_t* numbers, uint8_t* dst, int count)
 
 static void
 pc4_init_hash_state(PC4Context* pc4_ctx, const unsigned char key1[], size_t size1, unsigned char h4[n1]) {
-    md2_init(pc4_ctx);
-    md2_hashing(pc4_ctx, key1, size1);
-    md2_end(pc4_ctx, h4);
+    (void)dsd_md2ii_hash(key1, size1, n1, h4, n1);
 
-    for (int i = 0; i < 16; i++) {
-        pc4_ctx->keys[i] = h4[i];
-    }
     arc4_init(pc4_ctx, h4);
 
     pc4_ctx->x = 0;
@@ -254,7 +211,7 @@ pc4_init_permutations(PC4Context* pc4_ctx, uint8_t* numbers) {
 }
 
 /* Key schedule and S-box generation */
-void
+static void
 create_keys(PC4Context* pc4_ctx, const unsigned char key1[], size_t size1) {
     unsigned char h4[n1];
     uint8_t numbers[256];
@@ -306,7 +263,7 @@ compute(PC4Context* pc4_ctx, const uint8_t* tab1, uint8_t round) {
 }
 
 /* Convert bits to bytes */
-void
+static void
 binhex(PC4Context* pc4_ctx, const short* z, int length) {
     const short* b = z;
     int i, j;
@@ -321,19 +278,17 @@ binhex(PC4Context* pc4_ctx, const short* z, int length) {
 }
 
 /* Convert byte to bits */
-void
-hexbin(PC4Context* pc4_ctx, short* q, uint8_t w,
-       uint8_t hex) { // warning: unused parameter ‘pc4_ctx’ [-Wunused-parameter]
+static void
+hexbin(PC4Context* pc4_ctx, short* q, uint8_t w, uint8_t hex) {
+    (void)pc4_ctx;
     short* bits = (short*)q;
     for (uint8_t i = 0; i < 8; ++i) {
         bits[(short)(7 + w) - i] = (short)((hex >> i) & 1u);
     }
-
-    UNUSEDPC4(pc4_ctx); //fix above warning
 }
 
 /* Encrypt one block */
-void
+static void
 pc4encrypt(PC4Context* pc4_ctx) {
     int i;
     pc4_ctx->totb = 0;
@@ -396,7 +351,7 @@ pc4encrypt(PC4Context* pc4_ctx) {
 }
 
 /* Decrypt one block */
-void
+static void
 pc4decrypt(PC4Context* pc4_ctx) {
     int i;
     pc4_ctx->totb = 0;
@@ -466,4 +421,86 @@ pc4decrypt(PC4Context* pc4_ctx) {
     }
 
     pc4_ctx->totb %= 2;
+}
+
+void
+pc4_tyt_set_key(const unsigned char* key, size_t key_len) {
+    create_keys(&g_tyt_pc4_context, key, key_len);
+    g_tyt_pc4_context.rounds = nbround;
+}
+
+void
+pc4_tyt_decrypt_frame49(short frame_bits[49]) {
+    PC4Context* ctx = &g_tyt_pc4_context;
+    for (int i = 0; i < 49; i++) {
+        ctx->bits[i] = frame_bits[i];
+    }
+    for (int i = 0; i < 49; i++) {
+        ctx->temp[i] = ctx->bits[ctx->array2[i]];
+    }
+    for (int i = 0; i < 49; i++) {
+        ctx->bits[i] = ctx->temp[i];
+    }
+    ctx->ptconvert = 0;
+    binhex(ctx, ctx->bits, 48);
+    pc4decrypt(ctx);
+    for (int q = 0; q < 6; q++) {
+        uint8_t w = (uint8_t)(q * 8);
+        hexbin(ctx, ctx->bits, w, ctx->convert[q]);
+    }
+    ctx->bits[48] = (short)(ctx->bits[48] ^ ctx->totb);
+    for (int i = 0; i < 49; i++) {
+        ctx->temp[ctx->array[i]] = ctx->bits[i];
+    }
+    for (int i = 0; i < 49; i++) {
+        frame_bits[i] = ctx->temp[i];
+    }
+}
+
+void
+pc4_tyt_set_static_keystream(const uint8_t bits[49]) {
+    for (int i = 0; i < 49; i++) {
+        g_tyt_pc4_context.bits[i] = bits[i];
+    }
+}
+
+void
+pc4_tyt_apply_static_keystream(char frame_bits[49]) {
+    for (int i = 0; i < 49; i++) {
+        frame_bits[i] ^= (char)(g_tyt_pc4_context.bits[i] & 1);
+    }
+}
+
+void
+pc4_kirisun_generate_keystream(const uint8_t key[32], uint64_t initial_state, uint8_t output[126]) {
+    PC4Context ctx = {0};
+    create_keys(&ctx, key, 32U);
+    ctx.rounds = nbround;
+
+    for (int i = 0; i < 126; i++) {
+        output[i] = 0;
+    }
+
+    int k = 0;
+    for (int frame = 0; frame < 18; frame++) {
+        ctx.convert[0] = (uint8_t)((initial_state >> 40) & 0xFFU);
+        ctx.convert[1] = (uint8_t)((initial_state >> 32) & 0xFFU);
+        ctx.convert[2] = (uint8_t)((initial_state >> 24) & 0xFFU);
+        ctx.convert[3] = (uint8_t)((initial_state >> 16) & 0xFFU);
+        ctx.convert[4] = (uint8_t)((initial_state >> 8) & 0xFFU);
+        ctx.convert[5] = (uint8_t)(initial_state & 0xFFU);
+
+        pc4encrypt(&ctx);
+
+        initial_state = 0;
+        for (int i = 0; i < 6; i++) {
+            initial_state = (initial_state << 8) | ctx.convert[i];
+        }
+        initial_state = ((initial_state << 1) | (initial_state >> 47)) & 0xFFFFFFFFFFFFULL;
+
+        for (int i = 0; i < 6; i++) {
+            output[k++] = ctx.convert[i];
+        }
+        k++;
+    }
 }

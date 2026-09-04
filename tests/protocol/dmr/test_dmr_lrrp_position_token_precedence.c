@@ -11,16 +11,18 @@
  * Ensure we mirror that selection even when multiple position tokens are present.
  */
 
-#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/time_format.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -42,14 +44,6 @@ dsd_unicode_supported(void) {
 }
 
 void
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    if (len > 0) {
-        DSD_MEMSET(output, 0, (size_t)len);
-    }
-}
-
-void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
     (void)opts;
@@ -66,27 +60,26 @@ decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     (void)len;
 }
 
-void
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* str, uint8_t slot) {
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
-    (void)src;
-    (void)dst;
-    (void)str;
+    (void)observation->ota_source_id;
+    (void)observation->ota_target_id;
+    (void)notice;
     (void)slot;
+    return 0;
 }
 
 // Deterministic system time stubs (not used: file output disabled)
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-getTimeC_buf(char out[9]) {
-    DSD_SNPRINTF(out, 9, "%s", "11:22:33");
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-getDateS_buf(char out[11]) {
-    DSD_SNPRINTF(out, 11, "%s", "1999/01/02");
+dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out, size_t out_size) {
+    (void)timestamp;
+    const char* value = (format == DSD_LOCAL_DATETIME_DATE_SLASH) ? "1999/01/02" : "11:22:33";
+    DSD_SNPRINTF(out, out_size, "%s", value);
+    return 1;
 }
 
 // Under test
@@ -211,6 +204,27 @@ main(void) {
 
     dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 123, /*dst*/ 456, pdu, 1);
     rc |= expect_has_point(st.dmr_lrrp_gps[0], exp_lat, exp_lon, "position precedence");
+
+    // Unknown LRRP message types still carry usable position payloads in the field.
+    DSD_MEMSET(&st, 0, sizeof st);
+    st.currentslot = 0;
+    DSD_MEMSET(pdu, 0, sizeof pdu);
+    i = 0;
+    pdu[i++] = 0x99; // unknown LRRP type
+    pdu[i++] = 9;    // POINT_2D token length
+    pdu[i++] = 0x66; // POINT_2D token id
+    pdu[i++] = (lat_p3d >> 24) & 0xFF;
+    pdu[i++] = (lat_p3d >> 16) & 0xFF;
+    pdu[i++] = (lat_p3d >> 8) & 0xFF;
+    pdu[i++] = (lat_p3d >> 0) & 0xFF;
+    pdu[i++] = (lon_p3d >> 24) & 0xFF;
+    pdu[i++] = (lon_p3d >> 16) & 0xFF;
+    pdu[i++] = (lon_p3d >> 8) & 0xFF;
+    pdu[i++] = (lon_p3d >> 0) & 0xFF;
+
+    expected_from_raw(lat_p3d, lon_p3d, &exp_lat, &exp_lon);
+    dmr_lrrp(&opts, &st, (uint16_t)i, /*src*/ 321, /*dst*/ 654, pdu, 1);
+    rc |= expect_has_point(st.dmr_lrrp_gps[0], exp_lat, exp_lon, "unknown type with point token");
 
     return rc;
 }

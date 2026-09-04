@@ -116,33 +116,45 @@ escape_rg() {
   printf '%s' "$1" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g'
 }
 
+# Expand a changed header to the translation units that include it directly,
+# sampled per language and per top-level tree (src, apps, tests, examples) so
+# each tree contributes up to MAX_TUS_PER_HEADER_PER_LANGUAGE files. A single
+# alphabetical cut across the whole repository let the first five src/ includers
+# fill the quota, and a verdict that only renders in a tests/ TU (IWYU judges a
+# header by the includer it is analysed from) then surfaced on main after the
+# merge (#471, the IWYU failure on main after the merge).
+HEADER_INCLUDER_ROOTS=(src apps tests examples)
+
 collect_header_includers() {
   local pattern="$1"
-  local c_file=""
-  local cxx_file=""
-  local c_matches=()
-  local cxx_matches=()
+  local root=""
+  local f=""
+  local matches=()
 
-  mapfile -t c_matches < <(
-    rg -l --glob '!src/third_party/**' \
-      -g'*.c' \
-      "$pattern" src apps tests examples 2> /dev/null |
-      sort |
-      head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
-  )
-  mapfile -t cxx_matches < <(
-    rg -l --glob '!src/third_party/**' \
-      -g'*.cc' -g'*.cpp' -g'*.cxx' \
-      "$pattern" src apps tests examples 2> /dev/null |
-      sort |
-      head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
-  )
-
-  for c_file in "${c_matches[@]}"; do
-    printf '%s\n' "$c_file"
-  done
-  for cxx_file in "${cxx_matches[@]}"; do
-    printf '%s\n' "$cxx_file"
+  for root in "${HEADER_INCLUDER_ROOTS[@]}"; do
+    if [[ ! -d "$root" ]]; then
+      continue
+    fi
+    mapfile -t matches < <(
+      rg -l --glob '!src/third_party/**' \
+        -g'*.c' \
+        "$pattern" "$root" 2> /dev/null |
+        sort |
+        head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
+    )
+    for f in "${matches[@]}"; do
+      printf '%s\n' "$f"
+    done
+    mapfile -t matches < <(
+      rg -l --glob '!src/third_party/**' \
+        -g'*.cc' -g'*.cpp' -g'*.cxx' \
+        "$pattern" "$root" 2> /dev/null |
+        sort |
+        head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
+    )
+    for f in "${matches[@]}"; do
+      printf '%s\n' "$f"
+    done
   done
 }
 
@@ -170,13 +182,20 @@ changed_sources=()
 changed_headers=()
 format_files=()
 semgrep_targets=()
+semgrep_full_scan=0
 cmake_format_files=()
 workflow_security_targets=()
 dependency_scan_targets=()
 
 for p in "${changed_paths[@]}"; do
   case "$p" in
+    # Vendored upstream snapshots are excluded from every repository tool. Listed
+    # per library rather than as the whole android/third_party subtree, so the build
+    # glue that sits beside them (android/third_party/CMakeLists.txt) stays in scope
+    # -- that file is ours. Keep in step with .githooks/pre-push, which drops exactly
+    # these paths.
     build/* | src/third_party/*) continue ;;
+    android/third_party/libusb/* | android/third_party/librtlsdr/*) continue ;;
   esac
 
   if [[ ! -e "$p" && ! -L "$p" ]]; then
@@ -184,9 +203,16 @@ for p in "${changed_paths[@]}"; do
   fi
 
   case "$p" in
-    src/* | include/* | apps/* | tests/* | tools/* | .github/workflows/*.yml | .github/workflows/*.yaml)
+    # android/ is project-owned JNI and host glue; the vendored subtree under it
+    # was already dropped above.
+    src/* | include/* | apps/* | tests/* | tools/* | android/* | .github/workflows/*.yml | .github/workflows/*.yaml)
       semgrep_targets+=("$p")
       ;;
+  esac
+
+  # A rule edit can change the verdict on any file, so scan the whole tree.
+  case "$p" in
+    semgrep/*) semgrep_full_scan=1 ;;
   esac
 
   case "$p" in
@@ -243,10 +269,14 @@ if [[ $EXPAND_HEADERS -eq 1 && ${#changed_headers[@]} -gt 0 ]]; then
   fi
 fi
 
+# Keep in step with the target list in tools/cppcheck.sh (src/, include/, android/),
+# so a PR is checked over the same tree the push build scans. Leaving android/ out
+# here meant a finding in the JNI and host glue only ever surfaced on main, after
+# the merge. The vendored subtree under android/ was already dropped above.
 cppcheck_sources=()
 for p in "${analysis_tus[@]}"; do
   case "$p" in
-    src/*) cppcheck_sources+=("$p") ;;
+    src/* | include/* | android/*) cppcheck_sources+=("$p") ;;
   esac
 done
 
@@ -285,7 +315,7 @@ echo "ci-changed-files: base=${BASE_REF} head=${HEAD_REF}"
 echo "ci-changed-files: changed=${#changed_paths[@]} format=${#format_files[@]}" \
   "tus=${#analysis_tus[@]} cppcheck=${#cppcheck_sources[@]} semgrep=${#semgrep_targets[@]}" \
   "cmake=${#cmake_format_files[@]} workflows=${#workflow_security_targets[@]}" \
-  "deps=${#dependency_scan_targets[@]}"
+  "deps=${#dependency_scan_targets[@]} semgrep_full=${semgrep_full_scan}"
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   {
@@ -295,6 +325,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     echo "analysis_tus=${#analysis_tus[@]}"
     echo "cppcheck_sources=${#cppcheck_sources[@]}"
     echo "semgrep_targets=${#semgrep_targets[@]}"
+    echo "semgrep_full_scan=${semgrep_full_scan}"
     echo "cmake_format_files=${#cmake_format_files[@]}"
     echo "workflow_security_targets=${#workflow_security_targets[@]}"
     echo "dependency_scan_targets=${#dependency_scan_targets[@]}"

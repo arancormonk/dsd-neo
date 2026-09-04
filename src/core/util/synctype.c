@@ -15,7 +15,7 @@
 #include <stddef.h>
 
 /**
- * @brief Legacy synctype string table.
+ * @brief Base synctype string table.
  *
  * This table covers indices 0-43. Extended M17 types (76-77, 86-87, 98-101)
  * are handled separately in dsd_synctype_to_string().
@@ -71,7 +71,7 @@ static const char* const SyncTypeStrings[] = {
 
 const char*
 dsd_synctype_to_string(int synctype) {
-    /* Handle special cases for extended M17 types not in the legacy table */
+    /* Handle extended M17 types outside the base table. */
     switch (synctype) {
         case DSD_SYNC_M17_BRT_POS: /* 76 */
         case DSD_SYNC_M17_BRT_NEG: /* 77 */ return "M17 BRT";
@@ -85,7 +85,7 @@ dsd_synctype_to_string(int synctype) {
         default: break;
     }
 
-    /* Check bounds for the legacy table */
+    /* Check bounds for the base table. */
     if (synctype < 0 || (size_t)synctype >= SYNCTYPE_TABLE_SIZE) {
         return "UNKNOWN";
     }

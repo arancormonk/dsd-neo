@@ -116,6 +116,31 @@ ui_chooser_render(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 int
+rr_panel_active(void) { // NOLINT(misc-use-internal-linkage)
+    return 0;
+}
+
+int
+rr_panel_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
+    (void)ch;
+    return 0;
+}
+
+void
+rr_panel_render(void) { // NOLINT(misc-use-internal-linkage)
+}
+
+void
+rr_panel_tick(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
+rr_panel_close(void) { // NOLINT(misc-use-internal-linkage)
+}
+
+int
 ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx) {
     (void)ctx;
     return (items && n > 0) ? 1 : 0;
@@ -128,7 +153,13 @@ ui_is_enabled(const NcMenuItem* it, const void* ctx) {
 }
 
 int
-ui_next_enabled(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
+ui_is_selectable(const NcMenuItem* it, const void* ctx) {
+    (void)ctx;
+    return it ? 1 : 0;
+}
+
+int
+ui_next_selectable(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
     (void)ctx;
     if (!items || n == 0) {
         return 0;
@@ -221,8 +252,8 @@ resize_term(int lines, int columns) {
 
 int
 main(void) {
-    unsigned char opts_token = 0;
-    unsigned char state_token = 0;
+    static unsigned char opts_token;
+    static unsigned char state_token;
     dsd_opts* opts = (dsd_opts*)&opts_token;
     dsd_state* state = (dsd_state*)&state_token;
 

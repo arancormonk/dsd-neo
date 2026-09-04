@@ -9,7 +9,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <stdbool.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -21,54 +21,9 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-struct RtlSdrContext;
-
-// Forward declaration for the MAC VPDU handler under test
-void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]);
-
 // Minimal stubs referenced by linked objects
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
-}
 
 // Alias/embedded helpers referenced in p25p2_vpdu.c (unused in this test path)
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
@@ -138,7 +93,7 @@ main(void) {
     MAC[1] = 0x00; // SIGNAL
     MAC[2] = 0x00; // standard MFID
 
-    process_MAC_VPDU(&opts, &state, 0 /*FACCH*/, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /*FACCH*/, P25_MAC_PDU_SIGNAL, MAC);
 
     // Gates must remain unchanged by MAC_SIGNAL when on LCCH
     rc |= expect_eq("gate slot0", state.p25_p2_audio_allowed[0], 1);
@@ -151,7 +106,7 @@ main(void) {
     state.currentslot = 1;
     state.p25_p2_audio_allowed[0] = 1;
     state.p25_p2_audio_allowed[1] = 1;
-    process_MAC_VPDU(&opts, &state, 1 /*SACCH*/, MAC);
+    process_MAC_VPDU(&opts, &state, 1 /*SACCH*/, P25_MAC_PDU_SIGNAL, MAC);
     rc |= expect_eq("gate slot0 (SACCH)", state.p25_p2_audio_allowed[0], 1);
     rc |= expect_eq("gate slot1 (SACCH)", state.p25_p2_audio_allowed[1], 1);
 

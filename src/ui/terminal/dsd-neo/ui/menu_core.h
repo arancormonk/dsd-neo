@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/**
+ * @file
+ * @brief Minimal, reusable ncurses menu framework for the terminal UI.
+ *
+ * Declares the menu item structure and overlay driver helpers used by the
+ * asynchronous menu system.
+ */
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_CORE_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_CORE_H_
+
+#include <stdbool.h>
+#include <stddef.h>
+
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
+
+typedef struct NcMenuItem NcMenuItem;
+
+/** Predicate signature for enabling/disabling items. */
+typedef bool (*nc_enabled_fn)(const void* ctx);
+/** Action to invoke on item selection. */
+typedef void (*nc_action_fn)(void* ctx);
+/** Dynamic label generator; writes into buf and returns it. */
+typedef const char* (*nc_label_fn)(const void* ctx, char* buf, size_t buf_len);
+
+/**
+ * @brief How a row behaves. The default (0) is an ordinary selectable row.
+ */
+typedef enum {
+    NC_ITEM_ACTION = 0,   /**< selectable: runs on_select and/or opens its submenu */
+    NC_ITEM_STATUS = 1,   /**< read-only status text; drawn dimmed; navigation skips it */
+    NC_ITEM_SEPARATOR = 2 /**< horizontal rule; label ignored; navigation skips it */
+} NcMenuItemKind;
+
+/**
+ * @brief Declarative menu item description.
+ *
+ * New fields are appended so positional initializers stay valid.
+ */
+struct NcMenuItem {
+    const char* id;            // stable identifier for the item
+    const char* label;         // static label text (fallback if label_fn is NULL)
+    nc_label_fn label_fn;      // optional dynamic label generator (writes into buf and returns it)
+    const char* help;          // optional help text shown with 'h'
+    nc_enabled_fn is_enabled;  // optional predicate; NULL -> enabled
+    nc_action_fn on_select;    // action to run when selected; may open submenus
+    const NcMenuItem* submenu; // optional nested items
+    size_t submenu_len;        // length of submenu
+    const char* hotkey;        // main-screen key(s) for the same action, e.g. "t", "+ -", "P/p"; NULL = none
+    NcMenuItemKind kind;       // NC_ITEM_ACTION unless set
+    // The highlight never arrives here on its own: Home, End and the highlight a
+    // frame opens with all skip the row. Arrows and paging still reach it. Set it
+    // on a row that would be destructive to land on with Enter already under the
+    // finger -- one keystroke should not be able to park there.
+    bool no_jump;
+};
+
+/**
+ * @brief Set a transient status footer (shows briefly at bottom of menu window).
+ */
+void ui_statusf(const char* fmt, ...);
+
+/**
+ * @brief Open the main menu as a nonblocking overlay.
+ *
+ * Subsequent draws happen via `ui_menu_tick`, and keys are routed via
+ * `ui_menu_handle_key`.
+ */
+void ui_menu_open_async(dsd_opts* opts, dsd_state* state);
+/** @brief Return 1 when the overlay is currently open. */
+int ui_menu_is_open(void);
+/**
+ * @brief Handle a key for the overlay; returns 1 if consumed.
+ */
+int ui_menu_handle_key(int ch, dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Draw/update one frame of the overlay (no input read here).
+ */
+void ui_menu_tick(dsd_opts* opts, dsd_state* state);
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_UI_MENU_CORE_H_ */

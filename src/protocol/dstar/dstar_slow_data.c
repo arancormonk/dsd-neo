@@ -3,9 +3,13 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/bit_packing.h>
+
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 #include <stdint.h>
@@ -14,16 +18,19 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dstar_confirm.h"
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 
 //first 24-bits of the larger scramble table
-static const uint8_t sd_d[48] = {0, 0, 0, 0,  //0
-                                 1, 1, 1, 0,  //E
-                                 1, 1, 1, 1,  //F
-                                 0, 0, 1, 0,  //2
-                                 1, 1, 0, 0,  //C
-                                 1, 0, 0, 1}; //9
+enum { DSTAR_SLOW_DATA_SCRAMBLER_BITS = 24 };
+
+static const uint8_t sd_d[DSTAR_SLOW_DATA_SCRAMBLER_BITS] = {0, 0, 0, 0,  //0
+                                                             1, 1, 1, 0,  //E
+                                                             1, 1, 1, 1,  //F
+                                                             0, 0, 1, 0,  //2
+                                                             1, 1, 0, 0,  //C
+                                                             1, 0, 0, 1}; //9
 
 typedef struct dstar_sd_ctx_s {
     uint8_t sd_bytes[60];
@@ -55,7 +62,7 @@ static void
 dstar_sd_apply_descrambler(uint8_t* sd) {
     int i;
     for (i = 0; i < 480; i++) {
-        sd[i] ^= sd_d[i % 24];
+        sd[i] ^= sd_d[i % DSTAR_SLOW_DATA_SCRAMBLER_BITS];
     }
 }
 
@@ -75,7 +82,7 @@ static void
 dstar_sd_pack_bytes(const uint8_t* sd, uint8_t* sd_bytes) {
     int i;
     for (i = 0; i < 60; i++) {
-        sd_bytes[59 - i] = (uint8_t)ConvertBitIntoBytes(&sd[i * 8 + 0], 8);
+        sd_bytes[59 - i] = (uint8_t)convert_bits_into_output(&sd[i * 8 + 0], 8);
     }
 }
 
@@ -175,15 +182,27 @@ dstar_sd_print_header_flags(uint8_t flags) {
 static void
 dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
     if (ctx->crc_cmp == ctx->crc_ext) {
+        /* A CRC-16/X.25 over 39 octets of rebroadcast header: proof the transmission is
+         * real, on its own (#421). */
+        dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
         DSD_FPRINTF(stderr, " RPT 2: %s", ctx->str1);
         DSD_FPRINTF(stderr, " RPT 1: %s", ctx->str2);
         DSD_FPRINTF(stderr, " DST: %s", ctx->str3);
         DSD_FPRINTF(stderr, " SRC: %s", ctx->str4);
         dstar_sd_print_header_flags(ctx->sd_bytes[1]);
-        DSD_MEMCPY(state->dstar_rpt2, ctx->str1, sizeof(ctx->str1));
-        DSD_MEMCPY(state->dstar_rpt1, ctx->str2, sizeof(ctx->str2));
-        DSD_MEMCPY(state->dstar_dst, ctx->str3, sizeof(ctx->str3));
-        DSD_MEMCPY(state->dstar_src, ctx->str4, sizeof(ctx->str4));
+        if ((ctx->sd_bytes[1] & 0x80U) == 0U) {
+            int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_VOICE_POS;
+            dsd_call_observation observation = {
+                .protocol = protocol,
+                .slot = 0U,
+                .kind = DSD_CALL_KIND_VOICE,
+            };
+            DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", ctx->str4);
+            DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", ctx->str3);
+            DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", ctx->str2);
+            DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", ctx->str1);
+            (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+        }
         return;
     }
     DSD_FPRINTF(stderr, " SLOW DATA - HEADER FORMAT (CRC ERR)");
@@ -312,15 +331,23 @@ dstar_sd_handle_aprs(dsd_state* state, const uint8_t* sd_bytes) {
     dstar_sd_collect_aprs_bytes(sd_bytes, aprs);
     start = dstar_sd_find_aprs_start(aprs);
     if (start == -1) {
+        dsd_event_history_transaction transaction;
+        dsd_event_history_transaction_begin(state, &transaction);
         DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s,
                      sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dstar_gps);
+        dsd_event_history_mark_dirty(&state->event_history_s[0]);
+        dsd_event_history_transaction_end(&transaction);
         return;
     }
 
     dstar_sd_print_aprs_lat(state, aprs, &start, temp);
     dstar_sd_print_aprs_lon(state, aprs, &start, temp, tempa);
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s,
                  sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dstar_gps);
+    dsd_event_history_mark_dirty(&state->event_history_s[0]);
+    dsd_event_history_transaction_end(&transaction);
 }
 
 static void
@@ -329,13 +356,20 @@ dstar_sd_handle_text_message(dsd_state* state, dstar_sd_ctx* ctx) {
     DSD_FPRINTF(stderr, " TEXT: ");
     dstar_sd_emit_truncated_ascii(ctx->sd_bytes, ctx->strt, 1);
     DSD_MEMCPY(state->dstar_txt, ctx->strt, sizeof(ctx->strt));
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].text_message,
                  sizeof(state->event_history_s[0].Event_History_Items[0].text_message), "%s", state->dstar_txt);
+    dsd_event_history_mark_dirty(&state->event_history_s[0]);
+    dsd_event_history_transaction_end(&transaction);
 }
 
 static void
 dstar_sd_handle_fixed_form(dsd_state* state, dstar_sd_ctx* ctx) {
     if (strcmp(ctx->type, "$$CRC") == 0) {
+        /* Forty exact bits behind the 0x35 type byte that selected this branch: not a
+         * checksum, but a literal noise does not produce (#421). */
+        dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
         DSD_MEMSET(ctx->strt, 0x20, sizeof(ctx->strt));
         DSD_FPRINTF(stderr, " DATA: ");
         dstar_sd_emit_truncated_ascii(ctx->sd_bytes, ctx->strt, 0);

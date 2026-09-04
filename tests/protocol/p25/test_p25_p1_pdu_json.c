@@ -4,16 +4,21 @@
  */
 
 /*
- * Verify P25 Phase 1 PDU JSON emission for data SAPs (RegAuth, SysCfg).
+ * Verify P25 Phase 1 PDU JSON emission for data SAPs.
  */
+
+#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 
 #include <errno.h>
 #include <limits.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "test_support.h"
 
@@ -26,25 +31,45 @@
 
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
 typedef struct dsd_opts dsd_opts;
-typedef struct dsd_state dsd_state;
-void dsd_neo_config_init(const dsd_opts* opts);
+void dsd_neo_config_init(void);
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 
 // Use a local shim that sets up real opts/state in a separate TU.
 void p25_test_p1_pdu_data_decode(const unsigned char* input, int len);
 
 static int g_utf8_calls = 0;
+static int g_data_notice_calls = 0;
+static int g_control_notice_calls = 0;
+static int g_data_category_notice_calls = 0;
+static dsd_event_category g_last_data_notice_category = DSD_EVENT_CATEGORY_UNKNOWN;
 
 // Stubs referenced by PDU data path
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* str, uint8_t slot) {
+dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                      const dsd_call_observation* observation, dsd_event_category category,
+                                      const char* notice) {
     (void)opts;
     (void)state;
-    (void)src;
-    (void)dst;
-    (void)str;
+    (void)observation->ota_source_id;
+    (void)observation->ota_target_id;
+    (void)notice;
     (void)slot;
+    g_data_notice_calls++;
+    g_last_data_notice_category = category;
+    if (category == DSD_EVENT_CATEGORY_CONTROL) {
+        g_control_notice_calls++;
+    } else if (category == DSD_EVENT_CATEGORY_DATA) {
+        g_data_category_notice_calls++;
+    }
+    return 0;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
+    return dsd_event_emit_data_notice_classified(opts, state, slot, observation, DSD_EVENT_CATEGORY_DATA, notice);
 }
 
 void
@@ -65,42 +90,20 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
     (void)state;
     (void)wr;
     (void)len;
     (void)input;
     g_utf8_calls++;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    if (!input || !output || len <= 0) {
-        return;
-    }
-    int k = 0;
-    for (int i = 0; i < len; i++) {
-        output[k++] = (input[i] >> 7) & 1;
-        output[k++] = (input[i] >> 6) & 1;
-        output[k++] = (input[i] >> 5) & 1;
-        output[k++] = (input[i] >> 4) & 1;
-        output[k++] = (input[i] >> 3) & 1;
-        output[k++] = (input[i] >> 2) & 1;
-        output[k++] = (input[i] >> 1) & 1;
-        output[k++] = (input[i] >> 0) & 1;
-    }
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* BufferIn, uint32_t BitLength) {
-    // Simple MSB-first packer
-    uint64_t v = 0;
-    for (uint32_t i = 0; i < BitLength; i++) {
-        v = (v << 1) | (BufferIn[i] & 1);
-    }
-    return v;
 }
 
 uint8_t
@@ -115,7 +118,7 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
 
     char prefix[7];
     for (int i = 0; i < 6; i++) {
-        prefix[i] = (char)ConvertBitIntoBytes(input + ((size_t)i * 8U), 8);
+        prefix[i] = (char)convert_bits_into_output(input + ((size_t)i * 8U), 8);
     }
     prefix[6] = '\0';
     if (strcmp(prefix, "$GPRMC") != 0) {
@@ -123,50 +126,18 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
     }
 
     DSD_FPRINTF(stderr, "$GPRMC,123519");
+    const dsd_call_observation observation = dsd_call_observation_data(0, slot, 0U, 0U);
+    (void)dsd_event_emit_data_notice((dsd_opts*)opts, state, slot, &observation, "NMEA");
     return 1;
 }
 
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
-    (void)opts;
-    (void)state;
-    (void)len;
-    (void)input;
-}
-
-// Additional stubs referenced by linked objects (rigctl/rtl streaming)
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
+decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
+    (void)len;
+    (void)input;
+    const dsd_call_observation observation = dsd_call_observation_data(0, 0U, 0U, 0U);
+    return dsd_event_emit_data_notice(opts, state, 0U, &observation, "IP") == 0;
 }
 
 static int
@@ -205,6 +176,42 @@ expect_str_contains(const char* tag, const char* hay, const char* needle) {
         return 1;
     }
     return 0;
+}
+
+static int
+test_p25_sap_category_matrix(void) {
+    static const struct {
+        uint8_t sap;
+        dsd_event_category category;
+    } cases[] = {
+        {3U, DSD_EVENT_CATEGORY_CONTROL},  {6U, DSD_EVENT_CATEGORY_CONTROL},  {29U, DSD_EVENT_CATEGORY_CONTROL},
+        {32U, DSD_EVENT_CATEGORY_CONTROL}, {33U, DSD_EVENT_CATEGORY_CONTROL}, {34U, DSD_EVENT_CATEGORY_CONTROL},
+        {37U, DSD_EVENT_CATEGORY_CONTROL}, {38U, DSD_EVENT_CATEGORY_CONTROL}, {39U, DSD_EVENT_CATEGORY_CONTROL},
+        {40U, DSD_EVENT_CATEGORY_CONTROL}, {41U, DSD_EVENT_CATEGORY_CONTROL}, {61U, DSD_EVENT_CATEGORY_CONTROL},
+        {63U, DSD_EVENT_CATEGORY_CONTROL}, {48U, DSD_EVENT_CATEGORY_DATA},    {4U, DSD_EVENT_CATEGORY_DATA},
+    };
+
+    int rc = 0;
+    for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        uint8_t pdu[64];
+        DSD_MEMSET(pdu, 0, sizeof(pdu));
+        pdu[0] = 0x10U;
+        pdu[1] = cases[i].sap;
+        pdu[6] = 0x01U;
+        const int notices_before = g_data_notice_calls;
+        p25_test_p1_pdu_data_decode(pdu, 32);
+        if (g_data_notice_calls != notices_before + 1) {
+            DSD_FPRINTF(stderr, "SAP %u notice count: got %d want %d\n", (unsigned)cases[i].sap, g_data_notice_calls,
+                        notices_before + 1);
+            rc = 1;
+        }
+        if (g_last_data_notice_category != cases[i].category) {
+            DSD_FPRINTF(stderr, "SAP %u category: got %d want %d\n", (unsigned)cases[i].sap,
+                        (int)g_last_data_notice_category, (int)cases[i].category);
+            rc = 1;
+        }
+    }
+    return rc;
 }
 
 static int
@@ -264,7 +271,7 @@ int
 main(void) {
     int rc = 0;
     setenv("DSD_NEO_PDU_JSON", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "p25_p1_pdu_json") != 0) {
@@ -332,6 +339,114 @@ main(void) {
         p25_test_p1_pdu_data_decode(pdu, total_len);
     }
 
+    // Case 4: SAP 6 inbound SNDCP Activate TDS Context Request.
+    {
+        uint8_t pdu[64];
+        DSD_MEMSET(pdu, 0, sizeof(pdu));
+        pdu[0] = 0x10; // fmt=16, io=0/inbound
+        pdu[1] = 6;    // SAP 6
+        pdu[2] = 0x21; // MFID
+        pdu[6] = 0x02;
+        pdu[12] = 0x07; // type=0, nsapi=7
+        pdu[13] = 0x41; // version=4, IPv4 dynamic
+        pdu[14] = 198;
+        pdu[15] = 51;
+        pdu[16] = 100;
+        pdu[17] = 9;
+        pdu[18] = 0x20; // DSUT=2
+        pdu[19] = 0x00;
+        pdu[20] = 0x00;
+        pdu[21] = 0x01;
+        int total_len = 12 + 10 + 4;
+        p25_test_p1_pdu_data_decode(pdu, total_len);
+    }
+
+    // Case 5: SAP 6 outbound SNDCP Activate TDS Context Accept.
+    {
+        uint8_t pdu[64];
+        DSD_MEMSET(pdu, 0, sizeof(pdu));
+        pdu[0] = 0x30; // fmt=16, io=1/outbound
+        pdu[1] = 6;    // SAP 6
+        pdu[2] = 0x22; // MFID
+        pdu[6] = 0x02;
+        pdu[12] = 0x05; // type=0, nsapi=5
+        pdu[13] = 0xAB; // priority=10, ready timer=60s
+        pdu[14] = 0x31; // standby timer=60s, IPv4 dynamic
+        pdu[15] = 192;
+        pdu[16] = 0;
+        pdu[17] = 2;
+        pdu[18] = 7;
+        pdu[19] = 0x00;
+        pdu[20] = 0x00;
+        pdu[21] = 0x20; // MTU 510, UDP compression none
+        pdu[22] = 0x02; // MDP PPP
+        int total_len = 12 + 11 + 4;
+        p25_test_p1_pdu_data_decode(pdu, total_len);
+    }
+
+    // Case 6: SAP 6 outbound SNDCP Activate TDS Context Reject.
+    {
+        uint8_t pdu[64];
+        DSD_MEMSET(pdu, 0, sizeof(pdu));
+        pdu[0] = 0x30; // fmt=16, io=1/outbound
+        pdu[1] = 6;
+        pdu[2] = 0x23;
+        pdu[6] = 0x02;
+        pdu[12] = 0x34; // type=3, nsapi=4
+        pdu[13] = 0x0A; // IPv4 not supported
+        int total_len = 12 + 2 + 4;
+        p25_test_p1_pdu_data_decode(pdu, total_len);
+    }
+
+    // Case 7: SAP 6 outbound SNDCP Deactivate TDS Context Request.
+    {
+        uint8_t pdu[64];
+        DSD_MEMSET(pdu, 0, sizeof(pdu));
+        pdu[0] = 0x30; // fmt=16, io=1/outbound
+        pdu[1] = 6;
+        pdu[2] = 0x24;
+        pdu[6] = 0x02;
+        pdu[12] = 0x21; // type=2, nsapi=1
+        pdu[13] = 0x10; // deactivate this NSAPI
+        int total_len = 12 + 2 + 4;
+        p25_test_p1_pdu_data_decode(pdu, total_len);
+    }
+
+    // Case 8: SAP 0 unconfirmed packet data delegates its one notice to the IP decoder.
+    {
+        uint8_t pdu[64];
+        DSD_MEMSET(pdu, 0, sizeof(pdu));
+        pdu[0] = 0x10; // fmt=16, io=0
+        pdu[1] = 0;    // SAP 0
+        pdu[2] = 0x32; // MFID
+        pdu[6] = 0x02;
+        pdu[12] = 0x45; // start of IPv4 payload passed to decode_ip_pdu
+        int total_len = 12 + 20 + 4;
+        p25_test_p1_pdu_data_decode(pdu, total_len);
+    }
+
+    // Case 9: SAP 4 packet data with the optional 2-octet SNDCP packet header.
+    const int primary_utf8_calls = g_utf8_calls;
+    rc |= test_p25_sap_category_matrix();
+
+    {
+        uint8_t pdu[96];
+        DSD_MEMSET(pdu, 0, sizeof(pdu));
+        pdu[0] = 0x30; // fmt=16, io=1/outbound
+        pdu[1] = 4;    // SAP 4
+        pdu[2] = 0x33; // MFID
+        pdu[6] = 0x03;
+        pdu[9] = 0x02;  // data header offset = 2 octets
+        pdu[12] = 0x45; // RF unconfirmed data, NSAPI 5
+        pdu[13] = 0x00; // no IP/UDP header compression
+        pdu[14] = 0x45; // start of IPv4 payload passed to decode_ip_pdu
+        pdu[15] = 0x00;
+        pdu[16] = 0x00;
+        pdu[17] = 0x14;
+        int total_len = 12 + 2 + 20 + 4;
+        p25_test_p1_pdu_data_decode(pdu, total_len);
+    }
+
     dsd_test_capture_stderr_end(&cap);
 
     FILE* rf = fopen(cap.path, "rb");
@@ -354,7 +469,7 @@ main(void) {
     }
     fclose(rf);
 
-    // Parse last (SysCfg)
+    // Parse last (SAP 4 packet header)
     int sap = -1, mfid = -1, io = -1, jlen = -1;
     char summary[128];
     int er = parse_last_json(buf, (int)nread, &sap, &mfid, &io, &jlen, summary, sizeof(summary));
@@ -363,13 +478,23 @@ main(void) {
         DSD_FPRINTF(stderr, "parse_last_json er=%d\n", er);
         return 103;
     }
-    rc |= expect_eq_int("SysCfg sap", sap, 34);
-    rc |= expect_eq_int("SysCfg mfid", mfid, 0x55);
-    rc |= expect_eq_int("SysCfg io", io, 1);
-    rc |= expect_eq_int("SysCfg len", jlen, 3);
-    rc |= expect_str_contains("SysCfg summary", summary, "SysCfg");
+    rc |= expect_eq_int("SAP4 sap", sap, 4);
+    rc |= expect_eq_int("SAP4 mfid", mfid, 0x33);
+    rc |= expect_eq_int("SAP4 io", io, 1);
+    rc |= expect_eq_int("SAP4 len", jlen, 22);
+    rc |= expect_str_contains("SAP4 summary", summary, "SNDCP Packet Header");
+    rc |= expect_str_contains("SysCfg summary", buf, "SysCfg");
+    rc |= expect_str_contains("SAP6 request output", buf, "Activate TDS Context Request");
+    rc |= expect_str_contains("SAP6 request IP", buf, "IP:198.51.100.9");
+    rc |= expect_str_contains("SAP6 accept output", buf, "Activate TDS Context Accept");
+    rc |= expect_str_contains("SAP6 SNDCP MTU", buf, "MTU:510");
+    rc |= expect_str_contains("SAP6 reject output", buf, "IPv4 Not Supported");
+    rc |= expect_str_contains("SAP6 deactivate output", buf, "Deactivate:This NSAPI");
     rc |= expect_str_contains("SAP48 NMEA output", buf, "$GPRMC,123519");
-    rc |= expect_eq_int("SAP48 NMEA avoids UTF8 fallback", g_utf8_calls, 0);
+    rc |= expect_eq_int("SAP48 NMEA avoids UTF8 fallback", primary_utf8_calls, 0);
+    rc |= expect_eq_int("one data notice per PDU", g_data_notice_calls, 24);
+    rc |= expect_eq_int("P25 control SAP notices", g_control_notice_calls, 19);
+    rc |= expect_eq_int("P25 packet/location data notices", g_data_category_notice_calls, 5);
     free(buf);
 
     (void)remove(cap.path);

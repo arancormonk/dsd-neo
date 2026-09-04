@@ -101,7 +101,7 @@ test_ensure_started_preserves_dispatch_status(void) {
     rc |= expect_u32(test, "count after ensure", ctx.state->p25_ss_count, 1);
     rc |= expect_u32(test, "first status", ctx.state->p25_ss_buf[0], 0x01);
 
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
     rc |= expect_class(test, ctx.state, P25_SS_CLASS_INFRASTRUCTURE);
 
     p25_status_accum_ensure_started(ctx.state);
@@ -121,7 +121,7 @@ test_classify_empty_frame_suppresses_unknown(void) {
     }
 
     p25_status_accum_reset(ctx.state);
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
 
     int rc = 0;
     rc |= expect_class(test, ctx.state, P25_SS_CLASS_UNKNOWN);
@@ -167,7 +167,7 @@ test_accum_accepts_full_ldu_status_count(void) {
     for (int i = 0; i < 12; i++) {
         p25_status_accum_add(ctx.state, 0x01);
     }
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
 
     int rc = 0;
     rc |= expect_u32(test, "count", ctx.state->p25_ss_count, P25_STATUS_ACCUM_MAX);
@@ -189,26 +189,26 @@ test_classify_status_values(void) {
 
     p25_status_accum_reset(ctx.state);
     p25_status_accum_add(ctx.state, 0x01);
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
     rc |= expect_class(test, ctx.state, P25_SS_CLASS_INFRASTRUCTURE);
 
     p25_status_accum_reset(ctx.state);
     p25_status_accum_add(ctx.state, 0x03);
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
     rc |= expect_class(test, ctx.state, P25_SS_CLASS_INFRASTRUCTURE);
 
     p25_status_accum_reset(ctx.state);
     for (int i = 0; i < 24; i++) {
         p25_status_accum_add(ctx.state, 0x00);
     }
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
     rc |= expect_class(test, ctx.state, P25_SS_CLASS_SUBSCRIBER);
 
     p25_status_accum_reset(ctx.state);
     for (int i = 0; i < 24; i++) {
         p25_status_accum_add(ctx.state, 0x02);
     }
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
     rc |= expect_class(test, ctx.state, P25_SS_CLASS_UNKNOWN);
 
     free_ctx(&ctx);
@@ -230,7 +230,7 @@ test_classify_ignores_10_and_uses_counts(void) {
     for (int i = 0; i < 10; i++) {
         p25_status_accum_add(ctx.state, 0x02);
     }
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
     rc |= expect_class(test, ctx.state, P25_SS_CLASS_SUBSCRIBER);
 
     p25_status_accum_reset(ctx.state);
@@ -238,14 +238,14 @@ test_classify_ignores_10_and_uses_counts(void) {
         p25_status_accum_add(ctx.state, 0x00);
     }
     p25_status_accum_add(ctx.state, 0x01);
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
     rc |= expect_class(test, ctx.state, P25_SS_CLASS_SUBSCRIBER);
 
     p25_status_accum_reset(ctx.state);
     p25_status_accum_add(ctx.state, 0x00);
     p25_status_accum_add(ctx.state, 0x01);
     p25_status_accum_add(ctx.state, 0x03);
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
     rc |= expect_class(test, ctx.state, P25_SS_CLASS_INFRASTRUCTURE);
 
     free_ctx(&ctx);
@@ -264,7 +264,7 @@ test_gate_decisions_and_counters(void) {
 
     p25_status_accum_reset(ctx.state);
     p25_status_accum_add(ctx.state, 0x01);
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
     rc |= expect_u32(test, "gate_allow infra", ctx.state->p25_afc_gate_allow, 1);
     rc |= expect_u32(test, "gate_valid infra", ctx.state->p25_afc_gate_valid, 1);
     rc |= expect_u32(test, "allowed_count", ctx.state->p25_afc_allowed_count, 1);
@@ -272,14 +272,14 @@ test_gate_decisions_and_counters(void) {
 
     p25_status_accum_reset(ctx.state);
     p25_status_accum_add(ctx.state, 0x00);
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
     rc |= expect_u32(test, "gate_allow subscriber", ctx.state->p25_afc_gate_allow, 0);
     rc |= expect_u32(test, "allowed_count after subscriber", ctx.state->p25_afc_allowed_count, 1);
     rc |= expect_u32(test, "suppressed_count after subscriber", ctx.state->p25_afc_suppressed_count, 1);
 
     p25_status_accum_reset(ctx.state);
     p25_status_accum_add(ctx.state, 0x02);
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
     rc |= expect_u32(test, "gate_allow unknown", ctx.state->p25_afc_gate_allow, 0);
     rc |= expect_u32(test, "suppressed_count after unknown", ctx.state->p25_afc_suppressed_count, 2);
 
@@ -301,7 +301,7 @@ test_gate_decision_remains_advisory_when_opt_out(void) {
     for (int i = 0; i < 24; i++) {
         p25_status_accum_add(ctx.state, 0x00);
     }
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
 
     int rc = 0;
     rc |= expect_u32(test, "gate_allow advisory", ctx.state->p25_afc_gate_allow, 0);
@@ -344,7 +344,7 @@ test_overflow_ignored_gracefully(void) {
     for (int i = 0; i < 30; i++) {
         p25_status_accum_add(ctx.state, 0x01);
     }
-    p25_status_accum_classify(ctx.state, ctx.opts);
+    p25_status_accum_classify(ctx.state);
 
     int rc = 0;
     rc |= expect_u32(test, "count", ctx.state->p25_ss_count, P25_STATUS_ACCUM_MAX);

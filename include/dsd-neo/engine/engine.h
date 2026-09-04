@@ -13,7 +13,31 @@
 extern "C" {
 #endif
 
-int dsd_engine_run(dsd_opts* opts, dsd_state* state);
+typedef int (*dsd_engine_lifecycle_start_fn)(dsd_opts* opts, dsd_state* state, void* context);
+typedef void (*dsd_engine_lifecycle_stop_fn)(dsd_opts* opts, dsd_state* state, void* context);
+
+typedef struct {
+    dsd_engine_lifecycle_start_fn start;
+    dsd_engine_lifecycle_stop_fn stop;
+    void* context;
+} dsd_engine_lifecycle_hooks;
+
+/**
+ * Run the engine with optional live-run lifecycle hooks.
+ *
+ * The start hook is called after engine and mode-specific setup succeeds, just
+ * before live processing begins. If start succeeds, the stop hook is called
+ * after live processing returns and before dsd_engine_cleanup() tears down
+ * engine-owned state.
+ *
+ * Shutdown flag: this clears the global exit flag on entry so a second run in one
+ * process is not killed by the previous run's shutdown. A host that can receive a
+ * stop request before this call returns to the decode loop -- anything driving the
+ * engine from its own thread -- must therefore latch that request and re-assert it
+ * from the start hook, which runs after the reset. Relying on the flag alone loses
+ * the stop, and the run then has nothing left watching for one.
+ */
+int dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks);
 void dsd_engine_cleanup(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus

@@ -17,6 +17,9 @@
  * 2023-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
+
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
@@ -44,14 +47,29 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#define PCLEAR_TUNE_AWAY //disable if slower return is preferred
-
 static void
 dmr_csbk_print_group_label(const dsd_state* state, uint32_t id) {
     char name[50];
     if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
         DSD_FPRINTF(stderr, " [%s]", name);
     }
+}
+
+static void
+dmr_csbk_publish_activity(dsd_state* state, uint8_t index, uint8_t slot, dsd_call_kind kind, uint64_t target,
+                          uint64_t source, uint16_t channel, long int frequency, int emergency, const char* notice) {
+    const dsd_call_observation observation = {
+        .protocol = state->lastsynctype,
+        .slot = slot & 1U,
+        .kind = kind,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+        .channel = channel,
+        .frequency_hz = frequency,
+        .emergency = emergency != 0,
+    };
+    (void)dsd_recent_activity_publish(state, index, &observation, notice, 0U);
 }
 
 // Safe append helper: appends src to dst within dstsz, NUL-terminating
@@ -89,52 +107,14 @@ dmr_policy_tune_allowed(const dsd_opts* opts, const dsd_state* state, uint32_t t
     DSD_MEMSET(&decision, 0, sizeof(decision));
 
     if (is_group_call) {
-        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, 0, data_call,
-                                               DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, 0, data_call, &decision);
     } else {
-        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, data_call,
-                                                 DSD_TG_POLICY_PRIVATE_ALLOWLIST_UNKNOWN_BLOCK,
-                                                 DSD_TG_POLICY_HOLD_COMPAT_GRANT, &decision);
+        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, data_call, &decision);
     }
     if (out_decision) {
         *out_decision = decision;
     }
     return rc == 0 && decision.tune_allowed;
-}
-
-static const char*
-dmr_policy_block_reason_label(uint32_t block_reasons) {
-    if (block_reasons & DSD_TG_POLICY_BLOCK_HOLD) {
-        return "hold";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_PRIVATE_DISABLED) {
-        return "private-disabled";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_GROUP_DISABLED) {
-        return "group-disabled";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_DATA_DISABLED) {
-        return "data-disabled";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED) {
-        return "enc-disabled";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) {
-        return "allowlist";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_MODE) {
-        return "mode";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_AUDIO) {
-        return "audio";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_RECORD) {
-        return "record";
-    }
-    if (block_reasons & DSD_TG_POLICY_BLOCK_STREAM) {
-        return "stream";
-    }
-    return "policy";
 }
 
 static void
@@ -147,7 +127,7 @@ dmr_policy_log_block(const dsd_opts* opts, int is_group_call, uint32_t target, u
         return;
     }
     DSD_FPRINTF(stderr, "\n DMR %s grant blocked (%s): target=%u source=%u;", is_group_call ? "group" : "private",
-                dmr_policy_block_reason_label(decision->block_reasons), target, source);
+                dsd_tg_policy_block_reason_label(decision->block_reasons), target, source);
 }
 
 static void dmr_gateway_identifier(uint32_t source, uint32_t target);
@@ -270,10 +250,10 @@ dmr_heuristic_report_fill(dsd_opts* opts, dsd_state* state, const dmr_heuristic_
                  step_khz, stats->first_lcn, mhz0);
     prev_alert = opts->call_alert;
     opts->call_alert = 0;
-    watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, msg, 0);
+    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, 0xFFFFFFU, 0xFFFFFFU);
+    (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, msg);
     opts->call_alert = prev_alert;
-    watchdog_event_history(opts, state, 0);
-    watchdog_event_current(opts, state, 0);
+    dsd_event_sync_slot(opts, state, 0);
 }
 
 // Attempt to fill missing LCNs heuristically from learned anchors.
@@ -337,10 +317,11 @@ dmr_learn_chan_map(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int fre
         DSD_SNPRINTF(msg, sizeof(msg), "DMR TIII: Learned LCN %04u -> %010.6f MHz;", lpcn, mhz);
         int prev_alert = opts->call_alert;
         opts->call_alert = 0; // suppress beeper for system-status events
-        watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, msg, 0);
+        const dsd_call_observation observation =
+            dsd_call_observation_data(state->lastsynctype, 0U, 0xFFFFFFU, 0xFFFFFFU);
+        (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, msg);
         opts->call_alert = prev_alert;
-        watchdog_event_history(opts, state, 0);
-        watchdog_event_current(opts, state, 0);
+        dsd_event_sync_slot(opts, state, 0);
     }
 
     // Try heuristic gap fill after learning a new anchor
@@ -370,48 +351,18 @@ dmr_cspdu_pf0_should_skip_call(const dsd_opts* opts, int* csbk_o, int* data_call
     return (opts->trunk_tune_private_calls == 0 && *csbk_o != 49) ? 1 : 0;
 }
 
-static void
-dmr_cspdu_pf0_update_slot_call_string(dsd_state* state, int slot, int csbk_o, int data_call, int emergency) {
-    DSD_SNPRINTF(state->call_string[slot], sizeof(state->call_string[slot]), " Trunked ");
-    if (csbk_o == 49 || csbk_o == 50) {
-        DSD_SNPRINTF(state->call_string[slot], sizeof(state->call_string[slot]), "   Group ");
-    } else if (!data_call) {
-        DSD_SNPRINTF(state->call_string[slot], sizeof(state->call_string[slot]), " Private ");
-    }
-    if (emergency && !data_call) {
-        dsd_append(state->call_string[slot], sizeof state->call_string[slot], " Emergency  ");
-    } else {
-        dsd_append(state->call_string[slot], sizeof state->call_string[slot], "            ");
-    }
-}
-
-static void
-dmr_cspdu_pf0_update_slot_grant_state(dsd_state* state, int slot, uint32_t target, uint32_t source, int csbk_o,
-                                      int data_call, int emergency) {
-    if (slot == 0) {
-        state->lasttg = target;
-        state->lastsrc = source;
-    } else if (slot == 1) {
-        state->lasttgR = target;
-        state->lastsrcR = source;
-    } else {
-        return;
-    }
-    dmr_cspdu_pf0_update_slot_call_string(state, slot, csbk_o, data_call, emergency);
-}
-
 static uint16_t
 dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], long int* freq) {
-    uint8_t mbc_cdeftype = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[112], 4);
-    unsigned long long int mbc_cdefparms = (unsigned long long int)ConvertBitIntoBytes(&cs_pdu_bits[118], 58);
+    uint8_t mbc_cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
+    unsigned long long int mbc_cdefparms = (unsigned long long int)convert_bits_into_output(&cs_pdu_bits[118], 58);
     if (mbc_cdeftype != 0) {
         DSD_FPRINTF(stderr, "\n  MBC Channel Grant - Unknown Parms: %015llX", mbc_cdefparms);
         return 0;
     }
 
-    uint16_t mbc_lpchannum = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[118], 12);
-    uint16_t mbc_abs_rx_int = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[153], 10);
-    uint16_t mbc_abs_rx_step = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[163], 13);
+    uint16_t mbc_lpchannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[118], 12);
+    uint16_t mbc_abs_rx_int = (uint16_t)convert_bits_into_output(&cs_pdu_bits[153], 10);
+    uint16_t mbc_abs_rx_step = (uint16_t)convert_bits_into_output(&cs_pdu_bits[163], 13);
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, "  RX APCN: %04d; RX INT: %d; RX STEP: %d;", mbc_lpchannum, mbc_abs_rx_int, mbc_abs_rx_step);
     *freq = (mbc_abs_rx_int * 1000000L) + (mbc_abs_rx_step * 125L);
@@ -420,7 +371,8 @@ dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_
 }
 
 static void
-dmr_cspdu_pf0_set_active_channel(dsd_state* state, uint8_t lcn, uint16_t channel, uint32_t target, int csbk_o) {
+dmr_cspdu_pf0_publish_grant(dsd_state* state, uint8_t lcn, uint16_t channel, long int frequency, uint32_t target,
+                            uint32_t source, int csbk_o, int emergency) {
     char suf[24];
     dmr_format_chan_suffix(lcn, suf, sizeof suf);
     const char* kind = "Active Private Ch";
@@ -429,8 +381,13 @@ dmr_cspdu_pf0_set_active_channel(dsd_state* state, uint8_t lcn, uint16_t channel
     } else if (dmr_cspdu_pf0_is_data_grant_opcode(csbk_o)) {
         kind = "Active Data Ch";
     }
-    DSD_SNPRINTF(state->active_channel[lcn], sizeof(state->active_channel[lcn]), "%s: %04X%s TG: %u; ", kind, channel,
-                 suf, (unsigned)target);
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    DSD_SNPRINTF(notice, sizeof notice, "%s: %04X%s TG: %u; ", kind, channel, suf, (unsigned)target);
+    const dsd_call_kind call_kind =
+        dmr_cspdu_pf0_is_data_grant_opcode(csbk_o)
+            ? DSD_CALL_KIND_DATA
+            : ((csbk_o == 49 || csbk_o == 50) ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE);
+    dmr_csbk_publish_activity(state, lcn, lcn, call_kind, target, source, channel, frequency, emergency, notice);
 }
 
 static void
@@ -466,12 +423,12 @@ dmr_cspdu_pf0_print_frequency(uint16_t lpchannum, long int freq) {
 }
 
 static void
-dmr_cspdu_pf0_update_active_channels(dsd_state* state, uint8_t lcn, uint16_t lpchannum, uint16_t mbc_lpchannum,
-                                     uint32_t target, int csbk_o) {
+dmr_cspdu_pf0_publish_active_grant(dsd_state* state, uint8_t lcn, uint16_t lpchannum, uint16_t mbc_lpchannum,
+                                   long int frequency, uint32_t target, uint32_t source, int csbk_o, int emergency) {
     if (lpchannum != 0 && lpchannum != 0xFFF) {
-        dmr_cspdu_pf0_set_active_channel(state, lcn, lpchannum, target, csbk_o);
+        dmr_cspdu_pf0_publish_grant(state, lcn, lpchannum, frequency, target, source, csbk_o, emergency);
     } else if (lpchannum == 0xFFF) {
-        dmr_cspdu_pf0_set_active_channel(state, lcn, mbc_lpchannum, target, csbk_o);
+        dmr_cspdu_pf0_publish_grant(state, lcn, mbc_lpchannum, frequency, target, source, csbk_o, emergency);
     }
 }
 
@@ -497,8 +454,7 @@ dmr_cspdu_pf0_prepare_dispatch(const dsd_opts* opts, dsd_state* state, int* csbk
 
 static void
 dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], int csbk_o,
-                                 int data_call, uint8_t lcn, int emergency, uint16_t lpchannum, long int freq,
-                                 uint32_t target, uint32_t source) {
+                                 int data_call, uint16_t lpchannum, long int freq, uint32_t target, uint32_t source) {
     if (state->trunk_cc_freq == 0 || opts->trunk_enable != 1 || freq == 0) {
         return;
     }
@@ -513,12 +469,6 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     }
 
     dmr_csbk_print_group_label(state, target);
-    if (lcn == 0 && data_call == 0) {
-        dmr_cspdu_pf0_update_slot_grant_state(state, 0, target, source, csbk_o, data_call, emergency);
-    }
-    if (lcn == 1 && data_call == 0) {
-        dmr_cspdu_pf0_update_slot_grant_state(state, 1, target, source, csbk_o, data_call, emergency);
-    }
 
     struct dmr_csbk_result res;
     if (dmr_csbk_parse(cs_pdu_bits, cs_pdu, &res) != 0) {
@@ -544,14 +494,14 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
         DSD_FPRINTF(stderr, " %s", dmr_csbk_grant_opcode_name((uint8_t)csbk_o));
     }
 
-    uint16_t lpchannum = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 12);
+    uint16_t lpchannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 12);
     dmr_cspdu_pf0_print_channel_kind(lpchannum);
 
-    uint16_t pluschannum = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 13) + 1;
+    uint16_t pluschannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 13) + 1;
     uint8_t lcn = cs_pdu_bits[28];
     uint8_t st2 = cs_pdu_bits[30];
-    uint32_t target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, "  LPCN: %04d; TS: %d; LPCN+TS: %04d; Target: %08d - Source: %08d ", lpchannum, lcn + 1,
@@ -564,27 +514,26 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     uint16_t mbc_lpchannum = dmr_cspdu_pf0_resolve_frequency(opts, state, cs_pdu_bits, lpchannum, &freq);
     dmr_cspdu_pf0_print_frequency(lpchannum, freq);
 
-    dmr_cspdu_pf0_update_active_channels(state, lcn, lpchannum, mbc_lpchannum, target, csbk_o);
-    state->last_active_time = time(NULL);
+    dmr_cspdu_pf0_publish_active_grant(state, lcn, lpchannum, mbc_lpchannum, freq, target, source, csbk_o, st2);
 
     int data_call = 0;
     if (!dmr_cspdu_pf0_prepare_dispatch(opts, state, &csbk_o, &data_call, freq, target)) {
         return;
     }
 
-    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, csbk_o, data_call, lcn, st2, lpchannum, freq,
-                                     target, source);
+    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, csbk_o, data_call, lpchannum, freq, target,
+                                     source);
 }
 
 static void
 dmr_cspdu_pf0_move_resolve_freq(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint16_t* move_lpcn,
                                 long int* move_freq) {
     if (*move_lpcn == 0xFFF) {
-        uint8_t mbc_cdeftype = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[112], 4);
+        uint8_t mbc_cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
         if (mbc_cdeftype == 0) {
-            uint16_t mbc_lpchannum = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[118], 12);
-            uint16_t mbc_abs_rx_int = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[153], 10);
-            uint16_t mbc_abs_rx_step = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[163], 13);
+            uint16_t mbc_lpchannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[118], 12);
+            uint16_t mbc_abs_rx_int = (uint16_t)convert_bits_into_output(&cs_pdu_bits[153], 10);
+            uint16_t mbc_abs_rx_step = (uint16_t)convert_bits_into_output(&cs_pdu_bits[163], 13);
             *move_lpcn = mbc_lpchannum;
             *move_freq = (mbc_abs_rx_int * 1000000L) + (mbc_abs_rx_step * 125L);
             dmr_learn_chan_map(opts, state, *move_lpcn, *move_freq);
@@ -597,48 +546,17 @@ dmr_cspdu_pf0_move_resolve_freq(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu
 }
 
 static void
-dmr_cspdu_pf0_move_update_slot_state(dsd_state* state, int tslot, uint32_t mv_target, uint32_t mv_source) {
-    if (mv_target == 0) {
-        return;
-    }
-    if (tslot == 0) {
-        state->lasttg = mv_target;
-        state->lastsrc = mv_source;
-        if (state->gi[0] == 0) {
-            DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], "   Group  Move      ");
-        } else if (state->gi[0] == 1) {
-            DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], " Private  Move      ");
-        } else {
-            DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], " Trunked  Move      ");
-        }
-        return;
-    }
-
-    state->lasttgR = mv_target;
-    state->lastsrcR = mv_source;
-    if (state->gi[1] == 0) {
-        DSD_SNPRINTF(state->call_string[1], sizeof state->call_string[1], "   Group  Move      ");
-    } else if (state->gi[1] == 1) {
-        DSD_SNPRINTF(state->call_string[1], sizeof state->call_string[1], " Private  Move      ");
-    } else {
-        DSD_SNPRINTF(state->call_string[1], sizeof state->call_string[1], " Trunked  Move      ");
-    }
-}
-
-static void
 dmr_cspdu_pf0_move_debounce_slot(dsd_state* state, int tslot) {
     if (tslot == 0) {
         state->dmrburstL = 16;
         state->dmrburstR = 9;
-        state->active_channel[1][0] = '\0';
-        state->call_string[1][0] = '\0';
+        (void)dsd_recent_activity_clear(state, 1U);
         return;
     }
 
     state->dmrburstR = 16;
     state->dmrburstL = 9;
-    state->active_channel[0][0] = '\0';
-    state->call_string[0][0] = '\0';
+    (void)dsd_recent_activity_clear(state, 0U);
 }
 
 static void
@@ -651,29 +569,29 @@ dmr_cspdu_pf0_handle_move(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
     DSD_FPRINTF(stderr, " Move (C_MOVE) ");
 
     long int move_freq = 0;
-    uint16_t move_lpcn = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 12);
+    uint16_t move_lpcn = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 12);
     uint8_t move_ts = cs_pdu_bits[28];
-    uint32_t mv_target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t mv_source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint32_t mv_target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t mv_source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
     int tslot = (int)(move_ts & 1);
     char suf[24];
 
     UNUSED(move_ts);
     dmr_cspdu_pf0_move_resolve_freq(opts, state, cs_pdu_bits, &move_lpcn, &move_freq);
-    dmr_cspdu_pf0_move_update_slot_state(state, tslot, mv_target, mv_source);
 
     dmr_format_chan_suffix(tslot, suf, sizeof suf);
     if (move_lpcn != 0) {
-        DSD_SNPRINTF(state->active_channel[tslot], sizeof state->active_channel[tslot], "Active Ch: %04X%s TG: %u; ",
-                     move_lpcn, suf, mv_target);
-        state->last_active_time = time(NULL);
+        char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %u; ", move_lpcn, suf, mv_target);
+        dmr_csbk_publish_activity(state, (uint8_t)tslot, (uint8_t)tslot, DSD_CALL_KIND_GROUP_VOICE, mv_target,
+                                  mv_source, move_lpcn, move_freq, 0, notice);
     }
 
     dmr_cspdu_pf0_move_debounce_slot(state, tslot);
 
     if (opts->trunk_enable == 1 && state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 1
         && (move_freq > 0 || (move_lpcn > 0 && move_lpcn < 0xFFFF))) {
-        dmr_sm_emit_group_grant(opts, state, move_freq, move_lpcn, mv_target, mv_source);
+        dmr_sm_emit_group_grant_slot(opts, state, move_freq, move_lpcn, tslot, mv_target, mv_source);
     }
 }
 
@@ -712,11 +630,11 @@ dmr_cspdu_pf0_handle_p_maint(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o
 
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " P_MAINT -");
-    uint16_t pm_res1 = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 12);
-    uint8_t pm_kind = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[28], 3);
+    uint16_t pm_res1 = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 12);
+    uint8_t pm_kind = (uint8_t)convert_bits_into_output(&cs_pdu_bits[28], 3);
     uint8_t pm_res2 = cs_pdu_bits[31];
-    uint32_t pm_target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t pm_source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint32_t pm_target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t pm_source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
     if (pm_kind == 0) {
         DSD_FPRINTF(stderr, "Disconnect; ");
@@ -759,11 +677,11 @@ dmr_cspdu_pf0_handle_acks(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o, i
         DSD_FPRINTF(stderr, " P_ACKU Inbound Payload; ");
     }
 
-    uint8_t response_info = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 7);
-    uint8_t reason_code = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[23], 8);
+    uint8_t response_info = (uint8_t)convert_bits_into_output(&cs_pdu_bits[16], 7);
+    uint8_t reason_code = (uint8_t)convert_bits_into_output(&cs_pdu_bits[23], 8);
     uint8_t ack_res1 = cs_pdu_bits[31];
-    uint32_t ack_target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t ack_source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint32_t ack_target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t ack_source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
     DSD_FPRINTF(stderr, "Response: %02X; Reason: %02X; ", response_info, reason_code);
     if (ack_res1) {
@@ -785,8 +703,8 @@ dmr_cspdu_pf0_handle_c_rand(int csbk_o) {
 
 static void
 dmr_cspdu_pf0_print_tier2_target_source(const char* label, uint8_t cs_pdu_bits[]) {
-    uint32_t target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, "%s", label);
     DSD_FPRINTF(stderr, "Target [%d] - Source [%d] ", target, source);
@@ -856,18 +774,19 @@ dmr_cspdu_pf0_ahoy_service_text(uint8_t svc_kind, const char** print_text, const
 
 static void
 dmr_cspdu_pf0_handle_c_ahoy(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid) {
+    UNUSED(state);
     if (csbk_o != 28) {
         return;
     }
 
-    uint16_t svc_opt = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 7);
+    uint16_t svc_opt = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 7);
     uint8_t svc_flag = cs_pdu_bits[23];
     uint8_t als_flag = cs_pdu_bits[24];
     uint8_t ahoy_gi = cs_pdu_bits[25];
-    uint8_t ahoy_bf = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[26], 2);
-    uint8_t svc_kind = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[28], 4);
-    uint32_t ahoy_target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t ahoy_source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint8_t ahoy_bf = (uint8_t)convert_bits_into_output(&cs_pdu_bits[26], 2);
+    uint8_t svc_kind = (uint8_t)convert_bits_into_output(&cs_pdu_bits[28], 4);
+    uint32_t ahoy_target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t ahoy_source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
     char ahoy_str[200];
     const char* svc_print = NULL;
     const char* svc_append = NULL;
@@ -880,8 +799,6 @@ dmr_cspdu_pf0_handle_c_ahoy(dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o,
 
     DSD_FPRINTF(stderr, ahoy_gi == 0 ? "Private " : "Group ");
     dsd_append(ahoy_str, sizeof ahoy_str, ahoy_gi == 0 ? "Private; " : "Group; ");
-    state->gi[state->currentslot] = ahoy_gi ^ 1;
-
     DSD_FPRINTF(stderr, "FID: %02X SVC: %02X ", csbk_fid, svc_opt);
     dmr_cspdu_pf0_ahoy_service_text(svc_kind, &svc_print, &svc_append);
     if (svc_print != NULL) {
@@ -903,10 +820,10 @@ dmr_cspdu_pf0_handle_preamble(const dsd_opts* opts, dsd_state* state, uint8_t cs
 
     uint8_t content = cs_pdu_bits[16];
     uint8_t gi = cs_pdu_bits[17];
-    uint8_t res = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[18], 6);
-    uint8_t blocks = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[24], 8);
-    uint32_t target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint8_t res = (uint8_t)convert_bits_into_output(&cs_pdu_bits[18], 6);
+    uint8_t blocks = (uint8_t)convert_bits_into_output(&cs_pdu_bits[24], 8);
+    uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Preamble CSBK - ");
@@ -915,8 +832,8 @@ dmr_cspdu_pf0_handle_preamble(const dsd_opts* opts, dsd_state* state, uint8_t cs
     DSD_FPRINTF(stderr, content == 0 ? "CSBK - " : "Data - ");
 
     if (strcmp(state->dmr_branding_sub, "XPT ") == 0) {
-        target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[40], 16);
-        source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[64], 16);
+        target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[40], 16);
+        source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[64], 16);
         if (gi == 0) {
             uint8_t target_hash[24];
             for (int i = 0; i < 16; i++) {
@@ -929,10 +846,10 @@ dmr_cspdu_pf0_handle_preamble(const dsd_opts* opts, dsd_state* state, uint8_t cs
         }
     } else if (strcmp(state->dmr_branding_sub, "Cap+ ") == 0) {
         if (gi == 0) {
-            target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[40], 16);
+            target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[40], 16);
         }
-        source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[64], 16);
-        int rest = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[60], 4);
+        source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[64], 16);
+        int rest = (uint32_t)convert_bits_into_output(&cs_pdu_bits[60], 4);
         DSD_FPRINTF(stderr, "Source: %d - Target: %d - Rest LSN: %d", source, target, rest);
     } else {
         DSD_FPRINTF(stderr, "Source: %d - Target: %d ", source, target);
@@ -948,13 +865,12 @@ dmr_cspdu_pf0_handle_preamble(const dsd_opts* opts, dsd_state* state, uint8_t cs
 }
 
 static void
-dmr_cspdu_pf0_p_protect_mark_slot(dsd_state* state, int is_group_call) {
+dmr_cspdu_pf0_p_protect_mark_slot(dsd_state* state) {
     if (state->currentslot == 0) {
         state->dmrburstL = 1;
     } else {
         state->dmrburstR = 1;
     }
-    state->gi[state->currentslot] = is_group_call ? 0 : 1;
 }
 
 static const char*
@@ -974,11 +890,11 @@ dmr_cspdu_pf0_handle_p_protect(const dsd_opts* opts, dsd_state* state, uint8_t c
         return;
     }
 
-    uint16_t reserved = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 12);
-    uint8_t p_kind = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[28], 3);
+    uint16_t reserved = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 12);
+    uint8_t p_kind = (uint8_t)convert_bits_into_output(&cs_pdu_bits[28], 3);
     uint8_t gi = cs_pdu_bits[31];
-    uint32_t target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[32], 24);
-    uint32_t source = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    uint32_t source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Protect (P_PROTECT) -");
@@ -1003,20 +919,34 @@ dmr_cspdu_pf0_handle_p_protect(const dsd_opts* opts, dsd_state* state, uint8_t c
         return;
     }
     if (gi && opts->trunk_tune_group_calls == 1) {
-        dmr_cspdu_pf0_p_protect_mark_slot(state, 1);
+        dmr_cspdu_pf0_p_protect_mark_slot(state);
     }
     if (!gi && opts->trunk_tune_private_calls == 1) {
-        dmr_cspdu_pf0_p_protect_mark_slot(state, 0);
+        dmr_cspdu_pf0_p_protect_mark_slot(state);
     }
 }
 
 static int
+dmr_cspdu_pf0_slot_call_active(const dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+}
+
+// The companion slot is busy when its canonical call epoch is ACTIVE, not just
+// when its burst hint shows voice: the hint records the last burst decoded, so
+// a slot mid-call can sit on a TLC, data or stale hint between voice bursts,
+// and misreading that as free would force-release the channel out from under
+// the companion call. The hint values stay as corroboration for late entry,
+// where bursts decode before any LC has opened a canonical epoch.
+static int
 dmr_cspdu_pf0_p_clear_from_voice(const dsd_state* state) {
     int clear = 0;
-    if (state->currentslot == 0 && (state->dmrburstR != 16 && state->dmrburstR != 0 && state->dmrburstR != 1)) {
+    if (state->currentslot == 0 && (state->dmrburstR != 16 && state->dmrburstR != 0 && state->dmrburstR != 1)
+        && !dmr_cspdu_pf0_slot_call_active(state, 1U)) {
         clear = 2;
     }
-    if (state->currentslot == 1 && (state->dmrburstL != 16 && state->dmrburstL != 0 && state->dmrburstL != 1)) {
+    if (state->currentslot == 1 && (state->dmrburstL != 16 && state->dmrburstL != 0 && state->dmrburstL != 1)
+        && !dmr_cspdu_pf0_slot_call_active(state, 0U)) {
         clear = 3;
     }
     return clear;
@@ -1039,11 +969,14 @@ dmr_cspdu_pf0_p_clear_from_data(const dsd_opts* opts, const dsd_state* state, in
 
 static int
 dmr_cspdu_pf0_p_clear_from_hold(const dsd_state* state, int clear) {
-    if (state->currentslot == 0 && state->tg_hold == (uint32_t)state->lasttg && state->tg_hold != 0) {
-        clear = 4;
+    dsd_call_snapshot call;
+    if (state->tg_hold == 0 || state->currentslot < 0 || state->currentslot >= DSD_CALL_STATE_SLOT_COUNT
+        || dsd_call_state_get(state, (uint8_t)state->currentslot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return clear;
     }
-    if (state->currentslot == 1 && state->tg_hold == (uint32_t)state->lasttgR && state->tg_hold != 0) {
-        clear = 5;
+    const uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
+    if ((uint64_t)state->tg_hold == target) {
+        clear = state->currentslot == 0 ? 4 : 5;
     }
     return clear;
 }
@@ -1056,19 +989,20 @@ dmr_cspdu_pf0_p_clear_compute(const dsd_opts* opts, const dsd_state* state) {
     return clear;
 }
 
+// Only the P_CLEAR's own slot goes idle. The companion's burst hint records
+// what that slot last decoded, and this teardown is not an observation of the
+// companion: stomping it mid-call would hand every hint consumer a false
+// "idle" for a slot whose call is still running. A genuinely idle companion
+// re-records 9 from its own idle bursts within a burst period.
 static void
 dmr_cspdu_pf0_p_clear_mark_slots_idle(dsd_state* state) {
     if (state->currentslot == 0) {
         state->dmrburstL = 9;
-        state->dmrburstR = 9;
-        state->call_string[0][0] = '\0';
-        state->active_channel[0][0] = '\0';
+        (void)dsd_recent_activity_clear(state, 0U);
         return;
     }
     state->dmrburstR = 9;
-    state->dmrburstL = 9;
-    state->call_string[1][0] = '\0';
-    state->active_channel[1][0] = '\0';
+    (void)dsd_recent_activity_clear(state, 1U);
 }
 
 static void
@@ -1201,18 +1135,12 @@ dmr_cspdu_pf0_handle_p_clear(dsd_opts* opts, dsd_state* state, int csbk_o, int c
     clear = dmr_cspdu_pf0_p_clear_compute(opts, state);
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Clear (P_CLEAR) ");
-#ifdef PCLEAR_TUNE_AWAY
     if (opts->trunk_enable != 1) {
         return;
     }
     dmr_cspdu_pf0_p_clear_mark_slots_idle(state);
     clear = dmr_cspdu_pf0_p_clear_log_status(state, clear, csbk_fid, pslot, oslot);
     dmr_cspdu_pf0_p_clear_emit_release(opts, state, clear);
-#else
-    UNUSED(clear);
-    UNUSED(pslot);
-    UNUSED(oslot);
-#endif
 }
 
 typedef struct {
@@ -1245,28 +1173,28 @@ typedef struct {
 
 static void
 dmr_cspdu_pf0_c_bcast_parse(const uint8_t cs_pdu_bits[], dmr_cspdu_pf0_c_bcast_fields* f) {
-    f->a_type = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 5);
-    f->bparms1 = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[21], 14);
+    f->a_type = (uint8_t)convert_bits_into_output(&cs_pdu_bits[16], 5);
+    f->bparms1 = (uint16_t)convert_bits_into_output(&cs_pdu_bits[21], 14);
     for (int i = 0; i < 14; i++) {
         f->bpbits1[i] = cs_pdu_bits[21 + i];
     }
 
     f->reg_req = cs_pdu_bits[35];
-    f->backoff = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[36], 4);
-    f->syscode = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[40], 14);
-    f->bparms2 = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    f->backoff = (uint8_t)convert_bits_into_output(&cs_pdu_bits[36], 4);
+    f->syscode = (uint16_t)convert_bits_into_output(&cs_pdu_bits[40], 14);
+    f->bparms2 = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
     for (int i = 0; i < 24; i++) {
         f->bpbits2[i] = cs_pdu_bits[56 + i];
     }
 
-    f->mbc_csbko = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[98], 6);
-    f->mbc_res = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[104], 4);
-    f->mbc_cc = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[108], 4);
-    f->mbc_cdeftype = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[112], 4);
-    f->mbc_res2 = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[116], 2);
-    f->mbc_cdefparms = (unsigned long long)ConvertBitIntoBytes(&cs_pdu_bits[118], 58);
+    f->mbc_csbko = (uint8_t)convert_bits_into_output(&cs_pdu_bits[98], 6);
+    f->mbc_res = (uint8_t)convert_bits_into_output(&cs_pdu_bits[104], 4);
+    f->mbc_cc = (uint8_t)convert_bits_into_output(&cs_pdu_bits[108], 4);
+    f->mbc_cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
+    f->mbc_res2 = (uint8_t)convert_bits_into_output(&cs_pdu_bits[116], 2);
+    f->mbc_cdefparms = (unsigned long long)convert_bits_into_output(&cs_pdu_bits[118], 58);
 
-    f->a_channel = (uint16_t)ConvertBitIntoBytes(&f->bpbits2[12], 12);
+    f->a_channel = (uint16_t)convert_bits_into_output(&f->bpbits2[12], 12);
 }
 
 static void
@@ -1293,11 +1221,11 @@ dmr_cspdu_pf0_c_bcast_print_type(uint8_t a_type) {
 
 static void
 dmr_cspdu_pf0_c_bcast_parse_abs_freqs(const uint8_t cs_pdu_bits[], dmr_cspdu_pf0_c_bcast_abs_freqs* abs_freqs) {
-    abs_freqs->lpchannum = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[118], 12);
-    abs_freqs->abs_tx_int = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[130], 10);
-    abs_freqs->abs_tx_step = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[140], 13);
-    abs_freqs->abs_rx_int = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[153], 10);
-    abs_freqs->abs_rx_step = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[163], 13);
+    abs_freqs->lpchannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[118], 12);
+    abs_freqs->abs_tx_int = (uint16_t)convert_bits_into_output(&cs_pdu_bits[130], 10);
+    abs_freqs->abs_tx_step = (uint16_t)convert_bits_into_output(&cs_pdu_bits[140], 13);
+    abs_freqs->abs_rx_int = (uint16_t)convert_bits_into_output(&cs_pdu_bits[153], 10);
+    abs_freqs->abs_rx_step = (uint16_t)convert_bits_into_output(&cs_pdu_bits[163], 13);
     abs_freqs->freqr = (abs_freqs->abs_rx_int * 1000000L) + (abs_freqs->abs_rx_step * 125L);
     abs_freqs->freqt = (abs_freqs->abs_tx_int * 1000000L) + (abs_freqs->abs_tx_step * 125L);
 }
@@ -1323,12 +1251,44 @@ dmr_cspdu_pf0_c_bcast_print_unknown_cdef(const dmr_cspdu_pf0_c_bcast_fields* f, 
     DSD_FPRINTF(stderr, " RES2: %X;", f->mbc_res2);
 }
 
+/*
+ * Ceiling on frequencies learned from site broadcasts. Held at the embedded slot count so
+ * over-the-air data can never drive a heap allocation; the reserve call below keeps the
+ * function correct if that ever changes.
+ */
+enum { DMR_CSBK_LEARNED_LCN_MAX = DSD_TRUNK_LCN_EMBEDDED };
+
+/*
+ * Remember a frequency announced by C_BCAST Chan_Freq as a control-channel hunt candidate.
+ *
+ * Appends distinct frequencies rather than writing modulo a fixed window: the scan list is no
+ * longer capped at a handful of slots, so a modular write would clobber a learned entry and
+ * assigning the count would truncate the list to the window size. An operator-supplied map is
+ * left untouched entirely - it is positional (index i is LCN i+1), so appending site-announced
+ * frequencies to it would break that numbering, and the announced channel is already recorded
+ * in the sparse channel map by the caller either way.
+ */
 static void
-dmr_cspdu_pf0_c_bcast_track_freq(dsd_state* state, long freqr) {
-    state->trunk_lcn_freq[state->lcn_freq_count++ % 25] = freqr;
-    if (state->lcn_freq_count > 25) {
-        state->lcn_freq_count = 25;
+dmr_cspdu_pf0_c_bcast_track_freq(const dsd_opts* opts, dsd_state* state, long freqr) {
+    if (freqr == 0 || dsd_state_trunk_lcn_user_list_present(opts, state)) {
+        return;
     }
+    if (state->lcn_freq_count < 0) {
+        state->lcn_freq_count = 0;
+    }
+    for (int i = 0; i < state->lcn_freq_count; i++) {
+        if (*dsd_state_trunk_lcn_slot_const(state, i) == freqr) {
+            return;
+        }
+    }
+    if (state->lcn_freq_count >= DMR_CSBK_LEARNED_LCN_MAX) {
+        return;
+    }
+    if (dsd_state_trunk_lcn_reserve(state, (size_t)state->lcn_freq_count + 1U) != 0) {
+        return;
+    }
+    *dsd_state_trunk_lcn_slot(state, state->lcn_freq_count) = freqr;
+    state->lcn_freq_count++;
 }
 
 static void
@@ -1337,7 +1297,7 @@ dmr_cspdu_pf0_c_bcast_maybe_store_channel(dsd_opts* opts, dsd_state* state, uint
         return;
     }
     dsd_state_set_trunk_chan_freq(state, (uint32_t)a_channel, freqr);
-    dmr_cspdu_pf0_c_bcast_track_freq(state, freqr);
+    dmr_cspdu_pf0_c_bcast_track_freq(opts, state, freqr);
     const long cand[1] = {freqr};
     dmr_sm_on_neighbor_update(opts, state, cand, 1);
 }
@@ -1370,7 +1330,7 @@ dmr_cspdu_pf0_c_bcast_try_switch_tscc(dsd_opts* opts, dsd_state* state, long f1,
     if (next > 0 && next != cur) {
         const long previous_cc = state->trunk_cc_freq;
         state->trunk_cc_freq = next;
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state);
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state, NULL);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             state->trunk_cc_freq = previous_cc;
             return;
@@ -1381,13 +1341,13 @@ dmr_cspdu_pf0_c_bcast_try_switch_tscc(dsd_opts* opts, dsd_state* state, long f1,
 
 static void
 dmr_cspdu_pf0_c_bcast_handle_ann_wd_tscc(dsd_opts* opts, dsd_state* state, const dmr_cspdu_pf0_c_bcast_fields* f) {
-    uint8_t ann_res = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[0], 4);
-    uint8_t cc_ch1 = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[4], 4);
-    uint8_t cc_ch2 = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[8], 4);
+    uint8_t ann_res = (uint8_t)convert_bits_into_output(&f->bpbits1[0], 4);
+    uint8_t cc_ch1 = (uint8_t)convert_bits_into_output(&f->bpbits1[4], 4);
+    uint8_t cc_ch2 = (uint8_t)convert_bits_into_output(&f->bpbits1[8], 4);
     uint8_t ch1_flag = f->bpbits1[12];
     uint8_t ch2_flag = f->bpbits1[13];
-    uint16_t bcast_ch1 = (uint16_t)ConvertBitIntoBytes(&f->bpbits2[0], 12);
-    uint16_t bcast_ch2 = (uint16_t)ConvertBitIntoBytes(&f->bpbits2[12], 12);
+    uint16_t bcast_ch1 = (uint16_t)convert_bits_into_output(&f->bpbits2[0], 12);
+    uint16_t bcast_ch2 = (uint16_t)convert_bits_into_output(&f->bpbits2[12], 12);
 
     DSD_FPRINTF(stderr, "\n");
     if (ann_res) {
@@ -1424,10 +1384,10 @@ dmr_cspdu_pf0_c_bcast_handle_ann_wd_tscc(dsd_opts* opts, dsd_state* state, const
 
 static void
 dmr_cspdu_pf0_c_bcast_handle_call_timer(const dmr_cspdu_pf0_c_bcast_fields* f) {
-    uint16_t t_emerg_timer = (uint16_t)ConvertBitIntoBytes(&f->bpbits1[0], 9);
-    uint8_t t_packet_timer = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[9], 5);
-    uint16_t t_msms_timer = (uint16_t)ConvertBitIntoBytes(&f->bpbits2[0], 12);
-    uint16_t t_msline_timer = (uint16_t)ConvertBitIntoBytes(&f->bpbits2[12], 12);
+    uint16_t t_emerg_timer = (uint16_t)convert_bits_into_output(&f->bpbits1[0], 9);
+    uint8_t t_packet_timer = (uint8_t)convert_bits_into_output(&f->bpbits1[9], 5);
+    uint16_t t_msms_timer = (uint16_t)convert_bits_into_output(&f->bpbits2[0], 12);
+    uint16_t t_msline_timer = (uint16_t)convert_bits_into_output(&f->bpbits2[12], 12);
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Timers - Emergency: %d; Packet: %d; MS-MS: %d; Line: %d; ", t_emerg_timer, t_packet_timer,
                 t_msms_timer, t_msline_timer);
@@ -1452,16 +1412,16 @@ dmr_cspdu_pf0_c_bcast_offset_minutes(uint8_t lt_off_fr) {
 
 static void
 dmr_cspdu_pf0_c_bcast_handle_local_time(const dmr_cspdu_pf0_c_bcast_fields* f) {
-    uint8_t lt_day = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[0], 5);
-    uint8_t lt_mon = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[5], 4);
-    uint8_t lt_off = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[9], 4);
+    uint8_t lt_day = (uint8_t)convert_bits_into_output(&f->bpbits1[0], 5);
+    uint8_t lt_mon = (uint8_t)convert_bits_into_output(&f->bpbits1[5], 4);
+    uint8_t lt_off = (uint8_t)convert_bits_into_output(&f->bpbits1[9], 4);
     uint8_t lt_off_sign = f->bpbits1[13];
-    uint8_t lt_hour = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[0], 5);
-    uint8_t lt_mins = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[5], 6);
-    uint8_t lt_secs = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[11], 6);
-    uint8_t lt_dofw = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[17], 3);
-    uint8_t lt_off_fr = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[20], 2);
-    uint8_t lt_res = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[22], 2);
+    uint8_t lt_hour = (uint8_t)convert_bits_into_output(&f->bpbits2[0], 5);
+    uint8_t lt_mins = (uint8_t)convert_bits_into_output(&f->bpbits2[5], 6);
+    uint8_t lt_secs = (uint8_t)convert_bits_into_output(&f->bpbits2[11], 6);
+    uint8_t lt_dofw = (uint8_t)convert_bits_into_output(&f->bpbits2[17], 3);
+    uint8_t lt_off_fr = (uint8_t)convert_bits_into_output(&f->bpbits2[20], 2);
+    uint8_t lt_res = (uint8_t)convert_bits_into_output(&f->bpbits2[22], 2);
 
     int offset = lt_off_sign ? -(int)lt_off : (int)lt_off;
     int localhour = lt_off_sign ? (int)lt_hour - (int)lt_off : (int)lt_hour + (int)lt_off;
@@ -1508,9 +1468,9 @@ dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(dsd_opts* opts, dsd_state* state, 
                                               int csbk_fid, const dmr_cspdu_pf0_c_bcast_fields* f) {
     uint8_t active_ava = f->bpbits2[0];
     uint8_t active_con = f->bpbits2[1];
-    uint8_t c_chan_pri = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[2], 3);
-    uint8_t a_chan_pri = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[5], 3);
-    uint8_t a_reserved = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[8], 4);
+    uint8_t c_chan_pri = (uint8_t)convert_bits_into_output(&f->bpbits2[2], 3);
+    uint8_t a_chan_pri = (uint8_t)convert_bits_into_output(&f->bpbits2[5], 3);
+    uint8_t a_reserved = (uint8_t)convert_bits_into_output(&f->bpbits2[8], 4);
 
     DSD_FPRINTF(stderr, "\n");
     dmr_decode_syscode(opts, state, (uint8_t*)cs_pdu_bits, csbk_fid, 1);
@@ -1549,8 +1509,8 @@ dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(dsd_opts* opts, dsd_state* state, 
 
 static void
 dmr_cspdu_pf0_c_bcast_handle_gen_site_params(const dmr_cspdu_pf0_c_bcast_fields* f) {
-    uint8_t csi = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[0], 8);
-    uint8_t nin = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[16], 8);
+    uint8_t csi = (uint8_t)convert_bits_into_output(&f->bpbits1[0], 8);
+    uint8_t nin = (uint8_t)convert_bits_into_output(&f->bpbits2[16], 8);
     uint8_t hibernate_flag = f->bpbits2[1];
     uint8_t reg_tg_sub = f->bpbits2[16];
 
@@ -1561,9 +1521,9 @@ dmr_cspdu_pf0_c_bcast_handle_gen_site_params(const dmr_cspdu_pf0_c_bcast_fields*
 
 static void
 dmr_cspdu_pf0_c_bcast_handle_mass_reg(const dmr_cspdu_pf0_c_bcast_fields* f) {
-    uint8_t reg_window = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[5], 4);
-    uint8_t aloha_mask = (uint8_t)ConvertBitIntoBytes(&f->bpbits1[9], 5);
-    uint8_t reg_address = (uint8_t)ConvertBitIntoBytes(&f->bpbits2[16], 8);
+    uint8_t reg_window = (uint8_t)convert_bits_into_output(&f->bpbits1[5], 4);
+    uint8_t aloha_mask = (uint8_t)convert_bits_into_output(&f->bpbits1[9], 5);
+    uint8_t reg_address = (uint8_t)convert_bits_into_output(&f->bpbits2[16], 8);
 
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Reg Window: %X; Aloha Mask: %02X; Target: %d; ", reg_window, aloha_mask, reg_address);
@@ -1695,8 +1655,8 @@ dmr_cspdu_cap_plus_handle_3b(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
     DSD_MEMSET(nr, 0, sizeof(nr));
 
     for (int i = 0; i < 6; i++) {
-        nl[i] = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[32 + (i * 8)], 4);
-        nr[i] = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[36 + (i * 8)], 4);
+        nl[i] = (uint8_t)convert_bits_into_output(&cs_pdu_bits[32 + (i * 8)], 4);
+        nr[i] = (uint8_t)convert_bits_into_output(&cs_pdu_bits[36 + (i * 8)], 4);
         if (nl[i]) {
             DSD_FPRINTF(stderr, "Site: %d Rest: %d; ", nl[i], nr[i]);
         }
@@ -1724,6 +1684,7 @@ typedef struct {
     uint8_t bank_two;
     uint8_t ch[24];
     uint8_t pch[24];
+    uint16_t decoded_targets[24];
     uint16_t t_tg[24];
     int start;
     int end;
@@ -1731,10 +1692,10 @@ typedef struct {
 
 static void
 dmr_cspdu_cap_plus_3e_init_ctx(dmr_cap_plus_3e_ctx* ctx, const uint8_t cs_pdu_bits[]) {
-    ctx->fl = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 2);
+    ctx->fl = (uint8_t)convert_bits_into_output(&cs_pdu_bits[16], 2);
     ctx->ts = cs_pdu_bits[18];
     ctx->res = cs_pdu_bits[19];
-    ctx->rest_channel = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[20], 4);
+    ctx->rest_channel = (uint8_t)convert_bits_into_output(&cs_pdu_bits[20], 4);
     ctx->active_group_count = 0;
     ctx->bank_one = 0;
     ctx->bank_two = 0;
@@ -1742,6 +1703,7 @@ dmr_cspdu_cap_plus_3e_init_ctx(dmr_cap_plus_3e_ctx* ctx, const uint8_t cs_pdu_bi
     ctx->end = 16;
     DSD_MEMSET(ctx->ch, 0, sizeof(ctx->ch));
     DSD_MEMSET(ctx->pch, 0, sizeof(ctx->pch));
+    DSD_MEMSET(ctx->decoded_targets, 0, sizeof(ctx->decoded_targets));
     DSD_MEMSET(ctx->t_tg, 0, sizeof(ctx->t_tg));
 }
 
@@ -1803,7 +1765,7 @@ static void
 dmr_cspdu_cap_plus_3e_parse_group_banks(dsd_state* state, dmr_cap_plus_3e_ctx* ctx) {
     uint8_t b2_start = 0;
 
-    ctx->bank_one = (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ctx->ts][24], 8);
+    ctx->bank_one = (uint8_t)convert_bits_into_output(&state->cap_plus_csbk_bits[ctx->ts][24], 8);
     for (int i = 0; i < 8; i++) {
         ctx->ch[i] = state->cap_plus_csbk_bits[ctx->ts][i + 24];
         if (ctx->ch[i] == 1) {
@@ -1812,7 +1774,7 @@ dmr_cspdu_cap_plus_3e_parse_group_banks(dsd_state* state, dmr_cap_plus_3e_ctx* c
     }
 
     ctx->bank_two =
-        (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ctx->ts][32 + (ctx->active_group_count * 8)], 8);
+        (uint8_t)convert_bits_into_output(&state->cap_plus_csbk_bits[ctx->ts][32 + (ctx->active_group_count * 8)], 8);
     b2_start = ctx->active_group_count;
     if (ctx->bank_two == 0) {
         return;
@@ -1830,7 +1792,7 @@ static int
 dmr_cspdu_cap_plus_3e_parse_private_bank_one(dsd_state* state, dmr_cap_plus_3e_ctx* ctx) {
     int k = 0;
     uint8_t pdflag =
-        (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ctx->ts][40 + (ctx->active_group_count * 8)], 8);
+        (uint8_t)convert_bits_into_output(&state->cap_plus_csbk_bits[ctx->ts][40 + (ctx->active_group_count * 8)], 8);
     if (pdflag == 0) {
         return 0;
     }
@@ -1843,7 +1805,7 @@ dmr_cspdu_cap_plus_3e_parse_private_bank_one(dsd_state* state, dmr_cap_plus_3e_c
             continue;
         }
         DSD_FPRINTF(stderr, " LSN %02d:", i + 1);
-        uint16_t private_target = (uint16_t)ConvertBitIntoBytes(
+        uint16_t private_target = (uint16_t)convert_bits_into_output(
             &state->cap_plus_csbk_bits[ctx->ts][56 + (k * 16) + (ctx->active_group_count * 8)], 16);
         DSD_FPRINTF(stderr, " TGT %d;", private_target);
         k++;
@@ -1856,7 +1818,7 @@ dmr_cspdu_cap_plus_3e_parse_private_bank_one(dsd_state* state, dmr_cap_plus_3e_c
 
 static void
 dmr_cspdu_cap_plus_3e_parse_private_bank_two(dsd_state* state, dmr_cap_plus_3e_ctx* ctx, int pd_b2) {
-    uint8_t pdflag2 = (uint8_t)ConvertBitIntoBytes(
+    uint8_t pdflag2 = (uint8_t)convert_bits_into_output(
         &state->cap_plus_csbk_bits[ctx->ts][56 + (ctx->active_group_count * 8) + (pd_b2 * 16)], 8);
     int k = 0;
 
@@ -1872,7 +1834,7 @@ dmr_cspdu_cap_plus_3e_parse_private_bank_two(dsd_state* state, dmr_cap_plus_3e_c
             continue;
         }
         DSD_FPRINTF(stderr, " LSN %02d:", i + 1);
-        uint16_t private_target = (uint16_t)ConvertBitIntoBytes(
+        uint16_t private_target = (uint16_t)convert_bits_into_output(
             &state->cap_plus_csbk_bits[ctx->ts][64 + (k * 16) + (ctx->active_group_count * 8) + (pd_b2 * 16)], 16);
         DSD_FPRINTF(stderr, " TGT %d;", private_target);
         k++;
@@ -1943,15 +1905,55 @@ dmr_cspdu_cap_plus_3e_emit_row_breaks(int start, int i) {
 }
 
 static void
-dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dmr_cap_plus_3e_ctx* ctx) {
+dmr_cspdu_cap_plus_3e_render_slot(const dsd_opts* opts, dsd_state* state, dmr_cap_plus_3e_ctx* ctx, int i, int* k,
+                                  int* x, char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE]) {
     char cap_active[20];
+    if (ctx->ch[i] == 1) {
+        uint16_t tg = (uint16_t)convert_bits_into_output(&state->cap_plus_csbk_bits[ctx->ts][(*k * 8) + 32], 8);
+        DSD_FPRINTF(stderr, tg ? "%5d;  " : "Group;  ", tg);
+        ctx->decoded_targets[i] = tg;
+        if (opts->trunk_tune_group_calls == 1) {
+            ctx->t_tg[i] = tg;
+        }
+        if (tg != 0) {
+            (*k)++;
+        }
+        DSD_SNPRINTF(cap_active, sizeof(cap_active), "LSN:%d TG:%d; ", i + 1, tg);
+        dsd_append(notice, DSD_RECENT_ACTIVITY_TEXT_SIZE, cap_active);
+        return;
+    }
+
+    if (ctx->pch[i] == 1) {
+        uint16_t tg = (uint16_t)convert_bits_into_output(
+            &state->cap_plus_csbk_bits[ctx->ts][(ctx->active_group_count * 8) + (*x * 16) + 56], 16);
+        DSD_FPRINTF(stderr, tg ? "%5d;  " : " P||D;  ", tg);
+        ctx->decoded_targets[i] = tg;
+        if (opts->trunk_tune_private_calls == 1) {
+            ctx->t_tg[i] = tg;
+        }
+        if (tg != 0) {
+            (*x)++;
+        }
+        if (opts->trunk_tune_private_calls == 1) {
+            DSD_SNPRINTF(cap_active, sizeof(cap_active), "LSN:%d PC:%d; ", i + 1, tg);
+            dsd_append(notice, DSD_RECENT_ACTIVITY_TEXT_SIZE, cap_active);
+        }
+        return;
+    }
+
+    DSD_FPRINTF(stderr, i + 1 == ctx->rest_channel ? " Rest;  " : " Idle;  ");
+}
+
+static void
+dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dmr_cap_plus_3e_ctx* ctx) {
+    char notices[17][DSD_RECENT_ACTIVITY_TEXT_SIZE] = {{0}};
     int k = 0;
     int x = 0;
 
     DSD_FPRINTF(stderr, "\n  ");
-    DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
-    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Cap+ ");
-    state->last_active_time = time(NULL);
+    (void)dsd_recent_activity_clear_all(state);
+    DSD_SNPRINTF(notices[0], sizeof notices[0], "Cap+ ");
+    dmr_csbk_publish_activity(state, 0U, 0U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, 0, 0, notices[0]);
     dmr_cspdu_cap_plus_3e_calc_window(ctx);
 
     for (int i = ctx->start; i < ctx->end; i++) {
@@ -1960,42 +1962,14 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
         }
         dmr_cspdu_cap_plus_3e_emit_row_breaks(ctx->start, i);
         DSD_FPRINTF(stderr, "LSN %02d: ", i + 1);
-
-        if (ctx->ch[i] == 1) {
-            uint16_t tg = (uint16_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ctx->ts][(k * 8) + 32], 8);
-            DSD_FPRINTF(stderr, tg ? "%5d;  " : "Group;  ", tg);
-            if (opts->trunk_tune_group_calls == 1) {
-                ctx->t_tg[i] = tg;
-            }
-            if (tg != 0) {
-                k++;
-            }
-            DSD_SNPRINTF(cap_active, sizeof(cap_active), "LSN:%d TG:%d; ", i + 1, tg);
-            dsd_append(state->active_channel[i + 1], sizeof state->active_channel[0], cap_active);
-            continue;
-        }
-
-        if (ctx->pch[i] == 1) {
-            uint16_t tg = (uint16_t)ConvertBitIntoBytes(
-                &state->cap_plus_csbk_bits[ctx->ts][(ctx->active_group_count * 8) + (x * 16) + 56], 16);
-            DSD_FPRINTF(stderr, tg ? "%5d;  " : " P||D;  ", tg);
-            if (opts->trunk_tune_private_calls == 1) {
-                ctx->t_tg[i] = tg;
-            }
-            if (tg != 0) {
-                x++;
-            }
-            if (opts->trunk_tune_private_calls == 1) {
-                DSD_SNPRINTF(cap_active, sizeof(cap_active), "LSN:%d PC:%d; ", i + 1, tg);
-                dsd_append(state->active_channel[i + 1], sizeof state->active_channel[0], cap_active);
-            }
-            continue;
-        }
-
-        if (i + 1 == ctx->rest_channel) {
-            DSD_FPRINTF(stderr, " Rest;  ");
-        } else {
-            DSD_FPRINTF(stderr, " Idle;  ");
+        dmr_cspdu_cap_plus_3e_render_slot(opts, state, ctx, i, &k, &x, notices[i + 1]);
+    }
+    for (int i = 1; i <= 16; i++) {
+        if (notices[i][0] != '\0') {
+            const dsd_call_kind kind = ctx->pch[i - 1] == 1 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
+            const uint8_t slot = (uint8_t)((i - 1) & 1);
+            dmr_csbk_publish_activity(state, (uint8_t)i, slot, kind, ctx->decoded_targets[i - 1], 0U, (uint16_t)i,
+                                      state->trunk_chan_map[i], 0, notices[i]);
         }
     }
 }
@@ -2034,16 +2008,9 @@ dmr_cspdu_cap_plus_3e_try_tune_grants(dsd_opts* opts, dsd_state* state, const dm
 
         const long int grant_freq = state->trunk_chan_map[j + 1];
         const uint32_t old_rtl_center_freq = opts->rtlsdr_center_freq;
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, grant_freq, 0);
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, grant_freq, 0, NULL);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             break;
-        }
-        if (state->tg_hold != 0) {
-            if ((j & 1) == 0) {
-                state->lasttg = ctx->t_tg[j];
-            } else {
-                state->lasttgR = ctx->t_tg[j];
-            }
         }
         if (old_rtl_center_freq != (uint32_t)grant_freq) {
             dmr_reset_blocks(opts, state);
@@ -2061,7 +2028,7 @@ dmr_cspdu_cap_plus_3e_dump_payload(const dsd_opts* opts, dsd_state* state, const
     DSD_FPRINTF(stderr, "%s\n", KYEL);
     DSD_FPRINTF(stderr, " CAP+ Multi Block PDU \n  ");
     for (int i = 0; i < (10 + (block_num * 7)); i++) {
-        uint8_t fl_bytes = (uint8_t)ConvertBitIntoBytes(&state->cap_plus_csbk_bits[ctx->ts][((size_t)i * 8)], 8);
+        uint8_t fl_bytes = (uint8_t)convert_bits_into_output(&state->cap_plus_csbk_bits[ctx->ts][((size_t)i * 8)], 8);
         DSD_FPRINTF(stderr, "[%02X]", fl_bytes);
         if (i == 17 || i == 35) {
             DSD_FPRINTF(stderr, "\n  ");
@@ -2250,9 +2217,9 @@ dmr_cspdu_con_plus_try_tune_voice(dsd_opts* opts, dsd_state* state, const dmr_co
 
     state->is_con_plus = 1;
     if (g->opt == 3) {
-        dmr_sm_emit_indiv_grant(opts, state, f, g->lcn, g->grp_addr, g->src_addr);
+        dmr_sm_emit_indiv_grant_slot(opts, state, f, g->lcn, g->tslot, g->grp_addr, g->src_addr);
     } else {
-        dmr_sm_emit_group_grant(opts, state, f, g->lcn, g->grp_addr, g->src_addr);
+        dmr_sm_emit_group_grant_slot(opts, state, f, g->lcn, g->tslot, g->grp_addr, g->src_addr);
     }
 }
 
@@ -2275,9 +2242,11 @@ dmr_cspdu_con_plus_handle_voice(dsd_opts* opts, dsd_state* state, const uint8_t 
     dmr_cspdu_con_plus_set_branding(state);
 
     dmr_format_chan_suffix(g.tslot, suf, sizeof suf);
-    DSD_SNPRINTF(state->active_channel[g.tslot], sizeof(state->active_channel[g.tslot]), "Active Ch: %04X%s TG: %d; ",
-                 g.lcn, suf, g.grp_addr);
-    state->last_active_time = time(NULL);
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", g.lcn, suf, g.grp_addr);
+    const dsd_call_kind kind = g.opt == 3 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
+    dmr_csbk_publish_activity(state, g.tslot, g.tslot, kind, (uint64_t)g.grp_addr, (uint64_t)g.src_addr,
+                              (uint16_t)g.lcn, state->trunk_chan_map[g.lcn], 0, notice);
 
     if (opts->trunk_enable == 0 && state->trunk_chan_map[g.lcn] != 0) {
         state->trunk_vc_freq[0] = state->trunk_chan_map[g.lcn];
@@ -2303,8 +2272,7 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     dsd_tg_policy_decision policy_decision;
     int policy_allowed;
     char suf[24];
-    char prev_active_channel[sizeof state->active_channel[0]];
-    time_t prev_last_active_time;
+    dsd_recent_activity_transaction activity_transaction;
     time_t now;
 
     if (csbk_o != 0x06) {
@@ -2320,17 +2288,16 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     DSD_FPRINTF(stderr, " Target: %d; LCN: %d; TS: %d;", dtarget, lcn, tslot + 1);
     dmr_cspdu_con_plus_set_branding(state);
 
+    dmr_format_chan_suffix(tslot, suf, sizeof suf);
+    (void)dsd_recent_activity_save(state, tslot, &activity_transaction);
+    now = time(NULL);
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", lcn, suf, dtarget);
+    dmr_csbk_publish_activity(state, tslot, tslot, DSD_CALL_KIND_DATA, dtarget, 0U, lcn, state->trunk_chan_map[lcn], 0,
+                              notice);
     if (opts->trunk_tune_data_calls == 0) {
         return;
     }
-
-    dmr_format_chan_suffix(tslot, suf, sizeof suf);
-    DSD_SNPRINTF(prev_active_channel, sizeof prev_active_channel, "%s", state->active_channel[tslot]);
-    prev_last_active_time = state->last_active_time;
-    now = time(NULL);
-    DSD_SNPRINTF(state->active_channel[tslot], sizeof(state->active_channel[tslot]), "Active Ch: %04X%s TG: %d; ", lcn,
-                 suf, dtarget);
-    state->last_active_time = now;
     if (opts->trunk_enable == 0 && state->trunk_chan_map[lcn] != 0) {
         state->trunk_vc_freq[0] = state->trunk_chan_map[lcn];
         state->trunk_vc_freq[1] = state->trunk_chan_map[lcn];
@@ -2345,11 +2312,9 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     if (state->trunk_cc_freq != 0 && opts->trunk_enable == 1 && policy_allowed) {
         if (state->trunk_chan_map[lcn] != 0) {
             dsd_trunk_tune_result tune_result =
-                dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_chan_map[lcn], 0);
+                dsd_trunk_tuning_hook_tune_to_freq(opts, state, state->trunk_chan_map[lcn], 0, NULL);
             if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-                DSD_SNPRINTF(state->active_channel[tslot], sizeof(state->active_channel[tslot]), "%s",
-                             prev_active_channel);
-                state->last_active_time = prev_last_active_time;
+                (void)dsd_recent_activity_restore(state, &activity_transaction);
                 return;
             }
             state->is_con_plus = 1;
@@ -2439,22 +2404,20 @@ static void
 dmr_cspdu_xpt_print_and_collect(const dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t xpt_seq,
                                 uint8_t xpt_bank, const uint8_t xpt_ch[6], uint8_t t_tg[18]) {
     char xpt_active[20];
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE] = {0};
     int xpt_lcn = dmr_cspdu_xpt_lcn_start(xpt_seq);
     const int t_tg_count = 18;
 
     if (xpt_seq == 0) {
-        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "XPT ");
-    } else {
-        DSD_SNPRINTF(state->active_channel[xpt_seq], sizeof(state->active_channel[xpt_seq]), "%s", "");
+        DSD_SNPRINTF(notice, sizeof notice, "XPT ");
     }
-    state->last_active_time = time(NULL);
 
     for (int i = 0; i < 6; i++) {
         int slot_idx = i + xpt_bank;
         if (slot_idx >= t_tg_count) {
             continue;
         }
-        uint16_t tg = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[i * 8 + 32], 8);
+        uint16_t tg = (uint16_t)convert_bits_into_output(&cs_pdu_bits[i * 8 + 32], 8);
 
         if (i == 0 || i == 2 || i == 4) {
             DSD_FPRINTF(stderr, "\n LCN %d - ", xpt_lcn);
@@ -2472,7 +2435,7 @@ dmr_cspdu_xpt_print_and_collect(const dsd_opts* opts, dsd_state* state, uint8_t 
             } else {
                 DSD_SNPRINTF(xpt_active, sizeof(xpt_active), "LSN:%d UK:%d; ", slot_idx + 1, tg);
             }
-            dsd_append(state->active_channel[xpt_seq], sizeof state->active_channel[0], xpt_active);
+            dsd_append(notice, sizeof notice, xpt_active);
             continue;
         }
 
@@ -2481,6 +2444,7 @@ dmr_cspdu_xpt_print_and_collect(const dsd_opts* opts, dsd_state* state, uint8_t 
             t_tg[slot_idx] = 1;
         }
     }
+    dmr_csbk_publish_activity(state, xpt_seq, xpt_seq & 1U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, 0, 0, notice);
 }
 
 static void
@@ -2517,14 +2481,7 @@ dmr_cspdu_xpt_try_tune(dsd_opts* opts, dsd_state* state, const uint8_t t_tg[18],
         }
 
         DSD_FPRINTF(stderr, "\n LSN/TG to tune to: %d - %d", slot_idx + 1, tg);
-        if (state->tg_hold != 0) {
-            if ((j & 1) == 0) {
-                state->lasttg = (int)tg;
-            } else {
-                state->lasttgR = (int)tg;
-            }
-        }
-        dmr_sm_emit_group_grant(opts, state, state->trunk_chan_map[slot_idx + 1], 0, tg, 0);
+        dmr_sm_emit_group_grant_slot(opts, state, state->trunk_chan_map[slot_idx + 1], 0, slot_idx & 1, tg, 0);
         break;
     }
 }
@@ -2545,11 +2502,11 @@ dmr_cspdu_xpt_handle_site_status(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_MEMSET(t_tg, 0, sizeof(t_tg));
 
-    xpt_seq = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[0], 2);
-    xpt_free = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[16], 4);
+    xpt_seq = (uint8_t)convert_bits_into_output(&cs_pdu_bits[0], 2);
+    xpt_free = (uint8_t)convert_bits_into_output(&cs_pdu_bits[16], 4);
     xpt_bank = (xpt_seq <= 2 && xpt_seq != 0) ? (uint8_t)(xpt_seq * 6) : 0;
     for (int i = 0; i < 6; i++) {
-        xpt_ch[i] = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[20 + (i * 2)], 2);
+        xpt_ch[i] = (uint8_t)convert_bits_into_output(&cs_pdu_bits[20 + (i * 2)], 2);
     }
 
     DSD_FPRINTF(stderr, " Hytera XPT Site Status - Free LCN: %d SN: %d", xpt_free, xpt_seq);
@@ -2595,10 +2552,10 @@ dmr_cspdu_xpt_handle_adjacent(uint8_t cs_pdu_bits[], dsd_state* state, int csbk_
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, "%s", KYEL);
 
-    xpt_sn = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[0], 2);
+    xpt_sn = (uint8_t)convert_bits_into_output(&cs_pdu_bits[0], 2);
     for (int i = 0; i < 4; i++) {
-        xpt_site_id[i] = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[16 + (i * 16)], 5);
-        xpt_site_rp[i] = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[24 + (i * 16)], 4);
+        xpt_site_id[i] = (uint8_t)convert_bits_into_output(&cs_pdu_bits[16 + (i * 16)], 5);
+        xpt_site_rp[i] = (uint8_t)convert_bits_into_output(&cs_pdu_bits[24 + (i * 16)], 4);
     }
 
     DSD_FPRINTF(stderr, " Hytera XPT CSBK 0x0B - SN: %d", xpt_sn);
@@ -2700,9 +2657,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
 
     if (IrrecoverableErrors == 0 && CRCCorrect == 1) {
         //clear stale Active Channel messages here
-        if (((time(NULL) - state->last_active_time) > 3) && ((time(NULL) - state->last_vc_sync_time) > 3)) {
-            DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
-        }
+        (void)dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS);
 
         //update time to prevent random 'Control Channel Signal Lost' hopping
         //in the middle of voice call on current Control Channel (con+ and t3)
@@ -2721,7 +2676,6 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
     // This does not process the PDU further — it only keeps the CC timer warm.
     else if (opts->dmr_crc_relaxed_default) {
         state->last_cc_sync_time = time(NULL);
-        state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
         state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
     }
 
@@ -2786,26 +2740,26 @@ dmr_syscode_decode_model(uint8_t model, uint8_t* cs_pdu_bits, uint16_t* net, uin
 
     switch (model) {
         case 0:
-            *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 9);
-            *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[51], 3);
+            *net = (uint16_t)convert_bits_into_output(&cs_pdu_bits[42], 9);
+            *site = (uint16_t)convert_bits_into_output(&cs_pdu_bits[51], 3);
             *site_bits = 3;
             DSD_SNPRINTF(model_str, model_str_sz, "%s", "Tiny");
             break;
         case 1:
-            *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 7);
-            *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[49], 5);
+            *net = (uint16_t)convert_bits_into_output(&cs_pdu_bits[42], 7);
+            *site = (uint16_t)convert_bits_into_output(&cs_pdu_bits[49], 5);
             *site_bits = 5;
             DSD_SNPRINTF(model_str, model_str_sz, "%s", "Small");
             break;
         case 2:
-            *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 4);
-            *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[46], 8);
+            *net = (uint16_t)convert_bits_into_output(&cs_pdu_bits[42], 4);
+            *site = (uint16_t)convert_bits_into_output(&cs_pdu_bits[46], 8);
             *site_bits = 8;
             DSD_SNPRINTF(model_str, model_str_sz, "%s", "Large");
             break;
         default:
-            *net = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[42], 2);
-            *site = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[44], 10);
+            *net = (uint16_t)convert_bits_into_output(&cs_pdu_bits[42], 2);
+            *site = (uint16_t)convert_bits_into_output(&cs_pdu_bits[44], 10);
             *site_bits = 10;
             DSD_SNPRINTF(model_str, model_str_sz, "%s", "Huge");
             break;
@@ -2854,15 +2808,15 @@ dmr_syscode_print_type0(const dsd_opts* opts, uint8_t* cs_pdu_bits, const char* 
     uint8_t reserved = cs_pdu_bits[16];
     uint8_t tsccas = cs_pdu_bits[17];
     uint8_t sync = cs_pdu_bits[18];
-    uint8_t version = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[19], 3);
+    uint8_t version = (uint8_t)convert_bits_into_output(&cs_pdu_bits[19], 3);
     uint8_t offset = cs_pdu_bits[22];
     uint8_t active = cs_pdu_bits[23];
-    uint8_t mask = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[24], 5);
-    uint8_t sf = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[29], 2);
-    uint8_t nrandwait = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[31], 4);
+    uint8_t mask = (uint8_t)convert_bits_into_output(&cs_pdu_bits[24], 5);
+    uint8_t sf = (uint8_t)convert_bits_into_output(&cs_pdu_bits[29], 2);
+    uint8_t nrandwait = (uint8_t)convert_bits_into_output(&cs_pdu_bits[31], 4);
     uint8_t regreq = cs_pdu_bits[35];
-    uint8_t backoff = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[36], 4);
-    uint32_t target = (uint32_t)ConvertBitIntoBytes(&cs_pdu_bits[56], 24);
+    uint8_t backoff = (uint8_t)convert_bits_into_output(&cs_pdu_bits[36], 4);
+    uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
     if (n != 0) {
         uint16_t display_net = dmr_tiii_display_net(net, n);
@@ -2951,17 +2905,17 @@ dmr_decode_syscode(dsd_opts* opts, dsd_state* state, uint8_t* cs_pdu_bits, int c
         }
     }
 
-    syscode = (uint16_t)ConvertBitIntoBytes(&cs_pdu_bits[40], 14);
+    syscode = (uint16_t)convert_bits_into_output(&cs_pdu_bits[40], 14);
     if (type == 0) {
         state->dmr_t3_syscode = syscode;
     }
 
-    model = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[40], 2);
+    model = (uint8_t)convert_bits_into_output(&cs_pdu_bits[40], 2);
     dmr_syscode_decode_model(model, cs_pdu_bits, &net, &site, &site_bits, model_str, sizeof(model_str));
 
     n = dmr_syscode_effective_split_n(opts, state, csbk_fid, site_bits, &is_capmax);
     sub_mask = dmr_tiii_subsite_mask(n);
-    par = (uint8_t)ConvertBitIntoBytes(&cs_pdu_bits[54], 2);
+    par = (uint8_t)convert_bits_into_output(&cs_pdu_bits[54], 2);
     dmr_syscode_set_partition_label(par, par_str, sizeof(par_str));
 
     if (type == 0) {

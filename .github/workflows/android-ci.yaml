@@ -1,0 +1,1188 @@
+name: android-ci
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main, master]
+    tags:
+      - "v*.*.*"
+    paths-ignore:
+      - ".*"
+      - "**/*.md"
+  pull_request:
+    # No paths-ignore here: the Android PR jobs are required status checks, and a
+    # filtered-out workflow never reports them, which would block docs-only PRs.
+    # Keep this in step with windows-ci and macos-ci.
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cross-build-cli:
+    name: arm64 CLI (NDK cross build)
+    runs-on: ubuntu-latest
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-archives
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read pinned toolchain versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source tools/ci-dependency-pins.env
+          echo "ANDROID_NDK_VERSION=$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+
+      - name: Install the pinned NDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sdk="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}"
+          "$sdk/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION"
+          {
+            echo "ANDROID_NDK_HOME=$sdk/ndk/$ANDROID_NDK_VERSION"
+            echo "ANDROID_NDK_ROOT=$sdk/ndk/$ANDROID_NDK_VERSION"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare cache directories
+        shell: bash
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE" "$CCACHE_DIR"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-arm64-android-${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-triplets/arm64-android-static.cmake', 'vcpkg-ports/**') }}
+          restore-keys: |
+            vcpkg-arm64-android-${{ env.ANDROID_NDK_VERSION }}-
+
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-android-cli-${{ env.ANDROID_NDK_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-android-cli-${{ env.ANDROID_NDK_VERSION }}-
+
+      - name: Initialize ccache
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ccache --zero-stats
+          ccache --set-config=max_size=500M
+          ccache --set-config=compression=true
+
+      # vcpkg's bootstrap fetches the vcpkg-tool binary with `curl --retry 3`,
+      # but curl only spends that retry budget on timeouts and 5xx/429
+      # responses: a connection-level failure -- curl 35, "Recv failure:
+      # Connection reset by peer" -- aborts on the first attempt and fails the
+      # job before any of our code is built. --retry-all-errors extends the
+      # existing budget to those resets. It goes in a curlrc because run-vcpkg
+      # invokes bootstrap-vcpkg.sh itself, so there is no command line of ours
+      # to add it to, and because it then also covers the curl calls vcpkg
+      # makes for port sources. Linux-only: the Windows bootstrap downloads
+      # through tls12-download.exe, which never reads this file.
+      - name: Make curl retry connection resets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$HOME/.curlrc" << 'EOF'
+          retry = 3
+          retry-all-errors
+          retry-delay = 5
+          EOF
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.5
+        with:
+          # run-vcpkg requires a full 40-char SHA1.
+          # Keep this in sync with vcpkg.json's builtin-baseline.
+          vcpkgGitCommitId: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+
+      - name: Configure (android-arm64-release)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          log="$RUNNER_TEMP/configure-android-cli.log"
+          cmake --preset android-arm64-release -G Ninja \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 2>&1 | tee "$log"
+          # The presets set DSD_REQUIRE_CODEC2/DSD_REQUIRE_CURL/DSD_REQUIRE_EXPAT,
+          # so configure already failed if one was missing; assert the archives
+          # too, since the static triplet means a skipped port is invisible
+          # until link time.
+          grep -F "Codec2 available: ON (M17 voice)" "$log"
+          grep -F "libcurl available: ON (rdio API uploads)" "$log"
+          grep -F "expat available: ON (RadioReference import)" "$log"
+          lib=build/android-arm64-release/vcpkg_installed/arm64-android-static/lib
+          test -f "$lib/libcodec2.a"
+          test -f "$lib/libcurl.a"
+          test -f "$lib/libexpat.a"
+
+      - name: Build (android-arm64-release)
+        shell: bash
+        run: cmake --build --preset android-arm64-release -j
+
+      # Proves the code was linked in, not merely that the package was found.
+      - name: Verify codec2 and libcurl reached the CLI
+        shell: bash
+        run: |
+          set -euxo pipefail
+          nm="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          syms=$("$nm" --defined-only build/android-arm64-release/apps/dsd-cli/dsd-neo)
+          grep -qE '(^| )codec2_create$' <<< "$syms"
+          grep -qE '(^| )curl_easy_init$' <<< "$syms"
+
+      - name: Verify the CLI is arm64 with 16 KB page alignment
+        shell: bash
+        run: tools/check_android_elf_alignment.sh build/android-arm64-release/apps/dsd-cli/dsd-neo
+
+      - name: Show ccache stats
+        shell: bash
+        run: ccache --show-stats
+
+  # The app's UI is QML, which the arm64 APK job can build but cannot run. This
+  # job configures the same frontend for the host with the same pinned Qt the APK
+  # ships, and runs the Qt Quick Test suite over the real .qml files plus the Qt
+  # model tests that are otherwise registered only behind DSD_ENABLE_QT_UI and so
+  # have never run anywhere in CI. Only the frontend's test targets are built:
+  # they do not link the decoder, so this stays a short job.
+  qt-ui-tests:
+    name: Qt UI tests (host Qt)
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read pinned toolchain versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source tools/ci-dependency-pins.env
+          echo "ANDROID_QT_VERSION=$ANDROID_QT_VERSION" >> "$GITHUB_ENV"
+
+      # The project's own dependencies, plus the handful of runtime libraries
+      # Qt Gui links even when the platform plugin is offscreen.
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build ccache pkg-config git \
+            libsndfile1-dev libpulse-dev libncurses-dev \
+            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev libexpat1-dev \
+            libgl1-mesa-dev libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+
+      - name: Build and install mbelib-neo
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source tools/ci-dependency-pins.env
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+
+      # Qt is installed with aqtinstall rather than a Qt-installing action: every
+      # action used here must be hash-pinned, transitively, and the available
+      # actions are not.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: .github/requirements/aqtinstall.txt
+
+      - name: Record the Qt location
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/qt"
+          {
+            echo "QT_INSTALL_ROOT=$root"
+            echo "QT_HOST_ROOT=$root/$ANDROID_QT_VERSION/gcc_64"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore Qt
+        id: qt-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.QT_INSTALL_ROOT }}
+          key: qt-host-${{ env.ANDROID_QT_VERSION }}-linux-aqt3.3.0
+
+      - name: Install Qt (host kit)
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --require-hashes -r .github/requirements/aqtinstall.txt
+          aqt install-qt linux desktop "$ANDROID_QT_VERSION" linux_gcc_64 -O "$QT_INSTALL_ROOT"
+
+      - name: Verify the Qt kit
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -x "$QT_HOST_ROOT/bin/qmake"
+          test -f "$QT_HOST_ROOT/lib/cmake/Qt6QuickTest/Qt6QuickTestConfig.cmake"
+
+      - name: Prepare the local dependency environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=$HOME/.local:$QT_HOST_ROOT:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-qt-ui-tests-${{ env.ANDROID_QT_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-qt-ui-tests-${{ env.ANDROID_QT_VERSION }}-
+
+      - name: Initialize ccache
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ccache --zero-stats
+          ccache --set-config=max_size=200M
+          ccache --set-config=compression=true
+
+      - name: Configure (dev-debug, Qt frontend on)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --preset dev-debug \
+            -DDSD_ENABLE_QT_UI=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      # A Qt frontend that stops registering its tests would otherwise read as a
+      # green run with nothing in it.
+      - name: Verify the Qt UI tests are registered
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --preset dev-debug -N -L qml | grep -F "UI_QT_QML_CALL_LISTS"
+          # A floor, not an exact count. publish-apk gates on this job, so pinning
+          # the count would fail the release for the act of adding a UI test —
+          # and fail it saying only that a grep matched nothing. Registration
+          # going backwards, which is what this guards, still fails here.
+          min=10
+          registered=$(ctest --preset dev-debug -N -R '^UI_QT_' | sed -n 's/^Total Tests: *//p')
+          echo "UI_QT_* tests registered: ${registered:-none} (floor $min)"
+          if [ "${registered:-0}" -lt "$min" ]; then
+            echo "::error::expected at least $min UI_QT_* tests, found ${registered:-0}"
+            exit 1
+          fi
+
+      # Every target behind a UI_QT_* test, because the Test step runs them by
+      # name pattern: registering one and forgetting it here fails the job with
+      # "Could not find executable", not with anything about the test.
+      - name: Build the Qt UI test targets
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build --preset dev-debug -j \
+            --target dsd-neo_test_ui_qt_qml \
+            dsd-neo_test_ui_qt_persistence \
+            dsd-neo_test_ui_qt_call_history_model \
+            dsd-neo_test_ui_qt_session_args \
+            dsd-neo_test_ui_qt_imported_files_model \
+            dsd-neo_test_ui_qt_call_history_merge \
+            dsd-neo_test_ui_qt_call_line \
+            dsd-neo_test_ui_qt_session_state \
+            dsd-neo_test_ui_qt_spectrum_math \
+            dsd-neo_test_ui_qt_spectrum_model \
+            dsd-neo_test_ui_qt_metrics_model \
+            dsd-neo_test_ui_qt_radio_reference_model
+
+      # The QML test carries its own headless environment (offscreen platform,
+      # software renderer) in the CTest registration, so there is nothing to set
+      # here — a developer running ctest locally gets the same run.
+      - name: Test
+        shell: bash
+        run: ctest --preset dev-debug -R '^UI_QT_' --output-on-failure
+
+      # The baked RadioReference key is a compile-time constant, so the shipped
+      # configuration — a build that carries its own key and must ignore any
+      # stored override — is a branch no other job here can reach. The APK job
+      # builds it but cannot run tests; every other job is keyless.
+      #
+      # Reconfiguring the same tree costs a relink: DSD_RR_APP_KEY only feeds a
+      # generated one-line C file. The key below is a dummy that no request is
+      # ever made with — the transport in this test is faked — and it is
+      # deliberately NOT the repository secret, so this step stays meaningful on
+      # a fork with no secrets configured.
+      - name: Re-test the RadioReference model as a keyed build
+        shell: bash
+        env:
+          DSD_RR_APP_KEY: CI_DUMMY_KEY_not_a_real_credential
+        run: |
+          set -euxo pipefail
+          cmake --preset dev-debug \
+            -DDSD_ENABLE_QT_UI=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build --preset dev-debug -j \
+            --target dsd-neo_test_ui_qt_radio_reference_model
+          ctest --preset dev-debug -R '^UI_QT_RADIO_REFERENCE$' --output-on-failure
+
+      - name: Show ccache stats
+        shell: bash
+        run: ccache --show-stats
+
+  build-apk:
+    name: APK (Qt Quick app)
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      attestations: write
+      artifact-metadata: write
+      contents: read
+      id-token: write
+    outputs:
+      signed: ${{ steps.sign.outputs.SIGNED }}
+      art_name: ${{ steps.names.outputs.ART_NAME }}
+      apk_path: ${{ steps.names.outputs.APK_PATH }}
+      publishable: ${{ steps.names.outputs.PUBLISHABLE }}
+      aab_ok: ${{ steps.aab_outcome.outputs.AAB_OK }}
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-archives
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          RELEASE_TAG_CREATED: ${{ github.event.created }}
+        run: tools/ci_validate_release_tag.sh
+
+      - name: Read pinned toolchain versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source tools/ci-dependency-pins.env
+          {
+            echo "ANDROID_NDK_VERSION=$ANDROID_NDK_VERSION"
+            echo "ANDROID_COMPILE_SDK=$ANDROID_COMPILE_SDK"
+            echo "ANDROID_BUILD_TOOLS_VERSION=$ANDROID_BUILD_TOOLS_VERSION"
+            echo "ANDROID_QT_VERSION=$ANDROID_QT_VERSION"
+          } >> "$GITHUB_ENV"
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+
+      - name: Set up JDK
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install the pinned NDK and SDK platform
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sdk="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}"
+          "$sdk/cmdline-tools/latest/bin/sdkmanager" --install \
+            "ndk;$ANDROID_NDK_VERSION" \
+            "platforms;android-$ANDROID_COMPILE_SDK" \
+            "build-tools;$ANDROID_BUILD_TOOLS_VERSION"
+          {
+            echo "ANDROID_NDK_HOME=$sdk/ndk/$ANDROID_NDK_VERSION"
+            echo "ANDROID_NDK_ROOT=$sdk/ndk/$ANDROID_NDK_VERSION"
+          } >> "$GITHUB_ENV"
+
+      # Qt is installed with aqtinstall rather than a Qt-installing action: every
+      # action used here must be hash-pinned, transitively, and the available
+      # actions are not.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: .github/requirements/aqtinstall.txt
+
+      - name: Record the Qt locations
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/qt"
+          {
+            echo "QT_INSTALL_ROOT=$root"
+            echo "QT_HOST_ROOT=$root/$ANDROID_QT_VERSION/gcc_64"
+            echo "QT_ANDROID_ROOT=$root/$ANDROID_QT_VERSION/android_arm64_v8a"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore Qt
+        id: qt-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.QT_INSTALL_ROOT }}
+          key: qt-${{ env.ANDROID_QT_VERSION }}-linux-android_arm64_v8a-aqt3.3.0
+
+      - name: Install Qt (host kit and android_arm64_v8a kit)
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --require-hashes -r .github/requirements/aqtinstall.txt
+          aqt install-qt linux desktop "$ANDROID_QT_VERSION" linux_gcc_64 -O "$QT_INSTALL_ROOT"
+          # Qt 6.8+ publishes the Android kits under the host-agnostic "all_os".
+          aqt install-qt all_os android "$ANDROID_QT_VERSION" android_arm64_v8a -O "$QT_INSTALL_ROOT"
+
+      - name: Verify the Qt kits
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -x "$QT_HOST_ROOT/bin/qmake"
+          test -f "$QT_ANDROID_ROOT/lib/cmake/Qt6/qt.toolchain.cmake"
+
+      - name: Prepare cache directories
+        shell: bash
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE" "$CCACHE_DIR"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-arm64-android-${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-triplets/arm64-android-static.cmake', 'vcpkg-ports/**') }}
+          restore-keys: |
+            vcpkg-arm64-android-${{ env.ANDROID_NDK_VERSION }}-
+
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-android-apk-${{ env.ANDROID_NDK_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-android-apk-${{ env.ANDROID_NDK_VERSION }}-
+
+      - name: Initialize ccache
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ccache --zero-stats
+          ccache --set-config=max_size=500M
+          ccache --set-config=compression=true
+
+      # vcpkg's bootstrap fetches the vcpkg-tool binary with `curl --retry 3`,
+      # but curl only spends that retry budget on timeouts and 5xx/429
+      # responses: a connection-level failure -- curl 35, "Recv failure:
+      # Connection reset by peer" -- aborts on the first attempt and fails the
+      # job before any of our code is built. --retry-all-errors extends the
+      # existing budget to those resets. It goes in a curlrc because run-vcpkg
+      # invokes bootstrap-vcpkg.sh itself, so there is no command line of ours
+      # to add it to, and because it then also covers the curl calls vcpkg
+      # makes for port sources. Linux-only: the Windows bootstrap downloads
+      # through tls12-download.exe, which never reads this file.
+      - name: Make curl retry connection resets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$HOME/.curlrc" << 'EOF'
+          retry = 3
+          retry-all-errors
+          retry-delay = 5
+          EOF
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.5
+        with:
+          # run-vcpkg requires a full 40-char SHA1.
+          # Keep this in sync with vcpkg.json's builtin-baseline.
+          vcpkgGitCommitId: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+
+      - name: Configure (android-app)
+        shell: bash
+        env:
+          # Baked into the APK at configure time, so only this step needs it —
+          # "Build the APK" and "Build the AAB" just run cmake --build. Passed
+          # through the step environment rather than interpolated into the run
+          # body, the way the signing secrets are. An unset secret expands to
+          # the empty string, which yields an empty built-in key and the in-app
+          # prompt rather than a broken build. The env-var route also keeps the
+          # value out of build/android-app/CMakeCache.txt, unlike -D.
+          DSD_RR_APP_KEY: ${{ secrets.RADIOREFERENCE_APP_KEY }}
+        run: |
+          set -euxo pipefail
+          log="$RUNNER_TEMP/configure-android-app.log"
+          # QT_ANDROID_SIGN_AAB only adds --sign to the aab target's
+          # androiddeployqt invocation; the apk target is driven by
+          # QT_ANDROID_SIGN_APK and keeps signing through apksigner below. The
+          # aab target is outside ALL, so this is inert until the "Build the
+          # AAB" step names that target — which it does on every publishable
+          # run (release tags, pushes to main/master, and workflow_dispatch),
+          # not only on tags.
+          cmake --preset android-app -G Ninja \
+            -DQT_ANDROID_SIGN_AAB=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 2>&1 | tee "$log"
+          grep -F "Codec2 available: ON (M17 voice)" "$log"
+          grep -F "libcurl available: ON (rdio API uploads)" "$log"
+          grep -F "expat available: ON (RadioReference import)" "$log"
+          lib=build/android-app/vcpkg_installed/arm64-android-static/lib
+          test -f "$lib/libcodec2.a"
+          test -f "$lib/libcurl.a"
+          test -f "$lib/libexpat.a"
+
+      - name: Build the APK
+        shell: bash
+        run: cmake --build --preset android-app -j
+
+      - name: Locate the APK
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t apks < <(find build/android-app -name '*.apk' | sort)
+          if [ "${#apks[@]}" -eq 0 ]; then
+            echo "No APK produced under build/android-app" >&2
+            exit 1
+          fi
+          printf 'Found: %s\n' "${apks[@]}"
+          # androiddeployqt copies the Gradle output next to the build tree, so
+          # several paths are byte-identical. Anything else means the build
+          # produced more than one APK and picking the first would be a coin toss.
+          mapfile -t digests < <(sha256sum "${apks[@]}" | awk '{ print $1 }' | sort -u)
+          if [ "${#digests[@]}" -ne 1 ]; then
+            echo "build/android-app contains more than one distinct APK" >&2
+            exit 1
+          fi
+          echo "APK_PATH=${apks[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare artifact naming and the publish gate
+        id: names
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = 'tag' ] && [ -n "$REF_NAME" ]; then
+            art="dsd-neo-android-arm64-app-${REF_NAME}"
+          else
+            art="dsd-neo-android-arm64-app-nightly"
+          fi
+          # The one definition of "a run that publishes": the upstream repo, on
+          # a release tag or a push/dispatch to main/master. The AAB steps, the
+          # publish-apk job gate, and the aab-status job all read this output
+          # instead of restating the predicate.
+          publishable=false
+          if [ "$GITHUB_REPOSITORY" = 'arancormonk/dsd-neo' ]; then
+            case "$GITHUB_REF" in
+              refs/tags/v*) publishable=true ;;
+              refs/heads/main | refs/heads/master)
+                if [ "$GITHUB_EVENT_NAME" = 'push' ] || [ "$GITHUB_EVENT_NAME" = 'workflow_dispatch' ]; then
+                  publishable=true
+                fi
+                ;;
+            esac
+          fi
+          mkdir -p dist
+          {
+            echo "APK_PATH=dist/${art}.apk"
+            echo "ART_NAME=${art}"
+            echo "PUBLISHABLE=${publishable}"
+          } >> "$GITHUB_OUTPUT"
+
+      # One decision, shared by APK signing and the AAB build below: is there
+      # usable signing material? A release tag without it is fatal — a release
+      # must not ship artifacts nobody can install or upload. The decoded
+      # keystore lives in RUNNER_TEMP until the always() cleanup step at the
+      # end of the job.
+      - name: Materialize the signing keystore
+        id: keystore
+        shell: bash
+        env:
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64}" ]; then
+            if [ "${IS_TAG}" = 'true' ]; then
+              echo "::error::ANDROID_KEYSTORE_BASE64 is not configured; a release tag cannot ship unsigned artifacts" >&2
+              exit 1
+            fi
+            # Pull requests never see the secrets, so only a push that was meant
+            # to publish deserves a warning annotation.
+            if [ "${IS_PR}" = 'true' ]; then
+              echo "Pull request build: no signing material; the APK stays unsigned and no AAB is built."
+            else
+              echo "::warning::Android signing secrets are not configured; the APK stays unsigned, no AAB is built, and nothing is published"
+            fi
+            echo "AVAILABLE=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          : "${KEYSTORE_PASSWORD:?ANDROID_KEYSTORE_PASSWORD is required alongside ANDROID_KEYSTORE_BASE64}"
+          : "${KEY_ALIAS:?ANDROID_KEY_ALIAS is required alongside ANDROID_KEYSTORE_BASE64}"
+          : "${KEY_PASSWORD:?ANDROID_KEY_PASSWORD is required alongside ANDROID_KEYSTORE_BASE64}"
+          keystore="$RUNNER_TEMP/android-release.jks"
+          printf '%s' "${KEYSTORE_BASE64}" | base64 -d > "$keystore"
+          chmod 600 "$keystore"
+          {
+            echo "AVAILABLE=true"
+            echo "KEYSTORE_PATH=$keystore"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Sign the APK
+        id: sign
+        shell: bash
+        env:
+          BUILT_APK: ${{ steps.apk.outputs.APK_PATH }}
+          OUT_APK: ${{ steps.names.outputs.APK_PATH }}
+          KEYSTORE_AVAILABLE: ${{ steps.keystore.outputs.AVAILABLE }}
+          KEYSTORE_PATH: ${{ steps.keystore.outputs.KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ "${KEYSTORE_AVAILABLE}" != 'true' ]; then
+            cp "${BUILT_APK}" "${OUT_APK}"
+            echo "SIGNED=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tools="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}/build-tools/$ANDROID_BUILD_TOOLS_VERSION"
+          # androiddeployqt's release output is already 16 KB aligned and
+          # apksigner preserves that, so re-running zipalign would only risk
+          # undoing it; the alignment checks below run on the signed APK.
+          "$tools/apksigner" sign \
+            --ks "${KEYSTORE_PATH}" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --key-pass env:KEY_PASSWORD \
+            --ks-key-alias "${KEY_ALIAS}" \
+            --out "${OUT_APK}" \
+            "${BUILT_APK}"
+          "$tools/apksigner" verify --verbose --print-certs "${OUT_APK}"
+          "$tools/zipalign" -c -P 16 4 "${OUT_APK}"
+          echo "SIGNED=true" >> "$GITHUB_OUTPUT"
+
+      - name: Verify every packaged library is arm64, 16 KB aligned, and compressed for sideload
+        shell: bash
+        env:
+          APK_PATH: ${{ steps.names.outputs.APK_PATH }}
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d)
+          unzip -q "$APK_PATH" 'lib/*' -d "$workdir" || true
+          if [ ! -d "$workdir/lib" ]; then
+            echo "APK contains no native libraries" >&2
+            exit 1
+          fi
+          mapfile -t libs < <(find "$workdir/lib" -name '*.so' | sort)
+          if [ "${#libs[@]}" -eq 0 ]; then
+            echo "APK contains no native libraries" >&2
+            exit 1
+          fi
+          echo "Checking ${#libs[@]} packaged libraries"
+          tools/check_android_elf_alignment.sh "${libs[@]}"
+          # arm64-v8a only: any other ABI directory means androiddeployqt was
+          # not restricted to the supported ABI.
+          if find "$workdir/lib" -mindepth 1 -maxdepth 1 -type d ! -name 'arm64-v8a' | grep -q .; then
+            echo "APK contains ABIs other than arm64-v8a" >&2
+            exit 1
+          fi
+          # The sideload APK compresses its native libs (legacy jniLibs
+          # packaging) so the GitHub release download stays roughly half the
+          # size; only the Play AAB stores them uncompressed for delta
+          # patching. android/package/build.gradle branches on the Gradle
+          # invocation. A Stored entry here means that branch regressed and the
+          # sideload download doubled.
+          if ! unzip -v "$APK_PATH" 'lib/*.so' \
+            | awk '$8 ~ /^lib\// && $2 !~ /^Defl/ {print "not compressed: " $8; bad = 1} END {exit bad}'; then
+            echo "APK stores native libraries uncompressed; the sideload download doubles" >&2
+            exit 1
+          fi
+          # Compressed libs require install-time extraction: the platform
+          # cannot load them straight from the APK, so legacy packaging has AGP
+          # write extractNativeLibs=true into the merged manifest. Anything
+          # else here means the manifest and the lib entries disagree.
+          aapt2="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}/build-tools/$ANDROID_BUILD_TOOLS_VERSION/aapt2"
+          if ! "$aapt2" dump xmltree "$APK_PATH" --file AndroidManifest.xml \
+            | grep -q 'extractNativeLibs([x0-9a-f]*)=true'; then
+            echo "APK manifest does not set extractNativeLibs=true while its libs are compressed" >&2
+            exit 1
+          fi
+          echo "All packaged libraries are compressed; the platform extracts them at install"
+
+      - name: Verify the APK carries the required license files
+        shell: bash
+        env:
+          APK_PATH: ${{ steps.names.outputs.APK_PATH }}
+        run: |
+          set -euo pipefail
+          docdir="assets/doc/dsd-neo"
+          required=(
+            LICENSE
+            COPYRIGHT
+            THIRD_PARTY.md
+            licenses/ezpwd-LGPL-2.1-or-later.txt
+            licenses/pffft-FFTPACK.txt
+            licenses/libusb-LGPL-2.1-or-later.txt
+            licenses/librtlsdr-GPL-2.0-or-later.txt
+            licenses/ibm-plex-OFL-1.1.txt
+          )
+          for f in "${required[@]}"; do
+            # unzip exits 11 when the pattern matches no entry.
+            if ! unzip -l "$APK_PATH" "$docdir/$f" > /dev/null 2>&1; then
+              echo "ERROR: missing required license file in the APK: $docdir/$f" >&2
+              exit 1
+            fi
+          done
+          echo "All required license files are packaged."
+
+      - name: Verify the APK's launcher name and icon
+        shell: bash
+        env:
+          APK_PATH: ${{ steps.names.outputs.APK_PATH }}
+        run: |
+          set -euo pipefail
+          aapt2="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}/build-tools/$ANDROID_BUILD_TOOLS_VERSION/aapt2"
+          badging=$("$aapt2" dump badging "$APK_PATH")
+          # Unless QT_ANDROID_APP_NAME/QT_ANDROID_APP_ICON stay set,
+          # androiddeployqt substitutes the CMake target name into android:label
+          # and drops android:icon entirely, and the app installs as
+          # "dsd-neo-app" with the stock Android robot.
+          if ! printf '%s\n' "$badging" | grep -qxF "application-label:'DSD-neo'"; then
+            echo "ERROR: unexpected launcher label" >&2
+            printf '%s\n' "$badging" | grep '^application-label' >&2 || true
+            exit 1
+          fi
+          if ! printf '%s\n' "$badging" | grep -qE "^application-icon-[0-9]+:'[^']"; then
+            echo "ERROR: the APK declares no launcher icon" >&2
+            exit 1
+          fi
+          # The version code is the release version scaled up with git describe's
+          # commit distance added, so it is always seven digits or more. A
+          # smaller one means the derivation regressed to a placeholder or to
+          # bare PROJECT_VERSION, either of which gives nightlies the same code
+          # as the release they follow.
+          version_code=$(printf '%s\n' "$badging" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -n1)
+          if [ -z "$version_code" ] || [ "$version_code" -lt 1000000 ]; then
+            echo "ERROR: unexpected versionCode '${version_code}'" >&2
+            exit 1
+          fi
+          # aapt2 renames res/ paths in a release APK, so assert on the resource
+          # table rather than on the archive entries.
+          names=$("$aapt2" dump resources "$APK_PATH" | awk '$1 == "resource" {print $3}')
+          required=(
+            mipmap/ic_launcher
+            mipmap/ic_launcher_foreground
+            mipmap/ic_launcher_monochrome
+            drawable/ic_stat_dsdneo
+            drawable/splash
+            style/Theme.DsdNeo
+          )
+          for res in "${required[@]}"; do
+            if ! printf '%s\n' "$names" | grep -qxF "$res"; then
+              echo "ERROR: missing resource in the APK: $res" >&2
+              exit 1
+            fi
+          done
+          echo "Launcher identity OK: DSD-neo with the adaptive icon."
+
+      - name: Upload APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.names.outputs.ART_NAME }}
+          path: ${{ steps.names.outputs.APK_PATH }}
+          retention-days: 7
+
+      - name: Generate APK SBOM
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          file: ${{ steps.names.outputs.APK_PATH }}
+          format: spdx-json
+          output-file: ${{ steps.names.outputs.APK_PATH }}.spdx.json
+          artifact-name: ${{ steps.names.outputs.ART_NAME }}.spdx.json
+          upload-artifact: true
+          upload-release-assets: false
+
+      - name: Attest APK provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.names.outputs.APK_PATH }}
+
+      - name: Attest APK SBOM
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.names.outputs.APK_PATH }}
+          sbom-path: ${{ steps.names.outputs.APK_PATH }}.spdx.json
+
+      # Google Play will not take an APK for a new app, so releases also produce
+      # an Android App Bundle. It is deliberately a workflow artifact and never a
+      # release asset: an AAB cannot be installed, so next to the APK it is only
+      # a trap for anyone who downloads it, and under Play App Signing the
+      # uploaded bundle carries the upload key while Google re-signs what users
+      # actually install - it corresponds to no shipped binary. A maintainer
+      # downloads it and hands it to the Play Console.
+      #
+      # Built on main as well as on tags, so the bundle path is exercised every
+      # merge rather than for the first time on a release. Building consumes no
+      # versionCode - only an upload to a Play track does that. Every AAB step
+      # is continue-on-error so a bundle-only failure cannot fail this job and
+      # take the already-verified APK publish down with it; the aab-status job
+      # turns any such failure into its own red check instead.
+      #
+      # Gated on SIGNED rather than on the keystore directly: an unsigned
+      # bundle is useless - Play rejects it on upload - and the missing-secrets
+      # warning (or the tag-fatal error) was already issued by "Materialize the
+      # signing keystore".
+      #
+      # Must run after "Sign the APK": this step's Gradle invocation repackages
+      # the build-tree dsd-neo-app.apk with the bundle's Play-shaped packaging
+      # (uncompressed libs, extractNativeLibs=false), so the sideload APK has to
+      # be signed and copied to dist/ first.
+      - name: Build the AAB
+        id: aab_build
+        if: >-
+          steps.names.outputs.PUBLISHABLE == 'true' &&
+          steps.sign.outputs.SIGNED == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          KEYSTORE_PATH: ${{ steps.keystore.outputs.KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # androiddeployqt signs a bundle with jarsigner rather than apksigner,
+          # which cannot sign an AAB at all. The four QT_ANDROID_KEYSTORE_*
+          # variables keep the passwords out of this step's own command lines,
+          # but androiddeployqt still forwards them to jarsigner as
+          # -storepass/-keypass argv, so they are visible in the runner's
+          # process table while jarsigner runs. That is tolerated only because
+          # the runner is ephemeral and single-tenant; do not point verbose
+          # Gradle/androiddeployqt logging at this step, since a mode that
+          # echoes child command lines would put them in the build log.
+          export QT_ANDROID_KEYSTORE_PATH="${KEYSTORE_PATH}"
+          export QT_ANDROID_KEYSTORE_ALIAS="${KEY_ALIAS}"
+          export QT_ANDROID_KEYSTORE_STORE_PASS="${KEYSTORE_PASSWORD}"
+          export QT_ANDROID_KEYSTORE_KEY_PASS="${KEY_PASSWORD}"
+          # Qt's aab target is outside ALL and the android-app build preset pins
+          # its targets to apk, so name it against the build directory. The
+          # native libraries are already built at this point; this only re-runs
+          # androiddeployqt and Gradle.
+          cmake --build build/android-app --target aab -j
+          echo "BUILT=true" >> "$GITHUB_OUTPUT"
+
+      # A step skipped by its own `if` (or by its predecessor failing) reports
+      # empty outputs, so these conditions also cover pull requests, where the
+      # build step never ran.
+      - name: Locate the AAB
+        id: aab
+        if: steps.aab_build.outputs.BUILT == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          ART_NAME: ${{ steps.names.outputs.ART_NAME }}
+        run: |
+          set -euo pipefail
+          # Qt's aab target drives Gradle's variant-less `bundle` anchor task,
+          # which builds every variant: the debug bundle and AGP's intermediary
+          # bundles land in the build tree alongside the release bundle, and
+          # jarsigner signs only the release output. Scope the search to the
+          # release outputs directory; the digest check still guards against a
+          # build that leaves two distinct candidates even there.
+          mapfile -t aabs < <(find build/android-app -path '*/build/outputs/bundle/release/*.aab' | sort)
+          if [ "${#aabs[@]}" -eq 0 ]; then
+            echo "No release AAB produced under build/android-app" >&2
+            exit 1
+          fi
+          printf 'Found: %s\n' "${aabs[@]}"
+          mapfile -t digests < <(sha256sum "${aabs[@]}" | awk '{ print $1 }' | sort -u)
+          if [ "${#digests[@]}" -ne 1 ]; then
+            echo "build/android-app contains more than one distinct release AAB" >&2
+            exit 1
+          fi
+          mkdir -p dist
+          cp "${aabs[0]}" "dist/${ART_NAME}.aab"
+          echo "AAB_PATH=dist/${ART_NAME}.aab" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the AAB
+        id: aab_verify
+        if: steps.aab.outputs.AAB_PATH != ''
+        continue-on-error: true
+        shell: bash
+        env:
+          AAB_PATH: ${{ steps.aab.outputs.AAB_PATH }}
+        run: |
+          set -euo pipefail
+          # jarsigner -verify exits 0 on an unsigned jar, so assert on the
+          # message. -strict is deliberately not used: the release key is
+          # self-signed, and -strict turns signerSelfSigned into a nonzero exit.
+          verify_out=$(jarsigner -verify -verbose:summary "$AAB_PATH" 2>&1)
+          printf '%s\n' "$verify_out"
+          if ! printf '%s\n' "$verify_out" | grep -qF 'jar verified.'; then
+            echo "ERROR: the AAB is unsigned; Play rejects it on upload" >&2
+            exit 1
+          fi
+          entries=$(unzip -Z1 "$AAB_PATH")
+          if ! printf '%s\n' "$entries" | grep -qxF 'base/manifest/AndroidManifest.xml'; then
+            echo "ERROR: the AAB has no base module manifest" >&2
+            exit 1
+          fi
+          # Play generates the per-device APKs from these directories, so a
+          # stray ABI would be served to devices the app was never built for.
+          abis=$(printf '%s\n' "$entries" | sed -n 's:^base/lib/\([^/]*\)/.*:\1:p' | sort -u)
+          if [ "$abis" != 'arm64-v8a' ]; then
+            echo "ERROR: unexpected ABIs in the AAB: ${abis:-none}" >&2
+            exit 1
+          fi
+          # The Play-side invariant the sideload APK deliberately no longer
+          # carries: the bundle must keep extractNativeLibs=false so Play-served
+          # APKs store libs uncompressed and delta updates stay small. The base
+          # manifest is proto-encoded; the attribute value is the
+          # length-prefixed string "false", hence the \x1a\x05 bytes.
+          if ! unzip -p "$AAB_PATH" base/manifest/AndroidManifest.xml \
+            | grep -aqF $'extractNativeLibs\x1a\x05false'; then
+            echo "ERROR: the AAB base manifest does not set extractNativeLibs=false; Play updates would ship near-full downloads" >&2
+            exit 1
+          fi
+          echo "AAB OK: signed, arm64-v8a only, extractNativeLibs=false."
+
+      - name: Upload AAB
+        id: aab_upload
+        if: steps.aab.outputs.AAB_PATH != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.names.outputs.ART_NAME }}.aab
+          path: ${{ steps.aab.outputs.AAB_PATH }}
+          # Longer than the APK's 7 days: nothing consumes the bundle
+          # automatically, it is fetched by hand whenever the Play track is
+          # next updated, which is not necessarily release day. A tag bundle
+          # gets the 90-day maximum for that reason (a re-run after expiry
+          # rebuilds with the current toolchain, it does not restore the same
+          # bytes); a nightly is superseded on the next merge and keeps 30.
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/v') && 90 || 30 }}
+
+      - name: Generate AAB SBOM
+        id: aab_sbom
+        if: steps.aab.outputs.AAB_PATH != ''
+        continue-on-error: true
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          file: ${{ steps.aab.outputs.AAB_PATH }}
+          format: spdx-json
+          output-file: ${{ steps.aab.outputs.AAB_PATH }}.spdx.json
+          artifact-name: ${{ steps.names.outputs.ART_NAME }}.aab.spdx.json
+          upload-artifact: true
+          upload-release-assets: false
+
+      # The AAB is the artifact that actually reaches users through Play, so a
+      # tag attests it exactly like the sideload APK; a maintainer verifies
+      # with `gh attestation verify` before handing a bundle to the Play
+      # Console (docs/release-verification.md).
+      - name: Attest AAB provenance
+        id: aab_attest
+        if: startsWith(github.ref, 'refs/tags/') && steps.aab.outputs.AAB_PATH != ''
+        continue-on-error: true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.aab.outputs.AAB_PATH }}
+
+      - name: Attest AAB SBOM
+        id: aab_attest_sbom
+        if: startsWith(github.ref, 'refs/tags/') && steps.aab.outputs.AAB_PATH != ''
+        continue-on-error: true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.aab.outputs.AAB_PATH }}
+          sbom-path: ${{ steps.aab.outputs.AAB_PATH }}.spdx.json
+
+      # continue-on-error keeps AAB failures from failing this job, so the
+      # signal has to leave through a job output instead; the aab-status job
+      # fails on it. Skipped steps count as ok: an AAB is only owed on
+      # publishable refs with signing material, and the missing-material cases
+      # already warned (nightly) or hard-failed (tag) at the keystore step.
+      - name: Record the AAB outcome
+        id: aab_outcome
+        if: always()
+        shell: bash
+        env:
+          OUTCOMES: >-
+            ${{ steps.aab_build.outcome }}
+            ${{ steps.aab.outcome }}
+            ${{ steps.aab_verify.outcome }}
+            ${{ steps.aab_upload.outcome }}
+            ${{ steps.aab_sbom.outcome }}
+            ${{ steps.aab_attest.outcome }}
+            ${{ steps.aab_attest_sbom.outcome }}
+        run: |
+          set -euo pipefail
+          if printf '%s\n' "${OUTCOMES}" | grep -qw 'failure'; then
+            echo "AAB_OK=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "AAB_OK=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Remove the signing keystore
+        if: always() && steps.keystore.outputs.KEYSTORE_PATH != ''
+        shell: bash
+        env:
+          KEYSTORE_PATH: ${{ steps.keystore.outputs.KEYSTORE_PATH }}
+        run: rm -f "${KEYSTORE_PATH}"
+
+      - name: Show ccache stats
+        shell: bash
+        run: ccache --show-stats
+
+  aab-status:
+    name: AAB status
+    # The AAB steps in build-apk are continue-on-error so a bundle-only failure
+    # cannot block the APK publish; this job is where such a failure surfaces
+    # as its own red check instead of vanishing.
+    needs: [build-apk]
+    runs-on: ubuntu-latest
+    if: needs.build-apk.outputs.publishable == 'true'
+    steps:
+      - name: Fail when the AAB pipeline failed
+        shell: bash
+        env:
+          AAB_OK: ${{ needs.build-apk.outputs.aab_ok }}
+        run: |
+          set -euo pipefail
+          if [ "${AAB_OK}" != 'true' ]; then
+            echo "::error::An AAB build/verify/upload/attest step failed in build-apk; the APK publish is unaffected, but this run produced no uploadable bundle" >&2
+            exit 1
+          fi
+          echo "AAB pipeline OK."
+
+  publish-apk:
+    name: Publish APK
+    # Also gated on the UI tests: the APK job proves the QML compiles and packages,
+    # not that the app's screens behave, and a release is the wrong place to find
+    # that out. The cost is that a failure to install the host Qt kit blocks a
+    # publish until it is re-run.
+    needs: [build-apk, qt-ui-tests]
+    runs-on: ubuntu-latest
+    # An unsigned APK cannot be installed, so a build that could not sign
+    # publishes nothing rather than shipping a broken download. The publishable
+    # predicate (upstream repo + release tag or main/master push/dispatch) is
+    # computed once, in build-apk's "Prepare artifact naming and the publish
+    # gate" step.
+    if: >-
+      needs.build-apk.outputs.publishable == 'true' &&
+      needs.build-apk.outputs.signed == 'true'
+    permissions:
+      actions: read
+      contents: write
+    env:
+      APK_PATH: ${{ needs.build-apk.outputs.apk_path }}
+      ART_NAME: ${{ needs.build-apk.outputs.art_name }}
+    steps:
+      - name: Checkout release helpers
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download APK artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build-apk.outputs.art_name }}
+          path: dist
+
+      - name: Download APK SBOM artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build-apk.outputs.art_name }}.spdx.json
+          path: dist
+
+      - name: Normalize downloaded SBOM filename
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv -f "dist/${ART_NAME}.spdx.json" "${APK_PATH}.spdx.json"
+
+      - name: Verify downloaded release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "${APK_PATH}"
+          test -f "${APK_PATH}.spdx.json"
+
+      - name: Wait for release metadata
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: tools/ci_wait_for_release.sh
+
+      - name: Upload APK release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            "${APK_PATH}" \
+            "${APK_PATH}.spdx.json" \
+            --repo "${RELEASE_REPOSITORY}" \
+            --clobber
+
+      # The job-level gate already restricts this job to publishable refs, so
+      # "not a tag" is all that distinguishes a nightly here.
+      - name: Upload APK nightly assets (overwrite)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
+        with:
+          tag_name: nightly
+          name: nightly
+          prerelease: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          files: |
+            ${{ needs.build-apk.outputs.apk_path }}
+            ${{ needs.build-apk.outputs.apk_path }}.spdx.json
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          token: ${{ github.token }}

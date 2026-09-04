@@ -3,9 +3,9 @@
  * Focused checks for P25 Phase 1 sync constants and dispatch routing.
  */
 
+#include <mbelib-neo/mbelib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "mbelib.h"
 
 #include <assert.h>
 #include <dsd-neo/core/dibit.h>
@@ -16,6 +16,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
@@ -25,7 +26,32 @@
 #include <string.h>
 
 int dsd_dispatch_matches_p25p1(int synctype);
-void dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
+dsd_frame_verdict dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
+
+static uint8_t g_test_duid = 0x3U;
+static int g_check_result = NID_OK;
+static int g_new_nac = 0x293;
+static int g_error_count;
+static int g_last_observed_nac;
+static int g_open_mbe_calls;
+static int g_close_mbe_calls;
+static int g_close_mbe_r_calls;
+static int g_resume_calls;
+static int g_status_classify_calls;
+
+static void
+reset_stub_state(void) {
+    g_test_duid = 0x3U;
+    g_check_result = NID_OK;
+    g_new_nac = 0x293;
+    g_error_count = 0;
+    g_last_observed_nac = -1;
+    g_open_mbe_calls = 0;
+    g_close_mbe_calls = 0;
+    g_close_mbe_r_calls = 0;
+    g_resume_calls = 0;
+    g_status_classify_calls = 0;
+}
 
 int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
@@ -39,36 +65,16 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     return 0;
 }
 
-int
-getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability) {
-    (void)opts;
-    (void)state;
-    if (out_reliability != NULL) {
-        *out_reliability = 255;
-    }
-    return 0;
-}
-
-int
-check_NID_with_observed_nac_soft(const char* bch_code, const uint8_t* reliab63, int observed_nac, int* new_nac,
-                                 char* new_duid, unsigned char parity, uint8_t parity_reliab, int* error_count) {
+struct p25p1_nid_result
+p25p1_nid_decode(const char bch_code[63], const uint8_t reliab63[63], int observed_nac, unsigned char parity,
+                 uint8_t parity_reliab) {
     (void)bch_code;
     (void)reliab63;
-    (void)observed_nac;
     (void)parity;
     (void)parity_reliab;
-    if (new_nac != NULL) {
-        *new_nac = 0x293;
-    }
-    if (new_duid != NULL) {
-        new_duid[0] = '0';
-        new_duid[1] = '3';
-        new_duid[2] = '\0';
-    }
-    if (error_count != NULL) {
-        *error_count = 0;
-    }
-    return NID_OK;
+    g_last_observed_nac = observed_nac;
+    struct p25p1_nid_result result = {(enum NidResult)g_check_result, g_new_nac, g_test_duid, g_error_count};
+    return result;
 }
 
 void
@@ -80,18 +86,21 @@ printFrameInfo(dsd_opts* opts, dsd_state* state) {
 void
 openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)state;
+    ++g_open_mbe_calls;
     opts->mbe_out_f = stdout;
 }
 
 void
 closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
     (void)state;
+    ++g_close_mbe_calls;
     opts->mbe_out_f = NULL;
 }
 
 void
 closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
     (void)state;
+    ++g_close_mbe_r_calls;
     opts->mbe_out_fR = NULL;
 }
 
@@ -99,6 +108,7 @@ void
 resumeScan(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    ++g_resume_calls;
 }
 
 void
@@ -120,9 +130,9 @@ p25_status_accum_add(dsd_state* state, int dibit_value) {
 }
 
 void
-p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
+p25_status_accum_classify(dsd_state* state) {
     (void)state;
-    (void)opts;
+    ++g_status_classify_calls;
 }
 
 void
@@ -196,8 +206,10 @@ test_simple_tdu_dispatch_defaults(void) {
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
 
     state.synctype = DSD_SYNC_P25P1_POS;
+    g_test_duid = 0x3U;
     dsd_dispatch_handle_p25p1(&opts, &state);
 
     assert(state.nac == 0x293);
@@ -205,11 +217,384 @@ test_simple_tdu_dispatch_defaults(void) {
     assert(strcmp(state.fsubtype, " TDU          ") == 0);
 }
 
+static const char k_valid_embedded_gps[] = "GPS: 41.12345N 087.12345W (41.12345, -87.12345) Current Fix";
+
+static void
+seed_stale_data_call_display(dsd_state* state) {
+    DSD_SNPRINTF(state->dmr_embedded_gps[0], sizeof(state->dmr_embedded_gps[0]), "%s", k_valid_embedded_gps);
+    DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]),
+                 "Data Call: Mobile Radio Statistics; SAP:24; LLID: 393226; ");
+}
+
+static void
+expect_stale_data_call_display_cleared(uint8_t duid, unsigned int expected_burst, const char* expected_subtype) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    seed_stale_data_call_display(&state);
+
+    g_test_duid = duid;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(state.dmrburstL == expected_burst);
+    assert(strcmp(state.dmr_embedded_gps[0], k_valid_embedded_gps) == 0);
+    assert(state.dmr_lrrp_gps[0][0] == '\0');
+    assert(strcmp(state.fsubtype, expected_subtype) == 0);
+}
+
+static void
+test_p25p1_dispatch_clears_stale_data_call_display(void) {
+    static const struct {
+        uint8_t duid;
+        unsigned int expected_burst;
+        const char* expected_subtype;
+    } cases[] = {
+        {0x0U, 25, " HDU          "}, {0x5U, 26, " LDU1         "}, {0xAU, 27, " LDU2         "},
+        {0xFU, 28, " TDULC        "}, {0x3U, 28, " TDU          "}, {0x7U, 29, " TSBK         "},
+        {0xCU, 29, " MPDU         "}, {0xFFU, 0, "              "},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        expect_stale_data_call_display_cleared(cases[i].duid, cases[i].expected_burst, cases[i].expected_subtype);
+    }
+}
+
+static void
+expect_observed_nac(const char* label, unsigned long long p2_cc, int p2_hardset, int nac, int expected_observed_nac) {
+    (void)label;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p2_cc = p2_cc;
+    state.p2_hardset = p2_hardset;
+    state.nac = nac;
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(g_last_observed_nac == expected_observed_nac);
+}
+
+static void
+test_p25p1_observed_nac_priority(void) {
+    expect_observed_nac("hardset-p2-cc", 0x123ULL, 1, 0x234, 0x123);
+    expect_observed_nac("decoded-nac", 0x123ULL, 0, 0x234, 0x234);
+    expect_observed_nac("fallback-p2-cc", 0x456ULL, 0, 0, 0x456);
+    expect_observed_nac("invalid-values", 0xFFFULL, 0, 0xFFF, 0);
+}
+
+static void
+test_p25p1_nid_correction_and_failure_state(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    g_check_result = NID_PARITY_OVERRIDE;
+    g_error_count = 3;
+    g_new_nac = 0x321;
+    g_test_duid = 0x3U;
+
+    /* A decoded NID is taken at its word: the BCH held, so the burst behind it counts -- and
+     * proves the profile carried it, whatever fraction of the slot the handler read (#400). */
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+
+    assert(state.nid_corrections_total == 3U);
+    assert(state.nid_parity_overrides == 1U);
+    assert(state.nac == 0x321);
+    assert(state.p2_cc == 0x321ULL);
+    assert(state.debug_header_errors == 2U);
+    assert(state.nid_failures_total == 0U);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_check_result = NID_DECODE_FAIL;
+    g_test_duid = 0x5U;
+
+    /* #391: the 63-bit BCH failed, the DUID is invalid and nothing is decoded past it, so
+     * the 33 dibits already read validated nothing. Nothing has decoded here to vouch for
+     * it either -- the zeroed state carries no evidence (#400). */
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+
+    assert(state.nid_failures_total == 1U);
+    assert(state.debug_header_critical_errors == 1U);
+    assert(state.lastp25type == 0);
+    assert(strcmp(state.fsubtype, "              ") == 0);
+    assert(g_status_classify_calls == 1);
+}
+
+static void
+test_p25p1_nac_update_guards(void) {
+    static const int invalid_nacs[] = {0, 0xFFF};
+
+    for (size_t i = 0; i < sizeof(invalid_nacs) / sizeof(invalid_nacs[0]); i++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_stub_state();
+
+        state.synctype = DSD_SYNC_P25P1_POS;
+        state.nac = 0x2AA;
+        state.p2_cc = 0x2AAULL;
+        g_new_nac = invalid_nacs[i];
+        g_error_count = 2;
+        g_test_duid = 0x0U;
+
+        dsd_dispatch_handle_p25p1(&opts, &state);
+
+        assert(g_last_observed_nac == 0x2AA);
+        assert(state.nac == 0x2AA);
+        assert(state.p2_cc == 0x2AAULL);
+        assert(state.nid_corrections_total == 2U);
+        assert(state.debug_header_errors == 1U);
+        assert(state.nid_failures_total == 0U);
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.nac = 0x234;
+    state.p2_cc = 0x123ULL;
+    state.p2_hardset = 1;
+    g_new_nac = 0x321;
+    g_error_count = 1;
+    g_test_duid = 0x0U;
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(g_last_observed_nac == 0x123);
+    assert(state.nac == 0x321);
+    assert(state.p2_cc == 0x123ULL);
+    assert(state.nid_corrections_total == 1U);
+    assert(state.debug_header_errors == 1U);
+    assert(state.nid_failures_total == 0U);
+}
+
+static void
+test_p25p1_mbe_output_and_resume_side_effects(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
+    opts.mbe_out_f = (FILE*)0x1;
+    g_test_duid = 0x0U;
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(g_close_mbe_calls == 1);
+    assert(g_open_mbe_calls == 0);
+    assert(opts.mbe_out_f == NULL);
+    assert(state.lastp25type == 2);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
+    opts.mbe_out_f = (FILE*)0x1;
+    opts.mbe_out_fR = (FILE*)0x2;
+    opts.resume = 1;
+    g_test_duid = 0x7U;
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(g_close_mbe_calls == 1);
+    assert(g_close_mbe_r_calls == 1);
+    assert(g_resume_calls == 1);
+    assert(opts.mbe_out_f == NULL);
+    assert(opts.mbe_out_fR == NULL);
+    assert(state.lastp25type == 3);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    opts.resume = 1;
+    state.numtdulc = 1;
+    g_test_duid = 0xFU;
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(g_resume_calls == 1);
+    assert(state.numtdulc == 2);
+    assert(state.lastp25type == 0);
+}
+
+/*
+ * Issue #423: a decoded NID is the only place that knows which modulation actually carried a
+ * P25p1 frame -- the sync word is identical on C4FM and CQPSK -- so it is where the trunking
+ * retunes and the SPS hunt learn what to restore.
+ */
+static void
+test_p25p1_valid_nid_learns_modulation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* A frame that decoded through the CQPSK chain stamps CQPSK. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.rf_mod = 1;
+    state.p25_p1_validated_rf_mod = -1;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p25_p1_validated_rf_mod == 1);
+
+    /* And one that decoded through C4FM stamps C4FM, so a wrong guess self-corrects. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.rf_mod = 0;
+    state.p25_p1_validated_rf_mod = 1;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p25_p1_validated_rf_mod == 0);
+
+    /* A failed NID validated nothing, so it teaches nothing. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_check_result = NID_DECODE_FAIL;
+    state.rf_mod = 0;
+    state.p25_p1_validated_rf_mod = 1;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p25_p1_validated_rf_mod == 1);
+
+    /* An explicit CLI modulation lock owns the decision outright. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    opts.mod_cli_lock = 1;
+    state.rf_mod = 1;
+    state.p25_p1_validated_rf_mod = -1;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p25_p1_validated_rf_mod == -1);
+
+    /* GFSK is not a P25p1 modulation; nothing to learn from it. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.rf_mod = 2;
+    state.p25_p1_validated_rf_mod = -1;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p25_p1_validated_rf_mod == -1);
+}
+
+/*
+ * Issue #400: consumption credit is bounded by what the handler read, so a control channel
+ * decoding 134 symbols of a ~180-symbol TSDU slot loses ground on every frame it decodes and
+ * the SPS hunt rotates off it. A decoded NID proves the profile instead of paying for the
+ * frame, and vouches for the failures around it for a bounded window.
+ */
+static void
+test_p25p1_verdict_follows_the_nid_evidence_window(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* A decoded NID stamps the window and proves the profile. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.symbolcnt = 5000U;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(state.p25_p1_nid_evidence == 1);
+    assert(state.p25_p1_nid_evidence_symbolcnt == 5000U);
+
+    /* The stamp speaks for the profile, not the demodulator, so neither of the gates the
+     * modulation stamp answers to applies: a CLI modulation lock still stamps it. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    opts.mod_cli_lock = 1;
+    state.rf_mod = 1;
+    state.p25_p1_validated_rf_mod = -1;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(state.p25_p1_nid_evidence == 1);
+    assert(state.p25_p1_validated_rf_mod == -1);
+
+    /* And so does a frame that arrived through a chain the modulation stamp will not speak for. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.rf_mod = 2;
+    state.p25_p1_validated_rf_mod = -1;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(state.p25_p1_nid_evidence == 1);
+    assert(state.p25_p1_validated_rf_mod == -1);
+
+    /* A failed NID inside the window is still evidence about the profile: P25p1 was decoding
+     * here a moment ago. It learns no modulation from it, and does not move the window. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_check_result = NID_DECODE_FAIL;
+    state.rf_mod = 0;
+    state.p25_p1_validated_rf_mod = 1;
+    state.p25_p1_nid_evidence = 1;
+    state.p25_p1_nid_evidence_symbolcnt = 1000U;
+    state.symbolcnt = 1000U + 9599U;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(state.p25_p1_nid_evidence_symbolcnt == 1000U);
+    assert(state.p25_p1_validated_rf_mod == 1);
+
+    /* One symbol past the window it speaks only for itself again, so a channel that stops
+     * decoding stops being vouched for. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_check_result = NID_DECODE_FAIL;
+    state.p25_p1_nid_evidence = 1;
+    state.p25_p1_nid_evidence_symbolcnt = 1000U;
+    state.symbolcnt = 1000U + 9600U;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+
+    /* The flag is what opens the window, not the stamp: a state that has never decoded a NID
+     * reads as no evidence rather than as evidence at symbol zero. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_check_result = NID_DECODE_FAIL;
+    state.p25_p1_nid_evidence = 0;
+    state.p25_p1_nid_evidence_symbolcnt = 0U;
+    state.symbolcnt = 12U;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+
+    /* The window is measured modularly, so it stays exact across the symbol counter's rollover. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_check_result = NID_DECODE_FAIL;
+    state.p25_p1_nid_evidence = 1;
+    state.p25_p1_nid_evidence_symbolcnt = UINT32_MAX - 100U;
+    state.symbolcnt = 100U;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
     test_synctype_helpers();
     test_simple_tdu_dispatch_defaults();
+    test_p25p1_dispatch_clears_stale_data_call_display();
+    test_p25p1_observed_nac_priority();
+    test_p25p1_nid_correction_and_failure_state();
+    test_p25p1_nac_update_guards();
+    test_p25p1_mbe_output_and_resume_side_effects();
+    test_p25p1_valid_nid_learns_modulation();
+    test_p25p1_verdict_follows_the_nid_evidence_window();
     printf("P25_P1_SYNC_DISPATCH: OK\n");
     return 0;
 }

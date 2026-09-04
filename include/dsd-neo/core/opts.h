@@ -14,9 +14,9 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 
-#include <dsd-neo/platform/platform.h>
-
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/platform/platform.h>
 #ifdef __cplusplus
 #include <dsd-neo/core/safe_api.h>
 #endif
@@ -29,6 +29,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+/* Extra UDP ports a site can route onto the LRRP decoder with --lrrp-extra-port or the
+   mode.dmr_lrrp_ports config key; see core/lrrp_ports.h for the shared helpers. */
+#define DSD_LRRP_EXTRA_PORT_MAX 8
 
 /**
  * @brief Audio input source types.
@@ -62,6 +66,7 @@ struct dsd_opts {
     FILE* mbe_out_fR; //second slot on a TDMA system
     FILE* symbol_out_f;
     FILE* frame_log_f;                    // optional frame-trace sink
+    FILE* p25_sm_log_f;                   // optional P25 state-machine diagnostic sink
     time_t symbol_out_file_creation_time; //time the symbol out file was created
     SNDFILE* wav_out_f;
     SNDFILE* wav_out_fR;
@@ -77,15 +82,25 @@ struct dsd_opts {
     unsigned long long udp_in_bytes;   // received bytes
     unsigned long long udp_in_drops;   // dropped samples due to ring overflow
     tcp_input_ctx* tcp_in_ctx;         ///< TCP audio input context (cross-platform)
+    double rtl_squelch_level;
+    double input_warn_db;
+    time_t last_input_warn_time;
+    // P25 SM unified follower configuration (CLI values override environment defaults)
+    // Values <= 0 mean "unset" and will defer to environment or defaults.
+    double p25_vc_grace_s;             // seconds after tune before eligible for VC->CC return
+    double p25_min_follow_dwell_s;     // minimum seconds to dwell after first voice
+    double p25_grant_voice_to_s;       // max seconds to wait from grant until voice before returning
+    double p25_force_release_extra_s;  // safety-net extra seconds beyond hangtime
+    double p25_force_release_margin_s; // safety-net hard margin seconds beyond extra
+    double p25_p1_err_hold_pct;        // P25p1 IMBE error average threshold (percent) to extend hang
+    double p25_p1_err_hold_s;          // additional seconds to hold when threshold exceeded
+    uint64_t iq_capture_max_bytes;
+    dsd_resampler_state input_resampler;
 
     // Scalars and smaller integers
     int onesymbol;
     int errorbars;
     int datascope;
-    int constellation;      //ncurses ASCII constellation view (0=off, 1=on)
-    float const_gate_qpsk;  //constellation magnitude gate for QPSK
-    float const_gate_other; //constellation gate for non-QPSK (FSK)
-    int symboltiming;
     int verbose;
     int p25enc;
     int p25lc;
@@ -95,9 +110,9 @@ struct dsd_opts {
     int audio_in_fd;
     uint32_t rtlsdr_center_freq;
     int rtlsdr_ppm_error;
-    dsd_audio_in_type audio_in_type; ///< Audio input source (see dsd_audio_in_type)
     int audio_out_fd;
-    int audio_out_type; // 0 for pulse, 1 for file/stdout, 8 for UDP
+    int audio_out_type;            // 0 for pulse, 1 for file/stdout, 8 for UDP
+    int audio_output_async_policy; // async mode applied to currently open local output streams
     int split;
     int playoffset;
     int playoffsetR;
@@ -128,8 +143,13 @@ struct dsd_opts {
     int mod_c4fm;
     int mod_qpsk;
     int mod_gfsk;
-    /* When set by CLI (-mc/-mg/-mq/-m2), pin demod path and disable
-       auto modulation switching/overrides. 0=auto (default), 1=locked. */
+    /* Explicit -m3 P25p2 C4FM path; keeps its 10-SPS timing eligible for P25p2 sync. */
+    int mod_p25p2_c4fm;
+    /* P25p2-specific -m2/M selection; pins the strict matcher to the 6000-symbol profile. */
+    int mod_p25p2_profile_lock;
+    /* When set by an explicit modulation selection (CLI -mc/-mg/-mq/-m2/-m3 or the
+       interactive P25p2 helper), pin the demod path and disable auto modulation
+       switching/overrides. 0=auto (default), 1=locked. */
     int mod_cli_lock;
     int inverted_x2tdma;
     int inverted_dmr;
@@ -142,10 +162,10 @@ struct dsd_opts {
     int m17decoderip;
     int delay;
     int use_cosine_filter;
+    // User override for undeciphered P25 audio; crypto resolution must not mutate it.
     int unmute_encrypted_p25;
     int rtl_dev_index;
     int rtl_gain_value;
-    double rtl_squelch_level;
     int rtl_volume_multiplier;
     /* Generic input volume multiplier for non-RTL inputs (Pulse/WAV/TCP/UDP). */
     int input_volume_multiplier;
@@ -155,21 +175,20 @@ struct dsd_opts {
     int rtl_dsp_bw_khz;
     int rtl_bias_tee;       /* 1 to enable RTL-SDR bias tee (if supported) */
     int soapy_bandwidth_hz; /* -1=profile/default, 0=driver automatic, >0 explicit Soapy hardware bandwidth */
+    /* Digital FSK stream resampling: 0=auto (only for non-integer SPS), 1=on, 2=off.
+       Values match enum dsd_digital_resample_mode. */
+    int digital_resample_mode;
     int rtl_started;
     /* Mark when RTL-SDR stream must be destroyed/recreated to apply changes
        that cannot be updated live (e.g., device index, bandwidth, manual gain). */
     int rtl_needs_restart;
-    /* Spectrum-based RTL auto-PPM enable (0=off, 1=on). Mirrors DSD_NEO_AUTO_PPM. */
+    /* Carrier/tracking-based RTL auto-PPM enable (0=off, 1=on). Mirrors DSD_NEO_AUTO_PPM. */
     int rtl_auto_ppm;
-    /* Spectrum-based RTL auto-PPM SNR threshold in dB; <=0 means default. */
+    /* Carrier/tracking-based RTL auto-PPM SNR threshold in dB; <=0 means default. */
     float rtl_auto_ppm_snr_db;
     int monitor_input_audio;
-    /* Warn when input level is below this dBFS threshold (e.g., -40). */
-    double input_warn_db;
     /* Minimum seconds between repeated low-level warnings. */
     int input_warn_cooldown_sec;
-    /* Last time a low-level input warning was emitted. */
-    time_t last_input_warn_time;
     int analog_only;
     int pulse_raw_rate_in;
     int pulse_raw_rate_out;
@@ -180,60 +199,27 @@ struct dsd_opts {
     int pulse_digi_in_channels;
     int pulse_digi_out_channels;
     int pulse_flush;
-    uint8_t use_ncurses_terminal;
-    uint8_t ncurses_compact;
-    uint8_t ncurses_history;
-    uint8_t eye_view;                    //ncurses timing/eye diagram for C4FM/FSK (0=off)
-    uint8_t fsk_hist_view;               //ncurses 4-level histogram for C4FM/FSK (0=off)
-    uint8_t spectrum_view;               //ncurses spectrum analyzer for complex baseband (0=off)
-    uint8_t eye_unicode;                 //use Unicode block glyphs in eye diagram (0=ASCII)
-    uint8_t eye_color;                   //use colorized density in eye diagram (0=mono)
-    uint8_t show_dsp_panel;              //show compact DSP status panel (0=hidden)
-    uint8_t show_p25_metrics;            //show P25 Metrics section (0=hidden)
-    uint8_t show_p25_neighbors;          //show P25 Neighbors (freq list) (0=hidden)
-    uint8_t show_p25_iden_plan;          //show P25 IDEN Plan table (0=hidden)
-    uint8_t show_p25_cc_candidates;      //show P25 CC Candidates (0=hidden)
-    uint8_t show_channels;               //show Channels section (0=hidden)
-    uint8_t show_p25_affiliations;       //show P25 Affiliations (RID list) (0=hidden)
-    uint8_t show_p25_group_affiliations; //show P25 Group Affiliation (RID↔TG) (0=hidden)
-    uint8_t show_p25_callsign_decode;    //show P25 callsign decode from WACN/SysID (0=hidden)
-    uint8_t show_keys;                   //show radio key/keystream material in CLI/status output (0=redacted)
     /** Enable status-symbol-based P25 AFC suppression (0=advisory only [default], 1=enforce). */
     int p25_afc_status_gate_enable;
 
-    // P25 SM unified follower configuration (CLI-mirrored; env fallback retained)
-    // Values <= 0 mean "unset" and will defer to environment or defaults.
-    double p25_vc_grace_s;             // seconds after tune before eligible for VC->CC return
-    double p25_min_follow_dwell_s;     // minimum seconds to dwell after first voice
-    double p25_grant_voice_to_s;       // max seconds to wait from grant until voice before returning
-    double p25_retune_backoff_s;       // seconds to block immediate retune to same VC after return
-    double p25_force_release_extra_s;  // safety-net extra seconds beyond hangtime
-    double p25_force_release_margin_s; // safety-net hard margin seconds beyond extra
-    double p25_p1_err_hold_pct;        // P25p1 IMBE error average threshold (percent) to extend hang
-    double p25_p1_err_hold_s;          // additional seconds to hold when threshold exceeded
     int reset_state;
     int payload;
-    int frame_log_open_error_reported;  // guard repeated open error spam
-    int frame_log_write_error_reported; // guard repeated write error spam
+    int frame_log_open_error_reported;   // guard repeated open error spam
+    int frame_log_write_error_reported;  // guard repeated write error spam
+    int p25_sm_log_open_error_reported;  // guard repeated open error spam
+    int p25_sm_log_write_error_reported; // guard repeated write error spam
     unsigned int dPMR_curr_frame_is_encrypted;
     int dPMR_next_part_of_superframe;
     int inverted_dpmr;
     int frame_dpmr;
-    short int mbe_out;  //flag for mbe out, don't attempt fclose more than once
-    short int mbe_outR; //flag for mbe out, don't attempt fclose more than once
-    short int dmr_mono;
-    short int dmr_stereo;
-    short int lrrp_file_output;
-    short int dmr_mute_encL;
-    short int dmr_mute_encR;
     /* DMR: when set, relax CRC gating (ignore final CRC when no irrecoverable errors).
        Off by default; enabled via -F like other protocols. */
     uint8_t dmr_crc_relaxed_default;
     uint8_t dmr_debug_burst;
+    uint8_t dmr_debug_unsynced;
     uint8_t call_alert_events;
     int frame_ysf;
     int inverted_ysf;
-    short int aggressive_framesync;
     int frame_m17;
     int inverted_m17;
     int call_alert;
@@ -259,22 +245,21 @@ struct dsd_opts {
     int staged_file_sample_rate;
     int wav_interpolator;
     int wav_decimator;
-    dsd_resampler_state input_resampler;
-    float input_upsample_buf[6];
     float input_upsample_prev;
     int input_upsample_len;
     int input_upsample_pos;
     int input_upsample_tail_blocks;
     int input_upsample_prev_valid;
-    int p25_trunk;        // legacy flag name used across protocols
-    int trunk_enable;     // protocol-agnostic alias for trunking enable (kept in sync with p25_trunk)
-    int p25_is_tuned;     //set to 1 if currently on VC, set back to 0 if on CC
-    int trunk_is_tuned;   //protocol-agnostic alias (kept in sync with p25_is_tuned)
+    int trunk_enable;     // trunking owner is enabled
+    int trunk_is_tuned;   // tuner is currently on a trunked voice channel
     float trunk_hangtime; //hangtime in seconds before tuning back to CC
     int scanner_mode;     //experimental -- use the channel map as a conventional scanner, quicker tuning, but no CC
     int trunk_scan_enabled;
     int trunk_scan_idle_dwell_ms;
     int trunk_scan_activity_hold_ms;
+    int scan_voice_only;
+    int scan_voice_qualify_ms;
+    int scan_voice_hold_ms;
     int setmod_bw;
     int slot_preference;
     int slot1_on;
@@ -284,10 +269,23 @@ struct dsd_opts {
     int use_pbf;
     int use_hpf_d;
     int floating_point;
+    float input_upsample_buf[6];
+    dsd_frontend_common_display_opts frontend_display;
+    dsd_frontend_terminal_display_opts frontend_terminal_display;
+    short int mbe_out;  //flag for mbe out, don't attempt fclose more than once
+    short int mbe_outR; //flag for mbe out, don't attempt fclose more than once
+    short int dmr_mono; //select the DMR single-slot decoder and mono audio path
+    short int dmr_stereo;
+    short int lrrp_file_output;
+    int lrrp_extra_port_count; //number of entries used in lrrp_extra_ports
+    short int dmr_mute_encL;
+    short int dmr_mute_encR;
+    short int aggressive_framesync;
     // Small flags and bytes
-    uint8_t const_norm_mode;         //0=radial (percentile) norm, 1=unit-circle norm
+    dsd_audio_in_type audio_in_type; ///< Audio input source (see dsd_audio_in_type)
+    dsd_frontend_kind frontend_kind;
+    uint8_t show_keys;               //show radio key/keystream material in CLI/status output (0=redacted)
     uint8_t symbol_out_file_is_auto; //if the user hit the R key
-    uint8_t symbol_capture_format;   //DSD_SYMBOL_CAPTURE_FORMAT_* for new symbol captures
     uint8_t reverse_mute;
     uint8_t dmr_dmrla_is_set; //flag to tell us dmrla is set by the user
     uint8_t dmr_dmrla_n;      //n value for dmrla
@@ -302,7 +300,6 @@ struct dsd_opts {
     uint8_t p25_lcw_retune;
     uint8_t p25_prefer_candidates;
     uint8_t use_dsp_output;
-    uint8_t use_heuristics;
     uint8_t dmr_t3_heuristic_fill;
     // IQ capture and replay
     uint8_t iq_capture_requested; /* 1 if --iq-capture was provided */
@@ -311,13 +308,14 @@ struct dsd_opts {
     uint8_t iq_replay_active;     /* 1 while replay stream is active */
     uint8_t iq_replay_rate_mode;  /* DSD_IQ_REPLAY_RATE_* */
     uint8_t iq_capture_format;    /* DSD_IQ_FORMAT_* */
-    uint64_t iq_capture_max_bytes;
 
     // Strings and paths (large trailing arrays)
     char pa_input_idx[100];
     char pa_output_idx[100];
     char wav_out_dir[512];
     char rdio_api_key[256];
+    char rr_username[128]; // RadioReference account; mirrored from config, never the password
+    char rr_app_key[64];   // RadioReference application key; empty when the build bakes one in
     char mbe_in_file[1024];
     char audio_out_dev[1024];
     char mbe_out_dir[1024];
@@ -328,8 +326,10 @@ struct dsd_opts {
     char wav_out_file_raw[1024];
     char symbol_out_file[1024];
     char lrrp_out_file[1024];
+    uint16_t lrrp_extra_ports[DSD_LRRP_EXTRA_PORT_MAX]; //site-mapped UDP ports decoded as LRRP
     char event_out_file[1024];
     char frame_log_file[1024];
+    char p25_sm_log_file[1024];
     char szNumbers[1024]; //**tera 10/32/64 char str
     char serial_dev[1024];
     char output_name[1024];
@@ -342,9 +342,10 @@ struct dsd_opts {
     char tcp_hostname[1024];
     char rtltcp_hostname[1024];
     char group_in_file[1024];
-    char lcn_in_file[1024];
     char chan_in_file[1024];
     char trunk_scan_targets_csv[1024];
+    char p25_bandplan_in_file[1024];     // --p25-bandplan / [trunking] p25_bandplan_csv
+    char p25_bandplan_export_file[1024]; // --p25-bandplan-export: written once at clean shutdown
     char key_in_file[1024];
     char soapy_profile[32];
     char soapy_stream_format[16];
@@ -369,13 +370,59 @@ enum DSD_ATTR_PACKED {
         (int)(sizeof(((dsd_opts*)0)->input_upsample_buf) / sizeof(((dsd_opts*)0)->input_upsample_buf[0])),
 };
 
+/** @brief Return 1 when any digital frame decoder is enabled. */
+static inline int
+dsd_opts_has_digital_decode_mode(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_provoice == 1 || opts->frame_dmr == 1
+           || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_x2tdma == 1 || opts->frame_ysf == 1
+           || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1;
+}
+
+/**
+ * @brief The modulation the `mod_*` flags select: 0 C4FM, 1 QPSK, 2 GFSK.
+ *
+ * Same encoding as @c dsd_state::rf_mod and @c DSD_APP_CMD_MOD_SET's payload, so
+ * a control's request and its readback are the same number.
+ *
+ * One copy of the mapping because two readers already need it -- the reading a
+ * segmented control binds to, and the skip test that decides whether a request
+ * is a no-op -- and if those two disagree the control shows one modulation while
+ * the engine drops the tap that would resynchronise them.
+ *
+ * More than one flag set is not a modulation: `-ma` and `demod = auto` turn all
+ * three on to mean "let the hunt choose", and the demodulator starts that on
+ * C4FM. Reporting the first flag found would answer QPSK for a session running
+ * as C4FM.
+ */
+static inline int
+dsd_opts_modulation(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    const int selected = (opts->mod_c4fm != 0) + (opts->mod_qpsk != 0) + (opts->mod_gfsk != 0);
+    if (selected != 1) {
+        return 0;
+    }
+    return (opts->mod_qpsk != 0) ? 1 : ((opts->mod_gfsk != 0) ? 2 : 0);
+}
+
+/** @brief Return 1 when an enabled 4800-symbol four-level mode uses the 12.5 kHz channel profile. */
+static inline int
+dsd_opts_uses_wide_4800_profile(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1 || opts->frame_m17 == 1;
+}
+
 /**
  * @brief Clear staged low-rate PCM input bookkeeping.
  *
- * Zeros the staged output buffer and clears the legacy bookkeeping fields
- * retained for compatibility. The reusable FIR state is intentionally not
- * touched here so runtime-only targets can use this inline helper without
- * taking a link-time dependency on `dsd-neo_dsp`.
+ * Zeros the staged output buffer and clears its bookkeeping fields. The reusable FIR state is intentionally not touched
+ * here so runtime-only targets can use this inline helper without taking a link-time dependency on `dsd-neo_dsp`.
  *
  * @param opts Decoder options containing the staged input bookkeeping.
  */
@@ -397,9 +444,8 @@ dsd_opts_reset_input_upsample_state(dsd_opts* opts) {
 /**
  * @brief Reset low-rate PCM input processing state at a stream boundary.
  *
- * Clears both the legacy staged upsample bookkeeping and the reusable FIR
- * state so the next socket/file block cannot blend samples from a previous
- * stream. Callers that use this helper must link against `dsd-neo_dsp`.
+ * Clears both the staged upsample bookkeeping and the reusable FIR state so the next socket/file block cannot blend
+ * samples from a previous stream. Callers that use this helper must link against `dsd-neo_dsp`.
  *
  * @param opts Decoder options containing the staged/FIR input state.
  */
@@ -415,10 +461,9 @@ dsd_opts_reset_pcm_input_state(dsd_opts* opts) {
 /**
  * @brief Apply a new raw PCM input sample rate to decoder options.
  *
- * Updates the stored raw rate, preserves the legacy integer interpolator
- * semantics for integer >=48 kHz ratios, and clears staged bookkeeping so the
- * next sample block starts on the new rate. Callers that own a live
- * FIR/polyphase state must reset `input_resampler` from compiled code.
+ * Updates the stored raw rate, preserves integer staged-resampling semantics for integer >=48 kHz ratios, and clears
+ * staged bookkeeping so the next sample block starts on the new rate. Callers that own a live FIR/polyphase state must
+ * reset `input_resampler` from compiled code.
  *
  * @param opts Decoder options to update.
  * @param sample_rate_hz New raw PCM sample rate in Hz.
@@ -561,7 +606,7 @@ dsd_opts_compute_sps_rate(const dsd_opts* opts, int sym_rate_hz, int demod_rate_
 /**
  * @brief Return the integer upsample factor used for common sub-48 kHz PCM inputs.
  *
- * Legacy file/socket decode paths expect approximately 48 kHz discriminator
+ * PCM file/socket decode paths expect approximately 48 kHz discriminator
  * audio. When a non-RTL PCM source is an integer divisor of 48 kHz, the sample
  * reader stages FIR/polyphase-resampled output up to 48 kHz before symbol
  * timing consumes it. The factor must fit within the fixed staging buffer used
@@ -587,7 +632,29 @@ dsd_opts_input_upsample_factor(const dsd_opts* opts) {
 }
 
 /**
- * @brief Return the effective PCM rate seen by non-RTL legacy decode paths.
+ * @brief Return 1 when a tuner sits behind this session, 0 otherwise.
+ *
+ * The question every surface that renders a tuner reading has to ask first. On a WAV,
+ * stdin, UDP, TCP or symbol-file session the centre frequency, gain, squelch and PPM are
+ * options the front end never applied, and rendering them puts plausible readings on
+ * screen for a run that has no radio; the RTL stream state is process-global and outlives
+ * its session, so the readings themselves cannot be trusted to say so. The input type is
+ * re-parsed per session and can, which is why it is the authority.
+ *
+ * One predicate rather than an open-coded comparison per call site: the moment a second
+ * RTL-family input type appears, whichever site is updated first would otherwise start
+ * disagreeing with the others about whether the same session has a tuner.
+ *
+ * @param opts Decoder options containing the configured input source.
+ * @return 1 for RTL-family input, 0 for everything else and for NULL.
+ */
+static inline int
+dsd_opts_input_is_radio(const dsd_opts* opts) {
+    return (opts != NULL && opts->audio_in_type == AUDIO_IN_RTL) ? 1 : 0;
+}
+
+/**
+ * @brief Return the effective PCM rate seen by non-RTL PCM decode paths.
  *
  * @param opts Decoder options containing the configured PCM input sample rate.
  * @return Effective sample rate in Hz after any staged PCM input resampling.
@@ -681,22 +748,6 @@ dsd_opts_current_input_timing_rate(const dsd_opts* opts) {
 }
 
 /**
- * @brief Compute samples-per-symbol for a given symbol rate and DSP bandwidth.
- *
- * Convenience wrapper that uses rtl_dsp_bw_khz from opts. For cases where the
- * actual demodulator output rate may differ (e.g., resampler active), prefer
- * dsd_opts_compute_sps_rate() with the actual rate.
- *
- * @param opts Decoder options containing rtl_dsp_bw_khz (may be NULL).
- * @param sym_rate_hz Symbol rate in Hz (e.g., 4800 for P25P1, 6000 for P25P2).
- * @return Computed samples per symbol, clamped to [2, 64].
- */
-static inline int
-dsd_opts_compute_sps(const dsd_opts* opts, int sym_rate_hz) {
-    return dsd_opts_compute_sps_rate(opts, sym_rate_hz, 0);
-}
-
-/**
  * @brief Compute symbol center index for a given SPS value.
  *
  * The symbol center is the optimal sample index within the symbol period
@@ -709,5 +760,15 @@ dsd_opts_compute_sps(const dsd_opts* opts, int sym_rate_hz) {
 static inline int
 dsd_opts_symbol_center(int sps) {
     return (sps - 1) / 2;
+}
+
+static inline int
+dsd_opts_frontend_active(const dsd_opts* opts) {
+    return opts != NULL && opts->frontend_kind != DSD_FRONTEND_NONE;
+}
+
+static inline int
+dsd_opts_frontend_is_terminal(const dsd_opts* opts) {
+    return opts != NULL && opts->frontend_kind == DSD_FRONTEND_TERMINAL;
 }
 #endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H */

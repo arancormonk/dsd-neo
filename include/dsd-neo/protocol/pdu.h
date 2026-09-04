@@ -22,7 +22,13 @@
 extern "C" {
 #endif
 
-void decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input);
+/**
+ * Decode an IPv4 packet-data PDU and publish its data notice.
+ *
+ * @return 1 when the data notice was committed, or 0 when the input was
+ *         rejected or no notice could be committed.
+ */
+int decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input);
 void decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len);
 
 #ifdef __cplusplus

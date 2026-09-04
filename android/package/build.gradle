@@ -1,0 +1,126 @@
+// Copyright (C) The Qt Company Ltd.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+// Vendored from Qt 6.11.1's androiddeployqt template
+// (<Qt>/android_arm64_v8a/src/android/templates/build.gradle) with one change, marked
+// DSD-NEO below. Files in QT_ANDROID_PACKAGE_SOURCE_DIR override the Qt template, so
+// this copy is what Gradle actually runs. Re-diff against the Qt template when the
+// pinned Qt version changes.
+//
+// The change (jniLibs.useLegacyPackaging): gradle.properties values are Strings, and
+// Qt's template assigns `useLegacyPackaging = legacyPackaging` directly. Groovy
+// coerces the non-empty String "false" to boolean true, so legacy jniLibs packaging
+// (compressed .so entries, android:extractNativeLibs="true") was always on. Rather
+// than only restoring the intended value with `.toBoolean()`, the vendored copy picks
+// the packaging per artifact: the Play bundle stores .so files uncompressed
+// (extractNativeLibs=false) so Play can delta-patch updates, while the sideload APK
+// compresses them (legacy packaging, install-time extraction) so the GitHub release
+// download stays around half the size. android-ci asserts both sides; see the
+// packaging notes in android/README.md.
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        //noinspection AndroidGradlePluginVersion
+        classpath 'com.android.tools.build:gradle:9.0.0'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0"
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+apply plugin: qtGradlePluginType
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar', '*.aar'])
+    //noinspection GradleDependency
+    implementation 'androidx.core:core:1.17.0'
+}
+
+android {
+    /*******************************************************
+     * The following variables:
+     * - androidBuildToolsVersion,
+     * - androidCompileSdkVersion
+     * - qtAndroidDir - holds the path to qt android files
+     *                   needed to build any Qt application
+     *                   on Android.
+     * - qtGradlePluginType - whether to build an app or a library
+     *
+     * are defined in gradle.properties file. This file is
+     * updated by QtCreator and androiddeployqt tools.
+     * Changing them manually might break the compilation!
+     *******************************************************/
+
+    namespace = androidPackageName
+    compileSdkVersion androidCompileSdkVersion
+    buildToolsVersion androidBuildToolsVersion
+    ndkVersion = androidNdkVersion
+
+    sourceSets {
+        main {
+            manifest.srcFile 'AndroidManifest.xml'
+            java.srcDirs = [qtAndroidDir + '/src', 'src', 'java']
+            kotlin.srcDirs = [qtAndroidDir + '/src', 'src', 'kotlin']
+            aidl.srcDirs = [qtAndroidDir + '/src', 'src', 'aidl']
+            res.srcDirs = [qtAndroidDir + '/res', 'res']
+            resources.srcDirs = ['resources']
+            renderscript.srcDirs = ['src']
+            assets.srcDirs = ['assets']
+            jniLibs.srcDirs = ['libs']
+       }
+    }
+
+    tasks.withType(JavaCompile) {
+        options.incremental = true
+        options.compilerArgs += ['-Xlint:all']
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lintOptions {
+        abortOnError = false
+    }
+
+    aaptOptions {
+        // Do not compress Qt binary resources file
+        noCompress 'rcc'
+    }
+
+    packagingOptions {
+        jniLibs {
+            // DSD-NEO: split packaging by artifact. androiddeployqt hardcodes the
+            // Gradle invocation: "assembleRelease" for the apk target and
+            // "assembleRelease bundle" for the aab target, so the requested task
+            // names are the only per-artifact signal this file sees.
+            //
+            // Bundle builds honor legacyPackaging (a String; Qt's template forgets
+            // .toBoolean(), see header) — false by default, so the AAB keeps
+            // extractNativeLibs=false and Play ships delta updates. Every other
+            // build (the sideload/dev APK) forces legacy packaging: compressed
+            // .so entries and install-time extraction, which roughly halves the
+            // GitHub release download.
+            def bundleBuild = gradle.startParameter.taskNames.any {
+                it.tokenize(':').last().startsWith('bundle')
+            }
+            useLegacyPackaging = bundleBuild ? legacyPackaging.toBoolean() : true
+        }
+    }
+
+    defaultConfig {
+        resConfig "en"
+        minSdkVersion qtMinSdkVersion
+        targetSdkVersion qtTargetSdkVersion
+        ndk.abiFilters = qtTargetAbiList.split(",")
+    }
+}

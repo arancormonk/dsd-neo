@@ -18,6 +18,8 @@
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/dsp/demod_state.h>
 
+#include "rtl_stream_mirrors.hpp"
+
 extern demod_state demod;
 
 extern std::atomic<double> g_snr_c4fm_db;

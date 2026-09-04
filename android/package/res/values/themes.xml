@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- The parent is exactly what the app resolved to before this theme existed:
+     Resources.selectDefaultTheme() hands an app targeting API 29+ with no
+     android:theme the DeviceDefault DayNight theme. Keeping that parent means
+     the only behaviour this file changes is the window background, which stops
+     the launcher flashing a light surface before Qt paints its dark UI. -->
+<resources>
+    <style name="Theme.DsdNeo" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowBackground">@color/dsdneo_background</item>
+    </style>
+</resources>

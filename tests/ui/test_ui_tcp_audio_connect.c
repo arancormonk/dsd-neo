@@ -10,10 +10,10 @@
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/log.h>
-#include <dsd-neo/ui/menu_services.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "services.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push

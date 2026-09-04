@@ -92,6 +92,44 @@ check_channel_lpf_protected_edges(demod_state* s) {
     return 0;
 }
 
+/*
+ * The channel, not the filter.
+ *
+ * P25 CQPSK runs a deliberately roomier 7250 Hz cutoff than the other 12.5 kHz
+ * profiles, but the channel it protects is still 12.5 kHz. Reporting the cutoff
+ * would widen the spectrum screen's channel column by 2 kHz the moment the
+ * modulation flipped C4FM->CQPSK on the same system, which reads as the receiver
+ * changing its mind about what it is listening to.
+ */
+static int
+test_channel_lpf_protected_edge(void) {
+    const float tol = 0.5f;
+
+    struct {
+        int profile;
+        float want;
+    } cases[] = {
+        {DSD_CH_LPF_PROFILE_WIDE, 8000.0f},
+        {DSD_CH_LPF_PROFILE_6K25, 3125.0f},
+        {DSD_CH_LPF_PROFILE_12K5, 6250.0f},
+        {DSD_CH_LPF_PROFILE_PROVOICE, 6250.0f},
+        {DSD_CH_LPF_PROFILE_P25_C4FM, 6250.0f},
+        {DSD_CH_LPF_PROFILE_P25_CQPSK, 6250.0f},
+        /* An id from a newer build must fall back, not widen unpredictably. */
+        {99, 8000.0f},
+    };
+
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        float got = (float)dsd_channel_lpf_protected_edge_hz(cases[i].profile);
+        if (!approx_eq(got, cases[i].want, tol)) {
+            DSD_FPRINTF(stderr, "protected_edge(%d): got %f want %f\n", cases[i].profile, (double)got,
+                        (double)cases[i].want);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 int
 main(void) {
     demod_state* s = (demod_state*)malloc(sizeof(demod_state));
@@ -99,6 +137,11 @@ main(void) {
         return 1;
     }
     DSD_MEMSET(s, 0, sizeof(*s));
+
+    if (!test_channel_lpf_protected_edge()) {
+        free(s);
+        return 1;
+    }
 
     // deemph_filter: step response
     {
@@ -148,14 +191,12 @@ main(void) {
         }
     }
 
-    // dsd_fm_demod: differential phase + FLL offset
+    // dsd_fm_demod: differential phase
     {
         /* Three complex samples rotating +90 deg each step. */
         static float iq[6] = {0.5f, 0.0f, 0.0f, 0.5f, -0.5f, 0.0f};
         s->lowpassed = iq;
         s->lp_len = 6; // 3 complex samples
-        s->fll_enabled = 1;
-        s->fll_freq = 0.003f; // small FLL offset in rad/sample (native float)
         s->pre_r = 0.0f;
         s->pre_j = 0.0f;
         s->fm_demod_history_valid = 0; /* force seeding path */
@@ -165,20 +206,16 @@ main(void) {
             free(s);
             return 1;
         }
-        /* Output is the differential phase of the already-mixed I/Q plus the
-         * FLL's per-sample phase advance added back (see dsd_fm_demod comment):
-         * the sum represents the absolute instantaneous frequency of the
-         * unmixed signal. With the first sample seeded from history the delta
-         * is zero, and subsequent samples are +π/2 per step. */
+        /* With the first sample seeded from history the delta is zero, and
+         * subsequent samples are +pi/2 per step. */
         const float pi_2 = 1.5707963f;
-        const float fll_offset = 0.003f; /* full fll_freq contribution */
-        if (fabsf(s->result[0] - fll_offset) > 0.01f) {
-            DSD_FPRINTF(stderr, "dsd_fm_demod: result[0]=%f want ~%f (fll offset)\n", s->result[0], fll_offset);
+        if (fabsf(s->result[0]) > 0.01f) {
+            DSD_FPRINTF(stderr, "dsd_fm_demod: result[0]=%f want ~0\n", s->result[0]);
             free(s);
             return 1;
         }
         for (int i = 1; i < s->result_len; i++) {
-            float expect = pi_2 + fll_offset;
+            float expect = pi_2;
             if (fabsf(s->result[i] - expect) > 0.01f) {
                 DSD_FPRINTF(stderr, "dsd_fm_demod: result[%d]=%f want ~%f\n", i, s->result[i], expect);
                 free(s);

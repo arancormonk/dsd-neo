@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Coverage fixtures intentionally use private-source inclusion, synthetic sentinels,
+// invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
+// NOLINTBEGIN(performance-no-int-to-ptr)
 /*
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
@@ -480,6 +483,96 @@ cleanup:
     return rc;
 }
 
+static int
+test_public_guard_and_passthrough_contracts(void) {
+    dsd_resampler_reset(NULL);
+    dsd_resampler_clear_history(NULL);
+
+    dsd_resampler_state invalid = {};
+    invalid.enabled = 1;
+    invalid.L = 7;
+    invalid.M = 5;
+    invalid.taps = reinterpret_cast<float*>(static_cast<uintptr_t>(0x1));
+    invalid.hist = reinterpret_cast<float*>(static_cast<uintptr_t>(0x2));
+    if (dsd_resampler_design(&invalid, 0, 1) != 0) {
+        DSD_FPRINTF(stderr, "invalid design unexpectedly succeeded\n");
+        return 1;
+    }
+    if (invalid.enabled != 0 || invalid.L != 1 || invalid.M != 1 || invalid.taps != NULL || invalid.hist != NULL) {
+        DSD_FPRINTF(stderr, "invalid design did not reset first-use state\n");
+        return 1;
+    }
+
+    dsd_resampler_state first_use = {};
+    dsd_resampler_clear_history(&first_use);
+    if (first_use.enabled != 0 || first_use.L != 1 || first_use.M != 1 || first_use.taps != NULL
+        || first_use.hist != NULL) {
+        DSD_FPRINTF(stderr, "clear_history did not initialize first-use state\n");
+        return 1;
+    }
+
+    float in[3] = {0.25f, -0.5f, 0.75f};
+    float out[3] = {-9.0f, -9.0f, -9.0f};
+    if (dsd_resampler_process_block(NULL, in, 3, out, 3) != -1
+        || dsd_resampler_process_block(&first_use, NULL, 3, out, 3) != -1
+        || dsd_resampler_process_block(&first_use, in, -1, out, 3) != -1
+        || dsd_resampler_process_block(&first_use, in, 3, NULL, 3) != -1
+        || dsd_resampler_process_block(&first_use, in, 3, out, -1) != -1) {
+        DSD_FPRINTF(stderr, "invalid process arguments were not rejected\n");
+        return 1;
+    }
+    if (out[0] != -9.0f || out[1] != -9.0f || out[2] != -9.0f) {
+        DSD_FPRINTF(stderr, "invalid process arguments modified output\n");
+        return 1;
+    }
+
+    if (dsd_resampler_process_block(&first_use, in, 3, out, 2) != -1) {
+        DSD_FPRINTF(stderr, "passthrough capacity failure was not rejected\n");
+        return 1;
+    }
+    out[0] = out[1] = out[2] = -9.0f;
+    if (dsd_resampler_process_block(&first_use, in, 3, out, 3) != 3 || !arrays_close(out, in, 3, 0.0f)) {
+        DSD_FPRINTF(stderr, "first-use passthrough copy failed\n");
+        return 1;
+    }
+    float inout[3] = {1.0f, 2.0f, 3.0f};
+    if (dsd_resampler_process_block(&first_use, inout, 3, inout, 3) != 3 || inout[0] != 1.0f || inout[1] != 2.0f
+        || inout[2] != 3.0f) {
+        DSD_FPRINTF(stderr, "first-use in-place passthrough failed\n");
+        return 1;
+    }
+
+    demod_state* demod = alloc_demod_state();
+    if (!demod) {
+        DSD_FPRINTF(stderr, "alloc demod_state failed\n");
+        return 1;
+    }
+    resamp_design(NULL, 3, 2);
+    if (resamp_process_block(NULL, in, 3, out) != -1) {
+        DSD_FPRINTF(stderr, "demod wrapper null state was not rejected\n");
+        free_demod_state(demod);
+        return 1;
+    }
+
+    demod->resamp_enabled = 1;
+    resamp_design(demod, 3, 2);
+    if (!demod->resamp_taps || !demod->resamp_hist) {
+        DSD_FPRINTF(stderr, "demod wrapper design failed\n");
+        free_demod_state(demod);
+        return 1;
+    }
+    demod->resamp_M = 0;
+    out[0] = out[1] = out[2] = -9.0f;
+    if (resamp_process_block(demod, in, 3, out) != 3 || !arrays_close(out, in, 3, 0.0f)) {
+        DSD_FPRINTF(stderr, "demod wrapper fallback passthrough failed\n");
+        free_demod_state(demod);
+        return 1;
+    }
+
+    free_demod_state(demod);
+    return 0;
+}
+
 int
 main(void) {
     // demod_state is large; allocate on heap to avoid stack overflow
@@ -548,7 +641,13 @@ main(void) {
         free_demod_state(s);
         return 1;
     }
+    if (test_public_guard_and_passthrough_contracts() != 0) {
+        free_demod_state(s);
+        return 1;
+    }
 
     free_demod_state(s);
     return 0;
 }
+
+// NOLINTEND(performance-no-int-to-ptr)

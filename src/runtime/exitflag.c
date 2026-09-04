@@ -7,12 +7,8 @@
  * @file exitflag.c
  * @brief Global shutdown signaling flag for DSD-neo.
  *
- * Defines the shared exitflag variable used to signal graceful shutdown
- * across all modules. This flag is set by signal handlers (Ctrl+C) and
- * checked by processing loops throughout the codebase.
- *
- * Previously defined in apps/dsd-cli/main.c, moved here so libraries
- * don't depend on the app target for this symbol.
+ * Owns the shared exitflag variable used to signal graceful shutdown across
+ * all modules. Signal handlers set it and processing loops observe it.
  */
 
 #include <dsd-neo/runtime/exitflag.h>

@@ -85,11 +85,27 @@ CPPCHECK_ARGS=(
   --std=c++14
   "-D__has_include(x)=0"
   --suppress=missingIncludeSystem
+  "-DQ_OBJECT="
+  "-DQ_PROPERTY(x)="
+  "-DQ_ENUM(x)="
+  "-DQ_SIGNALS=public"
+  "-DQ_SLOTS="
+  "-DQ_INVOKABLE="
+  "-DQ_EMIT="
+  # The NDK's jni.h is not on the include path here, so JNIEXPORT/JNICALL would
+  # otherwise stay unknown identifiers and be parsed as part of the return type --
+  # which makes a `JNIEXPORT void JNICALL` entry point look non-void and every bare
+  # `return;` in it a missingReturn. Empty is what jni.h expands JNICALL to, and
+  # JNIEXPORT's visibility attribute has no bearing on analysis.
+  "-DJNIEXPORT="
+  "-DJNICALL="
   --cppcheck-build-dir="$CPPCHECK_BUILD_DIR"
   --inline-suppr
   -I include
+  -I src/dsp
   -I src/ui/terminal
   -I src/ui/terminal/menus
+  -I src/ui/qt
   -I src/third_party
   -I src/third_party/pffft
   -j "$NPROC"
@@ -109,11 +125,23 @@ if [[ $STRICT -eq 1 ]]; then
     --std=c++14
     "-D__has_include(x)=0"
     --suppress=missingIncludeSystem
+    "-DQ_OBJECT="
+    "-DQ_PROPERTY(x)="
+    "-DQ_ENUM(x)="
+    "-DQ_SIGNALS=public"
+    "-DQ_SLOTS="
+    "-DQ_INVOKABLE="
+    "-DQ_EMIT="
+    # See the note on the non-strict argument list above.
+    "-DJNIEXPORT="
+    "-DJNICALL="
     --cppcheck-build-dir="$CPPCHECK_BUILD_DIR"
     --inline-suppr
     -I include
+    -I src/dsp
     -I src/ui/terminal
     -I src/ui/terminal/menus
+    -I src/ui/qt
     -I src/third_party
     -I src/third_party/pffft
     -j "$NPROC"
@@ -127,7 +155,7 @@ if [[ $VERBOSE -eq 1 ]]; then
 fi
 
 # Suppress known false positives or low-value warnings for this codebase
-# Format string mismatches with %d and unsigned are common in legacy code
+# Format string mismatches with %d and unsigned are a recurring C-code issue
 CPPCHECK_ARGS+=(
   --suppress=invalidPrintfArgType_sint
   --suppress=invalidPrintfArgType_uint
@@ -139,7 +167,14 @@ CPPCHECK_ARGS+=(
   --suppress=checkersReport
   --suppress='*:src/third_party/*'
   --suppress='*:*/src/third_party/*'
+  --suppress='*:android/third_party/*'
+  --suppress='*:*/android/third_party/*'
+  # uninitMemberVarNoCtor on dsd_state is suppressed at the struct itself, with a
+  # cppcheck-suppress-begin/end pair in include/dsd-neo/core/state.h: a suppression
+  # here would have to name the file, and that covers the seventeen other types
+  # declared in it as well.
   -i src/third_party
+  -i android/third_party
 )
 
 LOG_FILE=".cppcheck.local.out"
@@ -149,7 +184,7 @@ if [[ ${#REQUESTED_FILES[@]} -gt 0 ]]; then
   for f in "${REQUESTED_FILES[@]}"; do
     f="${f#./}"
     case "$f" in
-      build/* | src/third_party/*) continue ;;
+      build/* | src/third_party/* | android/third_party/*) continue ;;
     esac
     case "$f" in
       *.c | *.cc | *.cpp | *.cxx) FILES+=("$f") ;;
@@ -164,12 +199,12 @@ if [[ ${#REQUESTED_FILES[@]} -gt 0 ]]; then
   mapfile -t FILES < <(printf '%s\n' "${FILES[@]}" | sort -u)
   echo "Analyzing ${#FILES[@]} file(s) with cppcheck..."
 else
-  echo "Analyzing src/ and include/ directories..."
+  echo "Analyzing src/, include/ and android/ directories..."
 fi
 echo ""
 
 # Select analysis targets.
-CPPCHECK_TARGETS=(src/ include/)
+CPPCHECK_TARGETS=(src/ include/ android/)
 if [[ ${#FILES[@]} -gt 0 ]]; then
   CPPCHECK_TARGETS=("${FILES[@]}")
 fi

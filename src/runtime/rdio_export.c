@@ -20,13 +20,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "curl_common.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
 
 #ifdef USE_CURL
 #include <curl/curl.h>
-#include <curl/curlver.h>
 #endif
 
 #define DSD_RDIO_PATH_MAX         2048
@@ -592,6 +592,12 @@ dsd_rdio_meta_fields_from_event(const Event_History* event, dsd_rdio_meta_fields
         out->talkgroup_tag = event->t_name;
     } else if (event->tgt_str[0] != '\0') {
         out->talkgroup_tag = event->tgt_str;
+    } else if (event->channel_label[0] != '\0') {
+        // A numeric talkgroup with no name of its own -- no CSV entry for it -- heard while the
+        // receiver was parked on a named channel. That name is what the operator would recognise
+        // the upload by; "GROUP" is not. A row with no talkgroup at all never gets here:
+        // dsd_rdio_write_trunk_recorder_meta() skips those outright.
+        out->talkgroup_tag = event->channel_label;
     } else {
         out->talkgroup_tag = event->gi ? "PRIVATE" : "GROUP";
     }
@@ -762,35 +768,12 @@ dsd_rdio_normalize_upload_options(const dsd_rdio_api_config* api, int* timeout_m
     return 0;
 }
 
-static int
-dsd_rdio_ensure_curl_global_ready(void) {
-    static int curl_global_state = 0; // 0=uninitialized, 1=ready, -1=failed
-    if (curl_global_state == 0) {
-        CURLcode gc = curl_global_init(CURL_GLOBAL_DEFAULT);
-        if (gc != CURLE_OK) {
-            LOG_ERROR("Rdio API upload: curl_global_init failed: %s\n", curl_easy_strerror(gc));
-            curl_global_state = -1;
-            return -1;
-        }
-        curl_global_state = 1;
-    }
-    return (curl_global_state < 0) ? -1 : 0;
-}
-
 static void
 dsd_rdio_configure_curl_request(CURL* curl, curl_mime* mime, const char* endpoint, int timeout_ms) {
     curl_easy_setopt(curl, CURLOPT_URL, endpoint);
     curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, (long)timeout_ms);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)timeout_ms);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
-#if LIBCURL_VERSION_NUM >= 0x075500
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
-#else
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS));
-#endif
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "dsd-neo/rdio-export");
+    /* Both timeouts take the same value here, which is what this call has always done. */
+    dsd_curl_apply_hardening(curl, timeout_ms, timeout_ms, "dsd-neo/rdio-export");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, dsd_rdio_discard_write_cb);
 }
 
@@ -873,7 +856,7 @@ dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_p
         return -1;
     }
 
-    if (dsd_rdio_ensure_curl_global_ready() != 0) {
+    if (dsd_curl_global_ready() != 0) {
         return -1;
     }
 

@@ -34,7 +34,8 @@ extern "C" {
  *   existing `rtl_*` option fields and normalizes `audio_in_dev` to
  *   `soapy`/`soapy:<args>`.
  * - If trailing fields are ambiguous or not valid shorthand, the full string is
- *   treated as opaque Soapy args for backward compatibility.
+ *   treated as opaque Soapy args so valid third-party device strings are not
+ *   misinterpreted as shorthand fields.
  *
  * @param opts Decoder options containing `audio_in_dev` and shared radio fields.
  * @param out_tuning_applied Optional out-flag set to 1 when shorthand tuning was

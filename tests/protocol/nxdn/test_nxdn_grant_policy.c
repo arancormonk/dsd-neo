@@ -7,10 +7,13 @@
  * Verify policy-backed NXDN VCALL assignment grant filtering.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/crypto/aes.h>
+#include <dsd-neo/crypto/des.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -51,37 +54,6 @@ free_test_state(dsd_state* st) {
  * Pulling NXDN_decode_VCALL_ASSGN from nxdn_element.c requires auxiliary
  * symbols that are irrelevant to this focused grant-policy test.
  */
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ConvertBitIntoBytes(const uint8_t* bits, uint32_t n) {
-    uint64_t v = 0ULL;
-    for (uint32_t i = 0U; i < n; i++) {
-        v = (v << 1U) | (uint64_t)(bits[i] & 1U);
-    }
-    return v;
-}
-
-uint64_t
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-convert_bits_into_output(const uint8_t* input, int len) {
-    if (input == NULL || len <= 0) {
-        return 0ULL;
-    }
-    return ConvertBitIntoBytes(input, (uint32_t)len);
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    if (input == NULL || output == NULL || len <= 0) {
-        return;
-    }
-    DSD_MEMSET(output, 0, (size_t)len * sizeof(uint8_t));
-    for (int i = 0; i < len; i++) {
-        output[i] = (uint8_t)((input[i / 8] >> (7 - (i % 8))) & 1U);
-    }
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
@@ -90,30 +62,20 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     (void)MessageType;
 }
 
-uint32_t
+void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_message_crc32(const uint8_t* input, int len) {
-    (void)input;
-    (void)len;
-    return 0U;
+nxdn_alias_decode_arib(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits) {
+    (void)opts;
+    (void)state;
+    (void)message_bits;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_alias_decode_arib(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
+nxdn_alias_decode_prop(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits) {
     (void)opts;
     (void)state;
     (void)message_bits;
-    (void)crc_ok;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_alias_decode_prop(dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
-    (void)opts;
-    (void)state;
-    (void)message_bits;
-    (void)crc_ok;
 }
 
 void
@@ -179,15 +141,17 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)slot;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
-    (void)src;
-    (void)dst;
-    (void)data_string;
+    (void)observation->ota_source_id;
+    (void)observation->ota_target_id;
+    (void)notice;
     (void)slot;
+    return 0;
 }
 
 void
@@ -198,22 +162,21 @@ LFSR128n(dsd_state* state) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-des_multi_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int type,
-                           int len) {
+des_ofb_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int nblocks) {
     (void)mi;
     (void)key_ulli;
     (void)output;
-    (void)type;
-    (void)len;
+    (void)nblocks;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, int type, int nblocks) {
+aes_ofb_keystream_output(const uint8_t* iv, const uint8_t* key, uint8_t* output, dsd_aes_key_size key_size,
+                         int nblocks) {
     (void)iv;
     (void)key;
     (void)output;
-    (void)type;
+    (void)key_size;
     (void)nblocks;
 }
 
@@ -230,37 +193,47 @@ dsd_time_monotonic_ns(void) {
     return 0ULL;
 }
 
-static void
-hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+uint64_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_time_monotonic_ms(void) {
+    return dsd_time_monotonic_ns() / 1000000U;
+}
+
+static dsd_trunk_tune_result
+hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)ted_sps;
     g_tune_count++;
     g_last_tune_freq = freq;
     if (opts) {
-        opts->p25_is_tuned = 1;
         opts->trunk_is_tuned = 1;
     }
     if (state) {
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-static void
-hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+static dsd_trunk_tune_result
+hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)request_id;
     (void)opts;
     (void)state;
     (void)freq;
     (void)ted_sps;
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
-static void
-hook_return_to_cc(dsd_opts* opts, dsd_state* state) {
+static dsd_trunk_tune_result
+hook_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
     if (opts) {
-        opts->p25_is_tuned = 0;
         opts->trunk_is_tuned = 0;
     }
     if (state) {
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     }
+    return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static void
@@ -305,7 +278,6 @@ static void
 reset_tune_state(dsd_opts* opts, dsd_state* st) {
     g_tune_count = 0;
     g_last_tune_freq = 0;
-    opts->p25_is_tuned = 0;
     opts->trunk_is_tuned = 0;
     st->trunk_vc_freq[0] = st->trunk_vc_freq[1] = 0;
 }
@@ -326,7 +298,6 @@ main(void) {
         return 1;
     }
 
-    opts->p25_trunk = 1;
     opts->trunk_enable = 1;
     opts->trunk_use_allow_list = 1;
     opts->trunk_tune_group_calls = 1;
@@ -337,9 +308,9 @@ main(void) {
     st->trunk_chan_map[chan] = freq;
 
     dsd_trunk_tuning_hooks hooks = {
-        .tune_to_freq = hook_tune_to_freq,
-        .tune_to_cc = hook_tune_to_cc,
-        .return_to_cc = hook_return_to_cc,
+        .tune_to_freq_request = hook_tune_to_freq,
+        .tune_to_cc_request = hook_tune_to_cc,
+        .return_to_cc_request = hook_return_to_cc,
     };
     dsd_trunk_tuning_hooks_set(hooks);
 

@@ -85,46 +85,6 @@ ring_clear(struct output_state* o) {
 }
 
 /**
- * @brief Write up to count samples, blocking until space is available.
- *
- * Signals data availability only on an empty-to-non-empty transition.
- *
- * @param o     Output ring buffer state.
- * @param data  Source samples to write.
- * @param count Number of samples to write.
- */
-void ring_write(struct output_state* o, const float* data, size_t count);
-
-/**
- * @brief Write up to count samples, blocking until space is available.
- *
- * Does not signal; caller should decide when to signal.
- *
- * @param o     Output ring buffer state.
- * @param data  Source samples to write.
- * @param count Number of samples to write.
- */
-void ring_write_no_signal(struct output_state* o, const float* data, size_t count);
-
-/**
- * @brief Write samples with signal on empty-to-non-empty transition.
- *
- * @param o     Output ring buffer state.
- * @param data  Source samples to write.
- * @param count Number of samples to write.
- */
-void ring_write_signal_on_empty_transition(struct output_state* o, const float* data, size_t count);
-
-/**
- * @brief Read one sample from the output ring, blocking with timeout until available.
- *
- * @param o    Output ring buffer state.
- * @param out  Destination for one sample.
- * @return 0 on success, -1 on exit.
- */
-int ring_read_one(struct output_state* o, float* out);
-
-/**
  * @brief Read up to max_count samples into out.
  *
  * Blocks until at least one sample is available or exit.

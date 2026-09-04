@@ -21,7 +21,6 @@
 #if !DSD_COMPILER_MSVC
 #include <strings.h> // IWYU pragma: keep
 #endif
-struct timeval; // IWYU pragma: keep
 
 #ifdef __cplusplus
 extern "C" {
@@ -174,34 +173,6 @@ dsd_popcount64(uint64_t x) {
 #if DSD_COMPILER_MSVC
 #define stat _stat
 #endif
-#endif
-
-/* ============================================================================
- * Time Helpers (gettimeofday)
- * ============================================================================ */
-
-#if DSD_PLATFORM_WIN_NATIVE
-struct dsd_timeval {
-    long tv_sec;
-    long tv_usec;
-};
-
-/**
- * @brief Get current time of day (Windows implementation).
- *
- * @param tv    Output timeval structure.
- * @param tz    Ignored (pass NULL).
- * @return 0 on success.
- */
-int dsd_gettimeofday(struct dsd_timeval* tv, void* tz);
-#else
-#include <sys/time.h>
-#define dsd_timeval timeval
-
-static inline int
-dsd_gettimeofday(struct timeval* tv, void* tz) {
-    return gettimeofday(tv, tz);
-}
 #endif
 
 #ifdef __cplusplus

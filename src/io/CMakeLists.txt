@@ -32,6 +32,7 @@ if(DSD_HAS_RADIO)
             radio/rtl_stream.cpp
             radio/rtl_stream_c.cpp
             radio/rtl_sdr_fm.cpp
+            radio/rtl_wideband_spectrum.cpp
             radio/soapy_profile.cpp
     )
     target_include_directories(
@@ -55,6 +56,44 @@ if(DSD_HAS_RADIO)
     target_link_libraries(dsd-neo_io_radio PRIVATE dsd-neo_feature_soapy)
 
     target_link_libraries(dsd-neo_io_radio PRIVATE dsd-neo_warnings)
+
+    if(BUILD_TESTING)
+        # Keep radio/device test seams out of the installed production archive.
+        # Hook-enabled tests link this uninstalled mirror instead.
+        get_target_property(
+            _dsd_neo_io_radio_private_sources
+            dsd-neo_io_radio
+            SOURCES
+        )
+        add_library(dsd-neo_io_radio_private_test_support STATIC)
+        target_sources(
+            dsd-neo_io_radio_private_test_support
+            PRIVATE ${_dsd_neo_io_radio_private_sources}
+        )
+        target_include_directories(
+            dsd-neo_io_radio_private_test_support
+            PUBLIC ${PROJECT_SOURCE_DIR}/include
+            PRIVATE ${_PUBLIC_INCLUDES}
+        )
+        target_compile_definitions(
+            dsd-neo_io_radio_private_test_support
+            PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        )
+        target_link_libraries(
+            dsd-neo_io_radio_private_test_support
+            PUBLIC
+                dsd-neo_dsp
+                dsd-neo_pffft
+                dsd-neo_feature_radio
+                dsd-neo_feature_rtlsdr
+            PRIVATE
+                dsd-neo_core
+                dsd-neo_io_iq
+                dsd-neo_platform
+                dsd-neo_feature_soapy
+                dsd-neo_warnings
+        )
+    endif()
 
     install(
         TARGETS dsd-neo_io_radio
@@ -142,6 +181,12 @@ if(DSD_HAS_RADIO)
     )
 
     target_link_libraries(dsd-neo_io_radio PUBLIC dsd-neo_io_udp_control)
+    if(BUILD_TESTING)
+        target_link_libraries(
+            dsd-neo_io_radio_private_test_support
+            PUBLIC dsd-neo_io_udp_control
+        )
+    endif()
     target_link_libraries(dsd-neo_io_control PUBLIC dsd-neo_io_radio)
 endif()
 

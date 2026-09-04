@@ -6,6 +6,7 @@
 /* Focused unit test for half-band decimator (real, float taps). */
 
 #include <dsd-neo/dsp/halfband.h>
+#include <dsd-neo/dsp/simd_fir.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -30,7 +31,7 @@ main(void) {
         in[i] = 1.0f;
     }
 
-    int out_len = hb_decim2_real(in, N, out, hist);
+    int out_len = simd_hb_decim2_real(in, N, out, hist, hb_q15_taps, HB_TAPS);
     if (out_len != (N >> 1)) {
         DSD_FPRINTF(stderr, "HB: unexpected out_len=%d (want %d)\n", out_len, N >> 1);
         return 1;
@@ -45,7 +46,7 @@ main(void) {
 
     // Run a second block to exercise history maintenance
     float out2[N];
-    int out_len2 = hb_decim2_real(in, N, out2, hist);
+    int out_len2 = simd_hb_decim2_real(in, N, out2, hist, hb_q15_taps, HB_TAPS);
     if (out_len2 != (N >> 1)) {
         DSD_FPRINTF(stderr, "HB: second call out_len=%d (want %d)\n", out_len2, N >> 1);
         return 1;

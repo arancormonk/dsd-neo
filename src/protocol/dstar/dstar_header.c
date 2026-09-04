@@ -3,8 +3,10 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dstar/dstar_header.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -12,81 +14,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/protocol/dstar/dstar_header_utils.h"
 
-void
-dstar_header_decode(dsd_state* state, int radioheaderbuffer[DSD_DSTAR_HEADER_CODED_BITS]) {
-    int radioheaderbuffer2[DSD_DSTAR_HEADER_CODED_BITS];
-    char radioheader[41];
-    int octetcount, bitcount, loop;
-    const unsigned char bit2octet[] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80};
-
-    dstar_scramble_header_bits(radioheaderbuffer, radioheaderbuffer2, DSD_DSTAR_HEADER_CODED_BITS);
-    dstar_deinterleave_header_bits(radioheaderbuffer2, radioheaderbuffer, DSD_DSTAR_HEADER_CODED_BITS);
-    dstar_header_viterbi_decode(radioheaderbuffer, DSD_DSTAR_HEADER_CODED_BITS, radioheaderbuffer2,
-                                DSD_DSTAR_HEADER_INFO_BITS);
-    DSD_MEMSET(radioheader, 0, 41);
-
-    // note we receive 330 bits, but we only use 328 of them (41 octets)
-    // bits 329 and 330 are unused
-    octetcount = 0;
-    bitcount = 0;
-    for (loop = 0; loop < 328; loop++) {
-        if (radioheaderbuffer2[loop]) {
-            radioheader[octetcount] |= bit2octet[bitcount];
-        }
-        bitcount++;
-        // increase octetcounter and reset bitcounter every 8 bits
-        if (bitcount >= 8) {
-            octetcount++;
-            bitcount = 0;
-        }
-    }
-
-    char str1[9];
-    char str2[9];
-    char str3[9];
-    char str4[13];
-
-    DSD_MEMCPY(str1, radioheader + 3, 8);
-    DSD_MEMCPY(str2, radioheader + 11, 8);
-    DSD_MEMCPY(str3, radioheader + 19, 8);
-    DSD_MEMCPY(str4, radioheader + 27, 12);
-
-    str1[8] = '\0';
-    str2[8] = '\0';
-    str3[8] = '\0';
-    str4[12] = '\0';
-
-    DSD_FPRINTF(stderr, " RPT 2: %s", str1);
-    DSD_FPRINTF(stderr, " RPT 1: %s", str2);
-    DSD_FPRINTF(stderr, " DST: %s", str3);
-    DSD_FPRINTF(stderr, " SRC: %s", str4);
-
-    //check flags for info
-    if (radioheader[0] & 0x80) {
-        DSD_FPRINTF(stderr, " DATA");
-    }
-    if (radioheader[0] & 0x40) {
-        DSD_FPRINTF(stderr, " REPEATER");
-    }
-    if (radioheader[0] & 0x20) {
-        DSD_FPRINTF(stderr, " INTERRUPTED");
-    }
-    if (radioheader[0] & 0x10) {
-        DSD_FPRINTF(stderr, " CONTROL SIGNAL");
-    }
-    if (radioheader[0] & 0x08) {
-        DSD_FPRINTF(stderr, " URGENT");
-    }
-
-    DSD_MEMCPY(state->dstar_rpt2, str1, sizeof(str1));
-    DSD_MEMCPY(state->dstar_rpt1, str2, sizeof(str2));
-    DSD_MEMCPY(state->dstar_dst, str3, sizeof(str3));
-    DSD_MEMCPY(state->dstar_src, str4, sizeof(str4));
-
-    //TODO: Call History for DSTAR
-}
-
-void
+int
 dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HEADER_CODED_BITS]) {
     uint16_t soft_costs[DSD_DSTAR_HEADER_CODED_BITS];
     uint16_t soft_scrambled[DSD_DSTAR_HEADER_CODED_BITS];
@@ -142,6 +70,9 @@ dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HE
     str3[8] = '\0';
     str4[12] = '\0';
 
+    const uint16_t crc_ext = (uint16_t)(((uint8_t)radioheader[39] << 8U) | (uint8_t)radioheader[40]);
+    const uint16_t crc_cmp = dstar_crc16((const uint8_t*)radioheader, 39U);
+
     DSD_FPRINTF(stderr, " RPT 2: %s", str1);
     DSD_FPRINTF(stderr, " RPT 1: %s", str2);
     DSD_FPRINTF(stderr, " DST: %s", str3);
@@ -164,8 +95,20 @@ dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HE
         DSD_FPRINTF(stderr, " URGENT");
     }
 
-    DSD_MEMCPY(state->dstar_rpt2, str1, sizeof(str1));
-    DSD_MEMCPY(state->dstar_rpt1, str2, sizeof(str2));
-    DSD_MEMCPY(state->dstar_dst, str3, sizeof(str3));
-    DSD_MEMCPY(state->dstar_src, str4, sizeof(str4));
+    if (crc_cmp != crc_ext) {
+        return 0;
+    }
+
+    int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_HD_POS;
+    dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = ((uint8_t)radioheader[0] & 0x80U) != 0U ? DSD_CALL_KIND_DATA : DSD_CALL_KIND_VOICE,
+    };
+    DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", str4);
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", str3);
+    DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", str2);
+    DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", str1);
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    return 1;
 }

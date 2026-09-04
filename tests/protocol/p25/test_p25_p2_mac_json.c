@@ -10,7 +10,6 @@
 
 #include <errno.h>
 #include <limits.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,22 +30,19 @@ typedef struct dsd_state dsd_state;
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
 
 // Runtime config hooks
-void dsd_neo_config_init(const dsd_opts* opts);
+void dsd_neo_config_init(void);
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 
 // Test shims: Phase 2 MAC VPDU entry points
-void p25_test_process_mac_vpdu(int type, const unsigned char* mac_bytes, int mac_len);
 void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot);
+void p25_test_process_mac_vpdu_typed(int type, int pdu_type, const unsigned char* mac_bytes, int mac_len, int is_lcch,
+                                     int currentslot);
+
+// Outer MAC PDU types (mirrors p25_mac_pdu_type; this test avoids decoder headers).
+#define TEST_MAC_PDU_IDLE     3
+#define TEST_MAC_PDU_HANGTIME 6
 
 // Stubs referenced by MAC VPDU path
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
@@ -83,39 +79,6 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int 
     (void)input;
     (void)src;
     (void)slot;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetFreq(int sockfd, long int freq) {
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-SetModulation(int sockfd, int bandwidth) {
-    (void)sockfd;
-    (void)bandwidth;
-    return false;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-return_to_cc(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-struct RtlSdrContext* g_rtl_ctx = 0;
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) {
-    (void)ctx;
-    (void)center_freq_hz;
-    return 0;
 }
 
 static int
@@ -227,6 +190,45 @@ extract_first_fields(FILE* rf, char* out_xch, size_t xch_cap, char* out_summary,
 }
 
 static int
+line_contains(const char* line, const char* line_end, const char* needle) {
+    const char* p = line;
+    while ((p = strstr(p, needle)) != NULL) {
+        if (p < line_end) {
+            return 1;
+        }
+        p++;
+    }
+    return 0;
+}
+
+static int
+expect_json_record_summary(const char* buf, const char* xch, int op, const char* summary) {
+    char xch_field[32];
+    char op_field[32];
+    char summary_field[64];
+
+    DSD_SNPRINTF(xch_field, sizeof xch_field, "\"xch\":\"%s\"", xch);
+    DSD_SNPRINTF(op_field, sizeof op_field, "\"op\":%d", op);
+    DSD_SNPRINTF(summary_field, sizeof summary_field, "\"summary\":\"%s\"", summary);
+
+    const char* line = buf;
+    while (line && *line) {
+        const char* line_end = strchr(line, '\n');
+        if (!line_end) {
+            line_end = line + strlen(line);
+        }
+        if (line_contains(line, line_end, xch_field) && line_contains(line, line_end, op_field)
+            && line_contains(line, line_end, summary_field)) {
+            return 0;
+        }
+        line = (*line_end == '\n') ? line_end + 1 : line_end;
+    }
+
+    DSD_FPRINTF(stderr, "missing JSON record xch=%s op=%d summary=%s\n", xch, op, summary);
+    return 1;
+}
+
+static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
@@ -250,7 +252,7 @@ main(void) {
 
     // Enable JSON emission
     setenv("DSD_NEO_PDU_JSON", "1", 1);
-    dsd_neo_config_init(NULL);
+    dsd_neo_config_init();
 
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "p25_p2_mac_json") != 0) {
@@ -266,7 +268,7 @@ main(void) {
         mac[1] = 10;    // opcode byte with MCO=10 (low 6 bits)
         mac[2] = 0x00;  // standard MFID
         mac[10] = 0xFF; // second message unknown to force fallback
-        p25_test_process_mac_vpdu(0 /*FACCH*/, mac, 24);
+        p25_test_process_mac_vpdu_ex(0 /*FACCH*/, mac, 24, 0, 0);
     }
 
     // Case B: SACCH, unknown opcode; MCO=15 → lenB=14, lenC=5; xch=SACCH
@@ -276,16 +278,29 @@ main(void) {
         mac[1] = 15;    // MCO=15
         mac[2] = 0x00;  // standard MFID
         mac[15] = 0xFF; // second message unknown
-        p25_test_process_mac_vpdu(1 /*SACCH*/, mac, 24);
+        p25_test_process_mac_vpdu_ex(1 /*SACCH*/, mac, 24, 0, 0);
     }
 
-    // Case C: LCCH labeling and summary (IDLE)
+    // Case C: LCCH labeling. The summary names the outer MAC PDU type, which
+    // is a different namespace from the inner MAC message opcode also emitted:
+    // here opcode 0x03 is Telephone Interconnect Voice Channel User while PDU
+    // type 3 is IDLE, so the record must read op=3 with summary IDLE.
     {
         unsigned char mac[24];
         DSD_MEMSET(mac, 0, sizeof mac);
-        mac[1] = 0x03; // IDLE
+        mac[1] = 0x03; // MAC opcode: telephone interconnect voice channel user
         mac[2] = 0x00; // standard MFID
-        p25_test_process_mac_vpdu_ex(0 /*FACCH path*/, mac, 24, /*is_lcch*/ 1, /*slot*/ 0);
+        p25_test_process_mac_vpdu_typed(0 /*FACCH path*/, TEST_MAC_PDU_IDLE, mac, 24, /*is_lcch*/ 1, /*slot*/ 0);
+    }
+
+    // Case C2: a hangtime PDU carrying a Group Voice Channel User. Deriving the
+    // summary from mac[1] labelled this "PTT"; it must follow the PDU type.
+    {
+        unsigned char mac[24];
+        DSD_MEMSET(mac, 0, sizeof mac);
+        mac[1] = 0x01; // MAC opcode: group voice channel user, abbreviated
+        mac[2] = 0x00; // standard MFID
+        p25_test_process_mac_vpdu_typed(1 /*SACCH*/, TEST_MAC_PDU_HANGTIME, mac, 24, /*is_lcch*/ 0, /*slot*/ 0);
     }
 
     // Case D: FACCH MCO clamp beyond capacity (opcode with MCO=63 → clamp to lenB=16)
@@ -324,8 +339,8 @@ main(void) {
     char xch[8] = {0}, summary[32] = {0};
     int lenB = -1, lenC = -1, slot = -1;
     int er = extract_last_fields(buf, (int)nread, xch, sizeof xch, &lenB, &lenC, &slot, summary, sizeof summary);
-    free(buf);
     if (er != 0) {
+        free(buf);
         DSD_FPRINTF(stderr, "parse JSON er=%d\n", er);
         fclose(rf);
         return 103;
@@ -333,6 +348,9 @@ main(void) {
     rc |= expect_eq_int("FACCH clamp lenB", lenB, 16);
     rc |= expect_eq_int("FACCH clamp lenC", lenC, 0);
     rc |= expect_eq_int("FACCH clamp slot", slot, 1);
+    rc |= expect_json_record_summary(buf, "LCCH", 0x03, "IDLE");
+    rc |= expect_json_record_summary(buf, "SACCH", 0x01, "HANGTIME");
+    free(buf);
 
     // First line should be Case A or earlier; specifically check LCCH label via reading first line after moving to start
     fseek(rf, 0, SEEK_SET);

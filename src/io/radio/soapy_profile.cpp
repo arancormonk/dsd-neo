@@ -158,15 +158,18 @@ parse_finite_double(const std::string& value, double* out) {
 }
 
 const SoapyProfile k_profiles[] = {
-    {SoapyProfileId::Auto, "auto", "auto", 0.0},
-    {SoapyProfileId::Generic, "generic", "Generic SoapySDR", 0.0},
-    {SoapyProfileId::Airspy, "airspy", "Airspy", 250000.0},
-    {SoapyProfileId::Sdrplay, "sdrplay", "SDRplay", 200000.0},
-    {SoapyProfileId::Hackrf, "hackrf", "HackRF", 1750000.0},
-    {SoapyProfileId::Lime, "lime", "LimeSDR", 300000.0},
-    {SoapyProfileId::Pluto, "pluto", "ADALM-Pluto", 300000.0},
-    {SoapyProfileId::Rtlsdr, "rtlsdr", "RTL-SDR", 0.0},
-    {SoapyProfileId::Uhd, "uhd", "UHD/USRP", 0.0},
+    {SoapyProfileId::Auto, "auto", "auto", 0.0, nullptr},
+    {SoapyProfileId::Generic, "generic", "Generic SoapySDR", 0.0, nullptr},
+    {SoapyProfileId::Airspy, "airspy", "Airspy", 250000.0, nullptr},
+    {SoapyProfileId::Sdrplay, "sdrplay", "SDRplay", 200000.0, nullptr},
+    {SoapyProfileId::Hackrf, "hackrf", "HackRF", 1750000.0, nullptr},
+    {SoapyProfileId::Lime, "lime", "LimeSDR", 300000.0, nullptr},
+    {SoapyProfileId::Pluto, "pluto", "ADALM-Pluto", 300000.0, nullptr},
+    {SoapyProfileId::Rtlsdr, "rtlsdr", "RTL-SDR", 0.0, nullptr},
+    {SoapyProfileId::Uhd, "uhd", "UHD/USRP", 0.0, nullptr},
+    /* SDDC (RX-888 family): no hardware bandwidth control, and the tuner path used by every
+       digital voice band is reached through the "VHF" antenna rather than the HF default. */
+    {SoapyProfileId::Sddc, "sddc", "SDDC/RX-888", 0.0, "VHF"},
 };
 
 SoapyProfileId
@@ -178,6 +181,8 @@ detect_profile_from_text(const std::string& text) {
     static const char* const k_pluto_keywords[] = {"pluto", "ad936"};
     static const char* const k_rtlsdr_keywords[] = {"rtlsdr", "rtl-sdr", "rtl_sdr"};
     static const char* const k_uhd_keywords[] = {"uhd", "usrp"};
+    static const char* const k_sddc_keywords[] = {"sddc",   "rx888", "rx-888", "rx999",
+                                                  "rx-999", "rx666", "rx-666", "bbrf103"};
 
     const std::string lower_text = lower_copy(text);
     if (contains_any_lower(lower_text, k_airspy_keywords, sizeof k_airspy_keywords / sizeof k_airspy_keywords[0])) {
@@ -200,6 +205,9 @@ detect_profile_from_text(const std::string& text) {
     }
     if (contains_any_lower(lower_text, k_uhd_keywords, sizeof k_uhd_keywords / sizeof k_uhd_keywords[0])) {
         return SoapyProfileId::Uhd;
+    }
+    if (contains_any_lower(lower_text, k_sddc_keywords, sizeof k_sddc_keywords / sizeof k_sddc_keywords[0])) {
+        return SoapyProfileId::Sddc;
     }
     return SoapyProfileId::Generic;
 }
@@ -260,18 +268,6 @@ soapy_profile_parse_name(const std::string& value, SoapyProfileId* out_id) {
         *out_id = it->id;
         return true;
     }
-    if (equals_ci(value, "sdr-play")) {
-        *out_id = SoapyProfileId::Sdrplay;
-        return true;
-    }
-    if (equals_ci(value, "rtl")) {
-        *out_id = SoapyProfileId::Rtlsdr;
-        return true;
-    }
-    if (equals_ci(value, "usrp")) {
-        *out_id = SoapyProfileId::Uhd;
-        return true;
-    }
     return false;
 }
 
@@ -330,6 +326,22 @@ soapy_stream_format_name(SoapyStreamFormat format) {
 bool
 soapy_name_list_contains(const std::vector<std::string>& names, const std::string& wanted) {
     return std::any_of(names.begin(), names.end(), [&wanted](const std::string& name) { return name == wanted; });
+}
+
+SoapyAntennaChoice
+soapy_choose_antenna(const char* profile_default_antenna, const std::string& configured_antenna,
+                     double center_freq_hz) {
+    const std::string configured = trim_copy(configured_antenna);
+    if (!configured.empty()) {
+        return {configured, false};
+    }
+    if (!profile_default_antenna || !*profile_default_antenna) {
+        return {std::string(), false};
+    }
+    if (!(center_freq_hz > kSoapyHfVhfSplitHz)) {
+        return {std::string(), false};
+    }
+    return {std::string(profile_default_antenna), true};
 }
 
 SoapyBandwidthChoice

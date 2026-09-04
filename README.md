@@ -7,6 +7,7 @@ Project homepage: https://github.com/arancormonk/dsd-neo
 [![linux-ci](https://github.com/arancormonk/dsd-neo/actions/workflows/linux-ci.yaml/badge.svg)](https://github.com/arancormonk/dsd-neo/actions/workflows/linux-ci.yaml)
 [![windows-ci](https://github.com/arancormonk/dsd-neo/actions/workflows/windows-ci.yaml/badge.svg)](https://github.com/arancormonk/dsd-neo/actions/workflows/windows-ci.yaml)
 [![macos-ci](https://github.com/arancormonk/dsd-neo/actions/workflows/macos-ci.yaml/badge.svg)](https://github.com/arancormonk/dsd-neo/actions/workflows/macos-ci.yaml)
+[![android-ci](https://github.com/arancormonk/dsd-neo/actions/workflows/android-ci.yaml/badge.svg)](https://github.com/arancormonk/dsd-neo/actions/workflows/android-ci.yaml)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12978/badge)](https://www.bestpractices.dev/projects/12978)
 [![OpenSSF Baseline](https://www.bestpractices.dev/projects/12978/baseline)](https://www.bestpractices.dev/projects/12978)
 
@@ -19,13 +20,18 @@ Project homepage: https://github.com/arancormonk/dsd-neo
   - Linux AppImage (aarch64): `dsd-neo-linux-aarch64-portable-<version>.AppImage`
   - macOS DMG (arm64): `dsd-neo-macos-arm64-portable-<version>.dmg`
   - Windows native ZIP (MSVC x86_64): `dsd-neo-msvc-x86_64-native-<version>.zip`
+  - Android APK (arm64-v8a): `dsd-neo-android-arm64-app-<version>.apk`
 - Nightly builds:
   - Linux AppImage (x86_64): [dsd-neo-linux-x86_64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-x86_64-portable-nightly.AppImage)
   - Linux AppImage (aarch64): [dsd-neo-linux-aarch64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-aarch64-portable-nightly.AppImage)
   - macOS DMG (arm64): [dsd-neo-macos-arm64-portable-nightly.dmg](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-macos-arm64-portable-nightly.dmg)
   - Windows native ZIP (MSVC x86_64): [dsd-neo-msvc-x86_64-native-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-msvc-x86_64-native-nightly.zip)
+  - Android APK (arm64-v8a): [dsd-neo-android-arm64-app-nightly.apk](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-android-arm64-app-nightly.apk)
 - Arch Linux (AUR): [dsd-neo](https://aur.archlinux.org/packages/dsd-neo) for stable releases,
   or [dsd-neo-git](https://aur.archlinux.org/packages/dsd-neo-git) for main-branch snapshots.
+
+The Android APK is side-loaded: arm64-v8a only, Android 10 (API 29) or newer. Every published APK is
+signed with the project release key, so nightly and stable builds install over each other.
 
 ## Project Status
 
@@ -44,7 +50,7 @@ This project is an active work in progress as we decouple from the upstream fork
 
 - More input and streaming options
 
-  - Direct RTL‑SDR USB, plus RTL‑TCP (`-i rtltcp[:host:port]`) and SoapySDR (`-i soapy[:args]`) for non-RTL radios (for example Airspy/SDRplay/HackRF/LimeSDR).
+  - Direct RTL‑SDR USB, plus RTL‑TCP (`-i rtltcp[:host:port]`) and SoapySDR (`-i soapy[:args]`) for non-RTL radios (for example Airspy/SDRplay/HackRF/LimeSDR/RX‑888).
   - Generic TCP PCM16LE input (`-i tcp[:host:port]`, SDR++/GRC 7355 audio streams).
   - UDP audio in/out: receive PCM16LE over UDP as an input, and send decoded audio to UDP sinks for easy piping to other apps or hosts (decoded voice is typically 8 kHz; see `docs/network-audio.md`).
   - M17 UDP/IP in/out: dedicated M17 stream and packet frame input/output over UDP (`-i m17udp[:bind:17000]`, `-o m17udp[:host:17000]`).
@@ -52,8 +58,9 @@ This project is an active work in progress as we decouple from the upstream fork
 
 - Built‑in trunking workflow
 
-  - Follow P25 and DMR trunked voice automatically using channel maps and group lists (`-C ...csv`, `-G group.csv`, `-T`, `-N`).
-  - Rotate one tuner across CSV-defined P25 trunk, DMR trunk, and one-frequency DMR targets with `--trunk-scan targets.csv`.
+  - Follow P25 and DMR trunked voice automatically using channel maps and group lists (`-C ...csv`, `-G group.csv`, `-T`, `--frontend terminal`; `-N` is the short alias).
+  - Rotate one tuner across CSV-defined P25 trunk, DMR trunk, NXDN trunk, and one-frequency DMR, NXDN96 and NXDN48
+    targets with `--trunk-scan targets.csv`.
   - On‑the‑fly retune control via rigctl (`-U`) for external SDR front-ends (e.g., SDR++). For RTL/RTL‑TCP input, DSD-neo retunes directly (optional external UDP retune control can be enabled on loopback with `--rtl-udp-control <port>`; remote exposure requires `--rtl-udp-control-bind <ipv4>`; see `docs/udp-control.md`).
 
 - RTL‑SDR quality‑of‑life features
@@ -89,7 +96,7 @@ This project is an active work in progress as we decouple from the upstream fork
   - See [docs/cli.md](docs/cli.md) for environment variable reference.
 
 - Portable, ready‑to‑run builds
-  - Linux AppImage, macOS DMG, and Windows portable ZIP releases.
+  - Linux AppImage, macOS DMG, Windows portable ZIP, and Android APK releases.
 
 ### How this compares at a glance
 
@@ -104,7 +111,7 @@ Requirements
 - CMake ≥ 3.20.
 - Dependencies:
   - Required: libsndfile; OpenSSL 3.x libcrypto; a curses backend (ncursesw/PDCurses); and an audio backend (PulseAudio by default, PortAudio on Windows).
-  - Optional: librtlsdr (RTL‑SDR support), SoapySDR >= 0.8.1 (non‑RTL SDR backends), Codec2 (additional vocoder paths), libcurl (rdio API uploads), PortAudio on non-Windows builds, help2man (man page generation).
+  - Optional: librtlsdr (RTL‑SDR support; 2.0.3 or newer for RTL‑SDR Blog V4/V4L dongles), SoapySDR >= 0.8.1 (non‑RTL SDR backends), Codec2 (additional vocoder paths), libcurl >= 7.56.0 (rdio API uploads), expat 2.x (RadioReference import), PortAudio on non-Windows builds, help2man (man page generation).
   - Vocoder: mbelib-neo 2.x (`mbe-neo` CMake package) is required.
 
 OS package hints
@@ -120,6 +127,11 @@ OS package hints
 - Windows:
   - Preferred binary: the native MSVC ZIP.
   - Source builds use CMake presets with vcpkg; set `VCPKG_ROOT` and use `win-msvc-*` presets in `CMakePresets.json`.
+- Android (arm64-v8a app, work in progress):
+  - Preferred binary: the signed APK from the [Downloads](#downloads) section.
+  - Cross-compiled with the NDK and vcpkg: preset `android-arm64-release` for a headless CLI, preset `android-app`
+    for the Qt Quick APK. Inputs include a USB-OTG RTL-SDR, `rtl_tcp`, UDP/TCP PCM, and local files.
+  - Prerequisites, the USB descriptor flow, and known limits: [android/README.md](android/README.md).
 
 MBE vocoder dependency (mbelib-neo)
 
@@ -249,18 +261,39 @@ These are CMake cache options (set at configure time via `-D...`).
   - `-DDSD_WARNINGS_AS_ERRORS=ON|OFF` — Treat warnings as errors (default ON).
   - `-DDSD_ENABLE_FAST_MATH=ON` — Enable fast‑math (`-ffast-math`/`/fp:fast`) across targets.
   - `-DDSD_ENABLE_LTO=ON` — Enable IPO/LTO in Release builds (when supported).
+  - `-DDSD_ENABLE_HARDENING=ON|OFF` — Enable supported Release-like compiler/linker hardening (default ON).
   - `-DDSD_ENABLE_NATIVE=ON` — Enable `-march=native -mtune=native` (non‑portable binaries).
   - `-DDSD_ENABLE_ASAN=ON` — AddressSanitizer in Debug builds.
   - `-DDSD_ENABLE_UBSAN=ON` — UndefinedBehaviorSanitizer in Debug builds.
   - `-DDSD_ENABLE_TSAN=ON` — ThreadSanitizer in Debug builds; use a separate build from ASan/UBSan.
+  - `-DDSD_ENABLE_FUZZING=ON` — Enable libFuzzer instrumentation and fuzz targets (Clang/libFuzzer builds).
 - Audio backend selection:
-  - `-DDSD_USE_PORTAUDIO=ON` — Use PortAudio instead of PulseAudio (default on Windows).
+  - `-DDSD_AUDIO_BACKEND=auto|pulse|portaudio|aaudio|none` — Select the audio backend (default `auto`:
+    PortAudio on Windows, PulseAudio elsewhere). `none` builds a discard/silence backend that needs no
+    audio library — device-audio output becomes a no-op instead of a configure failure. `aaudio` is
+    Android-only; it plays through AAudio, resamples when the device refuses the requested rate, and
+    reopens the stream by itself across route changes (headphones, Bluetooth).
+  - `DSD_NEO_AUDIO_STATS=1` in the environment prints per-stream output counters (underruns, drops)
+    when a stream closes; the AAudio backend also reports the format the device actually granted, plus
+    `in_frames` (what the decoder handed over, against `frames` = what the device accepted),
+    `underruns_partial` (a fragment of speech padded out to a full chunk) and `underruns_midspeech`
+    (concealment landing inside a call rather than after one). On a healthy stream the last two stay at
+    or near zero; concealment during idle gaps is expected and is just silence.
+  - `-DDSD_USE_PORTAUDIO=ON` — Deprecated alias for `-DDSD_AUDIO_BACKEND=portaudio`.
 - Radio backend selection:
   - `-DDSD_ENABLE_RTLSDR=ON|OFF` — Enable/disable RTL-SDR backend discovery.
   - `-DDSD_ENABLE_SOAPYSDR=ON|OFF` — Enable/disable SoapySDR backend discovery.
   - `-DDSD_REQUIRE_RTLSDR=ON|OFF` — Fail configure when RTL-SDR is enabled but unavailable.
   - `-DDSD_REQUIRE_SOAPYSDR=ON|OFF` — Fail configure when SoapySDR >= 0.8.1 is enabled but unavailable.
+  - `-DDSD_FORCE_RADIO_PIPELINE=ON` — Build the radio pipeline even with no SDR library present. Keeps
+    `rtl_tcp` input and radio-path I/Q replay working (real USB opens fail cleanly); used by targets that
+    cannot link librtlsdr/SoapySDR.
+  - `-DDSD_ANDROID_VENDORED_RTLSDR=ON` — Android only: build the vendored libusb/librtlsdr under
+    `android/third_party` and satisfy the RTL-SDR backend from them (needed for USB-OTG dongles).
 - UI and behavior toggles:
+  - `-DDSD_ENABLE_TERMINAL_UI=ON|OFF` — Build the ncurses/PDCurses terminal frontend (default ON).
+  - `-DDSD_ENABLE_QT_UI=ON|OFF` — Build the Qt Quick frontend in `src/ui/qt` (default OFF; requires Qt 6). Used by
+    the Android app today and shared with the planned desktop GUI.
   - `-DCOLORS=OFF` — Disable ncurses color output.
   - `-DCOLORSLOGS=OFF` — Disable colored terminal/log output.
 - Protocol and feature knobs:
@@ -270,13 +303,23 @@ These are CMake cache options (set at configure time via `-D...`).
 - Optional features (auto‑detected):
   - RTL‑SDR support is enabled when `librtlsdr` is found.
   - SoapySDR support is enabled when SoapySDR >= 0.8.1 is found through a CMake package that exports an imported target.
-  - Codec2 support is enabled when `codec2` is found.
-  - rdio API upload support is enabled when libcurl is found.
+  - Codec2 support is enabled when `codec2` is found. Both degrade silently, so pass `-DDSD_REQUIRE_CODEC2=ON` to fail
+    configure instead; `-DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=ON` turns detection off outright.
+  - rdio API upload support is enabled when libcurl is found. `-DDSD_REQUIRE_CURL=ON` and
+    `-DCMAKE_DISABLE_FIND_PACKAGE_CURL=ON` are the matching switches.
+  - RadioReference import support is enabled when expat is found. `-DDSD_REQUIRE_EXPAT=ON` and
+    `-DCMAKE_DISABLE_FIND_PACKAGE_EXPAT=ON` are the matching switches.
 
 ## CI Backend Policy
 
 - CI treats backend availability as a build contract, not a best-effort option.
 - Linux CI runs a backend matrix for `both`, `soapy_only`, `rtl_only`, and `neither`.
+- Linux CI also builds and tests the Android configuration on the host (no audio library, no terminal UI, no SDR
+  library, no Codec2, radio pipeline forced on), and `android-ci` cross-compiles the arm64 CLI and the APK on every pull
+  request, then signs and publishes the APK from `main` and release tags.
+- The Android and `win-msvc-*` presets require Codec2, libcurl and expat, so a vcpkg detection regression fails configure
+  rather than shipping a build that decodes no M17 voice. The host job above covers the opposite case: that the
+  degraded build still works.
 - Release/packaging/static-analysis jobs that are expected to exercise radio backends configure with:
   - `-DDSD_REQUIRE_RTLSDR=ON`
   - `-DDSD_REQUIRE_SOAPYSDR=ON`
@@ -348,18 +391,15 @@ Common options:
 - See the friendly CLI guide: [docs/cli.md](docs/cli.md)
   - Or run `dsd-neo -h` for quick usage in your terminal.
   - Digital/analog output gain: `-g <float>` (digital; `0` = auto, `1` ≈ 2%, `50` = 100%) and `-n <float>` (analog 0–100%).
-  - DMR mono helpers:
-    - Modern form: `-fs -nm` (DMR BS/MS simplex + mono audio).
-    - Legacy alias: `-fr` (kept as a shorthand for the same DMR‑mono profile).
   - Single-tuner trunk scan workflow: `docs/trunk-scan.md`
   - CSV formats (channel maps, trunk scan targets, group lists, key lists): `docs/csv-formats.md` (examples in `examples/`)
 
 Quick examples
 
-- UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse -N`
-- DMR trunking from TCP PCM input (with rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv -N`
-- Single-tuner P25/DMR trunk scan from RTL-SDR: `dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv -N`
-- IQ capture + inspect + replay: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq -N` then `dsd-neo --iq-info p25-control.iq.json` then `dsd-neo --iq-replay p25-control.iq.json -f1 -N`
+- UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse --frontend terminal`
+- DMR trunking from TCP PCM input (with rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv --frontend terminal`
+- Single-tuner P25/DMR/NXDN trunk scan from RTL-SDR: `dsd-neo -fa -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal`
+- IQ capture + inspect + replay: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq --frontend terminal` then `dsd-neo --iq-info p25-control.iq.json` then `dsd-neo --iq-replay p25-control.iq.json -f1 --frontend terminal`
 
 ## Configuration
 
@@ -383,8 +423,10 @@ Quick examples
 - SoapySDR non-RTL setup and usage: `docs/soapysdr.md`
 - User config system (INI): `docs/config-system.md`
 - Trunking and trunk scan CSV formats: `docs/csv-formats.md` (examples in `examples/`)
+- RadioReference.com system import (Android app): `docs/radioreference-import.md`
 - Network audio I/O details (TCP/UDP/stdin/stdout): `docs/network-audio.md`
 - Terminal UI hotkeys and menus: `docs/ui-terminal.md`
+- Android app build, USB-OTG flow, and limits: `android/README.md`
 - RTL UDP retune control protocol: `docs/udp-control.md`
 - Module overview and build targets: `docs/code_map.md`
 - Build and installation policy: `docs/build-installation.md`
@@ -409,6 +451,8 @@ Quick examples
 - FEC: `src/fec`, headers `<dsd-neo/fec/...>` — BCH, Golay, Hamming, RS, BPTC, CRC/FCS.
 - Crypto: `src/crypto`, headers `<dsd-neo/crypto/...>` — RC2/RC4/DES/AES, ECDSA, and helpers.
 - Protocols: `src/protocol/<name>`, headers `<dsd-neo/protocol/<name>/...>` — DMR, dPMR, D‑STAR, NXDN, P25, X2‑TDMA, EDACS, ProVoice, M17, YSF.
+- UI: `src/ui/terminal` (ncurses frontend, target `dsd-neo_ui_terminal`), `src/ui/qt` (Qt Quick frontend, target `dsd-neo_ui_qt`, option `DSD_ENABLE_QT_UI`).
+- Android app: `android/` — Kotlin foreground service, JNI lifecycle glue, and vendored libusb/librtlsdr for USB‑OTG dongles.
 - Third‑party: `src/third_party/ezpwd` (INTERFACE target `dsd-neo_ezpwd`), `src/third_party/pffft` (STATIC target `dsd-neo_pffft`).
 
 ## Tooling
@@ -428,13 +472,17 @@ Quick examples
   - `tools/cmake_format_check.sh` (CMake formatting with gersemi; use `--fix` to rewrite).
   - `tools/gitleaks.sh` (secret scanning with SARIF output for GitHub code scanning).
 - Security guardrails:
+  - `tools/check_arch_rules.sh` (module include boundaries and forbidden constructs from `cmake/arch_rules.cmake`; see `docs/code_map.md`).
   - `tools/check_secret_redaction.sh` (blocks formatted key/keystream output outside the redaction formatter helpers).
   - `tools/check_workflow_git_pins.sh` (blocks floating public GitHub source checkouts in workflows and CI helper scripts).
   - `tools/check_workflow_download_pins.sh` (blocks mutable release helper downloads and digestless AppImage container refs).
   - `tools/check_release_hardening.sh` (verifies Linux ELF PIE/RELRO/BIND_NOW, macOS Mach-O PIE/@rpath, and hardening compile flags).
   - `tools/check_release_hardening.ps1` (verifies Windows PE ASLR, NX, and high-entropy VA hardening).
 - Fuzzing: `tools/fuzz_smoke.sh` configures/builds the `fuzz-asan-debug` preset and runs bounded libFuzzer smoke passes.
-- Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and a CI-aligned pre-push analysis pass (security guardrails including workflow source/download pins, clang-format, CMake format, clang-tidy, cppcheck, IWYU, GCC fanalyzer, Semgrep, zizmor, OSV scan, shell/workflow lint) on changed paths.
+- Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and a CI-aligned pre-push analysis pass
+  (architecture rules, security guardrails including workflow source/download pins, install-destination checks, clang-format, CMake format,
+  clang-tidy, cppcheck, IWYU, GCC fanalyzer, Lizard, Semgrep, zizmor, OSV scan, and shell/workflow lint) on changed
+  paths.
 - Optional full scan-build pre-push/preflight pass: set `DSD_HOOK_RUN_SCAN_BUILD=1`.
 - Manual preflight runner: `tools/preflight_ci.sh` runs the same CI-aligned checks as `pre-push` without pushing.
 - Full quality preflight: `tools/quality_preflight.sh` enables missing-tool failures, includes scan-build, and runs the full local guardrail set.
@@ -453,5 +501,7 @@ Quick examples
 
 - Project license: GPL‑3.0‑or‑later (see `LICENSE`).
 - Portions remain under ISC per the original DSD author (see `COPYRIGHT`).
-- Third-party notices live in `THIRD_PARTY.md` (installed license texts: `share/doc/dsd-neo/licenses/`).
-- Project-authored source files carry SPDX identifiers reflecting their license; vendored third-party files retain upstream license headers.
+- Third-party and embedded-code notices are summarized in `THIRD_PARTY.md` (installed license texts:
+  `share/doc/dsd-neo/licenses/`).
+- Project-authored source files carry SPDX identifiers reflecting their license; vendored and embedded upstream-derived
+  code retains upstream license/provenance headers, which should be consulted for file-specific details.

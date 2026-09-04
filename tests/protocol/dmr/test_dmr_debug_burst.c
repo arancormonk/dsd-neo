@@ -3,11 +3,15 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -91,10 +95,126 @@ test_payload_formatter(void) {
     return expect_debug_burst_line("payload", actual, expected);
 }
 
+static int
+test_formatter_guards_and_truncation(void) {
+    int payload[144];
+    DSD_MEMSET(payload, 0, sizeof(payload));
+
+    char actual[8] = {'x', 'x', 'x', 'x', 'x', 'x', 'x', '\0'};
+    if (dmr_debug_format_burst_payload(NULL, sizeof(actual), payload, 0, 0x01) != 0U) {
+        DSD_FPRINTF(stderr, "NULL output was accepted\n");
+        return 1;
+    }
+    if (dmr_debug_format_burst_payload(actual, 0U, payload, 0, 0x01) != 0U) {
+        DSD_FPRINTF(stderr, "zero-sized output was accepted\n");
+        return 1;
+    }
+    if (dmr_debug_format_burst_payload(actual, sizeof(actual), NULL, 0, 0x01) != 0U) {
+        DSD_FPRINTF(stderr, "NULL payload was accepted\n");
+        return 1;
+    }
+    if (dmr_debug_format_burst_payload(actual, sizeof(actual), payload, 2, 0x01) != 0U) {
+        DSD_FPRINTF(stderr, "invalid slot was accepted\n");
+        return 1;
+    }
+    if (dmr_debug_format_burst(actual, sizeof(actual), NULL, 0, 0x01) != 0U) {
+        DSD_FPRINTF(stderr, "NULL state was accepted\n");
+        return 1;
+    }
+
+    char header_only[8];
+    size_t n = dmr_debug_format_burst_payload(header_only, sizeof(header_only), payload, 0, 0x55);
+    if (n <= sizeof(header_only) || header_only[sizeof(header_only) - 1U] != '\0') {
+        DSD_FPRINTF(stderr, "header truncation contract failed n=%zu tail=%d\n", n,
+                    (int)header_only[sizeof(header_only) - 1U]);
+        return 1;
+    }
+
+    char short_line[43];
+    n = dmr_debug_format_burst_payload(short_line, sizeof(short_line), payload, 0, 0x55);
+    if (n <= sizeof(short_line) || short_line[sizeof(short_line) - 1U] != '\0') {
+        DSD_FPRINTF(stderr, "payload truncation contract failed n=%zu tail=%d\n", n,
+                    (int)short_line[sizeof(short_line) - 1U]);
+        return 1;
+    }
+
+    return 0;
+}
+
+static int
+test_rc_burst_formatter(void) {
+    /* Reverse Channel burst: RC_a(8) EMB_a(4) SYNC(24) EMB_b(4) RC_b(8)
+     * dibits; the formatter dumps all 12 bytes in over-the-air order so the
+     * RC sync 77 D5 5F 7D FD 77 shows up as bytes 3..8. */
+    int dibits[48];
+    for (int i = 0; i < 48; i++) {
+        dibits[i] = 0;
+    }
+    static const char sync[] = DMR_MS_RC_SYNC;
+    for (int i = 0; i < 24; i++) {
+        dibits[12 + i] = sync[i] - '0';
+    }
+    dibits[0] = 2; /* first byte: dibits 2,0,0,0 -> 0x80 */
+
+    char expected[128];
+    DSD_SNPRINTF(expected, sizeof(expected), "%s",
+                 "Debug Demod +Sync RC: [80][00][00][77][D5][5F][7D][FD][77][00][00][00]");
+
+    char actual[128];
+    size_t n = dmr_debug_format_rc_burst(actual, sizeof(actual), dibits);
+    if (n == 0U) {
+        DSD_FPRINTF(stderr, "dmr_debug_format_rc_burst returned zero\n");
+        return 1;
+    }
+    if (expect_debug_burst_line("rc", actual, expected) != 0) {
+        return 1;
+    }
+
+    char tiny[8] = {'x', 'x', 'x', 'x', 'x', 'x', 'x', '\0'};
+    if (dmr_debug_format_rc_burst(NULL, sizeof(tiny), dibits) != 0U) {
+        DSD_FPRINTF(stderr, "RC NULL output was accepted\n");
+        return 1;
+    }
+    if (dmr_debug_format_rc_burst(tiny, 0U, dibits) != 0U) {
+        DSD_FPRINTF(stderr, "RC zero-sized output was accepted\n");
+        return 1;
+    }
+    if (dmr_debug_format_rc_burst(tiny, sizeof(tiny), NULL) != 0U) {
+        DSD_FPRINTF(stderr, "RC NULL dibits were accepted\n");
+        return 1;
+    }
+    n = dmr_debug_format_rc_burst(tiny, sizeof(tiny), dibits);
+    if (n <= sizeof(tiny) || tiny[sizeof(tiny) - 1U] != '\0') {
+        DSD_FPRINTF(stderr, "RC truncation contract failed n=%zu tail=%d\n", n, (int)tiny[sizeof(tiny) - 1U]);
+        return 1;
+    }
+
+    return 0;
+}
+
+static int
+test_debug_dump_gate_and_enabled_path(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    dmr_debug_dump_burst(NULL, &state, 0, 0x01);
+    dmr_debug_dump_burst(&opts, NULL, 0, 0x01);
+    dmr_debug_dump_burst(&opts, &state, 0, 0x01);
+    opts.dmr_debug_burst = 1;
+    dmr_debug_dump_burst(&opts, &state, 2, 0x01);
+    dmr_debug_dump_burst(&opts, &state, 0, 0x01);
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_state_formatter();
     rc |= test_payload_formatter();
+    rc |= test_formatter_guards_and_truncation();
+    rc |= test_rc_burst_formatter();
+    rc |= test_debug_dump_gate_and_enabled_path();
     return rc;
 }

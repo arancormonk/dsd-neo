@@ -8,97 +8,19 @@
  * IDEN tables and drives the channel→frequency calculator.
  */
 
-#include <dsd-neo/protocol/p25/p25_trunk_sm_api.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_test_shim.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-// Test shim helper (exposed by protocol library)
-int p25_test_mbt_iden_bridge(const unsigned char* mbt, int mbt_len, long* out_base, int* out_spac, int* out_type,
-                             int* out_tdma, long* out_freq);
-
-static void
-sm_noop_init(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-sm_noop_on_group_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int tg, int src) {
-    (void)opts;
-    (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)tg;
-    (void)src;
-}
-
-static void
-sm_noop_on_indiv_grant(dsd_opts* opts, dsd_state* state, int channel, int svc_bits, int dst, int src) {
-    (void)opts;
-    (void)state;
-    (void)channel;
-    (void)svc_bits;
-    (void)dst;
-    (void)src;
-}
-
-static void
-sm_noop_on_release(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static void
-sm_noop_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, int count) {
-    (void)opts;
-    (void)state;
-    (void)freqs;
-    (void)count;
-}
-
-static void
-sm_noop_tick(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
-}
-
-static int
-sm_noop_next_cc_candidate(dsd_state* state, long* out_freq) {
-    (void)state;
-    (void)out_freq;
-    return 0;
-}
-
-static p25_sm_api
-sm_noop_api(void) {
-    p25_sm_api api = {0};
-    api.init = sm_noop_init;
-    api.on_group_grant = sm_noop_on_group_grant;
-    api.on_indiv_grant = sm_noop_on_indiv_grant;
-    api.on_release = sm_noop_on_release;
-    api.on_neighbor_update = sm_noop_on_neighbor_update;
-    api.next_cc_candidate = sm_noop_next_cc_candidate;
-    api.tick = sm_noop_tick;
-    return api;
-}
-
 // Additional stubs referenced by MAC VPDU path (unused in this test)
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output, int len) {
-    (void)input;
-    (void)output;
-    (void)len;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits) {
@@ -159,17 +81,12 @@ int
 main(void) {
     int rc = 0;
 
-    {
-        p25_sm_api api = sm_noop_api();
-        p25_sm_set_api(&api);
-    }
-
     // Craft a minimal ALT MBT PDU carrying Identifier Update (UHF/VHF, opcode 0x74)
     // IDEN=1, spacing=100 (12.5 kHz), base=851.000000 MHz (base field in 5 Hz units)
     uint8_t mbt[48];
     DSD_MEMSET(mbt, 0, sizeof(mbt));
 
-    mbt[0] = 0x17; // ALT format
+    mbt[0] = 0x37; // outbound ALT format
     mbt[2] = 0x00; // MFID (standard)
     mbt[6] = 0x02; // blks=2 (3x12=36 total bytes), ample for payload
     mbt[7] = 0x74; // Identifier Update VHF/UHF (MAC-coded opcode)
@@ -209,13 +126,53 @@ main(void) {
     long want_freq = 851000000 + 10 * 100 * 125; // 851.125 MHz
     rc |= expect_eq_long("freq(0x100A)", freq, want_freq);
 
+    // Non-extended MBTC carries the opcode as the first data-header byte
+    // after the 12-byte PDU header. Preserve that bridge so IDEN updates with
+    // opcode at byte 12 and payload at byte 13 still populate the band plan.
+    {
+        uint8_t umb[48];
+        DSD_MEMSET(umb, 0, sizeof(umb));
+
+        umb[0] = 0x35;  // outbound Unconfirmed MBTC format
+        umb[2] = 0x00;  // MFID (standard)
+        umb[6] = 0x02;  // blks=2
+        umb[12] = 0x74; // Identifier Update VHF/UHF opcode in data header
+
+        umb[13] = 0x20; // IDEN=2, BW=0
+        umb[14] = 0x00; // tx_off hi
+        umb[15] = 0x00; // tx_off lo + spacing hi
+        umb[16] = 0x64; // spacing lo = 100
+        umb[17] = 0x0A; // base (851000000 / 5) = 0x0A250BC0
+        umb[18] = 0x25;
+        umb[19] = 0x0B;
+        umb[20] = 0xC0;
+
+        base = -1;
+        spac = -1;
+        type = -1;
+        tdma = -1;
+        freq = -1;
+
+        int umb_shim_rc = p25_test_mbt_iden_bridge(umb, (int)sizeof(umb), &base, &spac, &type, &tdma, &freq);
+        if (umb_shim_rc != 0) {
+            DSD_FPRINTF(stderr, "umbtc shim invocation failed (%d)\n", umb_shim_rc);
+            return 97;
+        }
+
+        rc |= expect_eq_int("umbtc_chan_type[2]", type, 1);
+        rc |= expect_eq_int("umbtc_chan_tdma[2]", tdma, 0);
+        rc |= expect_eq_long("umbtc_spacing[2]", spac, 100);
+        rc |= expect_eq_long("umbtc_base[2]", base, 851000000 / 5);
+        rc |= expect_eq_long("umbtc_freq(0x200A)", freq, want_freq);
+    }
+
     // AMBTC opcode 0x33 is a foreign-system TDMA identifier update in sdrtrunk.
     // It must not populate the active system IDEN table.
     {
         uint8_t tdma_mbt[48];
         DSD_MEMSET(tdma_mbt, 0, sizeof(tdma_mbt));
 
-        tdma_mbt[0] = 0x17; // ALT format
+        tdma_mbt[0] = 0x37; // outbound ALT format
         tdma_mbt[2] = 0x00; // MFID (standard)
         tdma_mbt[3] = 0x34; // IDEN=3, channel type=4
         tdma_mbt[6] = 0x02; // blks=2

@@ -19,14 +19,14 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/dsp/p25p1_heuristics.h>
 #include <dsd-neo/dsp/symbol.h>
-#include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
@@ -38,26 +38,13 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#ifdef TRACE_DSD
-#include <dsd-neo/platform/file_compat.h>
-#endif
-
 #ifdef USE_RADIO
-#endif
-
-#ifdef USE_RADIO
-#define DSD_RTL_OUTPUT_KIND_SYMBOL_FSK 1
+#define DSD_RTL_OUTPUT_KIND_FSK_DISCRIMINATOR 1
 #endif
 
 static void DSD_ATTR_USED
 throttle_symbol_bin_replay(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || state->use_throttle != 1) {
-        return;
-    }
-
-    /* Keep legacy microsecond override support when explicitly configured. */
-    if (state->symbol_throttle > 0) {
-        dsd_sleep_us((uint64_t)state->symbol_throttle);
         return;
     }
 
@@ -183,12 +170,18 @@ print_datascope(const dsd_opts* opts, dsd_state* state, const float* sbuf2, int 
     }
     const float scale = 32.0f / span;
     build_datascope_spectrum(sbuf2, count, scale, spectrum);
-    if (state->symbolcnt > (4800 / opts->scoperate)) {
+    /* dsd_state::symbolcnt is unsigned; the refresh period is a small positive int. */
+    if (state->symbolcnt > (uint32_t)(4800 / opts->scoperate)) {
+        dsd_call_snapshot call;
+        DSD_MEMSET(&call, 0, sizeof(call));
+        (void)dsd_call_state_get(state, 0U, &call);
         state->symbolcnt = 0;
         DSD_FPRINTF(stderr, "\n");
         DSD_FPRINTF(stderr, "Demod mode:     %s                Nac:                     %4X\n", modulation, state->nac);
-        DSD_FPRINTF(stderr, "Frame Type:    %s        Talkgroup:            %7i\n", state->ftype, state->lasttg);
-        DSD_FPRINTF(stderr, "Frame Subtype: %s       Source:          %12i\n", state->fsubtype, state->lastsrc);
+        DSD_FPRINTF(stderr, "Frame Type:    %s        Talkgroup:      %13llu\n", state->ftype,
+                    (unsigned long long)call.ota_target_id);
+        DSD_FPRINTF(stderr, "Frame Subtype: %s       Source:          %12llu\n", state->fsubtype,
+                    (unsigned long long)call.ota_source_id);
         DSD_FPRINTF(stderr, "TDMA activity:  %s %s     Voice errors: %s\n", state->slot0light, state->slot1light,
                     state->err_str);
         DSD_FPRINTF(stderr, "+----------------------------------------------------------------+\n");
@@ -367,7 +360,7 @@ static inline int DSD_ATTR_USED
 cqpsk_slice_aligned(float symbol) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(NULL);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
     int inv = (cfg && cfg->cqpsk_sync_inv) ? 1 : 0;
@@ -439,13 +432,13 @@ apply_cqpsk_snr_weight(int rel) {
 #endif
 
 static int DSD_ATTR_USED
-fsk_soft_metric_available(int* out_levels) {
+rtl_fsk_discriminator_metric_context(int* out_levels) {
 #ifdef USE_RADIO
     int symbol_rate_hz = 0;
     int levels = 0;
     int channel_profile = 0;
     if (dsd_rtl_stream_metrics_hook_stream_active()
-        && dsd_rtl_stream_metrics_hook_output_kind() == DSD_RTL_OUTPUT_KIND_SYMBOL_FSK
+        && dsd_rtl_stream_metrics_hook_output_kind() == DSD_RTL_OUTPUT_KIND_FSK_DISCRIMINATOR
         && dsd_rtl_stream_metrics_hook_symbol_profile(&symbol_rate_hz, &levels, &channel_profile) == 0) {
         (void)symbol_rate_hz;
         (void)channel_profile;
@@ -511,9 +504,9 @@ c4fm_reliability_from_thresholds(const dsd_state* st, float sym) {
 
 #ifdef USE_RADIO
 static int
-apply_c4fm_snr_weight(int rel, int rtl_fsk_soft, int rtl_fsk_levels) {
+apply_c4fm_snr_weight(int rel, int rtl_fsk_context, int rtl_fsk_levels) {
     double snr_db = -100.0;
-    if (rtl_fsk_soft && rtl_fsk_levels == 2) {
+    if (rtl_fsk_context && rtl_fsk_levels == 2) {
         snr_db = dsd_rtl_stream_metrics_hook_snr_gfsk_db();
         if (snr_db < -50.0) {
             snr_db = dsd_rtl_stream_metrics_hook_snr_c4fm_db();
@@ -567,13 +560,10 @@ dmr_compute_reliability(const dsd_state* st, float sym) {
     int rel = c4fm_reliability_from_thresholds(st, sym);
 #ifdef USE_RADIO
     int rtl_fsk_levels = 4;
-    int rtl_fsk_soft = fsk_soft_metric_available(&rtl_fsk_levels);
-    if (rtl_fsk_soft) {
-        rel = (int)dsd_fsk_symbol_reliability(sym, rtl_fsk_levels);
-    }
+    int rtl_fsk_context = rtl_fsk_discriminator_metric_context(&rtl_fsk_levels);
 #endif
 #ifdef USE_RADIO
-    rel = apply_c4fm_snr_weight(rel, rtl_fsk_soft, rtl_fsk_levels);
+    rel = apply_c4fm_snr_weight(rel, rtl_fsk_context, rtl_fsk_levels);
 #endif
     return (uint8_t)rel;
 }
@@ -667,10 +657,10 @@ build_standard_dibit_ideals(const dsd_state* state, int inverted, float ideal[4]
 }
 
 static void DSD_ATTR_USED
-build_cqpsk_dibit_ideals(const dsd_state* state, float ideal[4]) {
+build_cqpsk_dibit_ideals(const dsd_state* state, int inverted, float ideal[4]) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(NULL);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
 
@@ -679,18 +669,16 @@ build_cqpsk_dibit_ideals(const dsd_state* state, float ideal[4]) {
     const float base_ideal[4] = {1.0f, 3.0f, -1.0f, -3.0f};
 
     for (int dibit = 0; dibit < 4; dibit++) {
-        int base = inv ? invert_dibit(dibit) : dibit;
+        int corrected = inverted ? invert_dibit(dibit) : dibit;
+        if (corrected < 0 || corrected >= 4) {
+            corrected = dibit;
+        }
+        int mapped = dsd_p25_cqpsk_raw_dibit_for_corrected(state->p25_cqpsk_dibit_map_idx, (uint8_t)corrected);
+        int base = inv ? invert_dibit(mapped) : mapped;
         if (base < 0 || base >= 4) {
             base = 0;
         }
-        float level = 1.0f;
-        switch (base) {
-            case 0: level = base_ideal[0]; break;
-            case 1: level = base_ideal[1]; break;
-            case 2: level = base_ideal[2]; break;
-            case 3: level = base_ideal[3]; break;
-            default: level = base_ideal[0]; break;
-        }
+        float level = base_ideal[base];
         if (negate) {
             level = -level;
         }
@@ -708,7 +696,7 @@ compute_dibit_soft_metric(const dsd_state* state, float symbol, int dibit, int i
 
     float ideal[4];
     if (cqpsk_aligned) {
-        build_cqpsk_dibit_ideals(state, ideal);
+        build_cqpsk_dibit_ideals(state, inverted, ideal);
     } else {
         build_standard_dibit_ideals(state, inverted, ideal);
     }
@@ -775,13 +763,6 @@ replace_previous_dibit_soft(dsd_state* state, const dsd_dibit_soft_t* soft) {
             *(sp - 1) = *soft;
         }
     }
-
-    if (state->dmr_reliab_buf != NULL && state->dmr_reliab_p != NULL) {
-        uint8_t* rp = state->dmr_reliab_p;
-        if (rp > state->dmr_reliab_buf + 200 && rp <= state->dmr_reliab_buf + 1000000) {
-            *(rp - 1) = soft->reliability;
-        }
-    }
 }
 
 static void DSD_ATTR_USED
@@ -811,30 +792,24 @@ write_le_u32(unsigned char* out, uint32_t value) {
     out[3] = (unsigned char)((value >> 24) & 0xFFU);
 }
 
-static void DSD_ATTR_USED
-write_symbol_capture_record_with_soft(dsd_opts* opts, dsd_state* state, int dibit, float symbol,
-                                      const dsd_dibit_soft_t* soft_in) {
+void
+write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol, const dsd_dibit_soft_t* soft) {
     if (opts == NULL || state == NULL || opts->symbol_out_f == NULL) {
         return;
     }
 
-    if (opts->symbol_capture_format != DSD_SYMBOL_CAPTURE_FORMAT_SOFT) {
-        fputc(dibit, opts->symbol_out_f);
-        return;
-    }
-
-    dsd_dibit_soft_t soft;
-    if (soft_in != NULL) {
-        soft = *soft_in;
+    dsd_dibit_soft_t capture_soft;
+    if (soft != NULL) {
+        capture_soft = *soft;
     } else {
-        fallback_soft_from_dibit(dibit, 255, &soft);
+        fallback_soft_from_dibit(dibit, 255, &capture_soft);
     }
 
     unsigned char record[DSD_SYMBOL_CAPTURE_SOFT_RECORD_SIZE];
     record[0] = (unsigned char)(dibit & 3);
-    record[1] = soft.reliability;
-    write_le_i16(record + 2, soft.llr[0]);
-    write_le_i16(record + 4, soft.llr[1]);
+    record[1] = capture_soft.reliability;
+    write_le_i16(record + 2, capture_soft.llr[0]);
+    write_le_i16(record + 4, capture_soft.llr[1]);
     uint32_t raw_symbol = 0;
     DSD_MEMCPY(&raw_symbol, &symbol, sizeof(raw_symbol));
     write_le_u32(record + 6, raw_symbol);
@@ -843,30 +818,10 @@ write_symbol_capture_record_with_soft(dsd_opts* opts, dsd_state* state, int dibi
     }
 }
 
-void
-write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol) {
-    write_symbol_capture_record_with_soft(opts, state, dibit, symbol, NULL);
-}
-
-#ifdef DSD_NEO_TEST_HOOKS
-uint8_t
-dsd_test_compute_cqpsk_reliability(float sym) {
-    // Use static to avoid stack overflow - dsd_state is ~1.5MB
-    static dsd_state dummy;
-    static int initialized = 0;
-    if (!initialized) {
-        DSD_MEMSET(&dummy, 0, sizeof(dummy));
-        initialized = 1;
-    }
-    dummy.rf_mod = 1;
-    return dmr_compute_reliability(&dummy, sym);
-}
-#endif
-
 /**
  * @brief Check if CQPSK demodulation path is active.
  *
- * Returns 1 if the RTL-SDR CQPSK path with TED is active, meaning symbols
+ * Returns 1 if the RTL-SDR CQPSK timing path is active, meaning symbols
  * are pre-scaled phase values suitable for the CQPSK slicer.
  *
  * @param opts Decoder options (checks audio_in_type).
@@ -876,9 +831,10 @@ static inline int DSD_ATTR_USED
 is_cqpsk_active(const dsd_opts* opts) {
 #ifdef USE_RADIO
     if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
-        int cqpsk = 0, fll = 0, ted = 0;
-        dsd_rtl_stream_metrics_hook_dsp_get(&cqpsk, &fll, &ted);
-        if (cqpsk && ted) {
+        int cqpsk = 0;
+        int timing = 0;
+        dsd_rtl_stream_metrics_hook_cqpsk_status(&cqpsk, &timing);
+        if (cqpsk && timing) {
             return 1;
         }
     }
@@ -899,7 +855,7 @@ debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
-        dsd_neo_config_init(NULL);
+        dsd_neo_config_init();
         cfg = dsd_neo_get_config();
     }
     if (!cfg || !cfg->debug_cqpsk_enable) {
@@ -930,11 +886,6 @@ debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
         sym_min = 1e9f;
         sym_max = -1e9f;
     }
-}
-#else
-static inline void DSD_ATTR_USED
-debug_log_cqpsk_slice(int dibit, float symbol, const dsd_state* state) {
-    UNUSED3(dibit, symbol, state);
 }
 #endif
 
@@ -999,39 +950,15 @@ store_two_level_dibit(dsd_state* state, float symbol, int high_symbol_return) {
 
 static int DSD_ATTR_USED
 want_cqpsk_p25_slice(const dsd_opts* opts, const dsd_state* state, int is_negative) {
-    int p25p1_sync = is_negative ? DSD_SYNC_P25P1_NEG : DSD_SYNC_P25P1_POS;
-    int p25p2_sync = is_negative ? DSD_SYNC_P25P2_NEG : DSD_SYNC_P25P2_POS;
+    UNUSED(is_negative);
 #ifdef USE_RADIO
     return is_cqpsk_active(opts) && state->rf_mod == 1
-           && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || state->synctype == p25p1_sync
-               || state->synctype == p25p2_sync || state->lastsynctype == p25p1_sync
-               || state->lastsynctype == p25p2_sync);
+           && (DSD_SYNC_IS_P25(state->synctype) || DSD_SYNC_IS_P25(state->lastsynctype));
 #else
     UNUSED(opts);
     UNUSED(state);
-    UNUSED(p25p1_sync);
-    UNUSED(p25p2_sync);
     return 0;
 #endif
-}
-
-static int DSD_ATTR_USED
-try_p25p1_heuristic_slice(const dsd_opts* opts, dsd_state* state, float symbol, int is_negative, int* out_dibit) {
-    if (!opts || !state || !out_dibit || opts->use_heuristics != 1) {
-        return 0;
-    }
-
-    if (is_negative) {
-        if (state->synctype != DSD_SYNC_P25P1_NEG) {
-            return 0;
-        }
-        return estimate_symbol(state->rf_mod, &(state->inv_p25_heuristics), state->last_dibit, symbol, out_dibit);
-    }
-
-    if (state->synctype != DSD_SYNC_P25P1_POS) {
-        return 0;
-    }
-    return estimate_symbol(state->rf_mod, &(state->p25_heuristics), state->last_dibit, symbol, out_dibit);
 }
 
 static int DSD_ATTR_USED
@@ -1050,7 +977,8 @@ slice_dibit_from_symbol_regions(const dsd_state* state, float symbol, int is_neg
 }
 
 static int DSD_ATTR_USED
-select_four_level_dibit(const dsd_opts* opts, dsd_state* state, float symbol, int is_negative, int* used_cqpsk_slice) {
+select_four_level_dibit(const dsd_opts* opts, const dsd_state* state, float symbol, int is_negative,
+                        int* used_cqpsk_slice) {
     if (used_cqpsk_slice) {
         *used_cqpsk_slice = 0;
     }
@@ -1058,18 +986,23 @@ select_four_level_dibit(const dsd_opts* opts, dsd_state* state, float symbol, in
 #ifdef USE_RADIO
     if (want_cqpsk_p25_slice(opts, state, is_negative)) {
         int dibit = cqpsk_slice_aligned(symbol - state->center);
+        dibit = dsd_p25_cqpsk_correct_dibit(state->p25_cqpsk_dibit_map_idx, (uint8_t)dibit);
+        if (is_negative) {
+            dibit = invert_dibit(dibit);
+            if (dibit < 0) {
+                dibit = 0;
+            }
+        }
         if (used_cqpsk_slice) {
             *used_cqpsk_slice = 1;
         }
         debug_log_cqpsk_slice(dibit, symbol, state);
         return dibit;
     }
+#else
+    UNUSED(opts);
 #endif
 
-    int dibit = 0;
-    if (try_p25p1_heuristic_slice(opts, state, symbol, is_negative, &dibit)) {
-        return dibit;
-    }
     return slice_dibit_from_symbol_regions(state, symbol, is_negative);
 }
 
@@ -1079,13 +1012,6 @@ store_dibit_with_soft(dsd_state* state, int stored_dibit, const dsd_dibit_soft_t
     state->dibit_buf_p++;
 
     *state->dmr_payload_p = stored_dibit;
-    if (state->dmr_reliab_p) {
-        if (state->dmr_reliab_p > state->dmr_reliab_buf + 900000) {
-            state->dmr_reliab_p = state->dmr_reliab_buf + 200;
-        }
-        *state->dmr_reliab_p = soft->reliability;
-        state->dmr_reliab_p++;
-    }
     write_dibit_soft_metric(state, soft);
     state->dmr_payload_p++;
 }
@@ -1109,7 +1035,7 @@ digitize(const dsd_opts* opts, dsd_state* state, float symbol) {
     int stored_dibit = is_negative ? invert_dibit(dibit) : dibit;
 
     dsd_dibit_soft_t soft;
-    compute_dibit_soft_metric(state, symbol, dibit, is_negative && !used_cqpsk_slice, used_cqpsk_slice, &soft);
+    compute_dibit_soft_metric(state, symbol, dibit, is_negative, used_cqpsk_slice, &soft);
     state->last_dibit = dibit;
     store_dibit_with_soft(state, stored_dibit, &soft);
     return dibit;
@@ -1124,19 +1050,7 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     float symbol;
     int dibit;
 
-#ifdef TRACE_DSD
-    unsigned int l, r;
-#endif
-
-#ifdef TRACE_DSD
-    l = state->debug_sample_index;
-#endif
-
     symbol = getSymbol(opts, state, 1);
-
-#ifdef TRACE_DSD
-    r = state->debug_sample_index;
-#endif
 
     state->sbuf[state->sidx] = symbol;
 
@@ -1157,31 +1071,9 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
 
     dsd_dibit_soft_t capture_soft;
     const dsd_dibit_soft_t* capture_soft_p = read_previous_dibit_soft(state, &capture_soft) ? &capture_soft : NULL;
-    write_symbol_capture_record_with_soft(opts, state, dibit, symbol, capture_soft_p);
-
-#ifdef TRACE_DSD
-    {
-        if (state->debug_label_dibit_file == NULL) {
-            state->debug_label_dibit_file = dsd_fopen_private("pp_label_dibit.txt", "w");
-        }
-        if (state->debug_label_dibit_file != NULL) {
-            float left = l / 48000.0f;
-            float right = r / 48000.0f;
-            DSD_FPRINTF(state->debug_label_dibit_file, "%f\t%f\t%i\n", left, right, dibit);
-        }
-    }
-#endif
+    write_symbol_capture_record(opts, state, dibit, symbol, capture_soft_p);
 
     return dibit;
-}
-
-/**
- * \brief This important method reads the last analog signal value (getSymbol call) and digitizes it.
- * Depending of the ongoing transmission it in converted into a bit (0/1) or a di-bit (00/01/10/11).
- */
-int
-getDibit(dsd_opts* opts, dsd_state* state) {
-    return get_dibit_and_analog_signal(opts, state, NULL);
 }
 
 int
@@ -1190,36 +1082,8 @@ getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
 
     if (out_soft != NULL) {
         if (!read_previous_dibit_soft(state, out_soft)) {
-            uint8_t rel = 255;
-            if (state && state->dmr_reliab_p != NULL && state->dmr_reliab_buf != NULL) {
-                rel = *(state->dmr_reliab_p - 1);
-            }
-            fallback_soft_from_dibit(dibit, rel, out_soft);
+            fallback_soft_from_dibit(dibit, 255, out_soft);
         }
-    }
-
-    return dibit;
-}
-
-/**
- * \brief Get the next dibit along with its reliability value.
- *
- * This function reads the next dibit and returns the associated reliability
- * (0=uncertain, 255=confident) via out_reliability. The reliability is computed
- * based on the symbol's position relative to decision thresholds.
- *
- * @param opts Decoder options.
- * @param state Decoder state containing symbol buffers and thresholds.
- * @param out_reliability [out] Reliability value when non-NULL.
- * @return Dibit value [0,3]; negative on shutdown/EOF.
- */
-int
-getDibitWithReliability(dsd_opts* opts, dsd_state* state, uint8_t* out_reliability) {
-    dsd_dibit_soft_t soft;
-    int dibit = getDibitSoft(opts, state, &soft);
-
-    if (out_reliability != NULL) {
-        *out_reliability = soft.reliability;
     }
 
     return dibit;
@@ -1258,7 +1122,7 @@ getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_symbol) 
 
     dsd_dibit_soft_t capture_soft;
     const dsd_dibit_soft_t* capture_soft_p = read_previous_dibit_soft(state, &capture_soft) ? &capture_soft : NULL;
-    write_symbol_capture_record_with_soft(opts, state, dibit, symbol, capture_soft_p);
+    write_symbol_capture_record(opts, state, dibit, symbol, capture_soft_p);
 
     if (out_soft_symbol != NULL) {
         *out_soft_symbol = symbol;
@@ -1422,6 +1286,6 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
 
     int i;
     for (i = 0; i < (count); i++) {
-        (void)getDibit(opts, state);
+        (void)get_dibit_and_analog_signal(opts, state, NULL);
     }
 }

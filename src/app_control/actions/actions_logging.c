@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/* UI command actions — logging/history domain */
+
+#include <dsd-neo/core/state.h>
+#include <string.h>
+#include <time.h>
+#include "../command_dispatch.h"
+#include "../services.h"
+#include "dsd-neo/app_control/commands.h"
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
+
+static int
+ui_handle_eh_next(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)opts;
+    (void)c;
+    if (state->eh_index < 254) {
+        state->eh_index++;
+    }
+    return 1;
+}
+
+static int
+ui_handle_eh_prev(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)opts;
+    (void)c;
+    if (state->eh_index > 0) {
+        state->eh_index--;
+    }
+    return 1;
+}
+
+static int
+ui_handle_eh_toggle_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)opts;
+    (void)c;
+    if (state->eh_slot == 0) {
+        state->eh_slot = 1;
+    } else if (state->eh_slot == 1) {
+        state->eh_slot = 2;
+    } else {
+        state->eh_slot = 0;
+    }
+    state->eh_index = 0;
+    return 1;
+}
+
+static int
+ui_handle_ui_msg_clear(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)opts;
+    (void)c;
+    if (state) {
+        state->ui_msg[0] = '\0';
+        state->ui_msg_expire = 0;
+    }
+    return 1;
+}
+
+static int
+ui_handle_eh_reset(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)c;
+    if (state) {
+        svc_reset_event_history(state);
+        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Applied: Event history reset");
+        state->ui_msg_expire = time(NULL) + 3;
+    }
+    (void)opts;
+    return 1;
+}
+
+static int
+ui_handle_event_log_disable(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)c;
+    if (opts) {
+        svc_disable_event_log(opts);
+        if (state) {
+            DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Applied: Event log disabled");
+            state->ui_msg_expire = time(NULL) + 3;
+        }
+    }
+    return 1;
+}
+
+static int
+ui_handle_event_log_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (opts && c->n > 0) {
+        char path[1024] = {0};
+        size_t n = c->n < sizeof(path) ? c->n : sizeof(path) - 1;
+        DSD_MEMCPY(path, c->data, n);
+        path[n] = '\0';
+        int rc = svc_set_event_log(opts, path);
+        if (state) {
+            if (rc == 0) {
+                const size_t prefix_len = strlen("Applied: Event log -> ");
+                int max_path =
+                    (sizeof state->ui_msg > (prefix_len + 1)) ? (int)(sizeof state->ui_msg - prefix_len - 1) : 0;
+                DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Applied: Event log -> %.*s", max_path, path);
+                state->ui_msg_expire = time(NULL) + 3;
+            } else {
+                DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Failed: Event log path invalid");
+                state->ui_msg_expire = time(NULL) + 4;
+            }
+        }
+    }
+    return 1;
+}
+
+const struct dsd_app_command_reg dsd_app_actions_logging[] = {
+    {DSD_APP_CMD_EH_NEXT, ui_handle_eh_next},
+    {DSD_APP_CMD_EH_PREV, ui_handle_eh_prev},
+    {DSD_APP_CMD_EH_TOGGLE_SLOT, ui_handle_eh_toggle_slot},
+    {DSD_APP_CMD_UI_MSG_CLEAR, ui_handle_ui_msg_clear},
+    {DSD_APP_CMD_EH_RESET, ui_handle_eh_reset},
+    {DSD_APP_CMD_EVENT_LOG_DISABLE, ui_handle_event_log_disable},
+    {DSD_APP_CMD_EVENT_LOG_SET, ui_handle_event_log_set},
+    {0, NULL},
+};

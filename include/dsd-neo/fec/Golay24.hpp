@@ -2,6 +2,8 @@
 #ifndef GOLAY24_HPP_7a68240afda9406facf81fcad3851111
 #define GOLAY24_HPP_7a68240afda9406facf81fcad3851111
 
+#include <dsd-neo/platform/posix_compat.h>
+
 /**
  * @file
  * @brief (23,12) Golay FEC encoder/decoder utilities.
@@ -68,28 +70,6 @@ class Golay24 {
             cw >>= 1; /* shift intermediate result */
         }
         return (cw << 12); /* value pairs with upper bits of cw */
-    }
-
-    static int
-    weight(unsigned int cw)
-    /* This function calculates the weight of
-       23 bit codeword cw. */
-    {
-        int bits, k;
-
-        /* nibble weight table */
-        const char wgt[16] = {0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4};
-
-        bits = 0; /* bit counter */
-        k = 0;
-        /* do all bits, six nibbles max */
-        while ((k < 6) && (cw)) {
-            bits = bits + wgt[cw & 0xf];
-            cw >>= 4;
-            k++;
-        }
-
-        return (bits);
     }
 
     static unsigned int
@@ -165,7 +145,7 @@ class Golay24 {
                 (*errors_detected)++;
                 for (i = 0; i < 23; i++) /* check syndrome of each cyclic shift */
                 {
-                    *errs = weight(s);
+                    *errs = dsd_popcount64(s & 0x7fffffU);
                     if (*errs <= w) /* syndrome matches error pattern */
                     {
                         cw = cw ^ s;              /* remove errors */
@@ -193,11 +173,6 @@ class Golay24 {
         }
 
         return codeword;
-    }
-
-    static unsigned int
-    encode23(unsigned int data) {
-        return golay(data); /* make a test codeword */
     }
 
     static int

@@ -122,9 +122,7 @@ FIXED_PATHS=(
   .cppcheck-build
   coverage.info
   coverage.src.info
-  coverage.protocol.info
   coverage_html
-  coverage_protocol_html
   .gitleaks.sarif
   .osv-scanner.sarif
   .zizmor.sarif

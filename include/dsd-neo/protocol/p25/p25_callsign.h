@@ -32,20 +32,6 @@ extern "C" {
  */
 void p25_wacn_sysid_to_callsign(uint32_t wacn, uint16_t sysid, char out[7]);
 
-/**
- * @brief Format WACN/SysID with callsign for display.
- *
- * Produces a string like "WACN [BEE00] SYSID [001] (WBEE1)" where the
- * parenthetical callsign is only appended if it contains valid characters.
- *
- * @param wacn    20-bit WACN
- * @param sysid   12-bit SysID
- * @param out     Output buffer
- * @param out_len Size of output buffer
- * @return        Number of characters written (excluding null terminator)
- */
-int p25_format_wacn_sysid(uint32_t wacn, uint16_t sysid, char* out, int out_len);
-
 #ifdef __cplusplus
 }
 #endif

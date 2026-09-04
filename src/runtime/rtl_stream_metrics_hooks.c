@@ -79,37 +79,46 @@ dsd_rtl_stream_metrics_hook_input_level(dsd_input_level_snapshot* out) {
 }
 
 int
-dsd_rtl_stream_metrics_hook_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile) {
-    if (g_rtl_stream_metrics_hooks.set_symbol_profile) {
-        return g_rtl_stream_metrics_hooks.set_symbol_profile(symbol_rate_hz, levels, channel_profile);
+dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                                int ted_sps) {
+    if (g_rtl_stream_metrics_hooks.apply_demod_profile) {
+        return g_rtl_stream_metrics_hooks.apply_demod_profile(cqpsk_enable, symbol_rate_hz, levels, channel_profile,
+                                                              ted_sps);
     }
+    (void)cqpsk_enable;
     (void)symbol_rate_hz;
     (void)levels;
     (void)channel_profile;
-    return 0;
+    (void)ted_sps;
+    return -1;
 }
 
 int
-dsd_rtl_stream_metrics_hook_dsp_get(int* out_cqpsk_enable, int* out_fll_enable, int* out_ted_enable) {
-    if (g_rtl_stream_metrics_hooks.dsp_get) {
-        return g_rtl_stream_metrics_hooks.dsp_get(out_cqpsk_enable, out_fll_enable, out_ted_enable);
+dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
+    if (g_rtl_stream_metrics_hooks.cqpsk_status) {
+        return g_rtl_stream_metrics_hooks.cqpsk_status(out_cqpsk_enable, out_cqpsk_timing_active);
     }
     if (out_cqpsk_enable) {
         *out_cqpsk_enable = 0;
     }
-    if (out_fll_enable) {
-        *out_fll_enable = 0;
-    }
-    if (out_ted_enable) {
-        *out_ted_enable = 0;
+    if (out_cqpsk_timing_active) {
+        *out_cqpsk_timing_active = 0;
     }
     return 0;
 }
 
 int
-dsd_rtl_stream_metrics_hook_ted_bias(void) {
-    if (g_rtl_stream_metrics_hooks.ted_bias) {
-        return g_rtl_stream_metrics_hooks.ted_bias();
+dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire(void) {
+    if (g_rtl_stream_metrics_hooks.request_cqpsk_reacquire) {
+        return g_rtl_stream_metrics_hooks.request_cqpsk_reacquire();
+    }
+    return -1;
+}
+
+int
+dsd_rtl_stream_metrics_hook_cqpsk_timing_bias(void) {
+    if (g_rtl_stream_metrics_hooks.cqpsk_timing_bias) {
+        return g_rtl_stream_metrics_hooks.cqpsk_timing_bias();
     }
     return 0;
 }
@@ -150,6 +159,14 @@ double
 dsd_rtl_stream_metrics_hook_snr_gfsk_db(void) {
     if (g_rtl_stream_metrics_hooks.snr_gfsk_db) {
         return g_rtl_stream_metrics_hooks.snr_gfsk_db();
+    }
+    return -100.0;
+}
+
+double
+dsd_rtl_stream_metrics_hook_snr_gfsk_eye_db(void) {
+    if (g_rtl_stream_metrics_hooks.snr_gfsk_eye_db) {
+        return g_rtl_stream_metrics_hooks.snr_gfsk_eye_db();
     }
     return -100.0;
 }

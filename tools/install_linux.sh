@@ -249,27 +249,27 @@ prompt_for_packages() {
 
 case "$PM" in
   apt)
-    BASE_PACKAGES="bash build-essential cmake ninja-build pkg-config git ca-certificates libssl-dev libsndfile1-dev libpulse-dev libncurses-dev libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran libcurl4-openssl-dev"
+    BASE_PACKAGES="bash build-essential cmake ninja-build pkg-config git ca-certificates libssl-dev libsndfile1-dev libpulse-dev libncurses-dev libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran libcurl4-openssl-dev libexpat1-dev"
     CODEC2_PACKAGES="libcodec2-dev"
     RADIO_PACKAGES="librtlsdr-dev libsoapysdr-dev"
     ;;
   dnf)
-    BASE_PACKAGES="bash gcc gcc-c++ make cmake ninja-build pkgconf-pkg-config git ca-certificates openssl-devel libsndfile-devel pulseaudio-libs-devel ncurses-devel libusb1-devel fftw-devel blas-devel lapack-devel gcc-gfortran libcurl-devel"
+    BASE_PACKAGES="bash gcc gcc-c++ make cmake ninja-build pkgconf-pkg-config git ca-certificates openssl-devel libsndfile-devel pulseaudio-libs-devel ncurses-devel libusb1-devel fftw-devel blas-devel lapack-devel gcc-gfortran libcurl-devel expat-devel"
     CODEC2_PACKAGES="codec2-devel"
     RADIO_PACKAGES="rtl-sdr-devel SoapySDR-devel"
     ;;
   zypper)
-    BASE_PACKAGES="bash gcc gcc-c++ make cmake ninja pkgconf git ca-certificates libopenssl-devel libsndfile-devel libpulse-devel ncurses-devel libusb-1_0-devel fftw3-devel blas-devel lapack-devel gcc-fortran libcurl-devel"
+    BASE_PACKAGES="bash gcc gcc-c++ make cmake ninja pkgconf git ca-certificates libopenssl-devel libsndfile-devel libpulse-devel ncurses-devel libusb-1_0-devel fftw3-devel blas-devel lapack-devel gcc-fortran libcurl-devel libexpat-devel"
     CODEC2_PACKAGES="codec2-devel"
     RADIO_PACKAGES="rtl-sdr-devel soapy-sdr-devel"
     ;;
   apk)
-    BASE_PACKAGES="bash build-base cmake ninja pkgconf git ca-certificates openssl-dev libsndfile-dev pulseaudio-dev ncurses-dev libusb-dev fftw-dev blas-dev lapack-dev gfortran curl-dev"
+    BASE_PACKAGES="bash build-base cmake ninja pkgconf git ca-certificates openssl-dev libsndfile-dev pulseaudio-dev ncurses-dev libusb-dev fftw-dev blas-dev lapack-dev gfortran curl-dev expat-dev"
     CODEC2_PACKAGES="codec2-dev"
     RADIO_PACKAGES="librtlsdr-dev soapy-sdr-dev"
     ;;
   pacman)
-    BASE_PACKAGES="bash base-devel cmake ninja pkgconf git ca-certificates openssl libsndfile libpulse ncurses libusb fftw blas lapack gcc-fortran curl"
+    BASE_PACKAGES="bash base-devel cmake ninja pkgconf git ca-certificates openssl libsndfile libpulse ncurses libusb fftw blas lapack gcc-fortran curl expat"
     CODEC2_PACKAGES="codec2"
     RADIO_PACKAGES="rtl-sdr soapysdr"
     ;;
@@ -367,8 +367,28 @@ install_optional_packages() {
     return 2
   fi
 
-  echo "Skipping unavailable optional $label distro packages."
-  return 1
+  # Install whichever packages this distro does provide, so one missing package
+  # does not drop the whole optional group (openSUSE Leap 16.0, for example,
+  # ships rtl-sdr-devel but has no SoapySDR package).
+  available=
+  unavailable=
+  for pkg; do
+    if package_available "$pkg"; then
+      available="$available $pkg"
+    else
+      unavailable="$unavailable $pkg"
+    fi
+  done
+
+  if [ -z "$available" ]; then
+    echo "Skipping unavailable optional $label distro packages."
+    return 1
+  fi
+
+  echo "Skipping unavailable optional $label distro packages:$unavailable"
+  # shellcheck disable=SC2086
+  install_packages $available
+  return 0
 }
 
 jobs_count() {
@@ -541,21 +561,19 @@ configure_build_install_dsd_neo() {
     off)
       cmake_args="$cmake_args -DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=ON"
       ;;
-    auto | required)
+    auto)
       cmake_args="$cmake_args -DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=OFF"
+      ;;
+    required)
+      cmake_args="$cmake_args -DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=OFF -DDSD_REQUIRE_CODEC2=ON"
       ;;
   esac
 
   # shellcheck disable=SC2086
   run cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -G Ninja $cmake_args
 
-  if [ "$CODEC2_MODE" = required ] && [ "$DRY_RUN" -eq 0 ]; then
-    if ! grep -q '^CODEC2_LIBRARY:FILEPATH=.*[^-]$' "$BUILD_DIR/CMakeCache.txt" ||
-      grep -q '^CODEC2_LIBRARY:FILEPATH=.*NOTFOUND' "$BUILD_DIR/CMakeCache.txt"; then
-      echo "Codec2 was required but was not found by CMake." >&2
-      exit 1
-    fi
-  fi
+  # No CMakeCache.txt inspection here: DSD_REQUIRE_CODEC2 makes the configure
+  # above fail on its own, before anything is built.
 
   run cmake --build "$BUILD_DIR" -j "$(jobs_count)"
 

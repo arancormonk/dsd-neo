@@ -1,8 +1,10 @@
 # OpenSSF OSPS Baseline Evidence
 
-This document records DSD-neo's local evidence for OpenSSF OSPS Baseline Level
-1. Repository-hosted settings such as branch protection and MFA must also remain
-enabled in GitHub.
+This document records DSD-neo's repository-local evidence for OpenSSF OSPS
+Baseline Level 1. GitHub-hosted controls such as branch protection, tag
+rulesets, default workflow token permissions, and maintainer MFA/passkeys are
+external settings: they must remain enabled in GitHub, but the local worktree
+can only document the intended control and related workflow/config evidence.
 
 ## Repository and Access Controls
 

@@ -7,10 +7,16 @@
  * P25 channel→frequency mapping tests (FDMA/TDMA + overrides).
  */
 
-#include <stdbool.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -20,19 +26,6 @@
 // Use shim to avoid pulling in external deps like mbelib.
 int p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int chan16, long map_override,
                            long* out_freq);
-
-// Stubs to satisfy linked objects from p25 proto lib
-typedef struct dsd_opts dsd_opts;
-typedef struct dsd_state dsd_state;
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-unpack_byte_array_into_bit_array(const uint8_t* input, uint8_t* output,
-                                 int len) { // NOLINT(misc-use-internal-linkage)
-    (void)input;
-    (void)output;
-    (void)len;
-}
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -76,31 +69,12 @@ nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src,
     (void)slot;
 }
 
-bool
-SetFreq(int sockfd, long int freq) { // NOLINT(misc-use-internal-linkage)
-    (void)sockfd;
-    (void)freq;
-    return false;
-}
-
-bool
-SetModulation(int sockfd, int bw) { // NOLINT(misc-use-internal-linkage)
-    (void)sockfd;
-    (void)bw;
-    return false;
-}
-
-void
-return_to_cc(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-}
-struct RtlSdrContext* g_rtl_ctx = 0; // NOLINT(misc-use-internal-linkage)
-
-int
-rtl_stream_tune(struct RtlSdrContext* ctx, uint32_t center_freq_hz) { // NOLINT(misc-use-internal-linkage)
-    (void)ctx;
-    (void)center_freq_hz;
+static int
+expect_eq_int(const char* tag, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", tag, got, want);
+        return 1;
+    }
     return 0;
 }
 
@@ -108,6 +82,15 @@ static int
 expect_eq_long(const char* tag, long got, long want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got %ld want %ld\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_eq_str(const char* tag, const char* got, const char* want) {
+    if (strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, got, want);
         return 1;
     }
     return 0;
@@ -144,6 +127,241 @@ main(void) {
         long f = 0;
         p25_test_frequency_for(1, /*type*/ 1, /*tdma*/ 0, 851000000 / 5, 100, 0x1005, 762000000, &f);
         rc |= expect_eq_long("map override", f, 762000000);
+    }
+
+    // Public trace and guard behavior.
+    {
+        p25_freq_trace_t trace;
+        DSD_MEMSET(&trace, 0xA5, sizeof(trace));
+        rc |= expect_eq_long("trace missing state", process_channel_to_freq_trace(NULL, NULL, 0x1000, &trace), 0);
+        rc |= expect_eq_str("trace missing state source", trace.source, "invalid-state");
+        rc |= expect_eq_str("trace missing state failure", trace.failure, "missing-state");
+
+        static dsd_state st;
+        DSD_MEMSET(&st, 0, sizeof(st));
+        rc |= expect_eq_long("trace sentinel channel", process_channel_to_freq_trace(NULL, &st, 0xFFFF, &trace), 0);
+        rc |= expect_eq_str("trace sentinel source", trace.source, "invalid-channel");
+        rc |= expect_eq_str("trace sentinel failure", trace.failure, "sentinel-channel");
+
+        rc |= expect_eq_long("trace missing iden", process_channel_to_freq_trace(NULL, &st, 0x1001, &trace), 0);
+        rc |= expect_eq_str("trace missing iden source", trace.source, "missing-iden-fdma");
+        rc |= expect_eq_str("trace missing iden failure", trace.failure, "missing-iden-params");
+
+        dsd_state_set_trunk_chan_freq(&st, 0x1001U, 765432100L);
+        p25_invalidate_chan_map_for_iden(NULL, 1);
+        p25_invalidate_chan_map_for_iden(&st, -1);
+        p25_invalidate_chan_map_for_iden(&st, 16);
+        rc |= expect_eq_long("invalid iden did not clear map", st.trunk_chan_map[0x1001], 765432100L);
+        p25_invalidate_chan_map_for_iden(&st, 1);
+        rc |= expect_eq_long("valid iden clears map", st.trunk_chan_map[0x1001], 0);
+
+        st.p25_chan_tdma_explicit[3] = 2;
+        st.p25_iden_fdma[3].populated = 1;
+        st.p25_iden_tdma[3].populated = 1;
+        st.p25_secondary_cc_count = 1;
+        st.p25_secondary_cc_entries[0].freq = 851012500L;
+        st.p25_secondary_cc_entries[0].channel = 0x3001;
+        st.p25_pending_announcement_count = 1;
+        st.p25_pending_announcements[0].populated = 1;
+        st.p25_pending_announcements[0].channel = 0x3001;
+        p25_reset_iden_tables(NULL);
+        p25_reset_iden_tables(&st);
+        rc |= expect_eq_int("reset explicit tdma", st.p25_chan_tdma_explicit[3], 0);
+        rc |= expect_eq_int("reset fdma populated", st.p25_iden_fdma[3].populated, 0);
+        rc |= expect_eq_int("reset tdma populated", st.p25_iden_tdma[3].populated, 0);
+        rc |= expect_eq_int("reset secondary cc count", st.p25_secondary_cc_count, 0);
+        rc |= expect_eq_long("reset secondary cc freq", st.p25_secondary_cc_entries[0].freq, 0);
+        rc |= expect_eq_int("reset pending count", st.p25_pending_announcement_count, 0);
+        rc |= expect_eq_int("reset pending populated", st.p25_pending_announcements[0].populated, 0);
+
+        st.p2_wacn = 0x11111;
+        st.p2_sysid = 0x222;
+        st.p25_chan_tdma_explicit[4] = 1;
+        st.p25_iden_fdma[4].populated = 1;
+        st.p25_secondary_cc_count = 1;
+        st.p25_secondary_cc_entries[0].freq = 851012500L;
+        st.p25_secondary_cc_entries[0].channel = 0x4001;
+        st.p25_pending_announcement_count = 1;
+        st.p25_pending_announcements[0].populated = 1;
+        st.p25_pending_announcements[0].channel = 0x4001;
+        st.p25_cc_prot_valid = 1;
+        st.p25_cc_prot_algid = 0x84;
+        st.p25_sys_services_valid = 1;
+        st.p25_sys_services_available = 0xABCDEFU;
+        st.p25_sys_services_supported = 0x123456U;
+        st.p25_sys_services_request_priority = 7;
+        st.p25_site_lra_valid = 1;
+        st.p25_site_lra = 0x22;
+        st.p25_site_network_active_valid = 1;
+        st.p25_site_network_active = 1;
+        dsd_state_set_trunk_chan_freq(&st, 0x0000U, 769000000L);
+        dsd_state_set_trunk_chan_freq(&st, 0x4001U, 851012500L);
+        uint64_t identity_map_seq = st.trunk_chan_map_seq;
+        rc |= expect_eq_int("identity update applied", p25_update_system_identity(&st, 0xABCDE, 0x123), 1);
+        rc |= expect_eq_long("identity update wacn", (long)st.p2_wacn, 0xABCDE);
+        rc |= expect_eq_long("identity update sysid", (long)st.p2_sysid, 0x123);
+        rc |= expect_eq_int("identity update clears iden", st.p25_iden_fdma[4].populated, 0);
+        rc |= expect_eq_int("identity update clears pending", st.p25_pending_announcement_count, 0);
+        rc |= expect_eq_int("identity update clears secondary ccs", st.p25_secondary_cc_count, 0);
+        rc |= expect_eq_long("identity update clears chan0 cache", st.trunk_chan_map[0x0000], 0);
+        rc |= expect_eq_long("identity update clears chan cache", st.trunk_chan_map[0x4001], 0);
+        rc |= expect_eq_int("identity update clears chan used", (int)st.trunk_chan_map_used_count, 0);
+        rc |= expect_eq_int("identity update clears cc prot valid", st.p25_cc_prot_valid, 0);
+        rc |= expect_eq_int("identity update clears cc prot algid", st.p25_cc_prot_algid, 0);
+        rc |= expect_eq_int("identity update clears services valid", st.p25_sys_services_valid, 0);
+        rc |= expect_eq_long("identity update clears services available", st.p25_sys_services_available, 0);
+        rc |= expect_eq_long("identity update clears services supported", st.p25_sys_services_supported, 0);
+        rc |= expect_eq_int("identity update clears services priority", st.p25_sys_services_request_priority, 0);
+        rc |= expect_eq_int("identity update clears site lra valid", st.p25_site_lra_valid, 0);
+        rc |= expect_eq_int("identity update clears site lra", st.p25_site_lra, 0);
+        rc |= expect_eq_int("identity update clears network active valid", st.p25_site_network_active_valid, 0);
+        rc |= expect_eq_int("identity update clears network active", st.p25_site_network_active, 0);
+        int identity_map_seq_advanced = st.trunk_chan_map_seq > identity_map_seq ? 1 : 0;
+        rc |= expect_eq_int("identity update advances chan map seq", identity_map_seq_advanced, 1);
+
+        st.p25_cc_prot_valid = 1;
+        st.p25_cc_prot_algid = 0x90;
+        st.p25_sys_services_valid = 1;
+        st.p25_sys_services_available = 0x222222U;
+        st.p25_sys_services_supported = 0x333333U;
+        st.p25_sys_services_request_priority = 5;
+        st.p25_site_lra_valid = 1;
+        st.p25_site_lra = 0x33;
+        st.p25_site_network_active_valid = 1;
+        st.p25_site_network_active = 0;
+        rc |= expect_eq_int("same identity update applied", p25_update_system_identity(&st, 0xABCDE, 0x123), 1);
+        rc |= expect_eq_int("same identity preserves cc prot valid", st.p25_cc_prot_valid, 1);
+        rc |= expect_eq_int("same identity preserves cc prot algid", st.p25_cc_prot_algid, 0x90);
+        rc |= expect_eq_int("same identity preserves services valid", st.p25_sys_services_valid, 1);
+        rc |= expect_eq_long("same identity preserves services available", st.p25_sys_services_available, 0x222222U);
+        rc |= expect_eq_long("same identity preserves services supported", st.p25_sys_services_supported, 0x333333U);
+        rc |= expect_eq_int("same identity preserves services priority", st.p25_sys_services_request_priority, 5);
+        rc |= expect_eq_int("same identity preserves site lra valid", st.p25_site_lra_valid, 1);
+        rc |= expect_eq_int("same identity preserves site lra", st.p25_site_lra, 0x33);
+        rc |= expect_eq_int("same identity preserves network active valid", st.p25_site_network_active_valid, 1);
+        rc |= expect_eq_int("same identity preserves network active", st.p25_site_network_active, 0);
+
+        // A user band plan survives the wipe: after the identity changes to 0x55555/0x666 the
+        // global row (iden 8) and that system's row (iden 10) come back, the row for the old
+        // system (iden 9) does not, and the OTA entry on iden 4 is gone.
+        st.p25_bandplan_row_count = 3;
+        DSD_MEMSET(st.p25_bandplan_rows, 0, sizeof st.p25_bandplan_rows);
+        st.p25_bandplan_rows[0].iden = 8;
+        st.p25_bandplan_rows[0].entry.base_freq = 170201250L;
+        st.p25_bandplan_rows[0].entry.chan_spac = 50;
+        st.p25_bandplan_rows[0].entry.chan_type = 1;
+        st.p25_bandplan_rows[0].entry.populated = 1;
+        st.p25_bandplan_rows[1].iden = 9;
+        st.p25_bandplan_rows[1].entry = st.p25_bandplan_rows[0].entry;
+        st.p25_bandplan_rows[1].entry.wacn = 0xABCDE;
+        st.p25_bandplan_rows[1].entry.sysid = 0x123;
+        st.p25_bandplan_rows[2].iden = 10;
+        st.p25_bandplan_rows[2].is_tdma = 1;
+        st.p25_bandplan_rows[2].entry = st.p25_bandplan_rows[0].entry;
+        st.p25_bandplan_rows[2].entry.chan_type = 3;
+        st.p25_bandplan_rows[2].entry.wacn = 0x55555;
+        st.p25_bandplan_rows[2].entry.sysid = 0x666;
+        st.p25_chan_tdma_explicit[4] = 1;
+        st.p25_iden_fdma[4].populated = 1;
+        rc |= expect_eq_int("bandplan identity change applied", p25_update_system_identity(&st, 0x55555, 0x666), 1);
+        rc |= expect_eq_int("bandplan identity change clears OTA iden", st.p25_iden_fdma[4].populated, 0);
+        rc |= expect_eq_int("bandplan global row re-seeded", st.p25_iden_fdma[8].populated, 1);
+        rc |= expect_eq_int("bandplan global row explicit", st.p25_chan_tdma_explicit[8], 1);
+        rc |= expect_eq_int("bandplan old system row dropped", st.p25_iden_fdma[9].populated, 0);
+        rc |= expect_eq_int("bandplan new system row seeded", st.p25_iden_tdma[10].populated, 1);
+        rc |= expect_eq_int("bandplan new system row trust", st.p25_iden_tdma[10].trust, 1);
+        rc |= expect_eq_int("bandplan new system row explicit", st.p25_chan_tdma_explicit[10], 2);
+        rc |= expect_eq_long("bandplan seeded row resolves", process_channel_to_freq(NULL, &st, 0x8002),
+                             851006250L + 2L * 6250L);
+
+        // First identity learn (from 0/0) resets nothing but still seeds that system's rows.
+        static dsd_state first;
+        DSD_MEMSET(&first, 0, sizeof first);
+        first.p25_bandplan_row_count = 3;
+        DSD_MEMCPY(first.p25_bandplan_rows, st.p25_bandplan_rows, sizeof first.p25_bandplan_rows);
+        rc |= expect_eq_int("bandplan first learn applied", p25_update_system_identity(&first, 0xABCDE, 0x123), 1);
+        rc |= expect_eq_int("bandplan first learn global row", first.p25_iden_fdma[8].populated, 1);
+        rc |= expect_eq_int("bandplan first learn system row", first.p25_iden_fdma[9].populated, 1);
+        rc |= expect_eq_int("bandplan first learn other system row", first.p25_iden_tdma[10].populated, 0);
+        st.p25_bandplan_row_count = 0;
+
+        static dsd_opts opts;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        opts.verbose = 2;
+        st.p25_iden_fdma[1].populated = 1;
+        st.p25_iden_fdma[1].chan_type = 1;
+        st.p25_iden_fdma[1].base_freq = 851000000 / 5;
+        st.p25_iden_fdma[1].chan_spac = 100;
+        rc |= expect_eq_long("verbose computed p25", process_channel_to_freq(&opts, &st, 0x1002),
+                             851000000 + 2 * 100 * 125);
+    }
+
+    // NXDN channel mapping uses the same module and should cover DFA/cache/no-map paths.
+    {
+        static dsd_state ns;
+        static dsd_opts opts;
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+
+        dsd_state_set_trunk_chan_freq(&ns, 10U, 123456789L);
+        rc |= expect_eq_long("nxdn cache verbose", nxdn_channel_to_frequency(&opts, &ns, 10U), 123456789L);
+        rc |= expect_eq_long("nxdn cache quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 123456789L);
+        rc |= expect_eq_long("nxdn quiet null state", nxdn_channel_to_frequency_quiet(NULL, 10U), 0);
+
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        rc |= expect_eq_long("nxdn no rcn verbose", nxdn_channel_to_frequency(&opts, &ns, 10U), 0);
+        rc |= expect_eq_long("nxdn no rcn quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 0);
+
+        ns.nxdn_rcn = 1;
+        ns.nxdn_base_freq = 1;
+        ns.nxdn_step = 2;
+        rc |= expect_eq_long("nxdn dfa base1 step2 verbose", nxdn_channel_to_frequency(&opts, &ns, 10U), 100012500L);
+
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        ns.nxdn_rcn = 1;
+        ns.nxdn_base_freq = 2;
+        ns.nxdn_step = 3;
+        rc |= expect_eq_long("nxdn dfa base2 step3 quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 330031250L);
+
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        ns.nxdn_rcn = 1;
+        ns.nxdn_base_freq = 3;
+        ns.nxdn_step = 2;
+        rc |= expect_eq_long("nxdn dfa base3 quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 400012500L);
+
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        ns.nxdn_rcn = 1;
+        ns.nxdn_base_freq = 4;
+        ns.nxdn_step = 3;
+        rc |= expect_eq_long("nxdn dfa base4 quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 750031250L);
+
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        ns.nxdn_rcn = 1;
+        ns.nxdn_base_freq = 99;
+        ns.nxdn_step = 99;
+        rc |= expect_eq_long("nxdn dfa unknown verbose", nxdn_channel_to_frequency(&opts, &ns, 10U), 0);
+        rc |= expect_eq_long("nxdn dfa unknown quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 0);
+
+        /* trunk_chan_map has DSD_TRUNK_CHAN_MAP_SIZE entries, so the largest uint16_t channel is
+         * one past the end and a miscorrected 16-bit outbound number reaches here unfiltered. The
+         * map lookup must not read past the array, while the DFA arithmetic stays valid for every
+         * channel number. Under ASan the unguarded read aborts; without it, the adjacent
+         * trunk_chan_map_used[] bytes would be returned as a bogus mapped frequency. */
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        ns.nxdn_rcn = 1;
+        ns.nxdn_base_freq = 1;
+        ns.nxdn_step = 2;
+        rc |= expect_eq_long("nxdn out-of-range channel falls through to dfa verbose",
+                             nxdn_channel_to_frequency(&opts, &ns, (uint16_t)DSD_TRUNK_CHAN_MAP_SIZE),
+                             100000000L + (long int)DSD_TRUNK_CHAN_MAP_SIZE * 1250L);
+        rc |= expect_eq_long("nxdn out-of-range channel falls through to dfa quiet",
+                             nxdn_channel_to_frequency_quiet(&ns, (uint16_t)DSD_TRUNK_CHAN_MAP_SIZE),
+                             100000000L + (long int)DSD_TRUNK_CHAN_MAP_SIZE * 1250L);
+
+        /* Without a map entry or DFA, an out-of-range channel is simply unknown. */
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        rc |= expect_eq_long("nxdn out-of-range channel unmapped quiet",
+                             nxdn_channel_to_frequency_quiet(&ns, (uint16_t)DSD_TRUNK_CHAN_MAP_SIZE), 0);
     }
 
     return rc;

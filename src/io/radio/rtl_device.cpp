@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cinttypes>
 #include <cmath>
 #include <dsd-neo/core/constants.h>
@@ -45,6 +46,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string>
+#include <vector>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <sys/socket.h>
 #endif
@@ -77,11 +80,8 @@ enum : unsigned char {
 #include <SoapySDR/Errors.hpp>
 #include <SoapySDR/Formats.h>
 #include <SoapySDR/Types.hpp>
-#include <cctype>
 #include <complex>
 #include <exception>
-#include <string>
-#include <vector>
 
 namespace SoapySDR {
 class Stream;
@@ -96,7 +96,6 @@ class Stream;
 #ifdef USE_RTLSDR
 #include <rtl-sdr.h>
 #else
-#include <dsd-neo/core/parse.h>
 typedef struct rtlsdr_dev rtlsdr_dev_t;
 
 #ifndef RTLSDR_TUNER_E4000
@@ -110,52 +109,16 @@ typedef struct rtlsdr_dev rtlsdr_dev_t;
 #endif
 
 static int
-rtlsdr_stub_status(void) {
-    const char* env = getenv("DSD_NEO_RTLSDR_STUB_STATUS");
-    if (env && *env != '\0') {
-        int parsed = 0;
-        if (dsd_parse_int_strict(env, 10, INT_MIN, INT_MAX, &parsed) == 0) {
-            return parsed;
-        }
-    }
-    return -1;
-}
-
-static uint32_t
-rtlsdr_stub_sample_rate(void) {
-    const char* env = getenv("DSD_NEO_RTLSDR_STUB_SAMPLE_RATE_HZ");
-    if (env && *env != '\0') {
-        uint32_t parsed = 0;
-        if (dsd_parse_uint32_strict(env, 10, UINT32_MAX, &parsed) == 0 && parsed > 0U) {
-            return parsed;
-        }
-    }
-    return 0U;
-}
-
-static int
-rtlsdr_stub_tuner_type(void) {
-    const char* env = getenv("DSD_NEO_RTLSDR_STUB_TUNER_TYPE");
-    if (env && *env != '\0') {
-        int parsed = RTLSDR_TUNER_UNKNOWN;
-        if (dsd_parse_int_strict(env, 10, INT_MIN, INT_MAX, &parsed) == 0) {
-            return parsed;
-        }
-    }
-    return RTLSDR_TUNER_UNKNOWN;
-}
-
-static int
 rtlsdr_open(rtlsdr_dev_t** dev, uint32_t index) {
     (void)dev;
     (void)index;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
 rtlsdr_close(rtlsdr_dev_t* dev) {
     (void)dev;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
@@ -166,114 +129,113 @@ rtlsdr_read_async(rtlsdr_dev_t* dev, void (*cb)(unsigned char*, uint32_t, void*)
     (void)ctx;
     (void)buf_num;
     (void)buf_len;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
 rtlsdr_cancel_async(rtlsdr_dev_t* dev) {
     (void)dev;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
 rtlsdr_set_tuner_gain_mode(rtlsdr_dev_t* dev, int manual) {
     (void)dev;
     (void)manual;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
 rtlsdr_get_tuner_gains(rtlsdr_dev_t* dev, int* gains) {
     (void)dev;
-    int count = rtlsdr_stub_status();
-    if (count <= 0) {
-        return count;
-    }
-    if (gains != nullptr) {
-        gains[0] = 0;
-        return 1;
-    }
-    return count;
+    (void)gains;
+    return -1;
 }
 
 static int
 rtlsdr_set_center_freq(rtlsdr_dev_t* dev, uint32_t freq) {
     (void)dev;
     (void)freq;
-    return rtlsdr_stub_status();
+    return -1;
+}
+
+static uint32_t
+rtlsdr_get_center_freq(rtlsdr_dev_t* dev) {
+    (void)dev;
+    return 0U;
 }
 
 static int
 rtlsdr_set_sample_rate(rtlsdr_dev_t* dev, uint32_t rate) {
     (void)dev;
     (void)rate;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
 rtlsdr_set_direct_sampling(rtlsdr_dev_t* dev, int on) {
     (void)dev;
     (void)on;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
 rtlsdr_get_tuner_type(rtlsdr_dev_t* dev) {
     (void)dev;
-    return rtlsdr_stub_tuner_type();
+    return RTLSDR_TUNER_UNKNOWN;
 }
 
 static int
 rtlsdr_set_tuner_bandwidth(rtlsdr_dev_t* dev, int bw_hz) {
     (void)dev;
     (void)bw_hz;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
 rtlsdr_set_agc_mode(rtlsdr_dev_t* dev, int on) {
     (void)dev;
     (void)on;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
 rtlsdr_set_tuner_gain(rtlsdr_dev_t* dev, int gain) {
     (void)dev;
     (void)gain;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
 rtlsdr_set_freq_correction(rtlsdr_dev_t* dev, int ppm) {
     (void)dev;
     (void)ppm;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
 rtlsdr_reset_buffer(rtlsdr_dev_t* dev) {
     (void)dev;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static uint32_t
 rtlsdr_get_sample_rate(rtlsdr_dev_t* dev) {
     (void)dev;
-    return rtlsdr_stub_sample_rate();
+    return 0U;
 }
 
 static int
 rtlsdr_get_tuner_gain(rtlsdr_dev_t* dev) {
     (void)dev;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
 rtlsdr_set_offset_tuning(rtlsdr_dev_t* dev, int on) {
     (void)dev;
     (void)on;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
@@ -281,14 +243,14 @@ rtlsdr_set_xtal_freq(rtlsdr_dev_t* dev, uint32_t rtl, uint32_t tuner) {
     (void)dev;
     (void)rtl;
     (void)tuner;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
 rtlsdr_set_testmode(rtlsdr_dev_t* dev, int on) {
     (void)dev;
     (void)on;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 static int
@@ -296,7 +258,7 @@ rtlsdr_set_tuner_if_gain(rtlsdr_dev_t* dev, int stage, int gain) {
     (void)dev;
     (void)stage;
     (void)gain;
-    return rtlsdr_stub_status();
+    return -1;
 }
 
 #ifdef USE_RTLSDR_BIAS_TEE
@@ -304,7 +266,7 @@ static int
 rtlsdr_set_bias_tee(rtlsdr_dev_t* dev, int on) {
     (void)dev;
     (void)on;
-    return rtlsdr_stub_status();
+    return -1;
 }
 #endif
 #endif
@@ -340,6 +302,10 @@ rtl_tuner_type_name(int tuner_type) {
 // Internal RTL device structure
 struct rtl_device {
     rtlsdr_dev_t* dev = nullptr;
+    /* Set when this device wrapped the app-supplied USB descriptor, so closing it
+     * knows to hand the descriptor back to its owner. See
+     * rtl_device_preopened_fd_in_use(). */
+    int owns_preopened_fd = 0;
     dsd_thread_t thread{};
     struct input_ring_state* input_ring = nullptr;
     struct dsd_iq_capture_writer* iq_capture_writer = nullptr;
@@ -357,6 +323,11 @@ struct rtl_device {
     uint64_t soapy_last_overflow_log_ns = 0U;
     int soapy_profile_id = 0;
     int soapy_requested_bandwidth_hz = 0;
+    uint32_t soapy_startup_center_freq_hz = 0U;
+    /* Memoized rtl_device_nearest_supported_rate answer; valid while the device configuration
+       (and therefore its rate grid) is unchanged. actual == 0 means empty. */
+    uint32_t soapy_nearest_rate_cache_requested = 0U;
+    uint32_t soapy_nearest_rate_cache_actual = 0U;
     int soapy_named_gain_override = 0;
     int soapy_named_gain_skip_logged = 0;
     char soapy_args_string[1024] = {};
@@ -394,13 +365,13 @@ struct rtl_device {
     int direct_sampling = 0;
     std::atomic<int> mute{0};
     int thread_started = 0;
-    int combine_rotate_enabled = 0;
     std::atomic<uint32_t> capture_retune_count{0U};
     std::atomic<int> capture_reconfigure_hold{0};
     /* Backend selector: 0 = USB (librtlsdr), 1 = rtl_tcp, 2 = SoapySDR */
     int backend = 0;
+    int live_combine_rotate_enabled = 1;
     int replay_fs4_shift_enabled = 0;
-    int replay_combine_rotate_enabled = 0;
+    int replay_historical_cu8_two_pass = 0;
     uint32_t replay_initial_sample_rate_hz = 0U;
     uint32_t replay_initial_freq = 0U;
     uint32_t replay_initial_rate = 0U;
@@ -469,21 +440,6 @@ rtl_tcp_metrics_record_recv_device(struct rtl_device* dev, uint32_t bytes_receiv
     return fired;
 }
 
-static void
-rtl_tcp_metrics_update_ring_snapshot(struct rtl_device* dev) {
-    if (!dev || !dev->input_ring) {
-        return;
-    }
-    size_t used = input_ring_used(dev->input_ring);
-    size_t capacity = dev->input_ring->capacity;
-    uint64_t producer_drops = dev->input_ring->producer_drops.load(std::memory_order_acquire);
-
-    rtl_tcp_metrics_lock(dev);
-    tcp_metrics_update_ring_fill(&dev->tcp_metrics, used, capacity);
-    dev->tcp_metrics.snapshot.producer_drops = producer_drops;
-    rtl_tcp_metrics_unlock(dev);
-}
-
 /**
  * Hint that a pointer is aligned to a compile-time boundary for vectorization.
  *
@@ -527,10 +483,10 @@ rtl_get_u8_transform_policy(const struct rtl_device* s, int* out_fs4_active, int
     int combine_active = 0;
     if (s && s->backend == RTL_BACKEND_IQ_REPLAY) {
         fs4_active = s->replay_fs4_shift_enabled ? 1 : 0;
-        combine_active = s->replay_combine_rotate_enabled ? 1 : 0;
+        combine_active = s->replay_historical_cu8_two_pass ? 0 : 1;
     } else {
         fs4_active = fs4_shift_capture_active(s);
-        combine_active = (s && s->combine_rotate_enabled) ? 1 : 0;
+        combine_active = (s && s->live_combine_rotate_enabled) ? 1 : 0;
     }
     if (out_fs4_active) {
         *out_fs4_active = fs4_active;
@@ -543,18 +499,98 @@ rtl_get_u8_transform_policy(const struct rtl_device* s, int* out_fs4_active, int
     }
 }
 
+/* Persisted IQ metadata and the live transform policy may select the two-pass
+ * CU8 transform. New captures use the combined bias-127.5 transform by default. */
+static inline void
+rtl_cu8_moments_add_sample(dsd_input_level_cu8_moments* moments, unsigned char sample) {
+    if (!moments) {
+        return;
+    }
+    moments->count++;
+    moments->sum += (uint64_t)sample;
+    moments->sum_sq += (uint64_t)sample * (uint64_t)sample;
+    moments->clipped += (sample <= 1U || sample >= 254U) ? 1U : 0U;
+    if (sample < moments->min_sample) {
+        moments->min_sample = sample;
+    }
+    if (sample > moments->max_sample) {
+        moments->max_sample = sample;
+    }
+}
+
+static uint32_t
+rtl_apply_two_pass_cu8_rotation(unsigned char* buf, uint32_t len, uint32_t phase,
+                                dsd_input_level_cu8_moments* moments) {
+    uint32_t cur_phase = phase & 3U;
+    if (!buf || len < 2U) {
+        return cur_phase;
+    }
+    dsd_input_level_cu8_moments local;
+    if (moments) {
+        dsd_input_level_cu8_moments_reset(&local);
+    }
+    const uint32_t pairs = len >> 1;
+    for (uint32_t n = 0; n < pairs; n++) {
+        const uint32_t idx = n << 1;
+        const unsigned char in_i = buf[idx];
+        const unsigned char in_q = buf[idx + 1U];
+        if (moments) {
+            rtl_cu8_moments_add_sample(&local, in_i);
+            rtl_cu8_moments_add_sample(&local, in_q);
+        }
+        switch (cur_phase) {
+            case 0: break;
+            case 1:
+                buf[idx] = (unsigned char)(255U - (uint32_t)in_q);
+                buf[idx + 1U] = in_i;
+                break;
+            case 2:
+                buf[idx] = (unsigned char)(255U - (uint32_t)in_i);
+                buf[idx + 1U] = (unsigned char)(255U - (uint32_t)in_q);
+                break;
+            default:
+                buf[idx] = in_q;
+                buf[idx + 1U] = (unsigned char)(255U - (uint32_t)in_i);
+                break;
+        }
+        cur_phase = (cur_phase + 1U) & 3U;
+    }
+    if (moments && (len & 1U) != 0U) {
+        rtl_cu8_moments_add_sample(&local, buf[len - 1U]);
+    }
+    if (moments) {
+        (void)dsd_input_level_cu8_moments_merge(moments, &local);
+    }
+    return cur_phase;
+}
+
+static void
+rtl_widen_two_pass_cu8(const unsigned char* src, float* dst, uint32_t len) {
+    if (!src || !dst || len == 0U) {
+        return;
+    }
+    const float inv = 1.0f / 127.5f;
+    for (uint32_t i = 0; i < len; i++) {
+        dst[i] = ((float)src[i] - 128.0f) * inv;
+    }
+}
+
 static inline int
 rtl_process_u8_chunk(const struct rtl_device* s, unsigned char* src, float* dst, size_t len, int fs4_shift_active,
-                     int combine_rotate_active, int use_two_pass, int* phase) {
+                     int combine_rotate_active, int use_two_pass, int* phase, dsd_input_level_cu8_moments* moments) {
     if (!s || !src || !dst || len == 0) {
         return phase ? *phase : 0;
     }
     int cur_phase = phase ? (*phase & 3) : 0;
     if (fs4_shift_active && combine_rotate_active) {
-        cur_phase = (int)widen_rotate90_u8_to_f32_bias127_phase(src, dst, (uint32_t)len, (uint32_t)cur_phase);
+        cur_phase = moments ? (int)widen_rotate90_u8_to_f32_bias127_phase_moments(src, dst, (uint32_t)len,
+                                                                                  (uint32_t)cur_phase, moments)
+                            : (int)widen_rotate90_u8_to_f32_bias127_phase(src, dst, (uint32_t)len, (uint32_t)cur_phase);
     } else if (use_two_pass) {
-        cur_phase = (int)rotate90_u8_inplace_phase(src, (uint32_t)len, (uint32_t)cur_phase);
-        widen_u8_to_f32_bias128_scalar(src, dst, (uint32_t)len);
+        cur_phase = (int)rtl_apply_two_pass_cu8_rotation(src, (uint32_t)len, (uint32_t)cur_phase, moments);
+        rtl_widen_two_pass_cu8(src, dst, (uint32_t)len);
+    } else if (moments) {
+        widen_u8_to_f32_bias127_moments(src, dst, (uint32_t)len, moments);
     } else {
         widen_u8_to_f32_bias127(src, dst, (uint32_t)len);
     }
@@ -700,9 +736,14 @@ struct rtl_u8_write_cursor {
     int fs4_shift_active;
     int combine_rotate_active;
     int use_two_pass;
+    dsd_input_level_cu8_moments* moments;
 };
 
 } // namespace
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+static std::atomic<int> g_rtl_test_force_u8_generation_stale{0};
+#endif
 
 static inline void
 rtl_write_u8_reserved_segment(const struct rtl_device* s, const rtl_u8_write_cursor* cursor, float* dst,
@@ -718,7 +759,10 @@ rtl_write_u8_reserved_segment(const struct rtl_device* s, const rtl_u8_write_cur
     size_t from_prefix = 0U;
     if (prefix != 0U) {
         rtl_process_u8_chunk(s, pair, dst, 2U, cursor->fs4_shift_active, cursor->combine_rotate_active,
-                             cursor->use_two_pass, cursor->phase);
+                             cursor->use_two_pass, cursor->phase, NULL);
+        if (cursor->moments) {
+            (void)dsd_input_level_cu8_moments_accumulate(cursor->moments, cursor->src + *cursor->done, prefix);
+        }
         *cursor->done += prefix;
         *cursor->need -= prefix;
         from_prefix = 2U;
@@ -726,7 +770,7 @@ rtl_write_u8_reserved_segment(const struct rtl_device* s, const rtl_u8_write_cur
     if (produced_bytes > from_prefix) {
         size_t body = produced_bytes - from_prefix;
         rtl_process_u8_chunk(s, cursor->src + *cursor->done, dst + from_prefix, body, cursor->fs4_shift_active,
-                             cursor->combine_rotate_active, cursor->use_two_pass, cursor->phase);
+                             cursor->combine_rotate_active, cursor->use_two_pass, cursor->phase, cursor->moments);
         *cursor->done += body;
         *cursor->need -= body;
     }
@@ -757,9 +801,42 @@ struct rtl_u8_finalize_state {
     int count_full_reserve;
     int ring_exhausted;
     int generation_stale;
+    dsd_input_level_cu8_moments* moments;
+};
+
+struct rtl_u8_perf_state {
+    int enabled;
+    uint64_t start_ns;
+    uint64_t drops_before;
 };
 
 } // namespace
+
+static inline void
+rtl_finalize_u8_ring_exhaustion(struct rtl_device* s, const rtl_u8_finalize_state* final_state) {
+    if (final_state->moments && final_state->need > 0U) {
+        (void)dsd_input_level_cu8_moments_accumulate(final_state->moments, final_state->src + final_state->done,
+                                                     final_state->need);
+    }
+    size_t dropped =
+        rtl_drop_u8_bytes_preserve_alignment(final_state->src + final_state->done, final_state->need,
+                                             final_state->carry, final_state->phase, final_state->fs4_shift_active);
+    rtl_accumulate_ring_drops(s->input_ring, dropped);
+    if (final_state->count_full_reserve) {
+        s->reserve_full_events++;
+    }
+}
+
+static inline void
+rtl_finalize_u8_trailing_carry(const rtl_u8_finalize_state* final_state) {
+    if (final_state->need != 1U || final_state->done >= final_state->len || final_state->carry->valid) {
+        return;
+    }
+    if (final_state->moments) {
+        (void)dsd_input_level_cu8_moments_accumulate(final_state->moments, final_state->src + final_state->done, 1U);
+    }
+    rtl_capture_u8_byte_carry_save(final_state->carry, final_state->src[final_state->done]);
+}
 
 static inline void
 rtl_finalize_u8_ring_write(struct rtl_device* s, const rtl_u8_finalize_state* final_state) {
@@ -769,36 +846,54 @@ rtl_finalize_u8_ring_write(struct rtl_device* s, const rtl_u8_finalize_state* fi
 
     if (final_state->generation_stale) {
         rtl_clear_capture_alignment_after_discard(s, final_state->carry);
-    } else if (final_state->ring_exhausted) {
-        size_t dropped =
-            rtl_drop_u8_bytes_preserve_alignment(final_state->src + final_state->done, final_state->need,
-                                                 final_state->carry, final_state->phase, final_state->fs4_shift_active);
-        rtl_accumulate_ring_drops(s->input_ring, dropped);
-        if (final_state->count_full_reserve) {
-            s->reserve_full_events++;
-        }
-    } else if (final_state->need == 1U && final_state->done < final_state->len && !final_state->carry->valid) {
-        rtl_capture_u8_byte_carry_save(final_state->carry, final_state->src[final_state->done]);
+        return;
+    }
+    if (final_state->ring_exhausted) {
+        rtl_finalize_u8_ring_exhaustion(s, final_state);
+    } else {
+        rtl_finalize_u8_trailing_carry(final_state);
     }
 
-    if (!final_state->generation_stale) {
-        s->iq_byte_carry = *final_state->carry;
-        if (final_state->fs4_shift_active) {
-            s->rot_phase = *final_state->phase;
-        }
+    s->iq_byte_carry = *final_state->carry;
+    if (final_state->fs4_shift_active) {
+        s->rot_phase = *final_state->phase;
     }
+}
+
+static inline rtl_u8_perf_state
+rtl_u8_perf_begin(const struct rtl_device* s) {
+    rtl_u8_perf_state perf = {};
+    perf.enabled = rtl_perf_enabled();
+    if (perf.enabled) {
+        perf.start_ns = dsd_time_monotonic_ns();
+        perf.drops_before = s->input_ring->producer_drops.load(std::memory_order_relaxed);
+    }
+    return perf;
+}
+
+static inline void
+rtl_u8_perf_end(const struct rtl_device* s, const rtl_u8_perf_state* perf, size_t done) {
+    if (!perf->enabled) {
+        return;
+    }
+    uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
+    uint64_t drops_delta = (drops_after >= perf->drops_before) ? (drops_after - perf->drops_before) : 0ULL;
+    rtl_perf_record_ingest(dsd_time_monotonic_ns() - perf->start_ns, done, drops_delta);
+}
+
+static inline int
+rtl_u8_write_result(int ring_exhausted, int generation_stale) {
+    return generation_stale ? 2 : ring_exhausted;
 }
 
 static int
 rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int fs4_shift_active, int use_two_pass,
-                     int combine_rotate_active, int count_full_reserve) {
+                     int combine_rotate_active, int count_full_reserve, dsd_input_level_cu8_moments* moments) {
     if (!s || !s->input_ring || !src || len == 0) {
         return 0;
     }
 
-    int perf_on = rtl_perf_enabled();
-    uint64_t perf_t0 = perf_on ? rtl_perf_now_ns() : 0ULL;
-    uint64_t perf_drops_before = perf_on ? s->input_ring->producer_drops.load(std::memory_order_relaxed) : 0ULL;
+    rtl_u8_perf_state perf = rtl_u8_perf_begin(s);
     size_t done = 0;
     size_t need = len;
     int phase = s->rot_phase & 3;
@@ -827,11 +922,19 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
         }
 
         rtl_u8_write_cursor cursor = {
-            src, &done, &need, &carry, &phase, fs4_shift_active, combine_rotate_active, use_two_pass};
+            src, &done, &need, &carry, &phase, fs4_shift_active, combine_rotate_active, use_two_pass, moments};
         rtl_write_u8_reserved_segment(s, &cursor, p1, w1);
         rtl_write_u8_reserved_segment(s, &cursor, p2, w2);
 
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        if (g_rtl_test_force_u8_generation_stale.exchange(0, std::memory_order_acq_rel) != 0) {
+            input_ring_request_discard(s->input_ring);
+        }
+#endif
         if (!input_ring_discard_generation_matches(s->input_ring, discard_generation)) {
+            if (moments && need > 0U) {
+                (void)dsd_input_level_cu8_moments_accumulate(moments, src + done, need);
+            }
             generation_stale =
                 rtl_handle_u8_ring_generation_stale(s, src, done, need, &carry, &phase, fs4_shift_active, produced);
             break;
@@ -840,14 +943,11 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
     }
 
     rtl_u8_finalize_state final_state = {
-        src, len, done, need, &carry, &phase, fs4_shift_active, count_full_reserve, ring_exhausted, generation_stale};
+        src,    len, done, need, &carry, &phase, fs4_shift_active, count_full_reserve, ring_exhausted, generation_stale,
+        moments};
     rtl_finalize_u8_ring_write(s, &final_state);
-    if (perf_on) {
-        uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
-        uint64_t drops_delta = (drops_after >= perf_drops_before) ? (drops_after - perf_drops_before) : 0ULL;
-        rtl_perf_record_ingest(rtl_perf_now_ns() - perf_t0, done, drops_delta);
-    }
-    return generation_stale ? 2 : ring_exhausted;
+    rtl_u8_perf_end(s, &perf, done);
+    return rtl_u8_write_result(ring_exhausted, generation_stale);
 }
 
 static inline void
@@ -864,17 +964,28 @@ rtl_u8_input_level_source(const struct rtl_device* s) {
 }
 
 static inline void
-rtl_publish_cu8_input_level(const struct rtl_device* s, const uint8_t* samples, size_t count) {
+rtl_publish_cu8_input_level_moments(const struct rtl_device* s, const dsd_input_level_cu8_moments* moments) {
     dsd_input_level_snapshot snapshot;
-    if (!s || !samples || count == 0U) {
+    if (!s || !moments || moments->count == 0U) {
         return;
     }
-    if (dsd_input_level_metrics_from_cu8(samples, count, rtl_u8_input_level_source(s), &snapshot) == 0) {
+    if (dsd_input_level_cu8_moments_finalize(moments, rtl_u8_input_level_source(s), &snapshot) == 0) {
         rtl_stream_input_level_publish(&snapshot);
     }
 }
 
 #ifdef USE_SOAPYSDR
+static inline void
+rtl_publish_cf32_input_level_source(const float* samples, size_t count, dsd_input_level_source source) {
+    dsd_input_level_snapshot snapshot;
+    if (!samples || count == 0U) {
+        return;
+    }
+    if (dsd_input_level_metrics_from_cf32(samples, count, source, &snapshot) == 0) {
+        rtl_stream_input_level_publish(&snapshot);
+    }
+}
+
 static inline void
 rtl_publish_cs16_input_level(const int16_t* samples, size_t count) {
     dsd_input_level_snapshot snapshot;
@@ -888,15 +999,45 @@ rtl_publish_cs16_input_level(const int16_t* samples, size_t count) {
 
 static inline void
 rtl_publish_cf32_input_level(const float* samples, size_t count) {
-    dsd_input_level_snapshot snapshot;
-    if (!samples || count == 0U) {
-        return;
-    }
-    if (dsd_input_level_metrics_from_cf32(samples, count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32, &snapshot) == 0) {
-        rtl_stream_input_level_publish(&snapshot);
-    }
+    rtl_publish_cf32_input_level_source(samples, count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32);
 }
 #endif
+
+static inline int
+rtl_prepare_replay_input_level_snapshot(const struct rtl_device* s, const uint8_t* raw_block, size_t raw_bytes,
+                                        float* scratch_f32, size_t scratch_cap_f32, dsd_input_level_snapshot* out) {
+    if (!s || !raw_block || raw_bytes == 0U || !out) {
+        return -1;
+    }
+    if (s->replay_cfg.format == DSD_IQ_FORMAT_CU8) {
+        return dsd_input_level_metrics_from_cu8(raw_block, raw_bytes, rtl_u8_input_level_source(s), out);
+    }
+    if (s->replay_cfg.format == DSD_IQ_FORMAT_CS16) {
+        if ((raw_bytes & 3U) != 0U) {
+            return -1;
+        }
+        size_t sample_count = raw_bytes / sizeof(int16_t);
+        if (sample_count == 0U) {
+            return -1;
+        }
+        std::vector<int16_t> samples(sample_count);
+        DSD_MEMCPY(samples.data(), raw_block, sample_count * sizeof(int16_t));
+        return dsd_input_level_metrics_from_cs16(samples.data(), sample_count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, out);
+    }
+    if (s->replay_cfg.format == DSD_IQ_FORMAT_CF32) {
+        if (!scratch_f32 || (raw_bytes & 7U) != 0U
+            || strcmp(s->replay_cfg.capture_stage, "post_driver_cf32_pre_ring") != 0) {
+            return -1;
+        }
+        size_t float_count = raw_bytes / sizeof(float);
+        if (float_count == 0U || float_count > scratch_cap_f32) {
+            return -1;
+        }
+        DSD_MEMCPY(scratch_f32, raw_block, float_count * sizeof(float));
+        return dsd_input_level_metrics_from_cf32(scratch_f32, float_count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32, out);
+    }
+    return -1;
+}
 
 static inline void
 rtl_copy_event_reason(char* dst, size_t dst_size, const char* reason) {
@@ -1048,11 +1189,6 @@ rtl_apply_j4_rotation(float in_i, float in_q, int phase, float* out_i, float* ou
 }
 
 #ifdef USE_SOAPYSDR
-static inline void
-apply_j4_rotation(float in_i, float in_q, int phase, float* out_i, float* out_q) {
-    rtl_apply_j4_rotation(in_i, in_q, phase, out_i, out_q);
-}
-
 static inline size_t
 soapy_reserve_even_ring_segments(struct input_ring_state* ring, size_t need, float** p1, size_t* w1, float** p2,
                                  size_t* w2) {
@@ -1099,7 +1235,7 @@ soapy_copy_cf32_samples(float* dst, const std::complex<float>* src, size_t elem_
         float i_in = src[i].real();
         float q_in = src[i].imag();
         if (apply_rot && phase) {
-            apply_j4_rotation(i_in, q_in, *phase, &dst[(i * 2U) + 0U], &dst[(i * 2U) + 1U]);
+            rtl_apply_j4_rotation(i_in, q_in, *phase, &dst[(i * 2U) + 0U], &dst[(i * 2U) + 1U]);
             *phase = (*phase + 1) & 3;
         } else {
             dst[(i * 2U) + 0U] = i_in;
@@ -1118,7 +1254,7 @@ soapy_copy_cs16_samples(float* dst, const int16_t* src_iq, size_t elem_count, fl
         float i_in = (float)src_iq[sample_idx + 0U] * scale;
         float q_in = (float)src_iq[sample_idx + 1U] * scale;
         if (apply_rot && phase) {
-            apply_j4_rotation(i_in, q_in, *phase, &dst[(i * 2U) + 0U], &dst[(i * 2U) + 1U]);
+            rtl_apply_j4_rotation(i_in, q_in, *phase, &dst[(i * 2U) + 0U], &dst[(i * 2U) + 1U]);
             *phase = (*phase + 1) & 3;
         } else {
             dst[(i * 2U) + 0U] = i_in;
@@ -1133,7 +1269,7 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const std::complex<float>* src, s
         return 0;
     }
     int perf_on = rtl_perf_enabled();
-    uint64_t perf_t0 = perf_on ? rtl_perf_now_ns() : 0ULL;
+    uint64_t perf_t0 = perf_on ? dsd_time_monotonic_ns() : 0ULL;
     uint64_t perf_drops_before = perf_on ? s->input_ring->producer_drops.load(std::memory_order_relaxed) : 0ULL;
     size_t need = num_elems * 2;
     size_t done = 0;
@@ -1164,7 +1300,7 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const std::complex<float>* src, s
     if (perf_on) {
         uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
         uint64_t drops_delta = (drops_after >= perf_drops_before) ? (drops_after - perf_drops_before) : 0ULL;
-        rtl_perf_record_ingest(rtl_perf_now_ns() - perf_t0, done, drops_delta);
+        rtl_perf_record_ingest(dsd_time_monotonic_ns() - perf_t0, done, drops_delta);
     }
     return done / 2;
 }
@@ -1175,7 +1311,7 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
         return 0;
     }
     int perf_on = rtl_perf_enabled();
-    uint64_t perf_t0 = perf_on ? rtl_perf_now_ns() : 0ULL;
+    uint64_t perf_t0 = perf_on ? dsd_time_monotonic_ns() : 0ULL;
     uint64_t perf_drops_before = perf_on ? s->input_ring->producer_drops.load(std::memory_order_relaxed) : 0ULL;
     const float scale = 1.0f / 32768.0f;
     size_t need = num_elems * 2;
@@ -1207,7 +1343,7 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
     if (perf_on) {
         uint64_t drops_after = s->input_ring->producer_drops.load(std::memory_order_relaxed);
         uint64_t drops_delta = (drops_after >= perf_drops_before) ? (drops_after - perf_drops_before) : 0ULL;
-        rtl_perf_record_ingest(rtl_perf_now_ns() - perf_t0, done, drops_delta);
+        rtl_perf_record_ingest(dsd_time_monotonic_ns() - perf_t0, done, drops_delta);
     }
     return done / 2;
 }
@@ -1218,7 +1354,7 @@ replay_forced_stop_requested(const struct rtl_device* s) {
     if (!s) {
         return 1;
     }
-    if (!s->run.load(std::memory_order_acquire) || exitflag) {
+    if (!s->run.load(std::memory_order_acquire) || dsd_exitflag_load()) {
         return 1;
     }
     if (s->replay_has_eof_state && s->replay_eof.replay_forced_stop
@@ -1403,7 +1539,7 @@ static int replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_writ
                                     uint32_t* event_cursor);
 static int replay_convert_block_to_f32(const struct rtl_device* s, const uint8_t* raw_block, size_t out_bytes,
                                        float* f32_block, size_t f32_cap, int* phase, int* have_carry,
-                                       uint8_t* carry_byte);
+                                       uint8_t* carry_byte, dsd_input_level_cu8_moments* moments);
 
 static inline int
 replay_submit_chunk_inputs_valid(const struct rtl_device* s, const float* src, const size_t* out_grant_f32,
@@ -1564,10 +1700,27 @@ replay_thread_process_block(struct rtl_device* s, uint8_t* raw_block, size_t raw
         return 2;
     }
 
+    dsd_input_level_snapshot input_level;
+    DSD_MEMSET(&input_level, 0, sizeof(input_level));
+    dsd_input_level_cu8_moments moments;
+    dsd_input_level_cu8_moments_reset(&moments);
+    const int is_cu8 = s->replay_cfg.format == DSD_IQ_FORMAT_CU8;
+    int have_input_level =
+        !is_cu8
+        && (rtl_prepare_replay_input_level_snapshot(s, raw_block, out_bytes, f32_block, raw_block_bytes, &input_level)
+            == 0);
+
     int produced = replay_convert_block_to_f32(s, raw_block, out_bytes, f32_block, raw_block_bytes, io->phase,
-                                               io->have_carry, io->carry_byte);
+                                               io->have_carry, io->carry_byte, is_cu8 ? &moments : NULL);
     if (produced <= 0) {
         return 2;
+    }
+    if (is_cu8) {
+        have_input_level =
+            dsd_input_level_cu8_moments_finalize(&moments, rtl_u8_input_level_source(s), &input_level) == 0;
+    }
+    if (have_input_level) {
+        rtl_stream_input_level_publish(&input_level);
     }
 
     if (replay_enqueue_f32_no_drop(s, f32_block, (size_t)produced, io->complex_written, *io->start_ns, io->realtime)
@@ -1622,7 +1775,8 @@ replay_enqueue_f32_no_drop(struct rtl_device* s, const float* src, size_t float_
 
 static int
 replay_convert_cu8_to_f32(const struct rtl_device* s, const uint8_t* in, size_t in_bytes, float* out_f32,
-                          size_t out_cap_f32, int* io_phase, int* io_have_carry, uint8_t* io_carry_byte) {
+                          size_t out_cap_f32, int* io_phase, int* io_have_carry, uint8_t* io_carry_byte,
+                          dsd_input_level_cu8_moments* moments) {
     if (!s || !in || !out_f32 || !io_phase || !io_have_carry || !io_carry_byte) {
         return -1;
     }
@@ -1640,7 +1794,10 @@ replay_convert_cu8_to_f32(const struct rtl_device* s, const uint8_t* in, size_t 
         uint8_t pair[2];
         pair[0] = *io_carry_byte;
         pair[1] = in[0];
-        rtl_process_u8_chunk(s, pair, out_f32 + out_pos, 2U, fs4_active, combine_active, use_two_pass, io_phase);
+        rtl_process_u8_chunk(s, pair, out_f32 + out_pos, 2U, fs4_active, combine_active, use_two_pass, io_phase, NULL);
+        if (moments) {
+            (void)dsd_input_level_cu8_moments_accumulate(moments, in, 1U);
+        }
         out_pos += 2U;
         consumed = 1U;
         *io_have_carry = 0;
@@ -1653,12 +1810,15 @@ replay_convert_cu8_to_f32(const struct rtl_device* s, const uint8_t* in, size_t 
             return -1;
         }
         rtl_process_u8_chunk(s, const_cast<unsigned char*>(in + consumed), out_f32 + out_pos, aligned, fs4_active,
-                             combine_active, use_two_pass, io_phase);
+                             combine_active, use_two_pass, io_phase, moments);
         out_pos += aligned;
         consumed += aligned;
     }
 
     if (consumed < in_bytes) {
+        if (moments) {
+            (void)dsd_input_level_cu8_moments_accumulate(moments, in + consumed, 1U);
+        }
         *io_carry_byte = in[consumed];
         *io_have_carry = 1;
     }
@@ -1826,6 +1986,41 @@ rtl_device_test_replay_dispatch_reset_event_state(int* phase, int* have_carry, u
     uint64_t complex_written = 0;
     replay_dispatch_event(&dev, &event, phase, have_carry, carry_byte, &complex_written);
 }
+
+extern "C" int
+rtl_device_test_replay_input_level_snapshot(int format, int backend, const char* capture_stage, size_t raw_bytes,
+                                            size_t scratch_cap_f32, int* out_rc, int* out_source, uint64_t* out_count) {
+    if (!out_rc || !out_source || !out_count || raw_bytes > 32U || scratch_cap_f32 > 8U) {
+        return -1;
+    }
+
+    rtl_device dev{};
+    dev.backend = backend;
+    dev.replay_cfg.format = (dsd_iq_sample_format)format;
+    DSD_SNPRINTF(dev.replay_cfg.capture_stage, sizeof(dev.replay_cfg.capture_stage), "%s",
+                 capture_stage ? capture_stage : "");
+
+    uint8_t raw[32] = {};
+    for (size_t i = 0U; i < sizeof(raw); i++) {
+        raw[i] = (i & 1U) ? 136U : 119U;
+    }
+    if (format == DSD_IQ_FORMAT_CF32) {
+        const float samples[] = {0.25f, -0.25f, 0.50f, -0.50f};
+        size_t copy_bytes = raw_bytes < sizeof(samples) ? raw_bytes : sizeof(samples);
+        DSD_MEMCPY(raw, samples, copy_bytes);
+    } else if (format == DSD_IQ_FORMAT_CS16) {
+        const int16_t samples[] = {8192, -8192, 16384, -16384};
+        size_t copy_bytes = raw_bytes < sizeof(samples) ? raw_bytes : sizeof(samples);
+        DSD_MEMCPY(raw, samples, copy_bytes);
+    }
+
+    float scratch[8] = {};
+    dsd_input_level_snapshot snapshot{};
+    *out_rc = rtl_prepare_replay_input_level_snapshot(&dev, raw, raw_bytes, scratch, scratch_cap_f32, &snapshot);
+    *out_source = (*out_rc == 0) ? (int)snapshot.source : -1;
+    *out_count = (*out_rc == 0) ? snapshot.sample_count : 0U;
+    return 0;
+}
 #endif
 
 static void
@@ -1977,6 +2172,14 @@ replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_written, uint64
         replay_handle_eof_sequence(s);
         return 0;
     }
+    /* A rewind is a replay timeline boundary just like RESET. Do not restore
+     * the initial capture state while the demodulator still owns samples from
+     * the completed pass; the reconfigure callback would otherwise purge that
+     * work and a short fast-mode capture could loop without ever publishing
+     * output. */
+    if (!replay_wait_for_event_boundary_drain(s)) {
+        return 0;
+    }
     if (dsd_iq_replay_rewind(s->replay_src) != DSD_IQ_OK) {
         return 0;
     }
@@ -1993,18 +2196,84 @@ replay_handle_empty_read(struct rtl_device* s, uint64_t* complex_written, uint64
 
 static int
 replay_convert_block_to_f32(const struct rtl_device* s, const uint8_t* raw_block, size_t out_bytes, float* f32_block,
-                            size_t f32_cap, int* phase, int* have_carry, uint8_t* carry_byte) {
+                            size_t f32_cap, int* phase, int* have_carry, uint8_t* carry_byte,
+                            dsd_input_level_cu8_moments* moments) {
     if (!s) {
         return -1;
     }
     if (s->replay_cfg.format == DSD_IQ_FORMAT_CU8) {
-        return replay_convert_cu8_to_f32(s, raw_block, out_bytes, f32_block, f32_cap, phase, have_carry, carry_byte);
+        return replay_convert_cu8_to_f32(s, raw_block, out_bytes, f32_block, f32_cap, phase, have_carry, carry_byte,
+                                         moments);
     }
     if (s->replay_cfg.format == DSD_IQ_FORMAT_CF32) {
         return replay_convert_cf32_to_f32(s, raw_block, out_bytes, f32_block, f32_cap, phase);
     }
     return -1;
 }
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+// Internal test hooks use a pointer-shaped C ABI; the request layout is mirrored by the test TU.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+struct rtl_device_test_replay_convert_block_request {
+    int format;
+    const char* capture_stage;
+    int fs4_shift_enabled;
+    int historical_cu8_two_pass;
+    const uint8_t* raw_block;
+    size_t raw_bytes;
+    size_t out_cap_f32;
+    int start_phase;
+    int start_have_carry;
+    uint8_t start_carry_byte;
+};
+
+static int
+rtl_device_test_replay_convert_block_request_valid(const rtl_device_test_replay_convert_block_request* request,
+                                                   const float* out_f32, size_t out_f32_count, const int* out_phase,
+                                                   const int* out_have_carry, const uint8_t* out_carry_byte) {
+    return request && request->raw_block && out_f32 && out_phase && out_have_carry && out_carry_byte
+           && request->raw_bytes <= 32U && request->out_cap_f32 <= out_f32_count;
+}
+
+static size_t
+rtl_device_test_replay_convert_copy_count(int rc, size_t out_f32_count, size_t scratch_count) {
+    size_t copy_count = (rc > 0 && (size_t)rc < out_f32_count) ? (size_t)rc : out_f32_count;
+    return (copy_count > scratch_count) ? scratch_count : copy_count;
+}
+
+extern "C" int
+rtl_device_test_replay_convert_block(const rtl_device_test_replay_convert_block_request* request, float* out_f32,
+                                     size_t out_f32_count, int* out_phase, int* out_have_carry,
+                                     uint8_t* out_carry_byte) {
+    if (!rtl_device_test_replay_convert_block_request_valid(request, out_f32, out_f32_count, out_phase, out_have_carry,
+                                                            out_carry_byte)) {
+        return -1;
+    }
+
+    rtl_device dev{};
+    dev.backend = RTL_BACKEND_IQ_REPLAY;
+    dev.replay_cfg.format = (dsd_iq_sample_format)request->format;
+    dev.replay_cfg.fs4_shift_enabled = request->fs4_shift_enabled ? 1 : 0;
+    dev.replay_fs4_shift_enabled = request->fs4_shift_enabled ? 1 : 0;
+    dev.replay_historical_cu8_two_pass = request->historical_cu8_two_pass ? 1 : 0;
+    DSD_SNPRINTF(dev.replay_cfg.capture_stage, sizeof(dev.replay_cfg.capture_stage), "%s",
+                 request->capture_stage ? request->capture_stage : "");
+
+    float scratch[8] = {};
+    int phase = request->start_phase;
+    int have_carry = request->start_have_carry;
+    uint8_t carry_byte = request->start_carry_byte;
+    int rc = replay_convert_block_to_f32(&dev, request->raw_block, request->raw_bytes, scratch, request->out_cap_f32,
+                                         &phase, &have_carry, &carry_byte, NULL);
+    size_t copy_count =
+        rtl_device_test_replay_convert_copy_count(rc, out_f32_count, sizeof(scratch) / sizeof(scratch[0]));
+    DSD_MEMCPY(out_f32, scratch, copy_count * sizeof(float));
+    *out_phase = phase;
+    *out_have_carry = have_carry;
+    *out_carry_byte = carry_byte;
+    return rc;
+}
+#endif
 
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
@@ -2060,11 +2329,9 @@ static DSD_THREAD_RETURN_TYPE
 
 /**
  * @brief RTL-SDR asynchronous USB callback.
- * Converts incoming u8 I/Q to normalized float and enqueues into the input ring. If
- * `offset_tuning` is off and `DSD_NEO_COMBINE_ROT` is enabled (default), a
- * combined rotate+widen implementation is used. Otherwise it falls back to
- * a legacy two-pass byte-rotation + bias128 widen path or a simple widen
- * subtracting 127. On overflow, drops oldest ring data to avoid stalls.
+ * Converts incoming u8 I/Q to normalized float and enqueues into the input ring.
+ * When offset tuning is off, rotation and widening use the combined bias-127.5
+ * transform. On overflow, drops oldest ring data to avoid stalls.
  *
  * @param buf USB I/Q byte buffer.
  * @param len Buffer length in bytes (I/Q interleaved).
@@ -2083,7 +2350,7 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
         }
     }
 
-    if (exitflag) {
+    if (dsd_exitflag_load()) {
         return;
     }
     if (!ctx) {
@@ -2093,12 +2360,9 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
     int combine_rotate_active = 0;
     int use_two_pass = 0;
     rtl_get_u8_transform_policy(s, &fs4_shift_active, &combine_rotate_active, &use_two_pass);
-    /* Handle muting: skip (discard) muted samples entirely instead of zero-filling.
-     *
-     * Previously we set muted samples to 127 (midpoint), which after bias subtraction
-     * becomes 0.0. These zero-magnitude samples corrupt the Costas loop and TED when
-     * they're processed after the retune gate opens. By discarding them entirely,
-     * the demod thread never sees transient samples.
+    /* Handle muting by discarding muted samples entirely. Feeding midpoint
+     * bytes through bias subtraction would create zero-magnitude samples that
+     * corrupt the Costas loop and TED after the retune gate opens.
      *
      * Advance buf pointer and reduce len to skip the muted portion.
      *
@@ -2140,9 +2404,11 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
         return;
     }
     rtl_submit_capture_bytes(s, buf, len);
-    rtl_publish_cu8_input_level(s, buf, len);
+    dsd_input_level_cu8_moments moments;
+    dsd_input_level_cu8_moments_reset(&moments);
     /* Convert incoming u8 I/Q and write directly into input ring without extra copy. */
-    rtl_write_u8_to_ring(s, buf, len, fs4_shift_active, use_two_pass, combine_rotate_active, 0);
+    rtl_write_u8_to_ring(s, buf, len, fs4_shift_active, use_two_pass, combine_rotate_active, 0, &moments);
+    rtl_publish_cu8_input_level_moments(s, &moments);
 }
 
 /**
@@ -2167,7 +2433,7 @@ static DSD_THREAD_RETURN_TYPE
             stderr,
             "ERROR: libusb exception in rtlsdr_read_async (MSVC/Windows). "
             "Check that the bundled libusb/librtlsdr DLLs match the build and the device driver is installed.\n");
-        exitflag = 1;
+        dsd_exitflag_store(1);
     }
 #else
     rtlsdr_read_async(s->dev, rtlsdr_callback, s, 16, s->buf_len);
@@ -2184,20 +2450,20 @@ rtl_device_copy_cstr(char* dst, size_t dst_size, const char* src) {
     dst[dst_size - 1] = '\0';
 }
 
-static bool
-rtl_soapy_config_has_field(size_t config_size, size_t field_offset, size_t field_size) {
-    return field_offset <= config_size && field_size <= config_size - field_offset;
+#if defined(USE_SOAPYSDR) || defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+static std::string
+soapy_trim_copy(const std::string& value) {
+    size_t start = 0;
+    while (start < value.size() && std::isspace((unsigned char)value[start])) {
+        start++;
+    }
+    size_t end = value.size();
+    while (end > start && std::isspace((unsigned char)value[end - 1])) {
+        end--;
+    }
+    return value.substr(start, end - start);
 }
-
-static bool
-rtl_soapy_config_field_available(const struct rtl_soapy_config* cfg, size_t config_size, size_t field_offset,
-                                 size_t field_size) {
-    return cfg && rtl_soapy_config_has_field(config_size, field_offset, field_size);
-}
-
-#define RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, field)                                                      \
-    rtl_soapy_config_field_available((cfg), (config_size), offsetof(struct rtl_soapy_config, field),                   \
-                                     sizeof(((struct rtl_soapy_config*)0)->field))
+#endif
 
 #ifdef USE_SOAPYSDR
 template <typename Fn>
@@ -2358,32 +2624,36 @@ soapy_log_capability_summary_locked(struct rtl_device* dev) {
         dsdneo::soapy_join_names(antennas, 80).c_str(), dsdneo::soapy_join_names(clocks, 80).c_str());
 }
 
-static std::string
-soapy_trim_copy(const std::string& value) {
-    size_t start = 0;
-    while (start < value.size() && isspace((unsigned char)value[start])) {
-        start++;
-    }
-    size_t end = value.size();
-    while (end > start && isspace((unsigned char)value[end - 1])) {
-        end--;
-    }
-    return value.substr(start, end - start);
-}
-
 static int
 soapy_apply_antenna_locked(struct rtl_device* dev) {
-    if (!dev || !dev->soapy_dev || dev->soapy_requested_antenna[0] == '\0') {
+    if (!dev || !dev->soapy_dev) {
+        return 0;
+    }
+    const dsdneo::SoapyProfile& profile = dsdneo::soapy_profile_by_id((dsdneo::SoapyProfileId)dev->soapy_profile_id);
+    const dsdneo::SoapyAntennaChoice choice = dsdneo::soapy_choose_antenna(
+        profile.default_antenna, dev->soapy_requested_antenna, (double)dev->soapy_startup_center_freq_hz);
+    if (choice.name.empty()) {
         return 0;
     }
     std::vector<std::string> antennas = dev->soapy_dev->listAntennas(SOAPY_SDR_RX, 0);
-    if (!dsdneo::soapy_name_list_contains(antennas, dev->soapy_requested_antenna)) {
-        DSD_FPRINTF(stderr, "SoapySDR: antenna '%s' is unavailable; choices=[%s].\n", dev->soapy_requested_antenna,
+    if (!dsdneo::soapy_name_list_contains(antennas, choice.name)) {
+        if (choice.auto_selected) {
+            /* The profile guessed; leave the driver default rather than failing the open. */
+            DSD_FPRINTF(stderr, "SoapySDR: %s profile antenna '%s' is unavailable; leaving driver default.\n",
+                        profile.name, choice.name.c_str());
+            return 0;
+        }
+        DSD_FPRINTF(stderr, "SoapySDR: antenna '%s' is unavailable; choices=[%s].\n", choice.name.c_str(),
                     dsdneo::soapy_join_names(antennas, 160).c_str());
         return DSD_ERR_NOT_SUPPORTED;
     }
-    dev->soapy_dev->setAntenna(SOAPY_SDR_RX, 0, dev->soapy_requested_antenna);
-    DSD_FPRINTF(stderr, "SoapySDR: selected antenna '%s'.\n", dev->soapy_requested_antenna);
+    dev->soapy_dev->setAntenna(SOAPY_SDR_RX, 0, choice.name);
+    if (choice.auto_selected) {
+        DSD_FPRINTF(stderr, "SoapySDR: selected antenna '%s' for %.4f MHz (%s profile default).\n", choice.name.c_str(),
+                    (double)dev->soapy_startup_center_freq_hz / 1e6, profile.name);
+    } else {
+        DSD_FPRINTF(stderr, "SoapySDR: selected antenna '%s'.\n", choice.name.c_str());
+    }
     return 0;
 }
 
@@ -2953,7 +3223,7 @@ static DSD_THREAD_RETURN_TYPE
     }
 
     int fatal = 0;
-    while (s->run.load() && exitflag == 0) {
+    while (s->run.load() && dsd_exitflag_load() == 0) {
         void* buffs[1] = {NULL};
         if (soapy_prepare_read_buffer(s, &cf32_buf, &cs16_buf, buffs) != 0) {
             fatal = 1;
@@ -3135,6 +3405,35 @@ static inline size_t
 rtl_tcp_round_up_page(size_t n) {
     return (n + 4095U) & ~((size_t)4095U);
 }
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+extern "C" int
+rtl_device_test_misc_string_helpers(char* tuner_labels, size_t tuner_labels_size, char* reason_small,
+                                    size_t reason_small_size, char* reason_null, size_t reason_null_size, char* trimmed,
+                                    size_t trimmed_size, size_t* rounded_pages, size_t rounded_pages_len) {
+    if (!tuner_labels || tuner_labels_size == 0U || !reason_small || reason_small_size == 0U || !reason_null
+        || reason_null_size == 0U || !trimmed || trimmed_size == 0U || !rounded_pages || rounded_pages_len < 4U) {
+        return -1;
+    }
+
+    DSD_SNPRINTF(tuner_labels, tuner_labels_size, "%s|%s|%s|%s|%s|%s|%s", rtl_tuner_type_name(RTLSDR_TUNER_E4000),
+                 rtl_tuner_type_name(RTLSDR_TUNER_FC0012), rtl_tuner_type_name(RTLSDR_TUNER_FC0013),
+                 rtl_tuner_type_name(RTLSDR_TUNER_FC2580), rtl_tuner_type_name(RTLSDR_TUNER_R820T),
+                 rtl_tuner_type_name(RTLSDR_TUNER_R828D), rtl_tuner_type_name(-1));
+
+    rtl_copy_event_reason(reason_small, reason_small_size, "capture-reconfigure");
+    rtl_copy_event_reason(reason_null, reason_null_size, NULL);
+
+    std::string t = soapy_trim_copy(" \t gain = 12.5 \n");
+    DSD_SNPRINTF(trimmed, trimmed_size, "%s", t.c_str());
+
+    rounded_pages[0] = rtl_tcp_round_up_page(0U);
+    rounded_pages[1] = rtl_tcp_round_up_page(1U);
+    rounded_pages[2] = rtl_tcp_round_up_page(4096U);
+    rounded_pages[3] = rtl_tcp_round_up_page(4097U);
+    return 0;
+}
+#endif
 
 static size_t
 rtl_tcp_default_bufsz(const struct rtl_device* s) {
@@ -3358,7 +3657,7 @@ rtl_tcp_reconnect_after_stall(struct rtl_device* s, struct rtl_tcp_loop_state* s
     rtl_tcp_close_socket_if_open(s);
 
     int attempt = 0;
-    while (s->run.load() && exitflag == 0) {
+    while (s->run.load() && dsd_exitflag_load() == 0) {
         attempt++;
         if (rtl_tcp_try_reconnect_once(s, &snap, st, attempt, out_r)) {
             return 1;
@@ -3385,7 +3684,7 @@ rtl_tcp_handle_recv_failure(struct rtl_device* s, struct rtl_tcp_loop_state* st,
     if (!s || !st || !out_r) {
         return 0;
     }
-    if (!s->run.load() || exitflag) {
+    if (!s->run.load() || dsd_exitflag_load()) {
         return 0;
     }
     if (rtl_tcp_recv_is_timeout(r)) {
@@ -3499,9 +3798,30 @@ rtl_tcp_ensure_pending_capacity(struct rtl_device* s, size_t needed) {
     return 1;
 }
 
+static void
+rtl_tcp_copy_cu8_with_moments(unsigned char* dst, const unsigned char* src, size_t len,
+                              dsd_input_level_cu8_moments* moments) {
+    if (!dst || !src || len == 0U) {
+        return;
+    }
+    if (!moments) {
+        DSD_MEMCPY(dst, src, len);
+        return;
+    }
+
+    dsd_input_level_cu8_moments local;
+    dsd_input_level_cu8_moments_reset(&local);
+    for (size_t i = 0U; i < len; i++) {
+        const unsigned char sample = src[i];
+        dst[i] = sample;
+        rtl_cu8_moments_add_sample(&local, sample);
+    }
+    (void)dsd_input_level_cu8_moments_merge(moments, &local);
+}
+
 static size_t
 rtl_tcp_fill_pending_slice(struct rtl_device* s, const unsigned char* u8, size_t len, size_t slice,
-                           const struct rtl_u8_transform_policy_state* policy) {
+                           const struct rtl_u8_transform_policy_state* policy, dsd_input_level_cu8_moments* moments) {
     if (!s || !u8 || !policy || s->tcp_pending_len == 0U) {
         return 0U;
     }
@@ -3509,15 +3829,18 @@ rtl_tcp_fill_pending_slice(struct rtl_device* s, const unsigned char* u8, size_t
     size_t missing = (slice > s->tcp_pending_len) ? (slice - s->tcp_pending_len) : 0U;
     size_t take = (missing < len) ? missing : len;
     if (take > 0U && rtl_tcp_ensure_pending_capacity(s, slice) && s->tcp_pending_cap >= (s->tcp_pending_len + take)) {
-        DSD_MEMCPY(s->tcp_pending + s->tcp_pending_len, u8, take);
+        rtl_tcp_copy_cu8_with_moments(s->tcp_pending + s->tcp_pending_len, u8, take, moments);
         s->tcp_pending_len += take;
         consumed += take;
     }
     if (s->tcp_pending_len == slice) {
         int ring_status = rtl_write_u8_to_ring(s, s->tcp_pending, slice, policy->fs4_shift_active, policy->use_two_pass,
-                                               policy->combine_rotate_active, 1);
+                                               policy->combine_rotate_active, 1, NULL);
         s->tcp_pending_len = 0U;
         if (ring_status == 2) {
+            if (moments && take < len) {
+                (void)dsd_input_level_cu8_moments_accumulate(moments, u8 + take, len - take);
+            }
             return len;
         }
     }
@@ -3526,15 +3849,19 @@ rtl_tcp_fill_pending_slice(struct rtl_device* s, const unsigned char* u8, size_t
 
 static void
 rtl_tcp_process_full_slices(struct rtl_device* s, unsigned char* u8, size_t len, size_t slice,
-                            const struct rtl_u8_transform_policy_state* policy, size_t* io_consumed) {
+                            const struct rtl_u8_transform_policy_state* policy, size_t* io_consumed,
+                            dsd_input_level_cu8_moments* moments) {
     if (!s || !u8 || !policy || !io_consumed || slice == 0U) {
         return;
     }
     while ((len - *io_consumed) >= slice) {
         int ring_status = rtl_write_u8_to_ring(s, u8 + *io_consumed, slice, policy->fs4_shift_active,
-                                               policy->use_two_pass, policy->combine_rotate_active, 1);
+                                               policy->use_two_pass, policy->combine_rotate_active, 1, moments);
         *io_consumed += slice;
         if (ring_status == 2) {
+            if (moments && *io_consumed < len) {
+                (void)dsd_input_level_cu8_moments_accumulate(moments, u8 + *io_consumed, len - *io_consumed);
+            }
             *io_consumed = len;
             s->tcp_pending_len = 0U;
             break;
@@ -3546,31 +3873,36 @@ rtl_tcp_process_full_slices(struct rtl_device* s, unsigned char* u8, size_t len,
 }
 
 static void
-rtl_tcp_store_remainder(struct rtl_device* s, const unsigned char* data, size_t rem, int fs4_shift_active) {
+rtl_tcp_store_remainder(struct rtl_device* s, const unsigned char* data, size_t rem, int fs4_shift_active,
+                        dsd_input_level_cu8_moments* moments) {
     if (!s || !data || rem == 0U) {
         return;
     }
     if (!rtl_tcp_ensure_pending_capacity(s, rem)) {
+        if (moments) {
+            (void)dsd_input_level_cu8_moments_accumulate(moments, data, rem);
+        }
         (void)rtl_drop_u8_bytes_preserve_alignment(data, rem, &s->iq_byte_carry, &s->rot_phase, fs4_shift_active);
         return;
     }
-    DSD_MEMCPY(s->tcp_pending, data, rem);
+    rtl_tcp_copy_cu8_with_moments(s->tcp_pending, data, rem, moments);
     s->tcp_pending_len = rem;
 }
 
 static void
 rtl_tcp_reassemble_and_submit(struct rtl_device* s, unsigned char* u8, uint32_t len,
-                              const struct rtl_u8_transform_policy_state* policy) {
+                              const struct rtl_u8_transform_policy_state* policy,
+                              dsd_input_level_cu8_moments* moments) {
     if (!s || !u8 || !policy) {
         return;
     }
     const size_t slice = (s->buf_len > 0 ? (size_t)s->buf_len : 16384U);
-    size_t consumed = rtl_tcp_fill_pending_slice(s, u8, len, slice, policy);
+    size_t consumed = rtl_tcp_fill_pending_slice(s, u8, len, slice, policy, moments);
     if (consumed < len) {
-        rtl_tcp_process_full_slices(s, u8, len, slice, policy, &consumed);
+        rtl_tcp_process_full_slices(s, u8, len, slice, policy, &consumed, moments);
     }
     if (consumed < len) {
-        rtl_tcp_store_remainder(s, u8 + consumed, len - consumed, policy->fs4_shift_active);
+        rtl_tcp_store_remainder(s, u8 + consumed, len - consumed, policy->fs4_shift_active, moments);
     }
 }
 
@@ -3612,6 +3944,53 @@ static inline uint64_t
 rtl_tcp_counter_delta(uint64_t now, uint64_t prev) {
     return (now >= prev) ? (now - prev) : 0ULL;
 }
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+extern "C" int
+rtl_device_test_tcp_policy_helpers(size_t* bufsz_out, size_t bufsz_count, int* waitall_out, size_t waitall_count,
+                                   uint64_t* delta_out, size_t delta_count, int* agc_out) {
+    if (!bufsz_out || bufsz_count < 8U || !waitall_out || waitall_count < 4U || !delta_out || delta_count < 2U
+        || !agc_out) {
+        return -1;
+    }
+
+    rtl_device dev{};
+    dsdneoRuntimeConfig cfg{};
+
+    bufsz_out[0] = rtl_tcp_default_bufsz(NULL);
+    dev.backend = RTL_BACKEND_TCP;
+    bufsz_out[1] = rtl_tcp_default_bufsz(&dev);
+    dev.backend = RTL_BACKEND_USB;
+    dev.rate = 0U;
+    bufsz_out[2] = rtl_tcp_default_bufsz(&dev);
+    dev.rate = 48000U;
+    bufsz_out[3] = rtl_tcp_default_bufsz(&dev);
+    dev.rate = 960000U;
+    bufsz_out[4] = rtl_tcp_default_bufsz(&dev);
+    dev.rate = 10000000U;
+    bufsz_out[5] = rtl_tcp_default_bufsz(&dev);
+    cfg.tcp_bufsz_is_set = 1;
+    cfg.tcp_bufsz_bytes = 12345;
+    bufsz_out[6] = rtl_tcp_cfg_bufsz(&dev, &cfg);
+    cfg.tcp_bufsz_bytes = 0;
+    bufsz_out[7] = rtl_tcp_cfg_bufsz(&dev, &cfg);
+
+    waitall_out[0] = rtl_tcp_cfg_waitall(NULL, NULL);
+    dev.backend = RTL_BACKEND_TCP;
+    waitall_out[1] = rtl_tcp_cfg_waitall(&dev, NULL);
+    cfg = {};
+    cfg.tcp_waitall_is_set = 1;
+    cfg.tcp_waitall_enable = 1;
+    waitall_out[2] = rtl_tcp_cfg_waitall(&dev, &cfg);
+    cfg.tcp_waitall_enable = 0;
+    waitall_out[3] = rtl_tcp_cfg_waitall(&dev, &cfg);
+
+    delta_out[0] = rtl_tcp_counter_delta(100U, 40U);
+    delta_out[1] = rtl_tcp_counter_delta(40U, 100U);
+    *agc_out = env_agc_want();
+    return 0;
+}
+#endif
 
 static inline void
 rtl_tcp_autotune_on_overflow(struct rtl_tcp_loop_state* st) {
@@ -3709,7 +4088,7 @@ static DSD_THREAD_RETURN_TYPE
         DSD_THREAD_RETURN;
     }
 
-    while (s->run.load() && exitflag == 0) {
+    while (s->run.load() && dsd_exitflag_load() == 0) {
         rtl_tcp_apply_backpressure_if_needed(s);
         int r = dsd_socket_recv(s->sockfd, st.u8, st.bufsz, st.waitall ? MSG_WAITALL : 0);
         if (r <= 0) {
@@ -3738,9 +4117,10 @@ static DSD_THREAD_RETURN_TYPE
 
         rtl_tcp_account_input_stats(s, len);
         rtl_submit_capture_bytes(s, st.u8, len);
-        rtl_publish_cu8_input_level(s, st.u8, len);
-        rtl_tcp_reassemble_and_submit(s, st.u8, len, &policy);
-        rtl_tcp_metrics_update_ring_snapshot(s);
+        dsd_input_level_cu8_moments moments;
+        dsd_input_level_cu8_moments_reset(&moments);
+        rtl_tcp_reassemble_and_submit(s, st.u8, len, &policy, &moments);
+        rtl_publish_cu8_input_level_moments(s, &moments);
         rtl_tcp_periodic_maintenance(s, &st);
     }
 
@@ -3758,14 +4138,10 @@ static DSD_THREAD_RETURN_TYPE
  */
 static int
 nearest_gain(rtlsdr_dev_t* dev, int target_gain) {
-    int i, r, count, nearest;
+    int i, count, nearest;
     int* gains;
-    r = rtlsdr_set_tuner_gain_mode(dev, 1);
-    if (r < 0) {
-        DSD_FPRINTF(stderr, "WARNING: Failed to enable manual gain.\n");
-        return r;
-    }
     count = rtlsdr_get_tuner_gains(dev, NULL);
+    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (count <= 0) {
         return 0;
     }
@@ -3774,6 +4150,7 @@ nearest_gain(rtlsdr_dev_t* dev, int target_gain) {
         return 0;
     }
     count = rtlsdr_get_tuner_gains(dev, gains);
+    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (count <= 0) {
         free(gains);
         return 0;
@@ -3790,6 +4167,449 @@ nearest_gain(rtlsdr_dev_t* dev, int target_gain) {
     return nearest;
 }
 
+namespace {
+
+struct rtl_usb_apply_policy {
+    int verify_enabled;
+    int attempts;
+};
+
+typedef int (*rtl_usb_apply_fn)(void* ctx);
+typedef int (*rtl_usb_verify_fn)(void* ctx);
+
+static struct rtl_usb_apply_policy
+rtl_usb_apply_policy_from_runtime(void) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    struct rtl_usb_apply_policy policy{};
+    policy.verify_enabled = (!cfg || cfg->rtl_verify_enable) ? 1 : 0;
+    policy.attempts = cfg ? cfg->rtl_verify_attempts : 10;
+    if (policy.attempts < 1) {
+        policy.attempts = 1;
+    }
+    if (policy.attempts > 10) {
+        policy.attempts = 10;
+    }
+    if (!policy.verify_enabled) {
+        policy.attempts = 1;
+    }
+    return policy;
+}
+
+static int
+rtl_usb_apply_with_retry(const struct rtl_usb_apply_policy* policy, rtl_usb_apply_fn apply, rtl_usb_verify_fn verify,
+                         void* ctx, int* out_attempts) {
+    if (!policy || !apply) {
+        return -1;
+    }
+    int attempts = policy->attempts;
+    if (attempts < 1) {
+        attempts = 1;
+    }
+    if (attempts > 10) {
+        attempts = 10;
+    }
+    if (!policy->verify_enabled) {
+        attempts = 1;
+    }
+
+    int last_rc = -1;
+    int used_attempts = 0;
+    for (int i = 0; i < attempts; i++) {
+        used_attempts = i + 1;
+        last_rc = apply(ctx);
+        if (last_rc != 0) {
+            continue;
+        }
+        if (!policy->verify_enabled || !verify || verify(ctx) == 0) {
+            if (out_attempts) {
+                *out_attempts = used_attempts;
+            }
+            return 0;
+        }
+        last_rc = -1;
+    }
+
+    if (out_attempts) {
+        *out_attempts = used_attempts;
+    }
+    return (last_rc < 0) ? last_rc : -1;
+}
+
+static int
+rtl_usb_apply_with_runtime_retry(rtl_usb_apply_fn apply, rtl_usb_verify_fn verify, void* ctx, int* out_attempts) {
+    struct rtl_usb_apply_policy policy = rtl_usb_apply_policy_from_runtime();
+    return rtl_usb_apply_with_retry(&policy, apply, verify, ctx, out_attempts);
+}
+
+static void
+rtl_usb_log_retry_attempts(const char* control, int attempts) {
+    if (attempts > 1) {
+        DSD_FPRINTF(stderr, "RTL-SDR %s took %d attempts.\n", control ? control : "control apply", attempts);
+    }
+}
+
+struct rtl_usb_frequency_apply_ctx {
+    rtlsdr_dev_t* dev;
+    uint32_t frequency;
+};
+
+static int
+rtl_usb_apply_center_freq(void* opaque) {
+    rtl_usb_frequency_apply_ctx* ctx = static_cast<rtl_usb_frequency_apply_ctx*>(opaque);
+    return (ctx && ctx->dev) ? rtlsdr_set_center_freq(ctx->dev, ctx->frequency) : -1;
+}
+
+static int
+rtl_usb_verify_center_freq(void* opaque) {
+    rtl_usb_frequency_apply_ctx* ctx = static_cast<rtl_usb_frequency_apply_ctx*>(opaque);
+    if (!ctx || !ctx->dev) {
+        return -1;
+    }
+    return (rtlsdr_get_center_freq(ctx->dev) == ctx->frequency) ? 0 : -1;
+}
+
+struct rtl_usb_sample_rate_apply_ctx {
+    rtlsdr_dev_t* dev;
+    uint32_t requested_rate;
+    uint32_t actual_rate;
+};
+
+static int
+rtl_usb_sample_rate_readback_is_usable(uint32_t actual_rate) {
+    return actual_rate != 0U;
+}
+
+static int
+rtl_usb_apply_sample_rate(void* opaque) {
+    rtl_usb_sample_rate_apply_ctx* ctx = static_cast<rtl_usb_sample_rate_apply_ctx*>(opaque);
+    return (ctx && ctx->dev) ? rtlsdr_set_sample_rate(ctx->dev, ctx->requested_rate) : -1;
+}
+
+static int
+rtl_usb_verify_sample_rate(void* opaque) {
+    rtl_usb_sample_rate_apply_ctx* ctx = static_cast<rtl_usb_sample_rate_apply_ctx*>(opaque);
+    if (!ctx || !ctx->dev) {
+        return -1;
+    }
+    uint32_t actual = rtlsdr_get_sample_rate(ctx->dev);
+    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build always reports no sample rate.
+    if (!rtl_usb_sample_rate_readback_is_usable(actual)) {
+        return -1;
+    }
+    ctx->actual_rate = actual;
+    return 0;
+}
+
+struct rtl_usb_gain_apply_ctx {
+    rtlsdr_dev_t* dev;
+    int gain;
+    int agc_rc;
+};
+
+typedef int (*rtl_usb_int_control_fn)(void* dev, int value);
+
+static int
+rtl_usb_set_agc_mode_control(void* dev, int value) {
+    return rtlsdr_set_agc_mode(static_cast<rtlsdr_dev_t*>(dev), value);
+}
+
+static int
+rtl_usb_set_tuner_gain_mode_control(void* dev, int value) {
+    return rtlsdr_set_tuner_gain_mode(static_cast<rtlsdr_dev_t*>(dev), value);
+}
+
+static int
+rtl_usb_set_tuner_gain_control(void* dev, int value) {
+    return rtlsdr_set_tuner_gain(static_cast<rtlsdr_dev_t*>(dev), value);
+}
+
+static int
+rtl_usb_apply_manual_gain_controls(void* dev, int gain, int* out_agc_rc, rtl_usb_int_control_fn set_agc_mode,
+                                   rtl_usb_int_control_fn set_gain_mode, rtl_usb_int_control_fn set_tuner_gain) {
+    if (!dev || !set_agc_mode || !set_gain_mode || !set_tuner_gain) {
+        return -1;
+    }
+    int agc_rc = set_agc_mode(dev, 0);
+    if (agc_rc != 0 && out_agc_rc && *out_agc_rc == 0) {
+        *out_agc_rc = agc_rc;
+    }
+    int r = set_gain_mode(dev, 1);
+    if (r != 0) {
+        return r;
+    }
+    return set_tuner_gain(dev, gain);
+}
+
+static int
+rtl_usb_apply_manual_gain(void* opaque) {
+    rtl_usb_gain_apply_ctx* ctx = static_cast<rtl_usb_gain_apply_ctx*>(opaque);
+    if (!ctx || !ctx->dev) {
+        return -1;
+    }
+    return rtl_usb_apply_manual_gain_controls(ctx->dev, ctx->gain, &ctx->agc_rc, rtl_usb_set_agc_mode_control,
+                                              rtl_usb_set_tuner_gain_mode_control, rtl_usb_set_tuner_gain_control);
+}
+
+static int
+rtl_usb_verify_manual_gain(void* opaque) {
+    rtl_usb_gain_apply_ctx* ctx = static_cast<rtl_usb_gain_apply_ctx*>(opaque);
+    if (!ctx || !ctx->dev) {
+        return -1;
+    }
+    return (rtlsdr_get_tuner_gain(ctx->dev) == ctx->gain) ? 0 : -1;
+}
+
+struct rtl_usb_auto_gain_apply_ctx {
+    rtlsdr_dev_t* dev;
+    int agc_want;
+    int agc_rc;
+};
+
+static int
+rtl_usb_apply_auto_gain_controls(void* dev, int agc_want, int* out_agc_rc, rtl_usb_int_control_fn set_gain_mode,
+                                 rtl_usb_int_control_fn set_agc_mode) {
+    if (!dev || !set_gain_mode || !set_agc_mode) {
+        return -1;
+    }
+    int r = set_gain_mode(dev, 0);
+    if (r != 0) {
+        return r;
+    }
+    int agc_rc = set_agc_mode(dev, agc_want);
+    if (agc_rc != 0 && out_agc_rc && *out_agc_rc == 0) {
+        *out_agc_rc = agc_rc;
+    }
+    return 0;
+}
+
+static int
+rtl_usb_apply_auto_gain(void* opaque) {
+    rtl_usb_auto_gain_apply_ctx* ctx = static_cast<rtl_usb_auto_gain_apply_ctx*>(opaque);
+    if (!ctx || !ctx->dev) {
+        return -1;
+    }
+    return rtl_usb_apply_auto_gain_controls(ctx->dev, ctx->agc_want, &ctx->agc_rc, rtl_usb_set_tuner_gain_mode_control,
+                                            rtl_usb_set_agc_mode_control);
+}
+
+struct rtl_usb_int_apply_ctx {
+    rtlsdr_dev_t* dev;
+    int value;
+};
+
+static int
+rtl_usb_apply_direct_sampling(void* opaque) {
+    rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
+    return (ctx && ctx->dev) ? rtlsdr_set_direct_sampling(ctx->dev, ctx->value) : -1;
+}
+
+static int
+rtl_usb_apply_ppm(void* opaque) {
+    rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
+    return (ctx && ctx->dev) ? rtlsdr_set_freq_correction(ctx->dev, ctx->value) : -1;
+}
+
+static int
+rtl_usb_apply_offset_tuning(void* opaque) {
+    rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
+    return (ctx && ctx->dev) ? rtlsdr_set_offset_tuning(ctx->dev, ctx->value ? 1 : 0) : -1;
+}
+
+static int
+rtl_usb_apply_testmode(void* opaque) {
+    rtl_usb_int_apply_ctx* ctx = static_cast<rtl_usb_int_apply_ctx*>(opaque);
+    return (ctx && ctx->dev) ? rtlsdr_set_testmode(ctx->dev, ctx->value ? 1 : 0) : -1;
+}
+
+struct rtl_usb_u32_apply_ctx {
+    rtlsdr_dev_t* dev;
+    uint32_t value;
+};
+
+static int
+rtl_usb_apply_tuner_bandwidth(void* opaque) {
+    rtl_usb_u32_apply_ctx* ctx = static_cast<rtl_usb_u32_apply_ctx*>(opaque);
+    return (ctx && ctx->dev) ? rtlsdr_set_tuner_bandwidth(ctx->dev, (int)ctx->value) : -1;
+}
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+struct rtl_usb_retry_test_ctx {
+    int apply_calls;
+    int verify_calls;
+    int apply_success_after;
+    int verify_success_after;
+};
+
+static int
+rtl_usb_retry_test_apply(void* opaque) {
+    rtl_usb_retry_test_ctx* ctx = static_cast<rtl_usb_retry_test_ctx*>(opaque);
+    if (!ctx) {
+        return -1;
+    }
+    ctx->apply_calls++;
+    return (ctx->apply_calls >= ctx->apply_success_after) ? 0 : -1;
+}
+
+static int
+rtl_usb_retry_test_verify(void* opaque) {
+    rtl_usb_retry_test_ctx* ctx = static_cast<rtl_usb_retry_test_ctx*>(opaque);
+    if (!ctx) {
+        return -1;
+    }
+    ctx->verify_calls++;
+    return (ctx->verify_calls >= ctx->verify_success_after) ? 0 : -1;
+}
+
+struct rtl_usb_manual_gain_test_ctx {
+    int agc_rc;
+    int gain_mode_rc;
+    int gain_rc;
+    int agc_calls;
+    int gain_mode_calls;
+    int gain_calls;
+};
+
+static int
+rtl_usb_manual_gain_test_agc(void* opaque, int value) {
+    UNUSED(value);
+    rtl_usb_manual_gain_test_ctx* ctx = static_cast<rtl_usb_manual_gain_test_ctx*>(opaque);
+    if (!ctx) {
+        return -1;
+    }
+    ctx->agc_calls++;
+    return ctx->agc_rc;
+}
+
+static int
+rtl_usb_manual_gain_test_mode(void* opaque, int value) {
+    UNUSED(value);
+    rtl_usb_manual_gain_test_ctx* ctx = static_cast<rtl_usb_manual_gain_test_ctx*>(opaque);
+    if (!ctx) {
+        return -1;
+    }
+    ctx->gain_mode_calls++;
+    return ctx->gain_mode_rc;
+}
+
+static int
+rtl_usb_manual_gain_test_gain(void* opaque, int value) {
+    UNUSED(value);
+    rtl_usb_manual_gain_test_ctx* ctx = static_cast<rtl_usb_manual_gain_test_ctx*>(opaque);
+    if (!ctx) {
+        return -1;
+    }
+    ctx->gain_calls++;
+    return ctx->gain_rc;
+}
+
+struct rtl_usb_auto_gain_test_ctx {
+    int agc_rc;
+    int gain_mode_rc;
+    int agc_calls;
+    int gain_mode_calls;
+};
+
+static int
+rtl_usb_auto_gain_test_agc(void* opaque, int value) {
+    UNUSED(value);
+    rtl_usb_auto_gain_test_ctx* ctx = static_cast<rtl_usb_auto_gain_test_ctx*>(opaque);
+    if (!ctx) {
+        return -1;
+    }
+    ctx->agc_calls++;
+    return ctx->agc_rc;
+}
+
+static int
+rtl_usb_auto_gain_test_mode(void* opaque, int value) {
+    UNUSED(value);
+    rtl_usb_auto_gain_test_ctx* ctx = static_cast<rtl_usb_auto_gain_test_ctx*>(opaque);
+    if (!ctx) {
+        return -1;
+    }
+    ctx->gain_mode_calls++;
+    return ctx->gain_mode_rc;
+}
+
+} // namespace
+
+extern "C" int
+rtl_device_test_usb_apply_retry(int verify_enabled, int attempts, int apply_success_after, int verify_success_after,
+                                int* out_apply_calls, int* out_verify_calls, int* out_used_attempts) {
+    if (!out_apply_calls || !out_verify_calls || !out_used_attempts || apply_success_after < 1
+        || verify_success_after < 1) {
+        return -100;
+    }
+    rtl_usb_apply_policy policy{};
+    policy.verify_enabled = verify_enabled ? 1 : 0;
+    policy.attempts = attempts;
+    rtl_usb_retry_test_ctx ctx{};
+    ctx.apply_success_after = apply_success_after;
+    ctx.verify_success_after = verify_success_after;
+    int used_attempts = 0;
+    int rc =
+        rtl_usb_apply_with_retry(&policy, rtl_usb_retry_test_apply, rtl_usb_retry_test_verify, &ctx, &used_attempts);
+    *out_apply_calls = ctx.apply_calls;
+    *out_verify_calls = ctx.verify_calls;
+    *out_used_attempts = used_attempts;
+    return rc;
+}
+
+extern "C" int
+rtl_device_test_usb_sample_rate_readback(uint32_t requested_rate, uint32_t actual_rate, uint32_t* out_actual_rate) {
+    if (!out_actual_rate) {
+        return -100;
+    }
+    UNUSED(requested_rate);
+    *out_actual_rate = 0U;
+    if (!rtl_usb_sample_rate_readback_is_usable(actual_rate)) {
+        return -1;
+    }
+    *out_actual_rate = actual_rate;
+    return 0;
+}
+
+extern "C" int
+rtl_device_test_usb_manual_gain_controls(int agc_rc, int gain_mode_rc, int gain_rc, int* out_agc_calls,
+                                         int* out_gain_mode_calls, int* out_gain_calls, int* out_recorded_agc_rc) {
+    if (!out_agc_calls || !out_gain_mode_calls || !out_gain_calls || !out_recorded_agc_rc) {
+        return -100;
+    }
+    rtl_usb_manual_gain_test_ctx ctx{};
+    ctx.agc_rc = agc_rc;
+    ctx.gain_mode_rc = gain_mode_rc;
+    ctx.gain_rc = gain_rc;
+    int recorded_agc_rc = 0;
+    int rc = rtl_usb_apply_manual_gain_controls(&ctx, 270, &recorded_agc_rc, rtl_usb_manual_gain_test_agc,
+                                                rtl_usb_manual_gain_test_mode, rtl_usb_manual_gain_test_gain);
+    *out_agc_calls = ctx.agc_calls;
+    *out_gain_mode_calls = ctx.gain_mode_calls;
+    *out_gain_calls = ctx.gain_calls;
+    *out_recorded_agc_rc = recorded_agc_rc;
+    return rc;
+}
+
+extern "C" int
+rtl_device_test_usb_auto_gain_controls(int agc_rc, int gain_mode_rc, int* out_agc_calls, int* out_gain_mode_calls,
+                                       int* out_recorded_agc_rc) {
+    if (!out_agc_calls || !out_gain_mode_calls || !out_recorded_agc_rc) {
+        return -100;
+    }
+    rtl_usb_auto_gain_test_ctx ctx{};
+    ctx.agc_rc = agc_rc;
+    ctx.gain_mode_rc = gain_mode_rc;
+    int recorded_agc_rc = 0;
+    int rc = rtl_usb_apply_auto_gain_controls(&ctx, 1, &recorded_agc_rc, rtl_usb_auto_gain_test_mode,
+                                              rtl_usb_auto_gain_test_agc);
+    *out_agc_calls = ctx.agc_calls;
+    *out_gain_mode_calls = ctx.gain_mode_calls;
+    *out_recorded_agc_rc = recorded_agc_rc;
+    return rc;
+}
+#else
+} // namespace
+#endif
+
 /**
  * @brief Set RTL-SDR center frequency with a brief status message.
  *
@@ -3799,11 +4619,13 @@ nearest_gain(rtlsdr_dev_t* dev, int target_gain) {
  */
 static int
 verbose_set_frequency(rtlsdr_dev_t* dev, uint32_t frequency) {
-    int r;
-    r = rtlsdr_set_center_freq(dev, frequency);
+    rtl_usb_frequency_apply_ctx ctx{dev, frequency};
+    int attempts = 0;
+    int r = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_center_freq, rtl_usb_verify_center_freq, &ctx, &attempts);
     if (r < 0) {
         DSD_FPRINTF(stderr, " (WARNING: Failed to set Center Frequency). \n");
     } else {
+        rtl_usb_log_retry_attempts("center frequency apply", attempts);
         DSD_FPRINTF(stderr, " (Center Frequency: %u Hz.) \n", frequency);
     }
     return r;
@@ -3817,12 +4639,23 @@ verbose_set_frequency(rtlsdr_dev_t* dev, uint32_t frequency) {
  * @return 0 on success or a negative error code.
  */
 static int
-verbose_set_sample_rate(rtlsdr_dev_t* dev, uint32_t samp_rate) {
-    int r;
-    r = rtlsdr_set_sample_rate(dev, samp_rate);
+verbose_set_sample_rate(rtlsdr_dev_t* dev, uint32_t samp_rate, uint32_t* out_actual_rate) {
+    rtl_usb_sample_rate_apply_ctx ctx{dev, samp_rate, 0U};
+    int attempts = 0;
+    int r = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_sample_rate, rtl_usb_verify_sample_rate, &ctx, &attempts);
     if (r < 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to set sample rate.\n");
     } else {
+        if (ctx.actual_rate == 0U) {
+            ctx.actual_rate = rtlsdr_get_sample_rate(dev);
+        }
+        if (ctx.actual_rate == 0U) {
+            ctx.actual_rate = samp_rate;
+        }
+        if (out_actual_rate) {
+            *out_actual_rate = ctx.actual_rate;
+        }
+        rtl_usb_log_retry_attempts("sample rate apply", attempts);
         DSD_FPRINTF(stderr, "Sampling at %u S/s.\n", samp_rate);
     }
     return r;
@@ -3837,12 +4670,14 @@ verbose_set_sample_rate(rtlsdr_dev_t* dev, uint32_t samp_rate) {
  */
 static int
 verbose_direct_sampling(rtlsdr_dev_t* dev, int on) {
-    int r;
-    r = rtlsdr_set_direct_sampling(dev, on);
+    rtl_usb_int_apply_ctx ctx{dev, on};
+    int attempts = 0;
+    int r = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_direct_sampling, NULL, &ctx, &attempts);
     if (r != 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to set direct sampling mode.\n");
         return r;
     }
+    rtl_usb_log_retry_attempts("direct sampling apply", attempts);
     if (on == 0) {
         DSD_FPRINTF(stderr, "Direct sampling mode disabled.\n");
     }
@@ -3900,10 +4735,13 @@ rtl_device_print_offset_capability(struct rtl_device* dev) {
 static int
 verbose_set_tuner_bandwidth(rtlsdr_dev_t* dev, uint32_t bw_hz) {
     /* Pass-through to librtlsdr; bw_hz == 0 lets driver choose an appropriate filter */
-    int r = rtlsdr_set_tuner_bandwidth(dev, (int)bw_hz);
+    rtl_usb_u32_apply_ctx ctx{dev, bw_hz};
+    int attempts = 0;
+    int r = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_tuner_bandwidth, NULL, &ctx, &attempts);
     if (r != 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to set tuner bandwidth to %u Hz.\n", bw_hz);
     } else {
+        rtl_usb_log_retry_attempts("tuner bandwidth apply", attempts);
         if (bw_hz == 0) {
             DSD_FPRINTF(stderr, "Tuner bandwidth set to auto (driver).\n");
         } else {
@@ -3921,21 +4759,23 @@ verbose_set_tuner_bandwidth(rtlsdr_dev_t* dev, uint32_t bw_hz) {
  */
 static int
 verbose_auto_gain(rtlsdr_dev_t* dev) {
-    int r;
-    r = rtlsdr_set_tuner_gain_mode(dev, 0);
-    if (r != 0) {
-        DSD_FPRINTF(stderr, "WARNING: Failed to set tuner gain.\n");
-    } else {
-        DSD_FPRINTF(stderr, "Tuner gain set to automatic.\n");
-    }
     /* Original plan: enable RTL digital AGC in auto mode by default.
        Allow override via env DSD_NEO_RTL_AGC=0 to disable. */
     int want = env_agc_want();
-    int ra = rtlsdr_set_agc_mode(dev, want);
-    if (ra != 0) {
-        DSD_FPRINTF(stderr, "WARNING: Failed to %s RTL AGC.\n", want ? "enable" : "disable");
+    rtl_usb_auto_gain_apply_ctx ctx{dev, want, 0};
+    int attempts = 0;
+    int r = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_auto_gain, NULL, &ctx, &attempts);
+    if (r != 0) {
+        DSD_FPRINTF(stderr, "WARNING: Failed to set automatic tuner gain.\n");
     } else {
-        DSD_FPRINTF(stderr, "RTL AGC %s.\n", want ? "enabled" : "disabled");
+        rtl_usb_log_retry_attempts("automatic gain apply", attempts);
+        DSD_FPRINTF(stderr, "Tuner gain set to automatic.\n");
+        if (ctx.agc_rc != 0) {
+            DSD_FPRINTF(stderr, "WARNING: Failed to %s RTL AGC for automatic gain (rc=%d); continuing.\n",
+                        want ? "enable" : "disable", ctx.agc_rc);
+        } else {
+            DSD_FPRINTF(stderr, "RTL AGC %s.\n", want ? "enabled" : "disabled");
+        }
     }
     return r;
 }
@@ -3949,18 +4789,17 @@ verbose_auto_gain(rtlsdr_dev_t* dev) {
  */
 static int
 verbose_gain_set(rtlsdr_dev_t* dev, int gain) {
-    int r;
-    /* Disable RTL digital AGC when setting manual tuner gain */
-    (void)rtlsdr_set_agc_mode(dev, 0);
-    r = rtlsdr_set_tuner_gain_mode(dev, 1);
-    if (r < 0) {
-        DSD_FPRINTF(stderr, "WARNING: Failed to enable manual gain.\n");
-        return r;
-    }
-    r = rtlsdr_set_tuner_gain(dev, gain);
+    rtl_usb_gain_apply_ctx ctx{dev, gain, 0};
+    int attempts = 0;
+    int r = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_manual_gain, rtl_usb_verify_manual_gain, &ctx, &attempts);
     if (r != 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to set tuner gain.\n");
     } else {
+        if (ctx.agc_rc != 0) {
+            DSD_FPRINTF(stderr, "WARNING: Failed to disable RTL AGC before manual gain (rc=%d); continuing.\n",
+                        ctx.agc_rc);
+        }
+        rtl_usb_log_retry_attempts("manual gain apply", attempts);
         DSD_FPRINTF(stderr, "Tuner gain set to %0.2f dB.\n", gain / 10.0);
     }
     return r;
@@ -3975,11 +4814,13 @@ verbose_gain_set(rtlsdr_dev_t* dev, int gain) {
  */
 static int
 verbose_ppm_set(rtlsdr_dev_t* dev, int ppm_error) {
-    int r;
-    r = rtlsdr_set_freq_correction(dev, ppm_error);
+    rtl_usb_int_apply_ctx ctx{dev, ppm_error};
+    int attempts = 0;
+    int r = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_ppm, NULL, &ctx, &attempts);
     if (r < 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to set ppm error.\n");
     } else {
+        rtl_usb_log_retry_attempts("PPM apply", attempts);
         DSD_FPRINTF(stderr, "Tuner error set to %i ppm.\n", ppm_error);
     }
     return r;
@@ -3995,6 +4836,7 @@ static int
 verbose_reset_buffer(rtlsdr_dev_t* dev) {
     int r;
     r = rtlsdr_reset_buffer(dev);
+    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (r < 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to reset buffers.\n");
     }
@@ -4012,8 +4854,10 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     dev->capture_retune_count.store(0, std::memory_order_relaxed);
     dev->capture_mute_pending_bytes.store(0U, std::memory_order_relaxed);
     dev->capture_reconfigure_hold.store(RTL_CAPTURE_RECONFIGURE_INACTIVE, std::memory_order_relaxed);
+    const dsdneoRuntimeConfig* runtime_config = dsd_neo_get_config();
+    dev->live_combine_rotate_enabled = runtime_config ? (runtime_config->combine_rot != 0) : 1;
     dev->replay_fs4_shift_enabled = 0;
-    dev->replay_combine_rotate_enabled = 0;
+    dev->replay_historical_cu8_two_pass = 0;
     DSD_MEMSET(&dev->replay_cfg, 0, sizeof(dev->replay_cfg));
     dev->replay_initial_center_frequency_hz = 0;
     dev->replay_initial_capture_center_frequency_hz = 0;
@@ -4026,6 +4870,9 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     dev->replay_float_elements_written = 0;
     dev->soapy_profile_id = (int)dsdneo::SoapyProfileId::Generic;
     dev->soapy_requested_bandwidth_hz = -1;
+    dev->soapy_startup_center_freq_hz = 0U;
+    dev->soapy_nearest_rate_cache_requested = 0U;
+    dev->soapy_nearest_rate_cache_actual = 0U;
     dev->soapy_named_gain_override = 0;
     dev->soapy_named_gain_skip_logged = 0;
     dev->soapy_args_string[0] = '\0';
@@ -4054,16 +4901,58 @@ rtl_device_cleanup_common_state(struct rtl_device* dev) {
     }
 }
 
+/*
+ * Descriptor handed down from an Android app (USB-OTG). Written before the engine
+ * starts and read on the engine/open path, so the two threads need it atomic.
+ */
+static std::atomic<int> g_preopened_usb_fd{-1};
+
+/*
+ * Whether the descriptor is currently wrapped by libusb, as opposed to merely
+ * recorded. Its owner (the Android app) has to close the connection eventually and
+ * needs to know when that is safe; "is the engine running" is a poor proxy, because
+ * the descriptor is taken and released well inside a run. Raised before the wrap is
+ * attempted and lowered once the device is closed, so it is never clear while a
+ * transfer could still be in flight.
+ */
+static std::atomic<int> g_preopened_usb_fd_in_use{0};
+
+void
+rtl_device_set_preopened_fd(int sys_fd) {
+    g_preopened_usb_fd.store((sys_fd < 0) ? -1 : sys_fd, std::memory_order_release);
+}
+
+int
+rtl_device_preopened_fd_is_set(void) {
+    return (g_preopened_usb_fd.load(std::memory_order_acquire) >= 0) ? 1 : 0;
+}
+
+int
+rtl_device_preopened_fd_in_use(void) {
+    return g_preopened_usb_fd_in_use.load(std::memory_order_acquire);
+}
+
+int
+rtl_device_preopened_fd_supported(void) {
+    /* Must match the guard on the open path in rtl_device_create() exactly: a build
+     * that records a descriptor it cannot open from advertises a USB source that can
+     * never work. */
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 /**
  * @brief Create and initialize an RTL-SDR device.
  *
  * @param dev_index Device index to open.
  * @param input_ring Pointer to input ring for USB data.
- * @param use_combine_rotate Whether to use combined rotate+widen when offset tuning is disabled.
  * @return Pointer to rtl_device handle, or NULL on failure.
  */
 struct rtl_device*
-rtl_device_create(int dev_index, struct input_ring_state* input_ring, int use_combine_rotate) {
+rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     if (!input_ring) {
         return NULL;
     }
@@ -4079,7 +4968,6 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int use_co
     dev->thread_started = 0;
     dev->mute = 0;
     dev->mute_byte_phase = 0;
-    dev->combine_rotate_enabled = use_combine_rotate;
     dev->backend = RTL_BACKEND_USB;
     dev->soapy_dev = NULL;
     dev->soapy_stream = NULL;
@@ -4099,6 +4987,27 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int use_co
     dev->if_gain_count = 0;
 
     int r = 0;
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+    /* An injected descriptor means the app already picked and opened the device and
+     * libusb discovery is off, so opening by index cannot work. rtlsdr_open_fd() is a
+     * project patch on the vendored tree; the configure step proves it is there. */
+    const int preopened_fd = g_preopened_usb_fd.load(std::memory_order_acquire);
+    if (preopened_fd >= 0) {
+        /* Claimed before the wrap, not after: the owner must not be told the
+         * descriptor is free while libusb is part way through taking it. */
+        g_preopened_usb_fd_in_use.store(1, std::memory_order_release);
+        r = rtlsdr_open_fd(&dev->dev, preopened_fd);
+        if (r < 0) {
+            g_preopened_usb_fd_in_use.store(0, std::memory_order_release);
+            DSD_FPRINTF(stderr, "Failed to open rtlsdr device from descriptor %d.\n", preopened_fd);
+            rtl_device_cleanup_common_state(dev);
+            free(dev);
+            return NULL;
+        }
+        dev->owns_preopened_fd = 1;
+        return dev;
+    }
+#endif
 #if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
     __try {
         r = rtlsdr_open(&dev->dev, (uint32_t)dev_index);
@@ -4112,6 +5021,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int use_co
 #else
     r = rtlsdr_open(&dev->dev, (uint32_t)dev_index);
 #endif
+    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (r < 0) {
         DSD_FPRINTF(stderr, "Failed to open rtlsdr device %d.\n", dev_index);
         rtl_device_cleanup_common_state(dev);
@@ -4123,8 +5033,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring, int use_co
 }
 
 struct rtl_device*
-rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring, int use_combine_rotate,
-                      int autotune_enabled) {
+rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring, int autotune_enabled) {
     if (!input_ring || !host || port <= 0) {
         return NULL;
     }
@@ -4144,7 +5053,6 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
     dev->thread_started = 0;
     dev->mute = 0;
     dev->mute_byte_phase = 0;
-    dev->combine_rotate_enabled = use_combine_rotate;
     dev->backend = RTL_BACKEND_TCP;
     dev->soapy_dev = NULL;
     dev->soapy_stream = NULL;
@@ -4210,7 +5118,7 @@ rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input
 }
 
 static struct rtl_device*
-rtl_device_alloc_soapy_base(struct input_ring_state* input_ring, int use_combine_rotate) {
+rtl_device_alloc_soapy_base(struct input_ring_state* input_ring) {
     struct rtl_device* dev = static_cast<rtl_device*>(calloc(1, sizeof(struct rtl_device)));
     if (!dev) {
         return NULL;
@@ -4219,7 +5127,6 @@ rtl_device_alloc_soapy_base(struct input_ring_state* input_ring, int use_combine
     dev->dev = NULL;
     dev->dev_index = -1;
     dev->input_ring = input_ring;
-    dev->combine_rotate_enabled = use_combine_rotate;
     dev->backend = RTL_BACKEND_SOAPY;
     dev->soapy_format = SOAPY_FMT_NONE;
     rtl_capture_u8_byte_carry_clear(&dev->iq_byte_carry);
@@ -4231,11 +5138,11 @@ rtl_device_alloc_soapy_base(struct input_ring_state* input_ring, int use_combine
 }
 
 struct rtl_device*
-rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring, int use_combine_rotate) {
+rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring) {
     if (!input_ring) {
         return NULL;
     }
-    struct rtl_device* dev = rtl_device_alloc_soapy_base(input_ring, use_combine_rotate);
+    struct rtl_device* dev = rtl_device_alloc_soapy_base(input_ring);
     if (!dev) {
         return NULL;
     }
@@ -4332,18 +5239,16 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
 }
 
 static void
-rtl_device_store_soapy_config_request(struct rtl_device* dev, const struct rtl_soapy_config* cfg, size_t config_size) {
+rtl_device_store_soapy_config_request(struct rtl_device* dev, const struct rtl_soapy_config* cfg) {
     if (!dev) {
         return;
     }
-    const char* profile = RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, profile) ? cfg->profile : NULL;
-    const char* antenna = RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, antenna) ? cfg->antenna : NULL;
-    const char* clock_source =
-        RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, clock_source) ? cfg->clock_source : NULL;
-    const char* settings = RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, settings) ? cfg->settings : NULL;
-    const char* gains = RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, gains) ? cfg->gains : NULL;
-    const char* stream_format =
-        RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, stream_format) ? cfg->stream_format : NULL;
+    const char* profile = cfg ? cfg->profile : NULL;
+    const char* antenna = cfg ? cfg->antenna : NULL;
+    const char* clock_source = cfg ? cfg->clock_source : NULL;
+    const char* settings = cfg ? cfg->settings : NULL;
+    const char* gains = cfg ? cfg->gains : NULL;
+    const char* stream_format = cfg ? cfg->stream_format : NULL;
 
     rtl_device_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile), profile);
     rtl_device_copy_cstr(dev->soapy_requested_antenna, sizeof(dev->soapy_requested_antenna), antenna);
@@ -4351,8 +5256,11 @@ rtl_device_store_soapy_config_request(struct rtl_device* dev, const struct rtl_s
     rtl_device_copy_cstr(dev->soapy_requested_settings, sizeof(dev->soapy_requested_settings), settings);
     rtl_device_copy_cstr(dev->soapy_requested_gains, sizeof(dev->soapy_requested_gains), gains);
     rtl_device_copy_cstr(dev->soapy_requested_stream_format, sizeof(dev->soapy_requested_stream_format), stream_format);
-    dev->soapy_requested_bandwidth_hz =
-        RTL_SOAPY_CONFIG_FIELD_AVAILABLE(cfg, config_size, bandwidth_hz) ? cfg->bandwidth_hz : -1;
+    dev->soapy_requested_bandwidth_hz = cfg ? cfg->bandwidth_hz : -1;
+    dev->soapy_startup_center_freq_hz = cfg ? cfg->center_freq_hz : 0U;
+    /* Driver settings (for example the SDDC ADC clock) can move the rate grid. */
+    dev->soapy_nearest_rate_cache_requested = 0U;
+    dev->soapy_nearest_rate_cache_actual = 0U;
 }
 
 #ifdef USE_SOAPYSDR
@@ -4390,15 +5298,10 @@ rtl_device_apply_soapy_configuration_locked(struct rtl_device* dev) {
 
 int
 rtl_device_configure_soapy(struct rtl_device* dev, const struct rtl_soapy_config* config) {
-    return rtl_device_configure_soapy_sized(dev, config, RTL_SOAPY_CONFIG_LEGACY_SIZE);
-}
-
-int
-rtl_device_configure_soapy_sized(struct rtl_device* dev, const struct rtl_soapy_config* config, size_t config_size) {
     if (!dev || dev->backend != RTL_BACKEND_SOAPY) {
         return DSD_ERR_NOT_SUPPORTED;
     }
-    rtl_device_store_soapy_config_request(dev, config, config ? config_size : 0U);
+    rtl_device_store_soapy_config_request(dev, config);
 #ifndef USE_SOAPYSDR
     return DSD_ERR_NOT_SUPPORTED;
 #else
@@ -4420,7 +5323,6 @@ rtl_device_init_iq_replay_backend_state(struct rtl_device* dev, const dsd_iq_rep
     dev->thread_started = 0;
     dev->mute.store(0, std::memory_order_relaxed);
     dev->mute_byte_phase.store(0, std::memory_order_relaxed);
-    dev->combine_rotate_enabled = cfg->combine_rotate_enabled ? 1 : 0;
     dev->backend = RTL_BACKEND_IQ_REPLAY;
     dev->soapy_dev = NULL;
     dev->soapy_stream = NULL;
@@ -4440,7 +5342,7 @@ rtl_device_init_iq_replay_backend_state(struct rtl_device* dev, const dsd_iq_rep
     dev->tuner_xtal_hz = 0;
     dev->if_gain_count = 0;
     dev->replay_fs4_shift_enabled = cfg->fs4_shift_enabled ? 1 : 0;
-    dev->replay_combine_rotate_enabled = cfg->combine_rotate_enabled ? 1 : 0;
+    dev->replay_historical_cu8_two_pass = cfg->historical_cu8_two_pass ? 1 : 0;
     if (eof_state) {
         dev->replay_eof = *eof_state;
         dev->replay_has_eof_state = 1;
@@ -4567,6 +5469,12 @@ rtl_device_close_backend_resources(struct rtl_device* dev) {
     }
     if (dev->backend == RTL_BACKEND_USB && dev->dev) {
         rtlsdr_close(dev->dev);
+        if (dev->owns_preopened_fd) {
+            /* Released only now that libusb is done with it: the owner polls this to
+             * decide when closing the underlying connection is safe. */
+            dev->owns_preopened_fd = 0;
+            g_preopened_usb_fd_in_use.store(0, std::memory_order_release);
+        }
     }
     if (dev->backend == RTL_BACKEND_TCP && dev->sockfd != DSD_INVALID_SOCKET) {
         dsd_socket_close(dev->sockfd);
@@ -4633,36 +5541,38 @@ rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency) {
     if (!dev) {
         return -1;
     }
-    dev->freq = frequency;
-    if (dev->backend == RTL_BACKEND_USB || dev->backend == RTL_BACKEND_TCP) {
-        rtl_reset_capture_state_on_stream_boundary(dev);
-    }
+    int rc = -1;
     if (dev->backend == RTL_BACKEND_USB) {
         if (!dev->dev) {
             return -1;
         }
-        return verbose_set_frequency(dev->dev, frequency);
-    }
-    if (dev->backend == RTL_BACKEND_TCP) {
-        return rtl_tcp_send_cmd(dev->sockfd, 0x01, frequency);
-    }
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
+        rc = verbose_set_frequency(dev->dev, frequency);
+    } else if (dev->backend == RTL_BACKEND_TCP) {
+        rc = rtl_tcp_send_cmd(dev->sockfd, 0x01, frequency);
+    } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         if (dev->replay_cfg.capture_center_frequency_hz > 0
             && (uint64_t)frequency != dev->replay_cfg.capture_center_frequency_hz) {
             DSD_FPRINTF(stderr, "IQ replay: ignoring retune request to %u Hz (capture center is %" PRIu64 " Hz).\n",
                         frequency, dev->replay_cfg.capture_center_frequency_hz);
         }
-        return 0;
-    }
+        rc = 0;
+    } else {
 #ifdef USE_SOAPYSDR
-    if (dev->backend == RTL_BACKEND_SOAPY) {
-        return soapy_call_locked(dev, "setFrequency", [&]() -> int {
-            dev->soapy_dev->setFrequency(SOAPY_SDR_RX, 0, (double)frequency);
-            return 0;
-        });
-    }
+        if (dev->backend == RTL_BACKEND_SOAPY) {
+            rc = soapy_call_locked(dev, "setFrequency", [&]() -> int {
+                dev->soapy_dev->setFrequency(SOAPY_SDR_RX, 0, (double)frequency);
+                return 0;
+            });
+        }
 #endif
-    return -1;
+    }
+    if (rc == 0) {
+        dev->freq = frequency;
+        if (dev->backend == RTL_BACKEND_USB || dev->backend == RTL_BACKEND_TCP) {
+            rtl_reset_capture_state_on_stream_boundary(dev);
+        }
+    }
+    return rc;
 }
 
 /**
@@ -4677,51 +5587,106 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
     if (!dev) {
         return -1;
     }
-    dev->rate = samp_rate;
+    int rc = -1;
+    uint32_t applied_rate = samp_rate;
     if (dev->backend == RTL_BACKEND_USB) {
         if (!dev->dev) {
             return -1;
         }
-        return verbose_set_sample_rate(dev->dev, samp_rate);
-    }
-    if (dev->backend == RTL_BACKEND_TCP) {
-        int rc = rtl_tcp_send_cmd(dev->sockfd, 0x02, samp_rate);
+        rc = verbose_set_sample_rate(dev->dev, samp_rate, &applied_rate);
+    } else if (dev->backend == RTL_BACKEND_TCP) {
+        rc = rtl_tcp_send_cmd(dev->sockfd, 0x02, samp_rate);
         if (rc == 0) {
             /* The TCP device is created before the final stream rate is known.
              * Reset the metric windows when the rate is programmed so startup
              * delay cannot count against the first watchdog interval. */
             rtl_tcp_metrics_reset_device(dev, samp_rate);
         }
-        return rc;
+    } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
+        rc = 0;
+    } else {
+#ifdef USE_SOAPYSDR
+        if (dev->backend == RTL_BACKEND_SOAPY) {
+            rc = soapy_call_locked(dev, "setSampleRate", [&]() -> int {
+                double requested = (double)samp_rate;
+                double applied = requested;
+                bool adjusted = false;
+                try {
+                    std::vector<double> listed =
+                        soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
+                    std::vector<dsdneo::SoapyRange> ranges =
+                        soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
+                    applied = dsdneo::soapy_nearest_sample_rate(requested, listed, ranges, &adjusted);
+                } catch (const std::exception&) {
+                    applied = requested;
+                }
+                if (adjusted) {
+                    DSD_FPRINTF(stderr, "SoapySDR: adjusted sample rate from %.0f Hz to %.0f Hz.\n", requested,
+                                applied);
+                }
+                dev->soapy_dev->setSampleRate(SOAPY_SDR_RX, 0, applied);
+                applied_rate = (uint32_t)std::lround(applied);
+                return 0;
+            });
+        }
+#endif
     }
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
+    if (rc == 0) {
+        dev->rate = applied_rate;
+    }
+    return rc;
+}
+
+/**
+ * @brief Report the rate the backend would deliver for a requested rate.
+ *
+ * Query only: the device is never reconfigured. Backends with a fixed rate grid (many
+ * SoapySDR drivers) answer with the grid entry nearest the request so the rate
+ * chain can pick decimation for the rate that will really arrive. The answer is
+ * cached per request while the device stays configured, so per-retune callers do
+ * not pay a driver round-trip; `rtl_device_store_soapy_config_request` clears the
+ * cache because driver settings (for example the SDDC ADC clock) can move the grid.
+ */
+int
+// cppcheck-suppress constParameterPointer -- The SoapySDR build locks dev and fills the cache; the stub build does not.
+rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual) {
+    if (!dev || requested == 0U || !out_actual) {
+        return -1;
+    }
+    *out_actual = requested;
+    if (dev->backend != RTL_BACKEND_SOAPY) {
         return 0;
     }
 #ifdef USE_SOAPYSDR
-    if (dev->backend == RTL_BACKEND_SOAPY) {
-        return soapy_call_locked(dev, "setSampleRate", [&]() -> int {
-            double requested = (double)samp_rate;
-            double applied = requested;
-            bool adjusted = false;
-            try {
-                std::vector<double> listed =
-                    soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
-                std::vector<dsdneo::SoapyRange> ranges =
-                    soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
-                applied = dsdneo::soapy_nearest_sample_rate(requested, listed, ranges, &adjusted);
-            } catch (const std::exception&) {
-                applied = requested;
-            }
-            if (adjusted) {
-                DSD_FPRINTF(stderr, "SoapySDR: adjusted sample rate from %.0f Hz to %.0f Hz.\n", requested, applied);
-            }
-            dev->soapy_dev->setSampleRate(SOAPY_SDR_RX, 0, applied);
-            dev->rate = (uint32_t)std::lround(applied);
+    /* The cache is read and refreshed under the Soapy lock so concurrent callers never
+       observe a torn requested/actual pair. */
+    uint32_t actual = 0U;
+    int rc = soapy_call_locked(dev, "listSampleRates", [&]() -> int {
+        if (dev->soapy_nearest_rate_cache_requested == requested && dev->soapy_nearest_rate_cache_actual != 0U) {
+            actual = dev->soapy_nearest_rate_cache_actual;
             return 0;
-        });
+        }
+        bool adjusted = false;
+        std::vector<double> listed = soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
+        std::vector<dsdneo::SoapyRange> ranges =
+            soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
+        double applied = dsdneo::soapy_nearest_sample_rate((double)requested, listed, ranges, &adjusted);
+        if (!(applied > 0.0) || applied > (double)UINT32_MAX) {
+            return -1;
+        }
+        actual = (uint32_t)std::lround(applied);
+        dev->soapy_nearest_rate_cache_requested = requested;
+        dev->soapy_nearest_rate_cache_actual = actual;
+        return 0;
+    });
+    if (rc != 0 || actual == 0U) {
+        return -1;
     }
-#endif
+    *out_actual = actual;
+    return 0;
+#else
     return -1;
+#endif
 }
 
 /**
@@ -4739,7 +5704,12 @@ rtl_device_get_sample_rate(struct rtl_device* dev) {
         if (!dev->dev) {
             return -1;
         }
-        return (int)rtlsdr_get_sample_rate(dev->dev);
+        uint32_t actual = rtlsdr_get_sample_rate(dev->dev);
+        // cppcheck-suppress unsignedLessThanZero -- The no-RTL optional build always reports a zero sample rate.
+        if (actual > 0U) {
+            dev->rate = actual;
+        }
+        return (int)actual;
     }
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         return (int)dev->replay_cfg.sample_rate_hz;
@@ -4763,15 +5733,23 @@ rtl_device_get_sample_rate(struct rtl_device* dev) {
 }
 
 static int
-rtl_device_set_gain_usb(struct rtl_device* dev, int gain) {
+rtl_device_set_gain_usb(struct rtl_device* dev, int gain, int* out_applied_gain) {
     if (!dev || !dev->dev) {
         return -1;
     }
     if (gain == RTL_AUTO_GAIN) {
-        return verbose_auto_gain(dev->dev);
+        int rc = verbose_auto_gain(dev->dev);
+        if (rc == 0 && out_applied_gain) {
+            *out_applied_gain = RTL_AUTO_GAIN;
+        }
+        return rc;
     }
     int nearest = nearest_gain(dev->dev, gain);
-    return verbose_gain_set(dev->dev, nearest);
+    int rc = verbose_gain_set(dev->dev, nearest);
+    if (rc == 0 && out_applied_gain) {
+        *out_applied_gain = nearest;
+    }
+    return rc;
 }
 
 static int
@@ -4854,23 +5832,29 @@ rtl_device_set_gain(struct rtl_device* dev, int gain) {
     if (!dev) {
         return -1;
     }
-    dev->gain = gain;
+    int rc = -1;
+    int applied_gain = gain;
     if (dev->backend == RTL_BACKEND_USB) {
-        return rtl_device_set_gain_usb(dev, gain);
-    }
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
+        rc = rtl_device_set_gain_usb(dev, gain, &applied_gain);
+        if (rc == 0) {
+            dev->agc_mode = (applied_gain == RTL_AUTO_GAIN) ? 1 : 0;
+        }
+    } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
         dev->agc_mode = 0;
-        return 0;
-    }
-    if (dev->backend == RTL_BACKEND_TCP) {
-        return rtl_device_set_gain_tcp(dev, gain);
-    }
+        rc = 0;
+    } else if (dev->backend == RTL_BACKEND_TCP) {
+        rc = rtl_device_set_gain_tcp(dev, gain);
+    } else {
 #ifdef USE_SOAPYSDR
-    if (dev->backend == RTL_BACKEND_SOAPY) {
-        return rtl_device_set_gain_soapy(dev, gain);
-    }
+        if (dev->backend == RTL_BACKEND_SOAPY) {
+            rc = rtl_device_set_gain_soapy(dev, gain);
+        }
 #endif
-    return -1;
+    }
+    if (rc == 0) {
+        dev->gain = applied_gain;
+    }
+    return rc;
 }
 
 static int
@@ -4882,17 +5866,13 @@ rtl_device_set_gain_nearest_usb(struct rtl_device* dev, int target_tenth_db) {
     if (g < 0) {
         return g;
     }
-    int r = rtlsdr_set_tuner_gain_mode(dev->dev, 1);
-    if (r < 0) {
-        DSD_FPRINTF(stderr, "WARNING: Failed to enable manual gain.\n");
-        return r;
-    }
-    r = rtlsdr_set_tuner_gain(dev->dev, g);
+    int r = verbose_gain_set(dev->dev, g);
     if (r < 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to set tuner gain (nearest).\n");
         return r;
     }
     dev->gain = g;
+    dev->agc_mode = 0;
     DSD_FPRINTF(stderr, "Tuner manual gain (nearest): %0.1f dB.\n", (double)g / 10.0);
     return 0;
 }
@@ -5067,6 +6047,33 @@ rtl_device_set_ppm(struct rtl_device* dev, int ppm_error) {
 }
 
 /**
+ * @brief Report whether the backend can apply a frequency (PPM) correction.
+ */
+int
+// cppcheck-suppress constParameterPointer -- The SoapySDR build locks dev; the stub build does not.
+rtl_device_supports_ppm(struct rtl_device* dev) {
+    if (!dev) {
+        return 0;
+    }
+    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
+        return 0;
+    }
+    if (dev->backend == RTL_BACKEND_SOAPY) {
+#ifdef USE_SOAPYSDR
+        int supported = 0;
+        int rc = soapy_call_locked(dev, "hasFrequencyCorrection", [&]() -> int {
+            supported = dev->soapy_dev->hasFrequencyCorrection(SOAPY_SDR_RX, 0) ? 1 : 0;
+            return 0;
+        });
+        return (rc == 0) ? supported : 0;
+#else
+        return 0;
+#endif
+    }
+    return 1;
+}
+
+/**
  * @brief Set direct sampling mode.
  *
  * @param dev RTL-SDR device handle.
@@ -5078,23 +6085,23 @@ rtl_device_set_direct_sampling(struct rtl_device* dev, int on) {
     if (!dev) {
         return -1;
     }
-    dev->direct_sampling = on;
+    int rc = -1;
     if (dev->backend == RTL_BACKEND_USB) {
         if (!dev->dev) {
             return -1;
         }
-        return verbose_direct_sampling(dev->dev, on);
+        rc = verbose_direct_sampling(dev->dev, on);
+    } else if (dev->backend == RTL_BACKEND_TCP) {
+        rc = rtl_tcp_send_cmd(dev->sockfd, 0x09, (uint32_t)on);
+    } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
+        rc = 0;
+    } else if (dev->backend == RTL_BACKEND_SOAPY) {
+        rc = DSD_ERR_NOT_SUPPORTED;
     }
-    if (dev->backend == RTL_BACKEND_TCP) {
-        return rtl_tcp_send_cmd(dev->sockfd, 0x09, (uint32_t)on);
+    if (rc == 0) {
+        dev->direct_sampling = on;
     }
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        return 0;
-    }
-    if (dev->backend == RTL_BACKEND_SOAPY) {
-        return DSD_ERR_NOT_SUPPORTED;
-    }
-    return -1;
+    return rc;
 }
 
 /**
@@ -5110,8 +6117,11 @@ rtl_device_set_offset_tuning_enabled(struct rtl_device* dev, int on) {
         if (!dev->dev) {
             return -1;
         }
-        r = rtlsdr_set_offset_tuning(dev->dev, on ? 1 : 0);
+        rtl_usb_int_apply_ctx ctx{dev->dev, on ? 1 : 0};
+        int attempts = 0;
+        r = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_offset_tuning, NULL, &ctx, &attempts);
         if (r == 0) {
+            rtl_usb_log_retry_attempts("offset tuning apply", attempts);
             DSD_FPRINTF(stderr, on ? "Offset tuning mode enabled.\n" : "Offset tuning mode disabled.\n");
         } else {
             int tuner_type = rtlsdr_get_tuner_type(dev->dev);
@@ -5355,33 +6365,47 @@ rtl_device_set_bias_tee(struct rtl_device* dev, int on) {
     if (!dev) {
         return -1;
     }
-    dev->bias_tee_on = on ? 1 : 0;
+    int requested = on ? 1 : 0;
+    int rc = -1;
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        return 0;
-    }
-    if (dev->backend == RTL_BACKEND_TCP) {
+        rc = 0;
+    } else if (dev->backend == RTL_BACKEND_TCP) {
         /* rtl_tcp protocol command 0x0E toggles bias tee */
-        return rtl_tcp_send_cmd(dev->sockfd, 0x0E, (uint32_t)dev->bias_tee_on);
-    }
-    if (dev->backend == RTL_BACKEND_SOAPY) {
-        return DSD_ERR_NOT_SUPPORTED;
-    }
+        rc = rtl_tcp_send_cmd(dev->sockfd, 0x0E, (uint32_t)requested);
+    } else if (dev->backend == RTL_BACKEND_SOAPY) {
+        rc = DSD_ERR_NOT_SUPPORTED;
+    } else {
 #ifdef USE_RTLSDR_BIAS_TEE
-    if (!dev->dev) {
-        return -1;
-    }
-    int r = rtlsdr_set_bias_tee(dev->dev, dev->bias_tee_on);
-    if (r != 0) {
-        DSD_FPRINTF(stderr, "WARNING: Failed to %sable RTL-SDR bias tee.\n", dev->bias_tee_on ? "en" : "dis");
-        return -1;
-    }
-    DSD_FPRINTF(stderr, "RTL-SDR bias tee %s.\n", dev->bias_tee_on ? "enabled" : "disabled");
-    return 0;
+        if (!dev->dev) {
+            return -1;
+        }
+
+        struct rtl_usb_bias_tee_apply_ctx {
+            rtlsdr_dev_t* dev;
+            int value;
+        } ctx{dev->dev, requested};
+
+        auto apply_bias_tee = [](void* opaque) -> int {
+            rtl_usb_bias_tee_apply_ctx* bias_ctx = static_cast<rtl_usb_bias_tee_apply_ctx*>(opaque);
+            return (bias_ctx && bias_ctx->dev) ? rtlsdr_set_bias_tee(bias_ctx->dev, bias_ctx->value) : -1;
+        };
+        int attempts = 0;
+        rc = rtl_usb_apply_with_runtime_retry(apply_bias_tee, NULL, &ctx, &attempts);
+        if (rc != 0) {
+            DSD_FPRINTF(stderr, "WARNING: Failed to %sable RTL-SDR bias tee.\n", requested ? "en" : "dis");
+            return -1;
+        }
+        rtl_usb_log_retry_attempts("bias tee apply", attempts);
+        DSD_FPRINTF(stderr, "RTL-SDR bias tee %s.\n", requested ? "enabled" : "disabled");
 #else
-    (void)on;
-    DSD_FPRINTF(stderr, "NOTE: librtlsdr built without bias tee API; ignoring bias setting on USB.\n");
-    return DSD_ERR_NOT_SUPPORTED;
+        DSD_FPRINTF(stderr, "NOTE: librtlsdr built without bias tee API; ignoring bias setting on USB.\n");
+        rc = DSD_ERR_NOT_SUPPORTED;
 #endif
+    }
+    if (rc == 0) {
+        dev->bias_tee_on = requested;
+    }
+    return rc;
 }
 
 int
@@ -5398,20 +6422,6 @@ rtl_device_set_tcp_autotune(struct rtl_device* dev, int onoff) {
     }
     dev->tcp_autotune = onoff ? 1 : 0;
     return 0;
-}
-
-int
-rtl_device_get_tcp_autotune(const struct rtl_device* dev) {
-    if (!dev) {
-        return 0;
-    }
-    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        return 0;
-    }
-    if (dev->backend != RTL_BACKEND_TCP) {
-        return 0;
-    }
-    return dev->tcp_autotune ? 1 : 0;
 }
 
 int
@@ -5443,6 +6453,7 @@ rtl_device_set_xtal_freq(struct rtl_device* dev, uint32_t rtl_xtal_hz, uint32_t 
         return -1;
     }
     int r = rtlsdr_set_xtal_freq(dev->dev, rtl_xtal_hz, tuner_xtal_hz);
+    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (r != 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to set xtal freq (rtl=%u, tuner=%u).\n", rtl_xtal_hz, tuner_xtal_hz);
         return -1;
@@ -5457,29 +6468,35 @@ rtl_device_set_testmode(struct rtl_device* dev, int on) {
     if (!dev) {
         return -1;
     }
-    dev->testmode_on = on ? 1 : 0;
+    int requested = on ? 1 : 0;
+    int rc = -1;
     if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
-        return 0;
-    }
-    if (dev->backend == RTL_BACKEND_TCP) {
+        rc = 0;
+    } else if (dev->backend == RTL_BACKEND_TCP) {
         if (dev->sockfd == DSD_INVALID_SOCKET) {
             return -1;
         }
-        return rtl_tcp_send_cmd(dev->sockfd, 0x07, (uint32_t)(on ? 1 : 0));
+        rc = rtl_tcp_send_cmd(dev->sockfd, 0x07, (uint32_t)requested);
+    } else if (dev->backend == RTL_BACKEND_SOAPY) {
+        rc = DSD_ERR_NOT_SUPPORTED;
+    } else {
+        if (!dev->dev) {
+            return -1;
+        }
+        rtl_usb_int_apply_ctx ctx{dev->dev, requested};
+        int attempts = 0;
+        rc = rtl_usb_apply_with_runtime_retry(rtl_usb_apply_testmode, NULL, &ctx, &attempts);
+        if (rc != 0) {
+            DSD_FPRINTF(stderr, "WARNING: Failed to %s RTL-SDR test mode.\n", on ? "enable" : "disable");
+            return -1;
+        }
+        rtl_usb_log_retry_attempts("test mode apply", attempts);
+        DSD_FPRINTF(stderr, "RTL-SDR test mode %s.\n", on ? "enabled" : "disabled");
     }
-    if (dev->backend == RTL_BACKEND_SOAPY) {
-        return DSD_ERR_NOT_SUPPORTED;
+    if (rc == 0) {
+        dev->testmode_on = requested;
     }
-    if (!dev->dev) {
-        return -1;
-    }
-    int r = rtlsdr_set_testmode(dev->dev, on ? 1 : 0);
-    if (r != 0) {
-        DSD_FPRINTF(stderr, "WARNING: Failed to %s RTL-SDR test mode.\n", on ? "enable" : "disable");
-        return -1;
-    }
-    DSD_FPRINTF(stderr, "RTL-SDR test mode %s.\n", on ? "enabled" : "disabled");
-    return 0;
+    return rc;
 }
 
 int
@@ -5520,6 +6537,7 @@ rtl_device_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db) {
         return -1;
     }
     int r = rtlsdr_set_tuner_if_gain(dev->dev, stage, (int16_t)gain_tenth_db);
+    // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (r != 0) {
         DSD_FPRINTF(stderr, "WARNING: Failed to set IF gain: stage=%d, gain=%d (0.1 dB).\n", stage, gain_tenth_db);
         return -1;
@@ -5630,22 +6648,210 @@ rtl_device_test_usb_reconfigure_discards_samples(size_t input_bytes, size_t* out
 }
 
 extern "C" int
-rtl_device_test_soapy_config_settings_visibility(size_t config_size, const char* settings, int* out_seen) {
-    if (!out_seen) {
+rtl_device_test_u8_odd_carry_bridge(size_t* out_used, int* out_phase, int* out_carry_valid, uint8_t* out_carry_byte,
+                                    int* out_first_status, int* out_second_status) {
+    if (!out_used || !out_phase || !out_carry_valid || !out_carry_byte || !out_first_status || !out_second_status) {
         return -1;
+    }
+    input_ring_state ring{};
+    if (input_ring_init(&ring, 16U) != 0) {
+        return -2;
     }
 
     rtl_device dev{};
-    rtl_device_init_common_state(&dev);
-    rtl_soapy_config cfg{};
-    cfg.settings = settings;
+    dev.input_ring = &ring;
+    dev.backend = RTL_BACKEND_IQ_REPLAY;
+    dev.replay_fs4_shift_enabled = 1;
+    dev.replay_historical_cu8_two_pass = 0;
+    dev.rot_phase = 0;
 
-    rtl_device_store_soapy_config_request(&dev, &cfg, config_size);
-    *out_seen = dev.soapy_requested_settings[0] != '\0' ? 1 : 0;
+    unsigned char first[] = {129U};
+    unsigned char second[] = {128U, 126U};
+    *out_first_status = rtl_write_u8_to_ring(&dev, first, sizeof(first), 1, 0, 1, 0, NULL);
+    *out_second_status = rtl_write_u8_to_ring(&dev, second, sizeof(second), 1, 0, 1, 0, NULL);
+    *out_used = input_ring_used(&ring);
+    *out_phase = dev.rot_phase;
+    *out_carry_valid = dev.iq_byte_carry.valid ? 1 : 0;
+    *out_carry_byte = dev.iq_byte_carry.byte;
 
-    rtl_device_cleanup_common_state(&dev);
+    input_ring_destroy(&ring);
     return 0;
 }
+
+extern "C" int
+rtl_device_test_u8_full_ring_drop(size_t* out_used, uint64_t* out_drops, uint64_t* out_full_events, int* out_phase,
+                                  int* out_status) {
+    if (!out_used || !out_drops || !out_full_events || !out_phase || !out_status) {
+        return -1;
+    }
+    input_ring_state ring{};
+    if (input_ring_init(&ring, 3U) != 0) {
+        return -2;
+    }
+
+    rtl_device dev{};
+    dev.input_ring = &ring;
+    dev.backend = RTL_BACKEND_USB;
+    dev.offset_tuning = 0;
+    dev.rot_phase = 0;
+
+    unsigned char input[] = {130U, 127U, 129U, 126U, 128U, 125U};
+    *out_status = rtl_write_u8_to_ring(&dev, input, sizeof(input), 1, 0, 1, 1, NULL);
+    *out_used = input_ring_used(&ring);
+    *out_drops = ring.producer_drops.load(std::memory_order_acquire);
+    *out_full_events = dev.reserve_full_events;
+    *out_phase = dev.rot_phase;
+
+    input_ring_destroy(&ring);
+    return 0;
+}
+
+extern "C" int
+rtl_device_test_u8_generation_stale_drop(uint64_t* out_drops, int* out_phase, int* out_dev_carry_valid,
+                                         int* out_local_carry_valid, int* out_status) {
+    if (!out_drops || !out_phase || !out_dev_carry_valid || !out_local_carry_valid || !out_status) {
+        return -1;
+    }
+    input_ring_state ring{};
+    if (input_ring_init(&ring, 8U) != 0) {
+        return -2;
+    }
+
+    rtl_device dev{};
+    dev.input_ring = &ring;
+    dev.backend = RTL_BACKEND_USB;
+    dev.rot_phase = 3;
+    rtl_capture_u8_byte_carry_save(&dev.iq_byte_carry, 200U);
+
+    unsigned char input[] = {120U, 121U, 122U, 123U, 124U};
+    rtl_capture_u8_byte_carry carry = dev.iq_byte_carry;
+    int phase = dev.rot_phase;
+    size_t done = 1U;
+    size_t need = 4U;
+    size_t produced = 2U;
+    *out_status = rtl_handle_u8_ring_generation_stale(&dev, input, done, need, &carry, &phase, 1, produced);
+
+    rtl_u8_finalize_state final_state = {input, sizeof(input), done, need, &carry, &phase, 1, 0, 0, 1, NULL};
+    rtl_finalize_u8_ring_write(&dev, &final_state);
+
+    *out_drops = ring.producer_drops.load(std::memory_order_acquire);
+    *out_phase = phase;
+    *out_dev_carry_valid = dev.iq_byte_carry.valid ? 1 : 0;
+    *out_local_carry_valid = carry.valid ? 1 : 0;
+
+    input_ring_destroy(&ring);
+    return 0;
+}
+
+static int
+rtl_device_test_collect_write_moments(unsigned char* input, size_t input_len, size_t ring_capacity, size_t start_index,
+                                      int use_two_pass, int force_stale, dsd_input_level_cu8_moments* out) {
+    if (!input || input_len == 0U || !out || ring_capacity < 3U || start_index >= ring_capacity) {
+        return -1;
+    }
+    input_ring_state ring{};
+    if (input_ring_init(&ring, ring_capacity) != 0) {
+        return -2;
+    }
+    ring.head.store(start_index, std::memory_order_relaxed);
+    ring.tail.store(start_index, std::memory_order_relaxed);
+
+    rtl_device dev{};
+    dev.input_ring = &ring;
+    dev.backend = RTL_BACKEND_USB;
+    dsd_input_level_cu8_moments_reset(out);
+    if (force_stale) {
+        g_rtl_test_force_u8_generation_stale.store(1, std::memory_order_release);
+    }
+    (void)rtl_write_u8_to_ring(&dev, input, input_len, 1, use_two_pass, use_two_pass ? 0 : 1, 1, out);
+    g_rtl_test_force_u8_generation_stale.store(0, std::memory_order_release);
+    input_ring_destroy(&ring);
+    return 0;
+}
+
+extern "C" int
+rtl_device_test_u8_moment_accounting(dsd_input_level_cu8_moments* out, size_t out_count) {
+    if (!out || out_count < 9U) {
+        return -1;
+    }
+
+    unsigned char contiguous[] = {0U, 1U, 2U, 128U, 254U, 255U};
+    unsigned char wrapped[] = {0U, 1U, 2U, 128U, 254U, 255U};
+    unsigned char full[] = {0U, 1U, 2U, 128U, 254U, 255U};
+    unsigned char stale[] = {0U, 1U, 2U, 128U, 254U, 255U};
+    if (rtl_device_test_collect_write_moments(contiguous, sizeof(contiguous), 10U, 0U, 0, 0, &out[0]) != 0
+        || rtl_device_test_collect_write_moments(wrapped, sizeof(wrapped), 10U, 8U, 0, 0, &out[1]) != 0) {
+        return -2;
+    }
+
+    input_ring_state odd_ring{};
+    if (input_ring_init(&odd_ring, 16U) != 0) {
+        return -2;
+    }
+    rtl_device odd_dev{};
+    odd_dev.input_ring = &odd_ring;
+    odd_dev.backend = RTL_BACKEND_USB;
+    unsigned char odd_first[] = {3U};
+    unsigned char odd_second[] = {4U, 5U};
+    dsd_input_level_cu8_moments_reset(&out[2]);
+    dsd_input_level_cu8_moments_reset(&out[3]);
+    (void)rtl_write_u8_to_ring(&odd_dev, odd_first, sizeof(odd_first), 1, 0, 1, 0, &out[2]);
+    (void)rtl_write_u8_to_ring(&odd_dev, odd_second, sizeof(odd_second), 1, 0, 1, 0, &out[3]);
+    input_ring_destroy(&odd_ring);
+
+    if (rtl_device_test_collect_write_moments(full, sizeof(full), 3U, 0U, 0, 0, &out[4]) != 0
+        || rtl_device_test_collect_write_moments(stale, sizeof(stale), 5U, 0U, 0, 1, &out[5]) != 0) {
+        return -2;
+    }
+
+    input_ring_state tcp_ring{};
+    if (input_ring_init(&tcp_ring, 32U) != 0) {
+        return -2;
+    }
+    rtl_device tcp_dev{};
+    tcp_dev.input_ring = &tcp_ring;
+    tcp_dev.backend = RTL_BACKEND_TCP;
+    tcp_dev.buf_len = 4;
+    tcp_dev.tcp_pending = static_cast<unsigned char*>(malloc(4U));
+    if (!tcp_dev.tcp_pending) {
+        input_ring_destroy(&tcp_ring);
+        return -2;
+    }
+    tcp_dev.tcp_pending_cap = 4U;
+    tcp_dev.tcp_pending_len = 2U;
+    tcp_dev.tcp_pending[0] = 91U;
+    tcp_dev.tcp_pending[1] = 92U;
+    unsigned char tcp_input[] = {0U, 255U, 1U, 2U, 3U, 4U, 254U, 253U, 128U};
+    rtl_u8_transform_policy_state policy{1, 1, 0};
+    dsd_input_level_cu8_moments_reset(&out[6]);
+    rtl_tcp_reassemble_and_submit(&tcp_dev, tcp_input, (uint32_t)sizeof(tcp_input), &policy, &out[6]);
+    free(tcp_dev.tcp_pending);
+    input_ring_destroy(&tcp_ring);
+
+    const uint8_t replay_raw[] = {0U, 1U, 254U, 255U};
+    for (int historical = 0; historical <= 1; historical++) {
+        rtl_device replay_dev{};
+        replay_dev.backend = RTL_BACKEND_IQ_REPLAY;
+        replay_dev.replay_cfg.format = DSD_IQ_FORMAT_CU8;
+        replay_dev.replay_fs4_shift_enabled = 1;
+        replay_dev.replay_historical_cu8_two_pass = historical;
+        uint8_t mutable_raw[sizeof(replay_raw)];
+        DSD_MEMCPY(mutable_raw, replay_raw, sizeof(replay_raw));
+        float converted[sizeof(replay_raw) + 1U] = {};
+        int phase = 0;
+        int have_carry = 1;
+        uint8_t carry_byte = 77U;
+        dsd_input_level_cu8_moments_reset(&out[7U + (size_t)historical]);
+        int produced = replay_convert_cu8_to_f32(&replay_dev, mutable_raw, sizeof(mutable_raw), converted,
+                                                 sizeof(converted) / sizeof(converted[0]), &phase, &have_carry,
+                                                 &carry_byte, &out[7U + (size_t)historical]);
+        if (produced <= 0) {
+            return -2;
+        }
+    }
+    return 0;
+}
+
 #endif
 
 void
@@ -5720,16 +6926,46 @@ rtl_device_get_native_sample_format(const struct rtl_device* dev) {
     return 0;
 }
 
-int
-rtl_device_get_tcp_quality_snapshot(struct rtl_device* dev, struct tcp_quality_snapshot* out) {
-    if (!dev || !out || dev->backend != RTL_BACKEND_TCP) {
-        if (out) {
-            *out = tcp_quality_snapshot{};
-        }
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+extern "C" int
+rtl_device_test_public_capture_policy(int* out_formats, size_t out_formats_len, uint32_t* out_counts,
+                                      size_t out_counts_len) {
+    if (!out_formats || out_formats_len < 8U || !out_counts || out_counts_len < 5U) {
         return -1;
     }
-    rtl_tcp_metrics_lock(dev);
-    *out = tcp_metrics_get_snapshot(&dev->tcp_metrics);
-    rtl_tcp_metrics_unlock(dev);
+
+    rtl_device dev{};
+
+    out_formats[0] = rtl_device_get_native_sample_format(NULL);
+    dev.backend = RTL_BACKEND_USB;
+    out_formats[1] = rtl_device_get_native_sample_format(&dev);
+    dev.backend = RTL_BACKEND_TCP;
+    out_formats[2] = rtl_device_get_native_sample_format(&dev);
+    dev.backend = RTL_BACKEND_SOAPY;
+    dev.soapy_format = SOAPY_FMT_CF32;
+    out_formats[3] = rtl_device_get_native_sample_format(&dev);
+    dev.soapy_format = SOAPY_FMT_CS16;
+    out_formats[4] = rtl_device_get_native_sample_format(&dev);
+    dev.soapy_format = SOAPY_FMT_NONE;
+    out_formats[5] = rtl_device_get_native_sample_format(&dev);
+    dev.backend = RTL_BACKEND_IQ_REPLAY;
+    dev.replay_cfg.format = DSD_IQ_FORMAT_CS16;
+    out_formats[6] = rtl_device_get_native_sample_format(&dev);
+    dev.backend = 99;
+    out_formats[7] = rtl_device_get_native_sample_format(&dev);
+
+    out_counts[0] = rtl_device_get_capture_retune_count(NULL);
+    out_counts[1] = rtl_device_get_capture_retune_count(&dev);
+    rtl_device_note_capture_retune(&dev);
+    out_counts[2] = rtl_device_get_capture_retune_count(&dev);
+    // Opaque non-null sentinel used only to exercise pointer-presence accounting.
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    rtl_device_set_iq_capture_writer(&dev, reinterpret_cast<dsd_iq_capture_writer*>(static_cast<uintptr_t>(1U)));
+    rtl_device_note_capture_retune(&dev);
+    rtl_device_note_capture_retune(&dev);
+    out_counts[3] = rtl_device_get_capture_retune_count(&dev);
+    rtl_device_set_iq_capture_writer(&dev, NULL);
+    out_counts[4] = rtl_device_get_capture_retune_count(&dev);
     return 0;
 }
+#endif

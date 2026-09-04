@@ -9,7 +9,11 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -17,6 +21,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+#include "dmr_hytera.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
@@ -24,7 +29,7 @@
 
 static void
 dmr_pi_update_sync_times_if_tuned(const dsd_opts* opts, dsd_state* state) {
-    if (opts->p25_is_tuned == 1 || opts->trunk_is_tuned == 1) {
+    if (opts->trunk_is_tuned == 1) {
         state->last_vc_sync_time = time(NULL);
         state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         state->last_cc_sync_time = time(NULL);
@@ -64,6 +69,8 @@ dmr_pi_handle_kirisun(dsd_opts* opts, dsd_state* state, const uint8_t pi_byte[])
         state->payload_keyidR = key_hash;
         state->payload_miR = mi;
     }
+    // CRC-verified PI header (gated by the caller): strong classification evidence.
+    dmr_enc_class_force(state, (uint8_t)(state->currentslot & 1), (so & 0x40U) != 0U);
 
     DSD_FPRINTF(stderr, "%s ", KYEL);
     DSD_FPRINTF(stderr, "\n Slot %d", state->currentslot + 1);
@@ -82,19 +89,6 @@ dmr_pi_handle_kirisun(dsd_opts* opts, dsd_state* state, const uint8_t pi_byte[])
     opts->dmr_le = 3;
 }
 
-static uint8_t
-dmr_pi_hytera_checksum(const uint8_t pi_byte[]) {
-    uint8_t checksum = 0;
-
-    for (int i = 0; i < 9; i++) {
-        checksum = (uint8_t)((checksum + pi_byte[i]) & 0xFFU);
-    }
-
-    checksum = (uint8_t)(~checksum & 0xFFU);
-    checksum++;
-    return checksum;
-}
-
 static void
 dmr_pi_hytera_print_key(const dsd_state* state, int show_keys) {
     if (state->currentslot == 0 && state->R != 0) {
@@ -111,24 +105,28 @@ dmr_pi_hytera_print_key(const dsd_state* state, int show_keys) {
 
 static void
 dmr_pi_handle_hytera(dsd_opts* opts, dsd_state* state, const uint8_t pi_byte[]) {
-    if (state->currentslot == 0) {
-        state->dmr_so |= 0x40; //OR the enc bit onto the SO
-        state->payload_algid = pi_byte[0];
-        state->payload_keyid = pi_byte[2];
-        state->payload_mi = dmr_pi_extract_mi40(pi_byte);
-    } else {
-        state->dmr_soR |= 0x40; //OR the enc bit onto the SO
-        state->payload_algidR = pi_byte[0];
-        state->payload_keyidR = pi_byte[2];
-        state->payload_miR = dmr_pi_extract_mi40(pi_byte);
-    }
-
     DSD_FPRINTF(stderr, "%s ", KYEL);
     DSD_FPRINTF(stderr, "\n Slot %d", state->currentslot + 1);
     DSD_FPRINTF(stderr, " DMR PI H- ALG ID: %02X; KEY ID: %02X; MI(40): %02X%02X%02X%02X%02X;", pi_byte[0], pi_byte[2],
                 pi_byte[3], pi_byte[4], pi_byte[5], pi_byte[6], pi_byte[7]);
 
-    if (dmr_pi_hytera_checksum(pi_byte) == pi_byte[9]) {
+    if (dmr_hytera_checksum(pi_byte, 9U) == pi_byte[9]) {
+        // Only a checksum-verified PI may mutate the live crypto: the caller dispatches on the
+        // MFID byte alone, so an unverified Hytera-shaped PI is exactly one corrupt burst away
+        // from muting a clear call with a fabricated ALGID/MI.
+        if (state->currentslot == 0) {
+            state->dmr_so |= 0x40; //OR the enc bit onto the SO
+            state->payload_algid = pi_byte[0];
+            state->payload_keyid = pi_byte[2];
+            state->payload_mi = dmr_pi_extract_mi40(pi_byte);
+        } else {
+            state->dmr_soR |= 0x40; //OR the enc bit onto the SO
+            state->payload_algidR = pi_byte[0];
+            state->payload_keyidR = pi_byte[2];
+            state->payload_miR = dmr_pi_extract_mi40(pi_byte);
+        }
+        dmr_enc_class_force(state, (uint8_t)(state->currentslot & 1), 1);
+
         DSD_FPRINTF(stderr, " Hytera Enhanced; ");
         dmr_pi_hytera_print_key(state, opts->show_keys);
 
@@ -222,6 +220,52 @@ dmr_pi_handle_dmra(dsd_state* state, const uint8_t pi_byte[]) {
     }
 }
 
+// Asymmetric with dmr_flco_publish_crypto() on purpose, and worth knowing which way: the FLCO
+// resolves the map against the talkgroup it is itself carrying (ctx->target), so it is immune to
+// snapshot ordering, while this one has only the slot's call snapshot to look the talkgroup up in.
+// A PI header that lands before any BEGIN observation on the slot therefore finds no snapshot,
+// leaves mapped at 0, and publishes ENCRYPTED/audio_permitted = 0 even for a mapped talkgroup.
+// That is a transient label, not a gate: this field drives the UI and telemetry, DMR voice audio is
+// gated in the voice path from its own resolver call, and the next FLCO or PI header on the slot
+// republishes with the snapshot in place.
+static void
+dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state) {
+    const uint8_t slot = (uint8_t)((state->currentslot == 1) ? 1 : 0);
+    const uint8_t algid = (uint8_t)(slot == 0U ? state->payload_algid : state->payload_algidR);
+    const uint16_t kid = (uint16_t)(slot == 0U ? state->payload_keyid : state->payload_keyidR);
+    const uint64_t mi = slot == 0U ? state->payload_mi : state->payload_miR;
+
+    // Same reason as dmr_flco_publish_crypto(): classify against the key id that will decrypt
+    // the call. One snapshot per PI header, not per voice frame.
+    // Same bounded staleness as the voice path: a missed terminator leaves the previous
+    // transmission's epoch ACTIVE, so an early PI header can publish against the old talkgroup's
+    // row. See keyring_dmr_tg_map_call_is_mappable() for why no freshness signal exists.
+    dsd_call_snapshot call;
+    int mapped = 0;
+    int eff_kid = (int)kid;
+    if (dsd_call_state_get(state, slot, &call) > 0) {
+        eff_kid = keyring_dmr_kid_for_call(state, &call, dsd_dmr_alg_key_need((int)algid), (int)kid, &mapped);
+    }
+    // Kirisun 0x36/0x37 decides on the quartet, not on r_key/aes_loaded, and activation overwrites
+    // the slot's quartet too -- so the mapped key id has to supply its own verdict here as well.
+    // Same helper dmr_flco.c resolves from, so the LC-published and PI-published verdicts for one
+    // call cannot drift apart.
+    const dsd_dmr_key_material key = dsd_dmr_slot_key_material(state, (int)slot, eff_kid, mapped);
+
+    const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(state, slot)
+                                    : dsd_dmr_voice_kid_can_decrypt(state, slot, algid, &key);
+    const dsd_call_crypto_update update = {
+        .classification = has_key ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED,
+        .algid = algid,
+        .kid = kid, /* OTA truth, never the override */
+        .mi = mi,
+        .audio_permitted = (uint8_t)has_key,
+    };
+    if (dsd_call_state_update_crypto(state, slot, &update) > 0) {
+        dsd_event_sync_slot(opts, state, slot);
+    }
+}
+
 void
 dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors) {
     const uint8_t MFID = PI_BYTE[1];
@@ -235,57 +279,21 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
 
     if (MFID == 0x0A && CRCCorrect == 1) { //Kirisun
         dmr_pi_handle_kirisun(opts, state, PI_BYTE);
+        dmr_pi_publish_crypto(opts, state);
         return;
     }
 
     if (MFID == 0x68) { //Hytera Enhanced
         dmr_pi_handle_hytera(opts, state, PI_BYTE);
+        if (dmr_hytera_checksum(PI_BYTE, 9U) == PI_BYTE[9]) {
+            dmr_pi_publish_crypto(opts, state);
+        }
         return;
     }
 
-    if (MFID == 0x10) { //DMRA
+    if (MFID == 0x10 && CRCCorrect == 1) { //DMRA
         dmr_pi_handle_dmra(state, PI_BYTE);
-    }
-}
-
-void
-LFSR(dsd_state* state) {
-    unsigned long long int lfsr = 0;
-    if (state->currentslot == 0) {
-        lfsr = state->payload_mi;
-    } else {
-        lfsr = state->payload_miR;
-    }
-
-    uint8_t cnt = 0;
-
-    for (cnt = 0; cnt < 32; cnt++) {
-        // Polynomial is C(x) = x^32 + x^4 + x^2 + 1
-        unsigned long long int bit = ((lfsr >> 31) ^ (lfsr >> 3) ^ (lfsr >> 1)) & 0x1;
-        lfsr = (lfsr << 1) | bit;
-    }
-
-    lfsr &= 0xFFFFFFFF;
-
-    if (state->currentslot == 0) {
-        DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, " Slot 1");
-        DSD_FPRINTF(stderr, " DMR PI C- ALG ID: %02X; KEY ID: %02X;", state->payload_algid, state->payload_keyid);
-        DSD_FPRINTF(stderr, " MI(32): %08llX;", lfsr);
-        DSD_FPRINTF(stderr, " RC4;");
-        DSD_FPRINTF(stderr, "%s", KNRM);
-        state->payload_mi = lfsr;
-    }
-
-    if (state->currentslot == 1) {
-
-        DSD_FPRINTF(stderr, "%s", KYEL);
-        DSD_FPRINTF(stderr, " Slot 2");
-        DSD_FPRINTF(stderr, " DMR PI C- ALG ID: %02X; KEY ID: %02X;", state->payload_algidR, state->payload_keyidR);
-        DSD_FPRINTF(stderr, " MI(32): %08llX;", lfsr);
-        DSD_FPRINTF(stderr, " RC4;");
-        DSD_FPRINTF(stderr, "%s", KNRM);
-        state->payload_miR = lfsr;
+        dmr_pi_publish_crypto(opts, state);
     }
 }
 

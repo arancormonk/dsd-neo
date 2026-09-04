@@ -5,6 +5,8 @@
 
 #include "dmr_block_crypto.h"
 #include <dsd-neo/core/bp.h>
+#include <dsd-neo/core/key_material.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
@@ -56,6 +58,11 @@ dmr_block_load_aes_key(const dsd_state* state, int key_id, uint8_t aes_key[32]) 
         dmr_block_rkey_at(state, key_id + 0x301),
     };
 
+    // Manual-key fallback for a key id with nothing imported. Unreachable on the mapped path by
+    // construction: dmr_block_alg_key_need() only lets a row apply for alg 4 when cells
+    // kid+0x000 and kid+0x101 are non-zero, and for alg 5 when all four are -- exactly the cells
+    // read above. So an explicit --dmr-tg-key-csv row beats -2/-H without the row ever being able
+    // to silently substitute an unusable key for a working manual one.
     if (parts[0] == 0ULL && parts[1] == 0ULL && parts[2] == 0ULL && parts[3] == 0ULL) {
         parts[0] = state->K1;
         parts[1] = state->K2;
@@ -79,8 +86,24 @@ dmr_block_crypto_clamp_window(const dsd_state* state, uint8_t slot, dmr_block_cr
     }
     const int max_end = cap - ctx->start;
     if (ctx->end < 0 || ctx->end > max_end) {
-        /* Preserve legacy malformed-length fallback semantics, bounded to the actual buffer. */
+        /* Malformed lengths consume the remaining bounded buffer window. */
         ctx->end = max_end;
+    }
+}
+
+// The data path's own ALG numbering, translated locally rather than normalized into the voice
+// space: data-2 (DES) and voice-0x02 (Hytera Enhanced) already collide there. Derived from what
+// dmr_block_crypto_decrypt_payload() actually consumes -- algs 1 and 2 require ctx->rkey, alg 4
+// reads parts[0..1], alg 5 reads parts[0..3], alg 0 (Moto BP) reads state->K and the BPK table
+// instead of the keyring, and alg 7 (VTX STD) has no decrypt branch at all.
+static dsd_key_material_need
+dmr_block_alg_key_need(int alg) {
+    switch (alg) {
+        case 1: /* RC4 */
+        case 2: /* DES */ return DSD_KEY_NEED_SCALAR;
+        case 4: /* AES-128 */ return DSD_KEY_NEED_AES_2;
+        case 5: /* AES-256 */ return DSD_KEY_NEED_AES_4;
+        default: return DSD_KEY_NEED_NONE;
     }
 }
 
@@ -99,23 +122,39 @@ dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, int blocks, uint
     ctx->end = ((blocks + 1) * block_len) - 4 - (int)state->data_block_poc[slot] - ctx->start;
     dmr_block_crypto_clamp_window(state, slot, ctx);
 
-    if (state->currentslot == 0) {
+    // The caller passes `slot`; the identity fields are selected by state->currentslot. They
+    // agree at every call site today -- normalizing here keeps the new map lookup from
+    // silently resolving for a different slot than the alg/kid it is resolving for.
+    const uint8_t id_slot = (uint8_t)((state->currentslot == 1) ? 1 : 0);
+
+    if (id_slot == 0U) {
         ctx->alg = state->payload_algid;
-        ctx->kid = state->payload_keyid;
+        ctx->signaled_kid = state->payload_keyid;
         ctx->mi = (unsigned long long)state->payload_mi;
-        ctx->rkey = dmr_block_rkey_at(state, state->payload_keyid);
     } else {
         ctx->alg = state->payload_algidR;
-        ctx->kid = state->payload_keyidR;
+        ctx->signaled_kid = state->payload_keyidR;
         ctx->mi = (unsigned long long)state->payload_miR;
-        ctx->rkey = dmr_block_rkey_at(state, state->payload_keyidR);
     }
+
+    // Same key for the call's data as for its voice: --dmr-tg-key-csv is keyed on the data
+    // header's target, whose group flag was recorded when the header was parsed. The resolver
+    // hands a 16-bit (P25) signaled id back untouched, so ctx->kid never indexes a narrowed one.
+    ctx->kid = keyring_dmr_effective_kid(state, (uint32_t)state->dmr_lrrp_target[id_slot],
+                                         state->dmr_data_target_is_group[id_slot] != 0U,
+                                         dmr_block_alg_key_need(ctx->alg), ctx->signaled_kid, &ctx->mapped);
+    ctx->rkey = dmr_block_rkey_at(state, ctx->kid);
 
     dmr_block_load_aes_key(state, ctx->kid, ctx->aes_key);
     ctx->aes_key_loaded = dmr_block_bytes_any_nonzero(ctx->aes_key, sizeof(ctx->aes_key));
 
-    if (ctx->rkey == 0ULL && state->R != 0ULL) {
-        ctx->rkey = state->R;
+    // Slot-correct fallback: RR keys slot 2. Reading R for both slots decrypted slot 2 with
+    // slot 1's key whenever the resolved id had nothing imported. No DMR key source is lost by
+    // this: -1 (args.c) and DSD_APP_CMD_KEY_RC4DES_SET both write R and RR. The only writers of R
+    // without RR are -R and DSD_APP_CMD_KEY_SCRAMBLER_SET, both NXDN/dPMR scrambler keys.
+    const unsigned long long slot_rkey = (id_slot == 0U) ? state->R : state->RR;
+    if (ctx->rkey == 0ULL && slot_rkey != 0ULL) {
+        ctx->rkey = slot_rkey;
     }
 
     ctx->rc4_iv[0] = (uint8_t)((ctx->rkey & 0xFF00000000ULL) >> 32U);
@@ -163,7 +202,10 @@ dmr_block_crypto_print_info(const dmr_block_crypto_ctx* ctx, int show_keys) {
         return;
     }
 
-    DSD_FPRINTF(stderr, "\\n PDU ALG: %02X; Key ID: %02X;", ctx->alg, ctx->kid);
+    DSD_FPRINTF(stderr, "\n PDU ALG: %02X; Key ID: %02X;", ctx->alg, ctx->signaled_kid);
+    if (ctx->mapped) {
+        DSD_FPRINTF(stderr, " TG Key Map -> Key ID: %02X;", ctx->kid);
+    }
     if (ctx->alg != 0 && ctx->mi != 0ULL) {
         DSD_FPRINTF(stderr, " MI(32): %08llX;", ctx->mi);
     }
@@ -212,7 +254,8 @@ dmr_block_crypto_apply_aes_ofb(dsd_state* state, uint8_t slot, const dmr_block_c
     DSD_MEMSET(maes, 0, sizeof(maes));
     DSD_FPRINTF(stderr, "\n");
     dmr_block_crypto_prepare_aes_iv(state, maes);
-    aes_ofb_keystream_output(maes, ctx->aes_key, stream, (ctx->alg == 5) ? 2 : 0, nblocks);
+    const dsd_aes_key_size key_size = (ctx->alg == 5) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
+    aes_ofb_keystream_output(maes, ctx->aes_key, stream, key_size, nblocks);
     dmr_block_crypto_apply_stream(state, slot, ctx, stream, DMR_AES_OFB_DISCARD_BYTES);
     return 1;
 }
@@ -230,7 +273,8 @@ dmr_block_crypto_apply_aes_ecb(const dsd_state* state, uint8_t* slot_payload, ui
     }
 
     uint8_t* payload = slot_payload + ctx->start;
-    aes_ecb_decrypt_blocks(payload, ctx->aes_key, payload, (ctx->alg == 5) ? 2 : 0, nblocks);
+    const dsd_aes_key_size key_size = (ctx->alg == 5) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
+    aes_ecb_decrypt_blocks(payload, ctx->aes_key, payload, key_size, nblocks);
     return 1;
 }
 
@@ -278,7 +322,7 @@ dmr_block_crypto_decrypt_payload(dsd_state* state, uint8_t slot, const dmr_block
         uint8_t stream[DMR_BLOCK_CRYPTO_STREAM_BYTES];
         const int nblocks = (ctx->end / 8) + 1;
         DSD_MEMSET(stream, 0, sizeof(stream));
-        des_multi_keystream_output(ctx->mi, ctx->rkey, stream, 1, nblocks);
+        des_ofb_keystream_output(ctx->mi, ctx->rkey, stream, nblocks);
         dmr_block_crypto_apply_stream(state, slot, ctx, stream, 0);
         return 1;
     }

@@ -26,8 +26,8 @@ extern "C" {
 /**
  * Returns the MAC message length for a given opcode with vendor overrides.
  *
- * Length semantics match the internal table: number of octets following the
- * opcode byte (i.e., includes MFID and payload, excludes the opcode itself).
+ * Length semantics match the MAC structure length used by the Phase 2 parser:
+ * whole structure octets, including the opcode byte.
  */
 int p25p2_mac_len_for(uint8_t mfid, uint8_t opcode);
 

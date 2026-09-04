@@ -41,8 +41,17 @@ void processMbeFrame(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char
                      char imbe7100_fr[7][24]);
 void processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23],
                          dsd_vocoder_soft_bit ambe_fr[4][24], dsd_vocoder_soft_bit imbe7100_fr[7][24]);
-void soft_mbe(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24], char imbe7100_fr[7][24]);
+
+/** Decode and log one soft IMBE frame without synthesizing or emitting media. */
+void dsd_mbe_log_imbe_soft_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit imbe_fr[8][23]);
+
+/** Decode and log one soft AMBE frame without synthesizing or emitting media. */
+void dsd_mbe_log_ambe_soft_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder_soft_bit ambe_fr[4][24]);
+
 void playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv);
+
+/** Purge queued/working audio and vocoder history for one logical voice slot. */
+void dsd_mbe_purge_slot_audio(dsd_state* state, int slot);
 
 #ifdef __cplusplus
 }

@@ -61,12 +61,6 @@ int p25p2_facch_soft_erasures(int ts_counter, int scrambled, int* erasures, int 
 int p25p2_sacch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fixed, int max_add);
 
 /**
- * Build soft-decision ESS erasures from collected contiguous LLR buffers.
- */
-int p25p2_ess_soft_erasures_from_llr(const int16_t payload_llr[96], const int16_t parity_llr[168], int* erasures,
-                                     int max_payload_add, int max_parity_add);
-
-/**
  * Build a globally ranked ESS erasure list across all 44 RS symbols.
  */
 int p25p2_ess_soft_erasures_ranked(const int16_t payload_llr[96], const int16_t parity_llr[168], int* erasures,

@@ -8,6 +8,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/platform/audio.h>
+#include <sndfile.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "../../src/platform/audio_stream_internal.h"
@@ -27,17 +28,6 @@ expect_true(const char* tag, int cond) {
         return 1;
     }
     return 0;
-}
-
-int
-ui_start(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-    return 0;
-}
-
-void
-ui_stop(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 static int
@@ -87,6 +77,8 @@ main(void) {
     opts->audio_out_streamR = (dsd_audio_stream*)calloc(1, sizeof(*opts->audio_out_streamR));
     opts->audio_raw_out = (dsd_audio_stream*)calloc(1, sizeof(*opts->audio_raw_out));
     opts->audio_in_stream = (dsd_audio_stream*)calloc(1, sizeof(*opts->audio_in_stream));
+    // File input metadata outlives its libsndfile handle when playback reaches EOF.
+    opts->audio_in_file_info = (SF_INFO*)calloc(1, sizeof(*opts->audio_in_file_info));
 
     dsd_engine_cleanup(opts, state);
 
@@ -94,6 +86,7 @@ main(void) {
     rc |= expect_true("audio_out_streamR-null", opts->audio_out_streamR == NULL);
     rc |= expect_true("audio_raw_out-null", opts->audio_raw_out == NULL);
     rc |= expect_true("audio_in_stream-null", opts->audio_in_stream == NULL);
+    rc |= expect_true("audio_in_file_info-null", opts->audio_in_file_info == NULL);
 
     free_test_runtime(opts, state);
     opts = NULL;

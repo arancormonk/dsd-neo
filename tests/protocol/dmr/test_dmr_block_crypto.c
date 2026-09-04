@@ -178,6 +178,29 @@ test_print_info_reveals_full_aes256_key_when_first_segment_zero(void) {
 }
 
 static int
+test_print_info_starts_on_its_own_line(void) {
+    static dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    char output[256];
+    const uint8_t slot = 0;
+    const int kid = 0x23;
+    int rc = 0;
+
+    seed_window(&state, slot, 0, 28);
+    state.payload_algid = 4;
+    state.payload_keyid = kid;
+    seed_key_array(&state, kid, 0x0123456789ABCDEFULL, 0ULL, 0xDEADBEEFDEADBEEFULL, 0ULL);
+
+    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    if (capture_print_info(&ctx, 1, output, sizeof output) != 0) {
+        return 1;
+    }
+    rc |= expect_int("crypto banner breaks the line before PDU ALG", output[0] == '\n', 1);
+    rc |= expect_int("crypto banner emits no literal backslash-n", strstr(output, "\\n") == NULL, 1);
+    return rc;
+}
+
+static int
 test_aes128_zero_mi_uses_reference_ecb_block_count(void) {
     static const uint8_t ciphertext[16] = {0x69, 0xC4, 0xE0, 0xD8, 0x6A, 0x7B, 0x04, 0x30,
                                            0xD8, 0xCD, 0xB7, 0x80, 0x70, 0xB4, 0xC5, 0x5A};
@@ -282,7 +305,7 @@ test_aes_nonzero_mi_keeps_ofb_path(void) {
         iv[i] = (uint8_t)i;
     }
     DSD_MEMSET(stream, 0, sizeof(stream));
-    aes_ofb_keystream_output(iv, ctx.aes_key, stream, /*AES-128*/ 0, 3);
+    aes_ofb_keystream_output(iv, ctx.aes_key, stream, DSD_AES_KEY_128, 3);
 
     rc |= expect_int("aes ofb ctx end", ctx.end, 16);
     rc |= expect_int("aes ofb decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
@@ -335,14 +358,14 @@ test_des_decrypts_window_with_manual_key_fallback(void) {
     state.payload_algidR = 2;
     state.payload_keyidR = 0x77;
     state.payload_miR = 0x11223344ULL;
-    state.R = 0x0123456789ABCDEFULL;
+    state.RR = 0x0123456789ABCDEFULL;
 
     dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
     rc |= expect_int("des ctx end", ctx.end, 24);
     rc |= expect_int("des manual key fallback", ctx.rkey != 0ULL, 1);
     fill_pattern(plaintext, (size_t)ctx.end, 0x52);
     DSD_MEMSET(stream, 0, sizeof(stream));
-    des_multi_keystream_output(ctx.mi, ctx.rkey, stream, 1, (ctx.end / 8) + 1);
+    des_ofb_keystream_output(ctx.mi, ctx.rkey, stream, (ctx.end / 8) + 1);
     xor_stream_into_payload(&state, slot, ctx.start, plaintext, stream, (size_t)ctx.end);
 
     rc |= expect_int("des decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 1);
@@ -396,6 +419,31 @@ test_aes_missing_key_still_normalizes_alg(void) {
     return rc;
 }
 
+static int
+test_malformed_window_decrypt_rejects_without_mutating_payload(void) {
+    static dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    const uint8_t slot = 0;
+    const uint8_t start = 12U;
+    uint8_t before[sizeof(state.dmr_pdu_sf[slot])];
+    int rc = 0;
+
+    seed_window(&state, slot, start, 32U);
+    state.payload_algid = 1;
+    state.payload_keyid = 0x33;
+    state.payload_mi = 0x01020304ULL;
+    state.rkey_array[0x33] = 0x0123456789ULL;
+    fill_pattern(state.dmr_pdu_sf[slot], sizeof(state.dmr_pdu_sf[slot]), 0x91U);
+    DSD_MEMCPY(before, state.dmr_pdu_sf[slot], sizeof(before));
+
+    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    rc |= expect_int("malformed ctx keeps start", ctx.start, start);
+    rc |= expect_int("malformed ctx empty window", ctx.end, 0);
+    rc |= expect_int("malformed decrypt result", dmr_block_crypto_decrypt_payload(&state, slot, &ctx, 0), 0);
+    rc |= expect_bytes("malformed decrypt preserves payload", state.dmr_pdu_sf[slot], before, sizeof(before));
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -404,9 +452,11 @@ main(void) {
     rc |= test_aes_nonzero_mi_keeps_ofb_path();
     rc |= test_print_info_reveals_full_aes128_key();
     rc |= test_print_info_reveals_full_aes256_key_when_first_segment_zero();
+    rc |= test_print_info_starts_on_its_own_line();
     rc |= test_rc4_decrypts_window_with_key_id_lookup();
     rc |= test_des_decrypts_window_with_manual_key_fallback();
     rc |= test_basic_privacy_decrypts_window();
     rc |= test_aes_missing_key_still_normalizes_alg();
+    rc |= test_malformed_window_decrypt_rejects_without_mutating_payload();
     return rc;
 }

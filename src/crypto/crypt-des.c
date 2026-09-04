@@ -193,7 +193,7 @@ des_cipher(const uint8_t* main_key, const uint8_t* input_register, uint8_t* outp
     //key sets
     uint8_t Ks[16][7];
     DSD_MEMSET(Ks, 0, sizeof(Ks));
-    // codeql[cpp/weak-cryptographic-algorithm] DES/TDEA is required for legacy radio protocol interoperability.
+    // codeql[cpp/weak-cryptographic-algorithm] DES/TDEA is required for active radio protocol interoperability.
     des_prepare_round_keys(main_key, Ks);
 
     //permute the input_register with the ip (initial_register_permutation) table
@@ -279,7 +279,7 @@ des56_ofb_keystream_output(const uint8_t* main_key, const uint8_t* iv, uint8_t* 
     //execute the des_cipher in output feedback mode
     for (int16_t i = 0; i < nblocks; i++) {
         //de should be 1 here for encryption mode
-        // codeql[cpp/weak-cryptographic-algorithm] DES OFB is required for legacy radio protocol interoperability.
+        // codeql[cpp/weak-cryptographic-algorithm] DES OFB is required for active radio protocol interoperability.
         des_cipher(main_key, input_register, output_register, de);
         DSD_MEMCPY(input_register, output_register,
                    sizeof(output_register)); //recycle output_register back into input register
@@ -291,8 +291,8 @@ des56_ofb_keystream_output(const uint8_t* main_key, const uint8_t* iv, uint8_t* 
 
 //TDEA, or triple data encryption algorithm, or triple DES, in output feedback mode
 static void
-tdea_tofb_keystream_output(const uint8_t* K1, const uint8_t* K2, const uint8_t* K3, const uint8_t* iv,
-                           uint8_t* ks_bytes, uint8_t de, int16_t nblocks) {
+tdea_tofb_keystream_output_bytes(const uint8_t* K1, const uint8_t* K2, const uint8_t* K3, const uint8_t* iv,
+                                 uint8_t* ks_bytes, uint8_t de, int16_t nblocks) {
 
     //cipher input and output
     uint8_t input_register[8];
@@ -306,7 +306,7 @@ tdea_tofb_keystream_output(const uint8_t* K1, const uint8_t* K2, const uint8_t* 
     //execute the des_cipher in output feedback mode 3 times using each key and transferring output to input each time
     for (int16_t i = 0; i < nblocks; i++) {
         //K1
-        // codeql[cpp/weak-cryptographic-algorithm] TDEA is required for legacy radio protocol interoperability.
+        // codeql[cpp/weak-cryptographic-algorithm] TDEA is required for active radio protocol interoperability.
         des_cipher(K1, input_register, output_register, de);
         DSD_MEMCPY(input_register, output_register,
                    sizeof(output_register));                     //recycle output_register back into input_register
@@ -314,7 +314,7 @@ tdea_tofb_keystream_output(const uint8_t* K1, const uint8_t* K2, const uint8_t* 
 
         //K2
         de = (de ^ 1) & 1; //flip the de bit
-        // codeql[cpp/weak-cryptographic-algorithm] TDEA is required for legacy radio protocol interoperability.
+        // codeql[cpp/weak-cryptographic-algorithm] TDEA is required for active radio protocol interoperability.
         des_cipher(K2, input_register, output_register, de);
         DSD_MEMCPY(input_register, output_register,
                    sizeof(output_register));                     //recycle output_register back into input_register
@@ -322,7 +322,7 @@ tdea_tofb_keystream_output(const uint8_t* K1, const uint8_t* K2, const uint8_t* 
 
         //K3
         de = (de ^ 1) & 1; //flip the de bit back
-        // codeql[cpp/weak-cryptographic-algorithm] TDEA is required for legacy radio protocol interoperability.
+        // codeql[cpp/weak-cryptographic-algorithm] TDEA is required for active radio protocol interoperability.
         des_cipher(K3, input_register, output_register, de);
         DSD_MEMCPY(input_register, output_register,
                    sizeof(output_register)); //recycle output_register back into input_register
@@ -381,7 +381,7 @@ des56_ca_keystream_output(const uint8_t* main_key, const uint8_t* iv, uint8_t* k
     for (int16_t i = 0; i < nbits; i++) {
 
         //de should be 1 here for encryption mode
-        // codeql[cpp/weak-cryptographic-algorithm] DES-XL is required for legacy radio protocol interoperability.
+        // codeql[cpp/weak-cryptographic-algorithm] DES-XL is required for active radio protocol interoperability.
         des_cipher(main_key, input_register, output_register, de);
 
         //keystream accumulation, shift current byte and append
@@ -397,10 +397,8 @@ des56_ca_keystream_output(const uint8_t* main_key, const uint8_t* iv, uint8_t* k
     }
 }
 
-//transitional function mainly to load key and iv into an array
 void
-des_multi_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int type,
-                           int len) {
+des_ofb_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int nblocks) {
     int i = 0;
     uint8_t iv[8];
     DSD_MEMSET(iv, 0, sizeof(iv));
@@ -416,21 +414,11 @@ des_multi_keystream_output(unsigned long long int mi, unsigned long long int key
         key[7 - i] = (key_ulli >> (8 * i)) & 0xFF;
     }
 
-    //types: 1 = DES56 OFB; 2 = DES56 CA (XL)
-    if (type == 2) {
-        if (len == 0) {
-            des56_ca_keystream_output(key, iv, output, 1, 110 + 696, 1704);
-        } else {
-            des56_ca_keystream_output(key, iv, output, 1, 110 + 000, 1704);
-        }
-    } else {
-        des56_ofb_keystream_output(key, iv, output, 1, len);
-    }
+    des56_ofb_keystream_output(key, iv, output, 1, nblocks);
 }
 
-//transitional function mainly to load iv into an array
 void
-tdea_multi_keystream_output(unsigned long long int mi, const uint8_t* key, uint8_t* output, int type, int len) {
+tdea_tofb_keystream_output(unsigned long long int mi, const uint8_t* key, uint8_t* output, int nblocks) {
     int i = 0;
     uint8_t iv[8];
     DSD_MEMSET(iv, 0, sizeof(iv));
@@ -440,9 +428,21 @@ tdea_multi_keystream_output(unsigned long long int mi, const uint8_t* key, uint8
         iv[7 - i] = (mi >> (8 * i)) & 0xFF;
     }
 
-    //debug
+    tdea_tofb_keystream_output_bytes(key, key + 8, key + 16, iv, output, 1, nblocks);
+}
 
-    //type 1 = TDEA TOFB //TODO: Add more types like 2DES?
-    (void)type; // currently only TOFB supported
-    tdea_tofb_keystream_output(key, key + 8, key + 16, iv, output, 1, len);
+void
+des_xl_keystream_output(unsigned long long int mi, unsigned long long int key_ulli, uint8_t* output, int late_entry) {
+    uint8_t iv[8];
+    uint8_t key[8];
+    DSD_MEMSET(iv, 0, sizeof(iv));
+    DSD_MEMSET(key, 0, sizeof(key));
+
+    for (int i = 7; i >= 0; i--) {
+        iv[7 - i] = (mi >> (8 * i)) & 0xFF;
+        key[7 - i] = (key_ulli >> (8 * i)) & 0xFF;
+    }
+
+    const int16_t fast_forward = (int16_t)(110 + ((late_entry == 0) ? 696 : 0));
+    des56_ca_keystream_output(key, iv, output, 1, fast_forward, 1704);
 }

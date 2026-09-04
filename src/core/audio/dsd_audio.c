@@ -27,6 +27,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
@@ -41,6 +42,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/resampler.h"
+#include "dsd_audio_internal.h"
 
 static int
 dsd_audio_path_is_wav_container(const char* path) {
@@ -90,6 +92,17 @@ dsd_audio_init_raw_pcm16_info(SF_INFO* info, int sample_rate_hz) {
 static int
 dsd_audio_default_sample_rate_hz(int configured_sample_rate_hz) {
     return (configured_sample_rate_hz > 0) ? configured_sample_rate_hz : 48000;
+}
+
+void
+dsd_audio_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context) {
+    if (file == NULL || samples == NULL || sample_count <= 0) {
+        return;
+    }
+    sf_count_t written = sf_write_short(file, samples, sample_count);
+    if (written != sample_count) {
+        LOG_WARN("%s: wrote %lld/%lld samples to WAV output\n", context, (long long)written, (long long)sample_count);
+    }
 }
 
 static int
@@ -173,19 +186,6 @@ dsd_audio_open_mono_file_input(const char* path, int configured_sample_rate_hz, 
     return 0;
 }
 
-size_t
-dsd_audio_linear_upsample_block_f32(float previous, float current, size_t factor, float* out, size_t out_cap) {
-    if (!out || factor == 0 || out_cap < factor) {
-        return 0;
-    }
-
-    float diff = current - previous;
-    for (size_t n = 0; n < factor; n++) {
-        out[n] = previous + (diff * ((float)(n + 1) / (float)factor));
-    }
-    return factor;
-}
-
 void
 dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_hz) {
     if (!state) {
@@ -250,6 +250,15 @@ closeAudioInput(dsd_opts* opts) {
     }
 }
 
+static int
+dsd_audio_should_use_async_output(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    return dsd_audio_input_type_uses_async_output(opts->audio_in_type, opts->playfiles, opts->audio_in_dev,
+                                                  opts->m17decoderip);
+}
+
 int
 openAudioOutput(dsd_opts* opts) {
     const char* dev = NULL;
@@ -258,8 +267,10 @@ openAudioOutput(dsd_opts* opts) {
     }
 
     dsd_audio_params params;
+    DSD_MEMSET(&params, 0, sizeof(params));
     params.device = dev;
     params.app_name = "DSD-neo";
+    params.async_output = dsd_audio_should_use_async_output(opts);
 
     /* Open raw/analog output stream for ProVoice or analog monitor mode */
     if (opts->frame_provoice == 1 || opts->monitor_input_audio == 1) {
@@ -288,6 +299,35 @@ openAudioOutput(dsd_opts* opts) {
             return -1;
         }
     }
+    opts->audio_output_async_policy = params.async_output ? 1 : 0;
+    return 0;
+}
+
+int
+dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
+    if (!opts) {
+        return -1;
+    }
+    if (opts->audio_out != 1 || opts->audio_out_type != 0) {
+        return 0;
+    }
+    if (!opts->audio_out_stream && !opts->audio_out_streamR && !opts->audio_raw_out) {
+        return 0;
+    }
+
+    int async_policy = dsd_audio_should_use_async_output(opts);
+    if (opts->audio_output_async_policy == async_policy) {
+        return 0;
+    }
+
+    if (opts->audio_output_async_policy == 0) {
+        dsd_drain_audio_output(opts);
+    }
+    closeAudioOutput(opts);
+    if (openAudioOutput(opts) != 0) {
+        LOG_ERROR("Failed to reconfigure audio output for input policy\n");
+        return -1;
+    }
     return 0;
 }
 
@@ -299,6 +339,7 @@ openAudioInput(dsd_opts* opts) {
     }
 
     dsd_audio_params params;
+    DSD_MEMSET(&params, 0, sizeof(params));
     params.sample_rate = opts->pulse_digi_rate_in;
     params.channels = opts->pulse_digi_in_channels;
     params.bits_per_sample = 16;
@@ -326,6 +367,9 @@ dsd_drain_audio_output(dsd_opts* opts) {
     if (opts->audio_out_type == 0) {
         if (opts->audio_out_stream) {
             (void)dsd_audio_drain(opts->audio_out_stream);
+        }
+        if (opts->audio_out_streamR) {
+            (void)dsd_audio_drain(opts->audio_out_streamR);
         }
         if (opts->audio_raw_out) {
             (void)dsd_audio_drain(opts->audio_raw_out);
@@ -694,7 +738,7 @@ writeSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
         state->audio_out_temp_buf_p++;
     }
 
-    sf_write_short(opts->wav_out_f, aout_buf, 160);
+    dsd_audio_write_wav_short_block(opts->wav_out_f, aout_buf, 160, "writeSynthesizedVoice");
 }
 
 void
@@ -717,7 +761,7 @@ writeSynthesizedVoiceR(dsd_opts* opts, dsd_state* state) {
         state->audio_out_temp_buf_pR++;
     }
 
-    sf_write_short(opts->wav_out_fR, aout_buf, 160);
+    dsd_audio_write_wav_short_block(opts->wav_out_fR, aout_buf, 160, "writeSynthesizedVoiceR");
 }
 
 //short Mono to Stereo version for new static .wav files in stereo format for TDMA
@@ -747,7 +791,7 @@ writeSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
         ss[(n * 2) + 1] = aout_buf[n];
     }
 
-    sf_write_short(opts->wav_out_f, ss, 320);
+    dsd_audio_write_wav_short_block(opts->wav_out_f, ss, 320, "writeSynthesizedVoiceMS");
 }
 
 void
@@ -827,6 +871,20 @@ dsd_audio_release_input_sources(dsd_opts* opts) {
     dsd_opts_reset_pcm_input_state(opts);
 }
 
+void
+closeAudioInDevice(dsd_opts* opts) {
+    if (opts == NULL) {
+        return;
+    }
+
+    closeAudioInput(opts);
+    dsd_audio_release_input_sources(opts);
+    if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
+        dsd_socket_close(opts->tcp_sockfd);
+        opts->tcp_sockfd = DSD_INVALID_SOCKET;
+    }
+}
+
 static void
 dsd_audio_reset_symbol_replay_pacing(dsd_state* state) {
     if (!state) {
@@ -902,18 +960,13 @@ dsd_audio_open_tcp_input(dsd_opts* opts) {
 }
 
 static int
-dsd_audio_select_radio_or_pulse_input(dsd_opts* opts) {
+dsd_audio_select_radio_input(dsd_opts* opts) {
 #ifdef USE_RADIO
     opts->audio_in_type = AUDIO_IN_RTL;
-    return 0;
+    return 1;
 #else
-    if (dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)) {
-        LOG_ERROR("IQ replay requires a build with radio pipeline support.\n");
-        return -1;
-    }
-    opts->audio_in_type = AUDIO_IN_PULSE;
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "pulse");
-    return 0;
+    LOG_ERROR("Radio input '%s' requires a build with radio pipeline support.\n", opts->audio_in_dev);
+    return -1;
 #endif
 }
 
@@ -936,12 +989,7 @@ dsd_audio_try_open_named_input(dsd_opts* opts) {
         || dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
         || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
         || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)) {
-#ifdef USE_RADIO
-        (void)dsd_audio_select_radio_or_pulse_input(opts);
-        return 1;
-#else
-        return (dsd_audio_select_radio_or_pulse_input(opts) == 0) ? 1 : -1;
-#endif
+        return dsd_audio_select_radio_input(opts);
     }
     if (dsd_opts_audio_in_dev_is_pulse_spec(opts->audio_in_dev)) {
         opts->audio_in_type = AUDIO_IN_PULSE;
@@ -994,8 +1042,8 @@ dsd_audio_open_symbol_input(dsd_opts* opts, dsd_state* state, int symbol_type, c
         return -1;
     }
     if (!dsd_stat_is_regular(&stat_buf)) {
-        opts->audio_in_type = AUDIO_IN_PULSE;
-        return 0;
+        LOG_ERROR("Error, %s input path is not a regular file: %s\n", label, opts->audio_in_dev);
+        return -1;
     }
 
     opts->symbolfile = dsd_fopen_existing_regular_file(opts->audio_in_dev, "rb");
@@ -1037,8 +1085,8 @@ dsd_audio_open_fallback_file_input(dsd_opts* opts, dsd_state* state, int old_eff
 
     if (active_sample_rate != opts->wav_sample_rate) {
         if (opened_as_container) {
-            LOG_NOTICE("WAV header sample rate %d Hz overrides configured %d Hz for %s\n", active_sample_rate,
-                       configured_file_sample_rate, opts->audio_in_dev);
+            LOG_INFO("NOTICE: WAV header sample rate %d Hz overrides configured %d Hz for %s\n", active_sample_rate,
+                     configured_file_sample_rate, opts->audio_in_dev);
         }
         dsd_audio_apply_input_sample_rate(opts, state, old_effective_input_rate, active_sample_rate);
     }
@@ -1093,5 +1141,5 @@ openAudioInDevice(dsd_opts* opts, dsd_state* state) {
     } else {
         DSD_FPRINTF(stderr, "Audio In/Out Device: %s\n", opts->audio_in_dev);
     }
-    return 0;
+    return dsd_audio_reconfigure_output_for_input_policy(opts);
 }

@@ -111,6 +111,39 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         set(_ARCH_RULES_IO_FORBIDDEN_AREA ON)
     endif()
 
+    set(_ARCH_RULES_ENGINE_FORBIDDEN_AREA OFF)
+    if(_ARCH_RULES_REL MATCHES "^(src/engine/|include/dsd-neo/engine/)")
+        set(_ARCH_RULES_ENGINE_FORBIDDEN_AREA ON)
+    endif()
+
+    set(_ARCH_RULES_FRONTEND_KIND_BACKEND_AREA OFF)
+    if(
+        _ARCH_RULES_REL
+            MATCHES
+            "^(src/dsp/|src/protocol/|src/engine/|include/dsd-neo/dsp/|include/dsd-neo/protocol/|include/dsd-neo/engine/)"
+    )
+        set(_ARCH_RULES_FRONTEND_KIND_BACKEND_AREA ON)
+    endif()
+
+    set(_ARCH_RULES_BACKEND_FRONTEND_FORBIDDEN_AREA OFF)
+    if(
+        _ARCH_RULES_REL
+            MATCHES
+            "^(src/core/|src/runtime/|src/dsp/|src/io/|src/protocol/|src/engine/|include/dsd-neo/core/|include/dsd-neo/runtime/|include/dsd-neo/dsp/|include/dsd-neo/io/|include/dsd-neo/protocol/|include/dsd-neo/engine/)"
+    )
+        set(_ARCH_RULES_BACKEND_FRONTEND_FORBIDDEN_AREA ON)
+    endif()
+
+    set(_ARCH_RULES_UI_RTL_FORBIDDEN_AREA OFF)
+    if(_ARCH_RULES_REL MATCHES "^src/ui/")
+        set(_ARCH_RULES_UI_RTL_FORBIDDEN_AREA ON)
+    endif()
+
+    set(_ARCH_RULES_PUBLIC_FRONTEND_AREA OFF)
+    if(_ARCH_RULES_REL MATCHES "^include/dsd-neo/app_control/")
+        set(_ARCH_RULES_PUBLIC_FRONTEND_AREA ON)
+    endif()
+
     file(
         STRINGS "${_ARCH_RULES_ABS}"
         _ARCH_RULES_EXIT_LINES
@@ -134,6 +167,91 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
     endforeach()
 
+    if(_ARCH_RULES_FRONTEND_KIND_BACKEND_AREA)
+        file(
+            STRINGS "${_ARCH_RULES_ABS}"
+            _ARCH_RULES_FRONTEND_KIND_LINES
+            REGEX "((->)|(\\.))frontend_kind"
+        )
+
+        foreach(
+            _ARCH_RULES_FRONTEND_KIND_LINE
+            IN
+            LISTS _ARCH_RULES_FRONTEND_KIND_LINES
+        )
+            if(_ARCH_RULES_FRONTEND_KIND_LINE MATCHES "^[ \t]*(//|/\\*)")
+                continue()
+            endif()
+
+            string(
+                STRIP "${_ARCH_RULES_FRONTEND_KIND_LINE}"
+                _ARCH_RULES_FRONTEND_KIND_LINE_STRIPPED
+            )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: backend code must use frontend predicates, not direct frontend_kind access '${_ARCH_RULES_FRONTEND_KIND_LINE_STRIPPED}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+        endforeach()
+    endif()
+
+    if(_ARCH_RULES_UI_RTL_FORBIDDEN_AREA)
+        file(
+            STRINGS "${_ARCH_RULES_ABS}"
+            _ARCH_RULES_UI_RTL_CALL_LINES
+            REGEX "rtl_stream_"
+        )
+
+        foreach(
+            _ARCH_RULES_UI_RTL_CALL_LINE
+            IN
+            LISTS _ARCH_RULES_UI_RTL_CALL_LINES
+        )
+            if(_ARCH_RULES_UI_RTL_CALL_LINE MATCHES "^[ \t]*(//|/\\*)")
+                continue()
+            endif()
+
+            string(
+                STRIP "${_ARCH_RULES_UI_RTL_CALL_LINE}"
+                _ARCH_RULES_UI_RTL_CALL_LINE_STRIPPED
+            )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: terminal UI must use app-control metrics, not rtl_stream_* directly '${_ARCH_RULES_UI_RTL_CALL_LINE_STRIPPED}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+        endforeach()
+    endif()
+
+    if(_ARCH_RULES_PUBLIC_FRONTEND_AREA)
+        file(
+            STRINGS "${_ARCH_RULES_ABS}"
+            _ARCH_RULES_CURSES_TOKEN_LINES
+            REGEX
+                "(^|[^A-Za-z0-9_])(WINDOW|stdscr|getch|printw)([^A-Za-z0-9_]|$)"
+        )
+
+        foreach(
+            _ARCH_RULES_CURSES_TOKEN_LINE
+            IN
+            LISTS _ARCH_RULES_CURSES_TOKEN_LINES
+        )
+            if(_ARCH_RULES_CURSES_TOKEN_LINE MATCHES "^[ \t]*(//|/\\*)")
+                continue()
+            endif()
+
+            string(
+                STRIP "${_ARCH_RULES_CURSES_TOKEN_LINE}"
+                _ARCH_RULES_CURSES_TOKEN_LINE_STRIPPED
+            )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: frontend boundary must not reference terminal/curses symbol '${_ARCH_RULES_CURSES_TOKEN_LINE_STRIPPED}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+        endforeach()
+    endif()
+
     file(
         STRINGS "${_ARCH_RULES_ABS}"
         _ARCH_RULES_INCLUDE_LINES
@@ -153,6 +271,84 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
             "${_ARCH_RULES_LINE}"
         )
 
+        # audio_error_internal.h defines the audio backends' last-error store with
+        # internal linkage, so an including translation unit gets its own private copy
+        # rather than a link error. src/platform/CMakeLists.txt compiles exactly one of
+        # the audio backends below, which is what makes that one copy process-wide;
+        # any other includer would be a second, silently divergent store whose
+        # set_error() dsd_audio_get_error() could never report.
+        if(_ARCH_RULES_HEADER MATCHES "(^|/)audio_error_internal\\.h$")
+            if(
+                NOT _ARCH_RULES_REL
+                    MATCHES
+                    "^src/platform/audio_(pulse|portaudio|aaudio|null)\\.c$"
+            )
+                message(
+                    SEND_ERROR
+                    "ARCH_RULES: ${_ARCH_RULES_REL}: audio_error_internal.h defines a static store and may only be included by a mutually exclusive audio backend under src/platform/"
+                )
+                math(
+                    EXPR
+                    _ARCH_RULES_VIOLATIONS
+                    "${_ARCH_RULES_VIOLATIONS} + 1"
+                )
+            endif()
+            continue()
+        endif()
+
+        if(_ARCH_RULES_PUBLIC_FRONTEND_AREA)
+            if(
+                _ARCH_RULES_HEADER MATCHES "^dsd-neo/core/(opts|state)\\.h$"
+                OR _ARCH_RULES_HEADER MATCHES "^dsd-neo/io/"
+                OR _ARCH_RULES_HEADER MATCHES "^dsd-neo/protocol/"
+                OR _ARCH_RULES_HEADER
+                    MATCHES
+                    "^dsd-neo/ui/(terminal|ncurses|menu_)"
+                OR _ARCH_RULES_HEADER STREQUAL "dsd-neo/platform/curses_compat.h"
+                OR _ARCH_RULES_HEADER MATCHES "(^|.*/)(curses|ncurses)\\.h$"
+                OR _ARCH_RULES_HEADER
+                    MATCHES
+                    "(^|.*/)(dsd_ncurses_|ncurses_|menu_)[^/]*\\.h$"
+                OR _ARCH_RULES_HEADER MATCHES "^Qt[A-Za-z0-9]*(/|$)"
+                OR _ARCH_RULES_HEADER MATCHES "^Q[A-Z][A-Za-z0-9_]*$"
+            )
+                message(
+                    SEND_ERROR
+                    "ARCH_RULES: ${_ARCH_RULES_REL}: public frontend headers must use app-control boundary, not '${_ARCH_RULES_HEADER}'"
+                )
+                math(
+                    EXPR
+                    _ARCH_RULES_VIOLATIONS
+                    "${_ARCH_RULES_VIOLATIONS} + 1"
+                )
+                continue()
+            endif()
+        endif()
+
+        if(
+            _ARCH_RULES_BACKEND_FRONTEND_FORBIDDEN_AREA
+            AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/"
+        )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: backend code must not include UI header '${_ARCH_RULES_HEADER}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            continue()
+        endif()
+
+        if(
+            _ARCH_RULES_BACKEND_FRONTEND_FORBIDDEN_AREA
+            AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/app_control/"
+        )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: backend code must not include app-control header '${_ARCH_RULES_HEADER}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            continue()
+        endif()
+
         if(
             _ARCH_RULES_UI_FORBIDDEN_AREA
             AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/"
@@ -160,6 +356,30 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
             message(
                 SEND_ERROR
                 "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden UI include '${_ARCH_RULES_HEADER}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            continue()
+        endif()
+
+        if(
+            _ARCH_RULES_ENGINE_FORBIDDEN_AREA
+            AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/ui/"
+        )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden UI include '${_ARCH_RULES_HEADER}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            continue()
+        endif()
+
+        if(
+            _ARCH_RULES_ENGINE_FORBIDDEN_AREA
+            AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/app_control/"
+        )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden app-control include '${_ARCH_RULES_HEADER}'"
             )
             math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
             continue()
@@ -189,8 +409,20 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
             continue()
         endif()
 
+        if(
+            _ARCH_RULES_UI_RTL_FORBIDDEN_AREA
+            AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/io/rtl"
+        )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: terminal UI must use app-control metrics, not RTL include '${_ARCH_RULES_HEADER}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            continue()
+        endif()
+
         if(_ARCH_RULES_HEADER STREQUAL "dsd-neo/platform/curses_compat.h")
-            if(NOT _ARCH_RULES_REL MATCHES "^(src/ui/|include/dsd-neo/ui/)")
+            if(NOT _ARCH_RULES_REL MATCHES "^src/ui/terminal/")
                 message(
                     SEND_ERROR
                     "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden curses wrapper include '${_ARCH_RULES_HEADER}'"
@@ -213,13 +445,30 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
                     _ARCH_RULES_REL
                         STREQUAL
                         "include/dsd-neo/platform/curses_compat.h"
-                    OR _ARCH_RULES_REL MATCHES "^src/ui/"
-                    OR _ARCH_RULES_REL MATCHES "^include/dsd-neo/ui/"
+                    OR _ARCH_RULES_REL MATCHES "^src/ui/terminal/"
                 )
             )
                 message(
                     SEND_ERROR
                     "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden curses include '${_ARCH_RULES_HEADER}'"
+                )
+                math(
+                    EXPR
+                    _ARCH_RULES_VIOLATIONS
+                    "${_ARCH_RULES_VIOLATIONS} + 1"
+                )
+            endif()
+            continue()
+        endif()
+
+        if(
+            _ARCH_RULES_HEADER MATCHES "^Qt[A-Za-z0-9]*(/|$)"
+            OR _ARCH_RULES_HEADER MATCHES "^Q[A-Z][A-Za-z0-9_]*$"
+        )
+            if(NOT _ARCH_RULES_REL MATCHES "^src/ui/qt/")
+                message(
+                    SEND_ERROR
+                    "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden Qt include '${_ARCH_RULES_HEADER}' (Qt is confined to src/ui/qt/)"
                 )
                 math(
                     EXPR

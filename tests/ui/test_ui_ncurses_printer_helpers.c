@@ -1,0 +1,1926 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Coverage fixtures intentionally use private-source inclusion, synthetic sentinels,
+// invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
+// NOLINTBEGIN(bugprone-suspicious-include)
+/*
+ * Pure-helper checks for the ncurses dashboard printer.
+ */
+
+#include <assert.h>
+#include <curses.h>
+#include <dsd-neo/app_control/history.h>
+#include <dsd-neo/core/channel_label.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/protocol/edacs/edacs_afs.h>
+#include <dsd-neo/protocol/m17/m17_parse.h>
+#include <dsd-neo/protocol/p25/p25_callsign.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/ui/menu_core.h>
+#include <dsd-neo/ui/ncurses_dsp_display.h>
+#include <dsd-neo/ui/ncurses_internal.h>
+#include <dsd-neo/ui/ncurses_p25_display.h>
+#include <dsd-neo/ui/ncurses_trunk_display.h>
+#include <dsd-neo/ui/panels.h>
+#include <dsd-neo/ui/ui_async.h>
+#include <dsd-neo/ui/ui_prims.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include "dsd-neo/core/call_state.h"
+#include "dsd-neo/core/dsd_time.h"
+#include "dsd-neo/platform/platform.h"
+
+/* ncurses builds with NCURSES_OPAQUE=0 (Debian/Ubuntu) expose these accessors as
+   function-like macros, which would expand over the stub definitions below. */
+#undef getcurx
+#undef getcury
+#undef getmaxx
+#undef getmaxy
+
+int ncurses_last_synctype;
+WINDOW* stdscr;
+
+static char g_printw_capture[4096];
+static size_t g_printw_capture_len;
+
+static void
+reset_printw_capture(void) {
+    DSD_MEMSET(g_printw_capture, 0, sizeof(g_printw_capture));
+    g_printw_capture_len = 0U;
+}
+
+static void append_printw_capture(const char* fmt, va_list ap) DSD_ATTR_FORMAT(printf, 1, 0);
+
+static void
+append_printw_capture(const char* fmt, va_list ap) {
+    if (!fmt || g_printw_capture_len >= sizeof(g_printw_capture) - 1U) {
+        return;
+    }
+    size_t remaining = sizeof(g_printw_capture) - g_printw_capture_len;
+    int wrote = DSD_VSNPRINTF(g_printw_capture + g_printw_capture_len, remaining, fmt, ap);
+    if (wrote <= 0) {
+        return;
+    }
+    if ((size_t)wrote >= remaining) {
+        g_printw_capture_len = sizeof(g_printw_capture) - 1U;
+    } else {
+        g_printw_capture_len += (size_t)wrote;
+    }
+}
+
+static void
+assert_capture_contains(const char* needle) {
+    assert(needle != NULL);
+    assert(strstr(g_printw_capture, needle) != NULL);
+}
+
+static void
+assert_capture_equals(const char* expected) {
+    assert(expected != NULL);
+    assert(strcmp(g_printw_capture, expected) == 0);
+}
+
+static void
+assert_capture_starts_with(const char* prefix) {
+    assert(prefix != NULL);
+    assert(strncmp(g_printw_capture, prefix, strlen(prefix)) == 0);
+}
+
+int
+printw(const char* fmt, ...) { // NOLINT(misc-use-internal-linkage)
+    va_list ap;
+    va_start(ap, fmt);
+    append_printw_capture(fmt, ap);
+    va_end(ap);
+    return 0;
+}
+
+int
+wprintw(WINDOW* win, const char* fmt, ...) { // NOLINT(misc-use-internal-linkage)
+    (void)win;
+    (void)fmt;
+    return 0;
+}
+
+int
+waddch(WINDOW* win, const chtype ch) { // NOLINT(misc-use-internal-linkage)
+    (void)win;
+    (void)ch;
+    return 0;
+}
+
+int
+waddnstr(WINDOW* win, const char* str, int n) { // NOLINT(misc-use-internal-linkage)
+    (void)win;
+    (void)str;
+    (void)n;
+    return 0;
+}
+
+/* Colour-pair trace: "+n" when a pair is switched on, "-n" when switched off, in
+   render order. Lets tests assert that a highlight is balanced and that the
+   section colour is restored before the rest of a line is drawn. */
+static char g_color_trace[256];
+static size_t g_color_trace_len;
+
+static void
+reset_color_trace(void) {
+    DSD_MEMSET(g_color_trace, 0, sizeof(g_color_trace));
+    g_color_trace_len = 0U;
+}
+
+static void
+append_color_trace(char sign, attr_t attrs) {
+    const short pair = (short)PAIR_NUMBER(attrs);
+    if (pair == 0 || g_color_trace_len + 4U >= sizeof(g_color_trace)) {
+        return;
+    }
+    int wrote = DSD_SNPRINTF(g_color_trace + g_color_trace_len, sizeof(g_color_trace) - g_color_trace_len, "%c%d", sign,
+                             (int)pair);
+    if (wrote > 0) {
+        g_color_trace_len += (size_t)wrote;
+    }
+}
+
+int
+wattr_on(WINDOW* win, attr_t attrs, void* opts) { // NOLINT(misc-use-internal-linkage)
+    (void)win;
+    (void)opts;
+    append_color_trace('+', attrs);
+    return 0;
+}
+
+int
+wattr_off(WINDOW* win, attr_t attrs, void* opts) { // NOLINT(misc-use-internal-linkage)
+    (void)win;
+    (void)opts;
+    append_color_trace('-', attrs);
+    return 0;
+}
+
+int
+werase(WINDOW* win) { // NOLINT(misc-use-internal-linkage)
+    (void)win;
+    return 0;
+}
+
+int
+wmove(WINDOW* win, int y, int x) { // NOLINT(misc-use-internal-linkage)
+    (void)win;
+    (void)y;
+    (void)x;
+    return 0;
+}
+
+int
+whline(WINDOW* win, chtype ch, int n) { // NOLINT(misc-use-internal-linkage)
+    (void)win;
+    (void)ch;
+    (void)n;
+    return 0;
+}
+
+int
+getmaxx(const WINDOW* win) { // NOLINT(misc-use-internal-linkage)
+    (void)win;
+    return 80;
+}
+
+int
+getmaxy(const WINDOW* win) { // NOLINT(misc-use-internal-linkage)
+    (void)win;
+    return 24;
+}
+
+int
+getcurx(const WINDOW* win) { // NOLINT(misc-use-internal-linkage)
+    (void)win;
+    return 0;
+}
+
+int
+getcury(const WINDOW* win) { // NOLINT(misc-use-internal-linkage)
+    (void)win;
+    return 0;
+}
+
+int
+ui_is_thread_context(void) { // NOLINT(misc-use-internal-linkage)
+    return 1;
+}
+
+int
+ui_is_locked_from_label(const dsd_state* state, const char* label) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    return label != NULL && strstr(label, "Locked") != NULL;
+}
+
+int
+ui_is_enc_locked_from_label(const dsd_state* state, const char* label) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    return label != NULL && strstr(label, "TransientEnc") != NULL;
+}
+
+int
+dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
+                           size_t name_sz) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    if (id != 1234U) {
+        return 0;
+    }
+    if (mode && mode_sz > 0U) {
+        DSD_SNPRINTF(mode, mode_sz, "A");
+    }
+    if (name && name_sz > 0U) {
+        DSD_SNPRINTF(name, name_sz, "Dispatch");
+    }
+    return 1;
+}
+
+/* Scan-list row names. The real store lives in core, which this target does not
+ * link, so a small table stands in for it: an unset row reports "", exactly as
+ * dsd_state_trunk_lcn_name_get() does. */
+static char g_lcn_name_stub[8][DSD_CHANNEL_LABEL_SIZE];
+
+static void
+reset_lcn_name_stub(void) {
+    DSD_MEMSET(g_lcn_name_stub, 0, sizeof(g_lcn_name_stub));
+}
+
+const char*
+dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    if (index >= sizeof(g_lcn_name_stub) / sizeof(g_lcn_name_stub[0])) {
+        return "";
+    }
+    return g_lcn_name_stub[index];
+}
+
+/* Mirrors the real resolver's contract over the name stub above, so the Call Info
+ * line is checkable without linking core: the trunk-scan target wins, only an idle
+ * trunk scan lets the -Y row on air have a say, and a row whose frequency is 0 was
+ * parked over rather than tuned, so it never names anything. */
+static const char*
+stub_channel_label_pick(const dsd_opts* opts, const dsd_state* state, dsd_channel_label_source* source) {
+    *source = DSD_CHANNEL_LABEL_SOURCE_NONE;
+    if (!opts || !state) {
+        return "";
+    }
+    if (opts->trunk_scan_enabled == 1 && state->trunk_scan_active_id[0] != '\0') {
+        *source = DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN;
+        return state->trunk_scan_active_id;
+    }
+    if (opts->scanner_mode == 1 && state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count
+        && *dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) != 0) {
+        const char* name = dsd_state_trunk_lcn_name_get(state, (size_t)(state->lcn_freq_roll - 1));
+        if (name[0] != '\0') {
+            *source = DSD_CHANNEL_LABEL_SOURCE_SCAN_LIST;
+        }
+        return name;
+    }
+    return "";
+}
+
+dsd_channel_label_source
+dsd_channel_label_current_source(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    dsd_channel_label_source source = DSD_CHANNEL_LABEL_SOURCE_NONE;
+    (void)stub_channel_label_pick(opts, state, &source);
+    return source;
+}
+
+int
+dsd_channel_label_current(const dsd_opts* opts, const dsd_state* state, char* out,
+                          size_t out_sz) { // NOLINT(misc-use-internal-linkage)
+    if (out && out_sz > 0U) {
+        out[0] = '\0';
+    }
+    dsd_channel_label_source source = DSD_CHANNEL_LABEL_SOURCE_NONE;
+    const char* label = stub_channel_label_pick(opts, state, &source);
+    if (source == DSD_CHANNEL_LABEL_SOURCE_NONE || label[0] == '\0') {
+        return 0;
+    }
+    if (out && out_sz > 0U) {
+        DSD_SNPRINTF(out, out_sz, "%s", label);
+    }
+    return 1;
+}
+
+double
+pwr_to_dB(double mean_power) { // NOLINT(misc-use-internal-linkage)
+    return mean_power;
+}
+
+/* Mirrors the real formatter's shape over the identity pwr_to_dB() above, so the
+ * rendered field is checkable without linking core. */
+int
+dsd_squelch_format(double mean_power, const char* unit, char* out,
+                   size_t out_size) { // NOLINT(misc-use-internal-linkage)
+    if (!out || out_size == 0U) {
+        return -1;
+    }
+    if (dsd_squelch_is_off(mean_power)) {
+        DSD_SNPRINTF(out, out_size, "off");
+        return 0;
+    }
+    DSD_SNPRINTF(out, out_size, "%.1f%s", pwr_to_dB(mean_power), unit ? unit : "");
+    return 0;
+}
+
+const char*
+dsd_input_level_status_label(dsd_input_level_status status) { // NOLINT(misc-use-internal-linkage)
+    (void)status;
+    return "ok";
+}
+
+const char*
+dsd_input_level_display_label(dsd_input_level_source source) { // NOLINT(misc-use-internal-linkage)
+    (void)source;
+    return "Input";
+}
+
+int
+dsd_input_level_source_is_rf(dsd_input_level_source source) { // NOLINT(misc-use-internal-linkage)
+    return source != DSD_INPUT_LEVEL_SOURCE_PCM;
+}
+
+int
+getAfsString(const dsd_state* state, char* buffer, int a, int f, int s) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    (void)a;
+    (void)f;
+    (void)s;
+    DSD_SNPRINTF(buffer, 8, "00-00");
+    return 0;
+}
+
+int
+getAfsStringLength(const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    return 6;
+}
+
+int
+compute_p25p1_voice_avg_err(const dsd_state* s, double* out_avg) { // NOLINT(misc-use-internal-linkage)
+    (void)s;
+    if (out_avg) {
+        *out_avg = 0.0;
+    }
+    return 0;
+}
+
+size_t
+dsd_app_frontend_history_compact_event_text(char* out, size_t out_size, const char* event_text,
+                                            int mode) { // NOLINT(misc-use-internal-linkage)
+    (void)mode;
+    if (out_size > 0U) {
+        DSD_SNPRINTF(out, out_size, "%s", event_text ? event_text : "");
+    }
+    return event_text ? strlen(event_text) : 0U;
+}
+
+time_t
+dsd_app_frontend_history_event_sort_time(const char* event_text,
+                                         time_t fallback_time) { // NOLINT(misc-use-internal-linkage)
+    (void)event_text;
+    return fallback_time;
+}
+
+int
+dsd_app_frontend_history_get_mode(void) { // NOLINT(misc-use-internal-linkage)
+    return 0;
+}
+
+const char*
+dsd_synctype_to_string(int synctype) { // NOLINT(misc-use-internal-linkage)
+    (void)synctype;
+    return "SYNC";
+}
+
+uint8_t
+m17_address_classify(unsigned long long address) { // NOLINT(misc-use-internal-linkage)
+    (void)address;
+    return M17_ADDRESS_STANDARD;
+}
+
+int
+p25_patch_compose_details(const dsd_state* state, char* out, size_t cap) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    if (cap > 0U) {
+        out[0] = '\0';
+    }
+    return 0;
+}
+
+void
+p25_wacn_sysid_to_callsign(uint32_t wacn, uint16_t sysid, char out[7]) { // NOLINT(misc-use-internal-linkage)
+    (void)wacn;
+    (void)sysid;
+    if (out) {
+        out[0] = '\0';
+    }
+}
+
+long int
+ui_guess_active_vc_freq(const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    return 0;
+}
+
+int
+ui_menu_is_open(void) { // NOLINT(misc-use-internal-linkage)
+    return 0;
+}
+
+void
+ui_menu_tick(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
+ui_print_header(const char* title) {
+    (void)title;
+} // NOLINT(misc-use-internal-linkage)
+
+void
+ui_print_hr(void) {} // NOLINT(misc-use-internal-linkage)
+
+void
+ui_print_lborder_green(void) {} // NOLINT(misc-use-internal-linkage)
+
+void
+ui_print_lborder(void) { // NOLINT(misc-use-internal-linkage)
+    if (g_printw_capture_len < sizeof(g_printw_capture) - 1U) {
+        g_printw_capture[g_printw_capture_len++] = '|';
+    }
+}
+
+void
+ui_panel_header_render(const dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
+ui_panel_footer_status_render(const dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
+ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+int
+ui_print_p25_metrics(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+    return 0;
+}
+
+void
+ui_print_p25_neighbors(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
+ui_print_p25_iden_plan(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
+ui_print_p25_cc_candidates(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
+ui_print_p25_secondary_ccs(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
+print_dsp_status(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+#include "../../src/ui/terminal/dsd_ncurses_printer.c"
+#include "dsd-neo/app_control/frontend.h"
+#include "dsd-neo/core/input_level.h"
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/secret_redaction.h"
+#include "dsd-neo/core/state_fwd.h"
+
+static int g_requested_ppm;
+
+int
+dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->requested_ppm = g_requested_ppm;
+    return 0;
+}
+
+static void
+test_input_source_helpers(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+
+    assert(ui_audio_in_is_soapy(NULL) == 0);
+    assert(ui_audio_in_is_soapy(&opts) == 0);
+
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "soapy");
+    assert(ui_audio_in_is_soapy(&opts) == 1);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "soapy:driver=rtlsdr");
+    assert(ui_audio_in_is_soapy(&opts) == 1);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl");
+    assert(ui_audio_in_is_soapy(&opts) == 0);
+}
+
+static void
+test_dmr_mono_override_terminal_reporting(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.frame_dmr = 1;
+    opts.dmr_stereo = 1;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "/tmp/mbe");
+    ncurses_last_synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    reset_printw_capture();
+    ui_render_file_output_status(&opts);
+    assert(strstr(g_printw_capture, "Writing MBE data files") == NULL);
+    reset_printw_capture();
+    ui_render_audio_decode_section(&opts, &state, 0);
+    assert_capture_contains("Slot 2 (2)");
+
+    opts.dmr_mono = 1;
+    reset_printw_capture();
+    ui_render_file_output_status(&opts);
+    assert_capture_contains("| Writing MBE data files to directory /tmp/mbe");
+    reset_printw_capture();
+    ui_render_audio_decode_section(&opts, &state, 0);
+    assert(strstr(g_printw_capture, "Slot 2 (2)") == NULL);
+
+    state.dmr_mono_slot = 1;
+    state.errs = 0x01;
+    state.errs2 = 0x02;
+    state.errsR = 0x0A;
+    state.errs2R = 0x0B;
+    opts.slot1_on = 1;
+    opts.slot2_on = 0;
+    reset_printw_capture();
+    ui_render_audio_decode_section(&opts, &state, 0);
+    assert_capture_contains("[A][B] Off");
+    assert(strstr(g_printw_capture, "[1][2] On") == NULL);
+
+    opts.frame_p25p2 = 1;
+    ncurses_last_synctype = DSD_SYNC_P25P2_POS;
+    reset_printw_capture();
+    ui_render_audio_decode_section(&opts, &state, 0);
+    assert_capture_contains("*Preferred (3)");
+
+    ncurses_last_synctype = DSD_SYNC_NONE;
+}
+
+static void
+test_basic_input_source_rendering(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.pulse_digi_rate_in = 48000;
+    opts.pulse_digi_in_channels = 2;
+    opts.input_volume_multiplier = 3;
+    opts.use_rigctl = 1;
+    opts.rigctlportno = 4532;
+    DSD_SNPRINTF(opts.pa_input_idx, sizeof(opts.pa_input_idx), "pulse-device");
+    DSD_SNPRINTF(opts.tcp_hostname, sizeof(opts.tcp_hostname), "radio.local");
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts);
+    assert_capture_contains("| Pulse Signal Input:  48 kHz; 2 Ch;");
+    assert_capture_contains(" D: pulse-device;");
+    assert_capture_contains("RIG: radio.local:4532;");
+    assert_capture_contains(" IV: 3X;");
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_in_type = AUDIO_IN_TCP;
+    opts.wav_sample_rate = 48000;
+    opts.tcp_portno = 7355;
+    opts.input_volume_multiplier = 4;
+    DSD_SNPRINTF(opts.tcp_hostname, sizeof(opts.tcp_hostname), "10.0.0.5");
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts);
+    assert_capture_contains("| TCP Signal Input: 10.0.0.5:7355; 48 kHz; 1 Ch;");
+    assert_capture_contains(" IV: 4X;");
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_in_type = AUDIO_IN_UDP;
+    opts.wav_sample_rate = 96000;
+    opts.udp_in_portno = 23456;
+    opts.input_volume_multiplier = 5;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts);
+    assert_capture_contains("| UDP Signal Input: 127.0.0.1:23456; 96 kHz; 1 Ch;");
+    assert_capture_contains("[Waiting]");
+
+    opts.udp_in_packets = 42ULL;
+    opts.udp_in_drops = 3ULL;
+    DSD_SNPRINTF(opts.udp_in_bindaddr, sizeof(opts.udp_in_bindaddr), "0.0.0.0");
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts);
+    assert_capture_contains("| UDP Signal Input: 0.0.0.0:23456; 96 kHz; 1 Ch;");
+    assert_capture_contains("Pkts:42 Drops:3");
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    opts.input_volume_multiplier = 2;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "capture.wav");
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts);
+    assert_capture_contains("| WAV Audio Input: capture.wav; 48000 kHz;");
+    assert_capture_contains(" IV: 2X;");
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_in_type = AUDIO_IN_STDIN;
+    reset_printw_capture();
+    ui_render_basic_input_sources(&opts);
+    assert_capture_contains("| STDIN Standard Input: - Menu Disabled when using STDIN!");
+}
+
+static void
+test_rtl_and_soapy_input_source_rendering(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_dev_index = 2;
+    opts.rtl_gain_value = 21;
+    opts.rtl_volume_multiplier = 3;
+    opts.rtlsdr_ppm_error = -7;
+    g_requested_ppm = opts.rtlsdr_ppm_error;
+    /* A stored threshold is a mean power, so a real one is positive; the dB stub
+     * above is the identity, which is why this reads back as "37.5 dB". */
+    opts.rtl_squelch_level = 37.5f;
+    opts.rtl_dsp_bw_khz = 24;
+    opts.rtlsdr_center_freq = 851012500;
+    opts.rtl_udp_port = 5555;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl");
+    DSD_SNPRINTF(opts.rtl_udp_bindaddr, sizeof(opts.rtl_udp_bindaddr), "127.0.0.1");
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains("| RTL: 2;");
+    assert_capture_contains(" G: 21dB;");
+    assert_capture_contains(" Mon: 3X;");
+    assert_capture_contains(" PPM: -7;");
+    assert_capture_contains(" SQL: 37.5 dB;");
+    assert_capture_contains(" DSP-BW: 24 kHz;");
+    assert_capture_contains(" FRQ: 851012500;");
+    assert_capture_contains("| Auto PPM: Off");
+    assert_capture_contains("| External RTL Tuning on UDP: 127.0.0.1:5555");
+
+    /* Squelch off is the default every documented example uses. Printed as a
+     * number it read as a threshold that had been applied. */
+    opts.rtl_squelch_level = 0.0;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" SQL: off;");
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_gain_value = 0;
+    opts.rtl_dsp_bw_khz = 12;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "soapy:driver=rtlsdr");
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains("| SoapySDR: driver=rtlsdr;");
+    assert_capture_contains(" G: AGC;");
+    assert_capture_contains(" DSP-BW: 12 kHz;");
+
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "soapy");
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains("| SoapySDR;");
+}
+
+static void
+test_rtl_auto_ppm_status_rendering(void) {
+    reset_printw_capture();
+    ui_print_rtl_auto_ppm_status_values(0, 0, 0, -100.0, 0.0, 0);
+    assert_capture_contains("| Auto PPM: Off");
+
+    reset_printw_capture();
+    ui_print_rtl_auto_ppm_status_values(1, 0, 0, 18.2, -122.5, 1);
+    assert_capture_contains("| Auto PPM: On; SNR: 18.2 dB; df: -122.5 Hz; step: +1;");
+
+    reset_printw_capture();
+    ui_print_rtl_auto_ppm_status_values(1, 0, 0, 20.0, 0.0, 0);
+    assert_capture_contains("| Auto PPM: On; SNR: 20.0 dB; df: 0.0 Hz; step: hold;");
+
+    reset_printw_capture();
+    ui_print_rtl_auto_ppm_status_values(1, 1, -12, 25.0, 10.0, -1);
+    assert_capture_contains("| Auto PPM: Locked (PPM: -12)");
+}
+
+static void
+test_demod_symbol_rate_helpers(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    assert(ui_demod_symbol_rate_hz(NULL, NULL) == 48000);
+
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    state.samplesPerSymbol = 10;
+    assert(ui_demod_symbol_rate_hz(&opts, &state) == 4800);
+
+    opts.wav_sample_rate = 44100;
+    state.samplesPerSymbol = 9;
+    assert(ui_demod_symbol_rate_hz(&opts, &state) == 4900);
+
+    state.samplesPerSymbol = 0;
+    assert(ui_demod_symbol_rate_hz(&opts, &state) == 44100);
+
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.pulse_digi_rate_in = 0;
+    state.samplesPerSymbol = 12;
+    assert(ui_demod_symbol_rate_hz(&opts, &state) == 4000);
+}
+
+static void
+test_input_level_policy(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    assert(ui_compute_input_level_and_color(NULL, &state) == 0);
+    assert(ui_compute_input_level_and_color(&opts, NULL) == 0);
+
+    state.carrier = 0;
+    state.max = 10000.0f;
+    assert(ui_compute_input_level_and_color(&opts, &state) == 0);
+
+    state.carrier = 1;
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.mod_qpsk = 0;
+    state.rf_mod = 0;
+    state.max = 8200.0f;
+    assert(ui_compute_input_level_and_color(&opts, &state) == 50);
+
+    opts.mod_qpsk = 1;
+    assert(ui_compute_input_level_and_color(&opts, &state) == 100);
+
+    opts.mod_qpsk = 0;
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    assert(ui_compute_input_level_and_color(&opts, &state) == 50);
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtl_dsp_bw_khz = 48;
+    state.max = 0.075f;
+    assert(ui_compute_input_level_and_color(&opts, &state) == 50);
+}
+
+static void
+test_compact_status_section_rendering(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    /* Null inputs render nothing */
+    reset_printw_capture();
+    ui_render_compact_status_section(NULL, &state, 0);
+    ui_render_compact_status_section(&opts, NULL, 0);
+    assert(g_printw_capture[0] == '\0');
+
+    /* Trunking tuned: Tuner [Busy]; dual-slot shows both slot states */
+    DSD_SNPRINTF(opts.output_name, sizeof(opts.output_name), "AUTO");
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    state.samplesPerSymbol = 10;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    opts.audio_out = 1;
+    opts.dmr_stereo = 1;
+    opts.slot1_on = 1;
+    opts.slot2_on = 0;
+    ncurses_last_synctype = DSD_SYNC_NONE;
+    reset_printw_capture();
+    ui_render_compact_status_section(&opts, &state, 42);
+    assert_capture_contains("[AUTO] [C4FM][4800]");
+    assert_capture_contains("Tuner [Busy]");
+    /* SNR line starts with its own left border in compact view */
+    assert_capture_contains("Tuner [Busy]\n|");
+    assert_capture_contains("In [42%]");
+    assert_capture_contains("Out (x) [On]");
+    assert_capture_contains("S1 (1) [On]");
+    assert_capture_contains("S2 (2) [Off]");
+
+    /* Trunking not tuned: Tuner [Free] */
+    opts.trunk_is_tuned = 0;
+    reset_printw_capture();
+    ui_render_compact_status_section(&opts, &state, 42);
+    assert_capture_contains("Tuner [Free]");
+
+    /* Trunking off: no Tuner field; muted output */
+    opts.trunk_enable = 0;
+    opts.audio_out = 0;
+    reset_printw_capture();
+    ui_render_compact_status_section(&opts, &state, 42);
+    assert(strstr(g_printw_capture, "Tuner [") == NULL);
+    assert_capture_contains("Out (x) [Muted]");
+
+    /* Single-slot mode shows only S1 */
+    opts.dmr_stereo = 0;
+    reset_printw_capture();
+    ui_render_compact_status_section(&opts, &state, 42);
+    assert_capture_contains("S1 (1) [On]");
+    assert(strstr(g_printw_capture, "S2 (2)") == NULL);
+
+    /* RTL QPSK hides In Level (fixed differential symbols) */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rf_mod = 1;
+    reset_printw_capture();
+    ui_render_compact_status_section(&opts, &state, 42);
+    assert(strstr(g_printw_capture, "In [") == NULL);
+    assert_capture_contains("[QPSK]");
+}
+
+static void
+test_scanner_status_row_rendering(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_lcn_name_stub();
+
+    opts.scanner_mode = 1;
+    opts.trunk_hangtime = 2.0f;
+    state.lcn_freq_count = 2;
+    state.lcn_freq_roll = 1;
+    state.trunk_lcn_freq[0] = 462012500;
+    state.trunk_lcn_freq[1] = 462037500;
+
+    /* An unnamed row keeps the row byte-identical to what it has always been. */
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n");
+
+    /* A named row spells the name out after the fixed fields, so the frequency and speed keep
+       their columns and only the operator-length name reaches a narrow terminal's edge. */
+    DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion \n");
+
+    /* HOLD is a state of the channel on air, so it sits with the channel's fixed fields. The
+       avoid count is a property of the list, not of this channel, so it trails the name: a
+       reader must not take "Avoided" beside HOLD as a verdict on the channel they are hearing
+       (PR #463 feedback). */
+    state.lcn_scan_hold = 1;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec HOLD Channel: Marion \n");
+    state.lcn_avoid_count = 2;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec HOLD Channel: Marion Avoids: 2 \n");
+    state.lcn_scan_hold = 0;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion Avoids: 2 \n");
+
+    /* An unnamed row on air: the count still closes the row, after the fixed fields. */
+    reset_lcn_name_stub();
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Avoids: 2 \n");
+    DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
+    state.lcn_avoid_count = 0;
+
+    /* The last row of the list is on air once roll has caught up with the count: the bound is
+       inclusive, so this row renders like any other. */
+    DSD_SNPRINTF(g_lcn_name_stub[1], sizeof(g_lcn_name_stub[1]), "Delaware");
+    state.lcn_freq_roll = 2;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.037500 MHz Speed: 2.00 sec Channel: Delaware \n");
+
+    /* A row the importer kept for its numbering but could not use: the scanner parks on the
+       frequency it is already on rather than tuning this one, so its name would credit the wrong
+       channel for a whole hangtime. The frequency field keeps printing the slot as it always has. */
+    state.trunk_lcn_freq[1] = 0;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 0.000000 MHz Speed: 2.00 sec \n");
+    state.trunk_lcn_freq[1] = 462037500;
+
+    /* Before the first tune there is no row on air, so neither field prints. */
+    state.lcn_freq_roll = 0;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Speed: 2.00 sec \n");
+
+    /* A roll left past a shrunken count must not reach into the stale tail. */
+    DSD_SNPRINTF(g_lcn_name_stub[2], sizeof(g_lcn_name_stub[2]), "Ghost");
+    state.lcn_freq_roll = 3;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Speed: 2.00 sec \n");
+
+    /* No -Y list, no row at all. */
+    opts.scanner_mode = 0;
+    state.lcn_freq_roll = 1;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("");
+
+    reset_lcn_name_stub();
+}
+
+static void
+test_trunk_scan_status_row_rendering(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_lcn_name_stub();
+
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
+    state.trunk_scan_active_ordinal = 3;
+    state.trunk_scan_target_count = 6;
+
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6)\n");
+
+    /* HOLD and the parked-on-avoided fallback describe the target on air and follow its
+       position; the list-wide avoid count comes last and under a different word, so the two
+       meanings of "avoided" never sit side by side. */
+    state.trunk_scan_hold = 1;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) HOLD\n");
+    state.trunk_scan_active_avoided = 1;
+    state.trunk_scan_avoided_count = 2;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) HOLD [avoided] Avoids: 2\n");
+    state.trunk_scan_hold = 0;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) [avoided] Avoids: 2\n");
+    state.trunk_scan_active_avoided = 0;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) Avoids: 2\n");
+    state.trunk_scan_avoided_count = 0;
+
+    /* No position published yet: name the target without inventing an "n of m". */
+    state.trunk_scan_active_ordinal = 0;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25\n");
+
+    /* Half a position is no position: an ordinal with no rotation length behind it prints
+       no suffix either. */
+    state.trunk_scan_active_ordinal = 3;
+    state.trunk_scan_target_count = 0;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25\n");
+    state.trunk_scan_target_count = 6;
+
+    /* A stale id from an earlier run must not show once scanning is off. */
+    state.trunk_scan_active_ordinal = 3;
+    opts.trunk_scan_enabled = 0;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("");
+
+    /* Enabled but between targets: nothing is on air to name. */
+    opts.trunk_scan_enabled = 1;
+    DSD_MEMSET(state.trunk_scan_active_id, 0, sizeof(state.trunk_scan_active_id));
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("");
+
+    /* Both scanners on: the Scan Mode row keeps its place above the new one, and drops its
+       own name while the target owns the label, so the screen never names two channels. */
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
+    opts.scanner_mode = 1;
+    opts.trunk_hangtime = 2.0f;
+    state.lcn_freq_count = 1;
+    state.lcn_freq_roll = 1;
+    state.trunk_lcn_freq[0] = 462012500;
+    DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n"
+                          "| Trunk Scan:  Target: county-p25 (3/6)\n");
+
+    /* Between targets the -Y row's name is the answer again. */
+    DSD_MEMSET(state.trunk_scan_active_id, 0, sizeof(state.trunk_scan_active_id));
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion \n");
+
+    reset_lcn_name_stub();
+}
+
+static void
+test_call_info_channel_line_rendering(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    reset_lcn_name_stub();
+    ncurses_last_synctype = DSD_SYNC_NONE;
+
+    /* -Y scan list: the row on air names the line, printed in the Call Info
+       colour, with the section colour restored before the newline. */
+    opts.scanner_mode = 1;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 1;
+    state->trunk_lcn_freq[0] = 462012500;
+    DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
+    reset_printw_capture();
+    reset_color_trace();
+    ui_render_call_info_channel_line(&opts, state);
+    assert_capture_equals("| Channel: Marion\n");
+    assert(strcmp(g_color_trace, "+4+4") == 0);
+
+    /* Carrier up: the restore hands back to the carrier pair, not to cyan. */
+    state->carrier = 1;
+    reset_color_trace();
+    ui_render_call_info_channel_line(&opts, state);
+    assert(strcmp(g_color_trace, "+4+3") == 0);
+    state->carrier = 0;
+
+    /* A trunk-scan target outranks the conventional scan list, and is worded the way the
+       Trunk Scan row words it: a target is a system, not a channel. */
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(state->trunk_scan_active_id, sizeof(state->trunk_scan_active_id), "county-p25");
+    reset_printw_capture();
+    ui_render_call_info_channel_line(&opts, state);
+    assert_capture_equals("| Target: county-p25\n");
+
+    /* It is the first row of the section ... */
+    reset_printw_capture();
+    ui_render_call_info_and_history(&opts, state);
+    assert_capture_starts_with("| Target: county-p25\n");
+
+    /* ... in compact view too, which is the view that hides the Input Output
+       section carrying the Scan Mode and Trunk Scan rows. */
+    opts.frontend_terminal_display.terminal_compact = 1;
+    reset_printw_capture();
+    ui_render_call_info_and_history(&opts, state);
+    assert_capture_starts_with("| Target: county-p25\n");
+    opts.frontend_terminal_display.terminal_compact = 0;
+
+    /* ... and it stays above the protocol rows. */
+    ncurses_last_synctype = DSD_SYNC_DSTAR_VOICE_POS;
+    reset_printw_capture();
+    ui_render_call_info_and_history(&opts, state);
+    const char* channel_row = strstr(g_printw_capture, "| Target: county-p25");
+    const char* dstar_row = strstr(g_printw_capture, "| RPT2:");
+    assert(channel_row != NULL);
+    assert(dstar_row != NULL);
+    assert(channel_row < dstar_row);
+    ncurses_last_synctype = DSD_SYNC_NONE;
+
+    /* Neither scanner running: no line, and no empty label either. */
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 0;
+    reset_printw_capture();
+    ui_render_call_info_and_history(&opts, state);
+    assert(strstr(g_printw_capture, "| Channel:") == NULL);
+    assert(strstr(g_printw_capture, "| Target:") == NULL);
+
+    reset_lcn_name_stub();
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+static void
+test_history_and_sort_helpers(void) {
+    Event_History item;
+    DSD_MEMSET(&item, 0, sizeof(item));
+    assert(ui_eh_item_has_content(NULL) == 0);
+    assert(ui_eh_item_has_content(&item) == 0);
+
+    DSD_SNPRINTF(item.alias, sizeof(item.alias), "Unit 12");
+    assert(ui_eh_item_has_content(&item) == 1);
+
+    time_t last_seen[4] = {(time_t)10, (time_t)40, (time_t)20, (time_t)30};
+    int idxs[4] = {0, 1, 2, 3};
+    ui_sort_indices_by_last_seen(last_seen, idxs, 4);
+    assert(idxs[0] == 1);
+    assert(idxs[1] == 3);
+    assert(idxs[2] == 2);
+    assert(idxs[3] == 0);
+
+    ui_history_item_ref newer = {.slot = 1, .idx = 7, .sort_time = (time_t)200};
+    ui_history_item_ref older = {.slot = 0, .idx = 1, .sort_time = (time_t)100};
+    assert(ui_history_item_ref_compare(&newer, &older) < 0);
+    assert(ui_history_item_ref_compare(&older, &newer) > 0);
+
+    ui_history_item_ref same_time_low_idx = {.slot = 1, .idx = 2, .sort_time = (time_t)200};
+    ui_history_item_ref same_time_high_idx = {.slot = 0, .idx = 3, .sort_time = (time_t)200};
+    assert(ui_history_item_ref_compare(&same_time_low_idx, &same_time_high_idx) < 0);
+
+    static dsd_state state;
+    static Event_History_I history[2];
+    ui_history_item_ref refs[4];
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    DSD_MEMSET(refs, 0, sizeof(refs));
+    state.event_history_s = history;
+
+    DSD_SNPRINTF(history[0].Event_History_Items[1].event_string, sizeof(history[0].Event_History_Items[1].event_string),
+                 "slot0 old");
+    history[0].Event_History_Items[1].event_time = (time_t)100;
+    DSD_SNPRINTF(history[1].Event_History_Items[3].text_message, sizeof(history[1].Event_History_Items[3].text_message),
+                 "slot1 newest");
+    history[1].Event_History_Items[3].event_time = (time_t)300;
+    DSD_SNPRINTF(history[1].Event_History_Items[4].alias, sizeof(history[1].Event_History_Items[4].alias),
+                 "slot1 middle");
+    history[1].Event_History_Items[4].event_time = (time_t)200;
+
+    assert(ui_history_collect_slot_items(NULL, 0, refs, 0U, 4U) == 0U);
+    assert(ui_history_collect_slot_items(&state, 2, refs, 0U, 4U) == 0U);
+    assert(ui_history_collect_slot_items(&state, 0, NULL, 0U, 4U) == 0U);
+    assert(ui_history_collect_slot_items(&state, 0, refs, 4U, 4U) == 4U);
+
+    DSD_MEMSET(refs, 0, sizeof(refs));
+    assert(ui_history_collect_slot_items(&state, 0, refs, 0U, 4U) == 1U);
+    assert(refs[0].slot == 0);
+    assert(refs[0].idx == 1);
+    assert(refs[0].sort_time == (time_t)100);
+
+    DSD_MEMSET(refs, 0, sizeof(refs));
+    assert(ui_history_collect_sorted_items(&state, 2, refs, 4U) == 3U);
+    assert(refs[0].slot == 1);
+    assert(refs[0].idx == 3);
+    assert(refs[1].slot == 1);
+    assert(refs[1].idx == 4);
+    assert(refs[2].slot == 0);
+    assert(refs[2].idx == 1);
+}
+
+static void
+test_history_color_pair_policy(void) {
+    static const struct {
+        uint8_t severity;
+        uint8_t category;
+        uint8_t legacy_pair;
+        short expected_pair;
+    } cases[] = {
+        {DSD_EVENT_SEVERITY_UNKNOWN, DSD_EVENT_CATEGORY_UNKNOWN, 0U, 4},
+        {DSD_EVENT_SEVERITY_UNKNOWN, DSD_EVENT_CATEGORY_UNKNOWN, 7U, 7},
+        {DSD_EVENT_SEVERITY_DEBUG, DSD_EVENT_CATEGORY_UNKNOWN, 3U, 4},
+        {DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_UNKNOWN, 3U, 4},
+        {DSD_EVENT_SEVERITY_UNKNOWN, DSD_EVENT_CATEGORY_STATUS, 2U, 4},
+        {DSD_EVENT_SEVERITY_UNKNOWN, DSD_EVENT_CATEGORY_VOICE, 2U, 3},
+        {DSD_EVENT_SEVERITY_UNKNOWN, DSD_EVENT_CATEGORY_DATA, 2U, 4},
+        {DSD_EVENT_SEVERITY_UNKNOWN, DSD_EVENT_CATEGORY_CONTROL, 2U, 1},
+        {DSD_EVENT_SEVERITY_UNKNOWN, DSD_EVENT_CATEGORY_SYSTEM, 2U, 4},
+        {DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_VOICE, 2U, 3},
+        {DSD_EVENT_SEVERITY_DEBUG, DSD_EVENT_CATEGORY_CONTROL, 2U, 1},
+        {DSD_EVENT_SEVERITY_WARNING, DSD_EVENT_CATEGORY_UNKNOWN, 3U, 1},
+        {DSD_EVENT_SEVERITY_WARNING, DSD_EVENT_CATEGORY_VOICE, 3U, 1},
+        {DSD_EVENT_SEVERITY_WARNING, DSD_EVENT_CATEGORY_DATA, 3U, 1},
+        {DSD_EVENT_SEVERITY_ERROR, DSD_EVENT_CATEGORY_UNKNOWN, 3U, 2},
+        {DSD_EVENT_SEVERITY_ERROR, DSD_EVENT_CATEGORY_CONTROL, 3U, 2},
+        {DSD_EVENT_SEVERITY_ERROR, DSD_EVENT_CATEGORY_SYSTEM, 3U, 2},
+        {UINT8_MAX, DSD_EVENT_CATEGORY_VOICE, 3U, 3},
+        {UINT8_MAX, UINT8_MAX, 3U, 4},
+        {DSD_EVENT_SEVERITY_INFO, UINT8_MAX, 3U, 4},
+        {DSD_EVENT_SEVERITY_WARNING, UINT8_MAX, 3U, 1},
+        {DSD_EVENT_SEVERITY_ERROR, UINT8_MAX, 3U, 2},
+    };
+
+    assert(ui_history_color_pair_for_event(NULL) == 4);
+    for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        Event_History item;
+        DSD_MEMSET(&item, 0, sizeof(item));
+        item.severity = cases[i].severity;
+        item.category = cases[i].category;
+        item.color_pair = cases[i].legacy_pair;
+        assert(ui_history_color_pair_for_event(&item) == cases[i].expected_pair);
+    }
+}
+
+static void
+test_history_viewport_helpers(void) {
+    int draw_footer = 1;
+    ui_history_render_ctx ctx;
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+
+    ui_history_setup_render_ctx(1, &draw_footer, &ctx);
+    assert(draw_footer == 1);
+    assert(ctx.history_mode == 1);
+    assert(ctx.rows == 24);
+    assert(ctx.cols == 80);
+    assert(ctx.history_stop_y == 22);
+    assert(ctx.events_to_show == 22);
+    assert(ctx.string_size == 71);
+
+    assert(ui_history_has_room_for_line(0) == 0);
+    assert(ui_history_has_room_for_line(1) == 1);
+    assert(ui_history_clamp_line_size(&ctx, 2) == 71U);
+    assert(ui_history_clamp_line_size(&ctx, 90) == 0U);
+
+    draw_footer = 1;
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    ui_history_setup_render_ctx(2, &draw_footer, &ctx);
+    assert(draw_footer == 1);
+    assert(ctx.history_mode == 2);
+    assert(ctx.events_to_show == 22);
+    assert(ctx.history_stop_y == 22);
+    assert(ctx.string_size == 1999U);
+    assert(ui_history_clamp_line_size(&ctx, 90) == 1999U);
+
+    Event_History item;
+    DSD_MEMSET(&item, 0, sizeof(item));
+    assert(ui_history_print_detail_line(1, UINT8_MAX, "Alias: ", "") == 1);
+    assert(ui_history_print_detail_line(1, UINT8_MAX, "Alias: ", NULL) == 1);
+    assert(ui_history_print_detail_line(0, UINT8_MAX, "Alias: ", "Unit") == 0);
+    assert(ui_history_print_detail_line(1, 0, "Alias: ", "Unit") == 1);
+}
+
+static void
+test_hytera_key_format_helper(void) {
+    static dsd_state state;
+    char key_text[96];
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(key_text, 0, sizeof(key_text));
+
+    state.K1 = 0x123456789AULL;
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 1, 1U), "123456789A") == 0);
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 0, 1U), DSD_SECRET_REDACTED) == 0);
+
+    state.K1 = 0x1111222233334444ULL;
+    state.K2 = 0x5555666677778888ULL;
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 1, 2U), "1111222233334444 5555666677778888")
+           == 0);
+
+    state.K3 = 0x9999AAAABBBBCCCCULL;
+    state.K4 = 0xDDDDEEEEFFFF0001ULL;
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 1, 4U),
+                  "1111222233334444 5555666677778888 9999AAAABBBBCCCC DDDDEEEEFFFF0001")
+           == 0);
+
+    state.K1 = 0xABCDEF123456ULL;
+    assert(strcmp(ui_format_hytera_key(key_text, sizeof(key_text), &state, 1, 3U), "CDEF123456") == 0);
+}
+
+static void
+test_edacs_tree_update_helpers(void) {
+    static dsd_state state;
+    static dsd_opts opts;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    ncurses_last_synctype = DSD_SYNC_NONE;
+
+    ui_update_sync_and_edacs_tree(NULL);
+    assert(ncurses_last_synctype == DSD_SYNC_NONE);
+
+    state.synctype = DSD_SYNC_EDACS_POS;
+    ui_update_sync_and_edacs_tree(&state);
+    assert(ncurses_last_synctype == DSD_SYNC_EDACS_POS);
+
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_EDACS_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1234U,
+        .policy_target_id = 1234U,
+        .ota_source_id = 5678U,
+        .channel = 5U,
+    };
+    const uint64_t now_ms = (uint64_t)(dsd_time_now_monotonic_s() * 1000.0);
+    assert(dsd_recent_activity_publish(&state, 5U, &observation, "Group Voice Ch: 5 TG: 1234 Src: 5678;", now_ms) == 1);
+    state.trunk_lcn_freq[4] = 851012500L;
+    dsd_recent_activity_snapshot recent;
+    assert(dsd_recent_activity_copy_snapshot(&state, &recent) == 1);
+    reset_printw_capture();
+    ui_render_edacs_lcn_row(&opts, &state, 5, &recent);
+    assert_capture_contains("LCN [05][851.012500] MHz");
+    assert_capture_contains("Group Voice Ch: 5 TG: 1234 Src: 5678;");
+    assert_capture_contains("[Dispatch][A]");
+
+    state.synctype = DSD_SYNC_NONE;
+    ui_update_sync_and_edacs_tree(&state);
+    assert(ncurses_last_synctype == DSD_SYNC_EDACS_POS);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
+test_patch_and_slot_helpers(void) {
+    char tokens[48][64];
+    int count = 0;
+    DSD_MEMSET(tokens, 0, sizeof(tokens));
+    ui_parse_patch_tokens(" TG 100 ; ; TG 200 ; very-long-token-that-keeps-its-text ", tokens, &count);
+    assert(count == 3);
+    assert(strcmp(tokens[0], "TG 100") == 0);
+    assert(strcmp(tokens[1], "TG 200") == 0);
+    assert(strcmp(tokens[2], "very-long-token-that-keeps-its-text") == 0);
+    assert(ui_patch_tokens_col_width(tokens, count) == 28);
+
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.dmrburstL = 16;
+    state.dmrburstR = 21;
+    state.payload_algid = 0x24;
+    state.payload_algidR = 0x21;
+    state.payload_keyid = 11;
+    state.payload_keyidR = 22;
+    state.payload_mi = 0x12345678ULL;
+    state.payload_miR = 0x87654321ULL;
+    state.payload_miP = 0x1111222233334444ULL;
+    state.payload_miN = 0x5555666677778888ULL;
+    state.R = 0x12345ULL;
+    state.RR = 0x67890ULL;
+    state.aes_key_loaded[0] = 1;
+    state.A2[0] = 0x1111ULL;
+    state.A4[0] = 0x2222ULL;
+    DSD_SNPRINTF(state.dmr_embedded_gps[1], sizeof(state.dmr_embedded_gps[1]), "gps");
+    DSD_SNPRINTF(state.dmr_lrrp_gps[1], sizeof(state.dmr_lrrp_gps[1]), "lrrp");
+    DSD_SNPRINTF(state.generic_talker_alias[1], sizeof(state.generic_talker_alias[1]), "alias");
+
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 1U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 202U,
+        .policy_target_id = 202U,
+        .ota_source_id = 404U,
+    };
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_ENCRYPTED,
+        .algid = 0x21U,
+        .kid = 22U,
+        .mi = 0x5555666677778888ULL,
+    };
+    assert(dsd_call_state_update_crypto(&state, 1U, &crypto) == 1);
+
+    ui_slot_view right = ui_build_slot_view(&(dsd_opts){0}, &state, 1);
+    assert(right.slot_no == 2);
+    assert(right.burst == 21);
+    assert(right.target == 202);
+    assert(right.source == 404);
+    assert(right.payload_algid == 0x21);
+    assert(right.payload_keyid == 22);
+    assert(right.payload_mi_dmr == 0x87654321ULL);
+    assert(right.payload_mi_p25 == 0x5555666677778888ULL);
+    assert(right.rc4_key == 0x67890ULL);
+    assert(strcmp(right.call_banner, " Group Encrypted") == 0);
+    assert(strcmp(right.embedded_gps, "gps") == 0);
+    assert(strcmp(right.lrrp_gps, "lrrp") == 0);
+    assert(strcmp(right.talker_alias, "alias") == 0);
+
+    assert(ui_slot_has_dxtra_embedded(1, 26) == 1);
+    assert(ui_slot_has_dxtra_embedded(2, 26) == 0);
+    assert(ui_slot_has_dxtra_embedded(2, 21) == 1);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
+test_lock_and_protocol_helpers(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    assert(ui_channel_label_is_locked(&opts, &state, "Already Locked") == 1);
+    assert(ui_channel_label_is_locked(NULL, &state, "TG: 123") == 0);
+
+    opts.trunk_tune_data_calls = 0;
+    assert(ui_channel_label_is_locked(&opts, &state, "Active Data Ch: 7") == 1);
+    opts.trunk_tune_data_calls = 1;
+    opts.trunk_tune_group_calls = 0;
+    assert(ui_channel_label_is_locked(&opts, &state, "TG: 123") == 1);
+    opts.trunk_tune_group_calls = 1;
+    opts.trunk_tune_private_calls = 0;
+    assert(ui_channel_label_is_locked(&opts, &state, "TGT: 456") == 1);
+
+    DSD_SNPRINTF(state.nxdn_location_category, sizeof(state.nxdn_location_category), "Type-D");
+    assert(ui_nxdn_is_idas(&state) == 1);
+    DSD_SNPRINTF(state.nxdn_location_category, sizeof(state.nxdn_location_category), "Type-C");
+    assert(ui_nxdn_is_idas(&state) == 0);
+}
+
+static void
+test_canonical_p25_slot_and_recent_activity(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    state->synctype = DSD_SYNC_P25P2_POS;
+    state->dmrburstL = 0;
+
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_P25P2_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 1201U;
+    observation.policy_target_id = 1201U;
+    observation.frequency_hz = 851012500;
+    observation.observed_m = 1.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    dsd_call_crypto_update crypto = {0};
+    crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    crypto.algid = 0x84U;
+    crypto.kid = 0x2468U;
+    crypto.mi = 0x1122334455667788ULL;
+    crypto.audio_permitted = 0U;
+    crypto.observed_m = 1.1;
+    assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
+
+    ui_slot_view slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
+    assert(slot.canonical_p25 == 1);
+    assert(slot.burst == 21);
+    assert(slot.target == 1201);
+    assert(slot.source == 0);
+    reset_printw_capture();
+    ui_slot_render_flags flags = {0};
+    ui_render_slot_header_line(state, &slot, &flags);
+    ui_render_slot_vxtra_line(&(dsd_opts){0}, state, &slot, &flags);
+    assert_capture_contains("TGT: [    1201]");
+    assert_capture_contains("SRC: [       0]");
+    assert_capture_contains("ALG: 0x84 KEY ID: 0x2468 MI: 0x1122334455667788");
+    assert(strstr(g_printw_capture, "UNKNOWN") == NULL);
+    assert(strstr(g_printw_capture, "ENC?") == NULL);
+    assert(strstr(g_printw_capture, "Freq:") == NULL);
+    assert(strstr(g_printw_capture, "[GROUP]") == NULL);
+    assert(strstr(g_printw_capture, "P25 VOICE") == NULL);
+    assert_capture_contains(" | VOICE");
+
+    state->dmrburstR = 21;
+    ui_slot_view idle_companion = ui_build_slot_view(&(dsd_opts){0}, state, 1);
+    assert(idle_companion.canonical_p25 == 0);
+    assert(idle_companion.call.phase == DSD_CALL_PHASE_IDLE);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &idle_companion);
+    assert_capture_contains("TGT: [        ] SRC: [        ]");
+    assert(strstr(g_printw_capture, "9999") == NULL);
+    assert(strstr(g_printw_capture, "8888") == NULL);
+
+    const uint64_t now_ms = (uint64_t)(dsd_time_now_monotonic_s() * 1000.0);
+    dsd_call_observation old_activity = observation;
+    old_activity.ota_target_id = 100U;
+    old_activity.policy_target_id = 100U;
+    dsd_call_observation fresh_activity = observation;
+    fresh_activity.ota_target_id = 200U;
+    fresh_activity.policy_target_id = 200U;
+    assert(dsd_recent_activity_publish(state, 0U, &old_activity, "old TG: 100; ", now_ms - 4000U) == 1);
+    assert(dsd_recent_activity_publish(state, 1U, &fresh_activity, "fresh TG: 200; ", now_ms - 1000U) == 1);
+    reset_printw_capture();
+    ui_render_active_channel_list(&(dsd_opts){0}, state, 31U);
+    assert(strstr(g_printw_capture, "old") == NULL);
+    assert_capture_contains("fresh TG: 200");
+    reset_printw_capture();
+    ui_render_p25_dmr_active_channels_line(&(dsd_opts){0}, state);
+    assert_capture_contains("|        | fresh TG: 200");
+    assert(strstr(g_printw_capture, "RECENT") == NULL);
+
+    dsd_call_observation data_observation = observation;
+    data_observation.kind = DSD_CALL_KIND_DATA;
+    data_observation.ota_target_id = 2202U;
+    data_observation.policy_target_id = 2202U;
+    data_observation.observed_m = 1.5;
+    assert(dsd_call_state_observe(state, &data_observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
+    assert(slot.canonical_p25 == 1);
+    assert(slot.burst == 6);
+    assert(strcmp(slot.call_banner, " Data") == 0);
+
+    assert(dsd_call_state_end(state, 0U, 2.0) == 1);
+    slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
+    assert(slot.call.phase == DSD_CALL_PHASE_ENDED);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &slot);
+    assert_capture_contains("TGT: [        ] SRC: [        ]");
+    assert(strstr(g_printw_capture, "1201") == NULL);
+
+    state->dmrburstL = 25;
+    state->payload_algid = 0x84;
+    state->payload_keyid = 0x2468;
+    state->payload_miP = 0x1122334455667788ULL;
+    slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
+    assert(slot.canonical_p25 == 0);
+    assert(slot.call.phase == DSD_CALL_PHASE_ENDED);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &slot);
+    assert_capture_contains("HDU");
+    assert_capture_contains("ALG: 0x84 KEY ID: 0x2468 MI: 0x1122334455667788");
+
+    static dsd_opts tuned_opts;
+    DSD_MEMSET(&tuned_opts, 0, sizeof(tuned_opts));
+    tuned_opts.trunk_enable = 1;
+    tuned_opts.trunk_is_tuned = 1;
+    state->trunk_vc_freq[0] = 851025000L;
+    reset_printw_capture();
+    ui_render_p25_dmr_tuned_freq_line(&tuned_opts, state);
+    assert_capture_contains("Frequency: 851.025000 MHz");
+
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->dmrburstL = 21;
+    observation.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 4321U;
+    observation.policy_target_id = 4321U;
+    observation.ota_source_id = 8765U;
+    observation.frequency_hz = 0;
+    observation.observed_m = 3.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
+    assert(slot.canonical_p25 == 0);
+    assert(slot.target == 4321);
+    assert(slot.source == 8765);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &slot);
+    assert_capture_contains("TGT: [    4321]");
+    assert_capture_contains("SRC: [    8765]");
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+/* Offset of the separator that precedes the burst/DUID indicator on a slot
+   header line. The whole point of the fixed status column is that this offset
+   does not move when optional call tags or banner text appear. */
+static size_t
+capture_burst_separator_offset(void) {
+    const char* separator = strstr(g_printw_capture, " | ");
+    assert(separator != NULL);
+    return (size_t)(separator - g_printw_capture);
+}
+
+static void
+capture_slot_header_line(dsd_state* state, int slot_index) {
+    ui_slot_view slot = ui_build_slot_view(&(dsd_opts){0}, state, slot_index);
+    ui_slot_render_flags flags = {0};
+    reset_printw_capture();
+    ui_render_slot_header_line(state, &slot, &flags);
+}
+
+static void
+test_slot_header_burst_column_is_fixed(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    state->synctype = DSD_SYNC_P25P2_POS;
+    state->lastsynctype = DSD_SYNC_P25P2_POS;
+
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_P25P2_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 1201U;
+    observation.policy_target_id = 1201U;
+    observation.ota_source_id = 404U;
+    observation.observed_m = 1.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    capture_slot_header_line(state, 0);
+    assert_capture_contains(" | VOICE");
+    const size_t baseline_offset = capture_burst_separator_offset();
+
+    // A grant carrying a priority must not push the burst indicator out of column.
+    observation.has_service_metadata = 1U;
+    observation.priority = 3U;
+    observation.observed_m = 1.2;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    capture_slot_header_line(state, 0);
+    assert_capture_contains("[PR:3]");
+    assert_capture_contains(" | VOICE");
+    assert(capture_burst_separator_offset() == baseline_offset);
+
+    // Emergency is reported once, by the [EM] tag; the banner must not repeat it.
+    observation.emergency = 1U;
+    observation.observed_m = 1.4;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    capture_slot_header_line(state, 0);
+    assert_capture_contains("[EM][PR:3]");
+    assert(strstr(g_printw_capture, "Emergency") == NULL);
+    assert(capture_burst_separator_offset() == baseline_offset);
+
+    // A longer banner (encrypted) shares the same column budget.
+    dsd_call_crypto_update crypto = {0};
+    crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED;
+    crypto.algid = 0x84U;
+    crypto.kid = 0x2468U;
+    crypto.observed_m = 1.5;
+    assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
+    capture_slot_header_line(state, 0);
+    assert_capture_contains("Group Encrypted");
+    assert(capture_burst_separator_offset() == baseline_offset);
+
+    // The idle-slot placeholder lands on the same column as a live call.
+    state->dmrburstR = 21;
+    capture_slot_header_line(state, 1);
+    assert_capture_contains("TGT: [        ] SRC: [        ]");
+    assert(capture_burst_separator_offset() == baseline_offset);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+static void
+test_slot_header_id_highlight_is_balanced(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    state->synctype = DSD_SYNC_P25P2_POS;
+    state->lastsynctype = DSD_SYNC_P25P2_POS;
+    state->carrier = 1;
+
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_P25P2_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 1201U;
+    observation.policy_target_id = 1201U;
+    observation.ota_source_id = 404U;
+    observation.observed_m = 1.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    // Voice burst: IDs are not highlighted, but the section colour is still restored.
+    ui_slot_view slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
+    assert(slot.burst == 21);
+    ui_slot_render_flags flags = {0};
+    reset_color_trace();
+    ui_render_slot_header_line(state, &slot, &flags);
+    assert(strcmp(g_color_trace, "+3") == 0);
+
+    // Non-voice burst with resolved IDs: the highlight is turned on and off again.
+    dsd_call_observation data_observation = observation;
+    data_observation.kind = DSD_CALL_KIND_DATA;
+    data_observation.ota_target_id = 2202U;
+    data_observation.policy_target_id = 2202U;
+    data_observation.observed_m = 2.0;
+    assert(dsd_call_state_observe(state, &data_observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
+    assert(slot.burst == 6);
+    reset_color_trace();
+    ui_render_slot_header_line(state, &slot, &flags);
+    assert(strcmp(g_color_trace, "+2-2+3") == 0);
+
+    // Without carrier there is nothing to highlight and the idle section colour applies.
+    state->carrier = 0;
+    reset_color_trace();
+    ui_render_slot_header_line(state, &slot, &flags);
+    assert(strcmp(g_color_trace, "+4") == 0);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+static void
+test_live_protocol_panels_ignore_ended_call_identity(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DSTAR_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .ota_target_id = 424242U,
+        .ota_source_id = 434343U,
+        .observed_m = 1.0,
+    };
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "STALE-DST");
+    DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "STALE-SRC");
+    DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", "STALE-RPT1");
+    DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", "STALE-RPT2");
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    ncurses_last_synctype = DSD_SYNC_DSTAR_VOICE_POS;
+    reset_printw_capture();
+    ui_render_call_info_dstar(state);
+    assert_capture_contains("STALE-DST");
+    assert_capture_contains("STALE-SRC");
+    assert(dsd_call_state_end(state, 0U, 2.0) == 1);
+
+    reset_printw_capture();
+    ui_render_call_info_dstar(state);
+    assert(strstr(g_printw_capture, "STALE-") == NULL);
+    assert_capture_contains("DEST: unknown");
+    assert_capture_contains("SRC: unknown");
+
+    ncurses_last_synctype = DSD_SYNC_M17_STR_POS;
+    reset_printw_capture();
+    ui_render_call_info_m17(state);
+    assert(strstr(g_printw_capture, "STALE-") == NULL);
+    assert(strstr(g_printw_capture, "424242") == NULL);
+    assert(strstr(g_printw_capture, "434343") == NULL);
+
+    reset_printw_capture();
+    ui_print_ysf_call_routes(state);
+    assert(strstr(g_printw_capture, "STALE-") == NULL);
+    assert_capture_contains("DST: unknown SRC: unknown");
+
+    reset_printw_capture();
+    ui_render_nxdn_tgt_src_line(state);
+    assert(strstr(g_printw_capture, "424242") == NULL);
+    assert(strstr(g_printw_capture, "434343") == NULL);
+    assert_capture_contains("TGT: [    0]");
+    assert_capture_contains("SRC: [    0]");
+
+    ncurses_last_synctype = DSD_SYNC_DPMR_FS1_POS;
+    reset_printw_capture();
+    ui_render_call_info_dpmr(&(dsd_opts){0}, state);
+    assert(strstr(g_printw_capture, "STALE-") == NULL);
+    assert_capture_contains("TGT: [unknown] SRC: [unknown]");
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+/* An encryption-lockout-suppressed P25p2 companion (canonical call ended by
+   lockout, crypto BLOCKED, MAC repeats keeping the raw burst hint on
+   MAC_ACTIVE and ESS repeats keeping ALG/KID/MI current) renders as an idle
+   slot: no VOICE status, no crypto line, blank identity. Follow mode keeps
+   the raw rendering. */
+static void
+test_lockout_suppressed_companion_slot_renders_idle(void) {
+    static dsd_opts lockout_opts;
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    DSD_MEMSET(&lockout_opts, 0, sizeof(lockout_opts));
+    lockout_opts.trunk_enable = 1;
+    lockout_opts.trunk_tune_enc_calls = 0;
+
+    state->synctype = DSD_SYNC_P25P2_POS;
+    state->lastsynctype = DSD_SYNC_P25P2_POS;
+    state->carrier = 1;
+    state->dmrburstR = 21; /* MAC_ACTIVE repeat after lockout ended the call */
+    state->payload_algidR = 0x84;
+    state->payload_keyidR = 0x026C;
+    state->payload_miN = 0x1122334455667788ULL;
+    state->p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
+
+    ui_slot_view slot = ui_build_slot_view(&lockout_opts, state, 1);
+    assert(slot.burst == 24);
+    assert(slot.payload_algid == 0);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(&lockout_opts, state, &slot);
+    assert(strstr(g_printw_capture, "VOICE") == NULL);
+    assert(strstr(g_printw_capture, "ALG:") == NULL);
+    assert(strstr(g_printw_capture, "0x84") == NULL);
+    assert_capture_contains("TGT: [        ] SRC: [        ]");
+    assert_capture_contains("IDLE");
+
+    /* Follow mode (or non-trunked decode) keeps showing what the slot
+       carries. */
+    static dsd_opts follow_opts;
+    DSD_MEMSET(&follow_opts, 0, sizeof(follow_opts));
+    follow_opts.trunk_enable = 1;
+    follow_opts.trunk_tune_enc_calls = 1;
+    slot = ui_build_slot_view(&follow_opts, state, 1);
+    assert(slot.burst == 21);
+    assert(slot.payload_algid == 0x84);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(&follow_opts, state, &slot);
+    assert_capture_contains("VOICE");
+    assert_capture_contains("ALG: 0x84");
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+/* Voice-gated scan (#381): with the gate on, both scan rows name the gate
+ * phase; with it off, both rows stay byte-identical to their ungated shape.
+ * Function-static fixtures keep the neighbour captures green on their own,
+ * and the gate is left off here as well so nothing leaks past this test. */
+static void
+test_scan_voice_gate_status_rendering(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_lcn_name_stub();
+
+    opts.scanner_mode = 1;
+    opts.trunk_hangtime = 2.0f;
+    state.lcn_freq_count = 1;
+    state.lcn_freq_roll = 1;
+    state.trunk_lcn_freq[0] = 462012500;
+
+    /* Gate off: the -Y row is exactly the ungated capture. */
+    opts.scan_voice_only = 0;
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n");
+
+    /* Gate on: each phase names itself after the fixed fields. */
+    opts.scan_voice_only = 1;
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Voice: QUALIFY \n");
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Voice: VOICE \n");
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_TAIL;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Voice: TAIL \n");
+    /* Gate on but the phase not yet published (OFF): nothing is printed. */
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n");
+
+    /* The trunk-scan row carries the same suffix, ahead of HOLD. */
+    opts.scanner_mode = 0;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
+    state.trunk_scan_active_ordinal = 3;
+    state.trunk_scan_target_count = 6;
+
+    opts.scan_voice_only = 0;
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6)\n");
+
+    opts.scan_voice_only = 1;
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) Voice: QUALIFY\n");
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) Voice: VOICE\n");
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_TAIL;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) Voice: TAIL\n");
+    /* A trunked target leaves the phase OFF: gate on, but no marker. */
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6)\n");
+
+    opts.scan_voice_only = 0;
+    state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
+    reset_lcn_name_stub();
+}
+
+int
+main(void) {
+    test_input_source_helpers();
+    test_dmr_mono_override_terminal_reporting();
+    test_basic_input_source_rendering();
+    test_rtl_and_soapy_input_source_rendering();
+    test_rtl_auto_ppm_status_rendering();
+    test_demod_symbol_rate_helpers();
+    test_input_level_policy();
+    test_compact_status_section_rendering();
+    test_scanner_status_row_rendering();
+    test_scan_voice_gate_status_rendering();
+    test_trunk_scan_status_row_rendering();
+    test_call_info_channel_line_rendering();
+    test_history_and_sort_helpers();
+    test_history_color_pair_policy();
+    test_history_viewport_helpers();
+    test_hytera_key_format_helper();
+    test_edacs_tree_update_helpers();
+    test_patch_and_slot_helpers();
+    test_lock_and_protocol_helpers();
+    test_canonical_p25_slot_and_recent_activity();
+    test_slot_header_burst_column_is_fixed();
+    test_slot_header_id_highlight_is_balanced();
+    test_live_protocol_panels_ignore_ended_call_identity();
+    test_lockout_suppressed_companion_slot_renders_idle();
+    return 0;
+}
+
+// NOLINTEND(bugprone-suspicious-include)

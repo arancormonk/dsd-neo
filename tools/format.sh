@@ -3,19 +3,21 @@ set -euo pipefail
 
 shopt -s globstar nullglob
 
-# Include all C/C++ sources/headers across src, include, tests, examples, apps,
-# plus any C/C++ headers at the repo root. CI excludes build/ via git; our
-# globs already avoid it by scoping to project dirs.
-# Third-party code (src/third_party/) is excluded to preserve upstream formatting.
+# Include all C/C++ sources/headers across src, include, tests, examples, apps and
+# the Android app shell, plus any C/C++ headers at the repo root. CI excludes build/
+# via git; our globs already avoid it by scoping to project dirs.
+# Vendored code (src/third_party/, android/third_party/) is excluded to preserve
+# upstream formatting; .clang-format-ignore keeps editors off it as well.
 files=(
   src/**/*.{c,cc,cxx,cpp,h,hpp}
   include/**/*.{h,hpp}
   tests/**/*.{c,cc,cxx,cpp,h,hpp}
   examples/**/*.{c,cc,cxx,cpp,h,hpp}
   apps/**/*.{c,cc,cxx,cpp,h,hpp}
+  android/**/*.{c,cc,cxx,cpp,h,hpp}
   *.{c,cc,cxx,cpp,h,hpp}
 )
-# Filter out third-party code
+# Filter out vendored code
 files=("${files[@]/*third_party*/}")
 # Remove empty elements left by filtering
 filtered=()

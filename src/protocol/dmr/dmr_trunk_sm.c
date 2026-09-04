@@ -5,10 +5,12 @@
  * DMR Tier III trunking state machine - event-driven, tick-based.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -26,16 +28,16 @@ void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
  * Internal Helpers
  * ============================================================================ */
 
-static inline double
-now_monotonic(void) {
-    return dsd_time_now_monotonic_s();
-}
-
 static void
 sm_log(const dsd_opts* opts, const char* tag) {
-    if (opts && opts->verbose > 1 && tag) {
+    if (opts && opts->trunk_enable == 1 && opts->verbose > 1 && tag) {
         DSD_FPRINTF(stderr, "\n[DMR SM] %s\n", tag);
     }
+}
+
+static int
+sm_status_log_enabled(const dsd_opts* opts) {
+    return opts && opts->trunk_enable == 1 && opts->verbose > 0;
 }
 
 static long
@@ -57,7 +59,7 @@ lpcn_is_trusted(const dsd_opts* opts, dsd_state* state, int lpcn) {
     uint8_t trust = state->dmr_lcn_trust[lpcn];
     int on_cc = (state->trunk_cc_freq != 0 && opts && opts->trunk_is_tuned == 0);
     if (trust < 2 && !on_cc) {
-        if (opts && opts->verbose > 0) {
+        if (sm_status_log_enabled(opts)) {
             DSD_FPRINTF(stderr, "\n  DMR SM: block tune LPCN=%d (untrusted off-CC)\n", lpcn);
         }
         return 0;
@@ -73,7 +75,7 @@ set_state(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dmr_sm_state_e new_state, con
     dmr_sm_state_e old = ctx->state;
     ctx->state = new_state;
 
-    if (opts && opts->verbose > 0) {
+    if (sm_status_log_enabled(opts)) {
         DSD_FPRINTF(stderr, "\n[DMR SM] %s -> %s (%s)\n", dmr_sm_state_name(old), dmr_sm_state_name(new_state),
                     reason ? reason : "");
     }
@@ -97,7 +99,7 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
 
     sm_log(opts, reason);
 
-    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state);
+    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state, NULL);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         sm_log(opts, "release-tune-deferred");
         if (state && had_force_release) {
@@ -115,7 +117,11 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     ctx->vc_freq_hz = 0;
     ctx->vc_lpcn = 0;
     ctx->vc_tg = 0;
+    ctx->vc_dst = 0;
     ctx->vc_src = 0;
+    ctx->vc_slot = -1;
+    ctx->vc_is_group = 0;
+    ctx->vc_identity_published = 0;
     ctx->t_tune_m = 0.0;
     ctx->t_voice_m = 0.0;
 
@@ -125,6 +131,7 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     if (state) {
         state->trunk_vc_freq[0] = 0;
         state->trunk_vc_freq[1] = 0;
+        state->dmr_mono_slot = 0;
         state->p25_sm_release_count++;
     }
 
@@ -172,10 +179,10 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
         return;
     }
 
-    double now_m = now_monotonic();
+    double now_m = dsd_time_now_monotonic_s();
 
     dsd_trunk_tune_result tune_result =
-        dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0); // DMR: no TED SPS override
+        dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL); // DMR: no TED SPS override
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         sm_log(opts, "grant-tune-deferred");
         return;
@@ -184,9 +191,14 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     ctx->vc_freq_hz = freq;
     ctx->vc_lpcn = ev->lpcn;
     ctx->vc_tg = ev->tg;
+    ctx->vc_dst = ev->dst;
     ctx->vc_src = ev->src;
+    ctx->vc_slot = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : -1;
+    ctx->vc_is_group = ev->is_group != 0;
+    ctx->vc_identity_published = 0;
     ctx->t_tune_m = now_m;
     ctx->t_voice_m = 0.0;
+    state->dmr_mono_slot = ctx->vc_slot;
 
     for (int s = 0; s < 2; s++) {
         ctx->slots[s].voice_active = 0;
@@ -199,11 +211,24 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     state->last_t3_tune_time_m = now_m;
     state->p25_sm_tune_count++;
 
-    if (opts->verbose > 0) {
+    if (sm_status_log_enabled(opts)) {
         DSD_FPRINTF(stderr, "\n  DMR SM: Tune VC freq=%.6lf MHz\n", (double)freq / 1000000.0);
     }
 
     set_state(ctx, opts, DMR_SM_TUNED, "grant");
+}
+
+static void
+update_voice_sync_state(dmr_sm_ctx_t* ctx, dsd_state* state, int slot, double now_m) {
+    if (!state) {
+        return;
+    }
+
+    state->last_vc_sync_time_m = now_m;
+    if (ctx->state == DMR_SM_TUNED && ctx->vc_slot < 0) {
+        ctx->vc_slot = slot;
+        state->dmr_mono_slot = slot;
+    }
 }
 
 static void
@@ -212,15 +237,36 @@ handle_voice_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int
         return;
     }
 
-    double now_m = now_monotonic();
+    double now_m = dsd_time_now_monotonic_s();
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
 
     ctx->slots[s].voice_active = 1;
     ctx->slots[s].last_active_m = now_m;
     ctx->t_voice_m = now_m;
 
-    if (state) {
-        state->last_vc_sync_time_m = now_m;
+    update_voice_sync_state(ctx, state, s, now_m);
+
+    if (state && ctx->state == DMR_SM_TUNED && ctx->vc_identity_published == 0
+        && (ctx->vc_slot < 0 || ctx->vc_slot == s)) {
+        int protocol = DSD_SYNC_IS_DMR(state->synctype) ? state->synctype : state->lastsynctype;
+        if (!DSD_SYNC_IS_DMR(protocol)) {
+            protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+        }
+        const uint64_t target = (uint64_t)(ctx->vc_is_group ? ctx->vc_tg : ctx->vc_dst);
+        const dsd_call_observation observation = {
+            .protocol = protocol,
+            .slot = (uint8_t)s,
+            .kind = ctx->vc_is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE,
+            .ota_target_id = target,
+            .policy_target_id = target,
+            .ota_source_id = (uint64_t)ctx->vc_src,
+            .channel = (uint32_t)ctx->vc_lpcn,
+            .frequency_hz = ctx->vc_freq_hz,
+            .observed_m = now_m,
+        };
+        if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) >= 0) {
+            ctx->vc_identity_published = 1;
+        }
     }
 
     sm_log(opts, "voice-sync");
@@ -236,7 +282,7 @@ handle_data_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int 
         return;
     }
 
-    double now_m = now_monotonic();
+    double now_m = dsd_time_now_monotonic_s();
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
 
     ctx->slots[s].last_active_m = now_m;
@@ -282,7 +328,7 @@ handle_cc_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     }
     UNUSED(state);
 
-    ctx->t_cc_sync_m = now_monotonic();
+    ctx->t_cc_sync_m = dsd_time_now_monotonic_s();
 
     if (ctx->state == DMR_SM_IDLE || ctx->state == DMR_SM_HUNTING) {
         set_state(ctx, opts, DMR_SM_ON_CC, "cc-sync");
@@ -379,6 +425,7 @@ dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state)
     }
 
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    ctx->vc_slot = -1;
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
 
@@ -400,7 +447,7 @@ dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state)
 
     if (state && state->trunk_cc_freq != 0) {
         ctx->state = DMR_SM_ON_CC;
-        ctx->t_cc_sync_m = now_monotonic();
+        ctx->t_cc_sync_m = dsd_time_now_monotonic_s();
     } else {
         ctx->state = DMR_SM_IDLE;
     }
@@ -438,7 +485,7 @@ dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
         dmr_sm_init_ctx(ctx, opts, state);
     }
 
-    double now_m = now_monotonic();
+    double now_m = dsd_time_now_monotonic_s();
     double hangtime = ctx->hangtime_s;
     double grant_timeout = ctx->grant_timeout_s;
     double cc_grace = ctx->cc_grace_s;
@@ -479,11 +526,6 @@ dmr_sm_get_ctx(void) {
  * ============================================================================ */
 
 void
-dmr_sm_emit(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
-    dmr_sm_event(dmr_sm_get_ctx(), opts, state, ev);
-}
-
-void
 dmr_sm_emit_voice_sync(dsd_opts* opts, dsd_state* state, int slot) {
     dmr_sm_event_t ev = dmr_sm_ev_voice_sync(slot);
     dmr_sm_event(dmr_sm_get_ctx(), opts, state, &ev);
@@ -502,20 +544,26 @@ dmr_sm_emit_release(dsd_opts* opts, dsd_state* state, int slot) {
 }
 
 void
-dmr_sm_emit_cc_sync(dsd_opts* opts, dsd_state* state) {
-    dmr_sm_event_t ev = dmr_sm_ev_cc_sync();
-    dmr_sm_event(dmr_sm_get_ctx(), opts, state, &ev);
+dmr_sm_emit_group_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int tg, int src) {
+    dmr_sm_emit_group_grant_slot(opts, state, freq_hz, lpcn, -1, tg, src);
 }
 
 void
-dmr_sm_emit_group_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int tg, int src) {
+dmr_sm_emit_group_grant_slot(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int slot, int tg, int src) {
     dmr_sm_event_t ev = dmr_sm_ev_group_grant(freq_hz, lpcn, tg, src);
+    ev.slot = (slot >= 0 && slot <= 1) ? slot : -1;
     dmr_sm_event(dmr_sm_get_ctx(), opts, state, &ev);
 }
 
 void
 dmr_sm_emit_indiv_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int dst, int src) {
+    dmr_sm_emit_indiv_grant_slot(opts, state, freq_hz, lpcn, -1, dst, src);
+}
+
+void
+dmr_sm_emit_indiv_grant_slot(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int slot, int dst, int src) {
     dmr_sm_event_t ev = dmr_sm_ev_indiv_grant(freq_hz, lpcn, dst, src);
+    ev.slot = (slot >= 0 && slot <= 1) ? slot : -1;
     dmr_sm_event(dmr_sm_get_ctx(), opts, state, &ev);
 }
 
@@ -526,11 +574,6 @@ dmr_sm_init(const dsd_opts* opts, const dsd_state* state) {
     // even if the singleton was previously auto-initialized with NULLs.
     g_dmr_sm_initialized = 0;
     dmr_sm_init_ctx(dmr_sm_get_ctx(), opts, state);
-}
-
-void
-dmr_sm_tick(dsd_opts* opts, dsd_state* state) {
-    dmr_sm_tick_ctx(dmr_sm_get_ctx(), opts, state);
 }
 
 /* ============================================================================
@@ -549,11 +592,6 @@ dmr_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
         if (f == 0 || f == state->trunk_cc_freq) {
             continue;
         }
-        (void)dsd_trunk_cc_candidates_add(state, f, 1);
+        (void)dsd_trunk_cc_candidates_add(state, f, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     }
-}
-
-int
-dmr_sm_next_cc_candidate(dsd_state* state, long* out_freq) {
-    return dsd_trunk_cc_candidates_next(state, now_monotonic(), out_freq);
 }

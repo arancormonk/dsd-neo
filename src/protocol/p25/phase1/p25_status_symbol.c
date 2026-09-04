@@ -19,7 +19,6 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <stdint.h>
-#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -67,7 +66,7 @@ p25_status_accum_add(dsd_state* state, int dibit_value) {
 }
 
 void
-p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
+p25_status_accum_classify(dsd_state* state) {
     if (!state) {
         return;
     }
@@ -111,8 +110,6 @@ p25_status_accum_classify(dsd_state* state, const dsd_opts* opts) {
     state->p25_ss_classification = (uint8_t)classification;
     state->p25_ss_frame_active = 0;
     state->p25_afc_gate_valid = 1;
-
-    (void)opts;
 
     if (classification == P25_SS_CLASS_INFRASTRUCTURE) {
         state->p25_afc_gate_allow = 1;

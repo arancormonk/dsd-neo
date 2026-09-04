@@ -22,6 +22,15 @@ extern "C" {
 
 float getSymbol(dsd_opts* opts, dsd_state* state, int have_sync);
 
+/**
+ * @brief Forget which matched filter the symbol grid was reading through.
+ *
+ * Pairs with init_rrc_filter_memory(): a cleared filter that the grid still
+ * believes it has primed would run from an empty history at the next sample,
+ * which is the transient the seam exists to prevent (issue #444).
+ */
+void dsd_symbol_matched_filter_reset(dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

@@ -2,7 +2,16 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-expected_release_signing_fingerprint="5FAF0C47C8E1F95D33CD83B1E42E43ADD853F280"
+# Trusted release signing keys: parallel arrays (indexed, for macOS bash 3.2)
+# pairing each key file in release-keys/ with its pinned primary fingerprint.
+trusted_release_key_files=(
+  "${repo_root}/release-keys/arancormonk-desktop-2026.pgp"
+  "${repo_root}/release-keys/arancormonk-laptop-2026.pgp"
+)
+trusted_release_key_fingerprints=(
+  "5FAF0C47C8E1F95D33CD83B1E42E43ADD853F280"
+  "35619AC50DF5FB9EA053296E5C77FAD44C3E67A7"
+)
 protected_main_ref="refs/remotes/origin/main"
 
 project_version="$(
@@ -80,12 +89,6 @@ if ! git merge-base --is-ancestor "${tag_commit}" "${main_commit}"; then
   exit 1
 fi
 
-trusted_key="${repo_root}/release-keys/arancormonk-2026.pgp"
-if [[ ! -f "${trusted_key}" ]]; then
-  echo "Trusted release key not found: ${trusted_key}" >&2
-  exit 1
-fi
-
 gnupg_home="$(mktemp -d)"
 tag_payload="$(mktemp)"
 tag_signature="$(mktemp)"
@@ -96,19 +99,27 @@ cleanup_gnupg_home() {
 trap cleanup_gnupg_home EXIT
 chmod 700 "${gnupg_home}"
 
-GNUPGHOME="${gnupg_home}" gpg --batch --import "${trusted_key}" > /dev/null
-imported_primary_fingerprint="$(
-  GNUPGHOME="${gnupg_home}" gpg --batch --with-colons --fingerprint --list-keys |
-    awk -F: '$1 == "pub" { want_fpr = 1; next } want_fpr && $1 == "fpr" { print $10; want_fpr = 0 }'
-)"
-if [[ "${imported_primary_fingerprint}" != "${expected_release_signing_fingerprint}" ]]; then
-  echo "Release key fingerprint mismatch." >&2
-  echo "Expected: ${expected_release_signing_fingerprint}" >&2
-  echo "Imported: ${imported_primary_fingerprint:-<none>}" >&2
-  exit 1
-fi
-printf '%s:6:\n' "${expected_release_signing_fingerprint}" |
-  GNUPGHOME="${gnupg_home}" gpg --batch --import-ownertrust > /dev/null
+for key_index in "${!trusted_release_key_files[@]}"; do
+  trusted_key="${trusted_release_key_files[${key_index}]}"
+  expected_fingerprint="${trusted_release_key_fingerprints[${key_index}]}"
+  if [[ ! -f "${trusted_key}" ]]; then
+    echo "Trusted release key not found: ${trusted_key}" >&2
+    exit 1
+  fi
+  key_file_primary_fingerprint="$(
+    GNUPGHOME="${gnupg_home}" gpg --batch --with-colons --show-keys "${trusted_key}" |
+      awk -F: '$1 == "pub" { want_fpr = 1; next } want_fpr && $1 == "fpr" { print $10; want_fpr = 0 }'
+  )"
+  if [[ "${key_file_primary_fingerprint}" != "${expected_fingerprint}" ]]; then
+    echo "Release key fingerprint mismatch for ${trusted_key}." >&2
+    echo "Expected: ${expected_fingerprint}" >&2
+    echo "Found:    ${key_file_primary_fingerprint:-<none>}" >&2
+    exit 1
+  fi
+  GNUPGHOME="${gnupg_home}" gpg --batch --import "${trusted_key}" > /dev/null
+  printf '%s:6:\n' "${expected_fingerprint}" |
+    GNUPGHOME="${gnupg_home}" gpg --batch --import-ownertrust > /dev/null
+done
 
 # Verify the tag object directly so Git for Windows cannot rewrite GNUPGHOME
 # before invoking gpg.

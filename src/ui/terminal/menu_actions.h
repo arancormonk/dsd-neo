@@ -36,23 +36,35 @@ void act_config_save_as(void* v);
 void act_crc_relax(void* v);
 void act_trunk_toggle(void* v);
 void act_scan_toggle(void* v);
+void act_scan_hold_toggle(void* v);
+void act_scan_avoid(void* v);
+void act_scan_avoid_clear(void* v);
 void act_lcw_toggle(void* v);
 void act_p25_enc_lockout(void* v);
+void act_enc_lockout_clear(void* v);
 void act_setmod_bw(void* v);
 void act_import_chan(void* v);
 void act_import_group(void* v);
+void act_import_p25_bandplan(void* v);
+void act_export_p25_bandplan(void* v);
 void act_allow_toggle(void* v);
 void act_tune_group(void* v);
 void act_tune_priv(void* v);
 void act_tune_data(void* v);
 void act_tg_hold(void* v);
 void act_hangtime(void* v);
+void act_scan_voice_only(void* v);
+void act_scan_voice_qualify(void* v);
+void act_scan_voice_hold(void* v);
+void act_rr_import(void* v);
+void act_rr_library(void* v);
+void act_rr_account_user(void* v);
+void act_rr_account_key(void* v);
 
 // ---- DMR/TDMA actions ----
 void act_rev_mute(void* v);
 void act_dmr_le(void* v);
 void act_slot_pref(void* v);
-void act_slots_on(void* v);
 
 // ---- Key import actions ----
 void act_keys_dec(void* v);
@@ -92,7 +104,6 @@ void act_tcp_rcvtimeo_prompt(void* v);
 void act_set_p25_vc_grace(void* v);
 void act_set_p25_min_follow(void* v);
 void act_set_p25_grant_voice(void* v);
-void act_set_p25_retune_backoff(void* v);
 void act_set_p25_cc_grace(void* v);
 void act_set_p25_force_extra(void* v);
 void act_set_p25_force_margin(void* v);
@@ -106,7 +117,6 @@ void io_select_call_alert_events(void* vctx);
 void io_toggle_cc_candidates(void* vctx);
 void io_enable_per_call_wav(void* vctx);
 void io_save_symbol_capture(void* vctx);
-void io_read_symbol_bin(void* vctx);
 void io_replay_last_symbol_bin(void* vctx);
 void io_stop_symbol_playback(void* vctx);
 void io_stop_symbol_saving(void* vctx);
@@ -119,8 +129,6 @@ void io_set_gain_ana(void* vctx);
 void io_toggle_monitor(void* vctx);
 void io_toggle_cosine(void* vctx);
 void io_set_input_volume(void* vctx);
-void io_input_vol_up(void* vctx);
-void io_input_vol_dn(void* vctx);
 void io_rigctl_config(void* vctx);
 
 // ---- Inversion actions ----
@@ -133,10 +141,8 @@ void inv_m17(void* v);
 void switch_to_pulse(void* vctx);
 void switch_to_wav(void* vctx);
 void switch_to_symbol(void* vctx);
-void switch_to_tcp(void* vctx);
 void switch_to_udp(void* vctx);
 void switch_out_pulse(void* vctx);
-void switch_out_udp(void* vctx);
 void switch_out_toggle_mute(void* vctx);
 
 // ---- Key entry actions ----
@@ -164,11 +170,11 @@ void act_toggle_ui_p25_neighbors(void* v);
 void act_toggle_ui_p25_iden(void* v);
 void act_toggle_ui_p25_ccc(void* v);
 void act_toggle_ui_channels(void* v);
+void act_toggle_ui_compact(void* v);
 void act_toggle_ui_p25_callsign(void* v);
 
 // ---- RTL-SDR actions (USE_RADIO only) ----
 #ifdef USE_RADIO
-void rtl_enable(void* v);
 void rtl_restart(void* v);
 void rtl_set_dev(void* v);
 void rtl_set_freq(void* v);
@@ -187,28 +193,44 @@ void switch_to_rtl(void* vctx);
 // ---- DSP actions (USE_RADIO only) ----
 #ifdef USE_RADIO
 void act_toggle_cq(void* v);
-void act_toggle_fll(void* v);
-void act_toggle_ted(void* v);
 void act_toggle_iqbal(void* v);
-void act_toggle_fm_agc(void* v);
-void act_toggle_fm_limiter(void* v);
-void act_fm_agc_target_up(void* v);
-void act_fm_agc_target_dn(void* v);
-void act_fm_agc_min_up(void* v);
-void act_fm_agc_min_dn(void* v);
-void act_fm_agc_alpha_up_up(void* v);
-void act_fm_agc_alpha_up_dn(void* v);
-void act_fm_agc_alpha_down_up(void* v);
-void act_fm_agc_alpha_down_dn(void* v);
 void act_toggle_iq_dc(void* v);
-void act_iq_dc_k_up(void* v);
-void act_iq_dc_k_dn(void* v);
-void act_ted_gain_up(void* v);
-void act_ted_gain_dn(void* v);
-void act_ted_force_toggle(void* v);
-void act_c4fm_clk_cycle(void* v);
-void act_c4fm_clk_sync_toggle(void* v);
 void act_toggle_dsp_panel(void* v);
+#endif
+
+// ---- Rows added with the signal-chain menu (hotkey-only commands) ----
+void act_decode_mode(void* v);
+void act_mod_cycle(void* v);
+void act_mod_p2_toggle(void* v);
+void act_lpf_toggle(void* v);
+void act_hpf_toggle(void* v);
+void act_pbf_toggle(void* v);
+void act_hpf_d_toggle(void* v);
+void act_slot1_toggle(void* v);
+void act_slot2_toggle(void* v);
+void act_dmr_reset(void* v);
+void act_provoice_esk(void* v);
+void act_provoice_mode(void* v);
+void act_return_cc(void* v);
+void act_channel_cycle(void* v);
+void act_lockout_slot1(void* v);
+void act_lockout_slot2(void* v);
+void act_force_rc4(void* v);
+void act_history_cycle(void* v);
+void act_eh_toggle_slot(void* v);
+void act_eh_prev(void* v);
+void act_eh_next(void* v);
+void act_sim_nocar(void* v);
+void act_vis_const(void* v);
+void act_vis_const_norm(void* v);
+void act_vis_eye(void* v);
+void act_vis_eye_unicode(void* v);
+void act_vis_eye_color(void* v);
+void act_vis_fsk(void* v);
+void act_vis_spectrum(void* v);
+#ifdef USE_RADIO
+void act_iq_dc_k_prompt(void* v);
+void act_ted_gain_prompt(void* v);
 #endif
 
 #endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_ACTIONS_H_ */

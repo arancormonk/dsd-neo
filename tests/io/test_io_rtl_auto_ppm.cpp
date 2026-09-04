@@ -10,6 +10,7 @@
 #include "rtl_auto_ppm.h"
 #include "rtl_ppm_request.h"
 
+using dsd::io::radio::rtl_auto_ppm_fsk_dc_est_to_cfo_hz;
 using dsd::io::radio::rtl_auto_ppm_select_estimate;
 using dsd::io::radio::RtlAutoPpmConfig;
 using dsd::io::radio::RtlAutoPpmController;
@@ -83,9 +84,7 @@ test_select_estimate_accepts_large_finite_cqpsk_nco(void) {
     metrics.cqpsk_enable = 1;
     metrics.tracking_enable = 1;
     metrics.carrier_lock = 1;
-    metrics.spectrum_valid = 1;
     metrics.nco_cfo_hz = -68000.0;
-    metrics.spectrum_cfo_hz = 1800.0;
 
     RtlAutoPpmEstimate estimate = select_estimate(metrics);
     rc |= expect_int_eq("large cqpsk nco source", static_cast<int>(estimate.source),
@@ -101,9 +100,7 @@ test_select_estimate_prefers_cqpsk_nco_after_lock(void) {
     metrics.cqpsk_enable = 1;
     metrics.tracking_enable = 1;
     metrics.carrier_lock = 1;
-    metrics.spectrum_valid = 1;
     metrics.nco_cfo_hz = 1200.0;
-    metrics.spectrum_cfo_hz = 75.0;
 
     RtlAutoPpmEstimate estimate = select_estimate(metrics);
     rc |= expect_int_eq("cqpsk carrier source", static_cast<int>(estimate.source),
@@ -113,30 +110,12 @@ test_select_estimate_prefers_cqpsk_nco_after_lock(void) {
 }
 
 static int
-test_select_estimate_uses_cqpsk_spectrum_before_lock(void) {
-    int rc = 0;
-    RtlAutoPpmSignalMetrics metrics = {};
-    metrics.cqpsk_enable = 1;
-    metrics.tracking_enable = 1;
-    metrics.spectrum_valid = 1;
-    metrics.nco_cfo_hz = 950.0;
-    metrics.spectrum_cfo_hz = 240.0;
-
-    RtlAutoPpmEstimate estimate = select_estimate(metrics);
-    rc |= expect_int_eq("cqpsk bootstrap source", static_cast<int>(estimate.source),
-                        static_cast<int>(RtlAutoPpmSource::SpectrumResidual));
-    rc |= expect_double_close("cqpsk bootstrap error", estimate.error_hz, 240.0, 1e-9);
-    return rc;
-}
-
-static int
-test_select_estimate_rejects_cqpsk_without_lock_or_spectrum(void) {
+test_select_estimate_rejects_cqpsk_without_lock(void) {
     int rc = 0;
     RtlAutoPpmSignalMetrics metrics = {};
     metrics.cqpsk_enable = 1;
     metrics.tracking_enable = 1;
     metrics.nco_cfo_hz = 950.0;
-    metrics.spectrum_cfo_hz = 240.0;
 
     RtlAutoPpmEstimate estimate = select_estimate(metrics);
     rc |= expect_int_eq("cqpsk no-lock source", static_cast<int>(estimate.source),
@@ -146,61 +125,39 @@ test_select_estimate_rejects_cqpsk_without_lock_or_spectrum(void) {
 }
 
 static int
-test_select_estimate_keeps_non_cqpsk_spectrum_with_tracking_enabled(void) {
-    int rc = 0;
-    RtlAutoPpmSignalMetrics metrics = {};
-    metrics.tracking_enable = 1;
-    metrics.spectrum_valid = 1;
-    metrics.nco_cfo_hz = -320.0;
-    metrics.phase_cfo_hz = -320.0;
-    metrics.spectrum_cfo_hz = 40.0;
-
-    RtlAutoPpmEstimate estimate = select_estimate(metrics);
-    rc |= expect_int_eq("non-cqpsk spectrum source", static_cast<int>(estimate.source),
-                        static_cast<int>(RtlAutoPpmSource::SpectrumResidual));
-    rc |= expect_double_close("non-cqpsk spectrum error", estimate.error_hz, 40.0, 1e-9);
-    return rc;
-}
-
-static int
-test_select_estimate_keeps_non_cqpsk_spectrum_for_large_offsets(void) {
-    int rc = 0;
-    RtlAutoPpmSignalMetrics metrics = {};
-    metrics.tracking_enable = 1;
-    metrics.spectrum_valid = 1;
-    metrics.nco_cfo_hz = 0.0;
-    metrics.phase_cfo_hz = -320.0;
-    metrics.spectrum_cfo_hz = 250.0;
-
-    RtlAutoPpmEstimate estimate = select_estimate(metrics);
-    rc |= expect_int_eq("fallback source", static_cast<int>(estimate.source),
-                        static_cast<int>(RtlAutoPpmSource::SpectrumResidual));
-    rc |= expect_double_close("fallback error", estimate.error_hz, 250.0, 1e-9);
-    return rc;
-}
-
-static int
-test_select_estimate_rejects_invalid_non_cqpsk_spectrum(void) {
+test_select_estimate_prefers_non_cqpsk_phase_tracking(void) {
     int rc = 0;
     RtlAutoPpmSignalMetrics metrics = {};
     metrics.tracking_enable = 1;
     metrics.nco_cfo_hz = -320.0;
     metrics.phase_cfo_hz = -320.0;
-    metrics.spectrum_cfo_hz = 90.0;
 
     RtlAutoPpmEstimate estimate = select_estimate(metrics);
-    rc |= expect_int_eq("invalid spectrum source", static_cast<int>(estimate.source),
-                        static_cast<int>(RtlAutoPpmSource::None));
-    rc |= expect_double_close("invalid spectrum error", estimate.error_hz, 0.0, 1e-9);
+    rc |= expect_int_eq("non-cqpsk phase source", static_cast<int>(estimate.source),
+                        static_cast<int>(RtlAutoPpmSource::PhaseResidual));
+    rc |= expect_double_close("non-cqpsk phase error", estimate.error_hz, -320.0, 1e-9);
     return rc;
 }
 
 static int
-test_select_estimate_rejects_phase_only_non_cqpsk(void) {
+test_select_estimate_uses_tracked_phase(void) {
+    int rc = 0;
+    RtlAutoPpmSignalMetrics metrics = {};
+    metrics.tracking_enable = 1;
+    metrics.phase_cfo_hz = 180.0;
+
+    RtlAutoPpmEstimate estimate = select_estimate(metrics);
+    rc |= expect_int_eq("tracked phase-only source", static_cast<int>(estimate.source),
+                        static_cast<int>(RtlAutoPpmSource::PhaseResidual));
+    rc |= expect_double_close("tracked phase-only error", estimate.error_hz, 180.0, 1e-9);
+    return rc;
+}
+
+static int
+test_select_estimate_rejects_untracked_phase_only_non_cqpsk(void) {
     int rc = 0;
     RtlAutoPpmSignalMetrics metrics = {};
     metrics.phase_cfo_hz = -320.0;
-    metrics.spectrum_cfo_hz = std::nan("");
 
     RtlAutoPpmEstimate estimate = select_estimate(metrics);
     rc |=
@@ -210,25 +167,30 @@ test_select_estimate_rejects_phase_only_non_cqpsk(void) {
 }
 
 static int
-test_spectrum_estimate_requires_valid_spectral_snr(void) {
+test_fsk_dc_estimate_uses_hardware_ppm_correction_sign(void) {
     int rc = 0;
+    const int sample_rate_hz = 48000;
+    const uint32_t tuned_freq_hz = 480000000U;
+    const double dc_rad_per_sample = (2.0 * std::acos(-1.0) * 960.0) / static_cast<double>(sample_rate_hz);
+
+    double cfo_hz = rtl_auto_ppm_fsk_dc_est_to_cfo_hz(dc_rad_per_sample, sample_rate_hz);
+    rc |= expect_double_close("positive fsk dc requests negative correction", cfo_hz, -960.0, 1e-9);
+    rc |= expect_double_close("negative fsk dc requests positive correction",
+                              rtl_auto_ppm_fsk_dc_est_to_cfo_hz(-dc_rad_per_sample, sample_rate_hz), 960.0, 1e-9);
+
     RtlAutoPpmController controller;
     RtlAutoPpmConfig config = {};
-    const uint32_t freq_hz = 460000000U;
+    controller.reset(0, tuned_freq_hz);
 
-    controller.reset(0, freq_hz);
-
-    RtlAutoPpmInputs inputs = make_inputs(0, 0, freq_hz, -6.0, RtlAutoPpmSource::SpectrumResidual);
-    inputs.gate_snr_db = 18.0;
-    inputs.spec_snr_db = -100.0;
-
-    (void)controller.update(config, inputs);
-    inputs.now_ms = 9000;
+    RtlAutoPpmInputs inputs = make_inputs(0, 0, tuned_freq_hz, 0.0, RtlAutoPpmSource::PhaseResidual);
+    inputs.estimate.error_hz = cfo_hz;
     RtlAutoPpmUpdate update = controller.update(config, inputs);
-    rc |= expect_int_eq("invalid spectrum does not apply", update.apply_ppm, 0);
-    rc |= expect_int_eq("invalid spectrum stays unlocked", update.locked, 0);
-    rc |= expect_int_eq("invalid spectrum is not training", update.training, 0);
-    rc |= expect_double_close("invalid spectrum uses spectral snr", update.snr_db, -100.0, 1e-9);
+    rc |= expect_int_eq("positive fsk dc waits for observation", update.apply_ppm, 0);
+
+    inputs.now_ms = 5001;
+    update = controller.update(config, inputs);
+    rc |= expect_int_eq("positive fsk dc decrements hardware ppm", update.apply_ppm, 1);
+    rc |= expect_int_eq("positive fsk dc correction step", update.new_ppm, -2);
     return rc;
 }
 
@@ -264,52 +226,6 @@ test_carrier_estimate_applies_direct_correction_then_locks(void) {
     rc |= expect_int_eq("stable zero locks", update.locked, 1);
     rc |= expect_int_eq("stable zero exits training", update.training, 0);
     rc |= expect_int_eq("lock stores corrected ppm", update.lock_ppm, -8);
-    return rc;
-}
-
-static int
-test_spectrum_fallback_clamps_large_steps(void) {
-    int rc = 0;
-    RtlAutoPpmController controller;
-    RtlAutoPpmConfig config = {};
-    const uint32_t freq_hz = 935000000U;
-
-    controller.reset(0, freq_hz);
-    (void)controller.update(config, make_inputs(0, 0, freq_hz, -20.0, RtlAutoPpmSource::SpectrumResidual));
-
-    RtlAutoPpmUpdate update =
-        controller.update(config, make_inputs(8000, 0, freq_hz, -20.0, RtlAutoPpmSource::SpectrumResidual));
-    rc |= expect_int_eq("spectrum fallback applies", update.apply_ppm, 1);
-    rc |= expect_int_eq("spectrum fallback clamps step", update.new_ppm, -4);
-    rc |= expect_int_eq("spectrum fallback remains in training", update.training, 1);
-    rc |= expect_int_eq("spectrum fallback stays unlocked", update.locked, 0);
-    return rc;
-}
-
-static int
-test_large_spectrum_residual_stays_bounded_across_windows(void) {
-    int rc = 0;
-    RtlAutoPpmController controller;
-    RtlAutoPpmConfig config = {};
-    const uint32_t freq_hz = 935000000U;
-
-    controller.reset(0, freq_hz);
-    (void)controller.update(config, make_inputs(0, 0, freq_hz, -60.0, RtlAutoPpmSource::SpectrumResidual));
-
-    RtlAutoPpmUpdate update =
-        controller.update(config, make_inputs(8000, 0, freq_hz, -60.0, RtlAutoPpmSource::SpectrumResidual));
-    rc |= expect_int_eq("bounded step applies", update.apply_ppm, 1);
-    rc |= expect_int_eq("bounded step clamps to spectrum max", update.new_ppm, -4);
-    rc |= expect_int_eq("bounded step keeps controller unlocked", update.locked, 0);
-    rc |= expect_int_eq("bounded step keeps training active", update.training, 1);
-
-    update = controller.update(config, make_inputs(10501, -4, freq_hz, -56.0, RtlAutoPpmSource::SpectrumResidual));
-    rc |= expect_int_eq("post-bounded settle does not reapply immediately", update.apply_ppm, 0);
-    rc |= expect_int_eq("post-bounded settle remains in training", update.training, 1);
-
-    update = controller.update(config, make_inputs(18502, -4, freq_hz, -56.0, RtlAutoPpmSource::SpectrumResidual));
-    rc |= expect_int_eq("residual can trigger another bounded step", update.apply_ppm, 1);
-    rc |= expect_int_eq("second bounded step continues converging", update.new_ppm, -8);
     return rc;
 }
 
@@ -671,88 +587,6 @@ test_sub_deadband_residual_locks_with_zero_lock_ppm_below_deadband_floor(void) {
 }
 
 static int
-test_spectrum_lock_revalidates_same_frequency_carrier_upgrade(void) {
-    int rc = 0;
-    RtlAutoPpmController controller;
-    RtlAutoPpmConfig config = {};
-    const uint32_t freq_hz = 851000000U;
-
-    controller.reset(0, freq_hz);
-
-    (void)controller.update(config, make_inputs(1000, 0, freq_hz, 0.02, RtlAutoPpmSource::SpectrumResidual));
-    RtlAutoPpmUpdate update =
-        controller.update(config, make_inputs(4000, 0, freq_hz, 0.02, RtlAutoPpmSource::SpectrumResidual));
-    rc |= expect_int_eq("spectrum provisional lock setup reaches lock", update.locked, 1);
-    rc |= expect_int_eq("spectrum provisional lock stores current ppm", update.lock_ppm, 0);
-
-    update = controller.update(config, make_inputs(5000, 0, freq_hz, -6.0, RtlAutoPpmSource::CarrierTotal));
-    rc |= expect_int_eq("same-frequency carrier upgrade clears provisional lock", update.locked, 0);
-    rc |= expect_int_eq("same-frequency carrier upgrade resumes training", update.training, 1);
-    rc |= expect_int_eq("same-frequency carrier upgrade does not apply immediately", update.apply_ppm, 0);
-    rc |= expect_int_eq("same-frequency carrier upgrade preserves lock snapshot", update.lock_ppm, 0);
-
-    update = controller.update(config, make_inputs(9000, 0, freq_hz, -6.0, RtlAutoPpmSource::CarrierTotal));
-    rc |= expect_int_eq("same-frequency carrier upgrade can correct after observation", update.apply_ppm, 1);
-    rc |= expect_int_eq("same-frequency carrier upgrade applies from current ppm", update.new_ppm, -6);
-    rc |= expect_int_eq("same-frequency carrier upgrade remains in training after step", update.training, 1);
-    rc |= expect_int_eq("same-frequency carrier upgrade stays unlocked after step", update.locked, 0);
-    return rc;
-}
-
-static int
-test_spectrum_lock_ignores_carrier_upgrade_after_frequency_change(void) {
-    int rc = 0;
-    RtlAutoPpmController controller;
-    RtlAutoPpmConfig config = {};
-    const uint32_t freq_a_hz = 851000000U;
-    const uint32_t freq_b_hz = 935000000U;
-
-    controller.reset(0, freq_a_hz);
-
-    (void)controller.update(config, make_inputs(1000, 0, freq_a_hz, 0.02, RtlAutoPpmSource::SpectrumResidual));
-    RtlAutoPpmUpdate update =
-        controller.update(config, make_inputs(4000, 0, freq_a_hz, 0.02, RtlAutoPpmSource::SpectrumResidual));
-    rc |= expect_int_eq("spectrum retune setup reaches lock", update.locked, 1);
-
-    update = controller.update(config, make_inputs(5000, 0, freq_b_hz, -6.0, RtlAutoPpmSource::CarrierTotal));
-    rc |= expect_int_eq("retuned carrier estimate keeps provisional lock", update.locked, 1);
-    rc |= expect_int_eq("retuned carrier estimate stays out of training", update.training, 0);
-    rc |= expect_int_eq("retuned carrier estimate does not apply", update.apply_ppm, 0);
-
-    update = controller.update(config, make_inputs(9000, 0, freq_b_hz, -6.0, RtlAutoPpmSource::CarrierTotal));
-    rc |= expect_int_eq("retuned carrier estimate still does not apply later", update.apply_ppm, 0);
-    rc |= expect_int_eq("retuned carrier estimate remains locked later", update.locked, 1);
-    rc |= expect_int_eq("retuned carrier estimate remains idle later", update.training, 0);
-    return rc;
-}
-
-static int
-test_spectrum_lock_promotes_on_same_frequency_carrier_zero_lock(void) {
-    int rc = 0;
-    RtlAutoPpmController controller;
-    RtlAutoPpmConfig config = {};
-    const uint32_t freq_hz = 851000000U;
-
-    controller.reset(0, freq_hz);
-
-    (void)controller.update(config, make_inputs(1000, 0, freq_hz, 0.02, RtlAutoPpmSource::SpectrumResidual));
-    RtlAutoPpmUpdate update =
-        controller.update(config, make_inputs(4000, 0, freq_hz, 0.02, RtlAutoPpmSource::SpectrumResidual));
-    rc |= expect_int_eq("spectrum carrier-zero setup reaches lock", update.locked, 1);
-
-    update = controller.update(config, make_inputs(5000, 0, freq_hz, 0.02, RtlAutoPpmSource::CarrierTotal));
-    rc |= expect_int_eq("same-frequency carrier zero keeps lock", update.locked, 1);
-    rc |= expect_int_eq("same-frequency carrier zero stays out of training", update.training, 0);
-    rc |= expect_int_eq("same-frequency carrier zero does not apply", update.apply_ppm, 0);
-
-    update = controller.update(config, make_inputs(9000, 0, freq_hz, -6.0, RtlAutoPpmSource::CarrierTotal));
-    rc |= expect_int_eq("carrier-validated lock ignores later drift", update.locked, 1);
-    rc |= expect_int_eq("carrier-validated lock stays out of training", update.training, 0);
-    rc |= expect_int_eq("carrier-validated lock does not apply later drift", update.apply_ppm, 0);
-    return rc;
-}
-
-static int
 test_frequency_change_during_training_restarts_observation(void) {
     int rc = 0;
     RtlAutoPpmController controller;
@@ -761,16 +595,16 @@ test_frequency_change_during_training_restarts_observation(void) {
     const uint32_t freq_b_hz = 935000000U;
 
     controller.reset(0, freq_a_hz);
-    (void)controller.update(config, make_inputs(0, 0, freq_a_hz, -8.0, RtlAutoPpmSource::SpectrumResidual));
+    (void)controller.update(config, make_inputs(0, 0, freq_a_hz, -8.0, RtlAutoPpmSource::PhaseResidual));
 
     RtlAutoPpmUpdate update =
-        controller.update(config, make_inputs(3000, 0, freq_b_hz, -8.0, RtlAutoPpmSource::SpectrumResidual));
+        controller.update(config, make_inputs(3000, 0, freq_b_hz, -8.0, RtlAutoPpmSource::PhaseResidual));
     rc |= expect_int_eq("retune during training does not apply immediately", update.apply_ppm, 0);
     rc |= expect_int_eq("retune during training keeps cooldown clear", update.cooldown_ticks, 0);
 
-    update = controller.update(config, make_inputs(11001, 0, freq_b_hz, -8.0, RtlAutoPpmSource::SpectrumResidual));
+    update = controller.update(config, make_inputs(11001, 0, freq_b_hz, -8.0, RtlAutoPpmSource::PhaseResidual));
     rc |= expect_int_eq("retune observation can apply on new channel", update.apply_ppm, 1);
-    rc |= expect_int_eq("retune observation applies from current ppm", update.new_ppm, -4);
+    rc |= expect_int_eq("retune observation applies from current ppm", update.new_ppm, -8);
     rc |= expect_int_eq("retune observation stays unlocked", update.locked, 0);
     rc |= expect_int_eq("retune observation keeps training active", update.training, 1);
     return rc;
@@ -864,16 +698,12 @@ main(void) {
     int rc = 0;
     rc |= test_select_estimate_accepts_large_finite_cqpsk_nco();
     rc |= test_select_estimate_prefers_cqpsk_nco_after_lock();
-    rc |= test_select_estimate_uses_cqpsk_spectrum_before_lock();
-    rc |= test_select_estimate_rejects_cqpsk_without_lock_or_spectrum();
-    rc |= test_select_estimate_keeps_non_cqpsk_spectrum_with_tracking_enabled();
-    rc |= test_select_estimate_keeps_non_cqpsk_spectrum_for_large_offsets();
-    rc |= test_select_estimate_rejects_invalid_non_cqpsk_spectrum();
-    rc |= test_select_estimate_rejects_phase_only_non_cqpsk();
-    rc |= test_spectrum_estimate_requires_valid_spectral_snr();
+    rc |= test_select_estimate_rejects_cqpsk_without_lock();
+    rc |= test_select_estimate_prefers_non_cqpsk_phase_tracking();
+    rc |= test_select_estimate_uses_tracked_phase();
+    rc |= test_select_estimate_rejects_untracked_phase_only_non_cqpsk();
+    rc |= test_fsk_dc_estimate_uses_hardware_ppm_correction_sign();
     rc |= test_carrier_estimate_applies_direct_correction_then_locks();
-    rc |= test_spectrum_fallback_clamps_large_steps();
-    rc |= test_large_spectrum_residual_stays_bounded_across_windows();
     rc |= test_external_ppm_change_resets_observation_window();
     rc |= test_async_ppm_waits_for_applied_snapshot_before_retraining();
     rc |= test_requested_ppm_change_blocks_retraining_until_applied();
@@ -886,9 +716,6 @@ main(void) {
     rc |= test_sub_deadband_residual_locks_without_dither_with_default_config();
     rc |= test_sub_deadband_residual_locks_with_zero_lock_hz_below_deadband_floor();
     rc |= test_sub_deadband_residual_locks_with_zero_lock_ppm_below_deadband_floor();
-    rc |= test_spectrum_lock_revalidates_same_frequency_carrier_upgrade();
-    rc |= test_spectrum_lock_ignores_carrier_upgrade_after_frequency_change();
-    rc |= test_spectrum_lock_promotes_on_same_frequency_carrier_zero_lock();
     rc |= test_frequency_change_during_training_restarts_observation();
     rc |= test_frequency_change_keeps_session_lock_after_lock_carry();
     rc |= test_locked_session_ignores_external_ppm_change();

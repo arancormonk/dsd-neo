@@ -20,13 +20,15 @@
 extern "C" {
 #endif
 
-int ez_rs28_ess(int payload[96], int parity[168]);
-int ez_rs28_facch(int payload[156], int parity[114]);
-int ez_rs28_sacch(int payload[180], int parity[132]);
-
-int ez_rs28_facch_soft(int payload[156], int parity[114], const int* erasures, int n_erasures);
-int ez_rs28_sacch_soft(int payload[180], int parity[132], const int* erasures, int n_erasures);
-int ez_rs28_ess_soft(int payload[96], int parity[168], const int* erasures, int n_erasures);
+/**
+ * Decode shortened P25 RS(63,35) bit arrays with optional erasures.
+ *
+ * Pass NULL and zero for a decoder without erasures. At most 28 erasure
+ * positions are consumed.
+ */
+int ez_rs28_ess(int payload[96], int parity[168], const int* erasures, int n_erasures);
+int ez_rs28_facch(int payload[156], int parity[114], const int* erasures, int n_erasures);
+int ez_rs28_sacch(int payload[180], int parity[132], const int* erasures, int n_erasures);
 
 int isch_lookup(uint64_t isch);
 int isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]);
