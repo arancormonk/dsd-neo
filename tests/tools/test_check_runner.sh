@@ -195,48 +195,86 @@ run_case lane_abort
 expect_out lane_abort "lane a aborted (rc=9)" "an aborted lane was not recorded"
 expect_out lane_abort "VERDICT: failed" "an aborted lane did not fail the report"
 
-# --- A TERM during a check takes the check down with it, promptly. ---
+# --- A signal during a check takes the check down with it, promptly. ---
 #
 # bash runs a trap only between commands, so a check run in the foreground
-# deferred INT/TERM for as long as the check took - minutes, for the whole
+# deferred HUP/INT/TERM for as long as the check took - minutes, for the whole
 # pre-push suite or a scan-build - and killing the runner left the analyzer
-# running. Checks are background jobs in their own process group now.
-write_case signal "
-runner_init t 0
-run_check 'long check' bash -c 'echo \$\$ > ${WORK}/child.pid; sleep 60'
+# running. Checks are background jobs in their own process group now, in serial
+# mode too, and SIGHUP is trapped as well: a closed terminal used to kill the
+# runner outright, leaving every analyzer it had started with no parent.
+#
+# assert_signal_stops_run NAME SERIAL SIGNAL
+assert_signal_stops_run() {
+  local name="$1"
+  local serial="$2"
+  local sig="$3"
+  local pidfile="$WORK/${name}.child.pid"
+
+  write_case "$name" "
+runner_init t ${serial}
+run_check 'long check' bash -c 'echo \$\$ > ${pidfile}; sleep 60'
 "
-rm -f "$WORK/child.pid"
-bash "$WORK/signal.sh" > "$WORK/signal.out" 2>&1 &
-signal_pid=$!
-for _ in $(seq 1 100); do
-  if [[ -s "$WORK/child.pid" ]]; then
-    break
+  rm -f "$pidfile"
+  bash "$WORK/${name}.sh" > "$WORK/${name}.out" 2>&1 &
+  local runner_pid=$!
+  local _ waited=0 child_pid="" rc=0
+  for _ in $(seq 1 100); do
+    if [[ -s "$pidfile" ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  child_pid=$(cat "$pidfile" 2> /dev/null || echo "")
+  [[ -n "$child_pid" ]] || fail "${name}: the long check never started"
+  kill "-${sig}" "$runner_pid" 2> /dev/null || true
+  while kill -0 "$runner_pid" 2> /dev/null && [[ $waited -lt 100 ]]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$runner_pid" 2> /dev/null; then
+    fail "${name}: the runner ignored SIG${sig} while a check was running"
+    kill -KILL "$runner_pid" 2> /dev/null || true
   fi
-  sleep 0.1
-done
-child_pid=$(cat "$WORK/child.pid" 2> /dev/null || echo "")
-[[ -n "$child_pid" ]] || fail "the long check never started"
-kill -TERM "$signal_pid" 2> /dev/null || true
-waited=0
-while kill -0 "$signal_pid" 2> /dev/null && [[ $waited -lt 100 ]]; do
-  sleep 0.1
-  waited=$((waited + 1))
-done
-if kill -0 "$signal_pid" 2> /dev/null; then
-  fail "the runner ignored SIGTERM while a check was running"
-  kill -KILL "$signal_pid" 2> /dev/null || true
+  set +e
+  wait "$runner_pid"
+  rc=$?
+  set -e
+  [[ $rc -eq 130 ]] || fail "${name}: an interrupted run should exit 130, got rc=$rc"
+  grep -qF "interrupted" "$WORK/${name}.out" || fail "${name}: the interrupt was not reported"
+  sleep 0.2
+  if [[ -n "$child_pid" ]] && kill -0 "$child_pid" 2> /dev/null; then
+    fail "${name}: the check outlived the runner that was told to stop"
+    kill -KILL "$child_pid" 2> /dev/null || true
+  fi
+}
+
+assert_signal_stops_run signal 0 TERM
+assert_signal_stops_run signal_hup 0 HUP
+assert_signal_stops_run signal_serial 1 TERM
+
+# --- A missing tool is never reported as a passing run. ---
+#
+# runner_report answered "nothing failed" for a run in which clang-tidy and
+# cppcheck were absent, and both gates printed "all checks passed" over it.
+# shellcheck disable=SC2016 # The body is expanded by the script it is written into, not here.
+write_case missing_not_passed '
+runner_init t 0
+run_check "a check that passes" true
+runner_note_missing clang-tidy
+if runner_report; then
+  if [[ "$RUNNER_MISSING" == "1" ]]; then
+    echo "VERDICT: passed with skips"
+  else
+    echo "VERDICT: all checks passed"
+  fi
+else
+  echo "VERDICT: failed"
 fi
-set +e
-wait "$signal_pid"
-signal_rc=$?
-set -e
-[[ $signal_rc -eq 130 ]] || fail "an interrupted run should exit 130, got rc=$signal_rc"
-grep -qF "interrupted" "$WORK/signal.out" || fail "the interrupt was not reported"
-sleep 0.2
-if [[ -n "$child_pid" ]] && kill -0 "$child_pid" 2> /dev/null; then
-  fail "the check outlived the runner that was told to stop"
-  kill -KILL "$child_pid" 2> /dev/null || true
-fi
+'
+run_case missing_not_passed
+expect_out missing_not_passed "VERDICT: passed with skips" "a run that skipped an analysis claimed to have passed it"
+expect_out missing_not_passed "missing tools: clang-tidy" "the missing tool was not named"
 
 if [[ $failures -ne 0 ]]; then
   echo "check_runner: ${failures} assertion(s) failed" >&2

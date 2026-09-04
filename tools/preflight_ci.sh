@@ -21,8 +21,10 @@ Environment:
   DSD_HOOK_RUN_SCAN_BUILD=1|0
   DSD_HOOK_SCAN_BUILD_REUSE=1|0   incremental scan-build: only the translation
                                   units the build recompiles are analyzed
-  DSD_HOOK_JOBS=N                 worker budget for the whole run
-                                  (default: detected CPU count)
+  DSD_HOOK_JOBS=N                 worker budget shared across the whole run
+                                  (default: detected CPU count); each check that
+                                  runs keeps at least one worker, so use
+                                  DSD_HOOK_SERIAL=1 to bound a small machine
   DSD_HOOK_SERIAL=1|0             one check at a time, streaming, fail fast
 
 Examples:
@@ -130,7 +132,15 @@ tmp_index="$(mktemp "${TMPDIR:-/tmp}/dsd-neo-preflight-index.XXXXXX")"
 cleanup() {
   rm -f "$tmp_index"
 }
+on_signal() {
+  cleanup
+  exit 130
+}
 trap cleanup EXIT
+# The gate that runs this script forwards SIGTERM to its process group when it
+# is interrupted, and bash runs no EXIT trap for an untrapped fatal signal, so
+# without this every interrupted run leaves a full worktree index behind.
+trap on_signal HUP INT TERM
 
 GIT_INDEX_FILE="$tmp_index" git read-tree "$local_sha"
 GIT_INDEX_FILE="$tmp_index" git add -A -- .

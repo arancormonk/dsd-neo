@@ -73,14 +73,26 @@ fi
 
 LOG_FILE=".shell-lint.local.out"
 set +e
+# One brace group reports only its last command's status, so shellcheck's
+# verdict was discarded and only shfmt could fail the lint. Run and score them
+# separately.
 {
   echo "shellcheck files: ${#FILTERED[@]}"
   shellcheck "${FILTERED[@]}"
+} 2>&1 | tee "$LOG_FILE"
+shellcheck_rc=${PIPESTATUS[0]}
+{
   echo "shfmt files: ${#FILTERED[@]}"
   shfmt -d -i 2 -ci -sr "${FILTERED[@]}"
-} 2>&1 | tee "$LOG_FILE"
-rc=${PIPESTATUS[0]}
+} 2>&1 | tee -a "$LOG_FILE"
+shfmt_rc=${PIPESTATUS[0]}
 set -e
+rc=0
+if [[ $shellcheck_rc -ne 0 ]]; then
+  rc=$shellcheck_rc
+elif [[ $shfmt_rc -ne 0 ]]; then
+  rc=$shfmt_rc
+fi
 
 if [[ $rc -eq 0 ]]; then
   echo "Shell lint completed. Full output in $LOG_FILE"

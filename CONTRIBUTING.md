@@ -98,9 +98,10 @@ tools/preflight_ci.sh
 ```
 
 The checks run in concurrent lanes sized to the machine's core count and every
-failure is reported at the end. `DSD_HOOK_JOBS=N` caps the worker budget for the
-whole run; `DSD_HOOK_SERIAL=1` runs the checks one at a time with streaming
-output and stops at the first failure.
+failure is reported at the end. `DSD_HOOK_JOBS=N` sets the worker budget shared
+out across the whole run; each check that runs keeps at least one worker, so on a
+small machine use `DSD_HOOK_SERIAL=1`, which runs the checks one at a time with
+streaming output and stops at the first failure.
 
 Broad or high-risk changes:
 

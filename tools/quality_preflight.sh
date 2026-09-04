@@ -17,7 +17,10 @@ set -euo pipefail
 # after another in the foreground and stops at the first failure.
 #
 # Environment (also read by the pre-push hook):
-#   DSD_HOOK_JOBS=N              Worker budget (default: detected core count).
+#   DSD_HOOK_JOBS=N              Worker budget shared across the run (default:
+#                                detected core count). Each check that runs keeps
+#                                at least one worker; DSD_HOOK_SERIAL=1 is what
+#                                bounds a small machine.
 #   DSD_HOOK_SERIAL=1            Sequential, stream everything, fail fast.
 #   DSD_HOOK_SCAN_BUILD_REUSE=1  Incremental scan-build: only the translation
 #                                units the build recompiles are analyzed.
@@ -32,8 +35,6 @@ export DSD_HOOK_RUN_SCAN_BUILD=1
 source "$ROOT_DIR/tools/lib/check_runner.sh"
 runner_init quality-preflight "${DSD_HOOK_SERIAL:-0}"
 JOBS=$(runner_detect_jobs)
-
-PREFLIGHT_ARGS=("$@")
 
 # shellcheck disable=SC2329 # Started through runner_spawn.
 lane_gitleaks() {
@@ -58,11 +59,11 @@ fuzz_configure_and_build() {
   cmake --build --preset fuzz-asan-debug -j "$JOBS" || return $?
 }
 
-echo "quality-preflight: jobs=${JOBS} serial=${DSD_HOOK_SERIAL:-0}"
+echo "quality-preflight: jobs=${JOBS} serial=${RUNNER_SERIAL}"
 
 # Phase 1: the pre-push checks, with gitleaks alongside.
 runner_spawn gitleaks lane_gitleaks
-run_check --stream "pre-push checks (tools/preflight_ci.sh)" tools/preflight_ci.sh "${PREFLIGHT_ARGS[@]}"
+run_check --stream "pre-push checks (tools/preflight_ci.sh)" tools/preflight_ci.sh "$@"
 runner_wait_all
 
 # Phase 2: the fuzz build, with the whole-tree lint alongside.
@@ -80,6 +81,8 @@ else
   echo "quality-preflight: skipping the fuzz smoke pass (the fuzz build failed)." >&2
 fi
 
+# A missing tool is fatal here (DSD_HOOK_FAIL_ON_MISSING_TOOLS=1 above), so it
+# reaches this point as a failed check rather than as a skip.
 if runner_report; then
   echo "quality-preflight: all checks passed."
   exit 0
