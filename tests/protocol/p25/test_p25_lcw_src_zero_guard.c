@@ -161,6 +161,13 @@ expect_contains(const char* tag, const char* text, const char* needle) {
     return 0;
 }
 
+#if defined(__GNUC__) && !defined(__clang__)
+/* dup2() returns the descriptor it wrote onto - one the process already owns
+ * and must not close - but GCC's analyzer models the return as a freshly opened
+ * descriptor and reports the redirect as a leak. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-fd-leak"
+#endif
 static int
 capture_lcw_output(dsd_opts* opts, dsd_state* st, uint8_t lcw[96], char* out, size_t out_sz) {
     if (!out || out_sz == 0) {
@@ -205,6 +212,9 @@ capture_lcw_output(dsd_opts* opts, dsd_state* st, uint8_t lcw[96], char* out, si
     (void)fclose(capture);
     return 0;
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 static void
 reset_lcw_state(dsd_state* state) {

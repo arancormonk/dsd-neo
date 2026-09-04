@@ -275,6 +275,13 @@ stderr_capture_init(stderr_capture_t* capture) {
     capture->redirected = 0;
 }
 
+#if defined(__GNUC__) && !defined(__clang__)
+/* dup2() returns the descriptor it wrote onto - here stderr, which the process
+ * already owns and must not close - but GCC's analyzer models the return as a
+ * freshly opened descriptor and reports the redirect as a leak. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-fd-leak"
+#endif
 static int
 stderr_capture_begin(stderr_capture_t* capture, const char** failure, int* saved_errno) {
     capture->stream = tmpfile();
@@ -297,6 +304,9 @@ stderr_capture_begin(stderr_capture_t* capture, const char** failure, int* saved
     capture->redirected = 1;
     return 0;
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 static int
 stderr_capture_read(stderr_capture_t* capture, char* buf, size_t buf_size, const char** failure, int* saved_errno) {

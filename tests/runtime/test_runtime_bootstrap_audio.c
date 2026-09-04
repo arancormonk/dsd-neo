@@ -88,6 +88,13 @@ reset_devices(void) {
 #if !defined(_WIN32)
 typedef void (*bootstrap_audio_fn)(dsd_opts* opts);
 
+#if defined(__GNUC__) && !defined(__clang__)
+/* dup2() returns the descriptor it wrote onto - one the process already owns
+ * and must not close - but GCC's analyzer models the return as a freshly opened
+ * descriptor and reports the redirect as a leak. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-fd-leak"
+#endif
 static int
 with_stdin_text(const char* text, bootstrap_audio_fn fn, dsd_opts* opts) {
     int rc = 0;
@@ -150,6 +157,9 @@ with_stdin_text(const char* text, bootstrap_audio_fn fn, dsd_opts* opts) {
     fclose(f);
     return rc;
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 static int
 test_output_selection_defaults_and_clamps(void) {
