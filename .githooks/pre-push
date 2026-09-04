@@ -627,6 +627,12 @@ if [[ $tu_count -gt 0 && ! -f build/dev-debug/compile_commands.json && ! -f comp
     mark_missing_tool "cmake" "per-TU analyzers (no compile database)"
   fi
 fi
+if [[ $tu_count -gt 0 && $compile_db_ready -eq 0 ]]; then
+  # Naming the tool is not the same as naming what went unanalyzed: "cmake is
+  # missing" reads like a nuisance, where the fact is that ${tu_count} changed
+  # translation units are about to be pushed with no per-TU analysis at all.
+  runner_note_skipped "clang-tidy, IWYU and GCC -fanalyzer over ${tu_count} changed translation unit(s): no compile database"
+fi
 
 runner_spawn guardrails lane_guardrails
 runner_spawn lint lane_lint
@@ -666,15 +672,17 @@ else
 fi
 
 if runner_report; then
-  if [[ "$RUNNER_MISSING" == "1" ]]; then
-    # The analyses those tools run did not run, so this is not "all checks
-    # passed": say what the run actually covered, and apply the missing-tool
-    # policy here, where every skip is known.
+  if [[ "$RUNNER_MISSING" == "1" || "$RUNNER_SKIPPED" == "1" ]]; then
+    # Those analyses did not run, so this is not "all checks passed": say what
+    # the run actually covered, and apply the policy here, where every gap is
+    # known. A gap is not a failure - a machine without cmake can still push -
+    # but it is fatal under the flag quality_preflight sets, which is what
+    # "missing tools are fatal" has to mean if it is to mean anything.
     if [[ "$FAIL_ON_MISSING_TOOLS" == "1" ]]; then
-      echo "pre-push: failing because DSD_HOOK_FAIL_ON_MISSING_TOOLS=1 and the tools listed above are missing." >&2
+      echo "pre-push: failing because DSD_HOOK_FAIL_ON_MISSING_TOOLS=1 and the run did not cover everything (see above)." >&2
       exit 1
     fi
-    echo "pre-push: no check failed, but the tools listed above are missing and their analyses were skipped."
+    echo "pre-push: no check failed, but the analyses listed above did not run."
   else
     echo "pre-push: all checks passed."
   fi

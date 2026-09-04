@@ -49,6 +49,10 @@ RUNNER_CHILD_PID=""
 # run. Callers read it so a run that skipped analyses never claims to have
 # passed them.
 RUNNER_MISSING=0
+# Set by runner_report: 1 when an analysis was skipped for a reason other than a
+# missing tool. Separate from RUNNER_MISSING because the two need different
+# sentences - one names a tool to install, the other a coverage gap to explain.
+RUNNER_SKIPPED=0
 # Exit status of the last run_check that ran in this shell. Callers gate
 # follow-up work on it; a check started inside a lane cannot report back here.
 RUNNER_LAST_RC=0
@@ -186,6 +190,7 @@ runner_init() {
   RUNNER_REPORTED=0
   RUNNER_CHILD_PID=""
   RUNNER_MISSING=0
+  RUNNER_SKIPPED=0
   RUNNER_LAST_RC=0
   RUNNER_LANE_PIDS=()
   RUNNER_LANE_NAMES=()
@@ -197,6 +202,49 @@ runner_init() {
 runner_note_missing() {
   runner_require_dir || exit 1
   printf '%s\n' "$1" >> "${RUNNER_DIR}/missing.txt"
+}
+
+# Record an analysis that did not run for a reason other than a missing tool -
+# no compile database, a prerequisite build that failed, a corpus that came out
+# empty. A tool being present says nothing about whether its analysis ran, so
+# this is tracked separately from missing.txt and reported in the same breath:
+# both mean the verdict covers less than it appears to.
+runner_note_skipped() {
+  runner_require_dir || exit 1
+  printf '%s\n' "$1" >> "${RUNNER_DIR}/skipped.txt"
+}
+
+# The marker a tool prints on the one line that says it downgraded a real
+# failure to a pass: analyzed nothing, scanned nothing, ran without a mapping
+# file it needs. Lane mode captures a passing check's output to a log nobody
+# reads and then deletes it, so without this those lines went to no one; the
+# whole point of the checks is that a pass means something, and these are the
+# lines that say a pass means less than it looks. Uppercase because clang and
+# gcc already own lowercase "note:".
+RUNNER_NOTE_MARKER=': NOTE: '
+
+# runner_collect_notes LABEL LOG: record the notes a passing check printed.
+# Nothing to do in serial mode or under --stream, where the check's output went
+# to the terminal already; LOG is empty in both cases.
+runner_collect_notes() {
+  local label="$1" log="$2"
+  if [[ -z "$log" || ! -f "$log" ]]; then
+    return 0
+  fi
+  local notes="" line=""
+  # `|| true`, and no pipeline: the callers run under `set -e -o pipefail`,
+  # where a grep that matches nothing - the ordinary case - is a failed pipeline
+  # that would take the whole gate down between the check and its status line.
+  notes=$(grep -F "$RUNNER_NOTE_MARKER" "$log" 2> /dev/null || true)
+  if [[ -z "$notes" ]]; then
+    return 0
+  fi
+  # Appended a line at a time, like failed.txt: short single writes, so a lane
+  # recording a note cannot interleave with another's.
+  while IFS= read -r line; do
+    printf '%s\t%s\n' "$label" "$line" >> "${RUNNER_DIR}/notes.txt"
+  done <<< "$notes"
+  return 0
 }
 
 # run_check [--stream] LABEL COMMAND [ARGS...]
@@ -282,6 +330,7 @@ run_check() {
   fi
   local elapsed=$((SECONDS - start))
   if [[ $rc -eq 0 ]]; then
+    runner_collect_notes "$label" "$log"
     echo "==> ok    ${label} (${elapsed}s)"
   else
     echo "==> FAIL  ${label} (${elapsed}s, rc=${rc})"
@@ -338,13 +387,15 @@ runner_wait_all() {
   RUNNER_LANE_NAMES=()
 }
 
-# Print missing tools and every failed check's log. Returns 1 if anything
-# failed, or if the recorded results are unreadable. Sets RUNNER_MISSING when a
-# tool was absent, so the caller can say that the run skipped analyses rather
-# than that it passed them.
+# Print what the run did not cover - missing tools, skipped analyses, the notes
+# passing checks left - and then every failed check's log. Returns 1 if anything
+# failed, or if the recorded results are unreadable. Sets RUNNER_MISSING and
+# RUNNER_SKIPPED so the caller can say what the run actually covered rather than
+# that it passed everything.
 runner_report() {
   RUNNER_REPORTED=1
   RUNNER_MISSING=0
+  RUNNER_SKIPPED=0
   runner_require_dir || return 1
   local missing=""
   if [[ -s "${RUNNER_DIR}/missing.txt" ]]; then
@@ -352,6 +403,18 @@ runner_report() {
     RUNNER_MISSING=1
     missing=$(sort -u "${RUNNER_DIR}/missing.txt" | tr '\n' ' ')
     echo "${RUNNER_PREFIX}: missing tools: ${missing% }" >&2
+  fi
+  if [[ -s "${RUNNER_DIR}/skipped.txt" ]]; then
+    # shellcheck disable=SC2034 # Read by the sourcing script once runner_report returns.
+    RUNNER_SKIPPED=1
+    echo "${RUNNER_PREFIX}: analyses that did not run:" >&2
+    sort -u "${RUNNER_DIR}/skipped.txt" | sed 's/^/  /' >&2
+  fi
+  # Before the verdict either way: a note is a check saying its pass covers less
+  # than it appears to, which matters most on the run where nothing failed.
+  if [[ -s "${RUNNER_DIR}/notes.txt" ]]; then
+    echo "${RUNNER_PREFIX}: notes from checks that passed:" >&2
+    sed 's/\t/: /' "${RUNNER_DIR}/notes.txt" | sed 's/^/  /' >&2
   fi
   if [[ ! -s "${RUNNER_DIR}/failed.txt" ]]; then
     return 0

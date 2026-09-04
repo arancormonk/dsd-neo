@@ -93,7 +93,7 @@ run_osv() {
 normalize_rc() {
   local rc="$1"
   if [[ "$ALLOW_NO_PACKAGES" == "1" && "$rc" -eq 128 ]]; then
-    echo "OSV-Scanner found no supported package metadata; treating as success." >&2
+    echo "osv-scan: NOTE: OSV-Scanner found no supported package metadata; nothing was scanned (treated as success)." >&2
     return 0
   fi
   return "$rc"

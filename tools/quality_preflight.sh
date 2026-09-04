@@ -79,11 +79,17 @@ if [[ $fuzz_build_rc -eq 0 ]]; then
   run_check --stream "fuzz smoke (tools/fuzz_smoke.sh)" tools/fuzz_smoke.sh --no-build
 else
   echo "quality-preflight: skipping the fuzz smoke pass (the fuzz build failed)." >&2
+  runner_note_skipped "fuzz smoke pass: the fuzz build failed"
 fi
 
-# A missing tool is fatal here (DSD_HOOK_FAIL_ON_MISSING_TOOLS=1 above), so it
-# reaches this point as a failed check rather than as a skip.
+# The pre-push checks run here with DSD_HOOK_FAIL_ON_MISSING_TOOLS=1 (exported
+# above), so a tool missing inside them arrives as a failed check. The gaps this
+# script opens itself are its own to record, which is what the skip above does.
 if runner_report; then
+  if [[ "$RUNNER_MISSING" == "1" || "$RUNNER_SKIPPED" == "1" ]]; then
+    echo "quality-preflight: no check failed, but the analyses listed above did not run." >&2
+    exit 1
+  fi
   echo "quality-preflight: all checks passed."
   exit 0
 fi

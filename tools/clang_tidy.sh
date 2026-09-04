@@ -290,9 +290,18 @@ if requested_rel:
     requested_tus = [p for p in requested_rel if is_translation_unit(p)]
     missing = [p for p in requested_tus if p not in entries_by_rel]
     if missing:
+        # NOTE, not a bare message: this is the run analyzing less than it was
+        # asked to, and in a lane the plain line went to a log nobody reads.
+        # The names go on the marked line itself, capped: the gate collects the
+        # line that carries the marker, so anything on a continuation line is
+        # dropped and the note arrives with a dangling colon.
+        shown = ", ".join(missing[:5])
+        if len(missing) > 5:
+            shown += f", and {len(missing) - 5} more"
         print(
-            "Skipping files not present in compilation database:\n  "
-            + "\n  ".join(missing),
+            f"clang-tidy: NOTE: {len(missing)} requested file(s) are not in the "
+            "compilation database and were not analyzed (it may be stale; "
+            f"reconfigure the dev-debug preset): {shown}",
             file=sys.stderr,
         )
     selected_files = sorted(p for p in requested_tus if p in entries_by_rel)
@@ -344,7 +353,7 @@ else
 fi
 if [ ${#FILES[@]} -eq 0 ]; then
   if [[ ${#REQUESTED_FILES[@]} -gt 0 ]]; then
-    echo "No translation units found to analyze from requested paths."
+    echo "clang-tidy: NOTE: none of the requested paths are in the compilation database; nothing was analyzed."
   else
     echo "No source files found to analyze."
   fi

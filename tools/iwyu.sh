@@ -282,7 +282,7 @@ def compiles_against_qt(entry):
 qt_mapping = root / "tools" / "iwyu-qt6.imp"
 qt_units = sum(1 for _rel, entry in selected_entries if compiles_against_qt(entry))
 if qt_units and not qt_mapping.is_file():
-    print(f"WARNING: {qt_units} Qt translation unit(s) will be analyzed without "
+    print(f"iwyu: NOTE: {qt_units} Qt translation unit(s) analyzed without "
           f"{qt_mapping.name}; expect private-header suggestions.")
 
 if not selected_entries:

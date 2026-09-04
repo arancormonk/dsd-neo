@@ -276,6 +276,52 @@ run_case missing_not_passed
 expect_out missing_not_passed "VERDICT: passed with skips" "a run that skipped an analysis claimed to have passed it"
 expect_out missing_not_passed "missing tools: clang-tidy" "the missing tool was not named"
 
+# --- An analysis skipped for a reason other than a missing tool is reported too. ---
+#
+# The pre-push hook skips clang-tidy, IWYU and GCC -fanalyzer when there is no
+# compile database. Every tool is installed in that case, so missing.txt stays
+# empty and the run used to end in "all checks passed" having analyzed no
+# translation unit at all.
+# shellcheck disable=SC2016 # The body is expanded by the script it is written into, not here.
+write_case skipped_not_passed '
+runner_init t 0
+run_check "a check that passes" true
+runner_note_skipped "clang-tidy over 3 changed translation unit(s): no compile database"
+if runner_report; then
+  if [[ "$RUNNER_SKIPPED" == "1" ]]; then
+    echo "VERDICT: passed with skips"
+  else
+    echo "VERDICT: all checks passed"
+  fi
+else
+  echo "VERDICT: failed"
+fi
+'
+run_case skipped_not_passed
+expect_out skipped_not_passed "VERDICT: passed with skips" "a skipped analysis was reported as a pass"
+expect_out skipped_not_passed "analyses that did not run" "the skipped analysis was not announced"
+expect_out skipped_not_passed "no compile database" "the reason for the skip was not given"
+
+# --- A passing check's NOTE reaches the report. ---
+#
+# Lane mode captures a check's output to a log that runner_report prints only
+# for failures and runner_cleanup then deletes, so the line a tool prints when
+# it downgrades a real failure to a pass - clang-tidy analyzing none of the
+# files it was handed, osv-scan finding no package metadata, IWYU running
+# without its Qt mapping - went to no one.
+write_case notes '
+runner_init t 0
+run_check "quiet check" bash -c "echo ordinary output"
+run_check "downgrading check" bash -c "echo \"tool: NOTE: analyzed nothing at all\"; exit 0"
+if runner_report; then echo "VERDICT: passed"; else echo "VERDICT: failed"; fi
+'
+run_case notes
+expect_out notes "VERDICT: passed" "a note should not fail the run"
+expect_out notes "notes from checks that passed" "the notes section is missing"
+expect_out notes "analyzed nothing at all" "a passing check's NOTE was discarded with its log"
+expect_out notes "downgrading check" "the note was not attributed to the check that printed it"
+refute_out notes "ordinary output" "a passing check's ordinary output leaked into the report"
+
 if [[ $failures -ne 0 ]]; then
   echo "check_runner: ${failures} assertion(s) failed" >&2
   exit 1

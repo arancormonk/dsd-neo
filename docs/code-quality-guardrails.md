@@ -42,6 +42,19 @@ Run the smallest useful set before opening a PR, then broaden it when the change
 
 ## Project-Specific Guardrails
 
+A gate that passes must have earned it. `tools/lib/check_runner.sh` runs the checks in concurrent lanes and captures each
+one's output to a log it prints only for failures, so anything a *passing* check says would otherwise be discarded — and
+what a tool says when it downgrades a real failure to a pass is exactly the line that matters. Two mechanisms carry it
+to the verdict, and a change to any local check should use them rather than printing and hoping:
+
+- A tool that passes while covering less than it was asked to prints one self-contained line containing `: NOTE: ` (for
+  example `clang-tidy: NOTE: 2 requested file(s) are not in the compilation database and were not analyzed: …`). The
+  runner collects those lines out of the passing check's log and prints them under "notes from checks that passed".
+  Keep the whole note on the marked line: continuation lines are not collected.
+- A gate that skips an analysis calls `runner_note_skipped "<what did not run, and why>"` (a missing tool calls
+  `runner_note_missing` instead). Either one makes the run report what it did not cover rather than "all checks passed",
+  and is fatal under `DSD_HOOK_FAIL_ON_MISSING_TOOLS=1`, which `tools/quality_preflight.sh` sets.
+
 The repository intentionally blocks or flags patterns that are easy to reintroduce during large edits:
 
 - Use the project safe API wrappers instead of raw C memory/string/formatting APIs in project-owned code.
