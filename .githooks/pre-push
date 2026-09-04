@@ -13,7 +13,18 @@ remote_url="${2:-}"
 # - DSD_HOOK_FAIL_ON_MISSING_TOOLS: 1|0 (default: 0)
 #   when 1, missing analyzers make the hook fail.
 # - DSD_HOOK_RUN_SCAN_BUILD: 1|0 (default: 0)
-#   when 1, also runs the heavier full scan-build pass.
+#   when 1, also runs the heavier scan-build pass (a full rebuild).
+# - DSD_HOOK_SCAN_BUILD_REUSE: 1|0 (default: 0)
+#   when 1, scan-build reuses its build tree, which analyzes only the
+#   translation units the incremental build recompiles.
+# - DSD_HOOK_JOBS: N (default: detected CPU count)
+#   worker budget for the whole run, split between the checks that fan out.
+#   Every check that runs keeps at least one worker, so values below the number
+#   of concurrent checks (six) do not reduce the run further; use
+#   DSD_HOOK_SERIAL=1 for that.
+# - DSD_HOOK_SERIAL: 1|0 (default: 0)
+#   when 1, run the checks one after another with streaming output and stop
+#   at the first failure instead of running them in concurrent lanes.
 FAIL_ON_MISSING_TOOLS="${DSD_HOOK_FAIL_ON_MISSING_TOOLS:-0}"
 RUN_SCAN_BUILD="${DSD_HOOK_RUN_SCAN_BUILD:-0}"
 
@@ -347,179 +358,334 @@ if [[ ${#cppcheck_sources[@]} -gt 0 ]]; then
   mapfile -t cppcheck_sources < <(printf '%s\n' "${cppcheck_sources[@]}" | sort -u)
 fi
 
-missing_tools=()
+# --- Execution ---------------------------------------------------------------
+#
+# The checks run through tools/lib/check_runner.sh. By default they run in
+# concurrent lanes sized to the machine: three light lanes, and one lane per
+# heavy per-TU analyzer. Every check that fans out draws on one worker budget,
+# split below, so the lanes together stay inside the machine. Every failure is
+# reported at the end. DSD_HOOK_SERIAL=1 runs the lanes one after another in the
+# foreground with streaming output and stops at the first failure.
 
+# shellcheck disable=SC1091 # Sourced from the repo root at runtime; linted as its own file.
+source "$repo_root/tools/lib/check_runner.sh"
+runner_init pre-push "${DSD_HOOK_SERIAL:-0}"
+JOBS=$(runner_detect_jobs)
+
+# Record the skip and carry on. DSD_HOOK_FAIL_ON_MISSING_TOOLS is applied once,
+# to the verdict at the end: exiting here would only end the lane the missing
+# tool happened to sit in, silently dropping every check after it in that lane
+# (a missing zizmor took Lizard with it) and reporting nothing but "lane lint
+# aborted".
 mark_missing_tool() {
   local tool="$1"
   local reason="$2"
   echo "pre-push: skipping ${reason} (${tool} not found in PATH)." >&2
-  missing_tools+=("$tool")
-  if [[ "$FAIL_ON_MISSING_TOOLS" == "1" ]]; then
-    echo "pre-push: failing because DSD_HOOK_FAIL_ON_MISSING_TOOLS=1." >&2
-    exit 1
-  fi
+  runner_note_missing "$tool"
 }
 
-run_check() {
-  local label="$1"
-  shift
-  echo "==> ${label}"
-  set +e
-  "$@"
-  local rc=$?
-  set -e
-  if [[ $rc -ne 0 ]]; then
-    echo "pre-push: ${label} failed." >&2
-    exit "$rc"
+# Worker budget. The four per-TU analyzer lanes and the two fan-out linters
+# (lizard and clang-format) all run at the same time, so JOBS is split once, up
+# front, rather than each tool helping itself to the whole machine: unsplit,
+# a 64-core box ran roughly 190 concurrent processes and clang-tidy alone held
+# more than 10 GB. DSD_HOOK_JOBS is therefore shared out across the run rather
+# than taken by each consumer. It is a share-out, not a hard cap: every check
+# that runs keeps at least one worker, so six of them (the four analyzers,
+# lizard and clang-format) is the floor and a budget below that buys nothing.
+# DSD_HOOK_SERIAL=1 is what actually bounds a small machine.
+#
+# The two linters take a small fixed reservation each. The rest is shared
+# between the analyzers by their measured cost per translation unit (clang-tidy
+# ~4.2 s, cppcheck strict ~4 s, GCC -fanalyzer ~1.3 s, IWYU ~0.2 s). That ratio
+# does not change with the size of the change, so it is written as fixed shares
+# rather than recomputed from the TU count; what the size of the change does
+# decide is the clamp, since no analyzer can use more workers than it has
+# translation units. clang-tidy, the largest, takes what rounding and the
+# clamps leave over. With 74 TUs that is 6/4/1/1 on 16 cores and 22/19/6/1 on
+# 64. Serial mode lets every tool use the whole machine, since nothing else
+# runs beside it.
+tu_count=${#analysis_tus[@]}
+cppcheck_count=${#cppcheck_sources[@]}
+
+# analyzer_share BUDGET PERMILLE CAP -> workers, at least 1, at most CAP (0: uncapped)
+analyzer_share() {
+  local budget="$1"
+  local permille="$2"
+  local cap="$3"
+  local share=$((budget * permille / 1000))
+  if [[ $share -lt 1 ]]; then
+    share=1
   fi
+  if [[ $cap -gt 0 && $share -gt $cap ]]; then
+    share=$cap
+  fi
+  printf '%s\n' "$share"
 }
 
-run_check "CMake install(TARGETS) runtime destinations" tools/check_install_runtime_destinations.sh
-
-if command -v cmake > /dev/null 2>&1; then
-  run_check "architecture rules guardrail" tools/check_arch_rules.sh
+jobs_cppcheck=0
+if [[ "$RUNNER_SERIAL" == "1" ]]; then
+  # Nothing runs beside a check in serial mode, so every tool gets the whole
+  # machine, clamped only by the work it has.
+  jobs_lizard=$JOBS
+  jobs_format=$JOBS
+  jobs_tidy=$(analyzer_share "$JOBS" 1000 "$tu_count")
+  jobs_fanalyzer=$(analyzer_share "$JOBS" 1000 "$tu_count")
+  jobs_iwyu=$(analyzer_share "$JOBS" 1000 "$tu_count")
+  if [[ $cppcheck_count -gt 0 ]]; then
+    jobs_cppcheck=$(analyzer_share "$JOBS" 1000 "$cppcheck_count")
+  fi
 else
-  mark_missing_tool "cmake" "architecture rules guardrail"
-fi
-
-if command -v rg > /dev/null 2>&1; then
-  run_check "secret redaction guardrail" tools/check_secret_redaction.sh
-  run_check "workflow Git pin guardrail" tools/check_workflow_git_pins.sh
-  run_check "workflow download pin guardrail" tools/check_workflow_download_pins.sh
-  run_check "vcpkg overlay pin guardrail" tools/check_vcpkg_overlay_pins.sh
-else
-  mark_missing_tool "rg" "repository security guardrails"
+  jobs_lizard=$((JOBS / 8))
+  if [[ $jobs_lizard -lt 1 ]]; then
+    jobs_lizard=1
+  fi
+  jobs_format=$jobs_lizard
+  analyzer_budget=$((JOBS - jobs_lizard - jobs_format))
+  if [[ $analyzer_budget -lt 1 ]]; then
+    analyzer_budget=1
+  fi
+  if [[ $cppcheck_count -gt 0 ]]; then
+    jobs_cppcheck=$(analyzer_share "$analyzer_budget" 410 "$cppcheck_count")
+  fi
+  jobs_fanalyzer=$(analyzer_share "$analyzer_budget" 130 "$tu_count")
+  jobs_iwyu=$(analyzer_share "$analyzer_budget" 30 "$tu_count")
+  jobs_tidy=$((analyzer_budget - jobs_cppcheck - jobs_fanalyzer - jobs_iwyu))
+  if [[ $jobs_tidy -lt 1 ]]; then
+    jobs_tidy=1
+  fi
+  if [[ $tu_count -gt 0 && $jobs_tidy -gt $tu_count ]]; then
+    jobs_tidy=$tu_count
+  fi
 fi
 
 # shellcheck disable=SC2329 # Invoked indirectly via run_check callback dispatch.
 run_clang_format_check() {
-  local rc=0
-  local f=""
-  for f in "$@"; do
-    if clang-format -n --Werror "$f" > /dev/null 2>&1; then
-      continue
-    fi
-    if ! diff -u "$f" <(clang-format "$f") > /dev/null; then
-      echo "pre-push: formatting issues found in ${f}" >&2
-      rc=1
-    fi
-  done
-  return "$rc"
+  # One parallel pass, and its own report. `clang-format -n --Werror` already
+  # prints "file:line:col: error: code should be clang-formatted" for every
+  # offender, so discarding that and then re-walking the files serially to
+  # recover the same names cost two extra clang-format runs per file. Letting it
+  # through also fails closed: a clang-format that errors for a reason other
+  # than formatting (an unsupported .clang-format key on the local build, say)
+  # used to leave rc at 0 because the second pass diffed a file against itself.
+  if printf '%s\0' "$@" | xargs -0 -P "$jobs_format" -n 8 clang-format -n --Werror; then
+    return 0
+  fi
+  echo "pre-push: formatting issues found in the files listed above (run tools/format.sh)." >&2
+  return 1
 }
 
-if [[ ${#format_files[@]} -gt 0 ]]; then
-  if command -v clang-format > /dev/null 2>&1; then
-    run_check "clang-format check (${#format_files[@]} file(s))" run_clang_format_check "${format_files[@]}"
-  else
-    mark_missing_tool "clang-format" "format check"
-  fi
-fi
+# shellcheck disable=SC2329 # Started through runner_spawn.
+lane_guardrails() {
+  run_check "CMake install(TARGETS) runtime destinations" tools/check_install_runtime_destinations.sh
 
-if [[ ${#cmake_format_files[@]} -gt 0 ]]; then
-  if command -v gersemi > /dev/null 2>&1; then
-    run_check "gersemi check (${#cmake_format_files[@]} file(s))" tools/cmake_format_check.sh -- "${cmake_format_files[@]}"
+  if command -v cmake > /dev/null 2>&1; then
+    run_check "architecture rules guardrail" tools/check_arch_rules.sh
   else
-    mark_missing_tool "gersemi" "CMake format check"
+    mark_missing_tool "cmake" "architecture rules guardrail"
   fi
-fi
 
-if [[ ${#analysis_tus[@]} -gt 0 ]]; then
+  if command -v rg > /dev/null 2>&1; then
+    run_check "secret redaction guardrail" tools/check_secret_redaction.sh
+    run_check "workflow Git pin guardrail" tools/check_workflow_git_pins.sh
+    run_check "workflow download pin guardrail" tools/check_workflow_download_pins.sh
+    run_check "vcpkg overlay pin guardrail" tools/check_vcpkg_overlay_pins.sh
+  else
+    mark_missing_tool "rg" "repository security guardrails"
+  fi
+
+  if [[ ${#format_files[@]} -gt 0 ]]; then
+    if command -v clang-format > /dev/null 2>&1; then
+      run_check "clang-format check (${#format_files[@]} file(s))" run_clang_format_check "${format_files[@]}"
+    else
+      mark_missing_tool "clang-format" "format check"
+    fi
+  fi
+
+  if [[ ${#cmake_format_files[@]} -gt 0 ]]; then
+    if command -v gersemi > /dev/null 2>&1; then
+      run_check "gersemi check (${#cmake_format_files[@]} file(s))" tools/cmake_format_check.sh -- "${cmake_format_files[@]}"
+    else
+      mark_missing_tool "gersemi" "CMake format check"
+    fi
+  fi
+}
+
+# shellcheck disable=SC2329 # Started through runner_spawn.
+lane_lint() {
+  if [[ ${#shell_lint_targets[@]} -gt 0 ]]; then
+    if command -v shellcheck > /dev/null 2>&1 && command -v shfmt > /dev/null 2>&1; then
+      run_check "shell lint (${#shell_lint_targets[@]} file(s))" tools/shell_lint.sh -- "${shell_lint_targets[@]}"
+    else
+      mark_missing_tool "shellcheck/shfmt" "shell lint"
+    fi
+  fi
+
+  if [[ ${#workflow_lint_targets[@]} -gt 0 ]]; then
+    if command -v actionlint > /dev/null 2>&1; then
+      run_check "workflow lint (${#workflow_lint_targets[@]} file(s))" tools/workflow_lint.sh -- "${workflow_lint_targets[@]}"
+    else
+      mark_missing_tool "actionlint" "workflow lint"
+    fi
+  fi
+
+  if [[ ${#workflow_security_targets[@]} -gt 0 ]]; then
+    if command -v zizmor > /dev/null 2>&1; then
+      run_check "zizmor workflow security" tools/zizmor.sh
+    else
+      mark_missing_tool "zizmor" "workflow security analysis"
+    fi
+  fi
+
+  if command -v lizard > /dev/null 2>&1; then
+    run_check "Lizard complexity (src/include/apps)" tools/lizard.sh --strict --jobs "$jobs_lizard"
+  else
+    mark_missing_tool "lizard" "Lizard complexity analysis"
+  fi
+}
+
+# shellcheck disable=SC2329 # Started through runner_spawn.
+lane_scan() {
+  if [[ $semgrep_full_scan -eq 1 ]]; then
+    if command -v semgrep > /dev/null 2>&1; then
+      run_check "Semgrep strict (full tree; rules changed)" tools/semgrep.sh --strict
+    else
+      mark_missing_tool "semgrep" "Semgrep analysis"
+    fi
+  elif [[ ${#semgrep_targets[@]} -gt 0 ]]; then
+    if command -v semgrep > /dev/null 2>&1; then
+      run_check "Semgrep strict (${#semgrep_targets[@]} path(s))" tools/semgrep.sh --strict -- "${semgrep_targets[@]}"
+    else
+      mark_missing_tool "semgrep" "Semgrep analysis"
+    fi
+  fi
+
+  if [[ ${#dependency_scan_targets[@]} -gt 0 ]]; then
+    if command -v osv-scanner > /dev/null 2>&1 || command -v docker > /dev/null 2>&1; then
+      run_check "OSV dependency scan" tools/osv_scan.sh
+    else
+      mark_missing_tool "osv-scanner/docker" "OSV dependency scan"
+    fi
+  fi
+}
+
+# shellcheck disable=SC2329 # Started through runner_spawn.
+lane_clang_tidy() {
   if command -v clang-tidy > /dev/null 2>&1; then
-    run_check "clang-tidy (${#analysis_tus[@]} TU(s))" tools/clang_tidy.sh -- "${analysis_tus[@]}"
+    run_check "clang-tidy (${tu_count} TU(s), ${jobs_tidy} worker(s))" tools/clang_tidy.sh --jobs "$jobs_tidy" -- "${analysis_tus[@]}"
   else
     mark_missing_tool "clang-tidy" "clang-tidy analysis"
   fi
-fi
+}
 
-if [[ ${#cppcheck_sources[@]} -gt 0 ]]; then
+# shellcheck disable=SC2329 # Started through runner_spawn.
+lane_cppcheck() {
   if command -v cppcheck > /dev/null 2>&1; then
-    run_check "cppcheck strict (${#cppcheck_sources[@]} TU(s))" tools/cppcheck.sh --strict -- "${cppcheck_sources[@]}"
+    run_check "cppcheck strict (${cppcheck_count} TU(s), ${jobs_cppcheck} worker(s))" tools/cppcheck.sh --strict --jobs "$jobs_cppcheck" -- "${cppcheck_sources[@]}"
   else
     mark_missing_tool "cppcheck" "cppcheck analysis"
   fi
-fi
+}
 
-if [[ ${#analysis_tus[@]} -gt 0 ]]; then
+# shellcheck disable=SC2329 # Started through runner_spawn.
+lane_iwyu() {
   if command -v include-what-you-use > /dev/null 2>&1; then
-    run_check "IWYU strict (${#analysis_tus[@]} TU(s))" tools/iwyu.sh --strict -- "${analysis_tus[@]}"
+    run_check "IWYU strict (${tu_count} TU(s), ${jobs_iwyu} worker(s))" tools/iwyu.sh --strict --jobs "$jobs_iwyu" -- "${analysis_tus[@]}"
   else
     mark_missing_tool "include-what-you-use" "IWYU analysis"
   fi
-fi
+}
 
-if [[ ${#analysis_tus[@]} -gt 0 ]]; then
+# shellcheck disable=SC2329 # Started through runner_spawn.
+lane_fanalyzer() {
   if command -v gcc > /dev/null 2>&1 && command -v g++ > /dev/null 2>&1; then
-    run_check "GCC fanalyzer strict (${#analysis_tus[@]} TU(s))" tools/gcc_fanalyzer.sh --strict -- "${analysis_tus[@]}"
+    run_check "GCC fanalyzer strict (${tu_count} TU(s), ${jobs_fanalyzer} worker(s))" tools/gcc_fanalyzer.sh --strict --jobs "$jobs_fanalyzer" -- "${analysis_tus[@]}"
   else
     mark_missing_tool "gcc/g++" "GCC fanalyzer analysis"
   fi
-fi
+}
 
-if [[ $semgrep_full_scan -eq 1 ]]; then
-  if command -v semgrep > /dev/null 2>&1; then
-    run_check "Semgrep strict (full tree; rules changed)" tools/semgrep.sh --strict
-  else
-    mark_missing_tool "semgrep" "Semgrep analysis"
-  fi
-elif [[ ${#semgrep_targets[@]} -gt 0 ]]; then
-  if command -v semgrep > /dev/null 2>&1; then
-    run_check "Semgrep strict (${#semgrep_targets[@]} path(s))" tools/semgrep.sh --strict -- "${semgrep_targets[@]}"
-  else
-    mark_missing_tool "semgrep" "Semgrep analysis"
-  fi
-fi
+echo "pre-push: jobs=${JOBS} (clang-tidy=${jobs_tidy} cppcheck=${jobs_cppcheck}" \
+  "fanalyzer=${jobs_fanalyzer} iwyu=${jobs_iwyu} lizard=${jobs_lizard}" \
+  "clang-format=${jobs_format}) serial=${RUNNER_SERIAL}"
 
-if [[ ${#shell_lint_targets[@]} -gt 0 ]]; then
-  if command -v shellcheck > /dev/null 2>&1 && command -v shfmt > /dev/null 2>&1; then
-    run_check "shell lint (${#shell_lint_targets[@]} file(s))" tools/shell_lint.sh -- "${shell_lint_targets[@]}"
+# The per-TU analyzers all read build/dev-debug/compile_commands.json and each
+# would configure the preset itself if it were missing. Do that once, up front,
+# so concurrent lanes never race on the same build tree. If it fails there is no
+# database to analyze against, and letting the lanes start would have three of
+# them configure the same build directory at the same time, so they are skipped:
+# the recorded failure is the verdict.
+compile_db_ready=1
+if [[ $tu_count -gt 0 && ! -f build/dev-debug/compile_commands.json && ! -f compile_commands.json ]]; then
+  if command -v cmake > /dev/null 2>&1; then
+    run_check "CMake configure (dev-debug compile database)" cmake --preset dev-debug
+    if [[ "$RUNNER_LAST_RC" -ne 0 ]]; then
+      compile_db_ready=0
+      echo "pre-push: skipping the per-TU analyzers (no compile database)." >&2
+    fi
   else
-    mark_missing_tool "shellcheck/shfmt" "shell lint"
-  fi
-fi
-
-if [[ ${#workflow_lint_targets[@]} -gt 0 ]]; then
-  if command -v actionlint > /dev/null 2>&1; then
-    run_check "workflow lint (${#workflow_lint_targets[@]} file(s))" tools/workflow_lint.sh -- "${workflow_lint_targets[@]}"
-  else
-    mark_missing_tool "actionlint" "workflow lint"
+    compile_db_ready=0
+    mark_missing_tool "cmake" "per-TU analyzers (no compile database)"
   fi
 fi
-
-if [[ ${#workflow_security_targets[@]} -gt 0 ]]; then
-  if command -v zizmor > /dev/null 2>&1; then
-    run_check "zizmor workflow security" tools/zizmor.sh
-  else
-    mark_missing_tool "zizmor" "workflow security analysis"
-  fi
+if [[ $tu_count -gt 0 && $compile_db_ready -eq 0 ]]; then
+  # Naming the tool is not the same as naming what went unanalyzed: "cmake is
+  # missing" reads like a nuisance, where the fact is that ${tu_count} changed
+  # translation units are about to be pushed with no per-TU analysis at all.
+  runner_note_skipped "clang-tidy, IWYU and GCC -fanalyzer over ${tu_count} changed translation unit(s): no compile database"
 fi
 
-if [[ ${#dependency_scan_targets[@]} -gt 0 ]]; then
-  if command -v osv-scanner > /dev/null 2>&1 || command -v docker > /dev/null 2>&1; then
-    run_check "OSV dependency scan" tools/osv_scan.sh
-  else
-    mark_missing_tool "osv-scanner/docker" "OSV dependency scan"
-  fi
+runner_spawn guardrails lane_guardrails
+runner_spawn lint lane_lint
+runner_spawn scan lane_scan
+if [[ $tu_count -gt 0 && $compile_db_ready -eq 1 ]]; then
+  runner_spawn clang-tidy lane_clang_tidy
+  runner_spawn iwyu lane_iwyu
+  runner_spawn fanalyzer lane_fanalyzer
 fi
-
-if command -v lizard > /dev/null 2>&1; then
-  run_check "Lizard complexity (src/include/apps)" tools/lizard.sh --strict
-else
-  mark_missing_tool "lizard" "Lizard complexity analysis"
+if [[ $cppcheck_count -gt 0 ]]; then
+  runner_spawn cppcheck lane_cppcheck
 fi
+runner_wait_all
 
+# scan-build is a full -j build and wants the whole machine, so it runs after
+# the lanes have joined. It rebuilds from scratch: the analyzer only sees a
+# translation unit the build actually recompiles, and the report directory is
+# wiped each run, so an incremental build would answer "nothing recompiled since
+# the last run produced a bug" where the verdict claims "the tree is clean".
+# DSD_HOOK_SCAN_BUILD_REUSE=1 takes the faster, narrower answer deliberately.
 if [[ "$RUN_SCAN_BUILD" == "1" ]]; then
   if command -v scan-build > /dev/null 2>&1; then
-    run_check "scan-build strict (full rebuild)" tools/scan_build.sh --strict
+    scan_build_args=(--strict --jobs "$JOBS")
+    scan_build_label="scan-build strict (full rebuild; log in .scan-build.local.out)"
+    if [[ "${DSD_HOOK_SCAN_BUILD_REUSE:-0}" == "1" ]]; then
+      scan_build_label="scan-build strict (incremental: only recompiled TUs are analyzed)"
+      scan_build_args+=(--reuse-build-dir)
+    fi
+    # Streamed: it is the longest check in the run, and a silent rebuild is
+    # indistinguishable from a hung one.
+    run_check --stream "$scan_build_label" tools/scan_build.sh "${scan_build_args[@]}"
   else
     mark_missing_tool "scan-build" "scan-build analysis"
   fi
 else
-  echo "pre-push: skipping scan-build full rebuild (set DSD_HOOK_RUN_SCAN_BUILD=1 to enable)."
+  echo "pre-push: skipping scan-build (set DSD_HOOK_RUN_SCAN_BUILD=1 to enable)."
 fi
 
-if [[ ${#missing_tools[@]} -gt 0 ]]; then
-  mapfile -t missing_tools < <(printf '%s\n' "${missing_tools[@]}" | sort -u)
-  echo "pre-push: missing tools: ${missing_tools[*]}" >&2
+if runner_report; then
+  if [[ "$RUNNER_MISSING" == "1" || "$RUNNER_SKIPPED" == "1" ]]; then
+    # Those analyses did not run, so this is not "all checks passed": say what
+    # the run actually covered, and apply the policy here, where every gap is
+    # known. A gap is not a failure - a machine without cmake can still push -
+    # but it is fatal under the flag quality_preflight sets, which is what
+    # "missing tools are fatal" has to mean if it is to mean anything.
+    if [[ "$FAIL_ON_MISSING_TOOLS" == "1" ]]; then
+      echo "pre-push: failing because DSD_HOOK_FAIL_ON_MISSING_TOOLS=1 and the run did not cover everything (see above)." >&2
+      exit 1
+    fi
+    echo "pre-push: no check failed, but the analyses listed above did not run."
+  else
+    echo "pre-push: all checks passed."
+  fi
+  exit 0
 fi
-
-exit 0
+exit 1

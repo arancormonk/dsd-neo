@@ -17,12 +17,13 @@ fi
 # Parse arguments
 usage() {
   cat << 'USAGE'
-Usage: tools/cppcheck.sh [--strict] [--verbose|-v] [--] [files...]
+Usage: tools/cppcheck.sh [--strict] [--verbose|-v] [--jobs N] [--] [files...]
 
 Options:
   --strict    Enable all checks, inconclusive findings, and exhaustive value-flow;
               treat findings as errors.
   --verbose   Show detailed output during analysis.
+  --jobs N    Number of cppcheck worker processes (default: detected CPU count).
 
 Arguments:
   files...    Optional list of translation units to analyze (e.g., src/foo.c).
@@ -36,6 +37,7 @@ USAGE
 
 STRICT=0
 VERBOSE=0
+JOBS=""
 REQUESTED_FILES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,6 +48,14 @@ while [[ $# -gt 0 ]]; do
     --verbose | -v)
       VERBOSE=1
       shift
+      ;;
+    --jobs)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --jobs" >&2
+        exit 2
+      fi
+      JOBS="$2"
+      shift 2
       ;;
     --help | -h)
       usage
@@ -71,8 +81,14 @@ done
 echo "cppcheck version:"
 cppcheck --version
 
-# Detect number of CPU cores for parallel analysis
-NPROC=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
+# Detect number of CPU cores for parallel analysis unless --jobs said otherwise.
+if [[ -z "$JOBS" ]]; then
+  JOBS=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
+fi
+if [[ ! "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid jobs value: $JOBS" >&2
+  exit 2
+fi
 CPPCHECK_BUILD_DIR="${CPPCHECK_BUILD_DIR:-.cppcheck-build}"
 mkdir -p "$CPPCHECK_BUILD_DIR"
 
@@ -108,7 +124,7 @@ CPPCHECK_ARGS=(
   -I src/ui/qt
   -I src/third_party
   -I src/third_party/pffft
-  -j "$NPROC"
+  -j "$JOBS"
   --error-exitcode=1
 )
 
@@ -144,7 +160,7 @@ if [[ $STRICT -eq 1 ]]; then
     -I src/ui/qt
     -I src/third_party
     -I src/third_party/pffft
-    -j "$NPROC"
+    -j "$JOBS"
     --error-exitcode=1
   )
 fi
