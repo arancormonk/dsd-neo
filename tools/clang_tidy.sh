@@ -19,8 +19,8 @@ Options:
                   in the compilation database (e.g., built for multiple targets),
                   clang-tidy may process it multiple times and its progress
                   counter can exceed the unique file count.
-  --jobs N        Number of translation units analyzed at once (default:
-                  DSD_CLANG_TIDY_JOBS or the detected CPU count).
+  --jobs N        Number of translation units analyzed at once. Overrides
+                  DSD_CLANG_TIDY_JOBS; without either, the detected CPU count.
 
 Arguments:
   files...        Optional list of translation units to analyze (e.g., src/foo.c).
@@ -28,8 +28,8 @@ Arguments:
                   database. Non-translation-unit paths (e.g., headers) are ignored.
 
 Environment:
-  DSD_CLANG_TIDY_JOBS  Optional parallelism override (each worker is one
-                       clang-tidy process, roughly 200 MB).
+  DSD_CLANG_TIDY_JOBS  Default parallelism when --jobs is not given (each
+                       worker is one clang-tidy process, roughly 200 MB).
 USAGE
 }
 
@@ -352,12 +352,12 @@ else
   echo "Config file not found: $CONFIG_FILE (clang-tidy will use built-in defaults)"
 fi
 
+EXPECT_SUMMARY=0
 if command -v python3 > /dev/null 2>&1; then
   # One clang-tidy process per translation unit, JOBS at a time. A single
   # clang-tidy invocation works through its files one after another on one
-  # core, which is where the wall-clock time of a large change goes. Each
-  # process' output is kept whole and the log is written in path order, so the
-  # verdict below reads the same file it always did.
+  # core, which is where the wall-clock time of a large change goes.
+  EXPECT_SUMMARY=1
   python3 - "$TIDY_PDB_DIR" "$CONFIG_FILE" "$LOG_FILE" "$JOBS" "${FILES[@]}" << 'PY'
 import concurrent.futures
 import os
@@ -371,8 +371,11 @@ jobs = max(1, int(jobs))
 
 def run_one(rel):
     cmd = ["clang-tidy", "-p", pdb_dir, "--config-file", config_file, rel]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
-    return rel, proc.stdout
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+    except Exception as exc:
+        return rel, f"Failed to run clang-tidy on {rel}: {exc}", 1
+    return rel, proc.stdout, proc.returncode
 
 
 def size_of(rel):
@@ -384,22 +387,37 @@ def size_of(rel):
 
 # Largest files first, so the slowest units do not end up alone at the tail.
 order = sorted(files, key=size_of, reverse=True)
-results = {}
-done = 0
-with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-    futures = [pool.submit(run_one, rel) for rel in order]
-    for future in concurrent.futures.as_completed(futures):
-        rel, output = future.result()
-        results[rel] = output
-        done += 1
-        print(f"[{done}/{len(order)}] {rel}", file=sys.stderr)
-
+analyzed = 0
+unexplained = 0
+# The log is opened before the first process starts and every section is
+# flushed as it lands, so it can be tailed while the run is going and an
+# interrupted run leaves a short log of this run rather than a complete-looking
+# log of the last one. Sections are in completion order; the verdict below
+# greps, so the order does not reach it.
 with open(log_file, "w", encoding="utf-8") as log:
-    for rel in sorted(results):
-        log.write(f"===== clang-tidy: {rel} =====\n")
-        log.write(results[rel])
-        if results[rel] and not results[rel].endswith("\n"):
-            log.write("\n")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = [pool.submit(run_one, rel) for rel in order]
+        for future in concurrent.futures.as_completed(futures):
+            rel, output, rc = future.result()
+            analyzed += 1
+            log.write(f"===== clang-tidy: {rel} =====\n")
+            log.write(output)
+            if output and not output.endswith("\n"):
+                log.write("\n")
+            # A worker killed without saying why - the OOM killer at a few
+            # hundred MB per process, or a crash - would otherwise leave an
+            # empty section, which reads exactly like a clean translation unit.
+            if rc != 0 and "error:" not in output:
+                unexplained += 1
+                log.write(
+                    f"Error while processing {rel} (clang-tidy exited with status {rc} "
+                    "and no diagnostics; the translation unit was not analyzed).\n"
+                )
+            log.flush()
+            print(f"[{analyzed}/{len(order)}] {rel}", file=sys.stderr)
+    log.write(
+        f"clang-tidy summary: analyzed={analyzed} of {len(order)} unexplained-failures={unexplained}\n"
+    )
 PY
 else
   clang-tidy -p "$TIDY_PDB_DIR" --config-file "$CONFIG_FILE" "${FILES[@]}" 2>&1 | tee "$LOG_FILE" > /dev/null || true
@@ -418,6 +436,15 @@ if rg -n "^Error while processing " "$LOG_FILE" > /dev/null; then
   echo "clang-tidy failed to process one or more files. See $LOG_FILE for details." >&2
   rg -n "^Error while processing " "$LOG_FILE" >&2 || true
   exit 1
+fi
+# The run has to have reached every translation unit it was given: a killed
+# worker or an interrupted run leaves a log that is silent rather than wrong.
+if [[ $EXPECT_SUMMARY -eq 1 ]]; then
+  if ! rg -n "^clang-tidy summary: analyzed=${#FILES[@]} of ${#FILES[@]} " "$LOG_FILE" > /dev/null; then
+    echo "clang-tidy did not analyze all ${#FILES[@]} translation unit(s). See $LOG_FILE for details." >&2
+    rg -n "^clang-tidy summary: " "$LOG_FILE" >&2 || echo "clang-tidy: the run did not finish (no summary line)." >&2
+    exit 1
+  fi
 fi
 
 echo "clang-tidy clean for error diagnostics. Full output in $LOG_FILE"
