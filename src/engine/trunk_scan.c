@@ -2749,9 +2749,9 @@ trunk_scan_conventional_activity(trunk_scan_conventional_family family, const ds
     if (!trunk_scan_type_in_conventional_family(rt->target.type, family)) {
         return;
     }
-    /* Voice-only scan: headers alone (including data) never hold; decoded voice
-     * media refreshes the hold in trunk_scan_tick_locked(). */
-    if (data_call && opts->scan_voice_only == 1) {
+    /* Voice-only scan: headers alone never hold, voice headers included; decoded
+     * voice media refreshes the hold in trunk_scan_tick_locked(). */
+    if (opts->scan_voice_only == 1) {
         return;
     }
 

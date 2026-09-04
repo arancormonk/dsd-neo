@@ -3104,12 +3104,13 @@ seed_voice_gate_media_epoch(dsd_state* state, double begin_m, double media_m, ds
     return 0;
 }
 
-/* With the gate on, a data header never holds a conventional target even when data-call
- * tuning is on: only decoded voice media refreshes the hold. One case per conventional
- * family, each through its own activity entry point. */
+/* With the gate on, a header alone never holds a conventional target: not a data header
+ * even when data-call tuning is on, and not a policy-allowed voice header either. Only
+ * decoded voice media refreshes the hold. One case per conventional family, each through
+ * its own activity entry point. */
 static int
-run_voice_gate_data_header_case(const char* tag, const char* body,
-                                void (*report)(const dsd_opts*, const dsd_state*, uint32_t, uint32_t, int, int, int)) {
+run_voice_gate_header_case(const char* tag, const char* body, int data_call,
+                           void (*report)(const dsd_opts*, const dsd_state*, uint32_t, uint32_t, int, int, int)) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
     if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
@@ -3134,11 +3135,11 @@ run_voice_gate_data_header_case(const char* tag, const char* body,
     }
 
     trunk_scan_test_set_now(0.10);
-    report(&opts, &state, 1001, 2002, 0, 0, 1);
+    report(&opts, &state, 1001, 2002, 0, 0, data_call);
     trunk_scan_test_set_now(0.30);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
-        DSD_FPRINTF(stderr, "%s: data header held conventional target with gate on\n", tag);
+        DSD_FPRINTF(stderr, "%s: %s header held conventional target with gate on\n", tag, data_call ? "data" : "voice");
         test_rc = 1;
     }
 
@@ -3157,12 +3158,31 @@ test_conventional_voice_gate_data_header_no_hold(void) {
     static const char nxdn48_body[] = "a,nxdn48-conventional,461556250,,250,250,\n"
                                       "b,nxdn48-conventional,462556250,,250,250,\n";
     int rc = 0;
+    rc |= run_voice_gate_header_case("dmr-data-gate-on", dmr_body, 1, dsd_engine_trunk_scan_dmr_conventional_activity);
     rc |=
-        run_voice_gate_data_header_case("dmr-data-gate-on", dmr_body, dsd_engine_trunk_scan_dmr_conventional_activity);
-    rc |= run_voice_gate_data_header_case("nxdn-data-gate-on", nxdn_body,
-                                          dsd_engine_trunk_scan_nxdn_conventional_activity);
-    rc |= run_voice_gate_data_header_case("nxdn48-data-gate-on", nxdn48_body,
-                                          dsd_engine_trunk_scan_nxdn_conventional_activity);
+        run_voice_gate_header_case("nxdn-data-gate-on", nxdn_body, 1, dsd_engine_trunk_scan_nxdn_conventional_activity);
+    rc |= run_voice_gate_header_case("nxdn48-data-gate-on", nxdn48_body, 1,
+                                     dsd_engine_trunk_scan_nxdn_conventional_activity);
+    return rc;
+}
+
+/* A policy-allowed voice header (DMR voice LC, NXDN VCALL) with no decoded voice media
+ * behind it must not hold either: that is exactly the header-only carrier the gate exists
+ * to skip, and holding on it would publish TAIL with no voice ever decoded. */
+static int
+test_conventional_voice_gate_voice_header_no_hold(void) {
+    static const char dmr_body[] = "a,dmr-conventional,461000000,,250,250,\n"
+                                   "b,dmr-conventional,462000000,,250,250,\n";
+    static const char nxdn_body[] = "a,nxdn-conventional,461000000,,250,250,\n"
+                                    "b,nxdn-conventional,462000000,,250,250,\n";
+    static const char nxdn48_body[] = "a,nxdn48-conventional,461556250,,250,250,\n"
+                                      "b,nxdn48-conventional,462556250,,250,250,\n";
+    int rc = 0;
+    rc |= run_voice_gate_header_case("dmr-voice-gate-on", dmr_body, 0, dsd_engine_trunk_scan_dmr_conventional_activity);
+    rc |= run_voice_gate_header_case("nxdn-voice-gate-on", nxdn_body, 0,
+                                     dsd_engine_trunk_scan_nxdn_conventional_activity);
+    rc |= run_voice_gate_header_case("nxdn48-voice-gate-on", nxdn48_body, 0,
+                                     dsd_engine_trunk_scan_nxdn_conventional_activity);
     return rc;
 }
 
@@ -6682,6 +6702,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_conventional_activity_families_do_not_cross);
     rc |= run_with_default_tune_hook(test_nxdn48_conventional_activity_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_data_header_no_hold);
+    rc |= run_with_default_tune_hook(test_conventional_voice_gate_voice_header_no_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_media_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_enc_lockout_media_rotates);
     rc |= run_with_default_tune_hook(test_trunked_voice_gate_control_only_unchanged);
