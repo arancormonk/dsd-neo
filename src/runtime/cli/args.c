@@ -2782,6 +2782,26 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     }
 // clang-format on
 
+/* Options that parsed fine but cannot act, given everything else on the command line.
+ * Checked once getopt has finished so the warnings do not depend on flag order. */
+static void
+dsd_warn_ineffective_short_opts(const dsd_opts* opts, const dsd_state* state) {
+    // --dmr-tg-key-csv is imported in the long-option pass, before -k/-K arm the keyring here, so the
+    // ordering has to be resolved once both have run. The map only picks which key id to use, so
+    // without a keyring it is a silent no-op.
+    if (state->dmr_tg_key_map_count > 0 && state->keyloader != 1 && !dsd_state_trunk_lcn_keys_present(state)) {
+        LOG_WARN("WARNING: --dmr-tg-key-csv has no effect without an imported key CSV (-K/-k).\n");
+    }
+    // Row keys ride the -Y scanner: a plain -C trunking map stores them but never applies them. Checked here
+    // rather than at the `-C` flag so a later `-Y` on the same command line counts.
+    if (opts->chan_in_file[0] != '\0') {
+        dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
+    }
+    if (opts->scan_voice_only && !opts->scanner_mode && !opts->trunk_scan_enabled) {
+        LOG_WARN("WARNING: --scan-voice-only has no effect without -Y or --trunk-scan.\n");
+    }
+}
+
 static int
 dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc,
                      int* out_chan_csv_cli_seen) {
@@ -2825,20 +2845,7 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
             }
         }
     }
-    // Checked after getopt completes: --dmr-tg-key-csv is imported in the long-option pass, before
-    // -k/-K arm the keyring here, so the ordering has to be resolved once both have run. The map
-    // only picks which key id to use, so without a keyring it is a silent no-op.
-    if (state->dmr_tg_key_map_count > 0 && state->keyloader != 1 && !dsd_state_trunk_lcn_keys_present(state)) {
-        LOG_WARN("WARNING: --dmr-tg-key-csv has no effect without an imported key CSV (-K/-k).\n");
-    }
-    // Row keys ride the -Y scanner: a plain -C trunking map stores them but never applies them. Checked here
-    // rather than at the `-C` flag so a later `-Y` on the same command line counts.
-    if (opts->chan_in_file[0] != '\0') {
-        dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
-    }
-    if (opts->scan_voice_only && !opts->scanner_mode && !opts->trunk_scan_enabled) {
-        LOG_WARN("WARNING: --scan-voice-only has no effect without -Y or --trunk-scan.\n");
-    }
+    dsd_warn_ineffective_short_opts(opts, state);
     // Set after getopt completes so -r file ordering is independent of later options.
     if (opts->playfiles == 1) {
         state->optind = optind;

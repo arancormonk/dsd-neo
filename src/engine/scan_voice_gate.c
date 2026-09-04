@@ -9,8 +9,10 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 
-#include <stddef.h>
 #include <stdint.h>
+
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 /* Voice must have run this long before it counts: D-STAR and ProVoice run the
  * vocoder before their confirm, DMR/NXDN/dPMR are already confirm-gated. */
@@ -102,6 +104,38 @@ dsd_scan_voice_gate_note_retune(dsd_state* state, double now_m) {
     state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY;
 }
 
+/* Re-open the per-visit window when the row changed underneath the tick or the
+ * operator released a hold. */
+static void
+scan_voice_gate_track_visit(dsd_state* state, double now_m) {
+    /* An external lcn_freq_roll change (avoid, `L` cycle) restarts the visit so
+     * the new row gets a full qualify window. */
+    if (state->lcn_freq_roll != state->scan_voice_gate_roll_seen) {
+        dsd_scan_voice_gate_note_retune(state, now_m);
+    }
+    /* An operator hold release grants a fresh qualify window rather than a hop on
+     * the very next tick, mirroring the mark_cc_sync() the release gives the
+     * legacy hangtime rule. */
+    const uint8_t hold_now = state->lcn_scan_hold ? 1U : 0U;
+    if (state->scan_voice_gate_hold_seen && !hold_now) {
+        state->scan_voice_gate_sync_m = -1.0;
+        state->scan_voice_gate_voice_m = -1.0;
+    }
+    state->scan_voice_gate_hold_seen = hold_now;
+}
+
+/* Voice while parked, tail once the media stops, qualify until either. */
+static void
+scan_voice_gate_publish_phase(dsd_state* state, int media_in_visit) {
+    if (media_in_visit) {
+        state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
+    } else if (state->scan_voice_gate_voice_m >= 0.0) {
+        state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_TAIL;
+    } else {
+        state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY;
+    }
+}
+
 void
 dsd_scan_voice_gate_tick(const dsd_opts* opts, dsd_state* state, int synced, double now_m) {
     if (!opts || !state) {
@@ -117,20 +151,7 @@ dsd_scan_voice_gate_tick(const dsd_opts* opts, dsd_state* state, int synced, dou
         state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
         return;
     }
-    /* An external lcn_freq_roll change (avoid, `L` cycle) restarts the visit so
-     * the new row gets a full qualify window. */
-    if (state->lcn_freq_roll != state->scan_voice_gate_roll_seen) {
-        dsd_scan_voice_gate_note_retune(state, now_m);
-    }
-    /* An operator hold release grants a fresh qualify window rather than a hop on
-     * the very next tick, mirroring the mark_cc_sync() the release gives the
-     * legacy hangtime rule. */
-    const uint8_t hold_now = state->lcn_scan_hold ? 1U : 0U;
-    if (state->scan_voice_gate_hold_seen && !hold_now) {
-        state->scan_voice_gate_sync_m = -1.0;
-        state->scan_voice_gate_voice_m = -1.0;
-    }
-    state->scan_voice_gate_hold_seen = hold_now;
+    scan_voice_gate_track_visit(state, now_m);
     if (state->scan_voice_gate_arrive_m < 0.0) {
         state->scan_voice_gate_arrive_m = now_m;
     }
@@ -142,13 +163,7 @@ dsd_scan_voice_gate_tick(const dsd_opts* opts, dsd_state* state, int synced, dou
     if (media_in_visit && media_m > state->scan_voice_gate_voice_m) {
         state->scan_voice_gate_voice_m = media_m;
     }
-    if (media_in_visit) {
-        state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
-    } else if (state->scan_voice_gate_voice_m >= 0.0) {
-        state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_TAIL;
-    } else {
-        state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY;
-    }
+    scan_voice_gate_publish_phase(state, media_in_visit);
 }
 
 int

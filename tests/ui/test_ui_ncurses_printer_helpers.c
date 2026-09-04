@@ -1907,6 +1907,7 @@ main(void) {
     test_scanner_status_row_rendering();
     test_scan_voice_gate_status_rendering();
     test_trunk_scan_status_row_rendering();
+    test_call_info_channel_line_rendering();
     test_history_and_sort_helpers();
     test_history_color_pair_policy();
     test_history_viewport_helpers();
