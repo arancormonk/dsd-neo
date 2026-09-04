@@ -1019,7 +1019,7 @@ static int cc_has_active_p25_context(const dsd_opts* opts, const dsd_state* stat
 
 static int
 manual_frequency_selects_p25_cc(const dsd_opts* opts, const dsd_state* state) {
-    if (opts->trunk_enable != 1) {
+    if (opts->trunk_enable != 1 || (opts->frame_p25p1 != 1 && opts->frame_p25p2 != 1)) {
         return 0;
     }
     if (cc_has_active_p25_context(opts, state)) {
@@ -1027,6 +1027,12 @@ manual_frequency_selects_p25_cc(const dsd_opts* opts, const dsd_state* state) {
     }
     if (state->synctype != DSD_SYNC_NONE || state->lastsynctype != DSD_SYNC_NONE) {
         return 0;
+    }
+    // A learned CC type survives P25 sync loss; noCarrier retires it after
+    // another trunking protocol takes over. The shared frequency alone is not
+    // P25 evidence, since DMR/NXDN/EDACS also use that anchor.
+    if (state->p25_cc_freq > 0 && (state->p25_cc_is_tdma == 0 || state->p25_cc_is_tdma == 1)) {
+        return 1;
     }
     const dsdneoUserDecodeMode mode = dsd_infer_decode_mode_preset_exact(opts);
     return mode == DSDCFG_MODE_P25P1 || mode == DSDCFG_MODE_P25P2;

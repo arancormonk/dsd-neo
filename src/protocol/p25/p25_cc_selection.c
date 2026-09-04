@@ -116,6 +116,10 @@ p25_sm_select_control_channel(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
         state->trunk_cc_freq = hz;
         opts->rtlsdr_center_freq = (uint32_t)hz;
         if (!dsd_state_trunk_lcn_user_list_present(opts, state)) {
+            // Secondary-CC announcements seed only empty fixed slots. Retire
+            // the old site's entries before publishing the new automatic anchor.
+            DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof(state->trunk_lcn_freq));
+            (void)dsd_state_trunk_lcn_avoid_clear(state);
             state->trunk_lcn_freq[0] = hz;
             state->lcn_freq_count = 1;
             state->lcn_freq_roll = 0;

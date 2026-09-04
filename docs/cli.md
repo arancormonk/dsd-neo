@@ -536,9 +536,10 @@ Notes
     - `DSD_NEO_TG_PREEMPT_COOLDOWN_MS=<ms>` — cooldown between displacement attempts (default `1000`)
 
 During single-system P25 trunking, **Input > RTL-SDR > Frequency** selects a new control channel and keeps trunk
-following enabled. This also works in mixed `-ft` mode when P25 is active. An accepted tune ends current calls and
-relearns the NAC and site, while preserving explicit identity/modulation overrides, same-network band plans (including
-`--p25-bandplan`), channel mappings, groups, and keys. Subsequent calls return to the newly selected channel.
+following enabled. This also works in mixed `-ft` mode when P25 is active, including after sync loss on a learned
+P25 control channel. An accepted tune ends current calls and relearns the NAC and site, while preserving explicit
+identity/modulation overrides, same-network band plans (including `--p25-bandplan`), channel mappings, groups, and keys.
+Subsequent calls return to the newly selected channel.
 A failed or deferred request leaves the previous channel and calls intact; retry a deferred request. Pending tunes
 receive the configured CC acquisition grace after hardware completion. If completion fails, hunting retries the
 selected channel. Old site candidates are discarded; disk candidates require a freshly learned site and its own

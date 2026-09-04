@@ -17,6 +17,7 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -330,6 +331,10 @@ test_overrides(dsd_opts* opts, dsd_state* state) {
     opts->mod_qpsk = 1;
     opts->mod_c4fm = 0;
     DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "user.csv");
+    state->trunk_lcn_freq[1] = CC_A + 25000;
+    state->trunk_lcn_freq[2] = CC_A + 50000;
+    state->lcn_freq_count = 3;
+    assert(dsd_state_trunk_lcn_avoid_set(state, 1, 1) == 0);
     state->p25_bandplan_row_count = 1;
     state->p25_bandplan_rows[0].iden = 1;
     state->p25_bandplan_rows[0].is_tdma = 1;
@@ -342,6 +347,9 @@ test_overrides(dsd_opts* opts, dsd_state* state) {
     assert(state->p2_cc == 0x123 && state->p2_hardset == 1);
     assert(opts->mod_cli_lock == 1 && opts->mod_qpsk == 1 && opts->mod_c4fm == 0);
     assert(state->trunk_lcn_freq[0] == CC_A && state->p25_bandplan_row_count == 1);
+    assert(state->trunk_lcn_freq[1] == CC_A + 25000 && state->trunk_lcn_freq[2] == CC_A + 50000);
+    assert(state->lcn_freq_count == 3);
+    assert(dsd_state_trunk_lcn_avoid_get(state, 1) == 1);
     dsd_tg_policy_lookup lookup;
     assert(state->R == 0x12345);
     assert(dsd_tg_policy_lookup_id(state, 1200, &lookup) == 0 && lookup.match == DSD_TG_POLICY_MATCH_EXACT);
@@ -390,7 +398,69 @@ test_cache(dsd_opts* opts, dsd_state* state) {
     assert(remove(legacy) == 0 && remove(site) == 0);
 }
 
+static void
+test_secondary_lcn_reseed(dsd_opts* opts, dsd_state* state) {
+    setup(opts, state);
+    state->trunk_lcn_freq[1] = CC_A + 25000;
+    state->trunk_lcn_freq[2] = CC_A + 50000;
+    state->lcn_freq_count = 3;
+    assert(dsd_state_trunk_lcn_avoid_set(state, 1, 1) == 0);
+    select_cc(opts, state, CC_B);
+    assert(state->trunk_lcn_freq[1] == 0 && state->trunk_lcn_freq[2] == 0);
+    assert(state->lcn_avoid_count == 0 && dsd_state_trunk_lcn_avoid_get(state, 1) == 0);
+    acquire_cc(opts, state);
+    // Native SCCB implicit: the two downlink channels use the preserved IDEN/map.
+    unsigned long long mac[24] = {0};
+    mac[1] = 0x79;
+    mac[2] = 2;
+    mac[3] = 3;
+    mac[4] = 0x10;
+    mac[5] = 0;
+    mac[6] = 1;
+    mac[7] = 0x10;
+    mac[8] = 2;
+    mac[9] = 1;
+    process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_ACTIVE, mac);
+    assert(state->lcn_freq_count == 3);
+    assert(state->trunk_lcn_freq[1] == VC && state->trunk_lcn_freq[2] == VC + 12500);
+    freeState(state);
+}
+
 #ifdef USE_RADIO
+static void
+test_quiet_p25_command(dsd_opts* opts, dsd_state* state) {
+    for (int type = 0; type <= 1; type++) {
+        setup(opts, state);
+        state->p25_cc_is_tdma = type;
+        state->synctype = DSD_SYNC_NONE;
+        noCarrier(opts, state);
+        assert(state->lastsynctype == DSD_SYNC_NONE);
+        assert(opts->trunk_is_tuned == 0 && state->p25_cc_is_tdma == type);
+        select_cc(opts, state, CC_B);
+        assert(cc_calls == 1 && state->p25_cc_freq == CC_B);
+        acquire_cc(opts, state);
+        start_voice(opts, state);
+        p25_sm_release(p25_sm_get_ctx(), opts, state, "quiet-test-return");
+        assert(return_calls == 1 && last_freq == CC_B);
+        freeState(state);
+    }
+}
+
+static void
+test_quiet_generic_command(dsd_opts* opts, dsd_state* state) {
+    const int syncs[] = {DSD_SYNC_DMR_BS_DATA_POS, DSD_SYNC_NXDN_POS, DSD_SYNC_EDACS_POS, DSD_SYNC_X2TDMA_DATA_POS};
+    for (unsigned i = 0; i < sizeof(syncs) / sizeof(syncs[0]); i++) {
+        setup(opts, state);
+        state->synctype = DSD_SYNC_NONE;
+        state->lastsynctype = syncs[i];
+        noCarrier(opts, state);
+        assert(state->p25_cc_is_tdma == 2 && state->lastsynctype == DSD_SYNC_NONE);
+        select_cc(opts, state, CC_B);
+        assert(cc_calls == 0 && state->p25_cc_freq == CC_A);
+        freeState(state);
+    }
+}
+
 static void
 test_command_scope(dsd_opts* opts, dsd_state* state) {
     setup(opts, state);
@@ -415,7 +485,9 @@ test_command_scope(dsd_opts* opts, dsd_state* state) {
     state->synctype = state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     select_cc(opts, state, CC_B);
     assert(cc_calls == 0 && state->p25_cc_freq == CC_A);
-    state->synctype = state->lastsynctype = DSD_SYNC_NONE;
+    state->synctype = DSD_SYNC_NONE;
+    noCarrier(opts, state); // Generic trunk activity retires the old P25 evidence.
+    assert(state->p25_cc_is_tdma == 2 && state->lastsynctype == DSD_SYNC_NONE);
     select_cc(opts, state, CC_B); // mixed -ft without P25 evidence stays generic
     assert(cc_calls == 0);
     assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
@@ -443,8 +515,11 @@ main(void) {
     test_pending(opts, state, 1, 1);
     test_superseded_completion(opts, state);
     test_overrides(opts, state);
+    test_secondary_lcn_reseed(opts, state);
     test_cache(opts, state);
 #ifdef USE_RADIO
+    test_quiet_p25_command(opts, state);
+    test_quiet_generic_command(opts, state);
     test_command_scope(opts, state);
 #endif
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
