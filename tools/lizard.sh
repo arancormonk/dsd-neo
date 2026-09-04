@@ -16,7 +16,10 @@ Options:
   --ccn N        Cyclomatic complexity warning threshold (default: 15).
   --length N     Function length warning threshold (default: 1000; strict: 100).
   --arguments N  Parameter count warning threshold (default: 100; strict: 10).
-  --jobs N       Number of Lizard worker threads (default: detected CPU count).
+  --jobs N       Number of Lizard worker processes (default: 1). Lizard keeps
+                 its output in file order only while single-threaded, so the
+                 default stays there and callers that do not need a stable
+                 report ask for workers explicitly.
 
 Arguments:
   paths...       Optional paths to scan. Default: src include apps
@@ -112,8 +115,11 @@ if [[ ${#TARGETS[@]} -eq 0 ]]; then
   TARGETS=(src include apps)
 fi
 
+# Lizard switches its pool from map to imap_unordered as soon as -t is above 1,
+# which reorders the report. CI uploads that report as an artifact, so the
+# default is one worker and parallelism is opt-in.
 if [[ -z "$JOBS" ]]; then
-  JOBS=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
+  JOBS=1
 fi
 if [[ ! "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
   echo "Invalid jobs value: $JOBS" >&2
