@@ -11,7 +11,7 @@ cd "$ROOT_DIR"
 
 usage() {
   cat << 'USAGE'
-Usage: tools/clang_tidy.sh [--all-commands] [--] [files...]
+Usage: tools/clang_tidy.sh [--all-commands] [--jobs N] [--] [files...]
 
 Options:
   --all-commands  Keep every compile command for each file rather than the single
@@ -19,21 +19,36 @@ Options:
                   in the compilation database (e.g., built for multiple targets),
                   clang-tidy may process it multiple times and its progress
                   counter can exceed the unique file count.
+  --jobs N        Number of translation units analyzed at once (default:
+                  DSD_CLANG_TIDY_JOBS or the detected CPU count).
 
 Arguments:
   files...        Optional list of translation units to analyze (e.g., src/foo.c).
                   When omitted, analyzes all translation units in the compilation
                   database. Non-translation-unit paths (e.g., headers) are ignored.
+
+Environment:
+  DSD_CLANG_TIDY_JOBS  Optional parallelism override (each worker is one
+                       clang-tidy process, roughly 200 MB).
 USAGE
 }
 
 ALL_COMMANDS=0
+JOBS="${DSD_CLANG_TIDY_JOBS:-}"
 REQUESTED_FILES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --all-commands)
       ALL_COMMANDS=1
       shift
+      ;;
+    --jobs)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --jobs" >&2
+        exit 2
+      fi
+      JOBS="$2"
+      shift 2
       ;;
     -h | --help)
       usage
@@ -63,6 +78,14 @@ fi
 if ! command -v rg > /dev/null 2>&1; then
   echo "ripgrep (rg) not found. Please install it (e.g., apt-get install ripgrep)." >&2
   exit 1
+fi
+
+if [[ -z "$JOBS" ]]; then
+  JOBS=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
+fi
+if [[ ! "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid jobs value: $JOBS" >&2
+  exit 2
 fi
 
 # Prefer compile_commands from the dev-debug preset; otherwise, use top-level if present.
@@ -314,7 +337,7 @@ if [ ${#FILES[@]} -eq 0 ]; then
 fi
 
 echo "Using compilation database: $TIDY_PDB_DIR"
-echo "Analyzing ${#FILES[@]} files with clang-tidy..."
+echo "Analyzing ${#FILES[@]} files with clang-tidy (${JOBS} at a time)..."
 echo "clang-tidy version:"
 clang-tidy --version | sed -n '1,2p'
 
@@ -329,13 +352,66 @@ else
   echo "Config file not found: $CONFIG_FILE (clang-tidy will use built-in defaults)"
 fi
 
-clang-tidy -p "$TIDY_PDB_DIR" --config-file "$CONFIG_FILE" "${FILES[@]}" 2>&1 | tee "$LOG_FILE" > /dev/null || true
+if command -v python3 > /dev/null 2>&1; then
+  # One clang-tidy process per translation unit, JOBS at a time. A single
+  # clang-tidy invocation works through its files one after another on one
+  # core, which is where the wall-clock time of a large change goes. Each
+  # process' output is kept whole and the log is written in path order, so the
+  # verdict below reads the same file it always did.
+  python3 - "$TIDY_PDB_DIR" "$CONFIG_FILE" "$LOG_FILE" "$JOBS" "${FILES[@]}" << 'PY'
+import concurrent.futures
+import os
+import subprocess
+import sys
+
+pdb_dir, config_file, log_file, jobs = sys.argv[1:5]
+files = sys.argv[5:]
+jobs = max(1, int(jobs))
+
+
+def run_one(rel):
+    cmd = ["clang-tidy", "-p", pdb_dir, "--config-file", config_file, rel]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+    return rel, proc.stdout
+
+
+def size_of(rel):
+    try:
+        return os.path.getsize(rel)
+    except OSError:
+        return 0
+
+
+# Largest files first, so the slowest units do not end up alone at the tail.
+order = sorted(files, key=size_of, reverse=True)
+results = {}
+done = 0
+with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+    futures = [pool.submit(run_one, rel) for rel in order]
+    for future in concurrent.futures.as_completed(futures):
+        rel, output = future.result()
+        results[rel] = output
+        done += 1
+        print(f"[{done}/{len(order)}] {rel}", file=sys.stderr)
+
+with open(log_file, "w", encoding="utf-8") as log:
+    for rel in sorted(results):
+        log.write(f"===== clang-tidy: {rel} =====\n")
+        log.write(results[rel])
+        if results[rel] and not results[rel].endswith("\n"):
+            log.write("\n")
+PY
+else
+  clang-tidy -p "$TIDY_PDB_DIR" --config-file "$CONFIG_FILE" "${FILES[@]}" 2>&1 | tee "$LOG_FILE" > /dev/null || true
+fi
 
 # Fail on error diagnostics (WarningsAsErrors) and on clang-tidy processing failures.
 if rg -n "error:" "$LOG_FILE" > /dev/null; then
   echo "clang-tidy emitted diagnostics treated as errors. See $LOG_FILE for details." >&2
   echo "Summary (errors by check):" >&2
-  rg -n "error:.*\\[[^]]+\\]$" "$LOG_FILE" | sed -E 's/.*\[([^]]+)\]$/\1/' | awk -F',' '{print $1}' | sort | uniq -c | sort -nr >&2
+  # A header diagnostic now appears once per translation unit that includes
+  # the header; count each distinct diagnostic once.
+  rg --no-line-number "error:.*\\[[^]]+\\]$" "$LOG_FILE" | sort -u | sed -E 's/.*\[([^]]+)\]$/\1/' | awk -F',' '{print $1}' | sort | uniq -c | sort -nr >&2
   exit 1
 fi
 if rg -n "^Error while processing " "$LOG_FILE" > /dev/null; then
