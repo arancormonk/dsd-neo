@@ -9,13 +9,14 @@ cd "$ROOT_DIR"
 
 usage() {
   cat << 'USAGE'
-Usage: tools/lizard.sh [--strict] [--ccn N] [--length N] [--arguments N] [--] [paths...]
+Usage: tools/lizard.sh [--strict] [--ccn N] [--length N] [--arguments N] [--jobs N] [--] [paths...]
 
 Options:
   --strict       Fail when threshold warnings are emitted.
   --ccn N        Cyclomatic complexity warning threshold (default: 15).
   --length N     Function length warning threshold (default: 1000; strict: 100).
   --arguments N  Parameter count warning threshold (default: 100; strict: 10).
+  --jobs N       Number of Lizard worker threads (default: detected CPU count).
 
 Arguments:
   paths...       Optional paths to scan. Default: src include apps
@@ -29,6 +30,7 @@ ARGUMENTS=100
 CCN_SET=0
 LENGTH_SET=0
 ARGUMENTS_SET=0
+JOBS=""
 TARGETS=()
 
 while [[ $# -gt 0 ]]; do
@@ -36,6 +38,14 @@ while [[ $# -gt 0 ]]; do
     --strict)
       STRICT=1
       shift
+      ;;
+    --jobs)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --jobs" >&2
+        exit 2
+      fi
+      JOBS="$2"
+      shift 2
       ;;
     --ccn)
       if [[ $# -lt 2 ]]; then
@@ -102,9 +112,18 @@ if [[ ${#TARGETS[@]} -eq 0 ]]; then
   TARGETS=(src include apps)
 fi
 
+if [[ -z "$JOBS" ]]; then
+  JOBS=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
+fi
+if [[ ! "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Invalid jobs value: $JOBS" >&2
+  exit 2
+fi
+
 LOG_FILE=".lizard.local.out"
 ARGS=(
   -l cpp
+  -t "$JOBS"
   -C "$CCN"
   -L "$LENGTH"
   -a "$ARGUMENTS"
