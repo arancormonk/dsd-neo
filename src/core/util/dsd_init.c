@@ -334,6 +334,9 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->trunk_scan_targets_csv[0] = '\0';
     opts->trunk_scan_idle_dwell_ms = 3000;
     opts->trunk_scan_activity_hold_ms = 1200;
+    opts->scan_voice_only = 0;
+    opts->scan_voice_qualify_ms = 1000;
+    opts->scan_voice_hold_ms = 2000;
     opts->trunk_cli_seen = 0;
 
     //reverse mute
@@ -922,6 +925,12 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->trunk_scan_hold = 0;
     state->trunk_scan_active_avoided = 0;
     state->trunk_scan_avoided_count = 0;
+    state->scan_voice_gate_arrive_m = -1.0;
+    state->scan_voice_gate_sync_m = -1.0;
+    state->scan_voice_gate_voice_m = -1.0;
+    state->scan_voice_gate_roll_seen = 0;
+    state->scan_voice_gate_hold_seen = 0;
+    state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
 }
 
 static void

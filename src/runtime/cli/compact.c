@@ -59,7 +59,7 @@ static const char* const k_skip_exact_no_arg[] = {
     "--auto-ppm",          "--rtltcp-autotune",      "--iq-loop",       "--rdio-api-delete-after-upload",
     "--enc-lockout",       "--enc-follow",           "--no-config",     "--print-config",
     "--interactive-setup", "--dump-config-template", "--strict-config", "--list-profiles",
-    "--dmr-debug-burst",   "--dmr-debug-unsynced",   "--show-keys",
+    "--dmr-debug-burst",   "--dmr-debug-unsynced",   "--show-keys",     "--scan-voice-only",
 };
 
 static const char* const k_skip_exact_next_any[] = {
@@ -97,6 +97,8 @@ static const char* const k_skip_exact_next_any[] = {
     "--trunk-scan",
     "--trunk-scan-dwell-ms",
     "--trunk-scan-activity-hold-ms",
+    "--scan-voice-qualify-ms",
+    "--scan-voice-hold-ms",
     "--calc-lcn",
     "--calc-step",
     "--calc-cc-freq",
@@ -136,6 +138,8 @@ static const char* const k_skip_prefix[] = {
     "--trunk-scan=",
     "--trunk-scan-dwell-ms=",
     "--trunk-scan-activity-hold-ms=",
+    "--scan-voice-qualify-ms=",
+    "--scan-voice-hold-ms=",
     "--frontend=",
 };
 

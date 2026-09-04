@@ -615,6 +615,9 @@ typedef struct dsdneoUserConfig {
     int trunk_tune_enc_calls;
     int trunk_scanner;
     int trunk_p25_prefer_candidates;
+    int trunk_scan_voice_only;
+    int trunk_scan_voice_qualify_ms;
+    int trunk_scan_voice_hold_ms;
 
     /* [radioreference] */
     int has_radioreference;

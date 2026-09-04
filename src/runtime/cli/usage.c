@@ -400,6 +400,10 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("      --trunk-scan-dwell-ms <ms>  Set default idle dwell per target (250..600000, default 3000).\n");
     printf("      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR/NXDN activity hold (250..600000, default "
            "1200).\n");
+    printf("      --scan-voice-only  Only stop scan on channels carrying voice.\n");
+    printf("      --scan-voice-qualify-ms <ms>  Window after sync in which voice must appear or the scan moves on "
+           "(100..600000, default 1000).\n");
+    printf("      --scan-voice-hold-ms <ms>  Time to stay after the last voice frame (100..600000, default 2000).\n");
     printf("  -W            Use Imported Group List as a Trunking Allow/White List -- Only Tune with Mode A\n");
     printf("  -p            Disable Tune to Private Calls (DMR TIII, P25, NXDN Type-C and Type-D)\n");
     printf("  -E            Disable Tune to Group Calls (DMR TIII, Con+, Cap+, P25, NXDN Type-C, and Type-D)\n");

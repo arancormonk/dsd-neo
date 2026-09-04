@@ -186,6 +186,9 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->trunk_tune_enc_calls = 1;
     cfg->trunk_scan_idle_dwell_ms = 3000;
     cfg->trunk_scan_activity_hold_ms = 1200;
+    cfg->trunk_scan_voice_only = 0;
+    cfg->trunk_scan_voice_qualify_ms = 1000;
+    cfg->trunk_scan_voice_hold_ms = 2000;
     cfg->rtl_auto_ppm = 0;
     cfg->soapy_bandwidth_hz = -1;
     cfg->soapy_bandwidth_hz_is_set = 0;
@@ -1021,6 +1024,9 @@ render_trunking_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "tune_enc_calls = %s\n", ini_bool(cfg->trunk_tune_enc_calls));
     DSD_FPRINTF(out, "scanner = %s\n", ini_bool(cfg->trunk_scanner));
     DSD_FPRINTF(out, "p25_prefer_candidates = %s\n", ini_bool(cfg->trunk_p25_prefer_candidates));
+    DSD_FPRINTF(out, "scan_voice_only = %s\n", ini_bool(cfg->trunk_scan_voice_only));
+    DSD_FPRINTF(out, "scan_voice_qualify_ms = %d\n", cfg->trunk_scan_voice_qualify_ms);
+    DSD_FPRINTF(out, "scan_voice_hold_ms = %d\n", cfg->trunk_scan_voice_hold_ms);
     DSD_FPRINTF(out, "\n");
 }
 
@@ -1417,6 +1423,9 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
         opts->scanner_mode = 0;
     }
     opts->p25_prefer_candidates = cfg->trunk_p25_prefer_candidates ? (uint8_t)1 : (uint8_t)0;
+    opts->scan_voice_only = cfg->trunk_scan_voice_only ? 1 : 0;
+    opts->scan_voice_qualify_ms = cfg->trunk_scan_voice_qualify_ms;
+    opts->scan_voice_hold_ms = cfg->trunk_scan_voice_hold_ms;
 }
 
 static void
@@ -1760,6 +1769,9 @@ snapshot_trunking_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->trunk_tune_enc_calls = opts->trunk_tune_enc_calls ? 1 : 0;
     cfg->trunk_scanner = opts->scanner_mode ? 1 : 0;
     cfg->trunk_p25_prefer_candidates = opts->p25_prefer_candidates ? 1 : 0;
+    cfg->trunk_scan_voice_only = opts->scan_voice_only ? 1 : 0;
+    cfg->trunk_scan_voice_qualify_ms = opts->scan_voice_qualify_ms;
+    cfg->trunk_scan_voice_hold_ms = opts->scan_voice_hold_ms;
 }
 
 static void

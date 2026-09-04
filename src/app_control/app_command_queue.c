@@ -156,10 +156,23 @@ static const int k_ui_cmd_string_ids[] = {
    the second answer without the decoder rebuilding timing for the first one on
    the way. */
 static const int k_ui_cmd_coalescible_setter_ids[] = {
-    DSD_APP_CMD_GAIN_SET,        DSD_APP_CMD_AGAIN_SET,        DSD_APP_CMD_INPUT_VOL_SET, DSD_APP_CMD_RTL_SET_FREQ,
-    DSD_APP_CMD_MANUAL_TUNE,     DSD_APP_CMD_RTL_SET_GAIN,     DSD_APP_CMD_RTL_SET_PPM,   DSD_APP_CMD_RTL_SET_BW,
-    DSD_APP_CMD_RTL_SET_SQL_DB,  DSD_APP_CMD_RTL_SET_VOL_MULT, DSD_APP_CMD_HANGTIME_SET,  DSD_APP_CMD_MOD_SET,
-    DSD_APP_CMD_DECODE_MODE_SET, DSD_APP_CMD_TRUNK_SET,        DSD_APP_CMD_SLOT_PREF_SET,
+    DSD_APP_CMD_GAIN_SET,
+    DSD_APP_CMD_AGAIN_SET,
+    DSD_APP_CMD_INPUT_VOL_SET,
+    DSD_APP_CMD_RTL_SET_FREQ,
+    DSD_APP_CMD_MANUAL_TUNE,
+    DSD_APP_CMD_RTL_SET_GAIN,
+    DSD_APP_CMD_RTL_SET_PPM,
+    DSD_APP_CMD_RTL_SET_BW,
+    DSD_APP_CMD_RTL_SET_SQL_DB,
+    DSD_APP_CMD_RTL_SET_VOL_MULT,
+    DSD_APP_CMD_HANGTIME_SET,
+    DSD_APP_CMD_MOD_SET,
+    DSD_APP_CMD_DECODE_MODE_SET,
+    DSD_APP_CMD_TRUNK_SET,
+    DSD_APP_CMD_SLOT_PREF_SET,
+    DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET,
+    DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET,
 };
 
 static int
@@ -1327,6 +1340,36 @@ ui_cmd_handle_slots_onoff_set(dsd_opts* opts, dsd_state* state, const struct dsd
 }
 
 static int
+ui_cmd_handle_scan_voice_only_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    int32_t on = 0;
+    if (state && ui_cmd_parse_i32_payload(c, &on)) {
+        svc_set_scan_voice_only(opts, on);
+        ui_set_toast(state, 3, "Applied: Voice-only scan -> %s", opts->scan_voice_only ? "On" : "Off");
+    }
+    return 1;
+}
+
+static int
+ui_cmd_handle_scan_voice_qualify_ms_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    int32_t ms = 0;
+    if (state && ui_cmd_parse_i32_payload(c, &ms)) {
+        svc_set_scan_voice_qualify_ms(opts, ms);
+        ui_set_toast(state, 3, "Applied: Voice qualify -> %d ms", opts->scan_voice_qualify_ms);
+    }
+    return 1;
+}
+
+static int
+ui_cmd_handle_scan_voice_hold_ms_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    int32_t ms = 0;
+    if (state && ui_cmd_parse_i32_payload(c, &ms)) {
+        svc_set_scan_voice_hold_ms(opts, ms);
+        ui_set_toast(state, 3, "Applied: Voice hold -> %d ms", opts->scan_voice_hold_ms);
+    }
+    return 1;
+}
+
+static int
 apply_cmd_io_and_import_runtime_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct dsd_app_command_handler_entry k_handlers[] = {
         {DSD_APP_CMD_RIGCTL_SET_MOD_BW, ui_cmd_handle_rigctl_set_mod_bw},
@@ -1334,6 +1377,9 @@ apply_cmd_io_and_import_runtime_a(dsd_opts* opts, dsd_state* state, const struct
         {DSD_APP_CMD_HANGTIME_SET, ui_cmd_handle_hangtime_set},
         {DSD_APP_CMD_SLOT_PREF_SET, ui_cmd_handle_slot_pref_set},
         {DSD_APP_CMD_SLOTS_ONOFF_SET, ui_cmd_handle_slots_onoff_set},
+        {DSD_APP_CMD_SCAN_VOICE_ONLY_SET, ui_cmd_handle_scan_voice_only_set},
+        {DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET, ui_cmd_handle_scan_voice_qualify_ms_set},
+        {DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET, ui_cmd_handle_scan_voice_hold_ms_set},
     };
     if (!opts || !c) {
         return 0;
@@ -2471,6 +2517,9 @@ static const int k_ui_cmd_i32_ids[] = {
     DSD_APP_CMD_RIGCTL_SET_MOD_BW,
     DSD_APP_CMD_SLOT_PREF_SET,
     DSD_APP_CMD_SLOTS_ONOFF_SET,
+    DSD_APP_CMD_SCAN_VOICE_ONLY_SET,
+    DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET,
+    DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET,
     DSD_APP_CMD_INPUT_VOL_SET,
     DSD_APP_CMD_MOD_SET,
     DSD_APP_CMD_DECODE_MODE_SET,
@@ -2652,6 +2701,9 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_MOD_SET, sizeof(int32_t)},
     {DSD_APP_CMD_DECODE_MODE_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TRUNK_SET, sizeof(int32_t)},
+    {DSD_APP_CMD_SCAN_VOICE_ONLY_SET, sizeof(int32_t)},
+    {DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET, sizeof(int32_t)},
+    {DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET, sizeof(int32_t)},
     {DSD_APP_CMD_MANUAL_TUNE, sizeof(uint32_t)},
     {DSD_APP_CMD_TG_HOLD_SET, sizeof(uint32_t)},
     {DSD_APP_CMD_KEY_BASIC_SET, sizeof(uint32_t)},

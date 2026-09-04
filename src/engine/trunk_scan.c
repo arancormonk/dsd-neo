@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -2190,6 +2191,8 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     double now_m = trunk_scan_now_m();
     rt->parked_since_m = now_m;
     rt->idle_since_m = now_m;
+    /* The incoming target publishes its own voice-gate phase on the next tick. */
+    state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
     uint64_t tune_request_id = 0U;
     dsd_trunk_tune_result tune_result = trunk_scan_retune_active(opts, state, rt, &tune_request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
@@ -2510,6 +2513,43 @@ trunk_scan_resolve_pending_retune(dsd_state* state, dsd_trunk_scan_target_runtim
     return -1;
 }
 
+static int
+trunk_scan_target_is_trunked(dsd_trunk_scan_target_type type) {
+    return type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK || type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK
+           || type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK;
+}
+
+/* Voice-only scan (issue #381): conventional targets hold only from decoded voice
+ * media, stamped with the media time so LC-less voice still holds. Trunked targets
+ * are unchanged: control-channel-only traffic already rotates after dwell. The
+ * status-line phase is published here for the parked target (the -Y tick leaves it
+ * alone while scanner_mode is off): VOICE while media is fresh, TAIL while the
+ * activity hold still runs, QUALIFY otherwise, OFF on trunked targets. */
+static void
+trunk_scan_refresh_voice_media_hold(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt,
+                                    double now_m) {
+    if (!opts || !state || !rt) {
+        return;
+    }
+    if (opts->scan_voice_only != 1 || trunk_scan_target_is_trunked(rt->target.type)) {
+        state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
+        return;
+    }
+    const double hold_s = (double)rt->target.activity_hold_ms / 1000.0;
+    const double media_m = dsd_scan_voice_probe(opts, state);
+    if (media_m > rt->last_allowed_activity_m) {
+        rt->last_allowed_activity_m = media_m;
+        rt->idle_since_m = -1.0;
+    }
+    if (media_m >= 0.0 && (now_m - media_m) < hold_s) {
+        state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
+    } else if (rt->last_allowed_activity_m > 0.0 && (now_m - rt->last_allowed_activity_m) < hold_s) {
+        state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_TAIL;
+    } else {
+        state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY;
+    }
+}
+
 static void
 trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
     double now_m = trunk_scan_now_m();
@@ -2530,6 +2570,7 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
     if (state->p2_wacn != rt->iden_share_wacn || state->p2_sysid != rt->iden_share_sysid) {
         trunk_scan_share_peer_idens(coord, state, rt);
     }
+    trunk_scan_refresh_voice_media_hold(opts, state, rt, now_m);
     if (trunk_scan_active_is_held(opts, coord)) {
         rt->idle_since_m = -1.0;
         return;
@@ -2706,6 +2747,11 @@ trunk_scan_conventional_activity(trunk_scan_conventional_family family, const ds
     }
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     if (!trunk_scan_type_in_conventional_family(rt->target.type, family)) {
+        return;
+    }
+    /* Voice-only scan: headers alone never hold, voice headers included; decoded
+     * voice media refreshes the hold in trunk_scan_tick_locked(). */
+    if (opts->scan_voice_only == 1) {
         return;
     }
 

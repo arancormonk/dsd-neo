@@ -86,6 +86,11 @@ static const dsdcfg_schema_entry_t s_schema[] = {
      "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
     {"trunking", "p25_prefer_candidates", "Prefer learned P25 control-channel candidates when hunting", "false", NULL,
      DSDCFG_TYPE_BOOL, 0, 0},
+    {"trunking", "scan_voice_only", "Only stop scan on channels carrying voice", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"trunking", "scan_voice_qualify_ms", "Window after sync in which voice must appear or the scan moves on", "1000",
+     NULL, DSDCFG_TYPE_INT, 100, 600000},
+    {"trunking", "scan_voice_hold_ms", "Time to stay after the last voice frame", "2000", NULL, DSDCFG_TYPE_INT, 100,
+     600000},
 
     /* [radioreference] section */
     {"radioreference", "username", "RadioReference account username", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
