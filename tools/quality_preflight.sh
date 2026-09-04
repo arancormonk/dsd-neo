@@ -12,14 +12,15 @@ set -euo pipefail
 #      the unscoped whole-tree lint (CMake format, shell, workflow, zizmor, OSV)
 #      runs in the background. Those tools may already have run scoped inside
 #      the hook, so they wait for it to finish rather than share its log files.
-#   3. The fuzz smoke pass.
+#   3. The fuzz smoke pass, if the build in phase 2 produced binaries to smoke.
 # Every failure is reported at the end. DSD_HOOK_SERIAL=1 runs everything one
 # after another in the foreground and stops at the first failure.
 #
 # Environment (also read by the pre-push hook):
 #   DSD_HOOK_JOBS=N              Worker budget (default: detected core count).
 #   DSD_HOOK_SERIAL=1            Sequential, stream everything, fail fast.
-#   DSD_HOOK_SCAN_BUILD_FRESH=1  Clean scan-build rebuild instead of incremental.
+#   DSD_HOOK_SCAN_BUILD_REUSE=1  Incremental scan-build: only the translation
+#                                units the build recompiles are analyzed.
 
 ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
 cd "$ROOT_DIR"
@@ -48,26 +49,36 @@ lane_lint() {
   run_check "OSV dependency scan" tools/osv_scan.sh
 }
 
+# run_check clears errexit around the command it runs, and that reaches inside a
+# shell function, so each step reports its own failure rather than relying on
+# `set -e` to stop the next one.
 # shellcheck disable=SC2329 # Invoked through run_check.
 fuzz_configure_and_build() {
-  cmake --preset fuzz-asan-debug
-  cmake --build --preset fuzz-asan-debug -j "$JOBS"
+  cmake --preset fuzz-asan-debug || return $?
+  cmake --build --preset fuzz-asan-debug -j "$JOBS" || return $?
 }
 
 echo "quality-preflight: jobs=${JOBS} serial=${DSD_HOOK_SERIAL:-0}"
 
 # Phase 1: the pre-push checks, with gitleaks alongside.
 runner_spawn gitleaks lane_gitleaks
-RUNNER_STREAM=1 run_check "pre-push checks (tools/preflight_ci.sh)" tools/preflight_ci.sh "${PREFLIGHT_ARGS[@]}"
+run_check --stream "pre-push checks (tools/preflight_ci.sh)" tools/preflight_ci.sh "${PREFLIGHT_ARGS[@]}"
 runner_wait_all
 
 # Phase 2: the fuzz build, with the whole-tree lint alongside.
 runner_spawn lint lane_lint
-RUNNER_STREAM=1 run_check "fuzz-asan-debug configure and build" fuzz_configure_and_build
+run_check --stream "fuzz-asan-debug configure and build" fuzz_configure_and_build
+fuzz_build_rc=$RUNNER_LAST_RC
 runner_wait_all
 
-# Phase 3: the fuzz smoke pass.
-RUNNER_STREAM=1 run_check "fuzz smoke (tools/fuzz_smoke.sh)" tools/fuzz_smoke.sh --no-build
+# Phase 3: the fuzz smoke pass. --no-build runs whatever binaries are in the
+# tree, which after a failed build are an earlier run's, so a pass there would
+# be an assertion about a build that does not exist.
+if [[ $fuzz_build_rc -eq 0 ]]; then
+  run_check --stream "fuzz smoke (tools/fuzz_smoke.sh)" tools/fuzz_smoke.sh --no-build
+else
+  echo "quality-preflight: skipping the fuzz smoke pass (the fuzz build failed)." >&2
+fi
 
 if runner_report; then
   echo "quality-preflight: all checks passed."
