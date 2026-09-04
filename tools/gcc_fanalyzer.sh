@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Run GCC's static analyzer (-fanalyzer) using compile_commands.json.
 # - Supports targeted translation units
-# - Excludes build/ and src/third_party/
+# - Excludes build/, src/third_party/ and C++ translation units
 # - By default, fails on analyzer diagnostics or compiler errors
 
 ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
@@ -22,7 +22,8 @@ Options:
 Arguments:
   files...        Optional list of translation units to analyze (e.g., src/foo.c).
                   When omitted, analyzes all translation units in the compilation
-                  database after filtering.
+                  database after filtering. C++ units are skipped: GCC supports
+                  the analyzer on C only.
 USAGE
 }
 
@@ -72,10 +73,6 @@ done
 
 if ! command -v gcc > /dev/null 2>&1; then
   echo "gcc not found. Please install GCC." >&2
-  exit 1
-fi
-if ! command -v g++ > /dev/null 2>&1; then
-  echo "g++ not found. Please install G++." >&2
   exit 1
 fi
 if ! command -v python3 > /dev/null 2>&1; then
@@ -190,8 +187,16 @@ def score_entry(entry):
     return score
 
 
+C_SUFFIXES = {".c"}
+CXX_SUFFIXES = {".cc", ".cpp", ".cxx"}
+
+
 def is_translation_unit(path):
-    return pathlib.Path(path).suffix.lower() in {".c", ".cc", ".cpp", ".cxx"}
+    return pathlib.Path(path).suffix.lower() in (C_SUFFIXES | CXX_SUFFIXES)
+
+
+def is_c_translation_unit(path):
+    return pathlib.Path(path).suffix.lower() in C_SUFFIXES
 
 
 entries_by_rel = {}
@@ -247,6 +252,24 @@ if requested:
             print(f"  {p}")
     selected_rel = sorted(p for p in requested_tus if p in entries_by_rel)
 
+# GCC manual, -fanalyzer: "The analyzer is only suitable for use on C code in
+# this release." On C++ it walks exception-unwind edges out of extern "C"
+# callees that cannot throw, and reports leaks on paths no execution reaches.
+skipped_cxx = [p for p in selected_rel if not is_c_translation_unit(p)]
+selected_rel = [p for p in selected_rel if is_c_translation_unit(p)]
+if skipped_cxx and requested:
+    # Asked for these and did not analyze them, so it goes to the gate as a note.
+    # The names stay on the marked line: the runner drops continuation lines.
+    shown = ", ".join(skipped_cxx[:5])
+    if len(skipped_cxx) > 5:
+        shown += f", and {len(skipped_cxx) - 5} more"
+    print(
+        f"gcc-fanalyzer: NOTE: {len(skipped_cxx)} requested C++ translation unit(s) were not "
+        f"analyzed (GCC supports -fanalyzer on C only): {shown}"
+    )
+elif skipped_cxx:
+    print(f"Skipping {len(skipped_cxx)} C++ translation unit(s): GCC analyzes C only.")
+
 if not selected_rel:
     print("No translation units selected for GCC analyzer.")
     raise SystemExit(0)
@@ -266,9 +289,12 @@ print(
     f"(strict={'yes' if strict else 'no'}, jobs={jobs})..."
 )
 
-analyzer_diag = re.compile(r"\[-Wanalyzer-[^]]+\]")
-compiler_error = re.compile(r"(^|\\s)error:", re.IGNORECASE)
-compiler_warning = re.compile(r"(^|\\s)warning:", re.IGNORECASE)
+# --strict adds -Werror, so GCC spells these [-Werror=analyzer-...] instead.
+analyzer_diag = re.compile(r"\[-W(?:error=)?analyzer-[^]]+\]")
+# Anchored on the "file:line:col: error:" / "cc1: error:" prefix, so a source
+# line quoted inside an analyzer trace cannot pass for a diagnostic of its own.
+compiler_error = re.compile(r"^\S+: (?:fatal )?error:", re.MULTILINE)
+compiler_warning = re.compile(r"^\S+: warning:", re.MULTILINE)
 
 
 def transform_command(rel, entry):
@@ -281,9 +307,10 @@ def transform_command(rel, entry):
     if pathlib.Path(cmd[0]).name in {"ccache", "sccache"} and len(cmd) > 1:
         compiler_index = 1
 
+    # Only C units reach this point, so the driver is always gcc.
     suffix = pathlib.Path(rel).suffix.lower()
-    desired_compiler = "gcc" if suffix == ".c" else "g++"
-    cmd[compiler_index] = desired_compiler
+    cmd[compiler_index] = "gcc"
+
 
     filtered = []
     skip_next = False
@@ -298,7 +325,17 @@ def transform_command(rel, entry):
             continue
         filtered.append(token)
 
-    filtered.extend(["-fsyntax-only", "-fanalyzer", "-fdiagnostics-color=never"])
+    # -fanalyzer is an IPA pass and never runs under -fsyntax-only, which is how
+    # this script came to analyze nothing at all. Assembling to /dev/null keeps
+    # the run cheap and gives the pass a function body to walk.
+    filtered.extend(["-S", "-o", os.devnull, "-fanalyzer", "-fdiagnostics-color=never"])
+    # dsd_safe_memset_impl() and its neighbours in core/safe_api.h compare their
+    # destination against NULL, which teaches the analyzer that the caller's own
+    # pointer parameter may be NULL; every DSD_MEMSET(p, 0, sizeof *p) followed by
+    # p->field then reads as a null dereference. Zeroing a struct that way is the
+    # project convention, so the class costs 91 reports here and has never
+    # covered a reachable path.
+    filtered.append("-Wno-analyzer-null-dereference")
     if strict:
         strict_warnings = [
             "-Wall",

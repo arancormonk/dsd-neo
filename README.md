@@ -462,7 +462,8 @@ Quick examples
   - `tools/clang_tidy.sh` (promotes broad bugprone/performance/portability findings; targeted TUs supported).
   - `tools/cppcheck.sh` (use `--strict` for broader checks).
   - `tools/iwyu.sh` (include hygiene via include-what-you-use; excludes `src/third_party`).
-  - `tools/gcc_fanalyzer.sh` (GCC `-fanalyzer` path-sensitive diagnostics; excludes `src/third_party`).
+  - `tools/gcc_fanalyzer.sh` (GCC `-fanalyzer` path-sensitive diagnostics; C translation units only, excludes
+    `src/third_party`).
   - `tools/scan_build.sh` (Clang Static Analyzer via `scan-build`, heavier full-build pass; excludes `src/third_party`; supports repeatable `--cmake-arg` passthrough).
   - `tools/semgrep.sh` (additional SAST and project guardrail rules; use `--strict` to fail on findings; excludes `src/third_party`).
   - `tools/shell_lint.sh` (ShellCheck plus `shfmt -d` for shell scripts and hooks).
