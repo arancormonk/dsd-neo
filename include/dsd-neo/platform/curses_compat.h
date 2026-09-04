@@ -77,6 +77,15 @@ dsd_curses_set_escdelay(int delay_ms) {
 #endif
 }
 
+#if defined(DSD_USE_PDCURSES)
+/* Some PDCurses distributions expose resize_term without declaring it. */
+#ifdef PDCEX
+PDCEX int resize_term(int, int);
+#else
+extern int resize_term(int, int);
+#endif
+#endif
+
 static inline int
 dsd_curses_resize_term(int lines, int columns) {
 #if defined(DSD_USE_PDCURSES)

@@ -33,7 +33,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <direct.h>
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 #include "dsd-neo/core/csv_validate.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"

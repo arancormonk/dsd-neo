@@ -15,6 +15,10 @@
 #include <string.h>
 #include <time.h>
 
+#if defined(DSD_USE_PDCURSES) && !defined(NCURSES_PAIRS_T)
+#define NCURSES_PAIRS_T short
+#endif
+
 /* ncurses builds with NCURSES_OPAQUE=0 (Debian/Ubuntu) expose these accessors as
    function-like macros, which would expand over the stub definitions below. */
 #undef getcurx

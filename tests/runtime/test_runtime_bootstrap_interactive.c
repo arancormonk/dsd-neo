@@ -108,13 +108,21 @@ dsd_stat_path(const char* path, dsd_stat_t* st) {
         return -1;
     }
     DSD_MEMSET(st, 0, sizeof *st);
+#if defined(_WIN32)
+    st->st_mode = _S_IFREG;
+#else
     st->st_mode = S_IFREG;
+#endif
     return 0;
 }
 
 int
 dsd_stat_is_regular(const dsd_stat_t* st) {
+#if defined(_WIN32)
+    return st && (st->st_mode & _S_IFMT) == _S_IFREG;
+#else
     return st && S_ISREG(st->st_mode);
+#endif
 }
 
 int

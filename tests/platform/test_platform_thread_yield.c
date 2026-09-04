@@ -18,11 +18,16 @@
 static atomic_int g_flag = 0;
 static atomic_int g_spins = 0;
 
+#if defined(_WIN32)
+static unsigned int __stdcall
+setter_thread(void* arg) {
+#else
 static void*
 setter_thread(void* arg) {
+#endif
     (void)arg;
     atomic_store(&g_flag, 1);
-    return NULL;
+    return 0;
 }
 
 /* Calling it with nothing else runnable must simply return. */

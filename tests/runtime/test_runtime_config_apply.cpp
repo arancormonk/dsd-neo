@@ -46,7 +46,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#if defined(_WIN32)
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <dirent.h>
 #endif

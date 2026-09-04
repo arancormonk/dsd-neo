@@ -1752,6 +1752,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
     )
     target_compile_definitions(
         dsd-neo_test_ui_menu_tree_audit
@@ -2196,7 +2197,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_compile_definitions(
         dsd-neo_test_ui_prims_status_gamma
-        PRIVATE NCURSES_REENTRANT=0
+        PRIVATE NCURSES_REENTRANT=0 $<$<C_COMPILER_ID:MSVC>:CURSES_LIBRARY>
     )
     target_include_directories(
         dsd-neo_test_ui_prims_status_gamma
@@ -2207,7 +2208,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_prims_status_gamma
-        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+        PRIVATE ${CURSES_LIBRARIES} ${DSD_NEO_TEST_MATH_LIB}
     )
     add_test(
         NAME UI_PRIMS_STATUS_GAMMA
@@ -3907,6 +3908,7 @@ target_link_libraries(
 if(NOT MSVC)
     target_link_options(dsd-neo_test_core_audio2_helpers PRIVATE -Wl,--gc-sections)
 endif()
+
 target_link_libraries(
     dsd-neo_test_core_audio2_helpers
     PRIVATE dsd-neo_test_call_state_support ${DSD_NEO_TEST_MATH_LIB}
@@ -4652,6 +4654,9 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_trunk_tuning_hook_tune_to_cc"
             "LINKER:--wrap=io_control_set_freq"
     )
+endif()
+if(WIN32)
+    target_compile_definitions(dsd-neo_test_app_command_queue PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP)
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
 
@@ -9728,4 +9733,24 @@ if(DSD_HAS_RADIO)
     )
     add_test(NAME ENGINE_RESTART COMMAND dsd-neo_test_engine_restart)
     set_tests_properties(ENGINE_RESTART PROPERTIES TIMEOUT 240)
+endif()
+
+# Several focused tests provide local stubs for symbols that are also pulled in
+# transitively by MSVC static libraries. Permit those deliberate overrides.
+if(MSVC)
+    foreach(
+        _dsd_override_test
+        dsd-neo_test_nxdn_enc_class
+        dsd-neo_test_p25_p2_2v_first_frame_gate
+        dsd-neo_test_p25_p2_release_partial_audio
+        dsd-neo_test_p25_p2_reliability
+        dsd-neo_test_ui_panels_header_footer
+        dsd-neo_test_ui_prims_status_gamma
+    )
+        target_link_options(
+            ${_dsd_override_test}
+            PRIVATE /FORCE:MULTIPLE /INCREMENTAL:NO /IGNORE:4006 /IGNORE:4075 /IGNORE:4088
+        )
+        set_property(TARGET ${_dsd_override_test} PROPERTY LINK_WARNING_AS_ERROR OFF)
+    endforeach()
 endif()
