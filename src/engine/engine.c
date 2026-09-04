@@ -1359,7 +1359,7 @@ no_carrier_step_retune(const dsd_opts* opts, dsd_state* state, long int freq, in
 // call still open as an explicit release rather than a sync loss.
 static int
 no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, time_t now) {
-    if (opts->scan_voice_only == 1 && state->scan_voice_gate_sync_m >= 0.0) {
+    if (dsd_scan_voice_gate_owns_step(opts, state)) {
         return dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s());
     }
     return (now - state->last_cc_sync_time) > opts->trunk_hangtime;

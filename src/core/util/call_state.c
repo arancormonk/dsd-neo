@@ -507,9 +507,12 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->has_service_metadata = previous->has_service_metadata;
     snapshot->emergency = previous->emergency;
     snapshot->priority = previous->priority;
+    snapshot->media_started_m = previous->media_started_m;
+    snapshot->media_updated_m = previous->media_updated_m;
     // audio_permitted and started_m are deliberately not carried: the reacquired segment
     // re-earns audio from the next crypto update exactly as it does today, and started_m stays
-    // the reopen instant so per-segment durations remain the segment's own.
+    // the reopen instant so per-segment durations remain the segment's own. The media clocks do
+    // carry because a recoverable reopen is still part of the same logical transmission.
 }
 
 // A protocol whose end path tears down live decoder state it needs back on a heal (the DMR
@@ -711,8 +714,15 @@ dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, do
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
+    const double now_m = call_state_observed_m(observed_m);
     snapshot->media_active = media_active ? 1U : 0U;
-    snapshot->updated_m = call_state_observed_m(observed_m);
+    snapshot->updated_m = now_m;
+    if (media_active) {
+        if (snapshot->media_started_m <= 0.0) {
+            snapshot->media_started_m = now_m;
+        }
+        snapshot->media_updated_m = now_m;
+    }
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
     dsd_call_state_ext_unlock(ext);
