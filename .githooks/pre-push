@@ -597,10 +597,12 @@ lane_iwyu() {
 
 # shellcheck disable=SC2329 # Started through runner_spawn.
 lane_fanalyzer() {
-  if command -v gcc > /dev/null 2>&1 && command -v g++ > /dev/null 2>&1; then
+  # gcc alone: the analyzer covers C only, so the script no longer calls g++, and
+  # a host that builds C++ with clang should not lose the analysis over it.
+  if command -v gcc > /dev/null 2>&1; then
     run_check "GCC fanalyzer strict (${tu_count} TU(s), ${jobs_fanalyzer} worker(s))" tools/gcc_fanalyzer.sh --strict --jobs "$jobs_fanalyzer" -- "${analysis_tus[@]}"
   else
-    mark_missing_tool "gcc/g++" "GCC fanalyzer analysis"
+    mark_missing_tool "gcc" "GCC fanalyzer analysis"
   fi
 }
 

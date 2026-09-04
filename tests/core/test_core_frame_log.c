@@ -275,10 +275,12 @@ stderr_capture_init(stderr_capture_t* capture) {
     capture->redirected = 0;
 }
 
-#if defined(__GNUC__) && !defined(__clang__)
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 13
 /* dup2() returns the descriptor it wrote onto - here stderr, which the process
  * already owns and must not close - but GCC's analyzer models the return as a
- * freshly opened descriptor and reports the redirect as a leak. */
+ * freshly opened descriptor and reports the redirect as a leak. GCC 13 is
+ * where that check got its name: an older gcc rejects the option below as
+ * unknown, which -Werror turns into a build failure. */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wanalyzer-fd-leak"
 #endif
@@ -304,7 +306,7 @@ stderr_capture_begin(stderr_capture_t* capture, const char** failure, int* saved
     capture->redirected = 1;
     return 0;
 }
-#if defined(__GNUC__) && !defined(__clang__)
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 13
 #pragma GCC diagnostic pop
 #endif
 

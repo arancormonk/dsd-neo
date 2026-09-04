@@ -145,10 +145,12 @@ config_profile_copy_source_path(const UiCtx* c, char* path, size_t path_size) {
     return 1;
 }
 
-#if defined(__GNUC__) && !defined(__clang__)
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 10
 /* GCC's analyzer loses the tie between pctx->n and the count that filled
  * pctx->names, so it walks a path where the names were allocated but this loop
- * runs zero times and reports them as leaked. */
+ * runs zero times and reports them as leaked.
+ * The analyzer arrived in GCC 10; before that the option below is unknown,
+ * which -Werror turns into a build failure. */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
 #endif
@@ -166,7 +168,7 @@ config_profile_free_context(ProfileSelCtx* pctx) {
     free((void*)pctx->names);
     free(pctx);
 }
-#if defined(__GNUC__) && !defined(__clang__)
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 10
 #pragma GCC diagnostic pop
 #endif
 

@@ -161,10 +161,12 @@ expect_contains(const char* tag, const char* text, const char* needle) {
     return 0;
 }
 
-#if defined(__GNUC__) && !defined(__clang__)
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 13
 /* dup2() returns the descriptor it wrote onto - one the process already owns
  * and must not close - but GCC's analyzer models the return as a freshly opened
- * descriptor and reports the redirect as a leak. */
+ * descriptor and reports the redirect as a leak. GCC 13 is
+ * where that check got its name: an older gcc rejects the option below as
+ * unknown, which -Werror turns into a build failure. */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wanalyzer-fd-leak"
 #endif
@@ -212,7 +214,7 @@ capture_lcw_output(dsd_opts* opts, dsd_state* st, uint8_t lcw[96], char* out, si
     (void)fclose(capture);
     return 0;
 }
-#if defined(__GNUC__) && !defined(__clang__)
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 13
 #pragma GCC diagnostic pop
 #endif
 
