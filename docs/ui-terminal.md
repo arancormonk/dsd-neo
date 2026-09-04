@@ -345,11 +345,11 @@ RadioReference import:
 
 ### Keys
 
-A `-Y` channel-map row or a `--trunk-scan` target can carry its own key files (`keys_hex_csv`/`keys_dec_csv`
-columns; see `docs/csv-formats.md`). While the row or target is parked its keys replace the global keyring;
-leaving it restores the globals. The Import keys CSV rows edit the globals underneath a parked row, so a
-runtime import survives the next hop. The single-key rows (Basic privacy, Hytera, scrambler, RC4/DES, AES)
-disarm the keyring, so a parked keyed row overrides them again on its next hop.
+A `-Y` channel-map row or a `--trunk-scan` target can carry key files (`keys_hex_csv`/`keys_dec_csv`) or embedded
+Basic Privacy/Hytera values (`single_key_dec`/`single_key_hex`; see `docs/csv-formats.md`). While the row or target
+is parked its keys replace the globals; leaving restores them. The Import keys CSV rows edit the globals underneath
+a parked row, so a runtime import survives the next hop. The single-key menu rows disarm the keyring, so a parked
+keyed row overrides them again on its next hop.
 
 ## DSP Status
 

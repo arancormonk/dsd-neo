@@ -530,10 +530,11 @@ struct dsd_state {
     uint8_t* trunk_lcn_avoid;
     size_t trunk_lcn_avoid_capacity;
     /* Sparse per-row key set per scan-list row, indexed like trunk_lcn_name. NULL until a
-     * channel-map CSV opts in with a `keys_hex_csv`/`keys_dec_csv` header column. Read it
-     * through dsd_state_trunk_lcn_keys_get(). Never inside a UI_SNAPSHOT_COPY_RANGE, for the
-     * same reason as the stores above -- and additionally because key material is never
-     * deep-copied into the snapshot. */
+     * channel-map CSV opts in with a key-file or direct-key header column. Read it through
+     * dsd_state_trunk_lcn_keys_get(); returned pointers are decoder-thread-only and invalidated
+     * by later store growth. Never inside a UI_SNAPSHOT_COPY_RANGE, for the same reason as the
+     * stores above -- and additionally because key material is never deep-copied into the
+     * snapshot. */
     dsd_key_set* trunk_lcn_keys;
     size_t trunk_lcn_keys_capacity;
     /* Scan key swap state: the lazily captured global keys plus the active row set copy.
@@ -1899,7 +1900,10 @@ void dsd_state_trunk_lcn_keys_free(dsd_state* state);
  */
 int dsd_state_trunk_lcn_keys_set(dsd_state* state, size_t index, dsd_key_set* ks);
 
-/** Key set of scan-list row @p index, or NULL when the row carries no keys. */
+/**
+ * Key set of scan-list row @p index, or NULL when the row carries no keys.
+ * Decoder thread only; the pointer is invalidated by subsequent key-store growth.
+ */
 const dsd_key_set* dsd_state_trunk_lcn_keys_get(const dsd_state* state, size_t index);
 
 /** Non-zero when any row in the store carries a key set. */

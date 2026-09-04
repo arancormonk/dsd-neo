@@ -163,6 +163,36 @@ dsd_safe_memset_impl(void* dst, size_t dst_size, int value, size_t count) {
 #endif
 }
 
+/**
+ * @brief Compiler-resistant zeroing for buffers that held secret material.
+ *
+ * Volatile stores keep the wipe observable even when the buffer is released or
+ * leaves scope immediately afterward. This is intentionally separate from
+ * DSD_MEMSET, whose ordinary memset semantics permit dead-store elimination.
+ */
+static inline void*
+dsd_safe_secure_zero_impl(void* dst, size_t dst_size, size_t count) {
+    if (dst == NULL) {
+        return NULL;
+    }
+    if (count == 0U) {
+        return dst;
+    }
+    if (!dsd_safe_count_fits(dst_size, count)) {
+        return NULL;
+    }
+#if defined(__cplusplus)
+    volatile unsigned char* bytes = static_cast<volatile unsigned char*>(dst);
+#else
+    volatile unsigned char* bytes = (volatile unsigned char*)dst;
+#endif
+    while (count > 0U) {
+        *bytes++ = 0U;
+        count--;
+    }
+    return dst;
+}
+
 static inline int dsd_safe_vfprintf(FILE* stream, const char* fmt, va_list ap) DSD_NEO_PRINTF_FORMAT(2, 0);
 
 static inline int
@@ -258,6 +288,7 @@ dsd_safe_sscanf(const char* src, const char* fmt, ...) {
 #define DSD_MEMCPY(dst, src, count)           dsd_safe_memcpy_impl((dst), DSD_NEO_OBJECT_SIZE(dst), (src), (count))
 #define DSD_MEMMOVE(dst, src, count)          dsd_safe_memmove_impl((dst), DSD_NEO_OBJECT_SIZE(dst), (src), (count))
 #define DSD_MEMSET(dst, value, count)         dsd_safe_memset_impl((dst), DSD_NEO_OBJECT_SIZE(dst), (value), (count))
+#define DSD_SECURE_ZERO(dst, count)           dsd_safe_secure_zero_impl((dst), DSD_NEO_OBJECT_SIZE(dst), (count))
 #define DSD_FPRINTF(stream, ...)              dsd_safe_fprintf((stream), __VA_ARGS__)
 #define DSD_SNPRINTF(dst, dst_size, ...)      dsd_safe_snprintf((dst), (dst_size), __VA_ARGS__)
 #define DSD_SSCANF(src, ...)                  dsd_safe_sscanf((src), __VA_ARGS__)

@@ -9,8 +9,9 @@
  *
  * A `dsd_key_set` is a sparse copy of the live keyring (`rkey_array` /
  * `rkey_array_loaded`) with the `keyloader` flag and the scalar key block it
- * was captured with. Row sets carry a zeroed scalar block so installing them
- * clears stale `-b`/`-1` scalars; the lazily captured baseline carries the
+ * was captured with. File-backed row sets carry a zeroed scalar block so
+ * installing them clears stale direct scalars; embedded direct-key sets carry
+ * their parsed `-b`/`-H` equivalents. The lazily captured baseline carries the
  * live scalars so leaving a keyed row restores them.
  *
  * Only core headers plus `runtime/log.h`; engine and app_control call down
@@ -57,14 +58,15 @@ typedef struct {
     unsigned long long A4[2];
     int aes_key_loaded[2];
     uint8_t aes_key_segments[2];
+    uint8_t aes_key[32];
 } dsd_key_scalars;
 
 typedef struct {
     dsd_key_set_entry* entries; /* heap, NULL when empty */
     size_t count;
-    uint8_t present; /* a key file was named on this row/target */
+    uint8_t present; /* a key source was supplied on this row/target */
     int keyloader;   /* state->keyloader to install with the entries */
-    /* Captured for the baseline; zeroed on row sets. */
+    /* Captured for the baseline or parsed directly; zeroed for file-backed sets. */
     dsd_key_scalars scalars;
 } dsd_key_set;
 
@@ -79,11 +81,18 @@ dsd_key_set_free(dsd_key_set* ks) {
         return;
     }
     if (ks->entries != NULL) {
-        DSD_MEMSET(ks->entries, 0, ks->count * sizeof(*ks->entries));
+        DSD_SECURE_ZERO(ks->entries, ks->count * sizeof(*ks->entries));
         free(ks->entries);
     }
-    DSD_MEMSET(ks, 0, sizeof(*ks));
+    DSD_SECURE_ZERO(ks, sizeof(*ks));
 }
+
+typedef enum {
+    DSD_KEY_DIRECT_OK = 0,
+    DSD_KEY_DIRECT_INVALID_ARGUMENT = -1,
+    DSD_KEY_DIRECT_INVALID_DEC = -2,
+    DSD_KEY_DIRECT_INVALID_HEX = -3,
+} dsd_key_direct_result;
 
 /**
  * Capture the live keyring plus scalar block into @p out (frees prior).
@@ -107,7 +116,7 @@ void dsd_key_set_install(dsd_state* state, const dsd_key_set* ks);
  */
 int dsd_key_set_copy(dsd_key_set* dst, const dsd_key_set* src);
 
-/** Non-zero when two sets hold the same entries and keyloader flag. */
+/** Non-zero when two sets hold the same metadata, scalar block, and entries. */
 int dsd_key_set_equal(const dsd_key_set* a, const dsd_key_set* b);
 
 /**
@@ -116,6 +125,19 @@ int dsd_key_set_equal(const dsd_key_set* a, const dsd_key_set* b);
  * success, -1 on any importer failure with @p out untouched.
  */
 int dsd_key_set_load_csv(dsd_key_set* out, const char* hex_path, const char* dec_path, int show_keys);
+
+/**
+ * Parse direct `-H`/`-b` equivalents into a scalar-only set. Either value may
+ * be NULL or ASCII-whitespace-only, but at least one must be present. Hex input
+ * accepts an optional leading `0x`, ignores embedded ASCII whitespace, and
+ * requires exactly 10, 32, or 64 digits. Decimal input is an unsigned value in
+ * `[0, 255]`. Both inputs may be supplied together.
+ *
+ * On success the set has `present = 1` and `keyloader = 0`. On failure @p out
+ * is untouched and the result identifies the invalid field without exposing
+ * its value to callers' diagnostics.
+ */
+dsd_key_direct_result dsd_key_set_load_direct(dsd_key_set* out, const char* single_hex, const char* single_dec);
 
 /**
  * Enter the scan swap: capture the baseline from live state when no set is

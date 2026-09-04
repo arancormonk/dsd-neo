@@ -6,7 +6,8 @@ The first byte selects which importer the fuzz harness exercises, then the remai
 file and parsed as that CSV format:
 
 - `selector % 7 == 0`: group list (`csvGroupImportPath`) -- seeded by `group.csv`, `malformed.csv` (`F`)
-- `selector % 7 == 1`: channel map (`csvChanImport`) -- seeded by `channel.csv` (`G`)
+- `selector % 7 == 1`: channel map (`csvChanImport`) -- seeded by `channel.csv`, `channel_direct.csv`, and
+  `channel_direct_conflict.csv` (`G`)
 - `selector % 7 == 2`: decimal key list (`csvKeyImportDec`) -- seeded by `key_dec.csv` (`H`)
 - `selector % 7 == 3`: hex key list (`csvKeyImportHex`) -- seeded by `key_hex.csv` (`I`)
 - `selector % 7 == 4`: Vertex keystream map (`csvVertexKsImport`) -- seeded by `vertex.csv` (`J`)

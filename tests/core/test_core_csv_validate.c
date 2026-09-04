@@ -413,6 +413,45 @@ test_chan_key_column_bad_path_fails(void) {
 }
 
 static int
+test_chan_direct_key_columns_validate(void) {
+    char valid_tmpl[] = "dsd-neo-test-validate-chan-direct-XXXXXX";
+    char conflict_tmpl[] = "dsd-neo-test-validate-chan-direct-mix-XXXXXX";
+    char invalid_tmpl[] = "dsd-neo-test-validate-chan-direct-bad-XXXXXX";
+    if (write_temp_csv(valid_tmpl, "channel,frequency_hz,single_key_dec,single_key_hex\n"
+                                   "1,851000000,1,0123456789\n"
+                                   "2,notafreq,2,00112233445566778899AABBCCDDEEFF\n"
+                                   "3,852000000,0,\n")
+        != 0) {
+        return 1;
+    }
+    dsd_csv_validation v = {0U, 0U, 0U};
+    int failed = 0;
+    if (dsd_csv_validate_chan_file(valid_tmpl, &v) != 0 || v.accepted != 2U || v.skipped != 1U || v.total != 3U) {
+        DSD_FPRINTF(stderr, "chan direct-key validation mismatch: accepted=%u skipped=%u total=%u\n", v.accepted,
+                    v.skipped, v.total);
+        failed = 1;
+    }
+    if (write_temp_csv(conflict_tmpl, "channel,frequency_hz,keys_hex_csv,single_key_dec\n"
+                                      "1,851000000,keys.csv,1\n")
+            != 0
+        || dsd_csv_validate_chan_file(conflict_tmpl, &v) == 0) {
+        DSD_FPRINTF(stderr, "chan validation accepted mixed direct/file key sources\n");
+        failed = 1;
+    }
+    if (write_temp_csv(invalid_tmpl, "channel,frequency_hz,single_key_hex\n"
+                                     "1,851000000,invalid-secret-value\n")
+            != 0
+        || dsd_csv_validate_chan_file(invalid_tmpl, &v) == 0) {
+        DSD_FPRINTF(stderr, "chan validation accepted an invalid direct key\n");
+        failed = 1;
+    }
+    (void)remove(valid_tmpl);
+    (void)remove(conflict_tmpl);
+    (void)remove(invalid_tmpl);
+    return failed;
+}
+
+static int
 test_p25_bandplan_counts_mixed_rows(void) {
     char tmpl[] = "dsd-neo-test-validate-bandplan-XXXXXX";
     if (write_temp_csv(tmpl, "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n"
@@ -503,6 +542,9 @@ main(void) {
         return 1;
     }
     if (test_chan_key_column_bad_path_fails() != 0) {
+        return 1;
+    }
+    if (test_chan_direct_key_columns_validate() != 0) {
         return 1;
     }
     if (test_key_dec_counts_mixed_rows() != 0) {

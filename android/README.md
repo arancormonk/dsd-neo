@@ -51,6 +51,9 @@ copy first. There are two copy paths, with different lifetimes:
   (`chan.csv` → `chan (2).csv`); updates stage a temp file and rename over the
   target so a half-copied CSV is never observable.
 
+Embedded `single_key_dec`/`single_key_hex` values in a channel map travel with that copied file and therefore work on
+Android. Referenced `keys_dec_csv`/`keys_hex_csv` companion files are not copied or path-rewritten automatically.
+
 Both are reached through `DecoderHost` virtuals (`importContentUri` /
 `importDocument`); the desktop default of `importDocument` implements the same
 semantics under `QStandardPaths::AppDataLocation`, which is what

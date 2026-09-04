@@ -65,6 +65,8 @@ test_capture_install_roundtrip(void) {
     state->A1[0] = 21ULL;
     state->aes_key_loaded[1] = 1;
     state->aes_key_segments[0] = 4U;
+    state->aes_key[0] = 0xABU;
+    state->aes_key[31] = 0xCDU;
 
     dsd_key_set ks;
     DSD_MEMSET(&ks, 0, sizeof(ks));
@@ -76,7 +78,8 @@ test_capture_install_roundtrip(void) {
     }
     if (ks.scalars.K != 11ULL || ks.scalars.K1 != 12ULL || ks.scalars.R != 13ULL || ks.scalars.RR != 14ULL
         || ks.scalars.H != 15ULL || ks.scalars.hytera_key_segments != 3U || ks.scalars.A1[0] != 21ULL
-        || ks.scalars.aes_key_loaded[1] != 1 || ks.scalars.aes_key_segments[0] != 4U) {
+        || ks.scalars.aes_key_loaded[1] != 1 || ks.scalars.aes_key_segments[0] != 4U || ks.scalars.aes_key[0] != 0xABU
+        || ks.scalars.aes_key[31] != 0xCDU) {
         DSD_FPRINTF(stderr, "capture scalar block mismatch\n");
         failed = 1;
     }
@@ -87,6 +90,7 @@ test_capture_install_roundtrip(void) {
     state->keyloader = 0;
     state->K = 0ULL;
     state->A1[0] = 0ULL;
+    DSD_MEMSET(state->aes_key, 0, sizeof(state->aes_key));
     dsd_key_set_install(state, &ks);
     if (state->rkey_array[5] != 0xABCDEULL || state->rkey_array_loaded[5] != 1U) {
         DSD_FPRINTF(stderr, "install did not restore slot 5\n");
@@ -100,7 +104,8 @@ test_capture_install_roundtrip(void) {
         DSD_FPRINTF(stderr, "install did not clear a prior entry\n");
         failed = 1;
     }
-    if (state->keyloader != 1 || state->K != 11ULL || state->A1[0] != 21ULL) {
+    if (state->keyloader != 1 || state->K != 11ULL || state->A1[0] != 21ULL || state->aes_key[0] != 0xABU
+        || state->aes_key[31] != 0xCDU) {
         DSD_FPRINTF(stderr, "install did not restore keyloader/scalars\n");
         failed = 1;
     }
@@ -128,9 +133,154 @@ test_capture_install_roundtrip(void) {
         DSD_FPRINTF(stderr, "equal missed a value change\n");
         failed = 1;
     }
+    copy.entries[0].value ^= 1ULL;
+    copy.scalars.aes_key[31] ^= 1U;
+    if (dsd_key_set_equal(&copy, &ks)) {
+        DSD_FPRINTF(stderr, "equal missed an AES byte change\n");
+        failed = 1;
+    }
 
     dsd_key_set_free(&copy);
     dsd_key_set_free(&ks);
+    free_test_state(state);
+    return failed;
+}
+
+static int
+test_load_direct(void) {
+    int failed = 0;
+    dsd_key_set direct;
+    DSD_MEMSET(&direct, 0, sizeof(direct));
+
+    if (dsd_key_set_load_direct(&direct, NULL, " 255 \t") != DSD_KEY_DIRECT_OK || direct.present != 1U
+        || direct.keyloader != 0 || direct.count != 0U || direct.scalars.K != 255ULL) {
+        DSD_FPRINTF(stderr, "direct decimal parse mismatch\n");
+        failed = 1;
+    }
+
+    if (dsd_key_set_load_direct(&direct, " 0x01 23 45 67 89 ", NULL) != DSD_KEY_DIRECT_OK
+        || direct.scalars.H != 0x0123456789ULL || direct.scalars.K1 != 0x0123456789ULL || direct.scalars.K2 != 0ULL
+        || direct.scalars.hytera_key_segments != 1U || direct.scalars.aes_key_loaded[0] != 0
+        || direct.scalars.aes_key_segments[0] != 0U) {
+        DSD_FPRINTF(stderr, "direct 40-bit hex parse mismatch\n");
+        failed = 1;
+    }
+
+    if (dsd_key_set_load_direct(&direct, "00112233445566778899AABBCCDDEEFF", "7") != DSD_KEY_DIRECT_OK
+        || direct.scalars.K != 7ULL || direct.scalars.K1 != 0x0011223344556677ULL
+        || direct.scalars.K2 != 0x8899AABBCCDDEEFFULL || direct.scalars.hytera_key_segments != 2U
+        || direct.scalars.A1[0] != direct.scalars.K1 || direct.scalars.A1[1] != direct.scalars.K1
+        || direct.scalars.A2[0] != direct.scalars.K2 || direct.scalars.aes_key_loaded[0] != 1
+        || direct.scalars.aes_key_loaded[1] != 1 || direct.scalars.aes_key_segments[0] != 2U
+        || direct.scalars.aes_key[0] != 0x00U || direct.scalars.aes_key[15] != 0xFFU
+        || direct.scalars.aes_key[16] != 0U) {
+        DSD_FPRINTF(stderr, "direct combined AES-128/decimal parse mismatch\n");
+        failed = 1;
+    }
+
+    if (dsd_key_set_load_direct(&direct, "00112233445566778899AABBCCDDEEFF102132435465768798A9BACBDCEDFE0F", NULL)
+            != DSD_KEY_DIRECT_OK
+        || direct.scalars.K3 != 0x1021324354657687ULL || direct.scalars.K4 != 0x98A9BACBDCEDFE0FULL
+        || direct.scalars.hytera_key_segments != 4U || direct.scalars.aes_key_segments[1] != 4U
+        || direct.scalars.aes_key[16] != 0x10U || direct.scalars.aes_key[31] != 0x0FU) {
+        DSD_FPRINTF(stderr, "direct AES-256 parse mismatch\n");
+        failed = 1;
+    }
+
+    if (dsd_key_set_load_direct(&direct, "00000000000000000000000000000000", "0") != DSD_KEY_DIRECT_OK
+        || direct.present != 1U || direct.scalars.K != 0ULL || direct.scalars.hytera_key_segments != 0U
+        || direct.scalars.aes_key_loaded[0] != 0 || direct.scalars.aes_key_segments[0] != 2U) {
+        DSD_FPRINTF(stderr, "explicit zero direct key mismatch\n");
+        failed = 1;
+    }
+
+    dsd_key_set before;
+    DSD_MEMSET(&before, 0, sizeof(before));
+    if (dsd_key_set_copy(&before, &direct) != 0) {
+        failed = 1;
+    }
+    static const char* const bad_dec[] = {"-1", "+1", "256", "999999999999999999999", "1 2"};
+    for (size_t i = 0U; i < sizeof(bad_dec) / sizeof(bad_dec[0]); i++) {
+        if (dsd_key_set_load_direct(&direct, NULL, bad_dec[i]) != DSD_KEY_DIRECT_INVALID_DEC
+            || !dsd_key_set_equal(&direct, &before)) {
+            DSD_FPRINTF(stderr, "invalid direct decimal was accepted or mutated output at %zu\n", i);
+            failed = 1;
+        }
+    }
+    static const char* const bad_hex[] = {"123", "00112233445566778899AABBCCDDEEFG", "0x", "-0123456789"};
+    for (size_t i = 0U; i < sizeof(bad_hex) / sizeof(bad_hex[0]); i++) {
+        if (dsd_key_set_load_direct(&direct, bad_hex[i], NULL) != DSD_KEY_DIRECT_INVALID_HEX
+            || !dsd_key_set_equal(&direct, &before)) {
+            DSD_FPRINTF(stderr, "invalid direct hex was accepted or mutated output at %zu\n", i);
+            failed = 1;
+        }
+    }
+    if (dsd_key_set_load_direct(&direct, " \t ", NULL) != DSD_KEY_DIRECT_INVALID_ARGUMENT
+        || !dsd_key_set_equal(&direct, &before)
+        || dsd_key_set_load_direct(NULL, NULL, "1") != DSD_KEY_DIRECT_INVALID_ARGUMENT) {
+        DSD_FPRINTF(stderr, "direct invalid-argument handling mismatch\n");
+        failed = 1;
+    }
+
+    dsd_key_set other;
+    DSD_MEMSET(&other, 0, sizeof(other));
+    if (dsd_key_set_load_direct(&other, NULL, "1") != DSD_KEY_DIRECT_OK) {
+        failed = 1;
+    } else {
+        before.scalars.K = 2ULL;
+        if (dsd_key_set_equal(&before, &other)) {
+            DSD_FPRINTF(stderr, "scalar-only direct sets compared equal\n");
+            failed = 1;
+        }
+    }
+
+    unsigned char secret[8];
+    DSD_MEMSET(secret, 0xA5, sizeof(secret));
+    (void)DSD_SECURE_ZERO(secret, sizeof(secret));
+    for (size_t i = 0U; i < sizeof(secret); i++) {
+        if (secret[i] != 0U) {
+            DSD_FPRINTF(stderr, "secure zero left byte %zu\n", i);
+            failed = 1;
+            break;
+        }
+    }
+
+    dsd_key_set_free(&other);
+    dsd_key_set_free(&before);
+    dsd_key_set_free(&direct);
+    return failed;
+}
+
+static int
+test_direct_key_store_growth(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (state == NULL) {
+        return 1;
+    }
+    int failed = 0;
+    for (size_t i = 0U; i < 20U; i++) {
+        char value[8];
+        (void)DSD_SNPRINTF(value, sizeof(value), "%zu", i);
+        dsd_key_set direct;
+        DSD_MEMSET(&direct, 0, sizeof(direct));
+        if (dsd_key_set_load_direct(&direct, NULL, value) != DSD_KEY_DIRECT_OK
+            || dsd_state_trunk_lcn_keys_set(state, i, &direct) != 0) {
+            dsd_key_set_free(&direct);
+            failed = 1;
+            break;
+        }
+    }
+    if (state->trunk_lcn_keys_capacity < 20U) {
+        DSD_FPRINTF(stderr, "direct key store did not grow\n");
+        failed = 1;
+    }
+    for (size_t i = 0U; i < 20U && !failed; i++) {
+        const dsd_key_set* direct = dsd_state_trunk_lcn_keys_get(state, i);
+        if (direct == NULL || direct->scalars.K != (unsigned long long)i || direct->present != 1U) {
+            DSD_FPRINTF(stderr, "direct key store lost row %zu across growth\n", i);
+            failed = 1;
+        }
+    }
     free_test_state(state);
     return failed;
 }
@@ -342,6 +492,32 @@ test_row_apply_epoch(void) {
         DSD_FPRINTF(stderr, "repeat unkeyed apply must not bump the epoch\n");
         failed = 1;
     }
+
+    dsd_key_set direct_one;
+    dsd_key_set direct_two;
+    DSD_MEMSET(&direct_one, 0, sizeof(direct_one));
+    DSD_MEMSET(&direct_two, 0, sizeof(direct_two));
+    if (dsd_key_set_load_direct(&direct_one, NULL, "1") != DSD_KEY_DIRECT_OK
+        || dsd_key_set_load_direct(&direct_two, NULL, "2") != DSD_KEY_DIRECT_OK
+        || dsd_state_trunk_lcn_keys_set(state, 2U, &direct_one) != 0
+        || dsd_state_trunk_lcn_keys_set(state, 3U, &direct_two) != 0) {
+        dsd_key_set_free(&direct_one);
+        dsd_key_set_free(&direct_two);
+        free_test_state(state);
+        return 1;
+    }
+    if (dsd_scan_row_keys_apply(state, 2) != 1 || state->K != 1ULL || state->enc_lockout_key_epoch != epoch0 + 3U) {
+        DSD_FPRINTF(stderr, "first direct row did not install and bump the epoch\n");
+        failed = 1;
+    }
+    if (dsd_scan_row_keys_apply(state, 3) != 1 || state->K != 2ULL || state->enc_lockout_key_epoch != epoch0 + 4U) {
+        DSD_FPRINTF(stderr, "distinct scalar-only row did not install and bump the epoch\n");
+        failed = 1;
+    }
+    if (dsd_scan_row_keys_apply(state, 3) != 0 || state->enc_lockout_key_epoch != epoch0 + 4U) {
+        DSD_FPRINTF(stderr, "repeat direct row changed the epoch\n");
+        failed = 1;
+    }
     if (dsd_scan_row_keys_apply(state, -1) != 0) {
         DSD_FPRINTF(stderr, "negative row must be a no-op\n");
         failed = 1;
@@ -357,6 +533,12 @@ main(void) {
         return 1;
     }
     if (test_load_hex_dec() != 0) {
+        return 1;
+    }
+    if (test_load_direct() != 0) {
+        return 1;
+    }
+    if (test_direct_key_store_growth() != 0) {
         return 1;
     }
     if (test_enter_leave_suspend_resume() != 0) {

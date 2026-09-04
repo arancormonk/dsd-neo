@@ -5,8 +5,12 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/key_material.h>
+#include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -75,6 +79,27 @@ main(void) {
     state.K1 = 0x0123456789ULL;
     rc |= expect_eq("missing-alg-hbp-key-slot0", dsd_dmr_missing_alg_key_can_decrypt(&state, 0), 1);
     rc |= expect_eq("missing-alg-hbp-key-slot1", dsd_dmr_missing_alg_key_can_decrypt(&state, 1), 1);
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (opts == NULL) {
+        return 1;
+    }
+    opts->dmr_mute_encL = 1;
+    opts->dmr_mute_encR = 1;
+    dsd_key_set direct;
+    DSD_MEMSET(&direct, 0, sizeof(direct));
+    if (dsd_key_set_load_direct(&direct, "0123456789", "7") != DSD_KEY_DIRECT_OK) {
+        rc = 1;
+    } else {
+        DSD_MEMSET(&state, 0, sizeof(state));
+        dsd_key_set_install(&state, &direct);
+        rc |= expect_eq("direct-bp-missing-alg-decryptable", dsd_dmr_missing_alg_key_can_decrypt(&state, 0), 1);
+        rc |= expect_eq("direct-hbp-missing-alg-decryptable", dsd_dmr_missing_alg_key_can_decrypt(&state, 1), 1);
+        rc |= expect_eq("direct-key-keeps-left-mute-preference", opts->dmr_mute_encL, 1);
+        rc |= expect_eq("direct-key-keeps-right-mute-preference", opts->dmr_mute_encR, 1);
+    }
+    dsd_key_set_free(&direct);
+    free(opts);
 
     DSD_MEMSET(&state, 0, sizeof(state));
     state.M = 0x24;

@@ -1681,6 +1681,121 @@ test_channel_import_row_key_columns(void) {
 }
 
 static int
+test_channel_import_direct_key_columns(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    dsd_state* scratch = (dsd_state*)calloc(1, sizeof(*scratch));
+    char map_tmpl[] = "dsd-neo-test-direct-rowkey-map-XXXXXX";
+    if (!opts || !state || !scratch) {
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    int fd = dsd_mkstemp(map_tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    static const char valid_map[] = "channel,frequency_hz,name,SINGLE_KEY_HEX,single_key_DEC\n"
+                                    "1,851000000,Dispatch,00112233445566778899AABBCCDDEEFF,7\n"
+                                    "2,851012500,Ops,,\n"
+                                    "bad,851025000,NoSlot,0123456789,99\n"
+                                    "3,851025000,Clear,,0\n";
+    if (write_text_file(map_tmpl, valid_map) != 0) {
+        (void)remove(map_tmpl);
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", map_tmpl);
+    state->K = 88ULL;
+    state->aes_key[0] = 0xAAU;
+    if (csvChanImport(opts, state) != 0 || state->lcn_freq_count != 3) {
+        DSD_FPRINTF(stderr, "direct row-key channel import failed\n");
+        failed = 1;
+    }
+    const dsd_key_set* row0 = dsd_state_trunk_lcn_keys_get(state, 0U);
+    if (row0 == NULL || row0->keyloader != 0 || row0->scalars.K != 7ULL || row0->scalars.K1 != 0x0011223344556677ULL
+        || row0->scalars.K2 != 0x8899AABBCCDDEEFFULL || row0->scalars.aes_key[15] != 0xFFU) {
+        DSD_FPRINTF(stderr, "direct row-key values did not land in slot 0\n");
+        failed = 1;
+    } else {
+        dsd_key_set_install(scratch, row0);
+        if (scratch->K != 7ULL || scratch->K1 != 0x0011223344556677ULL || scratch->keyloader != 0
+            || scratch->aes_key[15] != 0xFFU) {
+            DSD_FPRINTF(stderr, "direct row-key set did not install\n");
+            failed = 1;
+        }
+    }
+    if (dsd_state_trunk_lcn_keys_get(state, 1U) != NULL) {
+        DSD_FPRINTF(stderr, "blank direct cells stored a key set\n");
+        failed = 1;
+    }
+    const dsd_key_set* row2 = dsd_state_trunk_lcn_keys_get(state, 2U);
+    if (row2 == NULL || row2->present != 1U || row2->scalars.K != 0ULL) {
+        DSD_FPRINTF(stderr, "explicit zero direct key did not override globals\n");
+        failed = 1;
+    }
+    if (state->K != 88ULL || state->aes_key[0] != 0xAAU) {
+        DSD_FPRINTF(stderr, "direct row-key import leaked into live key state\n");
+        failed = 1;
+    }
+
+    dsd_state_trunk_lcn_free(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    if (write_text_file(map_tmpl, "channel,frequency_hz,keys_hex_csv,single_key_dec\n"
+                                  "1,851000000,keys.csv,1\n")
+            != 0
+        || csvChanImport(opts, state) == 0) {
+        DSD_FPRINTF(stderr, "direct/file row-key conflict was accepted\n");
+        failed = 1;
+    }
+
+    dsd_state_trunk_lcn_free(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    if (write_text_file(map_tmpl, "channel,frequency_hz,single_key_hex,single_key_hex\n"
+                                  "1,851000000,0123456789,0123456789\n")
+            != 0
+        || csvChanImport(opts, state) == 0) {
+        DSD_FPRINTF(stderr, "duplicate direct row-key header was accepted\n");
+        failed = 1;
+    }
+
+    dsd_state_trunk_lcn_free(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    if (write_text_file(map_tmpl, "channel,frequency_hz,single_key_dec\n"
+                                  "1,851000000,256\n")
+            != 0
+        || csvChanImport(opts, state) == 0) {
+        DSD_FPRINTF(stderr, "invalid direct decimal row key was accepted\n");
+        failed = 1;
+    }
+
+    dsd_state_trunk_lcn_free(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    if (write_text_file(map_tmpl, "channel,frequency_hz,single_key_hex\n"
+                                  "1,851000000,not-a-key\n")
+            != 0
+        || csvChanImport(opts, state) == 0) {
+        DSD_FPRINTF(stderr, "invalid direct hexadecimal row key was accepted\n");
+        failed = 1;
+    }
+
+    (void)remove(map_tmpl);
+    free(opts);
+    free_test_state(state);
+    free_test_state(scratch);
+    return failed;
+}
+
+static int
 test_channel_import_accepts_hex_and_iden_chan_keys(void) {
     int failed = 0;
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -2073,6 +2188,9 @@ main(void) {
         return 1;
     }
     if (test_channel_import_row_key_columns() != 0) {
+        return 1;
+    }
+    if (test_channel_import_direct_key_columns() != 0) {
         return 1;
     }
     if (test_channel_import_row_key_relative_subdir() != 0) {
