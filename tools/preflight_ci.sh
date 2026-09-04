@@ -19,6 +19,9 @@ Options:
 Environment:
   DSD_HOOK_FAIL_ON_MISSING_TOOLS=1|0
   DSD_HOOK_RUN_SCAN_BUILD=1|0
+  DSD_HOOK_SCAN_BUILD_FRESH=1|0   clean scan-build rebuild instead of incremental
+  DSD_HOOK_JOBS=N                 worker budget (default: detected CPU count)
+  DSD_HOOK_SERIAL=1|0             one check at a time, streaming, fail fast
 
 Examples:
   tools/preflight_ci.sh

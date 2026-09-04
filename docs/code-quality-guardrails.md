@@ -29,7 +29,7 @@ Use this checklist when a change touches parser/decoder logic, external input, c
 Run the smallest useful set before opening a PR, then broaden it when the change is risky.
 
 - Normal C/C++ changes: `cmake --build --preset dev-debug -j` and `ctest --preset dev-debug --output-on-failure`.
-- Normal pre-push check: `tools/preflight_ci.sh`.
+- Normal pre-push check: `tools/preflight_ci.sh` (concurrent lanes sized to the machine, every failure reported at the end; `DSD_HOOK_SERIAL=1` for one-at-a-time streaming output).
 - Broad or high-risk changes: `tools/quality_preflight.sh`.
 - Sanitizer-sensitive code: `ctest --preset asan-ubsan-debug --output-on-failure` after configuring/building the matching preset.
 - Threading changes: `ctest --preset tsan-debug --output-on-failure` where the affected tests are supported by TSan.
