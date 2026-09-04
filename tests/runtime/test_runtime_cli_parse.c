@@ -6986,7 +6986,13 @@ test_scan_voice_rejects_ms_values_outside_range(void) {
         free(state);
     }
 
-    for (int shape = 0; shape < 2; shape++) {
+    /* Both bounds of the 100..600000 window parse for both flags in both argument forms.
+     * The space and equals forms carry separate range constants in the parser, so every
+     * (flag, form, bound) combination is pinned: an off-by-one in any one of them fails. */
+    for (int shape = 0; shape < 4; shape++) {
+        const int high = (shape & 1);
+        const int equals = (shape & 2) != 0;
+        const int want = high ? 600000 : 100;
         dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
         dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
         if (!opts || !state) {
@@ -6998,19 +7004,28 @@ test_scan_voice_rejects_ms_values_outside_range(void) {
         initState(state);
 
         char arg0[] = "dsd-neo";
-        char arg_space[] = "--scan-voice-qualify-ms";
-        char arg_space_val[] = "100";
-        char arg_equals[] = "--scan-voice-hold-ms=100";
-        char* argv[] = {arg0, (shape == 0) ? arg_space : arg_equals, (shape == 0) ? arg_space_val : NULL, NULL};
-        const int argc = (shape == 0) ? 3 : 2;
+        char qualify_flag[] = "--scan-voice-qualify-ms";
+        char hold_flag[] = "--scan-voice-hold-ms";
+        char value[16];
+        char qualify_equals[48];
+        char hold_equals[48];
+        DSD_SNPRINTF(value, sizeof value, "%d", want);
+        DSD_SNPRINTF(qualify_equals, sizeof qualify_equals, "--scan-voice-qualify-ms=%d", want);
+        DSD_SNPRINTF(hold_equals, sizeof hold_equals, "--scan-voice-hold-ms=%d", want);
+        char* argv_space[] = {arg0, qualify_flag, value, hold_flag, value, NULL};
+        char* argv_equals[] = {arg0, qualify_equals, hold_equals, NULL};
+        char** argv = equals ? argv_equals : argv_space;
+        const int argc = equals ? 3 : 5;
 
         int argc_effective = 0;
         int exit_rc = -1;
         int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
-        const int got = (shape == 0) ? opts->scan_voice_qualify_ms : opts->scan_voice_hold_ms;
-        if (rc != DSD_PARSE_CONTINUE || got != 100) {
-            DSD_FPRINTF(stderr, "shape %d: expected scan-voice boundary 100 to parse, got rc=%d exit=%d value=%d\n",
-                        shape, rc, exit_rc, got);
+        if (rc != DSD_PARSE_CONTINUE || opts->scan_voice_qualify_ms != want || opts->scan_voice_hold_ms != want) {
+            DSD_FPRINTF(stderr,
+                        "%s form: expected scan-voice boundary %d to parse for both flags, got rc=%d exit=%d "
+                        "qualify=%d hold=%d\n",
+                        equals ? "equals" : "space", want, rc, exit_rc, opts->scan_voice_qualify_ms,
+                        opts->scan_voice_hold_ms);
             test_rc = 1;
         }
 

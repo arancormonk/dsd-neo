@@ -185,8 +185,14 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing commented scan_voice_hold_ms key\n");
         rc = 1;
     }
-    if (!strstr(content, "# Range: 100 to 600000")) {
-        DSD_FPRINTF(stderr, "FAIL: template missing scan voice millisecond range hint\n");
+    /* The range hint sits directly above its key, so pin each key's own hint: a single
+     * search for the shared "100 to 600000" text would pass with either key's hint missing. */
+    if (!strstr(content, "# Range: 100 to 600000\n# scan_voice_qualify_ms = 1000\n")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing scan_voice_qualify_ms range hint or default\n");
+        rc = 1;
+    }
+    if (!strstr(content, "# Range: 100 to 600000\n# scan_voice_hold_ms = 2000\n")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing scan_voice_hold_ms range hint or default\n");
         rc = 1;
     }
     if (strstr(content, "version =") != NULL) {

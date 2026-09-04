@@ -131,10 +131,11 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
 - `--trunk-scan-activity-hold-ms <ms>` sets the default hold time after allowed conventional DMR/NXDN activity
   (NXDN96 and NXDN48 alike). Default: `1200`.
 - Per-target CSV values override these defaults.
-- `--scan-voice-only` with `--scan-voice-qualify-ms <100..600000>` (default `1000`, the window after sync in
-  which voice must appear or the scan moves on) and `--scan-voice-hold-ms <100..600000>` (default `2000`, the
-  time to stay after the last voice frame): conventional targets hold only from decoded voice media (headers and
-  data no longer hold); trunked targets are unchanged (control-only rotates after dwell).
+- `--scan-voice-only`: conventional targets hold only from decoded voice media (headers and data no longer hold),
+  with the per-target `dwell_ms` as the qualify window in which voice must appear and `activity_hold_ms` as the
+  hold after the last voice frame; trunked targets are unchanged (control-only rotates after dwell). The
+  `--scan-voice-qualify-ms` and `--scan-voice-hold-ms` timings apply to the `-Y` conventional scan only, not to
+  trunk-scan targets.
 
 Use the `-fa` (AUTO) command-line mode for mixed scan lists that contain NXDN targets: `-ft` enables the P25/DMR
 decoders but neither NXDN rate, so NXDN rows would sit idle with a startup warning. The two NXDN rates are separate
