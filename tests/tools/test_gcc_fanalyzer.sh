@@ -111,7 +111,9 @@ fi
 if ! grep -q -- "-Wanalyzer-double-free" "$WORK/seeded.out"; then
   fail "the double free was not reported"
 fi
-if ! grep -q "analyzer_diagnostics=1" "$WORK/seeded.out"; then
+# A count, not exactly one: which diagnostics a given GCC reports for the same
+# defect is its business, and the check is that they were counted at all.
+if ! grep -qE "analyzer_diagnostics=[1-9]" "$WORK/seeded.out"; then
   fail "the summary did not count the diagnostic"
   cat "$WORK/seeded.out" >&2
 fi
@@ -122,7 +124,7 @@ run_case strict --strict -- seeded.c
 if [[ $rc -eq 0 ]]; then
   fail "--strict did not fail on a seeded double free"
 fi
-if ! grep -q "analyzer_diagnostics=1" "$WORK/strict.out"; then
+if ! grep -qE "analyzer_diagnostics=[1-9]" "$WORK/strict.out"; then
   fail "--strict did not count the diagnostic"
   cat "$WORK/strict.out" >&2
 fi
