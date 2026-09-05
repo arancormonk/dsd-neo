@@ -3182,8 +3182,10 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
     opts->trunk_enable = 0;
     opts->scanner_mode = 0;
     // Leaving -Y hands the foreground keyring back to the globals.
-    dsd_engine_channel_scan_leave(opts, state);
-    dsd_scan_keys_leave(state);
+    if (opts->trunk_scan_enabled != 1) {
+        dsd_engine_channel_scan_leave(opts, state);
+        dsd_scan_keys_leave(state);
+    }
     reset_call_tracking(opts, state, 1);
     ui_set_toast(state, 3, "Automatic tuning stopped");
     return UI_CMD_APPLY_COMPLETED;
@@ -4210,7 +4212,9 @@ static int
 apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     const int mode_update = c
                             && (c->id == DSD_APP_CMD_DECODE_MODE_SET || c->id == DSD_APP_CMD_MOD_SET
-                                || c->id == DSD_APP_CMD_MOD_TOGGLE || c->id == DSD_APP_CMD_CONFIG_APPLY);
+                                || c->id == DSD_APP_CMD_MOD_TOGGLE || c->id == DSD_APP_CMD_MOD_P2_TOGGLE
+                                || c->id == DSD_APP_CMD_INVERT_TOGGLE || c->id == DSD_APP_CMD_COSINE_FILTER_TOGGLE
+                                || c->id == DSD_APP_CMD_INPUT_MONITOR_TOGGLE || c->id == DSD_APP_CMD_CONFIG_APPLY);
     const int scoped = mode_update && opts && state && dsd_scan_mode_suspend(opts, state);
     const int result = apply_cmd_unscoped(opts, state, c);
     if (scoped && dsd_scan_mode_resume(opts, state)) {

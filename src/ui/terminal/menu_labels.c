@@ -11,6 +11,7 @@
 #include "menu_labels.h"
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -217,9 +218,14 @@ is_ted_allowed(const void* v) {
 const char*
 lbl_decode_mode(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    dsdneoUserDecodeMode mode = (c && c->opts) ? dsd_scan_mode_configured_preset(c->opts, c->state) : DSDCFG_MODE_AUTO;
+    /* Menu contexts point at the live decoder. Extension-backed reads must use the
+     * published copies, whose lifetime belongs to this UI consumer thread. */
+    const dsd_state* snapshot = c ? dsd_app_get_latest_snapshot() : NULL;
+    const dsd_opts* opts_snapshot = c ? dsd_app_get_latest_opts_snapshot() : NULL;
+    dsdneoUserDecodeMode mode =
+        opts_snapshot ? dsd_scan_mode_configured_preset(opts_snapshot, snapshot) : DSDCFG_MODE_AUTO;
     /* "..." because the row opens a picker; without it the grammar promises a toggle. */
-    const dsd_scan_mode active = c ? dsd_scan_mode_active(c->state) : DSD_SCAN_MODE_INHERIT;
+    const dsd_scan_mode active = dsd_scan_mode_active(snapshot);
     if (active != DSD_SCAN_MODE_INHERIT) {
         DSD_SNPRINTF(b, n, "Mode... [%s; scan %s]", dsd_decode_mode_display_name(mode), dsd_scan_mode_name(active));
     } else {

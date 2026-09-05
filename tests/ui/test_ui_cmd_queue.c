@@ -2103,6 +2103,66 @@ test_scan_voice_gate_commands(void) {
 }
 
 static int
+test_scoped_setting_toggles(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    int rc = 0;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->use_cosine_filter = 1;
+    opts->monitor_input_audio = 0;
+    opts->inverted_dmr = 0;
+    rc |= expect_int("enter DMR for toggles", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR), 0);
+    const int commands[] = {DSD_APP_CMD_INVERT_TOGGLE, DSD_APP_CMD_COSINE_FILTER_TOGGLE,
+                            DSD_APP_CMD_INPUT_MONITOR_TOGGLE};
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); ++i) {
+        rc |= expect_int("scoped toggle queued", dsd_app_command_action(commands[i]), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("scoped toggle drained", dsd_app_drain_cmds(opts, state), 1);
+    }
+    rc |= expect_int("hop to NXDN", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48), 0);
+    rc |= expect_int("hop keeps invert", opts->inverted_dmr, 1);
+    rc |= expect_int("hop keeps filter", opts->use_cosine_filter, 0);
+    rc |= expect_int("hop keeps monitor", opts->monitor_input_audio, 1);
+    dsd_scan_mode_leave(opts, state);
+    rc |= expect_int("exit keeps invert", opts->inverted_dmr, 1);
+    rc |= expect_int("exit keeps filter", opts->use_cosine_filter, 0);
+    rc |= expect_int("exit keeps monitor", opts->monitor_input_audio, 1);
+    rc |= expect_int("enter P25 for helper toggle", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25), 0);
+    rc |= expect_int("helper toggle queued", dsd_app_command_action(DSD_APP_CMD_MOD_P2_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("helper toggle drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("helper remains on row", opts->mod_p25p2_profile_lock, 1);
+    rc |= expect_int("helper applies 6000 on first press", state->sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    rc |= expect_int("helper applies current input timing", state->samplesPerSymbol, 8);
+    dsd_scan_mode_leave(opts, state);
+    rc |= expect_int("exit keeps helper", opts->mod_p25p2_profile_lock, 1);
+    rc |= expect_int("exit keeps helper profile", state->sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    /* These commands leave the trunk-scan owner running. Its decoder scope must
+     * survive until the coordinator switches targets or shuts down. */
+    opts->trunk_scan_enabled = 1;
+    rc |= expect_int("enter target NXDN", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48), 0);
+    rc |= expect_int("trunk enable queued", dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk enable drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("enable preserves target class", dsd_scan_mode_active(state), DSD_SCAN_MODE_NXDN48);
+    rc |= expect_int("release queued with target owner", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release drained with target owner", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("release preserves target owner", opts->trunk_scan_enabled, 1);
+    rc |= expect_int("release preserves target class", dsd_scan_mode_active(state), DSD_SCAN_MODE_NXDN48);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
 test_scoped_mode_commands_and_config(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -2151,6 +2211,7 @@ test_scoped_mode_commands_and_config(void) {
 int
 main(void) {
     int rc = 0;
+    rc |= test_scoped_setting_toggles();
     rc |= test_scoped_mode_commands_and_config();
     rc |= test_command_api();
     rc |= test_manual_tune_queue_semantics();

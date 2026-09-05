@@ -256,9 +256,8 @@ During scanning:
   it is parked (`NOTICE: NXDN trunking: grant: CH 12 has no frequency mapping in chan_csv (site.csv)`), and a summary
   for each such target at exit. Every target keeps its own list, so one target's gaps are never attributed to another.
 - `nxdn48-conventional` targets park at 2400 sym/s with the 6.25 kHz channel filter; every other GFSK-family target
-  parks at 4800 sym/s with the 12.5 kHz filter. Set `modulation = gfsk` on NXDN48 rows: that pins the symbol-rate
-  hunt to the 2400 profile for the whole dwell, whereas an empty or `auto` column lets the hunt rotate through the
-  other enabled rates during dead air, which also swings the channel filter. The parked target's type selects the
+  parks at 4800 sym/s with the 12.5 kHz filter. Each target's decoder class keeps the hunt on its allowed
+  symbol profile throughout dead air, including with empty or `auto` modulation. The parked target's type selects the
   symbol rate and channel filter even under a global `-m` modulation lock; the lock still governs symbol slicing, so
   DMR and NXDN rows under `-mc` or `-mq` need `modulation = gfsk` (or `auto`) to decode.
 - When a retune fails, DSD-neo logs a warning, briefly cools that target down, and tries another eligible target.

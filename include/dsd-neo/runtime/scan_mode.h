@@ -73,6 +73,8 @@ dsd_scan_mode dsd_scan_mode_active(const dsd_state* state);
 /** Capture/restore effective fields for a staged tune; no pointers or audio sink fields are changed. */
 void dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out);
 void dsd_scan_settings_restore(const dsd_scan_settings* saved, dsd_opts* opts, dsd_state* state);
+/** Compare setting values, ignoring unused label bytes; optionally include live timing/modulation. */
+int dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, int include_timing);
 /** Prepare production row settings without committing the row or baseline. */
 int dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, dsd_scan_settings* out);
 /** Reserve scope storage before staging a tune or building trunk-target snapshots. */

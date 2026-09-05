@@ -1381,7 +1381,10 @@ test_manual_p25p2_c4fm_bypasses_profile_gating(void) {
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_NONE);
 
     opts.mod_p25p2_c4fm = 1;
+    assert(dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_P25) == 0);
+    assert(opts.mod_p25p2_c4fm == 1);
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_P25P2_POS);
+    dsd_scan_mode_leave(&opts, &state);
 }
 
 static void

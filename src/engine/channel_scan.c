@@ -23,7 +23,6 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
 
 typedef struct {
@@ -55,7 +54,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     if (dsd_scan_mode_prepare(opts, state, scan->mode, &latest) != 0) {
         return -1;
     }
-    if (memcmp(&latest, &scan->prepared, sizeof(latest)) != 0) {
+    if (!dsd_scan_settings_equal(&latest, &scan->prepared, 1)) {
         /* A configured setting changed while tuning. Stage the new effective
          * profile in a fresh request before any frame can use it. */
         scan->request = 0;

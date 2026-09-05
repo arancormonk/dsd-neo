@@ -165,6 +165,22 @@ dsd_scan_settings_restore(const dsd_scan_settings* saved, dsd_opts* opts, dsd_st
     state->sps_hunt_idx = saved->state_sps_hunt_idx;
 }
 
+int
+dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, int include_timing) {
+    if (!a || !b) {
+        return 0;
+    }
+    if (memcmp(a, b, offsetof(dsd_scan_settings, output_name)) != 0
+        || strncmp(a->output_name, b->output_name, sizeof(a->output_name)) != 0) {
+        return 0;
+    }
+    const size_t timing_offset = offsetof(dsd_scan_settings, state_rf_mod);
+    return !include_timing
+           || memcmp((const unsigned char*)a + timing_offset, (const unsigned char*)b + timing_offset,
+                     sizeof(*a) - timing_offset)
+                  == 0;
+}
+
 dsd_decode_mode_profile
 dsd_scan_mode_profile(dsd_scan_mode mode) {
     return dsd_decode_mode_profile_for(
@@ -213,6 +229,10 @@ scan_scope_apply(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
         opts->mod_c4fm = scope->configured.mod_c4fm;
         opts->mod_qpsk = scope->configured.mod_qpsk;
         opts->mod_gfsk = scope->configured.mod_gfsk;
+        if (scope->mode == DSD_SCAN_MODE_P25) {
+            opts->mod_p25p2_c4fm = scope->configured.mod_p25p2_c4fm;
+            opts->mod_p25p2_profile_lock = scope->configured.mod_p25p2_profile_lock;
+        }
         state->rf_mod = dsd_opts_modulation(opts);
     }
     if (scope->modulation) {
@@ -225,7 +245,11 @@ scan_scope_apply(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
         opts->mod_gfsk = mod == 2;
         state->rf_mod = mod;
     }
-    const dsd_decode_mode_profile profile = dsd_scan_mode_profile(scope->mode);
+    dsd_decode_mode_profile profile = dsd_scan_mode_profile(scope->mode);
+    if (scope->mode == DSD_SCAN_MODE_P25 && opts->mod_p25p2_profile_lock
+        && scope->configured.state_sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4) {
+        profile = dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2);
+    }
     scan_scope_apply_timing(opts, state, profile);
 }
 
@@ -260,6 +284,9 @@ dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode) {
         return -1;
     }
     scan_scope* scope = scan_scope_get(state);
+    if (!scope) {
+        return -1;
+    }
     scope->modulation = 0;
     scope->mode = mode;
     scope->suspended = 0;
@@ -325,7 +352,7 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
     }
     dsd_scan_settings effective;
     dsd_scan_settings_capture(opts, state, &effective);
-    if (memcmp(&scope->effective, &effective, offsetof(dsd_scan_settings, state_rf_mod)) == 0) {
+    if (dsd_scan_settings_equal(&scope->effective, &effective, 0)) {
         dsd_scan_settings_restore(&scope->effective, opts, state);
         return 0;
     }
