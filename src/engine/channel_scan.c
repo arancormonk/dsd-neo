@@ -40,13 +40,18 @@ channel_scan_get(const dsd_state* state) {
     return DSD_STATE_EXT_GET_AS(channel_scan, state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN);
 }
 
-static int
-channel_scan_waiting(const dsd_state* state) {
+int
+dsd_engine_channel_scan_waiting(const dsd_state* state) {
     const channel_scan* scan = channel_scan_get(state);
     return scan && (scan->request != 0 || scan->retry);
 }
 
 static int channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row);
+
+static int
+channel_scan_row_is_current(const dsd_opts* opts, const dsd_state* state, const channel_scan* scan) {
+    return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && scan->map_sequence == state->trunk_chan_map_seq;
+}
 
 static void
 channel_scan_end_calls(dsd_opts* opts, dsd_state* state) {
@@ -90,17 +95,19 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
 
 int
 dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
     channel_scan* scan = channel_scan_get(state);
     if (!scan) {
         return 0;
     }
     if (scan->retry) {
         scan->retry = 0;
-        if (opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1
-            && scan->map_sequence == state->trunk_chan_map_seq) {
+        if (channel_scan_row_is_current(opts, state, scan)) {
             (void)channel_scan_start_row(opts, state, scan->row);
         }
-        return channel_scan_waiting(state);
+        return dsd_engine_channel_scan_waiting(state);
     }
     if (!scan->request) {
         return 0;
@@ -109,19 +116,21 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
         return 1;
     }
-    if (result == DSD_TRUNK_TUNE_RESULT_OK && scan->map_sequence == state->trunk_chan_map_seq && opts->scanner_mode == 1
-        && opts->trunk_scan_enabled != 1) {
+    if (result == DSD_TRUNK_TUNE_RESULT_OK && channel_scan_row_is_current(opts, state, scan)) {
         scan->request = 0;
         (void)channel_scan_commit(opts, state, scan);
-        return channel_scan_waiting(state);
+        return dsd_engine_channel_scan_waiting(state);
     }
     channel_scan_end_calls(opts, state);
+    if (result == DSD_TRUNK_TUNE_RESULT_FAILED && scan->map_sequence == state->trunk_chan_map_seq) {
+        state->lcn_freq_roll = scan->row + 1;
+    }
     scan->request = 0;
     return 0;
 }
 
 int
-dsd_engine_channel_scan_sync_ready(dsd_opts* opts, dsd_state* state) {
+dsd_engine_channel_scan_service_sync(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return 0;
     }
@@ -150,7 +159,7 @@ channel_scan_next_row(const dsd_state* state) {
 static int
 channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     channel_scan* scan = channel_scan_get(state);
-    if (row < 0) {
+    if (row < 0 || row >= state->lcn_freq_count) {
         return 0;
     }
     const long freq = *dsd_state_trunk_lcn_slot(state, row);
@@ -191,6 +200,11 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     /* A failed second backend may already have moved the first one. Keep the tune
      * ledger's frame gate closed until a subsequent successful request recovers. */
     channel_scan_end_calls(opts, state);
+    if (result == DSD_TRUNK_TUNE_RESULT_FAILED) {
+        /* A bad row must not prevent a later successful row from recovering
+         * the receiver and retiring the failed tune's frame gate. */
+        state->lcn_freq_roll = row + 1;
+    }
     scan->request = 0;
     return -1;
 }
@@ -200,7 +214,7 @@ dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || opts->trunk_scan_enabled == 1 || state->lcn_freq_count <= 0) {
         return 0;
     }
-    if (channel_scan_waiting(state)) {
+    if (dsd_engine_channel_scan_waiting(state)) {
         (void)dsd_engine_channel_scan_pending(opts, state);
         return 0;
     }
@@ -236,6 +250,9 @@ dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state) {
 
 void
 dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
     const int active = channel_scan_get(state) != NULL || dsd_scan_mode_configured_view(state) != NULL
                        || dsd_scan_mode_updating(state);
     if (active) {
@@ -244,7 +261,7 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, NULL, NULL);
     dsd_scan_mode_leave(opts, state);
     if (active) {
-        dsd_frame_sync_reset_acquisition(opts, state, 1);
+        dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
         if (opts->audio_in_type == AUDIO_IN_RTL) {
             const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
             const int filter =

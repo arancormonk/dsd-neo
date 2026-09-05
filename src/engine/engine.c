@@ -2350,8 +2350,9 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     // calls as it retunes, so the finalizer has to know whether the frequency moved out from under
     // whatever it is about to close.
     const int scanner_retuned = no_carrier_step_scanner_mode_if_needed(opts, state, now);
-    if (scanner_retuned && dsd_channel_modes_present(state)) {
-        /* The committed row finalized its outgoing calls and reset once. */
+    if (dsd_channel_modes_present(state) && (scanner_retuned || dsd_engine_channel_scan_waiting(state))) {
+        /* Row ownership ends outgoing calls at commit/failure with an explicit
+         * hop reason. A pending tune must not close them as sync loss first. */
         return;
     }
     no_carrier_return_to_control_channel_if_needed(opts, state, now);
@@ -2515,7 +2516,10 @@ live_scanner_update_thresholds(dsd_state* state, int* last_max, int* last_min) {
 static void
 live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_max, int* last_min,
                                    uint64_t* frame_tune_generation) {
-    while (state->synctype != DSD_SYNC_NONE && dsd_engine_channel_scan_sync_ready(opts, state)) {
+    while (state->synctype != DSD_SYNC_NONE) {
+        if (!dsd_engine_channel_scan_service_sync(opts, state)) {
+            break;
+        }
         p25_sm_tick_guard_enter();
         const uint64_t dispatch_generation =
             frame_tune_generation ? *frame_tune_generation : dsd_trunk_tuning_generation();
@@ -2541,7 +2545,7 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
             }
         }
         dsd_runtime_pump_controls(opts, state);
-        if (!dsd_engine_channel_scan_sync_ready(opts, state)) {
+        if (!dsd_engine_channel_scan_service_sync(opts, state)) {
             break;
         }
         if (frame_tune_generation) {

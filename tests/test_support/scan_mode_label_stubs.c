@@ -16,6 +16,16 @@ static dsd_opts snapshot_opts;
 static dsd_state snapshot_state;
 static int snapshots_available = 1;
 static dsd_scan_mode active_mode;
+static dsd_scan_settings configured_settings;
+static int have_configured;
+
+void
+dsd_test_scan_labels_configured(const dsd_scan_settings* settings) {
+    have_configured = settings != NULL;
+    if (settings) {
+        configured_settings = *settings;
+    }
+}
 
 void
 dsd_test_scan_labels_set(int available, dsd_scan_mode mode) {
@@ -26,7 +36,7 @@ dsd_test_scan_labels_set(int available, dsd_scan_mode mode) {
 const dsd_scan_settings*
 dsd_scan_mode_configured_view(const dsd_state* state) {
     assert(state == &snapshot_state || state == NULL);
-    return NULL;
+    return state && have_configured ? &configured_settings : NULL;
 }
 
 void

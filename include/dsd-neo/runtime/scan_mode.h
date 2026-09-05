@@ -24,6 +24,15 @@ typedef enum {
     DSD_SCAN_MODE_M17
 } dsd_scan_mode;
 
+/** Target modulation precedence shared by scope reapplication and trunk entry. */
+typedef enum {
+    DSD_SCAN_MODULATION_INHERIT = 0,
+    DSD_SCAN_MODULATION_AUTO,
+    DSD_SCAN_MODULATION_C4FM,
+    DSD_SCAN_MODULATION_CQPSK,
+    DSD_SCAN_MODULATION_GFSK
+} dsd_scan_modulation;
+
 /** Scalar snapshot of the exact configured decoder settings; owns no pointers. */
 typedef struct {
     int frame_dstar;
@@ -95,8 +104,10 @@ int dsd_scan_mode_suspend(dsd_opts* opts, dsd_state* state);
 int dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state);
 /** Nonzero between suspend and resume; side effects must wait until effective settings are known. */
 int dsd_scan_mode_updating(const dsd_state* state);
-/** Trunk target modulation precedence: 0 inherit, 1 auto, 2 C4FM, 3 CQPSK, 4 GFSK. */
-void dsd_scan_mode_target_modulation(const dsd_state* state, int modulation);
+/** Retain target modulation precedence across configured-setting updates. */
+void dsd_scan_mode_target_modulation(const dsd_state* state, dsd_scan_modulation modulation);
+/** Apply target flags/locks only; AUTO starts P25 on C4FM and other trunk classes on GFSK. */
+void dsd_scan_mode_apply_modulation(dsd_opts* opts, dsd_scan_mode mode, dsd_scan_modulation modulation);
 /** Snapshot configured settings, even while a row override is active. */
 void dsd_scan_mode_configured(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out);
 /** Borrow saved settings, or NULL without a scope/during an update. Use only on
@@ -104,7 +115,7 @@ void dsd_scan_mode_configured(const dsd_opts* opts, const dsd_state* state, dsd_
 const dsd_scan_settings* dsd_scan_mode_configured_view(const dsd_state* state);
 /** Deep-copy scalar scope metadata for frontend snapshots. No live extension pointer is shared. */
 void dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src);
-/** Current class profile; combined P25 follows the active Phase 1/2 profile. */
+/** Current class profile; combined P25 and inherited settings follow the active hunt index. */
 dsd_decode_mode_profile dsd_scan_mode_effective_profile(const dsd_opts* opts, const dsd_state* state);
 #ifdef __cplusplus
 }

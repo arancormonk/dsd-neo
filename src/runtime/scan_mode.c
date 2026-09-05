@@ -20,7 +20,7 @@
 typedef struct {
     dsd_scan_settings configured;
     dsd_scan_settings effective;
-    int modulation;
+    dsd_scan_modulation modulation;
     dsd_scan_mode mode;
     dsdneoUserDecodeMode configured_mode;
     int suspended;
@@ -279,15 +279,9 @@ scan_scope_apply(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
         }
         state->rf_mod = dsd_opts_modulation(opts);
     }
-    if (scope->modulation) {
-        const int mod = scope->modulation == 1 ? (scope->mode == DSD_SCAN_MODE_P25 ? 0 : 2) : scope->modulation - 2;
-        opts->mod_cli_lock = scope->modulation == 1 ? 0 : 1;
-        opts->mod_p25p2_c4fm = 0;
-        opts->mod_p25p2_profile_lock = 0;
-        opts->mod_c4fm = mod == 0;
-        opts->mod_qpsk = mod == 1;
-        opts->mod_gfsk = mod == 2;
-        state->rf_mod = mod;
+    if (scope->modulation != DSD_SCAN_MODULATION_INHERIT) {
+        dsd_scan_mode_apply_modulation(opts, scope->mode, scope->modulation);
+        state->rf_mod = dsd_opts_modulation(opts);
     }
     dsd_decode_mode_profile profile = dsd_scan_mode_profile(scope->mode);
     if (scope->mode == DSD_SCAN_MODE_P25 && opts->mod_p25p2_profile_lock
@@ -409,11 +403,32 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-dsd_scan_mode_target_modulation(const dsd_state* state, int modulation) {
+dsd_scan_mode_target_modulation(const dsd_state* state, dsd_scan_modulation modulation) {
     scan_scope* scope = scan_scope_get(state);
-    if (scope && modulation >= 0 && modulation <= 4) {
+    if (scope && (unsigned)modulation <= DSD_SCAN_MODULATION_GFSK) {
         scope->modulation = modulation;
     }
+}
+
+void
+dsd_scan_mode_apply_modulation(dsd_opts* opts, dsd_scan_mode mode, dsd_scan_modulation modulation) {
+    if (!opts || modulation == DSD_SCAN_MODULATION_INHERIT || (unsigned)modulation > DSD_SCAN_MODULATION_GFSK) {
+        return;
+    }
+    int mod;
+    switch (modulation) {
+        case DSD_SCAN_MODULATION_AUTO: mod = mode == DSD_SCAN_MODE_P25 ? 0 : 2; break;
+        case DSD_SCAN_MODULATION_C4FM: mod = 0; break;
+        case DSD_SCAN_MODULATION_CQPSK: mod = 1; break;
+        case DSD_SCAN_MODULATION_GFSK: mod = 2; break;
+        default: return;
+    }
+    opts->mod_cli_lock = modulation != DSD_SCAN_MODULATION_AUTO;
+    opts->mod_p25p2_c4fm = 0;
+    opts->mod_p25p2_profile_lock = 0;
+    opts->mod_c4fm = mod == 0;
+    opts->mod_qpsk = mod == 1;
+    opts->mod_gfsk = mod == 2;
 }
 
 void
@@ -468,6 +483,18 @@ dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src) {
 dsd_decode_mode_profile
 dsd_scan_mode_effective_profile(const dsd_opts* opts, const dsd_state* state) {
     const dsd_scan_mode mode = dsd_scan_mode_active(state);
+    if (mode == DSD_SCAN_MODE_INHERIT && state) {
+        /* AUTO/custom baselines may have been captured anywhere in the hunt.
+         * The restored index, timing and frontend must describe the same profile. */
+        switch (state->sps_hunt_idx) {
+            case DSD_FRAME_SYNC_SPS_PROFILE_4800_4: return dsd_decode_mode_profile_for(DSDCFG_MODE_P25P1);
+            case DSD_FRAME_SYNC_SPS_PROFILE_2400_4: return dsd_decode_mode_profile_for(DSDCFG_MODE_NXDN48);
+            case DSD_FRAME_SYNC_SPS_PROFILE_9600_2: return dsd_decode_mode_profile_for(DSDCFG_MODE_EDACS_PV);
+            case DSD_FRAME_SYNC_SPS_PROFILE_6000_4: return dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2);
+            case DSD_FRAME_SYNC_SPS_PROFILE_4800_2: return dsd_decode_mode_profile_for(DSDCFG_MODE_DSTAR);
+            default: break;
+        }
+    }
     if (mode == DSD_SCAN_MODE_P25 && state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4) {
         return dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2);
     }

@@ -38,7 +38,7 @@ test_p25_modulation_helpers(dsd_opts* opts, dsd_state* state) {
     assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
     assert(opts->mod_p25p2_c4fm && state->samplesPerSymbol == 10 && state->rf_mod == 0);
     /* An explicit trunk-target modulation still takes precedence over the helper. */
-    dsd_scan_mode_target_modulation(state, 1);
+    dsd_scan_mode_target_modulation(state, DSD_SCAN_MODULATION_AUTO);
     assert(dsd_scan_mode_suspend(opts, state));
     (void)dsd_scan_mode_resume(opts, state);
     assert(!opts->mod_p25p2_c4fm);
@@ -147,6 +147,23 @@ main(void) {
     assert(dsd_scan_mode_parse("NXDN", &parsed) == -1);
     assert(dsd_scan_mode_parse("analog", &parsed) == -1);
     assert(dsd_scan_mode_parse("p25p1", &parsed) == -1);
+    /* AUTO may be captured on any hunt profile. Leaving a typed row must
+     * publish the restored clock and slicer levels, not AUTO's starting preset. */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    const int profile_rates[] = {4800, 2400, 9600, 6000, 4800};
+    const int profile_levels[] = {4, 4, 2, 4, 2};
+    for (int i = 0; i < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; i++) {
+        s->sps_hunt_idx = i;
+        s->samplesPerSymbol = 48000 / profile_rates[i];
+        s->symbolCenter = dsd_opts_symbol_center(s->samplesPerSymbol);
+        assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+        dsd_scan_mode_leave(o, s);
+        const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(o, s);
+        assert(profile.symbol_rate_hz == profile_rates[i]);
+        assert(profile.levels == profile_levels[i]);
+        assert((int)profile.sps_profile_index == i);
+        assert(s->samplesPerSymbol == 48000 / profile.symbol_rate_hz);
+    }
     test_p25_modulation_helpers(o, s);
     assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
     dsd_scan_settings_capture(o, s, &baseline);

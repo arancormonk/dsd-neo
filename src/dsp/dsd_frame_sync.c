@@ -3508,6 +3508,14 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
                                               : frame_sync_sps_hunt_next_index(opts, state));
     const int previous_idx = state->sps_hunt_idx;
     const int previous_mod = state->rf_mod;
+    if (frame_sync_trunk_scan_p25p1_trial(opts, state) && previous_mod != 1) {
+        /* Both P25 phases are enabled per target. Waiting for 4800 -> 6000 ->
+         * 4800 costs 3375 ms before CQPSK can be tried, beyond the default
+         * 3000 ms visit. The scan policy budgets shorter 4800 dwells for each
+         * demodulator before rotating, so Phase 2 also fits in the visit. */
+        next_idx = previous_idx;
+        state->p25_p1_mod_probe_next_qpsk = 1;
+    }
     frame_sync_apply_sps_hunt_profile(opts, state, next_idx, preserve_modulation);
     frame_sync_maybe_probe_p25p1_cqpsk(opts, state, preserve_modulation, previous_idx, previous_mod);
     /* A repeated binary profile is a step too: frame_sync_apply_sps_hunt_profile() normalises

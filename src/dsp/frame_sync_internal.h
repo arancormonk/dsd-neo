@@ -17,7 +17,10 @@ extern "C" {
  * The no-sync timeout fires after this many consecutive matchless symbols, and the SPS
  * hunt's dwell is a whole number of these (see dsd_frame_sync_sps_hunt_dwell_passes()).
  */
-#define DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS         1800
+#define DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS 1800
+
+/** Unlocked RTL trunk-scan P25 acquisition needs both demodulators within one visit. */
+int frame_sync_trunk_scan_p25p1_trial(const dsd_opts* opts, const dsd_state* state);
 
 /* How long a P25p1 frame that decoded its NID keeps the modulation heuristics off the
  * demodulator that carried it, in symbols at 4800 sym/s (two seconds). Long enough to span the

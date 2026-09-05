@@ -4526,7 +4526,7 @@ add_test(NAME ENGINE_CHANNEL_SCAN COMMAND dsd-neo_test_engine_channel_scan)
 add_executable(
     dsd-neo_test_engine_trunk_scan
     engine/test_engine_trunk_scan.c
-    test_support/channel_scan_stubs.c
+    ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/scan_voice_gate.c
     ${PROJECT_SOURCE_DIR}/src/engine/p25_bandplan_export.c

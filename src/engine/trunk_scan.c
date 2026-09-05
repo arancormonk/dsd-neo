@@ -1930,44 +1930,11 @@ trunk_scan_restore_saved_mod_gain_opts(dsd_opts* opts, const dsd_trunk_scan_coor
 
 static void
 trunk_scan_apply_target_mod_opts(dsd_opts* opts, const dsd_trunk_scan_target* target) {
-    if (!opts || !target || target->modulation == DSD_TRUNK_SCAN_MODULATION_UNSET) {
+    if (!target) {
         return;
     }
-    opts->mod_p25p2_c4fm = 0;
-    opts->mod_p25p2_profile_lock = 0;
-    switch (target->modulation) {
-        case DSD_TRUNK_SCAN_MODULATION_AUTO:
-            if (target->type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
-                opts->mod_c4fm = 1;
-                opts->mod_qpsk = 0;
-                opts->mod_gfsk = 0;
-            } else {
-                opts->mod_c4fm = 0;
-                opts->mod_qpsk = 0;
-                opts->mod_gfsk = 1;
-            }
-            opts->mod_cli_lock = 0;
-            break;
-        case DSD_TRUNK_SCAN_MODULATION_C4FM:
-            opts->mod_c4fm = 1;
-            opts->mod_qpsk = 0;
-            opts->mod_gfsk = 0;
-            opts->mod_cli_lock = 1;
-            break;
-        case DSD_TRUNK_SCAN_MODULATION_CQPSK:
-            opts->mod_c4fm = 0;
-            opts->mod_qpsk = 1;
-            opts->mod_gfsk = 0;
-            opts->mod_cli_lock = 1;
-            break;
-        case DSD_TRUNK_SCAN_MODULATION_GFSK:
-            opts->mod_c4fm = 0;
-            opts->mod_qpsk = 0;
-            opts->mod_gfsk = 1;
-            opts->mod_cli_lock = 1;
-            break;
-        case DSD_TRUNK_SCAN_MODULATION_UNSET: break;
-    }
+    dsd_scan_mode_apply_modulation(opts, trunk_scan_target_is_p25(target) ? DSD_SCAN_MODE_P25 : DSD_SCAN_MODE_DMR,
+                                   (dsd_scan_modulation)target->modulation);
 }
 
 static void
@@ -2113,7 +2080,6 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
         trunk_scan_restore_saved_mod_gain_opts(opts, coord);
         trunk_scan_restore_snapshot(state, empty_snapshot);
         trunk_scan_apply_target_opts(opts, coord, &rt->target);
-        dsd_scan_mode_target_modulation(state, (int)rt->target.modulation);
         trunk_scan_apply_target_demod(opts, state, &rt->target);
         trunk_scan_seed_target_state(state, &rt->target, now_m);
         if (trunk_scan_import_target_chan_csv(opts, state, &rt->target, err, err_sz) != 0) {
@@ -2314,7 +2280,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     trunk_scan_restore_target_snapshot(coord, state, rt);
     trunk_scan_share_peer_idens(coord, state, rt);
     trunk_scan_apply_target_opts(opts, coord, &rt->target);
-    dsd_scan_mode_target_modulation(state, (int)rt->target.modulation);
+    dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)rt->target.modulation);
     trunk_scan_apply_target_keys(state, rt);
     trunk_scan_apply_target_demod(opts, state, &rt->target);
     trunk_scan_sync_active_sm_mode(state, rt);
@@ -2415,7 +2381,7 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     (void)dsd_scan_mode_enter(opts, state, trunk_scan_target_mode(coord->targets[coord->active].target.type));
     trunk_scan_restore_snapshot(state, original_snapshot);
     trunk_scan_apply_target_opts(opts, coord, &coord->targets[coord->active].target);
-    dsd_scan_mode_target_modulation(state, (int)coord->targets[coord->active].target.modulation);
+    dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)coord->targets[coord->active].target.modulation);
     trunk_scan_apply_target_keys(state, &coord->targets[coord->active]);
     trunk_scan_apply_target_demod(opts, state, &coord->targets[coord->active].target);
     trunk_scan_sync_active_sm_mode(state, &coord->targets[coord->active]);
@@ -2961,8 +2927,8 @@ trunk_scan_coord_create(const dsd_trunk_scan_target_list* list, const dsd_opts* 
 static void
 trunk_scan_init_release(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
                         dsd_trunk_scan_target_list* list) {
-    trunk_scan_restore_saved_opts(opts, coord);
     dsd_engine_channel_scan_leave(opts, state);
+    trunk_scan_restore_saved_opts(opts, coord);
     dsd_scan_keys_leave(state);
     trunk_scan_coord_free(coord);
     dsd_trunk_scan_target_list_reset(list);
@@ -3036,8 +3002,8 @@ dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state) {
         return;
     }
     trunk_scan_log_nxdn_diag_summaries(coord, state);
-    trunk_scan_restore_saved_opts(opts, coord);
     dsd_engine_channel_scan_leave(opts, state);
+    trunk_scan_restore_saved_opts(opts, coord);
     dsd_scan_keys_leave(state);
     trunk_scan_uninstall_runtime_hooks(coord);
     trunk_scan_clear_published_target(state);

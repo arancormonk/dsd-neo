@@ -17,6 +17,8 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_tuning.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -27,6 +29,7 @@ static dsd_trunk_tune_result tune_result;
 static uint64_t request;
 static int tunes;
 static int reset_count;
+static int last_forget_modulation;
 static int expected_nxdn;
 static int change_rate_on_tune;
 static uint32_t reported_rate = 48000;
@@ -37,10 +40,14 @@ output_rate(void) {
 }
 
 static int restored_frontend;
+static int expected_frontend_rate = 4800;
+static int expected_frontend_levels = 2;
+static int expected_frontend_sps = 10;
 
 static int
 restore_frontend(int cqpsk, int rate, int levels, int filter, int sps) {
-    assert(cqpsk == 0 && rate == 4800 && levels == 2 && sps == 10);
+    assert(cqpsk == 0 && rate == expected_frontend_rate && levels == expected_frontend_levels
+           && sps == expected_frontend_sps);
     assert(filter == DSD_RTL_STREAM_CHANNEL_PROFILE_6K25);
     restored_frontend++;
     return 0;
@@ -77,7 +84,7 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
 void
 dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int forget) {
     (void)opts;
-    (void)forget;
+    last_forget_modulation = forget;
     state->synctype = DSD_SYNC_NONE;
     state->profile_proof_valid = 0;
     state->symbol_history_count = 0;
@@ -99,6 +106,7 @@ main(void) {
     opts->frame_dstar = 1;
     opts->scanner_mode = 1;
     state->samplesPerSymbol = 10;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
     state->lcn_freq_count = 4;
     for (int i = 0; i < 4; i++) {
         *dsd_state_trunk_lcn_slot(state, i) = i == 2 ? 0 : 150000000;
@@ -112,19 +120,21 @@ main(void) {
     assert(state->lcn_freq_roll == 0 && opts->frame_dstar == 1);
     assert(dsd_engine_channel_scan_pending(opts, state) == 1);
     state->synctype = DSD_SYNC_P25P1_POS;
-    assert(!dsd_engine_channel_scan_sync_ready(opts, state));
+    assert(!dsd_engine_channel_scan_service_sync(opts, state));
     assert(state->synctype == DSD_SYNC_NONE);
     const uint64_t old_generation = dsd_trunk_tuning_generation();
     assert(!dsd_trunk_tuning_frame_is_dispatchable(old_generation, 1));
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
     state->synctype = DSD_SYNC_P25P1_POS;
-    assert(!dsd_engine_channel_scan_sync_ready(opts, state));
+    assert(!dsd_engine_channel_scan_service_sync(opts, state));
     assert(state->lcn_freq_roll == 1 && opts->frame_nxdn48 == 1 && reset_count == 1);
     assert(!dsd_trunk_tuning_frame_is_dispatchable(old_generation, 1));
     expected_nxdn = 0;
     tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     assert(dsd_engine_channel_scan_step(opts, state) == -1);
-    assert(state->lcn_freq_roll == 1 && opts->frame_nxdn48 == 1);
+    assert(state->lcn_freq_roll == 2 && opts->frame_nxdn48 == 1);
+    /* A temporary deferral retries its own row; a hard failure skips it. */
+    state->lcn_freq_roll = 1;
     tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
     assert(dsd_engine_channel_scan_step(opts, state) == -1);
     assert(state->lcn_freq_roll == 1);
@@ -141,7 +151,8 @@ main(void) {
     assert(dsd_recent_activity_publish(state, 0, NULL, "Outgoing row data", 1) == 1);
     tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     assert(dsd_engine_channel_scan_step_manual(opts, state) == -1);
-    assert(state->lcn_freq_roll == 2);
+    assert(state->lcn_freq_roll == 4);
+    state->lcn_freq_roll = 2;
     opts->trunk_is_tuned = 1;
     assert(dsd_recent_activity_publish(state, 0, NULL, "Outgoing row data", 1) == 1);
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
@@ -167,7 +178,8 @@ main(void) {
     assert(dsd_engine_channel_scan_step(opts, state) == 0);
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
-    assert(opts->frame_dstar && state->lcn_freq_roll == 4);
+    assert(opts->frame_dstar && state->lcn_freq_roll == 1);
+    state->lcn_freq_roll = 0;
     assert(dsd_engine_channel_scan_step(opts, state) == 0);
     state->trunk_chan_map_seq++;
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
@@ -211,10 +223,35 @@ main(void) {
     dsd_rtl_stream_metrics_hooks_set(&hooks);
     opts->audio_in_type = AUDIO_IN_RTL;
     dsd_engine_channel_scan_leave(opts, state);
-    assert(restored_frontend == 1);
+    assert(restored_frontend == 1 && last_forget_modulation == 1);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
     assert(dsd_engine_channel_scan_pending(opts, state) == 0 && opts->frame_dstar);
+    /* Releasing a scope captured halfway through AUTO hunting restores its
+     * frontend with the same 2400/4 clock as the saved 20-SPS decoder. */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state->samplesPerSymbol = 20;
+    state->symbolCenter = 9;
+    state->rf_mod = 2;
+    expected_frontend_rate = 2400;
+    expected_frontend_levels = 4;
+    expected_frontend_sps = 20;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
+    dsd_engine_channel_scan_leave(NULL, state);
+    assert(dsd_scan_mode_active(state) == DSD_SCAN_MODE_P25);
+    assert(!dsd_engine_channel_scan_pending(NULL, state));
+    assert(!dsd_engine_channel_scan_pending(opts, NULL));
+    dsd_engine_channel_scan_leave(opts, NULL);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(restored_frontend == 2 && state->samplesPerSymbol == 20);
+    opts->trunk_scan_enabled = 1;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(last_forget_modulation == 0);
+    opts->trunk_scan_enabled = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_state_trunk_lcn_free(state);
     dsd_state_ext_free_all(state);
     free(state);

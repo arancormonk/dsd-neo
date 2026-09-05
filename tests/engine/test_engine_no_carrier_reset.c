@@ -347,28 +347,39 @@ test_typed_scan_tune_boundaries(void) {
     rc |= expect_true("typed hold prevents automatic entry", g_rtl_tune_calls == 1 && state->lcn_freq_roll == 1);
     state->lcn_scan_hold = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    const dsd_call_observation call = {.protocol = DSD_SYNC_NXDN_POS,
+                                       .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                       .ota_target_id = 1201,
+                                       .observed_m = dsd_time_now_monotonic_s()};
+    rc |= expect_true("seed outgoing typed call", dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
     noCarrier(opts, state);
     const uint64_t pending = dsd_trunk_tuning_pending_request();
     rc |= expect_true("typed timeout leaves outgoing mode", pending != 0 && opts->frame_nxdn48
                                                                 && state->lcn_freq_roll == 1
                                                                 && dsd_engine_channel_scan_pending(opts, state));
+    dsd_call_snapshot pending_call;
+    rc |= expect_true("typed pending hop keeps outgoing call", dsd_call_state_get(state, 0, &pending_call) == 1);
+    rc |= expect_true("typed pending hop avoids premature sync loss", pending_call.phase == DSD_CALL_PHASE_ACTIVE);
     apply_pending_profile(941012500);
     dsd_trunk_tuning_request_publish(pending, DSD_TRUNK_TUNE_RESULT_OK);
     rc |= expect_true("typed async completion commits",
                       !dsd_engine_channel_scan_pending(opts, state) && opts->frame_p25p1 && opts->frame_p25p2
                           && !opts->frame_dmr && state->lcn_freq_roll == 2 && g_rtl_symbol_rate_hz == 4800);
+    dsd_call_snapshot ended;
+    rc |= expect_true("typed pending hop retains call", dsd_call_state_get(state, 0, &ended) == 1);
+    rc |= expect_true("typed pending hop ends explicitly", ended.end_reason == DSD_CALL_END_EXPLICIT);
     opts->use_rigctl = 1;
     opts->setmod_bw = 0;
     g_rigctl_setfreq_ok = 1;
     g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
     state->last_cc_sync_time -= 11;
     noCarrier(opts, state);
-    rc |= expect_true("typed dual-backend partial failure leaves row", state->lcn_freq_roll == 2 && opts->frame_p25p1);
+    rc |= expect_true("typed dual-backend partial failure leaves row", state->lcn_freq_roll == 1 && opts->frame_p25p1);
     rc |= expect_true("typed partial failure closes frame gate",
                       !dsd_trunk_tuning_frame_is_dispatchable(dsd_trunk_tuning_generation(), 1));
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     noCarrier(opts, state);
-    rc |= expect_true("typed recovery commits new row", opts->frame_nxdn48 && state->lcn_freq_roll == 1);
+    rc |= expect_true("typed recovery skips failed row", opts->frame_p25p1 && state->lcn_freq_roll == 2);
     rc |= expect_true("typed recovery reopens frame gate",
                       dsd_trunk_tuning_frame_is_dispatchable(dsd_trunk_tuning_generation(), 1));
     g_rigctl_setfreq_ok = 0;

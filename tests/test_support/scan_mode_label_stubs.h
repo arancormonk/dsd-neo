@@ -5,5 +5,6 @@
 #include <dsd-neo/runtime/scan_mode.h>
 
 void dsd_test_scan_labels_set(int available, dsd_scan_mode mode);
+void dsd_test_scan_labels_configured(const dsd_scan_settings* settings);
 
 #endif

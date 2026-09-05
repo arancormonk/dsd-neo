@@ -4219,6 +4219,10 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
 
 static int
 command_updates_scan_mode(const struct dsd_app_command* c) {
+    /* Commands that edit configuration in place run against the saved baseline.
+     * Ownership changes (including RR import) release the scope before editing.
+     * Live controls must continue to inspect the effective row, so suspending
+     * every command and diffing afterward would change their behavior. */
     static const int commands[] = {
         DSD_APP_CMD_DECODE_MODE_SET,      DSD_APP_CMD_MOD_SET,
         DSD_APP_CMD_MOD_TOGGLE,           DSD_APP_CMD_MOD_P2_TOGGLE,

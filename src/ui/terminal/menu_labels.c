@@ -234,15 +234,39 @@ lbl_decode_mode(const void* v, char* b, size_t n) {
     return b;
 }
 
+typedef struct {
+    int modulation;
+    int qpsk;
+    int p25p2_c4fm;
+    int p25p2_profile_lock;
+    int flag_modulation;
+} menu_modulation_settings;
+
+static menu_modulation_settings
+menu_configured_modulation(const UiCtx* c) {
+    const dsd_state* snapshot = c ? dsd_app_get_latest_snapshot() : NULL;
+    const dsd_opts* opts_snapshot = c ? dsd_app_get_latest_opts_snapshot() : NULL;
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(snapshot);
+    if (configured) {
+        const menu_modulation_settings result = {
+            configured->state_rf_mod, configured->mod_qpsk, configured->mod_p25p2_c4fm,
+            configured->mod_p25p2_profile_lock,
+            dsd_modulation_from_flags(configured->mod_c4fm, configured->mod_qpsk, configured->mod_gfsk)};
+        return result;
+    }
+    const dsd_state* state = snapshot ? snapshot : (c ? c->state : NULL);
+    const dsd_opts* opts = opts_snapshot ? opts_snapshot : (c ? c->opts : NULL);
+    const menu_modulation_settings result = {state ? state->rf_mod : -1, opts ? opts->mod_qpsk : 0,
+                                             opts ? opts->mod_p25p2_c4fm : 0, opts ? opts->mod_p25p2_profile_lock : 0,
+                                             dsd_opts_modulation(opts)};
+    return result;
+}
+
 const char*
 lbl_modulation(const void* v, char* b, size_t n) {
-    const UiCtx* c = (const UiCtx*)v;
-    int mod = -1;
-    if (c && c->state && c->state->rf_mod >= 0 && c->state->rf_mod <= 2) {
-        mod = c->state->rf_mod;
-    } else if (c && c->opts) {
-        mod = dsd_opts_modulation(c->opts);
-    }
+    const menu_modulation_settings settings = menu_configured_modulation((const UiCtx*)v);
+    const int mod =
+        settings.modulation >= 0 && settings.modulation <= 2 ? settings.modulation : settings.flag_modulation;
     const char* name = (mod == 1) ? "QPSK" : ((mod == 2) ? "GFSK" : "C4FM");
     DSD_SNPRINTF(b, n, "Modulation [%s]", name);
     return b;
@@ -250,22 +274,16 @@ lbl_modulation(const void* v, char* b, size_t n) {
 
 const char*
 lbl_p25p2_mod_lock(const void* v, char* b, size_t n) {
-    const UiCtx* c = (const UiCtx*)v;
+    const menu_modulation_settings settings = menu_configured_modulation((const UiCtx*)v);
     const char* s = "Off";
-    /* Which modulation the lock pinned, read from the modulation itself. Reading
-       opts->mod_p25p2_c4fm instead reported QPSK forever: ui_handle_mod_p2_toggle()
-       -- the only thing this row and its 'M' hotkey run -- clears that flag on every
-       press and expresses the choice through mod_qpsk/rf_mod. The flag is a CLI-only
-       spelling of "P25p2 C4FM at 6000 sps", so it still counts as a lock. */
-    if (c && c->opts && (c->opts->mod_p25p2_profile_lock || c->opts->mod_p25p2_c4fm)) {
-        int qpsk = (c->opts->mod_qpsk != 0);
-        if (c->state && c->state->rf_mod >= 0 && c->state->rf_mod <= 2) {
-            qpsk = (c->state->rf_mod == 1);
+    /* The toggle expresses its lock through rf_mod; the CLI's C4FM helper
+     * additionally pins C4FM even when the saved live modulation differs. */
+    if (settings.p25p2_profile_lock || settings.p25p2_c4fm) {
+        int qpsk = settings.qpsk != 0;
+        if (settings.modulation >= 0 && settings.modulation <= 2) {
+            qpsk = settings.modulation == 1;
         }
-        if (c->opts->mod_p25p2_c4fm) {
-            qpsk = 0;
-        }
-        s = qpsk ? "QPSK" : "C4FM";
+        s = qpsk && !settings.p25p2_c4fm ? "QPSK" : "C4FM";
     }
     DSD_SNPRINTF(b, n, "P25 Phase 2 modulation lock [%s]", s);
     return b;

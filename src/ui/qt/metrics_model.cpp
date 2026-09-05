@@ -199,8 +199,9 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
      * C4FM as already-selected on a session that was never on it. Through the
      * shared helper so this and ui_handle_mod_set()'s skip test cannot drift. */
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(snapshot);
-    next.modulation =
-        configured ? (configured->mod_qpsk ? 1 : (configured->mod_gfsk ? 2 : 0)) : dsd_opts_modulation(opts_snapshot);
+    next.modulation = configured
+                          ? dsd_modulation_from_flags(configured->mod_c4fm, configured->mod_qpsk, configured->mod_gfsk)
+                          : dsd_opts_modulation(opts_snapshot);
     /* Gated on radio_input like center_freq_hz above, and for the same reason:
      * on a WAV, UDP, TCP or symbol-file session these are options the front end
      * never applied, and publishing them would put three plausible tuner

@@ -14,6 +14,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
@@ -4878,6 +4879,7 @@ test_per_target_modulation_overrides_global_lock(void) {
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.mod_cli_lock = 1;
+    opts.trunk_is_tuned = 1;
     opts.mod_qpsk = 1;
     opts.mod_c4fm = 0;
     opts.mod_gfsk = 0;
@@ -4904,7 +4906,7 @@ test_per_target_modulation_overrides_global_lock(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    if (opts.mod_cli_lock != 1 || opts.mod_qpsk != 1 || opts.mod_gfsk != 0) {
+    if (opts.trunk_is_tuned != 1 || opts.mod_cli_lock != 1 || opts.mod_qpsk != 1 || opts.mod_gfsk != 0) {
         DSD_FPRINTF(stderr, "shutdown did not restore saved modulation opts lock=%d qpsk=%d gfsk=%d\n",
                     opts.mod_cli_lock, opts.mod_qpsk, opts.mod_gfsk);
         test_rc = 1;
@@ -7028,6 +7030,12 @@ main(void) {
     rc |= run_with_default_tune_hook(test_target_p25_bandplan_loads_and_survives_rotation);
     rc |= run_with_default_tune_hook(test_p25_bandplan_export_collects_every_target);
     return rc;
+}
+
+void
+dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
 }
 
 /* Coordinator tests stub DSP; acquisition contents are covered by FRAME_SYNC_INTERNAL_HELPERS. */

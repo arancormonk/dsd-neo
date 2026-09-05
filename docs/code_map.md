@@ -107,14 +107,21 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   Suspend/update/resume supports global commands; scalar snapshot copies keep frontend state independent of live storage.
   Blank rows retain scope ownership. `dsd_scan_mode_configured_view()` borrows the baseline without copying its output
   label; consumers use their published snapshot, and persistence uses the exact configured preset (including custom sets).
+  `dsd_scan_mode_apply_modulation()` owns target flags/locks for both entry and scope updates. Inherited profiles use the
+  restored SPS hunt index, so AUTO's saved timing and the frontend's rate/levels agree after leaving a row.
 - Engine `channel_scan.c` (extension slot 7) stages typed `-Y` entries for automatic, manual, and avoid stepping through
   tracked tuning. It commits mode/keys only after success and retains generation protection across pending requests.
   Configuration edits retry pending tunes on a later service pass; live output-rate changes do not trigger another tune.
+  Failed rows advance to the next candidate; a later successful tune recovers any gate held by a partial backend failure.
+  `dsd_engine_channel_scan_waiting()` only inspects ownership; `dsd_engine_channel_scan_service_sync()` services pending
+  work and invalidates sync gathered before the transaction. Pending rows defer no-carrier call finalization until commit.
   `dsd_engine_reset_no_carrier_state()` shares decoder cleanup without recursively stepping or changing tuner ownership.
   `trunk_scan.c` selects the same classes from target types while retaining target snapshots and modulation/gain ownership.
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
   and slicer windows at committed row boundaries. Conventional rows also discard learned P25 modulation; trunk targets
   retain their own learned modulation. Normal no-carrier protocol confirmation resets remain in use.
+  Unlocked RTL P25 trunk-scan targets try CQPSK after their first unproductive 4800-symbol/s dwell, before visiting 6000,
+  so the default three-second target visit includes the trial. This changes acquisition scheduling, not symbol timing.
 - Frontend snapshots deep-copy only scalar scope metadata. `dsd_app_snapshot_configured_mode()` exposes the baseline;
   `dsd_scan_mode_active()` and `dsd_scan_mode_effective_profile()` distinguish combined P25 from global AUTO.
 

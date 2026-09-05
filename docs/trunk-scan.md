@@ -148,6 +148,13 @@ global modulation lock. Modes declared in a target's `chan_csv` do not override 
 Global mode/modulation commands update the configured settings while the parked target remains constrained.
 Stopping trunk scan restores those configured settings, and configuration saves record them rather than the parked
 target's decoder. Target gain, trunking state, and learned P25 modulation retain their existing coordinator ownership.
+The restored frontend rate and slicer levels follow the saved hunt profile, including a global AUTO preset captured
+on a rate other than 4800 symbols/s. Modulation controls display the saved configuration while a target is active.
+
+For unlocked RTL P25 targets, the first unproductive 4800-symbol/s dwell tries CQPSK before the hunt moves to Phase 2.
+Each Phase 1 demodulator gets 1125 ms of unproductive symbol input; CQPSK starts at 1125 ms and Phase 2 at 2250 ms,
+both within the default 3000 ms target dwell. Shorter custom dwells can still end before a trial; use an explicit
+target modulation or allow more acquisition time in that case.
 
 ## Config Usage
 

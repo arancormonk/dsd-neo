@@ -224,7 +224,7 @@ test_decoder_labels(void) {
     opts.use_cosine_filter = 1;
     rc |= expect_str("monitor before snapshots", lbl_monitor(&ctx, b, sizeof(b)), "Source audio monitor [On]");
     rc |= expect_str("filter before snapshots", lbl_cosine(&ctx, b, sizeof(b)), "Cosine filter [On]");
-    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
     rc |= expect_str("decode mode null ctx is auto", lbl_decode_mode(NULL, b, sizeof(b)), "Mode... [Auto]");
 
     state.rf_mod = 1;
@@ -252,6 +252,27 @@ test_decoder_labels(void) {
                      "P25 Phase 2 modulation lock [C4FM]");
     opts.mod_p25p2_c4fm = 0;
     state.rf_mod = 7;
+
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_P25);
+    dsd_scan_settings configured = {0};
+    configured.state_rf_mod = 1;
+    configured.mod_qpsk = 1;
+    configured.mod_p25p2_profile_lock = 1;
+    dsd_test_scan_labels_configured(&configured);
+    state.rf_mod = 2;
+    rc |= expect_str("modulation reads configured snapshot", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
+    rc |= expect_str("p2 lock reads configured snapshot", lbl_p25p2_mod_lock(&ctx, b, sizeof(b)),
+                     "P25 Phase 2 modulation lock [QPSK]");
+    configured.state_rf_mod = 0;
+    configured.mod_p25p2_c4fm = 1;
+    dsd_test_scan_labels_configured(&configured);
+    rc |= expect_str("modulation follows configured toggle", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [C4FM]");
+    rc |= expect_str("configured cli p2 lock", lbl_p25p2_mod_lock(&ctx, b, sizeof(b)),
+                     "P25 Phase 2 modulation lock [C4FM]");
+    dsd_test_scan_labels_configured(NULL);
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    ((dsd_state*)dsd_app_get_latest_snapshot())->rf_mod = 1;
+    rc |= expect_str("modulation uses published state", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
 
     opts.use_lpf = 1;
     opts.use_hpf = 0;

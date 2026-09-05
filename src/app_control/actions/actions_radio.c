@@ -47,9 +47,8 @@ ui_modulation_demod_rate(const dsd_opts* opts, const dsd_state* state) {
  * combination) answers 4800/4, which is where the hunt starts anyway.
  */
 static dsd_decode_mode_profile
-ui_modulation_profile(const dsd_opts* opts, const dsd_state* state) {
+ui_modulation_profile(const dsd_opts* opts) {
     /* Command dispatch suspends the scan scope before modulation edits. */
-    (void)state;
     return dsd_decode_mode_profile_for(dsd_infer_decode_mode_preset(opts));
 }
 
@@ -66,8 +65,8 @@ ui_modulation_profile(const dsd_opts* opts, const dsd_state* state) {
  * can never fire, so every tap rebuilds the timing for nothing.
  */
 static int
-ui_effective_modulation(const dsd_opts* opts, const dsd_state* state, int mod) {
-    return dsd_frame_sync_profile_modulation(ui_modulation_profile(opts, state).levels, mod);
+ui_effective_modulation(const dsd_opts* opts, int mod) {
+    return dsd_frame_sync_profile_modulation(ui_modulation_profile(opts).levels, mod);
 }
 
 static int
@@ -113,7 +112,7 @@ ui_handle_invert_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
 static void
 ui_apply_modulation(dsd_opts* opts, dsd_state* state, int mod) {
     const int leaving_p25p2_helper = opts->mod_p25p2_c4fm == 1 || opts->mod_p25p2_profile_lock == 1;
-    const dsd_decode_mode_profile profile = ui_modulation_profile(opts, state);
+    const dsd_decode_mode_profile profile = ui_modulation_profile(opts);
     const int sps = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, ui_modulation_demod_rate(opts, state));
     /* Through the profile, so the flags and rf_mod written below are a modulation
        the decode set can actually run and the SPS hunt will not move off. */
@@ -178,7 +177,7 @@ ui_handle_mod_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command
      * C4FM there is already satisfied and rebuilding the timing for it would be
      * the same pointless churn on every tap. */
     const int mod_in_effect = dsd_opts_modulation(opts);
-    const int mod_effective = ui_effective_modulation(opts, state, (int)want);
+    const int mod_effective = ui_effective_modulation(opts, (int)want);
     if (state->rf_mod == mod_effective && mod_in_effect == mod_effective && opts->mod_p25p2_c4fm == 0
         && opts->mod_p25p2_profile_lock == 0) {
         return 1;
