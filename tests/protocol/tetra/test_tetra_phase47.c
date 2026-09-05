@@ -32,6 +32,7 @@
  */
 
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/core/state.h>
@@ -206,6 +207,38 @@ static void test_bsch_tdma_overwrite(void)
     free(st); free(opt);
 }
 
+static void test_tdma_ndb_advance_and_rollover(void)
+{
+    printf("[test_tdma_ndb_advance_and_rollover]\n");
+    dsd_state *st = alloc_state();
+
+    /* No trustworthy BSCH timestamp: leave all counters untouched. */
+    st->tetra_tn = 3;
+    st->tetra_fn = 9;
+    st->tetra_mn = 37;
+    tetra_tdma_advance_ndb(st);
+    CHECK(st->tetra_tn == 3 && st->tetra_fn == 9 && st->tetra_mn == 37,
+          "NDB advance is inert before BSCH timing is valid");
+
+    st->tetra_tdma_valid = 1;
+    tetra_tdma_advance_ndb(st);
+    CHECK(st->tetra_tn == 4 && st->tetra_fn == 9 && st->tetra_mn == 37,
+          "TN3 advances to TN4 without changing FN/MN");
+
+    tetra_tdma_advance_ndb(st);
+    CHECK(st->tetra_tn == 1 && st->tetra_fn == 10 && st->tetra_mn == 37,
+          "TN4 wraps to TN1 and increments FN");
+
+    st->tetra_tn = 4;
+    st->tetra_fn = 17;
+    st->tetra_mn = 59;
+    tetra_tdma_advance_ndb(st);
+    CHECK(st->tetra_tn == 1 && st->tetra_fn == 0 && st->tetra_mn == 0,
+          "last frame and multiframe wrap to zero");
+
+    free(st);
+}
+
 /* =======================================================================
  * Phase 44: MM D-LU-REJECT + D-TEMPORARY-ADDRESS
  * ======================================================================= */
@@ -372,89 +405,89 @@ static void test_tx_granted_ui_fields_zero(void)
  */
 static void build_d_tx_granted(uint8_t *cmce, uint32_t granted_ssi)
 {
-    memset(cmce, 0, 38);
-    pack_bits(cmce, 10u,          0,  5);   /* pdu_type = 10 */
-    pack_bits(cmce,  1u,          5,  1);   /* tx_perm = 1   */
-    pack_bits(cmce,  0u,          6,  2);   /* enc_mode = 0  */
-    pack_bits(cmce,  0u,          8,  1);   /* reserv = 0    */
-    pack_bits(cmce,  1u,          9,  1);   /* gp_present = 1 */
-    pack_bits(cmce,  1u,         10,  3);   /* addr_type = SSI */
-    pack_bits(cmce, granted_ssi, 13, 24);   /* SSI           */
-    pack_bits(cmce,  0u,         37,  1);   /* ac_present = 0 */
+    memset(cmce, 0, 52);
+    pack_bits(cmce, 11u,          0,  5);   /* D-TX-GRANTED */
+    pack_bits(cmce,  1u,          5, 14);   /* call identifier */
+    pack_bits(cmce,  3u,         19,  2);   /* granted to another */
+    pack_bits(cmce,  1u,         21,  1);   /* request permission */
+    pack_bits(cmce,  0u,         22,  1);   /* encryption */
+    pack_bits(cmce,  0u,         23,  1);   /* reserved */
+    pack_bits(cmce,  0u,         24,  1);   /* notification absent */
+    pack_bits(cmce,  1u,         25,  1);   /* TPTI present */
+    pack_bits(cmce,  1u,         26,  2);   /* TPTI = SSI */
+    pack_bits(cmce, granted_ssi, 28, 24);   /* SSI */
 }
 
-static void test_tx_granted_lastsrc_set(void)
+static void test_tx_granted_identity_set(void)
 {
-    printf("[test_tx_granted_lastsrc_set]\n");
+    printf("[test_tx_granted_identity_set]\n");
 
-    uint8_t cmce[38];
+    uint8_t cmce[52];
     build_d_tx_granted(cmce, 88888u);
 
-    uint8_t mle[9 + 38];
+    uint8_t mle[9 + 52];
     int mle_nbits;
-    wrap_mle_cmce(cmce, 38, mle, &mle_nbits);
+    wrap_mle_cmce(cmce, 52, mle, &mle_nbits);
 
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
 
-    /* Pre-set lasttg so active_channel can include it */
-    st->lasttg = 44444;
+    st->tetra_gssi = 44444;
 
     tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
 
-    CHECK(st->lastsrc                 == 88888, "TX-GRANTED: lastsrc = 88888");
     CHECK(st->tetra_tx_granted_ssi    == 88888u, "TX-GRANTED: tx_granted_ssi = 88888");
     CHECK(st->tetra_tx_granted_valid  == 1,      "TX-GRANTED: valid = 1");
+    CHECK(st->tetra_gssi              == 44444u, "TX-GRANTED: current GSSI retained");
 
     free(st); free(opt);
 }
 
-static void test_tx_granted_active_channel_set(void)
+static void test_tx_granted_without_channel_assignment(void)
 {
-    printf("[test_tx_granted_active_channel_set]\n");
+    printf("[test_tx_granted_without_channel_assignment]\n");
 
-    uint8_t cmce[38];
+    uint8_t cmce[52];
     build_d_tx_granted(cmce, 12345u);
 
-    uint8_t mle[9 + 38];
+    uint8_t mle[9 + 52];
     int mle_nbits;
-    wrap_mle_cmce(cmce, 38, mle, &mle_nbits);
+    wrap_mle_cmce(cmce, 52, mle, &mle_nbits);
 
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
-    st->lasttg = 9999;
+    st->tetra_vc_freq_hz = 390000000L;
 
     tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
 
-    /* active_channel[0] must contain "TX-GRANTED" marker */
-    int found_tg  = (strstr(st->active_channel[0], "9999") != NULL);
-    int found_src = (strstr(st->active_channel[0], "12345") != NULL);
-    int found_kw  = (strstr(st->active_channel[0], "TX-GRANTED") != NULL);
-
-    CHECK(found_tg,  "TX-GRANTED: active_channel contains lasttg");
-    CHECK(found_src, "TX-GRANTED: active_channel contains granted SSI");
-    CHECK(found_kw,  "TX-GRANTED: active_channel contains TX-GRANTED keyword");
+    CHECK(st->tetra_tx_granted_ssi == 12345u,
+          "TX-GRANTED: granted SSI is retained");
+    CHECK(st->tetra_vc_freq_hz == 390000000L,
+          "TX-GRANTED: absent channel IE does not overwrite VC frequency");
 
     free(st); free(opt);
 }
 
-static void test_tx_granted_last_active_time(void)
+static void test_tx_granted_floor_state(void)
 {
-    printf("[test_tx_granted_last_active_time]\n");
+    printf("[test_tx_granted_floor_state]\n");
 
-    uint8_t cmce[38];
+    uint8_t cmce[52];
     build_d_tx_granted(cmce, 111u);
 
-    uint8_t mle[9 + 38];
+    uint8_t mle[9 + 52];
     int mle_nbits;
-    wrap_mle_cmce(cmce, 38, mle, &mle_nbits);
+    wrap_mle_cmce(cmce, 52, mle, &mle_nbits);
 
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
 
     tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
 
-    CHECK(st->last_active_time != 0, "TX-GRANTED: last_active_time updated");
+    CHECK(st->tetra_tx_granted_valid == 1,
+          "TX-GRANTED: floor grant marked valid");
+    CHECK(st->tetra_cmce_tx_granted_perm == 1,
+          "TX-GRANTED: transmit permission retained");
 
     free(st); free(opt);
 }
@@ -478,88 +511,51 @@ static void test_tx_granted_last_active_time(void)
  *   [53-60] 'A' = 65
  * Total: 61 bits
  */
-static void build_d_sds_data(uint8_t *cmce, uint32_t src_ssi, uint8_t msg_ref)
+static void build_d_sds_data(uint8_t *cmce, uint32_t src_ssi, uint8_t sdti)
 {
     memset(cmce, 0, 61);
-    pack_bits(cmce, 23u,     0,  5);    /* pdu_type = D-SDS-DATA */
-    pack_bits(cmce,  0u,     5,  1);    /* ext_flag = 0          */
-    pack_bits(cmce, src_ssi, 6, 24);    /* calling_ssi           */
-    pack_bits(cmce, msg_ref,30,  4);    /* msg_ref               */
-    pack_bits(cmce,  0u,    34,  1);    /* store_fwd             */
-    pack_bits(cmce,  0u,    35,  1);    /* vp_flag               */
-    pack_bits(cmce,  0u,    36,  1);    /* dt_flag               */
-    pack_bits(cmce,  8u,    37,  8);    /* bpc = 8               */
-    pack_bits(cmce,  1u,    45,  8);    /* num_chars = 1         */
-    pack_bits(cmce, (uint32_t)'A', 53, 8);  /* 'A'              */
+    pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
+    pack_bits(cmce, 1, 5, 2);          /* CPTI: SSI */
+    pack_bits(cmce, src_ssi, 7, 24);
+    pack_bits(cmce, sdti, 31, 2);
+    if (sdti == 0)
+        pack_bits(cmce, 0xCAFE, 33, 16);
 }
 
 static void test_sds_msg_ref_stored(void)
 {
-    printf("[test_sds_msg_ref_stored]\n");
-
-    uint8_t cmce[61];
-    build_d_sds_data(cmce, 22222u, 7u);
-
-    uint8_t mle[9 + 61];
-    int mle_nbits;
-    wrap_mle_cmce(cmce, 61, mle, &mle_nbits);
-
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    tetra_mle_dispatch(mle, mle_nbits, 3, opt, st);
-
-    CHECK(st->tetra_sds_msg_ref  == 7,  "SDS msg_ref = 7");
-    CHECK(st->tetra_sds_last_cc  == 3,  "SDS last_cc = 3");
-
+    printf("[test_sds_sdti_and_cc_stored]\n");
+    uint8_t cmce[61]; build_d_sds_data(cmce, 22222u, 0u);
+    uint8_t mle[70]; int n; wrap_mle_cmce(cmce,49,mle,&n);
+    dsd_state *st=alloc_state(); dsd_opts *opt=alloc_opts();
+    tetra_mle_dispatch(mle,n,3,opt,st);
+    CHECK(st->tetra_cmce_sds_data_type == 0, "SDS SDTI = 0");
+    CHECK(st->tetra_sds_last_cc == 3, "SDS last_cc = 3");
     free(st); free(opt);
 }
 
 static void test_sds_last_cc_stored(void)
 {
     printf("[test_sds_last_cc_stored]\n");
-
-    uint8_t cmce[61];
-    build_d_sds_data(cmce, 33333u, 2u);
-
-    uint8_t mle[9 + 61];
-    int mle_nbits;
-    wrap_mle_cmce(cmce, 61, mle, &mle_nbits);
-
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    tetra_mle_dispatch(mle, mle_nbits, 11, opt, st);
-
+    uint8_t cmce[61]; build_d_sds_data(cmce,33333u,0u);
+    uint8_t mle[70]; int n; wrap_mle_cmce(cmce,49,mle,&n);
+    dsd_state *st=alloc_state(); dsd_opts *opt=alloc_opts();
+    tetra_mle_dispatch(mle,n,11,opt,st);
     CHECK(st->tetra_sds_last_cc == 11, "SDS last_cc = 11");
-
     free(st); free(opt);
 }
 
 static void test_sds_msg_ref_overwrite(void)
 {
-    printf("[test_sds_msg_ref_overwrite]\n");
-
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    /* First SDS with msg_ref=5 */
-    uint8_t cmce1[61];
-    build_d_sds_data(cmce1, 10001u, 5u);
-    uint8_t mle1[9 + 61]; int n1;
-    wrap_mle_cmce(cmce1, 61, mle1, &n1);
-    tetra_mle_dispatch(mle1, n1, 0, opt, st);
-    CHECK(st->tetra_sds_msg_ref == 5, "first SDS: msg_ref=5");
-
-    /* Second SDS with msg_ref=12 */
-    uint8_t cmce2[61];
-    build_d_sds_data(cmce2, 10002u, 12u);
-    uint8_t mle2[9 + 61]; int n2;
-    wrap_mle_cmce(cmce2, 61, mle2, &n2);
-    tetra_mle_dispatch(mle2, n2, 0, opt, st);
-    /* msg_ref is 4-bit so 12 stores as 12 */
-    CHECK(st->tetra_sds_msg_ref == 12, "second SDS: msg_ref overwritten to 12");
-
+    printf("[test_sds_source_overwrite]\n");
+    dsd_state *st=alloc_state(); dsd_opts *opt=alloc_opts();
+    uint8_t cmce[61],mle[70]; int n;
+    build_d_sds_data(cmce,10001u,0u); wrap_mle_cmce(cmce,49,mle,&n);
+    tetra_mle_dispatch(mle,n,0,opt,st);
+    CHECK(st->tetra_sds_src == 10001u, "first SDS source");
+    build_d_sds_data(cmce,10002u,0u); wrap_mle_cmce(cmce,49,mle,&n);
+    tetra_mle_dispatch(mle,n,0,opt,st);
+    CHECK(st->tetra_sds_src == 10002u, "second SDS source overwrites first");
     free(st); free(opt);
 }
 
@@ -576,6 +572,7 @@ int main(void)
     test_bsch_tdma_parse();
     test_bsch_tdma_tn_onebased();
     test_bsch_tdma_overwrite();
+    test_tdma_ndb_advance_and_rollover();
 
     /* Phase 44 */
     printf("\n--- Phase 44: MM D-LU-REJECT + D-TEMPORARY-ADDRESS ---\n");
@@ -589,9 +586,9 @@ int main(void)
     /* Phase 45 */
     printf("\n--- Phase 45: D-TX-GRANTED UI fields ---\n");
     test_tx_granted_ui_fields_zero();
-    test_tx_granted_lastsrc_set();
-    test_tx_granted_active_channel_set();
-    test_tx_granted_last_active_time();
+    test_tx_granted_identity_set();
+    test_tx_granted_without_channel_assignment();
+    test_tx_granted_floor_state();
 
     /* Phase 46 */
     printf("\n--- Phase 46: SDS message reference tracking ---\n");

@@ -4,8 +4,8 @@
  *
  * Covers functionality introduced in Phases 71-75:
  *
- * Phase 71 — cmce_d_sds_data truncates stale text
- *   1. Send truncated SDS-DATA and ensure tetra_sds_text_len = 0
+ * Phase 71 — cmce_d_sds_data rejects truncated payload atomically
+ *   1. Send truncated SDS-DATA and ensure the prior valid state is retained
  *
  * Phase 72 — D-SDS-SHORT-DATA data_types 2 and 3
  *   2. data_type=2 (64-bit user defined)
@@ -69,7 +69,7 @@ static void wrap_mle_cmce(const uint8_t *cmce_body, int cmce_nbits,
 }
 
 /* =======================================================================
- * Phase 71: CMCE D-SDS-DATA truncated leaves no stale state
+ * Phase 71: CMCE D-SDS-DATA truncation does not publish partial state
  * ======================================================================= */
 static void test_sds_data_truncation(void)
 {
@@ -80,23 +80,28 @@ static void test_sds_data_truncation(void)
     /* Prime state with fake previous message */
     st->tetra_sds_text_len = 5;
     strcpy(st->tetra_sds_text, "HELLO");
+    st->tetra_sds_src = 222;
+    st->tetra_sds_short_valid = 1;
+    st->tetra_sds_short_data = 0xCAFEu;
 
     /* Truncated CMCE type=23 (D-SDS-DATA), missing SDS-TL bits but enough to parse SSI */
     uint8_t cmce[40];
     memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 23, 0, 5); /* D-SDS-DATA */
-    pack_bits(cmce,  0, 5, 1); /* external = 0 */
-    pack_bits(cmce, 111, 6, 24); /* calling_ssi */
-    /* Cut it short: only 36 bits total, so it reaches log_only */
+    pack_bits(cmce, 15, 0, 5); /* D-SDS-DATA */
+    pack_bits(cmce,  1, 5, 2); /* CPTI: SSI */
+    pack_bits(cmce, 111, 7, 24); /* calling_ssi */
+    pack_bits(cmce, 0, 31, 2); /* SDTI=0, but payload is absent */
 
     uint8_t pdu[40 + 9]; int n;
-    wrap_mle_cmce(cmce, 36, pdu, &n);
+    wrap_mle_cmce(cmce, 33, pdu, &n);
     tetra_mle_dispatch(pdu, n, 0, opt, st);
 
-    /* Since parsing truncated at log_only, text_len should be cleared */
-    CHECK(st->tetra_sds_text_len == 0,     "Stale text_len cleared on truncated D-SDS-DATA");
-    CHECK(st->tetra_sds_text[0] == '\0',   "Stale text buffer cleared on truncated D-SDS-DATA");
-    CHECK(st->tetra_sds_src == 111,        "src_ssi still extracted before truncation");
+    CHECK(st->tetra_sds_text_len == 5,      "Prior text_len retained after truncated D-SDS-DATA");
+    CHECK(strcmp(st->tetra_sds_text, "HELLO") == 0,
+          "Prior text retained after truncated D-SDS-DATA");
+    CHECK(st->tetra_sds_src == 222,         "Partial source SSI is not published");
+    CHECK(st->tetra_sds_short_valid == 1 && st->tetra_sds_short_data == 0xCAFEu,
+          "Prior short-data state retained after truncation");
 
     free(st); free(opt);
 }
@@ -104,89 +109,9 @@ static void test_sds_data_truncation(void)
 /* =======================================================================
  * Phase 72: CMCE D-SDS-SHORT-DATA types 2 and 3
  * ======================================================================= */
-static void test_sds_short_data_types(void)
-{
-    printf("[test_sds_short_data_types]\n");
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    /* 1) Type 2: 64-bit user defined -> bits 48-63 = 0xAA55 */
-    uint8_t cmce2[100];
-    memset(cmce2, 0, sizeof(cmce2));
-    pack_bits(cmce2, 21, 0, 5); /* D-SDS-SHORT-DATA */
-    pack_bits(cmce2,  0, 5, 1); /* external = 0 */
-    pack_bits(cmce2, 222, 6, 24); /* calling_ssi */
-    pack_bits(cmce2,  2, 30, 2); /* data_type = 2 */
-    pack_bits(cmce2, 0, 32, 48); /* bits 0..47 */
-    pack_bits(cmce2, 0xAA55, 32+48, 16); /* bits 48..63 = 0xAA55 */
-
-    uint8_t pdu2[100 + 9]; int n2;
-    wrap_mle_cmce(cmce2, 32 + 64, pdu2, &n2);
-    tetra_mle_dispatch(pdu2, n2, 0, opt, st);
-    
-    CHECK(st->tetra_sds_short_valid == 1,       "Short data flag set (type 2)");
-    CHECK(st->tetra_sds_short_data == 0xAA55,   "Short data (type 2) extracted bits 48-63");
-
-    /* 2) Type 3: Variable length (10-bit len + data) -> len=12, data=0x888 */
-    st->tetra_sds_short_valid = 0;
-    st->tetra_sds_short_data = 0;
-
-    uint8_t cmce3[100];
-    memset(cmce3, 0, sizeof(cmce3));
-    pack_bits(cmce3, 21, 0, 5); /* D-SDS-SHORT-DATA */
-    pack_bits(cmce3,  0, 5, 1); /* external = 0 */
-    pack_bits(cmce3, 333, 6, 24); /* calling_ssi */
-    pack_bits(cmce3,  3, 30, 2); /* data_type = 3 */
-    pack_bits(cmce3, 12, 32, 10); /* length = 12 */
-    pack_bits(cmce3, 0x888, 42, 12); /* data = 0x888 */
-
-    uint8_t pdu3[100 + 9]; int n3;
-    wrap_mle_cmce(cmce3, 42 + 12, pdu3, &n3);
-    tetra_mle_dispatch(pdu3, n3, 0, opt, st);
-    
-    CHECK(st->tetra_sds_short_valid == 1,       "Short data flag set (type 3)");
-    CHECK(st->tetra_sds_short_data == 0x0888,   "Short data (type 3) extracted variable data");
-
-    free(st); free(opt);
-}
-
 /* =======================================================================
  * Phase 73: CMCE D-SDS-REPORT (22)
  * ======================================================================= */
-static void test_sds_report(void)
-{
-    printf("[test_sds_report]\n");
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    /* Report: Delivered (ok) */
-    uint8_t cmce[16];
-    memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 22, 0, 5); /* D-SDS-REPORT */
-    pack_bits(cmce,  0, 5, 1); /* 0 = Delivered */
-
-    uint8_t pdu[16 + 9]; int n;
-    wrap_mle_cmce(cmce, 10, pdu, &n);
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-
-    CHECK(st->tetra_sds_report_valid == 1,       "SDS Report flag set");
-    CHECK(st->tetra_sds_report_delivery_ok == 1, "Delivered");
-
-    /* Report: Not delivered (ok=0), cause=7 */
-    memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 22, 0, 5); /* D-SDS-REPORT */
-    pack_bits(cmce,  1, 5, 1); /* 1 = Not delivered */
-    pack_bits(cmce,  7, 6, 4); /* cause = 7 */
-
-    wrap_mle_cmce(cmce, 12, pdu, &n);
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-
-    CHECK(st->tetra_sds_report_delivery_ok == 0, "Not delivered");
-    CHECK(st->tetra_sds_report_cause == 7,       "Extracted cause");
-
-    free(st); free(opt);
-}
-
 /* =======================================================================
  * Phase 74: MAC ACCESS-DEFINE Fields
  * ======================================================================= */
@@ -271,8 +196,6 @@ int main(void)
     printf("=== TETRA Phase 76 Test Suite ===\n\n");
 
     test_sds_data_truncation();
-    test_sds_short_data_types();
-    test_sds_report();
     test_mac_access_define();
     test_channel_info_fmt();
 

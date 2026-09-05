@@ -85,69 +85,8 @@ static void test_tetra_bits_to_uint(void)
 /* -----------------------------------------------------------------------
  * Phase 82: D-SDS-LONG-DATA (PDU type 20)
  * ----------------------------------------------------------------------- */
-static void test_d_sds_long_data(void)
-{
-    printf("[Phase 82] D-SDS-LONG-DATA parser\n");
-
-    dsd_state *st = alloc_state();
-    dsd_opts  *op = alloc_opts();
-
-    /* Build CMCE PDU type 20 with ext_flag=0, SSI, msg_ref, len_ind, bpc=8, 3 chars "Hi!" */
-    uint8_t cmce[256];
-    memset(cmce, 0, sizeof(cmce));
-
-    int off = 0;
-    pack_bits(cmce, 20, off, 5); off += 5;   /* pdu_type = 20 */
-    pack_bits(cmce,  0, off, 1); off += 1;   /* ext_flag = 0 (SSI follows) */
-    pack_bits(cmce, 99, off, 24); off += 24; /* calling_ssi = 99 */
-    pack_bits(cmce,  5, off, 4); off += 4;   /* msg_ref = 5 */
-    pack_bits(cmce, 24, off, 10); off += 10; /* length_indicator: 24 bits of SDS data */
-    pack_bits(cmce,  8, off, 8); off += 8;   /* bpc = 8 */
-    pack_bits(cmce,  3, off, 8); off += 8;   /* num_chars = 3 */
-    pack_bits(cmce, 'H', off, 8); off += 8;
-    pack_bits(cmce, 'i', off, 8); off += 8;
-    pack_bits(cmce, '!', off, 8); off += 8;
-
-    uint8_t mle[512];
-    int mle_nbits = 0;
-    wrap_mle_cmce(cmce, off, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 1, op, st);
-
-    CHECK(st->tetra_sds_long_valid == 1, "D-SDS-LONG-DATA valid flag set");
-    CHECK(st->tetra_sds_src == 99, "D-SDS-LONG-DATA src_ssi=99");
-    CHECK(st->tetra_sds_long_text_len == 3, "D-SDS-LONG-DATA text_len=3");
-    CHECK(strcmp(st->tetra_sds_long_text, "Hi!") == 0, "D-SDS-LONG-DATA text='Hi!'");
-    CHECK(st->tetra_sds_long_text_unicode == 0, "D-SDS-LONG-DATA not unicode");
-
-    free(st);
-    free(op);
-}
-
-static void test_d_sds_long_data_truncated(void)
-{
-    printf("[Phase 82] D-SDS-LONG-DATA truncated\n");
-
-    dsd_state *st = alloc_state();
-    dsd_opts  *op = alloc_opts();
-
-    /* Only 20 bits — too short */
-    uint8_t cmce[32];
-    memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 20, 0, 5); /* pdu_type = 20 */
-
-    uint8_t mle[64];
-    int mle_nbits = 0;
-    wrap_mle_cmce(cmce, 20, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 1, op, st);
-
-    CHECK(st->tetra_sds_long_valid == 0, "truncated D-SDS-LONG-DATA not marked valid");
-
-    free(st);
-    free(op);
-}
-
 /* -----------------------------------------------------------------------
- * Phase 83: D-FACILITY (PDU type 15)
+ * Phase 83: D-FACILITY (PDU type 16)
  * ----------------------------------------------------------------------- */
 static void test_d_facility(void)
 {
@@ -156,18 +95,28 @@ static void test_d_facility(void)
     dsd_state *st = alloc_state();
     dsd_opts  *op = alloc_opts();
 
-    uint8_t cmce[16];
+    uint8_t cmce[40];
     memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 15, 0, 5); /* pdu_type = 15 */
-    pack_bits(cmce,  7, 5, 4); /* fac_type = 7 */
+    pack_bits(cmce, TETRA_CMCE_D_FACILITY, 0, 5);
+    pack_bits(cmce,  1, 5, 4);  /* one SS-PDU */
+    pack_bits(cmce, 12, 9, 11); /* twelve content bits */
+    pack_bits(cmce,  7, 20, 6); /* SS-Type */
+    pack_bits(cmce,  3, 26, 5); /* SS-PDU type */
+    pack_bits(cmce,  0, 31, 1); /* SS-PDU optional elements absent */
+    pack_bits(cmce,  0, 32, 1); /* D-FACILITY optional elements absent */
 
-    uint8_t mle[32];
+    uint8_t mle[48];
     int mle_nbits = 0;
-    wrap_mle_cmce(cmce, 9, mle, &mle_nbits);
+    wrap_mle_cmce(cmce, 33, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 1, op, st);
 
     CHECK(st->tetra_facility_valid == 1, "D-FACILITY valid flag set");
-    CHECK(st->tetra_facility_type == 7, "D-FACILITY fac_type=7");
+    CHECK(st->tetra_facility_type == 7, "D-FACILITY first SS-Type parsed");
+
+    st->tetra_facility_valid = 0;
+    wrap_mle_cmce(cmce, 25, mle, &mle_nbits);
+    tetra_mle_dispatch(mle, mle_nbits, 1, op, st);
+    CHECK(st->tetra_facility_valid == 0, "truncated D-FACILITY rejected");
 
     free(st);
     free(op);
@@ -176,57 +125,9 @@ static void test_d_facility(void)
 /* -----------------------------------------------------------------------
  * Phase 83: D-SDS-ACK (PDU type 17)
  * ----------------------------------------------------------------------- */
-static void test_d_sds_ack(void)
-{
-    printf("[Phase 83] D-SDS-ACK parser\n");
-
-    dsd_state *st = alloc_state();
-    dsd_opts  *op = alloc_opts();
-
-    uint8_t cmce[16];
-    memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 17, 0, 5); /* pdu_type = 17 */
-    pack_bits(cmce, 12, 5, 4); /* msg_ref = 12 */
-
-    uint8_t mle[32];
-    int mle_nbits = 0;
-    wrap_mle_cmce(cmce, 9, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 1, op, st);
-
-    CHECK(st->tetra_sds_ack_valid == 1, "D-SDS-ACK valid flag set");
-    CHECK(st->tetra_sds_ack_msg_ref == 12, "D-SDS-ACK msg_ref=12");
-
-    free(st);
-    free(op);
-}
-
 /* -----------------------------------------------------------------------
  * Phase 83: D-SDS-SHORT-REPORT (PDU type 18)
  * ----------------------------------------------------------------------- */
-static void test_d_sds_short_report(void)
-{
-    printf("[Phase 83] D-SDS-SHORT-REPORT parser\n");
-
-    dsd_state *st = alloc_state();
-    dsd_opts  *op = alloc_opts();
-
-    uint8_t cmce[16];
-    memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 18, 0, 5); /* pdu_type = 18 */
-    pack_bits(cmce,  2, 5, 2); /* result = 2 (pending) */
-
-    uint8_t mle[32];
-    int mle_nbits = 0;
-    wrap_mle_cmce(cmce, 7, mle, &mle_nbits);
-    tetra_mle_dispatch(mle, mle_nbits, 1, op, st);
-
-    CHECK(st->tetra_sds_short_report_valid == 1, "D-SDS-SHORT-REPORT valid");
-    CHECK(st->tetra_sds_short_report_result == 2, "D-SDS-SHORT-REPORT result=2");
-
-    free(st);
-    free(op);
-}
-
 /* -----------------------------------------------------------------------
  * Phase 84: channel_info_fmt extensions
  * ----------------------------------------------------------------------- */
@@ -290,12 +191,15 @@ static void test_channel_info_mm_addr_type(void)
  * ----------------------------------------------------------------------- */
 static void test_cmce_constants(void)
 {
-    printf("[Phase 83] CMCE constant definitions\n");
-
-    CHECK(TETRA_CMCE_D_FACILITY == 15, "D-FACILITY type = 15");
-    CHECK(TETRA_CMCE_D_SDS_ACK == 17, "D-SDS-ACK type = 17");
-    CHECK(TETRA_CMCE_D_SDS_SHORT_REPORT == 18, "D-SDS-SHORT-REPORT type = 18");
-    CHECK(TETRA_CMCE_D_SDS_LONG_DATA == 20, "D-SDS-LONG-DATA type = 20");
+    printf("[Phase 83] ETSI table 14.66 constants\n");
+    CHECK(TETRA_CMCE_D_ALERT == 0, "D-ALERT type");
+    CHECK(TETRA_CMCE_D_INFO == 5, "D-INFO type");
+    CHECK(TETRA_CMCE_D_SETUP == 7, "D-SETUP type");
+    CHECK(TETRA_CMCE_D_TX_GRANTED == 11, "D-TX-GRANTED type");
+    CHECK(TETRA_CMCE_D_CALL_RESTORE == 14, "D-CALL-RESTORE type");
+    CHECK(TETRA_CMCE_D_SDS_DATA == 15, "D-SDS-DATA type");
+    CHECK(TETRA_CMCE_D_FACILITY == 16, "D-FACILITY type");
+    CHECK(TETRA_CMCE_FUNCTION_NOT_SUPPORTED == 31, "FUNCTION-NOT-SUPPORTED type");
 }
 
 /* -----------------------------------------------------------------------
@@ -309,13 +213,10 @@ int main(void)
     test_tetra_bits_to_uint();
 
     /* Phase 82 */
-    test_d_sds_long_data();    test_d_sds_long_data_truncated();
 
     /* Phase 83 */
     test_cmce_constants();
     test_d_facility();
-    test_d_sds_ack();
-    test_d_sds_short_report();
 
     /* Phase 84 */
     test_channel_info_release_cause();

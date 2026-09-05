@@ -44,6 +44,13 @@ dsd_decode_mode_profile_for(dsdneoUserDecodeMode mode) {
     dsd_decode_mode_profile profile = {4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4};
 
     switch (mode) {
+        case DSDCFG_MODE_TETRA:
+            /* TETRA owns a dedicated 18 ksym/s timing path rather than taking
+               part in the multi-protocol SPS hunt. COUNT is therefore the
+               intentional no-hunt-profile sentinel. */
+            profile.symbol_rate_hz = 18000;
+            profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_COUNT;
+            break;
         case DSDCFG_MODE_P25P2:
             profile.symbol_rate_hz = 6000;
             profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
@@ -84,6 +91,9 @@ dsd_decode_mode_profile_for(dsdneoUserDecodeMode mode) {
 
 int
 dsd_rtl_channel_profile_for(const dsd_opts* opts, int symbol_rate_hz, int levels, int rf_mod) {
+    if (symbol_rate_hz == 18000) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE;
+    }
     if (symbol_rate_hz == 2400 || (symbol_rate_hz == 4800 && levels == 2)) {
         return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
     }

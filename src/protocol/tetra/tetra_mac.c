@@ -76,6 +76,121 @@ static int addr_field_len(int addr_type)
     }
 }
 
+/* Parse the mandatory tail of a pi/4-DQPSK MAC-RESOURCE header and its
+ * optional basic Channel Allocation IE (EN 300 392-2, tables 21.55/21.87).
+ * Returns the first TM-SDU bit, or -1 for a truncated header. */
+static int parse_resource_optional_elements(const uint8_t *bits, int nbits, int off,
+                                            int cc, dsd_opts *opts, dsd_state *state)
+{
+    if (off + 1 > nbits) return -1;
+    uint32_t power_flag = bits_to_uint(bits, off, 1); off++;
+    if (power_flag) {
+        if (off + 4 > nbits) return -1;
+        off += 4;
+    }
+
+    if (off + 1 > nbits) return -1;
+    uint32_t slot_grant_flag = bits_to_uint(bits, off, 1); off++;
+    if (slot_grant_flag) {
+        if (off + 8 > nbits) return -1;
+        off += 8; /* basic slot granting element for pi/4-DQPSK */
+    }
+
+    if (off + 1 > nbits) return -1;
+    uint32_t allocation_flag = bits_to_uint(bits, off, 1); off++;
+    if (!allocation_flag)
+        return off;
+
+    /* Fixed part through the extended-carrier-numbering flag. */
+    if (off + 23 > nbits) return -1;
+    uint32_t allocation_type = bits_to_uint(bits, off, 2); off += 2;
+    uint32_t timeslots       = bits_to_uint(bits, off, 4); off += 4;
+    uint32_t up_down         = bits_to_uint(bits, off, 2); off += 2;
+    off += 1; /* CLCH permission */
+    off += 1; /* cell change flag */
+    uint32_t carrier         = bits_to_uint(bits, off, 12); off += 12;
+    uint32_t extended        = bits_to_uint(bits, off, 1); off += 1;
+
+    uint32_t band = state ? state->tetra_freq_band : 0;
+    uint32_t freq_offset = state ? state->tetra_freq_offset : 0;
+    if (extended) {
+        if (off + 10 > nbits) return -1;
+        band        = bits_to_uint(bits, off, 4); off += 4;
+        freq_offset = bits_to_uint(bits, off, 2); off += 2;
+        off += 3; /* duplex spacing */
+        off += 1; /* reverse operation */
+    }
+
+    if (off + 2 > nbits) return -1;
+    uint32_t monitoring = bits_to_uint(bits, off, 2); off += 2;
+    if (monitoring == 0) {
+        if (off + 2 > nbits) return -1;
+        off += 2; /* frame-18 monitoring pattern */
+    }
+
+    uint32_t bandwidth_code = 0;
+    uint32_t modulation = 0; /* pi/4-DQPSK */
+    if (up_down == 0) {
+        if (off + 2 + 3 + 3 + 3 + 3 + 4 + 5 + 2 > nbits) return -1;
+        up_down        = bits_to_uint(bits, off, 2); off += 2;
+        bandwidth_code = bits_to_uint(bits, off, 3); off += 3;
+        modulation     = bits_to_uint(bits, off, 3); off += 3;
+        off += 3; /* maximum QAM level, or reserved for non-QAM */
+        off += 3; /* conforming channel status */
+        off += 4; /* BS link imbalance */
+        off += 5; /* BS transmit power relative to main carrier */
+        uint32_t napping = bits_to_uint(bits, off, 2); off += 2;
+        if (napping == 1) {
+            if (off + 11 > nbits) return -1;
+            off += 11;
+        }
+        if (off + 4 + 1 > nbits) return -1;
+        off += 4; /* reserved */
+        uint32_t conditional_a = bits_to_uint(bits, off, 1); off++;
+        if (conditional_a) {
+            if (off + 16 > nbits) return -1;
+            off += 16;
+        }
+        if (off + 1 > nbits) return -1;
+        uint32_t conditional_b = bits_to_uint(bits, off, 1); off++;
+        if (conditional_b) {
+            if (off + 16 > nbits) return -1;
+            off += 16;
+        }
+        if (off + 1 > nbits) return -1;
+        uint32_t further = bits_to_uint(bits, off, 1); off++;
+        if (further) {
+            fprintf(stderr, "[TETRA CHANNEL-ALLOCATION] CC=%d unsupported further augmentation\n", cc);
+            return -1;
+        }
+    }
+
+    long vc_hz = tetra_carrier_to_dl_hz(carrier, band, freq_offset);
+    if (vc_hz > 0 && bandwidth_code < 4) {
+        static const long wide_center_adjust_hz[4] = {0L, 12500L, 37500L, 62500L};
+        vc_hz += wide_center_adjust_hz[bandwidth_code];
+    }
+    fprintf(stderr, "[TETRA CHANNEL-ALLOCATION] CC=%d type=%u slots=0x%X dir=%u carrier=%u freq=%ld bw=%u mod=%u\n",
+            cc, allocation_type, timeslots, up_down, carrier, vc_hz,
+            bandwidth_code, modulation);
+
+    if (state) {
+        state->tetra_vc_assignment_valid = 1;
+        state->tetra_vc_assignment_type = (uint8_t)allocation_type;
+        state->tetra_vc_timeslot_bitmap = (uint8_t)(timeslots & 0x0Fu);
+        state->tetra_vc_slot = (uint8_t)(timeslots & 0x0Fu); /* compatibility */
+        state->tetra_vc_uplink_downlink = (uint8_t)up_down;
+        state->tetra_vc_carrier = (uint16_t)carrier;
+        state->tetra_vc_freq_hz = vc_hz;
+
+        if (timeslots == 0)
+            tetra_sm_on_release(opts, state);
+        else if ((up_down == 1 || up_down == 3) && vc_hz > 0 && modulation == 0)
+            tetra_sm_on_grant(opts, state, vc_hz, (uint8_t)timeslots);
+    }
+    return off;
+}
+
 /* -----------------------------------------------------------------------
  * Subtype parsers
  * ----------------------------------------------------------------------- */
@@ -156,6 +271,16 @@ static void parse_mac_resource(const uint8_t *bits, int nbits, int cc,
 
     fprintf(stderr, "  fill=%d  grant_pos=%d\n", fill_bits, grant_pos);
 
+    /* The optional MAC header elements precede the TM-SDU. Older captures and
+     * unit vectors that end exactly after the address are accepted as a
+     * header-only PDU. */
+    if (off < nbits) {
+        int payload_off = parse_resource_optional_elements(bits, nbits, off, cc,
+                                                           (dsd_opts *)(uintptr_t)opts, state);
+        if (payload_off < 0) goto short_out;
+        off = payload_off;
+    }
+
     /* --- Update dsd_state --- */
     if (state) {
         state->tetra_enc_mode = enc_mode;
@@ -192,7 +317,7 @@ static void parse_mac_resource(const uint8_t *bits, int nbits, int cc,
      * reassembly buffer instead of dispatching immediately.
      * --------------------------------------------------------------- */
     if (state && off < nbits) {
-        if (fill_bits == 0) {
+        if (len_ind == 63) {
             /* First fragment: seed the reassembly buffer */
             int payload_bits = nbits - off;
             int copy = payload_bits < (int)sizeof(state->tetra_frag_buf)
@@ -203,7 +328,7 @@ static void parse_mac_resource(const uint8_t *bits, int nbits, int cc,
             state->tetra_frag_active = 1;
             fprintf(stderr, "[TETRA MAC-RESOURCE] CC=%d  fragment start (%d bits buffered)\n",
                     cc, copy);
-        } else {
+        } else if (len_ind != 2) {
             /* Complete TM-SDU: dispatch directly */
             tetra_mle_dispatch(bits + off, nbits - off, cc, opts, state);
         }
@@ -505,7 +630,7 @@ void tetra_mac_parse_schd(const uint8_t *bits, int nbits,
             int bcast_type = (int)bits_to_uint(bits, 2, 2);
             if (bcast_type == TETRA_MAC_BC_SYSINFO) {
                 if (state) state->tetra_frames_sysinfo++;
-                parse_mac_sysinfo(bits, nbits, cc, opts, state);
+                parse_mac_sysinfo(bits, nbits, cc, (dsd_opts *)(uintptr_t)opts, state);
             } else if (bcast_type == TETRA_MAC_BC_ACCESS_DEF)
                 parse_mac_access_define(bits, nbits, cc, state);
             else if (bcast_type == TETRA_MAC_BC_RESTORE

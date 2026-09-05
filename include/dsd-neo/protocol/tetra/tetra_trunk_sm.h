@@ -43,22 +43,23 @@ void tetra_sm_init(void);
 /**
  * @brief Called when SYSINFO is decoded and trunk_cc_freq is valid.
  *
- * Transitions IDLE→ON_CC and registers the CC in the CC-candidates list.
+ * When trunking is enabled and the CC frequency is positive, transitions
+ * IDLE→ON_CC and registers the CC in the CC-candidates list.
  */
 void tetra_sm_on_cc_sync(dsd_opts *opts, dsd_state *state);
 
 /**
- * @brief Called on D-TX-GRANTED with a resolved VC frequency.
+ * @brief Called when a MAC Channel Allocation IE resolves a VC frequency.
  *
  * If trunking is enabled and vc_freq_hz > 0 the SM tunes to the VC.
  * @param vc_freq_hz  Resolved downlink VC frequency in Hz (0 = same as CC).
- * @param slot        Assigned timeslot (0-3; 0 means unspecified).
+ * @param slot        Four-bit assigned timeslot bitmap.
  */
 void tetra_sm_on_grant(dsd_opts *opts, dsd_state *state,
                        long vc_freq_hz, uint8_t slot);
 
 /**
- * @brief Called on D-TX-CEASED or D-RELEASE / D-DISCONNECT.
+ * @brief Called on D-RELEASE / D-DISCONNECT or MAC allocation release.
  *
  * Immediately returns to CC (hangtime elapsed or call cleared).
  */
@@ -67,7 +68,8 @@ void tetra_sm_on_release(dsd_opts *opts, dsd_state *state);
 /**
  * @brief Periodic tick: enforces hangtime timeout while TUNED.
  *
- * Call from processTetraFrame() once per NDB burst (every 56.67 ms).
+ * Also returns to the CC when trunking is disabled while tuned. Call from
+ * processTetraFrame() once per NDB burst (every 56.67 ms).
  */
 void tetra_sm_tick(dsd_opts *opts, dsd_state *state);
 

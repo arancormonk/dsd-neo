@@ -156,6 +156,14 @@ static void test_acelp_reorder(void) {
         if(written[i] == 0 && out[i] != 0xFF) untouched_correct = 0;
     }
     CHECK(untouched_correct == 1, "Unwritten bytes retained initial pattern");
+
+    memset(out, 0xA5, sizeof(out));
+    tetra_acelp_reorder(in, out, 271);
+    int short_unchanged = 1;
+    for (size_t i = 0; i < sizeof(out); i++) {
+        if (out[i] != 0xA5) short_unchanged = 0;
+    }
+    CHECK(short_unchanged == 1, "Short ACELP input is rejected without output writes");
 }
 
 int main(void) {

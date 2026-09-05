@@ -66,8 +66,9 @@
 #define TETRA_BLOCK_ROWS  101
 #define TETRA_BLOCK_COLS  3   /* ceil(216/101) = 3, informational only */
 
-/* Neutral soft cost used when we have hard dibits only (no soft symbols).
- * 0x7FFF  →  Viterbi treats this as "completely uncertain"; branch metric = 0. */
+/* Neutral soft cost used for punctured positions inserted by depuncturing.
+ * 0x7FFF makes either candidate bit equally likely. Hard-only captured dibits
+ * are mapped to confident 0x0000/0xFFFF costs below. */
 #define SOFT_NEUTRAL ((uint16_t)0x7FFFu)
 
 /* -------------------------------------------------------------------------
@@ -103,8 +104,8 @@ static void tetra_prepare_block(const uint8_t *dibuf, const float *soft_in,
             soft_costs[i * 2 + 0] = soft_symbol_to_viterbi_cost(soft_in[i], state, 0);
             soft_costs[i * 2 + 1] = soft_symbol_to_viterbi_cost(soft_in[i], state, 1);
         } else {
-            soft_costs[i * 2 + 0] = SOFT_NEUTRAL;
-            soft_costs[i * 2 + 1] = SOFT_NEUTRAL;
+            soft_costs[i * 2 + 0] = hard_bits[i * 2 + 0] ? 0xFFFFu : 0x0000u;
+            soft_costs[i * 2 + 1] = hard_bits[i * 2 + 1] ? 0xFFFFu : 0x0000u;
         }
     }
 
@@ -143,7 +144,9 @@ static void tetra_decode_schd(const uint16_t *soft, int cc, int block_idx,
                               dsd_opts *opts, dsd_state *state)
 {
     const int punct_id   = TETRA_RCPC_PUNCT_2_3;
-    const int depunc_len = TETRA_NDB_BLOCK_BITS * 2;  /* 432 */
+    const int type1_len  = 124;
+    const int type2_len  = 144; /* 124 payload + 16 CRC + 4 zero tail */
+    const int depunc_len = type2_len * 4;
 
     uint16_t *depunc = (uint16_t *)malloc(sizeof(uint16_t) * (size_t)depunc_len);
     if (!depunc) {
@@ -159,12 +162,15 @@ static void tetra_decode_schd(const uint16_t *soft, int cc, int block_idx,
                                             decoded, (int)sizeof(decoded));
     free(depunc);
 
-    if (dec_len > 0)
+    const int crc_ok = dec_len >= type2_len
+                       && tetra_crc16_ccitt_bits(decoded, type1_len + 16) == 0x1D0Fu;
+    if (crc_ok)
         state->tetra_decode_ok++;
     else
         state->tetra_decode_errors++;
 
-    tetra_mac_parse_schd(decoded, dec_len > 0 ? dec_len : 0, cc, opts, state);
+    if (crc_ok)
+        tetra_mac_parse_schd(decoded, type1_len, cc, opts, state);
 }
 
 /* -------------------------------------------------------------------------
@@ -232,7 +238,7 @@ static void tetra_decode_tch_fs(const uint16_t *soft_b1, const uint16_t *soft_b2
         tetra_acelp_process_tch(decoded, dec_len, 0, opts, state);
     }
 
-    if (opts->payload) {
+    if (opts->payload || opts->errorbars) {
         fprintf(stderr, "[TETRA TCH/FS] CC=%d  dec_bits=%d  first16=", cc, dec_len);
         for (int i = 0; i < 16 && i < dec_len; i++)
             fprintf(stderr, "%d", decoded[i] & 1);
@@ -249,6 +255,7 @@ static void tetra_decode_tch_fs(const uint16_t *soft_b1, const uint16_t *soft_b2
 void processTetraFrame(dsd_opts* opts, dsd_state* state)
 {
     soft_symbol_frame_begin(state);
+    tetra_tdma_advance_ndb(state);
 
     /* ---------------------------------------------------------------
      * Read Block 2 live (108 dibits = 216 bits).
@@ -358,7 +365,8 @@ void processTetraFrame(dsd_opts* opts, dsd_state* state)
  *
  * BSCH FEC pipeline (hard-input only):
  *   60 dibits → 120 bits → deinterleave(K=120,a=11) → descramble(seed=3)
- *   → RCPC depuncture(2/3, 120→240) → Viterbi(out=60b) → tetra_bsch_parse()
+ *   → RCPC depuncture(2/3, 120→320) → Viterbi(out=80b)
+ *   → CRC-16 gate → tetra_bsch_parse(first 60b)
  * -------------------------------------------------------------------------*/
 
 /* SB constants */
@@ -368,7 +376,10 @@ void processTetraFrame(dsd_opts* opts, dsd_state* state)
 #define TETRA_SB_BKN2_DIBITS   108   /* BKN2 block (SB2, BNCH) after BB */
 #define TETRA_SB_BSCH_ROWS     11    /* interleaver parameter a for K=120 */
 #define TETRA_SB_SCRAMB_SEED   3u    /* SCRAMB_INIT = tetra_compute_scramb_seed(0,0,0) */
-#define TETRA_SB_DEPUNC_LEN    (TETRA_SB_BSCH_BITS * 2)  /* 240 mother bits */
+#define TETRA_SB_TYPE2_BITS    80
+#define TETRA_SB_TYPE1_BITS    60
+#define TETRA_SB_DEPUNC_LEN    (TETRA_SB_TYPE2_BITS * 4)
+#define TETRA_CRC_OK           0x1D0Fu
 
 void processTetraSBFrame(dsd_opts *opts, dsd_state *state)
 {
@@ -390,16 +401,17 @@ void processTetraSBFrame(dsd_opts *opts, dsd_state *state)
     }
     state->tetra_sb1_valid = 0; /* consume */
 
-    /* Expand 60 dibits → 120 hard bits; all soft costs = SOFT_NEUTRAL. */
+    /* Expand 60 dibits → 120 hard bits and preserve their decisions as
+     * confident Viterbi costs. The sync cache has no amplitudes, but hard
+     * decisions still carry information; neutral costs discard the BSCH. */
     uint8_t  hard[TETRA_SB_BSCH_BITS];
     uint16_t soft[TETRA_SB_BSCH_BITS];
     for (int i = 0; i < TETRA_SB_BSCH_DIBITS; i++) {
         uint8_t d = state->tetra_sb1_dibuf[i] & 3u;
         hard[i * 2 + 0] = (d >> 1) & 1u;
         hard[i * 2 + 1] =  d       & 1u;
-        soft[i * 2 + 0] = SOFT_NEUTRAL;
-        soft[i * 2 + 1] = SOFT_NEUTRAL;
     }
+    tetra_hard_bits_to_soft(hard, soft, TETRA_SB_BSCH_BITS);
 
     /* ------------------------------------------------------------------
      * Step 3: Deinterleave (K=120, a=11).
@@ -445,7 +457,9 @@ void processTetraSBFrame(dsd_opts *opts, dsd_state *state)
     }
 
     /* Phase 39: quality counters (SB1 decode also counts). */
-    if (dec_len > 0)
+    const int crc_ok = dec_len >= TETRA_SB_TYPE2_BITS
+                       && tetra_crc16_ccitt_bits(decoded, TETRA_SB_TYPE1_BITS + 16) == TETRA_CRC_OK;
+    if (crc_ok)
         state->tetra_decode_ok++;
     else
         state->tetra_decode_errors++;
@@ -453,8 +467,8 @@ void processTetraSBFrame(dsd_opts *opts, dsd_state *state)
     /* ------------------------------------------------------------------
      * Step 7: Parse BSCH PDU (60 type-1 bits) → update network identity.
      * ------------------------------------------------------------------ */
-    if (dec_len >= 60)
-        tetra_bsch_parse(decoded, dec_len, opts, state);
+    if (crc_ok)
+        tetra_bsch_parse(decoded, TETRA_SB_TYPE1_BITS, opts, state);
 
     /* ------------------------------------------------------------------
      * Housekeeping.

@@ -492,7 +492,8 @@ if(DSD_ENABLE_WARNINGS)
             target_compile_options(dsd-neo_warnings INTERFACE /WX)
             target_link_options(
                 dsd-neo_warnings
-                INTERFACE "$<${_dsd_linkable_target}:/WX>"
+                INTERFACE
+                    "$<$<AND:${_dsd_linkable_target},$<NOT:$<BOOL:$<TARGET_PROPERTY:DSD_NEO_ALLOW_LINK_WARNINGS>>>>:/WX>"
             )
         endif()
     endif()

@@ -12,10 +12,10 @@
  *   5.  D-LU-DEMAND too-short still sets valid=1 (cause=0)
  *
  * Phase 49 — D-CONNECT full parse:
- *   6.  D-CONNECT with 12 bits extracts call_type and enc_mode
+ *   6.  D-CONNECT extracts the mandatory fields from ETSI table 14.7
  *   7.  D-CONNECT sets tetra_call_active=1
- *   8.  D-CONNECT updates tetra_enc_mode
- *   9.  D-CONNECT too-short PDU (no crash, call_active still 1)
+ *   8.  D-CONNECT records transmission grant and ownership
+ *   9.  D-CONNECT rejects a too-short PDU
  *
  * Phase 50 — D-SDS-SHORT-DATA:
  *  10.  D-SDS-SHORT-DATA type 0 extracts 16-bit status
@@ -213,37 +213,35 @@ static void test_mm_d_lu_demand_short(void)
  * Phase 49: D-CONNECT full parse
  * ======================================================================= */
 
-/* Test 6: D-CONNECT with call_type=2 enc_mode=1 */
+/* Test 6: D-CONNECT mandatory fields, ETSI EN 300 392-2 table 14.7. */
 static void test_d_connect_parse(void)
 {
     printf("[test_d_connect_parse]\n");
 
-    /* CMCE D-CONNECT:
-     *   [0-4]  pdu_type = 2
-     *   [5]    call_id = 0
-     *   [6-8]  call_type = 2 (ACKNOWLEDGED)
-     *   [9]    simplex_duplex = 0
-     *   [10-11] enc_mode = 1
-     * Total: 12 bits */
-    uint8_t cmce[12];
+    uint8_t cmce[29];
     memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 2u, 0, 5);   /* pdu_type = 2 (D-CONNECT) */
-    pack_bits(cmce, 0u, 5, 1);   /* call_id = 0              */
-    pack_bits(cmce, 2u, 6, 3);   /* call_type = 2            */
-    pack_bits(cmce, 0u, 9, 1);   /* simplex_duplex = 0       */
-    pack_bits(cmce, 1u, 10, 2);  /* enc_mode = 1             */
+    pack_bits(cmce, 2u,      0, 5);
+    pack_bits(cmce, 0x2345u, 5, 14);
+    pack_bits(cmce, 9u,     19, 4);
+    pack_bits(cmce, 1u,     23, 1);
+    pack_bits(cmce, 1u,     24, 1);
+    pack_bits(cmce, 3u,     25, 2);
+    pack_bits(cmce, 1u,     27, 1);
+    pack_bits(cmce, 1u,     28, 1);
 
-    uint8_t mle[9 + 12]; int n;
-    wrap_mle_cmce(cmce, 12, mle, &n);
+    uint8_t mle[9 + 29]; int n;
+    wrap_mle_cmce(cmce, 29, mle, &n);
 
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
 
     tetra_mle_dispatch(mle, n, 0, opt, st);
 
-    CHECK(st->tetra_connect_valid     == 1, "D-CONNECT: valid=1");
-    CHECK(st->tetra_connect_call_type == 2, "D-CONNECT: call_type=2");
-    CHECK(st->tetra_connect_enc_mode  == 1, "D-CONNECT: enc_mode=1");
+    CHECK(st->tetra_connect_valid == 1, "D-CONNECT: valid=1");
+    CHECK(st->tetra_call_id == 0x2345, "D-CONNECT: call identifier");
+    CHECK(st->tetra_call_timeout == 9, "D-CONNECT: call timeout");
+    CHECK(st->tetra_cmce_connect_hook == 1, "D-CONNECT: hook method");
+    CHECK(st->tetra_cmce_connect_duplex == 1, "D-CONNECT: simplex/duplex");
 
     free(st); free(opt);
 }
@@ -253,16 +251,12 @@ static void test_d_connect_call_active(void)
 {
     printf("[test_d_connect_call_active]\n");
 
-    uint8_t cmce[12];
+    uint8_t cmce[29];
     memset(cmce, 0, sizeof(cmce));
     pack_bits(cmce, 2u, 0, 5);
-    pack_bits(cmce, 0u, 5, 1);
-    pack_bits(cmce, 0u, 6, 3);
-    pack_bits(cmce, 0u, 9, 1);
-    pack_bits(cmce, 0u, 10, 2);
 
-    uint8_t mle[9 + 12]; int n;
-    wrap_mle_cmce(cmce, 12, mle, &n);
+    uint8_t mle[9 + 29]; int n;
+    wrap_mle_cmce(cmce, 29, mle, &n);
 
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
@@ -274,33 +268,34 @@ static void test_d_connect_call_active(void)
     free(st); free(opt);
 }
 
-/* Test 8: D-CONNECT updates tetra_enc_mode */
-static void test_d_connect_enc_mode(void)
+/* Test 8: D-CONNECT transmission control fields. */
+static void test_d_connect_transmission_control(void)
 {
-    printf("[test_d_connect_enc_mode]\n");
+    printf("[test_d_connect_transmission_control]\n");
 
-    uint8_t cmce[12];
+    uint8_t cmce[29];
     memset(cmce, 0, sizeof(cmce));
     pack_bits(cmce, 2u, 0, 5);
-    pack_bits(cmce, 0u, 5, 1);
-    pack_bits(cmce, 0u, 6, 3);
-    pack_bits(cmce, 0u, 9, 1);
-    pack_bits(cmce, 3u, 10, 2);  /* enc_mode = 3 */
+    pack_bits(cmce, 3u, 25, 2);
+    pack_bits(cmce, 1u, 27, 1);
+    pack_bits(cmce, 1u, 28, 1);
 
-    uint8_t mle[9 + 12]; int n;
-    wrap_mle_cmce(cmce, 12, mle, &n);
+    uint8_t mle[9 + 29]; int n;
+    wrap_mle_cmce(cmce, 29, mle, &n);
 
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
 
     tetra_mle_dispatch(mle, n, 0, opt, st);
 
-    CHECK(st->tetra_enc_mode == 3, "D-CONNECT: tetra_enc_mode=3");
+    CHECK(st->tetra_cmce_connect_tx_grant == 3, "D-CONNECT: transmission grant");
+    CHECK(st->tetra_cmce_connect_tx_permission == 1, "D-CONNECT: request permission");
+    CHECK(st->tetra_cmce_connect_ownership == 1, "D-CONNECT: ownership");
 
     free(st); free(opt);
 }
 
-/* Test 9: D-CONNECT too-short (only 5 bits) — still sets call_active */
+/* Test 9: D-CONNECT too-short (only the PDU type). */
 static void test_d_connect_too_short(void)
 {
     printf("[test_d_connect_too_short]\n");
@@ -317,40 +312,38 @@ static void test_d_connect_too_short(void)
 
     tetra_mle_dispatch(mle, n, 0, opt, st);
 
-    CHECK(st->tetra_call_active == 1, "D-CONNECT short: call_active=1");
-    CHECK(st->tetra_connect_valid == 1, "D-CONNECT short: connect_valid=1");
-    /* enc_mode defaults to 0 when PDU too short */
-    CHECK(st->tetra_connect_enc_mode == 0, "D-CONNECT short: enc_mode=0 (default)");
+    CHECK(st->tetra_call_active == 0, "D-CONNECT short: call stays inactive");
+    CHECK(st->tetra_connect_valid == 0, "D-CONNECT short: remains invalid");
 
     free(st); free(opt);
 }
 
 /* =======================================================================
- * Phase 50: D-SDS-SHORT-DATA
+ * Phase 50: D-SDS-DATA SDTI=0
  * ======================================================================= */
 
-/* Test 10: D-SDS-SHORT-DATA type 0 with 16-bit status */
+/* Test 10: D-SDS-DATA SDTI=0 type 0 with 16-bit status */
 static void test_d_sds_short_data_type0(void)
 {
     printf("[test_d_sds_short_data_type0]\n");
 
-    /* CMCE D-SDS-SHORT-DATA:
-     *   [0-4]   pdu_type = 21
+    /* CMCE D-SDS-DATA SDTI=0:
+     *   [0-4]   pdu_type = 15
      *   [5]     ext_flag = 0
      *   [6-29]  calling_ssi = 99999 (24 bits)
      *   [30-31] data_type = 0
      *   [32-47] pre-defined status = 0xABCD (16 bits)
      * Total: 48 bits */
-    uint8_t cmce[48];
+    uint8_t cmce[49];
     memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 21u,     0,  5);
-    pack_bits(cmce,  0u,     5,  1);
-    pack_bits(cmce, 99999u,  6, 24);
-    pack_bits(cmce,  0u,    30,  2);  /* data_type = 0 */
-    pack_bits(cmce, 0xABCDu, 32, 16); /* status */
+    pack_bits(cmce, TETRA_CMCE_D_SDS_DATA,     0,  5);
+    pack_bits(cmce,  1u,     5,  2);
+    pack_bits(cmce, 99999u,  7, 24);
+    pack_bits(cmce,  0u,    31,  2);  /* data_type = 0 */
+    pack_bits(cmce, 0xABCDu, 33, 16); /* status */
 
-    uint8_t mle[9 + 48]; int n;
-    wrap_mle_cmce(cmce, 48, mle, &n);
+    uint8_t mle[9 + 49]; int n;
+    wrap_mle_cmce(cmce, 49, mle, &n);
 
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
@@ -363,21 +356,21 @@ static void test_d_sds_short_data_type0(void)
     free(st); free(opt);
 }
 
-/* Test 11: D-SDS-SHORT-DATA sets sds_short_src */
+/* Test 11: D-SDS-DATA SDTI=0 sets sds_short_src */
 static void test_d_sds_short_data_src(void)
 {
     printf("[test_d_sds_short_data_src]\n");
 
-    uint8_t cmce[48];
+    uint8_t cmce[49];
     memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 21u,    0,  5);
-    pack_bits(cmce,  0u,    5,  1);
-    pack_bits(cmce, 55555u, 6, 24);
-    pack_bits(cmce,  0u,   30,  2);
-    pack_bits(cmce,  0u,   32, 16);
+    pack_bits(cmce, TETRA_CMCE_D_SDS_DATA,    0,  5);
+    pack_bits(cmce,  1u,    5,  2);
+    pack_bits(cmce, 55555u, 7, 24);
+    pack_bits(cmce,  0u,   31,  2);
+    pack_bits(cmce,  0u,   33, 16);
 
-    uint8_t mle[9 + 48]; int n;
-    wrap_mle_cmce(cmce, 48, mle, &n);
+    uint8_t mle[9 + 49]; int n;
+    wrap_mle_cmce(cmce, 49, mle, &n);
 
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
@@ -392,14 +385,14 @@ static void test_d_sds_short_data_src(void)
     free(st); free(opt);
 }
 
-/* Test 12: D-SDS-SHORT-DATA too short (no crash) */
+/* Test 12: D-SDS-DATA SDTI=0 too short (no crash) */
 static void test_d_sds_short_data_too_short(void)
 {
     printf("[test_d_sds_short_data_too_short]\n");
 
     uint8_t cmce[10];
     memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 21u, 0, 5);
+    pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
 
     uint8_t mle[9 + 10]; int n;
     wrap_mle_cmce(cmce, 10, mle, &n);
@@ -463,7 +456,7 @@ int main(void)
     printf("\n--- Phase 49: D-CONNECT full parse ---\n");
     test_d_connect_parse();
     test_d_connect_call_active();
-    test_d_connect_enc_mode();
+    test_d_connect_transmission_control();
     test_d_connect_too_short();
 
     /* Phase 50 */

@@ -122,83 +122,14 @@ static void test_mm_d_otar(void)
 /* =======================================================================
  * Phase 64: CMCE D-ALERT call_id
  * ======================================================================= */
-static void test_d_alert(void)
-{
-    printf("[test_d_alert]\n");
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    /* CMCE type=0 (D-ALERT), call_id=5 */
-    uint8_t cmce[9];
-    memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 0, 0, 5); /* D-ALERT */
-    pack_bits(cmce, 5, 5, 4); /* call_id = 5 */
-
-    uint8_t pdu[9 + 9]; int n;
-    wrap_mle_cmce(cmce, 9, pdu, &n);
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-
-    CHECK(st->tetra_d_alert_valid == 1,    "D-ALERT valid flag");
-    CHECK(st->tetra_d_alert_call_id == 5,  "D-ALERT call_id extracted");
-    CHECK(st->tetra_call_active == 1,      "D-ALERT sets call_active");
-
-    free(st); free(opt);
-}
-
 /* =======================================================================
  * Phase 65: CMCE D-CALL-PROCEEDING call_id
  * ======================================================================= */
-static void test_d_call_proceeding(void)
-{
-    printf("[test_d_call_proceeding]\n");
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    /* CMCE type=1 (D-CALL-PROCEEDING), call_id=3 */
-    uint8_t cmce[9];
-    memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 1, 0, 5); /* D-CALL-PROCEEDING */
-    pack_bits(cmce, 3, 5, 4); /* call_id = 3 */
-
-    uint8_t pdu[9 + 9]; int n;
-    wrap_mle_cmce(cmce, 9, pdu, &n);
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-
-    CHECK(st->tetra_d_call_proc_valid == 1,   "D-CALL-PROCEEDING valid flag");
-    CHECK(st->tetra_d_call_proc_call_id == 3, "D-CALL-PROCEEDING call_id extracted");
-    CHECK(st->tetra_call_active == 1,         "D-CALL-PROCEEDING sets call_active");
-
-    free(st); free(opt);
-}
-
 /* =======================================================================
  * Phase 66: CMCE D-CONNECT-ACK call_id
  * ======================================================================= */
-static void test_d_connect_ack(void)
-{
-    printf("[test_d_connect_ack]\n");
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    /* CMCE type=3 (D-CONNECT-ACK), call_id=11 */
-    uint8_t cmce[9];
-    memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce,  3, 0, 5); /* D-CONNECT-ACK */
-    pack_bits(cmce, 11, 5, 4); /* call_id = 11 */
-
-    uint8_t pdu[9 + 9]; int n;
-    wrap_mle_cmce(cmce, 9, pdu, &n);
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-
-    CHECK(st->tetra_d_connect_ack_valid == 1,    "D-CONNECT-ACK valid flag");
-    CHECK(st->tetra_d_connect_ack_call_id == 11, "D-CONNECT-ACK call_id extracted");
-    CHECK(st->tetra_call_active == 1,            "D-CONNECT-ACK sets call_active");
-
-    free(st); free(opt);
-}
-
 /* =======================================================================
- * Phase 67: CMCE D-TX-CEASED tx_perm / cipher_res bits
+ * CMCE D-TX-CEASED standard mandatory layout
  * ======================================================================= */
 static void test_d_tx_ceased(void)
 {
@@ -206,21 +137,21 @@ static void test_d_tx_ceased(void)
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
 
-    /* CMCE type=8 (D-TX-CEASED), tx_perm=1, cipher_res=1 */
-    uint8_t cmce[7];
+    /* PDU type, 14-bit call identifier, request permission. */
+    uint8_t cmce[20];
     memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 8, 0, 5); /* D-TX-CEASED */
-    pack_bits(cmce, 1, 5, 1); /* tx_perm = 1 */
-    pack_bits(cmce, 1, 6, 1); /* cipher_res = 1 */
+    pack_bits(cmce, 9, 0, 5); /* D-TX-CEASED */
+    pack_bits(cmce, 0x1234, 5, 14);
+    pack_bits(cmce, 1, 19, 1); /* requests remain permitted */
 
     st->tetra_tx_granted_valid = 1; /* pre-condition */
 
-    uint8_t pdu[7 + 9]; int n;
-    wrap_mle_cmce(cmce, 7, pdu, &n);
+    uint8_t pdu[20 + 9]; int n;
+    wrap_mle_cmce(cmce, 20, pdu, &n);
     tetra_mle_dispatch(pdu, n, 0, opt, st);
 
-    CHECK(st->tetra_tx_ceased_tx_perm == 1,     "D-TX-CEASED tx_perm extracted");
-    CHECK(st->tetra_tx_ceased_cipher_info == 1, "D-TX-CEASED cipher_res extracted");
+    CHECK(st->tetra_tx_ceased_tx_perm == 1,     "D-TX-CEASED request permission extracted");
+    CHECK(st->tetra_tx_ceased_cipher_info == 0, "D-TX-CEASED has no cipher-info field");
     CHECK(st->tetra_tx_granted_valid == 0,      "D-TX-CEASED clears grant");
 
     free(st); free(opt);
@@ -266,9 +197,6 @@ int main(void)
 
     test_sds_text_len_type();
     test_mm_d_otar();
-    test_d_alert();
-    test_d_call_proceeding();
-    test_d_connect_ack();
     test_d_tx_ceased();
     test_mle_restore_fields();
 

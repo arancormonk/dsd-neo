@@ -50,6 +50,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
@@ -2793,6 +2794,7 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
 
     p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
     dmr_sm_init(opts, state);
+    tetra_sm_init();
 
     if (opts->resume > 0) {
         openSerial(opts, state);

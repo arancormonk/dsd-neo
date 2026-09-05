@@ -7,6 +7,7 @@
 
 #include <QChar>
 #include <QDateTime>
+#include <QStringList>
 #include <QtGlobal>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend.h>
@@ -210,6 +211,34 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
     next.squelch_db = next.radio_input ? pwr_to_dB(opts_snapshot->rtl_squelch_level) : 0.0;
     next.squelch_off = next.radio_input && dsd_squelch_is_off(opts_snapshot->rtl_squelch_level);
     next.ppm = next.radio_input ? opts_snapshot->rtlsdr_ppm_error : 0;
+
+    next.tetra_network_known = snapshot->tetra_net_known != 0;
+    if (next.tetra_network_known) {
+        next.tetra_network_text = QStringLiteral("MCC %1 · MNC %2 · CC %3")
+                                      .arg(snapshot->tetra_mcc)
+                                      .arg(snapshot->tetra_mnc)
+                                      .arg(snapshot->tetra_colour);
+        if (snapshot->tetra_sysinfo_main_carrier != 0U) {
+            next.tetra_control_channel_text = QStringLiteral("Carrier %1").arg(snapshot->tetra_sysinfo_main_carrier);
+        }
+        if (snapshot->tetra_vc_assignment_valid != 0U) {
+            QStringList slots;
+            for (unsigned slot = 0; slot < 4U; ++slot) {
+                if ((snapshot->tetra_vc_timeslot_bitmap & (1U << slot)) != 0U) {
+                    slots.append(QString::number(slot + 1U));
+                }
+            }
+            const QString allocation = QStringLiteral("Carrier %1 · TS %2")
+                                           .arg(snapshot->tetra_vc_carrier)
+                                           .arg(slots.isEmpty() ? QStringLiteral("—") : slots.join(QLatin1Char(',')));
+            next.tetra_traffic_channel_text = snapshot->tetra_vc_freq_hz > 0
+                                                  ? QStringLiteral("%1 MHz · %2")
+                                                        .arg(static_cast<double>(snapshot->tetra_vc_freq_hz) / 1.0e6,
+                                                             0, 'f', 4)
+                                                        .arg(allocation)
+                                                  : allocation;
+        }
+    }
 }
 
 void

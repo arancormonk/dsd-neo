@@ -83,6 +83,10 @@ class MetricsModel : public QObject {
     Q_PROPERTY(double squelchDb READ squelchDb NOTIFY controlChanged)
     Q_PROPERTY(bool squelchOff READ squelchOff NOTIFY controlChanged)
     Q_PROPERTY(int ppm READ ppm NOTIFY controlChanged)
+    Q_PROPERTY(bool tetraNetworkKnown READ tetraNetworkKnown NOTIFY controlChanged)
+    Q_PROPERTY(QString tetraNetworkText READ tetraNetworkText NOTIFY controlChanged)
+    Q_PROPERTY(QString tetraControlChannelText READ tetraControlChannelText NOTIFY controlChanged)
+    Q_PROPERTY(QString tetraTrafficChannelText READ tetraTrafficChannelText NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
 
   public:
@@ -291,6 +295,11 @@ class MetricsModel : public QObject {
     ppm() const {
         return m_view.ppm;
     }
+
+    bool tetraNetworkKnown() const { return m_view.tetra_network_known; }
+    const QString& tetraNetworkText() const { return m_view.tetra_network_text; }
+    const QString& tetraControlChannelText() const { return m_view.tetra_control_channel_text; }
+    const QString& tetraTrafficChannelText() const { return m_view.tetra_traffic_channel_text; }
 
     /**
      * @brief Structured call identity per slot, for the monitor's hero panel.
@@ -583,6 +592,10 @@ class MetricsModel : public QObject {
         double squelch_db = 0.0;
         bool squelch_off = false;
         int ppm = 0;
+        bool tetra_network_known = false;
+        QString tetra_network_text;
+        QString tetra_control_channel_text;
+        QString tetra_traffic_channel_text;
         bool audio_muted = false;
         qulonglong held_tg = 0;
         int enc_lockout_count = 0;
@@ -628,7 +641,11 @@ class MetricsModel : public QObject {
                    && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
                    && scanControlEquals(other) && decode_mode == other.decode_mode && modulation == other.modulation
                    && tuner_gain_db == other.tuner_gain_db && squelch_db == other.squelch_db
-                   && squelch_off == other.squelch_off && ppm == other.ppm;
+                   && squelch_off == other.squelch_off && ppm == other.ppm
+                   && tetra_network_known == other.tetra_network_known
+                   && tetra_network_text == other.tetra_network_text
+                   && tetra_control_channel_text == other.tetra_control_channel_text
+                   && tetra_traffic_channel_text == other.tetra_traffic_channel_text;
         }
     };
 

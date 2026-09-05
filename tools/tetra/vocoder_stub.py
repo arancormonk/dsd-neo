@@ -38,7 +38,13 @@ def main() -> None:
         if len(data) < FRAME_BITS:
             break                       # short read at EOF
 
-        # Output one frame of PCM16LE silence
+        # --short-output exercises the decoder's IPC framing/error recovery.
+        if "--short-output" in sys.argv[1:]:
+            stdout.write(PCM_SILENCE[: len(PCM_SILENCE) // 2])
+            stdout.flush()
+            break
+
+        # Output one frame of PCM16LE silence.
         stdout.write(PCM_SILENCE)
         stdout.flush()
 

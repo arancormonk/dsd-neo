@@ -235,6 +235,21 @@ void tetra_descramble_soft(uint16_t* costs, int len, uint32_t lfsr_init) {
     }
 }
 
+void tetra_hard_bits_to_soft(const uint8_t* bits, uint16_t* costs, int len) {
+    if (!bits || !costs || len <= 0) return;
+    for (int i = 0; i < len; i++) costs[i] = (bits[i] & 1u) ? 0xFFFFu : 0x0000u;
+}
+
+uint16_t tetra_crc16_ccitt_bits(const uint8_t* bits, int len) {
+    if (!bits || len <= 0) return 0xFFFFu;
+    uint16_t crc = 0xFFFFu;
+    for (int i = 0; i < len; i++) {
+        crc ^= (uint16_t)((bits[i] & 1u) << 15);
+        crc = (crc & 0x8000u) ? (uint16_t)((crc << 1) ^ 0x1021u) : (uint16_t)(crc << 1);
+    }
+    return crc;
+}
+
 /* Compute the TETRA scrambling seed from network identity parameters.
  * Formula from ETSI EN 300 392-2 §8.2.5.2 and osmo-tetra tetra_scramb.c:
  *   seed = ((colour & 0x3f) | ((mnc & 0x3fff) << 6) | ((mcc & 0x3ff) << 20)) << 2) | 3
@@ -258,33 +273,60 @@ void tetra_viterbi_decode(uint8_t* in, uint8_t* out, int len) {
 
 int tetra_viterbi_decode_soft(const uint16_t* depunc, int depunc_len, uint8_t* out_bits, int out_bits_len) {
     if (!depunc || !out_bits) return -1;
+    if (depunc_len <= 0 || (depunc_len & 3) != 0) return -1;
+    const int symbols = depunc_len / 4;
+    if (symbols > 512 || out_bits_len < symbols) return -1;
 
-    /* viterbi_decode expects (uint8_t* out_bytes, const uint16_t* in_costs, uint16_t len)
-     * where `len` is number of coded symbols (soft costs). We'll allocate a bytes buffer
-     * large enough to hold the decoded output and then unpack to bits.
-     */
-    int out_bytes_cap = (depunc_len / 8) + 8;
-    uint8_t out_bytes[256];
-    memset(out_bytes, 0, sizeof(out_bytes));
+    /* 16-state, constraint-length-5 TETRA rate-1/4 mother code. State bits
+     * [0..3] are D,D2,D3,D4, matching tetra_conv_enc.c. */
+    uint64_t prev_metric[16], next_metric[16];
+    uint8_t predecessor[512][16];
+    uint8_t decision[512][16];
+    const uint64_t inf = UINT64_MAX / 4u;
+    for (int state = 0; state < 16; state++) prev_metric[state] = state == 0 ? 0 : inf;
 
-#ifdef TETRA_FEC_TEST_MAIN
-    /* Test build: no viterbi implementation linked. Provide a simple deterministic
-     * stub to produce predictable output bytes for the unit test.
-     */
-    for (int i = 0; i < out_bytes_cap; i++) out_bytes[i] = (uint8_t)(0xAA + (i & 0xFF));
-#else
-    uint32_t v_err = viterbi_decode(out_bytes, depunc, (uint16_t)depunc_len);
-#endif
-
-    /* Unpack bytes into bits (MSB first) up to out_bits_len */
-    int bitpos = 0;
-    for (int b = 0; b < out_bytes_cap && bitpos < out_bits_len; b++) {
-        for (int i = 0; i < 8 && bitpos < out_bits_len; i++) {
-            out_bits[bitpos++] = (out_bytes[b] >> (7 - i)) & 1;
+    for (int pos = 0; pos < symbols; pos++) {
+        for (int state = 0; state < 16; state++) next_metric[state] = inf;
+        for (int state = 0; state < 16; state++) {
+            if (prev_metric[state] == inf) continue;
+            const int d1 = (state >> 0) & 1;
+            const int d2 = (state >> 1) & 1;
+            const int d3 = (state >> 2) & 1;
+            const int d4 = (state >> 3) & 1;
+            for (int bit = 0; bit <= 1; bit++) {
+                const int expected[4] = {bit ^ d1 ^ d4, bit ^ d2 ^ d3 ^ d4,
+                                         bit ^ d1 ^ d2 ^ d4, bit ^ d1 ^ d3 ^ d4};
+                uint64_t branch = 0;
+                for (int lane = 0; lane < 4; lane++) {
+                    const uint16_t target = expected[lane] ? 0xFFFFu : 0x0000u;
+                    const uint16_t got = depunc[pos * 4 + lane];
+                    branch += target > got ? target - got : got - target;
+                }
+                const int next = ((state << 1) & 0xEu) | bit;
+                const uint64_t metric = prev_metric[state] + branch;
+                if (metric < next_metric[next]) {
+                    next_metric[next] = metric;
+                    predecessor[pos][next] = (uint8_t)state;
+                    decision[pos][next] = (uint8_t)bit;
+                }
+            }
         }
+        memcpy(prev_metric, next_metric, sizeof(prev_metric));
     }
 
-    return bitpos; /* number of bits written */
+    /* Signalling encoders append four zero tail bits, so state zero is the
+     * normative endpoint. Falling back to the best state keeps the helper
+     * useful for legacy unterminated diagnostic vectors. */
+    int state = 0;
+    if (prev_metric[state] == inf) {
+        for (int candidate = 1; candidate < 16; candidate++)
+            if (prev_metric[candidate] < prev_metric[state]) state = candidate;
+    }
+    for (int pos = symbols - 1; pos >= 0; pos--) {
+        out_bits[pos] = decision[pos][state];
+        state = predecessor[pos][state];
+    }
+    return symbols;
 }
 
 int tetra_rcpc_depuncture_soft(const uint16_t* in_costs, int info_bits_len, const uint8_t* punct, int p_len,

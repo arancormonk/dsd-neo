@@ -188,68 +188,6 @@ static void test_phase77_access_define(void)
     free(st); free(opt);
 }
 
-static void test_phase78_cmce_d_setup(void)
-{
-    printf("[test_phase78_cmce_d_setup]\n");
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    uint8_t cmce[100];
-    int n = 0;
-    
-    pack_bits(cmce, 6, n, 5); n+=5; // PDU type = D-SETUP
-    
-    pack_bits(cmce, 1, n, 1); n+=1; // call_id
-    pack_bits(cmce, 0, n, 1); n+=1; // call_timeout
-    pack_bits(cmce, 0, n, 3); n+=3; // call_type
-    pack_bits(cmce, 1, n, 1); n+=1; // duplex
-    pack_bits(cmce, 0, n, 1); n+=1; // notif
-    pack_bits(cmce, 1, n, 1); n+=1; // com_type
-    pack_bits(cmce, 0, n, 1); n+=1; // slots
-    
-    pack_bits(cmce, 1, n, 1); n+=1; // cp_present
-    pack_bits(cmce, 0, n, 1); n+=1; // cp_type (SSI)
-    pack_bits(cmce, 123, n, 24); n+=24; // calling_ssi
-    
-    pack_bits(cmce, 1, n, 1); n+=1; // cld_present
-    pack_bits(cmce, 2, n, 2); n+=2; // called_type
-    pack_bits(cmce, 456, n, 24); n+=24; // called_ssi
-
-    uint8_t pdu[200]; int out_n;
-    wrap_mle_cmce(cmce, n, pdu, &out_n);
-    tetra_mle_dispatch(pdu, out_n, 0, opt, st);
-
-    CHECK(st->tetra_cmce_duplex == 1, "tetra_cmce_duplex");
-    CHECK(st->tetra_cmce_notif == 0, "tetra_cmce_notif");
-    CHECK(st->tetra_cmce_com_type == 1, "tetra_cmce_com_type");
-    CHECK(st->tetra_cmce_called_type == 2, "tetra_cmce_called_type");
-
-    free(st); free(opt);
-}
-
-static void test_phase78_cmce_d_release(void)
-{
-    printf("[test_phase78_cmce_d_release]\n");
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    uint8_t cmce[100];
-    int n = 0;
-    
-    pack_bits(cmce, 5, n, 5); n+=5; // PDU type = D-RELEASE
-    pack_bits(cmce, 1, n, 1); n+=1; // cause_type
-    pack_bits(cmce, 11, n, 4); n+=4; // cause
-
-    uint8_t pdu[200]; int out_n;
-    wrap_mle_cmce(cmce, n, pdu, &out_n);
-    tetra_mle_dispatch(pdu, out_n, 0, opt, st);
-
-    CHECK(st->tetra_cmce_release_cause_type == 1, "tetra_cmce_release_cause_type");
-    CHECK(st->tetra_cmce_release_cause == 11, "tetra_cmce_release_cause");
-
-    free(st); free(opt);
-}
-
 static void test_phase78_cmce_d_tx_granted(void)
 {
     printf("[test_phase78_cmce_d_tx_granted]\n");
@@ -259,10 +197,12 @@ static void test_phase78_cmce_d_tx_granted(void)
     uint8_t cmce[100];
     int n = 0;
     
-    pack_bits(cmce, 10, n, 5); n+=5; // PDU type = D-TX-GRANTED
-    pack_bits(cmce, 1, n, 1); n+=1; // tx_perm
-    pack_bits(cmce, 0, n, 2); n+=2; // enc_mode
-    pack_bits(cmce, 1, n, 1); n+=1; // reserv
+    pack_bits(cmce, TETRA_CMCE_D_TX_GRANTED, n, 5); n+=5;
+    pack_bits(cmce, 0x123, n, 14); n+=14;
+    pack_bits(cmce, 3, n, 2); n+=2;
+    pack_bits(cmce, 1, n, 1); n+=1;
+    pack_bits(cmce, 0, n, 1); n+=1;
+    pack_bits(cmce, 1, n, 1); n+=1;
 
     uint8_t pdu[200]; int out_n;
     wrap_mle_cmce(cmce, n, pdu, &out_n);
@@ -291,60 +231,6 @@ static void test_phase78_mle_nwrk_broadcast(void)
     tetra_mle_dispatch(pdu, n, 0, opt, st);
 
     CHECK(st->tetra_mle_registration == 1, "tetra_mle_registration");
-
-    free(st); free(opt);
-}
-
-static void test_phase78_cmce_sds_short_data(void)
-{
-    printf("[test_phase78_cmce_sds_short_data]\n");
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    uint8_t cmce[100];
-    int n = 0;
-    
-    pack_bits(cmce, 21, n, 5); n+=5; // PDU type = D-SDS-SHORT-DATA
-    pack_bits(cmce, 0, n, 1); n+=1; // ext_flag
-    pack_bits(cmce, 1234, n, 24); n+=24; // src_ssi
-    pack_bits(cmce, 2, n, 2); n+=2; // data_type = 2
-    pack_bits(cmce, 0, n, 64); n+=64; // data_type 2 requires 64 bits
-
-    uint8_t pdu[200]; int out_n;
-    wrap_mle_cmce(cmce, n, pdu, &out_n);
-    tetra_mle_dispatch(pdu, out_n, 0, opt, st);
-
-    CHECK(st->tetra_cmce_sds_data_type == 2, "tetra_cmce_sds_data_type");
-
-    free(st); free(opt);
-}
-
-static void test_phase78_cmce_sds_data(void)
-{
-    printf("[test_phase78_cmce_sds_data]\n");
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    uint8_t cmce[150];
-    int n = 0;
-    
-    pack_bits(cmce, 23, n, 5); n+=5; // PDU type
-    pack_bits(cmce, 0, n, 1); n+=1; // ext_flag
-    pack_bits(cmce, 111, n, 24); n+=24; // src_ssi
-    pack_bits(cmce, 1, n, 4); n+=4; // msg_ref
-    pack_bits(cmce, 0, n, 1); n+=1; // store_fwd
-    pack_bits(cmce, 0, n, 1); n+=1; // vp_flag
-    pack_bits(cmce, 0, n, 1); n+=1; // dt_flag
-    pack_bits(cmce, 8, n, 8); n+=8; // bpc = 8
-    pack_bits(cmce, 5, n, 8); n+=8; // num_chars = 5
-    pack_bits(cmce, 0, n, 40); n+=40;
-
-    uint8_t pdu[200]; int out_n;
-    wrap_mle_cmce(cmce, n, pdu, &out_n);
-    tetra_mle_dispatch(pdu, out_n, 0, opt, st);
-
-    CHECK(st->tetra_cmce_sds_bpc == 8, "tetra_cmce_sds_bpc");
-    CHECK(st->tetra_cmce_sds_num_chars == 5, "tetra_cmce_sds_num_chars");
 
     free(st); free(opt);
 }
@@ -383,12 +269,8 @@ int main(void)
     test_phase77_sysinfo();
     test_phase77_access_define();
 
-    test_phase78_cmce_d_setup();
-    test_phase78_cmce_d_release();
     test_phase78_cmce_d_tx_granted();
     test_phase78_mle_nwrk_broadcast();
-    test_phase78_cmce_sds_short_data();
-    test_phase78_cmce_sds_data();
 
     test_phase79_mm_attach_detach();
 

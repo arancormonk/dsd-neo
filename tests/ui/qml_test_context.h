@@ -924,6 +924,12 @@ class Setup : public QObject {
         metrics[QStringLiteral("squelchDb")] = -120.0;
         metrics[QStringLiteral("squelchOff")] = false;
         metrics[QStringLiteral("ppm")] = 0;
+        // TETRA network identity and the current control/traffic allocations.
+        // Hidden at rest until the decoder has accepted network information.
+        metrics[QStringLiteral("tetraNetworkKnown")] = false;
+        metrics[QStringLiteral("tetraNetworkText")] = QString();
+        metrics[QStringLiteral("tetraControlChannelText")] = QString();
+        metrics[QStringLiteral("tetraTrafficChannelText")] = QString();
         m_metrics = metrics;
         m_engine = engine;
         ctx->setContextProperty(QStringLiteral("metrics"), metrics);

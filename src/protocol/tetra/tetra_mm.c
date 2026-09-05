@@ -26,7 +26,7 @@
  *
  * The formula for downlink carriers is:
  *   DL (Hz) = dl_base_hz[freq_band] + main_carrier × 25000
- *             + freq_offset × 6250
+ *             + decoded frequency offset
  *
  * Only commonly deployed European TETRA bands are listed here; other bands
  * return 0 (caller uses the channel map or ignores the result).
@@ -59,7 +59,8 @@ long tetra_carrier_to_dl_hz(uint32_t main_carrier,
     long base = tetra_dl_base_hz[freq_band];
     if (base == 0L)
         return 0L;
-    return base + (long)main_carrier * 25000L + (long)(freq_offset & 3u) * 6250L;
+    static const long offset_hz[4] = {0L, 6250L, -6250L, 12500L};
+    return base + (long)main_carrier * 25000L + offset_hz[freq_offset & 3u];
 }
 
 /* -----------------------------------------------------------------------

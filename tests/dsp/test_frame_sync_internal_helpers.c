@@ -1988,6 +1988,12 @@ test_decode_mode_profiles_agree_with_the_sps_hunt_table(void) {
      * they share a preset symbol timing but not a symbol rate. */
     assert(dsd_decode_mode_profile_for(DSDCFG_MODE_NXDN48).symbol_rate_hz == 2400);
     assert(dsd_decode_mode_profile_for(DSDCFG_MODE_NXDN96).symbol_rate_hz == 4800);
+    const dsd_decode_mode_profile tetra = dsd_decode_mode_profile_for(DSDCFG_MODE_TETRA);
+    assert(tetra.symbol_rate_hz == 18000);
+    assert(tetra.levels == 4);
+    assert(tetra.sps_profile_index == DSD_FRAME_SYNC_SPS_PROFILE_COUNT);
+    assert(dsd_rtl_channel_profile_for(NULL, tetra.symbol_rate_hz, tetra.levels, 1)
+           == DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE);
 
     /* AUTO's whole promise is that the hunt may visit every profile, and a config file selects
      * the same AUTO the command line does. The profile argument decides audio layout, never the

@@ -38,30 +38,35 @@ static int g_failures = 0;
 static int g_tune_calls    = 0;
 static long g_tuned_freq   = 0;
 static int g_release_calls = 0;
+static dsd_trunk_tune_result g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+static dsd_trunk_tune_result g_release_result = DSD_TRUNK_TUNE_RESULT_OK;
 
-static void
-mock_tune_to_freq(dsd_opts *opts, dsd_state *state, long int freq, int ted_sps)
+static dsd_trunk_tune_result
+mock_tune_to_freq(dsd_opts *opts, dsd_state *state, long int freq, int ted_sps,
+                  uint64_t request_id)
 {
-    (void)state; (void)ted_sps;
+    (void)state; (void)ted_sps; (void)request_id;
     g_tune_calls++;
     g_tuned_freq = freq;
-    if (opts) opts->trunk_is_tuned = 1;
+    if (opts && dsd_trunk_tune_result_is_ok(g_tune_result)) opts->trunk_is_tuned = 1;
+    return g_tune_result;
 }
 
-static void
-mock_return_to_cc(dsd_opts *opts, dsd_state *state)
+static dsd_trunk_tune_result
+mock_return_to_cc(dsd_opts *opts, dsd_state *state, uint64_t request_id)
 {
-    (void)state;
+    (void)state; (void)request_id;
     g_release_calls++;
-    if (opts) opts->trunk_is_tuned = 0;
+    if (opts && dsd_trunk_tune_result_is_ok(g_release_result)) opts->trunk_is_tuned = 0;
+    return g_release_result;
 }
 
 static void
 install_hooks(void)
 {
     dsd_trunk_tuning_hooks h = {0};
-    h.tune_to_freq = mock_tune_to_freq;
-    h.return_to_cc = mock_return_to_cc;
+    h.tune_to_freq_request = mock_tune_to_freq;
+    h.return_to_cc_request = mock_return_to_cc;
     dsd_trunk_tuning_hooks_set(h);
 }
 
@@ -71,6 +76,8 @@ reset_counters(void)
     g_tune_calls    = 0;
     g_tuned_freq    = 0;
     g_release_calls = 0;
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_release_result = DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 /* Build a minimal opts/state pair ready for trunking (heap-allocated). */
@@ -213,6 +220,28 @@ test_cc_sync_transitions_state(void)
     fprintf(stderr, "  PASS test_cc_sync_transitions_state\n");
 }
 
+static void
+test_cc_sync_requires_enabled_valid_cc(void)
+{
+    dsd_opts *opts; dsd_state *state;
+    make_pair(&opts, &state);
+    tetra_sm_init();
+
+    opts->trunk_enable = 0;
+    tetra_sm_on_cc_sync(opts, state);
+    CHECK(tetra_sm_get_state() == TETRA_SM_IDLE,
+          "disabled trunking must not enter ON_CC");
+
+    opts->trunk_enable = 1;
+    state->trunk_cc_freq = 0;
+    tetra_sm_on_cc_sync(opts, state);
+    CHECK(tetra_sm_get_state() == TETRA_SM_IDLE,
+          "invalid CC frequency must not enter ON_CC");
+
+    free(opts); free(state);
+    fprintf(stderr, "  PASS test_cc_sync_requires_enabled_valid_cc\n");
+}
+
 /* -----------------------------------------------------------------------
  * Test 7: tick while TUNED with expired hangtime → release
  *
@@ -239,6 +268,114 @@ test_hangtime_expires(void)
     fprintf(stderr, "  PASS test_hangtime_expires\n");
 }
 
+static void
+test_disable_while_tuned_returns_to_cc(void)
+{
+    dsd_opts *opts; dsd_state *state;
+    make_pair(&opts, &state);
+    reset_counters();
+    tetra_sm_init();
+    tetra_sm_on_grant(opts, state, 390000000L, 1);
+    CHECK(tetra_sm_get_state() == TETRA_SM_TUNED,
+          "SM must be TUNED before disabling trunking");
+
+    reset_counters();
+    opts->trunk_enable = 0;
+    tetra_sm_tick(opts, state);
+    CHECK(g_release_calls == 1,
+          "disabling trunking while tuned must request return to CC");
+    CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC,
+          "successful disabled return must finish ON_CC");
+
+    free(opts); free(state);
+    fprintf(stderr, "  PASS test_disable_while_tuned_returns_to_cc\n");
+}
+
+static void
+test_grant_result_matrix(void)
+{
+    const dsd_trunk_tune_result rejected[] = {
+        DSD_TRUNK_TUNE_RESULT_DEFERRED,
+        DSD_TRUNK_TUNE_RESULT_FAILED,
+        DSD_TRUNK_TUNE_RESULT_TIMEOUT,
+    };
+
+    for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
+        dsd_opts *opts; dsd_state *state;
+        make_pair(&opts, &state);
+        reset_counters();
+        tetra_sm_init();
+        tetra_sm_on_cc_sync(opts, state);
+        g_tune_result = rejected[i];
+
+        tetra_sm_on_grant(opts, state, 390000000L, 1);
+        CHECK(g_tune_calls == 1, "rejected grant must call tune hook once");
+        CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC,
+              "rejected grant must keep the previous state");
+
+        g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        tetra_sm_on_grant(opts, state, 390000000L, 1);
+        CHECK(g_tune_calls == 2, "grant must be retryable after rejection");
+        CHECK(tetra_sm_get_state() == TETRA_SM_TUNED,
+              "successful retry must advance to TUNED");
+        free(opts); free(state);
+    }
+
+    dsd_opts *opts; dsd_state *state;
+    make_pair(&opts, &state);
+    reset_counters();
+    tetra_sm_init();
+    g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    tetra_sm_on_grant(opts, state, 390000000L, 1);
+    CHECK(tetra_sm_get_state() == TETRA_SM_TUNED,
+          "pending grant must stage the TUNED state");
+    free(opts); free(state);
+    fprintf(stderr, "  PASS test_grant_result_matrix\n");
+}
+
+static void
+test_release_result_matrix(void)
+{
+    const dsd_trunk_tune_result rejected[] = {
+        DSD_TRUNK_TUNE_RESULT_DEFERRED,
+        DSD_TRUNK_TUNE_RESULT_FAILED,
+        DSD_TRUNK_TUNE_RESULT_TIMEOUT,
+    };
+
+    for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
+        dsd_opts *opts; dsd_state *state;
+        make_pair(&opts, &state);
+        reset_counters();
+        tetra_sm_init();
+        tetra_sm_on_grant(opts, state, 390000000L, 1);
+        g_release_result = rejected[i];
+
+        tetra_sm_on_release(opts, state);
+        CHECK(g_release_calls == 1, "rejected release must call return hook once");
+        CHECK(tetra_sm_get_state() == TETRA_SM_TUNED,
+              "rejected release must keep TUNED state");
+
+        g_release_result = DSD_TRUNK_TUNE_RESULT_OK;
+        tetra_sm_on_release(opts, state);
+        CHECK(g_release_calls == 2, "release must be retryable after rejection");
+        CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC,
+              "successful retry must advance to ON_CC");
+        free(opts); free(state);
+    }
+
+    dsd_opts *opts; dsd_state *state;
+    make_pair(&opts, &state);
+    reset_counters();
+    tetra_sm_init();
+    tetra_sm_on_grant(opts, state, 390000000L, 1);
+    g_release_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    tetra_sm_on_release(opts, state);
+    CHECK(tetra_sm_get_state() == TETRA_SM_ON_CC,
+          "pending return must stage the ON_CC state");
+    free(opts); free(state);
+    fprintf(stderr, "  PASS test_release_result_matrix\n");
+}
+
 /* -----------------------------------------------------------------------
  * main
  * ----------------------------------------------------------------------- */
@@ -253,7 +390,11 @@ int main(void)
     test_release_returns_to_cc();
     test_no_cc_freq_blocks_grant();
     test_cc_sync_transitions_state();
+    test_cc_sync_requires_enabled_valid_cc();
     test_hangtime_expires();
+    test_disable_while_tuned_returns_to_cc();
+    test_grant_result_matrix();
+    test_release_result_matrix();
     fprintf(stderr, "=== %d failure(s) ===\n", g_failures);
 
     /* Reset hooks so other tests are not affected */

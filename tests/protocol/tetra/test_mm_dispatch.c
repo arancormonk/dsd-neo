@@ -49,7 +49,8 @@ static void pack_bits(uint8_t *bits, int off, uint32_t v, int n)
 /* -----------------------------------------------------------------------
  * test_carrier_to_dl_hz
  *
- * Verify the formula:  DL = base[band] + carrier*25000 + offset*6250
+ * Verify the formula and the ETSI offset-code mapping:
+ * 00=0, 01=+6.25 kHz, 10=-6.25 kHz, 11=+12.5 kHz.
  * ----------------------------------------------------------------------- */
 static void test_carrier_to_dl_hz(void)
 {
@@ -65,8 +66,12 @@ static void test_carrier_to_dl_hz(void)
 
     /* band 4 with offset=2 */
     hz = tetra_carrier_to_dl_hz(50, 4, 2);
-    CHECK(hz == 460000000L + 50L * 25000L + 2L * 6250L,
-          "band 4, carrier=50, offset=2");
+    CHECK(hz == 460000000L + 50L * 25000L - 6250L,
+          "band 4, carrier=50, offset code 2 (-6.25 kHz)");
+
+    hz = tetra_carrier_to_dl_hz(50, 4, 3);
+    CHECK(hz == 460000000L + 50L * 25000L + 12500L,
+          "band 4, carrier=50, offset code 3 (+12.5 kHz)");
 
     /* band 8 base = 876 025 000 Hz */
     hz = tetra_carrier_to_dl_hz(0, 8, 0);

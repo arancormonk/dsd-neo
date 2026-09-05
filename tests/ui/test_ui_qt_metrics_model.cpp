@@ -380,6 +380,26 @@ main(int argc, char** argv) {
         }
     }
 
+    /* TETRA network and allocation state reaches QML as display-ready values. */
+    state.tetra_net_known = 1;
+    state.tetra_mcc = 460;
+    state.tetra_mnc = 1001;
+    state.tetra_colour = 17;
+    state.tetra_sysinfo_main_carrier = 321;
+    state.tetra_vc_assignment_valid = 1;
+    state.tetra_vc_carrier = 654;
+    state.tetra_vc_timeslot_bitmap = 0x05;
+    state.tetra_vc_freq_hz = 392125000;
+    model.refresh(&opts, &state);
+    expect("TETRA network becomes visible", model.tetraNetworkKnown());
+    expect("TETRA identity is formatted", model.tetraNetworkText() == QStringLiteral("MCC 460 · MNC 1001 · CC 17"));
+    expect("TETRA control carrier is formatted", model.tetraControlChannelText() == QStringLiteral("Carrier 321"));
+    expect("TETRA traffic allocation includes frequency and slots",
+           model.tetraTrafficChannelText() == QStringLiteral("392.1250 MHz · Carrier 654 · TS 1,3"));
+    state.tetra_net_known = 0;
+    model.refresh(&opts, &state);
+    expect("unknown TETRA network hides the row", !model.tetraNetworkKnown() && model.tetraNetworkText().isEmpty());
+
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

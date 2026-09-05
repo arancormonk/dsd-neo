@@ -3,6 +3,11 @@
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#endif
 
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 

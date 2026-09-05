@@ -23,23 +23,19 @@ struct dsd_state;
  * @in    : 292 combined type-2 bits (Viterbi-decoded from 432-bit TCH/FS)
  * @out   : output buffer of at least 2*TETRA_TCH_FRAME_BITS (274) bytes,
  *          one bit per byte; contains two consecutive ACELP codec frames
- * @len   : number of valid input bits (at least 272 used)
+ * @len   : number of valid input bits; values below 272 leave output untouched
  */
 void tetra_acelp_reorder(const uint8_t *in, uint8_t *out, int len);
 
 /*
- * Combined audio gate: returns 1 if the floor-grant AND timeslot checks
- * both allow audio for the given block index.
+ * TCH/FS audio gate. TCH/FS block_idx identifies a coded NDB half rather than
+ * a TDMA timeslot; the current TN comes from state->tetra_tn. Once both BSCH
+ * timing and a MAC Channel Allocation are known, only assigned slots pass.
  *
- * @block_idx : 1 or 2 (NDB sub-block / timeslot number)
+ * @block_idx : combined TCH/FS decoder input index (currently 0)
  * @state     : decoder state; NULL is treated as "pass" for safety
  *
- * Gate rules:
- *   tetra_tx_granted_valid == 0  → always suppress (Phase 12 gate)
- *   tetra_vc_slot == 0           → no slot assigned, pass all
- *   tetra_vc_slot == 1           → pass only block 1
- *   tetra_vc_slot == 2           → pass only block 2
- *   tetra_vc_slot == 3           → dual-slot call, pass all
+ * Returns 1 when audio may pass, 0 when the current TN is not assigned.
  */
 int tetra_acelp_slot_gate_passes(int block_idx, const struct dsd_state *state);
 

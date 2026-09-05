@@ -8,6 +8,7 @@
 
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +30,17 @@ static dsd_state *alloc_state(void) { return (dsd_state *)calloc(1, sizeof(dsd_s
 
 /* Heap-allocate a zeroed dsd_opts.  Caller must free(). */
 static dsd_opts  *alloc_opts(void)  { return (dsd_opts  *)calloc(1, sizeof(dsd_opts));  }
+
+static int tune_calls;
+static long tuned_freq;
+static dsd_trunk_tune_result tune_stub(dsd_opts *opts, dsd_state *state,
+                                       long freq, int ted_sps, uint64_t request_id)
+{
+    (void)opts; (void)state; (void)ted_sps; (void)request_id;
+    tune_calls++;
+    tuned_freq = freq;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
 
 /* -------------------------------------------------------------------------
  * Test 1: MAC-BROADCAST/SYSINFO → tetra_sysinfo_known, tetra_la,
@@ -317,6 +329,56 @@ static int test_bc_restore_noop(void)
     return ok;
 }
 
+/* A standards-shaped pi/4-DQPSK MAC-RESOURCE header containing a basic
+ * Channel Allocation IE. No TM-SDU follows this header. */
+static int test_mac_resource_channel_allocation(void)
+{
+    enum { NBITS = 44 };
+    uint8_t bits[NBITS];
+    memset(bits, 0, sizeof bits);
+
+    pack_bits(bits, 0u, 0, 2);   /* MAC-RESOURCE */
+    pack_bits(bits, 2u, 7, 6);   /* null/header-only PDU length code */
+    pack_bits(bits, 0u, 13, 3);  /* null address */
+    pack_bits(bits, 0u, 16, 1);  /* no power control */
+    pack_bits(bits, 0u, 17, 1);  /* no slot grant */
+    pack_bits(bits, 1u, 18, 1);  /* channel allocation present */
+    pack_bits(bits, 0u, 19, 2);  /* replace */
+    pack_bits(bits, 4u, 21, 4);  /* timeslot bitmap */
+    pack_bits(bits, 1u, 25, 2);  /* downlink only */
+    pack_bits(bits, 0u, 27, 1);  /* no CLCH permission */
+    pack_bits(bits, 0u, 28, 1);  /* no cell change */
+    pack_bits(bits, 50u, 29, 12);/* carrier */
+    pack_bits(bits, 0u, 41, 1);  /* use SYSINFO band/offset */
+    pack_bits(bits, 1u, 42, 2);  /* one monitoring pattern */
+
+    dsd_state *state = alloc_state();
+    dsd_opts *opts = alloc_opts();
+    state->tetra_freq_band = 4;
+    state->tetra_freq_offset = 2; /* -6.25 kHz */
+    state->trunk_cc_freq = 460000000L;
+    opts->trunk_enable = 1;
+    tune_calls = 0;
+    tuned_freq = 0;
+
+    tetra_mac_parse_schd(bits, NBITS, 2, opts, state);
+
+    int ok = 1;
+    if (!state->tetra_vc_assignment_valid) ok = 0;
+    if (state->tetra_vc_assignment_type != 0) ok = 0;
+    if (state->tetra_vc_timeslot_bitmap != 4) ok = 0;
+    if (state->tetra_vc_uplink_downlink != 1) ok = 0;
+    if (state->tetra_vc_carrier != 50) ok = 0;
+    if (state->tetra_vc_freq_hz != 461243750L) ok = 0;
+    if (tune_calls != 1 || tuned_freq != 461243750L) ok = 0;
+    if (!ok) fprintf(stderr, "FAIL(channel allocation): parsed fields differ\n");
+    else fprintf(stderr, "OK: MAC-RESOURCE channel allocation freq=%ld slots=0x%X\n",
+                 state->tetra_vc_freq_hz, state->tetra_vc_timeslot_bitmap);
+
+    free(state); free(opts);
+    return ok;
+}
+
 /* -------------------------------------------------------------------------
  * main
  * ------------------------------------------------------------------------- */
@@ -324,12 +386,19 @@ int main(void)
 {
     int failed = 0;
 
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_freq_request = tune_stub;
+    dsd_trunk_tuning_hooks_set(hooks);
+
     failed += !test_sysinfo();
     failed += !test_mac_resource_ssi();
     failed += !test_null_state();
     failed += !test_sysinfo_tooshort();
     failed += !test_nwrk_broadcast();
     failed += !test_bc_restore_noop();
+    failed += !test_mac_resource_channel_allocation();
+
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
 
     if (failed) {
         fprintf(stderr, "\n%d test(s) FAILED\n", failed);

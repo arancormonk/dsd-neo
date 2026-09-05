@@ -75,7 +75,7 @@ opts_digital_mode_count(const dsd_opts* opts) {
            + opts_flag_is_set(opts->frame_nxdn48) + opts_flag_is_set(opts->frame_nxdn96)
            + opts_flag_is_set(opts->frame_x2tdma) + opts_flag_is_set(opts->frame_ysf)
            + opts_flag_is_set(opts->frame_dstar) + opts_flag_is_set(opts->frame_dpmr)
-           + opts_flag_is_set(opts->frame_m17);
+           + opts_flag_is_set(opts->frame_m17) + opts_flag_is_set(opts->frame_tetra);
 }
 
 static int
@@ -119,6 +119,9 @@ opts_symbol_rate_hz(const dsd_opts* opts) {
         return 4800;
     }
     int digital_count = opts_digital_mode_count(opts);
+    if (opts->frame_tetra == 1 && digital_count == 1) {
+        return 18000;
+    }
     if (opts->frame_provoice == 1 && digital_count == 1) {
         return 9600;
     }
@@ -502,7 +505,7 @@ demod_apply_channel_lpf_defaults(struct demod_state* demod, const dsd_opts* opts
     }
     demod->channel_lpf_enable = channel_lpf ? 1 : 0;
     demod->channel_lpf_profile = profile;
-    if (demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) {
+    if (demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK && opts_has_p25_mode(opts)) {
         demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     }
     fsk_modem_apply_config(demod);
@@ -867,7 +870,7 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
          * P25P1 rate (4800) since CC is typically encountered first; the trunk
          * state machine will override via ted_sps_override when tuning to P25P2 VC. */
         sym_rate = opts_symbol_rate_hz(opts);
-        if (opts && opts->mod_qpsk == 1 && sym_rate != 6000) {
+        if (opts && opts_has_p25_mode(opts) && opts->mod_qpsk == 1 && sym_rate != 6000) {
             sym_rate = 4800;
         }
         sym_levels = opts_symbol_levels_for_rate(opts, sym_rate);
@@ -891,7 +894,7 @@ rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, con
     } else {
         demod->ted_sps = sps;
     }
-    if (demod->cqpsk_enable) {
+    if (demod->cqpsk_enable && opts_has_p25_mode(opts)) {
         demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
     }
     fsk_modem_apply_config(demod);

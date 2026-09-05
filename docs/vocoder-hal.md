@@ -130,8 +130,13 @@ dsd-neo ← stdout : TETRA_TCH_FRAME_SAMPLES (160) × 2 bytes, PCM16LE @ 8 kHz m
 Two frames are exchanged per NDB block pair (one per TCH/FS ACELP sub-frame).
 
 Cross-platform subprocess management is implemented in `src/protocol/tetra/tetra_acelp.c`:
-- **POSIX:** `fork()` + `pipe()` + `dup2()`.
-- **Windows:** `CreateProcess()` + anonymous pipes.
+- **POSIX:** `fork()` + `pipe()` + `dup2()`; pipe writes suppress per-thread
+  `SIGPIPE`, and shutdown waits at most two seconds before terminating the child.
+- **Windows:** `CreateProcess()` + anonymous pipes; shutdown uses the same
+  two-second bound before terminating an unresponsive child.
+
+Every response must contain exactly 160 PCM16LE samples. Short responses are
+discarded in full and reset the subprocess so partial audio cannot reach a sink.
 
 A silence-producing stub for integration testing is provided at `tools/tetra/vocoder_stub.py`.
 

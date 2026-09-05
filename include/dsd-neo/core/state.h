@@ -1761,20 +1761,19 @@ struct dsd_state {
      *
      * tetra_call_active:  1 while a call is in progress (set on D-SETUP or
      *                     D-CONNECT, cleared on D-RELEASE / D-DISCONNECT).
-     * tetra_call_type:    3-bit call-type field from CMCE D-SETUP
-     *                     (0=group, 1=unaack-group, 2=ack, 3=SDS, …).
+     * tetra_call_type:    3-bit circuit-mode type from D-SETUP basic service.
      * tetra_calling_ssi:  24-bit SSI of the calling party extracted from the
      *                     CMCE D-SETUP "Calling party" optional IE.
      * tetra_gssi:         24-bit Group SSI (talkgroup ID) from the CMCE
      *                     D-SETUP "Called party" optional IE.  Set for group
      *                     and individual calls; 0 if the IE was absent.
-     * tetra_call_id:      1-bit Transaction Identifier from CMCE D-SETUP.
+     * tetra_call_id:      14-bit call identifier from CMCE D-SETUP.
      * ───────────────────────────────────────────────────────────────────────── */
     uint8_t  tetra_call_active;
     uint8_t  tetra_call_type;
     uint32_t tetra_calling_ssi;
     uint32_t tetra_gssi;
-    uint8_t  tetra_call_id;
+    uint16_t tetra_call_id;
 
     /* ───────────────────────────────────────────────────────────────────────
      * TETRA floor-control state — updated by CMCE D-TX-GRANTED / D-TX-CEASED.
@@ -1814,8 +1813,8 @@ struct dsd_state {
     long     tetra_dl_carrier_hz;
 
     /* ───────────────────────────────────────────────────────────────────────
-     * TETRA Phase 12: frequency band params cached from SYSINFO so that
-     * D-TX-GRANTED can resolve an assigned carrier to a DL frequency.
+     * TETRA frequency band params cached from SYSINFO so that a MAC Channel
+     * Allocation IE can resolve an assigned carrier to a DL frequency.
      *
      * tetra_freq_band:   4-bit band index from last SYSINFO.
      * tetra_freq_offset: 2-bit freq_offset from last SYSINFO.
@@ -1824,17 +1823,21 @@ struct dsd_state {
     uint8_t  tetra_freq_offset;
 
     /* ───────────────────────────────────────────────────────────────────────
-     * TETRA VC channel assignment from D-TX-GRANTED Assigned Channel IE.
+     * TETRA assigned-channel state. The authoritative allocation is the
+     * Channel Allocation IE in a downlink MAC-RESOURCE/MAC-END PDU.
      *
-     * tetra_vc_assignment_type: 0=not present, 1=new carrier, 2/3=same carrier.
-     * tetra_vc_carrier:         12-bit carrier number (assignment types 1 only).
-     * tetra_vc_slot:            2-bit timeslot (0=all, 1-3=specific).
+     * tetra_vc_assignment_type: compatibility copy of MAC allocation type.
+     * tetra_vc_carrier:         12-bit carrier number.
+     * tetra_vc_slot:            compatibility copy of the timeslot bitmap.
      * tetra_vc_freq_hz:         Resolved VC downlink frequency in Hz (0=unknown).
      * ───────────────────────────────────────────────────────────────────────── */
     uint8_t  tetra_vc_assignment_type;
     uint16_t tetra_vc_carrier;
     uint8_t  tetra_vc_slot;
     long     tetra_vc_freq_hz;
+    uint8_t  tetra_vc_assignment_valid;
+    uint8_t  tetra_vc_timeslot_bitmap;
+    uint8_t  tetra_vc_uplink_downlink;
 
     /* ───────────────────────────────────────────────────────────────────────
      * TETRA SDS (Short Data Service) state — updated by CMCE D-STATUS.
@@ -1930,8 +1933,8 @@ struct dsd_state {
     /* ───────────────────────────────────────────────────────────────────────
      * TETRA CMCE D-SETUP supplementary fields (Phase 29):
      *
-     * tetra_call_timeout: 1-bit call timeout flag from D-SETUP.
-     * tetra_call_slots:   1-bit slots field from D-SETUP.
+     * tetra_call_timeout: 4-bit call timeout from D-SETUP.
+     * tetra_call_slots:   2-bit speech-service or slots-per-frame subfield.
      * ───────────────────────────────────────────────────────────────────────── */
     uint8_t  tetra_call_timeout;
     uint8_t  tetra_call_slots;
@@ -2004,8 +2007,8 @@ struct dsd_state {
     /* ───────────────────────────────────────────────────────────────────────
      * TETRA CMCE D-CONNECT parsed fields (Phase 49):
      *
-     * tetra_connect_enc_mode:  2-bit encryption mode from D-CONNECT.
-     * tetra_connect_call_type: 3-bit call_type from D-CONNECT.
+     * tetra_connect_enc_mode:  retained compatibility field; table 14.7 has no encryption-mode IE.
+     * tetra_connect_call_type: retained compatibility field; table 14.7 has no call-type IE.
      * tetra_connect_valid:     1 once a D-CONNECT has been fully parsed.
      * ───────────────────────────────────────────────────────────────────────── */
     uint8_t  tetra_connect_enc_mode;
@@ -2027,17 +2030,21 @@ struct dsd_state {
      * TETRA CMCE floor-control event flags (Phase 54):
      *
      * Each flag is set to 1 when the corresponding PDU is received.
-     * tetra_tx_continue:   D-TX-CONTINUE  (type 9)  — speaker may continue.
-     * tetra_tx_interrupted: D-TX-INTERRUPT (type 11) — speaker interrupted.
+     * tetra_tx_continue:   D-TX-CONTINUE  (type 10) — speaker may continue.
+     * tetra_tx_interrupted: D-TX-INTERRUPT (type 13) — speaker interrupted.
      * tetra_tx_wait:       D-TX-WAIT      (type 12) — MS must wait.
-     * tetra_tx_timed_out:  D-TX-TIMED-OUT (type 13) — grant expired.
+     * tetra_tx_timed_out: legacy ABI field; no downlink PDU has this type.
      * ───────────────────────────────────────────────────────────────────────── */
     uint8_t  tetra_tx_continue;
     uint8_t  tetra_tx_interrupted;
     uint8_t  tetra_tx_wait;
     uint8_t  tetra_tx_timed_out;
-    uint8_t  tetra_tx_event_call_id;
+    uint16_t tetra_tx_event_call_id;
     uint8_t  tetra_tx_event_notification;
+    uint8_t  tetra_tx_event_request_perm;
+    uint8_t  tetra_tx_event_continue;
+    uint8_t  tetra_tx_event_grant;
+    uint8_t  tetra_tx_event_encryption;
 
     /* ───────────────────────────────────────────────────────────────────────
      * TETRA MM D-CHECK-TSI / D-STATUS + MLE D-RESTORE fields (Phase 55):
@@ -2059,12 +2066,12 @@ struct dsd_state {
     /* ───────────────────────────────────────────────────────────────────────
      * TETRA CMCE D-INFO parsed fields (Phase 57):
      *
-     * tetra_d_info_call_id:      1-bit call identification (TI).
-     * tetra_d_info_call_timeout:  1-bit call timeout toggle.
-     * tetra_d_info_notification:  1-bit notification indicator (if present).
+     * tetra_d_info_call_id:      14-bit call identifier.
+     * tetra_d_info_call_timeout: reset-call-timeout flag.
+     * tetra_d_info_notification: poll-request flag.
      * tetra_d_info_valid:         1 once a D-INFO has been decoded.
      * ───────────────────────────────────────────────────────────────────────── */
-    uint8_t  tetra_d_info_call_id;
+    uint16_t tetra_d_info_call_id;
     uint8_t  tetra_d_info_call_timeout;
     uint8_t  tetra_d_info_notification;
     uint8_t  tetra_d_info_valid;
@@ -2108,17 +2115,38 @@ struct dsd_state {
      * Phase 65: CMCE D-CALL-PROCEEDING call_id.
      * Phase 66: CMCE D-CONNECT-ACK call_id.
      * ───────────────────────────────────────────────────────────────────────── */
-    uint8_t  tetra_d_alert_call_id;
+    uint16_t tetra_d_alert_call_id;
     uint8_t  tetra_d_alert_valid;
-    uint8_t  tetra_d_call_proc_call_id;
+    uint16_t tetra_d_call_proc_call_id;
     uint8_t  tetra_d_call_proc_valid;
-    uint8_t  tetra_d_connect_ack_call_id;
+    uint16_t tetra_d_connect_ack_call_id;
     uint8_t  tetra_d_connect_ack_valid;
+    uint8_t  tetra_d_alert_timeout;
+    uint8_t  tetra_d_alert_reserved;
+    uint8_t  tetra_d_alert_duplex;
+    uint8_t  tetra_d_alert_queued;
+    uint8_t  tetra_d_call_proc_timeout;
+    uint8_t  tetra_d_call_proc_hook;
+    uint8_t  tetra_d_call_proc_duplex;
+    uint8_t  tetra_d_connect_ack_tx_grant;
+    uint8_t  tetra_d_connect_ack_tx_permission;
+    uint16_t tetra_call_restore_id;
+    uint8_t  tetra_call_restore_grant;
+    uint8_t  tetra_call_restore_permission;
+    uint8_t  tetra_call_restore_reset;
+    uint8_t  tetra_call_restore_valid;
+    uint8_t  tetra_cmce_fns_rejected_pdu;
+    uint8_t  tetra_cmce_fns_call_id_present;
+    uint16_t tetra_cmce_fns_call_id;
+    uint8_t  tetra_cmce_fns_pointer;
+    uint8_t  tetra_cmce_fns_extract_bits;
+    uint8_t  tetra_cmce_fns_valid;
 
     /* ───────────────────────────────────────────────────────────────────────
-     * Phase 67: CMCE D-TX-CEASED parsed permission flags.
-     * tetra_tx_ceased_tx_perm:     Transmission permission bit.
-     * tetra_tx_ceased_cipher_info: Cipher information reservation bit.
+     * CMCE D-TX-CEASED parsed state.
+     * tetra_tx_ceased_tx_perm: Transmission request permission bit.
+     * tetra_tx_ceased_cipher_info: legacy ABI field; always zero because
+     *                              Table 14.16 contains no cipher-info IE.
      * ───────────────────────────────────────────────────────────────────────── */
     uint8_t  tetra_tx_ceased_tx_perm;
     uint8_t  tetra_tx_ceased_cipher_info;
@@ -2180,6 +2208,16 @@ struct dsd_state {
     uint8_t  tetra_cmce_notif;
     uint8_t  tetra_cmce_com_type;
     uint8_t  tetra_cmce_called_type;
+    uint8_t  tetra_cmce_setup_hook;
+    uint8_t  tetra_cmce_setup_basic_service;
+    uint8_t  tetra_cmce_setup_tx_grant;
+    uint8_t  tetra_cmce_setup_tx_permission;
+    uint8_t  tetra_cmce_setup_priority;
+    uint8_t  tetra_cmce_connect_hook;
+    uint8_t  tetra_cmce_connect_duplex;
+    uint8_t  tetra_cmce_connect_tx_grant;
+    uint8_t  tetra_cmce_connect_tx_permission;
+    uint8_t  tetra_cmce_connect_ownership;
     
     uint8_t  tetra_cmce_release_cause_type;
     uint8_t  tetra_cmce_release_cause;

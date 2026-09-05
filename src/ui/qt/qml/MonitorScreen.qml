@@ -618,6 +618,34 @@ Item {
             }
         }
 
+        Flow {
+            objectName: "tetraNetworkRow"
+            width: parent.width
+            visible: metrics.tetraNetworkKnown
+            spacing: 10
+
+            Text {
+                text: "TETRA " + metrics.tetraNetworkText
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.cyan
+            }
+            Text {
+                visible: metrics.tetraControlChannelText.length > 0
+                text: qsTr("CONTROL") + " " + metrics.tetraControlChannelText
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.textSubdued
+            }
+            Text {
+                visible: metrics.tetraTrafficChannelText.length > 0
+                text: qsTr("TRAFFIC") + " " + metrics.tetraTrafficChannelText
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.textSubdued
+            }
+        }
+
         // Why an empty log can still be a working decoder. On an almost entirely
         // encrypted site the control channel decodes, every grant is declined and
         // no call is ever logged, which is indistinguishable from a decoder that

@@ -21,6 +21,11 @@ void tetra_descramble(uint8_t* in, int len, uint32_t lfsr_init);
  */
 void tetra_descramble_soft(uint16_t* costs, int len, uint32_t lfsr_init);
 
+/* Convert unpacked hard bits to the soft-cost convention used by the Viterbi
+ * backend: zero is a confident 0 and 0xffff is a confident 1. */
+void tetra_hard_bits_to_soft(const uint8_t* bits, uint16_t* costs, int len);
+uint16_t tetra_crc16_ccitt_bits(const uint8_t* bits, int len);
+
 /* Compute TETRA scrambling seed from network identity (ETSI EN 300 392-2 §8.2.5.2).
  * mcc: 10-bit Mobile Country Code, mnc: 14-bit Mobile Network Code,
  * colour: 6-bit full colour code (from BSCH).
@@ -49,12 +54,22 @@ int tetra_rcpc_depuncture_soft(const uint16_t* in_costs, int info_bits_len, cons
 int tetra_rcpc_depuncture_by_id(int punct_id, const uint16_t* in_costs, int in_len, uint16_t* out_costs,
 								int out_len);
 
+/* Forward RCPC puncturing, primarily used by conformance vectors and synthetic
+ * off-air fixtures. Returns the number of output bits written or -1. */
+int tetra_rcpc_puncture_by_id(int punct_id, const uint8_t* mother, int mother_len, uint8_t* out, int out_len);
+
 /* Accessor: retrieve puncturer parameters for tests/validation.
  * Returns 0 on success, -1 on invalid punct_id.
  * `outP` points to the internal P array (callers must not modify), `out_t` is t,
  * and `out_period` is the period value.
  */
 int tetra_rcpc_get_puncturer_params(int punct_id, const uint8_t **outP, int *out_t, int *out_period);
+
+/* Map a one-based transmitted-bit index to its one-based mother-code index.
+ * Exposed for conformance tests and diagnostic tools. Returns -1 for an
+ * invalid puncturer or index.
+ */
+int tetra_rcpc_map_j_to_k(int punct_id, uint32_t j);
 
 
 

@@ -29,8 +29,11 @@ svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mo
         return;
     }
 
-    state->sps_hunt_idx = (int)profile.sps_profile_index;
-    state->sps_hunt_counter = 0;
+    if ((int)profile.sps_profile_index >= 0
+        && (int)profile.sps_profile_index < (int)DSD_FRAME_SYNC_SPS_PROFILE_COUNT) {
+        state->sps_hunt_idx = (int)profile.sps_profile_index;
+        state->sps_hunt_counter = 0;
+    }
 
 #ifdef USE_RADIO
     if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {

@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
-#include "../../../../src/protocol/tetra/osmo_sources/osmo_shim_map.h"
+#include "../../../src/protocol/tetra/osmo_sources/osmo_shim_map.h"
 
 int main(void) {
     struct { int8_t in; uint16_t expect; } cases[] = {

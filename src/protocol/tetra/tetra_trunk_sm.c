@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * TETRA trunking state machine.
- * Phase 13: frequency-hop follow the floor, hangtime-based return to CC.
+ * Frequency-hop on MAC channel allocation, with hangtime return to CC.
  *
  * States
  * ------
@@ -30,7 +30,7 @@
 typedef struct {
     tetra_sm_state_e state;
     long             vc_freq_hz;   /* freq we last tuned to            */
-    uint8_t          vc_slot;      /* slot associated with that tune   */
+    uint8_t          vc_slot;      /* timeslot bitmap for that tune    */
     double           t_tune_m;     /* monotonic time of last tune()    */
 } tetra_sm_ctx_t;
 
@@ -65,15 +65,23 @@ state_name(tetra_sm_state_e s)
     }
 }
 
-static void
+static int
 do_release(dsd_opts *opts, dsd_state *state)
 {
+    dsd_trunk_tune_result result = dsd_trunk_tuning_hook_return_to_cc(opts, state, NULL);
+    if (!dsd_trunk_tune_result_is_ok(result)) {
+        sm_log(opts, result == DSD_TRUNK_TUNE_RESULT_DEFERRED
+                         ? "return to CC deferred; keeping TUNED state"
+                         : "return to CC failed; keeping TUNED state");
+        return 0;
+    }
+
     sm_log(opts, "do_release -> ON_CC");
-    dsd_trunk_tuning_hook_return_to_cc(opts, state, NULL);
     g_tetra_sm.state     = TETRA_SM_ON_CC;
     g_tetra_sm.vc_freq_hz = 0;
     g_tetra_sm.vc_slot    = 0;
     g_tetra_sm.t_tune_m   = 0.0;
+    return 1;
 }
 
 /* ============================================================================
@@ -112,9 +120,13 @@ tetra_sm_on_cc_sync(dsd_opts *opts, dsd_state *state)
     if (!opts || !state)
         return;
 
-    /* Register the CC in the candidate list regardless of state */
-    if (state->trunk_cc_freq > 0)
-        dsd_trunk_cc_candidates_add(state, state->trunk_cc_freq, 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    if (!opts->trunk_enable || state->trunk_cc_freq <= 0) {
+        sm_log(opts, "cc_sync ignored: trunking disabled or CC frequency invalid");
+        return;
+    }
+
+    dsd_trunk_cc_candidates_add(state, state->trunk_cc_freq, 0,
+                                DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
 
     if (g_tetra_sm.state == TETRA_SM_IDLE) {
         if (opts->verbose > 1)
@@ -148,6 +160,7 @@ tetra_sm_on_grant(dsd_opts *opts, dsd_state *state,
         g_tetra_sm.vc_freq_hz == vc_freq_hz)
     {
         /* refresh hangtime even on duplicate grant */
+        g_tetra_sm.vc_slot = slot;
         g_tetra_sm.t_tune_m = now_m();
         if (opts->verbose > 1)
             fprintf(stderr, "\n[TETRA SM] on_grant: same VC %ld Hz – refreshing hangtime\n",
@@ -160,8 +173,15 @@ tetra_sm_on_grant(dsd_opts *opts, dsd_state *state,
                 state_name(g_tetra_sm.state), vc_freq_hz, (unsigned)slot);
 
     /* Tune to VC */
-    dsd_trunk_tuning_hook_tune_to_freq(opts, state, vc_freq_hz,
-                                       state->samplesPerSymbol, NULL);
+    dsd_trunk_tune_result result =
+        dsd_trunk_tuning_hook_tune_to_freq(opts, state, vc_freq_hz,
+                                           state->samplesPerSymbol, NULL);
+    if (!dsd_trunk_tune_result_is_ok(result)) {
+        sm_log(opts, result == DSD_TRUNK_TUNE_RESULT_DEFERRED
+                         ? "grant tune deferred; state unchanged"
+                         : "grant tune failed; state unchanged");
+        return;
+    }
 
     g_tetra_sm.state     = TETRA_SM_TUNED;
     g_tetra_sm.vc_freq_hz = vc_freq_hz;
@@ -194,6 +214,12 @@ tetra_sm_tick(dsd_opts *opts, dsd_state *state)
 
     if (g_tetra_sm.state != TETRA_SM_TUNED)
         return;
+
+    if (!opts->trunk_enable) {
+        sm_log(opts, "trunking disabled while tuned; returning to CC");
+        do_release(opts, state);
+        return;
+    }
 
     double elapsed = now_m() - g_tetra_sm.t_tune_m;
     double hangtime = (g_sm_hangtime_s > 0.0)

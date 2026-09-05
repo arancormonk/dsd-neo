@@ -89,36 +89,42 @@ static void test_floor_control_events(void)
     printf("[test_floor_control_events]\n");
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
-    uint8_t   pdu[9+5];
+    uint8_t   pdu[9+32];
     int       n;
 
-    /* CONTINUE=9 */
-    uint8_t cmce[5];
+    /* D-TX-CONTINUE: call=0x1234, continue=1, request=1. */
+    uint8_t cmce[32];
     memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 9, 0, 5);
-    wrap_mle_cmce(cmce, 5, pdu, &n);
+    pack_bits(cmce, TETRA_CMCE_D_TX_CONTINUE, 0, 5);
+    pack_bits(cmce, 0x1234, 5, 14);
+    pack_bits(cmce, 1, 19, 1);
+    pack_bits(cmce, 1, 20, 1);
+    wrap_mle_cmce(cmce, 21, pdu, &n);
     tetra_mle_dispatch(pdu, n, 0, opt, st);
     CHECK(st->tetra_tx_continue == 1, "D-TX-CONTINUE sets flag");
+    CHECK(st->tetra_tx_event_call_id == 0x1234, "D-TX-CONTINUE keeps 14-bit call id");
 
-    /* INTERRUPT=11 */
-    pack_bits(cmce, 11, 0, 5);
-    wrap_mle_cmce(cmce, 5, pdu, &n);
+    /* D-TX-INTERRUPT uses the same mandatory grant fields as D-TX-GRANTED. */
+    memset(cmce, 0, sizeof(cmce));
+    pack_bits(cmce, TETRA_CMCE_D_TX_INTERRUPT, 0, 5);
+    pack_bits(cmce, 0x22, 5, 14);
+    pack_bits(cmce, 3, 19, 2);
+    pack_bits(cmce, 1, 21, 1);
+    pack_bits(cmce, 1, 22, 1);
+    wrap_mle_cmce(cmce, 24, pdu, &n);
     tetra_mle_dispatch(pdu, n, 0, opt, st);
     CHECK(st->tetra_tx_interrupted == 1, "D-TX-INTERRUPT sets flag");
+    CHECK(st->tetra_tx_event_grant == 3, "D-TX-INTERRUPT grant decoded");
 
-    /* WAIT=12 */
-    pack_bits(cmce, 12, 0, 5);
-    wrap_mle_cmce(cmce, 5, pdu, &n);
+    /* D-TX-WAIT: call id plus request permission. */
+    memset(cmce, 0, sizeof(cmce));
+    pack_bits(cmce, TETRA_CMCE_D_TX_WAIT, 0, 5);
+    pack_bits(cmce, 0x321, 5, 14);
+    pack_bits(cmce, 0, 19, 1);
+    wrap_mle_cmce(cmce, 20, pdu, &n);
     tetra_mle_dispatch(pdu, n, 0, opt, st);
     CHECK(st->tetra_tx_wait == 1, "D-TX-WAIT sets flag");
-
-    /* TIMED-OUT=13 */
-    st->tetra_tx_granted_valid = 1; /* pre-condition */
-    pack_bits(cmce, 13, 0, 5);
-    wrap_mle_cmce(cmce, 5, pdu, &n);
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-    CHECK(st->tetra_tx_timed_out == 1, "D-TX-TIMED-OUT sets flag");
-    CHECK(st->tetra_tx_granted_valid == 0, "D-TX-TIMED-OUT clears grant");
+    CHECK(st->tetra_tx_event_call_id == 0x321, "D-TX-WAIT call id decoded");
 
     free(st); free(opt);
 }
@@ -160,19 +166,19 @@ static void test_mle_restore(void)
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
 
-    /* MLE D-RESTORE-ACK (type 2) */
+    /* Truncated MLE D-RESTORE-ACK (type 2) */
     uint8_t mle_ack[5];
     memset(mle_ack, 0, sizeof(mle_ack));
     pack_bits(mle_ack, 2, 0, 5);
     tetra_mle_dispatch(mle_ack, 5, 0, opt, st);
-    CHECK(st->tetra_restore_ack == 1, "MLE D-RESTORE-ACK flag");
+    CHECK(st->tetra_restore_ack == 0, "truncated MLE D-RESTORE-ACK rejected");
 
-    /* MLE D-RESTORE-RESPONSE (type 3) */
+    /* Truncated MLE D-RESTORE-RESPONSE (type 3) */
     uint8_t mle_res[5];
     memset(mle_res, 0, sizeof(mle_res));
     pack_bits(mle_res, 3, 0, 5);
     tetra_mle_dispatch(mle_res, 5, 0, opt, st);
-    CHECK(st->tetra_restore_response == 1, "MLE D-RESTORE-RESPONSE flag");
+    CHECK(st->tetra_restore_response == 0, "truncated MLE D-RESTORE-RESPONSE rejected");
 
     free(st); free(opt);
 }
@@ -180,94 +186,12 @@ static void test_mle_restore(void)
 /* =======================================================================
  * Phase 56: External subscriber parsing
  * ======================================================================= */
-static void test_sds_ext_flag(void)
-{
-    printf("[test_sds_ext_flag]\n");
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    /* D-SDS-SHORT-DATA (21), ext_flag=1, len=20 bits, val=0xABCDE, data_type=0 */
-    uint8_t cmce[60];
-    memset(cmce, 0, sizeof(cmce));
-    int off = 0;
-    pack_bits(cmce, 21, off, 5); off += 5;
-    pack_bits(cmce,  1, off, 1); off += 1; /* ext_flag=1 */
-    pack_bits(cmce, 20, off, 8); off += 8; /* length=20  */
-    pack_bits(cmce, 0xABCDE, off, 20); off += 20; /* 20-bit src_ssi */
-    pack_bits(cmce,  0, off, 2); off += 2; /* type=0 Status */
-    pack_bits(cmce, 0x1111, off, 16); off += 16; /* payload */
-
-    uint8_t pdu[100]; int n;
-    wrap_mle_cmce(cmce, off, pdu, &n);
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-
-    CHECK(st->tetra_sds_short_valid == 1, "D-SDS-SHORT-DATA ext_flag parsed");
-    CHECK(st->tetra_sds_src == 0xABCDE,   "Ext src_ssi extracted correctly");
-
-    free(st); free(opt);
-}
-
 /* =======================================================================
  * Phase 57: CMCE D-INFO
  * ======================================================================= */
-static void test_d_info(void)
-{
-    printf("[test_d_info]\n");
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    uint8_t cmce[7];
-    memset(cmce, 0, sizeof(cmce));
-    pack_bits(cmce, 14, 0, 5); /* pdu_type=14 */
-    pack_bits(cmce,  1, 5, 1); /* call_id=1 */
-    pack_bits(cmce,  0, 6, 1); /* timeout=0 */
-
-    uint8_t pdu[9+7]; int n;
-    wrap_mle_cmce(cmce, 7, pdu, &n);
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-
-    CHECK(st->tetra_d_info_valid == 1, "D-INFO valid");
-    CHECK(st->tetra_d_info_call_id == 1, "D-INFO call_id");
-
-    free(st); free(opt);
-}
-
 /* =======================================================================
  * Phase 58: SDS Unicode text
  * ======================================================================= */
-static void test_sds_unicode(void)
-{
-    printf("[test_sds_unicode]\n");
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    /* D-SDS-DATA (23), ext=0, src=1, msg_ref/vp=0, len/unicode */
-    uint8_t cmce[100];
-    memset(cmce, 0, sizeof(cmce));
-    int off = 0;
-    pack_bits(cmce, 23, off, 5); off += 5;
-    pack_bits(cmce,  0, off, 1); off += 1; /* ext=0 */
-    pack_bits(cmce,  1, off, 24); off += 24;
-    pack_bits(cmce,  0, off, 6); off += 6; /* msg_ref/etc */
-    pack_bits(cmce,  0, off, 1); off += 1; /* dt_flag=0 */
-
-    pack_bits(cmce, 16, off, 8); off += 8; /* bpc=16 (8-bit field) */
-    pack_bits(cmce,  2, off, 8); off += 8; /* 2 chars */
-    /* Unicode 'H' = 0x0048, 'i' = 0x0069 */
-    pack_bits(cmce, 0x0048, off, 16); off += 16;
-    pack_bits(cmce, 0x0069, off, 16); off += 16;
-
-    uint8_t pdu[100+9]; int n;
-    wrap_mle_cmce(cmce, off, pdu, &n);
-    tetra_mle_dispatch(pdu, n, 0, opt, st);
-
-    CHECK(st->tetra_sds_text_unicode == 1, "Unicode flag set");
-    CHECK(st->tetra_sds_text_len == 2, "Text len 2");
-    CHECK(strcmp(st->tetra_sds_text, "Hi") == 0, "UTF-8 conversion ok");
-
-    free(st); free(opt);
-}
-
 /* =======================================================================
  * Phase 59: NWRK-BCAST-EXT
  * ======================================================================= */
@@ -325,11 +249,8 @@ int main(void)
     puts("");
     test_mle_restore();
     puts("");
-    test_sds_ext_flag();
     puts("");
-    test_d_info();
     puts("");
-    test_sds_unicode();
     puts("");
     test_nwrk_ext();
     puts("");

@@ -12,18 +12,7 @@
  *   Bits  5-8  : Protocol discriminator (4 bits, TETRA_MLE_PD_*)
  *   Bits  9+   : CMCE / MM PDU
  *
- * CMCE D-SETUP fixed PDU layout (bits relative to start of CMCE PDU):
- *   Bits  0-4  : PDU type  = 6 (TETRA_CMCE_D_SETUP)
- *   Bit     5  : Call identification (TI)
- *   Bit     6  : Call timeout timer toggle
- *   Bits  7-9  : Call type  (TETRA_CMCE_CALL_TYPE_*)
- *   Bit    10  : Simplex / duplex flag
- *   Bit    11  : Notification indicator
- *   Bit    12  : Com-type (0=signalling, 1=user data)
- *   Bit    13  : Slots / circuit flag
- *   Bit    14  : Calling party present (optional IE presence flag)
- *   Bit    15  : (if present) Calling party type (0=SSI, 1=USSI/SNA)
- *   Bits 16-39 : (if present, type=SSI) Calling party SSI (24 bits)
+ * Individual CMCE parsers document their ETSI table layouts in the source.
  */
 #ifndef DSD_NEO_PROTOCOL_TETRA_MLE_H
 #define DSD_NEO_PROTOCOL_TETRA_MLE_H
@@ -54,30 +43,26 @@ extern "C" {
 #define TETRA_MLE_PD_SNDCP            8   /* Sub-Network Dependent Conv.Prot.*/
 
 /* -----------------------------------------------------------------------
- * CMCE downlink PDU type constants (5-bit, ETSI EN 300 392-2 Table 14.31)
+ * CMCE downlink PDU type constants (5-bit, ETSI EN 300 392-2 Table 14.66)
  * ----------------------------------------------------------------------- */
 #define TETRA_CMCE_D_ALERT            0
 #define TETRA_CMCE_D_CALL_PROCEEDING  1
 #define TETRA_CMCE_D_CONNECT          2   /* Call connected → call_active = 1 */
 #define TETRA_CMCE_D_CONNECT_ACK      3
 #define TETRA_CMCE_D_DISCONNECT       4   /* Call ending   → call_active = 0 */
-#define TETRA_CMCE_D_RELEASE          5   /* Call released → call_active = 0 */
-#define TETRA_CMCE_D_SETUP            6   /* Incoming call setup              */
-#define TETRA_CMCE_D_STATUS           7
-#define TETRA_CMCE_D_TX_CEASED        8   /* PTT released  → tx_granted_valid=0 */
-#define TETRA_CMCE_D_TX_CONTINUE      9
-#define TETRA_CMCE_D_TX_GRANTED      10   /* PTT grant     → tx_granted_ssi     */
-#define TETRA_CMCE_D_TX_INTERRUPT    11
+#define TETRA_CMCE_D_INFO             5
+#define TETRA_CMCE_D_RELEASE          6   /* Call released → call_active = 0 */
+#define TETRA_CMCE_D_SETUP            7   /* Incoming call setup              */
+#define TETRA_CMCE_D_STATUS           8
+#define TETRA_CMCE_D_TX_CEASED        9   /* PTT released  → tx_granted_valid=0 */
+#define TETRA_CMCE_D_TX_CONTINUE     10
+#define TETRA_CMCE_D_TX_GRANTED      11   /* PTT grant     → tx_granted_ssi     */
 #define TETRA_CMCE_D_TX_WAIT         12
-#define TETRA_CMCE_D_TX_TIMED_OUT    13
-#define TETRA_CMCE_D_INFO            14
-#define TETRA_CMCE_D_FACILITY        15   /* Supplementary svc   §14.7.1.18 */
-#define TETRA_CMCE_D_SDS_ACK         17   /* SDS acknowledgement §14.7.1.16 */
-#define TETRA_CMCE_D_SDS_SHORT_REPORT 18  /* SDS short report    §14.7.1.20a*/
-#define TETRA_CMCE_D_SDS_LONG_DATA   20   /* Long SDS data       §14.7.1.19a*/
-#define TETRA_CMCE_D_SDS_SHORT_DATA  21  /* Short data service  §14.7.1.17 */
-#define TETRA_CMCE_D_SDS_REPORT      22  /* SDS delivery report §14.7.1.20 */
-#define TETRA_CMCE_D_SDS_DATA        23  /* Short data message  §14.7.1.19 */
+#define TETRA_CMCE_D_TX_INTERRUPT    13
+#define TETRA_CMCE_D_CALL_RESTORE    14
+#define TETRA_CMCE_D_SDS_DATA        15
+#define TETRA_CMCE_D_FACILITY        16
+#define TETRA_CMCE_FUNCTION_NOT_SUPPORTED 31
 
 /* D-SETUP call_type field values (3-bit, ETSI §14.7.3.2 Table 14.33) */
 #define TETRA_CMCE_CALL_TYPE_GROUP        0   /* Basic group call        */
@@ -98,21 +83,22 @@ extern "C" {
  *   MLE D-NWRK-BROADCAST → tetra_nwrk_bcast_known, tetra_la,
  *                           tetra_subscr_class
  *   MLE D-NWRK-BCAST-EXT / D-RESTORE-ACK / D-RESTORE-RESPONSE
- *                        → log only
+ *                        → decoded result and location-area state
  *   CMCE D-ALERT / D-CALL-PROCEEDING
  *                    → tetra_call_active=1
  *   CMCE D-SETUP     → tetra_calling_ssi, tetra_gssi, tetra_call_id,
- *                       tetra_call_type, tetra_call_active=1,
- *                       lasttg, lastsrc, active_channel[0], last_active_time
+ *                       tetra_call_type, tetra_call_active=1 and canonical
+ *                       call-state attribution
  *   CMCE D-CONNECT   → tetra_call_active=1
  *   CMCE D-STATUS    → tetra_sds_status, tetra_sds_src
  *   CMCE D-RELEASE /
  *   CMCE D-DISCONNECT → tetra_call_active=0
  *   CMCE D-TX-GRANTED → tetra_tx_granted_ssi, tetra_tx_granted_valid=1
  *   CMCE D-TX-CEASED  → tetra_tx_granted_valid=0
- *   CMCE D-TX-CONTINUE / D-TX-INTERRUPT / D-TX-WAIT / D-TX-TIMED-OUT
- *                    → log only (no state change)
- *   CMCE D-INFO      → log only
+ *   CMCE D-TX-CONTINUE / D-TX-INTERRUPT / D-TX-WAIT
+ *                    → floor-control event state
+ *   CMCE D-INFO      → call identifier, reset and poll state
+ *   CMCE D-FACILITY  → first supplementary-service type
  *
  * @bits   – one byte per bit (value 0 or 1), MSB-first, TM-SDU payload
  * @nbits  – number of valid bits starting at @bits[0]

@@ -183,6 +183,31 @@ build still decodes.
 
 Known gaps and caveats:
 
+- **TETRA** has focused CTest coverage for FEC/interleaving, MAC, MLE/MM/CMCE,
+  SDS, channel information, TCH slot gating, and trunking state helpers (run
+  with `ctest --preset dev-debug -L tetra --output-on-failure`). A deterministic
+  Synchronisation Burst fixture crosses the full 18 ksym/s pi/4-DQPSK chain
+  through a CRC-valid BSCH, NDB SCH-HD blocks, a standards-shaped MAC-RESOURCE
+  Channel Allocation IE, and a known TCH/FS codeword. It verifies network
+  identity, SYSINFO, assigned-carrier parsing, and recovery of all 292 TCH/FS
+  type-2 bits. The sequence advances the BSCH timestamp across its NDB bursts
+  and verifies that the allocated TN2 bitmap admits the TCH/FS burst; focused
+  slot-gate cases cover all four TN/bitmap mappings and released allocations.
+  A paired bad-CRC burst verifies rejection. The same accept and
+  reject paths are replayed with deterministic 300 Hz carrier offset and 14 dB
+  complex-AWGN SNR, covering carrier/timing recovery under a repeatable channel
+  impairment. `TETRA_ACELP_PIPELINE`
+  The CMCE/SDS unit cases also require declared optional information elements
+  and SDS payloads to be complete before any call, floor-control, or short-data
+  state is published.
+  additionally launches the persistent Python vocoder stub, exchanges both
+  137-bit codec frames, and verifies that 320 PCM samples reach a WAV sink.
+  `TETRA_ACELP_SHORT_OUTPUT` makes the subprocess return only 80 of the required
+  160 samples and verifies that the decoder resets it without routing a partial
+  frame. Both cases run through the Windows and POSIX subprocess implementations.
+  A redistributable
+  off-air fixture, hardware retune capture, and decoded ACELP audio reference
+  remain outstanding.
 - **ProVoice** and **X2-TDMA** have no usable public sample and are untested here.
 - **dPMR** decodes only what its CCH CRC-7 verifies (issue #407), so the `dpmr` off-air capture publishes nothing:
   it carries no recoverable CCH, which is why the CRC was thought to be broken. `DECODE_IQ_DPMR_MARGINAL` pins that

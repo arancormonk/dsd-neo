@@ -1867,7 +1867,11 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_compile_definitions(
         dsd-neo_test_ui_panels_header_footer
-        PRIVATE NCURSES_NOMACROS
+        PRIVATE
+            NCURSES_NOMACROS
+            attron=dsd_test_attron
+            attroff=dsd_test_attroff
+            printw=dsd_test_printw
     )
     target_include_directories(
         dsd-neo_test_ui_panels_header_footer
@@ -8006,6 +8010,135 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_edacs_grant_policy PRIVATE dsd-neo_core)
 add_test(NAME EDACS_GRANT_POLICY COMMAND dsd-neo_test_edacs_grant_policy)
 
+# TETRA protocol coverage.  These sources previously lived under
+# tests/protocol/tetra without being registered in CTest, so regressions in
+# the MAC/MLE/MM, FEC, vocoder gating, and trunking paths were invisible to
+# the normal ALL_BUILD + CTest workflow.
+set(_dsd_tetra_test_sources
+    d_tx_granted_chan
+    depuncture_regression
+    interleaver_dims
+    mac_state
+    mle_cmce
+    mm_dispatch
+    osmo_shim
+    osmo_viterbi_backend
+    rcpc_map
+    tetra_fmt_helpers
+    tetra_integration
+    tetra_phase42
+    tetra_phase47
+    tetra_phase52
+    tetra_phase61
+    tetra_phase69
+    tetra_phase70
+    tetra_phase76
+    tetra_phase80
+    tetra_phase85
+    tetra_phase86
+    tetra_phase87
+    tetra_sm_hangtime
+    tetra_tch_slot_gate
+    tetra_trunk_sm
+)
+
+foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
+    set(_dsd_tetra_target "dsd-neo_test_tetra_${_dsd_tetra_test}")
+    add_executable(
+        "${_dsd_tetra_target}"
+        "protocol/tetra/test_${_dsd_tetra_test}.c"
+    )
+    target_include_directories(
+        "${_dsd_tetra_target}"
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        "${_dsd_tetra_target}"
+        PRIVATE dsd-neo_proto_tetra dsd-neo_fec
+    )
+    if(_dsd_tetra_test STREQUAL "depuncture_regression")
+        target_sources(
+            "${_dsd_tetra_target}"
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/src/protocol/tetra/osmo_sources/osmo_viterbi_shim.c
+                ${PROJECT_SOURCE_DIR}/src/protocol/tetra/osmo_sources/osmo_shim_map.c
+        )
+    elseif(_dsd_tetra_test STREQUAL "osmo_shim")
+        target_sources(
+            "${_dsd_tetra_target}"
+            PRIVATE ${PROJECT_SOURCE_DIR}/src/protocol/tetra/osmo_sources/osmo_shim_map.c
+        )
+    endif()
+    string(REGEX REPLACE "^tetra_" "" _dsd_tetra_test_name "${_dsd_tetra_test}")
+    string(TOUPPER "${_dsd_tetra_test_name}" _dsd_tetra_test_name)
+    add_test(
+        NAME "TETRA_${_dsd_tetra_test_name}"
+        COMMAND "${_dsd_tetra_target}"
+    )
+    set_tests_properties(
+        "TETRA_${_dsd_tetra_test_name}"
+        PROPERTIES LABELS "protocol;tetra"
+    )
+endforeach()
+unset(_dsd_tetra_target)
+unset(_dsd_tetra_test)
+unset(_dsd_tetra_test_name)
+unset(_dsd_tetra_test_sources)
+
+# Exercise the actual persistent vocoder subprocess and WAV routing with the
+# deterministic silence stub. Keep the protocol suite usable when Python is
+# intentionally absent from a minimal target environment.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_executable(
+        dsd-neo_test_tetra_acelp_pipeline
+        protocol/tetra/test_tetra_acelp_pipeline.c
+    )
+    target_include_directories(
+        dsd-neo_test_tetra_acelp_pipeline
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_tetra_acelp_pipeline
+        PRIVATE dsd-neo_proto_tetra dsd-neo_fec
+    )
+    add_test(
+        NAME TETRA_ACELP_PIPELINE
+        COMMAND dsd-neo_test_tetra_acelp_pipeline
+    )
+    set_tests_properties(
+        TETRA_ACELP_PIPELINE
+        PROPERTIES
+            LABELS "protocol;tetra;audio"
+            ENVIRONMENT
+                "TETRA_VOCODER_CMD=${Python3_EXECUTABLE} \"${PROJECT_SOURCE_DIR}/tools/tetra/vocoder_stub.py\""
+    )
+
+    add_executable(
+        dsd-neo_test_tetra_acelp_short_output
+        protocol/tetra/test_tetra_acelp_short_output.c
+    )
+    target_include_directories(
+        dsd-neo_test_tetra_acelp_short_output
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_tetra_acelp_short_output
+        PRIVATE dsd-neo_proto_tetra dsd-neo_fec
+    )
+    add_test(
+        NAME TETRA_ACELP_SHORT_OUTPUT
+        COMMAND dsd-neo_test_tetra_acelp_short_output
+    )
+    set_tests_properties(
+        TETRA_ACELP_SHORT_OUTPUT
+        PROPERTIES
+            LABELS "protocol;tetra;audio"
+            ENVIRONMENT
+                "TETRA_VOCODER_CMD=${Python3_EXECUTABLE} \"${PROJECT_SOURCE_DIR}/tools/tetra/vocoder_stub.py\" --short-output"
+    )
+endif()
+
 # This matrix drives eot_cc(); it must not call real skipDibit from the unit-test fixture.
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
@@ -9585,6 +9718,71 @@ if(DSD_HAS_RADIO)
         -fm
         "Src=7654321"
     )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH
+        tetra_bsch_synth
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_SYSINFO
+        tetra_bsch_synth
+        -fT
+        "\\[TETRA SYSINFO\\] CC=1  carrier=321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CHANNEL_ALLOCATION
+        tetra_bsch_synth
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=1 type=0 slots=0x4 dir=1 carrier=400"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_TCH_FS
+        tetra_bsch_synth
+        -fT
+        "\\[TETRA TCH/FS\\] CC=1  dec_bits=292"
+    )
+    # Deterministic 300 Hz carrier error plus 14 dB complex-AWGN SNR. These
+    # assertions prove acquisition and protected control decoding through the
+    # real CQPSK timing/carrier recovery path under a repeatable impairment.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH_CFO_AWGN
+        tetra_bsch_cfo_awgn
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_SYSINFO_CFO_AWGN
+        tetra_bsch_cfo_awgn
+        -fT
+        "\\[TETRA SYSINFO\\] CC=1  carrier=321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CHANNEL_ALLOCATION_CFO_AWGN
+        tetra_bsch_cfo_awgn
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=1 type=0 slots=0x4 dir=1 carrier=400"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_TCH_FS_CFO_AWGN
+        tetra_bsch_cfo_awgn
+        -fT
+        "\\[TETRA TCH/FS\\] CC=1  dec_bits=292"
+    )
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_TETRA_BAD_CRC_REJECT
+        tetra_bsch_bad_crc
+        -fT
+        "\\+TETRA SB"
+        "\\[TETRA BSCH\\]"
+    )
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_TETRA_BAD_CRC_CFO_AWGN_REJECT
+        tetra_bsch_bad_crc_cfo_awgn
+        -fT
+        "\\+TETRA SB"
+        "\\[TETRA BSCH\\]"
+    )
     # The off-air dpmr capture, which carries no recoverable CCH: its Hamming syndromes
     # sit at the random rate and its 4FSK eye is closed, so the Src=1601621 this case
     # used to assert was dpmr_ids_are_strong()'s Hamming fallback firing on
@@ -9744,13 +9942,13 @@ if(MSVC)
         dsd-neo_test_p25_p2_2v_first_frame_gate
         dsd-neo_test_p25_p2_release_partial_audio
         dsd-neo_test_p25_p2_reliability
-        dsd-neo_test_ui_panels_header_footer
         dsd-neo_test_ui_prims_status_gamma
     )
         target_link_options(
             ${_dsd_override_test}
             PRIVATE /FORCE:MULTIPLE /INCREMENTAL:NO /IGNORE:4006 /IGNORE:4075 /IGNORE:4088
         )
+        set_property(TARGET ${_dsd_override_test} PROPERTY DSD_NEO_ALLOW_LINK_WARNINGS ON)
         set_property(TARGET ${_dsd_override_test} PROPERTY LINK_WARNING_AS_ERROR OFF)
     endforeach()
 endif()

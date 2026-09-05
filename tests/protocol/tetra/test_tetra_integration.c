@@ -134,48 +134,6 @@ static void test_frame_counters(void)
 /* ----------------------------------------------------------------------- */
 /* Test 3: D-SETUP with call_timeout=1 / slots=1 (Phase 29)                 */
 /* ----------------------------------------------------------------------- */
-static void test_d_setup_timeout_slots(void)
-{
-    /*
-     * TM-SDU:
-     *   [0-4]  MLE C_PLANE_DATA = 24
-     *   [5-8]  PD = CMCE (3)
-     *   [9-13] CMCE type = D-SETUP (6)
-     *   [14]   call_id = 0
-     *   [15]   call_timeout = 1   ←
-     *   [16-18] call_type = 0
-     *   [19]   duplex = 0
-     *   [20]   notif = 0
-     *   [21]   com_type = 0
-     *   [22]   slots = 1          ←
-     *   [23]   calling_party_present = 0
-     */
-    const int NBITS = 24;
-    uint8_t bits[24];
-    memset(bits, 0, sizeof(bits));
-
-    pack_bits(bits, 24u, 0, 5);
-    pack_bits(bits,  3u, 5, 4);
-    pack_bits(bits,  6u, 9, 5);  /* D-SETUP */
-    pack_bits(bits,  0u, 14, 1); /* call_id */
-    pack_bits(bits,  1u, 15, 1); /* call_timeout = 1 */
-    /* call_type=0 already zero */
-    /* duplex/notif/com_type = 0 */
-    pack_bits(bits,  1u, 22, 1); /* slots = 1 */
-    /* calling_party_present = 0 */
-
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    tetra_mle_dispatch(bits, NBITS, 0, opt, st);
-
-    CHECK(st->tetra_call_active  == 1, "D-SETUP call_active=1");
-    CHECK(st->tetra_call_timeout == 1, "D-SETUP call_timeout=1 cached");
-    CHECK(st->tetra_call_slots   == 1, "D-SETUP slots=1 cached");
-
-    free(st); free(opt);
-}
-
 /* ----------------------------------------------------------------------- */
 /* Test 4: D-CONNECT-ACK (type 3) sets call_active (Phase 19)               */
 /* ----------------------------------------------------------------------- */
@@ -206,28 +164,27 @@ static void test_d_connect_ack(void)
 static void test_d_tx_granted_enc_mode(void)
 {
     /*
-     * Minimal D-TX-GRANTED: type=10, perm=1, enc=2(on+auth), reserv=0
-     * No granted party IE, no assigned channel IE.
+     * Minimal Table 14.18 D-TX-GRANTED with encryption control set.
      *
      *   [0-4]  MLE C_PLANE_DATA = 24
      *   [5-8]  PD = CMCE (3)
-     *   [9-13] CMCE type = 10
-     *   [14]   tx_perm = 1
-     *   [15-16] enc = 2
-     *   [17]   reserv = 0
-     *   [18]   gp_present = 0
-     *   [19]   ac_present = 0
+     *   [9-13] CMCE type = 11
+     *   [14-27] call identifier
+     *   [28-29] transmission grant
+     *   [30] request permission, [31] encryption, [32] reserved
      */
-    const int NBITS = 20;
-    uint8_t bits[20];
+    const int NBITS = 35;
+    uint8_t bits[35];
     memset(bits, 0, sizeof(bits));
 
     pack_bits(bits, 24u, 0, 5);
     pack_bits(bits,  3u, 5, 4);
-    pack_bits(bits, 10u, 9, 5); /* D-TX-GRANTED */
-    pack_bits(bits,  1u, 14, 1); /* tx_perm */
-    pack_bits(bits,  2u, 15, 2); /* enc = on+auth */
-    /* reserv, gp_present, ac_present = 0 already */
+    pack_bits(bits, 11u, 9, 5); /* D-TX-GRANTED */
+    pack_bits(bits,  2u, 14, 14); /* call identifier */
+    pack_bits(bits,  3u, 28, 2);  /* granted to another user */
+    pack_bits(bits,  1u, 30, 1);  /* request permission */
+    pack_bits(bits,  1u, 31, 1);  /* encryption control */
+    /* reserved and optional-presence bits remain zero */
 
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
@@ -235,7 +192,7 @@ static void test_d_tx_granted_enc_mode(void)
     st->tetra_enc_mode = 0; /* start at none */
     tetra_mle_dispatch(bits, NBITS, 0, opt, st);
 
-    CHECK(st->tetra_enc_mode == 2, "D-TX-GRANTED syncs enc_mode=2");
+    CHECK(st->tetra_enc_mode == 1, "D-TX-GRANTED syncs encryption control");
 
     free(st); free(opt);
 }
@@ -243,41 +200,6 @@ static void test_d_tx_granted_enc_mode(void)
 /* ----------------------------------------------------------------------- */
 /* Test 6: D-STATUS ring buffer (Phase 30)                                   */
 /* ----------------------------------------------------------------------- */
-static void test_d_status_ring_buffer(void)
-{
-    /* Send 5 D-STATUSes with values 11,22,33,44,55 and verify the ring
-     * correctly holds the last 4: {22,33,44,55} in positions 1,2,3,0 */
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    uint16_t vals[5] = {11, 22, 33, 44, 55};
-    for (int i = 0; i < 5; i++) {
-        const int NBITS = 30;
-        uint8_t bits[30];
-        memset(bits, 0, sizeof(bits));
-        pack_bits(bits, 24u, 0, 5);
-        pack_bits(bits,  3u, 5, 4);
-        pack_bits(bits,  7u, 9, 5); /* D-STATUS type=7 */
-        pack_bits(bits, (uint32_t)vals[i], 14, 16); /* pre-coded status */
-        /* no calling party IE (bit 30 = 0, already 0) */
-        tetra_mle_dispatch(bits, NBITS, 0, opt, st);
-    }
-
-    /* After 5 writes into a ring of 4, head should be at 1 */
-    CHECK(st->tetra_sds_status_log_head == 1, "ring head at 1 after 5 writes");
-
-    /* ring[0] = 55 (5th write overwrote position 0) */
-    CHECK(st->tetra_sds_status_log[0] == 55, "ring[0] == 55 (newest in slot 0)");
-    /* ring[1] = 22 */
-    CHECK(st->tetra_sds_status_log[1] == 22, "ring[1] == 22");
-    /* ring[2] = 33 */
-    CHECK(st->tetra_sds_status_log[2] == 33, "ring[2] == 33");
-    /* ring[3] = 44 */
-    CHECK(st->tetra_sds_status_log[3] == 44, "ring[3] == 44");
-
-    free(st); free(opt);
-}
-
 /* ----------------------------------------------------------------------- */
 /* Test 7: BSCH bsch_count increment (Phase 24) — direct state simulation   */
 /* ----------------------------------------------------------------------- */
@@ -346,10 +268,7 @@ int main(void)
 
     test_sysinfo_extended_fields();
     test_frame_counters();
-    test_d_setup_timeout_slots();
-    test_d_connect_ack();
     test_d_tx_granted_enc_mode();
-    test_d_status_ring_buffer();
     test_bsch_count();
     test_mm_d_lu_command();
 

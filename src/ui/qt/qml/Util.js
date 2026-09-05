@@ -54,6 +54,10 @@ var DECODE_MODES = [
     {
         label: "M17", short: "M17", flag: "-fz",
         hint: "M17 — open-source ham digital voice."
+    },
+    {
+        label: "TETRA", short: "TETRA", flag: "-fT", trunked: true,
+        hint: "TETRA — pi/4-DQPSK trunked voice and control channels."
     }
 ]
 
