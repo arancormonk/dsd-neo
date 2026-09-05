@@ -571,40 +571,42 @@ class MetricsModel : public QObject {
     };
 
     struct View {
+        /* Group equally aligned fields; this private value is copied on each
+         * refresh and is never serialized or initialized by member position. */
         double snr_db = 0.0;
-        bool snr_valid = false;
-        bool carrier_lock = false;
         double cfo_hz = 0.0;
-        QString tuner_gain_text;
-        bool radio_input = false;
-        bool stream_active = false;
         double center_freq_hz = 0.0;
-        int channel_bandwidth_hz = 0;
-        bool synced_here = false;
-        QString sync_label;
-        bool trunkable_sync = false;
-        int decode_mode = 0;
-        QString scan_mode;
-        int modulation = 0;
-        int tuner_gain_db = 0;
         double squelch_db = 0.0;
-        bool squelch_off = false;
-        int ppm = 0;
-        bool audio_muted = false;
         qulonglong held_tg = 0;
-        int enc_lockout_count = 0;
-        bool tuner_controlled = false;
-        bool trunking_enabled = false;
-        bool scanner_mode = false;
-        bool scan_rotation_active = false;
-        bool scan_hold = false;
-        int scan_avoid_count = 0;
-        bool scan_target_avoided = false;
+        QString tuner_gain_text;
+        QString sync_label;
+        QString scan_mode;
         QString ui_message;
         /* Sized from the canonical constant rather than a literal 2: leadSlot() ranks the
          * whole array through dsd_app_lead_slot(), so the two must agree or the ranking
          * would read past the end the day a third slot appears. */
         SlotCall slot_call[DSD_CALL_STATE_SLOT_COUNT];
+        int channel_bandwidth_hz = 0;
+        int decode_mode = 0;
+        int modulation = 0;
+        int tuner_gain_db = 0;
+        int ppm = 0;
+        int enc_lockout_count = 0;
+        int scan_avoid_count = 0;
+        bool snr_valid = false;
+        bool carrier_lock = false;
+        bool radio_input = false;
+        bool stream_active = false;
+        bool synced_here = false;
+        bool trunkable_sync = false;
+        bool squelch_off = false;
+        bool audio_muted = false;
+        bool tuner_controlled = false;
+        bool trunking_enabled = false;
+        bool scanner_mode = false;
+        bool scan_rotation_active = false;
+        bool scan_hold = false;
+        bool scan_target_avoided = false;
 
         /* Exact comparison is right for the two doubles: they are carried through
          * unmodified from the metrics boundary, so "unchanged" means the identical
