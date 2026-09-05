@@ -87,7 +87,8 @@ int dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode);
 void dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state);
 /** Temporarily restore configuration for an operator update, retaining the row constraint. */
 int dsd_scan_mode_suspend(dsd_opts* opts, dsd_state* state);
-/** Save the updated configuration and reapply the suspended constraint. */
+/** Save updated configuration and reapply the constraint. Return nonzero when decoder
+ * settings changed and acquisition must reset; audio-routing-only updates return zero. */
 int dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state);
 /** Nonzero between suspend and resume; side effects must wait until effective settings are known. */
 int dsd_scan_mode_updating(const dsd_state* state);

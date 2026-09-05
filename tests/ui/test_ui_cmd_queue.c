@@ -2122,9 +2122,26 @@ test_scoped_setting_toggles(void) {
     const int commands[] = {DSD_APP_CMD_INVERT_TOGGLE, DSD_APP_CMD_COSINE_FILTER_TOGGLE,
                             DSD_APP_CMD_INPUT_MONITOR_TOGGLE};
     for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); ++i) {
+        if (commands[i] == DSD_APP_CMD_INPUT_MONITOR_TOGGLE) {
+            const dsd_call_observation call = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+                                               .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                               .ota_target_id = 1201,
+                                               .observed_m = 1.0};
+            rc |= expect_int("seed call before monitor toggle",
+                             dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN), 1);
+            state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+            state->rf_mod = 2;
+            state->sps_hunt_counter = 17;
+        }
         rc |= expect_int("scoped toggle queued", dsd_app_command_action(commands[i]), DSD_APP_COMMAND_SUBMIT_QUEUED);
         rc |= expect_int("scoped toggle drained", dsd_app_drain_cmds(opts, state), 1);
     }
+    dsd_call_snapshot call;
+    rc |= expect_int("monitor keeps call", dsd_call_state_get(state, 0, &call), 1);
+    rc |= expect_int("monitor keeps call active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_int("monitor keeps acquired sync", state->synctype, DSD_SYNC_DMR_BS_VOICE_POS);
+    rc |= expect_int("monitor keeps acquired modulation", state->rf_mod, 2);
+    rc |= expect_int("monitor keeps hunt accounting", state->sps_hunt_counter, 17);
     rc |= expect_int("hop to NXDN", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48), 0);
     rc |= expect_int("hop keeps invert", opts->inverted_dmr, 1);
     rc |= expect_int("hop keeps filter", opts->use_cosine_filter, 0);

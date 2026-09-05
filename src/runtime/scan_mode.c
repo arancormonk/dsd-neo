@@ -352,6 +352,9 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
     }
     dsd_scan_settings effective;
     dsd_scan_settings_capture(opts, state, &effective);
+    /* Monitoring is audio routing. Fold it into the restored effective values
+     * without treating it as an acquisition change or replacing live timing. */
+    scope->effective.monitor_input_audio = opts->monitor_input_audio;
     if (dsd_scan_settings_equal(&scope->effective, &effective, 0)) {
         dsd_scan_settings_restore(&scope->effective, opts, state);
         return 0;

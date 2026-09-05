@@ -12,6 +12,7 @@
  */
 
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -250,7 +251,10 @@ test_decoder_labels(void) {
     rc |= expect_str("hpf off", lbl_hpf(&ctx, b, sizeof(b)), "High-pass filter [Off]");
     rc |= expect_str("pbf on", lbl_pbf(&ctx, b, sizeof(b)), "Pulse-shaping band-pass [On]");
     rc |= expect_str("hpf digital off", lbl_hpf_d(&ctx, b, sizeof(b)), "Digital high-pass filter [Off]");
-    opts.use_cosine_filter = 1;
+    /* The M17 row can disable the effective filter while the configured value
+     * shown by this toggle remains enabled. */
+    opts.use_cosine_filter = 0;
+    ((dsd_opts*)dsd_app_get_latest_opts_snapshot())->use_cosine_filter = 1;
     rc |= expect_str("cosine on", lbl_cosine(&ctx, b, sizeof(b)), "Cosine filter [On]");
 
     opts.aggressive_framesync = 0;
@@ -477,7 +481,8 @@ test_input_and_audio_labels(void) {
     rc |= expect_str("output muted", lbl_out_mute(&ctx, b, sizeof(b)), "Mute [On]");
     opts.audio_out = 1;
     rc |= expect_str("output unmuted", lbl_out_mute(&ctx, b, sizeof(b)), "Mute [Off]");
-    opts.monitor_input_audio = 1;
+    opts.monitor_input_audio = 0;
+    ((dsd_opts*)dsd_app_get_latest_opts_snapshot())->monitor_input_audio = 1;
     rc |= expect_str("monitor on", lbl_monitor(&ctx, b, sizeof(b)), "Source audio monitor [On]");
     opts.input_volume_multiplier = 0;
     rc |=

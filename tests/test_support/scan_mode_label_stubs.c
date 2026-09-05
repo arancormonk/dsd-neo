@@ -14,6 +14,14 @@
 static dsd_opts snapshot_opts;
 static dsd_state snapshot_state;
 
+void
+dsd_app_snapshot_configured_mode(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out) {
+    assert(opts == &snapshot_opts);
+    assert(state == &snapshot_state);
+    out->use_cosine_filter = opts->use_cosine_filter;
+    out->monitor_input_audio = opts->monitor_input_audio;
+}
+
 const dsd_opts*
 dsd_app_get_latest_opts_snapshot(void) {
     return &snapshot_opts;

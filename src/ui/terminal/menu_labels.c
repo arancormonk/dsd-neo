@@ -815,15 +815,19 @@ lbl_gain_ana(const void* v, char* b, size_t n) {
 
 const char*
 lbl_monitor(const void* v, char* b, size_t n) {
-    const UiCtx* c = (const UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Source audio monitor [%s]", onoff(c->opts->monitor_input_audio));
+    (void)v;
+    dsd_scan_settings configured = {0};
+    dsd_app_snapshot_configured_mode(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(), &configured);
+    DSD_SNPRINTF(b, n, "Source audio monitor [%s]", onoff(configured.monitor_input_audio));
     return b;
 }
 
 const char*
 lbl_cosine(const void* v, char* b, size_t n) {
-    const UiCtx* c = (const UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Cosine filter [%s]", onoff(c->opts->use_cosine_filter));
+    (void)v;
+    dsd_scan_settings configured = {0};
+    dsd_app_snapshot_configured_mode(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(), &configured);
+    DSD_SNPRINTF(b, n, "Cosine filter [%s]", onoff(configured.use_cosine_filter));
     return b;
 }
 
