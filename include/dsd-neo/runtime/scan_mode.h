@@ -8,6 +8,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -35,6 +36,16 @@ typedef enum {
 
 /** Scalar snapshot of the exact configured decoder settings; owns no pointers. */
 typedef struct {
+    int force_key;
+    int aggressive_framesync;
+    int dmr_crc_relaxed_default;
+    int scan_voice_only;
+    int scan_voice_qualify_ms;
+    int scan_voice_hold_ms;
+    int dmr_mute_encL;
+    int dmr_mute_encR;
+    int unmute_encrypted_p25;
+    char group_in_file[1024];
     int frame_dstar;
     int frame_x2tdma;
     int frame_p25p1;
@@ -95,6 +106,9 @@ dsdneoUserDecodeMode dsd_scan_mode_configured_preset_exact(const dsd_opts* opts,
 /** Select a row from the saved baseline, keeping the open audio sink layout fixed.
  * INHERIT restores the baseline for a blank row while retaining scan ownership. */
 int dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode);
+/** Install nonsecret row overrides after mode entry; NULL restores baseline row options.
+ * No allocation. The caller must already own a scan scope. Reapplied after operator updates. */
+void dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values);
 /** Restore the exact configured baseline and release the scope. */
 void dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state);
 /** Temporarily restore configuration for an operator update, retaining the row constraint. */

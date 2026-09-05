@@ -10,6 +10,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -18,6 +19,7 @@
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
@@ -205,6 +207,7 @@ typedef struct {
     /* Static per-target key configuration, loaded at init. Not part of the
      * snapshot: the switch applies it through the scan key swap instead. */
     dsd_key_set keys;
+    dsd_scan_row_profile* profile;
     p25_sm_ctx_t p25_ctx;
     dmr_sm_ctx_t dmr_ctx;
     double parked_since_m;
@@ -521,6 +524,7 @@ typedef struct {
     int single_key_hex_idx;
     int single_key_dec_idx;
     int p25_bandplan_idx;
+    int options_idx;
     unsigned int row;
     char* err;
     size_t err_sz;
@@ -760,6 +764,46 @@ scan_parse_target_direct_keys(dsd_trunk_scan_target* target, const dsd_trunk_sca
     return 0;
 }
 
+static dsd_scan_mode trunk_scan_target_mode(dsd_trunk_scan_target_type type);
+
+static int
+scan_parse_target_options(dsd_trunk_scan_target* target, char** fields, size_t count,
+                          const dsd_trunk_scan_row_parse* parse) {
+    const char* text = scan_optional_field(fields, count, parse->options_idx);
+    if (!text[0]) {
+        return 0;
+    }
+    dsd_scan_options options = {0};
+    char error[192] = "invalid row options";
+    int rc = dsd_scan_options_parse(text, (unsigned int)trunk_scan_target_mode(target->type),
+                                    trunk_scan_type_is_conventional(target->type), &options, error, sizeof(error));
+    if (!rc) {
+        rc = dsd_scan_options_merge_keys(&options, scan_optional_field(fields, count, parse->keys_hex_idx),
+                                         scan_optional_field(fields, count, parse->keys_dec_idx),
+                                         scan_optional_field(fields, count, parse->single_key_hex_idx),
+                                         scan_optional_field(fields, count, parse->single_key_dec_idx), error,
+                                         sizeof(error));
+    }
+    if (!rc) {
+        rc = dsd_scan_options_resolve(&options, parse->resolved_path, error, sizeof(error));
+    }
+    if (!rc) {
+        dsd_key_set keys = {0};
+        (void)dsd_scan_options_keys(&options, &keys);
+        target->single_key_scalars = keys.scalars;
+        target->single_keys_present = keys.present;
+        dsd_key_set_free(&keys);
+        DSD_MEMCPY(target->keys_hex_csv, options.hex_file, sizeof(target->keys_hex_csv));
+        DSD_MEMCPY(target->keys_dec_csv, options.dec_file, sizeof(target->keys_dec_csv));
+        target->row_options = options.values;
+    }
+    DSD_SECURE_ZERO(&options, sizeof(options));
+    if (rc) {
+        scan_set_error(parse->err, parse->err_sz, "row %u: %s", parse->row, error);
+    }
+    return rc;
+}
+
 static int
 scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_trunk_scan_row_parse* parse) {
     char* fields[DSD_TRUNK_SCAN_MAX_CSV_FIELDS] = {0};
@@ -825,6 +869,10 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
     if (scan_parse_target_direct_keys(&target, parse, single_hex_s, single_dec_s) != 0) {
         return -1;
     }
+    if (scan_parse_target_options(&target, fields, field_count, parse) != 0) {
+        DSD_SECURE_ZERO(&target.single_key_scalars, sizeof(target.single_key_scalars));
+        return -1;
+    }
     parsed->targets[parsed->count++] = target;
     DSD_SECURE_ZERO(&target.single_key_scalars, sizeof(target.single_key_scalars));
     return 0;
@@ -840,11 +888,20 @@ scan_match_optional_header(dsd_trunk_scan_row_parse* parse, const char* name, si
         {"modulation", &parse->modulation_idx},         {"rtl_gain", &parse->rtl_gain_idx},
         {"keys_hex_csv", &parse->keys_hex_idx},         {"keys_dec_csv", &parse->keys_dec_idx},
         {"single_key_hex", &parse->single_key_hex_idx}, {"single_key_dec", &parse->single_key_dec_idx},
-        {"p25_bandplan_csv", &parse->p25_bandplan_idx},
+        {"p25_bandplan_csv", &parse->p25_bandplan_idx}, {"options", &parse->options_idx},
+        {"relevant_CLI_switches", &parse->options_idx},
     };
 
     for (size_t k = 0; k < sizeof cols / sizeof cols[0]; k++) {
-        if (strcmp(name, cols[k].name) != 0) {
+        int matches = strcmp(name, cols[k].name) == 0;
+        if (cols[k].idx == &parse->options_idx) {
+            size_t n = strlen(name);
+            matches = n == strlen(cols[k].name);
+            for (size_t j = 0; matches && j < n; j++) {
+                matches = tolower((unsigned char)name[j]) == tolower((unsigned char)cols[k].name[j]);
+            }
+        }
+        if (!matches) {
             continue;
         }
         if (*cols[k].idx >= 0) {
@@ -893,6 +950,7 @@ scan_read_target_csv_header(FILE* fp, char* line, size_t line_sz, dsd_trunk_scan
     parse->single_key_hex_idx = -1;
     parse->single_key_dec_idx = -1;
     parse->p25_bandplan_idx = -1;
+    parse->options_idx = -1;
     for (size_t i = DSD_TRUNK_SCAN_REQUIRED_CSV_FIELDS; i < field_count; i++) {
         if (scan_match_optional_header(parse, scan_unquote(fields[i]), i) != 0) {
             return -1;
@@ -2052,6 +2110,25 @@ trunk_scan_import_target_p25_bandplan(dsd_state* state, const dsd_trunk_scan_tar
 }
 
 static int
+trunk_scan_load_profile(dsd_trunk_scan_target_runtime* rt, char* error, size_t error_size) {
+    if (!rt->target.row_options.present) {
+        return 0;
+    }
+    rt->profile = (dsd_scan_row_profile*)calloc(1, sizeof(*rt->profile));
+    if (!rt->profile) {
+        scan_set_error(error, error_size, "out of memory loading target options");
+        return -1;
+    }
+    rt->profile->values = rt->target.row_options;
+    if ((rt->profile->values.present & DSD_SCAN_OPT_GROUP)
+        && dsd_tg_policy_load(rt->profile->values.group_file, &rt->profile->groups)) {
+        scan_set_error(error, error_size, "failed to load group policy for target '%s'", rt->target.id);
+        return -1;
+    }
+    return 0;
+}
+
+static int
 trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd_state* state,
                                 const dsd_trunk_scan_target_list* list, char* err, size_t err_sz) {
     dsd_trunk_scan_snapshot* empty_snapshot = &coord->scratch_snapshot;
@@ -2064,6 +2141,9 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
     for (size_t i = 0; i < build_count; i++) {
         dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
         rt->target = list->targets[i];
+        if (trunk_scan_load_profile(rt, err, err_sz)) {
+            return -1;
+        }
         const int have_key_files = rt->target.keys_hex_csv[0] != '\0' || rt->target.keys_dec_csv[0] != '\0';
         if (rt->target.single_keys_present != 0U && have_key_files) {
             scan_set_error(err, err_sz, "trunk scan target '%s' combines direct keys with key CSV files",
@@ -2165,24 +2245,6 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
 }
 
 /*
- * Per-target keys ride the scan key swap: a keyed target installs its set, an
- * unkeyed one hands the foreground keyring back to the globals. Trunk scan
- * never bumps the lockout key epoch -- every target carries its own lockout
- * ledger snapshot, so no global invalidation is owed on a switch.
- */
-static void
-trunk_scan_apply_target_keys(dsd_state* state, const dsd_trunk_scan_target_runtime* rt) {
-    if (!state || !rt) {
-        return;
-    }
-    if (rt->keys.present) {
-        (void)dsd_scan_keys_enter(state, &rt->keys);
-    } else {
-        dsd_scan_keys_leave(state);
-    }
-}
-
-/*
  * Peer IDEN sharing (#402). Two scan targets that are sites of one P25 system (same WACN/SYS)
  * announce the same IDEN_UP tables, so an identifier one target has already learned is a valid
  * seed for the other. Copy only into empty live slots, only from a parked peer's snapshot entry
@@ -2260,10 +2322,30 @@ trunk_scan_target_mode(dsd_trunk_scan_target_type type) {
     return DSD_SCAN_MODE_INHERIT;
 }
 
+/*
+ * Per-target keys ride the scan key swap: a keyed target installs its set, an
+ * unkeyed one hands the foreground keyring back to the globals. Trunk scan
+ * never bumps the lockout key epoch -- every target carries its own lockout
+ * ledger snapshot, so no global invalidation is owed on a switch.
+ */
+static int
+trunk_scan_prepare_keys(dsd_state* state, const dsd_key_set* keys, dsd_scan_key_change* change) {
+    if (dsd_scan_groups_begin(state)) {
+        return -1;
+    }
+    return dsd_scan_key_change_prepare(state, keys, change);
+}
+
+enum { TRUNK_SCAN_PREPARE_FAILED = -2 };
+
 static int
 trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t next, int save_current) {
     if (!coord || next >= coord->count) {
         return -1;
+    }
+    dsd_scan_key_change key_change = {0};
+    if (trunk_scan_prepare_keys(state, &coord->targets[next].keys, &key_change)) {
+        return TRUNK_SCAN_PREPARE_FAILED;
     }
     if (save_current && coord->active < coord->count) {
         trunk_scan_save_target_snapshot(coord, state, &coord->targets[coord->active]);
@@ -2275,13 +2357,16 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     trunk_scan_publish_active_target(state, coord);
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     if (dsd_scan_mode_enter(opts, state, trunk_scan_target_mode(rt->target.type)) != 0) {
-        return -1;
+        dsd_scan_key_change_clear(&key_change);
+        return TRUNK_SCAN_PREPARE_FAILED;
     }
     trunk_scan_restore_target_snapshot(coord, state, rt);
     trunk_scan_share_peer_idens(coord, state, rt);
     trunk_scan_apply_target_opts(opts, coord, &rt->target);
     dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)rt->target.modulation);
-    trunk_scan_apply_target_keys(state, rt);
+    (void)dsd_scan_key_change_commit(state, &key_change);
+    dsd_scan_mode_options(opts, state, rt->profile ? &rt->profile->values : NULL);
+    dsd_scan_groups_enter(state, rt->profile);
     trunk_scan_apply_target_demod(opts, state, &rt->target);
     trunk_scan_sync_active_sm_mode(state, rt);
     dsd_frame_sync_reset_acquisition(opts, state, 0);
@@ -2333,6 +2418,11 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     if (!coord || coord->count < 2) {
         return;
     }
+    /* Reserve rollback keys before the first switch can change the foreground. */
+    dsd_scan_key_change rollback = {0};
+    if (dsd_scan_key_change_prepare(state, &coord->targets[coord->active].keys, &rollback)) {
+        return;
+    }
     double now_m = trunk_scan_now_m();
     dsd_trunk_scan_snapshot* original_snapshot = &coord->scratch_snapshot;
     trunk_scan_save_snapshot(state, original_snapshot);
@@ -2357,6 +2447,7 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
         }
         tried = 1;
         if (trunk_scan_switch_to(opts, state, coord, next, save_current) == 0) {
+            dsd_scan_key_change_clear(&rollback);
             return;
         }
         if (next != original_active) {
@@ -2372,6 +2463,7 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
          * re-running this walk on every tick until something changes. */
         coord->targets[original_active].idle_since_m = now_m;
         trunk_scan_publish_active_target(state, coord);
+        dsd_scan_key_change_clear(&rollback);
         return;
     }
     /* The loop above published every target it tried, and the last one it tried is not
@@ -2382,7 +2474,10 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     trunk_scan_restore_snapshot(state, original_snapshot);
     trunk_scan_apply_target_opts(opts, coord, &coord->targets[coord->active].target);
     dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)coord->targets[coord->active].target.modulation);
-    trunk_scan_apply_target_keys(state, &coord->targets[coord->active]);
+    (void)dsd_scan_key_change_commit(state, &rollback);
+    const dsd_scan_row_profile* restored_profile = coord->targets[coord->active].profile;
+    dsd_scan_mode_options(opts, state, restored_profile ? &restored_profile->values : NULL);
+    dsd_scan_groups_enter(state, restored_profile);
     trunk_scan_apply_target_demod(opts, state, &coord->targets[coord->active].target);
     trunk_scan_sync_active_sm_mode(state, &coord->targets[coord->active]);
 }
@@ -2831,6 +2926,7 @@ trunk_scan_coord_free(dsd_trunk_scan_coord* coord) {
         free(coord->targets[i].snapshot.chan_map_chan);
         free(coord->targets[i].snapshot.chan_map_freq);
         dsd_key_set_free(&coord->targets[i].keys);
+        dsd_scan_profile_free(coord->targets[i].profile);
         DSD_SECURE_ZERO(&coord->targets[i].target.single_key_scalars,
                         sizeof(coord->targets[i].target.single_key_scalars));
     }
@@ -2929,6 +3025,7 @@ trunk_scan_init_release(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
                         dsd_trunk_scan_target_list* list) {
     dsd_engine_channel_scan_leave(opts, state);
     trunk_scan_restore_saved_opts(opts, coord);
+    dsd_scan_groups_leave(state);
     dsd_scan_keys_leave(state);
     trunk_scan_coord_free(coord);
     dsd_trunk_scan_target_list_reset(list);
@@ -2968,7 +3065,13 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     }
     dsd_trunk_scan_target_list_reset(&list);
     trunk_scan_install_runtime_hooks(coord);
-    if (trunk_scan_switch_to(opts, state, coord, 0, 0) != 0 && coord->count > 1) {
+    const int switch_rc = trunk_scan_switch_to(opts, state, coord, 0, 0);
+    if (switch_rc == TRUNK_SCAN_PREPARE_FAILED) {
+        dsd_engine_trunk_scan_shutdown(opts, state);
+        scan_set_error(err, err_sz, "unable to prepare initial trunk scan key/policy scope");
+        return -1;
+    }
+    if (switch_rc != 0 && coord->count > 1) {
         trunk_scan_advance(opts, state, coord);
     }
     LOG_INFO("NOTICE: Trunk scan enabled with %zu targets\n", coord->count);
@@ -3004,6 +3107,7 @@ dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state) {
     trunk_scan_log_nxdn_diag_summaries(coord, state);
     dsd_engine_channel_scan_leave(opts, state);
     trunk_scan_restore_saved_opts(opts, coord);
+    dsd_scan_groups_leave(state);
     dsd_scan_keys_leave(state);
     trunk_scan_uninstall_runtime_hooks(coord);
     trunk_scan_clear_published_target(state);

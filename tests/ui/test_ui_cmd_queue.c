@@ -23,6 +23,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -2267,9 +2268,68 @@ test_scoped_mode_commands_and_config(void) {
     return rc;
 }
 
+static int
+test_scoped_row_option_commands(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->scan_voice_only = 0;
+    opts->scan_voice_hold_ms = 2000;
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    opts->dmr_mute_encL = opts->dmr_mute_encR = 1;
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", "global.csv");
+    state->M = 0;
+    int rc = expect_int("enter option row", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR), 0);
+    const dsd_scan_option_values row = {.present = DSD_SCAN_OPT_FORCE | DSD_SCAN_OPT_CRC | DSD_SCAN_OPT_VOICE
+                                                   | DSD_SCAN_OPT_HOLD | DSD_SCAN_OPT_GROUP | DSD_SCAN_OPT_BP,
+                                        .force = 0x21,
+                                        .strict_crc = 0,
+                                        .voice_only = 1,
+                                        .hold_ms = 4000,
+                                        .group_file = "row.csv"};
+    dsd_scan_mode_options(opts, state, &row);
+    rc |= expect_int("queue force default", post_empty(DSD_APP_CMD_FORCE_PRIV_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("queue CRC default", post_empty(DSD_APP_CMD_AGGR_SYNC_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("queue hold default", dsd_app_command_set_i32(DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET, 3000),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("queue mute default", post_empty(DSD_APP_CMD_ALL_MUTES_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("option commands drained", dsd_app_drain_cmds(opts, state), 4);
+    rc |= expect_int("row keeps force", state->M, 0x21);
+    rc |= expect_int("row keeps hold", opts->scan_voice_hold_ms, 4000);
+    dsd_scan_settings configured;
+    dsd_scan_mode_configured(opts, state, &configured);
+    rc |= expect_int("configured force updated", configured.force_key, 1);
+    rc |= expect_int("configured mute updated", configured.dmr_mute_encL, 0);
+    rc |= expect_int("configured CRC updated", configured.aggressive_framesync, 0);
+    rc |= expect_int("configured CRC default updated", configured.dmr_crc_relaxed_default, 1);
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(opts, state, &saved);
+    rc |= expect_int("saved configured hold", saved.trunk_scan_voice_hold_ms, 3000);
+    rc |= expect_int("saved configured gate", saved.trunk_scan_voice_only, 0);
+    rc |= expect_str("saved configured groups", saved.trunk_group_csv, "global.csv");
+    dsd_scan_mode_options(opts, state, NULL);
+    rc |= expect_int("clear options restores force", state->M, 1);
+    rc |= expect_int("clear options restores hold", opts->scan_voice_hold_ms, 3000);
+    rc |= expect_str("clear options restores groups", opts->group_in_file, "global.csv");
+    dsd_scan_mode_leave(opts, state);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_scoped_row_option_commands();
     rc |= test_scoped_setting_toggles();
     rc |= test_scoped_mode_commands_and_config();
     rc |= test_command_api();

@@ -596,3 +596,19 @@ External dependencies (resolved via CMake):
   vocoder (`mbe-neo` 2.x).
 - Terminal frontend: curses (ncursesw/PDCurses), enabled by default with `DSD_ENABLE_TERMINAL_UI=ON`.
 - Optional: RTL‑SDR, SoapySDR >= 0.8.1, CODEC2, libcurl >= 7.56.0.
+
+### Scoped scan options
+
+- Runtime `scan_options` parses the restricted `options` argument grammar into typed values and fixed key/path
+  metadata, validates declared modes, and reports errors without echoing raw arguments. It never runs the CLI parser.
+- Core `scan_profile` merges legacy key columns, resolves and loads companion files, and materializes direct keys.
+  Positional profiles extend the existing channel-mode store in extension slot 5; runtime slot 6 retains nonsecret
+  configured/active settings. Extension IDs and the main options/state struct layouts are unchanged.
+- The talkgroup policy store supports decoder-thread retain/install/release operations. Profiles retain their own
+  context so aliases and session policy changes survive visits; frontend snapshots still clone the effective context.
+  Slot 5 holds the saved global group context and suspend/resume ownership. Clearing metadata restores it first.
+- `dsd_scan_key_change_prepare()` allocates the incoming key copy and any needed baseline before a conventional tune;
+  commit transfers ownership without allocation. Engine checks the map generation and key epoch before committing.
+  Both coordinators restore mode, keys, group policy and scalar overrides together at their protected transitions.
+- App-control scopes force/CRC/voice configuration commands and group imports, while live row policy mutations stay
+  with the active context. Configuration export reads saved group paths and voice settings from the configured scope.

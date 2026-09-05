@@ -139,6 +139,21 @@ int dsd_key_set_load_csv(dsd_key_set* out, const char* hex_path, const char* dec
  */
 dsd_key_direct_result dsd_key_set_load_direct(dsd_key_set* out, const char* single_hex, const char* single_dec);
 
+/** Prepared key transition owns all allocations needed at commit; zero-initialize before use. */
+typedef struct {
+    dsd_key_set baseline;
+    dsd_key_set active;
+    int capture_baseline;
+    int keyed;
+    int changed;
+} dsd_scan_key_change;
+
+void dsd_scan_key_change_clear(dsd_scan_key_change* change);
+/** Prepare without changing live keys. NULL/absent row means restore globals. */
+int dsd_scan_key_change_prepare(const dsd_state* state, const dsd_key_set* row, dsd_scan_key_change* change);
+/** Install without allocation. Returns nonzero if effective key identity changed. */
+int dsd_scan_key_change_commit(dsd_state* state, dsd_scan_key_change* change);
+
 /**
  * Enter the scan swap: capture the baseline from live state when no set is
  * active, copy @p row_set into the active slot, install it. Returns 1 when

@@ -448,6 +448,20 @@ test_encryption_labels(void) {
     state.M = 0x21;
     rc |= expect_str("force bp off", lbl_key_force_bp(&ctx, b, sizeof(b)), "Force basic/scrambler key [Off]");
     rc |= expect_str("force rc4 on", lbl_key_force_rc4(&ctx, b, sizeof(b)), "Force RC4 key [On]");
+    dsd_scan_settings configured = {0};
+    configured.force_key = 1;
+    configured.dmr_mute_encL = configured.dmr_mute_encR = 1;
+    configured.aggressive_framesync = 1;
+    configured.scan_voice_only = 1;
+    configured.scan_voice_hold_ms = 4000;
+    dsd_test_scan_labels_configured(&configured);
+    rc |= expect_str("muting configured", lbl_muting(&ctx, b, sizeof(b)), "Mute encrypted audio [On]");
+    rc |= expect_str("force BP configured", lbl_key_force_bp(&ctx, b, sizeof(b)), "Force basic/scrambler key [On]");
+    rc |= expect_str("force RC4 configured", lbl_key_force_rc4(&ctx, b, sizeof(b)), "Force RC4 key [Off]");
+    rc |= expect_str("CRC configured", lbl_crc_relax(&ctx, b, sizeof(b)), "Relaxed CRC checks [Off]");
+    rc |= expect_str("voice gate configured", lbl_scan_voice_only(&ctx, b, sizeof(b)), "Voice-only scan [On]");
+    rc |= expect_str("voice hold configured", lbl_scan_voice_hold(&ctx, b, sizeof(b)), "Voice hold... [4000 ms]");
+    dsd_test_scan_labels_configured(NULL);
 
     rc |= expect_str("hytera unset", lbl_key_hytera(&ctx, b, sizeof(b)), "Hytera privacy key (hex)...");
     state.H = 0x1234U;

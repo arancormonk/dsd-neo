@@ -26,6 +26,7 @@
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -1940,6 +1941,68 @@ test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots(void) {
     return rc;
 }
 
+/* Ordinary BP follows signalling; forced BP also transforms frames marked clear.
+ * Exercise the production voice path in both slots with the same decoded fixture. */
+static int
+test_process_mbe_frame_mixed_clear_and_bp(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    mbe_parms cur, prev, enhanced, cur2, prev2, enhanced2;
+    mbe_parms expected_cur, expected_prev, expected_enhanced;
+    char imbe[8][23] = {{0}}, ambe[4][24] = {{0}}, imbe7100[7][24] = {{0}};
+    int rc = 0;
+    for (int slot = 0; slot < 2; slot++) {
+        for (int scenario = 0; scenario < 3; scenario++) {
+            char decoded[49], expected[49];
+            int errs = 0, errs2 = 0;
+            mbe_process_result result;
+            rc |= prepare_active_ambe2450_fixture(ambe, decoded, &errs, &errs2, &result);
+            DSD_MEMCPY(expected, decoded, sizeof(expected));
+            if (scenario != 0) {
+                rc |= dmr_basic_privacy_apply_frame49(1, expected) != 1;
+            }
+            (void)dsd_mbe_strip_ambe_context_if_changed(decoded, expected, &result);
+            float expected_audio[160];
+            char expected_error[96];
+            mbe_initMbeParms(&expected_cur, &expected_prev, &expected_enhanced);
+            int ret = mbe_processAmbe2450Dataf(expected_audio, &result, expected, &expected_cur, &expected_prev,
+                                               &expected_enhanced);
+            store_expected_process_status(ret, expected_audio, &errs, &errs2, expected_error, sizeof(expected_error),
+                                          &result);
+            init_mbe_state(state, &cur, &prev, &enhanced, &cur2, &prev2, &enhanced2);
+            opts->floating_point = 1;
+            opts->dmr_stereo = 1;
+            state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+            state->currentslot = slot;
+            state->K = 1;
+            state->M = scenario == 2;
+            state->dmr_fid = state->dmr_fidR = 0x10;
+            state->dmr_so = state->dmr_soR = scenario == 1 ? 0x40 : 0;
+            processMbeFrame(opts, state, imbe, ambe, imbe7100);
+            const float* actual = slot ? state->audio_out_temp_bufR : state->audio_out_temp_buf;
+            for (int sample = 0; sample < 160; sample++) {
+                float difference = actual[sample] - expected_audio[sample];
+                if (!(difference >= -0.000001f && difference <= 0.000001f)) {
+                    rc = 1;
+                }
+            }
+            rc |= (slot ? state->dmr_encR : state->dmr_encL) != 0;
+        }
+    }
+    if (rc) {
+        DSD_FPRINTF(stderr, "mixed clear/BP production processing regression\n");
+    }
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 static int
 test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override(void) {
     int rc = 0;
@@ -2824,6 +2887,7 @@ main(void) {
     rc |= test_process_mbe_frame_hard_dmr_left_stages_audio();
     rc |= test_process_mbe_frame_trunked_mono_bs_fallback_gates_to_granted_slot();
     rc |= test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots();
+    rc |= test_process_mbe_frame_mixed_clear_and_bp();
     rc |= test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override();
     rc |= test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots();
     rc |= test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags();

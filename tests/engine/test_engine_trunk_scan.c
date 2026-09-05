@@ -6931,6 +6931,122 @@ run_with_default_tune_hook(int (*test_fn)(void)) {
     return rc;
 }
 
+void dsd_key_set_test_alloc_fail_after(long count);
+
+static int
+test_initial_key_allocation_failure(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof(dir))) {
+        return 1;
+    }
+    if (write_targets_file_with_header(dir, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n",
+                                       "a,dmr-conventional,461000000,,250,,,-b 1 -4\n", path, sizeof(path))) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    state->R = 99;
+    state->rkey_array_loaded[7] = 1;
+    state->rkey_array[7] = 123;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof(opts->trunk_scan_targets_csv), "%s", path);
+    dsd_key_set_test_alloc_fail_after(0);
+    char error[256];
+    int rc = dsd_engine_trunk_scan_init(opts, state, error, sizeof(error)) == 0;
+    dsd_key_set_test_alloc_fail_after(-1);
+    rc |= dsd_engine_trunk_scan_active_index(state) != (size_t)-1;
+    rc |= state->R != 99 || state->rkey_array[7] != 123 || !state->rkey_array_loaded[7];
+    rc |= state->scan_keys_active_set || state->M != 0;
+    if (rc) {
+        DSD_FPRINTF(stderr, "initial key allocation failure did not preserve the baseline and reject startup\n");
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_ext_free_all(state);
+    dsd_state_trunk_lcn_free(state);
+    free(state);
+    free(opts);
+    cleanup_paths(dir, path, NULL);
+    return rc;
+}
+
+static int
+test_target_options_rotate_and_restore(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof(dir))) {
+        return 1;
+    }
+    const char* header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,OPTIONS\n";
+    if (write_targets_file_with_header(
+            dir, header,
+            "a,dmr-conventional,461000000,,250,,rc4,-1 0123456789 -0 -F --scan-voice-hold-ms 4000\n"
+            "b,dmr-conventional,461000001,,250,,hytera,-H 0000001f00 -4\n"
+            "c,dmr-conventional,461000002,,250,,mixed,-b 1 --no-force-key --strict-crc\n"
+            "d,nxdn48-conventional,461000003,,250,,scrambler,-R 1 --no-force-key\n",
+            path, sizeof(path))) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    state->R = 999;
+    state->M = 1;
+    opts->aggressive_framesync = 1;
+    opts->scan_voice_hold_ms = 2000;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof(opts->trunk_scan_targets_csv), "%s", path);
+    char error[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(opts, state, error, sizeof(error));
+    int failed = rc != 0;
+    if (rc == 0) {
+        failed |= state->R != 0x123456789ULL || state->RR != state->R || state->M != 0x21
+                  || opts->aggressive_framesync != 0 || opts->scan_voice_hold_ms != 4000;
+        trunk_scan_test_set_now(0.26);
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= state->R != 0 || state->K1 != 0x1f00 || state->M != 1 || opts->scan_voice_hold_ms != 2000;
+        trunk_scan_test_set_now(0.52);
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= state->K != 1 || state->K1 != 0 || state->M != 0 || !opts->aggressive_framesync;
+        trunk_scan_test_set_now(0.78);
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= state->R != 1 || state->RR != 0 || state->K != 0 || state->M != 0 || !opts->frame_nxdn48;
+        dsd_engine_trunk_scan_shutdown(opts, state);
+        failed |= state->R != 999 || state->M != 1 || opts->scan_voice_hold_ms != 2000;
+    }
+    if (failed) {
+        DSD_FPRINTF(stderr, "target options regression: %s\n", error);
+    }
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, path, NULL);
+    failed |= expect_parser_rejects_with_header("options-conflict", header, "a,dmr-conventional,461000000,,,,,-4 -0\n");
+    failed |= expect_parser_rejects_with_header("options-trunk-voice", header,
+                                                "a,p25-trunk,851000000,,,,,--scan-voice-only\n");
+    failed |= expect_parser_rejects_with_header(
+        "options-duplicate-header",
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options,relevant_CLI_switches\n",
+        "a,dmr-conventional,461000000,,,,,-b 1,-F\n");
+    return failed;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -6950,6 +7066,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_coordinator_preserves_long_lcn_list_across_rotation);
     rc |= run_with_default_tune_hook(test_target_keys_install_and_restore_across_switches);
     rc |= run_with_default_tune_hook(test_direct_target_keys_install_and_restore_across_switches);
+    rc |= run_with_default_tune_hook(test_initial_key_allocation_failure);
+    rc |= run_with_default_tune_hook(test_target_options_rotate_and_restore);
     rc |= run_with_default_tune_hook(test_target_chan_csv_keys_are_discarded);
     rc |= run_with_default_tune_hook(test_target_keys_survive_failed_alternate_retune);
     rc |= run_with_default_tune_hook(test_coordinator_preserves_large_chan_map_across_rotation);

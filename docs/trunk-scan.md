@@ -367,3 +367,15 @@ To scan multiple systems with one receiver:
 
 `-Y` conventional scanning remains a separate mode for fast conventional sync scanning and is mutually exclusive
 with trunk scan.
+
+### Per-target options
+
+The optional `options` column accepts the same [scoped switches](csv-formats.md#scoped-row-options) as conventional
+channel maps. The target `type` validates protocol-specific switches. A DMR system can use `-K Keys.csv -G Groups.csv
+-0 -F --dmr-force-algid 21`; a conventional NXDN target can use `-R 1`. Relative paths refer to the target-list directory.
+Unspecified settings inherit the configured defaults, and `--no-force-key` can disable inherited forcing.
+
+Group policies and keys are preloaded and isolated between targets. Re-parking, failed-tune recovery and shutdown
+restore the associated options with the target. Conventional voice-gate switches are accepted on conventional target
+types only; trunk systems keep their existing activity-hold policy. Row metadata in a target's `chan_csv` is validated
+and discarded; put system options on the target itself.

@@ -423,3 +423,8 @@ Fuzz-facing changes should run bounded libFuzzer smoke passes:
 ```sh
 tools/fuzz_smoke.sh
 ```
+
+Scoped scanning options are covered by `RUNTIME_SCAN_OPTIONS` and `CORE_SCAN_PROFILE`, plus conventional/trunk tune
+boundary regressions, CLI conflict/off-switch checks, and terminal loaded-key/redaction tests. The production MBE
+regression exercises clear and Motorola BP frames on both slots, with normal signalling and explicit forcing.
+`CORE_SCAN_PROFILE` tests actual group-store ownership; scanner hosts that stub group policy use `scan_group_stubs.c`.

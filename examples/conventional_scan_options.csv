@@ -1,0 +1,6 @@
+channel,frequency_hz,name,mode,options
+1,143950000,RC4 example,dmr,-1 0123456789 -0 -F
+2,160237500,Hytera forced example,dmr,-H 0123456789 -4 -F --scan-voice-only --scan-voice-hold-ms 4000
+3,164662500,Clear and BP1 example,dmr,-b 1 --no-force-key --strict-crc
+4,472000000,Clear P25 example,p25,--no-force-key --strict-crc
+5,456425000,NXDN scrambler example,nxdn48,-R 1 --no-force-key

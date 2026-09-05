@@ -832,11 +832,28 @@ ui_render_forced_key_status_tyt(const dsd_state* state, int show_keys) {
 }
 
 static void
+ui_render_loaded_scalar_keys(const dsd_state* state, int show_keys) {
+    if (state->M != 1 && state->K != 0) {
+        char key_text[16];
+        printw("| Moto BP Key Loaded (not forced): %s \n",
+               dsd_secret_format_decimal(key_text, sizeof(key_text), show_keys, state->K, 3U));
+    }
+    if (state->M != 1 && state->M != 0x21 && (state->R != 0 || state->RR != 0)) {
+        char left[17];
+        char right[17];
+        printw("| RC4/DES or scrambler key loaded (not forced): %s / %s \n",
+               dsd_secret_format_hex(left, sizeof(left), show_keys, state->R, 16U, 0),
+               dsd_secret_format_hex(right, sizeof(right), show_keys, state->RR, 16U, 0));
+    }
+}
+
+static void
 ui_render_forced_key_status(const dsd_state* state, int show_keys) {
     if (state == NULL) {
         return;
     }
 
+    ui_render_loaded_scalar_keys(state, show_keys);
     if (state->M != 1 && state->tyt_bp == 0 && ui_hytera_key_segment_count(state) != 0U) {
         ui_render_hytera_loaded_key_status(state, show_keys);
     }

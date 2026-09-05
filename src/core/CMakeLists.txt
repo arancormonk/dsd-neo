@@ -30,6 +30,7 @@ target_sources(
         util/dsd_state_trunk_lcn.c
         util/dsd_state_p25_bandplan.c
         util/key_set.c
+        util/scan_profile.c
         util/channel_label.c
         util/enc_lockout.c
         util/dsd_events.c

@@ -47,7 +47,7 @@
 
 // Local helpers --------------------------------------------------------------
 static int dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc,
-                                int* out_chan_csv_cli_seen);
+                                int* out_chan_csv_cli_seen, unsigned int* out_force_choices);
 extern int optind;
 extern char* optarg;
 
@@ -88,6 +88,21 @@ cli_collect_hex_digits(const char* in, char* out, size_t out_cap, size_t* out_le
         *out_len = w;
     }
     return 1;
+}
+
+static int
+cli_parse_force_algid(const char* text, uint64_t* algid) {
+    char hex[3];
+    size_t digits = 0;
+    return cli_collect_hex_digits(text, hex, sizeof(hex), &digits) && digits > 0
+           && dsd_parse_hex_u64_n(hex, digits, algid) == 0;
+}
+
+static int
+cli_force_algid_changed(const char* previous, const char* next) {
+    uint64_t old_value = 0, new_value = 0;
+    return previous && cli_parse_force_algid(previous, &old_value) && cli_parse_force_algid(next, &new_value)
+           && old_value != new_value;
 }
 
 static int
@@ -862,6 +877,18 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--no-force-key") == 0) {                                                                  \
+            no_force_key_cli = 1;                                                                                      \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--strict-crc") == 0) {                                                                    \
+            strict_crc_cli = 1;                                                                                        \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--no-scan-voice-only") == 0) {                                                            \
+            opts->scan_voice_only = 0;                                                                                 \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--scan-voice-only") == 0) {                                                               \
             opts->scan_voice_only = 1;                                                                                 \
             continue;                                                                                                  \
@@ -1062,10 +1089,13 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            dmr_force_algid_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                           \
+            const char* value = DSD_PARSE_ARGS_NEXT_ARG();                                                             \
+            long_force_conflict_cli |= cli_force_algid_changed(dmr_force_algid_cli, value);                            \
+            dmr_force_algid_cli = value;                                                                               \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--dmr-force-algid=", 18) == 0) {                                                         \
+            long_force_conflict_cli |= cli_force_algid_changed(dmr_force_algid_cli, argv[i] + 18);                     \
             dmr_force_algid_cli = argv[i] + 18;                                                                        \
             continue;                                                                                                  \
         }                                                                                                              \
@@ -1571,11 +1601,8 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         LOG_INFO("NOTICE: P25 band plan export file: %s\n", opts->p25_bandplan_export_file);                           \
     }                                                                                                                  \
     if (dmr_force_algid_cli) {                                                                                         \
-        char hex[3];                                                                                                   \
-        size_t nhex = 0;                                                                                               \
         uint64_t alg = 0U;                                                                                             \
-        if (!cli_collect_hex_digits(dmr_force_algid_cli, hex, sizeof hex, &nhex) || nhex == 0 || nhex > 2              \
-            || dsd_parse_hex_u64_n(hex, nhex, &alg) != 0) {                                                            \
+        if (!cli_parse_force_algid(dmr_force_algid_cli, &alg)) {                                                       \
             LOG_ERROR("Invalid --dmr-force-algid value\n");                                                            \
             cli_set_exit_rc(out_exit_rc, 1);                                                                           \
             return DSD_PARSE_ERROR;                                                                                    \
@@ -1599,6 +1626,45 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         state->m17_signature_verification_status = 0U;                                                                 \
         LOG_INFO("NOTICE: M17 signature public key loaded for secp256r1 verification\n");                              \
     }
+
+static void
+cli_finish_force_options(dsd_opts* opts, dsd_state* state, unsigned int choices, int long_force, int have_long,
+                         int clear_force, int strict_crc, int long_conflict) {
+    if (clear_force) {
+        state->M = 0;
+    }
+    if (strict_crc) {
+        opts->aggressive_framesync = 1;
+        opts->dmr_crc_relaxed_default = 0;
+    }
+    int conflict = choices == 3U || long_conflict;
+    if (have_long) {
+        conflict |= (choices & 1U) && long_force != 1;
+        conflict |= (choices & 2U) && long_force != 0x21;
+    }
+    conflict |= clear_force && (choices || (have_long && long_force != 0));
+    if (conflict) {
+        LOG_WARN("WARNING: Conflicting force options; effective force mode is 0x%02X. "
+                 "Use per-row options for mixed scans.\n",
+                 state->M);
+    }
+}
+
+static void
+cli_reset_getopt(void) {
+    // Reset getopt index and parse short options here (migrated)
+    // NOTE: We invoke getopt() multiple times (unit tests, bootstrap flows).
+    // Linux getopt supports optind=0 full reset; BSD variants use optreset.
+#if defined(__linux__)
+    optind = 0;
+#else
+    optind = 1;
+#endif
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    extern int optreset;
+    optreset = 1;
+#endif
+}
 
 int
 dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_exit_rc) {
@@ -1631,6 +1697,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* p25_bandplan_cli = NULL;
     const char* p25_bandplan_export_cli = NULL;
     const char* dmr_force_algid_cli = NULL;
+    int long_force_conflict_cli = 0;
+    int no_force_key_cli = 0;
+    int strict_crc_cli = 0;
     const char* m17_signature_public_key_cli = NULL;
     const char* iq_capture_cli = NULL;
     const char* iq_capture_format_cli = NULL;
@@ -1664,21 +1733,14 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     DSD_PARSE_ARGS_TRAILING_BLOCK();
 
     int new_argc = dsd_cli_compact_args(argc, argv);
-    // Reset getopt index and parse short options here (migrated)
-    // NOTE: We invoke getopt() multiple times (unit tests, bootstrap flows).
-    // Linux getopt supports optind=0 full reset; BSD variants use optreset.
-#if defined(__linux__)
-    optind = 0;
-#else
-    optind = 1;
-#endif
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
-    extern int optreset;
-    optreset = 1;
-#endif
+    cli_reset_getopt();
 
-    int parse_rc = dsd_parse_short_opts(new_argc, argv, opts, state, out_exit_rc, &chan_csv_cli_seen);
+    unsigned int force_choices = 0U;
+    const int long_force = state->M;
+    int parse_rc = dsd_parse_short_opts(new_argc, argv, opts, state, out_exit_rc, &chan_csv_cli_seen, &force_choices);
     if (parse_rc == DSD_PARSE_CONTINUE) {
+        cli_finish_force_options(opts, state, force_choices, long_force, dmr_force_algid_cli != NULL, no_force_key_cli,
+                                 strict_crc_cli, long_force_conflict_cli);
         parse_rc = cli_validate_trunk_scan_runtime_args(opts, trunk_scan_cli_seen, chan_csv_cli_seen,
                                                         p25_bandplan_cli_seen, config_one_shot_cli_seen, out_exit_rc);
     }
@@ -1740,6 +1802,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         case '0':                                                                                                      \
             state->M = 0x21;                                                                                           \
+            *out_force_choices |= 2U;                                                                                 \
             LOG_INFO("NOTICE: Force RC4 Key over Missing PI header/LE Encryption Identifiers (DMR)\n");                \
             break;                                                                                                     \
         case '1':                                                                                                      \
@@ -2773,6 +2836,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         case '4':                                                                                                      \
             /* Force Privacy Key over Encryption Identifiers */                                                        \
             state->M = 1;                                                                                              \
+            *out_force_choices |= 1U;                                                                                 \
             LOG_INFO("NOTICE: Force Privacy Key priority enabled\n");                                                  \
             break;                                                                                                     \
         default:                                                                                                       \
@@ -2804,7 +2868,7 @@ dsd_warn_ineffective_short_opts(const dsd_opts* opts, const dsd_state* state) {
 
 static int
 dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_exit_rc,
-                     int* out_chan_csv_cli_seen) {
+                     int* out_chan_csv_cli_seen, unsigned int* out_force_choices) {
 
     int c;
     dsd_stat_t st = {0};

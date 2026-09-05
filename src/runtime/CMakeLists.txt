@@ -12,6 +12,7 @@ target_sources(
         config_schema.c
         decode_mode.c
         scan_mode.c
+        scan_options.c
         config_expand.c
         control_pump.c
         freq_parse.c

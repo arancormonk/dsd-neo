@@ -6,8 +6,10 @@
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -21,6 +23,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -96,8 +99,60 @@ dsd_scan_voice_gate_note_retune(dsd_state* state, double now) {
     state->last_cc_sync_time_m = now;
 }
 
+static void
+test_option_commit_boundary(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->frame_dstar = 1;
+    opts->aggressive_framesync = 1;
+    opts->scan_voice_hold_ms = 2000;
+    state->samplesPerSymbol = 10;
+    state->R = 999;
+    state->lcn_freq_count = 2;
+    *dsd_state_trunk_lcn_slot(state, 0) = *dsd_state_trunk_lcn_slot(state, 1) = 150000000;
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
+    assert(profile);
+    profile->values.present = DSD_SCAN_OPT_FORCE | DSD_SCAN_OPT_CRC | DSD_SCAN_OPT_HOLD;
+    profile->values.force = 0x21;
+    profile->values.hold_ms = 4000;
+    assert(dsd_channel_profile_set(state, 0, profile) == 0);
+    dsd_key_set keys = {0};
+    keys.present = 1;
+    keys.scalars.R = keys.scalars.RR = 0x123456789ULL;
+    assert(dsd_state_trunk_lcn_keys_set(state, 0, &keys) == 0);
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(state->R == 999 && state->M == 0 && opts->scan_voice_hold_ms == 2000);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(!dsd_engine_channel_scan_pending(opts, state));
+    assert(state->R == 999 && state->M == 0 && opts->aggressive_framesync == 1);
+    state->lcn_freq_roll = 0;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(!dsd_engine_channel_scan_pending(opts, state));
+    assert(state->R == 0x123456789ULL && state->RR == state->R && state->M == 0x21);
+    assert(opts->scan_voice_hold_ms == 4000 && !opts->aggressive_framesync && opts->dmr_crc_relaxed_default);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step_manual(opts, state) == 1);
+    assert(state->R == 999 && state->M == 0 && opts->scan_voice_hold_ms == 2000 && opts->aggressive_framesync == 1);
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_scan_keys_leave(state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 int
 main(void) {
+    test_option_commit_boundary();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

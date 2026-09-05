@@ -156,6 +156,17 @@ int dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state);
  */
 int dsd_tg_policy_clear(dsd_state* state);
 
+/** Decoder-thread owned policy context. References preserve row-local aliases and lockouts.
+ * Frontend snapshots still deep-copy their effective context. */
+typedef struct dsd_tg_policy_store dsd_tg_policy_store;
+/** Retain the effective context; NULL represents an empty policy. */
+dsd_tg_policy_store* dsd_tg_policy_retain(const dsd_state* state);
+void dsd_tg_policy_release(dsd_tg_policy_store* store);
+/** Install a retained context without allocating, ending its old active-call bookkeeping. */
+void dsd_tg_policy_install(dsd_state* state, dsd_tg_policy_store* store);
+/** Load a standalone policy. On failure leave out untouched. */
+int dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out);
+
 #ifdef __cplusplus
 }
 #endif

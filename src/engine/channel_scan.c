@@ -4,10 +4,12 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -33,7 +35,19 @@ typedef struct {
     int retry;
     dsd_scan_mode mode;
     dsd_scan_settings configured;
+    dsd_scan_key_change keys;
+    uint64_t key_epoch;
 } channel_scan;
+
+static void
+channel_scan_free(void* ptr) {
+    channel_scan* scan = (channel_scan*)ptr;
+    if (!scan) {
+        return;
+    }
+    dsd_scan_key_change_clear(&scan->keys);
+    free(scan);
+}
 
 static channel_scan*
 channel_scan_get(const dsd_state* state) {
@@ -69,13 +83,14 @@ static int
 channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     dsd_scan_settings latest;
     dsd_scan_mode_configured(opts, state, &latest);
-    if (!dsd_scan_settings_equal(&latest, &scan->configured, 1)) {
+    if (!dsd_scan_settings_equal(&latest, &scan->configured, 1) || scan->key_epoch != state->enc_lockout_key_epoch) {
         /* A configured setting changed while tuning. Stage the new effective
          * profile in a fresh request before any frame can use it. */
         scan->request = 0;
         scan->retry = 1;
         return 0;
     }
+    const int outgoing_force = state->M;
     /* End calls with the outgoing row's keys and label still installed. */
     channel_scan_end_calls(opts, state);
     dsd_engine_reset_no_carrier_state(opts, state);
@@ -83,7 +98,13 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
         return -1;
     }
     state->lcn_freq_roll = scan->row + 1;
-    (void)dsd_scan_row_keys_apply(state, scan->row);
+    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)scan->row);
+    dsd_scan_mode_options(opts, state, profile ? &profile->values : NULL);
+    dsd_scan_groups_enter(state, profile);
+    const int keys_changed = dsd_scan_key_change_commit(state, &scan->keys);
+    if (keys_changed || outgoing_force != state->M) {
+        dsd_enc_lockout_bump_key_epoch(state);
+    }
     dsd_frame_sync_reset_acquisition(opts, state, 1);
     state->last_cc_sync_time = time(NULL);
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
@@ -175,7 +196,7 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
         if (!scan) {
             return -1;
         }
-        (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, scan, free);
+        (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, scan, channel_scan_free);
     }
     scan->row = row;
     scan->mode = dsd_channel_mode_get(state, (size_t)row);
@@ -187,6 +208,11 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
         return -1;
     }
     dsd_scan_mode_configured(opts, state, &scan->configured);
+    if (dsd_scan_groups_begin(state)
+        || dsd_scan_key_change_prepare(state, dsd_state_trunk_lcn_keys_get(state, (size_t)row), &scan->keys)) {
+        return -1;
+    }
+    scan->key_epoch = state->enc_lockout_key_epoch;
     dsd_scan_settings_restore(&next, opts, state);
     const dsd_trunk_tune_result result =
         dsd_engine_scan_tune_to_freq(opts, state, freq, state->samplesPerSymbol, &scan->request);
@@ -259,6 +285,7 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
         channel_scan_end_calls(opts, state);
     }
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, NULL, NULL);
+    dsd_scan_groups_leave(state);
     dsd_scan_mode_leave(opts, state);
     if (active) {
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);

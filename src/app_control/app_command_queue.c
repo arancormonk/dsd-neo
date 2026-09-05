@@ -21,6 +21,7 @@
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -2984,6 +2985,7 @@ ui_cmd_handle_aggr_sync_toggle(dsd_opts* opts, dsd_state* state, const struct ds
     (void)state;
     (void)c;
     opts->aggressive_framesync = opts->aggressive_framesync ? 0 : 1;
+    opts->dmr_crc_relaxed_default = (uint8_t)!opts->aggressive_framesync;
     return 1;
 }
 
@@ -4224,12 +4226,27 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
      * Live controls must continue to inspect the effective row, so suspending
      * every command and diffing afterward would change their behavior. */
     static const int commands[] = {
-        DSD_APP_CMD_DECODE_MODE_SET,      DSD_APP_CMD_MOD_SET,
-        DSD_APP_CMD_MOD_TOGGLE,           DSD_APP_CMD_MOD_P2_TOGGLE,
-        DSD_APP_CMD_INVERT_TOGGLE,        DSD_APP_CMD_COSINE_FILTER_TOGGLE,
-        DSD_APP_CMD_INV_X2_TOGGLE,        DSD_APP_CMD_INV_DMR_TOGGLE,
-        DSD_APP_CMD_INV_DPMR_TOGGLE,      DSD_APP_CMD_INV_M17_TOGGLE,
-        DSD_APP_CMD_INPUT_MONITOR_TOGGLE, DSD_APP_CMD_CONFIG_APPLY,
+        DSD_APP_CMD_ALL_MUTES_TOGGLE,
+        DSD_APP_CMD_FORCE_PRIV_TOGGLE,
+        DSD_APP_CMD_FORCE_RC4_TOGGLE,
+        DSD_APP_CMD_AGGR_SYNC_TOGGLE,
+        DSD_APP_CMD_SCAN_VOICE_ONLY_SET,
+        DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET,
+        DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET,
+        DSD_APP_CMD_IMPORT_GROUP_LIST,
+        DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
+        DSD_APP_CMD_DECODE_MODE_SET,
+        DSD_APP_CMD_MOD_SET,
+        DSD_APP_CMD_MOD_TOGGLE,
+        DSD_APP_CMD_MOD_P2_TOGGLE,
+        DSD_APP_CMD_INVERT_TOGGLE,
+        DSD_APP_CMD_COSINE_FILTER_TOGGLE,
+        DSD_APP_CMD_INV_X2_TOGGLE,
+        DSD_APP_CMD_INV_DMR_TOGGLE,
+        DSD_APP_CMD_INV_DPMR_TOGGLE,
+        DSD_APP_CMD_INV_M17_TOGGLE,
+        DSD_APP_CMD_INPUT_MONITOR_TOGGLE,
+        DSD_APP_CMD_CONFIG_APPLY,
     };
     if (!c) {
         return 0;
@@ -4247,7 +4264,14 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     const int mode_update = command_updates_scan_mode(c);
     const int was_scanner = opts && opts->scanner_mode == 1;
     const int scoped = mode_update && opts && state && dsd_scan_mode_suspend(opts, state);
+    const int group_update = c
+                             && (c->id == DSD_APP_CMD_IMPORT_GROUP_LIST || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR
+                                 || c->id == DSD_APP_CMD_CONFIG_APPLY);
+    const int groups_suspended = group_update && dsd_scan_groups_suspend(state);
     const int result = apply_cmd_unscoped(opts, state, c);
+    if (groups_suspended) {
+        dsd_scan_groups_resume(state);
+    }
     if (was_scanner && opts->scanner_mode != 1 && opts->trunk_scan_enabled != 1) {
         /* A suspended scope leaves the newly applied configuration in place. */
         dsd_engine_channel_scan_leave(opts, state);

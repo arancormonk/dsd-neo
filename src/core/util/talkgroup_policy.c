@@ -86,12 +86,14 @@ typedef struct {
     unsigned int generation;
 } dsd_tg_policy_active_table;
 
-typedef struct {
+struct dsd_tg_policy_store {
     dsd_tg_policy_table table;
+    size_t references;
     dsd_tg_policy_active_table active;
     uint64_t context_id;
     uint64_t snapshot_source_context_id;
-} dsd_tg_policy_context;
+};
+typedef struct dsd_tg_policy_store dsd_tg_policy_context;
 
 #ifdef DSD_NEO_TEST_HOOKS
 static long s_alloc_fail_after = -1;
@@ -288,6 +290,7 @@ tg_policy_context_alloc(void) {
     if (!ctx) {
         return NULL;
     }
+    ctx->references = 1;
     ctx->context_id = tg_policy_next_context_id();
     ctx->snapshot_source_context_id = ctx->context_id;
     return ctx;
@@ -297,6 +300,9 @@ static void
 tg_policy_context_free(void* ptr) {
     dsd_tg_policy_context* ctx = (dsd_tg_policy_context*)ptr;
     if (!ctx) {
+        return;
+    }
+    if (--ctx->references != 0) {
         return;
     }
     free(ctx->table.entries);
@@ -1628,4 +1634,53 @@ dsd_tg_policy_clear(dsd_state* state) {
         return -1;
     }
     return 0;
+}
+
+dsd_tg_policy_store*
+dsd_tg_policy_retain(const dsd_state* state) {
+    dsd_tg_policy_context* ctx = (dsd_tg_policy_context*)tg_policy_ctx_get_const(state);
+    if (ctx) {
+        ctx->references++;
+    }
+    return ctx;
+}
+
+void
+dsd_tg_policy_release(dsd_tg_policy_store* store) {
+    tg_policy_context_free(store);
+}
+
+void
+dsd_tg_policy_install(dsd_state* state, dsd_tg_policy_store* store) {
+    if (!state) {
+        return;
+    }
+    if (store) {
+        if (store != tg_policy_ctx_get_const(state)) {
+            store->references++;
+        }
+        DSD_MEMSET(&store->active, 0, sizeof(store->active));
+    }
+    (void)dsd_state_ext_set(state, DSD_STATE_EXT_CORE_TG_POLICY, store, tg_policy_context_free);
+}
+
+int
+dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out) {
+    if (!out) {
+        return -1;
+    }
+    dsd_state* scratch = (dsd_state*)calloc(1, sizeof(*scratch));
+    if (!scratch) {
+        return -1;
+    }
+    int rc = csvGroupImportPath(path, scratch);
+    if (rc == 0 && !tg_policy_ctx_get_mut(scratch, 1)) {
+        rc = -1;
+    }
+    if (rc == 0) {
+        *out = dsd_tg_policy_retain(scratch);
+    }
+    dsd_state_ext_free_all(scratch);
+    free(scratch);
+    return rc;
 }

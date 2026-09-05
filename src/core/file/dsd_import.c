@@ -6,6 +6,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -14,6 +15,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -427,6 +429,18 @@ group_import_row(dsd_state* state, const char* filename, unsigned int row_count,
     return group_commit_entry(state, &entry, is_range, filename, row_count, dropped_policy_alloc_rows);
 }
 
+static int
+group_import_finish(FILE* fp, const char* filename, size_t dropped_policy_alloc_rows) {
+    if (dropped_policy_alloc_rows > 0) {
+        LOG_WARN("WARNING: Group file '%s' skipped %zu rows due to policy allocation failure.\n", filename,
+                 dropped_policy_alloc_rows);
+    }
+
+    int rc = dropped_policy_alloc_rows || ferror(fp) ? -1 : 0;
+    fclose(fp);
+    return rc;
+}
+
 /* stats may be NULL; when set, counts data rows so a dry run can report them. */
 static int
 group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_validation* stats) {
@@ -474,13 +488,7 @@ group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_v
         }
     }
 
-    if (dropped_policy_alloc_rows > 0) {
-        LOG_WARN("WARNING: Group file '%s' skipped %zu rows due to policy allocation failure.\n", filename,
-                 dropped_policy_alloc_rows);
-    }
-
-    fclose(fp);
-    return 0;
+    return group_import_finish(fp, filename, dropped_policy_alloc_rows);
 }
 
 int
@@ -681,6 +689,7 @@ enum {
     CHAN_KEYS_DEC,
     CHAN_SINGLE_HEX,
     CHAN_SINGLE_DEC,
+    CHAN_OPTIONS,
     CHAN_FIELD_COUNT
 };
 
@@ -742,7 +751,7 @@ chan_resolve_key_cell(const char* base_path, const char* cell, char* out, size_t
 static int
 chan_parse_header(char* header_line, chan_header_cols* out) {
     static const char* const names[CHAN_FIELD_COUNT] = {
-        "", "", "name", "mode", "keys_hex_csv", "keys_dec_csv", "single_key_hex", "single_key_dec"};
+        "", "", "name", "mode", "keys_hex_csv", "keys_dec_csv", "single_key_hex", "single_key_dec", "options"};
     for (int i = 0; i < CHAN_FIELD_COUNT; i++) {
         out->index[i] = i < 2 ? i : -1;
     }
@@ -754,6 +763,9 @@ chan_parse_header(char* header_line, chan_header_cols* out) {
             *next++ = '\0';
         }
         const char* name = trim_ws(cell);
+        if (csv_ascii_casecmp(name, "relevant_CLI_switches") == 0) {
+            name = "options";
+        }
         for (int i = CHAN_NAME; index >= 2 && i < CHAN_FIELD_COUNT; i++) {
             if (csv_ascii_casecmp(name, names[i]) != 0) {
                 continue;
@@ -874,6 +886,45 @@ chan_import_row_keys(dsd_state* state, char** fields, size_t field_count, const 
     return 0;
 }
 
+static int
+chan_import_options(dsd_state* state, char** fields, dsd_scan_mode mode, const char* base_path, int row_number,
+                    int show_keys, int store, size_t slot) {
+    dsd_scan_options parsed = {0};
+    char error[192] = "could not load options or companion file";
+    int rc = dsd_scan_options_parse(fields[CHAN_OPTIONS], (unsigned int)mode, 1, &parsed, error, sizeof(error));
+    if (!rc) {
+        rc =
+            dsd_scan_options_merge_keys(&parsed, chan_key_cell(fields, CHAN_FIELD_COUNT, CHAN_KEYS_HEX),
+                                        chan_key_cell(fields, CHAN_FIELD_COUNT, CHAN_KEYS_DEC),
+                                        chan_key_cell(fields, CHAN_FIELD_COUNT, CHAN_SINGLE_HEX),
+                                        chan_key_cell(fields, CHAN_FIELD_COUNT, CHAN_SINGLE_DEC), error, sizeof(error));
+    }
+    dsd_scan_row_profile* profile = NULL;
+    dsd_key_set keys = {0};
+    if (!rc && store) {
+        rc = dsd_scan_options_resolve(&parsed, base_path, error, sizeof(error));
+    }
+    if (!rc && store) {
+        rc = dsd_scan_profile_load(&parsed, show_keys, &profile, &keys);
+    }
+    if (!rc && store && keys.present) {
+        rc = dsd_state_trunk_lcn_keys_set(state, slot, &keys);
+    }
+    if (!rc && store) {
+        rc = dsd_channel_profile_set(state, slot, profile);
+        if (!rc) {
+            profile = NULL;
+        }
+    }
+    dsd_scan_profile_free(profile);
+    dsd_key_set_free(&keys);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+    if (rc) {
+        LOG_ERROR("channel map file '%s' row %d: %s\n", base_path, row_number, error);
+    }
+    return rc;
+}
+
 /**
  * @brief Parse one channel row into @p state.
  *
@@ -915,9 +966,15 @@ chan_import_row(dsd_state* state, char* buffer, const chan_header_cols* cols, co
             return -1;
         }
     }
-    if (chan_import_row_keys(state, fields, CHAN_FIELD_COUNT, base_path, row_number, show_keys, row_has_slot,
-                             row_has_slot ? (size_t)lcn_before : 0U)
-        != 0) {
+    int keys_rc;
+    if (chan_key_cell_present(chan_key_cell(fields, CHAN_FIELD_COUNT, CHAN_OPTIONS))) {
+        keys_rc = chan_import_options(state, fields, mode, base_path, row_number, show_keys, row_has_slot,
+                                      row_has_slot ? (size_t)lcn_before : 0U);
+    } else {
+        keys_rc = chan_import_row_keys(state, fields, CHAN_FIELD_COUNT, base_path, row_number, show_keys, row_has_slot,
+                                       row_has_slot ? (size_t)lcn_before : 0U);
+    }
+    if (keys_rc != 0) {
         return -1;
     }
     *out_field_count = (int)field_count;

@@ -1273,6 +1273,34 @@ test_history_viewport_helpers(void) {
 }
 
 static void
+test_loaded_scalar_key_status(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(state);
+    state->K = 42;
+    state->R = 0x0123456789ULL;
+    reset_printw_capture();
+    ui_render_forced_key_status(state, 0);
+    assert_capture_contains("Moto BP Key Loaded (not forced): [redacted]");
+    assert_capture_contains("RC4/DES or scrambler key loaded");
+    assert(strstr(g_printw_capture, "0123456789") == NULL);
+    assert(strstr(g_printw_capture, "Forcing Key Priority") == NULL);
+    reset_printw_capture();
+    ui_render_forced_key_status(state, 1);
+    assert_capture_contains("042");
+    assert_capture_contains("0000000123456789");
+    state->M = 1;
+    reset_printw_capture();
+    ui_render_forced_key_status(state, 0);
+    assert_capture_contains("Forcing Key Priority -- Moto BP Key");
+    assert(strstr(g_printw_capture, "Moto BP Key Loaded (not forced)") == NULL);
+    state->M = 0x21;
+    reset_printw_capture();
+    ui_render_forced_key_status(state, 0);
+    assert_capture_contains("Forcing Key Priority -- RC4 Key");
+    free(state);
+}
+
+static void
 test_hytera_key_format_helper(void) {
     static dsd_state state;
     char key_text[96];
@@ -1912,6 +1940,7 @@ main(void) {
     test_history_color_pair_policy();
     test_history_viewport_helpers();
     test_hytera_key_format_helper();
+    test_loaded_scalar_key_status();
     test_edacs_tree_update_helpers();
     test_patch_and_slot_helpers();
     test_lock_and_protocol_helpers();

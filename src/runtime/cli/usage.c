@@ -293,6 +293,9 @@ dsd_cli_usage_section_advanced_decoder_options(void) {
 
 static void
 dsd_cli_usage_section_advanced_key_options(void) {
+    printf("  --no-force-key Disable privacy/scrambler forcing and DMR algorithm fallback.\n");
+    printf("  --strict-crc   Disable -F CRC relaxation.\n");
+    printf("  --no-scan-voice-only Disable conventional voice-only scanning.\n");
     printf("  -b <dec>      Manually Enter Basic Privacy Key (Decimal Value of Key Number)\n");
     printf("\n");
     printf("  -H <hex>      Manually Enter Hytera 10/32/64 Char Basic Privacy Hex Key (see example below)\n");

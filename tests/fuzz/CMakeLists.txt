@@ -76,6 +76,7 @@ target_sources(
         ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
         # A channel-map row's key cells load through the key-set helpers.
         ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/scan_profile.c
         ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
         # csvDmrTgKeyImport() clears the live map through keyring_dmr_tg_map_reset().
         ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c

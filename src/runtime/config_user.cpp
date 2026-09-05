@@ -1756,12 +1756,14 @@ snapshot_demod_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserCo
 }
 
 static void
-snapshot_trunking_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+snapshot_trunking_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     cfg->has_trunking = 1;
     cfg->trunk_enabled = (opts->trunk_enable) ? 1 : 0;
     DSD_SNPRINTF(cfg->trunk_chan_csv, sizeof cfg->trunk_chan_csv, "%s", opts->chan_in_file);
     cfg->trunk_chan_csv[sizeof cfg->trunk_chan_csv - 1] = '\0';
-    DSD_SNPRINTF(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, "%s", opts->group_in_file);
+    DSD_SNPRINTF(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, "%s",
+                 configured ? configured->group_in_file : opts->group_in_file);
     cfg->trunk_group_csv[sizeof cfg->trunk_group_csv - 1] = '\0';
     DSD_SNPRINTF(cfg->trunk_p25_bandplan_csv, sizeof cfg->trunk_p25_bandplan_csv, "%s", opts->p25_bandplan_in_file);
     cfg->trunk_p25_bandplan_csv[sizeof cfg->trunk_p25_bandplan_csv - 1] = '\0';
@@ -1772,9 +1774,9 @@ snapshot_trunking_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->trunk_tune_enc_calls = opts->trunk_tune_enc_calls ? 1 : 0;
     cfg->trunk_scanner = opts->scanner_mode ? 1 : 0;
     cfg->trunk_p25_prefer_candidates = opts->p25_prefer_candidates ? 1 : 0;
-    cfg->trunk_scan_voice_only = opts->scan_voice_only ? 1 : 0;
-    cfg->trunk_scan_voice_qualify_ms = opts->scan_voice_qualify_ms;
-    cfg->trunk_scan_voice_hold_ms = opts->scan_voice_hold_ms;
+    cfg->trunk_scan_voice_only = (configured ? configured->scan_voice_only : opts->scan_voice_only) ? 1 : 0;
+    cfg->trunk_scan_voice_qualify_ms = configured ? configured->scan_voice_qualify_ms : opts->scan_voice_qualify_ms;
+    cfg->trunk_scan_voice_hold_ms = configured ? configured->scan_voice_hold_ms : opts->scan_voice_hold_ms;
 }
 
 static void
@@ -1862,7 +1864,7 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     snapshot_output_config(opts, cfg);
     snapshot_mode_config(opts, state, cfg);
     snapshot_demod_config(opts, state, cfg);
-    snapshot_trunking_config(opts, cfg);
+    snapshot_trunking_config(opts, state, cfg);
     snapshot_radioreference_config(opts, cfg);
     snapshot_trunk_scan_config(opts, cfg);
     snapshot_logging_config(opts, cfg);
