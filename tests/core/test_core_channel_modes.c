@@ -96,6 +96,43 @@ main(void) {
     assert(dsd_channel_modes_present(s));
     assert(dsd_channel_mode_set(s, 0, DSD_SCAN_MODE_INHERIT) == 0);
     assert(!dsd_channel_modes_present(s));
+    clear(s);
+    fp = dsd_fopen_private(o->chan_in_file, "w");
+    assert(fp);
+    DSD_FPRINTF(fp, "chan,freq,notes,mode\n1,150000000,");
+    for (int i = 0; i < 2048; i++) {
+        assert(fputc('x', fp) != EOF);
+    }
+    DSD_FPRINTF(fp, ",nxdn48\n2,150000001,,dmr\n");
+    assert(fclose(fp) == 0);
+    assert(csvChanImport(o, s) == 0 && s->lcn_freq_count == 2);
+    assert(dsd_channel_mode_get(s, 0) == DSD_SCAN_MODE_NXDN48);
+    assert(dsd_channel_mode_get(s, 1) == DSD_SCAN_MODE_DMR);
+    clear(s);
+    fp = dsd_fopen_private(o->chan_in_file, "w");
+    assert(fp);
+    DSD_FPRINTF(fp, "chan,freq");
+    for (int i = 0; i < 400; i++) {
+        DSD_FPRINTF(fp, ",ignored");
+    }
+    DSD_FPRINTF(fp, ",mode\n1,150000000");
+    for (int i = 0; i < 400; i++) {
+        assert(fputc(',', fp) != EOF);
+    }
+    DSD_FPRINTF(fp, ",p25"); /* EOF without a newline is still one complete row. */
+    assert(fclose(fp) == 0);
+    assert(csvChanImport(o, s) == 0 && s->lcn_freq_count == 1);
+    assert(dsd_channel_mode_get(s, 0) == DSD_SCAN_MODE_P25);
+    clear(s);
+    fp = dsd_fopen_private(o->chan_in_file, "w");
+    assert(fp);
+    DSD_FPRINTF(fp, "chan,freq,notes,mode\n1,150000000,");
+    for (int i = 0; i < 1024 * 1024; i++) {
+        assert(fputc('x', fp) != EOF);
+    }
+    DSD_FPRINTF(fp, ",dmr\n");
+    assert(fclose(fp) == 0);
+    assert(csvChanImport(o, s) == -1 && s->lcn_freq_count == 0);
     assert(remove(o->chan_in_file) == 0);
     clear(s);
     clear(dst);

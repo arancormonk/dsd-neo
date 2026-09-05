@@ -92,6 +92,8 @@ Notes:
   trimmed: `name`, `mode`, `keys_hex_csv`, `keys_dec_csv`, `single_key_hex`, and `single_key_dec`. They may appear in
   any order, including after column 16. Unrecognized columns are ignored. The first `name` column wins; duplicate
   `mode` or key headers reject the file. This preserves legacy free-text note columns, including notes with commas.
+- Channel-map headers and data rows are read in full up to 1 MiB (including the line ending and terminating NUL).
+  Longer rows reject the import with an error; they are never split into additional channels.
 - `mode` accepts `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, and `m17`, case-insensitively and trimmed.
   Empty or missing values inherit the configured global decoder settings. Invalid nonempty values reject the import
   with file and row diagnostics, including on rows whose channel number is invalid.

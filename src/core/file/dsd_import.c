@@ -949,6 +949,48 @@ chan_import_row_report(const dsd_state* state, dsd_csv_validation* stats, const 
     LOG_INFO("\n");
 }
 
+/* Read a physical row intact. A malformed/oversized row must never become two
+ * independent channels or lose a trailing mode/key column. */
+static int
+chan_read_line(FILE* fp, char** buffer, size_t* capacity) {
+    const size_t max_capacity = (size_t)1024 * 1024;
+    size_t used = 0;
+    int ch;
+    while ((ch = fgetc(fp)) != EOF) {
+        if (used + 1 >= *capacity) {
+            if (*capacity >= max_capacity) {
+                return -1;
+            }
+            const size_t next = *capacity ? *capacity * 2 : 1024U;
+            char* grown = (char*)malloc(next);
+            if (!grown) {
+                return -1;
+            }
+            if (*buffer) {
+                /* Rows may contain direct keys; erase the old storage before
+                 * releasing it, just as the final buffer is erased below. */
+                DSD_MEMCPY(grown, *buffer, used);
+                DSD_SECURE_ZERO(*buffer, *capacity);
+                free(*buffer);
+            }
+            *buffer = grown;
+            *capacity = next;
+        }
+        (*buffer)[used++] = (char)ch;
+        if (ch == '\n') {
+            break;
+        }
+    }
+    if (ferror(fp)) {
+        return -1;
+    }
+    if (used == 0) {
+        return 0;
+    }
+    (*buffer)[used] = '\0';
+    return 1;
+}
+
 /* stats may be NULL; when set, counts data rows so a dry run can report them. */
 static int
 chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validation* stats, int show_keys) {
@@ -958,7 +1000,8 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
 
     char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
 
-    char buffer[BSIZE];
+    char* buffer = NULL;
+    size_t capacity = 0;
     FILE* fp = csv_open_user_read_file("channel map file", chan_file_path, filename, sizeof filename);
     if (fp == NULL) {
         return -1;
@@ -968,7 +1011,8 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
     DSD_MEMSET(&cols, 0, sizeof(cols));
     int rc = 0;
 
-    while (fgets(buffer, BSIZE, fp)) {
+    int read_result;
+    while ((read_result = chan_read_line(fp, &buffer, &capacity)) > 0) {
         int field_count = 0;
         long int chan_number = -1;
         row_count++;
@@ -991,7 +1035,15 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
         }
         chan_import_row_report(state, stats, filename, row_count, freq_parsed, field_count, chan_number);
     }
-    DSD_SECURE_ZERO(buffer, sizeof(buffer));
+    if (read_result < 0) {
+        LOG_ERROR("channel map file '%s': unable to read row %d (I/O, memory, or 1 MiB row limit)\n", filename,
+                  row_count + 1);
+        rc = -1;
+    }
+    if (buffer) {
+        DSD_SECURE_ZERO(buffer, capacity);
+        free(buffer);
+    }
     fclose(fp);
     return rc;
 }
