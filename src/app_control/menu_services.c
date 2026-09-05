@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
@@ -16,6 +17,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -346,7 +348,7 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
  * untouched and the imported one for that same call to free exactly once.
  */
 static int
-chan_map_adopt(dsd_state* dst, dsd_state* src) {
+chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
     // src is an arbitrary dsd_state*, so the sign and the tail are checked here rather
     // than inherited from the importer: a negative count would become a huge size_t.
     const int src_count = src->lcn_freq_count > 0 ? src->lcn_freq_count : 0;
@@ -358,6 +360,8 @@ chan_map_adopt(dsd_state* dst, dsd_state* src) {
         LOG_ERROR("channel map adopt out of memory\n");
         return -1;
     }
+    dsd_engine_channel_scan_leave(opts, dst);
+    dsd_scan_keys_leave(dst);
     DSD_MEMCPY(dst->trunk_chan_map, src->trunk_chan_map, sizeof dst->trunk_chan_map);
     DSD_MEMCPY(dst->trunk_chan_map_used, src->trunk_chan_map_used, sizeof dst->trunk_chan_map_used);
     dst->trunk_chan_map_used_count = src->trunk_chan_map_used_count;
@@ -366,6 +370,7 @@ chan_map_adopt(dsd_state* dst, dsd_state* src) {
         DSD_MEMCPY(dst->trunk_lcn_freq_ext, src->trunk_lcn_freq_ext,
                    (size_t)(src_count - DSD_TRUNK_LCN_EMBEDDED) * sizeof(dst->trunk_lcn_freq_ext[0]));
     }
+    dsd_channel_modes_move(dst, src);
     dsd_state_trunk_lcn_name_free(dst);
     dst->trunk_lcn_name = src->trunk_lcn_name;
     dst->trunk_lcn_name_capacity = src->trunk_lcn_name_capacity;
@@ -399,6 +404,8 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     if (opts->trunk_scan_enabled == 1) {
         return -1;
     }
+    char old_path[sizeof(opts->chan_in_file)];
+    DSD_MEMCPY(old_path, opts->chan_in_file, sizeof(old_path));
     DSD_STRNCPY(opts->chan_in_file, path, sizeof opts->chan_in_file - 1);
     opts->chan_in_file[sizeof opts->chan_in_file - 1] = '\0';
 
@@ -409,6 +416,7 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     // dsd_tg_policy_reload_group_file() uses for the same reason.
     dsd_state* imported = (dsd_state*)calloc(1, sizeof(*imported));
     if (!imported) {
+        DSD_MEMCPY(opts->chan_in_file, old_path, sizeof(old_path));
         return -1;
     }
     const int import_rc = csvChanImport(opts, imported);
@@ -419,7 +427,7 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     const int mapped_any = (imported->trunk_chan_map_used_count > 0);
     int adopt_rc = -1;
     if (import_rc == 0 && mapped_any) {
-        adopt_rc = chan_map_adopt(state, imported);
+        adopt_rc = chan_map_adopt(opts, state, imported);
     }
     if (import_rc == 0 && mapped_any && adopt_rc == 0) {
         dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
@@ -427,7 +435,11 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     dsd_state_ext_free_all(imported);
     dsd_state_trunk_lcn_free(imported);
     free(imported);
-    return (import_rc == 0 && mapped_any && adopt_rc == 0) ? 0 : -1;
+    if (import_rc == 0 && mapped_any && adopt_rc == 0) {
+        return 0;
+    }
+    DSD_MEMCPY(opts->chan_in_file, old_path, sizeof(old_path));
+    return -1;
 }
 
 int
@@ -484,6 +496,7 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof state->trunk_lcn_freq);
     // Releases the per-row name, avoid and key stores along with the scan-list heap tail.
     // Clearing the map leaves -Y: hand the foreground keyring back to the globals first.
+    dsd_engine_channel_scan_leave(opts, state);
     dsd_scan_keys_leave(state);
     dsd_state_trunk_lcn_free(state);
     state->lcn_freq_count = 0;

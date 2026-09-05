@@ -95,11 +95,23 @@ dsd_frame_sync_suppress_tcp_no_signal_console(const dsd_opts* opts, const dsd_st
 }
 
 int
+frame_sync_trunk_scan_p25p1_trial(const dsd_opts* opts, const dsd_state* state) {
+    return opts && state && opts->trunk_scan_enabled == 1 && !opts->mod_cli_lock && opts->frame_p25p1 == 1
+           && opts->frame_p25p2 == 1 && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx
+           && state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+}
+
+int
 dsd_frame_sync_sps_hunt_dwell_passes(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return 3;
     }
     if (opts->trunk_enable == 1 && opts->trunk_is_tuned == 0 && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
+        if (frame_sync_trunk_scan_p25p1_trial(opts, state)) {
+            /* C4FM and CQPSK each get 5400 symbols (1125 ms); Phase 2 then
+             * starts at 2250 ms, also inside the default 3000 ms target visit. */
+            return 3;
+        }
         return 5;
     }
     return 3;

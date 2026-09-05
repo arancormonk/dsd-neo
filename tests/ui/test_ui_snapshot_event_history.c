@@ -9,10 +9,15 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -359,6 +364,24 @@ main(void) {
     assert(dsd_app_notification_get(&notification) == 1);
     assert(strcmp(notification.protocol, "P25p2") == 0);
     assert(notification.cc_freq_hz == 851006250);
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    assert(opts);
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_NXDN48, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
+    dsd_app_telemetry_publish_snapshot(state);
+    snap = dsd_app_get_latest_snapshot();
+    assert(dsd_scan_mode_active(snap) == DSD_SCAN_MODE_P25);
+    assert(snap->state_ext[DSD_STATE_EXT_RUNTIME_SCAN_MODE] != state->state_ext[DSD_STATE_EXT_RUNTIME_SCAN_MODE]);
+    dsd_scan_settings settings;
+    dsd_app_snapshot_configured_mode(opts, snap, &settings);
+    assert(settings.frame_nxdn48 == 1 && settings.frame_p25p1 == 0);
+    dsd_scan_mode_leave(opts, state);
+    assert(dsd_scan_mode_active(snap) == DSD_SCAN_MODE_P25);
+    dsd_app_telemetry_publish_snapshot(state);
+    snap = dsd_app_get_latest_snapshot();
+    assert(dsd_scan_mode_active(snap) == DSD_SCAN_MODE_INHERIT);
+    free(opts);
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");
     dsd_state_ext_free_all(state);

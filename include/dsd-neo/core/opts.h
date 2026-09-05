@@ -398,15 +398,18 @@ dsd_opts_has_digital_decode_mode(const dsd_opts* opts) {
  * as C4FM.
  */
 static inline int
-dsd_opts_modulation(const dsd_opts* opts) {
-    if (!opts) {
-        return 0;
-    }
-    const int selected = (opts->mod_c4fm != 0) + (opts->mod_qpsk != 0) + (opts->mod_gfsk != 0);
+dsd_modulation_from_flags(int c4fm, int qpsk, int gfsk) {
+    const int selected = (c4fm != 0) + (qpsk != 0) + (gfsk != 0);
     if (selected != 1) {
         return 0;
     }
-    return (opts->mod_qpsk != 0) ? 1 : ((opts->mod_gfsk != 0) ? 2 : 0);
+    return qpsk != 0 ? 1 : (gfsk != 0 ? 2 : 0);
+}
+
+/** @brief Configured modulation; ambiguous/absent flags select the C4FM starting path. */
+static inline int
+dsd_opts_modulation(const dsd_opts* opts) {
+    return opts ? dsd_modulation_from_flags(opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk) : 0;
 }
 
 /** @brief Return 1 when an enabled 4800-symbol four-level mode uses the 12.5 kHz channel profile. */

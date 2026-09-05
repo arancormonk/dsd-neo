@@ -837,3 +837,15 @@ restart to take full effect.
 - Profile support for switching configurations.
 - Include directive for modular configs.
 - Interactive bootstrap can persist user choices automatically.
+
+### Decoder settings while scanning
+
+Channel-map `mode` cells and trunk-scan target types are temporary decoder constraints. `[mode] decode` and demod
+settings continue to describe the configured global settings. Saving from a frontend or shutdown while parked on a
+typed row writes those configured settings. A global mode/modulation command updates that baseline and reapplies the
+current row constraint. Clearing/replacing the map, leaving the scanner, or manually tuning away restores configuration.
+Filter and source-monitor toggles show and edit the configured baseline, even when a row's decoder preset constrains
+their effective values. Changing source monitoring alone preserves the active call and decoder acquisition.
+
+P25 scan mode enables both phases; it is a scan class rather than a new global `decode` value. No CLI preset or
+persisted decode enum changes. Channel numbers and frequencies remain decimal integer channel numbers and Hz.

@@ -11,14 +11,17 @@
 #include "menu_actions.h"
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -262,8 +265,14 @@ act_config_save_current(void* v) {
         return;
     }
 
+    const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    if (!opts_snapshot || !snapshot) {
+        ui_statusf("Decoder settings are not available yet");
+        return;
+    }
     dsdneoUserConfig cfg;
-    dsd_snapshot_opts_to_user_config(c->opts, c->state, &cfg);
+    dsd_snapshot_opts_to_user_config(opts_snapshot, snapshot, &cfg);
     if (dsd_user_config_save_atomic(path, &cfg) == 0) {
         ui_statusf("Config saved to %s", path);
     } else {
@@ -283,8 +292,14 @@ act_config_save_default(void* v) {
         ui_statusf("No default config path; nothing saved");
         return;
     }
+    const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    if (!opts_snapshot || !snapshot) {
+        ui_statusf("Decoder settings are not available yet");
+        return;
+    }
     dsdneoUserConfig cfg;
-    dsd_snapshot_opts_to_user_config(c->opts, c->state, &cfg);
+    dsd_snapshot_opts_to_user_config(opts_snapshot, snapshot, &cfg);
     if (dsd_user_config_save_atomic(path, &cfg) == 0) {
         ui_submit_config_metadata(1, path);
         ui_statusf("Config saved to %s", path);
@@ -1499,7 +1514,10 @@ act_decode_mode(void* v) {
        and Auto is the one choice the command layer never treats as a no-op: it
        re-enables every protocol and resets the modulation, so a stray second Enter
        would drag a settled QPSK session back to C4FM. */
-    const dsdneoUserDecodeMode now = (c && c->opts) ? dsd_infer_decode_mode_preset(c->opts) : DSDCFG_MODE_AUTO;
+    const dsd_opts* opts_snapshot = c ? dsd_app_get_latest_opts_snapshot() : NULL;
+    const dsd_state* snapshot = c ? dsd_app_get_latest_snapshot() : NULL;
+    const dsdneoUserDecodeMode now =
+        opts_snapshot ? dsd_scan_mode_configured_preset(opts_snapshot, snapshot) : DSDCFG_MODE_AUTO;
     ui_chooser_start_at("Decoder mode", g_decode_mode_labels, (int)DECODE_MODE_CHOICE_COUNT,
                         decode_mode_choice_index(now), chooser_done_decode_mode, NULL);
 }

@@ -78,6 +78,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
     Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
     Q_PROPERTY(int decodeMode READ decodeMode NOTIFY controlChanged)
+    Q_PROPERTY(QString scanMode READ scanMode NOTIFY controlChanged)
     Q_PROPERTY(int modulation READ modulation NOTIFY controlChanged)
     Q_PROPERTY(int tunerGainDb READ tunerGainDb NOTIFY controlChanged)
     Q_PROPERTY(double squelchDb READ squelchDb NOTIFY controlChanged)
@@ -248,6 +249,11 @@ class MetricsModel : public QObject {
      * decodeMode is a dsdneoUserDecodeMode; modulation is 0 for C4FM, 1 for QPSK
      * and 2 for GFSK, matching DSD_APP_CMD_MOD_SET's payload and dsd_state::rf_mod.
      */
+    QString
+    scanMode() const {
+        return m_view.scan_mode;
+    }
+
     int
     decodeMode() const {
         return m_view.decode_mode;
@@ -565,39 +571,42 @@ class MetricsModel : public QObject {
     };
 
     struct View {
+        /* Group equally aligned fields; this private value is copied on each
+         * refresh and is never serialized or initialized by member position. */
         double snr_db = 0.0;
-        bool snr_valid = false;
-        bool carrier_lock = false;
         double cfo_hz = 0.0;
-        QString tuner_gain_text;
-        bool radio_input = false;
-        bool stream_active = false;
         double center_freq_hz = 0.0;
-        int channel_bandwidth_hz = 0;
-        bool synced_here = false;
-        QString sync_label;
-        bool trunkable_sync = false;
-        int decode_mode = 0;
-        int modulation = 0;
-        int tuner_gain_db = 0;
         double squelch_db = 0.0;
-        bool squelch_off = false;
-        int ppm = 0;
-        bool audio_muted = false;
         qulonglong held_tg = 0;
-        int enc_lockout_count = 0;
-        bool tuner_controlled = false;
-        bool trunking_enabled = false;
-        bool scanner_mode = false;
-        bool scan_rotation_active = false;
-        bool scan_hold = false;
-        int scan_avoid_count = 0;
-        bool scan_target_avoided = false;
+        QString tuner_gain_text;
+        QString sync_label;
+        QString scan_mode;
         QString ui_message;
         /* Sized from the canonical constant rather than a literal 2: leadSlot() ranks the
          * whole array through dsd_app_lead_slot(), so the two must agree or the ranking
          * would read past the end the day a third slot appears. */
         SlotCall slot_call[DSD_CALL_STATE_SLOT_COUNT];
+        int channel_bandwidth_hz = 0;
+        int decode_mode = 0;
+        int modulation = 0;
+        int tuner_gain_db = 0;
+        int ppm = 0;
+        int enc_lockout_count = 0;
+        int scan_avoid_count = 0;
+        bool snr_valid = false;
+        bool carrier_lock = false;
+        bool radio_input = false;
+        bool stream_active = false;
+        bool synced_here = false;
+        bool trunkable_sync = false;
+        bool squelch_off = false;
+        bool audio_muted = false;
+        bool tuner_controlled = false;
+        bool trunking_enabled = false;
+        bool scanner_mode = false;
+        bool scan_rotation_active = false;
+        bool scan_hold = false;
+        bool scan_target_avoided = false;
 
         /* Exact comparison is right for the two doubles: they are carried through
          * unmodified from the metrics boundary, so "unchanged" means the identical
@@ -626,9 +635,9 @@ class MetricsModel : public QObject {
             return audio_muted == other.audio_muted && held_tg == other.held_tg
                    && enc_lockout_count == other.enc_lockout_count && tuner_controlled == other.tuner_controlled
                    && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
-                   && scanControlEquals(other) && decode_mode == other.decode_mode && modulation == other.modulation
-                   && tuner_gain_db == other.tuner_gain_db && squelch_db == other.squelch_db
-                   && squelch_off == other.squelch_off && ppm == other.ppm;
+                   && scanControlEquals(other) && scan_mode == other.scan_mode && decode_mode == other.decode_mode
+                   && modulation == other.modulation && tuner_gain_db == other.tuner_gain_db
+                   && squelch_db == other.squelch_db && squelch_off == other.squelch_off && ppm == other.ppm;
         }
     };
 

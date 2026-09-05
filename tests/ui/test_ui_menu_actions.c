@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
@@ -432,8 +433,8 @@ dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
 
 void
 dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
-    (void)opts;
-    (void)state;
+    assert(opts == dsd_app_get_latest_opts_snapshot());
+    assert(state == dsd_app_get_latest_snapshot());
     if (cfg) {
         DSD_MEMSET(cfg, 0, sizeof *cfg);
     }

@@ -17,6 +17,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/scan_mode.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -163,7 +164,8 @@ MetricsModel::fillScanControlView(View& next, const dsd_opts* opts_snapshot, con
 
 void
 MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) {
-    next.decode_mode = static_cast<int>(dsd_infer_decode_mode_preset(opts_snapshot));
+    next.scan_mode = QString::fromLatin1(dsd_scan_mode_name(dsd_scan_mode_active(snapshot)));
+    next.decode_mode = static_cast<int>(dsd_scan_mode_configured_preset(opts_snapshot, snapshot));
 
     /* Held for a moment after the last live sync, rather than latched until
      * something explicitly clears it.
@@ -196,7 +198,10 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
      * select, and folding it into C4FM made a control bound to this reading show
      * C4FM as already-selected on a session that was never on it. Through the
      * shared helper so this and ui_handle_mod_set()'s skip test cannot drift. */
-    next.modulation = dsd_opts_modulation(opts_snapshot);
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(snapshot);
+    next.modulation = configured
+                          ? dsd_modulation_from_flags(configured->mod_c4fm, configured->mod_qpsk, configured->mod_gfsk)
+                          : dsd_opts_modulation(opts_snapshot);
     /* Gated on radio_input like center_freq_hz above, and for the same reason:
      * on a WAV, UDP, TCP or symbol-file session these are options the front end
      * never applied, and publishing them would put three plausible tuner

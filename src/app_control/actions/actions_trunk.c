@@ -10,9 +10,10 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
-#include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 #include "../command_dispatch.h"
 
 #include "dsd-neo/app_control/commands.h"
@@ -57,7 +58,10 @@ ui_handle_trunk_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
         // ui_handle_scanner_toggle clears trunking for the same reason: whichever
         // one was asked for last is the one driving, not both at once.
         // Leaving -Y hands the foreground keyring back to the globals.
-        dsd_scan_keys_leave(state);
+        if (opts->trunk_scan_enabled != 1) {
+            dsd_engine_channel_scan_leave(opts, state);
+            dsd_scan_keys_leave(state);
+        }
         opts->scanner_mode = 0;
     }
     return 1;
@@ -66,10 +70,19 @@ ui_handle_trunk_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
 static int
 ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
+    if (opts->trunk_scan_enabled == 1) {
+        if (state) {
+            DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s",
+                         "Trunk scan active: conventional scanner unavailable");
+            state->ui_msg_expire = time(NULL) + 3;
+        }
+        return 1;
+    }
     const int was_scanner = opts->scanner_mode ? 1 : 0;
     opts->scanner_mode = opts->scanner_mode ? 0 : 1;
     opts->trunk_enable = 0;
-    if (was_scanner) {
+    if (was_scanner && opts->trunk_scan_enabled != 1) {
+        dsd_engine_channel_scan_leave(opts, state);
         dsd_scan_keys_leave(state);
     }
     return 1;

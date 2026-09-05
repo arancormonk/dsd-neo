@@ -92,6 +92,9 @@ typedef enum {
  * @brief Reset modulation auto-detect state used by frame sync.
  */
 void dsd_frame_sync_reset_mod_state(void);
+/** Reset per-acquisition evidence and slicer windows after a committed channel/mode change.
+ * Set forget_p25_modulation for conventional rows; trunk targets own their learned modulation. */
+void dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int forget_p25_modulation);
 
 /**
  * @brief Return the NXDN variant selected by the enabled mode and active SPS hunt profile.
@@ -183,6 +186,8 @@ void dsd_frame_sync_sps_hunt_restart_dwell(dsd_state* state);
  * @param state Decoder state; NULL or an out-of-range index yields the 4800/4 default.
  */
 int dsd_frame_sync_active_profile_symbol_rate_hz(const dsd_state* state);
+/** Slicer levels of the active profile; NULL/invalid indices yield four levels. */
+int dsd_frame_sync_active_profile_levels(const dsd_state* state);
 
 /**
  * @brief Scan for a valid frame sync pattern and return its type.

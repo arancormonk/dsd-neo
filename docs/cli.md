@@ -12,7 +12,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
-- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 targets; use `-fa` for mixed lists with NXDN), `-C chan.csv`, `-G group.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`
+- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
@@ -445,7 +445,7 @@ Notes
 ## Trunking & Scanning
 
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`
-- Conventional scan mode: `-Y` (not trunking; scans for sync on enabled decoders). For NXDN the hold is refreshed
+- Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). For NXDN the hold is refreshed
   only by frames whose content passed a CRC, so an open squelch on an empty channel no longer parks the scan.
   A channel map with a `name` column (see `docs/csv-formats.md`) names the row being listened to in the Scan Mode
   row, in Call Info, and on the event history rows recorded while it is tuned. A map can load a per-row key set from
@@ -461,6 +461,16 @@ Notes
   voice without a key holds unless the talkgroup policy blocks it; unknown identity counts as voice. The last-media
   time survives an over-the-air terminator, so the full hold still runs when a protocol closes the call before the
   scanner's next tick.
+  Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, or `m17` for
+  each row. See [the mixed-mode example](../examples/conventional_scan_modes.csv). Declared rows work even when
+  excluded by the global preset; blank rows inherit it. Modes take effect at the first scheduled row entry, including
+  manual `L` cycling. Existing dwell and voice-hold defaults remain unchanged.
+  The open audio sink retains its rate/channel count while logical DMR slot decoding may change. Global mode and
+  modulation commands update the saved configuration, and exiting scanning restores it.
+  Blank-mode rows retain that saved configuration while AUTO hunts. Loading a configuration that disables scanning
+  releases the row's decoder and keys. A manual frequency setting exits a typed scan and reports that in its status
+  message; legacy untyped scans retain their existing manual-tune behavior. Manual `L` skips zero-frequency placeholders,
+  while automatic scanning continues to park on them for the configured dwell.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
   - Rotates one tuner across CSV-defined P25 trunk, DMR trunk, DMR conventional, NXDN trunk, NXDN96 conventional
     (`nxdn-conventional`) and NXDN48 conventional (`nxdn48-conventional`) targets. Full guide: `docs/trunk-scan.md`.

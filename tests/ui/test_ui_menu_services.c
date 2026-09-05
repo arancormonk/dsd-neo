@@ -8,6 +8,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
@@ -29,6 +30,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -38,7 +40,6 @@
 #include "services.h"
 
 #include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "dsd-neo/platform/sockets.h"
@@ -155,6 +156,7 @@ static uint32_t g_chan_import_chan[4];
 static long int g_chan_import_freq[4];
 /* Per-row names, NULL for a row the file leaves unnamed. */
 static const char* g_chan_import_name[4];
+static dsd_scan_mode g_chan_import_mode[4];
 /* Per-row key seed: set entries load a one-slot key set into the row. */
 static int g_chan_import_has_key[4];
 static unsigned long long g_chan_import_key[4];
@@ -177,6 +179,7 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) {
         // Names are positional: the row index is the slot the frequency just took.
         const size_t row = (size_t)state->lcn_freq_count;
         state->trunk_lcn_freq[state->lcn_freq_count++] = g_chan_import_freq[i];
+        (void)dsd_channel_mode_set(state, row, g_chan_import_mode[i]);
         if (g_chan_import_name[i] != NULL) {
             (void)dsd_state_trunk_lcn_name_set(state, row, g_chan_import_name[i]);
         }
@@ -301,13 +304,6 @@ dsd_tg_policy_clear(dsd_state* state) {
     (void)state;
     g_tg_policy_clear_calls++;
     return 0;
-}
-
-/* The throwaway import state may carry module extensions; nothing under test
- * allocates one, so releasing it is a no-op here. */
-void
-dsd_state_ext_free_all(dsd_state* state) {
-    (void)state;
 }
 
 int
@@ -851,7 +847,7 @@ test_file_network_and_import_failure_contracts(void) {
 
     g_chan_import_result = -1;
     rc |= expect_int("channel import failure", svc_import_channel_map(&opts, &state, "channels.csv"), -1);
-    rc |= expect_str("channel import path stored", opts.chan_in_file, "channels.csv");
+    rc |= expect_str("failed channel import keeps path", opts.chan_in_file, "");
     rc |= expect_int("group import failure", svc_import_group_list(&opts, &state, "groups.csv"), -1);
     rc |= expect_str("group import path stored", opts.group_in_file, "groups.csv");
     rc |= expect_int("keys dec import failure", svc_import_keys_dec(&opts, &state, "keys.csv"), -1);
@@ -872,6 +868,7 @@ test_channel_map_reimport_replaces_previous_map(void) {
 
     g_chan_import_result = 0;
     g_chan_import_count = 3;
+    g_chan_import_mode[0] = DSD_SCAN_MODE_NXDN48;
     g_chan_import_chan[0] = 101;
     g_chan_import_freq[0] = 851000000L;
     g_chan_import_chan[1] = 102;
@@ -914,7 +911,7 @@ test_channel_map_reimport_replaces_previous_map(void) {
     rc |= expect_int("failed reimport rc", svc_import_channel_map(&opts, &state, "bad.csv"), -1);
     rc |= expect_int("failed reimport preserves lcn count", state.lcn_freq_count, 2);
     rc |= expect_int("failed reimport preserves chan", (int)state.trunk_chan_map[201], 860000000);
-    rc |= expect_str("failed reimport still stores path", opts.chan_in_file, "bad.csv");
+    rc |= expect_str("failed reimport keeps path", opts.chan_in_file, "b.csv");
 
     // The importer reports success for any file it can open, so a mispicked CSV
     // parses to an empty map. Adopting that would replace the live map with
@@ -960,10 +957,12 @@ test_channel_map_reimport_replaces_previous_map(void) {
     // the names it had, and the imported one is still released exactly once. The count of
     // frees is what ASan checks; a copy instead of a move would read back freed memory here.
     g_chan_import_count = 0;
+    const dsd_scan_mode kept_mode = dsd_channel_mode_get(&state, 0U);
     g_chan_import_name_without_row = "Orphan";
     rc |= expect_int("named empty import refused", svc_import_channel_map(&opts, &state, "empty.csv"), -1);
     rc |= expect_str("refused adopt keeps the live names", dsd_state_trunk_lcn_name_get(&state, 0U), "Repeater 1");
     g_chan_import_name_without_row = NULL;
+    rc |= expect_int("refused adopt keeps mode", dsd_channel_mode_get(&state, 0U), kept_mode);
 
     dsd_state_trunk_lcn_free(&state);
     return rc;
@@ -1029,6 +1028,7 @@ test_clear_services_unload_what_the_importers_loaded(void) {
 
     rc |= expect_int("chan map clear ok", svc_clear_channel_map(&opts, &state), 0);
     rc |= expect_str("chan map clear forgets the path", opts.chan_in_file, "");
+    rc |= expect_int("chan map clear releases modes", dsd_channel_modes_present(&state), 0);
     rc |= expect_int("chan map clear empties the map", (int)state.trunk_chan_map[101], 0);
     rc |= expect_int("chan map clear empties used count", (int)state.trunk_chan_map_used_count, 0);
     rc |= expect_int("chan map clear empties lcn list", state.lcn_freq_count, 0);

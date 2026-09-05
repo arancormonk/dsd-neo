@@ -24,6 +24,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/runtime/scan_mode.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -197,6 +198,23 @@ main(int argc, char** argv) {
     opts.mod_c4fm = 1;
     model.refresh(&opts, &state);
     expect("c4fm reads as modulation 0 again", model.modulation() == 0);
+    expect("enter DMR row", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR) == 0);
+    expect("row selects GFSK", opts.mod_gfsk == 1);
+    model.refresh(&opts, &state);
+    expect("modulation control keeps configured C4FM", model.modulation() == 0);
+    dsd_scan_mode_leave(&opts, &state);
+
+    /* Every flag combination must mean the same thing inside a scope. */
+    for (int flags = 0; flags < 8; flags++) {
+        opts.mod_c4fm = (flags & 1) != 0;
+        opts.mod_qpsk = (flags & 2) != 0;
+        opts.mod_gfsk = (flags & 4) != 0;
+        const int expected = dsd_opts_modulation(&opts);
+        expect("enter modulation combination", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR) == 0);
+        model.refresh(&opts, &state);
+        expect("scoped modulation uses one-flag rule", model.modulation() == expected);
+        dsd_scan_mode_leave(&opts, &state);
+    }
 
     /* Tuner ownership: the gate is the OR, and the two named owners exist only to
      * word a message. All three have to agree. */

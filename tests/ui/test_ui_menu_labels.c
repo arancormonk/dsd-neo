@@ -12,6 +12,7 @@
  */
 
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -21,10 +22,12 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <sndfile.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "../test_support/scan_mode_label_stubs.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
@@ -214,6 +217,14 @@ test_decoder_labels(void) {
     rc |= expect_str("decode mode auto", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [Auto]");
     g_infer_mode = DSDCFG_MODE_DMR;
     rc |= expect_str("decode mode dmr", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR]");
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_P25);
+    rc |= expect_str("decode mode with row override", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR; scan p25]");
+    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
+    opts.monitor_input_audio = 1;
+    opts.use_cosine_filter = 1;
+    rc |= expect_str("monitor before snapshots", lbl_monitor(&ctx, b, sizeof(b)), "Source audio monitor [On]");
+    rc |= expect_str("filter before snapshots", lbl_cosine(&ctx, b, sizeof(b)), "Cosine filter [On]");
+    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
     rc |= expect_str("decode mode null ctx is auto", lbl_decode_mode(NULL, b, sizeof(b)), "Mode... [Auto]");
 
     state.rf_mod = 1;
@@ -242,6 +253,27 @@ test_decoder_labels(void) {
     opts.mod_p25p2_c4fm = 0;
     state.rf_mod = 7;
 
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_P25);
+    dsd_scan_settings configured = {0};
+    configured.state_rf_mod = 1;
+    configured.mod_qpsk = 1;
+    configured.mod_p25p2_profile_lock = 1;
+    dsd_test_scan_labels_configured(&configured);
+    state.rf_mod = 2;
+    rc |= expect_str("modulation reads configured snapshot", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
+    rc |= expect_str("p2 lock reads configured snapshot", lbl_p25p2_mod_lock(&ctx, b, sizeof(b)),
+                     "P25 Phase 2 modulation lock [QPSK]");
+    configured.state_rf_mod = 0;
+    configured.mod_p25p2_c4fm = 1;
+    dsd_test_scan_labels_configured(&configured);
+    rc |= expect_str("modulation follows configured toggle", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [C4FM]");
+    rc |= expect_str("configured cli p2 lock", lbl_p25p2_mod_lock(&ctx, b, sizeof(b)),
+                     "P25 Phase 2 modulation lock [C4FM]");
+    dsd_test_scan_labels_configured(NULL);
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    ((dsd_state*)dsd_app_get_latest_snapshot())->rf_mod = 1;
+    rc |= expect_str("modulation uses published state", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
+
     opts.use_lpf = 1;
     opts.use_hpf = 0;
     opts.use_pbf = 1;
@@ -250,7 +282,10 @@ test_decoder_labels(void) {
     rc |= expect_str("hpf off", lbl_hpf(&ctx, b, sizeof(b)), "High-pass filter [Off]");
     rc |= expect_str("pbf on", lbl_pbf(&ctx, b, sizeof(b)), "Pulse-shaping band-pass [On]");
     rc |= expect_str("hpf digital off", lbl_hpf_d(&ctx, b, sizeof(b)), "Digital high-pass filter [Off]");
-    opts.use_cosine_filter = 1;
+    /* The M17 row can disable the effective filter while the configured value
+     * shown by this toggle remains enabled. */
+    opts.use_cosine_filter = 0;
+    ((dsd_opts*)dsd_app_get_latest_opts_snapshot())->use_cosine_filter = 1;
     rc |= expect_str("cosine on", lbl_cosine(&ctx, b, sizeof(b)), "Cosine filter [On]");
 
     opts.aggressive_framesync = 0;
@@ -477,7 +512,8 @@ test_input_and_audio_labels(void) {
     rc |= expect_str("output muted", lbl_out_mute(&ctx, b, sizeof(b)), "Mute [On]");
     opts.audio_out = 1;
     rc |= expect_str("output unmuted", lbl_out_mute(&ctx, b, sizeof(b)), "Mute [Off]");
-    opts.monitor_input_audio = 1;
+    opts.monitor_input_audio = 0;
+    ((dsd_opts*)dsd_app_get_latest_opts_snapshot())->monitor_input_audio = 1;
     rc |= expect_str("monitor on", lbl_monitor(&ctx, b, sizeof(b)), "Source audio monitor [On]");
     opts.input_volume_multiplier = 0;
     rc |=

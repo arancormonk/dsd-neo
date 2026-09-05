@@ -6,6 +6,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -22,6 +23,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
@@ -1366,8 +1368,8 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
 }
 
 static int
-no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, time_t now) {
-    if (opts->scanner_mode != 1 || !no_carrier_scanner_step_is_due(opts, state, now)) {
+no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t now) {
+    if (opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || !no_carrier_scanner_step_is_due(opts, state, now)) {
         return 0;
     }
     // An operator hold pauses the rotation where it stands. The dwell timer is left alone:
@@ -1376,6 +1378,9 @@ no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, t
         return 0;
     }
 
+    if (dsd_channel_modes_present(state)) {
+        return dsd_engine_channel_scan_step(opts, state) > 0;
+    }
     no_carrier_reset_nxdn_scan_markers(state);
     if (state->lcn_freq_roll >= state->lcn_freq_count) {
         state->lcn_freq_roll = 0;
@@ -2194,13 +2199,15 @@ no_carrier_reset_p25_metrics_and_cache(dsd_state* state) {
 }
 
 static int
-engine_trunk_tuning_owner_active(const dsd_opts* opts) {
-    return opts && (opts->trunk_enable == 1 || opts->trunk_scan_enabled == 1);
+engine_trunk_tuning_owner_active(const dsd_opts* opts, const dsd_state* state) {
+    return opts
+           && (opts->trunk_enable == 1 || opts->trunk_scan_enabled == 1
+               || (opts->scanner_mode == 1 && dsd_channel_modes_present(state)));
 }
 
 static void
-no_carrier_retire_inactive_tune_failures(const dsd_opts* opts) {
-    if (!engine_trunk_tuning_owner_active(opts)) {
+no_carrier_retire_inactive_tune_failures(const dsd_opts* opts, const dsd_state* state) {
+    if (!engine_trunk_tuning_owner_active(opts, state)) {
         dsd_trunk_tuning_retire_failed_requests();
     }
 }
@@ -2318,7 +2325,14 @@ void
 noCarrier(dsd_opts* opts, dsd_state* state) {
     const time_t now = time(NULL);
 
-    no_carrier_retire_inactive_tune_failures(opts);
+    if (opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && dsd_channel_modes_present(state)) {
+        /* Typed rows use tracked tunes, bypassing the legacy scan caches. */
+        s_last_rigctl_freq = -1;
+#ifdef USE_RADIO
+        s_last_rtl_freq = 0;
+#endif
+    }
+    no_carrier_retire_inactive_tune_failures(opts, state);
 
 #ifdef USE_RADIO
     maybe_request_rtl_fsk_reacquire_on_no_sync(opts, state, now);
@@ -2336,8 +2350,19 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     // calls as it retunes, so the finalizer has to know whether the frequency moved out from under
     // whatever it is about to close.
     const int scanner_retuned = no_carrier_step_scanner_mode_if_needed(opts, state, now);
+    if (dsd_channel_modes_present(state) && (scanner_retuned || dsd_engine_channel_scan_waiting(state))) {
+        /* Row ownership ends outgoing calls at commit/failure with an explicit
+         * hop reason. A pending tune must not close them as sync loss first. */
+        return;
+    }
     no_carrier_return_to_control_channel_if_needed(opts, state, now);
     no_carrier_finalize_canonical_calls(opts, state, scanner_retuned);
+    dsd_engine_reset_no_carrier_state(opts, state);
+}
+
+void
+dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
+    const time_t now = time(NULL);
     no_carrier_clear_stale_p25_return_hints_after_generic_activity(opts, state);
     no_carrier_reset_dibit_and_dmr_buffers(state);
     no_carrier_close_mbe_outputs_if_needed(opts, state);
@@ -2361,7 +2386,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     no_carrier_clear_stale_follow_state_if_needed(opts, state, now);
     no_carrier_reset_ysf_and_dstar_strings(state);
     no_carrier_reset_m17_and_sample_buffers(state);
-} //nocarrier
+}
 
 static int
 live_scanner_apply_audio_gain(dsd_opts* opts, dsd_state* state) {
@@ -2492,11 +2517,14 @@ static void
 live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_max, int* last_min,
                                    uint64_t* frame_tune_generation) {
     while (state->synctype != DSD_SYNC_NONE) {
+        if (!dsd_engine_channel_scan_service_sync(opts, state)) {
+            break;
+        }
         p25_sm_tick_guard_enter();
         const uint64_t dispatch_generation =
             frame_tune_generation ? *frame_tune_generation : dsd_trunk_tuning_generation();
         const int frame_dispatchable =
-            dsd_trunk_tuning_frame_is_dispatchable(dispatch_generation, engine_trunk_tuning_owner_active(opts));
+            dsd_trunk_tuning_frame_is_dispatchable(dispatch_generation, engine_trunk_tuning_owner_active(opts, state));
         if (!frame_tune_generation || frame_dispatchable) {
             processFrame(opts, state);
         } else {
@@ -2517,6 +2545,9 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
             }
         }
         dsd_runtime_pump_controls(opts, state);
+        if (!dsd_engine_channel_scan_service_sync(opts, state)) {
+            break;
+        }
         if (frame_tune_generation) {
             *frame_tune_generation = dsd_trunk_tuning_generation();
         }
@@ -2538,7 +2569,15 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
         dsd_scan_voice_gate_tick(opts, state, 0, dsd_time_now_monotonic_s());
         dsd_runtime_pump_controls(opts, state);
 
+        if (dsd_engine_channel_scan_pending(opts, state)) {
+            dsd_sleep_ms(1);
+            continue;
+        }
         noCarrier(opts, state);
+        if (dsd_engine_channel_scan_pending(opts, state)) {
+            dsd_sleep_ms(1);
+            continue;
+        }
         frame_tune_generation = dsd_trunk_tuning_generation();
         state->synctype = getFrameSync(opts, state);
         live_scanner_update_thresholds(state, &last_max, &last_min);
@@ -2738,6 +2777,7 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
         }
     }
     dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_engine_channel_scan_leave(opts, state);
     autosave_user_config(opts, state);
     dsd_engine_cleanup_print_stats(state);
 

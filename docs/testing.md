@@ -313,6 +313,13 @@ tools/replay_ab.sh --capture ~/captures/nxdn.json --mode -fi --reps 12 \
 tools/replay_ab_report.py /tmp/ab/summary.tsv
 ```
 
+For a declared channel mode, build `dsd-neo_test_scan_mode_replay` and pass it as the comparison binary.
+This test-only host parses the real `-C` map, prepares and enters row zero through the production scoped-mode
+API, and asserts the override before starting the real engine. It leaves scanner retuning disabled because the
+I/Q replay API rejects live retunes. For example, compare native `-fi` with a map whose first row declares
+`nxdn48`, using `--mode "-fi -Z -C /path/to/map.csv"` for both binaries. The baseline ignores the optional mode
+column. `DECODE_IQ_SCAN_*` additionally tests overrides from global presets that exclude the declared class.
+
 Reading it:
 
 - **Errors per decoded voice frame**, never the raw error total. A build that

@@ -433,24 +433,38 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
     state->p25_last_vc_tune_time_m = state->last_vc_sync_time_m;
 }
 
+static int
+dsd_engine_tune_rigctl(const dsd_opts* opts, long int freq) {
+    if (opts->setmod_bw != 0 && !SetModulation(opts->rigctl_sockfd, opts->setmod_bw)) {
+        DSD_FPRINTF(stderr, "Rigctl modulation update failed for bandwidth %d.\n", opts->setmod_bw);
+    }
+    if (!SetFreq(opts->rigctl_sockfd, freq)) {
+        DSD_FPRINTF(stderr, "Rigctl frequency update failed for %ld Hz.\n", freq);
+        return 0;
+    }
+    return 1;
+}
+
+static int
+dsd_engine_conventional_scan_active(const dsd_opts* opts) {
+    return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1;
+}
+
 static dsd_trunk_tune_result
 dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
+    const int conventional_scan = dsd_engine_conventional_scan_active(opts);
     if (opts->use_rigctl == 1) {
-        if (opts->setmod_bw != 0) {
-            if (!SetModulation(opts->rigctl_sockfd, opts->setmod_bw)) {
-                DSD_FPRINTF(stderr, "Rigctl modulation update failed for bandwidth %d.\n", opts->setmod_bw);
-            }
-        }
-        if (!SetFreq(opts->rigctl_sockfd, freq)) {
-            DSD_FPRINTF(stderr, "Rigctl frequency update failed for %ld Hz.\n", freq);
+        if (!dsd_engine_tune_rigctl(opts, freq)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
 #ifdef USE_RADIO
-        if (opts->audio_in_type == AUDIO_IN_RTL) {
+        if (opts->audio_in_type == AUDIO_IN_RTL && !conventional_scan) {
             rtl_stream_apply_pending_retune_profile_for_target((uint32_t)freq);
         }
 #endif
-        return DSD_TRUNK_TUNE_RESULT_OK;
+        if (!conventional_scan || opts->audio_in_type != AUDIO_IN_RTL) {
+            return DSD_TRUNK_TUNE_RESULT_OK;
+        }
     }
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
@@ -731,6 +745,33 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
     return result;
 }
 
+#ifdef USE_RADIO
+static void
+dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    if (opts->audio_in_type == AUDIO_IN_RTL && ted_sps > 0) {
+        if (dsd_engine_conventional_scan_active(opts)) {
+            const int rate = dsd_frame_sync_active_profile_symbol_rate_hz(state);
+            const int levels = dsd_frame_sync_active_profile_levels(state);
+            dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, state->rf_mod == 1, rate, levels,
+                                                         dsd_rtl_channel_profile_for(opts, rate, levels, state->rf_mod),
+                                                         ted_sps, 0);
+        } else {
+            dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
+        }
+    }
+}
+#endif
+
+static void
+dsd_engine_scan_tune_failed(const dsd_opts* opts, uint64_t request_id, dsd_trunk_tune_result result) {
+    if (dsd_engine_conventional_scan_active(opts) && opts->use_rigctl == 1 && opts->audio_in_type == AUDIO_IN_RTL) {
+        /* A rigctl leg may have moved before RTL failed. Completion disagreement
+         * retains the frame gate until the scanner establishes a new boundary. */
+        dsd_trunk_tuning_request_publish(request_id, DSD_TRUNK_TUNE_RESULT_OK);
+    }
+    dsd_trunk_tuning_request_complete(request_id, result);
+}
+
 dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t* out_request_id) {
     dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -756,9 +797,7 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     (void)ted_sps;
 #else
     dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
-    if (opts->audio_in_type == AUDIO_IN_RTL && ted_sps > 0) {
-        dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
-    }
+    dsd_engine_prepare_scan_profile(opts, state, freq, ted_sps);
 #endif
 
     dsd_engine_maybe_drain_audio(opts, state);
@@ -767,7 +806,7 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
 #ifdef USE_RADIO
         dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
 #endif
-        dsd_trunk_tuning_request_complete(tune_request_id, result);
+        dsd_engine_scan_tune_failed(opts, tune_request_id, result);
         return result;
     }
 

@@ -88,10 +88,22 @@ Notes:
   reach. A row outside it (including `0`) is skipped with a warning, and its slot in the LCN list below is left at 0 so
   later rows keep their LCN numbers. This is what tells a channel map apart from a decimal key list, which has the same
   `number,number` shape.
-- Extra columns are ignored; use them for labels like "default CC". Column 3 is one of them unless the header line
-  names it: a header whose third field is `name` (any capitalisation, surrounding spaces allowed) turns column 3 into
-  a channel name for every row of the file. This opt-in keeps the older maps working - two of the examples shipped in
-  `examples/` put a comma inside their third column, which a name column could not hold.
+- Optional headers after the two required columns are matched case-insensitively, with surrounding whitespace
+  trimmed: `name`, `mode`, `keys_hex_csv`, `keys_dec_csv`, `single_key_hex`, and `single_key_dec`. They may appear in
+  any order, including after column 16. Unrecognized columns are ignored. The first `name` column wins; duplicate
+  `mode` or key headers reject the file. This preserves legacy free-text note columns, including notes with commas.
+- Channel-map headers and data rows are read in full up to 1 MiB (including the line ending and terminating NUL).
+  Longer rows reject the import with an error; they are never split into additional channels.
+- `mode` accepts `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, and `m17`, case-insensitively and trimmed.
+  Empty or missing values inherit the configured global decoder settings. Invalid nonempty values reject the import
+  with file and row diagnostics, including on rows whose channel number is invalid.
+- Under `-Y`, a declared mode selects its decoder class even when the global preset excludes it. P25 enables both
+  phases and excludes DMR and X2-TDMA. Fully declared mixed lists work without `-fa`; untyped lists retain their
+  existing behavior. The initial input uses global settings until the first scheduled row entry. Explicit global
+  modulation locks remain effective. Manual `L` cycling and avoid/advance use the same row-entry rules and visit
+  same-frequency rows with different metadata. Zero-frequency placeholders change neither the mode nor keys.
+- Modes are stored by scan-list slot: duplicate channel numbers and repeated frequencies remain distinct rows.
+  Trunk-scan target `type` is authoritative; `mode` values inside a target's `chan_csv` are validated and discarded.
 - A `name` is trimmed of surrounding whitespace, capped at 63 bytes (never splitting a UTF-8 character), and must not
   contain a comma. It is stored per row of the LCN list below, so a row whose frequency was skipped keeps its name and
   the rest stay aligned. A row whose *channel number* does not parse is different: it takes no LCN slot at all, so it
@@ -162,6 +174,15 @@ channel,frequency_hz,name,keys_hex_csv,keys_dec_csv,single_key_dec,single_key_he
 2,462587500,System B,,multi_key.csv,,
 3,462612500,Shared,,,1,0000001F00
 ```
+
+Declared modes use these symbol profiles:
+
+| Mode | Symbols per second | Levels |
+| --- | ---: | ---: |
+| P25 (both phases) | 4800 and 6000 | 4 |
+| DMR, NXDN96, YSF, M17 | 4800 | 4 |
+| NXDN48, dPMR | 2400 | 4 |
+| D-STAR | 4800 | 2 |
 
 ## Trunk Scan Target CSV (`--trunk-scan <file>` / `[trunk_scan] targets_csv`)
 

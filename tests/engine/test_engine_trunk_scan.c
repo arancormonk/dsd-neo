@@ -14,6 +14,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
@@ -2735,7 +2736,18 @@ run_nxdn_decoder_warning_case(const char* label, const char* target_path, int fr
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    if (rc == 0 && (opts.frame_nxdn48 != 1 || opts.frame_nxdn96 != 0 || opts.frame_dmr != 0)) {
+        rc = -1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (rc == 0 && (opts.frame_nxdn48 != 0 || opts.frame_nxdn96 != 1 || opts.frame_p25p1 != 0)) {
+        rc = -1;
+    }
     dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (opts.frame_nxdn48 != frame_nxdn48 || opts.frame_nxdn96 != frame_nxdn96) {
+        rc = -1;
+    }
     trunk_scan_test_clear_now();
     (void)dsd_test_capture_stderr_end(&cap);
     if (dsd_test_capture_stderr_read(&cap, buf, buf_sz) != 0) {
@@ -2750,7 +2762,7 @@ run_nxdn_decoder_warning_case(const char* label, const char* target_path, int fr
 }
 
 static int
-test_warns_when_nxdn48_decoder_disabled(void) {
+test_target_classes_enable_missing_decoders(void) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
     if (make_runtime_targets("n48,nxdn48-conventional,461556250,,250,,\n"
@@ -2763,22 +2775,13 @@ test_warns_when_nxdn48_decoder_disabled(void) {
     int test_rc = 0;
     char buf[4096];
 
-    /* NXDN96 enabled only: the NXDN48 row is the one that cannot decode. */
-    if (run_nxdn_decoder_warning_case("nxdn48-disabled", target_path, 0, 1, buf, sizeof buf) != 0) {
-        test_rc = 1;
-    } else if (!strstr(buf, "1 trunk scan target(s) have no enabled NXDN48 decoder (first: 'n48')")
-               || !strstr(buf, "use -fi or -fa to decode them") || strstr(buf, "NXDN96 decoder") != NULL) {
-        DSD_FPRINTF(stderr, "nxdn48 disabled warning wrong:\n%s\n", buf);
-        test_rc = 1;
-    }
-
-    /* NXDN48 enabled only: the NXDN96 row is the one that cannot decode. */
-    if (run_nxdn_decoder_warning_case("nxdn96-disabled", target_path, 1, 0, buf, sizeof buf) != 0) {
-        test_rc = 1;
-    } else if (!strstr(buf, "1 trunk scan target(s) have no enabled NXDN96 decoder (first: 'n96')")
-               || !strstr(buf, "use -fn or -fa to decode them") || strstr(buf, "NXDN48 decoder") != NULL) {
-        DSD_FPRINTF(stderr, "nxdn96 disabled warning wrong:\n%s\n", buf);
-        test_rc = 1;
+    /* Either global NXDN variant may be disabled: the target class enables its decoder. */
+    for (int n48 = 0; n48 <= 1; n48++) {
+        if (run_nxdn_decoder_warning_case("target-class", target_path, n48, !n48, buf, sizeof buf) != 0
+            || strstr(buf, "have no enabled") != NULL) {
+            DSD_FPRINTF(stderr, "target class must not require global decoder flags: %s\n", buf);
+            test_rc = 1;
+        }
     }
 
     /* Both enabled (-fa): neither variant warns. */
@@ -4876,6 +4879,7 @@ test_per_target_modulation_overrides_global_lock(void) {
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
     opts.mod_cli_lock = 1;
+    opts.trunk_is_tuned = 1;
     opts.mod_qpsk = 1;
     opts.mod_c4fm = 0;
     opts.mod_gfsk = 0;
@@ -4902,7 +4906,7 @@ test_per_target_modulation_overrides_global_lock(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    if (opts.mod_cli_lock != 1 || opts.mod_qpsk != 1 || opts.mod_gfsk != 0) {
+    if (opts.trunk_is_tuned != 1 || opts.mod_cli_lock != 1 || opts.mod_qpsk != 1 || opts.mod_gfsk != 0) {
         DSD_FPRINTF(stderr, "shutdown did not restore saved modulation opts lock=%d qpsk=%d gfsk=%d\n",
                     opts.mod_cli_lock, opts.mod_qpsk, opts.mod_gfsk);
         test_rc = 1;
@@ -6967,7 +6971,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_nxdn_demod_profile);
     rc |= run_with_default_tune_hook(test_nxdn48_target_selects_2400_demod_profile);
     rc |= run_with_default_tune_hook(test_nxdn48_target_uses_rtl_output_rate_for_sps);
-    rc |= run_with_default_tune_hook(test_warns_when_nxdn48_decoder_disabled);
+    rc |= run_with_default_tune_hook(test_target_classes_enable_missing_decoders);
     rc |= run_with_default_tune_hook(test_nxdn_conventional_activity_hold);
     rc |= run_with_default_tune_hook(test_conventional_activity_data_call_respects_tune_data_calls);
     rc |= run_with_default_tune_hook(test_conventional_activity_families_do_not_cross);
@@ -7026,4 +7030,19 @@ main(void) {
     rc |= run_with_default_tune_hook(test_target_p25_bandplan_loads_and_survives_rotation);
     rc |= run_with_default_tune_hook(test_p25_bandplan_export_collects_every_target);
     return rc;
+}
+
+void
+dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+/* Coordinator tests stub DSP; acquisition contents are covered by FRAME_SYNC_INTERNAL_HELPERS. */
+void
+dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int forget) {
+    (void)opts;
+    (void)forget;
+    state->profile_proof_valid = 0;
+    state->sps_hunt_counter = 0;
 }

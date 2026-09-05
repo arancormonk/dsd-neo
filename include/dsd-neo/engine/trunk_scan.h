@@ -14,6 +14,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -55,11 +56,11 @@ typedef enum {
 } dsd_trunk_scan_target_type;
 
 typedef enum {
-    DSD_TRUNK_SCAN_MODULATION_UNSET = 0,
-    DSD_TRUNK_SCAN_MODULATION_AUTO = 1,
-    DSD_TRUNK_SCAN_MODULATION_C4FM = 2,
-    DSD_TRUNK_SCAN_MODULATION_CQPSK = 3,
-    DSD_TRUNK_SCAN_MODULATION_GFSK = 4,
+    DSD_TRUNK_SCAN_MODULATION_UNSET = DSD_SCAN_MODULATION_INHERIT,
+    DSD_TRUNK_SCAN_MODULATION_AUTO = DSD_SCAN_MODULATION_AUTO,
+    DSD_TRUNK_SCAN_MODULATION_C4FM = DSD_SCAN_MODULATION_C4FM,
+    DSD_TRUNK_SCAN_MODULATION_CQPSK = DSD_SCAN_MODULATION_CQPSK,
+    DSD_TRUNK_SCAN_MODULATION_GFSK = DSD_SCAN_MODULATION_GFSK,
 } dsd_trunk_scan_modulation;
 
 typedef struct {

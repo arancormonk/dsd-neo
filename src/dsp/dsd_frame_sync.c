@@ -395,6 +395,64 @@ typedef enum {
     FRAME_SYNC_P25_CENTER_SKIP = 2,
 } frame_sync_p25_center_mode_t;
 
+static void
+frame_sync_seed_p25_cqpsk_level_windows(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+
+    int minmax_count = dsd_state_minmax_window_size(opts->msize);
+    for (int i = 0; i < minmax_count; i++) {
+        state->minbuf[i] = state->min;
+        state->maxbuf[i] = state->max;
+    }
+    dsd_state_invalidate_minmax_sums(state);
+
+    int symbol_count = opts->ssize;
+    if (symbol_count < 0) {
+        symbol_count = 0;
+    }
+    if (symbol_count > (int)(sizeof(state->sbuf) / sizeof(state->sbuf[0]))) {
+        symbol_count = (int)(sizeof(state->sbuf) / sizeof(state->sbuf[0]));
+    }
+    for (int i = 0; i < symbol_count; i++) {
+        state->sbuf[i] = (i & 1) ? state->max : state->min;
+    }
+}
+
+void
+dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int forget_p25_modulation) {
+    if (!opts || !state) {
+        return;
+    }
+    dsd_frame_sync_reset_mod_state();
+    dsd_frame_sync_sps_hunt_restart_dwell(state);
+    state->sps_hunt_last_frame_verdict = 0;
+    state->profile_proof_valid = 0;
+    state->profile_proof_symbolcnt = 0;
+    state->profile_proof_idx = 0;
+    if (forget_p25_modulation) {
+        state->p25_p1_validated_rf_mod = -1;
+    }
+    state->symbol_history_count = 0;
+    state->symbol_history_head = 0;
+    state->sidx = 0;
+    state->midx = 0;
+    state->min = -15000;
+    state->max = 15000;
+    state->center = 0;
+    state->lmid = -9375;
+    state->umid = 9375;
+    state->minref = -12000;
+    state->maxref = 12000;
+    state->rtl_fsk_sps_num = 0;
+    state->rtl_fsk_sps_den = 0;
+    state->rtl_fsk_sps_accum = 0;
+    state->synctype = DSD_SYNC_NONE;
+    state->lastsynctype = DSD_SYNC_NONE;
+    frame_sync_seed_p25_cqpsk_level_windows(opts, state);
+}
+
 #ifdef USE_RADIO
 typedef struct {
     float center;
@@ -486,31 +544,6 @@ frame_sync_fit_p25_cqpsk_raw_sync(const frame_sync_match_ctx* ctx, const char* r
         return result;
     }
     return frame_sync_fit_p25_cqpsk_raw_levels(sum, count, out_fit);
-}
-
-static void
-frame_sync_seed_p25_cqpsk_level_windows(const dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state) {
-        return;
-    }
-
-    int minmax_count = dsd_state_minmax_window_size(opts->msize);
-    for (int i = 0; i < minmax_count; i++) {
-        state->minbuf[i] = state->min;
-        state->maxbuf[i] = state->max;
-    }
-    dsd_state_invalidate_minmax_sums(state);
-
-    int symbol_count = opts->ssize;
-    if (symbol_count < 0) {
-        symbol_count = 0;
-    }
-    if (symbol_count > (int)(sizeof(state->sbuf) / sizeof(state->sbuf[0]))) {
-        symbol_count = (int)(sizeof(state->sbuf) / sizeof(state->sbuf[0]));
-    }
-    for (int i = 0; i < symbol_count; i++) {
-        state->sbuf[i] = (i & 1) ? state->max : state->min;
-    }
 }
 
 static void
@@ -3475,6 +3508,14 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
                                               : frame_sync_sps_hunt_next_index(opts, state));
     const int previous_idx = state->sps_hunt_idx;
     const int previous_mod = state->rf_mod;
+    if (frame_sync_trunk_scan_p25p1_trial(opts, state) && previous_mod != 1) {
+        /* Both P25 phases are enabled per target. Waiting for 4800 -> 6000 ->
+         * 4800 costs 3375 ms before CQPSK can be tried, beyond the default
+         * 3000 ms visit. The scan policy budgets shorter 4800 dwells for each
+         * demodulator before rotating, so Phase 2 also fits in the visit. */
+        next_idx = previous_idx;
+        state->p25_p1_mod_probe_next_qpsk = 1;
+    }
     frame_sync_apply_sps_hunt_profile(opts, state, next_idx, preserve_modulation);
     frame_sync_maybe_probe_p25p1_cqpsk(opts, state, preserve_modulation, previous_idx, previous_mod);
     /* A repeated binary profile is a step too: frame_sync_apply_sps_hunt_profile() normalises
