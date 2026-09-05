@@ -1018,6 +1018,9 @@ render_trunking_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->trunk_p25_bandplan_csv[0]) {
         DSD_FPRINTF(out, "p25_bandplan_csv = \"%s\"\n", cfg->trunk_p25_bandplan_csv);
     }
+    if (cfg->trunk_src_csv[0]) {
+        DSD_FPRINTF(out, "src_csv = \"%s\"\n", cfg->trunk_src_csv);
+    }
     DSD_FPRINTF(out, "allow_list = %s\n", ini_bool(cfg->trunk_use_allow_list));
     DSD_FPRINTF(out, "tune_group_calls = %s\n", ini_bool(cfg->trunk_tune_group_calls));
     DSD_FPRINTF(out, "tune_private_calls = %s\n", ini_bool(cfg->trunk_tune_private_calls));
@@ -1403,6 +1406,7 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     apply_trunking_path(opts->group_in_file, sizeof opts->group_in_file, cfg->trunk_group_csv);
     /* Path only: the engine imports the band plan at start, once the CLI has had its say. */
     apply_trunking_path(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file, cfg->trunk_p25_bandplan_csv);
+    apply_trunking_path(opts->src_in_file, sizeof opts->src_in_file, cfg->trunk_src_csv);
     opts->trunk_use_allow_list = cfg->trunk_use_allow_list ? 1 : 0;
     opts->trunk_tune_group_calls = cfg->trunk_tune_group_calls ? 1 : 0;
     opts->trunk_tune_private_calls = cfg->trunk_tune_private_calls ? 1 : 0;
@@ -1767,6 +1771,8 @@ snapshot_trunking_config(const dsd_opts* opts, const dsd_state* state, dsdneoUse
     cfg->trunk_group_csv[sizeof cfg->trunk_group_csv - 1] = '\0';
     DSD_SNPRINTF(cfg->trunk_p25_bandplan_csv, sizeof cfg->trunk_p25_bandplan_csv, "%s", opts->p25_bandplan_in_file);
     cfg->trunk_p25_bandplan_csv[sizeof cfg->trunk_p25_bandplan_csv - 1] = '\0';
+    DSD_SNPRINTF(cfg->trunk_src_csv, sizeof cfg->trunk_src_csv, "%s", opts->src_in_file);
+    cfg->trunk_src_csv[sizeof cfg->trunk_src_csv - 1] = '\0';
     cfg->trunk_use_allow_list = opts->trunk_use_allow_list ? 1 : 0;
     cfg->trunk_tune_group_calls = opts->trunk_tune_group_calls ? 1 : 0;
     cfg->trunk_tune_private_calls = opts->trunk_tune_private_calls ? 1 : 0;

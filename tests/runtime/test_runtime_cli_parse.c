@@ -9,6 +9,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/secret_redaction.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/ecdsa.h>
@@ -6518,6 +6519,178 @@ test_trunk_scan_inherited_state_rejects_invalid_runtime_combinations(void) {
 }
 
 static int
+test_src_csv_long_option_parse(void) {
+    int test_rc = 0;
+
+    for (int shape = 0; shape < 2; shape++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "out of memory\n");
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char csv_path[1024];
+        if (test_create_temp_csv_with_contents("id,name,tags\n1201,Unit 1201,Ops\n", csv_path, sizeof csv_path) != 0) {
+            freeState(state);
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "failed to create temp band plan csv\n");
+            return 1;
+        }
+
+        char arg0[] = "dsd-neo";
+        char arg1[] = "--src-csv";
+        char arg_eq[1200];
+        DSD_SNPRINTF(arg_eq, sizeof arg_eq, "--src-csv=%s", csv_path);
+        char* argv_pair[] = {arg0, arg1, csv_path, NULL};
+        char* argv_eq[] = {arg0, arg_eq, NULL};
+        char** argv = (shape == 0) ? argv_pair : argv_eq;
+        int argc = (shape == 0) ? 3 : 2;
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE) {
+            DSD_FPRINTF(stderr, "shape %d: expected rc=%d, got %d (exit_rc=%d)\n", shape, DSD_PARSE_CONTINUE, rc,
+                        exit_rc);
+            test_rc = 1;
+        }
+        if (strcmp(opts->src_in_file, csv_path) != 0) {
+            DSD_FPRINTF(stderr, "shape %d: expected src_in_file=%s, got \"%s\"\n", shape, csv_path, opts->src_in_file);
+            test_rc = 1;
+        }
+        char name[50];
+        if (!dsd_source_alias_loaded(state) || dsd_source_alias_count(state) != 1
+            || !dsd_source_alias_lookup(state, 1201, name, sizeof name) || strcmp(name, "Unit 1201") != 0) {
+            DSD_FPRINTF(stderr, "source alias import failed for shape %d\n", shape);
+            test_rc = 1;
+        }
+
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+static int
+test_src_csv_missing_file_returns_error(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    DSD_SNPRINTF(opts->src_in_file, sizeof opts->src_in_file, "%s", "inherited.csv");
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--src-csv=dsdneo_missing_source_file.csv";
+    char* argv[] = {arg0, arg1, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc =
+        (rc == DSD_PARSE_ERROR && exit_rc == 1 && opts->src_in_file[0] == '\0' && !dsd_source_alias_loaded(state)) ? 0
+                                                                                                                   : 1;
+    if (test_rc) {
+        DSD_FPRINTF(stderr, "expected missing --src-csv file to fail, rc=%d exit=%d file=%s rows=%d\n", rc, exit_rc,
+                    opts->src_in_file, dsd_source_alias_loaded(state));
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_src_csv_missing_value_returns_error(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--src-csv";
+    char* argv[] = {arg0, arg1, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = (rc == DSD_PARSE_ERROR && exit_rc == 1) ? 0 : 1;
+    if (test_rc) {
+        DSD_FPRINTF(stderr, "expected bare --src-csv to fail, rc=%d exit=%d\n", rc, exit_rc);
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_src_csv_allowed_with_trunk_scan(void) {
+    int test_rc = 0;
+
+    /* Global source aliases are allowed in either argument order. */
+    for (int order = 0; order < 2; order++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char csv_path[1024];
+        if (test_create_temp_csv_with_contents("id,name,tags\n1201,Unit 1201,Ops\n", csv_path, sizeof csv_path) != 0) {
+            freeState(state);
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "failed to create temp band plan csv\n");
+            return 1;
+        }
+
+        char arg0[] = "dsd-neo";
+        char arg_scan[] = "--trunk-scan=targets.csv";
+        char arg_plan[1200];
+        DSD_SNPRINTF(arg_plan, sizeof arg_plan, "--src-csv=%s", csv_path);
+        char* argv_a[] = {arg0, arg_scan, arg_plan, NULL};
+        char* argv_b[] = {arg0, arg_plan, arg_scan, NULL};
+        char** argv = (order == 0) ? argv_a : argv_b;
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE || opts->trunk_scan_enabled != 1 || strcmp(opts->src_in_file, csv_path) != 0
+            || !dsd_source_alias_loaded(state)) {
+            DSD_FPRINTF(stderr, "expected source list with trunk scan, order=%d rc=%d exit=%d\n", order, rc, exit_rc);
+            test_rc = 1;
+        }
+
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+static int
 test_p25_bandplan_long_option_parse(void) {
     int test_rc = 0;
 
@@ -7705,6 +7878,10 @@ main(void) {
     rc |= test_trunk_scan_rejects_global_channel_map();
     rc |= test_trunk_scan_cli_clears_inherited_channel_map();
     rc |= test_trunk_scan_inherited_state_rejects_invalid_runtime_combinations();
+    rc |= test_src_csv_long_option_parse();
+    rc |= test_src_csv_missing_file_returns_error();
+    rc |= test_src_csv_missing_value_returns_error();
+    rc |= test_src_csv_allowed_with_trunk_scan();
     rc |= test_p25_bandplan_long_option_parse();
     rc |= test_p25_bandplan_missing_file_returns_error();
     rc |= test_p25_bandplan_missing_value_returns_error();

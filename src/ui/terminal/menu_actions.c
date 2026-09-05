@@ -407,6 +407,12 @@ act_import_group(void* v) {
 }
 
 void
+act_import_src(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    ui_csv_import_picker_open("src", "Source ID list CSV", 1024, cb_import_src, c);
+}
+
+void
 act_allow_toggle(void* v) {
     UNUSED(v);
     (void)dsd_app_command_action(DSD_APP_CMD_TRUNK_WLIST_TOGGLE);

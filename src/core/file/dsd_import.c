@@ -43,94 +43,6 @@ csv_rkey_index(unsigned long long keynumber, unsigned long long offset, size_t* 
     return 1;
 }
 
-static int
-group_parse_u32_token(const char* token, uint32_t* out) {
-    unsigned long long v = 0;
-    char* end = NULL;
-    const char* p = token;
-    if (!token || !out) {
-        return 0;
-    }
-    while (*p != '\0' && is_ascii_space((unsigned char)*p)) {
-        p++;
-    }
-    if (*p == '\0' || *p == '+' || *p == '-') {
-        return 0;
-    }
-    errno = 0;
-    v = strtoull(p, &end, 10);
-    if (errno != 0 || end == p || v > UINT32_MAX) {
-        return 0;
-    }
-    while (*end != '\0' && is_ascii_space((unsigned char)*end)) {
-        end++;
-    }
-    if (*end != '\0') {
-        return 0;
-    }
-    *out = (uint32_t)v;
-    return 1;
-}
-
-static int
-group_parse_single_id(const char* token, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
-    if (!token || !out_start || !out_end || !out_is_range) {
-        return 0;
-    }
-    if (!group_parse_u32_token(token, out_start)) {
-        return 0;
-    }
-    *out_end = *out_start;
-    *out_is_range = 0;
-    return 1;
-}
-
-static int
-group_parse_range_id(char* token, char* dash, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
-    uint32_t start = 0;
-    uint32_t end = 0;
-    if (!token || !dash || !out_start || !out_end || !out_is_range) {
-        return 0;
-    }
-    if (strchr(dash + 1, '-') != NULL) {
-        return 0;
-    }
-
-    *dash = '\0';
-    const char* start_token = trim_ws(token);
-    const char* end_token = trim_ws(dash + 1);
-    if (!start_token || !end_token || start_token[0] == '\0' || end_token[0] == '\0') {
-        return 0;
-    }
-    if (!group_parse_u32_token(start_token, &start) || !group_parse_u32_token(end_token, &end)) {
-        return 0;
-    }
-    if (start > end) {
-        return 0;
-    }
-    *out_start = start;
-    *out_end = end;
-    *out_is_range = (start != end) ? 1 : 0;
-    return 1;
-}
-
-static int
-group_parse_id_field(char* token, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
-    if (!token || !out_start || !out_end || !out_is_range) {
-        return 0;
-    }
-    token = trim_ws(token);
-    if (!token || token[0] == '\0') {
-        return 0;
-    }
-
-    char* dash = strchr(token, '-');
-    if (!dash) {
-        return group_parse_single_id(token, out_start, out_end, out_is_range);
-    }
-    return group_parse_range_id(token, dash, out_start, out_end, out_is_range);
-}
-
 enum group_parse_value_result {
     GROUP_PARSE_VALUE_MISSING = 0,
     GROUP_PARSE_VALUE_OK = 1,
@@ -420,7 +332,7 @@ group_import_row(dsd_state* state, dsd_tg_policy_store* store, const char* filen
         return -1;
     }
 
-    if (!group_parse_id_field(fields[0], &id_start, &id_end, &is_range)) {
+    if (!csv_parse_id_field(fields[0], &id_start, &id_end, &is_range)) {
         LOG_WARN("WARNING: Group file '%s' row %u has invalid id '%s'; skipping.\n", filename, row_count, fields[0]);
         return -1;
     }

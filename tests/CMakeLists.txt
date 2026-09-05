@@ -708,6 +708,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_source_alias
+  HEADERS_PUBLIC_CORE_SOURCE_ALIAS
+  dsd-neo/core/source_alias.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_wideband_spectrum
   HEADERS_PUBLIC_CORE_WIDEBAND_SPECTRUM
   dsd-neo/core/wideband_spectrum.h
@@ -2992,6 +2998,7 @@ add_test(
 add_executable(
     dsd-neo_test_app_control_snapshot_event_history
     ui/test_ui_snapshot_event_history.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
@@ -3854,6 +3861,36 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_core_talkgroup_policy PRIVATE dsd-neo_core)
 add_test(NAME CORE_TALKGROUP_POLICY COMMAND dsd-neo_test_core_talkgroup_policy)
+
+add_executable(dsd-neo_test_core_source_alias core/test_core_source_alias.c)
+target_link_libraries(dsd-neo_test_core_source_alias PRIVATE dsd-neo_core)
+add_test(NAME CORE_SOURCE_ALIAS COMMAND dsd-neo_test_core_source_alias)
+
+add_executable(
+    dsd-neo_test_core_source_alias_fail
+    core/test_core_source_alias_fail.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/source_alias_csv.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+)
+target_compile_definitions(
+    dsd-neo_test_core_source_alias_fail
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_include_directories(
+    dsd-neo_test_core_source_alias_fail
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_source_alias_fail
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME CORE_SOURCE_ALIAS_FAIL
+    COMMAND dsd-neo_test_core_source_alias_fail
+)
 
 add_executable(dsd-neo_test_enc_lockout core/test_enc_lockout.c)
 target_include_directories(

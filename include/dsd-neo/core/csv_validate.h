@@ -29,6 +29,8 @@ typedef struct dsd_csv_validation {
  * Each returns 0 when the file opened and was parsed (counts are valid, and
  * accepted may legitimately be 0), or -1 when the file could not be opened.
  */
+/* Returns -1 on open, read or allocation failure; header and blank lines are excluded. */
+int dsd_csv_validate_src_file(const char* path, dsd_csv_validation* out);
 int dsd_csv_validate_group_file(const char* path, dsd_csv_validation* out);
 int dsd_csv_validate_chan_file(const char* path, dsd_csv_validation* out);
 int dsd_csv_validate_key_file_dec(const char* path, dsd_csv_validation* out);

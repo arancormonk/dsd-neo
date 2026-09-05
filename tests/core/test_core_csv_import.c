@@ -3,10 +3,12 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <assert.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -2126,8 +2128,57 @@ test_p25_bandplan_export_round_trip(void) {
     return failed;
 }
 
+static void
+test_source_csv(void) {
+    const char* path = "source-import.csv";
+    FILE* fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    assert(
+        fputs(
+            "1234,Header consumed\n\n 1 , One \n2,Two,tags\n3,Three,tags,ignored\n10-20,Range\nbad,No\n20-10,No\n4, \n",
+            fp)
+        >= 0);
+    for (int i = 0; i < 1005; ++i) {
+        assert(fputc('x', fp) != EOF);
+    }
+    assert(fputs("\n5,After long\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state);
+    assert(csvSrcImportPath(path, state) == 0);
+    assert(dsd_source_alias_count(state) == 5);
+    char name[50];
+    assert(dsd_source_alias_lookup(state, 1, name, sizeof(name)) && strcmp(name, "One") == 0);
+    assert(dsd_source_alias_lookup(state, 15, name, sizeof(name)) && strcmp(name, "Range") == 0);
+    assert(dsd_source_alias_lookup(state, 5, name, sizeof(name)) && strcmp(name, "After long") == 0);
+    assert(!dsd_source_alias_lookup(state, 1234, name, sizeof(name)));
+    assert(remove(path) == 0);
+    assert(csvSrcImportPath(path, state) == -1);
+    assert(dsd_source_alias_count(state) == 5 && dsd_source_alias_lookup(state, 1, name, sizeof(name)));
+    fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    assert(fputs("id,name\n99,Replacement\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    assert(csvSrcImportPath(path, state) == 0 && dsd_source_alias_count(state) == 1);
+    assert(!dsd_source_alias_lookup(state, 1, name, sizeof(name)));
+    assert(dsd_source_alias_lookup(state, 99, name, sizeof(name)));
+    fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    assert(fputs("id,name\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts);
+    DSD_SNPRINTF(opts->src_in_file, sizeof(opts->src_in_file), "%s", path);
+    assert(csvSrcImport(opts, state) == 0 && dsd_source_alias_loaded(state) && dsd_source_alias_count(state) == 0);
+    free(opts);
+    assert(remove(path) == 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 int
 main(void) {
+    test_source_csv();
     if (test_group_import_missing_file() != 0) {
         return 1;
     }

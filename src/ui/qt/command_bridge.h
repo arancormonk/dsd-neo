@@ -151,6 +151,9 @@ class CommandBridge : public QObject {
      */
     Q_INVOKABLE bool importP25Bandplan(const QString& path) const;
 
+    /** @brief Import source radio ID aliases (--src-csv) into the running session. */
+    Q_INVOKABLE bool importSrcList(const QString& path) const;
+
     /*
      * Unloading. A system that clears its CSV selection has to say so: the
      * import calls above all reject an empty path, so re-importing cannot
@@ -164,6 +167,8 @@ class CommandBridge : public QObject {
 
     /** @brief Drop the running session's keyring (both CSV kinds share one). */
     Q_INVOKABLE bool clearKeys() const;
+    /** @brief Unload the running session's source radio ID aliases. */
+    Q_INVOKABLE bool clearSrcList() const;
 };
 
 } // namespace dsd_qt

@@ -106,6 +106,8 @@ int svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, in
 int svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path);
 /** @brief Import a group list CSV into runtime state. */
 int svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path);
+/** Adopt a nonempty source alias CSV; failure preserves the live list and path. */
+int svc_import_src_list(dsd_opts* opts, dsd_state* state, const char* path);
 /**
  * @brief Import a P25 band plan CSV (IDEN table) into the live state.
  *
@@ -137,6 +139,8 @@ int svc_import_keys_hex(dsd_opts* opts, dsd_state* state, const char* path);
 int svc_clear_channel_map(dsd_opts* opts, dsd_state* state);
 /** @brief Drop every loaded talkgroup entry. */
 int svc_clear_group_list(dsd_opts* opts, dsd_state* state);
+/** Clear the source alias list and its recorded path. */
+int svc_clear_src_list(dsd_opts* opts, dsd_state* state);
 /** @brief Drop the keyring and disarm the key loader (covers dec and hex). */
 int svc_clear_keys(dsd_opts* opts, dsd_state* state);
 /** @brief Set the current talkgroup hold value. */

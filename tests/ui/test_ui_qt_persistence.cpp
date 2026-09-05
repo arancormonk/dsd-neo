@@ -202,6 +202,7 @@ void
 test_saved_systems_csv_fields(void) {
     const QString groupPath = QStringLiteral("/data/imports/county.csv");
     const QString planPath = QStringLiteral("/data/imports/band plan.csv");
+    const QString srcPath = QStringLiteral("/data/imports/radio IDs.csv");
     {
         SavedSystemsModel model;
         QVariantMap sys = full_system_map();
@@ -210,6 +211,7 @@ test_saved_systems_csv_fields(void) {
         sys.insert(QStringLiteral("keyCsvPath"), QStringLiteral("/data/imports/keys.csv"));
         sys.insert(QStringLiteral("keyCsvHex"), true);
         sys.insert(QStringLiteral("p25BandplanCsvPath"), planPath);
+        sys.insert(QStringLiteral("srcCsvPath"), srcPath);
         model.add(sys);
 
         /* Legacy row: fields absent must read as no CSV, not junk. */
@@ -230,13 +232,15 @@ test_saved_systems_csv_fields(void) {
                && got.value(QStringLiteral("groupCsvPath")).toString() == groupPath
                && got.value(QStringLiteral("keyCsvPath")).toString() == QStringLiteral("/data/imports/keys.csv")
                && got.value(QStringLiteral("keyCsvHex")).toBool()
-               && got.value(QStringLiteral("p25BandplanCsvPath")).toString() == planPath);
+               && got.value(QStringLiteral("p25BandplanCsvPath")).toString() == planPath
+               && got.value(QStringLiteral("srcCsvPath")).toString() == srcPath);
     expect("legacy row reads empty csv fields",
            model.get(1).value(QStringLiteral("chanCsvPath")).toString().isEmpty()
                && model.get(1).value(QStringLiteral("groupCsvPath")).toString().isEmpty()
                && model.get(1).value(QStringLiteral("keyCsvPath")).toString().isEmpty()
                && !model.get(1).value(QStringLiteral("keyCsvHex")).toBool()
-               && model.get(1).value(QStringLiteral("p25BandplanCsvPath")).toString().isEmpty());
+               && model.get(1).value(QStringLiteral("p25BandplanCsvPath")).toString().isEmpty()
+               && model.get(1).value(QStringLiteral("srcCsvPath")).toString().isEmpty());
 
     /* The delete-with-in-use-warning flow: which systems reference a stored
      * file, and clearing that reference everywhere when the file goes away. */
@@ -262,9 +266,15 @@ test_saved_systems_csv_fields(void) {
     expect("clear blanks the bandplan field",
            model.get(0).value(QStringLiteral("p25BandplanCsvPath")).toString().isEmpty());
 
+    const QStringList srcUsers = model.systemsReferencingPath(srcPath);
+    expect("source users are named", srcUsers.size() == 1 && srcUsers.contains(QStringLiteral("Hamilton Co P25")));
+    model.clearCsvPath(srcPath);
+    expect("clear blanks source aliases", model.get(0).value(QStringLiteral("srcCsvPath")).toString().isEmpty());
+
     SavedSystemsModel reloaded;
     expect("clear persists", reloaded.get(0).value(QStringLiteral("groupCsvPath")).toString().isEmpty()
-                                 && reloaded.get(0).value(QStringLiteral("p25BandplanCsvPath")).toString().isEmpty());
+                                 && reloaded.get(0).value(QStringLiteral("p25BandplanCsvPath")).toString().isEmpty()
+                                 && reloaded.get(0).value(QStringLiteral("srcCsvPath")).toString().isEmpty());
     reloaded.remove(0);
     reloaded.remove(0);
     reloaded.remove(0);

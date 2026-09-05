@@ -20,7 +20,10 @@
 extern "C" {
 #endif
 
-enum { DSD_APP_CMD_DISPATCH_DATA_MAX = 16384 };
+/* The largest payload is a whole dsdneoUserConfig (16,432 bytes once the four [trunking]
+ * CSV paths are counted); app_command_queue.c static-asserts that it and the RadioReference
+ * apply payload fit. Keep headroom so the next 1 KiB path field does not need another bump. */
+enum { DSD_APP_CMD_DISPATCH_DATA_MAX = 20480 };
 
 /**
  * @brief Internal command payload envelope consumed by app-control dispatchers.

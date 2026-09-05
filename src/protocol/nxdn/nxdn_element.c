@@ -23,6 +23,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -132,6 +133,14 @@ static void
 nxdn_print_group_label(const dsd_state* state, uint32_t id) {
     char name[50];
     if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
+        DSD_FPRINTF(stderr, " [%s]", name);
+    }
+}
+
+static void
+nxdn_print_source_label(const dsd_state* state, uint32_t id) {
+    char name[50];
+    if (id != 0U && dsd_source_label_lookup(state, id, NULL, 0, name, sizeof(name))) {
         DSD_FPRINTF(stderr, " [%s]", name);
     }
 }
@@ -1629,10 +1638,10 @@ nxdn_vcall_assgn_can_tune(const dsd_opts* opts, const dsd_state* state, int poli
 
 static void
 nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info, long int freq) {
-    nxdn_print_group_label(state, info->destination_id != 0U ? info->destination_id : info->source_unit_id);
     if (info->destination_id != 0U) {
-        nxdn_print_group_label(state, info->source_unit_id);
+        nxdn_print_group_label(state, info->destination_id);
     }
+    nxdn_print_source_label(state, info->source_unit_id);
     const int is_private_call = (info->call_type == 4U) ? 1 : 0;
     const int data_call = (info->message_type == 0x0DU || info->message_type == 0x0EU) ? 1 : 0;
     const int hold_matches = (state->tg_hold != 0 && state->tg_hold == info->destination_id) ? 1 : 0;

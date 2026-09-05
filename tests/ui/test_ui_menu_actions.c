@@ -75,6 +75,7 @@ typedef struct {
 
 static CmdCapture g_cmd;
 static PromptCapture g_prompt;
+static char g_picker_kind[32];
 static ChooserCapture g_chooser;
 static char g_status[256];
 static int g_status_calls;
@@ -362,7 +363,7 @@ ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, 
 void
 ui_csv_import_picker_open(const char* kind, const char* prompt_title, size_t cap, ui_prompt_string_done_fn on_done,
                           void* user_ctx) {
-    (void)kind;
+    DSD_SNPRINTF(g_picker_kind, sizeof g_picker_kind, "%s", kind);
     ui_prompt_open_string_async(prompt_title, NULL, cap, on_done, user_ctx);
 }
 
@@ -626,6 +627,12 @@ cb_import_chan(void* v, const char* p) {
 
 void
 cb_import_group(void* v, const char* p) {
+    (void)v;
+    (void)p;
+}
+
+void
+cb_import_src(void* v, const char* p) {
     (void)v;
     (void)p;
 }
@@ -1294,6 +1301,14 @@ test_additional_prompt_and_toggle_actions(void) {
     act_import_chan(&ctx);
     rc |= expect_str("channel import prompt", g_prompt.title, "Channel map CSV");
     rc |= expect_int("channel import cap", (int)g_prompt.cap, 1024);
+
+    reset_capture();
+    act_import_src(&ctx);
+    rc |= expect_str("source picker kind", g_picker_kind, "src");
+    rc |= expect_int("source picker callback", g_prompt.str_cb == cb_import_src, 1);
+    rc |= expect_int("source picker context", g_prompt.user == &ctx, 1);
+    rc |= expect_str("source import prompt", g_prompt.title, "Source ID list CSV");
+    rc |= expect_int("source import cap", (int)g_prompt.cap, 1024);
 
     reset_capture();
     act_import_group(&ctx);

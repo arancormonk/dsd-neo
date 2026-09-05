@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <assert.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -530,8 +531,23 @@ test_p25_bandplan_rejects_other_kinds(void) {
     return failed;
 }
 
+static void
+test_source_validation_example(void) {
+    const char* path = "source-validate.csv";
+    FILE* fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    assert(fputs("id,name,tags\n1234567,Engine 21,Fire\n1234568,Ladder 4,Fire\n2000000-2000999,Dispatch consoles,Ops\n",
+                 fp)
+           >= 0);
+    assert(fclose(fp) == 0);
+    dsd_csv_validation v;
+    assert(dsd_csv_validate_src_file(path, &v) == 0 && v.accepted == 3 && v.skipped == 0 && v.total == 3);
+    assert(remove(path) == 0);
+}
+
 int
 main(void) {
+    test_source_validation_example();
     if (test_missing_file_fails() != 0) {
         return 1;
     }

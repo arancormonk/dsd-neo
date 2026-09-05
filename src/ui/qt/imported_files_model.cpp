@@ -100,6 +100,8 @@ ImportedFilesModel::validate(const QString& path, const QString& type, int* acce
         rc = dsd_csv_validate_key_file_hex(local.constData(), &counts);
     } else if (type == QLatin1String("p25Bandplan")) {
         rc = dsd_csv_validate_p25_bandplan_file(local.constData(), &counts);
+    } else if (type == QLatin1String("src")) {
+        rc = dsd_csv_validate_src_file(local.constData(), &counts);
     }
     if (rc != 0) {
         return false;

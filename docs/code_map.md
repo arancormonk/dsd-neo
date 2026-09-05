@@ -12,7 +12,7 @@ should be included via `#include <dsd-neo/...>`.
 - `cmake/` — CMake helper modules and install/uninstall scripts
 - `tools/` — development scripts (formatting, analysis, coverage)
 - `docs/` — documentation
-- `examples/` — sample CSV inputs (channel maps, groups, keys) used by the config system and tooling
+- `examples/` — sample CSV inputs (channel maps, groups, source IDs, keys) used by the config system and tooling
 - `packaging/` — packaging assets/scripts (AppImage, macOS)
 - `android/` — Android app shell: Kotlin foreground service, JNI lifecycle glue, and vendored libusb/librtlsdr
   (`android/README.md`); built only for `ANDROID` with `DSD_ENABLE_QT_UI=ON`
@@ -174,6 +174,21 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   direction the export uses. Every core CSV importer shares its token helpers through the module-private
   `src/core/file/csv_parse_internal.h`; the channel map's key column accepts decimal, `0x` hex and `<iden>-<chan>`
   spellings there.
+- API note: source ID aliases live in the opaque store declared by `<dsd-neo/core/source_alias.h>` and
+  implemented in `src/core/util/source_alias.c`, attached to state extension slot 8
+  (`DSD_STATE_EXT_CORE_SOURCE_ALIAS`). `dsd_source_alias_store_create()`/`dsd_source_alias_store_append()` build
+  a store; `dsd_source_alias_install()` takes ownership and replaces it, and `dsd_source_alias_clear()` removes it.
+  `dsd_source_alias_loaded()` distinguishes an empty imported store from no store; `dsd_source_alias_count()`
+  reports its row count. `src/core/file/source_alias_csv.c` implements `dsd_source_alias_load(path, &out)`
+  (fresh candidate, output untouched on open/read/allocation failure), `csvSrcImport()`/`csvSrcImportPath()`
+  from `<dsd-neo/core/csv_import.h>`, and `dsd_csv_validate_src_file()` from `<dsd-neo/core/csv_validate.h>`.
+  `dsd_source_alias_lookup()` uses exact-before-range, narrowest-range, first-row-wins matching;
+  `dsd_source_label_lookup()` prefers aliases over the active group-list exact label, with mode only from
+  group policy and OTA alias text untouched. The list is global across scan rows and immutable once installed;
+  live access belongs to the decoder thread. `dsd_source_alias_copy_snapshot(dst, src)` deep-copies it for
+  both snapshot hops, reuses an unchanged clone, and clears the destination alias slot on allocation failure
+  without freeing a shared source store. `CORE_SOURCE_ALIAS` tests matching, precedence, lifecycle and policy
+  isolation; `CORE_SOURCE_ALIAS_FAIL` covers allocation/read failures and physical-line length boundaries.
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -260,6 +275,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 - Responsibilities:
   - Frontend metrics and raw telemetry snapshots used by the terminal renderer
   - Command queue dispatch and menu service helpers
+  - Source ID imports: `DSD_APP_CMD_IMPORT_SRC_LIST = 572` carries a path string;
+    `DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR = 573` has no payload. Import validates one candidate, refuses zero usable
+    rows, and adopts that same store and path on success; failure preserves both.
   - Frontend runtime/control-pump glue and telemetry hook installation
   - Public frontend boundary headers under `<dsd-neo/app_control/...>`
   - RadioReference apply: `include/dsd-neo/app_control/rr_import_apply.h` carries the by-value apply payload
@@ -472,8 +490,9 @@ Qt Quick frontend (`src/ui/qt`):
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies
   picked documents into durable app storage through `DecoderHost::importDocument()` and dry-run validates them via
-  `<dsd-neo/core/csv_validate.h>` (`src/core/file/dsd_import.c`, and `src/core/file/p25_bandplan_csv.c` for the
-  P25 band plan kind) for row-count feedback.
+  `<dsd-neo/core/csv_validate.h>` (`src/core/file/dsd_import.c`, `src/core/file/p25_bandplan_csv.c`, and
+  `src/core/file/source_alias_csv.c`) for row-count feedback. Kinds are `chan`, `group`, `keysDec`, `keysHex`,
+  `p25Bandplan`, and `src` (source radio ID names), with `src` appended after `p25Bandplan`.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. See

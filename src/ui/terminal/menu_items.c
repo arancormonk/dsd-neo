@@ -427,6 +427,11 @@ static const NcMenuItem TRUNK_LISTS_ITEMS[] = {
      .label = "Import group list CSV...",
      .help = "Load group labels and allow/block flags; a parse failure keeps the current list.",
      .on_select = act_import_group},
+    {.id = "lists.src",
+     .label = "Import source ID list CSV...",
+     .help =
+         "Load names for source radio IDs from an id,name CSV; labels only, a parse failure keeps the current list.",
+     .on_select = act_import_src},
     {.id = "lists.p25_bandplan",
      .label = "Import P25 band plan CSV...",
      .help = "Load a P25 band plan (IDEN table) for sites that never send IDEN_UP.",

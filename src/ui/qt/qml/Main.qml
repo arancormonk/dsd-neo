@@ -570,6 +570,12 @@ Window {
                 if (sys.p25BandplanCsvPath !== (was.p25BandplanCsvPath || "")
                     && sys.p25BandplanCsvPath.length > 0)
                     commands.importP25Bandplan(sys.p25BandplanCsvPath)
+                if (sys.srcCsvPath !== (was.srcCsvPath || "")) {
+                    if (sys.srcCsvPath.length > 0)
+                        commands.importSrcList(sys.srcCsvPath)
+                    else if ((was.srcCsvPath || "").length > 0)
+                        commands.clearSrcList()
+                }
                 // The monitor header reads sessionSystem; without this it keeps
                 // naming and metering the system as it was before the edit.
                 mainRoot.sessionSystem = sys

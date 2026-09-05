@@ -18,6 +18,7 @@
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
 #include <math.h>
+#include <memory>
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
@@ -2329,6 +2330,7 @@ test_persistence_gap_schema_rows(void) {
         {"mode", "edacs_esk"},
         {"mode", "dmr_lrrp_ports"},
         {"trunking", "p25_bandplan_csv"},
+        {"trunking", "src_csv"},
         {"trunking", "scan_voice_only"},
         {"trunking", "scan_voice_qualify_ms"},
         {"trunking", "scan_voice_hold_ms"},
@@ -2474,6 +2476,66 @@ test_scan_voice_gate_roundtrip(void) {
  * opts->p25_bandplan_in_file -> snapshot -> render, and an empty path renders
  * no key at all so a saved config does not pin an empty string.
  */
+static int
+test_src_csv_roundtrip(void) {
+    static const char* ini = "[trunking]\n"
+                             "src_csv = \"/tmp/source.csv\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "src_csv config failed to load\n");
+        return 1;
+    }
+
+    int rc = 0;
+    if (strcmp(cfg.trunk_src_csv, "/tmp/source.csv") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: [trunking] src_csv did not load, got \"%s\"\n", cfg.trunk_src_csv);
+        rc |= 1;
+    }
+
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (strcmp(opts.src_in_file, "/tmp/source.csv") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: [trunking] src_csv did not reach opts.src_in_file, got \"%s\"\n", opts.src_in_file);
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (strcmp(snap.trunk_src_csv, "/tmp/source.csv") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot dropped src_csv, got \"%s\"\n", snap.trunk_src_csv);
+        rc |= 1;
+    }
+
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("trunking src_csv", rendered, "src_csv = \"/tmp/source.csv\"\n");
+
+    reset_opts_and_state(opts, state);
+    dsdneoUserConfig empty_snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &empty_snap);
+    if (render_config_to_buffer(&empty_snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (strstr(rendered, "src_csv") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: empty src_csv must not be rendered\n");
+        rc |= 1;
+    }
+    return rc;
+}
+
 static int
 test_p25_bandplan_csv_roundtrip(void) {
     static const char* ini = "[trunking]\n"
@@ -2992,6 +3054,7 @@ main(void) {
     rc |= test_dmr_lrrp_ports_bad_entries_are_skipped();
     rc |= test_scanner_and_candidates_roundtrip();
     rc |= test_scan_voice_gate_roundtrip();
+    rc |= test_src_csv_roundtrip();
     rc |= test_p25_bandplan_csv_roundtrip();
     rc |= test_edacs_variant_roundtrip();
     rc |= test_edacs_variant_unanswered_is_not_persisted();

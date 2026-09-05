@@ -101,4 +101,44 @@ Item {
             compare(message.width, card.width - 2 * inset)
         }
     }
+
+    // Kind selection needs no imported fixture; keep its geometry check independent
+    // of the library-card cases and their persistent test data.
+    TestCase {
+        id: kindTc
+        name: "ImportsKindPickerLayout"
+        when: windowShown
+        readonly property var screen: screenLoader.item
+        readonly property var importButton: findChild(screen, "importFileButton")
+
+        function test_kind_labels_fit_at_phone_width() {
+            root.width = 360
+            kindTc.importButton.clicked()
+            var picker = findChild(kindTc.screen, "importKindPicker")
+            verify(picker !== null)
+            tryVerify(function () { return picker.visible })
+            wait(100)
+            var kinds = ["chan", "group", "keys", "p25Bandplan", "src"]
+            var labels = ["Channel map", "Talkgroups", "Keys", "P25 band plan", "Radio IDs"]
+            for (var i = 0; i < kinds.length; i++) {
+                var pill = findChild(picker, "importKind_" + kinds[i])
+                verify(pill !== null && pill.visible)
+                compare(pill.text, labels[i])
+                verify(!pill.caret)
+                var label = pill.children[0].children[0]
+                compare(label.text, labels[i])
+                verify(!label.truncated && label.width >= label.contentWidth)
+                var inPill = label.mapToItem(pill, 0, 0)
+                verify(inPill.x >= 0 && inPill.x + label.width <= pill.width)
+                verify(inPill.y >= 0 && inPill.y + label.height <= pill.height)
+                var onScreen = pill.mapToItem(kindTc.screen, 0, 0)
+                verify(onScreen.x >= 0 && onScreen.x + pill.width <= kindTc.screen.width)
+                verify(onScreen.y >= 0 && onScreen.y + pill.height <= kindTc.screen.height)
+                pill.clicked()
+                compare(kindTc.screen.pendingType, kinds[i])
+            }
+            root.width = 420
+        }
+
+    }
 }

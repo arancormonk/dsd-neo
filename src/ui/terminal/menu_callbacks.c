@@ -176,6 +176,18 @@ cb_import_group(void* v, const char* p) {
 }
 
 void
+cb_import_src(void* v, const char* p) {
+    const UiCtx* c = mutable_ui_ctx_from_callback(v);
+    if (!c) {
+        return;
+    }
+    if (p && *p) {
+        (void)dsd_app_command_set_string(DSD_APP_CMD_IMPORT_SRC_LIST, p);
+        ui_statusf("Importing source ID list...");
+    }
+}
+
+void
 cb_import_p25_bandplan(void* v, const char* p) {
     const UiCtx* c = mutable_ui_ctx_from_callback(v);
     if (!c) {

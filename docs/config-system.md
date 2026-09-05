@@ -76,6 +76,7 @@ data = true
 enabled = true
 chan_csv = "~/dsd-neo/dmr_t3_chan.csv"   # path expansion supported
 group_csv = "$HOME/dsd-neo/group.csv"
+src_csv = "$HOME/dsd-neo/src.csv"         # source radio ID names; labels only
 p25_bandplan_csv = "~/dsd-neo/p25_bandplan.csv"
 allow_list = true
 
@@ -102,6 +103,7 @@ Path expansion is applied to:
 - `[input] file_path`
 - `[trunking] chan_csv`
 - `[trunking] group_csv`
+- `[trunking] src_csv`
 - `[trunking] p25_bandplan_csv`
 - `[trunk_scan] targets_csv`
 - `[logging] event_log`
@@ -333,6 +335,7 @@ small subset is exposed as config keys for convenience (for example
 | `enabled` | BOOL | Enable trunking | `false` |
 | `chan_csv` | PATH | Channel map CSV | (empty) |
 | `group_csv` | PATH | Group list CSV | (empty) |
+| `src_csv` | PATH | Source ID alias list CSV (`--src-csv`; labels only, loads regardless of trunking) | (empty) |
 | `p25_bandplan_csv` | PATH | P25 band plan CSV (`--p25-bandplan`; see `docs/csv-formats.md`) | (empty) |
 | `allow_list` | BOOL | Use as allow list | `false` |
 | `tune_group_calls` | BOOL | Follow group calls | `true` |
@@ -624,6 +627,10 @@ is rejected by Soapy metadata, or the driver rejects `writeSetting`.
 
 ### Trunking
 
+`[trunking] src_csv` is the global source ID alias list, equivalent to `--src-csv <file>`. When set, it loads
+regardless of whether trunking is enabled, so conventional decode also gets source names. It supplies labels only;
+source labels prefer this list and fall back to the active group list's exact row, with OTA alias text untouched.
+
 When `[trunking] enabled = true`:
 
 - Trunking is activated for the selected mode.
@@ -642,6 +649,8 @@ When `[trunk_scan] enabled = true`:
   `chan_csv` / `p25_bandplan_csv` if it needs a channel map or a band plan.
 - The group policy remains global, so `[trunking] group_csv`, `allow_list`, and tune controls apply uniformly across all
   scan targets.
+- `[trunking] src_csv` is also global and allowed under trunk scan (`--src-csv` on the CLI). It is not swapped
+  with scan rows; the source-label fallback uses whichever group policy table is active.
 - One tuner is rotated across targets. Calls on systems that are not currently parked can be missed.
 - Runtime still needs a retuning path, either RTL-family input opened by DSD-neo or rigctl tuning. IQ replay is rejected.
 - Full user workflow, examples, and troubleshooting: `docs/trunk-scan.md`.

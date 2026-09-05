@@ -4,8 +4,8 @@
 import QtQuick
 import QtQuick.Dialogs
 
-// The imported-files library: every channel map, talkgroup list, key file and
-// P25 band plan that has been copied into app storage, with import/update/remove
+// The imported-files library: every channel map, talkgroup list, key file,
+// P25 band plan and radio ID list copied into app storage, with import/update/remove
 // flows. The wizard's pickers reference the same library, so a file imported
 // here serves any saved system.
 Item {
@@ -38,6 +38,8 @@ Item {
             return count === 1 ? qsTr("talkgroup") : qsTr("talkgroups")
         if (type === "p25Bandplan")
             return count === 1 ? qsTr("identifier") : qsTr("identifiers")
+        if (type === "src")
+            return count === 1 ? qsTr("radio ID") : qsTr("radio IDs")
         return count === 1 ? qsTr("key") : qsTr("keys")
     }
 
@@ -309,7 +311,7 @@ Item {
             // second step in from the edge, not the first.
             width: parent.width - 2 * Theme.screenPadding
             visible: importedFiles.count === 0
-            text: qsTr("No imported files yet. Import a channel map, talkgroup list, key file, or P25 band plan to use it in your systems.")
+            text: qsTr("No imported files yet. Import a channel map, talkgroup list, key file, P25 band plan, or radio ID list to use it in your systems.")
             font.family: Theme.sans
             font.pixelSize: 14
             color: Theme.textSubdued
@@ -379,16 +381,23 @@ Item {
             wrapMode: Text.Wrap
         }
 
-        SegmentedControl {
+        Flow {
+            objectName: "importKindPicker"
             width: parent.width
-            model: [qsTr("Channel map"), qsTr("Talkgroups"), qsTr("Keys"), qsTr("P25 band plan")]
-            currentIndex: screen.pendingType === "chan" ? 0
-                          : screen.pendingType === "group" ? 1
-                          : screen.pendingType === "keys" ? 2 : 3
-            onSelected: function (index) {
-                screen.pendingType = index === 0 ? "chan"
-                                     : index === 1 ? "group"
-                                     : index === 2 ? "keys" : "p25Bandplan"
+            spacing: 8
+
+            Repeater {
+                model: [qsTr("Channel map"), qsTr("Talkgroups"), qsTr("Keys"), qsTr("P25 band plan"), qsTr("Radio IDs")]
+                delegate: FilterPill {
+                    required property int index
+                    required property string modelData
+                    readonly property string kind: ["chan", "group", "keys", "p25Bandplan", "src"][index]
+                    objectName: "importKind_" + kind
+                    text: modelData
+                    caret: false
+                    active: screen.pendingType === kind
+                    onClicked: screen.pendingType = kind
+                }
             }
         }
 
@@ -475,6 +484,7 @@ Item {
                 var sent = entry.type === "chan" ? commands.importChannelMap(entry.path)
                            : entry.type === "group" ? commands.importGroupList(entry.path)
                            : entry.type === "p25Bandplan" ? commands.importP25Bandplan(entry.path)
+                           : entry.type === "src" ? commands.importSrcList(entry.path)
                            : commands.importKeys(entry.path, entry.type === "keysHex")
                 screen.notice = sent ? qsTr("Sent to decoder") : qsTr("The decoder is not accepting commands")
                 screen.noticeIsProblem = !sent

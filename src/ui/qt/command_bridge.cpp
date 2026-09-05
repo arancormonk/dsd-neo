@@ -191,4 +191,18 @@ CommandBridge::clearKeys() const {
     return accepted(dsd_app_command_action(DSD_APP_CMD_IMPORT_KEYS_CLEAR));
 }
 
+bool
+CommandBridge::importSrcList(const QString& path) const {
+    if (path.isEmpty()) {
+        return false;
+    }
+    return accepted(dsd_app_command_set_string(DSD_APP_CMD_IMPORT_SRC_LIST, path.toUtf8().constData()));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::clearSrcList() const {
+    return accepted(dsd_app_command_action(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR));
+}
+
 } // namespace dsd_qt

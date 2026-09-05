@@ -1083,6 +1083,19 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             p25_bandplan_export_cli = argv[i] + 22;                                                                    \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--src-csv") == 0) {                                                                       \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--src-csv requires a CSV path\n");                                                          \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            src_csv_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                   \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--src-csv=", 10) == 0) {                                                                 \
+            src_csv_cli = argv[i] + 10;                                                                                \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--dmr-force-algid") == 0) {                                                               \
             if (i + 1 >= argc) {                                                                                       \
                 LOG_ERROR("--dmr-force-algid requires a hex ALGID value\n");                                           \
@@ -1600,6 +1613,28 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         opts->p25_bandplan_export_file[sizeof opts->p25_bandplan_export_file - 1] = '\0';                              \
         LOG_INFO("NOTICE: P25 band plan export file: %s\n", opts->p25_bandplan_export_file);                           \
     }                                                                                                                  \
+    if (src_csv_cli) {                                                                                                 \
+        opts->src_in_file[0] = '\0';                                                                                   \
+        char src_path[DSD_CLI_LOCAL_PATH_MAX];                                                                         \
+        if (!cli_resolve_existing_local_file_option("--src-csv", src_csv_cli, src_path, sizeof src_path,               \
+                                                    out_exit_rc)) {                                                    \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        if (strlen(src_path) >= sizeof opts->src_in_file) {                                                            \
+            LOG_ERROR("--src-csv path is too long\n");                                                                 \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        DSD_SNPRINTF(opts->src_in_file, sizeof opts->src_in_file, "%s", src_path);                                     \
+        opts->src_in_file[sizeof opts->src_in_file - 1] = '\0';                                                        \
+        if (csvSrcImport(opts, state) != 0) {                                                                          \
+            opts->src_in_file[0] = '\0';                                                                               \
+            LOG_ERROR("Invalid --src-csv value\n");                                                                    \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        LOG_INFO("NOTICE: Imported source ID list from %s\n", opts->src_in_file);                                      \
+    }                                                                                                                  \
     if (dmr_force_algid_cli) {                                                                                         \
         uint64_t alg = 0U;                                                                                             \
         if (!cli_parse_force_algid(dmr_force_algid_cli, &alg)) {                                                       \
@@ -1695,6 +1730,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* dmr_vertex_ks_csv_cli = NULL;
     const char* dmr_tg_key_csv_cli = NULL;
     const char* p25_bandplan_cli = NULL;
+    const char* src_csv_cli = NULL;
     const char* p25_bandplan_export_cli = NULL;
     const char* dmr_force_algid_cli = NULL;
     int long_force_conflict_cli = 0;

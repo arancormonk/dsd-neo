@@ -26,6 +26,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -76,6 +77,21 @@ ui_lookup_group_label(const dsd_state* state, unsigned long id, char* mode, size
         return 0;
     }
     return dsd_tg_policy_lookup_label(state, (uint32_t)id, mode, mode_sz, name, name_sz);
+}
+
+static int
+ui_lookup_source_label(const dsd_state* state, unsigned long id, char* mode, size_t mode_sz, char* name,
+                       size_t name_sz) {
+    if (id == 0UL || id > UINT32_MAX) {
+        if (mode && mode_sz > 0) {
+            mode[0] = '\0';
+        }
+        if (name && name_sz > 0) {
+            name[0] = '\0';
+        }
+        return 0;
+    }
+    return dsd_source_label_lookup(state, (uint32_t)id, mode, mode_sz, name, name_sz);
 }
 
 /* Small helpers to align key/value fields to a consistent value column. */
@@ -2244,7 +2260,9 @@ ui_render_nxdn_tgt_src_line(const dsd_state* state) {
             printw(" [%s]", group_name);
             printw("[%s] ", group_mode);
         }
-        if (source != target && ui_lookup_group_label(state, source, NULL, 0, group_name, sizeof(group_name))) {
+        if ((source != 0UL && source <= UINT32_MAX
+             && dsd_source_alias_lookup(state, (uint32_t)source, group_name, sizeof(group_name)))
+            || (source != target && ui_lookup_source_label(state, source, NULL, 0, group_name, sizeof(group_name)))) {
             attron(COLOR_PAIR(4));
             printw(" [%s]", group_name);
         }
@@ -2403,12 +2421,14 @@ ui_render_edacs_channel_label(const dsd_state* state, const dsd_call_observation
                                             sizeof group_mode, group_name, sizeof group_name);
     }
     if (!label_found && observation->ota_source_id != 0U && observation->ota_source_id <= UINT32_MAX) {
-        label_found = ui_lookup_group_label(state, (unsigned long)observation->ota_source_id, group_mode,
-                                            sizeof group_mode, group_name, sizeof group_name);
+        label_found = ui_lookup_source_label(state, (unsigned long)observation->ota_source_id, group_mode,
+                                             sizeof group_mode, group_name, sizeof group_name);
     }
     if (label_found) {
         printw(" [%s]", group_name);
-        printw("[%s]", group_mode);
+        if (group_mode[0]) {
+            printw("[%s]", group_mode);
+        }
     }
 }
 
@@ -2711,15 +2731,6 @@ ui_restore_call_info_color(const dsd_state* state) {
 }
 
 static void
-ui_render_p25_talker_alias(dsd_state* state, unsigned long src, int alias_index) {
-    char group_name[50];
-    if (ui_lookup_group_label(state, src, NULL, 0, group_name, sizeof(group_name))) {
-        DSD_SNPRINTF(state->generic_talker_alias[alias_index], sizeof state->generic_talker_alias[alias_index], "%s",
-                     group_name);
-    }
-}
-
-static void
 ui_render_p25_dmr_header_dmr_bs(const dsd_state* state) {
     printw("DMR BS - DCC: %02i; ", state->dmr_color_code);
     printw("%s ", state->dmr_branding);
@@ -2738,15 +2749,6 @@ ui_render_p25_dmr_header_dmr_bs(const dsd_state* state) {
     }
 }
 
-static unsigned long
-ui_active_call_source(const dsd_state* state, uint8_t slot) {
-    dsd_call_snapshot call;
-    if (!ui_active_call_snapshot(state, slot, &call) || call.ota_source_id > ULONG_MAX) {
-        return 0UL;
-    }
-    return (unsigned long)call.ota_source_id;
-}
-
 static void
 ui_render_p25_dmr_header_p25p1(const dsd_opts* opts, dsd_state* state) {
     char callsign[7] = {0};
@@ -2762,7 +2764,6 @@ ui_render_p25_dmr_header_p25p1(const dsd_opts* opts, dsd_state* state) {
         long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
         printw("Freq: %.06lf MHz", (double)f / 1000000);
     }
-    ui_render_p25_talker_alias(state, ui_active_call_source(state, 0U), 0);
 }
 
 static void
@@ -2797,8 +2798,6 @@ ui_render_p25_dmr_header_p25p2(const dsd_opts* opts, dsd_state* state) {
     }
     printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
     ui_render_p25p2_parameter_status(state);
-    ui_render_p25_talker_alias(state, ui_active_call_source(state, 0U), 0);
-    ui_render_p25_talker_alias(state, ui_active_call_source(state, 1U), 1);
 }
 
 static void
@@ -3095,6 +3094,15 @@ ui_render_slot_group_label(const dsd_state* state, const ui_slot_view* slot, int
 }
 
 static void
+ui_render_slot_source_label(const dsd_state* state, const ui_slot_view* slot, int show_ids) {
+    char name[DSD_SOURCE_ALIAS_NAME_MAX];
+    if (show_ids && ui_lookup_source_label(state, (unsigned long)slot->source, NULL, 0, name, sizeof(name))) {
+        attron(COLOR_PAIR(4));
+        printw(" SRC: [%s]", name);
+    }
+}
+
+static void
 ui_render_slot_dxtra_line(const dsd_state* state, const ui_slot_view* slot, int show_ids) {
     printw("| D XTRA | ");
     attron(COLOR_PAIR(4));
@@ -3117,6 +3125,7 @@ ui_render_slot_dxtra_line(const dsd_state* state, const ui_slot_view* slot, int 
     }
 
     ui_render_slot_group_label(state, slot, show_ids);
+    ui_render_slot_source_label(state, slot, show_ids);
     ui_restore_call_info_color(state);
     printw("\n");
 }

@@ -234,6 +234,10 @@ enum dsd_app_command_id {
     DSD_APP_CMD_RR_APPLY_IMPORT = 570, // payload: dsd_app_rr_apply_payload
     DSD_APP_CMD_RR_ACCOUNT_SET = 571,  // payload: dsd_app_rr_account_payload
 
+    // Source radio ID aliases (labels only)
+    DSD_APP_CMD_IMPORT_SRC_LIST = 572,       // payload: char path[]
+    DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR = 573, // no payload
+
     // P25 helpers
     DSD_APP_CMD_P25_P2_PARAMS_SET = 580, // payload: struct { uint64_t wacn, sysid, cc; }
 
