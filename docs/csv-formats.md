@@ -198,16 +198,22 @@ Options are parsed once when the list is loaded. They are a restricted argument 
 | `--scan-voice-only`, `--no-scan-voice-only` | Enable/disable the conventional voice gate. |
 | `--scan-voice-qualify-ms`, `--scan-voice-hold-ms` | Conventional voice-gate intervals, `100..600000` milliseconds. |
 
-Protocol-specific options require a declared `mode`; trunk targets use their `type`. Trunk-system targets reject
-voice-gate options: their existing `dwell_ms` and `activity_hold_ms` columns retain their roles. Input/output,
-frontend selection, decoder flags and scanner-wide `-t` are not accepted in `options`.
+Protocol-specific options require a declared `mode`; trunk targets use their `type`. A channel map whose rows carry
+`options` but no `mode` still runs through the typed scanner (blank rows inherit the configured decoder), since the
+legacy `-Y` scanner applies row keys but not row options. Trunk-system targets reject voice-gate options: their
+existing `dwell_ms` and `activity_hold_ms` columns retain their roles, while a conventional target's voice-gate
+intervals replace those two columns while the gate is on (see `docs/trunk-scan.md`). Input/output, frontend
+selection, decoder flags and scanner-wide `-t` are not accepted in `options`.
 
 Omitted settings inherit the outer CLI/configuration, including forcing. Use `--no-force-key` on a normal mixed
 clear/BP channel when forcing is configured globally. `-b 1` with normal signalling processes clear and BP calls;
 `-4` deliberately applies loaded privacy keys even to frames marked clear and can corrupt those clear calls.
 There is no automatic choice between forced Motorola and Hytera privacy.
 
-The existing `single_key_dec` and `single_key_hex` columns still mean `-b` and `-H`, respectively. Use `options=-R 1`
+The existing `single_key_dec` and `single_key_hex` columns still load the `-b` and `-H` key values, respectively,
+and only that: as before, they never change encrypted-audio muting, whether or not the row also has an `options`
+cell. `-b` and `-H` written in `options` behave like the CLI switches and do decide DMR muting for the row (explicit
+`-b 0` mutes; any key material unmutes); `-1` mutes undecodable P25 audio as the CLI switch does. Use `options=-R 1`
 for a direct NXDN scrambler and `options=-1 0123456789` for direct RC4. Loading a key does not itself enable forcing.
 A direct source replaces the row's complete key set; unspecified families and keyring entries are cleared. Explicit
 zero is a supplied value. Direct and file-backed key sources cannot be mixed, including across columns and options.
@@ -223,11 +229,14 @@ prefix and whitespace inside a quoted argument. Long arguments also accept `--na
 separators, including inside quotes. Unknown switches, positional text, malformed quotes and duplicate settings are
 errors. Diagnostics name the row and option without repeating raw option text or key values.
 
-File paths resolve relative to the containing CSV. Keys and group policies are loaded before scanning starts;
-switching rows never reads these files. `-G` replaces the active group policy while parked. Labels and session policy
+File paths resolve relative to the containing CSV. Key-file paths (`-K`, `-k` and the legacy columns) share the
+existing 2047-character limit; a `-G` path is limited to 1023 characters, the same as the global group file it
+replaces. Keys and group policies are loaded before scanning starts; switching rows never reads these files. A
+group file row the importer cannot store is skipped with a warning, exactly as for a global `-G` import. `-G` replaces the active group policy while parked. Labels and session policy
 edits remain with that row's policy; unconfigured rows use the global policy. Global group imports and scoped setting
-changes from the frontend update the saved baseline beneath the active row. Leaving or replacing the scan restores
-that baseline. Frontend configuration saves preserve configured defaults, not temporary row overrides.
+changes from the frontend (forcing, CRC policy, mutes, voice gate) update the saved baseline beneath the active row
+and take effect immediately without interrupting the parked row or a call in progress. Leaving or replacing the scan
+restores that baseline. Frontend configuration saves preserve configured defaults, not temporary row overrides.
 
 The Qt/Android picker supports embedded values. Companion files named by `-G`, `-k` or `-K` have the same limitation
 as existing key-file columns: the picker does not copy companion files alongside the imported list.

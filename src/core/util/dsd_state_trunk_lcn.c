@@ -439,6 +439,9 @@ typedef struct {
     dsd_scan_mode* rows;
     dsd_scan_row_profile** profiles;
     size_t profile_capacity;
+    /* Rows whose profile carries at least one option. Like declared_count, a nonzero value
+     * routes the scan through the typed scanner, which is the only path that applies them. */
+    size_t profile_count;
     dsd_tg_policy_store* group_baseline;
     dsd_tg_policy_store* group_suspended_row;
     int group_active;
@@ -467,7 +470,12 @@ dsd_channel_mode_get(const dsd_state* state, size_t row) {
 int
 dsd_channel_modes_present(const dsd_state* state) {
     const channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
-    return modes && modes->declared_count != 0;
+    return modes && (modes->declared_count != 0 || modes->profile_count != 0);
+}
+
+static int
+channel_profile_has_options(const dsd_scan_row_profile* profile) {
+    return profile != NULL && profile->values.present != 0;
 }
 
 int
@@ -575,8 +583,10 @@ dsd_channel_profile_set(dsd_state* state, size_t row, dsd_scan_row_profile* prof
         modes->profiles = profiles;
         modes->profile_capacity = capacity;
     }
+    modes->profile_count -= channel_profile_has_options(modes->profiles[row]);
     dsd_scan_profile_free(modes->profiles[row]);
     modes->profiles[row] = profile;
+    modes->profile_count += channel_profile_has_options(profile);
     return 0;
 }
 

@@ -608,7 +608,13 @@ External dependencies (resolved via CMake):
   context so aliases and session policy changes survive visits; frontend snapshots still clone the effective context.
   Slot 5 holds the saved global group context and suspend/resume ownership. Clearing metadata restores it first.
 - `dsd_scan_key_change_prepare()` allocates the incoming key copy and any needed baseline before a conventional tune;
-  commit transfers ownership without allocation. Engine checks the map generation and key epoch before committing.
-  Both coordinators restore mode, keys, group policy and scalar overrides together at their protected transitions.
+  commit consumes the change without allocation. Engine checks the map generation and key epoch before committing,
+  restaging the tune (and re-preparing against the current globals) when the keyring changed in the window. Both
+  coordinators reserve every scope and key allocation before saving the outgoing snapshot, so a failed preparation
+  leaves the receiver, the snapshot and the rotation bookkeeping untouched.
+- `dsd_channel_modes_present()` is true for declared modes and for option-bearing profiles alike, so option-only
+  channel maps run the typed scanner. `dsd_scan_settings_equal()` compares acquisition settings only; the row-scoped
+  options (forcing, CRC, mutes, voice gate, group file) are folded through `dsd_scan_mode_resume()` without
+  resetting acquisition. Conventional trunk-scan targets take their voice-gate hold/qualify from the row profile.
 - App-control scopes force/CRC/voice configuration commands and group imports, while live row policy mutations stay
   with the active context. Configuration export reads saved group paths and voice settings from the configured scope.

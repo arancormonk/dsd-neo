@@ -130,6 +130,11 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
     out->state_sps_hunt_idx = state->sps_hunt_idx;
 }
 
+_Static_assert(sizeof(((dsd_scan_option_values*)0)->group_file) == sizeof(((dsd_opts*)0)->group_in_file),
+               "row group paths are copied verbatim over dsd_opts::group_in_file");
+_Static_assert(sizeof(((dsd_scan_settings*)0)->group_in_file) == sizeof(((dsd_opts*)0)->group_in_file),
+               "scan settings snapshot dsd_opts::group_in_file verbatim");
+
 static void
 scan_settings_restore_row_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
     opts->aggressive_framesync = saved->aggressive_framesync;
@@ -141,6 +146,22 @@ scan_settings_restore_row_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
     opts->dmr_mute_encR = saved->dmr_mute_encR;
     opts->unmute_encrypted_p25 = saved->unmute_encrypted_p25;
     DSD_MEMCPY(opts->group_in_file, saved->group_in_file, sizeof(opts->group_in_file));
+}
+
+/* Row-scoped nonsecret options are policy, not acquisition: they never restage a tune
+ * or interrupt a parked row, so they travel beside the comparison, not through it. */
+static void
+scan_settings_copy_row_opts(dsd_scan_settings* dst, const dsd_scan_settings* src) {
+    dst->force_key = src->force_key;
+    dst->aggressive_framesync = src->aggressive_framesync;
+    dst->dmr_crc_relaxed_default = src->dmr_crc_relaxed_default;
+    dst->scan_voice_only = src->scan_voice_only;
+    dst->scan_voice_qualify_ms = src->scan_voice_qualify_ms;
+    dst->scan_voice_hold_ms = src->scan_voice_hold_ms;
+    dst->dmr_mute_encL = src->dmr_mute_encL;
+    dst->dmr_mute_encR = src->dmr_mute_encR;
+    dst->unmute_encrypted_p25 = src->unmute_encrypted_p25;
+    DSD_MEMCPY(dst->group_in_file, src->group_in_file, sizeof(dst->group_in_file));
 }
 
 static void
@@ -209,15 +230,6 @@ int
 dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, int include_timing) {
     /* Explicit membership, independent of struct order and padding. */
     static const size_t options[] = {
-        offsetof(dsd_scan_settings, force_key),
-        offsetof(dsd_scan_settings, aggressive_framesync),
-        offsetof(dsd_scan_settings, dmr_crc_relaxed_default),
-        offsetof(dsd_scan_settings, scan_voice_only),
-        offsetof(dsd_scan_settings, scan_voice_qualify_ms),
-        offsetof(dsd_scan_settings, scan_voice_hold_ms),
-        offsetof(dsd_scan_settings, dmr_mute_encL),
-        offsetof(dsd_scan_settings, dmr_mute_encR),
-        offsetof(dsd_scan_settings, unmute_encrypted_p25),
         offsetof(dsd_scan_settings, frame_dstar),
         offsetof(dsd_scan_settings, frame_x2tdma),
         offsetof(dsd_scan_settings, frame_p25p1),
@@ -259,7 +271,6 @@ dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, 
     }
     return scan_settings_fields_equal(a, b, options, sizeof(options) / sizeof(options[0]))
            && strncmp(a->output_name, b->output_name, sizeof(a->output_name)) == 0
-           && strncmp(a->group_in_file, b->group_in_file, sizeof(a->group_in_file)) == 0
            && (!include_timing || scan_settings_fields_equal(a, b, timing, sizeof(timing) / sizeof(timing[0])));
 }
 
@@ -348,12 +359,13 @@ scan_options_apply(dsd_opts* opts, dsd_state* state, const dsd_scan_option_value
     if (present & DSD_SCAN_OPT_HOLD) {
         opts->scan_voice_hold_ms = values->hold_ms;
     }
-    if (present & (DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA)) {
+    if (present & DSD_SCAN_OPT_MUTE_DMR) {
         opts->dmr_mute_encL = values->mute_dmr;
         opts->dmr_mute_encR = values->mute_dmr;
     }
     if (present & DSD_SCAN_OPT_SCALAR) {
-        opts->unmute_encrypted_p25 = values->unmute_p25;
+        /* `-1` loads a key for decryption; undecodable P25 audio stays muted, as on the CLI. */
+        opts->unmute_encrypted_p25 = 0;
     }
     if (present & DSD_SCAN_OPT_GROUP) {
         DSD_MEMCPY(opts->group_in_file, values->group_file, sizeof(opts->group_in_file));
@@ -366,11 +378,11 @@ scan_scope_apply(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
     scan_options_apply(opts, state, &scope->options);
 }
 
-void
+int
 dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
     scan_scope* scope = scan_scope_get(state);
     if (!scope || !opts) {
-        return;
+        return -1;
     }
     DSD_MEMSET(&scope->options, 0, sizeof(scope->options));
     if (values) {
@@ -381,6 +393,7 @@ dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_va
         state->M = scope->configured.force_key;
         scan_options_apply(opts, state, &scope->options);
     }
+    return 0;
 }
 
 int
@@ -485,9 +498,11 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
     }
     dsd_scan_settings effective;
     dsd_scan_settings_capture(opts, state, &effective);
-    /* Monitoring is audio routing. Fold it into the restored effective values
-     * without treating it as an acquisition change or replacing live timing. */
+    /* Monitoring is audio routing, and the row-scoped options are policy (forcing, CRC,
+     * mutes, voice gate, group file). Fold both into the restored effective values
+     * without treating them as an acquisition change or replacing live timing. */
     scope->effective.monitor_input_audio = opts->monitor_input_audio;
+    scan_settings_copy_row_opts(&scope->effective, &effective);
     if (dsd_scan_settings_equal(&scope->effective, &effective, 0)) {
         dsd_scan_settings_restore(&scope->effective, opts, state);
         return 0;

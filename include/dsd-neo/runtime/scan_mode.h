@@ -34,7 +34,9 @@ typedef enum {
     DSD_SCAN_MODULATION_GFSK
 } dsd_scan_modulation;
 
-/** Scalar snapshot of the exact configured decoder settings; owns no pointers. */
+/** Scalar snapshot of the exact configured decoder settings; owns no pointers.
+ * The leading block holds the row-scoped nonsecret options (see scan_options.h); they are
+ * captured and restored with the rest but excluded from dsd_scan_settings_equal(). */
 typedef struct {
     int force_key;
     int aggressive_framesync;
@@ -93,7 +95,9 @@ dsd_scan_mode dsd_scan_mode_active(const dsd_state* state);
 /** Capture/restore effective fields for a staged tune; no pointers or audio sink fields are changed. */
 void dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out);
 void dsd_scan_settings_restore(const dsd_scan_settings* saved, dsd_opts* opts, dsd_state* state);
-/** Compare setting values, ignoring unused label bytes; optionally include live timing/modulation. */
+/** Compare the acquisition-relevant settings (decoder set, modulation, inversion, slot policy, output
+ * name), ignoring unused label bytes and the row-scoped option fields; optionally include live
+ * timing/modulation. A difference means a staged tune or parked row must be re-acquired. */
 int dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, int include_timing);
 /** Prepare production row settings without committing the row or baseline. */
 int dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, dsd_scan_settings* out);
@@ -107,14 +111,18 @@ dsdneoUserDecodeMode dsd_scan_mode_configured_preset_exact(const dsd_opts* opts,
  * INHERIT restores the baseline for a blank row while retaining scan ownership. */
 int dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode);
 /** Install nonsecret row overrides after mode entry; NULL restores baseline row options.
- * No allocation. The caller must already own a scan scope. Reapplied after operator updates. */
-void dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values);
+ * No allocation. Returns -1 without touching anything when no scan scope is owned (call
+ * dsd_scan_mode_enter()/dsd_scan_mode_begin() first), else 0. While the scope is suspended the
+ * values are only recorded and take effect at dsd_scan_mode_resume(); they are reapplied over the
+ * refreshed baseline after every operator update. */
+int dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values);
 /** Restore the exact configured baseline and release the scope. */
 void dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state);
 /** Temporarily restore configuration for an operator update, retaining the row constraint. */
 int dsd_scan_mode_suspend(dsd_opts* opts, dsd_state* state);
 /** Save updated configuration and reapply the constraint. Return nonzero when decoder
- * settings changed and acquisition must reset; audio-routing-only updates return zero. */
+ * settings changed and acquisition must reset; audio-routing and row-scoped option updates
+ * (forcing, CRC policy, mutes, voice gate, group file) return zero and simply take effect. */
 int dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state);
 /** Nonzero between suspend and resume; side effects must wait until effective settings are known. */
 int dsd_scan_mode_updating(const dsd_state* state);

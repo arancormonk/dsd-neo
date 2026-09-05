@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "key_set_internal.h"
+
 static int
 profile_error(char* error, size_t size, const char* field, const char* reason) {
     if (error && size) {
@@ -35,24 +37,7 @@ dsd_scan_options_keys(const dsd_scan_options* options, dsd_key_set* out) {
         keys.scalars.RR = options->scalar;
     }
     if (present & DSD_SCAN_OPT_HYTERA) {
-        keys.scalars.H = keys.scalars.K1 = options->hytera[0];
-        keys.scalars.K2 = options->hytera[1];
-        keys.scalars.K3 = options->hytera[2];
-        keys.scalars.K4 = options->hytera[3];
-        unsigned int count = options->hytera_digits == 10 ? 1U : options->hytera_digits / 16U;
-        int nonzero = options->hytera[0] || options->hytera[1] || options->hytera[2] || options->hytera[3];
-        keys.scalars.hytera_key_segments = nonzero ? (uint8_t)count : 0;
-        if (count > 1) {
-            unsigned long long* slots[] = {keys.scalars.A1, keys.scalars.A2, keys.scalars.A3, keys.scalars.A4};
-            for (unsigned int i = 0; i < count; i++) {
-                slots[i][0] = slots[i][1] = options->hytera[i];
-                for (unsigned int j = 0; j < 8; j++) {
-                    keys.scalars.aes_key[i * 8 + j] = (uint8_t)(options->hytera[i] >> (56 - j * 8));
-                }
-            }
-            keys.scalars.aes_key_loaded[0] = keys.scalars.aes_key_loaded[1] = nonzero;
-            keys.scalars.aes_key_segments[0] = keys.scalars.aes_key_segments[1] = (uint8_t)count;
-        }
+        dsd_key_scalars_store_direct_hex(&keys.scalars, options->hytera, options->hytera_digits);
     }
     dsd_key_set_free(out);
     *out = keys;
@@ -145,17 +130,40 @@ dsd_scan_options_merge_keys(dsd_scan_options* options, const char* hex_file, con
     if ((combined & DSD_SCAN_OPT_DIRECT) && (combined & DSD_SCAN_OPT_FILES)) {
         return profile_error(error, error_size, "options", "direct keys cannot be combined with key files");
     }
-    if (profile_legacy_direct(options, legacy, single_hex, single_dec)) {
-        return profile_error(error, error_size, "single_key_hex/single_key_dec", "invalid value");
+    /* Merge into a copy so a rejected column leaves the caller's object exactly as it was. */
+    dsd_scan_options merged = *options;
+    int rc = 0;
+    if (profile_legacy_direct(&merged, legacy, single_hex, single_dec)) {
+        rc = profile_error(error, error_size, "single_key_hex/single_key_dec", "invalid value");
+    } else if (profile_copy_path(merged.hex_file, sizeof(merged.hex_file), hex_file)) {
+        rc = profile_error(error, error_size, "keys_hex_csv", "path too long");
+    } else if (profile_copy_path(merged.dec_file, sizeof(merged.dec_file), dec_file)) {
+        rc = profile_error(error, error_size, "keys_dec_csv", "path too long");
     }
-    if (profile_copy_path(options->hex_file, sizeof(options->hex_file), hex_file)) {
-        return profile_error(error, error_size, "keys_hex_csv", "path too long");
+    if (rc == 0) {
+        merged.values.present = combined;
+        /* Legacy columns only load keys. Only the option text's own `-b`/`-H` decide muting, and
+         * then from all of the row's privacy material, as the CLI switches do. */
+        if (combined & DSD_SCAN_OPT_MUTE_DMR) {
+            merged.values.mute_dmr = profile_mute_dmr(&merged);
+        }
+        *options = merged;
     }
-    if (profile_copy_path(options->dec_file, sizeof(options->dec_file), dec_file)) {
-        return profile_error(error, error_size, "keys_dec_csv", "path too long");
+    DSD_SECURE_ZERO(&merged, sizeof(merged));
+    return rc;
+}
+
+static int
+profile_resolve_path(const char* base, char* path, size_t capacity) {
+    if (!path[0]) {
+        return 0;
     }
-    options->values.present = combined;
-    options->values.mute_dmr = profile_mute_dmr(options);
+    char resolved[DSD_SCAN_OPTIONS_KEY_PATH_MAX] = {0};
+    const size_t limit = capacity < sizeof(resolved) ? capacity : sizeof(resolved);
+    if (dsd_path_resolve_relative_to_file(base, path, resolved, limit)) {
+        return -1;
+    }
+    DSD_MEMCPY(path, resolved, capacity);
     return 0;
 }
 
@@ -164,21 +172,30 @@ dsd_scan_options_resolve(dsd_scan_options* options, const char* base, char* erro
     if (!options) {
         return profile_error(error, error_size, "options", "invalid argument");
     }
-    const char* paths[] = {options->hex_file, options->dec_file, options->values.group_file};
-    char resolved[3][1024] = {{0}};
-    const char* names[] = {"keys_hex_csv/-K", "keys_dec_csv/-k", "-G"};
-    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
-        if (!paths[i][0]) {
-            continue;
-        }
-        if (dsd_path_resolve_relative_to_file(base, paths[i], resolved[i], sizeof(resolved[i]))) {
-            return profile_error(error, error_size, names[i], "invalid or oversized path");
+    /* Resolve into a copy so a failure leaves the caller's object exactly as it was. */
+    dsd_scan_options resolved = *options;
+
+    const struct {
+        char* path;
+        size_t capacity;
+        const char* name;
+    } paths[] = {
+        {resolved.hex_file, sizeof(resolved.hex_file), "keys_hex_csv/-K"},
+        {resolved.dec_file, sizeof(resolved.dec_file), "keys_dec_csv/-k"},
+        {resolved.values.group_file, sizeof(resolved.values.group_file), "-G"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; rc == 0 && i < sizeof(paths) / sizeof(paths[0]); i++) {
+        if (profile_resolve_path(base, paths[i].path, paths[i].capacity)) {
+            rc = profile_error(error, error_size, paths[i].name, "invalid or oversized path");
         }
     }
-    DSD_MEMCPY(options->hex_file, resolved[0], sizeof(options->hex_file));
-    DSD_MEMCPY(options->dec_file, resolved[1], sizeof(options->dec_file));
-    DSD_MEMCPY(options->values.group_file, resolved[2], sizeof(options->values.group_file));
-    return 0;
+    if (rc == 0) {
+        *options = resolved;
+    }
+    DSD_SECURE_ZERO(&resolved, sizeof(resolved));
+    return rc;
 }
 
 int

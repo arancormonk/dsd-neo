@@ -1277,26 +1277,53 @@ test_loaded_scalar_key_status(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(state);
     state->K = 42;
-    state->R = 0x0123456789ULL;
+    state->R = state->RR = 0x0123456789ULL; /* `-1` mirrors the RC4/DES key into both slots */
     reset_printw_capture();
     ui_render_forced_key_status(state, 0);
     assert_capture_contains("Moto BP Key Loaded (not forced): [redacted]");
-    assert_capture_contains("RC4/DES or scrambler key loaded");
+    assert_capture_contains("RC4/DES Key Loaded (not forced): [redacted]");
     assert(strstr(g_printw_capture, "0123456789") == NULL);
     assert(strstr(g_printw_capture, "Forcing Key Priority") == NULL);
+    assert(strstr(g_printw_capture, "Scrambler") == NULL);
     reset_printw_capture();
     ui_render_forced_key_status(state, 1);
     assert_capture_contains("042");
     assert_capture_contains("0000000123456789");
+    /* `-R` stores a 15-bit scrambler value in R alone: decimal, never a hex RC4 line. */
+    state->R = 1;
+    state->RR = 0;
+    reset_printw_capture();
+    ui_render_forced_key_status(state, 1);
+    assert_capture_contains("NXDN/dPMR Scrambler Key Loaded (not forced): 00001");
+    assert(strstr(g_printw_capture, "RC4/DES") == NULL);
+    /* Keyring slots holding two different RC4/DES keys show both. */
+    state->R = 0x0123456789ULL;
+    state->RR = 0x0000000ABCDEULL;
+    reset_printw_capture();
+    ui_render_forced_key_status(state, 1);
+    assert_capture_contains("RC4/DES Keys Loaded (not forced): 0000000123456789 / 00000000000ABCDE");
+    state->RR = state->R;
+    /* Any active forcing (BP, RC4, TYT marker, or the -2 TYT key) hides the loaded lines. */
     state->M = 1;
     reset_printw_capture();
     ui_render_forced_key_status(state, 0);
     assert_capture_contains("Forcing Key Priority -- Moto BP Key");
-    assert(strstr(g_printw_capture, "Moto BP Key Loaded (not forced)") == NULL);
+    assert(strstr(g_printw_capture, "Loaded (not forced)") == NULL);
     state->M = 0x21;
     reset_printw_capture();
     ui_render_forced_key_status(state, 0);
     assert_capture_contains("Forcing Key Priority -- RC4 Key");
+    assert(strstr(g_printw_capture, "Loaded (not forced)") == NULL);
+    state->M = 0x16;
+    reset_printw_capture();
+    ui_render_forced_key_status(state, 0);
+    assert_capture_contains("Forcing Key Priority -- TYT 16-bit Key");
+    assert(strstr(g_printw_capture, "Loaded (not forced)") == NULL);
+    state->M = 0;
+    state->tyt_bp = 1;
+    reset_printw_capture();
+    ui_render_forced_key_status(state, 0);
+    assert(strstr(g_printw_capture, "Loaded (not forced)") == NULL);
     free(state);
 }
 

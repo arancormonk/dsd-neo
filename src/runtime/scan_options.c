@@ -195,7 +195,6 @@ option_set_hex(const scan_option_spec* spec, const char* argument, unsigned int 
             rc = -1;
         } else {
             parsed->scalar = words[0];
-            parsed->values.unmute_p25 = 0;
         }
     } else if (rc == 0) {
         if (digits > 2 || words[0] == 1 || words[0] == 0x16) {
@@ -219,7 +218,6 @@ option_set_number(const scan_option_spec* spec, const char* argument, dsd_scan_o
             }
             if (spec->field == DSD_SCAN_OPT_BP) {
                 parsed->bp = number;
-                parsed->values.mute_dmr = number == 0;
             } else {
                 parsed->scalar = number;
             }
@@ -258,13 +256,19 @@ option_set(const scan_option_spec* spec, const char* argument, unsigned int mode
         case DSD_SCAN_OPT_VOICE: parsed->values.voice_only = spec->value; return 0;
         default: break;
     }
-    char* path = spec->field == DSD_SCAN_OPT_HEX_FILE   ? parsed->hex_file
-                 : spec->field == DSD_SCAN_OPT_DEC_FILE ? parsed->dec_file
-                                                        : parsed->values.group_file;
-    if (!argument[0] || strlen(argument) >= sizeof(parsed->hex_file)) {
+    char* path = parsed->values.group_file;
+    size_t capacity = sizeof(parsed->values.group_file);
+    if (spec->field == DSD_SCAN_OPT_HEX_FILE) {
+        path = parsed->hex_file;
+        capacity = sizeof(parsed->hex_file);
+    } else if (spec->field == DSD_SCAN_OPT_DEC_FILE) {
+        path = parsed->dec_file;
+        capacity = sizeof(parsed->dec_file);
+    }
+    if (!argument[0] || strlen(argument) >= capacity) {
         return -1;
     }
-    DSD_SNPRINTF(path, sizeof(parsed->hex_file), "%s", argument);
+    DSD_SNPRINTF(path, capacity, "%s", argument);
     return 0;
 }
 
@@ -297,7 +301,7 @@ static int
 option_read(const char** cursor, unsigned int mode, int conventional, dsd_scan_options* parsed,
             unsigned int* force_sources, char* error, size_t error_size) {
     char token[1024] = {0};
-    char argument[1024] = {0};
+    char argument[DSD_SCAN_OPTIONS_KEY_PATH_MAX] = {0};
     int rc = option_token(cursor, token, sizeof(token));
     if (rc <= 0) {
         if (rc < 0) {
@@ -362,7 +366,10 @@ dsd_scan_options_parse(const char* text, unsigned int mode, int conventional, ds
         rc = option_sources_valid(parsed.values.present, error, error_size);
     }
     if (rc == 0) {
+        /* The CLI `-b`/`-H` switches decide DMR encrypted-audio muting from whether any privacy
+         * material was supplied; explicit zero mutes. Only the option text claims that decision. */
         if (parsed.values.present & (DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA)) {
+            parsed.values.present |= DSD_SCAN_OPT_MUTE_DMR;
             parsed.values.mute_dmr = !option_has_privacy_material(&parsed);
         }
         *out = parsed;

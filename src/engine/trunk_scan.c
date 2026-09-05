@@ -18,6 +18,7 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #ifdef USE_RADIO
@@ -767,12 +768,22 @@ scan_parse_target_direct_keys(dsd_trunk_scan_target* target, const dsd_trunk_sca
 static dsd_scan_mode trunk_scan_target_mode(dsd_trunk_scan_target_type type);
 
 static int
-scan_parse_target_options(dsd_trunk_scan_target* target, char** fields, size_t count,
-                          const dsd_trunk_scan_row_parse* parse) {
-    const char* text = scan_optional_field(fields, count, parse->options_idx);
-    if (!text[0]) {
-        return 0;
+scan_copy_target_key_path(char* dest, size_t capacity, const char* resolved) {
+    if (strlen(resolved) >= capacity) {
+        return -1;
     }
+    DSD_SNPRINTF(dest, capacity, "%s", resolved);
+    return 0;
+}
+
+/*
+ * A row with an `options` cell hands every key cell to the scoped-options merge, which
+ * validates, resolves and materializes them once; the legacy key-cell parsers are skipped
+ * for that row so nothing is derived twice or overwritten.
+ */
+static int
+scan_parse_target_options(dsd_trunk_scan_target* target, const char* text, char** fields, size_t count,
+                          const dsd_trunk_scan_row_parse* parse) {
     dsd_scan_options options = {0};
     char error[192] = "invalid row options";
     int rc = dsd_scan_options_parse(text, (unsigned int)trunk_scan_target_mode(target->type),
@@ -787,14 +798,18 @@ scan_parse_target_options(dsd_trunk_scan_target* target, char** fields, size_t c
     if (!rc) {
         rc = dsd_scan_options_resolve(&options, parse->resolved_path, error, sizeof(error));
     }
+    if (!rc
+        && (scan_copy_target_key_path(target->keys_hex_csv, sizeof(target->keys_hex_csv), options.hex_file)
+            || scan_copy_target_key_path(target->keys_dec_csv, sizeof(target->keys_dec_csv), options.dec_file))) {
+        rc = -1;
+        DSD_SNPRINTF(error, sizeof(error), "%s", "keys_hex_csv/keys_dec_csv: path too long");
+    }
     if (!rc) {
         dsd_key_set keys = {0};
         (void)dsd_scan_options_keys(&options, &keys);
         target->single_key_scalars = keys.scalars;
         target->single_keys_present = keys.present;
         dsd_key_set_free(&keys);
-        DSD_MEMCPY(target->keys_hex_csv, options.hex_file, sizeof(target->keys_hex_csv));
-        DSD_MEMCPY(target->keys_dec_csv, options.dec_file, sizeof(target->keys_dec_csv));
         target->row_options = options.values;
     }
     DSD_SECURE_ZERO(&options, sizeof(options));
@@ -802,6 +817,38 @@ scan_parse_target_options(dsd_trunk_scan_target* target, char** fields, size_t c
         scan_set_error(parse->err, parse->err_sz, "row %u: %s", parse->row, error);
     }
     return rc;
+}
+
+/*
+ * Non-secret path work for one row. A row with an `options` cell hands its key cells to
+ * the scoped-options merge later (scan_parse_target_secrets), so only the legacy row
+ * validates and resolves them here.
+ */
+static int
+scan_parse_target_key_paths(dsd_trunk_scan_target* target, char** fields, size_t count,
+                            const dsd_trunk_scan_row_parse* parse, const char* chan_csv, int have_options) {
+    const char* keys_hex_s = have_options ? "" : scan_optional_field(fields, count, parse->keys_hex_idx);
+    const char* keys_dec_s = have_options ? "" : scan_optional_field(fields, count, parse->keys_dec_idx);
+    const char* single_hex_s = scan_optional_field(fields, count, parse->single_key_hex_idx);
+    const char* single_dec_s = scan_optional_field(fields, count, parse->single_key_dec_idx);
+    const char* p25_bandplan_s = scan_optional_field(fields, count, parse->p25_bandplan_idx);
+    if (!have_options
+        && scan_validate_target_key_sources(parse, keys_hex_s, keys_dec_s, single_hex_s, single_dec_s) != 0) {
+        return -1;
+    }
+    return scan_parse_target_paths(target, parse, chan_csv, keys_hex_s, keys_dec_s, p25_bandplan_s);
+}
+
+/* Secrets are parsed after every fallible non-secret row check. Once accepted, the
+ * list owns the only surviving copy. */
+static int
+scan_parse_target_secrets(dsd_trunk_scan_target* target, char** fields, size_t count,
+                          const dsd_trunk_scan_row_parse* parse, const char* options_s) {
+    if (options_s[0] != '\0') {
+        return scan_parse_target_options(target, options_s, fields, count, parse);
+    }
+    return scan_parse_target_direct_keys(target, parse, scan_optional_field(fields, count, parse->single_key_hex_idx),
+                                         scan_optional_field(fields, count, parse->single_key_dec_idx));
 }
 
 static int
@@ -819,11 +866,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
 
     const char* modulation_s = scan_optional_field(fields, field_count, parse->modulation_idx);
     const char* rtl_gain_s = scan_optional_field(fields, field_count, parse->rtl_gain_idx);
-    const char* keys_hex_s = scan_optional_field(fields, field_count, parse->keys_hex_idx);
-    const char* keys_dec_s = scan_optional_field(fields, field_count, parse->keys_dec_idx);
-    const char* single_hex_s = scan_optional_field(fields, field_count, parse->single_key_hex_idx);
-    const char* single_dec_s = scan_optional_field(fields, field_count, parse->single_key_dec_idx);
-    const char* p25_bandplan_s = scan_optional_field(fields, field_count, parse->p25_bandplan_idx);
+    const char* options_s = scan_optional_field(fields, field_count, parse->options_idx);
 
     dsd_trunk_scan_target target;
     DSD_MEMSET(&target, 0, sizeof(target));
@@ -838,9 +881,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         scan_set_error(parse->err, parse->err_sz, "row %u duplicates target type/frequency", parse->row);
         return -1;
     }
-
-    if (scan_validate_target_key_sources(parse, keys_hex_s, keys_dec_s, single_hex_s, single_dec_s) != 0
-        || scan_parse_target_paths(&target, parse, chan_csv, keys_hex_s, keys_dec_s, p25_bandplan_s) != 0) {
+    if (scan_parse_target_key_paths(&target, fields, field_count, parse, chan_csv, options_s[0] != '\0') != 0) {
         return -1;
     }
     if (scan_parse_ms_field(dwell_s, parse->default_dwell_ms, &target.dwell_ms) != 0) {
@@ -864,12 +905,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         scan_set_error(parse->err, parse->err_sz, "out of memory loading trunk scan targets");
         return -1;
     }
-    /* Parse secrets after every fallible non-secret row check. Once accepted,
-     * the list owns the only surviving copy. */
-    if (scan_parse_target_direct_keys(&target, parse, single_hex_s, single_dec_s) != 0) {
-        return -1;
-    }
-    if (scan_parse_target_options(&target, fields, field_count, parse) != 0) {
+    if (scan_parse_target_secrets(&target, fields, field_count, parse, options_s) != 0) {
         DSD_SECURE_ZERO(&target.single_key_scalars, sizeof(target.single_key_scalars));
         return -1;
     }
@@ -878,7 +914,8 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
     return 0;
 }
 
-/* Optional columns are matched by header name; naming one twice rejects the file. */
+/* Optional columns are matched by header name, ASCII case-insensitively as the channel-map
+ * importer does; naming one twice (including through an alias) rejects the file. */
 static int
 scan_match_optional_header(dsd_trunk_scan_row_parse* parse, const char* name, size_t index) {
     const struct {
@@ -893,15 +930,7 @@ scan_match_optional_header(dsd_trunk_scan_row_parse* parse, const char* name, si
     };
 
     for (size_t k = 0; k < sizeof cols / sizeof cols[0]; k++) {
-        int matches = strcmp(name, cols[k].name) == 0;
-        if (cols[k].idx == &parse->options_idx) {
-            size_t n = strlen(name);
-            matches = n == strlen(cols[k].name);
-            for (size_t j = 0; matches && j < n; j++) {
-                matches = tolower((unsigned char)name[j]) == tolower((unsigned char)cols[k].name[j]);
-            }
-        }
-        if (!matches) {
+        if (dsd_strcasecmp(name, cols[k].name) != 0) {
             continue;
         }
         if (*cols[k].idx >= 0) {
@@ -2327,15 +2356,21 @@ trunk_scan_target_mode(dsd_trunk_scan_target_type type) {
  * unkeyed one hands the foreground keyring back to the globals. Trunk scan
  * never bumps the lockout key epoch -- every target carries its own lockout
  * ledger snapshot, so no global invalidation is owed on a switch.
+ *
+ * Every allocation a switch needs (scan-mode scope, group scope, key copies) happens here,
+ * before the outgoing target's snapshot is saved or anything else moves, so a failure
+ * leaves the receiver exactly where it was and the caller can simply try another target.
  */
 static int
-trunk_scan_prepare_keys(dsd_state* state, const dsd_key_set* keys, dsd_scan_key_change* change) {
-    if (dsd_scan_groups_begin(state)) {
+trunk_scan_prepare_switch(const dsd_opts* opts, dsd_state* state, const dsd_key_set* keys,
+                          dsd_scan_key_change* change) {
+    if (dsd_scan_mode_begin(opts, state) || dsd_scan_groups_begin(state)) {
         return -1;
     }
     return dsd_scan_key_change_prepare(state, keys, change);
 }
 
+/* The receiver never left the active target; nothing was saved, published or retuned. */
 enum { TRUNK_SCAN_PREPARE_FAILED = -2 };
 
 static int
@@ -2344,7 +2379,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
         return -1;
     }
     dsd_scan_key_change key_change = {0};
-    if (trunk_scan_prepare_keys(state, &coord->targets[next].keys, &key_change)) {
+    if (trunk_scan_prepare_switch(opts, state, &coord->targets[next].keys, &key_change)) {
         return TRUNK_SCAN_PREPARE_FAILED;
     }
     if (save_current && coord->active < coord->count) {
@@ -2356,16 +2391,14 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
      * here until the caller decides otherwise, and the label has to say so. */
     trunk_scan_publish_active_target(state, coord);
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
-    if (dsd_scan_mode_enter(opts, state, trunk_scan_target_mode(rt->target.type)) != 0) {
-        dsd_scan_key_change_clear(&key_change);
-        return TRUNK_SCAN_PREPARE_FAILED;
-    }
+    /* The scope was reserved above and every target type maps to a valid mode. */
+    (void)dsd_scan_mode_enter(opts, state, trunk_scan_target_mode(rt->target.type));
     trunk_scan_restore_target_snapshot(coord, state, rt);
     trunk_scan_share_peer_idens(coord, state, rt);
     trunk_scan_apply_target_opts(opts, coord, &rt->target);
     dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)rt->target.modulation);
     (void)dsd_scan_key_change_commit(state, &key_change);
-    dsd_scan_mode_options(opts, state, rt->profile ? &rt->profile->values : NULL);
+    (void)dsd_scan_mode_options(opts, state, rt->profile ? &rt->profile->values : NULL);
     dsd_scan_groups_enter(state, rt->profile);
     trunk_scan_apply_target_demod(opts, state, &rt->target);
     trunk_scan_sync_active_sm_mode(state, rt);
@@ -2445,11 +2478,16 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
         if (coord->targets[next].avoided && next != original_active) {
             continue;
         }
-        tried = 1;
-        if (trunk_scan_switch_to(opts, state, coord, next, save_current) == 0) {
+        const int switch_rc = trunk_scan_switch_to(opts, state, coord, next, save_current);
+        if (switch_rc == 0) {
             dsd_scan_key_change_clear(&rollback);
             return;
         }
+        if (switch_rc == TRUNK_SCAN_PREPARE_FAILED) {
+            /* Nothing moved: the outgoing snapshot is still owed to the next real attempt. */
+            continue;
+        }
+        tried = 1;
         if (next != original_active) {
             attempted_alternate_retune = 1;
         }
@@ -2476,7 +2514,7 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     dsd_scan_mode_target_modulation(state, (dsd_scan_modulation)coord->targets[coord->active].target.modulation);
     (void)dsd_scan_key_change_commit(state, &rollback);
     const dsd_scan_row_profile* restored_profile = coord->targets[coord->active].profile;
-    dsd_scan_mode_options(opts, state, restored_profile ? &restored_profile->values : NULL);
+    (void)dsd_scan_mode_options(opts, state, restored_profile ? &restored_profile->values : NULL);
     dsd_scan_groups_enter(state, restored_profile);
     trunk_scan_apply_target_demod(opts, state, &coord->targets[coord->active].target);
     trunk_scan_sync_active_sm_mode(state, &coord->targets[coord->active]);
@@ -2499,6 +2537,28 @@ trunk_scan_retry_active_if_due(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     (void)trunk_scan_switch_to(opts, state, coord, coord->active, 0);
 }
 
+/*
+ * Conventional voice-gate intervals. The target list's dwell_ms/activity_hold_ms play the
+ * qualify/hold roles, and a target's own `--scan-voice-qualify-ms`/`--scan-voice-hold-ms`
+ * options replace them while the gate is on. The scanner-wide `-Y` timings never apply
+ * here (docs/trunk-scan.md).
+ */
+static int
+trunk_scan_target_hold_ms(const dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt) {
+    if (opts->scan_voice_only == 1 && rt->profile && (rt->profile->values.present & DSD_SCAN_OPT_HOLD)) {
+        return rt->profile->values.hold_ms;
+    }
+    return rt->target.activity_hold_ms;
+}
+
+static int
+trunk_scan_target_dwell_ms(const dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt) {
+    if (opts->scan_voice_only == 1 && rt->profile && (rt->profile->values.present & DSD_SCAN_OPT_QUALIFY)) {
+        return rt->profile->values.qualify_ms;
+    }
+    return rt->target.dwell_ms;
+}
+
 static int
 trunk_scan_active_is_held(const dsd_opts* opts, const dsd_trunk_scan_coord* coord, double now_m) {
     const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
@@ -2515,7 +2575,7 @@ trunk_scan_active_is_held(const dsd_opts* opts, const dsd_trunk_scan_coord* coor
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK) {
         return opts->trunk_is_tuned == 1;
     }
-    double hold_s = (double)rt->target.activity_hold_ms / 1000.0;
+    double hold_s = (double)trunk_scan_target_hold_ms(opts, rt) / 1000.0;
     return rt->last_allowed_activity_m > 0.0 && (now_m - rt->last_allowed_activity_m) < hold_s;
 }
 
@@ -2659,7 +2719,7 @@ trunk_scan_refresh_voice_media_hold(const dsd_opts* opts, dsd_state* state, dsd_
         state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
         return;
     }
-    const double hold_s = (double)rt->target.activity_hold_ms / 1000.0;
+    const double hold_s = (double)trunk_scan_target_hold_ms(opts, rt) / 1000.0;
     dsd_scan_voice_probe_result media;
     const int probe_rc = dsd_scan_voice_probe(opts, state, &media);
     if (probe_rc > 0 && media.retained_media_m > rt->last_allowed_activity_m) {
@@ -2710,7 +2770,7 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
         rt->idle_since_m = now_m;
         return;
     }
-    double dwell_s = (double)rt->target.dwell_ms / 1000.0;
+    double dwell_s = (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
     if ((now_m - rt->idle_since_m) >= dwell_s) {
         trunk_scan_advance(opts, state, coord);
     }

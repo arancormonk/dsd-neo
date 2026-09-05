@@ -378,6 +378,19 @@ key_set_parse_direct_hex(const char* text, dsd_key_scalars* scalars) {
         }
     }
 
+    dsd_key_scalars_store_direct_hex(scalars, segments, nhex);
+
+    DSD_SECURE_ZERO(segments, sizeof(segments));
+    DSD_SECURE_ZERO(hex, sizeof(hex));
+    return 0;
+}
+
+void
+dsd_key_scalars_store_direct_hex(dsd_key_scalars* scalars, const uint64_t segments[4], size_t nhex) {
+    if (scalars == NULL || segments == NULL || !key_set_direct_hex_width_valid(nhex)) {
+        return;
+    }
+    const size_t segment_count = nhex == 10U ? 1U : nhex / 16U;
     scalars->H = segments[0];
     scalars->K1 = segments[0];
     scalars->K2 = segments[1];
@@ -392,10 +405,6 @@ key_set_parse_direct_hex(const char* text, dsd_key_scalars* scalars) {
         scalars->aes_key_loaded[0] = scalars->aes_key_loaded[1] = any_nonzero;
         scalars->aes_key_segments[0] = scalars->aes_key_segments[1] = (uint8_t)segment_count;
     }
-
-    DSD_SECURE_ZERO(segments, sizeof(segments));
-    DSD_SECURE_ZERO(hex, sizeof(hex));
-    return 0;
 }
 
 dsd_key_direct_result
@@ -506,6 +515,7 @@ dsd_scan_key_change_prepare(const dsd_state* state, const dsd_key_set* row, dsd_
     change->changed = change->keyed ? !state->scan_keys_active_set || !dsd_key_set_equal(&state->scan_keys_active, row)
                                     : state->scan_keys_active_set != 0;
     if (!change->keyed) {
+        change->prepared = 1;
         return 0;
     }
     /* Own the globals as well as the row: rollback may cross an unkeyed target,
@@ -518,12 +528,18 @@ dsd_scan_key_change_prepare(const dsd_state* state, const dsd_key_set* row, dsd_
         dsd_scan_key_change_clear(change);
         return -1;
     }
+    change->prepared = 1;
     return 0;
 }
 
 int
 dsd_scan_key_change_commit(dsd_state* state, dsd_scan_key_change* change) {
     if (!state || !change) {
+        return 0;
+    }
+    if (!change->prepared) {
+        /* A failed or never-run prepare owns nothing and must not touch the live keyring. */
+        dsd_scan_key_change_clear(change);
         return 0;
     }
     const int changed = change->changed;

@@ -180,9 +180,101 @@ test_csv_import(void) {
     assert(dsd_state_trunk_lcn_keys_get(state, 1)->scalars.R == 1);
     dsd_state_trunk_lcn_free(state);
     dsd_state_ext_free_all(state);
+
+    /* A map whose rows carry options but no mode still has to run through the typed
+     * scanner, since the legacy scanner applies keys but never row options. */
+    write_file(path, "channel,frequency_hz,options\n"
+                     "1,150000000,--scan-voice-hold-ms 4000\n"
+                     "2,150000001,\n");
+    DSD_MEMSET(state, 0, sizeof(*state));
+    assert(csvChanImport(opts, state) == 0);
+    assert(state->lcn_freq_count == 2);
+    assert(dsd_channel_mode_get(state, 0) == DSD_SCAN_MODE_INHERIT);
+    assert(dsd_channel_modes_present(state));
+    assert(dsd_channel_profile_get(state, 0)->values.hold_ms == 4000);
+    assert(dsd_channel_profile_get(state, 1) == NULL);
+    /* Replacing the only option-bearing profile with an empty one releases the gate. */
+    dsd_scan_row_profile* blank = (dsd_scan_row_profile*)calloc(1, sizeof(*blank));
+    assert(blank);
+    assert(dsd_channel_profile_set(state, 0, blank) == 0);
+    assert(!dsd_channel_modes_present(state));
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+
+    /* Legacy key columns beside an options cell keep their key-only meaning: they never
+     * decide encrypted-audio muting, while the option text's own `-b` does. */
+    write_file(path, "channel,frequency_hz,mode,single_key_dec,options\n"
+                     "1,150000000,dmr,5,--no-force-key\n"
+                     "2,150000001,dmr,,-b 5\n"
+                     "3,150000002,dmr,,-b 0\n");
+    DSD_MEMSET(state, 0, sizeof(*state));
+    assert(csvChanImport(opts, state) == 0);
+    assert(state->lcn_freq_count == 3);
+    assert(dsd_state_trunk_lcn_keys_get(state, 0)->scalars.K == 5);
+    assert(dsd_state_trunk_lcn_keys_get(state, 1)->scalars.K == 5);
+    assert(!(dsd_channel_profile_get(state, 0)->values.present & DSD_SCAN_OPT_MUTE_DMR));
+    assert((dsd_channel_profile_get(state, 1)->values.present & DSD_SCAN_OPT_MUTE_DMR)
+           && dsd_channel_profile_get(state, 1)->values.mute_dmr == 0);
+    assert((dsd_channel_profile_get(state, 2)->values.present & DSD_SCAN_OPT_MUTE_DMR)
+           && dsd_channel_profile_get(state, 2)->values.mute_dmr == 1);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     assert(remove(path) == 0);
+}
+
+/* Option-bearing rows with no declared mode: the scope applies the row's policy over the
+ * baseline exactly as a declared row would, and the legacy columns leave muting alone. */
+static void
+test_legacy_columns_do_not_mute(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->wav_sample_rate = 48000;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->dmr_mute_encL = opts->dmr_mute_encR = 1;
+    dsd_scan_options parsed = {0};
+    char error[192];
+    assert(dsd_scan_options_parse("--no-force-key", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
+    assert(dsd_scan_options_merge_keys(&parsed, "", "", "0000001f00", "5", error, sizeof(error)) == 0);
+    assert(parsed.bp == 5 && parsed.hytera[0] == 0x1f00 && parsed.hytera_digits == 10);
+    assert(!(parsed.values.present & DSD_SCAN_OPT_MUTE_DMR));
+    dsd_key_set keys = {0};
+    dsd_scan_row_profile* profile = NULL;
+    assert(dsd_scan_profile_load(&parsed, 0, &profile, &keys) == 0);
+    assert(keys.present && keys.scalars.K == 5 && keys.scalars.K1 == 0x1f00 && keys.scalars.hytera_key_segments == 1);
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_INHERIT) == 0);
+    assert(dsd_scan_mode_options(opts, state, &profile->values) == 0);
+    assert(opts->dmr_mute_encL == 1 && opts->dmr_mute_encR == 1);
+    dsd_scan_profile_free(profile);
+    profile = NULL;
+    /* A rejected column leaves the options exactly as parsed. */
+    unsigned char before_merge[sizeof(parsed)];
+    unsigned char after_merge[sizeof(parsed)];
+    DSD_MEMCPY(before_merge, &parsed, sizeof(before_merge));
+    assert(dsd_scan_options_merge_keys(&parsed, "", "", "zz", "", error, sizeof(error)) != 0);
+    DSD_MEMCPY(after_merge, &parsed, sizeof(after_merge));
+    assert(memcmp(before_merge, after_merge, sizeof(after_merge)) == 0);
+    DSD_SECURE_ZERO(before_merge, sizeof(before_merge));
+    DSD_SECURE_ZERO(after_merge, sizeof(after_merge));
+    /* `-b` in the option text decides muting from all of the row's material. */
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+    assert(dsd_scan_options_parse("-b 0", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
+    assert((parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && parsed.values.mute_dmr == 1);
+    assert(dsd_scan_options_merge_keys(&parsed, "", "", "0000001f00", "", error, sizeof(error)) == 0);
+    assert((parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && parsed.values.mute_dmr == 0);
+    assert(dsd_scan_profile_load(&parsed, 0, &profile, &keys) == 0);
+    assert(dsd_scan_mode_options(opts, state, &profile->values) == 0);
+    assert(opts->dmr_mute_encL == 0 && opts->dmr_mute_encR == 0);
+    dsd_scan_mode_leave(opts, state);
+    assert(opts->dmr_mute_encL == 1);
+    dsd_scan_profile_free(profile);
+    dsd_key_set_free(&keys);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
 }
 
 static void
@@ -220,13 +312,29 @@ test_group_load_failure(void) {
     write_file(path, "id,mode,name\n123,A,Expected row\n");
     dsd_tg_policy_store* original = NULL;
     assert(dsd_tg_policy_load(path, &original) == 0);
-    for (long fail = 0; fail < 2; fail++) {
-        dsd_tg_policy_store* out = original;
-        dsd_tg_policy_test_alloc_fail_after(fail);
-        assert(dsd_tg_policy_load(path, &out) != 0);
-        assert(out == original);
-        dsd_tg_policy_test_alloc_reset();
-    }
+    /* No context at all is a failure that leaves the output alone. */
+    dsd_tg_policy_store* out = original;
+    dsd_tg_policy_test_alloc_fail_after(0);
+    assert(dsd_tg_policy_load(path, &out) != 0);
+    assert(out == original);
+    dsd_tg_policy_test_alloc_reset();
+    /* A row the importer could not store is skipped with a warning, as the global `-G`
+     * import has always done, and the load still yields a (here empty) policy. */
+    dsd_tg_policy_store* partial = NULL;
+    dsd_tg_policy_test_alloc_fail_after(1);
+    assert(dsd_tg_policy_load(path, &partial) == 0);
+    dsd_tg_policy_test_alloc_reset();
+    assert(partial != NULL && partial != original);
+    dsd_state* probe = (dsd_state*)calloc(1, sizeof(*probe));
+    assert(probe);
+    dsd_tg_policy_install(probe, partial);
+    char name[64];
+    assert(!dsd_tg_policy_lookup_label(probe, 123, NULL, 0, name, sizeof(name)));
+    dsd_tg_policy_install(probe, original);
+    assert(dsd_tg_policy_lookup_label(probe, 123, NULL, 0, name, sizeof(name)) && strcmp(name, "Expected row") == 0);
+    dsd_state_ext_free_all(probe);
+    free(probe);
+    dsd_tg_policy_release(partial);
     dsd_tg_policy_release(original);
     assert(remove(path) == 0);
 }
@@ -269,6 +377,26 @@ test_relative_paths(void) {
     assert(strcmp(options.values.group_file, "lists/group list.csv") == 0);
     assert(strcmp(options.hex_file, "lists/hex keys.csv") == 0);
     assert(strcmp(options.dec_file, "lists/decimal.csv") == 0);
+    /* Each path resolves within its own capacity: a key path may use the legacy column limit,
+     * while a group path is bounded by the option field it overrides. A failure leaves the
+     * object untouched. */
+    char base[DSD_SCAN_OPTIONS_GROUP_PATH_MAX];
+    DSD_MEMSET(base, 'b', sizeof(base) - 1);
+    base[sizeof(base) - 1] = '\0';
+    base[sizeof(base) - 5] = '/';
+    unsigned char before_resolve[sizeof(options)];
+    unsigned char after_resolve[sizeof(options)];
+    DSD_MEMCPY(before_resolve, &options, sizeof(before_resolve));
+    assert(dsd_scan_options_resolve(&options, base, error, sizeof(error)) != 0);
+    DSD_MEMCPY(after_resolve, &options, sizeof(after_resolve));
+    assert(memcmp(before_resolve, after_resolve, sizeof(after_resolve)) == 0);
+    DSD_SECURE_ZERO(before_resolve, sizeof(before_resolve));
+    DSD_SECURE_ZERO(after_resolve, sizeof(after_resolve));
+    options.values.present &= ~(uint32_t)DSD_SCAN_OPT_GROUP;
+    options.values.group_file[0] = '\0';
+    assert(dsd_scan_options_resolve(&options, base, error, sizeof(error)) == 0);
+    assert(strlen(options.hex_file) > DSD_SCAN_OPTIONS_GROUP_PATH_MAX);
+    assert(strlen(options.dec_file) > DSD_SCAN_OPTIONS_GROUP_PATH_MAX);
     DSD_SECURE_ZERO(&options, sizeof(options));
 }
 
@@ -281,5 +409,6 @@ main(void) {
     test_relative_paths();
     test_group_ownership();
     test_csv_import();
+    test_legacy_columns_do_not_mute();
     return 0;
 }

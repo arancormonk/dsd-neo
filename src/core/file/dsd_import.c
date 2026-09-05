@@ -429,6 +429,8 @@ group_import_row(dsd_state* state, const char* filename, unsigned int row_count,
     return group_commit_entry(state, &entry, is_range, filename, row_count, dropped_policy_alloc_rows);
 }
 
+/* Rows dropped for want of memory are a warning, as they always were: the import keeps
+ * what it could load. A read error is a failure, since the file was not fully read. */
 static int
 group_import_finish(FILE* fp, const char* filename, size_t dropped_policy_alloc_rows) {
     if (dropped_policy_alloc_rows > 0) {
@@ -436,7 +438,7 @@ group_import_finish(FILE* fp, const char* filename, size_t dropped_policy_alloc_
                  dropped_policy_alloc_rows);
     }
 
-    int rc = dropped_policy_alloc_rows || ferror(fp) ? -1 : 0;
+    const int rc = ferror(fp) ? -1 : 0;
     fclose(fp);
     return rc;
 }

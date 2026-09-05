@@ -139,19 +139,41 @@ int dsd_key_set_load_csv(dsd_key_set* out, const char* hex_path, const char* dec
  */
 dsd_key_direct_result dsd_key_set_load_direct(dsd_key_set* out, const char* single_hex, const char* single_dec);
 
-/** Prepared key transition owns all allocations needed at commit; zero-initialize before use. */
+/**
+ * Prepared key transition: owns every allocation the commit needs, so the commit itself
+ * cannot fail. Zero-initialize before the first prepare. Lifecycle:
+ *  - dsd_scan_key_change_prepare() fills it (or, on failure, leaves it empty: no partial
+ *    ownership, `prepared` clear);
+ *  - dsd_scan_key_change_commit() consumes it, moving the sets into the state's scan
+ *    swap and clearing the object, so a commit followed by a clear is safe and a change
+ *    can be re-prepared in place;
+ *  - dsd_scan_key_change_clear() discards a prepared-but-uncommitted change (rollback).
+ * Every path wipes the key material. The baseline is captured at prepare time; it is
+ * the caller's job to re-prepare when the keyring may have changed in between (the
+ * conventional scanner restages on a lockout key-epoch change for that reason).
+ */
 typedef struct {
     dsd_key_set baseline;
     dsd_key_set active;
     int capture_baseline;
     int keyed;
     int changed;
+    int prepared;
 } dsd_scan_key_change;
 
+/** Release everything the change owns and zero it. Safe on an empty or NULL change. */
 void dsd_scan_key_change_clear(dsd_scan_key_change* change);
-/** Prepare without changing live keys. NULL/absent row means restore globals. */
+/**
+ * Prepare without changing live keys. A NULL row, or one with `present == 0`, means the
+ * commit restores the globals. Any prior content of @p change is released first. Returns
+ * 0 on success, -1 on a bad argument or allocation failure with @p change left empty.
+ */
 int dsd_scan_key_change_prepare(const dsd_state* state, const dsd_key_set* row, dsd_scan_key_change* change);
-/** Install without allocation. Returns nonzero if effective key identity changed. */
+/**
+ * Install the prepared transition without allocating and consume @p change. Returns
+ * nonzero when the effective key identity changed. A change that was never prepared, or
+ * whose prepare failed, is a no-op that returns 0.
+ */
 int dsd_scan_key_change_commit(dsd_state* state, dsd_scan_key_change* change);
 
 /**

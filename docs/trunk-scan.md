@@ -135,9 +135,10 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
 - `--scan-voice-only`: conventional targets hold only from decoded voice media (headers and data no longer hold),
   with the per-target `dwell_ms` as the qualify window in which voice must appear and `activity_hold_ms` as the
   hold after the last voice frame, including when a terminator closes the call before the next scan tick; trunked
-  targets are unchanged (control-only rotates after dwell). The
+  targets are unchanged (control-only rotates after dwell). The scanner-wide
   `--scan-voice-qualify-ms` and `--scan-voice-hold-ms` timings apply to the `-Y` conventional scan only, not to
-  trunk-scan targets.
+  trunk-scan targets; a conventional target can carry its own intervals in its `options` column (see
+  [Per-target options](#per-target-options)).
 
 Each target's `type` selects its decoder class regardless of the configured global preset. P25 targets enable
 both phases and exclude DMR and X2-TDMA; DMR and NXDN targets enable only their declared class and rate. Mixed
@@ -287,7 +288,8 @@ in `[trunk_scan]`.
 
 `trunk scan target CSV header must start with ...`
 
-The first line must begin with `id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes`.
+The first line must begin with `id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes`. Optional column
+names after it are matched case-insensitively.
 
 `row N has invalid frequency_hz`
 
@@ -377,5 +379,12 @@ Unspecified settings inherit the configured defaults, and `--no-force-key` can d
 
 Group policies and keys are preloaded and isolated between targets. Re-parking, failed-tune recovery and shutdown
 restore the associated options with the target. Conventional voice-gate switches are accepted on conventional target
-types only; trunk systems keep their existing activity-hold policy. Row metadata in a target's `chan_csv` is validated
-and discarded; put system options on the target itself.
+types only; trunk systems keep their existing activity-hold policy. While the voice gate is on, a conventional
+target's `--scan-voice-hold-ms` replaces its `activity_hold_ms` as the hold after the last voice frame and
+`--scan-voice-qualify-ms` replaces its `dwell_ms` as the window in which voice must appear; targets without them
+keep the column values. Row metadata in a target's `chan_csv` is validated and discarded; put system options on the
+target itself.
+
+A row that names key material in `options` (`-b`, `-H`, `-1`, `-R`, `-K`, `-k`) may still fill the legacy key
+columns for the other families; the merge rejects a column that duplicates an option. Optional header names,
+including `options` and its `relevant_CLI_switches` alias, match ASCII case-insensitively.

@@ -2289,13 +2289,14 @@ test_scoped_row_option_commands(void) {
     state->M = 0;
     int rc = expect_int("enter option row", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR), 0);
     const dsd_scan_option_values row = {.present = DSD_SCAN_OPT_FORCE | DSD_SCAN_OPT_CRC | DSD_SCAN_OPT_VOICE
-                                                   | DSD_SCAN_OPT_HOLD | DSD_SCAN_OPT_GROUP | DSD_SCAN_OPT_BP,
+                                                   | DSD_SCAN_OPT_HOLD | DSD_SCAN_OPT_GROUP | DSD_SCAN_OPT_MUTE_DMR,
                                         .force = 0x21,
                                         .strict_crc = 0,
                                         .voice_only = 1,
                                         .hold_ms = 4000,
+                                        .mute_dmr = 1,
                                         .group_file = "row.csv"};
-    dsd_scan_mode_options(opts, state, &row);
+    rc |= expect_int("install row options", dsd_scan_mode_options(opts, state, &row), 0);
     rc |= expect_int("queue force default", post_empty(DSD_APP_CMD_FORCE_PRIV_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("queue CRC default", post_empty(DSD_APP_CMD_AGGR_SYNC_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("queue hold default", dsd_app_command_set_i32(DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET, 3000),
@@ -2304,6 +2305,7 @@ test_scoped_row_option_commands(void) {
     rc |= expect_int("option commands drained", dsd_app_drain_cmds(opts, state), 4);
     rc |= expect_int("row keeps force", state->M, 0x21);
     rc |= expect_int("row keeps hold", opts->scan_voice_hold_ms, 4000);
+    rc |= expect_int("row keeps mute", opts->dmr_mute_encL, 1);
     dsd_scan_settings configured;
     dsd_scan_mode_configured(opts, state, &configured);
     rc |= expect_int("configured force updated", configured.force_key, 1);
@@ -2315,9 +2317,10 @@ test_scoped_row_option_commands(void) {
     rc |= expect_int("saved configured hold", saved.trunk_scan_voice_hold_ms, 3000);
     rc |= expect_int("saved configured gate", saved.trunk_scan_voice_only, 0);
     rc |= expect_str("saved configured groups", saved.trunk_group_csv, "global.csv");
-    dsd_scan_mode_options(opts, state, NULL);
+    rc |= expect_int("clear row options", dsd_scan_mode_options(opts, state, NULL), 0);
     rc |= expect_int("clear options restores force", state->M, 1);
     rc |= expect_int("clear options restores hold", opts->scan_voice_hold_ms, 3000);
+    rc |= expect_int("clear options restores mute", opts->dmr_mute_encL, 0);
     rc |= expect_str("clear options restores groups", opts->group_in_file, "global.csv");
     dsd_scan_mode_leave(opts, state);
     freeState(state);

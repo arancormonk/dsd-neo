@@ -3788,13 +3788,6 @@ target_link_libraries(
 )
 add_test(NAME CORE_SCAN_PROFILE COMMAND dsd-neo_test_core_scan_profile)
 
-add_executable(
-    dsd-neo_test_runtime_scan_options
-    runtime/test_runtime_scan_options.c
-)
-target_link_libraries(dsd-neo_test_runtime_scan_options PRIVATE dsd-neo_runtime)
-add_test(NAME RUNTIME_SCAN_OPTIONS COMMAND dsd-neo_test_runtime_scan_options)
-
 add_executable(dsd-neo_test_core_csv_validate core/test_core_csv_validate.c)
 target_include_directories(
     dsd-neo_test_core_csv_validate
@@ -4628,6 +4621,13 @@ add_test(NAME RUNTIME_RR_PROVENANCE COMMAND dsd-neo_test_runtime_rr_provenance)
 add_executable(dsd-neo_test_runtime_scan_mode runtime/test_runtime_scan_mode.c)
 target_link_libraries(dsd-neo_test_runtime_scan_mode PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_SCAN_MODE COMMAND dsd-neo_test_runtime_scan_mode)
+
+add_executable(
+    dsd-neo_test_runtime_scan_options
+    runtime/test_runtime_scan_options.c
+)
+target_link_libraries(dsd-neo_test_runtime_scan_options PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_SCAN_OPTIONS COMMAND dsd-neo_test_runtime_scan_options)
 
 add_executable(dsd-neo_test_scan_mode_replay engine/scan_mode_replay.c)
 target_link_libraries(

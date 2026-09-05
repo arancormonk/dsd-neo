@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -11,6 +12,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -46,8 +48,74 @@ test_p25_modulation_helpers(dsd_opts* opts, dsd_state* state) {
     assert(opts->mod_p25p2_c4fm && opts->mod_cli_lock);
 }
 
+/* Row-scoped options are policy, not acquisition. An operator edit to any of them beneath
+ * a parked row must take effect without tearing the row down, and the equality that gates
+ * restaging a tune must ignore them. */
+static void
+test_row_option_edits_are_not_acquisition_changes(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_WAV;
+    o->frame_dmr = 1;
+    o->dmr_mute_encL = o->dmr_mute_encR = 1;
+    o->aggressive_framesync = 1;
+    o->scan_voice_hold_ms = 2000;
+    DSD_SNPRINTF(o->group_in_file, sizeof(o->group_in_file), "%s", "global.csv");
+    s->M = 0;
+    const dsd_scan_option_values none = {0};
+    assert(dsd_scan_mode_options(o, s, &none) == -1); /* no scope yet: nothing to apply */
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    dsd_scan_settings before;
+    dsd_scan_settings_capture(o, s, &before);
+
+    assert(dsd_scan_mode_suspend(o, s));
+    o->dmr_mute_encL = o->dmr_mute_encR = 0;
+    o->aggressive_framesync = 0;
+    o->dmr_crc_relaxed_default = 1;
+    o->scan_voice_only = 1;
+    o->scan_voice_hold_ms = 4000;
+    o->unmute_encrypted_p25 = 1;
+    s->M = 1;
+    DSD_SNPRINTF(o->group_in_file, sizeof(o->group_in_file), "%s", "edited.csv");
+    assert(dsd_scan_mode_resume(o, s) == 0);
+    assert(o->dmr_mute_encL == 0 && o->dmr_mute_encR == 0 && o->aggressive_framesync == 0
+           && o->dmr_crc_relaxed_default == 1 && o->scan_voice_only == 1 && o->scan_voice_hold_ms == 4000
+           && o->unmute_encrypted_p25 == 1 && s->M == 1);
+    assert(strcmp(o->group_in_file, "edited.csv") == 0);
+    dsd_scan_settings after;
+    dsd_scan_settings_capture(o, s, &after);
+    assert(dsd_scan_settings_equal(&before, &after, 1));
+    assert(after.dmr_mute_encL == 0 && after.force_key == 1 && after.scan_voice_hold_ms == 4000);
+
+    /* A row override layered over the edited baseline still yields to a decoder change. */
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_HOLD | DSD_SCAN_OPT_MUTE_DMR | DSD_SCAN_OPT_FORCE;
+    row.hold_ms = 3000;
+    row.mute_dmr = 1;
+    row.force = 0x21;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->scan_voice_hold_ms == 3000 && o->dmr_mute_encL == 1 && s->M == 0x21);
+    assert(dsd_scan_mode_suspend(o, s));
+    assert(o->scan_voice_hold_ms == 4000 && o->dmr_mute_encL == 0 && s->M == 1);
+    o->scan_voice_hold_ms = 5000;
+    assert(dsd_scan_mode_resume(o, s) == 0);
+    assert(o->scan_voice_hold_ms == 3000 && o->dmr_mute_encL == 1 && s->M == 0x21);
+    assert(dsd_scan_mode_suspend(o, s));
+    o->inverted_dmr = !o->inverted_dmr;
+    assert(dsd_scan_mode_resume(o, s) == 1);
+    dsd_scan_mode_leave(o, s);
+    assert(o->scan_voice_hold_ms == 5000 && o->dmr_mute_encL == 0 && s->M == 1);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
 int
 main(void) {
+    test_row_option_edits_are_not_acquisition_changes();
     dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
     dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
     dsd_state* copy = (dsd_state*)calloc(1, sizeof(*copy));

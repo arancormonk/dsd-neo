@@ -99,7 +99,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     }
     state->lcn_freq_roll = scan->row + 1;
     const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)scan->row);
-    dsd_scan_mode_options(opts, state, profile ? &profile->values : NULL);
+    (void)dsd_scan_mode_options(opts, state, profile ? &profile->values : NULL);
     dsd_scan_groups_enter(state, profile);
     const int keys_changed = dsd_scan_key_change_commit(state, &scan->keys);
     if (keys_changed || outgoing_force != state->M) {

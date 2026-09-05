@@ -23,11 +23,21 @@ enum {
     DSD_SCAN_OPT_HEX_FILE = 1U << 9,
     DSD_SCAN_OPT_DEC_FILE = 1U << 10,
     DSD_SCAN_OPT_GROUP = 1U << 11,
+    /** The row decides DMR encrypted-audio muting. Set only by the `-b`/`-H` switches in the option text,
+     * so legacy single_key_dec/single_key_hex columns keep their key-only meaning. */
+    DSD_SCAN_OPT_MUTE_DMR = 1U << 12,
     DSD_SCAN_OPT_DIRECT = DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA | DSD_SCAN_OPT_SCALAR | DSD_SCAN_OPT_SCRAMBLER,
     DSD_SCAN_OPT_FILES = DSD_SCAN_OPT_HEX_FILE | DSD_SCAN_OPT_DEC_FILE
 };
 
-/** Nonsecret overrides copied into runtime/frontend scan scopes. */
+/** Key-file path capacity, matching the legacy keys_hex_csv/keys_dec_csv column limit (CSV_IMPORT_PATH_MAX). */
+#define DSD_SCAN_OPTIONS_KEY_PATH_MAX   2048
+/** Group-file path capacity; must equal the capacity of dsd_opts::group_in_file, which it overrides. */
+#define DSD_SCAN_OPTIONS_GROUP_PATH_MAX 1024
+
+/** Nonsecret overrides copied into runtime/frontend scan scopes. A field is meaningful only when its
+ * DSD_SCAN_OPT_* bit is set in `present`. `-1` (DSD_SCAN_OPT_SCALAR) always mutes undecodable P25 audio,
+ * as the CLI switch does, so it carries no value here. */
 typedef struct {
     uint32_t present;
     int force;
@@ -36,8 +46,7 @@ typedef struct {
     int qualify_ms;
     int hold_ms;
     int mute_dmr;
-    int unmute_p25;
-    char group_file[1024];
+    char group_file[DSD_SCAN_OPTIONS_GROUP_PATH_MAX];
 } dsd_scan_option_values;
 
 /** Parsed import metadata. Wipe after materializing; never publish this object to a frontend. */
@@ -47,8 +56,8 @@ typedef struct {
     uint64_t scalar;
     uint64_t hytera[4];
     unsigned int hytera_digits;
-    char hex_file[1024];
-    char dec_file[1024];
+    char hex_file[DSD_SCAN_OPTIONS_KEY_PATH_MAX];
+    char dec_file[DSD_SCAN_OPTIONS_KEY_PATH_MAX];
 } dsd_scan_options;
 
 /** Parse and validate against a dsd_scan_mode value and conventional/trunk context.
