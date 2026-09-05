@@ -305,18 +305,18 @@ csv_p25_bandplan_parse_file(const char* path, p25_bandplan_row_t* rows, dsd_csv_
     int line_no = 0;
     int count = 0;
 
-    while (fgets(buffer, BSIZE, fp) != NULL) {
+    int invalid_line = 0;
+    while (csv_read_line(fp, buffer, sizeof(buffer), &invalid_line) > 0) {
         line_no++;
         trim_eol(buffer);
         if (line_no == 1) {
-            bp_parse_header(buffer, &cols);
+            if (!invalid_line) {
+                bp_parse_header(buffer, &cols);
+            }
             continue;
         }
-        if (csv_line_is_blank(buffer)) {
+        if (!csv_data_row_ready(buffer, invalid_line, filename, (unsigned)line_no, stats)) {
             continue;
-        }
-        if (stats) {
-            stats->total++;
         }
 
         char* fields[BP_MAX_FIELDS];
@@ -349,8 +349,9 @@ csv_p25_bandplan_parse_file(const char* path, p25_bandplan_row_t* rows, dsd_csv_
             stats->accepted++;
         }
     }
+    const int rc = ferror(fp) ? -1 : count;
     fclose(fp);
-    return count;
+    return rc;
 }
 
 int
@@ -451,12 +452,13 @@ csvP25BandplanExportRows(const char* path, const p25_bandplan_row_t* rows, int c
 /* Dry run for the import pickers: same parser, counts only, no state touched. */
 int
 dsd_csv_validate_p25_bandplan_file(const char* path, dsd_csv_validation* out) {
-    if (!path || path[0] == '\0' || !out) {
+    if (!out) {
         return -1;
     }
-    out->accepted = 0U;
-    out->skipped = 0U;
-    out->total = 0U;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!path || path[0] == '\0') {
+        return -1;
+    }
     char filename[CSV_IMPORT_PATH_MAX];
     p25_bandplan_row_t rows[DSD_P25_BANDPLAN_MAX_ROWS];
     if (csv_p25_bandplan_parse_file(path, rows, out, filename, sizeof filename) < 0) {

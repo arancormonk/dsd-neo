@@ -549,11 +549,6 @@ svc_import_src_list(dsd_opts* opts, dsd_state* state, const char* path) {
     if (dsd_source_alias_load(path, &candidate) != 0) {
         return -1;
     }
-    if (dsd_source_alias_store_count(candidate) == 0) {
-        dsd_source_alias_store_free(candidate);
-        LOG_WARN("Source ID list import refused: %s has no usable rows.\n", path);
-        return -1;
-    }
     dsd_source_alias_install(state, candidate);
     DSD_SNPRINTF(opts->src_in_file, sizeof opts->src_in_file, "%s", path);
     return 0;

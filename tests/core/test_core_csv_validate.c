@@ -39,6 +39,18 @@ write_temp_csv(char* tmpl, const char* contents) {
 
 static int
 test_missing_file_fails(void) {
+    int (*validators[])(const char*, dsd_csv_validation*) = {
+        dsd_csv_validate_src_file,     dsd_csv_validate_group_file,   dsd_csv_validate_chan_file,
+        dsd_csv_validate_key_file_dec, dsd_csv_validate_key_file_hex, dsd_csv_validate_p25_bandplan_file,
+    };
+    const char* bad_paths[] = {NULL, "", "dsd-neo-test-validate-missing-dir/missing.csv"};
+    for (size_t i = 0; i < sizeof(validators) / sizeof(validators[0]); ++i) {
+        for (size_t j = 0; j < sizeof(bad_paths) / sizeof(bad_paths[0]); ++j) {
+            dsd_csv_validation counts = {9, 9, 9};
+            assert(validators[i](bad_paths[j], &counts) == -1);
+            assert(counts.accepted == 0 && counts.skipped == 0 && counts.total == 0);
+        }
+    }
     dsd_csv_validation v = {9U, 9U, 9U};
     if (dsd_csv_validate_group_file("dsd-neo-test-validate-missing-dir/missing.csv", &v) == 0) {
         DSD_FPRINTF(stderr, "group validate accepted a missing file\n");

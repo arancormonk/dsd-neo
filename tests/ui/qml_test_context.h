@@ -421,6 +421,7 @@ class CallLogStore : public QAbstractListModel {
         int kind = CallHistoryModel::KindVoice;
         QString detail;
         QString channel;
+        QString sourceName;
     };
 
     int
@@ -462,6 +463,7 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::NameRole: return row.name;
             case CallHistoryModel::TgRole: return row.tg;
             case CallHistoryModel::SrcRole: return row.src;
+            case CallHistoryModel::SourceNameRole: return row.sourceName;
             case CallHistoryModel::EncRole: return row.enc;
             case CallHistoryModel::WhenRole: return row.when;
             case CallHistoryModel::DurationSecsRole: return row.durationSecs;
@@ -480,6 +482,7 @@ class CallLogStore : public QAbstractListModel {
         return {{CallHistoryModel::NameRole, "name"},
                 {CallHistoryModel::TgRole, "tg"},
                 {CallHistoryModel::SrcRole, "src"},
+                {CallHistoryModel::SourceNameRole, "srcName"},
                 {CallHistoryModel::EncRole, "enc"},
                 {CallHistoryModel::WhenRole, "when"},
                 {CallHistoryModel::DurationSecsRole, "durationSecs"},
@@ -511,6 +514,15 @@ class CallLogStore : public QAbstractListModel {
         endInsertRows();
         Q_EMIT countChanged();
         return row.name;
+    }
+
+    Q_INVOKABLE QString
+    pushWithSourceName(const QString& name) {
+        const QString call = push(QStringLiteral("TODAY"));
+        m_rows[0].sourceName = name;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::SourceNameRole});
+        return call;
     }
 
     /**

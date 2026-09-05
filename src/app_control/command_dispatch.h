@@ -11,8 +11,10 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_COMMAND_DISPATCH_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_COMMAND_DISPATCH_H_
 
+#include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/config.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -20,10 +22,14 @@
 extern "C" {
 #endif
 
-/* The largest payload is a whole dsdneoUserConfig (16,432 bytes once the four [trunking]
- * CSV paths are counted); app_command_queue.c static-asserts that it and the RadioReference
- * apply payload fit. Keep headroom so the next 1 KiB path field does not need another bump. */
-enum { DSD_APP_CMD_DISPATCH_DATA_MAX = 20480 };
+/* Preserve the original 16 KiB capacity for other payloads, and grow only to the
+ * exact size of a larger structured payload. Every byte is repeated in 128 slots. */
+enum {
+    DSD_APP_CMD_STRUCT_DATA_MAX = sizeof(dsdneoUserConfig) > sizeof(dsd_app_rr_apply_payload)
+                                      ? sizeof(dsdneoUserConfig)
+                                      : sizeof(dsd_app_rr_apply_payload),
+    DSD_APP_CMD_DISPATCH_DATA_MAX = DSD_APP_CMD_STRUCT_DATA_MAX > 16384 ? DSD_APP_CMD_STRUCT_DATA_MAX : 16384
+};
 
 /**
  * @brief Internal command payload envelope consumed by app-control dispatchers.

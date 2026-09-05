@@ -48,6 +48,14 @@ Item {
             tryVerify(function () { return tc.atTop() })
         }
 
+        function test_source_alias_is_visible() {
+            var newest = callHistory.pushWithSourceName("Radio 1201")
+            tryVerify(function () {
+                var first = tc.list.itemAtIndex(0)
+                return first !== null && first.name === newest && first.metaText.indexOf("SRC Radio 1201 (") >= 0
+            }, 5000, "the source alias and ID are missing from the call row")
+        }
+
         function test_01_the_call_that_just_ended_is_on_screen() {
             var newest = ""
             for (var i = 0; i < 4; i++) {
@@ -195,6 +203,9 @@ Item {
 
             testContext.setMetric("slot1TgText", "0")
             tryVerify(function () { return ids.text === "SRC 7001" }, 5000, "a zero talkgroup still prints")
+
+            testContext.setMetric("slot1SrcText", "Radio 1201 (1201)")
+            tryVerify(function () { return ids.text === "SRC Radio 1201 (1201)" }, 5000, "source alias missing from hero")
 
             testContext.setMetric("slot1SrcText", "0")
             tryVerify(function () { return !ids.visible }, 5000, "an id-less call keeps an empty subline")

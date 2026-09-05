@@ -344,6 +344,48 @@ test_relaunch_does_not_reingest(void) {
     expect("relaunched model does not re-ingest ring rows", relaunched.count() == 2);
 }
 
+void
+test_source_labels_survive_merge_and_relaunch(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754500500;
+    Event_History* item = ring.commit(0, 1201, 1201, when, when + 8, "", "Talkgroup 1201");
+    DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Radio 1201");
+    {
+        CallHistoryModel model;
+        model.refresh(ring.state);
+        expect("source alias has its own role",
+               model.data(model.index(0), CallHistoryModel::SourceNameRole).toString() == QStringLiteral("Radio 1201"));
+        expect("source alias preserves numeric ID",
+               model.data(model.index(0), CallHistoryModel::SrcRole).toUInt() == 1201U);
+        expect("source alias preserves group name",
+               model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("Talkgroup 1201"));
+        DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Enriched 1201");
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("alias-only enrichment updates the existing row",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Enriched 1201"));
+        item = ring.commit(0, 1201, 1201, when + 9, when + 15, "", "Talkgroup 1201");
+        DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Unit 1201");
+        model.refresh(ring.state);
+        expect("source alias follows merged fragment",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Unit 1201"));
+    }
+    CallHistoryModel restored;
+    expect("source alias survives persistence",
+           restored.data(restored.index(0), CallHistoryModel::SourceNameRole).toString()
+               == QStringLiteral("Unit 1201"));
+    item = ring.commit(1, 4005, 0, when + 60, when + 65);
+    DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", "N0CALL");
+    restored.refresh(ring.state);
+    expect("textual source survives without an alias",
+           restored.data(restored.index(0), CallHistoryModel::SourceNameRole).toString() == QStringLiteral("N0CALL"));
+}
+
 } // namespace
 
 int
@@ -364,6 +406,7 @@ main(int argc, char** argv) {
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
     QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, settingsDir.path());
 
+    test_source_labels_survive_merge_and_relaunch();
     test_two_slots_same_second_same_talkgroup();
     test_textual_targets_stay_distinct();
     test_alias_only_row_is_logged();

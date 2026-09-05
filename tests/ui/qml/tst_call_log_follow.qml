@@ -69,6 +69,17 @@ Item {
             tryVerify(function () { return tc.atTop() })
         }
 
+        function test_source_alias_is_visible() {
+            var newest = callHistory.pushWithSourceName("Radio 1201")
+            tryVerify(function () {
+                var first = tc.list.itemAtIndex(0)
+                return first !== null && first.name === newest && first.metaText.indexOf("SRC Radio 1201 (") >= 0
+            }, 5000, "the source alias and ID are missing from the call row")
+            historyView.filterText = "radio 1201"
+            tryCompare(historyView, "count", 1)
+            historyView.filterText = ""
+        }
+
         function test_01_calls_landing_at_the_top_stay_in_view() {
             var newest = ""
             for (var i = 0; i < 5; i++) {

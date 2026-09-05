@@ -57,7 +57,8 @@ test_store(void) {
     dsd_source_alias_install(state, store);
     assert(dsd_source_alias_loaded(state) && dsd_source_alias_count(state) == 6);
     label(state, 1201, "Unit 1201");
-    label(state, 1200, "Narrow first");
+    label(state, 1200, "Equal later");
+    label(state, 1120, "Narrow first");
     label(state, 1900, "Wide");
     label(state, 0, NULL);
     char name[50];

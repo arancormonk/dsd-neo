@@ -630,6 +630,8 @@ is rejected by Soapy metadata, or the driver rejects `writeSetting`.
 `[trunking] src_csv` is the global source ID alias list, equivalent to `--src-csv <file>`. When set, it loads
 regardless of whether trunking is enabled, so conventional decode also gets source names. It supplies labels only;
 source labels prefer this list and fall back to the active group list's exact row, with OTA alias text untouched.
+A load failure logs a warning and lets decoding continue. A successfully read file with zero usable rows installs
+an empty list, matching live imports from the terminal and Qt/Android.
 
 When `[trunking] enabled = true`:
 

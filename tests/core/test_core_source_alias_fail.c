@@ -76,6 +76,10 @@ test_failures(void) {
     dsd_source_alias_test_read_fail_after_lines(2);
     assert(csvSrcImportPath(path, state) == -1);
     expect_live(state);
+    dsd_csv_validation counts = {9, 9, 9};
+    dsd_source_alias_test_read_fail_after_lines(2);
+    assert(dsd_csv_validate_src_file(path, &counts) == -1);
+    assert(counts.accepted == 0 && counts.skipped == 0 && counts.total == 0);
     dsd_source_alias_test_read_fail_after_lines(-1);
     for (long n = 0; n < 2; ++n) {
         assert(dsd_source_alias_copy_snapshot(dst, state) == 0);
@@ -83,9 +87,10 @@ test_failures(void) {
         assert(csvSrcImportPath(path, state) == 0);
         dsd_source_alias_test_alloc_fail_after(n);
         assert(dsd_source_alias_copy_snapshot(dst, state) == -1);
-        assert(!dsd_source_alias_loaded(dst));
+        expect_live(dst);
         expect_live(state);
         dsd_source_alias_test_alloc_reset();
+        assert(dsd_source_alias_clear(dst) == 0);
         dst->state_ext[DSD_STATE_EXT_CORE_SOURCE_ALIAS] = state->state_ext[DSD_STATE_EXT_CORE_SOURCE_ALIAS];
         dst->state_ext_cleanup[DSD_STATE_EXT_CORE_SOURCE_ALIAS] =
             state->state_ext_cleanup[DSD_STATE_EXT_CORE_SOURCE_ALIAS];
@@ -181,9 +186,27 @@ nul_cases(void) {
     raw_case(padded, n, 0, 1, 456, 123);
 }
 
+static void
+test_validator_discards_partial_counts_on_allocation_failure(void) {
+    FILE* fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    assert(fputs("id,name\n", fp) >= 0);
+    for (unsigned i = 0; i < 17; ++i) {
+        assert(DSD_FPRINTF(fp, "%u,Unit\n", i) > 0);
+    }
+    assert(fclose(fp) == 0);
+    dsd_csv_validation counts = {9, 9, 9};
+    /* Store and first 16 entries succeed; growing for row 17 fails. */
+    dsd_source_alias_test_alloc_fail_after(2);
+    assert(dsd_csv_validate_src_file(path, &counts) == -1);
+    assert(counts.accepted == 0 && counts.skipped == 0 && counts.total == 0);
+    dsd_source_alias_test_alloc_reset();
+}
+
 int
 main(void) {
     test_failures();
+    test_validator_discards_partial_counts_on_allocation_failure();
     nul_cases();
     boundary(998, "", 0, 1, 0);
     boundary(998, "\n", 0, 1, 0);

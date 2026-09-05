@@ -736,6 +736,8 @@ Item {
                         var meta = []
                         if (model.tg > 0)
                             meta.push("TG " + model.tg)
+                        if (model.src > 0 || model.srcName)
+                            meta.push("SRC " + Util.sourceText(model.src, model.srcName))
                         if (model.enc)
                             meta.push(qsTr("encrypted"))
                         if (model.durationSecs >= 0)

@@ -9,6 +9,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/engine/engine.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -603,9 +604,32 @@ test_iq_replay_guard_and_requested_setup(void) {
     return test_rc;
 }
 
+static int
+test_missing_source_labels_do_not_stop_decode(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof(path), "dsd-missing-source-list");
+    if (fd < 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    (void)remove(path);
+    DSD_SNPRINTF(opts->src_in_file, sizeof(opts->src_in_file), "%s", path);
+    int rc = expect_true("missing cosmetic source list does not abort startup",
+                         dsd_engine_run_with_lifecycle(opts, state, NULL) == 0);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_missing_source_labels_do_not_stop_decode();
     rc |= test_conflicting_scan_modes_fail_before_live_setup();
     rc |= test_m17_udp_input_and_output_specs();
     rc |= test_m17_userdata_is_normalized_during_common_setup();

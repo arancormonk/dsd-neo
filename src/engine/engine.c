@@ -369,7 +369,9 @@ static int
 import_src_csv_if_needed(dsd_opts* opts, dsd_state* state) {
     if (opts->src_in_file[0] != '\0' && !dsd_source_alias_loaded(state)) {
         if (csvSrcImport(opts, state) != 0) {
-            return -1;
+            LOG_WARN("Unable to load source ID list '%s'; continuing without imported source aliases.\n",
+                     opts->src_in_file);
+            return 0;
         }
         LOG_INFO("NOTICE: Imported source ID list from %s\n", opts->src_in_file);
     }

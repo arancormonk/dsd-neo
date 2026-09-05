@@ -372,3 +372,10 @@ function monitorMeta(sys) {
         parts.push(qsTr("file"))
     return parts.join(" · ").toUpperCase()
 }
+
+// Keep source labels and numeric IDs together in both call lists.
+function sourceText(id, name) {
+    if (!name || name === String(id))
+        return id > 0 ? String(id) : ""
+    return id > 0 ? name + " (" + id + ")" : name
+}

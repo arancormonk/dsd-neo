@@ -5,6 +5,11 @@ labels, and key lists. These parsers are intentionally minimal and **not** full 
 
 If you want known-good starting points, see `examples/` in the repository.
 
+Group, source, key, and P25 band-plan CSVs consume each physical line in full. Lines over 998 content bytes
+(excluding LF/CRLF) or containing NUL are skipped once, without interpreting their tails as extra rows.
+The mapping importers (DMR TG-to-key and Vertex keystream) reject such data rows and retain the previous mapping.
+Channel maps retain their support for longer rows with mode/key options; a NUL byte rejects the import.
+
 ## General Rules (Unless A Format Says Otherwise)
 
 - The **first line is treated as a header and is ignored**. Keep the header line (it can be any text).
@@ -475,17 +480,19 @@ Notes:
 - A physical line with more than **998 bytes of content** (excluding its LF or CRLF terminator), or one that contains
   a NUL byte, is warned, its remainder discarded, and counted as one skipped row. Continuation fragments are never parsed as extra rows,
   and the following line is not consumed. An overlong header is still consumed as the header and is excluded
-  from the validator's accepted/skipped/total counts, as are all headers and blank lines.
-- Exact matches beat ranges; among ranges, the narrowest range wins. The **first row wins** among equal matches
-  (duplicate exact IDs or equal-width ranges). Group lists also keep the first duplicate exact row, but their
-  range matcher prefers the later row on an equal-width tie; this list deliberately uses first-row-wins for both.
+  from the validator's accepted/skipped/total counts, as are all headers and blank lines. It does not emit a
+  skipped-row warning.
+- Exact matches beat ranges; the **first row wins** for duplicate exact IDs. Among ranges, the narrowest
+  range wins, with the **last row winning** equal-width ties, matching the group-list grammar.
 - Names are not CSV-escaped; avoid commas and line breaks in fields.
 - Source labels prefer this list, then fall back to the active group list's **exact-row** label. A CSV alias
   therefore wins over an OTA talker alias learned for the same RID as the `SName:` label; the OTA alias text itself
   is kept unchanged. Source `Mode:` still comes only from a group-list exact row, never from this list.
 - Import replaces the current list. A missing or unreadable file, a read error, or an allocation failure fails
-  the import and keeps the current list. CLI/config imports accept zero usable rows as an empty list; terminal
-  and Qt/Android live imports refuse a file with no usable rows and preserve the current list and path.
+  the import and keeps the current list. All entry points accept zero usable rows as a loaded empty list.
+  At engine startup a source-list load failure logs a warning and decoding continues without imported aliases.
+- Qt/Android call views show the resolved source label alongside its radio ID or callsign; history preserves
+  that label across sessions and includes it in text searches. Talkgroup names remain separate.
 - The list is global, loads even when trunking is disabled, and is allowed with `--trunk-scan`. It survives scan
   target changes; its group-list fallback follows whichever policy table is active.
 - Terminal: **Trunking → Channels & groups → Import source ID list CSV...** imports the list. There is no terminal

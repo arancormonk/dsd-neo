@@ -16,6 +16,7 @@
 #define DSD_NEO_SRC_CORE_FILE_CSV_PARSE_INTERNAL_H_
 
 #include <ctype.h>
+#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
@@ -27,6 +28,50 @@
 
 #define BSIZE               999
 #define CSV_IMPORT_PATH_MAX 2048
+
+/* Reads one physical line byte by byte so the content count does not depend on string
+ * termination. Returns 1 with the line in buffer (NUL-terminated, at most size-1 content
+ * bytes kept), 0 at EOF with nothing read, -1 on a stream error. The LF or CRLF
+ * terminator is consumed and not counted. *overlong is set when the line carried more than
+ * size-1 content bytes or a NUL byte; every byte of such a line is consumed here, so the
+ * next call starts on the next physical line and a continuation can never become a row. */
+static inline int
+csv_read_line(FILE* fp, char* buffer, size_t size, int* overlong) {
+    size_t n = 0;
+    int c = EOF;
+    int last = EOF;
+    int seen_nul = 0;
+    int got = 0;
+    *overlong = 0;
+    while ((c = fgetc(fp)) != EOF) {
+        got = 1;
+        if (c == '\n') {
+            break;
+        }
+        if (c == '\0') {
+            seen_nul = 1;
+        }
+        if (n + 1 < size) {
+            buffer[n] = (char)c;
+        }
+        if (n <= size) {
+            n++;
+        }
+        last = c;
+    }
+    if (ferror(fp)) {
+        return -1;
+    }
+    if (!got) {
+        return 0;
+    }
+    if (c == '\n' && last == '\r') {
+        n--; /* CRLF: the CR is part of the terminator, not content. */
+    }
+    buffer[n < size ? n : size - 1] = '\0';
+    *overlong = (n > size - 1 || seen_nul) ? 1 : 0;
+    return 1;
+}
 
 static inline FILE*
 csv_open_user_read_file(const char* label, const char* requested, char* resolved, size_t resolved_size) {
@@ -75,6 +120,24 @@ csv_line_is_blank(const char* s) {
         }
     }
     return 1;
+}
+
+/* Account for one data line. Blank lines are filler; invalid physical lines count
+ * once and never reach a field parser. Validators suppress per-row diagnostics. */
+static inline int
+csv_data_row_ready(const char* buffer, int invalid, const char* filename, unsigned row, dsd_csv_validation* stats) {
+    if (!invalid && csv_line_is_blank(buffer)) {
+        return 0;
+    }
+    if (stats) {
+        stats->total++;
+        if (invalid) {
+            stats->skipped++;
+        }
+    } else if (invalid) {
+        LOG_WARN("CSV file '%s' row %u is overlong or contains NUL; skipped.\n", filename, row);
+    }
+    return !invalid;
 }
 
 static inline char*
@@ -323,7 +386,6 @@ csv_ascii_casecmp(const char* a, const char* b) {
  * silences the per-row diagnostics. `filename` receives the resolved path.
  */
 struct p25_bandplan_row;
-struct dsd_csv_validation;
 int csv_p25_bandplan_parse_file(const char* path, struct p25_bandplan_row* rows, struct dsd_csv_validation* stats,
                                 char* filename, size_t filename_size);
 

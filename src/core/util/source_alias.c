@@ -61,7 +61,6 @@ dsd_source_alias_store_create(void) {
     if (!s) {
         return NULL;
     }
-    DSD_MEMSET(s, 0, sizeof(*s));
     do {
         s->store_id = dsd_atomic_u64_fetch_add_relaxed(&next_store_id, 1u);
     } while (!s->store_id);
@@ -152,7 +151,7 @@ dsd_source_alias_lookup(const dsd_state* state, uint32_t id, char* name, size_t 
         if (id < e->id_start || id > e->id_end) {
             continue;
         }
-        if (!best || (best->is_range && (!e->is_range || e->id_end - e->id_start < best->id_end - best->id_start))) {
+        if (!best || (best->is_range && (!e->is_range || e->id_end - e->id_start <= best->id_end - best->id_start))) {
             best = e;
         }
         if (!best->is_range) {
@@ -215,7 +214,6 @@ dsd_source_alias_copy_snapshot(dsd_state* dst, const dsd_state* src) {
         dst->state_ext_cleanup[DSD_STATE_EXT_CORE_SOURCE_ALIAS] = NULL;
     }
     if (!clone) {
-        (void)dsd_source_alias_clear(dst);
         return -1;
     }
     clone->count = clone->capacity = s->count;

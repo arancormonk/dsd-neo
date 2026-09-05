@@ -87,7 +87,7 @@ p25p2_vpdu_print_group_label(const dsd_state* state, uint32_t id) {
 
 static void
 p25p2_vpdu_print_source_label(const dsd_state* state, uint32_t id) {
-    char name[50];
+    char name[DSD_SOURCE_ALIAS_NAME_MAX];
     if (id != 0U && dsd_source_label_lookup(state, id, NULL, 0, name, sizeof(name))) {
         DSD_FPRINTF(stderr, " [%s]", name);
     }

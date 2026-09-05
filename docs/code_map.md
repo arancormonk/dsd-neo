@@ -179,16 +179,18 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   (`DSD_STATE_EXT_CORE_SOURCE_ALIAS`). `dsd_source_alias_store_create()`/`dsd_source_alias_store_append()` build
   a store; `dsd_source_alias_install()` takes ownership and replaces it, and `dsd_source_alias_clear()` removes it.
   `dsd_source_alias_loaded()` distinguishes an empty imported store from no store; `dsd_source_alias_count()`
-  reports its row count. `src/core/file/source_alias_csv.c` implements `dsd_source_alias_load(path, &out)`
+  reports its row count. All import entry points accept a loaded empty list; startup failures warn without
+  stopping decoding. `src/core/file/source_alias_csv.c` implements `dsd_source_alias_load(path, &out)`
   (fresh candidate, output untouched on open/read/allocation failure), `csvSrcImport()`/`csvSrcImportPath()`
   from `<dsd-neo/core/csv_import.h>`, and `dsd_csv_validate_src_file()` from `<dsd-neo/core/csv_validate.h>`.
-  `dsd_source_alias_lookup()` uses exact-before-range, narrowest-range, first-row-wins matching;
+  `dsd_source_alias_lookup()` uses exact-before-range matching (first exact row wins) and narrowest-range
+  matching (last row wins ties);
   `dsd_source_label_lookup()` prefers aliases over the active group-list exact label, with mode only from
   group policy and OTA alias text untouched. The list is global across scan rows and immutable once installed;
   live access belongs to the decoder thread. `dsd_source_alias_copy_snapshot(dst, src)` deep-copies it for
-  both snapshot hops, reuses an unchanged clone, and clears the destination alias slot on allocation failure
-  without freeing a shared source store. `CORE_SOURCE_ALIAS` tests matching, precedence, lifecycle and policy
-  isolation; `CORE_SOURCE_ALIAS_FAIL` covers allocation/read failures and physical-line length boundaries.
+  both snapshot hops, reuses an unchanged clone, and preserves an owned destination store on allocation failure.
+  A shallow alias of the source is detached so destination cleanup cannot free the source. `CORE_SOURCE_ALIAS`
+  tests matching, precedence, lifecycle and policy isolation; `CORE_SOURCE_ALIAS_FAIL` covers allocation/read failures and physical-line length boundaries.
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime

@@ -2260,9 +2260,11 @@ ui_render_nxdn_tgt_src_line(const dsd_state* state) {
             printw(" [%s]", group_name);
             printw("[%s] ", group_mode);
         }
-        if ((source != 0UL && source <= UINT32_MAX
-             && dsd_source_alias_lookup(state, (uint32_t)source, group_name, sizeof(group_name)))
-            || (source != target && ui_lookup_source_label(state, source, NULL, 0, group_name, sizeof(group_name)))) {
+        const int source_label =
+            source == target ? (source != 0UL && source <= UINT32_MAX
+                                && dsd_source_alias_lookup(state, (uint32_t)source, group_name, sizeof(group_name)))
+                             : ui_lookup_source_label(state, source, NULL, 0, group_name, sizeof(group_name));
+        if (source_label) {
             attron(COLOR_PAIR(4));
             printw(" [%s]", group_name);
         }

@@ -378,7 +378,7 @@ dsd_app_notification_encode(char* out, size_t out_size) {
         const dsd_app_slot_call* call = &status.slots[slot];
         char name[DSD_APP_CALL_NAME_SIZE];
         char tg[DSD_CALL_IDENTITY_TEXT_SIZE];
-        char src[DSD_CALL_IDENTITY_TEXT_SIZE];
+        char src[DSD_APP_CALL_SOURCE_SIZE];
         sanitize_field(name, sizeof(name), call->name);
         sanitize_field(tg, sizeof(tg), call->tg_text);
         sanitize_field(src, sizeof(src), call->src_text);

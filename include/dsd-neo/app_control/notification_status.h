@@ -103,7 +103,7 @@ enum {
     /**
      * @brief Comfortably larger than any record the encoder produces.
      *
-     * The worst case is roughly 875 bytes: the fixed header, plus two slots each
+     * The worst case is less than 1400 bytes: the fixed header, plus two slots each
      * carrying a full-length @c name (@ref DSD_APP_CALL_NAME_SIZE), @c tg_text and
      * @c src_text alongside their numeric fields. Rounded well past that, because a
      * record that outgrows this buffer is not truncated -- it is dropped, and the

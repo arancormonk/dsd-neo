@@ -52,11 +52,12 @@ class CallHistoryModel : public QAbstractListModel {
         WhenRole,         // call start, seconds since epoch
         DurationSecsRole, // -1 when unknown
         SystemNameRole,
-        DayLabelRole, // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
-        TimeTextRole, // "12:04"
-        KindRole,     // RowKind: voice call or data/control notice
-        DetailRole,   // notice payload: decoded text message or GPS string
-        ChannelRole   // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
+        DayLabelRole,  // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
+        TimeTextRole,  // "12:04"
+        KindRole,      // RowKind: voice call or data/control notice
+        DetailRole,    // notice payload: decoded text message or GPS string
+        ChannelRole,   // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
+        SourceNameRole // resolved source label, falling back to the OTA source text
     };
 
     /** @brief What a row logs; pinned values because rows persist as JSON. */
@@ -116,6 +117,7 @@ class CallHistoryModel : public QAbstractListModel {
         QString name;
         qulonglong tg = 0;
         qulonglong src = 0;
+        QString sourceName;
         bool enc = false;
         int durationSecs = -1;
         QString systemName;
@@ -152,6 +154,7 @@ class CallHistoryModel : public QAbstractListModel {
         qint64 end = 0;
         qulonglong src = 0;
         bool enc = false;
+        QString sourceName;
     };
 
     /** @brief A ring row worth ingesting: brand new, or a seen row that advanced. */
@@ -170,7 +173,8 @@ class CallHistoryModel : public QAbstractListModel {
      * @return SeenNew for a first sighting, SeenAdvanced when a voice row already
      *         ingested has since learned something, SeenUnchanged otherwise.
      */
-    int noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool enc, bool voice);
+    int noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool enc, bool voice,
+                 const QString& sourceName);
 
     /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced. */
     QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2]);

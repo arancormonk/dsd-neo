@@ -22,7 +22,6 @@ typedef struct dsd_source_alias_entry {
     uint32_t id_start, id_end;
     uint8_t is_range;
     char name[DSD_SOURCE_ALIAS_NAME_MAX]; /* 49 bytes plus NUL; UTF-8 may be cut. */
-    unsigned row;
 } dsd_source_alias_entry;
 
 /* Live stores are immutable once installed; access belongs to the decoder thread. */
@@ -38,12 +37,13 @@ int dsd_source_alias_clear(dsd_state* state);
 /* Store presence, including a successfully imported empty list. */
 int dsd_source_alias_loaded(const dsd_state* state);
 size_t dsd_source_alias_count(const dsd_state* state);
-/* Exact beats range, narrowest range wins, first row wins ties. Returns 1 on hit. */
+/* Exact beats range; first exact row wins. Narrowest range wins, last row wins range ties. Returns 1 on hit. */
 int dsd_source_alias_lookup(const dsd_state* state, uint32_t id, char* name, size_t name_sz);
 /* Alias then policy exact label; mode is only ever supplied by policy. */
 int dsd_source_label_lookup(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name,
                             size_t name_sz);
-/* Deep copy or reuse matching clone. Failure clears dst without freeing shared src. */
+/* Deep copy or reuse matching clone. Failure preserves an owned destination store;
+ * a shallow alias of src is detached so destination cleanup cannot free src. */
 int dsd_source_alias_copy_snapshot(dsd_state* dst, const dsd_state* src);
 /* Fresh candidate; on open/read/allocation failure returns -1 and leaves *out untouched.
  * The header is always consumed. Blank lines are ignored, malformed rows skipped,

@@ -2440,6 +2440,13 @@ test_source_alias_commands(void) {
     rc |= expect_int("source failed replacement keeps lookup", dsd_source_alias_lookup(state, 1201, name, sizeof name),
                      1);
     rc |= expect_str("source failed replacement keeps name", name, "Engine 21");
+    static const unsigned char empty[] = "id,name\n";
+    rc |= write_file_bytes(path, empty, sizeof(empty) - 1U);
+    post_string(DSD_APP_CMD_IMPORT_SRC_LIST, path);
+    rc |= expect_int("source empty import drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("source empty import loaded", dsd_source_alias_loaded(state), 1);
+    rc |= expect_int("source empty import replaces aliases", (int)dsd_source_alias_count(state), 0);
+    rc |= expect_contains("source empty import applied", state->ui_msg, "Applied:");
     /* Through the public action helper, as the Qt bridge submits it: a clear that is not
        in the action allowlist is rejected before it is ever queued. */
     rc |= expect_int("source clear accepted as action", dsd_app_command_action(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR),
