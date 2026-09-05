@@ -1314,6 +1314,12 @@ test_loaded_scalar_key_status(void) {
     ui_render_forced_key_status(state, 0);
     assert_capture_contains("Forcing Key Priority -- RC4 Key");
     assert(strstr(g_printw_capture, "Loaded (not forced)") == NULL);
+    for (int algid = 1; algid <= 0xFF; algid++) {
+        state->M = algid;
+        reset_printw_capture();
+        ui_render_forced_key_status(state, 0);
+        assert(strstr(g_printw_capture, "Loaded (not forced)") == NULL);
+    }
     state->M = 0x16;
     reset_printw_capture();
     ui_render_forced_key_status(state, 0);

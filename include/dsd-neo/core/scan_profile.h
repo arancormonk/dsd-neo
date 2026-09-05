@@ -24,8 +24,8 @@ typedef struct {
  * @p out, releasing whatever @p out held. `present` is set only when a direct source exists.
  * Returns -1 on a bad argument with @p out untouched. */
 int dsd_scan_options_keys(const dsd_scan_options* options, dsd_key_set* out);
-/** Merge the legacy key columns into parsed options. The columns keep their key-only meaning:
- * they never change encrypted-audio muting (only the option text's own `-b`/`-H` do). Rejects a
+/** Merge legacy key columns into parsed options. Columns alone do not claim a mute override;
+ * when option text contains `-b`/`-H`, all merged BP/Hytera material decides DMR muting. Rejects a
  * column that duplicates an option or mixes direct keys with key files. No files are opened;
  * on failure @p options is untouched. */
 int dsd_scan_options_merge_keys(dsd_scan_options* options, const char* hex_file, const char* dec_file,
@@ -74,7 +74,7 @@ void dsd_scan_groups_leave(dsd_state* state);
 /** Park the row policy so a group import edits the global baseline beneath it. Returns 1 when
  * parked (resume is then owed), 0 when no row policy is active. */
 int dsd_scan_groups_suspend(dsd_state* state);
-/** Adopt the edited global policy as the new baseline and reinstall the parked row policy. */
+/** Adopt the edited global baseline and restore the parked policy with active calls intact. */
 void dsd_scan_groups_resume(dsd_state* state);
 #ifdef __cplusplus
 }

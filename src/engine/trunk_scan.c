@@ -2454,6 +2454,7 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     /* Reserve rollback keys before the first switch can change the foreground. */
     dsd_scan_key_change rollback = {0};
     if (dsd_scan_key_change_prepare(state, &coord->targets[coord->active].keys, &rollback)) {
+        coord->targets[coord->active].idle_since_m = trunk_scan_now_m();
         return;
     }
     double now_m = trunk_scan_now_m();
@@ -2530,11 +2531,13 @@ trunk_scan_retry_active_if_due(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     if (coord->count != 1 && !coord->hold_active) {
         return;
     }
-    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     if (rt->retry_until_m <= 0.0 || rt->retry_until_m > now_m) {
         return;
     }
-    (void)trunk_scan_switch_to(opts, state, coord, coord->active, 0);
+    if (trunk_scan_switch_to(opts, state, coord, coord->active, 0) == TRUNK_SCAN_PREPARE_FAILED) {
+        rt->retry_until_m = now_m + 2.0;
+    }
 }
 
 /*

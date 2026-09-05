@@ -6933,6 +6933,86 @@ run_with_default_tune_hook(int (*test_fn)(void)) {
 
 void dsd_key_set_test_alloc_fail_after(long count);
 
+/* Allocation failures re-arm dwell/retry timers. Recovering memory on the next tick
+ * must not cause an immediate retune, but the next scheduled attempt must succeed. */
+static int
+run_prepare_failure_timer_case(int retry) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char keys[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof(dir))) {
+        return 1;
+    }
+    if (dsd_test_path_join(keys, sizeof(keys), dir, "keys.csv")
+        || write_text_file(keys, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n")) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    const char* rows = retry ? "a,p25-trunk,851000000,,250,,,-K keys.csv\n"
+                             : "a,p25-trunk,851000000,,250,,,-K keys.csv\n"
+                               "b,p25-trunk,852000000,,250,,,\n";
+    if (write_targets_file_with_header(dir, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n",
+                                       rows, path, sizeof(path))) {
+        (void)remove(keys);
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        (void)remove(keys);
+        cleanup_paths(dir, path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof(opts->trunk_scan_targets_csv), "%s", path);
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_request = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_failures_remaining = retry;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    trunk_scan_test_set_now(0.0);
+    char error[256];
+    int failed = dsd_engine_trunk_scan_init(opts, state, error, sizeof(error)) != 0;
+    failed |= g_counting_tune_to_cc_calls != 1;
+    dsd_key_set_test_alloc_fail_after(0);
+    const double failure_time = retry ? 2.01 : 0.26;
+    trunk_scan_test_set_now(failure_time);
+    dsd_engine_trunk_scan_tick(opts, state);
+    dsd_key_set_test_alloc_fail_after(-1);
+    failed |= g_counting_tune_to_cc_calls != 1;
+    trunk_scan_test_set_now(failure_time + 0.01);
+    dsd_engine_trunk_scan_tick(opts, state);
+    failed |= g_counting_tune_to_cc_calls != 1;
+    failed |= dsd_engine_trunk_scan_active_index(state) != 0;
+    trunk_scan_test_set_now(retry ? 4.02 : 0.52);
+    dsd_engine_trunk_scan_tick(opts, state);
+    failed |= g_counting_tune_to_cc_calls != 2;
+    failed |= dsd_engine_trunk_scan_active_index(state) != (retry ? 0U : 1U);
+    if (failed) {
+        DSD_FPRINTF(stderr, "prepare failure did not re-arm %s timer\n", retry ? "retry" : "dwell");
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    trunk_scan_test_clear_now();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    (void)remove(keys);
+    cleanup_paths(dir, path, NULL);
+    return failed;
+}
+
+static int
+test_prepare_failure_timers(void) {
+    int rc = run_prepare_failure_timer_case(0);
+    return rc | run_prepare_failure_timer_case(1);
+}
+
 static int
 test_initial_key_allocation_failure(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -7277,6 +7357,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_coordinator_preserves_long_lcn_list_across_rotation);
     rc |= run_with_default_tune_hook(test_target_keys_install_and_restore_across_switches);
     rc |= run_with_default_tune_hook(test_direct_target_keys_install_and_restore_across_switches);
+    rc |= run_with_default_tune_hook(test_prepare_failure_timers);
     rc |= run_with_default_tune_hook(test_initial_key_allocation_failure);
     rc |= run_with_default_tune_hook(test_target_options_rotate_and_restore);
     rc |= run_with_default_tune_hook(test_prepare_failure_keeps_outgoing_snapshot);

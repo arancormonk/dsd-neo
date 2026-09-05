@@ -308,8 +308,8 @@ from `1` to `49` for manual RTL-family gain in dB.
 
 `row N keys_hex_csv path is too long or invalid` (and `_dec_`)
 
-The key path is resolved relative to the target CSV. Use a path that fits in 1024 bytes and, for a relative
-reference, keep the key file next to (or below) the target CSV.
+The key path is resolved relative to the target CSV. Use a resolved path of at most 1023 bytes (excluding the
+terminating NUL) and, for a relative reference, keep the key file next to (or below) the target CSV.
 
 `failed to import keys for trunk scan target '<id>' from '<file>'`
 
@@ -374,7 +374,7 @@ with trunk scan.
 
 The optional `options` column accepts the same [scoped switches](csv-formats.md#scoped-row-options) as conventional
 channel maps. The target `type` validates protocol-specific switches. A DMR system can use `-K Keys.csv -G Groups.csv
--0 -F --dmr-force-algid 21`; a conventional NXDN target can use `-R 1`. Relative paths refer to the target-list directory.
+-0 -F`; a conventional NXDN target can use `-R 1`. Relative paths refer to the target-list directory.
 Unspecified settings inherit the configured defaults, and `--no-force-key` can disable inherited forcing.
 
 Group policies and keys are preloaded and isolated between targets. Re-parking, failed-tune recovery and shutdown

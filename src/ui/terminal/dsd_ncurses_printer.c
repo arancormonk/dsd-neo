@@ -839,7 +839,7 @@ ui_render_forced_key_status_tyt(const dsd_state* state, int show_keys) {
  */
 static void
 ui_render_loaded_scalar_keys(const dsd_state* state, int show_keys) {
-    if (state->M == 1 || state->M == 0x21 || state->M == 0x16 || state->tyt_bp != 0) {
+    if (state->M != 0 || state->tyt_bp != 0) {
         return;
     }
     if (state->K != 0) {

@@ -4540,6 +4540,10 @@ target_link_libraries(
     dsd-neo_test_engine_channel_scan
     PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
 )
+target_compile_definitions(
+    dsd-neo_test_engine_channel_scan
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
 add_test(NAME ENGINE_CHANNEL_SCAN COMMAND dsd-neo_test_engine_channel_scan)
 
 add_executable(

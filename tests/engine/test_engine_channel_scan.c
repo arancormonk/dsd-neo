@@ -29,6 +29,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+void dsd_key_set_test_alloc_fail_after(long count);
+
 static dsd_trunk_tune_result tune_result;
 static uint64_t request;
 static int tunes;
@@ -218,9 +220,34 @@ test_option_only_rows_and_policy_edits(void) {
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
     assert(dsd_engine_channel_scan_pending(opts, state) == 1);
     assert(tunes == before_key_edit && state->R == 0);
-    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    /* The receiver moved, but its outgoing profile must remain gated if restaging
+     * runs out of memory. Repeated sync service passes cannot bypass that gate. */
+    dsd_key_set_test_alloc_fail_after(0);
+    for (int i = 0; i < 3; i++) {
+        assert(dsd_engine_channel_scan_pending(opts, state) == 1);
+        state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        assert(dsd_engine_channel_scan_service_sync(opts, state) == 0);
+        assert(state->synctype == DSD_SYNC_NONE);
+        assert(dsd_engine_channel_scan_waiting(state));
+        assert(tunes == before_key_edit && state->R == 0);
+    }
+    dsd_key_set_test_alloc_fail_after(-1);
+    /* A deferred or rejected retry can retire its tune-ledger gate, but the
+     * receiver is still on an uncommitted row. Keep decoding closed and allow
+     * ordinary scanning to recover instead of trapping it on the failed row. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
-    assert(tunes == before_key_edit + 1 && state->R == 0x55 && state->scan_keys_active_set);
+    assert(!dsd_engine_channel_scan_waiting(state));
+    assert(dsd_trunk_tuning_frame_is_dispatchable(dsd_trunk_tuning_generation(), 1));
+    assert(!dsd_engine_channel_scan_service_sync(opts, state));
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    assert(dsd_engine_channel_scan_step(opts, state) == -1);
+    assert(!dsd_engine_channel_scan_waiting(state));
+    assert(!dsd_engine_channel_scan_service_sync(opts, state));
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(dsd_engine_channel_scan_service_sync(opts, state) == 1);
+    assert(tunes == before_key_edit + 3 && state->R == 0x55 && state->scan_keys_active_set);
     assert(state->rkey_array[3] == 0 && !state->rkey_array_loaded[3]);
     dsd_engine_channel_scan_leave(opts, state);
     dsd_scan_keys_leave(state);

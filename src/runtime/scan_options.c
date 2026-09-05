@@ -272,9 +272,22 @@ option_set(const scan_option_spec* spec, const char* argument, unsigned int mode
     return 0;
 }
 
+typedef struct {
+    const scan_option_spec* first;
+    int alias_used;
+} scan_force_options;
+
+/* The only redundant spelling allowed is -0 paired once with --dmr-force-algid 21. */
+static int
+option_force_alias(const scan_option_spec* first, const scan_option_spec* next, int force) {
+    return force == 0x21
+           && ((strcmp(first->name, "-0") == 0 && strcmp(next->name, "--dmr-force-algid") == 0)
+               || (strcmp(first->name, "--dmr-force-algid") == 0 && strcmp(next->name, "-0") == 0));
+}
+
 static int
 option_apply(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed,
-             unsigned int* force_sources, char* error, size_t error_size) {
+             scan_force_options* forces, char* error, size_t error_size) {
     const int old_force = parsed->values.force;
     if ((parsed->values.present & spec->field) && spec->field != DSD_SCAN_OPT_FORCE) {
         return option_error(error, error_size, spec->name, "duplicate option");
@@ -287,19 +300,28 @@ option_apply(const scan_option_spec* spec, const char* argument, unsigned int mo
         return option_error(error, error_size, spec->name, "conflicting force settings");
     }
     if (spec->field == DSD_SCAN_OPT_FORCE) {
-        const unsigned int source = spec->argument ? 1U : spec->value == 0x21 ? 2U : 4U;
-        if (*force_sources && ((*force_sources & source) || parsed->values.force != 0x21)) {
-            return option_error(error, error_size, spec->name, "duplicate force setting");
+        if (forces->first) {
+            if (forces->alias_used || !option_force_alias(forces->first, spec, parsed->values.force)) {
+                return option_error(error, error_size, spec->name, "duplicate force setting");
+            }
+            forces->alias_used = 1;
+        } else {
+            forces->first = spec;
         }
-        *force_sources |= source;
     }
     parsed->values.present |= spec->field;
     return 1;
 }
 
+/* A missing value cannot consume the following switch as a file path. */
+static int
+option_argument(const char** cursor, char* argument, size_t size) {
+    return option_token(cursor, argument, size) == 1 && argument[0] != '-';
+}
+
 static int
 option_read(const char** cursor, unsigned int mode, int conventional, dsd_scan_options* parsed,
-            unsigned int* force_sources, char* error, size_t error_size) {
+            scan_force_options* forces, char* error, size_t error_size) {
     char token[1024] = {0};
     char argument[DSD_SCAN_OPTIONS_KEY_PATH_MAX] = {0};
     int rc = option_token(cursor, token, sizeof(token));
@@ -327,11 +349,11 @@ option_read(const char** cursor, unsigned int mode, int conventional, dsd_scan_o
         option_error(error, error_size, spec->name, "takes no argument");
         goto done;
     }
-    if (spec->argument && !equals && option_token(cursor, argument, sizeof(argument)) != 1) {
+    if (spec->argument && !equals && !option_argument(cursor, argument, sizeof(argument))) {
         option_error(error, error_size, spec->name, "requires a valid argument");
         goto done;
     }
-    rc = option_apply(spec, equals ? equals : argument, mode, parsed, force_sources, error, error_size);
+    rc = option_apply(spec, equals ? equals : argument, mode, parsed, forces, error, error_size);
 done:
     DSD_SECURE_ZERO(token, sizeof(token));
     DSD_SECURE_ZERO(argument, sizeof(argument));
@@ -358,9 +380,9 @@ dsd_scan_options_parse(const char* text, unsigned int mode, int conventional, ds
     dsd_scan_options parsed = {0};
     const char* cursor = text ? text : "";
     int rc;
-    unsigned int force_sources = 0;
+    scan_force_options forces = {0};
     do {
-        rc = option_read(&cursor, mode, conventional, &parsed, &force_sources, error, error_size);
+        rc = option_read(&cursor, mode, conventional, &parsed, &forces, error, error_size);
     } while (rc > 0);
     if (rc == 0) {
         rc = option_sources_valid(parsed.values.present, error, error_size);

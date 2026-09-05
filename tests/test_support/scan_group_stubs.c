@@ -24,6 +24,12 @@ dsd_tg_policy_install(dsd_state* state, dsd_tg_policy_store* store) {
     (void)store;
 }
 
+void
+dsd_tg_policy_restore(dsd_state* state, dsd_tg_policy_store* store) {
+    (void)state;
+    (void)store;
+}
+
 int
 dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out) {
     (void)path;

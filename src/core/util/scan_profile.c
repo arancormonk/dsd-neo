@@ -61,28 +61,14 @@ profile_legacy_fields(const char* hex_file, const char* dec_file, const char* si
            | (profile_text_present(single_dec) ? DSD_SCAN_OPT_BP : 0U);
 }
 
-static unsigned int
-profile_hex_digits(const char* text) {
-    unsigned int digits = 0;
-    const char* p = text + strspn(text, " \t\r\n\v\f");
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-        p += 2;
-    }
-    for (; *p; p++) {
-        if (!strchr(" \t\r\n\v\f", *p)) {
-            digits++;
-        }
-    }
-    return digits;
-}
-
 static int
 profile_legacy_direct(dsd_scan_options* options, uint32_t legacy, const char* hex, const char* dec) {
     if (!(legacy & DSD_SCAN_OPT_DIRECT)) {
         return 0;
     }
     dsd_key_set direct = {0};
-    if (dsd_key_set_load_direct(&direct, hex, dec) != DSD_KEY_DIRECT_OK) {
+    size_t hex_digits = 0;
+    if (dsd_key_set_load_direct_width(&direct, hex, dec, &hex_digits) != DSD_KEY_DIRECT_OK) {
         return -1;
     }
     if (legacy & DSD_SCAN_OPT_HYTERA) {
@@ -90,7 +76,7 @@ profile_legacy_direct(dsd_scan_options* options, uint32_t legacy, const char* he
         options->hytera[1] = direct.scalars.K2;
         options->hytera[2] = direct.scalars.K3;
         options->hytera[3] = direct.scalars.K4;
-        options->hytera_digits = profile_hex_digits(hex);
+        options->hytera_digits = (unsigned int)hex_digits;
     }
     if (legacy & DSD_SCAN_OPT_BP) {
         options->bp = direct.scalars.K;

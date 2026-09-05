@@ -356,7 +356,7 @@ key_set_direct_segments_nonzero(const uint64_t segments[4], size_t count) {
 }
 
 static int
-key_set_parse_direct_hex(const char* text, dsd_key_scalars* scalars) {
+key_set_parse_direct_hex(const char* text, dsd_key_scalars* scalars, size_t* digits) {
     char hex[65];
     DSD_MEMSET(hex, 0, sizeof(hex));
     size_t nhex = 0U;
@@ -379,6 +379,7 @@ key_set_parse_direct_hex(const char* text, dsd_key_scalars* scalars) {
     }
 
     dsd_key_scalars_store_direct_hex(scalars, segments, nhex);
+    *digits = nhex;
 
     DSD_SECURE_ZERO(segments, sizeof(segments));
     DSD_SECURE_ZERO(hex, sizeof(hex));
@@ -408,7 +409,7 @@ dsd_key_scalars_store_direct_hex(dsd_key_scalars* scalars, const uint64_t segmen
 }
 
 dsd_key_direct_result
-dsd_key_set_load_direct(dsd_key_set* out, const char* single_hex, const char* single_dec) {
+dsd_key_set_load_direct_width(dsd_key_set* out, const char* single_hex, const char* single_dec, size_t* hex_digits) {
     const int have_hex = key_set_text_present(single_hex);
     const int have_dec = key_set_text_present(single_dec);
     if (out == NULL || (!have_hex && !have_dec)) {
@@ -423,15 +424,24 @@ dsd_key_set_load_direct(dsd_key_set* out, const char* single_hex, const char* si
         dsd_key_set_free(&loaded);
         return DSD_KEY_DIRECT_INVALID_DEC;
     }
-    if (have_hex && key_set_parse_direct_hex(single_hex, &loaded.scalars) != 0) {
+    size_t digits = 0;
+    if (have_hex && key_set_parse_direct_hex(single_hex, &loaded.scalars, &digits) != 0) {
         dsd_key_set_free(&loaded);
         return DSD_KEY_DIRECT_INVALID_HEX;
     }
 
     dsd_key_set_free(out);
     *out = loaded;
+    if (hex_digits) {
+        *hex_digits = digits;
+    }
     DSD_SECURE_ZERO(&loaded, sizeof(loaded));
     return DSD_KEY_DIRECT_OK;
+}
+
+dsd_key_direct_result
+dsd_key_set_load_direct(dsd_key_set* out, const char* single_hex, const char* single_dec) {
+    return dsd_key_set_load_direct_width(out, single_hex, single_dec, NULL);
 }
 
 static void

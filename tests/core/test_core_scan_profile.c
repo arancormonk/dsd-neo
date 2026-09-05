@@ -137,15 +137,29 @@ test_group_ownership(void) {
     expect_label(state, "Global");
     dsd_scan_groups_enter(state, row);
     expect_label(state, "Row edit");
+    dsd_tg_policy_call_route active = {
+        .target_id = 123, .source_id = 1, .freq_hz = 851000000, .channel = 10, .slot = 0};
+    dsd_tg_policy_call_route candidate = active;
+    candidate.target_id = 456;
+    dsd_tg_policy_decision decision = {.priority = 10, .tune_allowed = 1, .preempt_requested = 1};
+    assert(dsd_tg_policy_note_active_call(state, &active, &decision, 1.0) == 0);
+    decision.priority = 20;
+    assert(dsd_tg_policy_should_preempt(NULL, state, &candidate, &decision, 100.0));
     assert(dsd_scan_groups_suspend(state));
     expect_label(state, "Global");
     assert(dsd_tg_policy_make_exact_entry(123, "A", "New global", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
     assert(dsd_tg_policy_upsert_exact(state, &entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
     dsd_scan_groups_resume(state);
     expect_label(state, "Row edit");
+    assert(dsd_tg_policy_should_preempt(NULL, state, &candidate, &decision, 100.0));
+    /* A plain suspend/resume must also retain the same active route. */
+    assert(dsd_scan_groups_suspend(state));
+    dsd_scan_groups_resume(state);
+    assert(dsd_tg_policy_should_preempt(NULL, state, &candidate, &decision, 100.0));
     for (int i = 0; i < 10; i++) {
         dsd_scan_groups_enter(state, row);
     }
+    assert(!dsd_tg_policy_should_preempt(NULL, state, &candidate, &decision, 100.0));
     dsd_scan_groups_leave(state);
     expect_label(state, "New global");
     dsd_scan_profile_free(row);
@@ -400,8 +414,104 @@ test_relative_paths(void) {
     DSD_SECURE_ZERO(&options, sizeof(options));
 }
 
+static void
+test_move_unwinds_both_group_scopes(void) {
+    for (int suspended = 0; suspended < 2; suspended++) {
+        dsd_state* src = (dsd_state*)calloc(1, sizeof(*src));
+        dsd_state* dst = (dsd_state*)calloc(1, sizeof(*dst));
+        assert(src && dst);
+        dsd_tg_policy_entry entry;
+        assert(dsd_tg_policy_make_exact_entry(123, "A", "Source global", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
+        assert(dsd_tg_policy_append_exact(src, &entry) == 0);
+        assert(dsd_tg_policy_make_exact_entry(123, "A", "Destination global", DSD_TG_POLICY_SOURCE_IMPORTED, &entry)
+               == 0);
+        assert(dsd_tg_policy_append_exact(dst, &entry) == 0);
+        dsd_scan_row_profile* row = (dsd_scan_row_profile*)calloc(1, sizeof(*row));
+        assert(row);
+        row->values.present = DSD_SCAN_OPT_GROUP;
+        /* An empty row policy still owns a scope and must not carry its source baseline. */
+        assert(dsd_channel_profile_set(src, 0, row) == 0);
+        assert(dsd_scan_groups_begin(dst) == 0);
+        dsd_scan_groups_enter(src, row);
+        dsd_scan_groups_enter(dst, row);
+        if (suspended) {
+            assert(dsd_scan_groups_suspend(src));
+            assert(dsd_scan_groups_suspend(dst));
+        }
+        dsd_channel_modes_move(dst, src);
+        expect_label(src, "Source global");
+        expect_label(dst, "Destination global");
+        assert(dsd_channel_profile_get(src, 0) == NULL);
+        assert(dsd_channel_profile_get(dst, 0) == row);
+        assert(!dsd_scan_groups_suspend(dst));
+        dsd_scan_groups_enter(dst, row);
+        dsd_scan_groups_leave(dst);
+        expect_label(dst, "Destination global");
+        dsd_state_ext_free_all(src);
+        dsd_state_ext_free_all(dst);
+        free(src);
+        free(dst);
+    }
+}
+
+static void
+test_slotless_options_validate_files(void) {
+    char path[1024];
+    int fd = dsd_test_mkstemp(path, sizeof(path), "dsd_slotless_options");
+    assert(fd >= 0);
+    dsd_close(fd);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    assert(state && opts);
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", path);
+    const char* switches[] = {"-G", "-K", "-k"};
+    for (size_t i = 0; i < sizeof(switches) / sizeof(switches[0]); i++) {
+        char csv[2048];
+        DSD_SNPRINTF(csv, sizeof(csv),
+                     "channel,frequency_hz,mode,options\n"
+                     "invalid,150000000,dmr,%s '%s.missing'\n",
+                     switches[i], path);
+        write_file(path, csv);
+        assert(csvChanImport(opts, state) != 0);
+        assert(state->lcn_freq_count == 0);
+    }
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    assert(remove(path) == 0);
+}
+
+/* The column parser supplies the width even for prefixed, spaced and all-zero keys. */
+static void
+test_legacy_hex_widths(void) {
+    const char* values[] = {" 0X00 0000 0000 ", "00000000000000000000000000000000",
+                            "0x00000000000000000000000000000000 00000000000000000000000000000001"};
+    const unsigned int widths[] = {10, 32, 64};
+    for (size_t i = 0; i < sizeof(widths) / sizeof(widths[0]); i++) {
+        dsd_scan_options options = {0};
+        dsd_key_set keys = {0};
+        char error[192];
+        assert(dsd_scan_options_merge_keys(&options, "", "", values[i], "", error, sizeof(error)) == 0);
+        assert(options.hytera_digits == widths[i]);
+        assert(dsd_scan_options_keys(&options, &keys) == 0);
+        assert(keys.present);
+        if (i > 0) {
+            assert(keys.scalars.aes_key_segments[0] == widths[i] / 16);
+        }
+        if (i == 2) {
+            assert(keys.scalars.K4 == 1 && keys.scalars.aes_key_loaded[0]);
+        }
+        dsd_key_set_free(&keys);
+        DSD_SECURE_ZERO(&options, sizeof(options));
+    }
+}
+
 int
 main(void) {
+    test_move_unwinds_both_group_scopes();
+    test_slotless_options_validate_files();
+    test_legacy_hex_widths();
     test_keys_and_scope();
     test_prepared_key_rollback();
     test_group_load_failure();

@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../util/key_set_internal.h"
+#include "../util/talkgroup_policy_internal.h"
 #include "csv_parse_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -375,14 +376,16 @@ group_apply_policy_fields(const group_policy_header* header, const char* filenam
 }
 
 static int
-group_commit_entry(dsd_state* state, const dsd_tg_policy_entry* entry, int is_range, const char* filename,
-                   unsigned int row_count, size_t* dropped_policy_alloc_rows) {
+group_commit_entry(dsd_state* state, dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry, int is_range,
+                   const char* filename, unsigned int row_count, size_t* dropped_policy_alloc_rows) {
     int rc = 0;
-    if (!state || !entry || !filename || !dropped_policy_alloc_rows) {
+    if ((!state && !store) || !entry || !filename || !dropped_policy_alloc_rows) {
         return -1;
     }
 
-    rc = is_range ? dsd_tg_policy_add_range_entry(state, entry) : dsd_tg_policy_append_exact(state, entry);
+    rc = store      ? dsd_tg_policy_store_append(store, entry)
+         : is_range ? dsd_tg_policy_add_range_entry(state, entry)
+                    : dsd_tg_policy_append_exact(state, entry);
     if (rc == -1) {
         (*dropped_policy_alloc_rows)++;
         return rc;
@@ -399,8 +402,8 @@ group_commit_entry(dsd_state* state, const dsd_tg_policy_entry* entry, int is_ra
 
 /** @brief Parse and commit one group data row. @return 0 when the row loaded. */
 static int
-group_import_row(dsd_state* state, const char* filename, unsigned int row_count, char* buffer,
-                 const group_policy_header* header, size_t* dropped_policy_alloc_rows) {
+group_import_row(dsd_state* state, dsd_tg_policy_store* store, const char* filename, unsigned int row_count,
+                 char* buffer, const group_policy_header* header, size_t* dropped_policy_alloc_rows) {
     char* fields[32];
     size_t field_count = 0;
     uint32_t id_start = 0;
@@ -426,7 +429,7 @@ group_import_row(dsd_state* state, const char* filename, unsigned int row_count,
     name_field = fields[2];
     group_entry_init(&entry, id_start, id_end, is_range, mode_field, name_field, row_count, &mode_blocking);
     group_apply_policy_fields(header, filename, row_count, field_count, fields, &entry, mode_blocking);
-    return group_commit_entry(state, &entry, is_range, filename, row_count, dropped_policy_alloc_rows);
+    return group_commit_entry(state, store, &entry, is_range, filename, row_count, dropped_policy_alloc_rows);
 }
 
 /* Rows dropped for want of memory are a warning, as they always were: the import keeps
@@ -445,7 +448,8 @@ group_import_finish(FILE* fp, const char* filename, size_t dropped_policy_alloc_
 
 /* stats may be NULL; when set, counts data rows so a dry run can report them. */
 static int
-group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_validation* stats) {
+group_import_path(const char* group_file_path, dsd_state* state, dsd_tg_policy_store* store,
+                  dsd_csv_validation* stats) {
     char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
     char buffer[BSIZE];
     FILE* fp = NULL;
@@ -453,7 +457,7 @@ group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_v
     size_t dropped_policy_alloc_rows = 0;
     group_policy_header header = {0, 0, 0};
 
-    if (!group_file_path || group_file_path[0] == '\0' || !state) {
+    if (!group_file_path || group_file_path[0] == '\0' || (!state && !store)) {
         return -1;
     }
 
@@ -485,12 +489,35 @@ group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_v
         if (stats) {
             stats->total++;
         }
-        if (group_import_row(state, filename, row_count, buffer, &header, &dropped_policy_alloc_rows) == 0 && stats) {
+        if (group_import_row(state, store, filename, row_count, buffer, &header, &dropped_policy_alloc_rows) == 0
+            && stats) {
             stats->accepted++;
         }
     }
 
     return group_import_finish(fp, filename, dropped_policy_alloc_rows);
+}
+
+static int
+group_import_path_stats(const char* path, dsd_state* state, dsd_csv_validation* stats) {
+    return group_import_path(path, state, NULL, stats);
+}
+
+int
+dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out) {
+    if (!out) {
+        return -1;
+    }
+    dsd_tg_policy_store* store = dsd_tg_policy_store_create();
+    if (!store) {
+        return -1;
+    }
+    if (group_import_path(path, NULL, store, NULL) != 0) {
+        dsd_tg_policy_release(store);
+        return -1;
+    }
+    *out = store;
+    return 0;
 }
 
 int
@@ -903,10 +930,10 @@ chan_import_options(dsd_state* state, char** fields, dsd_scan_mode mode, const c
     }
     dsd_scan_row_profile* profile = NULL;
     dsd_key_set keys = {0};
-    if (!rc && store) {
+    if (!rc) {
         rc = dsd_scan_options_resolve(&parsed, base_path, error, sizeof(error));
     }
-    if (!rc && store) {
+    if (!rc) {
         rc = dsd_scan_profile_load(&parsed, show_keys, &profile, &keys);
     }
     if (!rc && store && keys.present) {

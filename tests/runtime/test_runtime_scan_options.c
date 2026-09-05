@@ -13,6 +13,11 @@ main(void) {
     char error[192] = {0};
     assert(dsd_scan_options_parse("", DSD_SCAN_MODE_INHERIT, 1, &parsed, error, sizeof(error)) == 0);
     assert(parsed.values.present == 0);
+    assert(
+        dsd_scan_options_parse("--dmr-force-algid 0x21 -0 -G ./-F", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))
+        == 0);
+    assert(parsed.values.force == 0x21 && strcmp(parsed.values.group_file, "./-F") == 0);
+    assert(dsd_scan_options_parse("--strict-crc", DSD_SCAN_MODE_DSTAR, 1, &parsed, error, sizeof(error)) == 0);
     assert(dsd_scan_options_parse("-1 '01 23 45 67 89' -0 -F --scan-voice-only --scan-voice-hold-ms=4000",
                                   DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))
            == 0);
@@ -109,6 +114,11 @@ main(void) {
                    {"-G 'unterminated", DSD_SCAN_MODE_DMR, 1},
                    {"-G", DSD_SCAN_MODE_DMR, 1},
                    {"-G ''", DSD_SCAN_MODE_DMR, 1},
+                   {"-G -F", DSD_SCAN_MODE_DMR, 1},
+                   {"-K --no-force-key", DSD_SCAN_MODE_DMR, 1},
+                   {"-k --not-a-switch-SENSITIVE", DSD_SCAN_MODE_DMR, 1},
+                   {"-F --strict-crc", DSD_SCAN_MODE_DMR, 1},
+                   {"--dmr-force-algid 21 -0 --dmr-force-algid 21", DSD_SCAN_MODE_DMR, 1},
                    {"--scan-voice-only=yes", DSD_SCAN_MODE_DMR, 1},
                    {"-t 0", DSD_SCAN_MODE_DMR, 1},
                    {"-i rtl:0", DSD_SCAN_MODE_DMR, 1},

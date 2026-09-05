@@ -33,6 +33,7 @@ typedef struct {
     uint64_t map_sequence;
     int row;
     int retry;
+    int needs_commit;
     dsd_scan_mode mode;
     dsd_scan_settings configured;
     dsd_scan_key_change keys;
@@ -81,6 +82,9 @@ channel_scan_end_calls(dsd_opts* opts, dsd_state* state) {
 
 static int
 channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
+    /* Hardware has moved. Even if a later retry rolls back, frames cannot use
+     * the outgoing profile until a row is successfully committed. */
+    scan->needs_commit = 1;
     dsd_scan_settings latest;
     dsd_scan_mode_configured(opts, state, &latest);
     if (!dsd_scan_settings_equal(&latest, &scan->configured, 1) || scan->key_epoch != state->enc_lockout_key_epoch) {
@@ -95,6 +99,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     channel_scan_end_calls(opts, state);
     dsd_engine_reset_no_carrier_state(opts, state);
     if (dsd_scan_mode_enter(opts, state, scan->mode) != 0) {
+        scan->retry = 1;
         return -1;
     }
     state->lcn_freq_roll = scan->row + 1;
@@ -111,6 +116,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     state->nxdn_last_ran = -1;
     dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
     scan->request = 0;
+    scan->needs_commit = 0;
     return 1;
 }
 
@@ -124,9 +130,10 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     if (scan->retry) {
-        scan->retry = 0;
         if (channel_scan_row_is_current(opts, state, scan)) {
             (void)channel_scan_start_row(opts, state, scan->row);
+        } else {
+            scan->retry = 0;
         }
         return dsd_engine_channel_scan_waiting(state);
     }
@@ -156,7 +163,7 @@ dsd_engine_channel_scan_service_sync(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     const channel_scan* scan = channel_scan_get(state);
-    if (!scan || (!scan->request && !scan->retry)) {
+    if (!scan || (!scan->request && !scan->retry && !scan->needs_commit)) {
         return 1;
     }
     (void)dsd_engine_channel_scan_pending(opts, state);
@@ -213,6 +220,9 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
         return -1;
     }
     scan->key_epoch = state->enc_lockout_key_epoch;
+    /* A completed tune may already have moved the receiver. Keep its retry gate
+     * closed through preparation failures; the new request takes over below. */
+    scan->retry = 0;
     dsd_scan_settings_restore(&next, opts, state);
     const dsd_trunk_tune_result result =
         dsd_engine_scan_tune_to_freq(opts, state, freq, state->samplesPerSymbol, &scan->request);

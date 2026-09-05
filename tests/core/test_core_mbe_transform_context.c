@@ -1984,10 +1984,17 @@ test_process_mbe_frame_mixed_clear_and_bp(void) {
             state->dmr_fid = state->dmr_fidR = 0x10;
             state->dmr_so = state->dmr_soR = scenario == 1 ? 0x40 : 0;
             processMbeFrame(opts, state, imbe, ambe, imbe7100);
+            rc |= expect_eq_int("mixed clear/BP errs", slot ? state->errsR : state->errs, errs);
+            rc |= expect_eq_int("mixed clear/BP errs2", slot ? state->errs2R : state->errs2, errs2);
+            rc |= expect_eq_int("mixed clear/BP status",
+                                strcmp(slot ? state->err_strR : state->err_str, expected_error), 0);
+            const float* staged = slot ? state->f_r : state->f_l;
             const float* actual = slot ? state->audio_out_temp_bufR : state->audio_out_temp_buf;
             for (int sample = 0; sample < 160; sample++) {
                 float difference = actual[sample] - expected_audio[sample];
-                if (!(difference >= -0.000001f && difference <= 0.000001f)) {
+                float staged_difference = staged[sample] - expected_audio[sample];
+                if (!(difference >= -0.000001f && difference <= 0.000001f)
+                    || !(staged_difference >= -0.000001f && staged_difference <= 0.000001f)) {
                     rc = 1;
                 }
             }

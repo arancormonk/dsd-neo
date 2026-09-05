@@ -529,6 +529,7 @@ dsd_channel_modes_move(dsd_state* dst, dsd_state* src) {
         return;
     }
     dsd_scan_groups_leave(dst);
+    dsd_scan_groups_leave(src);
     void* ptr = dsd_state_ext_get(src, DSD_STATE_EXT_CORE_CHANNEL_MODES);
     /* Detach without cleanup before the source's normal teardown. */
     src->state_ext[DSD_STATE_EXT_CORE_CHANNEL_MODES] = NULL;
@@ -630,7 +631,7 @@ dsd_scan_groups_suspend(dsd_state* state) {
         return 0;
     }
     modes->group_suspended_row = dsd_tg_policy_retain(state);
-    dsd_tg_policy_install(state, modes->group_baseline);
+    dsd_tg_policy_restore(state, modes->group_baseline);
     modes->group_suspended = 1;
     return 1;
 }
@@ -643,7 +644,7 @@ dsd_scan_groups_resume(dsd_state* state) {
     }
     dsd_tg_policy_release(modes->group_baseline);
     modes->group_baseline = dsd_tg_policy_retain(state);
-    dsd_tg_policy_install(state, modes->group_suspended_row);
+    dsd_tg_policy_restore(state, modes->group_suspended_row);
     dsd_tg_policy_release(modes->group_suspended_row);
     modes->group_suspended_row = NULL;
     modes->group_suspended = 0;

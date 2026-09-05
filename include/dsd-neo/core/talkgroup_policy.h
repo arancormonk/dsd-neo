@@ -178,6 +178,12 @@ void dsd_tg_policy_release(dsd_tg_policy_store* store);
  */
 void dsd_tg_policy_install(dsd_state* state, dsd_tg_policy_store* store);
 /**
+ * Restore a retained context after a temporary suspension, preserving active calls and
+ * preemption cooldowns. Reference ownership is the same as dsd_tg_policy_install().
+ * Use install instead for a target transition that must restart call bookkeeping.
+ */
+void dsd_tg_policy_restore(dsd_state* state, dsd_tg_policy_store* store);
+/**
  * Load a standalone policy from a group file, with csvGroupImportPath() semantics (rows the
  * importer cannot store are skipped with a warning). On success `*out` is overwritten with a
  * new reference, so release any reference it held first. On failure `*out` is untouched.

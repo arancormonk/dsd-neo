@@ -366,7 +366,12 @@ ui_cmd_reset_key_mute_state(dsd_opts* opts, dsd_state* state) {
     }
     state->keyloader = 0;
     state->payload_keyid = state->payload_keyidR = 0;
+    /* Key ownership stays live; only the mute decision updates configured defaults. */
+    const int scoped = dsd_scan_mode_suspend(opts, state);
     opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
+    if (scoped) {
+        (void)dsd_scan_mode_resume(opts, state);
+    }
     // Every direct key mutation funnels through here: invalidate the
     // encrypted-target lockout ledger so each locked target re-verifies once
     // against the new key material.
@@ -2985,7 +2990,6 @@ ui_cmd_handle_aggr_sync_toggle(dsd_opts* opts, dsd_state* state, const struct ds
     (void)state;
     (void)c;
     opts->aggressive_framesync = opts->aggressive_framesync ? 0 : 1;
-    opts->dmr_crc_relaxed_default = (uint8_t)!opts->aggressive_framesync;
     return 1;
 }
 
