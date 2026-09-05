@@ -16,9 +16,11 @@ dsd_scan_mode dsd_channel_mode_get(const dsd_state* state, size_t row);
 int dsd_channel_mode_set(dsd_state* state, size_t row, dsd_scan_mode mode);
 /** Release all row modes. Does not restore active decoder settings. */
 void dsd_channel_modes_clear(dsd_state* state);
-/** Transfer ownership, replacing destination modes and clearing the source extension. */
+/** Transfer row definitions, replacing destination modes and clearing the source extension.
+ * Restore both states' global group policies first; active/suspended scopes are not moved. */
 void dsd_channel_modes_move(dsd_state* dst, dsd_state* src);
-/** Nonzero if at least one row declares a mode. */
+/** Nonzero if at least one row declares a mode or carries scoped row options (scan_profile.h),
+ * i.e. the typed scanner must run the list. */
 int dsd_channel_modes_present(const dsd_state* state);
 #ifdef __cplusplus
 }

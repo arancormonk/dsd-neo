@@ -15,6 +15,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -76,6 +77,8 @@ typedef struct {
      * text never survives parsing or reaches a diagnostic. */
     dsd_key_scalars single_key_scalars;
     uint8_t single_keys_present;
+    /** Nonsecret, validated per-target overrides. Group path is relative-resolved at import. */
+    dsd_scan_option_values row_options;
     /* Per-target P25 band plan CSV (trunk targets only), resolved relative to the targets CSV at
      * parse time and loaded into the target's own band-plan store at init; empty means none. */
     char p25_bandplan_csv[1024];

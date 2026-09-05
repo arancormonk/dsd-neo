@@ -156,6 +156,41 @@ int dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state);
  */
 int dsd_tg_policy_clear(dsd_state* state);
 
+/**
+ * Decoder-thread owned, reference-counted policy context. References preserve row-local
+ * aliases and lockouts across scan visits. Frontend snapshots still deep-copy their
+ * effective context. Ownership protocol: every dsd_tg_policy_retain()/dsd_tg_policy_load()
+ * result is one reference the caller must eventually dsd_tg_policy_release(); the state's
+ * own extension slot holds its own reference, so installing a store never transfers the
+ * caller's.
+ */
+typedef struct dsd_tg_policy_store dsd_tg_policy_store;
+/** Take one reference on the state's effective context. NULL (no context) represents an
+ * empty policy and needs no release. */
+dsd_tg_policy_store* dsd_tg_policy_retain(const dsd_state* state);
+/** Drop one reference; the context is freed with the last one. NULL is ignored. */
+void dsd_tg_policy_release(dsd_tg_policy_store* store);
+/**
+ * Make @p store the state's effective context without allocating: the state takes its own
+ * reference (the caller keeps and still owns theirs), the previously installed context is
+ * released, and the installed store's active-call bookkeeping restarts. NULL installs an
+ * empty policy. Reinstalling the current context only restarts the bookkeeping.
+ */
+void dsd_tg_policy_install(dsd_state* state, dsd_tg_policy_store* store);
+/**
+ * Restore a retained context after a temporary suspension, preserving active calls and
+ * preemption cooldowns. Reference ownership is the same as dsd_tg_policy_install().
+ * Use install instead for a target transition that must restart call bookkeeping.
+ */
+void dsd_tg_policy_restore(dsd_state* state, dsd_tg_policy_store* store);
+/**
+ * Load a standalone policy from a group file, with csvGroupImportPath() semantics (rows the
+ * importer cannot store are skipped with a warning). On success `*out` is overwritten with a
+ * new reference, so release any reference it held first. On failure `*out` is untouched.
+ * Returns 0 on success, -1 otherwise.
+ */
+int dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out);
+
 #ifdef __cplusplus
 }
 #endif

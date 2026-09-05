@@ -1638,6 +1638,7 @@ endif()
 
 add_executable(
     dsd-neo_test_app_control_actions
+    test_support/scan_group_stubs.c
     ui/test_ui_cmd_actions.c
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_audio.c
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_radio.c
@@ -1697,6 +1698,7 @@ add_test(
 
 add_executable(
     dsd-neo_test_ui_menu_services
+    test_support/scan_group_stubs.c
     ui/test_ui_menu_services.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
     # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().
@@ -3771,6 +3773,21 @@ target_link_libraries(
 )
 add_test(NAME CORE_KEY_SET COMMAND dsd-neo_test_core_key_set)
 
+add_executable(
+    dsd-neo_test_core_scan_profile
+    core/test_core_scan_profile.c
+    ../src/core/util/talkgroup_policy.c
+)
+target_compile_definitions(
+    dsd-neo_test_core_scan_profile
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_core_scan_profile
+    PRIVATE dsd-neo_core dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME CORE_SCAN_PROFILE COMMAND dsd-neo_test_core_scan_profile)
+
 add_executable(dsd-neo_test_core_csv_validate core/test_core_csv_validate.c)
 target_include_directories(
     dsd-neo_test_core_csv_validate
@@ -3810,6 +3827,7 @@ add_test(NAME CORE_CHANNEL_LABEL COMMAND dsd-neo_test_core_channel_label)
 
 add_executable(
     dsd-neo_test_core_state_trunk_lcn_avoid
+    test_support/scan_group_stubs.c
     core/test_core_state_trunk_lcn_avoid.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
@@ -4511,6 +4529,7 @@ add_test(
 
 add_executable(
     dsd-neo_test_engine_channel_scan
+    test_support/scan_group_stubs.c
     engine/test_engine_channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
@@ -4521,10 +4540,16 @@ target_link_libraries(
     dsd-neo_test_engine_channel_scan
     PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
 )
+target_compile_definitions(
+    dsd-neo_test_engine_channel_scan
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
 add_test(NAME ENGINE_CHANNEL_SCAN COMMAND dsd-neo_test_engine_channel_scan)
 
 add_executable(
     dsd-neo_test_engine_trunk_scan
+    ${PROJECT_SOURCE_DIR}/src/core/util/scan_profile.c
+    test_support/scan_group_stubs.c
     engine/test_engine_trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
@@ -4543,7 +4568,7 @@ target_include_directories(
 )
 target_compile_definitions(
     dsd-neo_test_engine_trunk_scan
-    PRIVATE DSD_TRUNK_SCAN_TEST_CLOCK=1
+    PRIVATE DSD_TRUNK_SCAN_TEST_CLOCK=1 DSD_NEO_TEST_HOOKS
 )
 target_link_libraries(
     dsd-neo_test_engine_trunk_scan
@@ -4600,6 +4625,13 @@ add_test(NAME RUNTIME_RR_PROVENANCE COMMAND dsd-neo_test_runtime_rr_provenance)
 add_executable(dsd-neo_test_runtime_scan_mode runtime/test_runtime_scan_mode.c)
 target_link_libraries(dsd-neo_test_runtime_scan_mode PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_SCAN_MODE COMMAND dsd-neo_test_runtime_scan_mode)
+
+add_executable(
+    dsd-neo_test_runtime_scan_options
+    runtime/test_runtime_scan_options.c
+)
+target_link_libraries(dsd-neo_test_runtime_scan_options PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_SCAN_OPTIONS COMMAND dsd-neo_test_runtime_scan_options)
 
 add_executable(dsd-neo_test_scan_mode_replay engine/scan_mode_replay.c)
 target_link_libraries(

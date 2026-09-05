@@ -19,6 +19,29 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "key_set_internal.h"
 
+#ifdef DSD_NEO_TEST_HOOKS
+static long key_set_alloc_fail_after = -1;
+void dsd_key_set_test_alloc_fail_after(long count);
+
+void
+dsd_key_set_test_alloc_fail_after(long count) {
+    key_set_alloc_fail_after = count;
+}
+#endif
+
+static dsd_key_set_entry*
+key_set_alloc_entries(size_t count) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (key_set_alloc_fail_after == 0) {
+        return NULL;
+    }
+    if (key_set_alloc_fail_after > 0) {
+        key_set_alloc_fail_after--;
+    }
+#endif
+    return (dsd_key_set_entry*)calloc(count, sizeof(dsd_key_set_entry));
+}
+
 static size_t
 key_set_capacity(void) {
     return sizeof(((dsd_state*)0)->rkey_array) / sizeof(((dsd_state*)0)->rkey_array[0]);
@@ -100,7 +123,7 @@ dsd_key_set_capture(dsd_key_set* out, const dsd_state* state) {
     }
     dsd_key_set_entry* entries = NULL;
     if (count > 0) {
-        entries = (dsd_key_set_entry*)calloc(count, sizeof(*entries));
+        entries = key_set_alloc_entries(count);
         if (entries == NULL) {
             dsd_key_set_free(out);
             return -1;
@@ -159,7 +182,7 @@ dsd_key_set_copy(dsd_key_set* dst, const dsd_key_set* src) {
         if (src->entries == NULL) {
             return -1;
         }
-        entries = (dsd_key_set_entry*)calloc(src->count, sizeof(*entries));
+        entries = key_set_alloc_entries(src->count);
         if (entries == NULL) {
             return -1;
         }
@@ -333,7 +356,7 @@ key_set_direct_segments_nonzero(const uint64_t segments[4], size_t count) {
 }
 
 static int
-key_set_parse_direct_hex(const char* text, dsd_key_scalars* scalars) {
+key_set_parse_direct_hex(const char* text, dsd_key_scalars* scalars, size_t* digits) {
     char hex[65];
     DSD_MEMSET(hex, 0, sizeof(hex));
     size_t nhex = 0U;
@@ -355,6 +378,20 @@ key_set_parse_direct_hex(const char* text, dsd_key_scalars* scalars) {
         }
     }
 
+    dsd_key_scalars_store_direct_hex(scalars, segments, nhex);
+    *digits = nhex;
+
+    DSD_SECURE_ZERO(segments, sizeof(segments));
+    DSD_SECURE_ZERO(hex, sizeof(hex));
+    return 0;
+}
+
+void
+dsd_key_scalars_store_direct_hex(dsd_key_scalars* scalars, const uint64_t segments[4], size_t nhex) {
+    if (scalars == NULL || segments == NULL || !key_set_direct_hex_width_valid(nhex)) {
+        return;
+    }
+    const size_t segment_count = nhex == 10U ? 1U : nhex / 16U;
     scalars->H = segments[0];
     scalars->K1 = segments[0];
     scalars->K2 = segments[1];
@@ -369,14 +406,10 @@ key_set_parse_direct_hex(const char* text, dsd_key_scalars* scalars) {
         scalars->aes_key_loaded[0] = scalars->aes_key_loaded[1] = any_nonzero;
         scalars->aes_key_segments[0] = scalars->aes_key_segments[1] = (uint8_t)segment_count;
     }
-
-    DSD_SECURE_ZERO(segments, sizeof(segments));
-    DSD_SECURE_ZERO(hex, sizeof(hex));
-    return 0;
 }
 
 dsd_key_direct_result
-dsd_key_set_load_direct(dsd_key_set* out, const char* single_hex, const char* single_dec) {
+dsd_key_set_load_direct_width(dsd_key_set* out, const char* single_hex, const char* single_dec, size_t* hex_digits) {
     const int have_hex = key_set_text_present(single_hex);
     const int have_dec = key_set_text_present(single_dec);
     if (out == NULL || (!have_hex && !have_dec)) {
@@ -391,15 +424,24 @@ dsd_key_set_load_direct(dsd_key_set* out, const char* single_hex, const char* si
         dsd_key_set_free(&loaded);
         return DSD_KEY_DIRECT_INVALID_DEC;
     }
-    if (have_hex && key_set_parse_direct_hex(single_hex, &loaded.scalars) != 0) {
+    size_t digits = 0;
+    if (have_hex && key_set_parse_direct_hex(single_hex, &loaded.scalars, &digits) != 0) {
         dsd_key_set_free(&loaded);
         return DSD_KEY_DIRECT_INVALID_HEX;
     }
 
     dsd_key_set_free(out);
     *out = loaded;
+    if (hex_digits) {
+        *hex_digits = digits;
+    }
     DSD_SECURE_ZERO(&loaded, sizeof(loaded));
     return DSD_KEY_DIRECT_OK;
+}
+
+dsd_key_direct_result
+dsd_key_set_load_direct(dsd_key_set* out, const char* single_hex, const char* single_dec) {
+    return dsd_key_set_load_direct_width(out, single_hex, single_dec, NULL);
 }
 
 static void
@@ -461,6 +503,72 @@ dsd_key_set_load_csv(dsd_key_set* out, const char* hex_path, const char* dec_pat
     *out = loaded;
     DSD_SECURE_ZERO(&loaded, sizeof(loaded));
     return 0;
+}
+
+void
+dsd_scan_key_change_clear(dsd_scan_key_change* change) {
+    if (!change) {
+        return;
+    }
+    dsd_key_set_free(&change->baseline);
+    dsd_key_set_free(&change->active);
+    DSD_SECURE_ZERO(change, sizeof(*change));
+}
+
+int
+dsd_scan_key_change_prepare(const dsd_state* state, const dsd_key_set* row, dsd_scan_key_change* change) {
+    if (!state || !change) {
+        return -1;
+    }
+    dsd_scan_key_change_clear(change);
+    change->keyed = row && row->present;
+    change->changed = change->keyed ? !state->scan_keys_active_set || !dsd_key_set_equal(&state->scan_keys_active, row)
+                                    : state->scan_keys_active_set != 0;
+    if (!change->keyed) {
+        change->prepared = 1;
+        return 0;
+    }
+    /* Own the globals as well as the row: rollback may cross an unkeyed target,
+     * whose leave releases the current baseline before this change commits. */
+    change->capture_baseline = 1;
+    const int baseline_rc = state->scan_keys_active_set
+                                ? dsd_key_set_copy(&change->baseline, &state->scan_keys_baseline)
+                                : dsd_key_set_capture(&change->baseline, state);
+    if (baseline_rc || dsd_key_set_copy(&change->active, row)) {
+        dsd_scan_key_change_clear(change);
+        return -1;
+    }
+    change->prepared = 1;
+    return 0;
+}
+
+int
+dsd_scan_key_change_commit(dsd_state* state, dsd_scan_key_change* change) {
+    if (!state || !change) {
+        return 0;
+    }
+    if (!change->prepared) {
+        /* A failed or never-run prepare owns nothing and must not touch the live keyring. */
+        dsd_scan_key_change_clear(change);
+        return 0;
+    }
+    const int changed = change->changed;
+    if (!change->keyed) {
+        dsd_scan_keys_leave(state);
+    } else {
+        if (change->capture_baseline) {
+            dsd_key_set_free(&state->scan_keys_baseline);
+            state->scan_keys_baseline = change->baseline;
+            DSD_MEMSET(&change->baseline, 0, sizeof(change->baseline));
+        }
+        dsd_key_set_free(&state->scan_keys_active);
+        state->scan_keys_active = change->active;
+        DSD_MEMSET(&change->active, 0, sizeof(change->active));
+        state->scan_keys_active_set = 1;
+        dsd_key_set_install(state, &state->scan_keys_active);
+    }
+    dsd_scan_key_change_clear(change);
+    return changed;
 }
 
 int

@@ -15,9 +15,12 @@
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -434,11 +437,26 @@ typedef struct {
     size_t capacity;
     size_t declared_count;
     dsd_scan_mode* rows;
+    dsd_scan_row_profile** profiles;
+    size_t profile_capacity;
+    /* Rows whose profile carries at least one option. Like declared_count, a nonzero value
+     * routes the scan through the typed scanner, which is the only path that applies them. */
+    size_t profile_count;
+    dsd_tg_policy_store* group_baseline;
+    dsd_tg_policy_store* group_suspended_row;
+    int group_active;
+    int group_suspended;
 } channel_modes;
 
 static void
 channel_modes_cleanup(void* ptr) {
     channel_modes* modes = (channel_modes*)ptr;
+    for (size_t i = 0; i < modes->profile_capacity; i++) {
+        dsd_scan_profile_free(modes->profiles[i]);
+    }
+    free((void*)modes->profiles);
+    dsd_tg_policy_release(modes->group_baseline);
+    dsd_tg_policy_release(modes->group_suspended_row);
     free(modes->rows);
     free(modes);
 }
@@ -452,7 +470,12 @@ dsd_channel_mode_get(const dsd_state* state, size_t row) {
 int
 dsd_channel_modes_present(const dsd_state* state) {
     const channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
-    return modes && modes->declared_count != 0;
+    return modes && (modes->declared_count != 0 || modes->profile_count != 0);
+}
+
+static int
+channel_profile_has_options(const dsd_scan_row_profile* profile) {
+    return profile != NULL && profile->values.present != 0;
 }
 
 int
@@ -496,6 +519,7 @@ dsd_channel_mode_set(dsd_state* state, size_t row, dsd_scan_mode mode) {
 
 void
 dsd_channel_modes_clear(dsd_state* state) {
+    dsd_scan_groups_leave(state);
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_CORE_CHANNEL_MODES, NULL, NULL);
 }
 
@@ -504,9 +528,124 @@ dsd_channel_modes_move(dsd_state* dst, dsd_state* src) {
     if (!dst || !src || dst == src) {
         return;
     }
+    dsd_scan_groups_leave(dst);
+    dsd_scan_groups_leave(src);
     void* ptr = dsd_state_ext_get(src, DSD_STATE_EXT_CORE_CHANNEL_MODES);
     /* Detach without cleanup before the source's normal teardown. */
     src->state_ext[DSD_STATE_EXT_CORE_CHANNEL_MODES] = NULL;
     src->state_ext_cleanup[DSD_STATE_EXT_CORE_CHANNEL_MODES] = NULL;
     (void)dsd_state_ext_set(dst, DSD_STATE_EXT_CORE_CHANNEL_MODES, ptr, channel_modes_cleanup);
+}
+
+int
+dsd_scan_groups_begin(dsd_state* state) {
+    if (!state) {
+        return -1;
+    }
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (modes) {
+        return 0;
+    }
+    modes = (channel_modes*)calloc(1, sizeof(*modes));
+    if (!modes) {
+        return -1;
+    }
+    (void)dsd_state_ext_set(state, DSD_STATE_EXT_CORE_CHANNEL_MODES, modes, channel_modes_cleanup);
+    return 0;
+}
+
+const dsd_scan_row_profile*
+dsd_channel_profile_get(const dsd_state* state, size_t row) {
+    const channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    return modes && row < modes->profile_capacity ? modes->profiles[row] : NULL;
+}
+
+int
+dsd_channel_profile_set(dsd_state* state, size_t row, dsd_scan_row_profile* profile) {
+    if (row >= SIZE_MAX / sizeof(dsd_scan_row_profile*) || dsd_scan_groups_begin(state)) {
+        return -1;
+    }
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes) {
+        return -1;
+    }
+    if (row >= modes->profile_capacity) {
+        size_t capacity = trunk_lcn_grown_capacity(modes->profile_capacity, row + 1, sizeof(*modes->profiles));
+        if (!capacity) {
+            return -1;
+        }
+        dsd_scan_row_profile** profiles =
+            (dsd_scan_row_profile**)realloc((void*)modes->profiles, capacity * sizeof(*profiles));
+        if (!profiles) {
+            return -1;
+        }
+        DSD_MEMSET((void*)(profiles + modes->profile_capacity), 0,
+                   (capacity - modes->profile_capacity) * sizeof(*profiles));
+        modes->profiles = profiles;
+        modes->profile_capacity = capacity;
+    }
+    modes->profile_count -= channel_profile_has_options(modes->profiles[row]);
+    dsd_scan_profile_free(modes->profiles[row]);
+    modes->profiles[row] = profile;
+    modes->profile_count += channel_profile_has_options(profile);
+    return 0;
+}
+
+void
+dsd_scan_groups_leave(dsd_state* state) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes || !modes->group_active) {
+        return;
+    }
+    if (!modes->group_suspended) {
+        dsd_tg_policy_install(state, modes->group_baseline);
+    }
+    dsd_tg_policy_release(modes->group_baseline);
+    dsd_tg_policy_release(modes->group_suspended_row);
+    modes->group_baseline = NULL;
+    modes->group_suspended_row = NULL;
+    modes->group_active = modes->group_suspended = 0;
+}
+
+void
+dsd_scan_groups_enter(dsd_state* state, const dsd_scan_row_profile* profile) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes) {
+        return;
+    }
+    if (!profile || !(profile->values.present & DSD_SCAN_OPT_GROUP)) {
+        dsd_scan_groups_leave(state);
+        return;
+    }
+    if (!modes->group_active) {
+        modes->group_baseline = dsd_tg_policy_retain(state);
+        modes->group_active = 1;
+    }
+    dsd_tg_policy_install(state, profile->groups);
+}
+
+int
+dsd_scan_groups_suspend(dsd_state* state) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes || !modes->group_active || modes->group_suspended) {
+        return 0;
+    }
+    modes->group_suspended_row = dsd_tg_policy_retain(state);
+    dsd_tg_policy_restore(state, modes->group_baseline);
+    modes->group_suspended = 1;
+    return 1;
+}
+
+void
+dsd_scan_groups_resume(dsd_state* state) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes || !modes->group_suspended) {
+        return;
+    }
+    dsd_tg_policy_release(modes->group_baseline);
+    modes->group_baseline = dsd_tg_policy_retain(state);
+    dsd_tg_policy_restore(state, modes->group_suspended_row);
+    dsd_tg_policy_release(modes->group_suspended_row);
+    modes->group_suspended_row = NULL;
+    modes->group_suspended = 0;
 }

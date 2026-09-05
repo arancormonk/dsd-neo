@@ -831,12 +831,47 @@ ui_render_forced_key_status_tyt(const dsd_state* state, int show_keys) {
            dsd_secret_format_hex(key_text, sizeof key_text, show_keys, state->H, 4U, 0));
 }
 
+/*
+ * Loaded-but-not-forced scalar keys, beside the Hytera line that already exists for the same
+ * purpose. Nothing prints while any forcing is active (BP, RC4, TYT or the -2 TYT key).
+ * `R` is shared: `-R` stores a 15-bit NXDN/dPMR scrambler value in it alone, while `-1`, the
+ * key menu and the keyring store 64-bit RC4/DES keys in R (slot 1) and RR (slot 2).
+ */
+static void
+ui_render_loaded_scalar_keys(const dsd_state* state, int show_keys) {
+    if (state->M != 0 || state->tyt_bp != 0) {
+        return;
+    }
+    if (state->K != 0) {
+        char key_text[16];
+        printw("| Moto BP Key Loaded (not forced): %s \n",
+               dsd_secret_format_decimal(key_text, sizeof(key_text), show_keys, state->K, 3U));
+    }
+    const int scrambler = state->R != 0 && state->R <= 0x7FFFULL && state->RR != state->R;
+    if (scrambler) {
+        char key_text[16];
+        printw("| NXDN/dPMR Scrambler Key Loaded (not forced): %s \n",
+               dsd_secret_format_decimal(key_text, sizeof(key_text), show_keys, state->R, 5U));
+    } else if (state->R == state->RR && state->R != 0) {
+        char key_text[17];
+        printw("| RC4/DES Key Loaded (not forced): %s \n",
+               dsd_secret_format_hex(key_text, sizeof(key_text), show_keys, state->R, 16U, 0));
+    } else if (state->R != 0 || state->RR != 0) {
+        char left[17];
+        char right[17];
+        printw("| RC4/DES Keys Loaded (not forced): %s / %s \n",
+               dsd_secret_format_hex(left, sizeof(left), show_keys, state->R, 16U, 0),
+               dsd_secret_format_hex(right, sizeof(right), show_keys, state->RR, 16U, 0));
+    }
+}
+
 static void
 ui_render_forced_key_status(const dsd_state* state, int show_keys) {
     if (state == NULL) {
         return;
     }
 
+    ui_render_loaded_scalar_keys(state, show_keys);
     if (state->M != 1 && state->tyt_bp == 0 && ui_hytera_key_segment_count(state) != 0U) {
         ui_render_hytera_loaded_key_status(state, show_keys);
     }

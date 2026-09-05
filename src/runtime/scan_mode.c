@@ -13,7 +13,9 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,6 +26,7 @@ typedef struct {
     dsd_scan_mode mode;
     dsdneoUserDecodeMode configured_mode;
     int suspended;
+    dsd_scan_option_values options;
 } scan_scope;
 
 static const char* const mode_names[] = {"", "p25", "dmr", "nxdn96", "nxdn48", "dpmr", "dstar", "ysf", "m17"};
@@ -79,6 +82,16 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
         return;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
+    out->force_key = state->M;
+    out->aggressive_framesync = opts->aggressive_framesync;
+    out->dmr_crc_relaxed_default = opts->dmr_crc_relaxed_default;
+    out->scan_voice_only = opts->scan_voice_only;
+    out->scan_voice_qualify_ms = opts->scan_voice_qualify_ms;
+    out->scan_voice_hold_ms = opts->scan_voice_hold_ms;
+    out->dmr_mute_encL = opts->dmr_mute_encL;
+    out->dmr_mute_encR = opts->dmr_mute_encR;
+    out->unmute_encrypted_p25 = opts->unmute_encrypted_p25;
+    DSD_MEMCPY(out->group_in_file, opts->group_in_file, sizeof(out->group_in_file));
     out->frame_dstar = opts->frame_dstar;
     out->frame_x2tdma = opts->frame_x2tdma;
     out->frame_p25p1 = opts->frame_p25p1;
@@ -117,8 +130,43 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
     out->state_sps_hunt_idx = state->sps_hunt_idx;
 }
 
+_Static_assert(sizeof(((dsd_scan_option_values*)0)->group_file) == sizeof(((dsd_opts*)0)->group_in_file),
+               "row group paths are copied verbatim over dsd_opts::group_in_file");
+_Static_assert(sizeof(((dsd_scan_settings*)0)->group_in_file) == sizeof(((dsd_opts*)0)->group_in_file),
+               "scan settings snapshot dsd_opts::group_in_file verbatim");
+
+static void
+scan_settings_restore_row_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
+    opts->aggressive_framesync = saved->aggressive_framesync;
+    opts->dmr_crc_relaxed_default = saved->dmr_crc_relaxed_default;
+    opts->scan_voice_only = saved->scan_voice_only;
+    opts->scan_voice_qualify_ms = saved->scan_voice_qualify_ms;
+    opts->scan_voice_hold_ms = saved->scan_voice_hold_ms;
+    opts->dmr_mute_encL = saved->dmr_mute_encL;
+    opts->dmr_mute_encR = saved->dmr_mute_encR;
+    opts->unmute_encrypted_p25 = saved->unmute_encrypted_p25;
+    DSD_MEMCPY(opts->group_in_file, saved->group_in_file, sizeof(opts->group_in_file));
+}
+
+/* Row-scoped nonsecret options are policy, not acquisition: they never restage a tune
+ * or interrupt a parked row, so they travel beside the comparison, not through it. */
+static void
+scan_settings_copy_row_opts(dsd_scan_settings* dst, const dsd_scan_settings* src) {
+    dst->force_key = src->force_key;
+    dst->aggressive_framesync = src->aggressive_framesync;
+    dst->dmr_crc_relaxed_default = src->dmr_crc_relaxed_default;
+    dst->scan_voice_only = src->scan_voice_only;
+    dst->scan_voice_qualify_ms = src->scan_voice_qualify_ms;
+    dst->scan_voice_hold_ms = src->scan_voice_hold_ms;
+    dst->dmr_mute_encL = src->dmr_mute_encL;
+    dst->dmr_mute_encR = src->dmr_mute_encR;
+    dst->unmute_encrypted_p25 = src->unmute_encrypted_p25;
+    DSD_MEMCPY(dst->group_in_file, src->group_in_file, sizeof(dst->group_in_file));
+}
+
 static void
 scan_settings_restore_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
+    scan_settings_restore_row_opts(saved, opts);
     opts->frame_dstar = saved->frame_dstar;
     opts->frame_x2tdma = saved->frame_x2tdma;
     opts->frame_p25p1 = saved->frame_p25p1;
@@ -158,6 +206,7 @@ dsd_scan_settings_restore(const dsd_scan_settings* saved, dsd_opts* opts, dsd_st
         return;
     }
     scan_settings_restore_opts(saved, opts);
+    state->M = saved->force_key;
     state->rf_mod = saved->state_rf_mod;
     state->samplesPerSymbol = saved->state_samplesPerSymbol;
     state->symbolCenter = saved->state_symbolCenter;
@@ -252,7 +301,7 @@ scan_scope_apply_timing(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_
 }
 
 static void
-scan_scope_apply(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
+scan_scope_apply_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
     dsd_scan_settings_restore(&scope->configured, opts, state);
     if (scope->mode == DSD_SCAN_MODE_INHERIT) {
         return;
@@ -291,6 +340,62 @@ scan_scope_apply(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
     scan_scope_apply_timing(opts, state, profile);
 }
 
+static void
+scan_options_apply(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    const uint32_t present = values->present;
+    if (present & DSD_SCAN_OPT_FORCE) {
+        state->M = values->force;
+    }
+    if (present & DSD_SCAN_OPT_CRC) {
+        opts->aggressive_framesync = (short)values->strict_crc;
+        opts->dmr_crc_relaxed_default = (uint8_t)!values->strict_crc;
+    }
+    if (present & DSD_SCAN_OPT_VOICE) {
+        opts->scan_voice_only = values->voice_only;
+    }
+    if (present & DSD_SCAN_OPT_QUALIFY) {
+        opts->scan_voice_qualify_ms = values->qualify_ms;
+    }
+    if (present & DSD_SCAN_OPT_HOLD) {
+        opts->scan_voice_hold_ms = values->hold_ms;
+    }
+    if (present & DSD_SCAN_OPT_MUTE_DMR) {
+        opts->dmr_mute_encL = values->mute_dmr;
+        opts->dmr_mute_encR = values->mute_dmr;
+    }
+    if (present & DSD_SCAN_OPT_SCALAR) {
+        /* `-1` loads a key for decryption; undecodable P25 audio stays muted, as on the CLI. */
+        opts->unmute_encrypted_p25 = 0;
+    }
+    if (present & DSD_SCAN_OPT_GROUP) {
+        DSD_MEMCPY(opts->group_in_file, values->group_file, sizeof(opts->group_in_file));
+    }
+}
+
+static void
+scan_scope_apply(dsd_opts* opts, dsd_state* state, const scan_scope* scope) {
+    scan_scope_apply_decoder(opts, state, scope);
+    scan_options_apply(opts, state, &scope->options);
+}
+
+int
+dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    scan_scope* scope = scan_scope_get(state);
+    if (!scope || !opts) {
+        return -1;
+    }
+    DSD_MEMSET(&scope->options, 0, sizeof(scope->options));
+    if (values) {
+        scope->options = *values;
+    }
+    if (!scope->suspended) {
+        scan_settings_restore_row_opts(&scope->configured, opts);
+        state->M = scope->configured.force_key;
+        scan_options_apply(opts, state, &scope->options);
+    }
+    return 0;
+}
+
 int
 dsd_scan_mode_begin(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -321,6 +426,7 @@ dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode) {
     if (!scope) {
         return -1;
     }
+    DSD_MEMSET(&scope->options, 0, sizeof(scope->options));
     scope->modulation = 0;
     scope->mode = mode;
     scope->suspended = 0;
@@ -392,9 +498,11 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
     }
     dsd_scan_settings effective;
     dsd_scan_settings_capture(opts, state, &effective);
-    /* Monitoring is audio routing. Fold it into the restored effective values
-     * without treating it as an acquisition change or replacing live timing. */
+    /* Monitoring is audio routing, and the row-scoped options are policy (forcing, CRC,
+     * mutes, voice gate, group file). Fold both into the restored effective values
+     * without treating them as an acquisition change or replacing live timing. */
     scope->effective.monitor_input_audio = opts->monitor_input_audio;
+    scan_settings_copy_row_opts(&scope->effective, &effective);
     if (dsd_scan_settings_equal(&scope->effective, &effective, 0)) {
         dsd_scan_settings_restore(&scope->effective, opts, state);
         return 0;
@@ -469,6 +577,7 @@ dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src) {
         (void)dsd_state_ext_set(dst, DSD_STATE_EXT_RUNTIME_SCAN_MODE, copy, free);
     }
     copy->configured = source->configured;
+    copy->options = source->options;
     copy->modulation = source->modulation;
     copy->mode = source->mode;
     copy->configured_mode = source->configured_mode;

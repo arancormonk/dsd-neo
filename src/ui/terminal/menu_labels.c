@@ -32,6 +32,11 @@
 #include "menu_internal.h"
 #include "ui_key_status.h"
 
+static const dsd_scan_settings*
+menu_configured_scan_settings(void) {
+    return dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
+}
+
 static const char*
 onoff(int on) {
     return on ? "On" : "Off";
@@ -320,7 +325,8 @@ lbl_hpf_d(const void* v, char* b, size_t n) {
 const char*
 lbl_crc_relax(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    int relaxed = (c->opts->aggressive_framesync == 0);
+    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    int relaxed = ((configured ? configured->aggressive_framesync : c->opts->aggressive_framesync) == 0);
     DSD_SNPRINTF(b, n, "Relaxed CRC checks [%s]", onoff(relaxed));
     return b;
 }
@@ -489,14 +495,17 @@ lbl_hangtime(const void* v, char* b, size_t n) {
 const char*
 lbl_scan_voice_only(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Voice-only scan [%s]", onoff(c && c->opts && c->opts->scan_voice_only));
+    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    DSD_SNPRINTF(b, n, "Voice-only scan [%s]",
+                 onoff(configured ? configured->scan_voice_only : c && c->opts && c->opts->scan_voice_only));
     return b;
 }
 
 const char*
 lbl_scan_voice_qualify(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const int ms = (c && c->opts) ? c->opts->scan_voice_qualify_ms : 0;
+    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    const int ms = configured ? configured->scan_voice_qualify_ms : (c && c->opts) ? c->opts->scan_voice_qualify_ms : 0;
     DSD_SNPRINTF(b, n, "Voice qualify... [%d ms]", ms);
     return b;
 }
@@ -504,7 +513,8 @@ lbl_scan_voice_qualify(const void* v, char* b, size_t n) {
 const char*
 lbl_scan_voice_hold(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const int ms = (c && c->opts) ? c->opts->scan_voice_hold_ms : 0;
+    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    const int ms = configured ? configured->scan_voice_hold_ms : (c && c->opts) ? c->opts->scan_voice_hold_ms : 0;
     DSD_SNPRINTF(b, n, "Voice hold... [%d ms]", ms);
     return b;
 }
@@ -604,8 +614,11 @@ lbl_p25_p1_err_sec(const void* v, char* b, size_t n) {
 const char*
 lbl_muting(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    int dmr = (c->opts->dmr_mute_encL == 1 && c->opts->dmr_mute_encR == 1);
-    int p25 = (c->opts->unmute_encrypted_p25 == 0);
+    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    const int left = configured ? configured->dmr_mute_encL : c->opts->dmr_mute_encL;
+    const int right = configured ? configured->dmr_mute_encR : c->opts->dmr_mute_encR;
+    const int dmr = left == 1 && right == 1;
+    const int p25 = (configured ? configured->unmute_encrypted_p25 : c->opts->unmute_encrypted_p25) == 0;
     DSD_SNPRINTF(b, n, "Mute encrypted audio [%s]", onoff(dmr && p25));
     return b;
 }
@@ -651,7 +664,8 @@ lbl_enc_lockout_clear(const void* v, char* b, size_t n) {
 const char*
 lbl_key_force_bp(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const int on = (c && c->state && c->state->M == 1);
+    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    const int on = configured ? configured->force_key == 1 : (c && c->state && c->state->M == 1);
     DSD_SNPRINTF(b, n, "Force basic/scrambler key [%s]", onoff(on));
     return b;
 }
@@ -659,7 +673,8 @@ lbl_key_force_bp(const void* v, char* b, size_t n) {
 const char*
 lbl_key_force_rc4(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const int on = (c && c->state && c->state->M == 0x21);
+    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    const int on = configured ? configured->force_key == 0x21 : (c && c->state && c->state->M == 0x21);
     DSD_SNPRINTF(b, n, "Force RC4 key [%s]", onoff(on));
     return b;
 }

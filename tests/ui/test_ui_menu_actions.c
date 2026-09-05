@@ -30,6 +30,8 @@
 #include <string.h>
 #include "command_dispatch.h"
 
+#include <dsd-neo/runtime/scan_mode.h>
+#include "../test_support/scan_mode_label_stubs.h"
 #include "csv_picker.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -1872,6 +1874,19 @@ test_scan_voice_gate_actions(void) {
     rc |= expect_int("voice hold opens int prompt", g_prompt.calls, 1);
     rc |= expect_int("voice hold wires callback", g_prompt.int_cb == cb_scan_voice_hold, 1);
     rc |= expect_int("voice hold posts nothing yet", g_cmd.calls, 0);
+
+    dsd_scan_settings configured = {0};
+    configured.scan_voice_qualify_ms = 1800;
+    configured.scan_voice_hold_ms = 2800;
+    dsd_test_scan_labels_configured(&configured);
+    reset_capture();
+    act_scan_voice_only(&ctx);
+    rc |= expect_int("voice-only toggles configured default", cmd_i32(), 1);
+    act_scan_voice_qualify(&ctx);
+    rc |= expect_int("voice qualify configured initial", g_prompt.initial_int, 1800);
+    act_scan_voice_hold(&ctx);
+    rc |= expect_int("voice hold configured initial", g_prompt.initial_int, 2800);
+    dsd_test_scan_labels_configured(NULL);
 
     return rc;
 }

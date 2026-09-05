@@ -6931,6 +6931,413 @@ run_with_default_tune_hook(int (*test_fn)(void)) {
     return rc;
 }
 
+void dsd_key_set_test_alloc_fail_after(long count);
+
+/* Allocation failures re-arm dwell/retry timers. Recovering memory on the next tick
+ * must not cause an immediate retune, but the next scheduled attempt must succeed. */
+static int
+run_prepare_failure_timer_case(int retry) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char keys[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof(dir))) {
+        return 1;
+    }
+    if (dsd_test_path_join(keys, sizeof(keys), dir, "keys.csv")
+        || write_text_file(keys, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n")) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    const char* rows = retry ? "a,p25-trunk,851000000,,250,,,-K keys.csv\n"
+                             : "a,p25-trunk,851000000,,250,,,-K keys.csv\n"
+                               "b,p25-trunk,852000000,,250,,,\n";
+    if (write_targets_file_with_header(dir, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n",
+                                       rows, path, sizeof(path))) {
+        (void)remove(keys);
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        (void)remove(keys);
+        cleanup_paths(dir, path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof(opts->trunk_scan_targets_csv), "%s", path);
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_request = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_failures_remaining = retry;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    trunk_scan_test_set_now(0.0);
+    char error[256];
+    int failed = dsd_engine_trunk_scan_init(opts, state, error, sizeof(error)) != 0;
+    failed |= g_counting_tune_to_cc_calls != 1;
+    dsd_key_set_test_alloc_fail_after(0);
+    const double failure_time = retry ? 2.01 : 0.26;
+    trunk_scan_test_set_now(failure_time);
+    dsd_engine_trunk_scan_tick(opts, state);
+    dsd_key_set_test_alloc_fail_after(-1);
+    failed |= g_counting_tune_to_cc_calls != 1;
+    trunk_scan_test_set_now(failure_time + 0.01);
+    dsd_engine_trunk_scan_tick(opts, state);
+    failed |= g_counting_tune_to_cc_calls != 1;
+    failed |= dsd_engine_trunk_scan_active_index(state) != 0;
+    trunk_scan_test_set_now(retry ? 4.02 : 0.52);
+    dsd_engine_trunk_scan_tick(opts, state);
+    failed |= g_counting_tune_to_cc_calls != 2;
+    failed |= dsd_engine_trunk_scan_active_index(state) != (retry ? 0U : 1U);
+    if (failed) {
+        DSD_FPRINTF(stderr, "prepare failure did not re-arm %s timer\n", retry ? "retry" : "dwell");
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    trunk_scan_test_clear_now();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    (void)remove(keys);
+    cleanup_paths(dir, path, NULL);
+    return failed;
+}
+
+static int
+test_prepare_failure_timers(void) {
+    int rc = run_prepare_failure_timer_case(0);
+    return rc | run_prepare_failure_timer_case(1);
+}
+
+static int
+test_initial_key_allocation_failure(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof(dir))) {
+        return 1;
+    }
+    if (write_targets_file_with_header(dir, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n",
+                                       "a,dmr-conventional,461000000,,250,,,-b 1 -4\n", path, sizeof(path))) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    state->R = 99;
+    state->rkey_array_loaded[7] = 1;
+    state->rkey_array[7] = 123;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof(opts->trunk_scan_targets_csv), "%s", path);
+    dsd_key_set_test_alloc_fail_after(0);
+    char error[256];
+    int rc = dsd_engine_trunk_scan_init(opts, state, error, sizeof(error)) == 0;
+    dsd_key_set_test_alloc_fail_after(-1);
+    rc |= dsd_engine_trunk_scan_active_index(state) != (size_t)-1;
+    rc |= state->R != 99 || state->rkey_array[7] != 123 || !state->rkey_array_loaded[7];
+    rc |= state->scan_keys_active_set || state->M != 0;
+    if (rc) {
+        DSD_FPRINTF(stderr, "initial key allocation failure did not preserve the baseline and reject startup\n");
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_ext_free_all(state);
+    dsd_state_trunk_lcn_free(state);
+    free(state);
+    free(opts);
+    cleanup_paths(dir, path, NULL);
+    return rc;
+}
+
+static int
+test_target_options_rotate_and_restore(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof(dir))) {
+        return 1;
+    }
+    const char* header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,OPTIONS\n";
+    if (write_targets_file_with_header(
+            dir, header,
+            "a,dmr-conventional,461000000,,250,,rc4,-1 0123456789 -0 -F --scan-voice-hold-ms 4000\n"
+            "b,dmr-conventional,461000001,,250,,hytera,-H 0000001f00 -4\n"
+            "c,dmr-conventional,461000002,,250,,mixed,-b 1 --no-force-key --strict-crc\n"
+            "d,nxdn48-conventional,461000003,,250,,scrambler,-R 1 --no-force-key\n",
+            path, sizeof(path))) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    state->R = 999;
+    state->M = 1;
+    opts->aggressive_framesync = 1;
+    opts->scan_voice_hold_ms = 2000;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof(opts->trunk_scan_targets_csv), "%s", path);
+    char error[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(opts, state, error, sizeof(error));
+    int failed = rc != 0;
+    if (rc == 0) {
+        failed |= state->R != 0x123456789ULL || state->RR != state->R || state->M != 0x21
+                  || opts->aggressive_framesync != 0 || opts->scan_voice_hold_ms != 4000;
+        trunk_scan_test_set_now(0.26);
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= state->R != 0 || state->K1 != 0x1f00 || state->M != 1 || opts->scan_voice_hold_ms != 2000;
+        trunk_scan_test_set_now(0.52);
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= state->K != 1 || state->K1 != 0 || state->M != 0 || !opts->aggressive_framesync;
+        trunk_scan_test_set_now(0.78);
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= state->R != 1 || state->RR != 0 || state->K != 0 || state->M != 0 || !opts->frame_nxdn48;
+        dsd_engine_trunk_scan_shutdown(opts, state);
+        failed |= state->R != 999 || state->M != 1 || opts->scan_voice_hold_ms != 2000;
+    }
+    if (failed) {
+        DSD_FPRINTF(stderr, "target options regression: %s\n", error);
+    }
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, path, NULL);
+    failed |= expect_parser_rejects_with_header("options-conflict", header, "a,dmr-conventional,461000000,,,,,-4 -0\n");
+    failed |= expect_parser_rejects_with_header("options-trunk-voice", header,
+                                                "a,p25-trunk,851000000,,,,,--scan-voice-only\n");
+    failed |= expect_parser_rejects_with_header(
+        "options-duplicate-header",
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options,relevant_CLI_switches\n",
+        "a,dmr-conventional,461000000,,,,,-b 1,-F\n");
+    return failed;
+}
+
+/* A target whose key copies cannot be allocated is not an attempt: the receiver never left
+ * the outgoing target, so its snapshot is still owed to the next switch that really happens.
+ * Here B's prepare fails while advancing from A, C is reached instead, and A's learned state
+ * must come back when the rotation returns to it. */
+static int
+test_prepare_failure_keeps_outgoing_snapshot(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char hex_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(hex_path, sizeof hex_path, dir, "hexkeys.csv") != 0
+        || write_text_file(hex_path, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "a,p25-trunk,851000000,,250,,plain,\n"
+                                       "b,p25-trunk,852000000,,250,,keyed,hexkeys.csv\n"
+                                       "c,p25-trunk,853000000,,250,,plain,\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        (void)remove(hex_path);
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "prepare-failure scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    state.p25_iden_fdma[1].base_freq = 12345;
+    dsd_state_set_trunk_chan_freq(&state, 99U, 851012500);
+
+    dsd_key_set_test_alloc_fail_after(0);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    dsd_key_set_test_alloc_fail_after(-1);
+    if (dsd_engine_trunk_scan_active_index(&state) != 2) {
+        DSD_FPRINTF(stderr, "keyed target with failed key allocation was not skipped (active=%zu)\n",
+                    dsd_engine_trunk_scan_active_index(&state));
+        test_rc = 1;
+    }
+    if (state.p25_iden_fdma[1].base_freq == 12345 || state.scan_keys_active_set) {
+        DSD_FPRINTF(stderr, "reached target carried the outgoing target's state or keys\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "scan did not rotate back to the first target (active=%zu)\n",
+                    dsd_engine_trunk_scan_active_index(&state));
+        test_rc = 1;
+    }
+    if (state.p25_iden_fdma[1].base_freq != 12345 || state.trunk_chan_map[99] != 851012500) {
+        DSD_FPRINTF(stderr, "outgoing snapshot was lost across a prepare failure (base=%ld chan=%ld)\n",
+                    state.p25_iden_fdma[1].base_freq, state.trunk_chan_map[99]);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    (void)remove(hex_path);
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Per-target voice-gate intervals: with the gate on, a conventional target's own
+ * --scan-voice-hold-ms replaces activity_hold_ms as the hold after the last voice frame,
+ * and --scan-voice-qualify-ms replaces dwell_ms as the window in which voice must appear.
+ * Targets without them keep the column values. */
+static int
+run_target_voice_option_case(const char* name, const char* options, double media_hold_until, double expect_rotate_by) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
+    char body[512];
+    DSD_SNPRINTF(body, sizeof body,
+                 "a,dmr-conventional,461000000,,250,250,,%s\n"
+                 "b,dmr-conventional,462000000,,250,250,,\n",
+                 options);
+    if (write_targets_file_with_header(dir, header, body, target_path, sizeof target_path) != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.scan_voice_only = 1;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: scan init failed: %s\n", name, err);
+        test_rc = 1;
+    }
+    if (media_hold_until > 0.0) {
+        if (seed_voice_gate_media_epoch(&state, 0.10, 0.25, DSD_CALL_CRYPTO_CLEAR) != 0
+            || dsd_call_state_end_ex(&state, 0U, 0.26, DSD_CALL_END_SYNC_LOSS) != 1) {
+            test_rc = 1;
+        }
+    }
+    /* Walk the clock; the target must still be parked right up to the expected hold or
+     * qualify boundary and gone one dwell after it. */
+    for (int step = 3; step * 0.10 < expect_rotate_by - 0.05; step++) {
+        const double now = step / 10.0;
+        trunk_scan_test_set_now(now);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+            DSD_FPRINTF(stderr, "%s: target rotated early at %.2f\n", name, now);
+            test_rc = 1;
+            break;
+        }
+        if (media_hold_until > 0.0 && now < media_hold_until
+            && state.scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_TAIL) {
+            DSD_FPRINTF(stderr, "%s: hold not honoured at %.2f (phase %u)\n", name, now,
+                        (unsigned)state.scan_voice_gate_phase);
+            test_rc = 1;
+            break;
+        }
+    }
+    trunk_scan_test_set_now(expect_rotate_by);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "%s: target did not rotate by %.2f\n", name, expect_rotate_by);
+        test_rc = 1;
+    }
+    /* The plain target keeps its 250 ms column dwell. */
+    trunk_scan_test_set_now(expect_rotate_by + 0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "%s: plain target did not keep its column dwell\n", name);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_state_ext_free_all(&state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_target_voice_gate_options_apply(void) {
+    int rc = 0;
+    /* Media at 0.25 with the column hold would lapse at 0.50 and rotate by ~0.80; the row's
+     * 1000 ms hold keeps the target until 1.25 and rotates one dwell later. */
+    rc |= run_target_voice_option_case("row-hold", "--scan-voice-hold-ms 1000", 1.25, 1.60);
+    rc |= run_target_voice_option_case("column-hold", "", 0.50, 0.80);
+    /* No media at all: the column dwell would rotate at 0.25; the row's 1000 ms qualify window
+     * keeps the target until 1.0. */
+    rc |= run_target_voice_option_case("row-qualify", "--scan-voice-qualify-ms 1000", 0.0, 1.05);
+    return rc;
+}
+
+/* Optional target-list headers match ASCII case-insensitively, as channel-map headers do,
+ * and a duplicate is still a duplicate whatever its case. */
+static int
+test_parser_optional_headers_are_case_insensitive(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,RTL_Gain,Modulation\n";
+    if (write_targets_file_with_header(dir, header, "p25,p25-trunk,851000000,,250,,primary,27,cqpsk\n", target_path,
+                                       sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_scan_idle_dwell_ms = 3000;
+    opts.trunk_scan_activity_hold_ms = 1200;
+    dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
+    char err[256] = {0};
+    int test_rc = 0;
+    if (dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err) != 0 || list.count != 1
+        || list.targets[0].modulation != DSD_TRUNK_SCAN_MODULATION_CQPSK || list.targets[0].rtl_gain_is_set != 1
+        || list.targets[0].rtl_gain_db != 27) {
+        DSD_FPRINTF(stderr, "mixed-case optional headers were not matched: %s\n", err);
+        test_rc = 1;
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+    cleanup_paths(dir, target_path, NULL);
+    test_rc |= expect_parser_rejects_with_header(
+        "duplicate-header-case",
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,MODULATION\n",
+        "p25,p25-trunk,851000000,,250,,primary,cqpsk,cqpsk\n");
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -6950,6 +7357,12 @@ main(void) {
     rc |= run_with_default_tune_hook(test_coordinator_preserves_long_lcn_list_across_rotation);
     rc |= run_with_default_tune_hook(test_target_keys_install_and_restore_across_switches);
     rc |= run_with_default_tune_hook(test_direct_target_keys_install_and_restore_across_switches);
+    rc |= run_with_default_tune_hook(test_prepare_failure_timers);
+    rc |= run_with_default_tune_hook(test_initial_key_allocation_failure);
+    rc |= run_with_default_tune_hook(test_target_options_rotate_and_restore);
+    rc |= run_with_default_tune_hook(test_prepare_failure_keeps_outgoing_snapshot);
+    rc |= run_with_default_tune_hook(test_target_voice_gate_options_apply);
+    rc |= run_with_default_tune_hook(test_parser_optional_headers_are_case_insensitive);
     rc |= run_with_default_tune_hook(test_target_chan_csv_keys_are_discarded);
     rc |= run_with_default_tune_hook(test_target_keys_survive_failed_alternate_retune);
     rc |= run_with_default_tune_hook(test_coordinator_preserves_large_chan_map_across_rotation);

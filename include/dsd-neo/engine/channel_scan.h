@@ -18,7 +18,9 @@ int dsd_engine_channel_scan_waiting(const dsd_state* state);
 /** Resolve an outstanding request before reading samples. Returns 1 while unsettled. */
 int dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state);
 /** Service a row transaction before dispatch/next sync search. Returns 1 when ready;
- * servicing any outstanding transaction clears synctype and returns 0 for a fresh hunt. */
+ * servicing any outstanding transaction clears synctype and returns 0 for a fresh hunt.
+ * A completed tune without a row commit keeps decoding gated even when a subsequent
+ * retry is rejected or deferred; ordinary scanning may still advance to recover. */
 int dsd_engine_channel_scan_service_sync(dsd_opts* opts, dsd_state* state);
 /** Cancel row ownership and restore configured settings. Late completions cannot adopt a row. */
 void dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);

@@ -566,3 +566,16 @@ row renders, so a call that outlives a scan step keeps the channel it was actual
 call heard on a scan-list row with no name stays unlabelled rather than picking up the name of the
 next channel. The bracketed name is for reading, not for parsing: a channel name may itself contain
 `]`.
+
+### Scoped scan controls and loaded keys
+
+The Input/Output pane reports loaded Motorola BP, RC4/DES and NXDN/dPMR scrambler keys while no forcing is active,
+matching its existing Hytera indication (a scrambler value prints in decimal, an RC4/DES key in hex, and the two
+keyring slots print separately when they differ). “Loaded” does not claim successful decryption. Values remain
+redacted unless `--show-keys` is enabled. Explicit forcing (BP, RC4 or TYT) replaces these lines with its own status.
+
+Force, CRC, mute and voice-gate controls edit the configured baseline while a scan row constrains their effective
+values; menu labels show that baseline. These edits are policy, not acquisition: they apply at once without ending
+the current call or re-hunting sync. Group-file imports also update the baseline, with the parked row's group policy
+restored afterward. Scalar key entry retains its existing temporary behavior. See the CSV documentation for the
+`options` column and per-row explicit-off switches.

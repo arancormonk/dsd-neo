@@ -6,8 +6,11 @@
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/enc_lockout.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -21,9 +24,12 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdlib.h>
+
+void dsd_key_set_test_alloc_fail_after(long count);
 
 static dsd_trunk_tune_result tune_result;
 static uint64_t request;
@@ -96,8 +102,168 @@ dsd_scan_voice_gate_note_retune(dsd_state* state, double now) {
     state->last_cc_sync_time_m = now;
 }
 
+static void
+test_option_commit_boundary(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->frame_dstar = 1;
+    opts->aggressive_framesync = 1;
+    opts->scan_voice_hold_ms = 2000;
+    state->samplesPerSymbol = 10;
+    state->R = 999;
+    state->lcn_freq_count = 2;
+    *dsd_state_trunk_lcn_slot(state, 0) = *dsd_state_trunk_lcn_slot(state, 1) = 150000000;
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
+    assert(profile);
+    profile->values.present = DSD_SCAN_OPT_FORCE | DSD_SCAN_OPT_CRC | DSD_SCAN_OPT_HOLD;
+    profile->values.force = 0x21;
+    profile->values.hold_ms = 4000;
+    assert(dsd_channel_profile_set(state, 0, profile) == 0);
+    dsd_key_set keys = {0};
+    keys.present = 1;
+    keys.scalars.R = keys.scalars.RR = 0x123456789ULL;
+    assert(dsd_state_trunk_lcn_keys_set(state, 0, &keys) == 0);
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(state->R == 999 && state->M == 0 && opts->scan_voice_hold_ms == 2000);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(!dsd_engine_channel_scan_pending(opts, state));
+    assert(state->R == 999 && state->M == 0 && opts->aggressive_framesync == 1);
+    state->lcn_freq_roll = 0;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(!dsd_engine_channel_scan_pending(opts, state));
+    assert(state->R == 0x123456789ULL && state->RR == state->R && state->M == 0x21);
+    assert(opts->scan_voice_hold_ms == 4000 && !opts->aggressive_framesync && opts->dmr_crc_relaxed_default);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step_manual(opts, state) == 1);
+    assert(state->R == 999 && state->M == 0 && opts->scan_voice_hold_ms == 2000 && opts->aggressive_framesync == 1);
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_scan_keys_leave(state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* Rows that carry options but declare no mode still belong to the typed scanner: the legacy
+ * scanner applies keys but never row options. Edits to the row-scoped policy (mutes, voice
+ * gate) beneath a staged tune take effect without restaging it, whereas a keyring change
+ * during the tune window restages so the commit re-prepares against the current globals. */
+static void
+test_option_only_rows_and_policy_edits(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->frame_dstar = 1;
+    opts->dmr_mute_encL = opts->dmr_mute_encR = 1;
+    opts->scan_voice_hold_ms = 2000;
+    opts->scan_voice_qualify_ms = 1000;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 1;
+    *dsd_state_trunk_lcn_slot(state, 0) = 150000000;
+    assert(!dsd_channel_modes_present(state));
+    dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
+    assert(profile);
+    profile->values.present = DSD_SCAN_OPT_HOLD | DSD_SCAN_OPT_MUTE_DMR;
+    profile->values.hold_ms = 4000;
+    profile->values.mute_dmr = 0;
+    assert(dsd_channel_profile_set(state, 0, profile) == 0);
+    assert(dsd_channel_modes_present(state) && dsd_channel_mode_get(state, 0) == DSD_SCAN_MODE_INHERIT);
+
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(opts->scan_voice_hold_ms == 4000 && opts->dmr_mute_encL == 0 && opts->dmr_mute_encR == 0);
+    assert(opts->frame_dstar == 1);
+
+    /* A policy edit during an outstanding request: the commit proceeds without a retry. */
+    state->lcn_freq_roll = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(dsd_scan_mode_suspend(opts, state));
+    assert(opts->scan_voice_hold_ms == 2000 && opts->dmr_mute_encL == 1);
+    opts->scan_voice_qualify_ms = 1500;
+    opts->unmute_encrypted_p25 = 1;
+    assert(dsd_scan_mode_resume(opts, state) == 0);
+    assert(opts->scan_voice_hold_ms == 4000 && opts->dmr_mute_encL == 0 && opts->scan_voice_qualify_ms == 1500);
+    const int before_policy_edit = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before_policy_edit && opts->scan_voice_qualify_ms == 1500 && opts->unmute_encrypted_p25 == 1);
+
+    /* A keyring change during an outstanding request restages, and the eventual leave hands
+     * back the globals as edited rather than the copy prepared before the edit. */
+    dsd_key_set keys = {0};
+    keys.present = 1;
+    keys.scalars.R = keys.scalars.RR = 0x55;
+    assert(dsd_state_trunk_lcn_keys_set(state, 0, &keys) == 0);
+    state->lcn_freq_roll = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    dsd_scan_keys_suspend(state);
+    state->rkey_array[3] = 777;
+    state->rkey_array_loaded[3] = 1;
+    dsd_scan_keys_resume(state);
+    dsd_enc_lockout_bump_key_epoch(state);
+    const int before_key_edit = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1);
+    assert(tunes == before_key_edit && state->R == 0);
+    /* The receiver moved, but its outgoing profile must remain gated if restaging
+     * runs out of memory. Repeated sync service passes cannot bypass that gate. */
+    dsd_key_set_test_alloc_fail_after(0);
+    for (int i = 0; i < 3; i++) {
+        assert(dsd_engine_channel_scan_pending(opts, state) == 1);
+        state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        assert(dsd_engine_channel_scan_service_sync(opts, state) == 0);
+        assert(state->synctype == DSD_SYNC_NONE);
+        assert(dsd_engine_channel_scan_waiting(state));
+        assert(tunes == before_key_edit && state->R == 0);
+    }
+    dsd_key_set_test_alloc_fail_after(-1);
+    /* A deferred or rejected retry can retire its tune-ledger gate, but the
+     * receiver is still on an uncommitted row. Keep decoding closed and allow
+     * ordinary scanning to recover instead of trapping it on the failed row. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(!dsd_engine_channel_scan_waiting(state));
+    assert(dsd_trunk_tuning_frame_is_dispatchable(dsd_trunk_tuning_generation(), 1));
+    assert(!dsd_engine_channel_scan_service_sync(opts, state));
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    assert(dsd_engine_channel_scan_step(opts, state) == -1);
+    assert(!dsd_engine_channel_scan_waiting(state));
+    assert(!dsd_engine_channel_scan_service_sync(opts, state));
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(dsd_engine_channel_scan_service_sync(opts, state) == 1);
+    assert(tunes == before_key_edit + 3 && state->R == 0x55 && state->scan_keys_active_set);
+    assert(state->rkey_array[3] == 0 && !state->rkey_array_loaded[3]);
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_scan_keys_leave(state);
+    assert(state->R == 0 && state->rkey_array[3] == 777 && state->rkey_array_loaded[3]);
+    assert(opts->scan_voice_hold_ms == 2000 && opts->dmr_mute_encL == 1 && opts->scan_voice_qualify_ms == 1500);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 int
 main(void) {
+    test_option_commit_boundary();
+    test_option_only_rows_and_policy_edits();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

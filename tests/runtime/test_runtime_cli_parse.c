@@ -7573,9 +7573,72 @@ test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open(void) {
     return test_rc;
 }
 
+static int
+test_force_conflicts_and_explicit_off_options(void) {
+    const struct {
+        const char* first;
+        const char* second;
+        int expected;
+    } cases[] = {{"-4", "-0", 0x21},
+                 {"-0", "-4", 1},
+                 {"-4", "--no-force-key", 0},
+                 {"--dmr-force-algid=21", "--dmr-force-algid=24", 0x24},
+                 {"--dmr-force-algid=24", "-0", 0x21},
+                 {"-0", "--dmr-force-algid=24", 0x21}};
+
+    int failed = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        char first[32], second[32];
+        DSD_SNPRINTF(first, sizeof(first), "%s", cases[i].first);
+        DSD_SNPRINTF(second, sizeof(second), "%s", cases[i].second);
+        char program[] = "dsd-neo";
+        char* argv[] = {program, first, second, NULL};
+        int argc_effective, exit_rc;
+        char output[4096];
+        int rc = parse_args_capture_stderr(3, argv, opts, state, &argc_effective, &exit_rc, output, sizeof(output));
+        const char* warning = strstr(output, "Conflicting force options");
+        failed |= rc != DSD_PARSE_CONTINUE || state->M != cases[i].expected || !warning;
+        if (warning) {
+            failed |= strstr(warning + 1, "Conflicting force options") != NULL;
+        }
+        freeState(state);
+        free(state);
+        free(opts);
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    char a0[] = "dsd-neo", a1[] = "-F", a2[] = "--strict-crc", a3[] = "--scan-voice-only",
+         a4[] = "--no-scan-voice-only";
+    char* argv[] = {a0, a1, a2, a3, a4, NULL};
+    int effective, exit_rc;
+    failed |= dsd_parse_args(5, argv, opts, state, &effective, &exit_rc) != DSD_PARSE_CONTINUE;
+    failed |= opts->aggressive_framesync != 1 || opts->dmr_crc_relaxed_default != 0 || opts->scan_voice_only != 0;
+    freeState(state);
+    free(state);
+    free(opts);
+    return failed;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_force_conflicts_and_explicit_off_options();
     rc |= test_help_returns_one_shot_and_does_not_exit();
     rc |= test_invalid_option_returns_error_and_does_not_exit();
     rc |= test_unknown_option_returns_error_and_does_not_exit();

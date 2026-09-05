@@ -23,6 +23,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -2267,9 +2268,145 @@ test_scoped_mode_commands_and_config(void) {
     return rc;
 }
 
+static int
+test_scoped_row_option_commands(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->scan_voice_only = 0;
+    opts->scan_voice_hold_ms = 2000;
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    opts->dmr_mute_encL = opts->dmr_mute_encR = 1;
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", "global.csv");
+    state->M = 0;
+    int rc = expect_int("enter option row", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR), 0);
+    const dsd_scan_option_values row = {.present = DSD_SCAN_OPT_FORCE | DSD_SCAN_OPT_CRC | DSD_SCAN_OPT_VOICE
+                                                   | DSD_SCAN_OPT_HOLD | DSD_SCAN_OPT_GROUP | DSD_SCAN_OPT_MUTE_DMR,
+                                        .force = 0x21,
+                                        .strict_crc = 0,
+                                        .voice_only = 1,
+                                        .hold_ms = 4000,
+                                        .mute_dmr = 1,
+                                        .group_file = "row.csv"};
+    rc |= expect_int("install row options", dsd_scan_mode_options(opts, state, &row), 0);
+    rc |= expect_int("queue force default", post_empty(DSD_APP_CMD_FORCE_PRIV_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("queue CRC default", post_empty(DSD_APP_CMD_AGGR_SYNC_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("queue hold default", dsd_app_command_set_i32(DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET, 3000),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("queue mute default", post_empty(DSD_APP_CMD_ALL_MUTES_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("option commands drained", dsd_app_drain_cmds(opts, state), 4);
+    rc |= expect_int("row keeps force", state->M, 0x21);
+    rc |= expect_int("row keeps hold", opts->scan_voice_hold_ms, 4000);
+    rc |= expect_int("row keeps mute", opts->dmr_mute_encL, 1);
+    dsd_scan_settings configured;
+    dsd_scan_mode_configured(opts, state, &configured);
+    rc |= expect_int("configured force updated", configured.force_key, 1);
+    rc |= expect_int("configured mute updated", configured.dmr_mute_encL, 0);
+    rc |= expect_int("configured CRC updated", configured.aggressive_framesync, 0);
+    rc |= expect_int("configured CSBK CRC default preserved", configured.dmr_crc_relaxed_default, 0);
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(opts, state, &saved);
+    rc |= expect_int("saved configured hold", saved.trunk_scan_voice_hold_ms, 3000);
+    rc |= expect_int("saved configured gate", saved.trunk_scan_voice_only, 0);
+    rc |= expect_str("saved configured groups", saved.trunk_group_csv, "global.csv");
+    rc |= expect_int("clear row options", dsd_scan_mode_options(opts, state, NULL), 0);
+    rc |= expect_int("clear options restores force", state->M, 1);
+    rc |= expect_int("clear options restores hold", opts->scan_voice_hold_ms, 3000);
+    rc |= expect_int("clear options restores mute", opts->dmr_mute_encL, 0);
+    rc |= expect_str("clear options restores groups", opts->group_in_file, "global.csv");
+    dsd_scan_mode_leave(opts, state);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* Direct key commands keep their live key ownership while their unmute decision
+ * persists in the configured scope, including beneath an explicit row mute. */
+static int
+test_scoped_direct_key_mutes(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    const int commands[] = {DSD_APP_CMD_KEY_BASIC_SET, DSD_APP_CMD_KEY_SCRAMBLER_SET, DSD_APP_CMD_KEY_RC4DES_SET,
+                            DSD_APP_CMD_KEY_HYTERA_SET, DSD_APP_CMD_KEY_AES_SET};
+    int rc = 0;
+    for (int row_mutes = 0; row_mutes < 2; row_mutes++) {
+        for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+            opts->dmr_mute_encL = opts->dmr_mute_encR = 1;
+            state->R = 99;
+            dsd_key_set keys = {0};
+            keys.present = 1;
+            keys.scalars.R = 55;
+            rc |= expect_true("enter row keys", dsd_scan_keys_enter(state, &keys));
+            rc |= expect_int("enter key command scope", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR), 0);
+            dsd_scan_option_values row = {.present = DSD_SCAN_OPT_MUTE_DMR, .mute_dmr = 1};
+            (void)dsd_scan_mode_options(opts, state, row_mutes ? &row : NULL);
+            uint64_t payload[5] = {7, 8, 9, 10, 11};
+            uint32_t short_key = 7;
+            const void* data = i < 2 ? (const void*)&short_key : (const void*)payload;
+            size_t size = i < 2    ? sizeof(uint32_t)
+                          : i == 2 ? sizeof(uint64_t)
+                          : i == 3 ? sizeof(dsd_app_hytera_key_payload)
+                                   : sizeof(dsd_app_aes_key_payload);
+            rc |= expect_int("post direct key", dsd_app_command_submit(commands[i], data, size),
+                             DSD_APP_COMMAND_SUBMIT_QUEUED);
+            rc |= expect_int("direct key drained", dsd_app_drain_cmds(opts, state), 1);
+            rc |= expect_int("row mute respected left", opts->dmr_mute_encL, row_mutes);
+            rc |= expect_int("row mute respected right", opts->dmr_mute_encR, row_mutes);
+            dsd_scan_settings configured;
+            dsd_scan_mode_configured(opts, state, &configured);
+            rc |= expect_int("direct key saved left unmute", configured.dmr_mute_encL, 0);
+            rc |= expect_int("direct key saved right unmute", configured.dmr_mute_encR, 0);
+            rc |= expect_true("direct key retains row ownership", state->scan_keys_active_set != 0);
+            const uint64_t live[] = {state->K, state->R, state->RR, state->K4, state->A4[0]};
+            const uint64_t expected[] = {7, 7, 7, 11, 10};
+            rc |= expect_true("direct key updates live material", live[i] == expected[i]);
+            post_empty(DSD_APP_CMD_AGGR_SYNC_TOGGLE);
+            (void)dsd_app_drain_cmds(opts, state);
+            rc |= expect_int("CRC toggle preserves row mute", opts->dmr_mute_encL, row_mutes);
+            (void)dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48);
+            (void)dsd_scan_mode_options(opts, state, NULL);
+            rc |= expect_int("next row inherits unmute", opts->dmr_mute_encL, 0);
+            dsd_scan_keys_leave(state);
+            rc |= expect_true("leave restores global key", state->R == 99);
+            dsd_scan_mode_leave(opts, state);
+        }
+    }
+    for (int relaxed = 0; relaxed < 2; relaxed++) {
+        opts->dmr_crc_relaxed_default = (uint8_t)relaxed;
+        for (int toggle = 0; toggle < 2; toggle++) {
+            post_empty(DSD_APP_CMD_AGGR_SYNC_TOGGLE);
+            (void)dsd_app_drain_cmds(opts, state);
+            rc |= expect_int("menu CRC toggle preserves CSBK policy", opts->dmr_crc_relaxed_default, relaxed);
+        }
+    }
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_scoped_direct_key_mutes();
+    rc |= test_scoped_row_option_commands();
     rc |= test_scoped_setting_toggles();
     rc |= test_scoped_mode_commands_and_config();
     rc |= test_command_api();

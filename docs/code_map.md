@@ -596,3 +596,30 @@ External dependencies (resolved via CMake):
   vocoder (`mbe-neo` 2.x).
 - Terminal frontend: curses (ncursesw/PDCurses), enabled by default with `DSD_ENABLE_TERMINAL_UI=ON`.
 - Optional: RTL‑SDR, SoapySDR >= 0.8.1, CODEC2, libcurl >= 7.56.0.
+
+### Scoped scan options
+
+- Runtime `scan_options` parses the restricted `options` argument grammar into typed values and fixed key/path
+  metadata, validates declared modes, and reports errors without echoing raw arguments. It never runs the CLI parser.
+- Core `scan_profile` merges legacy key columns, resolves and loads companion files, and materializes direct keys.
+  Positional profiles extend the existing channel-mode store in extension slot 5; runtime slot 6 retains nonsecret
+  configured/active settings. Extension IDs and the main options/state struct layouts are unchanged.
+- The talkgroup policy store supports decoder-thread retain/install/release operations. Profiles retain their own
+  context so aliases and session policy changes survive visits; frontend snapshots still clone the effective context.
+  `dsd_tg_policy_restore()` preserves active calls across temporary suspend/resume; install resets them for target
+  transitions. The CSV importer loads standalone stores through core-private helpers without a decoder-state allocation.
+  Slot 5 holds the saved global group context and suspend/resume ownership. Clearing metadata restores it first;
+  moving metadata unwinds both source and destination scopes before transferring the row definitions.
+- `dsd_scan_key_change_prepare()` allocates the incoming key copy and any needed baseline before a conventional tune;
+  commit consumes the change without allocation. Engine checks the map generation and key epoch before committing,
+  restaging the tune (and re-preparing against the current globals) when the keyring changed in the window. Both
+  coordinators reserve every scope and key allocation before saving the outgoing snapshot, so a failed preparation
+  leaves the receiver and snapshot untouched. Conventional retries keep the frame gate closed until a row commits,
+  including when a later tune is deferred or rejected; the scanner can still advance to a working row. Separately,
+  trunk-scan failures re-arm dwell or retry timers so memory pressure cannot cause a retry on every tick.
+- `dsd_channel_modes_present()` is true for declared modes and for option-bearing profiles alike, so option-only
+  channel maps run the typed scanner. `dsd_scan_settings_equal()` compares acquisition settings only; the row-scoped
+  options (forcing, CRC, mutes, voice gate, group file) are folded through `dsd_scan_mode_resume()` without
+  resetting acquisition. Conventional trunk-scan targets take their voice-gate hold/qualify from the row profile.
+- App-control scopes force/CRC/voice configuration commands and group imports, while live row policy mutations stay
+  with the active context. Configuration export reads saved group paths and voice settings from the configured scope.

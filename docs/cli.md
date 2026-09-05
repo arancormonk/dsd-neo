@@ -693,6 +693,14 @@ those values for the current CLI run only.
   without writing it to the slot.
 - Select DMR key by talkgroup: `--dmr-tg-key-csv <file>` (per-TG override of the signaled KEY ID;
   rows are `tg_dec,keyid_hex` into the `-K`/`-k` keyring — see `docs/csv-formats.md`)
+- Conflicting outer force switches emit one warning describing the final selection. Existing precedence is retained:
+  long-option ALGID settings are applied before short options, and the last `-4`/`-0` wins. Use per-row settings for
+  mixed scans. `--no-force-key` explicitly disables forcing after those settings; `--strict-crc` similarly disables
+  `-F`. `--no-scan-voice-only` is the inverse of `--scan-voice-only` (the last of these long switches wins).
+- Channel maps and trunk-target lists can combine mode/type with a restricted `options` column, including direct
+  `-1` RC4/DES and `-R` scrambler keys, group files, force settings, CRC policy and conventional voice-gate intervals.
+  See [scoped row options](csv-formats.md#scoped-row-options) for the supported switches and inheritance rules.
+  The outer conventional command remains `-Y -C <file>`; `-Y` does not take a filename argument.
 - Disable DMR Late Entry IDs: `-3` (avoid false ENC)
 
 ## Tools & Extras

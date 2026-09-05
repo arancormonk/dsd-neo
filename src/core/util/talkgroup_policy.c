@@ -21,6 +21,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "talkgroup_policy_internal.h"
 
 typedef struct {
     dsd_tg_policy_entry* entries;
@@ -86,12 +87,14 @@ typedef struct {
     unsigned int generation;
 } dsd_tg_policy_active_table;
 
-typedef struct {
+struct dsd_tg_policy_store {
     dsd_tg_policy_table table;
+    size_t references;
     dsd_tg_policy_active_table active;
     uint64_t context_id;
     uint64_t snapshot_source_context_id;
-} dsd_tg_policy_context;
+};
+typedef struct dsd_tg_policy_store dsd_tg_policy_context;
 
 #ifdef DSD_NEO_TEST_HOOKS
 static long s_alloc_fail_after = -1;
@@ -288,6 +291,7 @@ tg_policy_context_alloc(void) {
     if (!ctx) {
         return NULL;
     }
+    ctx->references = 1;
     ctx->context_id = tg_policy_next_context_id();
     ctx->snapshot_source_context_id = ctx->context_id;
     return ctx;
@@ -297,6 +301,9 @@ static void
 tg_policy_context_free(void* ptr) {
     dsd_tg_policy_context* ctx = (dsd_tg_policy_context*)ptr;
     if (!ctx) {
+        return;
+    }
+    if (--ctx->references != 0) {
         return;
     }
     free(ctx->table.entries);
@@ -426,57 +433,40 @@ dsd_tg_policy_make_exact_entry(uint32_t id, const char* mode, const char* name, 
 }
 
 int
-dsd_tg_policy_add_range_entry(dsd_state* state, const dsd_tg_policy_entry* entry) {
-    dsd_tg_policy_context* ctx = NULL;
+dsd_tg_policy_store_append(dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry) {
+    if (!store || !entry
+        || !(entry->is_range ? tg_policy_entry_valid_range(entry) : tg_policy_entry_valid_exact(entry))) {
+        return 1;
+    }
     dsd_tg_policy_entry normalized;
-    if (!state || !entry) {
-        return 1;
-    }
-    if (!tg_policy_entry_valid_range(entry)) {
-        return 1;
-    }
-
     tg_policy_copy_entry_normalized(&normalized, entry);
-
-    ctx = tg_policy_ctx_get_mut(state, 1);
-    if (!ctx) {
+    if (!entry->is_range) {
+        normalized.id_end = normalized.id_start;
+    }
+    if (tg_policy_table_reserve(store, store->table.count + 1) != 0) {
         return -1;
     }
-    if (tg_policy_table_reserve(ctx, ctx->table.count + 1) != 0) {
-        return -1;
-    }
-
-    ctx->table.entries[ctx->table.count++] = normalized;
-    tg_policy_table_note_mutation(ctx);
+    store->table.entries[store->table.count++] = normalized;
+    tg_policy_table_note_mutation(store);
     return 0;
 }
 
 int
+dsd_tg_policy_add_range_entry(dsd_state* state, const dsd_tg_policy_entry* entry) {
+    if (!state || !entry || !tg_policy_entry_valid_range(entry)) {
+        return 1;
+    }
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    return ctx ? dsd_tg_policy_store_append(ctx, entry) : -1;
+}
+
+int
 dsd_tg_policy_append_exact(dsd_state* state, const dsd_tg_policy_entry* entry) {
-    dsd_tg_policy_context* ctx = NULL;
-    dsd_tg_policy_entry normalized;
-    if (!state || !entry) {
+    if (!state || !entry || !tg_policy_entry_valid_exact(entry)) {
         return 1;
     }
-    if (!tg_policy_entry_valid_exact(entry)) {
-        return 1;
-    }
-
-    tg_policy_copy_entry_normalized(&normalized, entry);
-    normalized.is_range = 0;
-    normalized.id_end = normalized.id_start;
-
-    ctx = tg_policy_ctx_get_mut(state, 1);
-    if (!ctx) {
-        return -1;
-    }
-    if (tg_policy_table_reserve(ctx, ctx->table.count + 1) != 0) {
-        return -1;
-    }
-
-    ctx->table.entries[ctx->table.count++] = normalized;
-    tg_policy_table_note_mutation(ctx);
-    return 0;
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    return ctx ? dsd_tg_policy_store_append(ctx, entry) : -1;
 }
 
 int
@@ -1628,4 +1618,44 @@ dsd_tg_policy_clear(dsd_state* state) {
         return -1;
     }
     return 0;
+}
+
+dsd_tg_policy_store*
+dsd_tg_policy_retain(const dsd_state* state) {
+    dsd_tg_policy_context* ctx = (dsd_tg_policy_context*)tg_policy_ctx_get_const(state);
+    if (ctx) {
+        ctx->references++;
+    }
+    return ctx;
+}
+
+void
+dsd_tg_policy_release(dsd_tg_policy_store* store) {
+    tg_policy_context_free(store);
+}
+
+void
+dsd_tg_policy_restore(dsd_state* state, dsd_tg_policy_store* store) {
+    if (!state) {
+        return;
+    }
+    if (store) {
+        if (store != tg_policy_ctx_get_const(state)) {
+            store->references++;
+        }
+    }
+    (void)dsd_state_ext_set(state, DSD_STATE_EXT_CORE_TG_POLICY, store, tg_policy_context_free);
+}
+
+void
+dsd_tg_policy_install(dsd_state* state, dsd_tg_policy_store* store) {
+    if (state && store) {
+        DSD_MEMSET(&store->active, 0, sizeof(store->active));
+    }
+    dsd_tg_policy_restore(state, store);
+}
+
+dsd_tg_policy_store*
+dsd_tg_policy_store_create(void) {
+    return tg_policy_context_alloc();
 }

@@ -89,9 +89,10 @@ Notes:
   later rows keep their LCN numbers. This is what tells a channel map apart from a decimal key list, which has the same
   `number,number` shape.
 - Optional headers after the two required columns are matched case-insensitively, with surrounding whitespace
-  trimmed: `name`, `mode`, `keys_hex_csv`, `keys_dec_csv`, `single_key_hex`, and `single_key_dec`. They may appear in
+  trimmed: `name`, `mode`, `keys_hex_csv`, `keys_dec_csv`, `single_key_hex`, `single_key_dec`, and `options` (`relevant_CLI_switches`). They may appear in
   any order, including after column 16. Unrecognized columns are ignored. The first `name` column wins; duplicate
-  `mode` or key headers reject the file. This preserves legacy free-text note columns, including notes with commas.
+  `mode`, key, or `options` headers reject the file, including `options` repeated through its
+  `relevant_CLI_switches` alias. This preserves legacy free-text note columns, including notes with commas.
 - Channel-map headers and data rows are read in full up to 1 MiB (including the line ending and terminating NUL).
   Longer rows reject the import with an error; they are never split into additional channels.
 - `mode` accepts `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, and `m17`, case-insensitively and trimmed.
@@ -175,6 +176,86 @@ channel,frequency_hz,name,keys_hex_csv,keys_dec_csv,single_key_dec,single_key_he
 3,462612500,Shared,,,1,0000001F00
 ```
 
+### Scoped row options
+
+Channel maps and trunk-scan targets accept an optional `options` column. `relevant_CLI_switches` is an alias;
+headers match case-insensitively and naming both rejects the file. Combine `mode` and `options` in the same map
+(`examples/conventional_scan_options.csv`); run it with `-Y -C examples/conventional_scan_options.csv`.
+
+Options are parsed once when the list is loaded. They are a restricted argument list, with the following switches:
+
+| Switch | Meaning and accepted modes |
+| --- | --- |
+| `-b <decimal>` | Motorola BP number, `0..255`; DMR. |
+| `-H <hex>` | Hytera/AES key; DMR accepts 10/32/64 digits, P25 32/64, NXDN 64. |
+| `-1 <hex>` | Direct RC4/DES key, 1..16 digits; DMR/P25/NXDN. |
+| `-R <decimal>` | Direct scrambler key, `0..32767`; NXDN/dPMR. |
+| `-k <file>`, `-K <file>` | Decimal/hex key files; DMR/P25/NXDN. |
+| `-G <file>` | Group names and policy for this row or system. |
+| `-4` | Force loaded privacy keys over signalling; DMR/NXDN. |
+| `-0`, `--dmr-force-algid <hex>` | DMR algorithm fallback when identifiers are missing. `-0` means ALGID `21`. |
+| `-F` | Relax CRC checks; DMR/P25/M17. |
+| `--strict-crc` | Restore strict CRC checks; all modes, including inherited mode. |
+| `--no-force-key` | Disable privacy forcing and algorithm fallback for this row. |
+| `--scan-voice-only`, `--no-scan-voice-only` | Enable/disable the conventional voice gate. |
+| `--scan-voice-qualify-ms`, `--scan-voice-hold-ms` | Conventional voice-gate intervals, `100..600000` milliseconds. |
+
+Protocol-specific options require a declared `mode`; trunk targets use their `type`. A channel map whose rows carry
+`options` but no `mode` still runs through the typed scanner (blank rows inherit the configured decoder), since the
+legacy `-Y` scanner applies row keys but not row options. Trunk-system targets reject voice-gate options: their
+existing `dwell_ms` and `activity_hold_ms` columns retain their roles, while a conventional target's voice-gate
+intervals replace those two columns while the gate is on (see `docs/trunk-scan.md`). Input/output, frontend
+selection, decoder flags and scanner-wide `-t` are not accepted in `options`.
+
+Omitted settings inherit the outer CLI/configuration, including forcing. Use `--no-force-key` on a normal mixed
+clear/BP channel when forcing is configured globally. `-b 1` with normal signalling processes clear and BP calls;
+`-4` deliberately applies loaded privacy keys even to frames marked clear and can corrupt those clear calls.
+There is no automatic choice between forced Motorola and Hytera privacy.
+
+The existing `single_key_dec` and `single_key_hex` columns load the `-b` and `-H` key values, respectively.
+They do not claim an encrypted-audio mute override by themselves. When `options` contains `-b` or `-H`, those
+switches decide DMR muting from all of the row's BP/Hytera material, including the legacy columns: all zero
+mutes, any nonzero material unmutes. For example, `-b 0` mutes by itself, but unmutes alongside a nonzero
+`single_key_hex`. `-1` mutes undecodable P25 audio as the CLI switch does. Use `options=-R 1` for a direct
+NXDN scrambler and `options=-1 0123456789` for direct RC4. Loading a key does not itself enable forcing. A
+direct source replaces the row's complete key set; unspecified families and keyring entries are cleared.
+Explicit zero is a supplied value. Direct and file-backed key sources cannot be mixed, including across
+columns and options. Compatible direct families may be combined, but duplicate definitions reject the import.
+
+Within a row, repeated settings reject the import, even with identical values or different switch spellings:
+`-4 -4`, `-b 1 -b 2`, and `-F --strict-crc` are errors. Conflicting force settings also reject the import. The
+only accepted redundancy is one `-0` paired with one `--dmr-force-algid 21`, in either order, because both
+request the same fallback. ALGIDs are hexadecimal, with or without `0x`: `0x00` disables fallback; `0x01` and
+`0x16` are rejected because they are reserved non-algorithm markers internally. Received DMR algorithm/key
+identifiers retain precedence over algorithm fallback.
+
+Separate switches with whitespace; quote an argument with single or double quotes to retain spaces.
+Backslashes are literal, so `-G "C:\Radio Lists\groups.csv"` works without shell escaping. Hex keys may
+include an optional `0x` prefix and whitespace inside a quoted argument. Long switches that take an argument
+also accept `--name=value`; argument-free switches reject it (for example, `--scan-voice-only=yes`). An
+argument must not start with `-`; use `./-name.csv` for a filename that starts with a dash. CSV commas remain
+field separators, including inside quotes. Unknown switches, positional text, malformed quotes and duplicate
+settings are errors. Diagnostics name the row and option without repeating raw option text or key values.
+
+File paths resolve relative to the containing CSV. Key-file paths (`-K`, `-k` and the legacy columns) are
+limited to 2047 bytes for channel maps and 1023 bytes for trunk targets, after resolution and excluding the
+terminating NUL. A `-G` path is limited to 1023 bytes, the same as the global group file it replaces.
+Companion paths in a nonempty `options` cell are resolved and loaded even when the row's channel number is
+invalid and takes no scan slot. Keys and group policies are loaded before scanning starts; switching rows
+never reads these files. A group file row the importer cannot store is skipped with a warning, exactly as for
+a global `-G` import. `-G` replaces the active group policy while parked. Labels and session policy edits
+remain with that row's policy; unconfigured rows use the global policy. Global group imports and scoped
+setting changes from the frontend (forcing, CRC policy, mutes, voice gate) update the saved baseline beneath
+the active row. Changes to inherited settings take effect immediately; explicit row overrides continue to
+apply, and temporary suspension preserves active-call priority bookkeeping. Direct-key menu commands keep editing the live keys while their unmute decision updates the saved
+defaults; an explicit row mute still takes precedence. The existing Relaxed CRC checks menu toggle changes
+frame CRC checks only; it preserves the separately configured DMR CSBK CRC default. Leaving or replacing the
+scan restores that baseline. Frontend configuration saves preserve configured defaults, not temporary row
+overrides.
+
+The Qt/Android picker supports embedded values. Companion files named by `-G`, `-k` or `-K` have the same limitation
+as existing key-file columns: the picker does not copy companion files alongside the imported list.
+
 Declared modes use these symbol profiles:
 
 | Mode | Symbols per second | Levels |
@@ -218,6 +299,7 @@ Columns:
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to this CSV. Empty uses the global keys. |
 | `single_key_dec` | No | Embedded `-b` Motorola Basic Privacy key number (`0..255`). Explicit `0` is present and overrides the global key. May be combined with `single_key_hex`, but not either key-file column. |
 | `single_key_hex` | No | Embedded `-H` key: optional `0x`, whitespace ignored, exactly 10, 32, or 64 hex digits. May be combined with `single_key_dec`, but not either key-file column. |
+| `options` | No | Scoped switches described above; target `type` determines which protocol options apply. |
 | `p25_bandplan_csv` | No | Per-target [P25 band plan CSV](#p25-band-plan-csv---p25-bandplan-file--trunking-p25_bandplan_csv) for a `p25-trunk` target, resolved relative to this CSV. The rows are parked in the target's snapshot, so one exported multi-system file can be named on every P25 row: each target seeds only the rows that carry its own WACN/SYS (and rows that carry none). |
 
 Validation notes:
