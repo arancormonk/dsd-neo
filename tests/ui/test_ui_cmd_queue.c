@@ -9,6 +9,7 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
@@ -955,6 +956,17 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_true("accepted RTL frequency timeout reports pending",
                       strstr(state.ui_msg, "Accepted: RTL frequency -> 851500000 Hz (pending)") != NULL);
     rc |= expect_int("accepted RTL frequency timeout tune calls", g_io_control_tune_calls, 1);
+    opts.scanner_mode = 1;
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 852000000U);
+    rc |= expect_int("legacy scanner tune drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("legacy manual tune preserves scanner", opts.scanner_mode, 1);
+    rc |= expect_int("typed metadata for manual tune", dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("typed mode before manual tune", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853000000U);
+    rc |= expect_int("typed scanner tune drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("typed manual tune releases scanner", opts.scanner_mode, 0);
+    rc |= expect_int("typed manual tune releases mode", dsd_scan_mode_active(&state), DSD_SCAN_MODE_INHERIT);
+    rc |= expect_contains("manual tune explains scanner exit", state.ui_msg, "scanner stopped");
     freeState(&state);
 #endif
 
@@ -2118,9 +2130,13 @@ test_scoped_setting_toggles(void) {
     opts->use_cosine_filter = 1;
     opts->monitor_input_audio = 0;
     opts->inverted_dmr = 0;
+    opts->inverted_x2tdma = 0;
+    opts->inverted_dpmr = 0;
+    opts->inverted_m17 = 0;
     rc |= expect_int("enter DMR for toggles", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR), 0);
-    const int commands[] = {DSD_APP_CMD_INVERT_TOGGLE, DSD_APP_CMD_COSINE_FILTER_TOGGLE,
-                            DSD_APP_CMD_INPUT_MONITOR_TOGGLE};
+    const int commands[] = {DSD_APP_CMD_INV_DMR_TOGGLE,       DSD_APP_CMD_INV_X2_TOGGLE,
+                            DSD_APP_CMD_INV_DPMR_TOGGLE,      DSD_APP_CMD_INV_M17_TOGGLE,
+                            DSD_APP_CMD_COSINE_FILTER_TOGGLE, DSD_APP_CMD_INPUT_MONITOR_TOGGLE};
     for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); ++i) {
         if (commands[i] == DSD_APP_CMD_INPUT_MONITOR_TOGGLE) {
             const dsd_call_observation call = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS,
@@ -2148,6 +2164,9 @@ test_scoped_setting_toggles(void) {
     rc |= expect_int("hop keeps monitor", opts->monitor_input_audio, 1);
     dsd_scan_mode_leave(opts, state);
     rc |= expect_int("exit keeps invert", opts->inverted_dmr, 1);
+    rc |= expect_int("exit keeps X2 invert", opts->inverted_x2tdma, 1);
+    rc |= expect_int("exit keeps dPMR invert", opts->inverted_dpmr, 1);
+    rc |= expect_int("exit keeps M17 invert", opts->inverted_m17, 1);
     rc |= expect_int("exit keeps filter", opts->use_cosine_filter, 0);
     rc |= expect_int("exit keeps monitor", opts->monitor_input_audio, 1);
     rc |= expect_int("enter P25 for helper toggle", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25), 0);
@@ -2173,6 +2192,10 @@ test_scoped_setting_toggles(void) {
     rc |= expect_int("release drained with target owner", dsd_app_drain_cmds(opts, state), 1);
     rc |= expect_int("release preserves target owner", opts->trunk_scan_enabled, 1);
     rc |= expect_int("release preserves target class", dsd_scan_mode_active(state), DSD_SCAN_MODE_NXDN48);
+    post_empty(DSD_APP_CMD_SCANNER_TOGGLE);
+    rc |= expect_int("scanner toggle during trunk scan drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("trunk scan excludes conventional scanner", opts->scanner_mode, 0);
+    rc |= expect_int("refused scanner preserves target", dsd_scan_mode_active(state), DSD_SCAN_MODE_NXDN48);
     freeState(state);
     free(state);
     free(opts);
@@ -2219,6 +2242,25 @@ test_scoped_mode_commands_and_config(void) {
     rc |= expect_int("exit restores M17 filter", opts->use_cosine_filter, 0);
     rc |= expect_int("exit restores configured timing at live input rate", state->samplesPerSymbol, 20);
     rc |= expect_int("exit restores configured profile", state->sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    opts->scanner_mode = 1;
+    rc |= expect_int("reenter scan P25", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25), 0);
+    dsd_key_set row_keys = {0};
+    row_keys.present = 1;
+    opts->mod_cli_lock = 0;
+    rc |= expect_int("config exit row keys", dsd_scan_keys_enter(state, &row_keys), 1);
+    dsdneoUserConfig cfg = {0};
+    cfg.has_trunking = 1;
+    cfg.trunk_scanner = 0;
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_NXDN48;
+    rc |= expect_int("config exit queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("config exit drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("config stops scanner", opts->scanner_mode, 0);
+    rc |= expect_int("config releases scope", dsd_scan_mode_active(state), DSD_SCAN_MODE_INHERIT);
+    rc |= expect_int("config keeps new baseline", opts->frame_nxdn48, 1);
+    rc |= expect_int("config releases P25", opts->frame_p25p1, 0);
+    rc |= expect_int("config releases row keys", state->scan_keys_active_set, 0);
     freeState(state);
     free(state);
     free(opts);

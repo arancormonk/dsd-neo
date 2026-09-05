@@ -445,18 +445,24 @@ dsd_engine_tune_rigctl(const dsd_opts* opts, long int freq) {
     return 1;
 }
 
+static int
+dsd_engine_conventional_scan_active(const dsd_opts* opts) {
+    return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1;
+}
+
 static dsd_trunk_tune_result
 dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
+    const int conventional_scan = dsd_engine_conventional_scan_active(opts);
     if (opts->use_rigctl == 1) {
         if (!dsd_engine_tune_rigctl(opts, freq)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
 #ifdef USE_RADIO
-        if (opts->audio_in_type == AUDIO_IN_RTL && opts->scanner_mode != 1) {
+        if (opts->audio_in_type == AUDIO_IN_RTL && !conventional_scan) {
             rtl_stream_apply_pending_retune_profile_for_target((uint32_t)freq);
         }
 #endif
-        if (opts->scanner_mode != 1 || opts->audio_in_type != AUDIO_IN_RTL) {
+        if (!conventional_scan || opts->audio_in_type != AUDIO_IN_RTL) {
             return DSD_TRUNK_TUNE_RESULT_OK;
         }
     }
@@ -743,12 +749,9 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
 static void
 dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
     if (opts->audio_in_type == AUDIO_IN_RTL && ted_sps > 0) {
-        if (opts->scanner_mode == 1) {
+        if (dsd_engine_conventional_scan_active(opts)) {
             const int rate = dsd_frame_sync_active_profile_symbol_rate_hz(state);
-            const int levels = state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_2
-                                       || state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_9600_2
-                                   ? 2
-                                   : 4;
+            const int levels = dsd_frame_sync_active_profile_levels(state);
             dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, state->rf_mod == 1, rate, levels,
                                                          dsd_rtl_channel_profile_for(opts, rate, levels, state->rf_mod),
                                                          ted_sps, 0);
@@ -761,7 +764,7 @@ dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int
 
 static void
 dsd_engine_scan_tune_failed(const dsd_opts* opts, uint64_t request_id, dsd_trunk_tune_result result) {
-    if (opts->scanner_mode == 1 && opts->use_rigctl == 1 && opts->audio_in_type == AUDIO_IN_RTL) {
+    if (dsd_engine_conventional_scan_active(opts) && opts->use_rigctl == 1 && opts->audio_in_type == AUDIO_IN_RTL) {
         /* A rigctl leg may have moved before RTL failed. Completion disagreement
          * retains the frame gate until the scanner establishes a new boundary. */
         dsd_trunk_tuning_request_publish(request_id, DSD_TRUNK_TUNE_RESULT_OK);

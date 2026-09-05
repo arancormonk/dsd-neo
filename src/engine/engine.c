@@ -1369,7 +1369,7 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
 
 static int
 no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t now) {
-    if (opts->scanner_mode != 1 || !no_carrier_scanner_step_is_due(opts, state, now)) {
+    if (opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || !no_carrier_scanner_step_is_due(opts, state, now)) {
         return 0;
     }
     // An operator hold pauses the rotation where it stands. The dwell timer is left alone:
@@ -2325,7 +2325,7 @@ void
 noCarrier(dsd_opts* opts, dsd_state* state) {
     const time_t now = time(NULL);
 
-    if (dsd_channel_modes_present(state)) {
+    if (opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && dsd_channel_modes_present(state)) {
         /* Typed rows use tracked tunes, bypassing the legacy scan caches. */
         s_last_rigctl_freq = -1;
 #ifdef USE_RADIO
@@ -2350,8 +2350,18 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     // calls as it retunes, so the finalizer has to know whether the frequency moved out from under
     // whatever it is about to close.
     const int scanner_retuned = no_carrier_step_scanner_mode_if_needed(opts, state, now);
+    if (scanner_retuned && dsd_channel_modes_present(state)) {
+        /* The committed row finalized its outgoing calls and reset once. */
+        return;
+    }
     no_carrier_return_to_control_channel_if_needed(opts, state, now);
     no_carrier_finalize_canonical_calls(opts, state, scanner_retuned);
+    dsd_engine_reset_no_carrier_state(opts, state);
+}
+
+void
+dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
+    const time_t now = time(NULL);
     no_carrier_clear_stale_p25_return_hints_after_generic_activity(opts, state);
     no_carrier_reset_dibit_and_dmr_buffers(state);
     no_carrier_close_mbe_outputs_if_needed(opts, state);
@@ -2375,7 +2385,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     no_carrier_clear_stale_follow_state_if_needed(opts, state, now);
     no_carrier_reset_ysf_and_dstar_strings(state);
     no_carrier_reset_m17_and_sample_buffers(state);
-} //nocarrier
+}
 
 static int
 live_scanner_apply_audio_gain(dsd_opts* opts, dsd_state* state) {

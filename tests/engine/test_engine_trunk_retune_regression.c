@@ -897,6 +897,18 @@ main(void) {
     assert(g_rtl_ted_sps == 20); /* 48000 / 2400 from the stubbed RTL output rate */
     assert(g_rtl_ted_sps_override == 0);
 
+    /* Even stale scanner flags cannot change the trunk coordinator's backend
+     * contract: rigctl owns the frequency and the target owns the profile. */
+    opts->scanner_mode = 1;
+    opts->use_rigctl = 1;
+    g_setfreq_result = true;
+    const int before_stale_scanner = g_rtl_tune_calls;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461556250, 20, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_tune_calls == before_stale_scanner);
+    assert(g_rtl_symbol_rate_hz == 2400 && g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_6K25);
+    opts->scanner_mode = 0;
+    opts->use_rigctl = 0;
+
     /* A parked 4800-class scan target keeps the 12.5 kHz chain. */
     g_trunk_scan_active_gfsk_symbol_rate = 4800;
     g_rtl_symbol_rate_hz = 2400;

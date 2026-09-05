@@ -1712,9 +1712,10 @@ snapshot_mode_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserCon
     /* Exact, not the AUTO-falling-back spelling: a decoder set no preset reproduces must render
        no `decode` key at all. Saving it as "auto" would reload as every decoder enabled, so a
        session that never chose a mode would come back wider than it was saved. */
-    cfg->decode_mode = dsd_infer_decode_mode_preset_exact(opts);
+    cfg->decode_mode = dsd_scan_mode_configured_preset_exact(opts, state);
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     cfg->has_dmr_mono = 1;
-    cfg->dmr_mono = opts->dmr_mono ? 1 : 0;
+    cfg->dmr_mono = (configured ? configured->dmr_mono : opts->dmr_mono) ? 1 : 0;
     cfg->dmr_lrrp_ports[0] = '\0';
     for (int i = 0; i < opts->lrrp_extra_port_count && i < DSD_LRRP_EXTRA_PORT_MAX; i++) {
         size_t used = strlen(cfg->dmr_lrrp_ports);
@@ -1737,16 +1738,17 @@ snapshot_mode_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserCon
 }
 
 static void
-snapshot_demod_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
-    if (!opts->mod_cli_lock) {
+snapshot_demod_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    if (!(configured ? configured->mod_cli_lock : opts->mod_cli_lock)) {
         return;
     }
     cfg->has_demod = 1;
-    if (opts->mod_gfsk) {
+    if (configured ? configured->mod_gfsk : opts->mod_gfsk) {
         cfg->demod_path = DSDCFG_DEMOD_GFSK;
-    } else if (opts->mod_qpsk) {
+    } else if (configured ? configured->mod_qpsk : opts->mod_qpsk) {
         cfg->demod_path = DSDCFG_DEMOD_QPSK;
-    } else if (opts->mod_c4fm) {
+    } else if (configured ? configured->mod_c4fm : opts->mod_c4fm) {
         cfg->demod_path = DSDCFG_DEMOD_C4FM;
     } else {
         cfg->demod_path = DSDCFG_DEMOD_AUTO;
@@ -1855,21 +1857,11 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
         return;
     }
 
-    dsd_opts* configured = nullptr;
-    if (dsd_scan_mode_active(state) != DSD_SCAN_MODE_INHERIT) {
-        configured = static_cast<dsd_opts*>(malloc(sizeof(*configured)));
-        if (!configured) {
-            return;
-        }
-        DSD_MEMCPY(configured, opts, sizeof(*configured));
-        dsd_scan_mode_configured_opts(state, configured);
-        opts = configured;
-    }
     user_cfg_reset(cfg);
     snapshot_input_config(opts, cfg);
     snapshot_output_config(opts, cfg);
     snapshot_mode_config(opts, state, cfg);
-    snapshot_demod_config(opts, cfg);
+    snapshot_demod_config(opts, state, cfg);
     snapshot_trunking_config(opts, cfg);
     snapshot_radioreference_config(opts, cfg);
     snapshot_trunk_scan_config(opts, cfg);
@@ -1877,7 +1869,6 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     snapshot_alerts_config(opts, cfg);
     snapshot_recording_config(opts, cfg);
     snapshot_dsp_config(cfg);
-    free(configured);
 }
 
 // Template generation ---------------------------------------------------------

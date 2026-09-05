@@ -165,20 +165,64 @@ dsd_scan_settings_restore(const dsd_scan_settings* saved, dsd_opts* opts, dsd_st
     state->sps_hunt_idx = saved->state_sps_hunt_idx;
 }
 
+static int
+scan_settings_fields_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, const size_t* fields, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        const int* av = (const int*)((const unsigned char*)a + fields[i]);
+        const int* bv = (const int*)((const unsigned char*)b + fields[i]);
+        if (*av != *bv) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 int
 dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, int include_timing) {
+    /* Explicit membership, independent of struct order and padding. */
+    static const size_t options[] = {
+        offsetof(dsd_scan_settings, frame_dstar),
+        offsetof(dsd_scan_settings, frame_x2tdma),
+        offsetof(dsd_scan_settings, frame_p25p1),
+        offsetof(dsd_scan_settings, frame_p25p2),
+        offsetof(dsd_scan_settings, frame_nxdn48),
+        offsetof(dsd_scan_settings, frame_nxdn96),
+        offsetof(dsd_scan_settings, frame_dmr),
+        offsetof(dsd_scan_settings, frame_dpmr),
+        offsetof(dsd_scan_settings, frame_provoice),
+        offsetof(dsd_scan_settings, frame_ysf),
+        offsetof(dsd_scan_settings, frame_m17),
+        offsetof(dsd_scan_settings, mod_c4fm),
+        offsetof(dsd_scan_settings, mod_qpsk),
+        offsetof(dsd_scan_settings, mod_gfsk),
+        offsetof(dsd_scan_settings, mod_cli_lock),
+        offsetof(dsd_scan_settings, mod_p25p2_c4fm),
+        offsetof(dsd_scan_settings, mod_p25p2_profile_lock),
+        offsetof(dsd_scan_settings, inverted_p2),
+        offsetof(dsd_scan_settings, inverted_x2tdma),
+        offsetof(dsd_scan_settings, inverted_dmr),
+        offsetof(dsd_scan_settings, inverted_dpmr),
+        offsetof(dsd_scan_settings, inverted_ysf),
+        offsetof(dsd_scan_settings, inverted_m17),
+        offsetof(dsd_scan_settings, dmr_stereo),
+        offsetof(dsd_scan_settings, dmr_mono),
+        offsetof(dsd_scan_settings, use_cosine_filter),
+        offsetof(dsd_scan_settings, ssize),
+        offsetof(dsd_scan_settings, msize),
+        offsetof(dsd_scan_settings, analog_only),
+        offsetof(dsd_scan_settings, monitor_input_audio),
+    };
+    static const size_t timing[] = {
+        offsetof(dsd_scan_settings, state_rf_mod),       offsetof(dsd_scan_settings, state_samplesPerSymbol),
+        offsetof(dsd_scan_settings, state_symbolCenter), offsetof(dsd_scan_settings, state_dmr_stereo),
+        offsetof(dsd_scan_settings, state_sps_hunt_idx),
+    };
     if (!a || !b) {
         return 0;
     }
-    if (memcmp(a, b, offsetof(dsd_scan_settings, output_name)) != 0
-        || strncmp(a->output_name, b->output_name, sizeof(a->output_name)) != 0) {
-        return 0;
-    }
-    const size_t timing_offset = offsetof(dsd_scan_settings, state_rf_mod);
-    return !include_timing
-           || memcmp((const unsigned char*)a + timing_offset, (const unsigned char*)b + timing_offset,
-                     sizeof(*a) - timing_offset)
-                  == 0;
+    return scan_settings_fields_equal(a, b, options, sizeof(options) / sizeof(options[0]))
+           && strncmp(a->output_name, b->output_name, sizeof(a->output_name)) == 0
+           && (!include_timing || scan_settings_fields_equal(a, b, timing, sizeof(timing) / sizeof(timing[0])));
 }
 
 dsd_decode_mode_profile
@@ -266,7 +310,7 @@ dsd_scan_mode_begin(const dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     dsd_scan_settings_capture(opts, state, &scope->configured);
-    scope->configured_mode = dsd_infer_decode_mode_preset(opts);
+    scope->configured_mode = dsd_infer_decode_mode_preset_exact(opts);
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_RUNTIME_SCAN_MODE, scope, free);
     return 0;
 }
@@ -275,10 +319,6 @@ int
 dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode) {
     if (!opts || !state || (unsigned)mode >= sizeof(mode_presets) / sizeof(mode_presets[0])) {
         return -1;
-    }
-    if (mode == DSD_SCAN_MODE_INHERIT) {
-        dsd_scan_mode_leave(opts, state);
-        return 0;
     }
     if (dsd_scan_mode_begin(opts, state) != 0) {
         return -1;
@@ -296,8 +336,14 @@ dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode) {
 
 dsdneoUserDecodeMode
 dsd_scan_mode_configured_preset(const dsd_opts* opts, const dsd_state* state) {
+    const dsdneoUserDecodeMode mode = dsd_scan_mode_configured_preset_exact(opts, state);
+    return mode == DSDCFG_MODE_UNSET ? DSDCFG_MODE_AUTO : mode;
+}
+
+dsdneoUserDecodeMode
+dsd_scan_mode_configured_preset_exact(const dsd_opts* opts, const dsd_state* state) {
     const scan_scope* scope = scan_scope_get(state);
-    return scope && !scope->suspended ? scope->configured_mode : dsd_infer_decode_mode_preset(opts);
+    return scope && !scope->suspended ? scope->configured_mode : dsd_infer_decode_mode_preset_exact(opts);
 }
 
 void
@@ -333,11 +379,11 @@ dsd_scan_mode_updating(const dsd_state* state) {
 int
 dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
     scan_scope* scope = scan_scope_get(state);
-    if (!scope || !opts || !scope->suspended) {
+    if (!scope || !opts || !state || !scope->suspended) {
         return 0;
     }
     dsd_scan_settings_capture(opts, state, &scope->configured);
-    scope->configured_mode = dsd_infer_decode_mode_preset(opts);
+    scope->configured_mode = dsd_infer_decode_mode_preset_exact(opts);
     scope->suspended = 0;
     scan_scope_apply(opts, state, scope);
     if (scope->mode == DSD_SCAN_MODE_P25) {
@@ -383,12 +429,10 @@ dsd_scan_mode_configured(const dsd_opts* opts, const dsd_state* state, dsd_scan_
     }
 }
 
-void
-dsd_scan_mode_configured_opts(const dsd_state* state, dsd_opts* opts) {
+const dsd_scan_settings*
+dsd_scan_mode_configured_view(const dsd_state* state) {
     const scan_scope* scope = scan_scope_get(state);
-    if (scope && !scope->suspended && opts) {
-        scan_settings_restore_opts(&scope->configured, opts);
-    }
+    return scope && !scope->suspended ? &scope->configured : NULL;
 }
 
 void
@@ -409,7 +453,16 @@ dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src) {
         }
         (void)dsd_state_ext_set(dst, DSD_STATE_EXT_RUNTIME_SCAN_MODE, copy, free);
     }
-    *copy = *source;
+    copy->configured = source->configured;
+    copy->modulation = source->modulation;
+    copy->mode = source->mode;
+    copy->configured_mode = source->configured_mode;
+    copy->suspended = source->suspended;
+    /* The effective backup matters only between suspend and resume. A normal
+     * published snapshot never consumes it; a later suspend captures its own. */
+    if (source->suspended) {
+        copy->effective = source->effective;
+    }
 }
 
 dsd_decode_mode_profile
@@ -427,7 +480,7 @@ dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, dsd_
     if (!opts || !state || !out || (unsigned)mode >= sizeof(mode_presets) / sizeof(mode_presets[0])) {
         return -1;
     }
-    if (mode != DSD_SCAN_MODE_INHERIT && dsd_scan_mode_begin(opts, state) != 0) {
+    if (dsd_scan_mode_begin(opts, state) != 0) {
         return -1;
     }
     dsd_scan_settings effective;

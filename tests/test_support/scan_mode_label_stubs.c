@@ -10,9 +10,24 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <stddef.h>
+#include "scan_mode_label_stubs.h"
 
 static dsd_opts snapshot_opts;
 static dsd_state snapshot_state;
+static int snapshots_available = 1;
+static dsd_scan_mode active_mode;
+
+void
+dsd_test_scan_labels_set(int available, dsd_scan_mode mode) {
+    snapshots_available = available;
+    active_mode = mode;
+}
+
+const dsd_scan_settings*
+dsd_scan_mode_configured_view(const dsd_state* state) {
+    assert(state == &snapshot_state || state == NULL);
+    return NULL;
+}
 
 void
 dsd_app_snapshot_configured_mode(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out) {
@@ -24,12 +39,12 @@ dsd_app_snapshot_configured_mode(const dsd_opts* opts, const dsd_state* state, d
 
 const dsd_opts*
 dsd_app_get_latest_opts_snapshot(void) {
-    return &snapshot_opts;
+    return snapshots_available ? &snapshot_opts : NULL;
 }
 
 const dsd_state*
 dsd_app_get_latest_snapshot(void) {
-    return &snapshot_state;
+    return snapshots_available ? &snapshot_state : NULL;
 }
 
 /* Fail if a label or picker passes the live menu context to an extension reader. */
@@ -43,11 +58,10 @@ dsd_scan_mode_configured_preset(const dsd_opts* opts, const dsd_state* state) {
 dsd_scan_mode
 dsd_scan_mode_active(const dsd_state* state) {
     assert(state == &snapshot_state || state == NULL);
-    return DSD_SCAN_MODE_INHERIT;
+    return state ? active_mode : DSD_SCAN_MODE_INHERIT;
 }
 
 const char*
 dsd_scan_mode_name(dsd_scan_mode mode) {
-    (void)mode;
-    return "";
+    return mode == DSD_SCAN_MODE_P25 ? "p25" : "";
 }

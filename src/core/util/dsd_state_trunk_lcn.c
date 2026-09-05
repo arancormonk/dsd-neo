@@ -25,6 +25,21 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+/* Shared geometric growth for the positional stores. Allocation and ownership
+ * remain with each store (key arrays must securely erase the old allocation). */
+static size_t
+trunk_lcn_grown_capacity(size_t current, size_t needed, size_t element_size) {
+    size_t capacity = current > 0 ? current : 16;
+    while (capacity < needed) {
+        if (capacity > SIZE_MAX / 2) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2;
+    }
+    return capacity <= SIZE_MAX / element_size ? capacity : 0;
+}
+
 int
 dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed) {
     if (!state) {
@@ -37,15 +52,8 @@ dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed) {
     if (ext_needed <= state->trunk_lcn_freq_ext_capacity) {
         return 0;
     }
-    size_t capacity = state->trunk_lcn_freq_ext_capacity > 0 ? state->trunk_lcn_freq_ext_capacity : 16;
-    while (capacity < ext_needed) {
-        if (capacity > SIZE_MAX / 2) {
-            capacity = ext_needed;
-            break;
-        }
-        capacity *= 2;
-    }
-    if (capacity > SIZE_MAX / sizeof(long int)) {
+    const size_t capacity = trunk_lcn_grown_capacity(state->trunk_lcn_freq_ext_capacity, ext_needed, sizeof(long int));
+    if (!capacity) {
         return -1;
     }
     long int* ext = (long int*)realloc(state->trunk_lcn_freq_ext, capacity * sizeof *ext);
@@ -67,15 +75,8 @@ dsd_state_trunk_lcn_name_reserve(dsd_state* state, size_t count) {
     if (count <= state->trunk_lcn_name_capacity) {
         return 0;
     }
-    size_t capacity = state->trunk_lcn_name_capacity > 0 ? state->trunk_lcn_name_capacity : 16;
-    while (capacity < count) {
-        if (capacity > SIZE_MAX / 2) {
-            capacity = count;
-            break;
-        }
-        capacity *= 2;
-    }
-    if (capacity > SIZE_MAX / DSD_CHANNEL_LABEL_SIZE) {
+    const size_t capacity = trunk_lcn_grown_capacity(state->trunk_lcn_name_capacity, count, DSD_CHANNEL_LABEL_SIZE);
+    if (!capacity) {
         return -1;
     }
     char (*names)[DSD_CHANNEL_LABEL_SIZE] =
@@ -201,13 +202,9 @@ dsd_state_trunk_lcn_avoid_reserve(dsd_state* state, size_t count) {
     if (count <= state->trunk_lcn_avoid_capacity) {
         return 0;
     }
-    size_t capacity = state->trunk_lcn_avoid_capacity > 0 ? state->trunk_lcn_avoid_capacity : 16;
-    while (capacity < count) {
-        if (capacity > SIZE_MAX / 2) {
-            capacity = count;
-            break;
-        }
-        capacity *= 2;
+    const size_t capacity = trunk_lcn_grown_capacity(state->trunk_lcn_avoid_capacity, count, sizeof(uint8_t));
+    if (!capacity) {
+        return -1;
     }
     uint8_t* flags = (uint8_t*)realloc(state->trunk_lcn_avoid, capacity);
     if (!flags) {
@@ -237,15 +234,8 @@ dsd_state_trunk_lcn_keys_reserve(dsd_state* state, size_t count) {
     if (count <= state->trunk_lcn_keys_capacity) {
         return 0;
     }
-    size_t capacity = state->trunk_lcn_keys_capacity > 0 ? state->trunk_lcn_keys_capacity : 16;
-    while (capacity < count) {
-        if (capacity > SIZE_MAX / 2) {
-            capacity = count;
-            break;
-        }
-        capacity *= 2;
-    }
-    if (capacity > SIZE_MAX / sizeof(dsd_key_set)) {
+    const size_t capacity = trunk_lcn_grown_capacity(state->trunk_lcn_keys_capacity, count, sizeof(dsd_key_set));
+    if (!capacity) {
         return -1;
     }
     dsd_key_set* keys = (dsd_key_set*)calloc(capacity, sizeof(*keys));
@@ -482,7 +472,10 @@ dsd_channel_mode_set(dsd_state* state, size_t row, dsd_scan_mode mode) {
         (void)dsd_state_ext_set(state, DSD_STATE_EXT_CORE_CHANNEL_MODES, modes, channel_modes_cleanup);
     }
     if (row >= modes->capacity) {
-        const size_t capacity = row < SIZE_MAX / 2 / sizeof(dsd_scan_mode) ? (row + 1) * 2 : row + 1;
+        const size_t capacity = trunk_lcn_grown_capacity(modes->capacity, row + 1, sizeof(dsd_scan_mode));
+        if (!capacity) {
+            return -1;
+        }
         dsd_scan_mode* rows = (dsd_scan_mode*)realloc(modes->rows, capacity * sizeof(*rows));
         if (!rows) {
             return -1;

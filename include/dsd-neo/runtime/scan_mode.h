@@ -81,7 +81,10 @@ int dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, 
 int dsd_scan_mode_begin(const dsd_opts* opts, dsd_state* state);
 /** Configured preset for mode selectors; active combined P25 remains a separate scan class. */
 dsdneoUserDecodeMode dsd_scan_mode_configured_preset(const dsd_opts* opts, const dsd_state* state);
-/** Select a row from the saved baseline, keeping the open audio sink layout fixed. */
+/** Configured preset for persistence; UNSET preserves custom decoder combinations. */
+dsdneoUserDecodeMode dsd_scan_mode_configured_preset_exact(const dsd_opts* opts, const dsd_state* state);
+/** Select a row from the saved baseline, keeping the open audio sink layout fixed.
+ * INHERIT restores the baseline for a blank row while retaining scan ownership. */
 int dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode);
 /** Restore the exact configured baseline and release the scope. */
 void dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state);
@@ -96,8 +99,9 @@ int dsd_scan_mode_updating(const dsd_state* state);
 void dsd_scan_mode_target_modulation(const dsd_state* state, int modulation);
 /** Snapshot configured settings, even while a row override is active. */
 void dsd_scan_mode_configured(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out);
-/** Copy only configured option fields into an already initialized options copy. */
-void dsd_scan_mode_configured_opts(const dsd_state* state, dsd_opts* opts);
+/** Borrow saved settings, or NULL without a scope/during an update. Use only on
+ * the decoder thread or a consumer-owned snapshot; invalidated by scope updates. */
+const dsd_scan_settings* dsd_scan_mode_configured_view(const dsd_state* state);
 /** Deep-copy scalar scope metadata for frontend snapshots. No live extension pointer is shared. */
 void dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src);
 /** Current class profile; combined P25 follows the active Phase 1/2 profile. */

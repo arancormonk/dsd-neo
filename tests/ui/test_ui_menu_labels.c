@@ -22,10 +22,12 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <sndfile.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "../test_support/scan_mode_label_stubs.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
@@ -215,6 +217,14 @@ test_decoder_labels(void) {
     rc |= expect_str("decode mode auto", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [Auto]");
     g_infer_mode = DSDCFG_MODE_DMR;
     rc |= expect_str("decode mode dmr", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR]");
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_P25);
+    rc |= expect_str("decode mode with row override", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR; scan p25]");
+    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
+    opts.monitor_input_audio = 1;
+    opts.use_cosine_filter = 1;
+    rc |= expect_str("monitor before snapshots", lbl_monitor(&ctx, b, sizeof(b)), "Source audio monitor [On]");
+    rc |= expect_str("filter before snapshots", lbl_cosine(&ctx, b, sizeof(b)), "Cosine filter [On]");
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
     rc |= expect_str("decode mode null ctx is auto", lbl_decode_mode(NULL, b, sizeof(b)), "Mode... [Auto]");
 
     state.rf_mod = 1;

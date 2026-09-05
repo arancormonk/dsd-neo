@@ -1055,6 +1055,19 @@ ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
 }
 
 static int
+ui_cmd_leave_typed_scan_after_tune(dsd_opts* opts, dsd_state* state, int result) {
+    if ((result != 0 && result != RTL_STREAM_TUNE_TIMEOUT) || opts->scanner_mode != 1
+        || !dsd_channel_modes_present(state)) {
+        return 0;
+    }
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_scan_keys_leave(state);
+    opts->scanner_mode = 0;
+    state->lcn_freq_roll = 0;
+    return 1;
+}
+
+static int
 ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     uint32_t v = 0;
     int result = UI_CMD_APPLY_COMPLETED;
@@ -1076,16 +1089,12 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         }
         int rc = svc_rtl_set_freq(opts, state, v);
         result = ui_cmd_apply_status_from_tune_rc(rc);
-        if ((rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) && opts->scanner_mode == 1) {
-            dsd_engine_channel_scan_leave(opts, state);
-            dsd_scan_keys_leave(state);
-            opts->scanner_mode = 0;
-            state->lcn_freq_roll = 0;
-        }
+        const int stop_scanner = ui_cmd_leave_typed_scan_after_tune(opts, state, rc);
         if (rc == 0) {
-            ui_set_toast(state, 3, "Applied: RTL frequency -> %u Hz", v);
+            ui_set_toast(state, 3, "Applied: RTL frequency -> %u Hz%s", v, stop_scanner ? " (scanner stopped)" : "");
         } else if (rc == RTL_STREAM_TUNE_TIMEOUT) {
-            ui_set_toast(state, 3, "Accepted: RTL frequency -> %u Hz (pending)", v);
+            ui_set_toast(state, 3, "Accepted: RTL frequency -> %u Hz (pending)%s", v,
+                         stop_scanner ? " (scanner stopped)" : "");
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
         } else {
@@ -2068,7 +2077,7 @@ apply_manual_lcn_cycle_untyped(dsd_opts* opts, dsd_state* state) {
 static int
 apply_manual_lcn_cycle(dsd_opts* opts, dsd_state* state) {
     if (opts->scanner_mode == 1 && dsd_channel_modes_present(state)) {
-        return dsd_engine_channel_scan_step(opts, state) < 0 ? UI_CMD_APPLY_FAILED : UI_CMD_APPLY_COMPLETED;
+        return dsd_engine_channel_scan_step_manual(opts, state) < 0 ? UI_CMD_APPLY_FAILED : UI_CMD_APPLY_COMPLETED;
     }
     return apply_manual_lcn_cycle_untyped(opts, state);
 }
@@ -4209,14 +4218,37 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
 }
 
 static int
+command_updates_scan_mode(const struct dsd_app_command* c) {
+    static const int commands[] = {
+        DSD_APP_CMD_DECODE_MODE_SET,      DSD_APP_CMD_MOD_SET,
+        DSD_APP_CMD_MOD_TOGGLE,           DSD_APP_CMD_MOD_P2_TOGGLE,
+        DSD_APP_CMD_INVERT_TOGGLE,        DSD_APP_CMD_COSINE_FILTER_TOGGLE,
+        DSD_APP_CMD_INV_X2_TOGGLE,        DSD_APP_CMD_INV_DMR_TOGGLE,
+        DSD_APP_CMD_INV_DPMR_TOGGLE,      DSD_APP_CMD_INV_M17_TOGGLE,
+        DSD_APP_CMD_INPUT_MONITOR_TOGGLE, DSD_APP_CMD_CONFIG_APPLY,
+    };
+    if (!c) {
+        return 0;
+    }
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+        if (commands[i] == c->id) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
 apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    const int mode_update = c
-                            && (c->id == DSD_APP_CMD_DECODE_MODE_SET || c->id == DSD_APP_CMD_MOD_SET
-                                || c->id == DSD_APP_CMD_MOD_TOGGLE || c->id == DSD_APP_CMD_MOD_P2_TOGGLE
-                                || c->id == DSD_APP_CMD_INVERT_TOGGLE || c->id == DSD_APP_CMD_COSINE_FILTER_TOGGLE
-                                || c->id == DSD_APP_CMD_INPUT_MONITOR_TOGGLE || c->id == DSD_APP_CMD_CONFIG_APPLY);
+    const int mode_update = command_updates_scan_mode(c);
+    const int was_scanner = opts && opts->scanner_mode == 1;
     const int scoped = mode_update && opts && state && dsd_scan_mode_suspend(opts, state);
     const int result = apply_cmd_unscoped(opts, state, c);
+    if (was_scanner && opts->scanner_mode != 1 && opts->trunk_scan_enabled != 1) {
+        /* A suspended scope leaves the newly applied configuration in place. */
+        dsd_engine_channel_scan_leave(opts, state);
+        dsd_scan_keys_leave(state);
+    }
     if (scoped && dsd_scan_mode_resume(opts, state)) {
         reset_call_tracking(opts, state, 1);
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);

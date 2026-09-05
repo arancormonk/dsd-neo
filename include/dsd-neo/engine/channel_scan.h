@@ -11,6 +11,8 @@ extern "C" {
 #endif
 /** Enter the next eligible row. 1 committed, 0 parked/pending, -1 failed. Ignores hold for manual use. */
 int dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state);
+/** Manual next-row action: skip zero-frequency placeholders in one bounded pass. */
+int dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state);
 /** Resolve an outstanding request before reading samples. Returns 1 while unsettled. */
 int dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state);
 /** Resolve a row transaction before dispatch/next sync search; 0 forces a fresh hunt after servicing it. */

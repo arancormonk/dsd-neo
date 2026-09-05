@@ -148,6 +148,34 @@ main(void) {
     assert(dsd_scan_mode_parse("analog", &parsed) == -1);
     assert(dsd_scan_mode_parse("p25p1", &parsed) == -1);
     test_p25_modulation_helpers(o, s);
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
+    dsd_scan_settings_capture(o, s, &baseline);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_INHERIT) == 0);
+    /* AUTO acquisition on a blank row may move the live clock and modulation. */
+    s->samplesPerSymbol = 20;
+    s->symbolCenter = 9;
+    s->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    s->rf_mod = 2;
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_P25) == 0);
+    dsd_scan_mode_leave(o, s);
+    dsd_scan_settings_capture(o, s, &restored);
+    assert(dsd_scan_settings_equal(&baseline, &restored, 1));
+    /* Persistence must retain custom decoder combinations and the configured
+     * modulation/slot policy without allocating a whole options copy. */
+    o->frame_x2tdma = 0;
+    o->mod_cli_lock = 1;
+    o->mod_c4fm = 0;
+    o->mod_qpsk = 1;
+    o->mod_gfsk = 0;
+    o->dmr_mono = 1;
+    assert(dsd_infer_decode_mode_preset_exact(o) == DSDCFG_MODE_UNSET);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    dsdneoUserConfig config;
+    dsd_snapshot_opts_to_user_config(o, s, &config);
+    assert(config.decode_mode == DSDCFG_MODE_UNSET && config.dmr_mono == 1);
+    assert(config.has_demod && config.demod_path == DSDCFG_DEMOD_QPSK);
+    dsd_scan_mode_leave(o, s);
     dsd_state_ext_free_all(copy);
     dsd_state_ext_free_all(s);
     free(copy);

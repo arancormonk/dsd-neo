@@ -286,6 +286,36 @@ free_test_runtime(dsd_opts* opts, dsd_state* state) {
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 static int
+test_trunk_cache_with_mode_metadata(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    dsd_trunk_tuning_requests_reset();
+    opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->trunk_enable = 1;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    g_rigctl_setfreq_calls = 0;
+    rc |= expect_true("trunk cache mode metadata", dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    for (int i = 0; i < 2; i++) {
+        opts->trunk_is_tuned = 1;
+        state->trunk_cc_freq = 941012500;
+        state->p25_cc_freq = 0;
+        state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+        state->last_vc_sync_time = 0;
+        noCarrier(opts, state);
+    }
+    rc |= expect_true("mode metadata preserves redundant return suppression", g_rigctl_setfreq_calls == 1);
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+static int
 test_typed_scan_tune_boundaries(void) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
@@ -2024,6 +2054,7 @@ main(void) {
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_typed_scan_tune_boundaries();
+    rc |= test_trunk_cache_with_mode_metadata();
 #endif
 
     if (rc == 0) {

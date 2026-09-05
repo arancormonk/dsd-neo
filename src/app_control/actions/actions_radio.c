@@ -11,7 +11,6 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
-#include <dsd-neo/runtime/scan_mode.h>
 #include <stdint.h>
 #include <string.h>
 #include "../command_dispatch.h"
@@ -49,7 +48,9 @@ ui_modulation_demod_rate(const dsd_opts* opts, const dsd_state* state) {
  */
 static dsd_decode_mode_profile
 ui_modulation_profile(const dsd_opts* opts, const dsd_state* state) {
-    return dsd_scan_mode_effective_profile(opts, state);
+    /* Command dispatch suspends the scan scope before modulation edits. */
+    (void)state;
+    return dsd_decode_mode_profile_for(dsd_infer_decode_mode_preset(opts));
 }
 
 /**

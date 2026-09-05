@@ -186,6 +186,8 @@ void dsd_frame_sync_sps_hunt_restart_dwell(dsd_state* state);
  * @param state Decoder state; NULL or an out-of-range index yields the 4800/4 default.
  */
 int dsd_frame_sync_active_profile_symbol_rate_hz(const dsd_state* state);
+/** Slicer levels of the active profile; NULL/invalid indices yield four levels. */
+int dsd_frame_sync_active_profile_levels(const dsd_state* state);
 
 /**
  * @brief Scan for a valid frame sync pattern and return its type.

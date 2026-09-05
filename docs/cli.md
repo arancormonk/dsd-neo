@@ -467,6 +467,10 @@ Notes
   manual `L` cycling. Existing dwell and voice-hold defaults remain unchanged.
   The open audio sink retains its rate/channel count while logical DMR slot decoding may change. Global mode and
   modulation commands update the saved configuration, and exiting scanning restores it.
+  Blank-mode rows retain that saved configuration while AUTO hunts. Loading a configuration that disables scanning
+  releases the row's decoder and keys. A manual frequency setting exits a typed scan and reports that in its status
+  message; legacy untyped scans retain their existing manual-tune behavior. Manual `L` skips zero-frequency placeholders,
+  while automatic scanning continues to park on them for the configured dwell.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
   - Rotates one tuner across CSV-defined P25 trunk, DMR trunk, DMR conventional, NXDN trunk, NXDN96 conventional
     (`nxdn-conventional`) and NXDN48 conventional (`nxdn48-conventional`) targets. Full guide: `docs/trunk-scan.md`.

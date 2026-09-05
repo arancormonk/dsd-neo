@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
@@ -27,6 +28,13 @@ static uint64_t request;
 static int tunes;
 static int reset_count;
 static int expected_nxdn;
+static int change_rate_on_tune;
+static uint32_t reported_rate = 48000;
+
+static uint32_t
+output_rate(void) {
+    return reported_rate;
+}
 
 static int restored_frontend;
 
@@ -42,7 +50,11 @@ dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t* out) {
     assert(freq == 150000000);
     assert(opts->frame_nxdn48 == expected_nxdn);
-    assert(sps == (expected_nxdn ? 20 : 10));
+    assert(sps == (change_rate_on_tune ? (int)reported_rate / 4800 : (expected_nxdn ? 20 : 10)));
+    if (change_rate_on_tune) {
+        assert(tunes < 100);
+        reported_rate = reported_rate == 48000 ? 96000 : 48000;
+    }
     (void)state;
     tunes++;
     request = dsd_trunk_tuning_request_begin();
@@ -56,8 +68,8 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sp
 }
 
 void
-noCarrier(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
+dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
+    assert(opts->scanner_mode == 1);
     (void)state;
     reset_count++;
 }
@@ -124,6 +136,32 @@ main(void) {
     assert(tunes == before_zero && state->lcn_freq_roll == 3 && opts->frame_p25p1);
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
     assert(state->lcn_freq_roll == 4 && opts->frame_dstar == 1 && !opts->frame_p25p1);
+    state->lcn_freq_roll = 2;
+    opts->trunk_is_tuned = 1;
+    assert(dsd_recent_activity_publish(state, 0, NULL, "Outgoing row data", 1) == 1);
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    assert(dsd_engine_channel_scan_step_manual(opts, state) == -1);
+    assert(state->lcn_freq_roll == 2);
+    opts->trunk_is_tuned = 1;
+    assert(dsd_recent_activity_publish(state, 0, NULL, "Outgoing row data", 1) == 1);
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step_manual(opts, state) == 0);
+    assert(state->lcn_freq_roll == 2);
+    assert(dsd_scan_mode_suspend(opts, state));
+    opts->inverted_dmr = !opts->inverted_dmr;
+    (void)dsd_scan_mode_resume(opts, state);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1 && state->lcn_freq_roll == 2);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(state->lcn_freq_roll == 4);
+    dsd_recent_activity_snapshot recent;
+    assert(dsd_recent_activity_copy_snapshot(state, &recent) == 1);
+    assert(recent.entries[0].notice[0] == '\0' && opts->trunk_is_tuned == 0);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    state->lcn_freq_roll = 2;
+    assert(dsd_engine_channel_scan_step_manual(opts, state) == 1);
+    assert(state->lcn_freq_roll == 4 && opts->frame_dstar);
     expected_nxdn = 1;
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     assert(dsd_engine_channel_scan_step(opts, state) == 0);
@@ -134,6 +172,40 @@ main(void) {
     state->trunk_chan_map_seq++;
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
     assert(dsd_engine_channel_scan_pending(opts, state) == 0 && opts->frame_dstar);
+    /* A tune changes live output timing; it is not a configuration edit and
+     * must not recursively retune the same row. */
+    reported_rate = 48000;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    change_rate_on_tune = 1;
+    expected_nxdn = 0;
+    state->lcn_freq_roll = 1;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    const dsd_rtl_stream_metrics_hooks rate_hooks = {.output_rate_hz = output_rate};
+    dsd_rtl_stream_metrics_hooks_set(&rate_hooks);
+    const int before_rate_change = tunes;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(tunes == before_rate_change + 1 && state->samplesPerSymbol == 20);
+    change_rate_on_tune = 0;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    /* A real configuration edit during an outstanding request retries on the
+     * next service pass, without dispatching samples from the old request. */
+    state->lcn_freq_roll = 1;
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(dsd_scan_mode_suspend(opts, state));
+    opts->inverted_dmr = !opts->inverted_dmr;
+    (void)dsd_scan_mode_resume(opts, state);
+    const int before_config_retry = tunes;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1);
+    assert(tunes == before_config_retry && state->lcn_freq_roll == 1);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(tunes == before_config_retry + 1 && state->lcn_freq_roll == 2);
+    state->lcn_freq_roll = 0;
+    expected_nxdn = 1;
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     assert(dsd_engine_channel_scan_step(opts, state) == 0);
     const dsd_rtl_stream_metrics_hooks hooks = {.apply_demod_profile = restore_frontend};
     dsd_rtl_stream_metrics_hooks_set(&hooks);
