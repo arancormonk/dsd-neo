@@ -71,9 +71,10 @@ No storage permissions are involved; SAF needs none.
 Prerequisites:
 
 - Android SDK with build-tools and platform 36
-- The NDK the chosen Qt release is qualified with (Qt 6.9–6.11: r27+; r28 is what
-  this tree is built and tested with)
-- Qt 6.11 `android_arm64_v8a` kit **and** the matching host kit (`gcc_64` on Linux)
+- NDK r28c (`28.2.13676358`), retained by this tree's CI; Qt 6.11's published
+  support matrix recommends r27c, so a further NDK upgrade needs separate validation
+- JDK 21 for the build tools (Java source/target compatibility remains 17)
+- Qt 6.11.2 `android_arm64_v8a` kit **and** the matching host kit (`gcc_64` on Linux)
 - vcpkg (the repo's manifest and overlay ports cross-compile mbe-neo, OpenSSL,
   libsndfile, Codec2 and libcurl)
 - a host C compiler: Codec2 builds `generate_codebook` for the build machine and
@@ -83,8 +84,8 @@ Prerequisites:
 export VCPKG_ROOT=$HOME/vcpkg
 export ANDROID_SDK_ROOT=/opt/android-sdk
 export ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/28.2.13676358
-export QT_ANDROID_ROOT=$HOME/Qt/6.11.1/android_arm64_v8a
-export QT_HOST_ROOT=$HOME/Qt/6.11.1/gcc_64
+export QT_ANDROID_ROOT=$HOME/Qt/6.11.2/android_arm64_v8a
+export QT_HOST_ROOT=$HOME/Qt/6.11.2/gcc_64
 
 cmake --preset android-app
 cmake --build --preset android-app -j          # builds the apk target
