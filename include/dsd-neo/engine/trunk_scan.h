@@ -54,6 +54,7 @@ typedef enum {
     DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK = 3,
     DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL = 4,
     DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL = 5,
+    DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK = 6,
 } dsd_trunk_scan_target_type;
 
 typedef enum {

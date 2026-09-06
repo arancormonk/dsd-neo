@@ -133,8 +133,8 @@ static void DSD_ATTR_USED
 dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     // Skipping is safe for the other protocols rather than merely harmless: DMR and NXDN96 are
     // already parked at 4800 sym/s with the four-level profile, and NXDN48/EDACS carry rates
-    // this function cannot express at all. An nxdn48-conventional scan target relies on that
-    // skip: the coordinator seeds its 2400 sym/s timing, and the front end gets the matching
+    // this function cannot express at all. The nxdn48-conventional and nxdn48-trunk scan targets
+    // rely on that skip: the coordinator seeds their 2400 sym/s timing, and the front end gets the matching
     // 6.25 kHz chain from dsd_engine_gfsk_cc_symbol_rate().
     if (!opts || !state || state->p25_cc_freq == 0 || !dsd_engine_cc_is_p25(state)) {
         return;

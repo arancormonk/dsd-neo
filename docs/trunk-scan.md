@@ -40,6 +40,7 @@ county-p25,p25-trunk,851012500,,3000,,P25 control channel,cqpsk,18
 city-dmr,dmr-trunk,456318750,dmr_t3_chan.csv,3000,,DMR Tier III control channel,auto,
 plant-dmr,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto
 site-nxdn,nxdn-trunk,461037500,,3000,,NXDN Type-C control channel,auto,
+site-nxdn48,nxdn48-trunk,461556250,nxdn_chan_map.csv,3000,,NXDN48 Type-C control channel (6.25 kHz),gfsk,
 field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96,gfsk,
 field-nxdn48,nxdn48-conventional,461556250,,1500,1200,one-frequency NXDN48 (6.25 kHz),gfsk,
 ```
@@ -51,7 +52,7 @@ Column behavior:
 | Column | Required | Meaning |
 |--------|----------|---------|
 | `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows, `-J` log lines and the rdio `talkgroup_tag` fallback, and in log messages. Keep it under 64 bytes. |
-| `type` | Yes | `p25-trunk`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk`, `nxdn-conventional` (NXDN96, 12.5 kHz), or `nxdn48-conventional` (NXDN48, 6.25 kHz). |
+| `type` | Yes | `p25-trunk`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), or `nxdn48-conventional` (NXDN48, 6.25 kHz). |
 | `frequency_hz` | Yes | Initial park/control frequency in decimal Hz. Suffixes such as `M` are not accepted in CSV. |
 | `chan_csv` | No | Channel map for a trunk target. Paths are resolved relative to the target CSV file. Leave empty for conventional DMR and both conventional NXDN types. |
 | `dwell_ms` | No | Idle dwell for this target. Empty uses the CLI/config default. Valid range: `250..600000`. |
@@ -94,13 +95,14 @@ Target list limits and validation:
 - Duplicate `(type, frequency_hz)` pairs are rejected.
 - A duplicated key header is rejected. An unloadable key path fails the whole import like a bad `-K`/`-k`; a malformed
   direct key or a row mixing direct and file sources also fails, without repeating direct key material in the error.
-- `chan_csv` is only valid for `p25-trunk`, `dmr-trunk`, and `nxdn-trunk` targets; `p25_bandplan_csv` is refused
+- `chan_csv` is only valid for `p25-trunk`, `dmr-trunk`, `nxdn-trunk` and `nxdn48-trunk` targets; `p25_bandplan_csv` is refused
   on conventional targets, a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load
   fails the whole import. A global `--p25-bandplan`/`[trunking] p25_bandplan_csv` is rejected in this mode like
   `-C`.
 - `modulation` values are target-type specific: `cqpsk`/`c4fm` are P25-only, and `gfsk` is valid for DMR and both NXDN
   target rates.
-- `nxdn-conventional` and `nxdn48-conventional` are distinct types, so the same frequency may appear once as each.
+- `nxdn-trunk`/`nxdn48-trunk` and `nxdn-conventional`/`nxdn48-conventional` are distinct types, so the same frequency
+  may appear once as each.
 - `rtl_gain` only affects RTL-family inputs opened by DSD-neo. It is ignored when scan retuning is done through rigctl
   against a non-RTL audio input.
 - The parser is intentionally small. It can handle a quoted `chan_csv` that contains a comma, but it is not a full CSV
@@ -249,7 +251,7 @@ During scanning:
   tuner autogain; `auto` and global-auto targets restore the saved autogain setting.
 - P25, DMR, and NXDN trunk targets stay parked while their trunking state machine is following an active call
   (NXDN stays parked while following an active grant and returns to its control channel at hangtime/release).
-- `nxdn-trunk` targets follow the site-broadcast outbound control channel: when a DFA site announces a control
+- `nxdn-trunk` and `nxdn48-trunk` targets follow the site-broadcast outbound control channel: when a DFA site announces a control
   channel that differs from the target's `frequency_hz`, DSD-neo adopts it (logging
   `NOTICE: NXDN trunking: site control channel is X MHz; following it`) and re-parks that target there from then on.
   A per-target `chan_csv` containing LCN rows pins the control channel instead, so an operator list always wins.
@@ -263,14 +265,25 @@ During scanning:
   `activity_hold_ms` the hold. The terminal status line marks the parked conventional target `Voice: QUALIFY`,
   `VOICE` while a media-bearing call is active, or `TAIL` after it ends while the hold runs. Trunked
   targets are unchanged: control-only traffic rotates after dwell, and they carry no `Voice:` marker.
-- An `nxdn-trunk` target with a `chan_csv` reports channels it was granted but could not map, once per channel while
+- An `nxdn-trunk` or `nxdn48-trunk` target with a `chan_csv` reports channels it was granted but could not map, once per channel while
   it is parked (`NOTICE: NXDN trunking: grant: CH 12 has no frequency mapping in chan_csv (site.csv)`), and a summary
   for each such target at exit. Every target keeps its own list, so one target's gaps are never attributed to another.
-- `nxdn48-conventional` targets park at 2400 sym/s with the 6.25 kHz channel filter; every other GFSK-family target
-  parks at 4800 sym/s with the 12.5 kHz filter. Each target's decoder class keeps the hunt on its allowed
+- `nxdn48-conventional` and `nxdn48-trunk` targets park at 2400 sym/s with the 6.25 kHz channel filter; every other
+  GFSK-family target parks at 4800 sym/s with the 12.5 kHz filter. Each target's decoder class keeps the hunt on its allowed
   symbol profile throughout dead air, including with empty or `auto` modulation. The parked target's type selects the
   symbol rate and channel filter even under a global `-m` modulation lock; the lock still governs symbol slicing, so
   DMR and NXDN rows under `-mc` or `-mq` need `modulation = gfsk` (or `auto`) to decode.
+- NXDN Type-D (distributed trunking, Icom IDAS Type-D; 6.25 kHz only) has no dedicated control channel: an idle
+  home repeater sends an Idle Repeater Message on its SCCH and a busy one carries `Go to Repeater` messages.
+  To follow one, park an `nxdn48-trunk` target on the home repeater's outbound frequency with a `chan_csv` that
+  maps repeater numbers 1-30 to outbound frequencies, plus a row `31` carrying the home repeater's frequency:
+  the home repeater's own row must equal the target's `frequency_hz`, and row `31` is what DSD-neo tunes on a
+  call's termination message and then treats as the control channel (without it the return waits for the DISC
+  message or hangtime, and a `CH 31 has no frequency mapping` notice is logged once). Calls are followed from
+  the SCCH Busy Repeater message; while the site is idle nothing but `dwell_ms` keeps the target parked, so
+  give it a dwell of several seconds. This path is inherited from DSD-FME, which tested it on a two-channel
+  Type-D system; DSD-neo has not verified it against a live Type-D site. An `--iq-capture` of a home repeater
+  spanning an idle period and one call (see `docs/testing.md`) is what would confirm it.
 - When a retune fails, DSD-neo logs a warning, briefly cools that target down, and tries another eligible target.
   While held, a failed retune retries the held target after the cooldown instead of moving on.
 
@@ -346,10 +359,12 @@ rotating across unrelated scan targets.
 
 ## Limitations
 
-- P25 trunk, DMR trunk, DMR conventional, NXDN trunk, NXDN96 conventional, and NXDN48 conventional targets are
-  supported. Trunked NXDN targets are 12.5 kHz NXDN96 only: 6.25 kHz NXDN48 Type-D control channels are not a
-  trunk-scan target type, so an NXDN48 site's control channel cannot be followed. `-Y` with `-fi` remains available
-  for scanning NXDN48 channels outside trunk scan.
+- P25 trunk, DMR trunk, DMR conventional, NXDN trunk at both rates (`nxdn-trunk`, `nxdn48-trunk`), NXDN96
+  conventional, and NXDN48 conventional targets are supported. NXDN Type-C sites use one control-channel
+  format at 4800 and 9600 bps (NXDN TS 1-A), so `nxdn48-trunk` shares every decoding path with `nxdn-trunk`
+  and differs only in symbol rate and channel filter; neither the Type-C nor the Type-D NXDN48 path has been
+  verified against a live NXDN48 trunked site from trunk scan. `-Y` with `-fi` remains available for scanning
+  NXDN48 channels outside trunk scan.
 - There is one active receiver. Traffic on targets that are not currently parked can be missed.
 - Group policy is global across all scan targets.
 - Target CSV files are simple comma-delimited files, not full RFC 4180 CSV.
