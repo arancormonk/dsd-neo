@@ -384,10 +384,27 @@ trunk_scan_type_is_conventional(dsd_trunk_scan_target_type type) {
     switch (type) {
         case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK: return 0;
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return 1;
+    }
+    return 0;
+}
+
+/* NXDN trunk targets follow Type-C RCCH grants or Type-D SCCH busy-repeater signalling
+ * and own an nxdn_trunk_diag ledger. */
+static int
+trunk_scan_type_is_nxdn_trunk(dsd_trunk_scan_target_type type) {
+    switch (type) {
+        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK: return 1;
+        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
+        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
+        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return 0;
     }
     return 0;
 }
@@ -399,6 +416,7 @@ static int
 trunk_scan_type_anchors_p25_cc_freq(dsd_trunk_scan_target_type type) {
     switch (type) {
         case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK: return 1;
         case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
@@ -419,6 +437,7 @@ trunk_scan_type_gfsk_symbol_rate(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL: return 4800;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return 2400;
     }
     return 0;
@@ -456,6 +475,10 @@ scan_parse_type(const char* s, dsd_trunk_scan_target_type* out) {
     }
     if (strcmp(s, "nxdn48-conventional") == 0) {
         *out = DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL;
+        return 0;
+    }
+    if (strcmp(s, "nxdn48-trunk") == 0) {
+        *out = DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK;
         return 0;
     }
     return -1;
@@ -2044,6 +2067,7 @@ trunk_scan_apply_target_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord, 
     switch (target->type) {
         case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK: opts->trunk_enable = 1; break;
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
@@ -2346,6 +2370,7 @@ trunk_scan_target_mode(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL: return DSD_SCAN_MODE_DMR;
         case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL: return DSD_SCAN_MODE_NXDN96;
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return DSD_SCAN_MODE_NXDN48;
     }
     return DSD_SCAN_MODE_INHERIT;
@@ -2575,7 +2600,7 @@ trunk_scan_active_is_held(const dsd_opts* opts, const dsd_trunk_scan_coord* coor
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
         return (opts->trunk_is_tuned == 1 || dmr_sm_get_state(&rt->dmr_ctx) == DMR_SM_TUNED);
     }
-    if (rt->target.type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK) {
+    if (trunk_scan_type_is_nxdn_trunk(rt->target.type)) {
         return opts->trunk_is_tuned == 1;
     }
     double hold_s = (double)trunk_scan_target_hold_ms(opts, rt) / 1000.0;
@@ -2702,8 +2727,7 @@ trunk_scan_resolve_pending_retune(dsd_state* state, dsd_trunk_scan_target_runtim
 
 static int
 trunk_scan_target_is_trunked(dsd_trunk_scan_target_type type) {
-    return type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK || type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK
-           || type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK;
+    return !trunk_scan_type_is_conventional(type);
 }
 
 /* Voice-only scan (issue #381): conventional targets hold only from decoded voice
@@ -2915,6 +2939,7 @@ trunk_scan_type_in_conventional_family(dsd_trunk_scan_target_type type, trunk_sc
     switch (type) {
         case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
         case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK: return 0;
         case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL: return family == TRUNK_SCAN_CONVENTIONAL_FAMILY_DMR;
         case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
@@ -3153,7 +3178,7 @@ trunk_scan_log_nxdn_diag_summaries(dsd_trunk_scan_coord* coord, const dsd_state*
     }
     for (size_t i = 0; i < coord->count; i++) {
         const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
-        if (rt->target.type != DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK) {
+        if (!trunk_scan_type_is_nxdn_trunk(rt->target.type)) {
             continue;
         }
         nxdn_trunk_diag_log_summary_for(rt->target.chan_csv, &rt->snapshot.nxdn_diag, trunk_scan_snapshot_chan_lookup,

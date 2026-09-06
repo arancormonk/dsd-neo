@@ -63,7 +63,7 @@ Key public headers:
 ### Single-Tuner Trunk Scan
 
 `src/engine/trunk_scan.c` owns the coordinator that rotates one retunable receiver across the explicit targets of a
-target-list CSV (P25 trunk, DMR trunk, DMR conventional, NXDN trunk, and NXDN96/NXDN48 conventional). Operator-facing
+target-list CSV (P25 trunk, DMR trunk, DMR conventional, NXDN96/NXDN48 trunk, and NXDN96/NXDN48 conventional). Operator-facing
 behavior, the CSV columns, and the CLI/config options live in `docs/trunk-scan.md`;
 `include/dsd-neo/engine/trunk_scan.h` is the whole public surface:
 

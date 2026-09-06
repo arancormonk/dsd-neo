@@ -295,9 +295,9 @@ Columns:
 | Column | Required | Behavior |
 |--------|----------|----------|
 | `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows, `-J` log lines and the rdio `talkgroup_tag` fallback, and in log messages. Empty or too-long IDs are rejected. |
-| `type` | Yes | One of `p25-trunk`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk`, `nxdn-conventional` (NXDN96, 12.5 kHz), or `nxdn48-conventional` (NXDN48, 6.25 kHz). |
+| `type` | Yes | One of `p25-trunk`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), or `nxdn48-conventional` (NXDN48, 6.25 kHz). |
 | `frequency_hz` | Yes | Decimal Hz only. Normal 64-bit builds accept `1..4294967295`; 32-bit builds may reject values above `LONG_MAX`. Do not use `K`/`M`/`G` suffixes in CSV. |
-| `chan_csv` | No | Optional channel-map path for trunk targets. Paths are resolved relative to this CSV. Leave empty for conventional DMR and both conventional NXDN types. |
+| `chan_csv` | No | Optional channel-map path for trunk targets (`p25-trunk`, `dmr-trunk`, `nxdn-trunk`, `nxdn48-trunk`). Paths are resolved relative to this CSV. Leave empty for conventional DMR and both conventional NXDN types. |
 | `dwell_ms` | No | Per-target idle dwell (`250..600000`). Empty uses `--trunk-scan-dwell-ms` or `[trunk_scan] idle_dwell_ms`. |
 | `activity_hold_ms` | No | Per-target conventional DMR/NXDN (NXDN96 and NXDN48) activity hold (`250..600000`). Empty uses `--trunk-scan-activity-hold-ms` or `[trunk_scan] activity_hold_ms`. |
 | `notes` | No | Ignored. Use for local notes. |
@@ -315,8 +315,8 @@ Validation notes:
 - No fixed target-count limit. Each parked target reserves a snapshot of decoder state (~80 KB), and the list is
   capped by a 256 MB budget for those snapshots - a few thousand targets. A CSV past the cap is rejected while
   parsing, with an error naming the budget.
-- Duplicate IDs and duplicate `(type, frequency_hz)` rows are rejected. `nxdn-conventional` and
-  `nxdn48-conventional` are distinct types, so one frequency may appear once as each.
+- Duplicate IDs and duplicate `(type, frequency_hz)` rows are rejected. `nxdn-trunk`/`nxdn48-trunk` and
+  `nxdn-conventional`/`nxdn48-conventional` are distinct types, so one frequency may appear once as each.
 - Optional column names are exact-case in this format. Duplicate direct-key headers, malformed direct values, and
   rows that mix a direct value with a key-file path are rejected without echoing the key value.
 - `chan_csv` and `p25_bandplan_csv` on conventional (`dmr-conventional`/`nxdn-conventional`/`nxdn48-conventional`)
@@ -336,6 +336,7 @@ county-p25,p25-trunk,851012500,,3000,,primary P25 control channel,cqpsk,18
 city-dmr,dmr-trunk,452012500,dmr_channels.csv,3000,,DMR Tier III control channel,auto,
 plant,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto
 site-nxdn,nxdn-trunk,461037500,,3000,,NXDN Type-C control channel,auto,
+site-nxdn48,nxdn48-trunk,461556250,nxdn_chan_map.csv,3000,,NXDN48 Type-C control channel (6.25 kHz),gfsk,
 field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96 channel,gfsk,
 field-nxdn48,nxdn48-conventional,461556250,,1500,1200,one-frequency NXDN48 (6.25 kHz) channel,gfsk,
 ```

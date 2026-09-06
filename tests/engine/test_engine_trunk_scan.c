@@ -488,7 +488,8 @@ test_parser_accepts_nxdn_targets(void) {
     if (write_targets_file_with_header(dir, header,
                                        "nxdn,nxdn-trunk,461000000,chan.csv,,,site,gfsk\n"
                                        "conv,nxdn-conventional,462000000,,250,500,,auto\n"
-                                       "conv48,nxdn48-conventional,462000000,,250,500,,gfsk\n",
+                                       "conv48,nxdn48-conventional,462000000,,250,500,,gfsk\n"
+                                       "trunk48,nxdn48-trunk,461556250,chan.csv,,,narrow site,gfsk\n",
                                        target_path, sizeof target_path)
         != 0) {
         cleanup_paths(dir, NULL, chan_path);
@@ -505,7 +506,7 @@ test_parser_accepts_nxdn_targets(void) {
     int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
 
     int test_rc = 0;
-    if (rc != 0 || list.count != 3) {
+    if (rc != 0 || list.count != 4) {
         DSD_FPRINTF(stderr, "parser nxdn rc=%d count=%zu err=%s\n", rc, list.count, err);
         test_rc = 1;
     }
@@ -531,6 +532,13 @@ test_parser_accepts_nxdn_targets(void) {
             || list.targets[2].activity_hold_ms != 500 || list.targets[2].modulation != DSD_TRUNK_SCAN_MODULATION_GFSK
             || list.targets[2].chan_csv[0] != '\0') {
             DSD_FPRINTF(stderr, "parser nxdn48 conventional target 2 mismatch\n");
+            test_rc = 1;
+        }
+        if (list.targets[3].type != DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK || list.targets[3].frequency_hz != 461556250U
+            || list.targets[3].dwell_ms != 3000 || list.targets[3].activity_hold_ms != 1200
+            || list.targets[3].modulation != DSD_TRUNK_SCAN_MODULATION_GFSK
+            || !strstr(list.targets[3].chan_csv, "chan.csv")) {
+            DSD_FPRINTF(stderr, "parser nxdn48 trunk target 3 mismatch\n");
             test_rc = 1;
         }
     }
@@ -739,6 +747,10 @@ test_parser_rejects_invalid_inputs(void) {
     rc |= expect_parser_rejects_with_header(
         "nxdn48-unsupported-modulation", "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n",
         "a,nxdn48-conventional,461556250,,,,,c4fm\n");
+    rc |=
+        expect_parser_rejects_with_header("nxdn48-trunk-unsupported-modulation",
+                                          "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n",
+                                          "a,nxdn48-trunk,461556250,,,,,cqpsk\n");
     rc |= expect_parser_rejects_with_header("invalid-rtl-gain",
                                             "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain\n",
                                             "a,p25-trunk,851000000,,,,,50\n");
@@ -3510,13 +3522,12 @@ test_trunked_voice_gate_control_only_unchanged(void) {
 }
 
 static int
-test_nxdn_trunk_target_holds_while_tuned(void) {
+run_nxdn_trunk_hold_case(const char* trunk_row, const char* label) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
-    if (make_runtime_targets("n,nxdn-trunk,461000000,,250,,\n"
-                             "c,dmr-conventional,462000000,,250,,\n",
-                             target_path, sizeof target_path, dir, sizeof dir)
-        != 0) {
+    char rows[256];
+    DSD_SNPRINTF(rows, sizeof rows, "%sc,dmr-conventional,462000000,,250,,\n", trunk_row);
+    if (make_runtime_targets(rows, target_path, sizeof target_path, dir, sizeof dir) != 0) {
         return 1;
     }
 
@@ -3530,7 +3541,7 @@ test_nxdn_trunk_target_holds_while_tuned(void) {
     int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
     int test_rc = 0;
     if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
-        DSD_FPRINTF(stderr, "nxdn hold scan init failed rc=%d err=%s\n", rc, err);
+        DSD_FPRINTF(stderr, "%s hold scan init failed rc=%d err=%s\n", label, rc, err);
         test_rc = 1;
     }
 
@@ -3538,13 +3549,13 @@ test_nxdn_trunk_target_holds_while_tuned(void) {
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
-        DSD_FPRINTF(stderr, "tuned NXDN trunk target rotated away while tuned\n");
+        DSD_FPRINTF(stderr, "%s trunk target rotated away while tuned\n", label);
         test_rc = 1;
     }
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
-        DSD_FPRINTF(stderr, "tuned NXDN trunk target rotated away on second tick\n");
+        DSD_FPRINTF(stderr, "%s trunk target rotated away on second tick\n", label);
         test_rc = 1;
     }
 
@@ -3552,13 +3563,13 @@ test_nxdn_trunk_target_holds_while_tuned(void) {
     trunk_scan_test_set_now(0.78);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
-        DSD_FPRINTF(stderr, "NXDN trunk target rotated on idle clock restart tick\n");
+        DSD_FPRINTF(stderr, "%s trunk target rotated on idle clock restart tick\n", label);
         test_rc = 1;
     }
     trunk_scan_test_set_now(1.04);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
-        DSD_FPRINTF(stderr, "NXDN trunk target did not rotate after release and dwell\n");
+        DSD_FPRINTF(stderr, "%s trunk target did not rotate after release and dwell\n", label);
         test_rc = 1;
     }
 
@@ -3566,6 +3577,13 @@ test_nxdn_trunk_target_holds_while_tuned(void) {
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
+}
+
+static int
+test_nxdn_trunk_target_holds_while_tuned(void) {
+    int rc = run_nxdn_trunk_hold_case("n,nxdn-trunk,461000000,,250,,\n", "NXDN96");
+    rc |= run_nxdn_trunk_hold_case("n,nxdn48-trunk,461556250,,250,,\n", "NXDN48");
+    return rc;
 }
 
 static int
@@ -3640,7 +3658,7 @@ test_nxdn_trunk_diag_isolated_per_target(void) {
     char target_path[DSD_TEST_PATH_MAX];
     if (write_targets_file(dir,
                            "a,nxdn-trunk,461000000,chan.csv,250,,\n"
-                           "b,nxdn-trunk,462000000,,250,,\n",
+                           "b,nxdn48-trunk,462000000,,250,,\n",
                            target_path, sizeof target_path)
         != 0) {
         cleanup_paths(dir, NULL, chan_path);
@@ -3933,6 +3951,92 @@ counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
         state->trunk_cc_freq = freq;
     }
     return g_counting_tune_to_cc_result;
+}
+
+static int
+test_nxdn48_trunk_target_parks_on_2400_control_channel(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("n96,nxdn-trunk,461000000,,250,,\n"
+                             "n48,nxdn48-trunk,461556250,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_request = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_failures_remaining = 0;
+    g_counting_tune_to_cc_ted_sps = 0;
+    g_counting_tune_to_cc_freq = 0;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_ted_sps != 10
+        || opts.frame_nxdn96 != 1 || opts.frame_nxdn48 != 0) {
+        DSD_FPRINTF(stderr, "nxdn96 trunk park failed rc=%d active=%zu ted=%d n96=%d n48=%d err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_ted_sps, opts.frame_nxdn96,
+                    opts.frame_nxdn48, err);
+        test_rc = 1;
+    }
+
+    /* Parking an NXDN48 trunk target must replace stale timing and select the narrow decoder. */
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state.sps_hunt_counter = 17;
+    state.samplesPerSymbol = 8;
+    state.symbolCenter = 3;
+    state.rf_mod = 0;
+    g_counting_tune_to_cc_ted_sps = 0;
+    g_counting_tune_to_cc_freq = 0;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || opts.trunk_enable != 1 || opts.frame_nxdn48 != 1
+        || opts.frame_nxdn96 != 0 || state.p25_cc_freq != 461556250L || state.trunk_cc_freq != 461556250L
+        || state.trunk_lcn_freq[0] != 461556250L || state.lcn_freq_count < 1) {
+        DSD_FPRINTF(stderr,
+                    "nxdn48 trunk park wrong active=%zu trunk=%d n48=%d n96=%d p25=%ld cc=%ld lcn=%ld count=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), opts.trunk_enable, opts.frame_nxdn48, opts.frame_nxdn96,
+                    state.p25_cc_freq, state.trunk_cc_freq, state.trunk_lcn_freq[0], state.lcn_freq_count);
+        test_rc = 1;
+    }
+    if (state.sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_2400_4 || state.sps_hunt_counter != 0
+        || state.samplesPerSymbol != 20 || state.symbolCenter != 9 || state.rf_mod != 2
+        || g_counting_tune_to_cc_ted_sps != 20 || g_counting_tune_to_cc_freq != 461556250L) {
+        DSD_FPRINTF(stderr, "nxdn48 trunk timing wrong idx=%d counter=%d sps=%d center=%d rf_mod=%d ted=%d freq=%ld\n",
+                    state.sps_hunt_idx, state.sps_hunt_counter, state.samplesPerSymbol, state.symbolCenter,
+                    state.rf_mod, g_counting_tune_to_cc_ted_sps, g_counting_tune_to_cc_freq);
+        test_rc = 1;
+    }
+
+    /* The return to NXDN96 must restore both decoder selection and 4800-symbol timing. */
+    g_counting_tune_to_cc_ted_sps = 0;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4
+        || state.samplesPerSymbol != 10 || state.symbolCenter != 4 || state.rf_mod != 2 || opts.frame_nxdn96 != 1
+        || opts.frame_nxdn48 != 0 || g_counting_tune_to_cc_ted_sps != 10) {
+        DSD_FPRINTF(stderr, "nxdn96 trunk inherited narrow profile active=%zu idx=%d sps=%d center=%d ted=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), state.sps_hunt_idx, state.samplesPerSymbol,
+                    state.symbolCenter, g_counting_tune_to_cc_ted_sps);
+        test_rc = 1;
+    }
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
 }
 
 static int
@@ -6002,7 +6106,8 @@ test_parser_accepts_target_key_columns(void) {
                                        "c,nxdn-conventional,461000000,,250,,conv,hexkeys.csv,\n"
                                        "d,nxdn-trunk,461037500,,250,,type-c,,deckeys.csv\n"
                                        "e,dmr-conventional,461112500,,250,,plant,hexkeys.csv,deckeys.csv\n"
-                                       "f,nxdn48-conventional,461556250,,250,,narrow,hexkeys.csv,\n",
+                                       "f,nxdn48-conventional,461556250,,250,,narrow,hexkeys.csv,\n"
+                                       "g,nxdn48-trunk,461556250,,250,,narrow type-c,,deckeys.csv\n",
                                        target_path, sizeof target_path)
         != 0) {
         cleanup_paths(dir, NULL, NULL);
@@ -6021,7 +6126,7 @@ test_parser_accepts_target_key_columns(void) {
     int test_rc = 0;
     char want_hex[DSD_TEST_PATH_MAX] = {0};
     char want_dec[DSD_TEST_PATH_MAX] = {0};
-    if (rc != 0 || list.count != 6 || dsd_test_path_join(want_hex, sizeof want_hex, dir, "hexkeys.csv") != 0
+    if (rc != 0 || list.count != 7 || dsd_test_path_join(want_hex, sizeof want_hex, dir, "hexkeys.csv") != 0
         || dsd_test_path_join(want_dec, sizeof want_dec, dir, "deckeys.csv") != 0) {
         DSD_FPRINTF(stderr, "target keys parser rc=%d count=%zu err=%s\n", rc, list.count, err);
         test_rc = 1;
@@ -6053,6 +6158,10 @@ test_parser_accepts_target_key_columns(void) {
         }
         if (strcmp(list.targets[5].keys_hex_csv, want_hex) != 0 || list.targets[5].keys_dec_csv[0] != '\0') {
             DSD_FPRINTF(stderr, "nxdn48-conventional target key paths mismatch\n");
+            test_rc = 1;
+        }
+        if (list.targets[6].keys_hex_csv[0] != '\0' || strcmp(list.targets[6].keys_dec_csv, want_dec) != 0) {
+            DSD_FPRINTF(stderr, "nxdn48-trunk target key paths mismatch\n");
             test_rc = 1;
         }
     }
@@ -7383,6 +7492,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_seeds_control_channel);
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_nxdn_demod_profile);
     rc |= run_with_default_tune_hook(test_nxdn48_target_selects_2400_demod_profile);
+    rc |= run_with_default_tune_hook(test_nxdn48_trunk_target_parks_on_2400_control_channel);
     rc |= run_with_default_tune_hook(test_nxdn48_target_uses_rtl_output_rate_for_sps);
     rc |= run_with_default_tune_hook(test_target_classes_enable_missing_decoders);
     rc |= run_with_default_tune_hook(test_nxdn_conventional_activity_hold);

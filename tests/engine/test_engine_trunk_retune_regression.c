@@ -897,6 +897,41 @@ main(void) {
     assert(g_rtl_ted_sps == 20); /* 48000 / 2400 from the stubbed RTL output rate */
     assert(g_rtl_ted_sps_override == 0);
 
+    /* An nxdn48-trunk target anchors p25_cc_freq like nxdn-trunk, so its return to the control channel goes
+     * through dsd_engine_compute_cc_sps(), which only knows P25 rates. The RTL chain must still come back as
+     * 2400 sym/s in 6.25 kHz with TED 20 from the coordinator's rate, not the P25-derived 10. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_scan_enabled = 1;
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->rf_mod = 2;
+    state->p25_cc_freq = 461556250;
+    state->trunk_cc_freq = 461556250;
+    state->p25_cc_is_tdma = 2;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->samplesPerSymbol = 20;
+    state->symbolCenter = 9;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    g_trunk_scan_target_count = 2;
+    g_trunk_scan_active_p25_target = 0;
+    g_trunk_scan_active_gfsk_symbol_rate = 2400;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_symbol_rate_hz = 4800;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_12K5;
+    g_rtl_ted_sps = 10;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_symbol_rate_hz == 2400);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_6K25);
+    assert(g_rtl_ted_sps == 20);
+    assert(state->rf_mod == 2 && state->samplesPerSymbol == 20 && state->symbolCenter == 9);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(opts->trunk_is_tuned == 0);
+
     /* Even stale scanner flags cannot change the trunk coordinator's backend
      * contract: rigctl owns the frequency and the target owns the profile. */
     opts->scanner_mode = 1;
