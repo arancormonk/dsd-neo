@@ -72,6 +72,9 @@ typedef struct {
 int dsd_rr_system_info_resolve(dsd_rr_client* client, const dsd_rr_auth* auth, const dsd_rr_trs_details* details,
                                dsd_rr_system_info* info, dsd_rr_error* err);
 
+/** Splice matching category names onto talkgroups; NULL categories clears their labels. */
+void dsd_rr_talkgroups_apply_categories(dsd_rr_talkgroup_list* talkgroups, const dsd_rr_talkgroup_cat_list* categories);
+
 /**
  * @brief Import options. Tri-state members: -1 = follow the RadioReference record.
  *

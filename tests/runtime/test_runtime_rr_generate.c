@@ -540,15 +540,17 @@ test_group_csv(void) {
     tg_set(&tgs[5], 400U, "A\r\nB\tC", "", 0);
     tg_set(&tgs[6], 500U, over, "", 0);
     tg_set(&tgs[7], 600U, exact, "", 0);
+    (void)DSD_SNPRINTF(tgs[0].category, sizeof(tgs[0].category), "%s", "Fire");
+    (void)DSD_SNPRINTF(tgs[5].category, sizeof(tgs[5].category), "%s", "  Law,\r\nDispatch  ");
 
     char want[1024];
     (void)DSD_SNPRINTF(want, sizeof(want),
-                       "DEC,Mode,Name (generated from RadioReference)\n"
+                       "DEC,Mode,Name,Category,(generated from RadioReference)\n"
                        "100,A,Lead and trail\n"
                        "200,DE,Description only\n"
                        "250,DE,TG 250\n"
-                       "300,A,Fire/ Dispatch\n"
-                       "400,A,A B C\n"
+                       "300,A,Fire/ Dispatch,Fire\n"
+                       "400,A,A B C,Law/ Dispatch\n"
                        "500,A,%.48s\n"
                        "600,A,%s\n",
                        over, exact);
@@ -584,7 +586,7 @@ test_group_csv(void) {
     tg_set(&partial[1], 260U, "Full", "", 2);
     expect("partial csv generated", dsd_rr_generate_group_csv(partial, 2U, 0, &text, &len, &warnings) == 0);
     expect_str("partial enc kept clear", text,
-               "DEC,Mode,Name (generated from RadioReference)\n"
+               "DEC,Mode,Name,Category,(generated from RadioReference)\n"
                "250,A,Partial\n"
                "260,DE,Full\n");
     free(text);

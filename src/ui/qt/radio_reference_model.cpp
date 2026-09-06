@@ -162,8 +162,8 @@ error_kind_for(dsd_rr_status status) {
 /**
  * One completion, already converted off the worker thread.
  *
- * Site and talkgroup payloads keep their C form because the generators read the
- * structs rather than the QVariant views. They travel as shared_ptr so the data
+ * Site, talkgroup and category payloads keep their C form because the generators
+ * read the structs rather than the QVariant views. They travel as shared_ptr so the data
  * is released even when the queued call is dropped - which happens when the
  * model is destroyed between the callback and the event loop.
  */
@@ -176,6 +176,7 @@ struct RadioReferenceModel::Reply {
     QVariantMap map;
     std::shared_ptr<dsd_rr_site_list> sites;
     std::shared_ptr<dsd_rr_talkgroup_list> talkgroups;
+    std::shared_ptr<dsd_rr_talkgroup_cat_list> categories;
 };
 
 /** Per-request context handed to the C callback as its user pointer. */
@@ -269,8 +270,6 @@ take_categories(void* result) {
         row.insert(QStringLiteral("name"), field(list->items[i].name));
         out.append(row);
     }
-    dsd_rr_talkgroup_cat_list_free(list);
-    free(list);
     return out;
 }
 
@@ -347,8 +346,8 @@ take_details(void* result, dsd_rr_client* client, const dsd_rr_auth* auth) {
 void
 RadioReferenceModel::convertResult(const Request& request, void* result, Reply* reply) {
     /* WORKER THREAD. The C result becomes the reply's, one way or another: the
-     * small shapes are converted and released here, while sites and talkgroups
-     * keep their C form under a shared_ptr whose deleter runs even if the queued
+     * small shapes are converted and released here, while sites, talkgroups and
+     * categories keep their C form under a shared_ptr whose deleter runs even if the queued
      * call is never delivered. */
     switch (request.kind) {
         case FetchUserData: reply->map = take_user_info(result); break;
@@ -358,7 +357,14 @@ RadioReferenceModel::convertResult(const Request& request, void* result, Reply* 
         case FetchCounties: reply->list = take_counties(result); break;
         case FetchSystems: reply->list = take_systems(result); break;
         case FetchDetails: reply->map = take_details(result, request.client, &request.auth); break;
-        case FetchTalkgroupCats: reply->list = take_categories(result); break;
+        case FetchTalkgroupCats:
+            reply->categories = std::shared_ptr<dsd_rr_talkgroup_cat_list>(
+                static_cast<dsd_rr_talkgroup_cat_list*>(result), [](dsd_rr_talkgroup_cat_list* p) {
+                    dsd_rr_talkgroup_cat_list_free(p);
+                    free(p);
+                });
+            reply->list = take_categories(result);
+            break;
         case FetchSites:
             reply->sites =
                 std::shared_ptr<dsd_rr_site_list>(static_cast<dsd_rr_site_list*>(result), [](dsd_rr_site_list* p) {
@@ -446,6 +452,7 @@ RadioReferenceModel::~RadioReferenceModel() {
 
     dsd_rr_site_list_free(&m_siteData);
     dsd_rr_talkgroup_list_free(&m_talkgroupData);
+    dsd_rr_talkgroup_cat_list_free(&m_talkgroupCatData);
     scrub(m_password);
 }
 
@@ -816,6 +823,7 @@ RadioReferenceModel::clearSystem() {
     m_recordSaysEsk = false;
     dsd_rr_site_list_free(&m_siteData);
     dsd_rr_talkgroup_list_free(&m_talkgroupData);
+    dsd_rr_talkgroup_cat_list_free(&m_talkgroupCatData);
     m_sites.clear();
     m_systemDetails.clear();
     m_talkgroupSummary.clear();
@@ -846,7 +854,14 @@ RadioReferenceModel::applySystemReply(const Reply& reply) {
                 DSD_MEMSET(reply.talkgroups.get(), 0, sizeof(*reply.talkgroups));
             }
             break;
-        case FetchTalkgroupCats: m_talkgroupSummary.insert(QStringLiteral("categories"), reply.list); break;
+        case FetchTalkgroupCats:
+            if (reply.categories) {
+                dsd_rr_talkgroup_cat_list_free(&m_talkgroupCatData);
+                m_talkgroupCatData = *reply.categories;
+                DSD_MEMSET(reply.categories.get(), 0, sizeof(*reply.categories));
+            }
+            m_talkgroupSummary.insert(QStringLiteral("categories"), reply.list);
+            break;
         default: return false;
     }
 
@@ -944,6 +959,7 @@ RadioReferenceModel::applyReply(const Reply& reply) {
 
 void
 RadioReferenceModel::finishSystemLoad() {
+    dsd_rr_talkgroups_apply_categories(&m_talkgroupData, &m_talkgroupCatData);
     m_recordSaysSimulcast = false;
 
     QVariantList rows;

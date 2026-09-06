@@ -30,6 +30,8 @@
 #include "session_args.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
+#include "talkgroup_filter_model.h"
+#include "talkgroup_list_model.h"
 #include "ui_controller.h"
 
 namespace dsd_qt {
@@ -80,6 +82,9 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* systems = new SavedSystemsModel(&engine);
     auto* importedFiles = new ImportedFilesModel(host, &engine);
     auto* history = new CallHistoryModel(&engine);
+    auto* talkgroups = new TalkgroupListModel(history, &engine);
+    auto* talkgroupView = new TalkgroupFilterModel(&engine);
+    talkgroupView->setSourceModel(talkgroups);
     auto* spectrum = new SpectrumModel(&engine);
     // Each view that shows the call log owns its filter state: the history tab's
     // search and pills must not silently filter the monitor's recent-calls pane.
@@ -88,7 +93,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* monitorView = new CallHistoryFilterModel(&engine);
     monitorView->setSourceModel(history);
     auto* radioReference = new RadioReferenceModel(prefs, importedFiles, host, &engine);
-    auto* controller = new UiController(host, metrics, history, &engine);
+    auto* controller = new UiController(host, metrics, history, talkgroups, &engine);
 
     // The library drops rows whose stored copy vanished behind the app's back;
     // saved systems that still point at one would build a `-G <missing>` argv and
@@ -125,6 +130,8 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("callHistory"), history);
     context->setContextProperty(QStringLiteral("historyView"), historyView);
     context->setContextProperty(QStringLiteral("monitorView"), monitorView);
+    context->setContextProperty(QStringLiteral("talkgroups"), talkgroups);
+    context->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
     context->setContextProperty(QStringLiteral("spectrum"), spectrum);
     context->setContextProperty(QStringLiteral("sansFontFamily"),
                                 sans_family.isEmpty() ? QStringLiteral("sans-serif") : sans_family);

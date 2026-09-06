@@ -241,6 +241,13 @@ enum dsd_app_command_id {
     // P25 helpers
     DSD_APP_CMD_P25_P2_PARAMS_SET = 580, // payload: struct { uint64_t wacn, sysid, cc; }
 
+    // Edit the first effective policy row with these bounds, preserving its metadata.
+    // Missing exact IDs are added. listen=1 selects A; listen=0 selects B and releases
+    // blocked active group calls. Persist to group_in_file unless a scan row owns the list.
+    DSD_APP_CMD_TG_LISTEN_SET = 590, // payload: dsd_app_tg_listen_payload
+    // Edit all rows except radio-ID aliases; a nonempty tag selects exact tag matches.
+    DSD_APP_CMD_TG_LISTEN_SET_ALL = 591, // payload: dsd_app_tg_listen_all_payload
+
     // UI display toggles
     DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE = 620,
     DSD_APP_CMD_UI_SHOW_P25_METRICS_TOGGLE = 621,
@@ -313,6 +320,17 @@ typedef struct {
 } dsd_app_p25_p2_params_payload;
 
 typedef struct {
+    uint32_t id_start;
+    uint32_t id_end; /* Equal to id_start for an exact talkgroup. */
+    int32_t listen;  /* 1 = listen (A), 0 = do not tune (B). */
+} dsd_app_tg_listen_payload;
+
+typedef struct {
+    int32_t listen;
+    char tags[50]; /* Empty = all rows; otherwise an exact category match. */
+} dsd_app_tg_listen_all_payload;
+
+typedef struct {
     uint64_t H;
     uint64_t K1;
     uint64_t K2;
@@ -353,6 +371,8 @@ int dsd_app_command_set_float(int cmd_id, float value);
 int dsd_app_command_set_string(int cmd_id, const char* value);
 int dsd_app_command_set_endpoint(int cmd_id, const char* host, int32_t port);
 int dsd_app_command_set_p25_p2_params(const dsd_app_p25_p2_params_payload* payload);
+int dsd_app_command_set_tg_listen(const dsd_app_tg_listen_payload* payload);
+int dsd_app_command_set_tg_listen_all(const dsd_app_tg_listen_all_payload* payload);
 int dsd_app_command_set_hytera_key(const dsd_app_hytera_key_payload* payload);
 int dsd_app_command_set_aes_key(const dsd_app_aes_key_payload* payload);
 int dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload);

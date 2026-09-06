@@ -27,6 +27,8 @@ target_sources(
         spectrum_model.cpp
         spectrum_view_item.cpp
         session_args.cpp
+        talkgroup_filter_model.cpp
+        talkgroup_list_model.cpp
         ui_controller.cpp
 )
 
@@ -72,6 +74,8 @@ qt_add_resources(
         qml/SegmentedControl.qml
         qml/SettingsScreen.qml
         qml/SpectrumScreen.qml
+        qml/TalkgroupCard.qml
+        qml/TalkgroupsScreen.qml
         qml/ToggleRow.qml
         qml/TunerMarker.qml
         qml/UiPanel.qml

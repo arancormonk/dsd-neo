@@ -431,6 +431,7 @@ class RadioReferenceModel : public QObject {
     bool m_recordSaysEsk = false;
     dsd_rr_site_list m_siteData;
     dsd_rr_talkgroup_list m_talkgroupData;
+    dsd_rr_talkgroup_cat_list m_talkgroupCatData{};
     /* How many of the four system calls are still outstanding, so the preview is
      * assembled once rather than four times. */
     int m_systemPending = 0;

@@ -2771,6 +2771,18 @@ dsd_app_command_set_p25_p2_params(const dsd_app_p25_p2_params_payload* payload) 
 }
 
 int
+dsd_app_command_set_tg_listen(const dsd_app_tg_listen_payload* payload) {
+    return payload ? dsd_app_command_submit(DSD_APP_CMD_TG_LISTEN_SET, payload, sizeof *payload)
+                   : DSD_APP_COMMAND_SUBMIT_REJECTED;
+}
+
+int
+dsd_app_command_set_tg_listen_all(const dsd_app_tg_listen_all_payload* payload) {
+    return payload ? dsd_app_command_submit(DSD_APP_CMD_TG_LISTEN_SET_ALL, payload, sizeof *payload)
+                   : DSD_APP_COMMAND_SUBMIT_REJECTED;
+}
+
+int
 dsd_app_command_set_hytera_key(const dsd_app_hytera_key_payload* payload) {
     return payload ? dsd_app_command_submit(DSD_APP_CMD_KEY_HYTERA_SET, payload, sizeof *payload)
                    : DSD_APP_COMMAND_SUBMIT_REJECTED;
@@ -2847,6 +2859,8 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_RIGCTL_CONNECT_CFG, sizeof(dsd_app_endpoint_payload)},
     {DSD_APP_CMD_UDP_INPUT_CFG, sizeof(dsd_app_udp_input_payload)},
     {DSD_APP_CMD_P25_P2_PARAMS_SET, sizeof(dsd_app_p25_p2_params_payload)},
+    {DSD_APP_CMD_TG_LISTEN_SET, sizeof(dsd_app_tg_listen_payload)},
+    {DSD_APP_CMD_TG_LISTEN_SET_ALL, sizeof(dsd_app_tg_listen_all_payload)},
     {DSD_APP_CMD_KEY_HYTERA_SET, sizeof(dsd_app_hytera_key_payload)},
     {DSD_APP_CMD_KEY_AES_SET, sizeof(dsd_app_aes_key_payload)},
     {DSD_APP_CMD_DSP_OP, sizeof(dsd_app_dsp_payload)},
@@ -3733,6 +3747,113 @@ apply_cmd_lockout_resolve_target(const dsd_state* state, const struct dsd_app_co
 }
 
 static int
+tg_listen_apply(dsd_state* state, uint32_t id_start, uint32_t id_end, int listen) {
+    return dsd_tg_policy_set_mode(state, id_start, id_end, listen ? "A" : "B");
+}
+
+static void
+tg_listen_persist(dsd_opts* opts, dsd_state* state) {
+    if (dsd_scan_groups_row_active(state)) {
+        return;
+    }
+    if (dsd_tg_policy_write_group_file(opts, state) != 0) {
+        LOG_WARN("WARNING: Talkgroup list changes could not be written to '%s'.\n", opts->group_in_file);
+        ui_set_toast(state, 4, "Talkgroup change kept for this session only");
+    }
+}
+
+static int
+tg_listen_row_is_editable(const dsd_tg_policy_entry* entry) {
+    return entry->source != DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS && strcmp(entry->mode, "D") != 0;
+}
+
+static void
+tg_listen_release_blocked_calls(dsd_opts* opts, dsd_state* state) {
+    for (unsigned int slot = 0; slot < 2U; ++slot) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+            || call.kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+            continue;
+        }
+        const uint64_t target = call.policy_target_id ? call.policy_target_id : call.ota_target_id;
+        if (target == 0U || target > UINT32_MAX) {
+            continue;
+        }
+        dsd_tg_policy_decision decision;
+        if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)target, 0, 0, 0, &decision) == 0
+            && (decision.block_reasons & DSD_TG_POLICY_BLOCK_MODE)) {
+            if (apply_lockout_decoder_transition(opts, state) == UI_CMD_APPLY_FAILED) {
+                ui_set_toast(state, 4, "TG %u not tuned; return-to-CC tune failed", (unsigned)target);
+            }
+            return;
+        }
+    }
+}
+
+static int
+apply_cmd_tg_listen_one(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    dsd_app_tg_listen_payload payload;
+    DSD_MEMCPY(&payload, c->data, sizeof payload);
+    if (payload.id_start > payload.id_end) {
+        ui_set_toast(state, 3, "Invalid talkgroup range");
+        return UI_CMD_APPLY_FAILED;
+    }
+    const int rc = tg_listen_apply(state, payload.id_start, payload.id_end, payload.listen);
+    if (rc == 1) {
+        ui_set_toast(state, 3, "Range %u-%u is not on the list", (unsigned)payload.id_start, (unsigned)payload.id_end);
+        return UI_CMD_APPLY_FAILED;
+    }
+    if (rc != 0) {
+        LOG_WARN("WARNING: Could not update TG %u (rc=%d).\n", (unsigned)payload.id_start, rc);
+        ui_set_toast(state, 4, "Could not update TG %u", (unsigned)payload.id_start);
+        return UI_CMD_APPLY_FAILED;
+    }
+    tg_listen_persist(opts, state);
+    if (!payload.listen) {
+        tg_listen_release_blocked_calls(opts, state);
+    }
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+static int
+apply_cmd_tg_listen_all(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    dsd_app_tg_listen_all_payload payload;
+    DSD_MEMCPY(&payload, c->data, sizeof payload);
+    payload.tags[sizeof payload.tags - 1U] = '\0';
+    size_t applied = 0;
+    for (size_t i = 0; i < dsd_tg_policy_entry_count(state); ++i) {
+        dsd_tg_policy_entry entry;
+        if (!dsd_tg_policy_entry_at(state, i, &entry) || !tg_listen_row_is_editable(&entry)
+            || (payload.tags[0] && strcmp(entry.tags, payload.tags) != 0)) {
+            continue;
+        }
+        if (dsd_tg_policy_set_mode_at(state, i, payload.listen ? "A" : "B") == 0) {
+            ++applied;
+        }
+    }
+    ui_set_toast(state, 3, "%zu talkgroups %s", applied, payload.listen ? "listening" : "not tuned");
+    tg_listen_persist(opts, state);
+    if (!payload.listen) {
+        tg_listen_release_blocked_calls(opts, state);
+    }
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+static int
+apply_cmd_tg_listen(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (c->id != DSD_APP_CMD_TG_LISTEN_SET && c->id != DSD_APP_CMD_TG_LISTEN_SET_ALL) {
+        return 0;
+    }
+    if (!state) {
+        return 1;
+    }
+    if (c->id == DSD_APP_CMD_TG_LISTEN_SET) {
+        return apply_cmd_tg_listen_one(opts, state, c);
+    }
+    return apply_cmd_tg_listen_all(opts, state, c);
+}
+
+static int
 apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state) {
         return (c && c->id == DSD_APP_CMD_LOCKOUT_SLOT) ? 1 : 0;
@@ -3742,8 +3863,6 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     }
     uint8_t slot = 0U;
     uint32_t target = 0U;
-    dsd_tg_policy_entry lockout_entry;
-    char metadata[16];
     int upsert_rc = 0;
     if (opts->frame_provoice == 1) {
         return 1;
@@ -3752,14 +3871,9 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
         return 1;
     }
     int tg = (int)target;
-    if (dsd_tg_policy_make_exact_entry(target, "B", "LOCKOUT", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &lockout_entry)
-        != 0) {
-        return 1;
-    }
-    upsert_rc = dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+    upsert_rc = tg_listen_apply(state, target, target, 0);
     if (upsert_rc != 0) {
-        LOG_WARN("WARNING: User lockout for TG %d could not be applied (rc=%d); skipping persistence.\n", tg,
-                 upsert_rc);
+        LOG_WARN("WARNING: User lockout for TG %d could not be applied (rc=%d).\n", tg, upsert_rc);
         return 1;
     }
 
@@ -3773,12 +3887,7 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     dsd_event_history_transaction_end(&transaction);
     watchdog_event_current(opts, state, eh_slot);
 
-    DSD_SNPRINTF(metadata, sizeof(metadata), "%02X",
-                 (unsigned int)((slot == 0) ? state->payload_algid : state->payload_algidR));
-    if (dsd_tg_policy_append_group_file_row(opts, &lockout_entry, metadata) != 0) {
-        LOG_WARN("WARNING: User lockout for TG %d was applied in-memory but could not be persisted to '%s'.\n", tg,
-                 opts->group_in_file);
-    }
+    tg_listen_persist(opts, state);
 
     const int transition_status = apply_lockout_decoder_transition(opts, state);
     if (transition_status == UI_CMD_APPLY_FAILED) {
@@ -4216,9 +4325,10 @@ apply_cmd_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
 static int
 apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const dsd_app_command_handler_fn k_command_groups[] = {
-        apply_cmd_basic_a,       apply_cmd_slot_controls,  apply_cmd_payload_filters,  apply_cmd_constellation,
-        apply_cmd_eye_spectrum,  apply_cmd_trunk_controls, apply_cmd_lockout_slot,     apply_cmd_provoice_m17,
-        apply_cmd_scan_controls, apply_cmd_channel_cycle,  apply_cmd_capture_playback, apply_cmd_misc_config,
+        apply_cmd_basic_a,      apply_cmd_slot_controls,  apply_cmd_payload_filters, apply_cmd_constellation,
+        apply_cmd_eye_spectrum, apply_cmd_trunk_controls, apply_cmd_lockout_slot,    apply_cmd_tg_listen,
+        apply_cmd_provoice_m17, apply_cmd_scan_controls,  apply_cmd_channel_cycle,   apply_cmd_capture_playback,
+        apply_cmd_misc_config,
     };
     if (!c) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;

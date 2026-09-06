@@ -74,6 +74,8 @@ void dsd_scan_groups_leave(dsd_state* state);
 /** Park the row policy so a group import edits the global baseline beneath it. Returns 1 when
  * parked (resume is then owed), 0 when no row policy is active. */
 int dsd_scan_groups_suspend(dsd_state* state);
+/** A scan row's own group list is the effective policy (edits must not be written to the global group file). */
+int dsd_scan_groups_row_active(const dsd_state* state);
 /** Adopt the edited global baseline and restore the parked policy with active calls intact. */
 void dsd_scan_groups_resume(dsd_state* state);
 #ifdef __cplusplus

@@ -29,6 +29,23 @@
 #define RR_STEM_MAX_BYTES 64U
 #define RR_STEM_FALLBACK  "radioreference"
 
+void
+dsd_rr_talkgroups_apply_categories(dsd_rr_talkgroup_list* talkgroups, const dsd_rr_talkgroup_cat_list* categories) {
+    for (size_t i = 0; i < talkgroups->count; i++) {
+        talkgroups->items[i].category[0] = '\0';
+        if (categories == NULL) {
+            continue;
+        }
+        for (size_t k = 0; k < categories->count; k++) {
+            if (categories->items[k].tg_cid == talkgroups->items[i].tg_cid) {
+                DSD_SNPRINTF(talkgroups->items[i].category, sizeof talkgroups->items[i].category, "%s",
+                             categories->items[k].name);
+                break;
+            }
+        }
+    }
+}
+
 int
 dsd_rr_hz_to_mhz_text(long long hz, char* out, size_t out_sz) {
     if (out == NULL || out_sz == 0U) {

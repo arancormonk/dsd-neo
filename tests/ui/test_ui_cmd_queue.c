@@ -1041,6 +1041,11 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
 
     init_test_context(&opts, &state);
     seed_active_p25_voice(&opts, &state, 853000000L, 854000000L, 2201);
+    dsd_tg_policy_entry dispatch_entry;
+    rc |= expect_int(
+        "seed lockout named row",
+        dsd_tg_policy_make_exact_entry(2201, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &dispatch_entry), 0);
+    rc |= expect_int("append lockout named row", dsd_tg_policy_append_exact(&state, &dispatch_entry), 0);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
     const uint64_t lockout_history_revision = state.event_history_s[0].revision;
     rc |= expect_int("deferred lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U),
@@ -1058,7 +1063,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
                                                 sizeof(lockout_name)),
                      1);
     rc |= expect_str("deferred lockout policy mode", lockout_mode, "B");
-    rc |= expect_str("deferred lockout policy name", lockout_name, "LOCKOUT");
+    rc |= expect_str("deferred lockout policy name", lockout_name, "Dispatch");
     rc |= expect_true("deferred lockout advances event history revision",
                       state.event_history_s[0].revision > lockout_history_revision);
     rc |= expect_true("deferred lockout reports cleanup separately",
@@ -2470,9 +2475,80 @@ test_source_alias_commands(void) {
     return rc;
 }
 
+static int
+test_talkgroup_list_commands(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    const char* path = "dsd_neo_test_talkgroup_commands.csv";
+    static const char csv[] = "DEC,Mode,Name,Tag\n1001,A,Fire Dispatch,FIRE\n2001,A,EMS Dispatch,EMS\n"
+                              "3001,D,Radio,FIRE\n4001,A,Untagged\n";
+    int rc = write_file_bytes(path, csv, sizeof csv - 1U);
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    rc |= expect_int("load talkgroup command fixture", dsd_tg_policy_reload_group_file(opts, state), 0);
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    seed_active_p25_voice(opts, state, 851000000L, 852000000L, 1001);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+#endif
+    dsd_app_tg_listen_payload one = {1001, 1001, 0};
+    rc |= expect_int("block talkgroup queued", dsd_app_command_set_tg_listen(&one), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("block talkgroup drained", dsd_app_drain_cmds(opts, state), 1);
+    dsd_tg_policy_lookup lookup;
+    rc |= expect_int("blocked talkgroup lookup", dsd_tg_policy_lookup_id(state, 1001, &lookup), 0);
+    rc |= expect_str("blocked mode", lookup.entry.mode, "B");
+    rc |= expect_str("blocked name retained", lookup.entry.name, "Fire Dispatch");
+    rc |= expect_str("blocked tags retained", lookup.entry.tags, "FIRE");
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= expect_int("blocked call returns to CC", g_cc_tune_calls, 1);
+#endif
+    FILE* file = dsd_fopen_existing_regular_file(path, "r");
+    char contents[512] = {0};
+    if (file) {
+        size_t bytes = fread(contents, 1, sizeof contents - 1U, file);
+        contents[bytes] = '\0';
+        rc |= expect_int("close rewritten groups", fclose(file), 0);
+    } else {
+        rc = 1;
+    }
+    rc |= expect_contains("rewrite contains named blocked row", contents, "1001,B,Fire Dispatch,FIRE\n");
+    rc |= expect_int("reload persisted blocked mode", dsd_tg_policy_reload_group_file(opts, state), 0);
+    rc |= expect_int("reloaded talkgroup lookup", dsd_tg_policy_lookup_id(state, 1001, &lookup), 0);
+    rc |= expect_str("reloaded mode", lookup.entry.mode, "B");
+    one.listen = 1;
+    rc |= expect_int("listen queued", dsd_app_command_set_tg_listen(&one), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("listen drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("listening lookup", dsd_tg_policy_lookup_id(state, 1001, &lookup), 0);
+    rc |= expect_str("listening mode", lookup.entry.mode, "A");
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= expect_int("listen does not retune", g_cc_tune_calls, 1);
+#endif
+    dsd_app_tg_listen_all_payload all = {0, "FIRE"};
+    rc |= expect_int("category block queued", dsd_app_command_set_tg_listen_all(&all), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("category block drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("category row lookup", dsd_tg_policy_lookup_id(state, 1001, &lookup), 0);
+    rc |= expect_str("category row blocked", lookup.entry.mode, "B");
+    rc |= expect_int("other category lookup", dsd_tg_policy_lookup_id(state, 2001, &lookup), 0);
+    rc |= expect_str("other category unchanged", lookup.entry.mode, "A");
+    rc |= expect_int("alias row lookup", dsd_tg_policy_lookup_id(state, 3001, &lookup), 0);
+    rc |= expect_str("alias row unchanged", lookup.entry.mode, "D");
+    rc |= expect_int("untagged row lookup", dsd_tg_policy_lookup_id(state, 4001, &lookup), 0);
+    rc |= expect_str("untagged row unchanged", lookup.entry.mode, "A");
+    freeState(state);
+    free(state);
+    free(opts);
+    remove(path);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_talkgroup_list_commands();
     rc |= test_source_alias_commands();
     rc |= test_scoped_direct_key_mutes();
     rc |= test_scoped_row_option_commands();

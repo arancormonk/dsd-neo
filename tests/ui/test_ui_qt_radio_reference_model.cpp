@@ -495,7 +495,11 @@ test_trunked_system(void) {
                QStringLiteral("851.05"));
     expect_int("plan emits the 11-frequency hunt list", row_count(plan.value(QStringLiteral("chanCsvText")).toString()),
                12);
-    expect("plan emits a talkgroup file", !plan.value(QStringLiteral("groupCsvText")).toString().isEmpty());
+    const QString groupCsv = plan.value(QStringLiteral("groupCsvText")).toString();
+    expect("plan opts into talkgroup categories",
+           groupCsv.startsWith(QStringLiteral("DEC,Mode,Name,Category,(generated from RadioReference)\n")));
+    expect("plan splices the fetched category onto its talkgroup",
+           groupCsv.contains(QStringLiteral("\n52007,DE,RESERVOIR RANGRS,Coralville\n")));
     expect("plan warns the map column is a placeholder", warned(plan, QStringLiteral("placeholder")));
     expect("plan has no blocked reason", plan.value(QStringLiteral("blockedReason")).toString().isEmpty());
 

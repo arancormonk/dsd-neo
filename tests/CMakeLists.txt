@@ -2677,6 +2677,40 @@ if(DSD_ENABLE_QT_UI)
     )
     add_test(NAME UI_QT_METRICS_MODEL COMMAND dsd-neo_test_ui_qt_metrics_model)
 
+    add_executable(
+        dsd-neo_test_ui_qt_talkgroup_list_model
+        ui/test_ui_qt_talkgroup_list_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_talkgroup_list_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_talkgroup_list_model
+        PRIVATE
+            Qt6::Core
+            dsd-neo_core
+            dsd-neo_runtime
+            dsd-neo_feature_codec2
+            ${LIBS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_talkgroup_list_model
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_talkgroup_list_model
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_TALKGROUP_LIST_MODEL
+        COMMAND dsd-neo_test_ui_qt_talkgroup_list_model
+    )
+
     # The call-history model's ring ingest, driven against synthetic event
     # rings: the slot/seq row keying, merge-versus-duplicate decisions, the
     # commit_rev rescan gate, and the relaunch (Activity restart) path.
@@ -2896,6 +2930,8 @@ if(DSD_ENABLE_QT_UI)
             ui/qml_test_context.h
             ui/qml_spectrum_stub.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
             # The home screen, the imports library, the wizard's CSV pickers and

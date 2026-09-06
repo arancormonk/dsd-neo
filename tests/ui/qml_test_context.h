@@ -14,8 +14,8 @@
  * analyse moc output nobody can fix.
  *
  * What is real here and what is not: the view models are the production
- * CallHistoryFilterModel, so the filter and its change signalling are under
- * test. Behind it sits CallLogStore, a stand-in for CallHistoryModel that
+ * CallHistoryFilterModel, TalkgroupListModel and TalkgroupFilterModel, so their
+ * filtering and change signalling are under test. Behind them sits CallLogStore, a stand-in for CallHistoryModel that
  * prepends rows on demand — the real store only grows by ingesting a decoder
  * snapshot ring, which is covered by UI_QT_CALL_HISTORY_MODEL instead. The
  * engine-facing objects (metrics, decoderHost, commands, prefs) are plain maps
@@ -50,6 +50,12 @@
 #include <QStringList>
 #include <QVariantMap>
 #include <QtQuickTest>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include <memory>
 
 #include "app_prefs.h"
 #include "call_history_filter.h"
@@ -62,6 +68,8 @@
 #include "session_args.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
+#include "talkgroup_filter_model.h"
+#include "talkgroup_list_model.h"
 
 using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
@@ -177,6 +185,23 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
+    setTalkgroupListening(double idStart, double idEnd, bool listen) {
+        m_talkgroup_listen_calls++;
+        m_last_talkgroup_id_start = idStart;
+        m_last_talkgroup_id_end = idEnd;
+        m_last_talkgroup_listen = listen;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    setAllTalkgroupsListening(bool listen, const QString& tag) {
+        m_all_talkgroups_listen_calls++;
+        m_last_all_talkgroups_listen = listen;
+        m_last_all_talkgroups_tag = tag;
+        return true;
+    }
+
+    Q_INVOKABLE bool
     clearEncLockouts() {
         return true;
     }
@@ -287,6 +312,13 @@ class CommandRecorder : public QObject {
         m_scan_avoid_calls = 0;
         m_scan_avoid_clear_calls = 0;
         m_next_channel_calls = 0;
+        m_talkgroup_listen_calls = 0;
+        m_last_talkgroup_id_start = 0.0;
+        m_last_talkgroup_id_end = 0.0;
+        m_last_talkgroup_listen = false;
+        m_all_talkgroups_listen_calls = 0;
+        m_last_all_talkgroups_listen = false;
+        m_last_all_talkgroups_tag.clear();
     }
 
     int
@@ -371,6 +403,41 @@ class CommandRecorder : public QObject {
         return static_cast<double>(m_last_manual_tune_hz);
     }
 
+    int
+    talkgroupListenCalls() const {
+        return m_talkgroup_listen_calls;
+    }
+
+    double
+    lastTalkgroupListenIdStart() const {
+        return m_last_talkgroup_id_start;
+    }
+
+    double
+    lastTalkgroupListenIdEnd() const {
+        return m_last_talkgroup_id_end;
+    }
+
+    bool
+    lastTalkgroupListenOn() const {
+        return m_last_talkgroup_listen;
+    }
+
+    int
+    allTalkgroupsListenCalls() const {
+        return m_all_talkgroups_listen_calls;
+    }
+
+    bool
+    lastAllTalkgroupsListenOn() const {
+        return m_last_all_talkgroups_listen;
+    }
+
+    QString
+    lastAllTalkgroupsTag() const {
+        return m_last_all_talkgroups_tag;
+    }
+
   private:
     int m_src_import_calls = 0;
     int m_src_clear_calls = 0;
@@ -391,6 +458,13 @@ class CommandRecorder : public QObject {
     int m_last_modulation = -1;
     int m_last_decode_mode = -1;
     int m_last_ppm = 9999;
+    int m_talkgroup_listen_calls = 0;
+    double m_last_talkgroup_id_start = 0.0;
+    double m_last_talkgroup_id_end = 0.0;
+    bool m_last_talkgroup_listen = false;
+    int m_all_talkgroups_listen_calls = 0;
+    bool m_last_all_talkgroups_listen = false;
+    QString m_last_all_talkgroups_tag;
 };
 
 /**
@@ -604,6 +678,75 @@ class Setup : public QObject {
     Q_OBJECT
 
   public:
+    ~Setup() override { dsd_state_ext_free_all(m_talkgroup_state.get()); }
+
+    Q_INVOKABLE bool
+    pushTalkgroup(double id, const QString& mode, const QString& name, const QString& tags) {
+        dsd_tg_policy_entry entry{};
+        if (dsd_tg_policy_make_exact_entry(static_cast<uint32_t>(id), mode.toUtf8().constData(),
+                                           name.toUtf8().constData(), DSD_TG_POLICY_SOURCE_IMPORTED, &entry)
+            != 0) {
+            return false;
+        }
+        DSD_SNPRINTF(entry.tags, sizeof(entry.tags), "%s", tags.toUtf8().constData());
+        if (dsd_tg_policy_append_exact(m_talkgroup_state.get(), &entry) != 0) {
+            return false;
+        }
+        m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
+        return true;
+    }
+
+    Q_INVOKABLE void
+    setGroupFileConfigured(bool configured) {
+        DSD_SNPRINTF(m_talkgroup_opts->group_in_file, sizeof(m_talkgroup_opts->group_in_file), "%s",
+                     configured ? "fixture-talkgroups.csv" : "");
+        m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
+    }
+
+    Q_INVOKABLE bool
+    clearTalkgroups() {
+        if (dsd_tg_policy_clear(m_talkgroup_state.get()) != 0) {
+            return false;
+        }
+        m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
+        return true;
+    }
+
+    Q_INVOKABLE int
+    talkgroupListenCalls() const {
+        return m_commands != nullptr ? m_commands->talkgroupListenCalls() : -1;
+    }
+
+    Q_INVOKABLE double
+    lastTalkgroupListenIdStart() const {
+        return m_commands != nullptr ? m_commands->lastTalkgroupListenIdStart() : 0.0;
+    }
+
+    Q_INVOKABLE double
+    lastTalkgroupListenIdEnd() const {
+        return m_commands != nullptr ? m_commands->lastTalkgroupListenIdEnd() : 0.0;
+    }
+
+    Q_INVOKABLE bool
+    lastTalkgroupListenOn() const {
+        return m_commands != nullptr && m_commands->lastTalkgroupListenOn();
+    }
+
+    Q_INVOKABLE int
+    allTalkgroupsListenCalls() const {
+        return m_commands != nullptr ? m_commands->allTalkgroupsListenCalls() : -1;
+    }
+
+    Q_INVOKABLE bool
+    lastAllTalkgroupsListenOn() const {
+        return m_commands != nullptr && m_commands->lastAllTalkgroupsListenOn();
+    }
+
+    Q_INVOKABLE QString
+    lastAllTalkgroupsTag() const {
+        return m_commands != nullptr ? m_commands->lastAllTalkgroupsTag() : QString();
+    }
+
     /**
      * @brief Change one engine reading and republish it.
      *
@@ -881,12 +1024,18 @@ class Setup : public QObject {
         auto* monitorView = new CallHistoryFilterModel(engine);
         monitorView->setSourceModel(store);
         store->setParent(engine);
+        m_talkgroups = new dsd_qt::TalkgroupListModel(store, engine);
+        auto* talkgroupView = new dsd_qt::TalkgroupFilterModel(engine);
+        talkgroupView->setSourceModel(m_talkgroups);
+        m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
 
         QQmlContext* ctx = engine->rootContext();
         ctx->setContextProperty(QStringLiteral("uiDir"), QStringLiteral(DSD_QML_UI_DIR));
         ctx->setContextProperty(QStringLiteral("callHistory"), store);
         ctx->setContextProperty(QStringLiteral("historyView"), historyView);
         ctx->setContextProperty(QStringLiteral("monitorView"), monitorView);
+        ctx->setContextProperty(QStringLiteral("talkgroups"), m_talkgroups);
+        ctx->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
         ctx->setContextProperty(QStringLiteral("sansFontFamily"), QStringLiteral("IBM Plex Sans"));
         ctx->setContextProperty(QStringLiteral("monoFontFamily"), QStringLiteral("IBM Plex Mono"));
 
@@ -1076,6 +1225,9 @@ class Setup : public QObject {
     dsd_qt::SpectrumModel* m_spectrum = nullptr;
     CommandRecorder* m_commands = nullptr;
     ImportOnlyHost* m_import_host = nullptr;
+    std::unique_ptr<dsd_opts> m_talkgroup_opts = std::make_unique<dsd_opts>();
+    std::unique_ptr<dsd_state> m_talkgroup_state = std::make_unique<dsd_state>();
+    dsd_qt::TalkgroupListModel* m_talkgroups = nullptr;
 };
 
 #endif /* DSD_NEO_TESTS_UI_QML_TEST_CONTEXT_H_ */

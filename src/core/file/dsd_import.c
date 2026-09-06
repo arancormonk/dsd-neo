@@ -106,6 +106,7 @@ typedef struct {
     int policy_active;
     unsigned int prefix_len;
     int invalid_order;
+    int basic_tags;
 } group_policy_header;
 
 typedef struct {
@@ -120,7 +121,7 @@ typedef struct {
 
 static group_policy_header
 group_parse_policy_header(char* header_line) {
-    group_policy_header info = {0, 0, 0};
+    group_policy_header info = {0};
     char* fields[16];
     static const char* expected[] = {"preempt", "audio", "record", "stream", "tags"};
     size_t field_count = csv_split_preserve_empty(header_line, fields, sizeof(fields) / sizeof(fields[0]));
@@ -130,6 +131,9 @@ group_parse_policy_header(char* header_line) {
         return info;
     }
     if (csv_ascii_casecmp(trim_ws(fields[3]), "priority") != 0) {
+        const char* col = trim_ws(fields[3]);
+        info.basic_tags = csv_ascii_casecmp(col, "tag") == 0 || csv_ascii_casecmp(col, "tags") == 0
+                          || csv_ascii_casecmp(col, "category") == 0;
         return info;
     }
     info.policy_active = 1;
@@ -287,6 +291,23 @@ group_apply_policy_fields(const group_policy_header* header, const char* filenam
     group_enforce_media_constraints(filename, row_count, entry, mode_blocking, has_audio, has_record, has_stream);
 }
 
+static void
+group_apply_tags_field(const group_policy_header* header, size_t field_count, char** fields,
+                       dsd_tg_policy_entry* entry) {
+    const char* value = NULL;
+    if (!header || !fields || !entry) {
+        return;
+    }
+    if (header->policy_active && header->prefix_len >= 6 && field_count > 8) {
+        value = trim_ws(fields[8]);
+    } else if (!header->policy_active && header->basic_tags && field_count > 3) {
+        value = trim_ws(fields[3]);
+    }
+    if (value) {
+        DSD_SNPRINTF(entry->tags, sizeof(entry->tags), "%s", value);
+    }
+}
+
 static int
 group_commit_entry(dsd_state* state, dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry, int is_range,
                    const char* filename, unsigned int row_count, size_t* dropped_policy_alloc_rows) {
@@ -341,6 +362,7 @@ group_import_row(dsd_state* state, dsd_tg_policy_store* store, const char* filen
     name_field = fields[2];
     group_entry_init(&entry, id_start, id_end, is_range, mode_field, name_field, row_count, &mode_blocking);
     group_apply_policy_fields(header, filename, row_count, field_count, fields, &entry, mode_blocking);
+    group_apply_tags_field(header, field_count, fields, &entry);
     return group_commit_entry(state, store, &entry, is_range, filename, row_count, dropped_policy_alloc_rows);
 }
 
@@ -367,7 +389,7 @@ group_import_path(const char* group_file_path, dsd_state* state, dsd_tg_policy_s
     FILE* fp = NULL;
     unsigned int row_count = 0;
     size_t dropped_policy_alloc_rows = 0;
-    group_policy_header header = {0, 0, 0};
+    group_policy_header header = {0};
 
     if (!group_file_path || group_file_path[0] == '\0' || (!state && !store)) {
         return -1;

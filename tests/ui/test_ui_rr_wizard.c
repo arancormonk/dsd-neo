@@ -2596,9 +2596,11 @@ test_refresh_honours_the_stored_partial_encryption_answer(void) {
         return;
     }
     expect("A1: refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
-    expect_file_contains("A1: partial stays listenable", rc.csv_path, "\n57991,A,Test A\n");
-    expect_file_lacks("A1: partial not blocked", rc.csv_path, "\n57991,DE,Test A\n");
-    expect_file_contains("A1: full enc blocked", rc.csv_path, "\n52007,DE,RESERVOIR RANGRS\n");
+    expect_file_contains("A1: category header written", rc.csv_path,
+                         "DEC,Mode,Name,Category,(generated from RadioReference)\n");
+    expect_file_contains("A1: partial stays listenable", rc.csv_path, "\n57991,A,Test A,Radio Maintenance\n");
+    expect_file_lacks("A1: partial not blocked", rc.csv_path, "\n57991,DE,Test A,Radio Maintenance\n");
+    expect_file_contains("A1: full enc blocked", rc.csv_path, "\n52007,DE,RESERVOIR RANGRS,Coralville\n");
 
     /* A2: flip the stored answer and refresh the same file again. */
     ref_prov(&prov, "group", 6673, "16863", 1);
@@ -2609,8 +2611,8 @@ test_refresh_honours_the_stored_partial_encryption_answer(void) {
         return;
     }
     expect("A2: refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
-    expect_file_contains("A2: partial now blocked", rc.csv_path, "\n57991,DE,Test A\n");
-    expect_file_contains("A2: full enc still blocked", rc.csv_path, "\n52007,DE,RESERVOIR RANGRS\n");
+    expect_file_contains("A2: partial now blocked", rc.csv_path, "\n57991,DE,Test A,Radio Maintenance\n");
+    expect_file_contains("A2: full enc still blocked", rc.csv_path, "\n52007,DE,RESERVOIR RANGRS,Coralville\n");
     ref_case_close(&rc);
 }
 

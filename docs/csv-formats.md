@@ -55,14 +55,14 @@ accepted/skipped/total row counts without touching live decoder state.
 The RadioReference import (`docs/radioreference-import.md`) writes into the same library through the same validator,
 and its files are ordinary CSVs in the formats below — nothing reads them differently. Two things distinguish them:
 
-- **Their header line names its origin.** `DEC,Mode,Name (generated from RadioReference)` for a group list; a
+- **Their header line names its origin.** `DEC,Mode,Name,Category,(generated from RadioReference)` for a group list; a
   trunked channel map gets `ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this
   line)`. A **conventional** channel map's header differs —
   `ChannelNumber(dec),frequency(Hz),name,(generated from RadioReference; do not delete this line)` — because its
   third field is exactly `name`, which is what opts every row into the channel map's optional name column (see
   below); a trunked map has no per-channel name to offer, so its header stays two-field and the note stays free
-  text. Both parsers discard physical line 1 unconditionally, so the text is for humans — but deleting it eats the
-  first data row.
+  text. Headers are required: group categories and conventional channel names opt in through named columns,
+  while deleting the header causes the parser to consume the first data row as the header.
 - **Their library row records provenance**, so the file can be re-fetched later. In
   `files/imported_files.json` those rows carry five extra keys beyond the ordinary
   `name`/`path`/`type`/`importedAt`/`accepted`/`skipped`: `origin` (`"radioreference"`), `rrSid` (the RadioReference
@@ -410,7 +410,9 @@ Required columns:
 Notes:
 
 - The first line is treated as header text and is required.
-- Basic/default behavior uses only the first 3 columns; extra columns are ignored.
+- Basic/default behavior uses the first 3 columns. A fourth header field named `tag`, `tags`, or `category`
+  (case-insensitive, surrounding whitespace ignored) retains that column as a category; other extra columns,
+  including `metadata`, are ignored. Categories are trimmed and capped at 49 bytes, like names.
 - `mode` is matched literally by features that consult it:
   - `A` usually means allow/normal.
   - `B` and `DE` are treated as locked out.
@@ -425,7 +427,7 @@ Extended policy columns are supported only when the header opts into this exact 
 3. `audio` (`on`/`off`, default from `mode`)
 4. `record` (`on`/`off`, default from `mode`)
 5. `stream` (`on`/`off`, default from `mode`)
-6. `tags` (free text metadata; accepted for notes/round-tripping, not applied to runtime policy)
+6. `tags` (free text category retained for frontend filtering and round-tripping; never a policy condition)
 
 Important behavior:
 
@@ -439,6 +441,22 @@ Important behavior:
 - Exact duplicates preserve first-match behavior.
 - `audio=off` forces `record=off` and `stream=off`.
 - `mode=B`/`DE` forces media fields off regardless of optional values.
+- Android: **TG list** on the live monitor lists configured talkgroups/ranges plus voice talkgroups heard this
+  session that no listed row covers. Tap a card to choose **Listening** (`A`) or **Not tuned** (`B`); the screen
+  waits for the decoder snapshot before showing the change. Search matches names or IDs; category chips use the
+  retained tags (RadioReference imports supply their category names).
+- **Listen all** and **Do not tune all** edit listed rows in the selected category, or every listed row under
+  **All**. Search text does not narrow bulk edits. Learned radio-ID alias rows and mode `D` rows are excluded.
+  In allow-list mode, heard-but-unlisted talkgroups remain blocked until individually allowed.
+- A listening edit preserves a row's name, category, priority and preemption setting, but resets its media flags
+  from the selected mode. The monitor's **Skip** uses the same name-preserving block path.
+- When a group file is configured, edits atomically rewrite that file in table order, preserving ranges and
+  modeled fields. Existing extended policy headers remain extended; otherwise the output is `id,mode,name,tags`
+  when categories exist, or `id,mode,name`. Unmodeled metadata/note columns are discarded. Android rewrites its
+  app-private imported copy, not the original document.
+- Without a group file, edits last only for the session. A scan row's own effective list is also edited only
+  in memory, never written into the global group file. If saving fails, the decoder keeps the live edit and
+  reports that it is session-only; the previous file remains intact.
 
 Example:
 
