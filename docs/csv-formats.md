@@ -111,6 +111,8 @@ Notes:
   existing behavior. The initial input uses global settings until the first scheduled row entry. Explicit global
   modulation locks remain effective. Manual `L` cycling and avoid/advance use the same row-entry rules and visit
   same-frequency rows with different metadata. Zero-frequency placeholders change neither the mode nor keys.
+  An NXDN48 row needs only `mode=nxdn48`, not an outer `-fi` or a decoder switch in `options`. Audio keeps the
+  startup output layout; mono voice is duplicated into both channels when that layout is stereo.
 - Modes are stored by scan-list slot: duplicate channel numbers and repeated frequencies remain distinct rows.
   Trunk-scan target `type` is authoritative; `mode` values inside a target's `chan_csv` are validated and discarded.
 - A `name` is trimmed of surrounding whitespace, capped at 63 bytes (never splitting a UTF-8 character), and must not

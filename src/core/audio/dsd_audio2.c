@@ -1116,14 +1116,20 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
     encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
 
     if (!encL && opts->slot1_on != 0) {
-        dsd_output_float_block(opts, state, state->f_l, 160, 1);
+        if (opts->audio_out == 1 && opts->pulse_digi_out_channels == 2) {
+            float stereo[320];
+            audio_mono_to_stereo_f32(state->f_l, stereo, 160);
+            dsd_output_float_block(opts, state, stereo, 160, 2);
+        } else {
+            dsd_output_float_block(opts, state, state->f_l, 160, 1);
+        }
     }
     dsd_audio_maybe_reset_output_ring_left(state);
     DSD_MEMSET(state->f_l, 0.0f, sizeof(state->f_l));
     DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
 }
 
-//Mono - Short (SB16LE) - Drop-in replacement for playSyntesizedVoice, but easier to manipulate
+// Mono source, formatted for the device opened at startup (which stays stereo in AUTO/mixed scans).
 void
 playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     size_t len = state->audio_out_idx;
@@ -1140,7 +1146,13 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
         if (opts->use_hpf_d == 1) {
             hpf_dL(state, mono_samp, (int)len);
         }
-        dsd_output_s16_block(opts, state, mono_samp, len, 1);
+        if (opts->audio_out == 1 && opts->pulse_digi_out_channels == 2) {
+            short stereo[1920];
+            audio_mono_to_stereo_s16(mono_samp, stereo, len);
+            dsd_output_s16_block(opts, state, stereo, len, 2);
+        } else {
+            dsd_output_s16_block(opts, state, mono_samp, len, 1);
+        }
         dsd_write_static_wav_from_mono(opts, mono_samp, len);
     }
     dsd_audio_reset_short_mono_left_working_state(state);
