@@ -303,6 +303,9 @@ row_from_item(const Event_History* item, const QString& sessionLabel, int slot, 
     const qint64 start = static_cast<qint64>(item->event_start_time);
     const qint64 end = static_cast<qint64>(item->event_time);
     row.when = (start > 0) ? start : end;
+    row.sourceNameWhen = row.when;
+    row.sourceNameSeq = seq;
+    row.sourceNameSlot = slot;
     if (row.kind == CallHistoryModel::KindVoice) {
         row.durationSecs = call_history_duration_secs(start, end);
     }
@@ -419,6 +422,39 @@ rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Ro
                                             srcKnownMatch);
 }
 
+/**
+ * @brief Adopt @p row's source label when it is the later of the two.
+ *
+ * Fragments reach the merge in whichever order a refresh happens to collect them --
+ * a backlog walks newest-first, a live session arrives oldest-first -- so the label
+ * has to be chosen by the fragment it came from rather than by arrival. The push
+ * sequence and slot break a same-second tie; identical provenance is the fragment
+ * enriching its own label, which must still land.
+ */
+void
+merge_source_label(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (row.sourceName.isEmpty()) {
+        return;
+    }
+    if (!existing.sourceName.isEmpty()) {
+        if (row.sourceNameWhen != existing.sourceNameWhen) {
+            if (row.sourceNameWhen < existing.sourceNameWhen) {
+                return;
+            }
+        } else if (row.sourceNameSeq != existing.sourceNameSeq) {
+            if (row.sourceNameSeq < existing.sourceNameSeq) {
+                return;
+            }
+        } else if (row.sourceNameSlot < existing.sourceNameSlot) {
+            return;
+        }
+    }
+    existing.sourceName = row.sourceName;
+    existing.sourceNameWhen = row.sourceNameWhen;
+    existing.sourceNameSeq = row.sourceNameSeq;
+    existing.sourceNameSlot = row.sourceNameSlot;
+}
+
 } // namespace
 
 int
@@ -433,6 +469,7 @@ CallHistoryModel::tryMerge(const Row& row) {
         if (!rows_mergeable(existing, row)) {
             continue;
         }
+        merge_source_label(existing, row);
         const qint64 start = qMin(existing.when, row.when);
         const qint64 span = qMax(row_end_secs(existing), row_end_secs(row)) - start;
         existing.when = start;
@@ -442,9 +479,6 @@ CallHistoryModel::tryMerge(const Row& row) {
         existing.enc = existing.enc || row.enc;
         if (existing.src == 0) {
             existing.src = row.src;
-        }
-        if (!row.sourceName.isEmpty()) {
-            existing.sourceName = row.sourceName;
         }
         return i;
     }
@@ -620,6 +654,15 @@ CallHistoryModel::load() {
         row.channel = obj.value(QLatin1String("channel")).toString();
         row.slot = obj.value(QLatin1String("slot")).toInt();
         row.seq = obj.value(QLatin1String("seq")).toVariant().toULongLong();
+        // Older stores have no label provenance; their surviving row identity
+        // is the best available starting point.
+        row.sourceNameWhen = obj.contains(QLatin1String("srcNameWhen"))
+                                 ? obj.value(QLatin1String("srcNameWhen")).toVariant().toLongLong()
+                                 : row.when;
+        row.sourceNameSeq = obj.contains(QLatin1String("srcNameSeq"))
+                                ? obj.value(QLatin1String("srcNameSeq")).toVariant().toULongLong()
+                                : row.seq;
+        row.sourceNameSlot = obj.value(QLatin1String("srcNameSlot")).toInt(row.slot);
         rows.append(row);
     }
     beginResetModel();
@@ -677,6 +720,9 @@ CallHistoryModel::rowsToJson() const {
         obj.insert(QLatin1String("tg"), static_cast<qint64>(row.tg));
         obj.insert(QLatin1String("src"), static_cast<qint64>(row.src));
         obj.insert(QLatin1String("srcName"), row.sourceName);
+        obj.insert(QLatin1String("srcNameWhen"), row.sourceNameWhen);
+        obj.insert(QLatin1String("srcNameSeq"), static_cast<qint64>(row.sourceNameSeq));
+        obj.insert(QLatin1String("srcNameSlot"), row.sourceNameSlot);
         obj.insert(QLatin1String("enc"), row.enc);
         obj.insert(QLatin1String("durationSecs"), row.durationSecs);
         obj.insert(QLatin1String("systemName"), row.systemName);

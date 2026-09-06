@@ -118,6 +118,12 @@ class CallHistoryModel : public QAbstractListModel {
         qulonglong tg = 0;
         qulonglong src = 0;
         QString sourceName;
+        /* Keep the selected label's fragment identity separate from the merged
+         * call span. Same-second fragments use their push stamp/slot as a stable
+         * tie-break; the same fragment may still enrich its label in place. */
+        qint64 sourceNameWhen = 0;
+        qulonglong sourceNameSeq = 0;
+        int sourceNameSlot = 0;
         bool enc = false;
         int durationSecs = -1;
         QString systemName;

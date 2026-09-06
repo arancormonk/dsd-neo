@@ -3804,6 +3804,28 @@ target_link_libraries(
     dsd-neo_test_core_csv_validate
     PRIVATE dsd-neo_core dsd-neo_proto_dmr
 )
+# The read-error case faults the stream the validators open; the wrapper delegates
+# to the real opener for every other case in the suite. It needs GNU ld's --wrap
+# and fopencookie(), so the case only exists where both are present -- applying
+# --wrap without a wrapper to satisfy it would leave the link undefined.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    include(CheckSymbolExists)
+    set(_DSD_CSV_VALIDATE_DEFS_SAVE "${CMAKE_REQUIRED_DEFINITIONS}")
+    set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+    check_symbol_exists(fopencookie "stdio.h" DSD_HAVE_FOPENCOOKIE)
+    set(CMAKE_REQUIRED_DEFINITIONS "${_DSD_CSV_VALIDATE_DEFS_SAVE}")
+    unset(_DSD_CSV_VALIDATE_DEFS_SAVE)
+    if(DSD_HAVE_FOPENCOOKIE)
+        target_link_options(
+            dsd-neo_test_core_csv_validate
+            PRIVATE "LINKER:--wrap=dsd_path_fopen_user_read_file"
+        )
+        target_compile_definitions(
+            dsd-neo_test_core_csv_validate
+            PRIVATE DSD_TEST_FAULT_READS
+        )
+    endif()
+endif()
 add_test(NAME CORE_CSV_VALIDATE COMMAND dsd-neo_test_core_csv_validate)
 
 add_executable(

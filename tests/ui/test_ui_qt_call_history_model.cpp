@@ -386,6 +386,79 @@ test_source_labels_survive_merge_and_relaunch(void) {
            restored.data(restored.index(0), CallHistoryModel::SourceNameRole).toString() == QStringLiteral("N0CALL"));
 }
 
+/* Refresh timing must not choose the label: backlog scans newest-first, while
+ * incremental refresh sees the same fragments oldest-first. Also cover two
+ * distinct fragments stamped in the same second. */
+void
+test_source_label_is_independent_of_refresh_timing(void) {
+    const time_t when = 1754500600;
+    for (int sameSecond = 0; sameSecond < 2; sameSecond++) {
+        for (int incremental = 0; incremental < 2; incremental++) {
+            resetStorage();
+            RingFixture ring;
+            CallHistoryModel model;
+            Event_History* item = ring.commit(0, 1201, 1201, when, when + 8);
+            DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Old alias");
+            if (incremental) {
+                model.refresh(ring.state);
+            }
+            item = ring.commit(0, 1201, 1201, when + (sameSecond ? 0 : 9), when + 15);
+            DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "New alias");
+            model.refresh(ring.state);
+            expect("batched and incremental fragments select the latest alias",
+                   model.count() == 1
+                       && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                              == QStringLiteral("New alias"));
+        }
+    }
+}
+
+/* The selected label belongs to neither end of this merged span. A restart
+ * must retain that provenance, not use the merged start/end for the next merge. */
+void
+test_source_label_provenance_survives_merged_span_and_relaunch(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754500700;
+    ring.commit(0, 1201, 1201, when, when + 3);
+    Event_History* item = ring.commit(0, 1201, 1201, when + 10, when + 15);
+    DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Middle alias");
+    ring.commit(0, 1201, 1201, when + 20, when + 25);
+    {
+        CallHistoryModel model;
+        model.refresh(ring.state);
+        expect("unlabelled fragments extend the call without replacing its label",
+               model.count() == 1 && model.data(model.index(0), CallHistoryModel::DurationSecsRole).toInt() == 25
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Middle alias"));
+    }
+
+    CallHistoryModel restored;
+    item = ring.commit(1, 1201, 1201, when + 5, when + 8);
+    DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Older alias");
+    restored.refresh(ring.state);
+    expect("backfilled alias newer than the merged start does not replace the selected label",
+           restored.count() == 1
+               && restored.data(restored.index(0), CallHistoryModel::SourceNameRole).toString()
+                      == QStringLiteral("Middle alias"));
+
+    item = ring.commit(1, 1201, 1201, when + 18, when + 19);
+    DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Later alias");
+    restored.refresh(ring.state);
+    expect("newer alias older than the merged end replaces the selected label",
+           restored.count() == 1
+               && restored.data(restored.index(0), CallHistoryModel::SourceNameRole).toString()
+                      == QStringLiteral("Later alias"));
+
+    DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Enriched alias");
+    ring.touchCommitted(1);
+    restored.refresh(ring.state);
+    expect("selected fragment still accepts alias-only enrichment after merging and relaunch",
+           restored.count() == 1
+               && restored.data(restored.index(0), CallHistoryModel::SourceNameRole).toString()
+                      == QStringLiteral("Enriched alias"));
+}
+
 } // namespace
 
 int
@@ -407,6 +480,8 @@ main(int argc, char** argv) {
     QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, settingsDir.path());
 
     test_source_labels_survive_merge_and_relaunch();
+    test_source_label_is_independent_of_refresh_timing();
+    test_source_label_provenance_survives_merged_span_and_relaunch();
     test_two_slots_same_second_same_talkgroup();
     test_textual_targets_stay_distinct();
     test_alias_only_row_is_logged();

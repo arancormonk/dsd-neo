@@ -239,6 +239,76 @@ Item {
             testContext.setMetric("leadSlot", 0)
         }
 
+        // Source aliases share the subline with security information. A long
+        // identity must yield space rather than pushing ENC or its algorithm out.
+        function test_03d_a_long_source_alias_keeps_encryption_inside_the_panel() {
+            var ids = findChild(screenLoader.item, "heroIds")
+            var enc = findChild(screenLoader.item, "heroEncTag")
+            var algorithm = findChild(screenLoader.item, "heroAlgorithm")
+            verify(ids !== null && enc !== null && algorithm !== null, "a hero subline item is missing")
+
+            function encryptionFits() {
+                return ids.visible && ids.truncated && ids.width > 0
+                        && enc.visible && algorithm.visible && !algorithm.truncated
+                        && enc.x >= ids.x + ids.width + ids.parent.spacing - 0.5
+                        && algorithm.x >= enc.x + enc.width + ids.parent.spacing - 0.5
+                        && algorithm.x + algorithm.width <= ids.parent.width + 0.5
+            }
+
+            try {
+                testContext.setMetric("leadSlot", 1)
+                testContext.setMetric("slot1CallState", 2)
+                testContext.setMetric("slot1CallName", "Metro Fire")
+                testContext.setMetric("slot1TgText", "4001")
+                testContext.setMetric("slot1SrcText", "County Fire and Rescue Dispatch North Zone (1234567)")
+                testContext.setMetric("slot1Channel", "Fire Dispatch")
+                testContext.setMetric("slot1CallEnc", true)
+                testContext.setMetric("slot1EncText", "AES-256 K:65535")
+                tryVerify(encryptionFits, 5000, "the source alias crowds encryption out of the panel")
+
+                root.width = 320
+                tryVerify(encryptionFits, 5000, "encryption does not fit on a narrow screen")
+
+                // An unknown algorithm leaves no phantom gap; ENC still fits.
+                testContext.setMetric("slot1EncText", "")
+                tryVerify(function () {
+                    return !algorithm.visible && ids.truncated && enc.visible
+                            && enc.x >= ids.x + ids.width + ids.parent.spacing - 0.5
+                            && Math.abs(enc.x + enc.width - ids.parent.width) < 0.5
+                }, 5000, "a hidden algorithm still consumes identity space")
+
+                // Clear calls must not reserve space for hidden security fields,
+                // even if a previous header left an algorithm string behind.
+                testContext.setMetric("slot1EncText", "AES-256 K:65535")
+                testContext.setMetric("slot1CallEnc", false)
+                tryVerify(function () {
+                    return !enc.visible && !algorithm.visible && ids.truncated
+                            && Math.abs(ids.width - ids.parent.width) < 0.5
+                }, 5000, "an unencrypted call loses space to hidden indicators")
+
+                // With no decoded identity the security fields start the row.
+                testContext.setMetric("slot1CallEnc", true)
+                testContext.setMetric("slot1TgText", "0")
+                testContext.setMetric("slot1SrcText", "0")
+                tryVerify(function () {
+                    return !ids.visible && enc.visible && Math.abs(enc.x) < 0.5
+                            && algorithm.visible && !algorithm.truncated
+                            && algorithm.x >= enc.x + enc.width + ids.parent.spacing - 0.5
+                            && algorithm.x + algorithm.width <= ids.parent.width + 0.5
+                }, 5000, "a hidden identity displaces the encryption indicators")
+            } finally {
+                root.width = 420
+                testContext.setMetric("slot1CallEnc", false)
+                testContext.setMetric("slot1EncText", "")
+                testContext.setMetric("slot1Channel", "")
+                testContext.setMetric("slot1TgText", "")
+                testContext.setMetric("slot1SrcText", "")
+                testContext.setMetric("slot1CallName", "")
+                testContext.setMetric("slot1CallState", 0)
+                testContext.setMetric("leadSlot", 0)
+            }
+        }
+
         // The recent-calls row answers "where was this heard" the way the hero
         // does: the channel closes the meta line when it is not already the name.
         function test_03e_a_recent_row_names_its_channel() {

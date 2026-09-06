@@ -108,7 +108,7 @@ test_failures(void) {
 
 static void
 boundary(size_t length, const char* suffix, int header, unsigned accepted, unsigned skipped) {
-    FILE* fp = dsd_fopen_private(path, "w");
+    FILE* fp = dsd_fopen_private(path, "wb");
     assert(fp);
     if (!header) {
         assert(fputs("id,name\n", fp) >= 0);

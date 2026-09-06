@@ -9,8 +9,10 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
 #include "dsd-neo/core/safe_api.h"
 
 void
@@ -19,6 +21,98 @@ LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
     (void)BufferOut;
     (void)state;
 }
+
+/*
+ * A read error partway through a file is the one way a validator can fail after it has
+ * already counted rows, and the import pickers show whatever counts come back. Faulting
+ * the stream is the only way to reach it: every real regular file the parser accepts
+ * reads to EOF. The build arms this only where --wrap and fopencookie() both exist, and
+ * the fault itself stays off unless a case turns it on, so every other case here opens
+ * its file for real.
+ */
+#if defined(DSD_TEST_FAULT_READS)
+// IWYU pragma: no_include <bits/types/cookie_io_functions_t.h>
+
+static int g_fault_reads;
+static int g_fault_hits;
+static char g_fault_content[1400];
+static size_t g_fault_size;
+static size_t g_fault_offset;
+
+// GNU ld --wrap requires these exact external symbol names.
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+FILE* __real_dsd_path_fopen_user_read_file(const char* requested, char* out, size_t out_size);
+FILE* __wrap_dsd_path_fopen_user_read_file(const char* requested, char* out, size_t out_size);
+
+static ssize_t
+fault_read(void* cookie, char* buf, size_t size) {
+    (void)cookie;
+    if (g_fault_offset >= g_fault_size) {
+        g_fault_hits++;
+        errno = EIO;
+        return -1;
+    }
+    size_t n = g_fault_size - g_fault_offset;
+    if (n > size) {
+        n = size;
+    }
+    DSD_MEMCPY(buf, g_fault_content + g_fault_offset, n);
+    g_fault_offset += n;
+    return (ssize_t)n;
+}
+
+FILE*
+__wrap_dsd_path_fopen_user_read_file(const char* requested, char* out, size_t out_size) {
+    if (!g_fault_reads) {
+        return __real_dsd_path_fopen_user_read_file(requested, out, out_size);
+    }
+    if (out && out_size > 0) {
+        DSD_SNPRINTF(out, out_size, "%s", requested ? requested : "");
+    }
+    g_fault_offset = 0;
+    cookie_io_functions_t io = {0};
+    io.read = fault_read;
+    return fopencookie(NULL, "r", io);
+}
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+
+/* Header, then a row too long to be a row (counted as skipped), then the fault. */
+static int
+test_p25_bandplan_read_error_reports_no_counts(void) {
+    const char* header = "iden,base_hz,spacing_hz\n";
+    const size_t header_len = strlen(header);
+    DSD_MEMCPY(g_fault_content, header, header_len);
+    DSD_MEMSET(g_fault_content + header_len, 'x', sizeof(g_fault_content) - header_len);
+    g_fault_content[sizeof(g_fault_content) - 1] = '\n';
+    g_fault_size = sizeof(g_fault_content);
+
+    dsd_csv_validation v = {9U, 9U, 9U};
+    g_fault_hits = 0;
+    g_fault_reads = 1;
+    const int rc = dsd_csv_validate_p25_bandplan_file("faulted-bandplan.csv", &v);
+    g_fault_reads = 0;
+
+    /* Without the wrap in place the opener would fail outright and the counts would
+       be zero for the wrong reason, which would pass this case without testing it. */
+    if (g_fault_hits == 0 || g_fault_offset != g_fault_size) {
+        DSD_FPRINTF(stderr, "the faulted stream never served the file: hits=%d offset=%zu size=%zu\n", g_fault_hits,
+                    g_fault_offset, g_fault_size);
+        return 1;
+    }
+
+    if (rc == 0) {
+        DSD_FPRINTF(stderr, "bandplan validate reported success on a read error\n");
+        return 1;
+    }
+    if (v.accepted != 0U || v.skipped != 0U || v.total != 0U) {
+        DSD_FPRINTF(stderr, "failed bandplan validate kept counts: accepted=%u skipped=%u total=%u\n", v.accepted,
+                    v.skipped, v.total);
+        return 1;
+    }
+    return 0;
+}
+#endif
 
 static int
 write_temp_csv(char* tmpl, const char* contents) {
@@ -611,5 +705,10 @@ main(void) {
     if (test_p25_bandplan_rejects_other_kinds() != 0) {
         return 1;
     }
+#if defined(DSD_TEST_FAULT_READS)
+    if (test_p25_bandplan_read_error_reports_no_counts() != 0) {
+        return 1;
+    }
+#endif
     return 0;
 }

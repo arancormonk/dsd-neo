@@ -462,8 +462,7 @@ dsd_csv_validate_p25_bandplan_file(const char* path, dsd_csv_validation* out) {
     char filename[CSV_IMPORT_PATH_MAX];
     p25_bandplan_row_t rows[DSD_P25_BANDPLAN_MAX_ROWS];
     if (csv_p25_bandplan_parse_file(path, rows, out, filename, sizeof filename) < 0) {
-        out->accepted = 0U;
-        out->total = 0U;
+        DSD_MEMSET(out, 0, sizeof(*out));
         return -1;
     }
     out->skipped = out->total - out->accepted;
