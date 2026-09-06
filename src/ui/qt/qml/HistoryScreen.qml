@@ -146,8 +146,8 @@ Item {
                     var parts = []
                     if (model.tg > 0)
                         parts.push("TG " + model.tg)
-                    if (model.src > 0)
-                        parts.push("SRC " + model.src)
+                    if (model.src > 0 || model.srcName)
+                        parts.push("SRC " + Util.sourceText(model.src, model.srcName))
                     if (model.detail.length > 0)
                         parts.push(model.detail)
                     if (model.channel.length > 0 && model.channel !== model.name)
@@ -163,8 +163,8 @@ Item {
                 var meta = []
                 if (model.tg > 0)
                     meta.push("TG " + model.tg)
-                if (model.src > 0)
-                    meta.push("SRC " + model.src)
+                if (model.src > 0 || model.srcName)
+                    meta.push("SRC " + Util.sourceText(model.src, model.srcName))
                 if (model.enc)
                     meta.push(qsTr("encrypted"))
                 if (model.durationSecs >= 0)

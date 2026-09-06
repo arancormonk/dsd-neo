@@ -67,12 +67,14 @@ enum {
      *
      * Its own constant rather than DSD_CALL_IDENTITY_TEXT_SIZE, because the two fields
      * are copied from differently sized sources: @c name comes from a CSV import, held
-     * in @c Event_History::t_name as a @c char[200], while @c tg_text and @c src_text
+     * in @c Event_History::t_name as a @c char[200], while @c tg_text and the source identity
      * come from the canonical call state's @c char[DSD_CALL_IDENTITY_TEXT_SIZE] fields.
      * Sizing @c name like the other two silently cut a long talkgroup alias down to 63
      * characters on its way to the hero panel.
      */
     DSD_APP_CALL_NAME_SIZE = 200,
+    /** Source label plus OTA callsign/ID in parentheses, including the terminator. */
+    DSD_APP_CALL_SOURCE_SIZE = DSD_APP_CALL_NAME_SIZE + DSD_CALL_IDENTITY_TEXT_SIZE + 3,
     /**
      * Width of @c channel: the scan channel label the event layer stamps on history rows
      * (@c Event_History::channel_label, sized by @c DSD_CHANNEL_LABEL_SIZE in core). Copied
@@ -96,7 +98,8 @@ typedef struct {
      */
     char name[DSD_APP_CALL_NAME_SIZE];
     char tg_text[DSD_CALL_IDENTITY_TEXT_SIZE];
-    char src_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+    /** Resolved source label with the OTA identity, or the OTA identity alone. */
+    char src_text[DSD_APP_CALL_SOURCE_SIZE];
     /**
      * The scan channel the epoch was heard on: the @c -Y row name or the trunk-scan target
      * id, as staged on the slot's active history row. Empty when the receiver is not

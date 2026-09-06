@@ -21,6 +21,7 @@
    panel and the Android notification alike, with nothing failing. */
 _Static_assert(sizeof(((Event_History*)0)->t_name) == DSD_APP_CALL_NAME_SIZE,
                "dsd_app_slot_call::name must match Event_History::t_name");
+_Static_assert(sizeof(((Event_History*)0)->s_name) == DSD_APP_CALL_NAME_SIZE, "source label must fit the call view");
 _Static_assert(sizeof(((Event_History*)0)->channel_label) == DSD_APP_CALL_CHANNEL_SIZE,
                "dsd_app_slot_call::channel must match Event_History::channel_label");
 
@@ -89,6 +90,26 @@ staged_group_name(const dsd_state* state, uint8_t slot, uint64_t tg_id, char* ou
     }
     DSD_SNPRINTF(out, out_size, "%s", staged->t_name);
     return 1;
+}
+
+/* The event layer resolves source aliases before group-list exact labels. Reuse that
+ * staged value only for the same nonzero source, so the previous caller cannot name
+ * a new epoch. Keep the OTA identity visible alongside the label. */
+static void
+slot_source_text(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* call, char* out, size_t out_size) {
+    char identity[DSD_CALL_IDENTITY_TEXT_SIZE];
+    if (call->source_text[0] != '\0') {
+        DSD_SNPRINTF(identity, sizeof(identity), "%s", call->source_text);
+    } else {
+        DSD_SNPRINTF(identity, sizeof(identity), "%llu", (unsigned long long)call->ota_source_id);
+    }
+    const Event_History* staged = state->event_history_s ? &state->event_history_s[slot].Event_History_Items[0] : NULL;
+    if (staged && call->ota_source_id != 0U && call->ota_source_id == staged->source_id && staged->s_name[0] != '\0'
+        && strcmp(staged->s_name, identity) != 0) {
+        DSD_SNPRINTF(out, out_size, "%s (%s)", staged->s_name, identity);
+    } else {
+        DSD_SNPRINTF(out, out_size, "%s", identity);
+    }
 }
 
 /**
@@ -180,11 +201,7 @@ dsd_app_slot_call_view(const dsd_state* state, uint8_t slot, double now_m, dsd_a
        policy-resolved id otherwise. Text-only targets stay 0. */
     out->tg_id = (call.ota_target_id != 0U) ? call.ota_target_id : call.policy_target_id;
 
-    if (call.source_text[0] != '\0') {
-        DSD_SNPRINTF(out->src_text, sizeof(out->src_text), "%s", call.source_text);
-    } else {
-        DSD_SNPRINTF(out->src_text, sizeof(out->src_text), "%llu", (unsigned long long)call.ota_source_id);
-    }
+    slot_source_text(state, slot, &call, out->src_text, sizeof(out->src_text));
 
     slot_call_name(state, slot, &call, out);
 

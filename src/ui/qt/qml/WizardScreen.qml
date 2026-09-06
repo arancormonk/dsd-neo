@@ -50,8 +50,9 @@ Item {
     property string keyCsvPath: ""
     property bool keyCsvHex: false
     property string p25BandplanCsvPath: ""
+    property string srcCsvPath: ""
     // Which field the shared FileDialog is serving: "source" is the step-1
-    // audio/capture pick; "chan"/"group"/"keys"/"p25Bandplan" are the
+    // audio/capture pick; "chan"/"group"/"keys"/"p25Bandplan"/"src" are the
     // trunking-data picks.
     property string pickerTarget: "source"
     // Dec/hex choice for a new key-file import from the picker sheet.
@@ -113,6 +114,7 @@ Item {
         keyCsvPath = ""
         keyCsvHex = false
         p25BandplanCsvPath = ""
+        srcCsvPath = ""
         csvNotice = ""
         csvNoticeIsProblem = false
     }
@@ -152,6 +154,7 @@ Item {
         keyCsvPath = ""
         keyCsvHex = false
         p25BandplanCsvPath = ""
+        srcCsvPath = ""
         csvNotice = ""
         csvNoticeIsProblem = false
     }
@@ -181,6 +184,7 @@ Item {
         keyCsvPath = sys.keyCsvPath
         keyCsvHex = sys.keyCsvHex
         p25BandplanCsvPath = sys.p25BandplanCsvPath
+        srcCsvPath = sys.srcCsvPath
         csvNotice = ""
         csvNoticeIsProblem = false
     }
@@ -276,7 +280,8 @@ Item {
             groupCsvPath: groupCsvPath,
             keyCsvPath: keyCsvPath,
             keyCsvHex: keyCsvHex,
-            p25BandplanCsvPath: p25BandplanCsvPath
+            p25BandplanCsvPath: p25BandplanCsvPath,
+            srcCsvPath: srcCsvPath
         }
         if (editRow >= 0) {
             savedSystems.update(editRow, sys)
@@ -318,6 +323,8 @@ Item {
             keyCsvHex = hex
         } else if (target === "p25Bandplan") {
             p25BandplanCsvPath = path
+        } else if (target === "src") {
+            srcCsvPath = path
         }
     }
 
@@ -849,6 +856,13 @@ Item {
                             title: qsTr("P25 band plan")
                             target: "p25Bandplan"
                             path: wizard.p25BandplanCsvPath
+                            showDivider: true
+                        }
+
+                        CsvPickerRow {
+                            title: qsTr("Radio IDs")
+                            target: "src"
+                            path: wizard.srcCsvPath
                         }
 
                         Text {
@@ -1160,6 +1174,7 @@ Item {
         readonly property string currentPath: wizard.pickerTarget === "chan" ? wizard.chanCsvPath
                                               : wizard.pickerTarget === "group" ? wizard.groupCsvPath
                                               : wizard.pickerTarget === "p25Bandplan" ? wizard.p25BandplanCsvPath
+                                              : wizard.pickerTarget === "src" ? wizard.srcCsvPath
                                               : wizard.keyCsvPath
         readonly property var entries: {
             var n = importedFiles.count // dependency: recompute when the library changes
@@ -1177,7 +1192,9 @@ Item {
                          ? (entry.accepted === 1 ? qsTr("talkgroup") : qsTr("talkgroups"))
                          : wizard.pickerTarget === "p25Bandplan"
                            ? (entry.accepted === 1 ? qsTr("identifier") : qsTr("identifiers"))
-                           : (entry.accepted === 1 ? qsTr("key") : qsTr("keys"))
+                           : wizard.pickerTarget === "src"
+                             ? (entry.accepted === 1 ? qsTr("radio ID") : qsTr("radio IDs"))
+                             : (entry.accepted === 1 ? qsTr("key") : qsTr("keys"))
             var line = entry.accepted + " " + noun
             if (wizard.pickerTarget === "keys")
                 line += " · " + (entry.type === "keysHex" ? qsTr("hex") : qsTr("decimal"))
@@ -1188,6 +1205,7 @@ Item {
             text: wizard.pickerTarget === "chan" ? qsTr("Channel map")
                   : wizard.pickerTarget === "group" ? qsTr("Talkgroups")
                   : wizard.pickerTarget === "p25Bandplan" ? qsTr("P25 band plan")
+                  : wizard.pickerTarget === "src" ? qsTr("Radio IDs")
                   : qsTr("Encryption keys")
         }
 

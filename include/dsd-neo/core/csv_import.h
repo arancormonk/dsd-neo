@@ -29,6 +29,10 @@ extern "C" {
  * failure, and the import still returns 0 with whatever loaded. Returns -1 when the file
  * cannot be opened or a read error interrupts it.
  */
+/* Source aliases: replace on success; preserve live store on open/read/allocation failure. */
+int csvSrcImport(const dsd_opts* opts, dsd_state* state);
+int csvSrcImportPath(const char* path, dsd_state* state);
+
 int csvGroupImport(const dsd_opts* opts, dsd_state* state);
 /** csvGroupImport() on an explicit path. */
 int csvGroupImportPath(const char* group_file_path, dsd_state* state);

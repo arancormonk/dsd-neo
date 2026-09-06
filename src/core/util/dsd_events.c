@@ -18,6 +18,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -1336,8 +1337,8 @@ watchdog_event_current_load_labels(const dsd_state* state, watchdog_event_curren
     }
 
     if (ctx->source_id != 0
-        && dsd_tg_policy_lookup_label(state, ctx->source_id, ctx->s_mode, sizeof(ctx->s_mode), ctx->s_name,
-                                      sizeof(ctx->s_name))) {
+        && dsd_source_label_lookup(state, ctx->source_id, ctx->s_mode, sizeof(ctx->s_mode), ctx->s_name,
+                                   sizeof(ctx->s_name))) {
         ctx->s_name_loaded = 1;
     }
 }
@@ -1679,7 +1680,11 @@ watchdog_event_current_append_policy_labels(const watchdog_event_current_ctx* ct
 
     if (ctx->s_name_loaded) {
         char private[420];
-        DSD_SNPRINTF(private, sizeof(private), "SName: %s; Mode: %s; ", ctx->s_name, ctx->s_mode);
+        if (ctx->s_mode[0]) {
+            DSD_SNPRINTF(private, sizeof(private), "SName: %s; Mode: %s; ", ctx->s_name, ctx->s_mode);
+        } else {
+            DSD_SNPRINTF(private, sizeof(private), "SName: %s; ", ctx->s_name);
+        }
         watchdog_event_str_append(event_string, event_size, private);
     }
 }

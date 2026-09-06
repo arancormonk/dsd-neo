@@ -68,6 +68,9 @@ target_sources(
     PRIVATE
         ${PROJECT_SOURCE_DIR}/src/core/file/dsd_import.c
         ${PROJECT_SOURCE_DIR}/src/core/file/p25_bandplan_csv.c
+        # Source CSV parsing owns a candidate alias store before installing it.
+        ${PROJECT_SOURCE_DIR}/src/core/file/source_alias_csv.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
         ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
         # p25_bandplan_csv.c seeds the live IDEN tables through this.
         ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c

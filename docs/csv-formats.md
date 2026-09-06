@@ -1,9 +1,14 @@
 # CSV Input Formats
 
-DSD-neo uses small, purpose-built CSV importers for trunking helpers (channel maps, group lists) and key lists. These
-parsers are intentionally minimal and **not** full RFC 4180 CSV parsers.
+DSD-neo uses small, purpose-built CSV importers for trunking helpers (channel maps, group lists), source ID
+labels, and key lists. These parsers are intentionally minimal and **not** full RFC 4180 CSV parsers.
 
 If you want known-good starting points, see `examples/` in the repository.
+
+Group, source, key, and P25 band-plan CSVs consume each physical line in full. Lines over 998 content bytes
+(excluding LF/CRLF) or containing NUL are skipped once, without interpreting their tails as extra rows.
+The mapping importers (DMR TG-to-key and Vertex keystream) reject such data rows and retain the previous mapping.
+Channel maps retain their support for longer rows with mode/key options; a NUL byte rejects the import.
 
 ## General Rules (Unless A Format Says Otherwise)
 
@@ -20,14 +25,15 @@ If you want known-good starting points, see `examples/` in the repository.
 
 The Android app does not take CLI flags directly. Import CSVs through the UI instead: **Settings → Imported files**
 manages the library (import, update, remove), and the add/edit-system wizard's **Trunking data** panel assigns a
-channel map, talkgroup list, or key file to a system. Files are picked with the system document picker and copied into
-app-private storage (`files/imports/`), so the original can live anywhere (Downloads, Drive, …) and is not read again
+channel map, talkgroup list, key file, P25 band plan, or source ID list (**Radio IDs**, kind `src`) to a system.
+Files are picked with the system document picker and copied into app-private storage (`files/imports/`), so the
+original can live anywhere (Downloads, Drive, …) and is not read again
 after import — use "Update from file" to pull in a changed original. Each import is validated immediately and the row
 shows how many entries loaded ("412 talkgroups · 3 rows skipped"); a file whose rows all fail to parse is flagged
 "No usable rows". While a session is running, long-press its title on the monitor screen to edit that system; saving
 applies the files that changed to the live session immediately, including clearing a field to "None" — that unloads the
-channel map, talkgroup list or keys from the running session. One limit is worth knowing: the gesture only works for a
-session this app instance started (after the Activity is recreated while the service kept running, there is no
+channel map, talkgroup list, keys, or source ID list from the running session. One limit is worth knowing: the gesture
+only works for a session this app instance started (after the Activity is recreated while the service kept running, there is no
 saved-system row to write back to).
 
 Applying a channel map **replaces** the live one rather than merging into it, so anything the decoder learned on the
@@ -37,7 +43,9 @@ until the site announces it again.
 The library validates against the kind you picked, by content rather than by file name. A channel map and a decimal key
 file share the same `number,number` grammar and the header line is free text, so what separates them is the frequency
 column: picking a key list as a channel map reports "No usable rows". Two files of the same kind are still
-indistinguishable — nothing stops one site's map being picked for another.
+indistinguishable — nothing stops one site's map being picked for another. A group list (`id,mode,name`) and a
+source ID list (`id,name`) are not distinguishable by content either; the library validates against the kind you
+picked, so select **Radio IDs** for a source ID list.
 
 Programmatic validation uses the same dry-run parser: `dsd_csv_validate_*` in `<dsd-neo/core/csv_validate.h>` reports
 accepted/skipped/total row counts without touching live decoder state.
@@ -393,7 +401,8 @@ Purpose: Provide labels and allow/block behavior for talkgroups.
 
 Required columns:
 
-1. `id` (decimal integer; talkgroup ID or radio ID depending on protocol context)
+1. `id` (decimal integer; talkgroup ID or radio ID depending on protocol context). For radio ID names without
+   policy, use the [Source ID List CSV](#source-id-list-csv---src-csv-file--trunking-src_csv) below.
 2. `mode` (string)
 3. `name` (string)
 
@@ -445,6 +454,57 @@ id,mode,name,priority,preempt,audio,record,stream,tags
 1201,A,Dispatch 1,80,true,on,on,on,primary
 1202,A,Dispatch 2,40,false,on,off,on,secondary
 1300-1399,A,Ops Range,10,false,on,on,on,wide
+```
+
+## Source ID List CSV (`--src-csv <file>` / `[trunking] src_csv`)
+
+Purpose: Provide names for source radio IDs (unit IDs), shown as `SName:` in event history and in the terminal
+call display: after `SRC:` on the NXDN target/source line, and on the slot's `D XTRA` line beside the talkgroup
+label for DMR and P25 Phase 2. This list supplies labels only, with no allow/block or media policy. Private-call
+destination radio IDs still use the group list.
+
+Required columns:
+
+1. `id` (decimal `uint32_t`, `0..4294967295`; exact `1234567` or inclusive range `2000000-2000999`, using the
+   same grammar as the group list's `id`)
+2. `name` (free text, trimmed and truncated to **49 bytes**; truncation may cut a multi-byte UTF-8 tail)
+
+Optional column:
+
+3. `tags` (free text; accepted and ignored). Further columns are ignored.
+
+Notes:
+
+- The first physical line is always consumed as a header. Blank lines are skipped.
+- A row with fewer than two fields, an unparsable ID or reversed range, or an empty name is warned and skipped.
+- A physical line with more than **998 bytes of content** (excluding its LF or CRLF terminator), or one that contains
+  a NUL byte, is warned, its remainder discarded, and counted as one skipped row. Continuation fragments are never parsed as extra rows,
+  and the following line is not consumed. An overlong header is still consumed as the header and is excluded
+  from the validator's accepted/skipped/total counts, as are all headers and blank lines. It does not emit a
+  skipped-row warning.
+- Exact matches beat ranges; the **first row wins** for duplicate exact IDs. Among ranges, the narrowest
+  range wins, with the **last row winning** equal-width ties, matching the group-list grammar.
+- Names are not CSV-escaped; avoid commas and line breaks in fields.
+- Source labels prefer this list, then fall back to the active group list's **exact-row** label. A CSV alias
+  therefore wins over an OTA talker alias learned for the same RID as the `SName:` label; the OTA alias text itself
+  is kept unchanged. Source `Mode:` still comes only from a group-list exact row, never from this list.
+- Import replaces the current list. A missing or unreadable file, a read error, or an allocation failure fails
+  the import and keeps the current list. All entry points accept zero usable rows as a loaded empty list.
+  At engine startup a source-list load failure logs a warning and decoding continues without imported aliases.
+- Qt/Android call views show the resolved source label alongside its radio ID or callsign; history preserves
+  that label across sessions and includes it in text searches. Talkgroup names remain separate.
+- The list is global, loads even when trunking is disabled, and is allowed with `--trunk-scan`. It survives scan
+  target changes; its group-list fallback follows whichever policy table is active.
+- Terminal: **Trunking → Channels & groups → Import source ID list CSV...** imports the list. There is no terminal
+  clear row. Qt/Android uses the **Radio IDs** kind (`src`) and can clear the list by selecting **None**.
+
+Example (`examples/src.csv`):
+
+```csv
+id,name,tags
+1234567,Engine 21,Fire
+1234568,Ladder 4,Fire
+2000000-2000999,Dispatch consoles,Ops
 ```
 
 ## Decimal Key List CSV (`-k <file>`)

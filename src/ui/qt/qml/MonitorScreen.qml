@@ -307,8 +307,8 @@ Item {
                 Row {
                     id: heroSubline
 
-                    // Bounded so the channel text at the end can elide instead of
-                    // running out of the panel.
+                    // Give encryption indicators priority, then fit the identity
+                    // and trailing channel into the remaining space.
                     width: parent.width
                     visible: screen.heroSlot !== 0
                     spacing: 8
@@ -321,6 +321,10 @@ Item {
                         objectName: "heroIds"
                         anchors.verticalCenter: parent.verticalCenter
                         visible: text.length > 0
+                        width: Math.max(0, Math.min(implicitWidth, heroSubline.width
+                                                   - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0)
+                                                   - (heroAlgorithm.visible ? heroAlgorithm.width + heroSubline.spacing : 0)))
+                        elide: Text.ElideRight
                         text: {
                             var parts = []
                             if (screen.heroTg.length > 0 && screen.heroTg !== "0")
@@ -338,6 +342,8 @@ Item {
                     // encrypted — hearing silence over a normal-looking talkgroup
                     // otherwise reads as the decoder failing.
                     EncTag {
+                        id: heroEncTag
+                        objectName: "heroEncTag"
                         anchors.verticalCenter: parent.verticalCenter
                         visible: screen.heroEnc
                     }
@@ -345,8 +351,13 @@ Item {
                     // The decoded algorithm and key id, when the header said:
                     // AES and RC4 traffic should read differently at a glance.
                     Text {
+                        id: heroAlgorithm
+                        objectName: "heroAlgorithm"
                         anchors.verticalCenter: parent.verticalCenter
                         visible: screen.heroEnc && screen.heroEncText.length > 0
+                        width: Math.max(0, Math.min(implicitWidth, heroSubline.width
+                                                   - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0)))
+                        elide: Text.ElideRight
                         text: screen.heroEncText
                         font.family: Theme.mono
                         font.pixelSize: 11
@@ -736,6 +747,8 @@ Item {
                         var meta = []
                         if (model.tg > 0)
                             meta.push("TG " + model.tg)
+                        if (model.src > 0 || model.srcName)
+                            meta.push("SRC " + Util.sourceText(model.src, model.srcName))
                         if (model.enc)
                             meta.push(qsTr("encrypted"))
                         if (model.durationSecs >= 0)

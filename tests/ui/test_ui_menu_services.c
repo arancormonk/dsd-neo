@@ -17,6 +17,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
@@ -285,6 +286,53 @@ dsd_engine_p25_bandplan_export(const dsd_opts* opts, const dsd_state* state, con
     g_bandplan_export_calls++;
     DSD_SNPRINTF(g_bandplan_export_path, sizeof g_bandplan_export_path, "%s", path ? path : "");
     return g_bandplan_export_result;
+}
+
+/* One candidate must be adopted without a second load. */
+struct dsd_source_alias_store {
+    int marker;
+};
+
+static dsd_source_alias_store g_src_candidate;
+static int g_src_load_result, g_src_load_calls, g_src_install_calls, g_src_free_calls, g_src_clear_calls;
+static size_t g_src_count;
+static dsd_source_alias_store* g_src_installed;
+
+int
+dsd_source_alias_load(const char* path, dsd_source_alias_store** out) {
+    (void)path;
+    g_src_load_calls++;
+    if (g_src_load_result != 0) {
+        return g_src_load_result;
+    }
+    *out = &g_src_candidate;
+    return 0;
+}
+
+size_t
+dsd_source_alias_store_count(const dsd_source_alias_store* store) {
+    return store == &g_src_candidate ? g_src_count : 0;
+}
+
+void
+dsd_source_alias_install(dsd_state* state, dsd_source_alias_store* store) {
+    (void)state;
+    g_src_install_calls++;
+    g_src_installed = store;
+}
+
+void
+dsd_source_alias_store_free(dsd_source_alias_store* store) {
+    if (store == &g_src_candidate) {
+        g_src_free_calls++;
+    }
+}
+
+int
+dsd_source_alias_clear(dsd_state* state) {
+    (void)state;
+    g_src_clear_calls++;
+    return 0;
 }
 
 int
@@ -1205,9 +1253,50 @@ test_p25_bandplan_import_and_export_services(void) {
     return rc;
 }
 
+static int
+test_source_alias_services(void) {
+    int rc = 0;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->src_in_file, sizeof opts->src_in_file, "%s", "first.csv");
+    rc |= expect_int("source null path", svc_import_src_list(opts, state, NULL), -1);
+    rc |= expect_int("source empty path", svc_import_src_list(opts, state, ""), -1);
+    rc |= expect_int("source empty skips load", g_src_load_calls, 0);
+    g_src_load_result = -1;
+    rc |= expect_int("source load failure", svc_import_src_list(opts, state, "missing.csv"), -1);
+    rc |= expect_int("source failure skips install", g_src_install_calls, 0);
+    rc |= expect_str("source failure preserves path", opts->src_in_file, "first.csv");
+    g_src_load_result = 0;
+    g_src_count = 0;
+    rc |= expect_int("source zero rows accepted", svc_import_src_list(opts, state, "empty.csv"), 0);
+    rc |= expect_int("source empty adopted", g_src_free_calls, 0);
+    rc |= expect_int("source empty installed", g_src_install_calls, 1);
+    rc |= expect_str("source empty updates path", opts->src_in_file, "empty.csv");
+    g_src_count = 2;
+    opts->trunk_scan_enabled = 1;
+    rc |= expect_int("source allowed under trunk scan", svc_import_src_list(opts, state, "good.csv"), 0);
+    rc |= expect_int("source loads once per request", g_src_load_calls, 3);
+    rc |= expect_int("source installed per success", g_src_install_calls, 2);
+    rc |= expect_int("source adopts same candidate", g_src_installed == &g_src_candidate, 1);
+    rc |= expect_int("source adopted candidate not freed", g_src_free_calls, 0);
+    rc |= expect_str("source success path", opts->src_in_file, "good.csv");
+    rc |= expect_int("source clear", svc_clear_src_list(opts, state), 0);
+    rc |= expect_int("source clear calls core", g_src_clear_calls, 1);
+    rc |= expect_str("source clear path", opts->src_in_file, "");
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_source_alias_services();
     rc |= test_mute_and_protocol_inversion_toggles();
     rc |= test_lrrp_event_log_and_history_state();
     rc |= test_p2_trunking_and_slot_controls();

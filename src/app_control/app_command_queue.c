@@ -141,14 +141,15 @@ q_is_empty_unlocked(void) {
 }
 
 static const int k_ui_cmd_string_ids[] = {
-    DSD_APP_CMD_EVENT_LOG_SET,     DSD_APP_CMD_WAV_STATIC_OPEN,      DSD_APP_CMD_WAV_RAW_OPEN,
-    DSD_APP_CMD_DSP_OUT_SET,       DSD_APP_CMD_SYMCAP_OPEN,          DSD_APP_CMD_SYMBOL_IN_OPEN,
-    DSD_APP_CMD_INPUT_WAV_SET,     DSD_APP_CMD_INPUT_SYM_STREAM_SET, DSD_APP_CMD_PULSE_OUT_SET,
-    DSD_APP_CMD_PULSE_IN_SET,      DSD_APP_CMD_LRRP_SET_CUSTOM,      DSD_APP_CMD_IMPORT_CHANNEL_MAP,
-    DSD_APP_CMD_IMPORT_GROUP_LIST, DSD_APP_CMD_IMPORT_KEYS_DEC,      DSD_APP_CMD_IMPORT_KEYS_HEX,
-    DSD_APP_CMD_KEY_TYT_AP_SET,    DSD_APP_CMD_KEY_RETEVIS_RC2_SET,  DSD_APP_CMD_KEY_TYT_EP_SET,
-    DSD_APP_CMD_KEY_KEN_SCR_SET,   DSD_APP_CMD_KEY_ANYTONE_BP_SET,   DSD_APP_CMD_KEY_XOR_SET,
-    DSD_APP_CMD_M17_USER_DATA_SET, DSD_APP_CMD_IMPORT_P25_BANDPLAN,  DSD_APP_CMD_EXPORT_P25_BANDPLAN,
+    DSD_APP_CMD_EVENT_LOG_SET,       DSD_APP_CMD_WAV_STATIC_OPEN,      DSD_APP_CMD_WAV_RAW_OPEN,
+    DSD_APP_CMD_DSP_OUT_SET,         DSD_APP_CMD_SYMCAP_OPEN,          DSD_APP_CMD_SYMBOL_IN_OPEN,
+    DSD_APP_CMD_INPUT_WAV_SET,       DSD_APP_CMD_INPUT_SYM_STREAM_SET, DSD_APP_CMD_PULSE_OUT_SET,
+    DSD_APP_CMD_PULSE_IN_SET,        DSD_APP_CMD_LRRP_SET_CUSTOM,      DSD_APP_CMD_IMPORT_CHANNEL_MAP,
+    DSD_APP_CMD_IMPORT_SRC_LIST,     DSD_APP_CMD_IMPORT_GROUP_LIST,    DSD_APP_CMD_IMPORT_KEYS_DEC,
+    DSD_APP_CMD_IMPORT_KEYS_HEX,     DSD_APP_CMD_KEY_TYT_AP_SET,       DSD_APP_CMD_KEY_RETEVIS_RC2_SET,
+    DSD_APP_CMD_KEY_TYT_EP_SET,      DSD_APP_CMD_KEY_KEN_SCR_SET,      DSD_APP_CMD_KEY_ANYTONE_BP_SET,
+    DSD_APP_CMD_KEY_XOR_SET,         DSD_APP_CMD_M17_USER_DATA_SET,    DSD_APP_CMD_IMPORT_P25_BANDPLAN,
+    DSD_APP_CMD_EXPORT_P25_BANDPLAN,
 };
 
 /* Setters where only the newest value matters, so a queued one may be overwritten
@@ -1678,6 +1679,24 @@ ui_cmd_handle_import_group_list(dsd_opts* opts, dsd_state* state, const struct d
 }
 
 static int
+ui_cmd_handle_import_src_list(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    int result = UI_CMD_APPLY_COMPLETED;
+    if (state && c->n > 0) {
+        char path[1024] = {0};
+        if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
+            int rc = svc_import_src_list(opts, state, path);
+            result = ui_cmd_apply_status_from_service_rc(rc);
+            if (rc == 0) {
+                ui_set_toast(state, 3, "Applied: Source ID list imported -> %s", path);
+            } else {
+                ui_set_toast(state, 4, "Failed: Source ID list import -> %s", path);
+            }
+        }
+    }
+    return result;
+}
+
+static int
 ui_cmd_handle_import_keys_dec(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && c->n > 0) {
@@ -1752,6 +1771,21 @@ ui_cmd_handle_import_group_list_clear(dsd_opts* opts, dsd_state* state, const st
 }
 
 static int
+ui_cmd_handle_import_src_list_clear(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)c;
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    const int rc = svc_clear_src_list(opts, state);
+    if (rc == 0) {
+        ui_set_toast(state, 3, "Applied: Source ID list cleared");
+    } else {
+        ui_set_toast(state, 4, "Failed: Source ID list clear");
+    }
+    return ui_cmd_apply_status_from_service_rc(rc);
+}
+
+static int
 ui_cmd_handle_import_keys_clear(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (!state) {
@@ -1777,6 +1811,8 @@ apply_cmd_io_and_import_imports(dsd_opts* opts, dsd_state* state, const struct d
     static const struct dsd_app_command_handler_entry k_handlers[] = {
         {DSD_APP_CMD_IMPORT_CHANNEL_MAP, ui_cmd_handle_import_channel_map},
         {DSD_APP_CMD_IMPORT_GROUP_LIST, ui_cmd_handle_import_group_list},
+        {DSD_APP_CMD_IMPORT_SRC_LIST, ui_cmd_handle_import_src_list},
+        {DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR, ui_cmd_handle_import_src_list_clear},
         {DSD_APP_CMD_IMPORT_KEYS_DEC, ui_cmd_handle_import_keys_dec},
         {DSD_APP_CMD_IMPORT_KEYS_HEX, ui_cmd_handle_import_keys_hex},
         {DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR, ui_cmd_handle_import_channel_map_clear},
@@ -2549,6 +2585,12 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_TRUNK_DATA_TOGGLE,
     DSD_APP_CMD_TRUNK_ENC_TOGGLE,
     DSD_APP_CMD_ENC_LOCKOUT_CLEAR,
+    /* The frontend "None" selection unloads an imported CSV through these; a bridge
+       submits them with dsd_app_command_action(), which admits only this list. */
+    DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR,
+    DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
+    DSD_APP_CMD_IMPORT_KEYS_CLEAR,
+    DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR,
     DSD_APP_CMD_QUIT,
     DSD_APP_CMD_FORCE_PRIV_TOGGLE,
     DSD_APP_CMD_FORCE_RC4_TOGGLE,

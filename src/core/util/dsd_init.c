@@ -114,6 +114,7 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->chan_in_file[0] = 0;
     opts->key_in_file[0] = 0;
     opts->p25_bandplan_in_file[0] = 0;
+    opts->src_in_file[0] = 0;
     opts->p25_bandplan_export_file[0] = 0;
     //end import filenames
     opts->szNumbers[0] = 0;

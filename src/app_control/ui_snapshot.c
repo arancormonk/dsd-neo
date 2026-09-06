@@ -7,6 +7,7 @@
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -230,6 +231,7 @@ ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, dibit_buf, trunk_lcn_freq);
     ui_snapshot_copy_trunk_chan_map(dst, src);
     (void)dsd_tg_policy_copy_snapshot(dst, src);
+    (void)dsd_source_alias_copy_snapshot(dst, src);
 
     UI_SNAPSHOT_COPY_RANGE(dst, src, audio_out_idx, lastsample);
     UI_SNAPSHOT_COPY_RANGE(dst, src, err_str, aout_gainA);

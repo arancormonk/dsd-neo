@@ -157,6 +157,7 @@ Main Menu
 │   ├── Channels & groups
 │   │   ├── Import channel map CSV...
 │   │   ├── Import group list CSV...
+│   │   ├── Import source ID list CSV...
 │   │   ├── Import P25 band plan CSV...
 │   │   ├── Export learned P25 band plan...
 │   │   ├── ─────                                    (RadioReference builds)
@@ -332,6 +333,11 @@ RadioReference import:
   message (a target list's `p25_bandplan_csv` column is the way in) while the export still works and covers
   every target. The export's suggested file name carries the WACN/SYS when they are known and trunk scan is
   off; under trunk scan the merged multi-target file keeps the generic name.
+- **Trunking -> Channels & groups -> Import source ID list CSV...** prompts for an `id,name[,tags]`
+  CSV of source radio ID names. These labels carry no allow/block or media policy and apply in conventional
+  decode and trunk scan alike. A successful import replaces the source list; an unreadable file, a load
+  failure, or a file with no usable rows keeps the current list and path. Source labels prefer this list,
+  then fall back to the group list's exact row, including learned talker aliases. See `docs/csv-formats.md`.
 - P25 channels are shown as four hex digits followed by the same channel as `<identifier>-<channel>` in
   parentheses (`Active Ch: 2A46 (2-2630)`, `CH:2A46 (2-2630)` in the secondary control channel list, and the
   learned Channels panel), which is the spelling a channel map CSV accepts as its first column.

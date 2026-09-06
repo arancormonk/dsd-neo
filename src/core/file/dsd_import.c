@@ -43,94 +43,6 @@ csv_rkey_index(unsigned long long keynumber, unsigned long long offset, size_t* 
     return 1;
 }
 
-static int
-group_parse_u32_token(const char* token, uint32_t* out) {
-    unsigned long long v = 0;
-    char* end = NULL;
-    const char* p = token;
-    if (!token || !out) {
-        return 0;
-    }
-    while (*p != '\0' && is_ascii_space((unsigned char)*p)) {
-        p++;
-    }
-    if (*p == '\0' || *p == '+' || *p == '-') {
-        return 0;
-    }
-    errno = 0;
-    v = strtoull(p, &end, 10);
-    if (errno != 0 || end == p || v > UINT32_MAX) {
-        return 0;
-    }
-    while (*end != '\0' && is_ascii_space((unsigned char)*end)) {
-        end++;
-    }
-    if (*end != '\0') {
-        return 0;
-    }
-    *out = (uint32_t)v;
-    return 1;
-}
-
-static int
-group_parse_single_id(const char* token, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
-    if (!token || !out_start || !out_end || !out_is_range) {
-        return 0;
-    }
-    if (!group_parse_u32_token(token, out_start)) {
-        return 0;
-    }
-    *out_end = *out_start;
-    *out_is_range = 0;
-    return 1;
-}
-
-static int
-group_parse_range_id(char* token, char* dash, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
-    uint32_t start = 0;
-    uint32_t end = 0;
-    if (!token || !dash || !out_start || !out_end || !out_is_range) {
-        return 0;
-    }
-    if (strchr(dash + 1, '-') != NULL) {
-        return 0;
-    }
-
-    *dash = '\0';
-    const char* start_token = trim_ws(token);
-    const char* end_token = trim_ws(dash + 1);
-    if (!start_token || !end_token || start_token[0] == '\0' || end_token[0] == '\0') {
-        return 0;
-    }
-    if (!group_parse_u32_token(start_token, &start) || !group_parse_u32_token(end_token, &end)) {
-        return 0;
-    }
-    if (start > end) {
-        return 0;
-    }
-    *out_start = start;
-    *out_end = end;
-    *out_is_range = (start != end) ? 1 : 0;
-    return 1;
-}
-
-static int
-group_parse_id_field(char* token, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
-    if (!token || !out_start || !out_end || !out_is_range) {
-        return 0;
-    }
-    token = trim_ws(token);
-    if (!token || token[0] == '\0') {
-        return 0;
-    }
-
-    char* dash = strchr(token, '-');
-    if (!dash) {
-        return group_parse_single_id(token, out_start, out_end, out_is_range);
-    }
-    return group_parse_range_id(token, dash, out_start, out_end, out_is_range);
-}
-
 enum group_parse_value_result {
     GROUP_PARSE_VALUE_MISSING = 0,
     GROUP_PARSE_VALUE_OK = 1,
@@ -420,7 +332,7 @@ group_import_row(dsd_state* state, dsd_tg_policy_store* store, const char* filen
         return -1;
     }
 
-    if (!group_parse_id_field(fields[0], &id_start, &id_end, &is_range)) {
+    if (!csv_parse_id_field(fields[0], &id_start, &id_end, &is_range)) {
         LOG_WARN("WARNING: Group file '%s' row %u has invalid id '%s'; skipping.\n", filename, row_count, fields[0]);
         return -1;
     }
@@ -466,11 +378,15 @@ group_import_path(const char* group_file_path, dsd_state* state, dsd_tg_policy_s
         return -1;
     }
 
-    while (fgets(buffer, BSIZE, fp)) {
+    int invalid_line = 0;
+    while (csv_read_line(fp, buffer, sizeof(buffer), &invalid_line) > 0) {
         row_count++;
         trim_eol(buffer);
 
         if (row_count == 1) {
+            if (invalid_line) {
+                continue;
+            }
             char header_copy[BSIZE];
             DSD_SNPRINTF(header_copy, sizeof(header_copy), "%s", buffer);
             header = group_parse_policy_header(header_copy);
@@ -483,11 +399,8 @@ group_import_path(const char* group_file_path, dsd_state* state, dsd_tg_policy_s
             continue; //don't want labels
         }
 
-        if (csv_line_is_blank(buffer)) {
+        if (!csv_data_row_ready(buffer, invalid_line, filename, (unsigned)row_count, stats)) {
             continue;
-        }
-        if (stats) {
-            stats->total++;
         }
         if (group_import_row(state, store, filename, row_count, buffer, &header, &dropped_policy_alloc_rows) == 0
             && stats) {
@@ -1043,6 +956,9 @@ chan_read_line(FILE* fp, char** buffer, size_t* capacity) {
     size_t used = 0;
     int ch;
     while ((ch = fgetc(fp)) != EOF) {
+        if (ch == '\0') {
+            return -1;
+        }
         if (used + 1 >= *capacity) {
             if (*capacity >= max_capacity) {
                 return -1;
@@ -1103,7 +1019,7 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
         long int chan_number = -1;
         row_count++;
         if (row_count == 1) {
-            // Split in place: the header is not needed again, and the next fgets refills the buffer.
+            // Split in place: the header is not needed again, and the next read refills the buffer.
             if (chan_parse_header(buffer, &cols) != 0) {
                 rc = -1;
                 break;
@@ -1166,7 +1082,8 @@ key_import_dec_stats(int show_keys, const char* key_file_path, dsd_state* state,
     }
     int row_count = 0;
 
-    while (fgets(buffer, BSIZE, fp)) {
+    int invalid_line = 0;
+    while (csv_read_line(fp, buffer, sizeof(buffer), &invalid_line) > 0) {
         unsigned long long int keynumber = 0;
         int field_count = 0;
         int id_ok = 0;
@@ -1175,11 +1092,8 @@ key_import_dec_stats(int show_keys, const char* key_file_path, dsd_state* state,
         if (row_count == 1) {
             continue; //don't want labels
         }
-        if (csv_line_is_blank(buffer)) {
+        if (!csv_data_row_ready(buffer, invalid_line, filename, (unsigned)row_count, stats)) {
             continue;
-        }
-        if (stats) {
-            stats->total++;
         }
         char* saveptr = NULL;
         const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
@@ -1210,8 +1124,9 @@ key_import_dec_stats(int show_keys, const char* key_file_path, dsd_state* state,
         LOG_INFO("\n");
     }
     DSD_SECURE_ZERO(buffer, sizeof(buffer));
+    const int rc = ferror(fp) ? -1 : 0;
     fclose(fp);
-    return 0;
+    return rc;
 }
 
 int
@@ -1421,17 +1336,15 @@ key_import_hex_stats(int show_keys, const char* key_file_path, dsd_state* state,
     }
     int row_count = 0;
 
-    while (fgets(buffer, BSIZE, fp)) {
+    int invalid_line = 0;
+    while (csv_read_line(fp, buffer, sizeof(buffer), &invalid_line) > 0) {
         int stored_segments = 0;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels
         }
-        if (csv_line_is_blank(buffer)) {
+        if (!csv_data_row_ready(buffer, invalid_line, filename, (unsigned)row_count, stats)) {
             continue;
-        }
-        if (stats) {
-            stats->total++;
         }
         unsigned long long keynumber = csv_key_import_hex_parse_row(state, buffer, &stored_segments);
         if (stats && stored_segments > 0) {
@@ -1465,8 +1378,9 @@ key_import_hex_stats(int show_keys, const char* key_file_path, dsd_state* state,
         LOG_INFO("\n");
     }
     DSD_SECURE_ZERO(buffer, sizeof(buffer));
+    const int rc = ferror(fp) ? -1 : 0;
     fclose(fp);
-    return 0;
+    return rc;
 }
 
 int
@@ -1492,12 +1406,13 @@ typedef int (*csv_validate_run_fn)(const char* path, dsd_state* state, dsd_csv_v
  */
 static int
 csv_validate_into_throwaway(const char* path, dsd_csv_validation* out, csv_validate_run_fn run) {
-    if (!path || path[0] == '\0' || !out || !run) {
+    if (!out) {
         return -1;
     }
-    out->accepted = 0U;
-    out->skipped = 0U;
-    out->total = 0U;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!path || path[0] == '\0' || !run) {
+        return -1;
+    }
 
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     int rc = -1;
@@ -1635,12 +1550,18 @@ csv_mapping_import_rows(const char* csv_label, const char* open_label, const cha
     int rows = 0;
     int rc = 0;
 
-    while (fgets(buffer, BSIZE, fp) != NULL) {
+    int invalid_line = 0;
+    while (csv_read_line(fp, buffer, sizeof(buffer), &invalid_line) > 0) {
         row_count++;
         if (row_count == 1) {
             continue; //header
         }
 
+        if (invalid_line) {
+            LOG_ERROR("%s '%s' row %d is overlong or contains NUL.\n", csv_label, filename, row_count);
+            rc = -1;
+            break;
+        }
         trim_eol(buffer);
         char* line = trim_ws(buffer);
         if (line == NULL || line[0] == '\0') {
@@ -1653,6 +1574,9 @@ csv_mapping_import_rows(const char* csv_label, const char* open_label, const cha
         rows++;
     }
 
+    if (ferror(fp)) {
+        rc = -1;
+    }
     fclose(fp);
 
     if (rc == 0 && rows == 0) {

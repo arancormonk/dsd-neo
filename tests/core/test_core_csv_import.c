@@ -3,10 +3,13 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <assert.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -18,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../test_support/test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -2126,8 +2130,165 @@ test_p25_bandplan_export_round_trip(void) {
     return failed;
 }
 
+static void
+test_source_csv(void) {
+    const char* path = "source-import.csv";
+    FILE* fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    assert(
+        fputs(
+            "1234,Header consumed\n\n 1 , One \n2,Two,tags\n3,Three,tags,ignored\n10-20,Range\nbad,No\n20-10,No\n4, \n",
+            fp)
+        >= 0);
+    for (int i = 0; i < 1005; ++i) {
+        assert(fputc('x', fp) != EOF);
+    }
+    assert(fputs("\n5,After long\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state);
+    assert(csvSrcImportPath(path, state) == 0);
+    assert(dsd_source_alias_count(state) == 5);
+    char name[50];
+    assert(dsd_source_alias_lookup(state, 1, name, sizeof(name)) && strcmp(name, "One") == 0);
+    assert(dsd_source_alias_lookup(state, 15, name, sizeof(name)) && strcmp(name, "Range") == 0);
+    assert(dsd_source_alias_lookup(state, 5, name, sizeof(name)) && strcmp(name, "After long") == 0);
+    assert(!dsd_source_alias_lookup(state, 1234, name, sizeof(name)));
+    assert(remove(path) == 0);
+    assert(csvSrcImportPath(path, state) == -1);
+    assert(dsd_source_alias_count(state) == 5 && dsd_source_alias_lookup(state, 1, name, sizeof(name)));
+    fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    assert(fputs("id,name\n99,Replacement\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    assert(csvSrcImportPath(path, state) == 0 && dsd_source_alias_count(state) == 1);
+    assert(!dsd_source_alias_lookup(state, 1, name, sizeof(name)));
+    assert(dsd_source_alias_lookup(state, 99, name, sizeof(name)));
+    fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    assert(fputs("id,name\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts);
+    DSD_SNPRINTF(opts->src_in_file, sizeof(opts->src_in_file), "%s", path);
+    assert(csvSrcImport(opts, state) == 0 && dsd_source_alias_loaded(state) && dsd_source_alias_count(state) == 0);
+    free(opts);
+    assert(remove(path) == 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+/* Invalid physical lines must not import their valid prefix or continuation. */
+static void
+test_csv_physical_lines(void) {
+    static const struct {
+        const char* header;
+        const char* first;
+        const char* injected;
+        const char* next;
+        int (*validate)(const char*, dsd_csv_validation*);
+    } cases[] = {
+        {"id,mode,name", "1,A,First", "2,A,Injected", "3,A,Next", dsd_csv_validate_group_file},
+        {"id,key", "1,123", "2,456", "3,789", dsd_csv_validate_key_file_dec},
+        {"id,key", "1,123", "2,456", "3,789", dsd_csv_validate_key_file_hex},
+        {"iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid", "1,851000000,12500,1,0,0,,",
+         "2,852000000,12500,1,0,0,,", "3,853000000,12500,1,0,0,,", dsd_csv_validate_p25_bandplan_file},
+    };
+
+    for (size_t kind = 0; kind < sizeof(cases) / sizeof(cases[0]); ++kind) {
+        for (int header = 0; header < 2; ++header) {
+            for (int nul = 0; nul < 2; ++nul) {
+                char path[DSD_TEST_PATH_MAX];
+                int fd = dsd_test_mkstemp(path, sizeof(path), "csv-physical-lines");
+                assert(fd >= 0);
+                assert(dsd_close(fd) == 0);
+                FILE* fp = dsd_fopen_private(path, "wb");
+                assert(fp);
+                if (!header) {
+                    assert(DSD_FPRINTF(fp, "%s\n", cases[kind].header) > 0);
+                }
+                const char* prefix = header ? cases[kind].header : cases[kind].first;
+                assert(DSD_FPRINTF(fp, "%s,", prefix) > 0);
+                if (nul) {
+                    assert(fputc('\0', fp) != EOF);
+                } else {
+                    for (size_t n = strlen(prefix) + 1; n < 998; ++n) {
+                        assert(fputc('x', fp) != EOF);
+                    }
+                }
+                assert(DSD_FPRINTF(fp, "%s\r\n%s\r\n", cases[kind].injected, cases[kind].next) > 0);
+                assert(fclose(fp) == 0);
+                dsd_csv_validation counts;
+                assert(cases[kind].validate(path, &counts) == 0);
+                assert(counts.accepted == 1 && counts.skipped == (unsigned)!header
+                       && counts.total == 1U + (unsigned)!header);
+                dsd_state* state = calloc(1, sizeof(*state));
+                assert(state);
+                if (kind == 0) {
+                    char name[50];
+                    assert(csvGroupImportPath(path, state) == 0);
+                    assert(!dsd_tg_policy_lookup_label(state, 1, NULL, 0, name, sizeof(name)));
+                    assert(!dsd_tg_policy_lookup_label(state, 2, NULL, 0, name, sizeof(name)));
+                    assert(dsd_tg_policy_lookup_label(state, 3, NULL, 0, name, sizeof(name)));
+                    assert(strcmp(name, "Next") == 0);
+                } else if (kind == 3) {
+                    assert(csvP25BandplanImportPath(path, state) == 0);
+                    assert(state->p25_bandplan_row_count == 1 && state->p25_bandplan_rows[0].iden == 3);
+                } else {
+                    assert((kind == 1 ? csvKeyImportDecPath(path, 0, state, NULL)
+                                      : csvKeyImportHexPath(path, 0, state, NULL))
+                           == 0);
+                    assert(!state->rkey_array_loaded[1] && !state->rkey_array_loaded[2] && state->rkey_array_loaded[3]);
+                }
+                free_test_state(state);
+                assert(remove(path) == 0);
+            }
+        }
+    }
+}
+
+static void
+test_mapping_and_channel_nul_rows_are_atomic(void) {
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof(path), "csv-mapping-lines");
+    assert(fd >= 0);
+    assert(dsd_close(fd) == 0);
+    for (int nul = 0; nul < 2; ++nul) {
+        FILE* fp = dsd_fopen_private(path, "wb");
+        assert(fp);
+        assert(fputs("id,value\n1,123,", fp) >= 0);
+        if (nul) {
+            assert(fputc('\0', fp) != EOF);
+        } else {
+            for (int n = 6; n < 998; ++n) {
+                assert(fputc(' ', fp) != EOF);
+            }
+        }
+        assert(fputs("2,456\n", fp) >= 0);
+        assert(fclose(fp) == 0);
+        dsd_state* state = calloc(1, sizeof(*state));
+        assert(state);
+        assert(csvDmrTgKeyImport(state, path) == -1);
+        assert(csvVertexKsImport(state, path) == -1);
+        if (nul) {
+            dsd_opts* opts = calloc(1, sizeof(*opts));
+            assert(opts);
+            DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", path);
+            state->trunk_chan_map[1] = 851000000;
+            assert(csvChanImport(opts, state) == -1);
+            assert(state->trunk_chan_map[1] == 851000000);
+            free(opts);
+        }
+        free_test_state(state);
+    }
+    assert(remove(path) == 0);
+}
+
 int
 main(void) {
+    test_csv_physical_lines();
+    test_mapping_and_channel_nul_rows_are_atomic();
+    test_source_csv();
     if (test_group_import_missing_file() != 0) {
         return 1;
     }

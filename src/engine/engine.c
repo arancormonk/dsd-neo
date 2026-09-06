@@ -14,6 +14,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -363,6 +364,20 @@ import_group_csv_if_needed(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* Source labels apply to conventional decode as well as trunking. */
+static int
+import_src_csv_if_needed(dsd_opts* opts, dsd_state* state) {
+    if (opts->src_in_file[0] != '\0' && !dsd_source_alias_loaded(state)) {
+        if (csvSrcImport(opts, state) != 0) {
+            LOG_WARN("Unable to load source ID list '%s'; continuing without imported source aliases.\n",
+                     opts->src_in_file);
+            return 0;
+        }
+        LOG_INFO("NOTICE: Imported source ID list from %s\n", opts->src_in_file);
+    }
+    return 0;
+}
+
 static int
 import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -374,7 +389,10 @@ import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
     if (import_global_p25_bandplan_if_needed(opts, state) != 0) {
         return -1;
     }
-    return import_group_csv_if_needed(opts, state);
+    if (import_group_csv_if_needed(opts, state) != 0) {
+        return -1;
+    }
+    return import_src_csv_if_needed(opts, state);
 }
 
 static void

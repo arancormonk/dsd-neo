@@ -494,6 +494,16 @@ test_path_and_file_callbacks(void) {
     rc |= expect_cmd_string("channel import command", DSD_APP_CMD_IMPORT_CHANNEL_MAP, "channels.csv");
 
     reset_capture();
+    cb_import_src(&ctx, "sources.csv");
+    rc |= expect_cmd_string("source import command", DSD_APP_CMD_IMPORT_SRC_LIST, "sources.csv");
+    rc |= expect_str("source import status", g_status, "Importing source ID list...");
+
+    reset_capture();
+    cb_import_src(&ctx, "");
+    cb_import_src(&ctx, NULL);
+    rc |= expect_int("source cancel no status", g_status_calls, 0);
+
+    reset_capture();
     cb_import_group(&ctx, "groups.csv");
     rc |= expect_cmd_string("group import command", DSD_APP_CMD_IMPORT_GROUP_LIST, "groups.csv");
 

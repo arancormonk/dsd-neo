@@ -608,6 +608,7 @@ typedef struct dsdneoUserConfig {
     char trunk_chan_csv[1024];
     char trunk_group_csv[1024];
     char trunk_p25_bandplan_csv[1024];
+    char trunk_src_csv[1024]; // Source radio ID alias CSV path (labels only).
     int trunk_use_allow_list;
     int trunk_tune_group_calls;
     int trunk_tune_private_calls;

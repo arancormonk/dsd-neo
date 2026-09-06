@@ -6,15 +6,18 @@
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/sndfile_fwd.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
@@ -4870,8 +4873,60 @@ test_history_reset_drops_pending_end_alert(void) {
     return rc;
 }
 
+static void
+test_source_alias_collision(int protocol) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    Event_History_I* history = calloc(2, sizeof(*history));
+    assert(opts && state && history);
+    reset_fixture(opts, state, history);
+    char group_path[DSD_TEST_PATH_MAX], source_path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(group_path, sizeof(group_path), "alias-collision-group");
+    assert(fd >= 0);
+    assert(dsd_close(fd) == 0);
+    fd = dsd_test_mkstemp(source_path, sizeof(source_path), "alias-collision-source");
+    assert(fd >= 0);
+    assert(dsd_close(fd) == 0);
+    FILE* fp = dsd_fopen_private(group_path, "w");
+    assert(fp);
+    assert(fputs("id,mode,name\n1201,A,Talkgroup 1201\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    fp = dsd_fopen_private(source_path, "w");
+    assert(fp);
+    assert(fputs("id,name\n1201,Radio 1201\n1202,Unit X\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    assert(csvGroupImportPath(group_path, state) == 0);
+    assert(csvSrcImportPath(source_path, state) == 0);
+    assert(remove(group_path) == 0 && remove(source_path) == 0);
+    state->lastsynctype = protocol;
+    assert(observe_test_call(state, 0U, protocol, DSD_CALL_KIND_GROUP_VOICE, 1201, 1201, 0, 0, DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    watchdog_event_current(opts, state, 0);
+    const Event_History* item = &history[0].Event_History_Items[0];
+    assert(strcmp(item->t_name, "Talkgroup 1201") == 0 && strcmp(item->s_name, "Radio 1201") == 0);
+    assert(strstr(item->event_string, "TName: Talkgroup 1201; Mode: A;"));
+    assert(strstr(item->event_string, "SName: Radio 1201; Mode: A;"));
+    assert(observe_test_call(state, 0U, protocol, DSD_CALL_KIND_GROUP_VOICE, 9999, 1202, 0, 0, DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    watchdog_event_current(opts, state, 0);
+    assert(strstr(item->event_string, "SName: Unit X; "));
+    assert(!strstr(item->event_string, "Mode:"));
+    assert(dsd_source_alias_clear(state) == 0);
+    assert(observe_test_call(state, 0U, protocol, DSD_CALL_KIND_GROUP_VOICE, 9999, 1201, 0, 0, DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    watchdog_event_current(opts, state, 0);
+    assert(strstr(item->event_string, "SName: Talkgroup 1201; Mode: A;"));
+    dsd_state_ext_free_all(state);
+    free(history);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
+    test_source_alias_collision(DSD_SYNC_NXDN_POS);
+    test_source_alias_collision(DSD_SYNC_P25P1_POS);
+    test_source_alias_collision(DSD_SYNC_DMR_BS_VOICE_POS);
     int rc = 0;
 
     rc |= test_event_history_revision_primitives();

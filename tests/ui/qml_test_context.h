@@ -117,6 +117,35 @@ class CommandRecorder : public QObject {
 
   public:
     Q_INVOKABLE bool
+    importSrcList(const QString& path) {
+        m_src_import_calls++;
+        m_last_src_path = path;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    clearSrcList() {
+        m_src_clear_calls++;
+        m_last_src_path.clear();
+        return true;
+    }
+
+    Q_INVOKABLE int
+    srcImportCalls() const {
+        return m_src_import_calls;
+    }
+
+    Q_INVOKABLE int
+    srcClearCalls() const {
+        return m_src_clear_calls;
+    }
+
+    Q_INVOKABLE QString
+    lastSrcPath() const {
+        return m_last_src_path;
+    }
+
+    Q_INVOKABLE bool
     manualTuneHz(unsigned int hz) {
         m_manual_tune_calls++;
         m_last_manual_tune_hz = hz;
@@ -239,6 +268,9 @@ class CommandRecorder : public QObject {
 
     void
     reset() {
+        m_src_import_calls = 0;
+        m_src_clear_calls = 0;
+        m_last_src_path.clear();
         m_manual_tune_calls = 0;
         m_last_manual_tune_hz = 0U;
         m_release_tuner_calls = 0;
@@ -340,6 +372,9 @@ class CommandRecorder : public QObject {
     }
 
   private:
+    int m_src_import_calls = 0;
+    int m_src_clear_calls = 0;
+    QString m_last_src_path;
     int m_manual_tune_calls = 0;
     unsigned int m_last_manual_tune_hz = 0U;
     int m_release_tuner_calls = 0;
@@ -386,6 +421,7 @@ class CallLogStore : public QAbstractListModel {
         int kind = CallHistoryModel::KindVoice;
         QString detail;
         QString channel;
+        QString sourceName;
     };
 
     int
@@ -427,6 +463,7 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::NameRole: return row.name;
             case CallHistoryModel::TgRole: return row.tg;
             case CallHistoryModel::SrcRole: return row.src;
+            case CallHistoryModel::SourceNameRole: return row.sourceName;
             case CallHistoryModel::EncRole: return row.enc;
             case CallHistoryModel::WhenRole: return row.when;
             case CallHistoryModel::DurationSecsRole: return row.durationSecs;
@@ -445,6 +482,7 @@ class CallLogStore : public QAbstractListModel {
         return {{CallHistoryModel::NameRole, "name"},
                 {CallHistoryModel::TgRole, "tg"},
                 {CallHistoryModel::SrcRole, "src"},
+                {CallHistoryModel::SourceNameRole, "srcName"},
                 {CallHistoryModel::EncRole, "enc"},
                 {CallHistoryModel::WhenRole, "when"},
                 {CallHistoryModel::DurationSecsRole, "durationSecs"},
@@ -476,6 +514,15 @@ class CallLogStore : public QAbstractListModel {
         endInsertRows();
         Q_EMIT countChanged();
         return row.name;
+    }
+
+    Q_INVOKABLE QString
+    pushWithSourceName(const QString& name) {
+        const QString call = push(QStringLiteral("TODAY"));
+        m_rows[0].sourceName = name;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::SourceNameRole});
+        return call;
     }
 
     /**
@@ -651,6 +698,15 @@ class Setup : public QObject {
         }
         file.close();
         return path;
+    }
+
+    /** @brief Publish a live/idle host so cases can exercise session-only actions. */
+    Q_INVOKABLE void
+    setHostRunning(bool running) {
+        m_host[QStringLiteral("running")] = running;
+        if (m_engine != nullptr) {
+            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host);
+        }
     }
 
     /** @brief Forget every recorded command. */

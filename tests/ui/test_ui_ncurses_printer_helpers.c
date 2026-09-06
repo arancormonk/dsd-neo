@@ -13,6 +13,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -243,6 +244,35 @@ dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size
         DSD_SNPRINTF(name, name_sz, "Dispatch");
     }
     return 1;
+}
+
+static const char* g_source_alias_stub;
+
+int
+dsd_source_alias_lookup(const dsd_state* state, uint32_t id, char* name, size_t size) {
+    (void)state;
+    if (name && size) {
+        name[0] = '\0';
+    }
+    if (id != 1234U || !g_source_alias_stub) {
+        return 0;
+    }
+    if (name && size) {
+        DSD_SNPRINTF(name, size, "%s", g_source_alias_stub);
+    }
+    return 1;
+}
+
+int
+dsd_source_label_lookup(const dsd_state* state, uint32_t id, char* mode, size_t mode_sz, char* name, size_t name_sz) {
+    if (mode && mode_sz) {
+        mode[0] = '\0';
+    }
+    int found = dsd_tg_policy_lookup_label(state, id, mode, mode_sz, name, name_sz);
+    if (g_source_alias_stub && id == 1234U) {
+        return dsd_source_alias_lookup(state, id, name, name_sz);
+    }
+    return found;
 }
 
 /* Scan-list row names. The real store lives in core, which this target does not
@@ -1955,8 +1985,64 @@ test_scan_voice_gate_status_rendering(void) {
     reset_lcn_name_stub();
 }
 
+static void
+test_source_alias_rendering(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(state && opts);
+    dsd_call_observation obs = {0};
+    obs.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+    obs.ota_target_id = 1234;
+    obs.policy_target_id = 1234;
+    obs.ota_source_id = 1234;
+    obs.observed_m = 1.0;
+    state->synctype = obs.protocol;
+    state->lastsynctype = obs.protocol;
+    assert(dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    const char* names[] = {"Unit", "1234567890123456789012345678901234567890123456789", NULL};
+    size_t baseline = 0;
+    for (size_t i = 0; i < 3; ++i) {
+        g_source_alias_stub = names[i];
+        ui_slot_view slot = ui_build_slot_view(opts, state, 0);
+        reset_printw_capture();
+        ui_render_p25_dmr_slot_block(opts, state, &slot);
+        assert_capture_contains("[Dispatch][A]");
+        if (names[i]) {
+            assert_capture_contains(names[i]);
+        }
+        size_t offset = capture_burst_separator_offset();
+        if (i == 0) {
+            baseline = offset;
+        } else {
+            assert(offset == baseline);
+        }
+        slot = ui_build_slot_view(opts, state, 1);
+        reset_printw_capture();
+        ui_render_p25_dmr_slot_block(opts, state, &slot);
+        assert(capture_burst_separator_offset() == baseline);
+        if (names[i]) {
+            assert(strstr(g_printw_capture, names[i]) == NULL);
+        }
+    }
+    g_source_alias_stub = "Radio alias";
+    obs.protocol = DSD_SYNC_NXDN_POS;
+    obs.observed_m = 2.0;
+    state->lastsynctype = obs.protocol;
+    assert(dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    reset_printw_capture();
+    ui_render_nxdn_tgt_src_line(state);
+    assert_capture_contains("[Dispatch][A]");
+    assert_capture_contains("[Radio alias]");
+    g_source_alias_stub = NULL;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
+    test_source_alias_rendering();
     test_input_source_helpers();
     test_dmr_mono_override_terminal_reporting();
     test_basic_input_source_rendering();

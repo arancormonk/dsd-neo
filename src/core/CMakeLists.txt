@@ -38,10 +38,12 @@ target_sources(
         util/edacs_afs.c
         util/dsd_alias.c
         util/talkgroup_policy.c
+        util/source_alias.c
         util/synctype.c
         file/dsd_file.c
         file/dsd_import.c
         file/p25_bandplan_csv.c
+        file/source_alias_csv.c
         file/p25_sm_log.c
         gps/dsd_gps.c
 )

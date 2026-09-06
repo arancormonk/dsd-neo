@@ -390,6 +390,7 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("                 Optional name, mode and key columns; see examples/conventional_scan_modes.csv.\n");
     printf("  -G <file>     Import Group List Allow/Block and Label from csv file.\n");
     printf("                 (See group.csv for example)\n");
+    printf("      --src-csv <file>   Source ID (radio ID) alias list CSV: id,name[,tags]; labels only, no policy.\n");
     printf("      --p25-bandplan <file>   P25 band plan CSV (IDEN table) for sites that never send IDEN_UP.\n");
     printf("                 Cannot be combined with --trunk-scan; use per-target p25_bandplan_csv.\n");
     printf("      --p25-bandplan-export <file>  Write the learned P25 band plan CSV once at clean shutdown.\n");

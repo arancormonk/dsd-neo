@@ -45,7 +45,7 @@ copy first. There are two copy paths, with different lifetimes:
 - `AppSupport.copyContentUriToCache` → `cacheDir`, for one-shot opens (the
   wizard's audio/capture "File" source). Android may evict it.
 - `AppSupport.importDocumentToFiles` → `files/imports/`, for the CSV library
-  (channel maps, talkgroup lists, key files). These must survive restarts —
+  (channel maps, talkgroup lists, key files, P25 band plans, source ID lists). These must survive restarts —
   saved systems reference the path, and the engine appends learned talkgroup
   rows to the group list in place. Display-name collisions are unique-ified
   (`chan.csv` → `chan (2).csv`); updates stage a temp file and rename over the
@@ -61,6 +61,9 @@ semantics under `QStandardPaths::AppDataLocation`, which is what
 row per stored file, with dry-run validation counts from
 `<dsd-neo/core/csv_validate.h>`) is `src/ui/qt/imported_files_model.{h,cpp}`,
 surfaced as Settings → Imported files and the wizard's Trunking data pickers.
+The imported-file kinds are `chan`, `group`, `keysDec`, `keysHex`, `p25Bandplan`, and `src` (the **Radio IDs** picker). Source
+ID lists use `id,name[,tags]` and supply labels only; they can be applied or cleared in a running session. A group
+list and a source ID list cannot be distinguished by content: validation uses the kind selected by the user.
 No storage permissions are involved; SAF needs none.
 
 ## Build

@@ -20,6 +20,9 @@ state from one system is not reused on another.
 - Global channel maps (`-C` or `[trunking] chan_csv`) cannot be used while trunk scan is active. Put each trunk target's
   optional channel map in the target CSV `chan_csv` column instead.
 - A group list (`-G` or `[trunking] group_csv`) is still global and applies to every target.
+- A source ID list (`--src-csv` or `[trunking] src_csv`) is also global and allowed while scanning. It supplies
+  source radio names only and survives target changes; its fallback uses the active group list's exact row.
+  See [Source ID List CSV](csv-formats.md#source-id-list-csv---src-csv-file--trunking-src_csv).
 
 ## Target CSV
 

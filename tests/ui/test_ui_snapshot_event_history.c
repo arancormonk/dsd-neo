@@ -11,6 +11,7 @@
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -340,6 +341,27 @@ main(void) {
     assert(dsd_tg_policy_lookup_id(snap, 7777U, &lookup) == 0);
     assert(lookup.match == DSD_TG_POLICY_MATCH_EXACT);
     assert(strcmp(lookup.entry.name, "POLICY-ONLY") == 0);
+
+    for (int alias_version = 0; alias_version < 2; ++alias_version) {
+        dsd_source_alias_store* aliases = dsd_source_alias_store_create();
+        assert(aliases);
+        dsd_source_alias_entry alias = {.id_start = 7777, .id_end = 7777};
+        DSD_SNPRINTF(alias.name, sizeof(alias.name), "Unit %d", alias_version);
+        assert(dsd_source_alias_store_append(aliases, &alias) == 0);
+        dsd_source_alias_install(state, aliases);
+        dsd_app_telemetry_publish_snapshot(state);
+        snap = dsd_app_get_latest_snapshot();
+        char alias_name[50];
+        assert(dsd_source_label_lookup(snap, 7777, NULL, 0, alias_name, sizeof(alias_name)));
+        assert(strcmp(alias_name, alias.name) == 0);
+    }
+    assert(dsd_source_alias_clear(state) == 0);
+    dsd_app_telemetry_publish_snapshot(state);
+    snap = dsd_app_get_latest_snapshot();
+    assert(!dsd_source_alias_loaded(snap));
+    char alias_name[50];
+    assert(dsd_source_label_lookup(snap, 7777, NULL, 0, alias_name, sizeof(alias_name)));
+    assert(strcmp(alias_name, "POLICY-ONLY") == 0);
 
     /* A cleared channel map must not leave the previous map's names in the snapshot. */
     dsd_state_trunk_lcn_name_free(state);

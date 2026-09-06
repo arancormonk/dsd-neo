@@ -9,6 +9,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -116,6 +117,12 @@ test_group_ownership(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     dsd_state* snapshot = (dsd_state*)calloc(1, sizeof(*snapshot));
     assert(state && snapshot);
+    dsd_source_alias_store* aliases = dsd_source_alias_store_create();
+    assert(aliases);
+    dsd_source_alias_entry alias = {.id_start = 123, .id_end = 123, .name = "Global radio"};
+    assert(dsd_source_alias_store_append(aliases, &alias) == 0);
+    dsd_source_alias_install(state, aliases);
+    char alias_name[50];
     dsd_tg_policy_entry entry;
     assert(dsd_tg_policy_make_exact_entry(123, "A", "Global", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
     assert(dsd_tg_policy_append_exact(state, &entry) == 0);
@@ -129,14 +136,23 @@ test_group_ownership(void) {
     assert(dsd_scan_groups_begin(state) == 0);
     dsd_scan_groups_enter(state, row);
     expect_label(state, "Row group");
+    assert(dsd_state_ext_get_const(state, DSD_STATE_EXT_CORE_SOURCE_ALIAS) == aliases);
+    assert(dsd_source_label_lookup(state, 123, NULL, 0, alias_name, sizeof(alias_name)));
+    assert(strcmp(alias_name, "Global radio") == 0);
     assert(dsd_tg_policy_copy_snapshot(snapshot, state) == 0);
     assert(dsd_tg_policy_make_exact_entry(123, "A", "Row edit", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &entry) == 0);
     assert(dsd_tg_policy_upsert_exact(state, &entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
     expect_label(snapshot, "Row group");
     dsd_scan_groups_enter(state, NULL);
     expect_label(state, "Global");
+    assert(dsd_state_ext_get_const(state, DSD_STATE_EXT_CORE_SOURCE_ALIAS) == aliases);
+    assert(dsd_source_label_lookup(state, 123, NULL, 0, alias_name, sizeof(alias_name)));
+    assert(strcmp(alias_name, "Global radio") == 0);
     dsd_scan_groups_enter(state, row);
     expect_label(state, "Row edit");
+    assert(dsd_state_ext_get_const(state, DSD_STATE_EXT_CORE_SOURCE_ALIAS) == aliases);
+    assert(dsd_source_label_lookup(state, 123, NULL, 0, alias_name, sizeof(alias_name)));
+    assert(strcmp(alias_name, "Global radio") == 0);
     dsd_tg_policy_call_route active = {
         .target_id = 123, .source_id = 1, .freq_hz = 851000000, .channel = 10, .slot = 0};
     dsd_tg_policy_call_route candidate = active;
@@ -147,10 +163,16 @@ test_group_ownership(void) {
     assert(dsd_tg_policy_should_preempt(NULL, state, &candidate, &decision, 100.0));
     assert(dsd_scan_groups_suspend(state));
     expect_label(state, "Global");
+    assert(dsd_state_ext_get_const(state, DSD_STATE_EXT_CORE_SOURCE_ALIAS) == aliases);
+    assert(dsd_source_label_lookup(state, 123, NULL, 0, alias_name, sizeof(alias_name)));
+    assert(strcmp(alias_name, "Global radio") == 0);
     assert(dsd_tg_policy_make_exact_entry(123, "A", "New global", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
     assert(dsd_tg_policy_upsert_exact(state, &entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
     dsd_scan_groups_resume(state);
     expect_label(state, "Row edit");
+    assert(dsd_state_ext_get_const(state, DSD_STATE_EXT_CORE_SOURCE_ALIAS) == aliases);
+    assert(dsd_source_label_lookup(state, 123, NULL, 0, alias_name, sizeof(alias_name)));
+    assert(strcmp(alias_name, "Global radio") == 0);
     assert(dsd_tg_policy_should_preempt(NULL, state, &candidate, &decision, 100.0));
     /* A plain suspend/resume must also retain the same active route. */
     assert(dsd_scan_groups_suspend(state));
@@ -162,6 +184,9 @@ test_group_ownership(void) {
     assert(!dsd_tg_policy_should_preempt(NULL, state, &candidate, &decision, 100.0));
     dsd_scan_groups_leave(state);
     expect_label(state, "New global");
+    assert(dsd_state_ext_get_const(state, DSD_STATE_EXT_CORE_SOURCE_ALIAS) == aliases);
+    assert(dsd_source_label_lookup(state, 123, NULL, 0, alias_name, sizeof(alias_name)));
+    assert(strcmp(alias_name, "Global radio") == 0);
     dsd_scan_profile_free(row);
     dsd_key_set_free(&keys);
     dsd_state_trunk_lcn_free(state);

@@ -49,6 +49,7 @@
     X(act_hpf_toggle)                                                                                                  \
     X(act_import_chan)                                                                                                 \
     X(act_import_group)                                                                                                \
+    X(act_import_src)                                                                                                  \
     X(act_import_p25_bandplan)                                                                                         \
     X(act_iq_dc_k_prompt)                                                                                              \
     X(act_ken_scr)                                                                                                     \

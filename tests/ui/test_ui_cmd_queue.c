@@ -15,6 +15,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -2402,9 +2403,77 @@ test_scoped_direct_key_mutes(void) {
     return rc;
 }
 
+static int
+test_source_alias_commands(void) {
+    int rc = 0;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    const char* path = "ui_cmd_queue_sources.csv";
+    const char* missing = "ui_cmd_queue_sources_missing.csv";
+    static const unsigned char data[] = "id,name,tags\n1201,Engine 21,Fire\n2000-2099,Dispatch,Ops\n";
+    char name[50];
+    remove(missing);
+    init_test_context(opts, state);
+    post_string(DSD_APP_CMD_IMPORT_SRC_LIST, missing);
+    rc |= expect_int("source missing drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_contains("source failure toast", state->ui_msg, "Failed: Source ID list import ->");
+    rc |= expect_str("source missing no path", opts->src_in_file, "");
+    rc |= expect_int("source missing not loaded", dsd_source_alias_loaded(state), 0);
+    rc |= write_file_bytes(path, data, sizeof(data) - 1U);
+    post_string(DSD_APP_CMD_IMPORT_SRC_LIST, path);
+    rc |= expect_int("source import drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_contains("source success toast", state->ui_msg, "Applied: Source ID list imported ->");
+    rc |= expect_str("source imported path", opts->src_in_file, path);
+    rc |= expect_int("source exact lookup", dsd_source_alias_lookup(state, 1201, name, sizeof name), 1);
+    rc |= expect_str("source exact name", name, "Engine 21");
+    rc |= expect_int("source range lookup", dsd_source_alias_lookup(state, 2050, name, sizeof name), 1);
+    rc |= expect_str("source range name", name, "Dispatch");
+    post_string(DSD_APP_CMD_IMPORT_SRC_LIST, missing);
+    rc |= expect_int("source failed replacement drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_contains("source replacement failure toast", state->ui_msg, "Failed: Source ID list import ->");
+    rc |= expect_str("source failed replacement keeps path", opts->src_in_file, path);
+    rc |= expect_int("source failed replacement keeps lookup", dsd_source_alias_lookup(state, 1201, name, sizeof name),
+                     1);
+    rc |= expect_str("source failed replacement keeps name", name, "Engine 21");
+    static const unsigned char empty[] = "id,name\n";
+    rc |= write_file_bytes(path, empty, sizeof(empty) - 1U);
+    post_string(DSD_APP_CMD_IMPORT_SRC_LIST, path);
+    rc |= expect_int("source empty import drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("source empty import loaded", dsd_source_alias_loaded(state), 1);
+    rc |= expect_int("source empty import replaces aliases", (int)dsd_source_alias_count(state), 0);
+    rc |= expect_contains("source empty import applied", state->ui_msg, "Applied:");
+    /* Through the public action helper, as the Qt bridge submits it: a clear that is not
+       in the action allowlist is rejected before it is ever queued. */
+    rc |= expect_int("source clear accepted as action", dsd_app_command_action(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("source clear drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_str("source clear toast", state->ui_msg, "Applied: Source ID list cleared");
+    rc |= expect_str("source cleared path", opts->src_in_file, "");
+    rc |= expect_int("source cleared lookup", dsd_source_alias_lookup(state, 1201, name, sizeof name), 0);
+    /* The sibling clears the same frontend flow relies on. */
+    rc |= expect_int("channel map clear accepted as action",
+                     dsd_app_command_action(DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("group list clear accepted as action", dsd_app_command_action(DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("keys clear accepted as action", dsd_app_command_action(DSD_APP_CMD_IMPORT_KEYS_CLEAR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("sibling clears drained", dsd_app_drain_cmds(opts, state), 3);
+    freeState(state);
+    free(state);
+    free(opts);
+    remove(path);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_source_alias_commands();
     rc |= test_scoped_direct_key_mutes();
     rc |= test_scoped_row_option_commands();
     rc |= test_scoped_setting_toggles();

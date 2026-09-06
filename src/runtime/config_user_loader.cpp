@@ -432,6 +432,8 @@ apply_trunking_section_path_key(dsdneoUserConfig* cfg, const char* key_lc, const
         copy_path_expanded(cfg->trunk_chan_csv, sizeof cfg->trunk_chan_csv, val);
     } else if (strcmp(key_lc, "group_csv") == 0) {
         copy_path_expanded(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, val);
+    } else if (strcmp(key_lc, "src_csv") == 0) {
+        copy_path_expanded(cfg->trunk_src_csv, sizeof cfg->trunk_src_csv, val);
     } else if (strcmp(key_lc, "p25_bandplan_csv") == 0) {
         copy_path_expanded(cfg->trunk_p25_bandplan_csv, sizeof cfg->trunk_p25_bandplan_csv, val);
     } else {

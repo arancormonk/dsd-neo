@@ -557,6 +557,45 @@ test_p25_bandplan_kind(void) {
     }
 }
 
+void
+test_src_kind(void) {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+
+    TestHost host;
+    QTemporaryDir sourceDir;
+    expect("src source dir created", sourceDir.isValid());
+
+    const QString srcPath = sourceDir.filePath(QStringLiteral("src.csv"));
+    expect("src source written", write_file(srcPath, "id,name,tags\n"
+                                                     "1201,Engine 21,Fire\n2000-2099,Dispatch,Ops\n"));
+    const QString emptyPath = sourceDir.filePath(QStringLiteral("empty.csv"));
+    expect("empty source written", write_file(emptyPath, "id,name,tags\n"));
+
+    dsd_qt::ImportedFilesModel model(&host);
+    const QVariantMap result =
+        model.importFile(QUrl::fromLocalFile(srcPath).toString(), QStringLiteral("src.csv"), QStringLiteral("src"));
+    expect("src import ok", result.value(QStringLiteral("ok")).toBool());
+    expect("src import has no error", result.value(QStringLiteral("error")).toString().isEmpty());
+    expect("src import counts exact and range rows", result.value(QStringLiteral("accepted")).toInt() == 2);
+    expect("src import stores its kind", result.value(QStringLiteral("type")).toString() == QStringLiteral("src"));
+
+    const QVariantList entries = model.entriesForType(QStringLiteral("src"));
+    expect("type filter finds the src row", entries.size() == 1);
+    expect("src is not offered as talkgroups", model.entriesForType(QStringLiteral("group")).isEmpty());
+
+    // A header-only source list is retained with an empty warning.
+    const QVariantMap wrong =
+        model.importFile(QUrl::fromLocalFile(emptyPath).toString(), QStringLiteral("empty.csv"), QStringLiteral("src"));
+    expect("header-only file as src is kept", wrong.value(QStringLiteral("ok")).toBool());
+    expect("header-only file as src is flagged empty",
+           wrong.value(QStringLiteral("error")).toString() == QStringLiteral("empty"));
+    expect("header-only file as src accepts nothing", wrong.value(QStringLiteral("accepted")).toInt() == 0);
+
+    while (model.rowCount() > 0) {
+        model.remove(0);
+    }
+}
+
 /*
  * Stores written before provenance existed must load unchanged. rowFromMap reads
  * through QVariantMap::value, which default-constructs a missing key, so this
@@ -616,6 +655,7 @@ main(int argc, char** argv) {
     test_replace_validates_before_touching_the_stored_file();
     test_generated_import_and_refresh();
     test_p25_bandplan_kind();
+    test_src_kind();
     test_legacy_store_without_provenance();
 
     QDir(dataDir).removeRecursively();
