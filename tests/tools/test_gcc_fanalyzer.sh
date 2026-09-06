@@ -11,7 +11,7 @@
 # database and check that a seeded defect is actually reported and counted.
 set -euo pipefail
 
-ROOT_DIR=$(git rev-parse --show-toplevel)
+ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 
 if ! command -v gcc > /dev/null 2>&1 || ! command -v python3 > /dev/null 2>&1; then
   echo "SKIP: gcc or python3 not available"

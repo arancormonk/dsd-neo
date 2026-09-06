@@ -12,7 +12,7 @@
 # printed and what it exited with.
 set -euo pipefail
 
-ROOT_DIR=$(git rev-parse --show-toplevel)
+ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 # Keep the runner's own mktemp -d inside the throwaway directory.

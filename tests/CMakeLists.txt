@@ -69,6 +69,13 @@ if(NOT WIN32)
                 ${PROJECT_SOURCE_DIR}/tests/tools/test_gcc_fanalyzer.sh
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
+        add_test(
+            NAME TOOLS_INSTALL_LINUX_PACKAGE_FAILURE
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_install_linux_package_failure.sh
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
     endif()
 endif()
 
