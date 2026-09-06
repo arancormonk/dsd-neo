@@ -35,17 +35,20 @@ id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes
 Example:
 
 ```csv
-id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain
-county-p25,p25-trunk,851012500,,3000,,P25 control channel,cqpsk,18
-city-dmr,dmr-trunk,456318750,dmr_t3_chan.csv,3000,,DMR Tier III control channel,auto,
-plant-dmr,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto
-site-nxdn,nxdn-trunk,461037500,,3000,,NXDN Type-C control channel,auto,
-site-nxdn48,nxdn48-trunk,461556250,nxdn_chan_map.csv,3000,,NXDN48 Type-C control channel (6.25 kHz),gfsk,
-field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96,gfsk,
-field-nxdn48,nxdn48-conventional,461556250,,1500,1200,one-frequency NXDN48 (6.25 kHz),gfsk,
+id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain,options,p25_bandplan_csv
+county-p25,p25-trunk,851012500,,3000,,P25 control channel,cqpsk,18,,p25_bandplan.csv
+city-dmr,dmr-trunk,456318750,dmr_t3_chan.csv,3000,,DMR Tier III control channel,auto,,,
+plant-dmr,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto,--no-force-key,
+site-nxdn,nxdn-trunk,461037500,,3000,,NXDN Type-C control channel,auto,,,
+site-nxdn48,nxdn48-trunk,461556250,nxdn_chan_map.csv,3000,,NXDN48 Type-C control channel (6.25 kHz),gfsk,,,
+field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96,gfsk,,,
+field-nxdn48,nxdn48-conventional,461556250,,1500,1200,one-frequency NXDN48 (6.25 kHz),gfsk,,,
 ```
 
-The repository includes a starter file at `examples/trunk_scan_targets.csv`.
+The repository includes a starter file at `examples/trunk_scan_targets.csv`. Companion paths in these examples
+refer to files in `examples/`; replace the illustrative frequencies, keys and band plan with your system's values.
+Omitted scoped settings inherit the outer CLI/configuration; the DMR conventional example uses
+`--no-force-key` to disable inherited privacy forcing without changing other settings.
 
 Column behavior:
 
@@ -64,6 +67,7 @@ Column behavior:
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to the target CSV. Empty uses the global keys. |
 | `single_key_dec` | No | Embedded `-b` Motorola Basic Privacy key number (`0..255`). Explicit `0` is an active override. It may be combined with `single_key_hex`, but not either key-file column. |
 | `single_key_hex` | No | Embedded `-H` key. It accepts an optional `0x`, ignores ASCII whitespace, and requires exactly 10, 32, or 64 hex digits. It may be combined with `single_key_dec`, but not either key-file column. |
+| `options` | No | Per-target [scoped switches](#per-target-options); `relevant_CLI_switches` is an alias. This header and its alias match ASCII case-insensitively, and naming both rejects the file. The target `type` determines which protocol-specific switches are accepted. Omitted settings inherit the outer CLI/configuration. |
 | `p25_bandplan_csv` | No | P25 band plan CSV for a `p25-trunk` target (format in [csv-formats.md](csv-formats.md)), resolved relative to the target CSV. Its rows are parked in the target's snapshot, so an exported multi-system plan can be named on every P25 row and each target keeps only the rows that carry its WACN/SYS (plus rows that carry none). |
 
 Targets that turn out to be sites of the same P25 system (same WACN/SYS) share what one of them learned over the
@@ -150,6 +154,8 @@ both phases and exclude DMR and X2-TDMA; DMR and NXDN targets enable only their 
 lists, including both NXDN rates, work without `-fa`. The target's `modulation` column keeps its existing precedence:
 an explicit value, including `auto`, overrides global modulation handling. An empty value preserves an explicit
 global modulation lock. Modes declared in a target's `chan_csv` do not override its type.
+NXDN48 targets do not require an outer `-fi`. Audio retains the startup output layout, with mono NXDN voice
+duplicated into both channels when the output is stereo.
 
 Global mode/modulation commands update the configured settings while the parked target remains constrained.
 Stopping trunk scan restores those configured settings, and configuration saves record them rather than the parked
