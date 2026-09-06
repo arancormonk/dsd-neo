@@ -53,7 +53,7 @@ Vendored code and embedded upstream-derived snippets retain upstream notices.
 License and attribution details are in `THIRD_PARTY.md`.
 
 Registry-managed vcpkg dependencies are pinned by the manifest
-`builtin-baseline` (`9e593bb18ea69cc5095e012465dcd675a822ed0d` in the current
+`builtin-baseline` (`04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4` in the current
 manifest). The baseline, overlay ports, and triplets are the source of truth
 for exact registry versions; system-package builds enforce the OpenSSL
 requirement through `find_package(OpenSSL 3.0 REQUIRED)`.
@@ -68,6 +68,13 @@ images from `tools/ci-dependency-pins.env` to exercise apt, dnf, zypper, apk,
 and pacman bootstrap paths. Overlay ports, CI source checkouts, and validation
 container images must use immutable source references and hashes as described in
 `docs/supply-chain-guardrails.md`.
+
+AppImage's pinned libcrypto tracks OpenSSL 3.5 LTS (supported through April 2030),
+independently of the vcpkg registry's OpenSSL version. Keep each runtime's
+`libssl` and `libcrypto` compatible: a newer `libssl.so.3` can require symbols
+that an older `libcrypto.so.3` does not provide despite the shared major version.
+The AppImage CMake installer stays on 3.31 because pinned SoapySDR and AppImage
+helper sources still declare policy versions rejected by CMake 4.
 
 ## Tooling Dependencies
 

@@ -529,8 +529,7 @@ jobs:
 
       - name: Install Semgrep
         if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0' || steps.changed.outputs.semgrep_full_scan == '1'
-        # Semgrep currently pins a vulnerable MCP SDK release. The hashed lock overrides that pin with the patched SDK.
-        run: python -m pip install --no-deps --require-hashes -r .github/requirements/semgrep.txt
+        run: python -m pip install --require-hashes -r .github/requirements/semgrep.txt
 
       - name: Run Semgrep
         if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0' || steps.changed.outputs.semgrep_full_scan == '1'
@@ -550,7 +549,7 @@ jobs:
       - name: Upload Semgrep SARIF
         if: always() && hashFiles('.semgrep.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           sarif_file: .semgrep.sarif
 
