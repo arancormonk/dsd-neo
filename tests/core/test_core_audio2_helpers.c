@@ -1312,7 +1312,7 @@ test_mono_voice_preserves_samples_in_configured_output(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
     dsd_state* state = calloc(1, sizeof(*state));
     assert(opts && state);
-    short history[960];
+    static short history[960];
     short expected_short[1920];
     float expected_float[320];
     const int sinks[] = {0, 1, 8};

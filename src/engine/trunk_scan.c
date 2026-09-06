@@ -3021,9 +3021,7 @@ trunk_scan_coord_free(dsd_trunk_scan_coord* coord) {
     free(coord->scratch_snapshot.trunk_lcn_freq_ext);
     free(coord->scratch_snapshot.chan_map_chan);
     free(coord->scratch_snapshot.chan_map_freq);
-    if (coord->targets != NULL) {
-        free(coord->targets);
-    }
+    free(coord->targets);
     free(coord);
 }
 

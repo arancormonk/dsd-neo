@@ -1952,7 +1952,7 @@ test_process_mbe_frame_mixed_clear_and_bp(void) {
         free(state);
         return 1;
     }
-    mbe_parms cur, prev, enhanced, cur2, prev2, enhanced2;
+    static mbe_parms cur, prev, enhanced, cur2, prev2, enhanced2;
     mbe_parms expected_cur, expected_prev, expected_enhanced;
     char imbe[8][23] = {{0}}, ambe[4][24] = {{0}}, imbe7100[7][24] = {{0}};
     int rc = 0;
