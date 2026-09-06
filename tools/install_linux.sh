@@ -18,7 +18,7 @@ Options:
   --build-dir DIR    DSD-neo build directory (default: build/install-linux)
   --destdir DIR      Stage DSD-neo install under DESTDIR instead of installing live
   --radio MODE       Radio backend setup: auto, required, off (default: auto)
-  --codec2 MODE      Codec2 setup: auto, required, off (default: auto)
+  --codec2 MODE      Codec2 setup: auto, required, off (default: required)
   --yes              Do not prompt before installing distro packages
   --dry-run          Print commands without executing them
   -h, --help         Show this help
@@ -35,7 +35,7 @@ DEPS_PREFIX=
 BUILD_DIR=build/install-linux
 DESTDIR_VALUE=
 RADIO_MODE=auto
-CODEC2_MODE=auto
+CODEC2_MODE=required
 ASSUME_YES=0
 DRY_RUN=0
 ORIGINAL_LD_LIBRARY_PATH=
@@ -359,7 +359,7 @@ install_optional_packages() {
 
   [ "$mode" != off ] || return 1
   if all_packages_available "$@"; then
-    install_packages "$@"
+    install_packages "$@" || exit $?
     return 0
   fi
 
@@ -387,7 +387,7 @@ install_optional_packages() {
 
   echo "Skipping unavailable optional $label distro packages:$unavailable"
   # shellcheck disable=SC2086
-  install_packages $available
+  install_packages $available || exit $?
   return 0
 }
 
@@ -456,44 +456,20 @@ installed_binary_path() {
 
 run_installed_dsd_neo_help() {
   installed_binary=$1
-  if system_library_prefix "$DEPS_PREFIX"; then
-    if [ "$ORIGINAL_LD_LIBRARY_PATH_SET" -eq 1 ]; then
-      env "LD_LIBRARY_PATH=$ORIGINAL_LD_LIBRARY_PATH" "$installed_binary" -h > /dev/null
-    else
-      env LD_LIBRARY_PATH= "$installed_binary" -h > /dev/null
-    fi
+  if [ "$ORIGINAL_LD_LIBRARY_PATH_SET" -eq 1 ]; then
+    env "LD_LIBRARY_PATH=$ORIGINAL_LD_LIBRARY_PATH" "$installed_binary" -h > /dev/null
   else
-    "$installed_binary" -h > /dev/null
+    env LD_LIBRARY_PATH= "$installed_binary" -h > /dev/null
   fi
-}
-
-print_loader_fix_hint() {
-  smoke_output=$1
-  case "$smoke_output" in
-    *libmbe-neo.so.2*)
-      if system_library_prefix "$DEPS_PREFIX"; then
-        echo "Installed dsd-neo could not load libmbe-neo.so.2; run sudo ldconfig and try again." >&2
-      else
-        cat >&2 << EOF
-Installed dsd-neo could not load libmbe-neo.so.2; update this shell before running it:
-  export LD_LIBRARY_PATH="$DEPS_PREFIX/lib:$DEPS_PREFIX/lib64\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-EOF
-      fi
-      ;;
-  esac
 }
 
 validate_installed_dsd_neo() {
   installed_binary=$(installed_binary_path)
   if [ "$DRY_RUN" -eq 1 ]; then
-    if system_library_prefix "$DEPS_PREFIX"; then
-      if [ "$ORIGINAL_LD_LIBRARY_PATH_SET" -eq 1 ]; then
-        run env "LD_LIBRARY_PATH=$ORIGINAL_LD_LIBRARY_PATH" "$installed_binary" -h
-      else
-        run env LD_LIBRARY_PATH= "$installed_binary" -h
-      fi
+    if [ "$ORIGINAL_LD_LIBRARY_PATH_SET" -eq 1 ]; then
+      run env "LD_LIBRARY_PATH=$ORIGINAL_LD_LIBRARY_PATH" "$installed_binary" -h
     else
-      run "$installed_binary" -h
+      run env LD_LIBRARY_PATH= "$installed_binary" -h
     fi
     return 0
   fi
@@ -501,7 +477,6 @@ validate_installed_dsd_neo() {
   if ! smoke_output=$(run_installed_dsd_neo_help "$installed_binary" 2>&1); then
     printf '%s\n' "$smoke_output" >&2
     echo "Installed dsd-neo smoke test failed: $installed_binary -h" >&2
-    print_loader_fix_hint "$smoke_output"
     exit 1
   fi
 }
@@ -543,26 +518,26 @@ build_codec2() {
 }
 
 configure_build_install_dsd_neo() {
-  cmake_args="-DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DDSD_ENABLE_LTO=ON -DDSD_ENABLE_FAST_MATH=ON -DDSD_WARNINGS_AS_ERRORS=OFF"
+  cmake_args="-DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DDSD_ENABLE_LTO=ON -DDSD_ENABLE_FAST_MATH=ON -DDSD_WARNINGS_AS_ERRORS=OFF -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON -DDSD_REQUIRE_CURL=ON -DDSD_REQUIRE_EXPAT=ON"
 
   case "$RADIO_MODE" in
     off)
-      cmake_args="$cmake_args -DDSD_ENABLE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=OFF"
+      cmake_args="$cmake_args -DDSD_ENABLE_RTLSDR=OFF -DDSD_REQUIRE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=OFF -DDSD_REQUIRE_SOAPYSDR=OFF"
       ;;
     required)
       cmake_args="$cmake_args -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON"
       ;;
     auto)
-      cmake_args="$cmake_args -DDSD_ENABLE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=ON"
+      cmake_args="$cmake_args -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=OFF"
       ;;
   esac
 
   case "$CODEC2_MODE" in
     off)
-      cmake_args="$cmake_args -DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=ON"
+      cmake_args="$cmake_args -DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=ON -DDSD_REQUIRE_CODEC2=OFF"
       ;;
     auto)
-      cmake_args="$cmake_args -DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=OFF"
+      cmake_args="$cmake_args -DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=OFF -DDSD_REQUIRE_CODEC2=OFF"
       ;;
     required)
       cmake_args="$cmake_args -DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=OFF -DDSD_REQUIRE_CODEC2=ON"
@@ -645,6 +620,5 @@ if [ "$PREFIX" != /usr ] && [ "$PREFIX" != /usr/local ]; then
 
 For this shell, you may need:
   export PATH="$PREFIX/bin:\$PATH"
-  export LD_LIBRARY_PATH="$DEPS_PREFIX/lib:$DEPS_PREFIX/lib64\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 EOF
 fi
