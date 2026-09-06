@@ -66,12 +66,12 @@ void playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state); // float stereo m
 void playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state); // float stereo mix 3v2 DMR
 /** @brief Play synthesized voice (float stereo mix 4v2 P25p2). */
 void playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state); // float stereo mix 4v2 P25p2
-/** @brief Play synthesized voice (float mono). */
+/** @brief Play float mono voice, duplicating samples when the configured output is stereo. */
 void playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state); // float mono
 
 /** @brief Play synthesized voice (short mono output slot 1). */
 void playSynthesizedVoice(dsd_opts* opts, dsd_state* state); // short mono output slot 1
-/** @brief Play synthesized voice (short mono mix). */
+/** @brief Play short mono voice, duplicating samples when the configured output is stereo. */
 void playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state); // short mono mix
 /** @brief Play synthesized voice (short stereo mix). */
 void playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state); // short stereo mix

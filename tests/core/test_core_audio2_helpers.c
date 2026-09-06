@@ -11,6 +11,7 @@
  * paths do not require live audio/device stubs.
  */
 
+#include <assert.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -18,6 +19,7 @@
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 
@@ -59,14 +61,15 @@ dsd_p25_sm_logf(dsd_opts* opts, const char* format, ...) {
 
 static int g_audio_write_calls;
 static size_t g_audio_write_frames;
-static int16_t g_audio_write_samples[640];
+static int g_audio_write_channels = 2;
+static int16_t g_audio_write_samples[1920];
 static int g_udp_blast_calls;
 static size_t g_udp_blast_bytes;
-static uint8_t g_udp_blast_data[256];
+static uint8_t g_udp_blast_data[1920 * sizeof(short)];
 static int g_dsd_write_calls;
 static int g_dsd_write_fd;
 static size_t g_dsd_write_bytes;
-static uint8_t g_dsd_write_data[256];
+static uint8_t g_dsd_write_data[1920 * sizeof(short)];
 static int g_dmr_missing_alg_key_allowed[2];
 static int g_dmr_voice_slot_allowed[2];
 static int g_gate_mono_forced_enc = -1;
@@ -241,7 +244,7 @@ dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) 
     (void)stream;
     g_audio_write_calls++;
     g_audio_write_frames = frames;
-    size_t samples = frames * 2U;
+    size_t samples = frames * (size_t)g_audio_write_channels;
     if (samples > sizeof(g_audio_write_samples) / sizeof(g_audio_write_samples[0])) {
         samples = sizeof(g_audio_write_samples) / sizeof(g_audio_write_samples[0]);
     }
@@ -1302,6 +1305,87 @@ test_audio_gate_target_preserves_p25_ota_identity(void) {
     return rc;
 }
 
+/* A mono vocoder frame must retain its duration, pitch and samples when the
+ * startup preset leaves a stereo device open during a mixed-protocol scan. */
+static int
+test_mono_voice_preserves_samples_in_configured_output(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    short history[960];
+    short expected_short[1920];
+    float expected_float[320];
+    const int sinks[] = {0, 1, 8};
+    int rc = 0;
+    opts->audio_out = 1;
+    opts->slot1_on = 1;
+    opts->audio_out_stream = (dsd_audio_stream*)opts;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    reset_gate_capture();
+
+    for (int channels = 1; channels <= 2; channels++) {
+        opts->pulse_digi_out_channels = channels;
+        g_audio_write_channels = channels;
+        for (int format = 0; format < 3; format++) {
+            const int floating = format == 1;
+            const size_t frames = format == 2 ? 960U : 160U;
+            opts->floating_point = floating;
+            for (size_t sink = 0; sink < sizeof(sinks) / sizeof(sinks[0]); sink++) {
+                opts->audio_out_type = sinks[sink];
+                state->audio_out_idx = (int)frames;
+                state->audio_out_buf_p = history + frames;
+                for (size_t i = 0; i < frames; i++) {
+                    short sample = (short)((int)i - 480);
+                    float value = (float)((int)(i % 29U) - 14) / 32.0f;
+                    history[i] = sample;
+                    if (i < 160U) {
+                        state->s_l[i] = sample;
+                        state->f_l[i] = value;
+                    }
+                    for (int channel = 0; channel < channels; channel++) {
+                        size_t index = i * (size_t)channels + (size_t)channel;
+                        expected_short[index] = floating ? (short)(value * 32767.0f) : sample;
+                        if (floating) {
+                            expected_float[index] = value;
+                        }
+                    }
+                }
+                reset_sink_capture();
+                if (floating) {
+                    playSynthesizedVoiceFM(opts, state);
+                } else {
+                    playSynthesizedVoiceMS(opts, state);
+                }
+                size_t count = frames * (size_t)channels;
+                if (opts->audio_out_type == 0) {
+                    rc |= expect_size("mono voice device frame duration", g_audio_write_frames, frames);
+                    rc |= expect_bytes("mono voice device channel samples", g_audio_write_samples, expected_short,
+                                       count * sizeof(short));
+                } else {
+                    const void* data = opts->audio_out_type == 1 ? g_dsd_write_data : g_udp_blast_data;
+                    size_t bytes = opts->audio_out_type == 1 ? g_dsd_write_bytes : g_udp_blast_bytes;
+                    rc |= expect_size("mono voice stream frame duration", bytes,
+                                      count * (floating ? sizeof(float) : sizeof(short)));
+                    if (floating) {
+                        for (size_t i = 0; i < count; i++) {
+                            float sample;
+                            DSD_MEMCPY(&sample, (const uint8_t*)data + i * sizeof(float), sizeof(sample));
+                            rc |= expect_float("mono voice stream channel sample", sample, expected_float[i]);
+                        }
+                    } else {
+                        rc |= expect_bytes("mono voice stream channel samples", data, expected_short,
+                                           count * sizeof(short));
+                    }
+                }
+            }
+        }
+    }
+    g_audio_write_channels = 2;
+    free(state);
+    free(opts);
+    return rc;
+}
+
 static int
 test_silent_s16_helper(void) {
     short all_zero[4] = {0, 0, 0, 0};
@@ -1331,6 +1415,7 @@ main(void) {
     rc |= test_short_dmr_mono_honors_slot_controls_and_one_channel_output();
     rc |= test_float_playback_orchestrators_emit_expected_blocks();
     rc |= test_audio_gate_target_preserves_p25_ota_identity();
+    rc |= test_mono_voice_preserves_samples_in_configured_output();
     rc |= test_silent_s16_helper();
     return rc;
 }
