@@ -318,6 +318,7 @@ jobs:
             dsd-neo_test_ui_qt_spectrum_math \
             dsd-neo_test_ui_qt_spectrum_model \
             dsd-neo_test_ui_qt_metrics_model \
+            dsd-neo_test_ui_qt_talkgroup_list_model \
             dsd-neo_test_ui_qt_radio_reference_model
 
       # The QML test carries its own headless environment (offscreen platform,

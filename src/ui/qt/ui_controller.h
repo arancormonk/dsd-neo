@@ -25,13 +25,15 @@ namespace dsd_qt {
 
 class CallHistoryModel;
 class MetricsModel;
+class TalkgroupListModel;
 
 class UiController : public QObject {
     Q_OBJECT
     Q_PROPERTY(int pollIntervalMs READ pollIntervalMs WRITE setPollIntervalMs NOTIFY pollIntervalChanged)
 
   public:
-    UiController(DecoderHost* host, MetricsModel* metrics, CallHistoryModel* history, QObject* parent = nullptr);
+    UiController(DecoderHost* host, MetricsModel* metrics, CallHistoryModel* history, TalkgroupListModel* talkgroups,
+                 QObject* parent = nullptr);
     ~UiController() override;
 
     int pollIntervalMs() const;
@@ -61,6 +63,7 @@ class UiController : public QObject {
     DecoderHost* m_host = nullptr;
     MetricsModel* m_metrics = nullptr;
     CallHistoryModel* m_history = nullptr;
+    TalkgroupListModel* m_talkgroups = nullptr;
     QTimer m_timer;
     DecoderHost::SessionState m_session = DecoderHost::Idle;
 };

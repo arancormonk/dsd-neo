@@ -5,8 +5,10 @@
 
 #include "command_bridge.h"
 
+#include <QByteArray>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/core/safe_api.h>
 #include <stdint.h>
 
 #include "decode_mode_flag.h"
@@ -43,6 +45,26 @@ bool
 CommandBridge::lockoutSlot(int slot) const {
     const uint8_t index = (slot > 0) ? 1U : 0U;
     return accepted(dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, index));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::setTalkgroupListening(unsigned int idStart, unsigned int idEnd, bool listen) const {
+    dsd_app_tg_listen_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof(payload));
+    payload.id_start = idStart;
+    payload.id_end = idEnd;
+    payload.listen = listen ? 1 : 0;
+    return accepted(dsd_app_command_set_tg_listen(&payload));
+}
+
+bool
+CommandBridge::setAllTalkgroupsListening(bool listen, const QString& tag) const {
+    dsd_app_tg_listen_all_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof(payload));
+    payload.listen = listen ? 1 : 0;
+    DSD_SNPRINTF(payload.tags, sizeof(payload.tags), "%s", tag.toUtf8().constData());
+    return accepted(dsd_app_command_set_tg_listen_all(&payload));
 }
 
 bool

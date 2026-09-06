@@ -66,6 +66,7 @@ typedef struct {
     uint32_t id_end;
     char mode[8];
     char name[50];
+    char tags[50]; /* Free text from the CSV tags/category column; frontends only, never consulted by policy. */
     int priority;
     uint8_t preempt;
     uint8_t audio;
@@ -155,6 +156,31 @@ int dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state);
  *         loaded), -1 on a null state or allocation failure.
  */
 int dsd_tg_policy_clear(dsd_state* state);
+
+/** Rows in table order (file order, then runtime appends). 0 without a policy context.
+ * Works on live decoder state and frontend snapshot copies. */
+size_t dsd_tg_policy_entry_count(const dsd_state* state);
+/** Copy row @p index into @p out. Returns 1 when copied, 0 for NULL out or out of range (out zeroed). */
+int dsd_tg_policy_entry_at(const dsd_state* state, size_t index, dsd_tg_policy_entry* out);
+/** Live source context identity and table generation; both 0 without a context.
+ * Every row mutation advances the generation. Equal pairs mean equal rows; snapshots report their source id. */
+void dsd_tg_policy_table_version(const dsd_state* state, uint64_t* out_context_id, unsigned int* out_generation);
+/** Set the mode of the first row with exactly these bounds, keeping its name, tags, priority,
+ * preempt and source, and re-deriving audio/record/stream from mode. A missing exact id is
+ * appended with an empty name and source USER_LOCKOUT; a missing range is refused.
+ * Creates the context when absent.
+ * Returns 0 applied, 1 invalid (NULL state/mode, empty or over-long mode, reversed bounds,
+ * missing range), -1 allocation failure. */
+int dsd_tg_policy_set_mode(dsd_state* state, uint32_t id_start, uint32_t id_end, const char* mode);
+/** Same edit on the row at @p index (decoder thread only; indices remain stable while it holds state).
+ * Returns 0 applied, 1 bad index or mode. */
+int dsd_tg_policy_set_mode_at(dsd_state* state, size_t index, const char* mode);
+/** Atomically rewrite opts->group_in_file from the effective table using a sibling temporary file.
+ * Keeps an existing extended policy header, otherwise uses id,mode,name,tags when any row has tags,
+ * or id,mode,name. Ranges are written as start-end. Unmodelled free-text columns (e.g. alias metadata)
+ * are not preserved. Returns 0 written or nothing to write (NULL opts, empty path), -1 on I/O
+ * failure with the old file intact. */
+int dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * Decoder-thread owned, reference-counted policy context. References preserve row-local

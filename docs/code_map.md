@@ -499,6 +499,13 @@ Qt Quick frontend (`src/ui/qt`):
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. See
   `docs/radioreference-import.md`.
+- `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
+  ingestion, merging listed rows with uncovered talkgroups heard this session. `talkgroup_filter_model.{h,cpp}`
+  filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the monitor's **TG list** action.
+  `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
+  policy and atomically rewrites a configured group file. Scan-row lists remain session-only. Skip shares this
+  mutation path, preserving labels. Runtime's `dsd_rr_talkgroups_apply_categories()` supplies category names to
+  both RadioReference frontends before CSV generation.
 - Platform-free by rule: it may include Qt and `include/dsd-neo/app_control/` headers, never engine/io/protocol
   internals, and never platform APIs (`QJniObject`, `<android/*.h>`). Platform specifics live behind the `DecoderHost`
   interface, implemented per host (`android/decoder_host_android.cpp` today).

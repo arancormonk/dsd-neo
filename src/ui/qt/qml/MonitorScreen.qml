@@ -11,6 +11,7 @@ Item {
 
     // Raised by the header's spectrum button; Main.qml owns the layer.
     signal openSpectrum()
+    signal openTalkgroups()
 
     // Raised by a long-press on the header title, the same gesture that edits a
     // card on Home. Main.qml opens the wizard on the running system — the only
@@ -410,7 +411,7 @@ Item {
             spacing: 10
 
             OutlineButton {
-                width: (parent.width - 20) / 3
+                width: (parent.width - 30) / 4
                 text: screen.muted ? qsTr("Unmute") : qsTr("Mute")
                 enabled: decoderHost.running
                 // The label follows metrics.audioMuted once the engine applies the
@@ -419,7 +420,7 @@ Item {
             }
 
             OutlineButton {
-                width: (parent.width - 20) / 3
+                width: (parent.width - 30) / 4
                 text: screen.holding ? qsTr("Release") : qsTr("Hold TG")
                 // Disabled, not a silent no-op, when the call has no numeric
                 // talkgroup (M17/D-STAR callsigns, dPMR dial strings).
@@ -429,10 +430,18 @@ Item {
             }
 
             OutlineButton {
-                width: (parent.width - 20) / 3
+                width: (parent.width - 30) / 4
                 text: qsTr("Skip")
                 enabled: decoderHost.running && screen.heroSlot !== 0
                 onClicked: commands.lockoutSlot(screen.heroSlot === 2 ? 1 : 0)
+            }
+
+            OutlineButton {
+                objectName: "talkgroupsButton"
+                width: (parent.width - 30) / 4
+                text: qsTr("TG list")
+                enabled: decoderHost.running
+                onClicked: screen.openTalkgroups()
             }
         }
 

@@ -29,10 +29,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Human-facing only: both importers discard physical line 1 without looking at
- * it. The group header stays at three columns so it can never be mistaken for a
- * policy header, whose 4th field would have to read "priority". */
-#define RR_GROUP_HEADER "DEC,Mode,Name (generated from RadioReference)\n"
+/* The fourth field opts into categories without being mistaken for an extended
+ * policy header, whose fourth field must read "priority". */
+#define RR_GROUP_HEADER "DEC,Mode,Name,Category,(generated from RadioReference)\n"
 #define RR_CHAN_HEADER  "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
 
 /* The importer's opt-in for the channel map's name column is the header's
@@ -1380,7 +1379,7 @@ rr_group_mode(const dsd_rr_talkgroup* talkgroup, int partial_enc_as_de) {
 /**
  * @brief Append one talkgroup row.
  *
- * No space follows either comma: the importer trims the mode column but hands
+ * No space follows a comma: the importer trims the mode column but hands
  * the name column through verbatim, so " Fire Dispatch" would keep its space in
  * the UI and in event history.
  *
@@ -1388,13 +1387,18 @@ rr_group_mode(const dsd_rr_talkgroup* talkgroup, int partial_enc_as_de) {
  * @param talkgroup Talkgroup.
  * @param mode      Mode column.
  * @param name      Sanitized name column.
+ * @param category  Sanitized category column; omitted when empty.
  */
 static void
-rr_text_group_row(rr_text* text, const dsd_rr_talkgroup* talkgroup, const char* mode, const char* name) {
-    char line[128];
-    const int written = DSD_SNPRINTF(line, sizeof(line), "%lu,%s,%s\n", (unsigned long)talkgroup->tg_dec, mode, name);
+rr_text_group_row(rr_text* text, const dsd_rr_talkgroup* talkgroup, const char* mode, const char* name,
+                  const char* category) {
+    char line[256];
+    const int written =
+        category[0]
+            ? DSD_SNPRINTF(line, sizeof(line), "%lu,%s,%s,%s\n", (unsigned long)talkgroup->tg_dec, mode, name, category)
+            : DSD_SNPRINTF(line, sizeof(line), "%lu,%s,%s\n", (unsigned long)talkgroup->tg_dec, mode, name);
     /* BSIZE is 999 and the importer reads with fgets, so a longer line would be
-     * split into two malformed rows. The 49-byte name cap makes this
+     * split into two malformed rows. The 49-byte name and category caps make this
      * unreachable; the check is here so it stays unreachable. */
     if (written <= 0 || (size_t)written >= sizeof(line)) {
         text->failed = 1;
@@ -1435,7 +1439,11 @@ rr_group_emit(rr_text* text, const dsd_rr_talkgroup* talkgroup, int partial_enc_
     if (name[0] == '\0') {
         (void)DSD_SNPRINTF(name, sizeof(name), "TG %lu", (unsigned long)talkgroup->tg_dec);
     }
-    rr_text_group_row(text, talkgroup, rr_group_mode(talkgroup, partial_enc_as_de), name);
+    char category[RR_NAME_MAX + 1U] = {0};
+    if (talkgroup->category[0]) {
+        (void)rr_sanitize_name(talkgroup->category, category, sizeof(category));
+    }
+    rr_text_group_row(text, talkgroup, rr_group_mode(talkgroup, partial_enc_as_de), name, category);
     counts->emitted++;
 }
 

@@ -14,6 +14,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "metrics_model.h"
+#include "talkgroup_list_model.h"
 
 namespace dsd_qt {
 
@@ -26,8 +27,9 @@ constexpr int kDefaultPollIntervalMs = 250;
 
 } // namespace
 
-UiController::UiController(DecoderHost* host, MetricsModel* metrics, CallHistoryModel* history, QObject* parent)
-    : QObject(parent), m_host(host), m_metrics(metrics), m_history(history) {
+UiController::UiController(DecoderHost* host, MetricsModel* metrics, CallHistoryModel* history,
+                           TalkgroupListModel* talkgroups, QObject* parent)
+    : QObject(parent), m_host(host), m_metrics(metrics), m_history(history), m_talkgroups(talkgroups) {
     m_timer.setInterval(kDefaultPollIntervalMs);
     m_timer.setTimerType(Qt::CoarseTimer);
     connect(&m_timer, &QTimer::timeout, this, &UiController::tick);
@@ -87,6 +89,9 @@ UiController::onSessionStateChanged() {
         if (m_metrics != nullptr) {
             m_metrics->clear();
         }
+        if (m_talkgroups != nullptr) {
+            m_talkgroups->clear();
+        }
     }
 }
 
@@ -102,7 +107,7 @@ UiController::tick() {
         return;
     }
 
-    /* Consumed once, here, and handed to both models. Each accessor deep-copies
+    /* Consumed once, here, and handed to the models. Each accessor deep-copies
      * whenever the publisher has moved on, so fetching per model would let a publish
      * land mid-frame and leave the status card describing one generation and the
      * event list another — and would repeat the copy for every fetch. */
@@ -116,6 +121,9 @@ UiController::tick() {
      * cleared on session boundaries — only fed. */
     if (m_history != nullptr) {
         m_history->refresh(snapshot);
+    }
+    if (m_talkgroups != nullptr) {
+        m_talkgroups->refresh(opts_snapshot, snapshot);
     }
 }
 

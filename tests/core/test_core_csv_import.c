@@ -906,23 +906,40 @@ test_group_import_policy_and_basic_headers(void) {
     }
     (void)dsd_close(fd);
 
-    if (write_text_file(tmpl, "id,mode,name,tag\n100,B,LOCK,90,true,on,on,on\n101,A,ALLOW,meta\n") != 0) {
-        (void)remove(tmpl);
-        free(opts);
-        free_test_state(state);
-        return 1;
-    }
+    static const struct {
+        const char* header;
+        const char* expected_tags;
+    } basic_cases[] = {
+        {"DEC,Mode,Name,Tag", "Fire"},
+        {"id,mode,name, tags ", "Fire"},
+        {"DEC,Mode,Name,Category,(generated from RadioReference)", "Fire"},
+        {"id,mode,name,metadata", ""},
+    };
+
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
-    if (csvGroupImport(opts, state) != 0) {
-        failed = 1;
-    }
-    if (dsd_tg_policy_lookup_id(state, 100, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
-        || lookup.entry.priority != 0 || lookup.entry.preempt != 0 || lookup.entry.audio != 0) {
-        failed = 1;
-    }
-    if (dsd_tg_policy_lookup_id(state, 101, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
-        || lookup.entry.priority != 0 || lookup.entry.preempt != 0 || lookup.entry.audio != 1) {
-        failed = 1;
+    for (size_t i = 0; i < sizeof(basic_cases) / sizeof(basic_cases[0]); i++) {
+        char text[256];
+        dsd_state_ext_free_all(state);
+        DSD_MEMSET(state, 0, sizeof(*state));
+        DSD_SNPRINTF(text, sizeof(text), "%s\n100,B,LOCK, Fire ,true,on,on,on\n101,A,ALLOW\n", basic_cases[i].header);
+        if (write_text_file(tmpl, text) != 0) {
+            failed = 1;
+            break;
+        }
+        if (csvGroupImport(opts, state) != 0) {
+            failed = 1;
+        }
+        if (dsd_tg_policy_lookup_id(state, 100, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
+            || lookup.entry.priority != 0 || lookup.entry.preempt != 0 || lookup.entry.audio != 0
+            || strcmp(lookup.entry.tags, basic_cases[i].expected_tags) != 0) {
+            DSD_FPRINTF(stderr, "basic group header case %zu lost tags or changed policy\n", i);
+            failed = 1;
+        }
+        if (dsd_tg_policy_lookup_id(state, 101, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
+            || lookup.entry.priority != 0 || lookup.entry.preempt != 0 || lookup.entry.audio != 1
+            || lookup.entry.tags[0] != '\0') {
+            failed = 1;
+        }
     }
 
     dsd_state_ext_free_all(state);
@@ -943,7 +960,7 @@ test_group_import_policy_and_basic_headers(void) {
         }
         if (dsd_tg_policy_lookup_id(state, 200, &lookup) != 0 || lookup.entry.priority != 90
             || lookup.entry.preempt != 1 || lookup.entry.audio != 1 || lookup.entry.record != 1
-            || lookup.entry.stream != 1) {
+            || lookup.entry.stream != 1 || strcmp(lookup.entry.tags, "fire") != 0) {
             failed = 1;
         }
         if (dsd_tg_policy_lookup_id(state, 201, &lookup) != 0 || lookup.entry.priority != 0 || lookup.entry.preempt != 1

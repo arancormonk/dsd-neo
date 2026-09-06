@@ -3,12 +3,15 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,35 +50,16 @@ init_entry(dsd_tg_policy_entry* e, uint32_t id, const char* mode, const char* na
     e->stream = e->audio;
 }
 
-typedef struct {
-    dsd_tg_policy_entry* entries;
-    size_t count;
-    size_t capacity;
-    unsigned int generation;
-} test_tg_policy_table_view;
-
-typedef struct {
-    test_tg_policy_table_view table;
-} test_tg_policy_context_view;
-
 static unsigned int
 policy_generation(const dsd_state* st) {
-    const test_tg_policy_context_view* ctx =
-        (const test_tg_policy_context_view*)dsd_state_ext_get_const(st, DSD_STATE_EXT_CORE_TG_POLICY);
-    if (!ctx) {
-        return 0u;
-    }
-    return ctx->table.generation;
+    unsigned int generation = 0;
+    dsd_tg_policy_table_version(st, NULL, &generation);
+    return generation;
 }
 
 static size_t
 policy_count(const dsd_state* st) {
-    const test_tg_policy_context_view* ctx =
-        (const test_tg_policy_context_view*)dsd_state_ext_get_const(st, DSD_STATE_EXT_CORE_TG_POLICY);
-    if (!ctx) {
-        return 0u;
-    }
-    return ctx->table.count;
+    return dsd_tg_policy_entry_count(st);
 }
 
 static int
@@ -866,6 +850,249 @@ test_reload_group_file(void) {
     return rc;
 }
 
+static int
+expect_zeroed_entry(const char* tag, const dsd_tg_policy_entry* entry) {
+    int rc = expect_true(tag, entry->id_start == 0);
+    rc |= expect_true(tag, entry->id_end == 0);
+    rc |= expect_true(tag, entry->mode[0] == '\0');
+    rc |= expect_true(tag, entry->name[0] == '\0');
+    rc |= expect_true(tag, entry->tags[0] == '\0');
+    rc |= expect_true(tag, entry->priority == 0);
+    rc |= expect_true(tag, entry->preempt == 0);
+    rc |= expect_true(tag, entry->audio == 0);
+    rc |= expect_true(tag, entry->record == 0);
+    rc |= expect_true(tag, entry->stream == 0);
+    rc |= expect_true(tag, entry->is_range == 0);
+    rc |= expect_true(tag, entry->source == 0);
+    rc |= expect_true(tag, entry->row == 0);
+    return rc;
+}
+
+static int
+test_mode_edits_and_enumeration(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_state* snap = (dsd_state*)calloc(1, sizeof(*snap));
+    dsd_tg_policy_entry e;
+    dsd_tg_policy_entry row;
+    uint64_t context = 1;
+    uint64_t snapshot_context = 0;
+    unsigned int generation = 1;
+    unsigned int snapshot_generation = 0;
+    if (!st || !snap) {
+        free_test_state(st);
+        free_test_state(snap);
+        return 1;
+    }
+
+    dsd_tg_policy_table_version(st, &context, &generation);
+    rc |= expect_true("absent table identity", context == 0 && generation == 0);
+    rc |= expect_true("absent table count", dsd_tg_policy_entry_count(st) == 0);
+    DSD_MEMSET(&row, 0xff, sizeof(row));
+    rc |= expect_true("absent row", dsd_tg_policy_entry_at(st, 0, &row) == 0);
+    rc |= expect_zeroed_entry("absent row zeroed", &row);
+    rc |= expect_true("null row destination", dsd_tg_policy_entry_at(st, 0, NULL) == 0);
+
+    init_entry(&e, 1001, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED);
+    DSD_SNPRINTF(e.tags, sizeof(e.tags), "%s", "FIRE");
+    e.priority = 23;
+    e.preempt = 1;
+    rc |= expect_true("seed editable row", dsd_tg_policy_append_exact(st, &e) == 0);
+    rc |= expect_true("seed duplicate row", dsd_tg_policy_append_exact(st, &e) == 0);
+    dsd_tg_policy_table_version(st, &context, &generation);
+    rc |= expect_true("copy editable snapshot", dsd_tg_policy_copy_snapshot(snap, st) == 0);
+    dsd_tg_policy_table_version(snap, &snapshot_context, &snapshot_generation);
+    rc |= expect_true("snapshot shares source version",
+                      context != 0 && snapshot_context == context && snapshot_generation == generation);
+    rc |= expect_true("block existing row", dsd_tg_policy_set_mode(st, 1001, 1001, "B") == 0);
+    rc |= expect_true("mode edit advances generation", policy_generation(st) > generation);
+    rc |= expect_true("read blocked row", dsd_tg_policy_entry_at(st, 0, &row) == 1);
+    rc |= expect_true("mode edit preserves metadata", strcmp(row.name, "Dispatch") == 0 && strcmp(row.tags, "FIRE") == 0
+                                                          && row.priority == 23 && row.preempt == 1
+                                                          && row.source == DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("blocking disables media",
+                      strcmp(row.mode, "B") == 0 && row.audio == 0 && row.record == 0 && row.stream == 0);
+    rc |= expect_true("read duplicate row", dsd_tg_policy_entry_at(st, 1, &row) == 1);
+    rc |= expect_true("only first bounds match changes", strcmp(row.mode, "A") == 0);
+    rc |= expect_true("read original snapshot", dsd_tg_policy_entry_at(snap, 0, &row) == 1);
+    rc |= expect_true("snapshot keeps old row", strcmp(row.mode, "A") == 0 && strcmp(row.tags, "FIRE") == 0);
+    rc |= expect_true("refresh edited snapshot", dsd_tg_policy_copy_snapshot(snap, st) == 0);
+    rc |= expect_true("read refreshed snapshot", dsd_tg_policy_entry_at(snap, 0, &row) == 1);
+    rc |= expect_true("snapshot receives edit", strcmp(row.mode, "B") == 0 && strcmp(row.tags, "FIRE") == 0);
+    rc |= expect_true("listen to existing row", dsd_tg_policy_set_mode(st, 1001, 1001, "A") == 0);
+    rc |= expect_true("read listening row", dsd_tg_policy_entry_at(st, 0, &row) == 1);
+    rc |= expect_true("listening restores media",
+                      strcmp(row.mode, "A") == 0 && row.audio == 1 && row.record == 1 && row.stream == 1);
+    rc |= expect_true("listen preserves metadata", strcmp(row.name, "Dispatch") == 0 && strcmp(row.tags, "FIRE") == 0
+                                                       && row.priority == 23 && row.preempt == 1
+                                                       && row.source == DSD_TG_POLICY_SOURCE_IMPORTED);
+
+    init_entry(&e, 1300, "A", "Regional", DSD_TG_POLICY_SOURCE_IMPORTED);
+    e.id_end = 1399;
+    e.is_range = 1;
+    rc |= expect_true("append editable range", dsd_tg_policy_add_range_entry(st, &e) == 0);
+    rc |= expect_true("edit range bounds", dsd_tg_policy_set_mode(st, 1300, 1399, "B") == 0);
+    rc |= expect_true("append missing exact", dsd_tg_policy_set_mode(st, 900, 900, "B") == 0);
+    rc |= expect_true("enumerated append count", dsd_tg_policy_entry_count(st) == 4);
+    rc |= expect_true("enumerate range in append order", dsd_tg_policy_entry_at(st, 2, &row) == 1);
+    rc |= expect_true("range edit retained bounds",
+                      row.id_start == 1300 && row.id_end == 1399 && row.is_range && strcmp(row.mode, "B") == 0);
+    rc |= expect_true("enumerate runtime row last", dsd_tg_policy_entry_at(st, 3, &row) == 1);
+    rc |= expect_true("runtime row identity", row.id_start == 900 && row.id_end == 900 && row.name[0] == '\0'
+                                                  && row.source == DSD_TG_POLICY_SOURCE_USER_LOCKOUT);
+    generation = policy_generation(st);
+    rc |= expect_true("index edit", dsd_tg_policy_set_mode_at(st, 2, "A") == 0);
+    rc |= expect_true("index edit advances version", policy_generation(st) > generation);
+    rc |= expect_true("read index edit", dsd_tg_policy_entry_at(st, 2, &row) == 1);
+    rc |= expect_true("index edit restores range media", row.audio && row.record && row.stream);
+    generation = policy_generation(st);
+    rc |= expect_true("missing range refused", dsd_tg_policy_set_mode(st, 1400, 1499, "B") == 1);
+    rc |= expect_true("reversed bounds refused", dsd_tg_policy_set_mode(st, 2, 1, "B") == 1);
+    rc |= expect_true("null state refused", dsd_tg_policy_set_mode(NULL, 1, 1, "B") == 1);
+    rc |= expect_true("null mode refused", dsd_tg_policy_set_mode(st, 1, 1, NULL) == 1);
+    rc |= expect_true("empty mode refused", dsd_tg_policy_set_mode(st, 1, 1, "") == 1);
+    rc |= expect_true("eight byte mode refused", dsd_tg_policy_set_mode(st, 1, 1, "12345678") == 1);
+    rc |= expect_true("bad index refused", dsd_tg_policy_set_mode_at(st, 4, "A") == 1);
+    rc |= expect_true("index empty mode refused", dsd_tg_policy_set_mode_at(st, 0, "") == 1);
+    rc |= expect_true("index long mode refused", dsd_tg_policy_set_mode_at(st, 0, "12345678") == 1);
+    rc |= expect_true("invalid edits leave table unchanged",
+                      policy_generation(st) == generation && dsd_tg_policy_entry_count(st) == 4);
+    rc |= expect_true("out of range enumeration", dsd_tg_policy_entry_at(st, 4, &row) == 0);
+    rc |= expect_zeroed_entry("out of range row zeroed", &row);
+    dsd_state_ext_free_all(st);
+    rc |= expect_true("setter creates absent context", dsd_tg_policy_set_mode(st, 7, 7, "A") == 0);
+    dsd_tg_policy_table_version(st, &snapshot_context, NULL);
+    rc |= expect_true("recreated context differs", snapshot_context != 0 && snapshot_context != context);
+    free_test_state(st);
+    free_test_state(snap);
+    return rc;
+}
+
+static int
+test_group_file_rewrite(void) {
+    int rc = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_state* loaded = (dsd_state*)calloc(1, sizeof(*loaded));
+    dsd_tg_policy_entry e;
+    dsd_tg_policy_entry row;
+    char path[] = "dsd-neo-test-tg-rewrite-XXXXXX";
+    char l1[256] = {0};
+    char l2[256] = {0};
+    char l3[256] = {0};
+    if (!opts || !st || !loaded) {
+        free(opts);
+        free_test_state(st);
+        free_test_state(loaded);
+        return 1;
+    }
+    int fd = dsd_mkstemp(path);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(st);
+        free_test_state(loaded);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    (void)remove(path);
+    rc |= expect_true("empty path rewrite ignored", dsd_tg_policy_write_group_file(opts, st) == 0);
+    rc |= expect_true("null options rewrite ignored", dsd_tg_policy_write_group_file(NULL, st) == 0);
+    FILE* fp = fopen(path, "r");
+    rc |= expect_true("empty path creates no file", fp == NULL);
+    if (fp) {
+        fclose(fp);
+    }
+    init_entry(&e, 1001, "B", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED);
+    DSD_SNPRINTF(e.tags, sizeof(e.tags), "%s", "FIRE");
+    rc |= expect_true("seed rewrite exact", dsd_tg_policy_append_exact(st, &e) == 0);
+    init_entry(&e, 1300, "A", "Regional", DSD_TG_POLICY_SOURCE_IMPORTED);
+    e.id_end = 1399;
+    e.is_range = 1;
+    rc |= expect_true("seed rewrite range", dsd_tg_policy_add_range_entry(st, &e) == 0);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    rc |= expect_true("rewrite tagged table", dsd_tg_policy_write_group_file(opts, st) == 0);
+    rc |=
+        expect_true("read rewritten table", read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), l3, sizeof(l3)) == 0);
+    rc |= expect_true("tagged header", strcmp(l1, "id,mode,name,tags\n") == 0);
+    rc |= expect_true("tagged exact row", strcmp(l2, "1001,B,Dispatch,FIRE\n") == 0);
+    rc |= expect_true("range row with empty category", strcmp(l3, "1300-1399,A,Regional,\n") == 0);
+    rc |= expect_true("reload tagged table", csvGroupImportPath(path, loaded) == 0);
+    rc |= expect_true("roundtrip row count", dsd_tg_policy_entry_count(loaded) == 2);
+    rc |= expect_true("roundtrip exact row", dsd_tg_policy_entry_at(loaded, 0, &row) == 1);
+    rc |= expect_true("roundtrip exact fields", row.id_start == 1001 && row.id_end == 1001 && strcmp(row.mode, "B") == 0
+                                                    && strcmp(row.name, "Dispatch") == 0
+                                                    && strcmp(row.tags, "FIRE") == 0);
+    rc |= expect_true("roundtrip range row", dsd_tg_policy_entry_at(loaded, 1, &row) == 1);
+    rc |= expect_true("roundtrip range fields", row.id_start == 1300 && row.id_end == 1399 && row.is_range
+                                                    && strcmp(row.mode, "A") == 0 && strcmp(row.name, "Regional") == 0
+                                                    && row.tags[0] == '\0');
+
+    fp = dsd_fopen_private(path, "w");
+    if (!fp) {
+        rc = 1;
+        goto cleanup;
+    }
+    DSD_FPRINTF(fp, "id,mode,name,priority,preempt,audio,record,stream,tags\n");
+    fclose(fp);
+    rc |= expect_true("clear rewrite fixture", dsd_tg_policy_clear(st) == 0);
+    init_entry(&e, 2001, "A", "EMS Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED);
+    DSD_SNPRINTF(e.tags, sizeof(e.tags), "%s", "EMS");
+    e.priority = 17;
+    e.preempt = 1;
+    e.record = 0;
+    rc |= expect_true("seed extended rewrite", dsd_tg_policy_append_exact(st, &e) == 0);
+    rc |= expect_true("rewrite extended table", dsd_tg_policy_write_group_file(opts, st) == 0);
+    rc |= expect_true("read extended table", read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
+    rc |= expect_true("extended header preserved",
+                      strcmp(l1, "id,mode,name,priority,preempt,audio,record,stream,tags\n") == 0);
+    rc |= expect_true("extended row media", strcmp(l2, "2001,A,EMS Dispatch,17,true,on,off,on,EMS\n") == 0);
+    dsd_state_ext_free_all(loaded);
+    rc |= expect_true("reload extended table", csvGroupImportPath(path, loaded) == 0);
+    rc |= expect_true("extended roundtrip count", dsd_tg_policy_entry_count(loaded) == 1);
+    rc |= expect_true("extended roundtrip row", dsd_tg_policy_entry_at(loaded, 0, &row) == 1);
+    rc |= expect_true("extended roundtrip policy", row.priority == 17 && row.preempt && row.audio && !row.record
+                                                       && row.stream && strcmp(row.tags, "EMS") == 0);
+    (void)remove(path);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s/groups.csv", path);
+    rc |= expect_true("missing directory rewrite fails", dsd_tg_policy_write_group_file(opts, st) == -1);
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    rc |= expect_true("clear untagged fixture", dsd_tg_policy_clear(st) == 0);
+    rc |= expect_true("seed untagged runtime row", dsd_tg_policy_set_mode(st, 99, 99, "B") == 0);
+    rc |= expect_true("rewrite untagged table", dsd_tg_policy_write_group_file(opts, st) == 0);
+    rc |= expect_true("read untagged table", read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
+    rc |= expect_true("untagged header", strcmp(l1, "id,mode,name\n") == 0);
+    rc |= expect_true("untagged runtime row", strcmp(l2, "99,B,\n") == 0);
+cleanup:
+    (void)remove(path);
+    free(opts);
+    free_test_state(st);
+    free_test_state(loaded);
+    return rc;
+}
+
+static int
+test_scan_row_policy_activity(void) {
+    int rc = 0;
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    dsd_scan_row_profile profile = {0};
+    if (!st) {
+        return 1;
+    }
+    rc |= expect_true("no scan policy active", !dsd_scan_groups_row_active(st));
+    profile.values.present = DSD_SCAN_OPT_GROUP;
+    rc |= expect_true("reserve scan groups", dsd_scan_groups_begin(st) == 0);
+    dsd_scan_groups_enter(st, &profile);
+    rc |= expect_true("row policy active", dsd_scan_groups_row_active(st));
+    rc |= expect_true("suspend row policy", dsd_scan_groups_suspend(st) == 1);
+    rc |= expect_true("suspended row policy inactive", !dsd_scan_groups_row_active(st));
+    dsd_scan_groups_resume(st);
+    rc |= expect_true("resumed row policy active", dsd_scan_groups_row_active(st));
+    dsd_scan_groups_leave(st);
+    rc |= expect_true("left row policy inactive", !dsd_scan_groups_row_active(st));
+    free_test_state(st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -879,5 +1106,8 @@ main(void) {
     rc |= test_group_file_append_helper();
     rc |= test_preemption_helpers();
     rc |= test_reload_group_file();
+    rc |= test_mode_edits_and_enumeration();
+    rc |= test_group_file_rewrite();
+    rc |= test_scan_row_policy_activity();
     return rc;
 }

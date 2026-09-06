@@ -1601,25 +1601,6 @@ rr_refresh_complete(RrWizardCore* w) {
 
 /* ---- System assembly ----------------------------------------------------- */
 
-/**
- * @brief Splice category names onto the talkgroups.
- *
- * Display only in v1: no generator reads dsd_rr_talkgroup::category, and the Qt
- * model never filled it, so there is nothing to port here.
- */
-static void
-rr_apply_categories(dsd_rr_talkgroup_list* tgs, const dsd_rr_talkgroup_cat_list* cats) {
-    for (size_t i = 0; i < tgs->count; i++) {
-        tgs->items[i].category[0] = '\0';
-        for (size_t k = 0; k < cats->count; k++) {
-            if (cats->items[k].tg_cid == tgs->items[i].tg_cid) {
-                DSD_STRNCPY(tgs->items[i].category, cats->items[k].name, sizeof tgs->items[i].category - 1U);
-                break;
-            }
-        }
-    }
-}
-
 /** @brief Move a heap list sink's contents into a core-owned struct. */
 static void
 rr_core_take_list(void* dst, void* src, size_t size) {
@@ -1816,7 +1797,7 @@ rr_system_assemble(RrWizardCore* w) {
     rr_core_take_list(&w->talkgroups, w->pend_tgs, sizeof w->talkgroups);
     w->pend_tgs = NULL;
     if (w->pend_cats != NULL) {
-        rr_apply_categories(&w->talkgroups, w->pend_cats);
+        dsd_rr_talkgroups_apply_categories(&w->talkgroups, w->pend_cats);
         dsd_rr_talkgroup_cat_list_free(w->pend_cats);
         free(w->pend_cats);
         w->pend_cats = NULL;
@@ -2074,12 +2055,12 @@ static int
 rr_core_dispatch_error(RrWizardCore* w, RrWizResult* r) {
     if (r->kind == RR_FETCH_TRS_TALKGROUP_CATS
         && (w->step == RR_STEP_LOADING_SYSTEM || w->step == RR_STEP_REFRESHING)) {
-        /* Category names are display-only; losing them must not lose the load.
+        /* Categories are optional labels; losing them must not lose the load.
            RR_STEP_REFRESHING is the same load seen from the browser -
            rr_wizard_core_begin_refresh() overwrites the step right after
            rr_load_system() queues the four fetches - and rr_refresh_complete()
-           reads sites and talkgroups only, so a categories fault must not abort a
-           refresh either. */
+           can generate without categories, so a categories fault must not abort
+           a refresh either. */
         r->payload = rr_payload_none();
         return rr_core_apply_system_slot(w, r);
     }

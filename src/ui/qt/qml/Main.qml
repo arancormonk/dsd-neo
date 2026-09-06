@@ -56,6 +56,7 @@ Window {
     // The spectrum view is pushed over the monitor, so it can only be open
     // while a session is; ending one has to take it down with it.
     property bool spectrumOpen: false
+    property bool talkgroupsOpen: false
     // The saved-system map the running session was started from.
     property var sessionSystem: null
     // Whether this session is free to be retuned by hand. False for anything
@@ -112,8 +113,8 @@ Window {
     }
 
     onMonitorModeChanged: {
-        // The spectrum layer lives above the monitor; when the session goes so
-        // does it, or the next one would open onto a stale panorama.
+        // Pushed session screens must close with the session rather than showing
+        // stale content when the next one starts.
         if (!monitorMode) {
             // Where the exploring got to, so the next one resumes there rather
             // than back at the start frequency.
@@ -121,6 +122,7 @@ Window {
                 prefs.exploreFreqMhz = mainRoot.lastExploreFreqMhz
             mainRoot.exploring = false
             mainRoot.spectrumOpen = false
+            mainRoot.talkgroupsOpen = false
             // Row indices shift when a system is removed, and Home is reachable
             // again from here; a row remembered past its session would name a
             // different system by the time anything read it.
@@ -135,6 +137,8 @@ Window {
             // last hour rather than the whole persisted log.
             if (monitorView.minWhen === 0)
                 monitorView.minWhen = Math.floor(Date.now() / 1000) - 3600
+            if (talkgroups.sinceWhen === 0)
+                talkgroups.sinceWhen = monitorView.minWhen
         }
     }
 
@@ -219,6 +223,7 @@ Window {
         callHistory.sessionLabel = sys.name
         // The monitor's recent-calls pane shows this session, not the whole log.
         monitorView.minWhen = Math.floor(Date.now() / 1000)
+        talkgroups.sinceWhen = monitorView.minWhen
         savedSystems.touch(row)
     }
 
@@ -410,7 +415,7 @@ Window {
         // what lets that screen stay lit over the monitor rather than standing
         // down into a three-layer deadlock.
         enabled: opacity > 0.9 && !mainRoot.wizardOpen && !mainRoot.spectrumOpen
-                 && !mainRoot.radioReferenceOpen
+                 && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible
 
         Behavior on opacity {
             NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
@@ -420,6 +425,7 @@ Window {
             spectrumLoader.active = true
             mainRoot.spectrumOpen = true
         }
+        onOpenTalkgroups: mainRoot.talkgroupsOpen = true
         onEditSystem: {
             // Only a session started from a saved row has a system to edit; a
             // reattached or quick-start session has no row to write back to.
@@ -445,7 +451,7 @@ Window {
         // The wizard can now open over a running session ("Save as a system"), and
         // TapHandlers never take exclusive grabs — without this, a tap meant for a
         // wizard field also reaches the spectrum underneath and retunes the radio.
-        enabled: opacity > 0.9 && !mainRoot.wizardOpen
+        enabled: opacity > 0.9 && !mainRoot.wizardOpen && !talkgroupsScreen.visible
 
         Behavior on opacity {
             NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
@@ -497,6 +503,28 @@ Window {
                 wizard.openForFound(mainRoot.sessionSystem, Util.mhzText(freqHz))
                 mainRoot.wizardOpen = true
             }
+        }
+    }
+
+    // ---- Talkgroups (pushed over the monitor) ----
+    TalkgroupsScreen {
+        id: talkgroupsScreen
+
+        objectName: "talkgroupsScreen"
+        anchors.fill: safeArea
+        systemName: monitor.systemName
+        opacity: mainRoot.monitorMode && mainRoot.talkgroupsOpen && !mainRoot.wizardOpen ? 1.0 : 0.0
+        visible: opacity > 0.0
+        enabled: opacity > 0.9 && mainRoot.monitorMode && mainRoot.talkgroupsOpen
+                 && !mainRoot.wizardOpen && !mainRoot.radioReferenceOpen
+
+        Behavior on opacity {
+            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+        }
+
+        onClosed: {
+            mainRoot.talkgroupsOpen = false
+            Qt.inputMethod.hide()
         }
     }
 

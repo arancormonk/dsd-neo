@@ -625,6 +625,12 @@ dsd_scan_groups_enter(dsd_state* state, const dsd_scan_row_profile* profile) {
 }
 
 int
+dsd_scan_groups_row_active(const dsd_state* state) {
+    const channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    return modes && modes->group_active && !modes->group_suspended;
+}
+
+int
 dsd_scan_groups_suspend(dsd_state* state) {
     channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
     if (!modes || !modes->group_active || modes->group_suspended) {

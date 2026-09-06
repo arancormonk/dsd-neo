@@ -211,13 +211,14 @@ int dsd_rr_site_is_simulcast(const dsd_rr_site* site);
 /**
  * @brief Generate a group (talkgroup) CSV.
  *
- * Three columns, sorted ascending by ID, duplicate IDs dropped keeping the
- * first. Encrypted talkgroups get mode "DE", which blocks tuning, audio,
- * recording and streaming for that ID. Names are sanitized for a parser with no
- * quoting: commas become slashes, control bytes are stripped, whitespace runs
- * collapse, and the result is truncated on a UTF-8 boundary to fit the
- * importer's 49-byte name field. No space follows a comma, because the importer
- * does not trim the name column.
+ * ID, mode and name columns, plus a fourth category column when non-empty.
+ * Sorted ascending by ID, duplicate IDs dropped keeping the first. Encrypted
+ * talkgroups get mode "DE", which blocks tuning, audio, recording and streaming
+ * for that ID. Names and categories are sanitized for a parser with no quoting:
+ * commas become slashes, control bytes are stripped, whitespace runs collapse,
+ * and each result is truncated on a UTF-8 boundary to fit the importer's 49-byte
+ * fields. No space follows a comma, because the importer does not trim the name
+ * column. Category shortening is not included in talkgroup-name warnings.
  *
  * @param talkgroups      Talkgroups to emit.
  * @param count           Number of talkgroups.

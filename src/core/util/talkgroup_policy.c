@@ -230,6 +230,18 @@ tg_policy_normalize_entry(dsd_tg_policy_entry* e) {
     }
 }
 
+static int
+tg_policy_mode_valid(const char* mode) {
+    return mode && mode[0] != '\0' && strlen(mode) < sizeof(((dsd_tg_policy_entry*)0)->mode);
+}
+
+static void
+tg_policy_entry_apply_mode(dsd_tg_policy_entry* e, const char* mode) {
+    tg_policy_safe_copy(e->mode, sizeof(e->mode), mode);
+    tg_policy_defaults_from_mode(e->mode, &e->audio, &e->record, &e->stream);
+    tg_policy_normalize_entry(e);
+}
+
 static void
 tg_policy_copy_entry_normalized(dsd_tg_policy_entry* dst, const dsd_tg_policy_entry* src) {
     if (!dst || !src) {
@@ -240,6 +252,7 @@ tg_policy_copy_entry_normalized(dsd_tg_policy_entry* dst, const dsd_tg_policy_en
     dst->id_end = src->id_end;
     tg_policy_safe_copy(dst->mode, sizeof(dst->mode), src->mode);
     tg_policy_safe_copy(dst->name, sizeof(dst->name), src->name);
+    tg_policy_safe_copy(dst->tags, sizeof(dst->tags), src->tags);
     dst->priority = src->priority;
     dst->preempt = src->preempt;
     dst->audio = src->audio;
@@ -383,6 +396,16 @@ tg_policy_find_policy_exact_idx_first(const dsd_tg_policy_context* ctx, uint32_t
     return -1;
 }
 
+static int
+tg_policy_find_bounds_idx_first(const dsd_tg_policy_context* ctx, uint32_t id_start, uint32_t id_end) {
+    for (size_t i = 0; i < ctx->table.count; i++) {
+        if (ctx->table.entries[i].id_start == id_start && ctx->table.entries[i].id_end == id_end) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 static int DSD_ATTR_USED
 tg_policy_lookup_exact_only(const dsd_state* state, uint32_t id, dsd_tg_policy_entry* out) {
     dsd_tg_policy_lookup lookup;
@@ -515,6 +538,71 @@ dsd_tg_policy_upsert_exact(dsd_state* state, const dsd_tg_policy_entry* entry, d
         return dsd_tg_policy_append_exact(state, &normalized);
     }
     ctx->table.entries[policy_idx] = normalized;
+    tg_policy_table_note_mutation(ctx);
+    return 0;
+}
+
+size_t
+dsd_tg_policy_entry_count(const dsd_state* state) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    return ctx ? ctx->table.count : 0;
+}
+
+int
+dsd_tg_policy_entry_at(const dsd_state* state, size_t index, dsd_tg_policy_entry* out) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    if (!out) {
+        return 0;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!ctx || index >= ctx->table.count) {
+        return 0;
+    }
+    *out = ctx->table.entries[index];
+    return 1;
+}
+
+void
+dsd_tg_policy_table_version(const dsd_state* state, uint64_t* out_context_id, unsigned int* out_generation) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    if (out_context_id) {
+        *out_context_id = ctx ? ctx->snapshot_source_context_id : 0;
+    }
+    if (out_generation) {
+        *out_generation = ctx ? ctx->table.generation : 0;
+    }
+}
+
+int
+dsd_tg_policy_set_mode(dsd_state* state, uint32_t id_start, uint32_t id_end, const char* mode) {
+    if (!state || !tg_policy_mode_valid(mode) || id_start > id_end) {
+        return 1;
+    }
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    if (!ctx) {
+        return -1;
+    }
+    int index = tg_policy_find_bounds_idx_first(ctx, id_start, id_end);
+    if (index >= 0) {
+        tg_policy_entry_apply_mode(&ctx->table.entries[index], mode);
+        tg_policy_table_note_mutation(ctx);
+        return 0;
+    }
+    if (id_start != id_end) {
+        return 1;
+    }
+    dsd_tg_policy_entry entry;
+    dsd_tg_policy_make_exact_entry(id_start, mode, "", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &entry);
+    return dsd_tg_policy_store_append(ctx, &entry);
+}
+
+int
+dsd_tg_policy_set_mode_at(dsd_state* state, size_t index, const char* mode) {
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
+    if (!ctx || index >= ctx->table.count || !tg_policy_mode_valid(mode)) {
+        return 1;
+    }
+    tg_policy_entry_apply_mode(&ctx->table.entries[index], mode);
     tg_policy_table_note_mutation(ctx);
     return 0;
 }
@@ -1093,7 +1181,7 @@ tg_policy_header_is_policy(const char* header_line) {
     return 1;
 }
 
-static void
+static int
 tg_policy_probe_group_file(const char* path, int* has_existing_header, int* existing_policy_header,
                            int* file_missing_or_empty) {
     char first_line[512];
@@ -1109,13 +1197,13 @@ tg_policy_probe_group_file(const char* path, int* has_existing_header, int* exis
         *file_missing_or_empty = 0;
     }
     if (!path || !file_missing_or_empty) {
-        return;
+        return -1;
     }
 
     rf = dsd_fopen_existing_regular_file(path, "r");
     if (!rf) {
         *file_missing_or_empty = 1;
-        return;
+        return errno == ENOENT ? 0 : -1;
     }
 
     if (fgets(first_line, sizeof(first_line), rf) != NULL) {
@@ -1128,7 +1216,11 @@ tg_policy_probe_group_file(const char* path, int* has_existing_header, int* exis
     } else {
         *file_missing_or_empty = 1;
     }
-    fclose(rf);
+    int failed = ferror(rf);
+    if (fclose(rf) != 0) {
+        failed = 1;
+    }
+    return failed ? -1 : 0;
 }
 
 static int
@@ -1166,27 +1258,97 @@ tg_policy_bool_on_off(uint8_t v) {
 }
 
 static int
+tg_policy_write_group_row(FILE* wf, const dsd_tg_policy_entry* entry, const char* id_text, int use_policy,
+                          int use_extra, const char* clean_mode, const char* clean_name, const char* clean_extra) {
+    int written;
+    if (use_policy) {
+        written = DSD_FPRINTF(wf, "%s,%s,%s,%d,%s,%s,%s,%s,%s\n", id_text, clean_mode, clean_name, entry->priority,
+                              tg_policy_bool_true_false(entry->preempt), tg_policy_bool_on_off(entry->audio),
+                              tg_policy_bool_on_off(entry->record), tg_policy_bool_on_off(entry->stream), clean_extra);
+    } else if (use_extra) {
+        written = DSD_FPRINTF(wf, "%s,%s,%s,%s\n", id_text, clean_mode, clean_name, clean_extra);
+    } else {
+        written = DSD_FPRINTF(wf, "%s,%s,%s\n", id_text, clean_mode, clean_name);
+    }
+    return written < 0 ? -1 : 0;
+}
+
+static int
 tg_policy_write_group_file_entry(FILE* wf, const dsd_tg_policy_entry* entry, int has_existing_header,
                                  int existing_policy_header, const char* clean_mode, const char* clean_name,
                                  const char* clean_meta) {
     if (!wf || !entry || !clean_mode || !clean_name || !clean_meta) {
         return -1;
     }
-    if (has_existing_header && existing_policy_header) {
-        if (DSD_FPRINTF(wf, "%u,%s,%s,%d,%s,%s,%s,%s,%s\n", entry->id_start, clean_mode, clean_name, entry->priority,
-                        tg_policy_bool_true_false(entry->preempt), tg_policy_bool_on_off(entry->audio),
-                        tg_policy_bool_on_off(entry->record), tg_policy_bool_on_off(entry->stream), clean_meta)
-            < 0) {
-            return -1;
+    char id_text[24];
+    DSD_SNPRINTF(id_text, sizeof(id_text), "%u", entry->id_start);
+    return tg_policy_write_group_row(wf, entry, id_text, has_existing_header && existing_policy_header,
+                                     clean_meta[0] != '\0', clean_mode, clean_name, clean_meta);
+}
+
+static int
+tg_policy_write_group_table(FILE* wf, const dsd_tg_policy_entry* entries, size_t count, int use_policy, int any_tags) {
+    const char* header = "id,mode,name\n";
+    if (use_policy) {
+        header = "id,mode,name,priority,preempt,audio,record,stream,tags\n";
+    } else if (any_tags) {
+        header = "id,mode,name,tags\n";
+    }
+    int failed = DSD_FPRINTF(wf, "%s", header) < 0;
+    for (size_t i = 0; !failed && i < count; i++) {
+        const dsd_tg_policy_entry* entry = &entries[i];
+        char id_text[24];
+        char clean_mode[sizeof(entry->mode)];
+        char clean_name[sizeof(entry->name)];
+        char clean_tags[sizeof(entry->tags)];
+        if (entry->is_range) {
+            DSD_SNPRINTF(id_text, sizeof(id_text), "%u-%u", entry->id_start, entry->id_end);
+        } else {
+            DSD_SNPRINTF(id_text, sizeof(id_text), "%u", entry->id_start);
         }
-    } else if (clean_meta[0] != '\0') {
-        if (DSD_FPRINTF(wf, "%u,%s,%s,%s\n", entry->id_start, clean_mode, clean_name, clean_meta) < 0) {
-            return -1;
+        tg_policy_csv_sanitize_copy(clean_mode, sizeof(clean_mode), entry->mode);
+        tg_policy_csv_sanitize_copy(clean_name, sizeof(clean_name), entry->name);
+        tg_policy_csv_sanitize_copy(clean_tags, sizeof(clean_tags), entry->tags);
+        failed = tg_policy_write_group_row(wf, entry, id_text, use_policy, any_tags, clean_mode, clean_name, clean_tags)
+                 != 0;
+    }
+    return failed ? -1 : 0;
+}
+
+int
+dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || opts->group_in_file[0] == '\0') {
+        return 0;
+    }
+    const char* path = opts->group_in_file;
+    int has_header = 0;
+    int policy_header = 0;
+    int missing = 0;
+    if (tg_policy_probe_group_file(path, &has_header, &policy_header, &missing) != 0) {
+        return -1;
+    }
+    int use_policy = has_header && policy_header;
+    int any_tags = 0;
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    size_t count = ctx ? ctx->table.count : 0;
+    for (size_t i = 0; i < count; i++) {
+        if (ctx->table.entries[i].tags[0] != '\0') {
+            any_tags = 1;
+            break;
         }
-    } else {
-        if (DSD_FPRINTF(wf, "%u,%s,%s\n", entry->id_start, clean_mode, clean_name) < 0) {
-            return -1;
-        }
+    }
+    char tmp[sizeof(opts->group_in_file) + 32];
+    FILE* wf = dsd_fopen_private_temp_for_replace(path, tmp, sizeof(tmp), "w");
+    if (!wf) {
+        return -1;
+    }
+    int failed = tg_policy_write_group_table(wf, ctx ? ctx->table.entries : NULL, count, use_policy, any_tags) != 0;
+    if (fclose(wf) != 0) {
+        failed = 1;
+    }
+    if (failed || dsd_replace_file_with_temp(tmp, path) != 0) {
+        (void)remove(tmp);
+        return -1;
     }
     return 0;
 }
@@ -1217,7 +1379,9 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_en
     tg_policy_csv_sanitize_copy(clean_name, sizeof(clean_name), entry->name);
     tg_policy_csv_sanitize_copy(clean_meta, sizeof(clean_meta), metadata ? metadata : "");
 
-    tg_policy_probe_group_file(path, &has_existing_header, &existing_policy_header, &file_missing_or_empty);
+    if (tg_policy_probe_group_file(path, &has_existing_header, &existing_policy_header, &file_missing_or_empty) != 0) {
+        return -1;
+    }
 
     wf = dsd_fopen_private(path, "a");
     if (!wf) {
