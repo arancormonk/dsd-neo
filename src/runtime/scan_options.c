@@ -40,6 +40,10 @@ static const scan_option_spec specifications[] = {
     {"--no-force-key", DSD_SCAN_OPT_FORCE, ALL_MODES, 0, 0, 0},
     {"-F", DSD_SCAN_OPT_CRC, DMR | P25 | MODE_BIT(DSD_SCAN_MODE_M17), 0, 0, 0},
     {"--strict-crc", DSD_SCAN_OPT_CRC, ALL_MODES, 0, 0, 1},
+    {"-e", DSD_SCAN_OPT_DATA, ALL_MODES, 0, 0, 1},
+    {"--no-data-calls", DSD_SCAN_OPT_DATA, ALL_MODES, 0, 0, 0},
+    {"--enc-follow", DSD_SCAN_OPT_ENC, ALL_MODES, 0, 0, 1},
+    {"--enc-lockout", DSD_SCAN_OPT_ENC, ALL_MODES, 0, 0, 0},
     {"--scan-voice-only", DSD_SCAN_OPT_VOICE, ALL_MODES, 0, 1, 1},
     {"--no-scan-voice-only", DSD_SCAN_OPT_VOICE, ALL_MODES, 0, 1, 0},
     {"--scan-voice-qualify-ms", DSD_SCAN_OPT_QUALIFY, ALL_MODES, 1, 1, 0},
@@ -238,6 +242,24 @@ option_set_number(const scan_option_spec* spec, const char* argument, dsd_scan_o
 }
 
 static int
+option_set_path(const scan_option_spec* spec, const char* argument, dsd_scan_options* parsed) {
+    char* path = parsed->values.group_file;
+    size_t capacity = sizeof(parsed->values.group_file);
+    if (spec->field == DSD_SCAN_OPT_HEX_FILE) {
+        path = parsed->hex_file;
+        capacity = sizeof(parsed->hex_file);
+    } else if (spec->field == DSD_SCAN_OPT_DEC_FILE) {
+        path = parsed->dec_file;
+        capacity = sizeof(parsed->dec_file);
+    }
+    if (!argument[0] || strlen(argument) >= capacity) {
+        return -1;
+    }
+    DSD_SNPRINTF(path, capacity, "%s", argument);
+    return 0;
+}
+
+static int
 option_set(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
     switch (spec->field) {
         case DSD_SCAN_OPT_FORCE:
@@ -254,22 +276,10 @@ option_set(const scan_option_spec* spec, const char* argument, unsigned int mode
         case DSD_SCAN_OPT_HOLD: return option_set_number(spec, argument, parsed);
         case DSD_SCAN_OPT_CRC: parsed->values.strict_crc = spec->value; return 0;
         case DSD_SCAN_OPT_VOICE: parsed->values.voice_only = spec->value; return 0;
-        default: break;
+        case DSD_SCAN_OPT_DATA: parsed->values.tune_data_calls = spec->value; return 0;
+        case DSD_SCAN_OPT_ENC: parsed->values.tune_enc_calls = spec->value; return 0;
+        default: return option_set_path(spec, argument, parsed);
     }
-    char* path = parsed->values.group_file;
-    size_t capacity = sizeof(parsed->values.group_file);
-    if (spec->field == DSD_SCAN_OPT_HEX_FILE) {
-        path = parsed->hex_file;
-        capacity = sizeof(parsed->hex_file);
-    } else if (spec->field == DSD_SCAN_OPT_DEC_FILE) {
-        path = parsed->dec_file;
-        capacity = sizeof(parsed->dec_file);
-    }
-    if (!argument[0] || strlen(argument) >= capacity) {
-        return -1;
-    }
-    DSD_SNPRINTF(path, capacity, "%s", argument);
-    return 0;
 }
 
 typedef struct {

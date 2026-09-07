@@ -207,6 +207,8 @@ Options are parsed once when the list is loaded. They are a restricted argument 
 | `-F` | Relax CRC checks; DMR/P25/M17. |
 | `--strict-crc` | Restore strict CRC checks; all modes, including inherited mode. |
 | `--no-force-key` | Disable privacy forcing and algorithm fallback for this row. |
+| `-e`, `--no-data-calls` | Enable/disable data-call tuning and conventional data-header holds; all modes. |
+| `--enc-lockout`, `--enc-follow` | Disable/enable encrypted-call following; all modes. |
 | `--scan-voice-only`, `--no-scan-voice-only` | Enable/disable the conventional voice gate. |
 | `--scan-voice-qualify-ms`, `--scan-voice-hold-ms` | Conventional voice-gate intervals, `100..600000` milliseconds. |
 

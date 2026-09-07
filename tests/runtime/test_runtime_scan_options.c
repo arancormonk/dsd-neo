@@ -76,6 +76,13 @@ main(void) {
                                   sizeof(error))
            == 0);
     assert(parsed.hytera_digits == 32 && parsed.hytera[1] == 0x8899aabbccddeeffULL);
+    assert(dsd_scan_options_parse("-e --enc-lockout", DSD_SCAN_MODE_DMR, 0, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.present == (DSD_SCAN_OPT_DATA | DSD_SCAN_OPT_ENC));
+    assert(parsed.values.tune_data_calls == 1 && parsed.values.tune_enc_calls == 0);
+    assert(dsd_scan_options_parse("--no-data-calls --enc-follow", DSD_SCAN_MODE_P25, 1, &parsed, error, sizeof(error))
+           == 0);
+    assert(parsed.values.present == (DSD_SCAN_OPT_DATA | DSD_SCAN_OPT_ENC));
+    assert(parsed.values.tune_data_calls == 0 && parsed.values.tune_enc_calls == 1);
 
     const struct {
         const char* text;
@@ -120,6 +127,9 @@ main(void) {
                    {"-F --strict-crc", DSD_SCAN_MODE_DMR, 1},
                    {"--dmr-force-algid 21 -0 --dmr-force-algid 21", DSD_SCAN_MODE_DMR, 1},
                    {"--scan-voice-only=yes", DSD_SCAN_MODE_DMR, 1},
+                   {"-e --no-data-calls", DSD_SCAN_MODE_DMR, 1},
+                   {"--enc-lockout --enc-follow", DSD_SCAN_MODE_NXDN96, 0},
+                   {"-e 1", DSD_SCAN_MODE_DMR, 1},
                    {"-t 0", DSD_SCAN_MODE_DMR, 1},
                    {"-i rtl:0", DSD_SCAN_MODE_DMR, 1},
                    {"-f1", DSD_SCAN_MODE_DMR, 1},

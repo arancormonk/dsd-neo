@@ -7167,6 +7167,68 @@ test_initial_key_allocation_failure(void) {
 }
 
 static int
+test_target_policy_options_rotate_and_restore(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof(dir))) {
+        return 1;
+    }
+    const char* header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
+    if (write_targets_file_with_header(dir, header,
+                                      "a,dmr-conventional,461000000,,250,250,,-e --enc-lockout\n"
+                                      "b,dmr-conventional,462000000,,250,250,,\n", path, sizeof(path))) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    opts->trunk_tune_data_calls = 0;
+    opts->trunk_tune_enc_calls = 1;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof(opts->trunk_scan_targets_csv), "%s", path);
+    char error[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int failed = dsd_engine_trunk_scan_init(opts, state, error, sizeof(error)) != 0;
+    if (!failed) {
+        failed |= opts->trunk_tune_data_calls != 1 || opts->trunk_tune_enc_calls != 0;
+        trunk_scan_test_set_now(0.20);
+        dsd_engine_trunk_scan_dmr_conventional_activity(opts, state, 1001, 2002, 0, 0, 1);
+        trunk_scan_test_set_now(0.30);
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= dsd_engine_trunk_scan_active_index(state) != 0;
+        trunk_scan_test_set_now(0.46);
+        dsd_engine_trunk_scan_tick(opts, state);
+        trunk_scan_test_set_now(0.72);
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= dsd_engine_trunk_scan_active_index(state) != 1;
+        failed |= opts->trunk_tune_data_calls != 0 || opts->trunk_tune_enc_calls != 1;
+        trunk_scan_test_set_now(0.92);
+        dsd_engine_trunk_scan_dmr_conventional_activity(opts, state, 1001, 2002, 0, 0, 1);
+        trunk_scan_test_set_now(0.98);
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= dsd_engine_trunk_scan_active_index(state) != 0;
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    failed |= opts->trunk_tune_data_calls != 0 || opts->trunk_tune_enc_calls != 1;
+    if (failed) {
+        DSD_FPRINTF(stderr, "target policy rotation regression: %s\n", error);
+    }
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, path, NULL);
+    return failed;
+}
+
+static int
 test_target_options_rotate_and_restore(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
@@ -7469,6 +7531,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_prepare_failure_timers);
     rc |= run_with_default_tune_hook(test_initial_key_allocation_failure);
     rc |= run_with_default_tune_hook(test_target_options_rotate_and_restore);
+    rc |= run_with_default_tune_hook(test_target_policy_options_rotate_and_restore);
     rc |= run_with_default_tune_hook(test_prepare_failure_keeps_outgoing_snapshot);
     rc |= run_with_default_tune_hook(test_target_voice_gate_options_apply);
     rc |= run_with_default_tune_hook(test_parser_optional_headers_are_case_insensitive);

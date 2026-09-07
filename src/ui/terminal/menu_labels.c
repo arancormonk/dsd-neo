@@ -468,7 +468,18 @@ lbl_tune_priv(const void* v, char* b, size_t n) {
 const char*
 lbl_tune_data(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Data calls [%s]", onoff(c->opts->trunk_tune_data_calls));
+    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
+    if (!opts) {
+        opts = c ? c->opts : NULL;
+    }
+    const int effective = opts && opts->trunk_tune_data_calls;
+    const int enabled = configured ? configured->trunk_tune_data_calls != 0 : effective;
+    if (configured && enabled != effective) {
+        DSD_SNPRINTF(b, n, "Data calls [%s] (target: %s)", onoff(enabled), onoff(effective));
+    } else {
+        DSD_SNPRINTF(b, n, "Data calls [%s]", onoff(enabled));
+    }
     return b;
 }
 
@@ -626,8 +637,18 @@ lbl_muting(const void* v, char* b, size_t n) {
 const char*
 lbl_p25_enc_lockout(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    int on = (c && c->opts) ? ((c->opts->trunk_tune_enc_calls == 0) ? 1 : 0) : 0;
-    DSD_SNPRINTF(b, n, "Lock out encrypted calls [%s]", onoff(on));
+    const dsd_scan_settings* configured = menu_configured_scan_settings();
+    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
+    if (!opts) {
+        opts = c ? c->opts : NULL;
+    }
+    const int effective = opts && opts->trunk_tune_enc_calls == 0;
+    const int enabled = configured ? configured->trunk_tune_enc_calls == 0 : effective;
+    if (configured && enabled != effective) {
+        DSD_SNPRINTF(b, n, "Lock out encrypted calls [%s] (target: %s)", onoff(enabled), onoff(effective));
+    } else {
+        DSD_SNPRINTF(b, n, "Lock out encrypted calls [%s]", onoff(enabled));
+    }
     return b;
 }
 

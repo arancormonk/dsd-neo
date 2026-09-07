@@ -47,6 +47,8 @@ typedef struct {
     int dmr_mute_encL;
     int dmr_mute_encR;
     int unmute_encrypted_p25;
+    int trunk_tune_data_calls;
+    int trunk_tune_enc_calls;
     char group_in_file[1024];
     int frame_dstar;
     int frame_x2tdma;
@@ -122,7 +124,7 @@ void dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state);
 int dsd_scan_mode_suspend(dsd_opts* opts, dsd_state* state);
 /** Save updated configuration and reapply the constraint. Return nonzero when decoder
  * settings changed and acquisition must reset; audio-routing and row-scoped option updates
- * (forcing, CRC policy, mutes, voice gate, group file) return zero and simply take effect. */
+ * (forcing, CRC policy, mutes, voice gate, group file, data/encrypted-call policy) return zero and simply take effect. */
 int dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state);
 /** Nonzero between suspend and resume; side effects must wait until effective settings are known. */
 int dsd_scan_mode_updating(const dsd_state* state);

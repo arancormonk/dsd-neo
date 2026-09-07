@@ -267,7 +267,7 @@ During scanning:
   only after allowed activity is decoded: a DMR voice header or data header, or an NXDN VCALL, DCALL or SDCALL header.
   NXDN48 and NXDN96 share a sync word and every decoded element, so one NXDN reporting path serves both. The allow/block list, private-call tuning,
   data-call tuning, and encrypted-call tuning controls all apply to that decision, so data headers refresh the hold
-  only when data-call tuning is enabled (`-e`, or `tune_data_calls` in a config file); it is off by default.
+  only when data-call tuning is enabled (the parked row's `-e` overrides the CLI/config value); it is off by default.
   With `--scan-voice-only`, headers alone never hold: the hold refreshes only from decoded voice media (stamped
   with a retained media time, so LC-less and just-ended voice hold), `dwell_ms` is the qualify window and
   `activity_hold_ms` the hold. The terminal status line marks the parked conventional target `Voice: QUALIFY`,
@@ -402,6 +402,11 @@ The optional `options` column accepts the same [scoped switches](csv-formats.md#
 channel maps. The target `type` validates protocol-specific switches. A DMR system can use `-K Keys.csv -G Groups.csv
 -0 -F`; a conventional NXDN target can use `-R 1`. Relative paths refer to the target-list directory.
 Unspecified settings inherit the configured defaults, and `--no-force-key` can disable inherited forcing.
+A row's `-e` / `--no-data-calls` and `--enc-lockout` / `--enc-follow` override the CLI/config data-call and
+encrypted-call policy while that target is parked. The terminal `d`/`e` toggles still edit the configured global
+value; the data-call label under Trunking > Follow and the encrypted-call label under Encryption append
+`(target: On)` or `(target: Off)` when the parked row's effective value differs.
+Targets without these switches inherit that edited baseline.
 
 Group policies and keys are preloaded and isolated between targets. Re-parking, failed-tune recovery and shutdown
 restore the associated options with the target. Conventional voice-gate switches are accepted on conventional target
