@@ -240,6 +240,8 @@ During scanning:
 
 - The terminal names the target on air: a `| Trunk Scan:  Target: county-p25 (3/6)` row in the Input Output section,
   and a `| Target: county-p25` line at the top of Call Info, which is the one that survives compact view.
+  While idle, Call Info follows the parked target's protocol panel; an unknown NXDN RAN or IDAS area
+  is shown as `--`.
 - Idle targets rotate after their dwell time.
 - The rotation can be driven from the terminal (Trunking menu, or the hotkeys): `Y` holds the scan on the parked
   target, `b` avoids the parked target for the rest of the session and moves on, `L` moves to the next eligible target

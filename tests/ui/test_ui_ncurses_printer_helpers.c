@@ -22,6 +22,7 @@
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
 #include <dsd-neo/ui/ncurses_internal.h>
@@ -432,6 +433,14 @@ const char*
 dsd_synctype_to_string(int synctype) { // NOLINT(misc-use-internal-linkage)
     (void)synctype;
     return "SYNC";
+}
+
+static dsd_scan_mode g_scan_mode_active = DSD_SCAN_MODE_INHERIT;
+
+dsd_scan_mode
+dsd_scan_mode_active(const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    return g_scan_mode_active;
 }
 
 uint8_t
@@ -1431,6 +1440,51 @@ test_edacs_tree_update_helpers(void) {
 }
 
 static void
+test_sync_tree_follows_scan_class(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    state->synctype = DSD_SYNC_NONE;
+    g_scan_mode_active = DSD_SCAN_MODE_DMR;
+    ncurses_last_synctype = DSD_SYNC_NXDN_POS;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_DMR_BS_DATA_POS);
+
+    g_scan_mode_active = DSD_SCAN_MODE_P25;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_P25P1_POS);
+    state->p25_cc_is_tdma = 1;
+    ncurses_last_synctype = DSD_SYNC_NXDN_POS;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_P25P2_POS);
+    state->p25_cc_is_tdma = 0;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_P25P2_POS);
+
+    g_scan_mode_active = DSD_SCAN_MODE_NXDN96;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_DMR_BS_VOICE_POS);
+
+    g_scan_mode_active = DSD_SCAN_MODE_NXDN48;
+    state->synctype = DSD_SYNC_NONE;
+    state->nxdn_last_ran = (unsigned int)-1;
+    ui_update_sync_and_edacs_tree(state);
+    reset_printw_capture();
+    ui_render_call_info_nxdn(opts, state);
+    assert_capture_contains("NXDN - RAN: --;");
+    assert(strstr(g_printw_capture, "RAN: -1") == NULL);
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 1);
+    assert_capture_contains("IDAS - Area: --;");
+    g_scan_mode_active = DSD_SCAN_MODE_INHERIT;
+    ncurses_last_synctype = DSD_SYNC_NONE;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
+static void
 test_patch_and_slot_helpers(void) {
     char tokens[48][64];
     int count = 0;
@@ -2061,6 +2115,7 @@ main(void) {
     test_hytera_key_format_helper();
     test_loaded_scalar_key_status();
     test_edacs_tree_update_helpers();
+    test_sync_tree_follows_scan_class();
     test_patch_and_slot_helpers();
     test_lock_and_protocol_helpers();
     test_canonical_p25_slot_and_recent_activity();

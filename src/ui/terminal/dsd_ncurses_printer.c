@@ -35,6 +35,7 @@
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
@@ -229,6 +230,39 @@ static const char* DMRBusrtTypes[32] = {
     "SIGNAL",   //31 MAC_SIGNAL
 };
 
+static int
+ui_synctype_in_scan_class(int synctype, dsd_scan_mode mode) {
+    switch (mode) {
+        case DSD_SCAN_MODE_P25: return DSD_SYNC_IS_P25(synctype);
+        case DSD_SCAN_MODE_DMR: return DSD_SYNC_IS_DMR(synctype);
+        case DSD_SCAN_MODE_NXDN96:
+        case DSD_SCAN_MODE_NXDN48: return DSD_SYNC_IS_NXDN(synctype);
+        case DSD_SCAN_MODE_DPMR: return DSD_SYNC_IS_DPMR(synctype);
+        case DSD_SCAN_MODE_DSTAR: return DSD_SYNC_IS_DSTAR(synctype);
+        case DSD_SCAN_MODE_YSF: return DSD_SYNC_IS_YSF(synctype);
+        case DSD_SCAN_MODE_M17: return DSD_SYNC_IS_M17(synctype);
+        case DSD_SCAN_MODE_INHERIT: return 1;
+    }
+    return 0;
+}
+
+static int
+ui_scan_class_idle_synctype(dsd_scan_mode mode, const dsd_state* state) {
+    switch (mode) {
+        case DSD_SCAN_MODE_P25:
+            return state->p25_cc_is_tdma == 1 ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
+        case DSD_SCAN_MODE_DMR: return DSD_SYNC_DMR_BS_DATA_POS;
+        case DSD_SCAN_MODE_NXDN96:
+        case DSD_SCAN_MODE_NXDN48: return DSD_SYNC_NXDN_POS;
+        case DSD_SCAN_MODE_DPMR: return DSD_SYNC_DPMR_FS1_POS;
+        case DSD_SCAN_MODE_DSTAR: return DSD_SYNC_DSTAR_VOICE_POS;
+        case DSD_SCAN_MODE_YSF: return DSD_SYNC_YSF_POS;
+        case DSD_SCAN_MODE_M17: return DSD_SYNC_M17_STR_POS;
+        case DSD_SCAN_MODE_INHERIT: return DSD_SYNC_NONE;
+    }
+    return DSD_SYNC_NONE;
+}
+
 static void
 ui_update_sync_and_edacs_tree(const dsd_state* state) {
     if (state == NULL) {
@@ -238,6 +272,11 @@ ui_update_sync_and_edacs_tree(const dsd_state* state) {
     // Keep the last detected sync type available while carrier state changes.
     if (state->synctype != DSD_SYNC_NONE) {
         ncurses_last_synctype = state->synctype;
+    } else {
+        const dsd_scan_mode mode = dsd_scan_mode_active(state);
+        if (mode != DSD_SCAN_MODE_INHERIT && !ui_synctype_in_scan_class(ncurses_last_synctype, mode)) {
+            ncurses_last_synctype = ui_scan_class_idle_synctype(mode, state);
+        }
     }
 }
 
@@ -2225,7 +2264,9 @@ ui_render_nxdn_monitor_line(const dsd_opts* opts, const dsd_state* state, int id
 static void
 ui_render_nxdn_site_line(const dsd_state* state, int idas) {
     printw("| ");
-    if (idas) {
+    if (state->nxdn_last_ran > 63U) {
+        printw("%s", idas ? "IDAS - Area: --; " : "NXDN - RAN: --; ");
+    } else if (idas) {
         printw("IDAS - Area: %02d; ", state->nxdn_last_ran);
     } else {
         printw("NXDN - RAN: %02d; ", state->nxdn_last_ran);
