@@ -450,13 +450,41 @@ dsd_engine_conventional_scan_active(const dsd_opts* opts) {
     return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1;
 }
 
+#ifdef USE_RADIO
 static dsd_trunk_tune_result
-dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
+dsd_engine_tune_rtl(dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
+    if (!state->rtl_ctx) {
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    const int rc = request_id != 0U ? rtl_stream_tune_tagged(state->rtl_ctx, (uint32_t)freq, request_id)
+                                    : rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
+    if (rc == RTL_STREAM_TUNE_OK) {
+        uint32_t applied = 0U;
+        opts->rtlsdr_center_freq =
+            (rtl_stream_get_last_applied_freq(&applied) == 0 && applied != 0U) ? applied : (uint32_t)freq;
+        return DSD_TRUNK_TUNE_RESULT_OK;
+    }
+    if (rc == RTL_STREAM_TUNE_DEFERRED) {
+        return DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    }
+    if (rc == RTL_STREAM_TUNE_TIMEOUT) {
+        /* The controller still owns the request after the bounded wait.
+         * Tagged calls publish their terminal result asynchronously. */
+        opts->rtlsdr_center_freq = (uint32_t)freq;
+        return DSD_TRUNK_TUNE_RESULT_PENDING;
+    }
+    return DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+#endif
+
+static dsd_trunk_tune_result
+dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
     const int conventional_scan = dsd_engine_conventional_scan_active(opts);
     if (opts->use_rigctl == 1) {
         if (!dsd_engine_tune_rigctl(opts, freq)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
+        opts->rtlsdr_center_freq = (uint32_t)freq;
 #ifdef USE_RADIO
         if (opts->audio_in_type == AUDIO_IN_RTL && !conventional_scan) {
             rtl_stream_apply_pending_retune_profile_for_target((uint32_t)freq);
@@ -470,23 +498,7 @@ dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int fr
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
 #ifdef USE_RADIO
-    if (state->rtl_ctx) {
-        int rc = request_id != 0U ? rtl_stream_tune_tagged(state->rtl_ctx, (uint32_t)freq, request_id)
-                                  : rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
-        if (rc == RTL_STREAM_TUNE_OK) {
-            return DSD_TRUNK_TUNE_RESULT_OK;
-        }
-        if (rc == RTL_STREAM_TUNE_DEFERRED) {
-            return DSD_TRUNK_TUNE_RESULT_DEFERRED;
-        }
-        if (rc == RTL_STREAM_TUNE_TIMEOUT) {
-            /* The controller still owns the request after the bounded wait.
-             * Tagged calls publish their terminal result asynchronously. */
-            return DSD_TRUNK_TUNE_RESULT_PENDING;
-        }
-        return DSD_TRUNK_TUNE_RESULT_FAILED;
-    }
-    return DSD_TRUNK_TUNE_RESULT_FAILED;
+    return dsd_engine_tune_rtl(opts, state, freq, request_id);
 #else
     (void)state;
     (void)request_id;
