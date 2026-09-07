@@ -188,7 +188,8 @@ typedef struct {
     uint8_t algid;
     uint8_t audio_permitted;
     uint8_t media_active;
-    uint8_t end_reason; /**< dsd_call_end_reason; meaningful only while phase is DSD_CALL_PHASE_ENDED. */
+    uint8_t end_reason;  /**< dsd_call_end_reason; meaningful only while phase is DSD_CALL_PHASE_ENDED. */
+    uint8_t crc_invalid; /**< Sticky known CRC failure in this logical transmission; zero is not verified. */
     char source_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char route_text[DSD_CALL_ROUTE_COUNT][DSD_CALL_IDENTITY_TEXT_SIZE];

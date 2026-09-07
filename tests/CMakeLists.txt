@@ -7190,6 +7190,17 @@ target_link_libraries(
 )
 add_test(NAME DMR_UDT_UTF16_TEXT COMMAND dsd-neo_test_dmr_udt_utf16_text)
 
+add_executable(dsd-neo_test_dmr_event_crc protocol/dmr/test_dmr_event_crc.c)
+target_include_directories(
+    dsd-neo_test_dmr_event_crc
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_event_crc
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_EVENT_CRC COMMAND dsd-neo_test_dmr_event_crc)
+
 add_executable(
     dsd-neo_test_dmr_ms_data
     protocol/dmr/test_dmr_ms_data.c

@@ -422,7 +422,10 @@ p25_mpdu_decode_header_if_usable(dsd_opts* opts, dsd_state* state, P25MpduContex
     ctx->fmt = ctx->mpdu_byte[0] & 0x1F;
     ctx->sap = ctx->mpdu_byte[1] & 0x3F;
     ctx->blks = ctx->mpdu_byte[6] & 0x7F;
+    uint8_t saved_crc_invalid = state->event_crc_invalid[0];
+    state->event_crc_invalid[0] |= (uint8_t)(ctx->err[0] != 0);
     p25_decode_pdu_header(opts, state, ctx->mpdu_byte);
+    state->event_crc_invalid[0] = saved_crc_invalid;
 }
 
 static void
@@ -605,8 +608,16 @@ p25_mpdu_handle_rate34(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx) {
     DSD_MEMSET(crc9_cmp, 0, sizeof(crc9_cmp));
 
     int mpdu_idx = p25_mpdu_reconstruct_rate34_payload(ctx, dbsn, crc9_ext, crc9_cmp);
-    if ((ctx->err[1] == 0 || opts->aggressive_framesync == 0) && ctx->blks != 0) {
+    int crc_invalid = ctx->err[0] != 0 || ctx->err[1] != 0;
+    /* Confirmed CRC9 also protects DBSN, which the packet CRC32 does not cover. */
+    for (int block = 0; block < ctx->blks; block++) {
+        crc_invalid |= crc9_ext[block] != crc9_cmp[block];
+    }
+    if ((!crc_invalid || opts->aggressive_framesync == 0) && ctx->blks != 0) {
+        uint8_t saved_crc_invalid = state->event_crc_invalid[0];
+        state->event_crc_invalid[0] |= (uint8_t)crc_invalid;
         p25_decode_pdu_data(opts, state, ctx->mpdu_byte, mpdu_idx - 1);
+        state->event_crc_invalid[0] = saved_crc_invalid;
     }
 
     p25_mpdu_print_rate34_payload(opts, ctx, mpdu_idx, dbsn, crc9_ext, crc9_cmp, crc_extracted, crc_computed);
@@ -649,8 +660,12 @@ p25_mpdu_handle_rate12(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx) {
         ctx->err[1] = 0;
     }
 
-    if ((ctx->err[1] == 0 || opts->aggressive_framesync == 0) && ctx->blks != 0) {
+    int crc_invalid = ctx->err[0] != 0 || ctx->err[1] != 0;
+    if ((!crc_invalid || opts->aggressive_framesync == 0) && ctx->blks != 0) {
+        uint8_t saved_crc_invalid = state->event_crc_invalid[0];
+        state->event_crc_invalid[0] |= (uint8_t)crc_invalid;
         p25_decode_pdu_data(opts, state, ctx->mpdu_byte, len);
+        state->event_crc_invalid[0] = saved_crc_invalid;
     }
 
     p25_mpdu_print_rate12_payload(opts, ctx, len);
