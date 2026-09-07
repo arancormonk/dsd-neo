@@ -79,8 +79,9 @@ behavior, the CSV columns, and the CLI/config options live in `docs/trunk-scan.m
   `dsd_engine_trunk_scan_active_dmr_ctx()`, `dsd_engine_trunk_scan_active_chan_csv()`,
   `dsd_engine_trunk_scan_active_gfsk_symbol_rate()`, `dsd_engine_trunk_scan_active_p25_cqpsk_request()`,
   `dsd_engine_trunk_scan_saved_tuner_autogain()`, and `dsd_engine_trunk_scan_target_count()`.
-- Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()` and
-  `dsd_engine_trunk_scan_nxdn_conventional_activity()`, reached from protocol code through the runtime hooks.
+- Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()`,
+  `dsd_engine_trunk_scan_nxdn_conventional_activity()`, and `dsd_engine_trunk_scan_p25_conventional_activity()`,
+  reached from protocol code through the runtime hooks.
 
 Every parked target keeps its own snapshot of decoder state — channel map, trunking/LCN state, call and P25 identity
 metadata (the IDEN tables and the user band plan behind them), the encrypted-target lockout ledger, and the NXDN
@@ -255,10 +256,11 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 - `dsd_trunk_scan_hook_p25_ctx()` / `dsd_trunk_scan_hook_dmr_ctx()` — the parked target's trunking state machine
   context, or NULL when trunk scan is not installed (`p25_trunk_sm.c`, `dmr_trunk_sm.c`, `nxdn_element.c`)
 - `dsd_trunk_scan_hook_tick()` — step the rotation; called from the engine decode loop
-- `dsd_trunk_scan_hook_dmr_conventional_activity()` / `dsd_trunk_scan_hook_nxdn_conventional_activity()` — report
-  decoded conventional activity so the parked target keeps its park. Pass only identity that has already cleared the
-  protocol's FEC/CRC gate; the coordinator runs it through the talkgroup policy before refreshing the hold, and ignores
-  it unless the parked target is of the matching conventional family
+- `dsd_trunk_scan_hook_dmr_conventional_activity()` / `dsd_trunk_scan_hook_nxdn_conventional_activity()` /
+  `dsd_trunk_scan_hook_p25_conventional_activity()` — report decoded conventional activity so the parked target keeps
+  its park. Pass only identity that has already cleared the protocol's FEC/CRC gate; the coordinator runs it through
+  the talkgroup policy before refreshing the hold, and ignores it unless the parked target is of the matching
+  conventional family. P25 reports voice starts only, not PDU data, and treats decryptable calls as clear for this policy.
 - `dsd_trunk_scan_hook_active_chan_csv()` — the parked target's channel-map path, which `opts->chan_in_file` cannot
   answer while scanning (`src/protocol/nxdn/nxdn_trunk_diag.c`)
 - `dsd_trunk_scan_hook_enc_lockout_clear_snapshots()` — scrub the encrypted-target lockout ledger parked in every

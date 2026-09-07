@@ -55,6 +55,7 @@ typedef enum {
     DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL = 4,
     DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL = 5,
     DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK = 6,
+    DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL = 7,
 } dsd_trunk_scan_target_type;
 
 typedef enum {
@@ -161,6 +162,9 @@ void dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const
 /** @copydoc dsd_engine_trunk_scan_dmr_conventional_activity */
 void dsd_engine_trunk_scan_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                       uint32_t source, int is_private, int encrypted, int data_call);
+/** @copydoc dsd_engine_trunk_scan_dmr_conventional_activity */
+void dsd_engine_trunk_scan_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
+                                                     uint32_t source, int is_private, int encrypted, int data_call);
 size_t dsd_engine_trunk_scan_target_count(const dsd_state* state);
 int dsd_engine_trunk_scan_saved_tuner_autogain(const dsd_state* state, int* out_on);
 int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_enable);
@@ -181,6 +185,13 @@ int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* 
  *         parked target is P25.
  */
 int dsd_engine_trunk_scan_active_gfsk_symbol_rate(const dsd_state* state);
+/**
+ * @brief Non-zero while the parked target is p25-trunk or p25-conventional.
+ *
+ * Identifies the demodulation class, not ownership of a P25 trunk state machine.
+ * Returns 0 when no target is parked for the supplied decoder state.
+ */
+int dsd_engine_trunk_scan_active_is_p25_class(const dsd_state* state);
 /**
  * @brief Append the parked targets' learned IDEN entries as band-plan rows.
  *

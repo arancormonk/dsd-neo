@@ -82,7 +82,7 @@ dsd_engine_select_p25_sps_profile(dsd_state* state, int is_tdma) {
  */
 static int
 dsd_engine_cc_is_p25(const dsd_state* state) {
-    if (dsd_engine_trunk_scan_active_p25_ctx() != NULL) {
+    if (dsd_engine_trunk_scan_active_is_p25_class(state)) {
         return 1;
     }
     // Under trunk scan the coordinator knows the parked target's protocol, and that beats sync
@@ -104,7 +104,8 @@ dsd_engine_cc_is_p25(const dsd_state* state) {
 
 static int
 dsd_engine_is_p25_profile_retune(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
-    if (!opts || !state || opts->trunk_enable != 1 || ted_sps <= 0) {
+    if (!opts || !state || ted_sps <= 0
+        || (opts->trunk_enable != 1 && !dsd_engine_trunk_scan_active_is_p25_class(state))) {
         return 0;
     }
     return dsd_engine_cc_is_p25(state);

@@ -53,6 +53,8 @@ typedef struct {
                                       int is_private, int encrypted, int data_call);
     void (*nxdn_conventional_activity)(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
                                        int is_private, int encrypted, int data_call);
+    void (*p25_conventional_activity)(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
+                                      int is_private, int encrypted, int data_call);
     const char* (*active_chan_csv)(const dsd_state* state);
     void (*enc_lockout_clear_snapshots)(const dsd_state* state);
     int (*control)(dsd_opts* opts, dsd_state* state, int op);
@@ -64,7 +66,7 @@ void* dsd_trunk_scan_hook_p25_ctx(void);
 void* dsd_trunk_scan_hook_dmr_ctx(void);
 void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
 /**
- * @brief Report decoded conventional DMR/NXDN activity to the scan coordinator.
+ * @brief Report decoded conventional DMR/NXDN/P25 activity to the scan coordinator.
  *
  * Lets protocol code refresh the parked target's activity hold without
  * depending on engine-owned scan headers. No-op when trunk scan is not
@@ -78,6 +80,9 @@ void dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const d
 /** @copydoc dsd_trunk_scan_hook_dmr_conventional_activity */
 void dsd_trunk_scan_hook_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                     uint32_t source, int is_private, int encrypted, int data_call);
+/** @copydoc dsd_trunk_scan_hook_dmr_conventional_activity */
+void dsd_trunk_scan_hook_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
+                                                   uint32_t source, int is_private, int encrypted, int data_call);
 
 /**
  * @brief Path of the channel map belonging to the currently parked scan target.

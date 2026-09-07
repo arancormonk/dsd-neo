@@ -549,6 +549,45 @@ test_parser_accepts_nxdn_targets(void) {
 }
 
 static int
+test_parser_accepts_p25_conventional_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n";
+    if (write_targets_file_with_header(dir, header, "conv,p25-conventional,851500000,,1500,1200,simplex,cqpsk\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    if (!opts) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    dsd_trunk_scan_target_list list = {0};
+    char err[256] = {0};
+    int rc = dsd_trunk_scan_load_targets_csv(target_path, opts, &list, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || list.count != 1) {
+        DSD_FPRINTF(stderr, "parser P25 conventional rc=%d count=%zu err=%s\n", rc, list.count, err);
+        test_rc = 1;
+    } else if (list.targets[0].type != DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL
+               || list.targets[0].modulation != DSD_TRUNK_SCAN_MODULATION_CQPSK
+               || list.targets[0].frequency_hz != 851500000U || list.targets[0].dwell_ms != 1500
+               || list.targets[0].activity_hold_ms != 1200) {
+        DSD_FPRINTF(stderr, "parser P25 conventional target mismatch\n");
+        test_rc = 1;
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+    free(opts);
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
 test_parser_accepts_quoted_chan_csv_with_comma(void) {
     char dir[DSD_TEST_PATH_MAX];
     if (make_temp_dir(dir, sizeof dir) != 0) {
@@ -729,6 +768,13 @@ test_parser_rejects_invalid_inputs(void) {
 #endif
     rc |= expect_parser_rejects("invalid-dwell", "a,p25-trunk,851000000,,249,,\n");
     rc |= expect_parser_rejects("conventional-chan-csv", "a,dmr-conventional,461000000,chan.csv,,,\n");
+    rc |= expect_parser_rejects("p25-conventional-chan-csv", "a,p25-conventional,851500000,chan.csv,,,\n");
+    rc |= expect_parser_rejects_with_header(
+        "p25-conventional-bandplan", "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,p25_bandplan_csv\n",
+        "a,p25-conventional,851500000,,,,,bandplan.csv\n");
+    rc |= expect_parser_rejects_with_header(
+        "p25-conventional-gfsk", "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n",
+        "a,p25-conventional,851500000,,,,,gfsk\n");
     rc |= expect_parser_rejects_with_header(
         "duplicate-modulation-header",
         "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,modulation\n",
@@ -2896,6 +2942,106 @@ test_nxdn_conventional_activity_hold(void) {
     return test_rc;
 }
 
+static int
+test_p25_conventional_activity_hold(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-conventional,851500000,,250,250,\n"
+                             "b,dmr-conventional,461000000,,250,250,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+
+    static const struct {
+        const char* label;
+        int group_calls;
+        int private_calls;
+        int is_private;
+        int encrypted;
+        int holds;
+    } cases[] = {
+        {"allowed group", 1, 0, 0, 0, 1},    {"allowed private", 0, 1, 1, 0, 1},   {"disabled group", 0, 1, 0, 0, 0},
+        {"disabled private", 1, 0, 1, 0, 0}, {"encrypted lockout", 1, 1, 0, 1, 0},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_scan_opts_state(opts, state);
+        opts->trunk_enable = 1;
+        opts->trunk_tune_group_calls = cases[i].group_calls;
+        opts->trunk_tune_private_calls = cases[i].private_calls;
+        opts->trunk_tune_enc_calls = 0;
+        state->p25_cc_freq = 852000000;
+        state->trunk_cc_freq = 852000000;
+        state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+        state->rf_mod = 2;
+        g_scan_tune_to_freq_ted_sps = 0;
+        DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+        char err[256] = {0};
+        trunk_scan_test_set_now(0.0);
+        if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+            DSD_FPRINTF(stderr, "P25 conventional %s init failed: %s\n", cases[i].label, err);
+            test_rc = 1;
+            goto cleanup;
+        }
+        if (dsd_engine_trunk_scan_active_index(state) != 0 || opts->trunk_enable != 0 || state->p25_cc_freq != 0
+            || state->trunk_cc_freq != 0 || state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4
+            || state->rf_mod != 0 || state->samplesPerSymbol <= 0
+            || g_scan_tune_to_freq_ted_sps != state->samplesPerSymbol
+            || dsd_engine_trunk_scan_active_p25_ctx() != NULL) {
+            DSD_FPRINTF(stderr, "P25 conventional %s park did not select a standalone P25 voice profile\n",
+                        cases[i].label);
+            test_rc = 1;
+        }
+        trunk_scan_test_set_now(0.10);
+        dsd_engine_trunk_scan_p25_conventional_activity(opts, state, 1001, 2002, cases[i].is_private,
+                                                        cases[i].encrypted, 0);
+        trunk_scan_test_set_now(0.30);
+        dsd_engine_trunk_scan_tick(opts, state);
+        if (dsd_engine_trunk_scan_active_index(state) != (cases[i].holds ? 0U : 1U)) {
+            DSD_FPRINTF(stderr, "P25 conventional %s activity violated hold policy\n", cases[i].label);
+            test_rc = 1;
+        }
+        if (cases[i].holds) {
+            // The 250 ms hold expires at 0.35; a fresh idle dwell must still elapse.
+            trunk_scan_test_set_now(0.36);
+            dsd_engine_trunk_scan_tick(opts, state);
+            trunk_scan_test_set_now(0.60);
+            dsd_engine_trunk_scan_tick(opts, state);
+            if (dsd_engine_trunk_scan_active_index(state) != 0) {
+                DSD_FPRINTF(stderr, "P25 conventional %s rotated before post-hold dwell elapsed\n", cases[i].label);
+                test_rc = 1;
+            }
+            trunk_scan_test_set_now(0.62);
+            dsd_engine_trunk_scan_tick(opts, state);
+            if (dsd_engine_trunk_scan_active_index(state) != 1) {
+                DSD_FPRINTF(stderr, "P25 conventional %s did not rotate after hold plus dwell\n", cases[i].label);
+                test_rc = 1;
+            }
+        }
+        dsd_engine_trunk_scan_shutdown(opts, state);
+    }
+
+cleanup:
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /*
  * Data traffic holds a conventional target exactly as far as data-call tuning allows: reported
  * activity is run through the same talkgroup policy as voice, and --trunk-tune-data-calls is off
@@ -2980,6 +3126,8 @@ test_conventional_activity_families_do_not_cross(void) {
                                        "dmrc,dmr-conventional,461112500,,250,250,\n";
     static const char dmr_first[] = "dmrc,dmr-conventional,461112500,,250,250,\n"
                                     "n48,nxdn48-conventional,461556250,,250,250,\n";
+    static const char p25_first[] = "p25c,p25-conventional,851500000,,250,250,\n"
+                                    "dmrc,dmr-conventional,461112500,,250,250,\n";
     int rc = 0;
 
     /* NXDN hook holds a parked nxdn48-conventional target (data-call tuning on to reuse the helper). */
@@ -2991,6 +3139,8 @@ test_conventional_activity_families_do_not_cross(void) {
     /* And the NXDN hook must not claim a parked dmr-conventional target. */
     rc |= run_conventional_data_call_hold_case("nxdn-hook-skips-dmr", dmr_first, 1, 1,
                                                dsd_engine_trunk_scan_nxdn_conventional_activity);
+    rc |= run_conventional_data_call_hold_case("dmr-hook-skips-p25", p25_first, 1, 1,
+                                               dsd_engine_trunk_scan_dmr_conventional_activity);
     return rc;
 }
 
@@ -3306,6 +3456,109 @@ test_conventional_voice_gate_media_hold(void) {
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     dsd_state_ext_free_all(&state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_p25_conventional_voice_gate_media_hold(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-conventional,851500000,,250,250,\n"
+                             "b,dmr-conventional,461000000,,250,250,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    int test_rc = 0;
+    for (int has_media = 0; has_media <= 1; has_media++) {
+        reset_scan_opts_state(opts, state);
+        opts->scan_voice_only = 1;
+        DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+        char err[256] = {0};
+        trunk_scan_test_set_now(0.0);
+        if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+            DSD_FPRINTF(stderr, "P25 conventional voice-gate init failed: %s\n", err);
+            test_rc = 1;
+            goto cleanup;
+        }
+        trunk_scan_test_set_now(0.10);
+        if (!has_media) {
+            dsd_engine_trunk_scan_p25_conventional_activity(opts, state, 1001, 2002, 0, 0, 0);
+        } else {
+            // No activity report: the canonical P25 media alone must hold the park.
+            dsd_call_observation obs = {0};
+            obs.protocol = DSD_SYNC_P25P1_POS;
+            obs.slot = 0U;
+            obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+            obs.ota_target_id = 1001U;
+            obs.policy_target_id = 1001U;
+            obs.ota_source_id = 2002U;
+            obs.observed_m = 0.10;
+            if (dsd_call_state_ensure(state) <= 0 || dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) != 1
+                || dsd_call_state_update_media(state, 0U, 1, 0.10) != 1
+                || dsd_call_state_update_media(state, 0U, 1, 0.25) != 1) {
+                DSD_FPRINTF(stderr, "P25 conventional voice-gate media seed failed\n");
+                test_rc = 1;
+                goto cleanup;
+            }
+        }
+        trunk_scan_test_set_now(0.30);
+        dsd_engine_trunk_scan_tick(opts, state);
+        if (dsd_engine_trunk_scan_active_index(state) != (has_media ? 0U : 1U)) {
+            DSD_FPRINTF(stderr, "P25 conventional voice gate failed to distinguish media from a bare report\n");
+            test_rc = 1;
+        }
+        if (has_media) {
+            if (state->scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_VOICE) {
+                DSD_FPRINTF(stderr, "P25 conventional fresh media did not publish VOICE\n");
+                test_rc = 1;
+            }
+            if (dsd_call_state_update_media(state, 0U, 1, 0.49) != 1
+                || dsd_call_state_end_ex(state, 0U, 0.50, DSD_CALL_END_TERMINATOR) != 1) {
+                DSD_FPRINTF(stderr, "P25 conventional media refresh/end failed\n");
+                test_rc = 1;
+                goto cleanup;
+            }
+            trunk_scan_test_set_now(0.70);
+            dsd_engine_trunk_scan_tick(opts, state);
+            if (dsd_engine_trunk_scan_active_index(state) != 0
+                || state->scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_TAIL) {
+                DSD_FPRINTF(stderr, "P25 conventional refreshed media did not retain a post-call tail\n");
+                test_rc = 1;
+            }
+            trunk_scan_test_set_now(0.75);
+            dsd_engine_trunk_scan_tick(opts, state);
+            if (dsd_engine_trunk_scan_active_index(state) != 0
+                || state->scan_voice_gate_phase != (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY) {
+                DSD_FPRINTF(stderr, "P25 conventional media hold did not re-arm the idle dwell\n");
+                test_rc = 1;
+            }
+            trunk_scan_test_set_now(1.01);
+            dsd_engine_trunk_scan_tick(opts, state);
+            if (dsd_engine_trunk_scan_active_index(state) != 1) {
+                DSD_FPRINTF(stderr, "P25 conventional target did not rotate after media hold plus dwell\n");
+                test_rc = 1;
+            }
+        }
+        dsd_engine_trunk_scan_shutdown(opts, state);
+    }
+
+cleanup:
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -7175,8 +7428,9 @@ test_target_policy_options_rotate_and_restore(void) {
     }
     const char* header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
     if (write_targets_file_with_header(dir, header,
-                                      "a,dmr-conventional,461000000,,250,250,,-e --enc-lockout\n"
-                                      "b,dmr-conventional,462000000,,250,250,,\n", path, sizeof(path))) {
+                                       "a,dmr-conventional,461000000,,250,250,,-e --enc-lockout\n"
+                                       "b,dmr-conventional,462000000,,250,250,,\n",
+                                       path, sizeof(path))) {
         cleanup_paths(dir, NULL, NULL);
         return 1;
     }
@@ -7515,6 +7769,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_valid_mixed_targets_and_relative_chan_csv);
     rc |= run_with_default_tune_hook(test_parser_accepts_quoted_chan_csv_with_comma);
     rc |= run_with_default_tune_hook(test_parser_accepts_optional_modulation_and_gain_columns);
+    rc |= run_with_default_tune_hook(test_parser_accepts_p25_conventional_target);
     rc |= run_with_default_tune_hook(test_parser_accepts_target_key_columns);
     rc |= run_with_default_tune_hook(test_parser_accepts_direct_target_key_columns);
     rc |= run_with_default_tune_hook(test_parser_rejects_duplicate_target_key_columns);
@@ -7559,12 +7814,14 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nxdn48_target_uses_rtl_output_rate_for_sps);
     rc |= run_with_default_tune_hook(test_target_classes_enable_missing_decoders);
     rc |= run_with_default_tune_hook(test_nxdn_conventional_activity_hold);
+    rc |= run_with_default_tune_hook(test_p25_conventional_activity_hold);
     rc |= run_with_default_tune_hook(test_conventional_activity_data_call_respects_tune_data_calls);
     rc |= run_with_default_tune_hook(test_conventional_activity_families_do_not_cross);
     rc |= run_with_default_tune_hook(test_nxdn48_conventional_activity_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_data_header_no_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_voice_header_no_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_media_hold);
+    rc |= run_with_default_tune_hook(test_p25_conventional_voice_gate_media_hold);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_terminator_before_first_tick);
     rc |= run_with_default_tune_hook(test_conventional_voice_gate_enc_lockout_media_rotates);
     rc |= run_with_default_tune_hook(test_trunked_voice_gate_control_only_unchanged);

@@ -6346,6 +6346,13 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
     }
     (void)dsd_call_state_observe(state, &observation, boundary);
     p25_call_publish_crypto(opts, state, slot, 0.0);
+    dsd_call_snapshot published;
+    int encrypted = 0;
+    if (dsd_call_state_get(state, (uint8_t)slot, &published) > 0) {
+        encrypted =
+            published.crypto == DSD_CALL_CRYPTO_ENCRYPTED || published.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    }
+    dsd_trunk_scan_hook_p25_conventional_activity(opts, state, call.target, call.source, !call.is_group, encrypted, 0);
     (void)dsd_call_state_update_media(state, (uint8_t)slot, 1, 0.0);
     dsd_event_sync_slot(opts, state, (uint8_t)slot);
     return 1;

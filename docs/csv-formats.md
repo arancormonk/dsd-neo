@@ -279,8 +279,8 @@ Declared modes use these symbol profiles:
 
 ## Trunk Scan Target CSV (`--trunk-scan <file>` / `[trunk_scan] targets_csv`)
 
-Purpose: Rotate one tuner across explicit P25 trunk, DMR trunk, NXDN trunk, and one-frequency DMR, NXDN96 and
-NXDN48 targets. See
+Purpose: Rotate one tuner across explicit P25 trunk, DMR trunk, NXDN trunk, and one-frequency P25, DMR, NXDN96 and
+NXDN48 conventional targets. See
 `docs/trunk-scan.md` for the full setup workflow and troubleshooting guide.
 
 The header must start with this exact prefix:
@@ -299,20 +299,20 @@ Columns:
 | Column | Required | Behavior |
 |--------|----------|----------|
 | `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows, `-J` log lines and the rdio `talkgroup_tag` fallback, and in log messages. Empty or too-long IDs are rejected. |
-| `type` | Yes | One of `p25-trunk`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), or `nxdn48-conventional` (NXDN48, 6.25 kHz). |
+| `type` | Yes | One of `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), or `nxdn48-conventional` (NXDN48, 6.25 kHz). |
 | `frequency_hz` | Yes | Decimal Hz only. Normal 64-bit builds accept `1..4294967295`; 32-bit builds may reject values above `LONG_MAX`. Do not use `K`/`M`/`G` suffixes in CSV. |
-| `chan_csv` | No | Optional channel-map path for trunk targets (`p25-trunk`, `dmr-trunk`, `nxdn-trunk`, `nxdn48-trunk`). Paths are resolved relative to this CSV. Leave empty for conventional DMR and both conventional NXDN types. |
+| `chan_csv` | No | Optional channel-map path for trunk targets (`p25-trunk`, `dmr-trunk`, `nxdn-trunk`, `nxdn48-trunk`). Paths are resolved relative to this CSV. Leave empty for conventional DMR, P25 and both conventional NXDN types. |
 | `dwell_ms` | No | Per-target idle dwell (`250..600000`). Empty uses `--trunk-scan-dwell-ms` or `[trunk_scan] idle_dwell_ms`. |
-| `activity_hold_ms` | No | Per-target conventional DMR/NXDN (NXDN96 and NXDN48) activity hold (`250..600000`). Empty uses `--trunk-scan-activity-hold-ms` or `[trunk_scan] activity_hold_ms`. |
+| `activity_hold_ms` | No | Per-target conventional DMR/P25/NXDN (NXDN96 and NXDN48) activity hold (`250..600000`). Empty uses `--trunk-scan-activity-hold-ms` or `[trunk_scan] activity_hold_ms`. P25 holds from allowed voice starts, not PDU data; `-e` has no effect on P25 conventional holds. |
 | `notes` | No | Ignored. Use for local notes. |
-| `modulation` | No | Per-target demod hint. Empty preserves global/default handling. `auto` uses target defaults and overrides global `-m` locks for that target. P25 accepts `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. |
+| `modulation` | No | Per-target demod hint. Empty preserves global/default handling. `auto` uses target defaults and overrides global `-m` locks for that target. Both P25 types accept `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. |
 | `rtl_gain` | No | Per-target RTL-family tuner gain. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. Ignored for non-RTL retuning paths. |
 | `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to this CSV. A row may fill both key columns; they load into one per-target key set. Empty uses the global keys. |
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to this CSV. Empty uses the global keys. |
 | `single_key_dec` | No | Embedded `-b` Motorola Basic Privacy key number (`0..255`). Explicit `0` is present and overrides the global key. May be combined with `single_key_hex`, but not either key-file column. |
 | `single_key_hex` | No | Embedded `-H` key: optional `0x`, whitespace ignored, exactly 10, 32, or 64 hex digits. May be combined with `single_key_dec`, but not either key-file column. |
 | `options` | No | Scoped switches described above; target `type` determines which protocol options apply. |
-| `p25_bandplan_csv` | No | Per-target [P25 band plan CSV](#p25-band-plan-csv---p25-bandplan-file--trunking-p25_bandplan_csv) for a `p25-trunk` target, resolved relative to this CSV. The rows are parked in the target's snapshot, so one exported multi-system file can be named on every P25 row: each target seeds only the rows that carry its own WACN/SYS (and rows that carry none). |
+| `p25_bandplan_csv` | No | Per-target [P25 band plan CSV](#p25-band-plan-csv---p25-bandplan-file--trunking-p25_bandplan_csv) for a `p25-trunk` target, resolved relative to this CSV. Leave empty for conventional targets, including `p25-conventional`. The rows are parked in the trunk target's snapshot, so one exported multi-system file can be named on every `p25-trunk` row: each target seeds only the rows that carry its own WACN/SYS (and rows that carry none). |
 
 Validation notes:
 
@@ -323,8 +323,9 @@ Validation notes:
   `nxdn-conventional`/`nxdn48-conventional` are distinct types, so one frequency may appear once as each.
 - Optional column names are exact-case in this format. Duplicate direct-key headers, malformed direct values, and
   rows that mix a direct value with a key-file path are rejected without echoing the key value.
-- `chan_csv` and `p25_bandplan_csv` on conventional (`dmr-conventional`/`nxdn-conventional`/`nxdn48-conventional`)
-  rows are rejected; a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load fails
+- `chan_csv` and `p25_bandplan_csv` on conventional
+  (`p25-conventional`/`dmr-conventional`/`nxdn-conventional`/`nxdn48-conventional`) rows are rejected;
+  a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load fails
   the whole import.
 - Global `-C`/`[trunking] chan_csv` and `--p25-bandplan`/`[trunking] p25_bandplan_csv` are rejected in trunk scan
   mode so channel maps and band plans do not leak across systems.
@@ -337,6 +338,7 @@ Example:
 ```csv
 id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain
 county-p25,p25-trunk,851012500,,3000,,primary P25 control channel,cqpsk,18
+field-p25,p25-conventional,851500000,,1500,1200,one-frequency P25,c4fm,
 city-dmr,dmr-trunk,452012500,dmr_channels.csv,3000,,DMR Tier III control channel,auto,
 plant,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto
 site-nxdn,nxdn-trunk,461037500,,3000,,NXDN Type-C control channel,auto,

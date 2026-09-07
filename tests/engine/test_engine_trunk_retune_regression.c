@@ -80,6 +80,7 @@ static int g_trunk_scan_saved_autogain_on = 0;
 static int g_trunk_scan_active_p25_cqpsk_is_set = 0;
 static int g_trunk_scan_active_p25_cqpsk_enable = 0;
 static int g_trunk_scan_active_p25_target = 0;
+static int g_trunk_scan_active_p25_class = 0;
 static int g_runtime_config_is_set = 0;
 
 int
@@ -253,11 +254,11 @@ dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_
     return 1;
 }
 
-void*
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_engine_trunk_scan_active_p25_ctx(void) {
-    static int p25_ctx_token;
-    return g_trunk_scan_active_p25_target ? &p25_ctx_token : NULL;
+dsd_engine_trunk_scan_active_is_p25_class(const dsd_state* state) {
+    (void)state;
+    return g_trunk_scan_active_p25_class || g_trunk_scan_active_p25_target;
 }
 
 bool
@@ -517,6 +518,23 @@ test_backend_tune_updates_center_freq_cache(void) {
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     assert(dsd_engine_scan_tune_to_freq(opts, state, 461556250, 20, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(opts->rtlsdr_center_freq == 461556250U);
+
+    /* A conventional P25 target selects the P25 chain without enabling a trunk SM. */
+    g_trunk_scan_active_p25_class = 1;
+    g_trunk_scan_target_count = 1;
+    opts->trunk_enable = 0;
+    state->rf_mod = 0;
+    g_rtl_cqpsk_enable = 0;
+    g_rtl_symbol_rate_hz = 2400;
+    g_rtl_symbol_levels = 2;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_6K25;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853000000, 10, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_symbol_levels == 4);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
+    g_trunk_scan_active_p25_class = 0;
+    g_trunk_scan_target_count = 0;
 #endif
     opts->audio_in_type = AUDIO_IN_PULSE;
     opts->use_rigctl = 1;

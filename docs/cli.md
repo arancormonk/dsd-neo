@@ -475,20 +475,24 @@ Notes
   message; legacy untyped scans retain their existing manual-tune behavior. Manual `L` skips zero-frequency placeholders,
   while automatic scanning continues to park on them for the configured dwell.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
-  - Rotates one tuner across CSV-defined P25 trunk, DMR trunk, DMR conventional, NXDN trunk (`nxdn-trunk` NXDN96,
-    `nxdn48-trunk` NXDN48), NXDN96 conventional (`nxdn-conventional`) and NXDN48 conventional
-    (`nxdn48-conventional`) targets. Full guide: `docs/trunk-scan.md`.
+  - Rotates one tuner across CSV-defined P25 trunk, P25 conventional (`p25-conventional`), DMR trunk, DMR
+    conventional, NXDN trunk (`nxdn-trunk` NXDN96, `nxdn48-trunk` NXDN48), NXDN96 conventional
+    (`nxdn-conventional`) and NXDN48 conventional (`nxdn48-conventional`) targets. Full guide: `docs/trunk-scan.md`.
   - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`.
-  - Use per-target `chan_csv` (and `p25_bandplan_csv`) entries in the target CSV; global `-C` and `--p25-bandplan`
-    are rejected in this mode. Targets that are sites of one P25 system (same WACN/SYS) share the band plan one of
-    them learned over the air.
+  - Use per-target `chan_csv` (and `p25_bandplan_csv`) entries in the target CSV; leave both empty on conventional
+    rows, including `p25-conventional`. Global `-C` and `--p25-bandplan` are rejected in this mode. P25 trunk targets
+    that are sites of one system (same WACN/SYS) share the band plan one of them learned over the air.
   - Optional per-target `modulation` and `rtl_gain` columns can override demod hints and RTL-family tuner gain for the
-    active target. Optional `keys_hex_csv`/`keys_dec_csv` columns load a per-target key set, while
+    active target. Both P25 types accept `auto`, `c4fm`, or `cqpsk`. Optional `keys_hex_csv`/`keys_dec_csv` columns load a per-target key set, while
     `single_key_dec`/`single_key_hex` embed `-b`/`-H` equivalents; a target cannot mix direct and file key sources.
     Leaving the target restores the global keys.
   - Idle dwell: `--trunk-scan-dwell-ms <250..600000>` (default `3000`).
-  - Conventional DMR/NXDN activity hold (both NXDN rates): `--trunk-scan-activity-hold-ms <250..600000>`
+  - Conventional DMR/P25/NXDN activity hold (both NXDN rates): `--trunk-scan-activity-hold-ms <250..600000>`
     (default `1200`).
+  - `p25-conventional` parks without a trunking state machine and holds after voice starts allowed by the
+    group/private and encrypted-call policy. PDU data never refreshes its hold, so `-e` has no effect on that row.
+    Phase 1 decode captures are available for replay checks, not proof of on-air target holds; Phase 2 conventional
+    parking is untested on air.
   - Voice-only scan (`--scan-voice-only` with the qualify/hold flags above): conventional targets hold only from
     decoded voice, with `dwell_ms` as the qualify window and `activity_hold_ms` as the hold; trunked targets are
     unchanged (control-only rotates after dwell) and show no `Voice:` marker on the status line. A conventional
