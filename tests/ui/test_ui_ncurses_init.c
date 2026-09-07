@@ -7,14 +7,18 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/ncurses.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "curses.h"
+#include "dsd-neo/core/opts_fwd.h"
 
 struct WINDOW {
     int unused;
@@ -49,6 +53,25 @@ static int g_fopen_private_calls;
 static const char* g_fopen_private_path;
 static const char* g_fopen_private_mode;
 static int g_unicode_init_calls;
+static int g_payload_warnings;
+
+void
+dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
+    char message[512];
+    va_list args;
+    va_start(args, format);
+    DSD_VSNPRINTF(message, sizeof(message), format, args);
+    va_end(args);
+
+    assert(level == LOG_LEVEL_WARN);
+    assert(strstr(message, "payload") != NULL);
+    assert(strstr(message, "stderr") != NULL);
+    assert(strstr(message, "2>") != NULL);
+    /* A warning inside the alternate screen or after redirection is lost. */
+    assert(g_initscr_calls == 0);
+    assert(g_dup2_calls == 0);
+    g_payload_warnings++;
+}
 
 WINDOW*
 initscr(void) {
@@ -225,6 +248,7 @@ reset_stubs(void) {
     g_fopen_private_path = NULL;
     g_fopen_private_mode = NULL;
     g_unicode_init_calls = 0;
+    g_payload_warnings = 0;
 }
 
 static void
@@ -247,6 +271,7 @@ test_non_tty_stderr_is_not_suppressed(void) {
     assert(g_dup2_calls == 0);
     assert(g_close_calls == 0);
     assert(g_endwin_calls == 1);
+    assert(g_payload_warnings == 0);
 }
 
 static void
@@ -271,6 +296,7 @@ test_tty_stderr_suppressed_once_and_restored(void) {
     assert(g_close_calls == 1);
     assert(g_closed_fd[0] == 42);
     assert(g_endwin_calls == 1);
+    assert(g_payload_warnings == 0);
 
     dsd_terminal_close();
     assert(g_dup2_calls == 2);
@@ -296,11 +322,37 @@ test_devnull_open_failure_closes_backup(void) {
     assert(g_endwin_calls == 1);
 }
 
+static void
+test_payload_warning_only_when_stderr_will_be_suppressed(void) {
+    static dsd_opts opts;
+    opts.payload = 1;
+
+    reset_stubs();
+    g_isatty_result = 1;
+    dsd_terminal_open(&opts, NULL);
+    dsd_terminal_open(&opts, NULL);
+    dsd_terminal_close();
+    assert(g_payload_warnings == 1);
+
+    reset_stubs();
+    dsd_terminal_open(&opts, NULL);
+    dsd_terminal_close();
+    assert(g_payload_warnings == 0);
+
+    reset_stubs();
+    opts.payload = 0;
+    g_isatty_result = 1;
+    dsd_terminal_open(&opts, NULL);
+    dsd_terminal_close();
+    assert(g_payload_warnings == 0);
+}
+
 int
 main(void) {
     test_non_tty_stderr_is_not_suppressed();
     test_tty_stderr_suppressed_once_and_restored();
     test_devnull_open_failure_closes_backup();
+    test_payload_warning_only_when_stderr_will_be_suppressed();
     return 0;
 }
 

@@ -112,7 +112,11 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `--frontend terminal` Use the terminal UI (`-N` is the supported short alias)
 - `--frontend native` remains accepted and maps to headless mode. The retired native provider was a non-rendering
   scaffold; this keeps existing invocations working without restoring its provider/threading layer.
-- `-Z` Log MBE/PDU payloads to the console (verbose), including encrypted P25 voice frames when media is gated
+- `-Z` Log MBE/PDU payloads to stderr (verbose), including encrypted P25 voice frames when media is gated.
+  With `--frontend terminal` / `-N`, redirect stderr to capture them:
+  `dsd-neo -Z --frontend terminal 2> console_log.txt`. The terminal frontend suppresses stderr when it is a TTY
+  to protect the screen, and warns before opening the UI if payload logging is enabled without a redirect.
+  Already-redirected stderr is preserved; `--frontend none -Z` leaves console payload output visible.
 - `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
 - `--p25-sm-log <file>` Append one-line P25 state-machine decision diagnostics (separate from stdout/stderr, event log, and frame log)
 - `-O` List PulseAudio input sources and output sinks
