@@ -144,7 +144,7 @@ Main Menu
 │   ├── Follow
 │   │   ├── Group calls [On]                     g
 │   │   ├── Private calls [Off]                  u
-│   │   ├── Data calls [Off]                     d
+│   │   ├── Data calls [Off]                     d   (edits configured value; adds (target: On/Off) when a parked row differs)
 │   │   ├── Allow-list mode [Off]                w
 │   │   ├── Talkgroup hold... [none]             k/l
 │   │   ├── Hangtime... [1.0 s]
@@ -183,7 +183,7 @@ Main Menu
 │   └── Rigctl setmod bandwidth...
 ├── Encryption
 │   ├── Mute encrypted audio [On]
-│   ├── Lock out encrypted calls [Off]           e
+│   ├── Lock out encrypted calls [Off]           e   (edits configured value; adds (target: On/Off) when a parked row differs)
 │   ├── Clear lockouts [0]
 │   ├── ─────
 │   ├── Keys

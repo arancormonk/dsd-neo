@@ -26,6 +26,8 @@ enum {
     /** The row decides DMR encrypted-audio muting. Set only by the `-b`/`-H` switches in the option text,
      * so legacy single_key_dec/single_key_hex columns keep their key-only meaning. */
     DSD_SCAN_OPT_MUTE_DMR = 1U << 12,
+    DSD_SCAN_OPT_DATA = 1U << 13,
+    DSD_SCAN_OPT_ENC = 1U << 14,
     DSD_SCAN_OPT_DIRECT = DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA | DSD_SCAN_OPT_SCALAR | DSD_SCAN_OPT_SCRAMBLER,
     DSD_SCAN_OPT_FILES = DSD_SCAN_OPT_HEX_FILE | DSD_SCAN_OPT_DEC_FILE
 };
@@ -46,6 +48,8 @@ typedef struct {
     int qualify_ms;
     int hold_ms;
     int mute_dmr;
+    int tune_data_calls;
+    int tune_enc_calls;
     char group_file[DSD_SCAN_OPTIONS_GROUP_PATH_MAX];
 } dsd_scan_option_values;
 

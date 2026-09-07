@@ -22,6 +22,7 @@
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
 #include <dsd-neo/ui/ncurses_internal.h>
@@ -432,6 +433,14 @@ const char*
 dsd_synctype_to_string(int synctype) { // NOLINT(misc-use-internal-linkage)
     (void)synctype;
     return "SYNC";
+}
+
+static dsd_scan_mode g_scan_mode_active = DSD_SCAN_MODE_INHERIT;
+
+dsd_scan_mode
+dsd_scan_mode_active(const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    return g_scan_mode_active;
 }
 
 uint8_t
@@ -1296,10 +1305,41 @@ test_history_viewport_helpers(void) {
 
     Event_History item;
     DSD_MEMSET(&item, 0, sizeof(item));
-    assert(ui_history_print_detail_line(1, UINT8_MAX, "Alias: ", "") == 1);
-    assert(ui_history_print_detail_line(1, UINT8_MAX, "Alias: ", NULL) == 1);
-    assert(ui_history_print_detail_line(0, UINT8_MAX, "Alias: ", "Unit") == 0);
-    assert(ui_history_print_detail_line(1, 0, "Alias: ", "Unit") == 1);
+    assert(ui_history_print_detail_line(1, NULL, "Alias: ", "") == 1);
+    assert(ui_history_print_detail_line(1, NULL, "Alias: ", NULL) == 1);
+    assert(ui_history_print_detail_line(0, NULL, "Alias: ", "Unit") == 0);
+    assert(ui_history_print_detail_line(1, "[S1] ", "Alias: ", "Unit") == 1);
+}
+
+static void
+test_history_merged_slot_tags(void) {
+    int draw_footer = 1;
+    ui_history_render_ctx ctx;
+    ui_history_setup_render_ctx(1, &draw_footer, &ctx);
+    Event_History item = {0};
+    DSD_SNPRINTF(item.event_string, sizeof(item.event_string), "%s", "DMR TGT: 100; SRC: 200;");
+    item.event_time = time(NULL);
+    item.systype = DSD_SYNC_DMR_BS_VOICE_POS;
+    reset_printw_capture();
+    ui_history_render_dual_slot_item(&item, 1, &ctx);
+    assert_capture_contains("|[S2] ");
+
+    item.systype = DSD_SYNC_P25P2_POS;
+    reset_printw_capture();
+    ui_history_render_dual_slot_item(&item, 0, &ctx);
+    assert_capture_contains("|[S1] ");
+
+    item.systype = DSD_SYNC_NXDN_POS;
+    reset_printw_capture();
+    ui_history_render_dual_slot_item(&item, 0, &ctx);
+    assert(strncmp(g_printw_capture, "|     ", 6) == 0);
+    assert(strstr(g_printw_capture, "[S1]") == NULL);
+
+    item.systype = DSD_SYNC_P25P1_POS;
+    DSD_SNPRINTF(item.text_message, sizeof(item.text_message), "%s", "MEET AT GATE");
+    reset_printw_capture();
+    ui_history_render_dual_slot_item(&item, 0, &ctx);
+    assert_capture_contains("|     \\-- MEET AT GATE");
 }
 
 static void
@@ -1428,6 +1468,51 @@ test_edacs_tree_update_helpers(void) {
     ui_update_sync_and_edacs_tree(&state);
     assert(ncurses_last_synctype == DSD_SYNC_EDACS_POS);
     dsd_state_ext_free_all(&state);
+}
+
+static void
+test_sync_tree_follows_scan_class(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    state->synctype = DSD_SYNC_NONE;
+    g_scan_mode_active = DSD_SCAN_MODE_DMR;
+    ncurses_last_synctype = DSD_SYNC_NXDN_POS;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_DMR_BS_DATA_POS);
+
+    g_scan_mode_active = DSD_SCAN_MODE_P25;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_P25P1_POS);
+    state->p25_cc_is_tdma = 1;
+    ncurses_last_synctype = DSD_SYNC_NXDN_POS;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_P25P2_POS);
+    state->p25_cc_is_tdma = 0;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_P25P2_POS);
+
+    g_scan_mode_active = DSD_SCAN_MODE_NXDN96;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_DMR_BS_VOICE_POS);
+
+    g_scan_mode_active = DSD_SCAN_MODE_NXDN48;
+    state->synctype = DSD_SYNC_NONE;
+    state->nxdn_last_ran = (unsigned int)-1;
+    ui_update_sync_and_edacs_tree(state);
+    reset_printw_capture();
+    ui_render_call_info_nxdn(opts, state);
+    assert_capture_contains("NXDN - RAN: --;");
+    assert(strstr(g_printw_capture, "RAN: -1") == NULL);
+    reset_printw_capture();
+    ui_render_nxdn_site_line(state, 1);
+    assert_capture_contains("IDAS - Area: --;");
+    g_scan_mode_active = DSD_SCAN_MODE_INHERIT;
+    ncurses_last_synctype = DSD_SYNC_NONE;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
 }
 
 static void
@@ -2061,6 +2146,8 @@ main(void) {
     test_hytera_key_format_helper();
     test_loaded_scalar_key_status();
     test_edacs_tree_update_helpers();
+    test_sync_tree_follows_scan_class();
+    test_history_merged_slot_tags();
     test_patch_and_slot_helpers();
     test_lock_and_protocol_helpers();
     test_canonical_p25_slot_and_recent_activity();

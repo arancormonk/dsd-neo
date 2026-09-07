@@ -91,6 +91,8 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
     out->dmr_mute_encL = opts->dmr_mute_encL;
     out->dmr_mute_encR = opts->dmr_mute_encR;
     out->unmute_encrypted_p25 = opts->unmute_encrypted_p25;
+    out->trunk_tune_data_calls = opts->trunk_tune_data_calls;
+    out->trunk_tune_enc_calls = opts->trunk_tune_enc_calls;
     DSD_MEMCPY(out->group_in_file, opts->group_in_file, sizeof(out->group_in_file));
     out->frame_dstar = opts->frame_dstar;
     out->frame_x2tdma = opts->frame_x2tdma;
@@ -145,6 +147,8 @@ scan_settings_restore_row_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
     opts->dmr_mute_encL = saved->dmr_mute_encL;
     opts->dmr_mute_encR = saved->dmr_mute_encR;
     opts->unmute_encrypted_p25 = saved->unmute_encrypted_p25;
+    opts->trunk_tune_data_calls = saved->trunk_tune_data_calls;
+    opts->trunk_tune_enc_calls = saved->trunk_tune_enc_calls;
     DSD_MEMCPY(opts->group_in_file, saved->group_in_file, sizeof(opts->group_in_file));
 }
 
@@ -161,6 +165,8 @@ scan_settings_copy_row_opts(dsd_scan_settings* dst, const dsd_scan_settings* src
     dst->dmr_mute_encL = src->dmr_mute_encL;
     dst->dmr_mute_encR = src->dmr_mute_encR;
     dst->unmute_encrypted_p25 = src->unmute_encrypted_p25;
+    dst->trunk_tune_data_calls = src->trunk_tune_data_calls;
+    dst->trunk_tune_enc_calls = src->trunk_tune_enc_calls;
     DSD_MEMCPY(dst->group_in_file, src->group_in_file, sizeof(dst->group_in_file));
 }
 
@@ -366,6 +372,12 @@ scan_options_apply(dsd_opts* opts, dsd_state* state, const dsd_scan_option_value
     if (present & DSD_SCAN_OPT_SCALAR) {
         /* `-1` loads a key for decryption; undecodable P25 audio stays muted, as on the CLI. */
         opts->unmute_encrypted_p25 = 0;
+    }
+    if (present & DSD_SCAN_OPT_DATA) {
+        opts->trunk_tune_data_calls = values->tune_data_calls;
+    }
+    if (present & DSD_SCAN_OPT_ENC) {
+        opts->trunk_tune_enc_calls = values->tune_enc_calls;
     }
     if (present & DSD_SCAN_OPT_GROUP) {
         DSD_MEMCPY(opts->group_in_file, values->group_file, sizeof(opts->group_in_file));

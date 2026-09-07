@@ -17,6 +17,8 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_xcch.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -718,6 +720,111 @@ test_raw_ptt_markers_are_slot_local(void) {
         return 1;
     }
     return 0;
+}
+
+static int g_conventional_holds;
+
+static void
+observe_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
+                              int is_private, int encrypted, int data_call) {
+    dsd_tg_policy_decision decision;
+    const int rc =
+        is_private ? dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, data_call, &decision)
+                   : dsd_tg_policy_evaluate_group_call(opts, state, target, source, encrypted, data_call, &decision);
+    if (rc == 0 && decision.tune_allowed) {
+        g_conventional_holds++;
+    }
+}
+
+static void
+conventional_ptt_payload(int payload[180], int facch, int encrypted) {
+    uint8_t mac[23] = {0x20, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x80, 0x12,
+                       0x34, 0,    0,    123,  3,    0xE8, 0,    0,    0,    0,    0};
+    mac[10] = encrypted ? 0xAA : 0x80;
+    for (int i = 0; i < 180; i++) {
+        payload[i] = (mac[i / 8] >> (7 - i % 8)) & 1;
+    }
+    /* CRC12 for the fixed MAC above: SACCH has 168 data bits, FACCH 144. */
+    static const uint16_t crc[2][2] = {{0x84B, 0xD0D}, {0x1F8, 0x5A8}};
+    const int data_bits = facch ? 144 : 168;
+    for (int i = 0; i < 12; i++) {
+        payload[data_bits + i] = (crc[facch][encrypted] >> (11 - i)) & 1;
+    }
+}
+
+static int
+test_conventional_voice_start_encryption_policy(void) {
+    int fail = 0;
+    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){.p25_conventional_activity = observe_conventional_activity});
+    for (int encrypted = 0; encrypted <= 1; encrypted++) {
+        reset_test_state();
+        g_opts.trunk_enable = 0;
+        g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P1_POS;
+        p25_sm_init_ctx(p25_sm_get_ctx(), &g_opts, &g_state);
+        p25_crypto_reset_slot(&g_state, 0);
+        g_conventional_holds = 0;
+        if (!p25_sm_emit_active_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, encrypted ? 0x40 : 0)
+            || g_conventional_holds != (encrypted ? 0 : 1)) {
+            DSD_FPRINTF(stderr, "FAIL: Late-join Phase 1 service encryption bypassed conventional hold policy\n");
+            fail = 1;
+        }
+    }
+
+    static const struct {
+        int encrypted;
+        int has_key;
+        int follow;
+        int holds;
+    } cases[] = {{0, 0, 0, 1}, {1, 0, 0, 0}, {1, 1, 0, 1}, {1, 0, 1, 1}};
+
+    for (int facch = 0; facch <= 1; facch++) {
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            reset_test_state();
+            g_opts.trunk_enable = 0;
+            g_opts.trunk_tune_enc_calls = cases[i].follow;
+            g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P2_POS;
+            g_state.currentslot = facch ? 1 : 0; /* Both transports describe slot 2. */
+            p25_sm_init_ctx(p25_sm_get_ctx(), &g_opts, &g_state);
+            p25_crypto_reset_slot(&g_state, 1);
+            g_state.RR = cases[i].has_key ? UINT64_C(0x123456789A) : 0U;
+            int payload[180];
+            conventional_ptt_payload(payload, facch, cases[i].encrypted);
+            g_conventional_holds = 0;
+            if (facch) {
+                process_FACCH_MAC_PDU(&g_opts, &g_state, payload);
+            } else {
+                process_SACCH_MAC_PDU(&g_opts, &g_state, payload);
+            }
+            if (g_state.p25_crypto_state[1] == DSD_P25_CRYPTO_UNKNOWN || g_conventional_holds != cases[i].holds) {
+                DSD_FPRINTF(stderr, "FAIL: %s PTT case %zu refreshed %d holds, expected %d\n",
+                            facch ? "FACCH" : "SACCH", i, g_conventional_holds, cases[i].holds);
+                fail = 1;
+            }
+        }
+        /* An unidentified PTT after a missed END must not refresh the retained call. */
+        int payload[180];
+        conventional_ptt_payload(payload, facch, 0);
+        for (int i = 128; i < 144; i++) {
+            payload[i] = 0;
+        }
+        const uint16_t crc = facch ? 0x30E : 0x8F5;
+        const int data_bits = facch ? 144 : 168;
+        for (int i = 0; i < 12; i++) {
+            payload[data_bits + i] = (crc >> (11 - i)) & 1;
+        }
+        g_conventional_holds = 0;
+        if (facch) {
+            process_FACCH_MAC_PDU(&g_opts, &g_state, payload);
+        } else {
+            process_SACCH_MAC_PDU(&g_opts, &g_state, payload);
+        }
+        if (g_state.p25_crypto_state[1] != DSD_P25_CRYPTO_CLEAR || g_conventional_holds != 0) {
+            DSD_FPRINTF(stderr, "FAIL: Unidentified PTT refreshed a retained conventional call\n");
+            fail = 1;
+        }
+    }
+    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    return fail;
 }
 
 static int
@@ -2901,6 +3008,7 @@ main(void) {
     fail += test_raw_ptt_boundary_invalidation();
     fail += test_raw_ptt_markers_are_slot_local();
     fail += test_conventional_raw_ptt_retransmissions_coalesce();
+    fail += test_conventional_voice_start_encryption_policy();
     fail += test_trunked_late_voice_is_rejected_after_encryption_lockout();
     fail += test_source_less_identity_change_does_not_inherit_rid();
     fail += test_p2_resolved_crypto_survives_pending_active();

@@ -62,6 +62,8 @@ test_row_option_edits_are_not_acquisition_changes(void) {
     o->dmr_mute_encL = o->dmr_mute_encR = 1;
     o->aggressive_framesync = 1;
     o->scan_voice_hold_ms = 2000;
+    o->trunk_tune_data_calls = 0;
+    o->trunk_tune_enc_calls = 1;
     DSD_SNPRINTF(o->group_in_file, sizeof(o->group_in_file), "%s", "global.csv");
     s->M = 0;
     const dsd_scan_option_values none = {0};
@@ -89,6 +91,22 @@ test_row_option_edits_are_not_acquisition_changes(void) {
     dsd_scan_settings_capture(o, s, &after);
     assert(dsd_scan_settings_equal(&before, &after, 1));
     assert(after.dmr_mute_encL == 0 && after.force_key == 1 && after.scan_voice_hold_ms == 4000);
+
+    /* Call-policy overrides survive baseline edits without restarting acquisition. */
+    const dsd_scan_option_values policy = {
+        .present = DSD_SCAN_OPT_DATA | DSD_SCAN_OPT_ENC, .tune_data_calls = 1, .tune_enc_calls = 0};
+    assert(dsd_scan_mode_options(o, s, &policy) == 0);
+    assert(o->trunk_tune_data_calls == 1 && o->trunk_tune_enc_calls == 0);
+    dsd_scan_settings_capture(o, s, &after);
+    assert(dsd_scan_settings_equal(&before, &after, 1));
+    assert(dsd_scan_mode_suspend(o, s));
+    assert(o->trunk_tune_data_calls == 0 && o->trunk_tune_enc_calls == 1);
+    o->trunk_tune_data_calls = 1;
+    assert(dsd_scan_mode_resume(o, s) == 0);
+    assert(o->trunk_tune_data_calls == 1 && o->trunk_tune_enc_calls == 0);
+    dsd_scan_mode_leave(o, s);
+    assert(o->trunk_tune_data_calls == 1 && o->trunk_tune_enc_calls == 1);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
 
     /* A row override layered over the edited baseline still yields to a decoder change. */
     dsd_scan_option_values row = {0};

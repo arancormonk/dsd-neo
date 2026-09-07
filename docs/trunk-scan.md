@@ -1,9 +1,9 @@
 # Single-Tuner Trunk Scan
 
 Single-tuner trunk scan lets one retunable receiver rotate across several explicit targets instead of staying on one
-system. Use it when you want one DSD-neo instance to check a small set of P25 trunk, DMR trunk, DMR conventional,
-and NXDN (trunk, NXDN96 conventional, and NXDN48 conventional) targets, but you do not have a separate receiver for
-each system.
+system. Use it when you want one DSD-neo instance to check a small set of P25 trunk, P25 conventional, DMR trunk,
+DMR conventional, and NXDN (trunk, NXDN96 conventional, and NXDN48 conventional) targets, but you do not have a
+separate receiver for each system.
 
 The scan coordinator parks on one target, watches for activity, and moves to the next idle target after the configured
 dwell time. Trunking state and per-target channel maps are kept separate, so a channel number or learned control-channel
@@ -37,6 +37,7 @@ Example:
 ```csv
 id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain,options,p25_bandplan_csv
 county-p25,p25-trunk,851012500,,3000,,P25 control channel,cqpsk,18,,p25_bandplan.csv
+field-p25,p25-conventional,851500000,,1500,1200,one-frequency P25,c4fm,,,
 city-dmr,dmr-trunk,456318750,dmr_t3_chan.csv,3000,,DMR Tier III control channel,auto,,,
 plant-dmr,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto,--no-force-key,
 site-nxdn,nxdn-trunk,461037500,,3000,,NXDN Type-C control channel,auto,,,
@@ -55,22 +56,22 @@ Column behavior:
 | Column | Required | Meaning |
 |--------|----------|---------|
 | `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows, `-J` log lines and the rdio `talkgroup_tag` fallback, and in log messages. Keep it under 64 bytes. |
-| `type` | Yes | `p25-trunk`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), or `nxdn48-conventional` (NXDN48, 6.25 kHz). |
+| `type` | Yes | `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), or `nxdn48-conventional` (NXDN48, 6.25 kHz). |
 | `frequency_hz` | Yes | Initial park/control frequency in decimal Hz. Suffixes such as `M` are not accepted in CSV. |
-| `chan_csv` | No | Channel map for a trunk target. Paths are resolved relative to the target CSV file. Leave empty for conventional DMR and both conventional NXDN types. |
+| `chan_csv` | No | Channel map for a trunk target. Paths are resolved relative to the target CSV file. Leave empty for conventional DMR, P25 and both conventional NXDN types. |
 | `dwell_ms` | No | Idle dwell for this target. Empty uses the CLI/config default. Valid range: `250..600000`. |
-| `activity_hold_ms` | No | Conventional DMR/NXDN (NXDN96 and NXDN48) activity hold for this target. Empty uses the CLI/config default. Valid range: `250..600000`. |
+| `activity_hold_ms` | No | Conventional DMR/P25/NXDN (NXDN96 and NXDN48) activity hold for this target. Empty uses the CLI/config default. Valid range: `250..600000`. |
 | `notes` | No | Ignored by DSD-neo. Use it for local notes. |
-| `modulation` | No | Demod hint for this target. Empty preserves global/default handling. `auto` uses target defaults even when a global `-m` lock is set. P25 accepts `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. |
+| `modulation` | No | Demod hint for this target. Empty preserves global/default handling. `auto` uses target defaults even when a global `-m` lock is set. Both P25 types accept `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. |
 | `rtl_gain` | No | RTL-family tuner gain for this target. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. |
 | `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to the target CSV. Parking the target installs its set; leaving it restores the global keys. A row may fill both key columns; they load into one set. Empty uses the global keys. |
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to the target CSV. Empty uses the global keys. |
 | `single_key_dec` | No | Embedded `-b` Motorola Basic Privacy key number (`0..255`). Explicit `0` is an active override. It may be combined with `single_key_hex`, but not either key-file column. |
 | `single_key_hex` | No | Embedded `-H` key. It accepts an optional `0x`, ignores ASCII whitespace, and requires exactly 10, 32, or 64 hex digits. It may be combined with `single_key_dec`, but not either key-file column. |
 | `options` | No | Per-target [scoped switches](#per-target-options); `relevant_CLI_switches` is an alias. This header and its alias match ASCII case-insensitively, and naming both rejects the file. The target `type` determines which protocol-specific switches are accepted. Omitted settings inherit the outer CLI/configuration. |
-| `p25_bandplan_csv` | No | P25 band plan CSV for a `p25-trunk` target (format in [csv-formats.md](csv-formats.md)), resolved relative to the target CSV. Its rows are parked in the target's snapshot, so an exported multi-system plan can be named on every P25 row and each target keeps only the rows that carry its WACN/SYS (plus rows that carry none). |
+| `p25_bandplan_csv` | No | P25 band plan CSV for a `p25-trunk` target (format in [csv-formats.md](csv-formats.md)), resolved relative to the target CSV. Leave empty for conventional targets, including `p25-conventional`. Its rows are parked in the trunk target's snapshot, so an exported multi-system plan can be named on every `p25-trunk` row and each target keeps only the rows that carry its WACN/SYS (plus rows that carry none). |
 
-Targets that turn out to be sites of the same P25 system (same WACN/SYS) share what one of them learned over the
+P25 trunk targets that turn out to be sites of the same system (same WACN/SYS) share what one of them learned over the
 air: when a parked target is missing a band-plan identifier that another target's table holds for the same
 WACN/SYS, the entry is copied in at trust `prov` (unconfirmed) and yields to the site's own `IDEN_UP`. Entries whose
 system is unknown or different are never copied, so the per-target isolation below still holds for everything else.
@@ -100,11 +101,11 @@ Target list limits and validation:
 - A duplicated key header is rejected. An unloadable key path fails the whole import like a bad `-K`/`-k`; a malformed
   direct key or a row mixing direct and file sources also fails, without repeating direct key material in the error.
 - `chan_csv` is only valid for `p25-trunk`, `dmr-trunk`, `nxdn-trunk` and `nxdn48-trunk` targets; `p25_bandplan_csv` is refused
-  on conventional targets, a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load
+  on conventional targets, including `p25-conventional`, a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load
   fails the whole import. A global `--p25-bandplan`/`[trunking] p25_bandplan_csv` is rejected in this mode like
   `-C`.
-- `modulation` values are target-type specific: `cqpsk`/`c4fm` are P25-only, and `gfsk` is valid for DMR and both NXDN
-  target rates.
+- `modulation` values are target-type specific: `cqpsk`/`c4fm` are valid for both P25 types, and `gfsk` is valid for
+  DMR and both NXDN target rates, not P25.
 - `nxdn-trunk`/`nxdn48-trunk` and `nxdn-conventional`/`nxdn48-conventional` are distinct types, so the same frequency
   may appear once as each.
 - `rtl_gain` only affects RTL-family inputs opened by DSD-neo. It is ignored when scan retuning is done through rigctl
@@ -138,7 +139,7 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
 
 - `--trunk-scan-dwell-ms <ms>` sets the default idle dwell for targets whose `dwell_ms` column is empty. Default:
   `3000`.
-- `--trunk-scan-activity-hold-ms <ms>` sets the default hold time after allowed conventional DMR/NXDN activity
+- `--trunk-scan-activity-hold-ms <ms>` sets the default hold time after allowed conventional DMR/P25/NXDN activity
   (NXDN96 and NXDN48 alike). Default: `1200`.
 - Per-target CSV values override these defaults.
 - `--scan-voice-only`: conventional targets hold only from decoded voice media (headers and data no longer hold),
@@ -149,13 +150,15 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   trunk-scan targets; a conventional target can carry its own intervals in its `options` column (see
   [Per-target options](#per-target-options)).
 
-Each target's `type` selects its decoder class regardless of the configured global preset. P25 targets enable
-both phases and exclude DMR and X2-TDMA; DMR and NXDN targets enable only their declared class and rate. Mixed
+Each target's `type` selects its decoder class regardless of the configured global preset. Both `p25-trunk` and
+`p25-conventional` enable both phases and exclude DMR and X2-TDMA; DMR and NXDN targets enable only their declared class and rate. Mixed
 lists, including both NXDN rates, work without `-fa`. The target's `modulation` column keeps its existing precedence:
 an explicit value, including `auto`, overrides global modulation handling. An empty value preserves an explicit
 global modulation lock. Modes declared in a target's `chan_csv` do not override its type.
 NXDN48 targets do not require an outer `-fi`. Audio retains the startup output layout, with mono NXDN voice
 duplicated into both channels when the output is stereo.
+A `p25-conventional` target disables trunking and parks on its fixed frequency without a P25 trunking state-machine
+context or band-plan seeding. Its hold follows conventional voice activity, not control-channel grants.
 
 Global mode/modulation commands update the configured settings while the parked target remains constrained.
 Stopping trunk scan restores those configured settings, and configuration saves record them rather than the parked
@@ -204,7 +207,7 @@ Voice-only scan from a config file lives in `[trunking]` (`scan_voice_only`, `sc
 hold, refreshed only from decoded voice; trunked targets are unchanged.
 
 Set `tune_enc_calls = false` to enable key-aware encryption lockout. Otherwise eligible encrypted or
-encryption-unknown P25 voice grants are visited briefly and classified silently; only clear calls or calls with a
+encryption-unknown P25 trunk voice grants are visited briefly and classified silently; only clear calls or calls with a
 complete matching key for a supported algorithm continue. Missing-key calls remain silent and are released at
 classification or grant timeout, while a clear companion Phase 2 slot is preserved. A target confirmed encrypted
 without a usable key stays locked out for the rest of the session (no retry backoff); it re-verifies once after key
@@ -240,6 +243,8 @@ During scanning:
 
 - The terminal names the target on air: a `| Trunk Scan:  Target: county-p25 (3/6)` row in the Input Output section,
   and a `| Target: county-p25` line at the top of Call Info, which is the one that survives compact view.
+  While idle, Call Info follows the parked target's protocol panel; an unknown NXDN RAN or IDAS area
+  is shown as `--`.
 - Idle targets rotate after their dwell time.
 - The rotation can be driven from the terminal (Trunking menu, or the hotkeys): `Y` holds the scan on the parked
   target, `b` avoids the parked target for the rest of the session and moves on, `L` moves to the next eligible target
@@ -265,8 +270,15 @@ During scanning:
   only after allowed activity is decoded: a DMR voice header or data header, or an NXDN VCALL, DCALL or SDCALL header.
   NXDN48 and NXDN96 share a sync word and every decoded element, so one NXDN reporting path serves both. The allow/block list, private-call tuning,
   data-call tuning, and encrypted-call tuning controls all apply to that decision, so data headers refresh the hold
-  only when data-call tuning is enabled (`-e`, or `tune_data_calls` in a config file); it is off by default.
-  With `--scan-voice-only`, headers alone never hold: the hold refreshes only from decoded voice media (stamped
+  only when data-call tuning is enabled (the parked row's `-e` overrides the CLI/config value); it is off by default.
+- A `p25-conventional` target stays parked after a decoded P25 voice call start (Phase 1 HDU/LDU or Phase 2 PTT)
+  passes the allow/block list, group/private-call tuning and encrypted-call policy. Clear calls and calls decryptable
+  with a complete matching key can refresh `activity_hold_ms` even with `--enc-lockout`. P25 data (PDU) traffic
+  does not refresh the hold, so `-e` has no effect on this row.
+  Phase 2 PTT holds are evaluated after crypto classification; Phase 1 late joins honor the LCW encryption bit
+  before HDU/LDU2 metadata arrives.
+- With `--scan-voice-only`, all conventional types, including P25, hold only from decoded voice media, not headers
+  or voice-start reports alone. The hold refreshes from decoded voice media (stamped
   with a retained media time, so LC-less and just-ended voice hold), `dwell_ms` is the qualify window and
   `activity_hold_ms` the hold. The terminal status line marks the parked conventional target `Voice: QUALIFY`,
   `VOICE` while a media-bearing call is active, or `TAIL` after it ends while the hold runs. Trunked
@@ -292,6 +304,8 @@ During scanning:
   spanning an idle period and one call (see `docs/testing.md`) is what would confirm it.
 - When a retune fails, DSD-neo logs a warning, briefly cools that target down, and tries another eligible target.
   While held, a failed retune retries the held target after the cooldown instead of moving on.
+  A still-pending accepted tune can temporarily show its requested frequency, including during recovery from a
+  later backend failure. Frame dispatch remains gated until recovery completes.
 
 Expected log messages include:
 
@@ -350,7 +364,7 @@ sources cannot be mixed for one target.
 
 `--trunk-scan cannot be combined with global -C/channel-map config`
 
-Move channel maps into the target CSV `chan_csv` column. Conventional DMR and conventional NXDN rows (both NXDN
+Move channel maps into the target CSV `chan_csv` column. Conventional DMR, P25 and NXDN rows (both NXDN
 rates) must leave `chan_csv` empty.
 
 `--trunk-scan requires an open RTL input or rigctl tuning`
@@ -365,12 +379,15 @@ rotating across unrelated scan targets.
 
 ## Limitations
 
-- P25 trunk, DMR trunk, DMR conventional, NXDN trunk at both rates (`nxdn-trunk`, `nxdn48-trunk`), NXDN96
-  conventional, and NXDN48 conventional targets are supported. NXDN Type-C sites use one control-channel
+- P25 trunk, P25 conventional, DMR trunk, DMR conventional, NXDN trunk at both rates (`nxdn-trunk`, `nxdn48-trunk`),
+  NXDN96 conventional, and NXDN48 conventional targets are supported. NXDN Type-C sites use one control-channel
   format at 4800 and 9600 bps (NXDN TS 1-A), so `nxdn48-trunk` shares every decoding path with `nxdn-trunk`
   and differs only in symbol rate and channel filter; neither the Type-C nor the Type-D NXDN48 path has been
   verified against a live NXDN48 trunked site from trunk scan. `-Y` with `-fi` remains available for scanning
   NXDN48 channels outside trunk scan.
+- Phase 1 P25 decode captures are available for replay verification; a replay checks decoding, not live target
+  rotation or conventional activity holds. P25 conventional target holds have not been verified on air, and
+  Phase 2 conventional parking remains untested on air.
 - There is one active receiver. Traffic on targets that are not currently parked can be missed.
 - Group policy is global across all scan targets.
 - Target CSV files are simple comma-delimited files, not full RFC 4180 CSV.
@@ -400,6 +417,12 @@ The optional `options` column accepts the same [scoped switches](csv-formats.md#
 channel maps. The target `type` validates protocol-specific switches. A DMR system can use `-K Keys.csv -G Groups.csv
 -0 -F`; a conventional NXDN target can use `-R 1`. Relative paths refer to the target-list directory.
 Unspecified settings inherit the configured defaults, and `--no-force-key` can disable inherited forcing.
+A row's `-e` / `--no-data-calls` and `--enc-lockout` / `--enc-follow` override the CLI/config data-call and
+encrypted-call policy while that target is parked. The terminal `d`/`e` toggles still edit the configured global
+value; the data-call label under Trunking > Follow and the encrypted-call label under Encryption append
+`(target: On)` or `(target: Off)` when the parked row's effective value differs.
+Targets without these switches inherit that edited baseline.
+Saving configuration while parked also records the global data/encrypted-call baseline, not the row's overrides.
 
 Group policies and keys are preloaded and isolated between targets. Re-parking, failed-tune recovery and shutdown
 restore the associated options with the target. Conventional voice-gate switches are accepted on conventional target

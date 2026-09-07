@@ -49,6 +49,7 @@ static int g_frame_sync_reset_calls = 0;
 static int g_sps_hunt_restart_calls = 0;
 static int g_p25p2_frame_reset_calls = 0;
 static int g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+static uint32_t g_rtl_last_applied_freq = 0U;
 static int g_rtl_cqpsk_enable = 0;
 static int g_rtl_symbol_rate_hz = 4800;
 static int g_rtl_symbol_levels = 4;
@@ -79,6 +80,7 @@ static int g_trunk_scan_saved_autogain_on = 0;
 static int g_trunk_scan_active_p25_cqpsk_is_set = 0;
 static int g_trunk_scan_active_p25_cqpsk_enable = 0;
 static int g_trunk_scan_active_p25_target = 0;
+static int g_trunk_scan_active_p25_class = 0;
 static int g_runtime_config_is_set = 0;
 
 int
@@ -252,11 +254,11 @@ dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_
     return 1;
 }
 
-void*
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_engine_trunk_scan_active_p25_ctx(void) {
-    static int p25_ctx_token;
-    return g_trunk_scan_active_p25_target ? &p25_ctx_token : NULL;
+dsd_engine_trunk_scan_active_is_p25_class(const dsd_state* state) {
+    (void)state;
+    return g_trunk_scan_active_p25_class || g_trunk_scan_active_p25_target;
 }
 
 bool
@@ -321,6 +323,15 @@ rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t req
     g_rtl_tagged_tune_calls++;
     g_rtl_last_request_id = request_id;
     return rtl_stream_tune(ctx, center_freq_hz);
+}
+
+int
+rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz) {
+    if (g_rtl_last_applied_freq == 0U) {
+        return -1;
+    }
+    *out_freq_hz = g_rtl_last_applied_freq;
+    return 0;
 }
 
 void
@@ -469,6 +480,77 @@ dsd_neo_get_config(void) {
     return g_runtime_config_is_set ? &g_runtime_config : NULL;
 }
 
+static void
+test_backend_tune_updates_center_freq_cache(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+#ifdef USE_RADIO
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    opts->rtlsdr_center_freq = 111111100U;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 456318750, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(opts->rtlsdr_center_freq == 456318750U);
+
+    opts->rtlsdr_center_freq = 111111100U;
+    g_rtl_last_applied_freq = 456331250U;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 456318750, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(opts->rtlsdr_center_freq == 456331250U);
+    g_rtl_last_applied_freq = 0U;
+
+    opts->rtlsdr_center_freq = 111111100U;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 456318750, 10, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(opts->rtlsdr_center_freq == 111111100U);
+
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 456318750, 10, 0U) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    assert(opts->rtlsdr_center_freq == 111111100U);
+
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 456318750, 10, UINT64_C(0x10))
+           == DSD_TRUNK_TUNE_RESULT_PENDING);
+    assert(opts->rtlsdr_center_freq == 456318750U);
+    rtl_stream_clear_pending_retune_profile();
+
+    opts->rtlsdr_center_freq = 111111100U;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461556250, 20, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(opts->rtlsdr_center_freq == 461556250U);
+
+    /* A conventional P25 target selects the P25 chain without enabling a trunk SM. */
+    g_trunk_scan_active_p25_class = 1;
+    g_trunk_scan_target_count = 1;
+    opts->trunk_enable = 0;
+    state->rf_mod = 0;
+    g_rtl_cqpsk_enable = 0;
+    g_rtl_symbol_rate_hz = 2400;
+    g_rtl_symbol_levels = 2;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_6K25;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 853000000, 10, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_symbol_levels == 4);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
+    g_trunk_scan_active_p25_class = 0;
+    g_trunk_scan_target_count = 0;
+#endif
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    opts->rtlsdr_center_freq = 111111100U;
+    g_setfreq_result = true;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 451000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(opts->rtlsdr_center_freq == 451000000U);
+    opts->rtlsdr_center_freq = 111111100U;
+    g_setfreq_result = false;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 451000000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(opts->rtlsdr_center_freq == 111111100U);
+    g_setfreq_result = true;
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -479,6 +561,8 @@ main(void) {
         free(opts);
         return 1;
     }
+
+    test_backend_tune_updates_center_freq_cache();
 
     /* DMR trunking active via protocol-agnostic flag only. */
     opts->trunk_enable = 1;

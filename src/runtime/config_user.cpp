@@ -1776,8 +1776,8 @@ snapshot_trunking_config(const dsd_opts* opts, const dsd_state* state, dsdneoUse
     cfg->trunk_use_allow_list = opts->trunk_use_allow_list ? 1 : 0;
     cfg->trunk_tune_group_calls = opts->trunk_tune_group_calls ? 1 : 0;
     cfg->trunk_tune_private_calls = opts->trunk_tune_private_calls ? 1 : 0;
-    cfg->trunk_tune_data_calls = opts->trunk_tune_data_calls ? 1 : 0;
-    cfg->trunk_tune_enc_calls = opts->trunk_tune_enc_calls ? 1 : 0;
+    cfg->trunk_tune_data_calls = (configured ? configured->trunk_tune_data_calls : opts->trunk_tune_data_calls) != 0;
+    cfg->trunk_tune_enc_calls = (configured ? configured->trunk_tune_enc_calls : opts->trunk_tune_enc_calls) != 0;
     cfg->trunk_scanner = opts->scanner_mode ? 1 : 0;
     cfg->trunk_p25_prefer_candidates = opts->p25_prefer_candidates ? 1 : 0;
     cfg->trunk_scan_voice_only = (configured ? configured->scan_voice_only : opts->scan_voice_only) ? 1 : 0;

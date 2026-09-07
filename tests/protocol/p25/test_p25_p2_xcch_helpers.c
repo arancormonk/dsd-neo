@@ -252,6 +252,14 @@ p25_sm_emit_ptt_call_metadata(dsd_opts* opts, dsd_state* state, int slot, int tg
     return p25_sm_emit_ptt_call(opts, state, slot, tg, dst, src, is_group, svc_bits);
 }
 
+void
+p25_sm_note_conventional_activity(const dsd_opts* opts, const dsd_state* state, int slot, uint32_t target) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)target;
+}
+
 int
 p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot) {
     (void)opts;

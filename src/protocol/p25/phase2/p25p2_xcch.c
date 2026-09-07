@@ -379,6 +379,7 @@ p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long
 
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);
+    p25_sm_note_conventional_activity(opts, state, slot, (uint32_t)p25p2_xcch_tg_from_mac(mac));
 }
 
 static void

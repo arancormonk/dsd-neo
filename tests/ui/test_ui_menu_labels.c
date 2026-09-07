@@ -271,7 +271,12 @@ test_decoder_labels(void) {
                      "P25 Phase 2 modulation lock [C4FM]");
     dsd_test_scan_labels_configured(NULL);
     dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
-    ((dsd_state*)dsd_app_get_latest_snapshot())->rf_mod = 1;
+    dsd_state* published_state = (dsd_state*)dsd_app_get_latest_snapshot();
+    if (published_state == NULL) {
+        DSD_FPRINTF(stderr, "published state snapshot unavailable\n");
+        return 1;
+    }
+    published_state->rf_mod = 1;
     rc |= expect_str("modulation uses published state", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
 
     opts.use_lpf = 1;
@@ -285,7 +290,12 @@ test_decoder_labels(void) {
     /* The M17 row can disable the effective filter while the configured value
      * shown by this toggle remains enabled. */
     opts.use_cosine_filter = 0;
-    ((dsd_opts*)dsd_app_get_latest_opts_snapshot())->use_cosine_filter = 1;
+    dsd_opts* published_opts = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
+    if (published_opts == NULL) {
+        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
+        return 1;
+    }
+    published_opts->use_cosine_filter = 1;
     rc |= expect_str("cosine on", lbl_cosine(&ctx, b, sizeof(b)), "Cosine filter [On]");
 
     opts.aggressive_framesync = 0;
@@ -371,7 +381,9 @@ test_trunking_labels(void) {
     opts.trunk_tune_data_calls = 1;
     rc |= expect_str("group calls on", lbl_tune_group(&ctx, b, sizeof(b)), "Group calls [On]");
     rc |= expect_str("private calls off", lbl_tune_priv(&ctx, b, sizeof(b)), "Private calls [Off]");
+    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
     rc |= expect_str("data calls on", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [On]");
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
     opts.reverse_mute = 1;
     opts.p25_prefer_candidates = 1;
     rc |= expect_str("reverse mute on", lbl_rev_mute(&ctx, b, sizeof(b)), "Reverse mute [On]");
@@ -436,10 +448,12 @@ test_encryption_labels(void) {
     opts.unmute_encrypted_p25 = 1;
     rc |= expect_str("muting off", lbl_muting(&ctx, b, sizeof(b)), "Mute encrypted audio [Off]");
 
+    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
     opts.trunk_tune_enc_calls = 0;
     rc |= expect_str("enc lockout on", lbl_p25_enc_lockout(&ctx, b, sizeof(b)), "Lock out encrypted calls [On]");
     opts.trunk_tune_enc_calls = 1;
     rc |= expect_str("enc lockout off", lbl_p25_enc_lockout(&ctx, b, sizeof(b)), "Lock out encrypted calls [Off]");
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
     rc |= expect_str("enc lockout clear count", lbl_enc_lockout_clear(&ctx, b, sizeof(b)), "Clear lockouts [0]");
 
     state.M = 1;
@@ -454,6 +468,15 @@ test_encryption_labels(void) {
     configured.aggressive_framesync = 1;
     configured.scan_voice_only = 1;
     configured.scan_voice_hold_ms = 4000;
+    configured.trunk_tune_data_calls = 0;
+    configured.trunk_tune_enc_calls = 1;
+    dsd_opts* published = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
+    if (published == NULL) {
+        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
+        return 1;
+    }
+    published->trunk_tune_data_calls = 1;
+    published->trunk_tune_enc_calls = 0;
     dsd_test_scan_labels_configured(&configured);
     rc |= expect_str("muting configured", lbl_muting(&ctx, b, sizeof(b)), "Mute encrypted audio [On]");
     rc |= expect_str("force BP configured", lbl_key_force_bp(&ctx, b, sizeof(b)), "Force basic/scrambler key [On]");
@@ -461,7 +484,24 @@ test_encryption_labels(void) {
     rc |= expect_str("CRC configured", lbl_crc_relax(&ctx, b, sizeof(b)), "Relaxed CRC checks [Off]");
     rc |= expect_str("voice gate configured", lbl_scan_voice_only(&ctx, b, sizeof(b)), "Voice-only scan [On]");
     rc |= expect_str("voice hold configured", lbl_scan_voice_hold(&ctx, b, sizeof(b)), "Voice hold... [4000 ms]");
+    rc |= expect_str("data calls target override", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [Off] (target: On)");
+    rc |= expect_str("enc lockout target override", lbl_p25_enc_lockout(&ctx, b, sizeof(b)),
+                     "Lock out encrypted calls [Off] (target: On)");
+    configured.trunk_tune_data_calls = 1;
+    configured.trunk_tune_enc_calls = 0;
+    dsd_test_scan_labels_configured(&configured);
+    rc |= expect_str("data calls baseline matches target", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [On]");
+    rc |= expect_str("enc lockout baseline matches target", lbl_p25_enc_lockout(&ctx, b, sizeof(b)),
+                     "Lock out encrypted calls [On]");
+    published->trunk_tune_data_calls = 0;
+    published->trunk_tune_enc_calls = 1;
+    rc |= expect_str("data calls target disabled", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [On] (target: Off)");
+    rc |= expect_str("enc lockout target disabled", lbl_p25_enc_lockout(&ctx, b, sizeof(b)),
+                     "Lock out encrypted calls [On] (target: Off)");
     dsd_test_scan_labels_configured(NULL);
+    rc |= expect_str("data calls unscoped snapshot", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [Off]");
+    rc |= expect_str("enc lockout unscoped snapshot", lbl_p25_enc_lockout(&ctx, b, sizeof(b)),
+                     "Lock out encrypted calls [Off]");
 
     rc |= expect_str("hytera unset", lbl_key_hytera(&ctx, b, sizeof(b)), "Hytera privacy key (hex)...");
     state.H = 0x1234U;
@@ -527,7 +567,12 @@ test_input_and_audio_labels(void) {
     opts.audio_out = 1;
     rc |= expect_str("output unmuted", lbl_out_mute(&ctx, b, sizeof(b)), "Mute [Off]");
     opts.monitor_input_audio = 0;
-    ((dsd_opts*)dsd_app_get_latest_opts_snapshot())->monitor_input_audio = 1;
+    dsd_opts* published_opts = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
+    if (published_opts == NULL) {
+        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
+        return 1;
+    }
+    published_opts->monitor_input_audio = 1;
     rc |= expect_str("monitor on", lbl_monitor(&ctx, b, sizeof(b)), "Source audio monitor [On]");
     opts.input_volume_multiplier = 0;
     rc |=

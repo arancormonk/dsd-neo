@@ -283,7 +283,7 @@ small subset is exposed as config keys for convenience (for example
 | `pulse_source` | STRING | PulseAudio source device | (empty) |
 | `pulse_input` | STRING | Deprecated read alias for `pulse_source` | (empty) |
 | `rtl_device` | INT (0-255) | RTL-SDR device index | `0` |
-| `rtl_freq` | FREQ | RTL-SDR frequency | `851.375M` |
+| `rtl_freq` | FREQ | RTL-SDR frequency; saving during trunking or scanning records the accepted tune target, not the startup frequency | `851.375M` |
 | `rtl_gain` | INT (0-49) | RTL-SDR gain in dB | `0` |
 | `rtl_ppm` | INT (-1000-1000) | Frequency correction | `0` |
 | `rtl_bw_khz` | INT (4-48) | DSP bandwidth | `48` |
