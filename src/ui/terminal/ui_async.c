@@ -113,7 +113,7 @@ ui_open_curses_if_needed(void) {
     if (!dsd_opts_frontend_is_terminal(g_ui_opts)) {
         return 0;
     }
-    dsd_terminal_open(g_ui_opts, g_ui_state);
+    dsd_terminal_open(ui_get_opts_snapshot_or_default(), g_ui_state);
     return 1;
 }
 

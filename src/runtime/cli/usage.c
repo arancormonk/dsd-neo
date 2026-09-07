@@ -35,7 +35,8 @@ dsd_cli_usage_section_intro(void) {
     printf("                 native is accepted as a headless alias for the retired non-rendering scaffold\n");
     printf("                 dsd-neo --frontend terminal 2> console_log.txt\n");
     printf("  -N            Enable terminal frontend (alias for --frontend terminal)\n");
-    printf("  -Z            Log MBE/PDU Payloads to console\n");
+    printf("  -Z            Log MBE/PDU Payloads to stderr\n");
+    printf("                 Terminal frontend suppresses TTY stderr; capture with -Z -N 2> console_log.txt\n");
     printf("      --frame-log <file>    Append one-line timestamped frame trace output\n");
     printf("      --p25-sm-log <file>   Append P25 state-machine decision diagnostics\n");
     printf("  -^            Prefer P25 CC candidates (RFSS/Adjacent/Network) during hunt\n");

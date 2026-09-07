@@ -171,7 +171,7 @@ dsd_app_frontend_redraw_consume(void) {
 }
 
 void
-dsd_terminal_open(dsd_opts* opts, dsd_state* state) {
+dsd_terminal_open(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_ncurses_open_calls++;
