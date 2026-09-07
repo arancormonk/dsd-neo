@@ -29,6 +29,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
+#include <dsd-neo/crypto/nxdn_keystream.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
@@ -98,8 +99,6 @@ static void nxdn_element_handle_vcall(dsd_opts* opts, dsd_state* state, const ui
 static void nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits);
 static void nxdn_element_handle_vcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                          size_t elements_bits);
-static void nxdn_pdu_scrambler_keystream_creation(uint8_t* ks, int lfsr, int len_bits);
-static void nxdn_lfsr128_expand_iv_from_mi64(uint64_t mi, uint8_t out[16]);
 static int nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[32]);
 static void nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 static void nxdn_dcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
@@ -573,40 +572,6 @@ nxdn_data_call_option_to_str(uint8_t data_call_option, char* duplex, size_t dupl
     if (mode != NULL && mode_sz > 0U) {
         const char* mode_str = modes[data_call_option & 0x0FU];
         DSD_SNPRINTF(mode, mode_sz, "%s", mode_str);
-    }
-}
-
-static void
-nxdn_pdu_scrambler_keystream_creation(uint8_t* ks, int lfsr, int len_bits) {
-    if (ks == NULL || len_bits <= 0) {
-        return;
-    }
-
-    for (int i = 0; i < len_bits; i++) {
-        ks[i] = (uint8_t)(lfsr & 0x1);
-        const int bit = ((lfsr >> 1) ^ (lfsr >> 0)) & 1;
-        lfsr = (lfsr >> 1) | (bit << 14);
-    }
-}
-
-static void
-nxdn_lfsr128_expand_iv_from_mi64(uint64_t mi, uint8_t out[16]) {
-    if (out == NULL) {
-        return;
-    }
-
-    DSD_MEMSET(out, 0, 16U);
-    uint64_t lfsr = mi;
-    for (int i = 0; i < 8; i++) {
-        out[i] = (uint8_t)((lfsr >> (56 - (i * 8))) & 0xFFU);
-    }
-
-    int x = 64;
-    for (int cnt = 0; cnt < 64; cnt++) {
-        uint64_t bit = ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 1U;
-        lfsr = (lfsr << 1) | bit;
-        out[x / 8] = (uint8_t)((out[x / 8] << 1) | (uint8_t)bit);
-        x++;
     }
 }
 

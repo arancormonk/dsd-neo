@@ -200,6 +200,18 @@ Windows console runs:
 - `--rdio-upload-retries <n>` API upload attempts per call (default 1)
 - `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload
 - `-r <files>` Play saved MBE files
+  SDRTrunk JSON exports support P25, DMR, and NXDN enhanced-half-rate voice. NXDN playback accepts clear voice,
+  the 15-bit scrambler, DES-OFB, and AES-256-OFB; use `-R`, `-1`, or `-H`, respectively, or a key CSV indexed by
+  the recorded key ID. For an encrypted NXDN scrambler export without algorithm metadata, use `-4 -R <key>`.
+  DES/AES require a recorded 64-bit `encryption_mi`; an absent IV is not guessed. SACCH tags align the scrambler
+  to each 16-frame superframe and DES/AES to their 32-frame sessions. Exports that omit the positions of
+  FACCH-stolen voice within an RF frame cannot fully reconstruct that frame's keystream alignment.
+  NXDN full-rate voice is not supported by this reader.
+  DMR AES-128/AES-256 exports use ALGID `0x24`/`0x25` and a 32-bit MI. For metadata-free DMR exports, use
+  `-H '<key>' --dmr-force-algid 24` (or `25`); audio remains muted until a Golay/CRC-verified late-entry MI
+  supplies the next superframe's context. For example:
+  `dsd-neo -o null -w decoded.wav -H '<key>' --dmr-force-algid 25 -r call.mbe`.
+  These are known-key playback modes, not key recovery.
 - `-c <file>` Save symbol captures to a .bin file
 - `--symbol-capture-format <soft|legacy>` Select the current soft/v2 writer. `legacy` remains accepted as an alias; it
   does not reactivate the removed one-byte writer.

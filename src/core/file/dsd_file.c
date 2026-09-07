@@ -37,6 +37,7 @@
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/crypto/nxdn_keystream.h>
 #include <dsd-neo/crypto/rc4.h>
 #include <dsd-neo/fec/dmr_late_entry.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -1109,7 +1110,11 @@ sdrtrunk_build_rc4_keystream_bytes(const dsd_state* state, uint16_t key_id, cons
     rc4_kiv[2] = (uint8_t)((rc4_key >> 16ULL) & 0xFFULL);
     rc4_kiv[3] = (uint8_t)((rc4_key >> 8ULL) & 0xFFULL);
     rc4_kiv[4] = (uint8_t)((rc4_key >> 0ULL) & 0xFFULL);
-    DSD_MEMCPY(rc4_kiv + 5, iv64, 8);
+    if (rc4_mod == 9) {
+        DSD_MEMCPY(rc4_kiv + 5, iv64 + 4, 4);
+    } else {
+        DSD_MEMCPY(rc4_kiv + 5, iv64, 8);
+    }
     // codeql[cpp/weak-cryptographic-algorithm] RC4 is required for active radio protocol interoperability.
     rc4_block_output(rc4_db, rc4_mod, SDRTRUNK_KS_BYTES, rc4_kiv, ks_bytes);
     return 1;
@@ -1122,8 +1127,8 @@ sdrtrunk_build_des_keystream_bytes(const dsd_state* state, uint16_t key_id, cons
         return 0;
     }
 
-    unsigned long long int des_key = state->rkey_array[key_id];
-    if (des_key == 0ULL) {
+    unsigned long long int des_key = (protocol == 3 && state->keyloader != 1) ? state->R : state->rkey_array[key_id];
+    if (des_key == 0ULL && (protocol != 3 || state->keyloader != 1)) {
         des_key = state->R;
     }
     if (des_key == 0ULL) {
@@ -1138,41 +1143,73 @@ sdrtrunk_build_des_keystream_bytes(const dsd_state* state, uint16_t key_id, cons
 }
 
 static int
+sdrtrunk_load_aes_key(const dsd_state* state, uint16_t key_id, int strict_lookup, uint8_t key[32]) {
+    uint64_t words[4];
+    if (strict_lookup && state->keyloader != 1) {
+        words[0] = state->K1;
+        words[1] = state->K2;
+        words[2] = state->K3;
+        words[3] = state->K4;
+    } else {
+        words[0] = state->rkey_array[key_id];
+        words[1] = state->rkey_array[key_id + 0x101];
+        words[2] = state->rkey_array[key_id + 0x201];
+        words[3] = state->rkey_array[key_id + 0x301];
+    }
+    uint64_t present = words[0] | words[1] | words[2] | words[3];
+    if (!present && !strict_lookup) {
+        words[0] = state->K1;
+        words[1] = state->K2;
+        words[2] = state->K3;
+        words[3] = state->K4;
+        present = words[0] | words[1] | words[2] | words[3];
+    }
+    if (!present && !(strict_lookup && state->keyloader == 1 && state->rkey_array_loaded[key_id])) {
+        return 0;
+    }
+    for (unsigned word = 0; word < 4U; word++) {
+        for (unsigned byte = 0; byte < 8U; byte++) {
+            key[word * 8U + byte] = (uint8_t)(words[word] >> (56U - byte * 8U));
+        }
+    }
+    return 1;
+}
+
+static int
+sdrtrunk_expand_aes_iv(const dsd_state* state, uint8_t alg_id, int protocol, const uint8_t mi_bytes[8],
+                       uint8_t iv[16]) {
+    const uint64_t mi = sdrtrunk_u64_from_be8(mi_bytes);
+    if (alg_id == 0x24 || alg_id == 0x25) {
+        if (mi > UINT32_MAX || !DSD_SYNC_IS_DMR(state->synctype)) {
+            return 0;
+        }
+        (void)dmr_aes_expand_iv((uint32_t)mi, iv);
+    } else if (protocol == 3) {
+        nxdn_lfsr128_expand_iv_from_mi64(mi, iv);
+    } else {
+        DSD_MEMCPY(iv, mi_bytes, 8);
+        sdrtrunk_lfsr_64_to_128(iv);
+    }
+    return 1;
+}
+
+static int
 sdrtrunk_build_aes_keystream_bytes(const dsd_state* state, uint16_t key_id, uint8_t alg_id, const uint8_t iv64[8],
                                    int protocol, uint8_t* ks_bytes, size_t ks_cap, size_t* skip_bytes) {
     if (!state || !iv64 || !ks_bytes || !skip_bytes || ks_cap < SDRTRUNK_KS_BYTES) {
         return 0;
     }
-
+    const int dmr_aes = alg_id == 0x24 || alg_id == 0x25;
+    const int nxdn = protocol == 3;
     uint8_t aes_key[32];
-    DSD_MEMSET(aes_key, 0, sizeof(aes_key));
-    unsigned long long int a1 = state->rkey_array[key_id + 0x000];
-    unsigned long long int a2 = state->rkey_array[key_id + 0x101];
-    unsigned long long int a3 = state->rkey_array[key_id + 0x201];
-    unsigned long long int a4 = state->rkey_array[key_id + 0x301];
-    if (a1 == 0ULL && a2 == 0ULL && a3 == 0ULL && a4 == 0ULL) {
-        a1 = state->K1;
-        a2 = state->K2;
-        a3 = state->K3;
-        a4 = state->K4;
-    }
-    for (int i = 0; i < 8; i++) {
-        aes_key[i + 0] = (uint8_t)((a1 >> (56 - (i * 8))) & 0xFFULL);
-        aes_key[i + 8] = (uint8_t)((a2 >> (56 - (i * 8))) & 0xFFULL);
-        aes_key[i + 16] = (uint8_t)((a3 >> (56 - (i * 8))) & 0xFFULL);
-        aes_key[i + 24] = (uint8_t)((a4 >> (56 - (i * 8))) & 0xFFULL);
-    }
-    uint8_t zeros[32];
-    DSD_MEMSET(zeros, 0, sizeof(zeros));
-    if (memcmp(aes_key, zeros, sizeof(aes_key)) == 0) {
+    if (!sdrtrunk_load_aes_key(state, key_id, dmr_aes || nxdn, aes_key)) {
         return 0;
     }
-
-    uint8_t aes_iv[16];
-    DSD_MEMSET(aes_iv, 0, sizeof(aes_iv));
-    DSD_MEMCPY(aes_iv, iv64, 8);
-    sdrtrunk_lfsr_64_to_128(aes_iv);
-    const dsd_aes_key_size key_size = (alg_id == 0x84) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
+    uint8_t aes_iv[16] = {0};
+    if (!sdrtrunk_expand_aes_iv(state, alg_id, protocol, iv64, aes_iv)) {
+        return 0;
+    }
+    const dsd_aes_key_size key_size = (nxdn || alg_id == 0x84 || alg_id == 0x25) ? DSD_AES_KEY_256 : DSD_AES_KEY_128;
     aes_ofb_keystream_output(aes_iv, aes_key, ks_bytes, key_size, SDRTRUNK_KS_BYTES / 16);
     *skip_bytes = (protocol == 1) ? 27u : 16u;
     return 1;
@@ -1186,13 +1223,23 @@ sdrtrunk_build_voice_keystream_bytes(const dsd_state* state, uint8_t alg_id, uin
         return 0;
     }
     *skip_bytes = 0;
+    if (protocol == 3) {
+        if (alg_id == 2) {
+            return sdrtrunk_build_des_keystream_bytes(state, key_id, iv64, protocol, ks_bytes, ks_cap, skip_bytes);
+        }
+        if (alg_id == 3) {
+            return sdrtrunk_build_aes_keystream_bytes(state, key_id, alg_id, iv64, protocol, ks_bytes, ks_cap,
+                                                      skip_bytes);
+        }
+        return 0;
+    }
     if (alg_id == 0xAA || alg_id == 0x21) {
         return sdrtrunk_build_rc4_keystream_bytes(state, key_id, iv64, rc4_db, rc4_mod, ks_bytes, ks_cap);
     }
     if (alg_id == 0x81) {
         return sdrtrunk_build_des_keystream_bytes(state, key_id, iv64, protocol, ks_bytes, ks_cap, skip_bytes);
     }
-    if (alg_id == 0x84 || alg_id == 0x89) {
+    if (alg_id == 0x84 || alg_id == 0x89 || alg_id == 0x24 || alg_id == 0x25) {
         return sdrtrunk_build_aes_keystream_bytes(state, key_id, alg_id, iv64, protocol, ks_bytes, ks_cap, skip_bytes);
     }
     return 0;
@@ -1266,9 +1313,6 @@ sdrtrunk_dmr_process_late_entry_mi(dsd_state* state) {
 
     if (state->payload_mi != result.mi && result.crc_ok) {
         state->payload_mi = result.mi;
-    }
-    if (state->payload_algid == 0x21) {
-        state->payload_mi = dmr_mi_advance32((uint32_t)state->payload_mi);
     }
 }
 
@@ -1352,7 +1396,7 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
         ambe_fr[map->low_row][map->low_col] = (char)(dibits[i] & 1U);
     }
 
-    if (dmra_le != 0 && ambe2_counter != NULL) {
+    if (dmra_le != 0 && ambe2_counter != NULL && *ambe2_counter >= 0 && *ambe2_counter < 18) {
         uint8_t c3[24];
         DSD_MEMSET(c3, 0, sizeof(c3));
         for (int i = 0; i < 24; i++) {
@@ -1362,10 +1406,6 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
         state->currentslot = 0;
         uint8_t c3_hex = (uint8_t)convert_bits_into_output(c3, 4);
         state->late_entry_mi_fragment[0][(*ambe2_counter / 3) + 1][*ambe2_counter % 3] = c3_hex;
-
-        if (*ambe2_counter == 17) {
-            sdrtrunk_dmr_process_late_entry_mi(state);
-        }
     }
 
     char ambe_d[49];
@@ -1476,6 +1516,7 @@ typedef struct {
     uint8_t dmra_le;
     uint8_t show_time;
     uint8_t alg_id;
+    uint8_t alg_seen;
     uint16_t key_id;
     int rc4_db;
     int rc4_mod;
@@ -1497,6 +1538,7 @@ typedef struct {
     uint16_t ks_idx_i;
     int imbe_counter;
     int ambe2_counter;
+    uint8_t nxdn_sacch;
     dsd_call_kind kind;
     uint32_t source_id;
     uint32_t target_id;
@@ -1504,7 +1546,7 @@ typedef struct {
 
 static char*
 sdrtrunk_json_next_value(char** str_saveptr) {
-    return dsd_strtok_r(NULL, " : \"", str_saveptr);
+    return dsd_strtok_r(NULL, " : \",{}[]\r\n\t", str_saveptr);
 }
 
 static void
@@ -1517,6 +1559,7 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     ctx->dmra_le = 0;
     ctx->show_time = 1;
     ctx->alg_id = 0;
+    ctx->alg_seen = 0;
     ctx->key_id = 0;
     ctx->rc4_db = 256;
     ctx->rc4_mod = 13;
@@ -1532,6 +1575,7 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     ctx->ks_idx_i = 808;
     ctx->imbe_counter = 0;
     ctx->ambe2_counter = 0;
+    ctx->nxdn_sacch = 0;
     ctx->kind = DSD_CALL_KIND_VOICE;
     ctx->source_id = 0U;
     ctx->target_id = 0U;
@@ -1582,12 +1626,22 @@ sdrtrunk_json_target_is_group(const sdrtrunk_json_context* ctx) {
 }
 
 static void
+sdrtrunk_json_apply_forced_nxdn(const dsd_state* state, sdrtrunk_json_context* ctx) {
+    if (ctx->is_enc && !ctx->alg_seen && state->M == 1 && ctx->alg_id != 1) {
+        ctx->alg_id = 1;
+        ctx->ks_built = 0;
+    }
+}
+
+static void
 sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
     if (state->M >= 0x21 && state->M <= 0x25) {
         ctx->is_dmra = 1;
         ctx->dmra_le = 1;
         ctx->is_enc = 1;
-        ctx->alg_id = (uint8_t)state->M;
+        if (!ctx->alg_seen) {
+            ctx->alg_id = (uint8_t)state->M;
+        }
         state->payload_algid = ctx->alg_id;
         ctx->rc4_db = 256;
         ctx->rc4_mod = 9;
@@ -1619,7 +1673,7 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
             }
         }
         if (ctx->alg_id == 0x21) {
-            if (state->R != 0 && state->payload_mi != 0) {
+            if (state->payload_mi != 0) {
                 uint8_t iv64[8] = {0};
                 iv64[4] = (uint8_t)((state->payload_mi >> 24ULL) & 0xFFULL);
                 iv64[5] = (uint8_t)((state->payload_mi >> 16ULL) & 0xFFULL);
@@ -1634,8 +1688,7 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
                 // bytes.
                 ctx->ks_key_id = effective_kid;
                 ctx->ks_built = 1;
-            } else {
-                // No key or no IV yet: we have no keystream. Leaving the previous token's in place
+            } else { // No key or no IV yet: we have no keystream. Leaving the previous token's in place
                 // kept the decoder XORing against an earlier key while still reporting the record
                 // decryptable. Self-corrects on the next token once the MI lands, like everything
                 // else in this file.
@@ -1672,6 +1725,13 @@ sdrtrunk_json_set_protocol(const char* value, dsd_state* state, sdrtrunk_json_co
         ctx->rc4_mod = 9;
         state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
         state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    }
+    if (strcmp(value, "NXDN") == 0) {
+        ctx->protocol = 3;
+        ctx->is_dmra = 0;
+        ctx->dmra_le = 0;
+        state->synctype = DSD_SYNC_NXDN_POS;
+        state->lastsynctype = DSD_SYNC_NXDN_POS;
     }
 }
 
@@ -1742,6 +1802,7 @@ sdrtrunk_json_handle_encrypted(const char* token, char** str_saveptr, sdrtrunk_j
     ctx->is_enc = (strncmp("true", value, 4) == 0) ? 1 : 0;
     ctx->alg_id = 0;
     ctx->key_id = 0;
+    ctx->alg_seen = 0;
     DSD_FPRINTF(stderr, "\n Encryption: %s", value);
     return 1;
 }
@@ -1780,8 +1841,14 @@ sdrtrunk_json_handle_alg(const dsd_opts* opts, const char* token, char** str_sav
         return 1;
     }
     uint8_t alg_id = 0;
+    const uint8_t previous_alg = ctx->alg_id;
     if (dsd_parse_uint8_strict(value, 10, UINT8_MAX, &alg_id) == 0) {
         ctx->alg_id = alg_id;
+        ctx->alg_seen = 1;
+    }
+    if (ctx->alg_id != previous_alg) {
+        ctx->ks_built = 0;
+        ctx->ks_available = 0;
     }
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n Alg ID: %02X;", ctx->alg_id);
@@ -1801,8 +1868,13 @@ sdrtrunk_json_handle_key_id(const dsd_opts* opts, const char* token, char** str_
         return 1;
     }
     uint16_t key_id = 0;
+    const uint16_t previous_key = ctx->key_id;
     if (dsd_parse_uint16_strict(value, 10, UINT16_MAX, &key_id) == 0) {
         ctx->key_id = key_id;
+    }
+    if (ctx->key_id != previous_key) {
+        ctx->ks_built = 0;
+        ctx->ks_available = 0;
     }
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n Key ID: %04X;", ctx->key_id);
@@ -1843,6 +1915,23 @@ sdrtrunk_json_build_keystreams(const dsd_opts* opts, const dsd_state* state, sdr
     // ctx->is_enc themselves.
     ctx->ks_built = 1;
     ctx->ks_key_id = key_id;
+    if (ctx->protocol == 3) {
+        DSD_MEMSET(ctx->ks, 0, sizeof(ctx->ks));
+        if (key_id > 63U) {
+            return 0;
+        }
+        if (ctx->alg_id == 1) {
+            const uint64_t key = state->keyloader == 1 ? state->rkey_array[key_id] : state->R;
+            if (key == 0U || key > 0x7FFFU) {
+                return 0;
+            }
+            nxdn_pdu_scrambler_keystream_creation(ctx->ks, (int)key, 16 * 49);
+            return 1;
+        }
+        if (!ctx->mi_seen) {
+            return 0;
+        }
+    }
     uint8_t ks_available = (uint8_t)sdrtrunk_build_voice_keystream_bits(
         state, ctx->alg_id, key_id, ctx->mi_iv, ctx->rc4_db, ctx->rc4_mod, ctx->protocol, ctx->ks, sizeof(ctx->ks));
     if (ctx->protocol == 1 && ctx->version == 1 && ks_available) {
@@ -1960,15 +2049,21 @@ sdrtrunk_json_handle_mi(const dsd_opts* opts, dsd_state* state, const char* toke
     char iv_str[20];
     sdrtrunk_json_extract_iv(value, iv_str);
     uint64_t iv_parsed = 0;
-    unsigned long long int iv_hex =
-        (dsd_parse_uint64_strict(iv_str, 16, UINT64_MAX, &iv_parsed) == 0) ? (unsigned long long int)iv_parsed : 0ULL;
+    const int iv_valid = dsd_parse_uint64_strict(iv_str, 16, UINT64_MAX, &iv_parsed) == 0;
+    const unsigned long long int iv_hex = iv_valid ? (unsigned long long int)iv_parsed : 0ULL;
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n IV: %016llX;", iv_hex);
     }
 
     DSD_MEMSET(ctx->mi_iv, 0, sizeof(ctx->mi_iv));
     (void)parse_raw_user_string(iv_str, ctx->mi_iv, sizeof(ctx->mi_iv));
-    ctx->mi_seen = 1;
+    ctx->mi_seen = (uint8_t)iv_valid;
+    if (DSD_SYNC_IS_DMR(state->synctype) && strlen(iv_str) == 8U && iv_valid) {
+        for (unsigned i = 0; i < 8U; i++) {
+            ctx->mi_iv[i] = (uint8_t)(iv_parsed >> (56U - i * 8U));
+        }
+        ctx->ambe2_counter = 0;
+    }
 
     state->currentslot = 0;
     state->payload_algid = ctx->alg_id;
@@ -2020,14 +2115,119 @@ sdrtrunk_json_decode_imbe_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_co
 }
 
 static void
+sdrtrunk_json_prepare_dmr_aes(const dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx) {
+    if (!ctx->dmra_le) {
+        ctx->ambe2_counter = 0;
+        ctx->ks_idx = 0;
+        DSD_MEMSET(state->late_entry_mi_fragment[0], 0, sizeof(state->late_entry_mi_fragment[0]));
+    }
+    ctx->is_dmra = 1;
+    ctx->dmra_le = 1;
+    state->payload_algid = ctx->alg_id;
+    uint16_t kid = ctx->key_id;
+    if (state->keyloader == 1) {
+        kid = (uint16_t)keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
+                                                  dsd_dmr_alg_key_need(ctx->alg_id), ctx->key_id, NULL);
+    }
+    if (!ctx->mi_seen) {
+        ctx->ks_available = 0;
+    } else if (!ctx->ks_built || ctx->ks_key_id != kid) {
+        ctx->ks_available = sdrtrunk_json_build_keystreams(opts, state, ctx, kid);
+    }
+}
+
+static void
+sdrtrunk_json_finish_dmr_aes(dsd_state* state, sdrtrunk_json_context* ctx) {
+    dsd_dmr_late_entry_result result = {0};
+    if (dsd_dmr_late_entry_decode(&state->late_entry_mi_fragment[0][0][0], &result) && result.crc_ok) {
+        // A verified late-entry MI belongs to the following 18-frame superframe.
+        state->payload_mi = result.mi;
+        ctx->mi_seen = 1;
+    } else if (ctx->mi_seen) {
+        uint8_t iv[16];
+        state->payload_mi = dmr_aes_expand_iv((uint32_t)state->payload_mi, iv);
+    }
+    for (unsigned i = 0; i < 8U; i++) {
+        ctx->mi_iv[i] = (uint8_t)(state->payload_mi >> (56U - i * 8U));
+    }
+    ctx->ks_built = 0;
+}
+
+static void
 sdrtrunk_json_decode_ambe_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* value) {
+    const int dmr_aes = DSD_SYNC_IS_DMR(state->synctype) && (ctx->alg_id == 0x24 || ctx->alg_id == 0x25);
+    if (dmr_aes) {
+        sdrtrunk_json_prepare_dmr_aes(opts, state, ctx);
+    }
     ctx->ks_idx = ambe2_str_to_decode(opts, state, value, ctx->ks, ctx->ks_idx, ctx->is_dmra, ctx->dmra_le,
                                       &ctx->ambe2_counter, ctx->is_enc, ctx->ks_available);
     ctx->ambe2_counter++;
     if (ctx->dmra_le != 0 && ctx->ambe2_counter == 18) {
+        if (dmr_aes) {
+            sdrtrunk_json_finish_dmr_aes(state, ctx);
+        } else {
+            sdrtrunk_dmr_process_late_entry_mi(state);
+        }
         ctx->ambe2_counter = 0;
         ctx->ks_idx = 0;
     }
+}
+
+static void
+sdrtrunk_json_handle_nxdn_tag(const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
+    if (ctx->protocol != 3 || strcmp(token, "tag") != 0) {
+        return;
+    }
+    const char* value = sdrtrunk_json_next_value(str_saveptr);
+    if (!value || strcmp(value, "SACCH") != 0) {
+        return;
+    }
+    const char* position = sdrtrunk_json_next_value(str_saveptr);
+    uint8_t part = 0;
+    if (position && dsd_parse_uint8_strict(position, 10, 4U, &part) == 0 && part != 0U) {
+        ctx->nxdn_sacch = part;
+    }
+}
+
+static void
+sdrtrunk_json_decode_nxdn_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* value) {
+    // NXDN EHR transports 72 bits per 49-bit vocoder frame. Do not interpret EFR as EHR.
+    if (strlen(value) != 18U) {
+        LOG_WARN("Unsupported NXDN MBE voice frame length\n");
+        return;
+    }
+    if (ctx->nxdn_sacch != 0U) {
+        unsigned position = (ctx->ks_idx / (16U * 49U)) * (16U * 49U) + (ctx->nxdn_sacch - 1U) * (4U * 49U);
+        if (position < ctx->ks_idx) {
+            position += 16U * 49U;
+        }
+        ctx->ks_idx = (uint16_t)position;
+        ctx->nxdn_sacch = 0U;
+    }
+    // Scrambling restarts each superframe. DES/AES sessions span two superframes;
+    // advance the transmitted MI only when the next session actually begins.
+    const unsigned session_bits = (ctx->alg_id == 1 ? 16U : 32U) * 49U;
+    if (ctx->ks_idx >= session_bits) {
+        if (ctx->alg_id != 1 && ctx->mi_seen) {
+            uint8_t iv[16];
+            nxdn_lfsr128_expand_iv_from_mi64(sdrtrunk_u64_from_be8(ctx->mi_iv), iv);
+            DSD_MEMCPY(ctx->mi_iv, iv + 8, sizeof(ctx->mi_iv));
+            ctx->ks_built = 0;
+        }
+        ctx->ks_idx %= session_bits;
+    }
+    if (!ctx->is_enc) {
+        DSD_MEMSET(ctx->ks, 0, sizeof(ctx->ks));
+        ctx->ks_available = 0;
+        ctx->ks_built = 0;
+    } else if (!ctx->ks_built || ctx->ks_key_id != ctx->key_id) {
+        ctx->ks_available = sdrtrunk_json_build_keystreams(opts, state, ctx, ctx->key_id);
+    }
+    state->payload_algid = ctx->alg_id;
+    state->payload_keyid = ctx->key_id;
+    state->payload_mi = sdrtrunk_u64_from_be8(ctx->mi_iv);
+    ctx->ks_idx =
+        ambe2_str_to_decode(opts, state, value, ctx->ks, ctx->ks_idx, 0, 0, NULL, ctx->is_enc, ctx->ks_available);
 }
 
 static int
@@ -2045,6 +2245,8 @@ sdrtrunk_json_handle_hex(dsd_opts* opts, dsd_state* state, const char* token, ch
         sdrtrunk_json_decode_imbe_hex(opts, state, ctx, value);
     } else if (ctx->protocol == 2) {
         sdrtrunk_json_decode_ambe_hex(opts, state, ctx, value);
+    } else if (ctx->protocol == 3) {
+        sdrtrunk_json_decode_nxdn_hex(opts, state, ctx, value);
     }
     return 1;
 }
@@ -2116,12 +2318,17 @@ sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_cont
     (void)sdrtrunk_json_handle_protocol(opts, state, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_call_type(token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_encrypted(token, str_saveptr, ctx);
-    sdrtrunk_json_apply_forced_algid(state, ctx);
+    if (ctx->protocol == 3) {
+        sdrtrunk_json_apply_forced_nxdn(state, ctx);
+    } else {
+        sdrtrunk_json_apply_forced_algid(state, ctx);
+    }
     sdrtrunk_json_apply_dmr_tg_key_map(opts, state, ctx);
     (void)sdrtrunk_json_handle_to_from(ctx, token, str_saveptr);
     (void)sdrtrunk_json_handle_alg(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_key_id(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_mi(opts, state, token, str_saveptr, ctx);
+    sdrtrunk_json_handle_nxdn_tag(token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_hex(opts, state, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_time(token, str_saveptr, state, ctx);
     sdrtrunk_json_publish_call(state, ctx);
@@ -2129,6 +2336,12 @@ sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_cont
 
 void
 read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
+    // openMbeInFile() probes a four-byte binary cookie even for JSON exports.
+    // Rewind so compact JSON does not lose the start of its first property.
+    if (fseek(opts->mbe_in_f, 0L, SEEK_SET) != 0) {
+        LOG_ERROR("Failed to rewind MBE JSON input\n");
+        return;
+    }
     char* source_str = (char*)malloc(0x100000 + 1);
     if (source_str == NULL) {
         LOG_ERROR("Failed to allocate memory for MBE file buffer\n");
