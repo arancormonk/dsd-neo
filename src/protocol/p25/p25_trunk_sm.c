@@ -6316,6 +6316,35 @@ p25_sm_conventional_resolve_call(const dsd_state* state, const p25_sm_event_t* e
 }
 
 static int
+p25_sm_conventional_call_encrypted(const dsd_call_snapshot* call) {
+    switch (call->crypto) {
+        case DSD_CALL_CRYPTO_ENCRYPTED:
+        case DSD_CALL_CRYPTO_ENCRYPTED_PENDING: return 1;
+        case DSD_CALL_CRYPTO_UNKNOWN:
+            /* A late-join LCW can precede HDU/LDU2 classification. Its service bit
+             * is evidence; absent service metadata is not proof of clear voice. */
+            return !call->has_service_metadata || (call->service_options & 0x40U) != 0U;
+        default: return 0;
+    }
+}
+
+void
+p25_sm_note_conventional_activity(const dsd_opts* opts, const dsd_state* state, int slot, uint32_t target) {
+    if (!opts || opts->trunk_enable == 1 || !state || slot < 0 || slot > 1 || target == 0U) {
+        return;
+    }
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_P25(call.protocol) || call.ota_target_id != target || call.ota_source_id > UINT32_MAX
+        || (call.kind != DSD_CALL_KIND_GROUP_VOICE && call.kind != DSD_CALL_KIND_PRIVATE_VOICE)) {
+        return;
+    }
+    const int encrypted = p25_sm_conventional_call_encrypted(&call);
+    dsd_trunk_scan_hook_p25_conventional_activity(opts, state, target, (uint32_t)call.ota_source_id,
+                                                  call.kind == DSD_CALL_KIND_PRIVATE_VOICE, encrypted, 0);
+}
+
+static int
 p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, int ptt_retransmit) {
     if (!state || !ev) {
         return 0;
@@ -6346,13 +6375,11 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
     }
     (void)dsd_call_state_observe(state, &observation, boundary);
     p25_call_publish_crypto(opts, state, slot, 0.0);
-    dsd_call_snapshot published;
-    int encrypted = 0;
-    if (dsd_call_state_get(state, (uint8_t)slot, &published) > 0) {
-        encrypted =
-            published.crypto == DSD_CALL_CRYPTO_ENCRYPTED || published.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    /* Raw MAC_PTT still has to resolve its ALGID/KID after publishing identity.
+     * XCCH reports the hold once that classification is complete. */
+    if (!ev->ptt_signature_valid) {
+        p25_sm_note_conventional_activity(opts, state, slot, call.target);
     }
-    dsd_trunk_scan_hook_p25_conventional_activity(opts, state, call.target, call.source, !call.is_group, encrypted, 0);
     (void)dsd_call_state_update_media(state, (uint8_t)slot, 1, 0.0);
     dsd_event_sync_slot(opts, state, (uint8_t)slot);
     return 1;

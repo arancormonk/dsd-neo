@@ -271,7 +271,12 @@ test_decoder_labels(void) {
                      "P25 Phase 2 modulation lock [C4FM]");
     dsd_test_scan_labels_configured(NULL);
     dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
-    ((dsd_state*)dsd_app_get_latest_snapshot())->rf_mod = 1;
+    dsd_state* published_state = (dsd_state*)dsd_app_get_latest_snapshot();
+    if (published_state == NULL) {
+        DSD_FPRINTF(stderr, "published state snapshot unavailable\n");
+        return 1;
+    }
+    published_state->rf_mod = 1;
     rc |= expect_str("modulation uses published state", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
 
     opts.use_lpf = 1;
@@ -285,7 +290,12 @@ test_decoder_labels(void) {
     /* The M17 row can disable the effective filter while the configured value
      * shown by this toggle remains enabled. */
     opts.use_cosine_filter = 0;
-    ((dsd_opts*)dsd_app_get_latest_opts_snapshot())->use_cosine_filter = 1;
+    dsd_opts* published_opts = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
+    if (published_opts == NULL) {
+        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
+        return 1;
+    }
+    published_opts->use_cosine_filter = 1;
     rc |= expect_str("cosine on", lbl_cosine(&ctx, b, sizeof(b)), "Cosine filter [On]");
 
     opts.aggressive_framesync = 0;
@@ -461,6 +471,10 @@ test_encryption_labels(void) {
     configured.trunk_tune_data_calls = 0;
     configured.trunk_tune_enc_calls = 1;
     dsd_opts* published = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
+    if (published == NULL) {
+        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
+        return 1;
+    }
     published->trunk_tune_data_calls = 1;
     published->trunk_tune_enc_calls = 0;
     dsd_test_scan_labels_configured(&configured);
@@ -553,7 +567,12 @@ test_input_and_audio_labels(void) {
     opts.audio_out = 1;
     rc |= expect_str("output unmuted", lbl_out_mute(&ctx, b, sizeof(b)), "Mute [Off]");
     opts.monitor_input_audio = 0;
-    ((dsd_opts*)dsd_app_get_latest_opts_snapshot())->monitor_input_audio = 1;
+    dsd_opts* published_opts = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
+    if (published_opts == NULL) {
+        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
+        return 1;
+    }
+    published_opts->monitor_input_audio = 1;
     rc |= expect_str("monitor on", lbl_monitor(&ctx, b, sizeof(b)), "Source audio monitor [On]");
     opts.input_volume_multiplier = 0;
     rc |=

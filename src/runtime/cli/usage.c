@@ -401,8 +401,9 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("      --trunk-scan <targets.csv>  Enable single-tuner trunk scan target rotation.\n");
     printf("                 Uses per-target chan_csv values; cannot be combined with global -C or IQ replay.\n");
     printf("      --trunk-scan-dwell-ms <ms>  Set default idle dwell per target (250..600000, default 3000).\n");
-    printf("      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR/NXDN activity hold (250..600000, default "
-           "1200).\n");
+    printf(
+        "      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR/P25/NXDN activity hold (250..600000, default "
+        "1200).\n");
     printf("      --scan-voice-only  Only stop scan on channels carrying voice.\n");
     printf("      --scan-voice-qualify-ms <ms>  Window after sync in which voice must appear or the scan moves on "
            "(100..600000, default 1000).\n");

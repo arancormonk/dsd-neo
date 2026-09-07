@@ -275,6 +275,8 @@ During scanning:
   passes the allow/block list, group/private-call tuning and encrypted-call policy. Clear calls and calls decryptable
   with a complete matching key can refresh `activity_hold_ms` even with `--enc-lockout`. P25 data (PDU) traffic
   does not refresh the hold, so `-e` has no effect on this row.
+  Phase 2 PTT holds are evaluated after crypto classification; Phase 1 late joins honor the LCW encryption bit
+  before HDU/LDU2 metadata arrives.
 - With `--scan-voice-only`, all conventional types, including P25, hold only from decoded voice media, not headers
   or voice-start reports alone. The hold refreshes from decoded voice media (stamped
   with a retained media time, so LC-less and just-ended voice hold), `dwell_ms` is the qualify window and
@@ -302,6 +304,8 @@ During scanning:
   spanning an idle period and one call (see `docs/testing.md`) is what would confirm it.
 - When a retune fails, DSD-neo logs a warning, briefly cools that target down, and tries another eligible target.
   While held, a failed retune retries the held target after the cooldown instead of moving on.
+  A still-pending accepted tune can temporarily show its requested frequency, including during recovery from a
+  later backend failure. Frame dispatch remains gated until recovery completes.
 
 Expected log messages include:
 
@@ -418,6 +422,7 @@ encrypted-call policy while that target is parked. The terminal `d`/`e` toggles 
 value; the data-call label under Trunking > Follow and the encrypted-call label under Encryption append
 `(target: On)` or `(target: Off)` when the parked row's effective value differs.
 Targets without these switches inherit that edited baseline.
+Saving configuration while parked also records the global data/encrypted-call baseline, not the row's overrides.
 
 Group policies and keys are preloaded and isolated between targets. Re-parking, failed-tune recovery and shutdown
 restore the associated options with the target. Conventional voice-gate switches are accepted on conventional target

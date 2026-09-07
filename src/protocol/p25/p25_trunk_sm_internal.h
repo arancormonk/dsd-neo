@@ -29,6 +29,10 @@ void p25_sm_note_encrypted_call_typed(dsd_opts* opts, dsd_state* state, int targ
 int p25_sm_emit_ptt_call_metadata(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
                                   int svc_bits, const uint8_t signature[17], double observed_m, int facch);
 
+/** Report an active conventional call after its crypto metadata is ready.
+ *  The target must match the accepted voice-start observation, not a retained call. */
+void p25_sm_note_conventional_activity(const dsd_opts* opts, const dsd_state* state, int slot, uint32_t target);
+
 /**
  * Apply a per-slot MAC Release boundary without releasing a retained carrier.
  */

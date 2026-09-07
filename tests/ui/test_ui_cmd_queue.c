@@ -2339,6 +2339,8 @@ test_scoped_row_option_commands(void) {
     rc |= expect_int("row encrypted override survives toggle", opts->trunk_tune_enc_calls, 0);
     dsdneoUserConfig saved;
     dsd_snapshot_opts_to_user_config(opts, state, &saved);
+    rc |= expect_int("saved configured data", saved.trunk_tune_data_calls, 0);
+    rc |= expect_int("saved configured encrypted", saved.trunk_tune_enc_calls, 1);
     rc |= expect_int("saved configured hold", saved.trunk_scan_voice_hold_ms, 3000);
     rc |= expect_int("saved configured gate", saved.trunk_scan_voice_only, 0);
     rc |= expect_str("saved configured groups", saved.trunk_group_csv, "global.csv");
