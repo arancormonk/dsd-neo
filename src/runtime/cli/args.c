@@ -2116,9 +2116,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             LOG_INFO("NOTICE: Trunking: Private call follow disabled.\n");                                             \
             break;                                                                                                     \
         case 'Z':                                                                                                      \
-            /* Log MBE/PDU payloads to console */                                                                      \
+            /* Log MBE/PDU payloads to stderr */                                                                       \
             opts->payload = 1;                                                                                         \
-            LOG_INFO("NOTICE: Logging MBE/PDU payloads to console.\n");                                                \
+            LOG_INFO("NOTICE: MBE/PDU payload logging to stderr enabled.\n");                                          \
             break;                                                                                                     \
         case 'N':                                                                                                      \
             /* Compatibility alias for --frontend terminal. */                                                         \
