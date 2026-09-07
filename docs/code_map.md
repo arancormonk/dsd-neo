@@ -147,6 +147,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
 - Target: `dsd-neo_core`
 - Responsibilities: cross-protocol glue (audio output helpers, vocoder glue, frame helpers, GPS, file import),
   misc/util
+- `src/core/file/dsd_file.c` reads SDRTrunk JSON MBE exports. Its file-local crypto context owns NXDN SACCH
+  position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating
+  IV expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path.
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
@@ -391,6 +394,11 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 - Path: `src/crypto`, `include/dsd-neo/crypto`
 - Target: `dsd-neo_crypto`
 - Responsibilities: stream/block ciphers and helpers (RC2/RC4/DES/AES/etc)
+- `nxdn_keystream.c` / `<dsd-neo/crypto/nxdn_keystream.h>` share the NXDN TS 1-D scrambler and AES IV
+  expansion between protocol data handling and MBE playback.
+- `dmr_mi.c` / `<dsd-neo/crypto/dmr_keystream.h>` own RC4 MI advancement and the pure DMR AES
+  `dmr_aes_expand_iv()` helper. The live protocol wrapper `LFSR128d()` retains slot-state updates and logging;
+  MBE playback uses the same expansion without those side effects.
 - Build files: `src/crypto/CMakeLists.txt`
 
 ## Protocols

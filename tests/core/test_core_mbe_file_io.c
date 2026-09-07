@@ -6,24 +6,22 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/fec/block_codes.h>
-#include <dsd-neo/fec/dmr_late_entry.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #if DSD_PLATFORM_WIN_NATIVE
@@ -375,6 +373,11 @@ static int
 run_sdrtrunk_json(const char* json, dsd_opts* opts, dsd_state* state) {
     FILE* in = NULL;
     if (write_sdrtrunk_json_input(&in, json) != 0) {
+        return 1;
+    }
+    // Match openMbeInFile()'s four-byte cookie probe, including compact JSON.
+    if (fseek(in, 4L, SEEK_SET) != 0) {
+        fclose(in);
         return 1;
     }
     opts->mbe_in_f = in;
@@ -1112,47 +1115,6 @@ test_sdrtrunk_forced_rc4_reports_no_keystream_without_an_iv(void) {
     return rc;
 }
 
-// state->M forces ctx->alg_id to its own literal value for every state->M in 0x21..0x25
-// (sdrtrunk_json_apply_forced_algid()), but sdrtrunk_build_voice_keystream_bytes() only
-// recognizes 0xAA/0x21 (RC4), 0x81 (DES), and 0x84/0x89 (AES) -- none of which match DMR's own
-// forced-DES/AES numbering (0x22 DES, 0x24 AES-128, 0x25 AES-256) or the unused 0x23.
-// sdrtrunk_json_handle_mi() shares that same builder chain, so no path in this file can ever build
-// a keystream for a forced 0x22..0x25 replay today, regardless of whether the signaled key id and
-// MI are both valid. That is what makes the ctx->alg_id == 0x21 scope on the fix above safe rather
-// than merely convenient: an unscoped else would be a no-op for these values today, since
-// ctx->ks_available is already permanently 0 for them. This pins that today-truth, so it fails the
-// day sdrtrunk_build_voice_keystream_bytes() (or the 0x21 branches themselves) is widened to reach
-// these algids without the else being widened to match. The key id (3) and MI are the same valid,
-// imported ones the RC4 tests above use -- not an unkeyed record -- so a regression that wrongly
-// routed 0x22..0x25 through the RC4 path (rather than merely failing to build) would also be
-// caught here.
-static int
-test_sdrtrunk_forced_des_and_aes_never_report_a_keystream(void) {
-    int rc = 0;
-    static const int forced_algids[] = {0x22, 0x23, 0x24, 0x25};
-    static const char json[] = "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\","
-                               "\"encrypted\":\"true\",\"encryption_key_id\":\"3\","
-                               "\"encryption_mi\":\"001122334455667788\",\"to\":\"4567\","
-                               "\"from\":\"456\",\"time\":\"1700000000000\","
-                               "\"hex\":\"000000000000000000\"}";
-
-    for (size_t i = 0; i < sizeof forced_algids / sizeof forced_algids[0]; i++) {
-        static dsd_state state;
-        unsigned char out[SDRTRUNK_MAP_RECORD_CAP];
-        size_t out_len = 0;
-        char tag[96];
-
-        DSD_MEMSET(&state, 0, sizeof state);
-        seed_sdrtrunk_dmr_replay_keys(&state);
-        state.M = forced_algids[i];
-        DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk forced 0x%02x writes no keystream", forced_algids[i]);
-        rc |= capture_sdrtrunk_replay_records(tag, json, &state, out, sizeof out, &out_len);
-        dsd_state_ext_free_all(&state);
-        rc |= expect_true(tag, out_len == 0U);
-    }
-    return rc;
-}
-
 // With no matching row, the pre-existing implicit "key indexed by talkgroup" replay behavior
 // must be untouched -- replay workflows depend on it. That convention lives only in
 // sdrtrunk_json_apply_forced_algid()'s DMRA branch (state.M in 0x21..0x25): handle_mi has no
@@ -1641,130 +1603,167 @@ test_sdrtrunk_json_encrypted_keystreams_write_voice_records(void) {
     return rc;
 }
 
-static uint8_t
-bits_to_u4_msb(const unsigned char bits4[4]) {
-    uint8_t v = 0;
-    for (int i = 0; i < 4; i++) {
-        v = (uint8_t)((v << 1U) | (bits4[i] & 1U));
-    }
-    return (uint8_t)(v & 0xFU);
-}
+// NXDN TS 1-D v1.3 §§7.2.1.1–7.2.1.3: published EHR 1031 Hz tone vectors.
+// https://www.qsl.net/kb9mwr/projects/dv/nxdn/NXDN-TS-1-D_v0103.pdf
+// Ciphertext bytes also cross-checked against tylerwatt12/known-key-mbe-samples.
+static const char nxdn_scrambler_frames[][19] = {
+    "2AACF8C7CCA0847464", "EC8EFFD1275856A48A", "A080D29DACE081EC62", "9F14FDC32D06B1644D",
+    "B77DA530F731390CC8", "ACCC99F75320B0A406", "C1D05F6188840165EF", "F50AFDC53C4A556850",
+    "907962D490353263B8", "957B840478E876CE6C", "E286A4E7CEA481202E", "128CBD810B03F4A7E8",
+    "F55FF21A199D644020", "4F489C91B0A7882FDA", "DE2756A9C28A23CB8D", "0E8CBD835C2F1C3664",
+};
 
-static void
-fill_sdrtrunk_dmr_le_fragments(dsd_state* state, uint32_t mi32) {
-    uint8_t mi_bits32[32];
-    for (int i = 0; i < 32; i++) {
-        mi_bits32[i] = (uint8_t)((mi32 >> (31 - i)) & 1U);
-    }
-    const uint8_t crc = dsd_dmr_crc4(mi_bits32, 32);
+static const char nxdn_des_ofb_frames[][19] = {
+    "5A15117BC1A2267FA5", "FDB29C8B16A43BFC9B", "12119A8C7ED5F4712D", "5CD92943840389B3E7", "667F483093AE6E8012",
+    "2C7778404A1AC1299B", "EA0ABC8435BC2943A1", "403684D936BA5D8B82", "9046C209B217777E56", "45CCC260D1E3FE98CA",
+    "46AF37612AF2F3C919", "85B75E23B79D259597", "AE7A6D5784C22E53D7", "D6563E77F8652DF7D4", "98942BDC8857F4F52E",
+    "959829B3C31A9086D9", "7F9929683AC175A994", "8A5F512DD6F904E6D2", "BC1679CE445EE2B490", "4B7E315EEC9B1C534E",
+    "F27899AB1451775575", "0D5D2214E38AFC1CC4", "EAF96DA3D359FA44FB", "BC659A00CE74428F3E", "86A31BAC528074E403",
+    "0B621F54051A13994D", "31C5FB690EABA11D71", "3D2F3CFB6AD5A2C740", "57DE8320BE6E3F66E6", "ACFE50291649E11832",
+    "3F88465CD4C8440FF4", "D827718948CC6A04B1",
+};
 
-    unsigned char msg36[36];
-    unsigned char go36[36];
-    DSD_MEMSET(msg36, 0, sizeof msg36);
-    DSD_MEMSET(go36, 0, sizeof go36);
-    for (int i = 0; i < 32; i++) {
-        msg36[i] = (unsigned char)(mi_bits32[i] & 1U);
-    }
-    for (int i = 0; i < 4; i++) {
-        msg36[32 + i] = (unsigned char)((crc >> (3 - i)) & 1U);
-    }
+static const char nxdn_aes256_frames[][19] = {
+    "BD4503BDC7F187AF31", "72FFC7506DB58330D0", "5C0BC6F1471DDE572B", "17D7202AF5EA342472", "4AEF6528DA8145E9BD",
+    "916D09EC70C2D7E5FC", "15A25D968FD1A7F14E", "DB6E471655BBA93502", "6579296763DCF3F8CD", "4E97E1AB77B9C8E5C8",
+    "A1390C285695DB3667", "BBAE0D4F69A2FC8AFF", "2D60701DF171C735B7", "F40E8FB1BB3F9A558D", "7485751FE484A653BB",
+    "644E705B916A310BCF", "50DD37B40C5EBD3638", "6CB7C18B179DB8F2CB", "49245FCEB8D050735F", "7E2D9F89A6ED1FA25F",
+    "E894C53A4D7B5AFBBF", "2CB7A7B4B827B6BD42", "D1F438BC58B930432B", "664A0B0155CBE78BBC", "C683C9BAE6002F0D04",
+    "E8D8D9ACDA07ADE722", "79B5E87D9E41418C13", "E220F3E27131907C6B", "2948D6C1C2EFA230C0", "73B3D3BCFA3E3BB0C7",
+    "00D78E91160FD8FA75", "0FA9A6E8D5160D1F3C",
+};
 
-    for (int chunk = 0; chunk < 3; chunk++) {
-        unsigned char orig[12];
-        unsigned char enc[24];
-        DSD_MEMSET(orig, 0, sizeof orig);
-        DSD_MEMSET(enc, 0, sizeof enc);
-        for (int i = 0; i < 12; i++) {
-            orig[i] = (unsigned char)(msg36[chunk * 12 + i] & 1U);
-        }
-        Golay_24_12_encode(orig, enc);
-        for (int i = 0; i < 12; i++) {
-            go36[chunk * 12 + i] = (unsigned char)(enc[12 + i] & 1U);
-        }
-    }
-
-    for (int col = 0; col < 3; col++) {
-        for (int row = 0; row < 3; row++) {
-            const int bit_base = col * 12 + row * 4;
-            state->late_entry_mi_fragment[0][1 + row][col] = bits_to_u4_msb(&msg36[bit_base]);
-            state->late_entry_mi_fragment[0][4 + row][col] = bits_to_u4_msb(&go36[bit_base]);
+static dsd_state*
+nxdn_replay_test_state(unsigned cipher) {
+    static const unsigned long long keys[3][4] = {
+        {0x0000000000000001ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL},
+        {0xABCDEF0123456789ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL},
+        {0xABCDEF0123456789ULL, 0xCDEF0123456789ABULL, 0xEF0123456789ABCDULL, 0x0123456789ABCDEFULL}};
+    static const unsigned offsets[4] = {0, 0x101, 0x201, 0x301};
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (state) {
+        state->keyloader = 1;
+        for (unsigned i = 0; i < 4U; i++) {
+            state->rkey_array[1U + offsets[i]] = keys[cipher - 1U][i];
+            state->rkey_array_loaded[1U + offsets[i]] = 1;
         }
     }
-}
-
-static uint8_t
-hex_char_to_nibble(char c) {
-    const int parsed = dsd_hex_nibble_value((unsigned char)c);
-    return (parsed < 0) ? 0U : (uint8_t)parsed;
-}
-
-static void
-set_sdrtrunk_dmr_hex_nibble_bit(char hex[19], int row, int col, uint8_t bit) {
-    if ((bit & 1U) == 0U) {
-        return;
-    }
-    for (int map_idx = 0; map_idx < DSD_AMBE_2450_DIBITS; map_idx++) {
-        const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[map_idx];
-        if (map->low_row == row && map->low_col == col) {
-            const int hex_idx = map_idx / 2;
-            const uint8_t mask = (map_idx % 2 == 0) ? 0x4U : 0x1U;
-            const uint8_t nibble = hex_char_to_nibble(hex[hex_idx]);
-            static const char lut[] = "0123456789ABCDEF";
-            hex[hex_idx] = lut[(nibble | mask) & 0xFU];
-            return;
-        }
-    }
-}
-
-static void
-build_sdrtrunk_dmr_late_entry_hex(uint8_t nibble, char hex[19]) {
-    DSD_MEMSET(hex, '0', 18);
-    hex[18] = '\0';
-    for (int bit_idx = 0; bit_idx < 4; bit_idx++) {
-        set_sdrtrunk_dmr_hex_nibble_bit(hex, 3, bit_idx, (uint8_t)((nibble >> (3 - bit_idx)) & 1U));
-    }
+    return state;
 }
 
 static int
-test_sdrtrunk_json_dmr_late_entry_updates_mi(void) {
-    int rc = 0;
-    const uint32_t mi = 0xA1B2C3D4U;
-    static dsd_state encoded;
-    static dsd_state state;
-    static dsd_opts opts;
-    static Event_History_I history[2];
-
-    DSD_MEMSET(&encoded, 0, sizeof encoded);
-    DSD_MEMSET(&state, 0, sizeof state);
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(history, 0, sizeof history);
-    fill_sdrtrunk_dmr_le_fragments(&encoded, mi);
-
-    char json[768];
-    size_t used = 0;
-    used += (size_t)DSD_SNPRINTF(json + used, sizeof(json) - used,
-                                 "{\"version\":\"2\",\"protocol\":\"DMR\",\"encrypted\":\"true\",");
-    for (uint8_t vc = 1; vc <= 6; vc++) {
-        for (uint8_t col = 0; col < 3; col++) {
-            char hex[19];
-            build_sdrtrunk_dmr_late_entry_hex((uint8_t)encoded.late_entry_mi_fragment[0][vc][col], hex);
-            used += (size_t)DSD_SNPRINTF(json + used, sizeof(json) - used, "\"hex\":\"%s\",", hex);
-        }
+expect_nxdn_tone_records(const unsigned char* records, size_t size, size_t frames) {
+    static const unsigned char tone[7] = {0xFE, 0xE2, 0x12, 0x12, 0x12, 0x10, 0x00};
+    int rc = expect_true("NXDN decoded frame count", size == frames * 8U);
+    if (rc) {
+        return rc;
     }
-    rc |= expect_true("sdrtrunk dmr late entry json buffer", used + 2 < sizeof json);
-    json[used - 1] = '}';
-    json[used] = '\0';
+    for (size_t i = 0; i < frames; i++) {
+        rc |= expect_true("NXDN decrypted 1031 Hz tone bits", memcmp(records + i * 8U + 1U, tone, sizeof(tone)) == 0);
+    }
+    return rc;
+}
 
-    opts.playfiles = 1;
-    opts.floating_point = 1;
-    state.event_history_s = history;
-    state.M = 0x21;
-    state.R = 0x0102030405ULL;
+static int
+test_sdrtrunk_nxdn_published_voice_vectors(void) {
+    static const struct {
+        const char (*frames)[19];
+        size_t count;
+        size_t repeat;
+    } vectors[] = {
+        {nxdn_scrambler_frames, 16, 4},
+        {nxdn_des_ofb_frames, 32, 1},
+        {nxdn_aes256_frames, 32, 1},
+    };
 
-    rc |= run_sdrtrunk_json(json, &opts, &state);
-    rc |= expect_int("sdrtrunk dmr late entry synctype", state.synctype, DSD_SYNC_DMR_BS_DATA_POS);
-    rc |= expect_int("sdrtrunk dmr late entry algid", state.payload_algid, 0x21);
-    rc |= expect_u64("sdrtrunk dmr late entry mi", state.payload_mi, 0xDAB4A1A7ULL);
+    int rc = 0;
+    for (unsigned c = 0; c < 3U; c++) {
+        dsd_state* state = nxdn_replay_test_state(c + 1U);
+        if (!state) {
+            return 1;
+        }
+        char json[12000];
+        size_t off = (size_t)DSD_SNPRINTF(json, sizeof(json),
+                                          "{\"protocol\":\"NXDN\",\"version\":2,\"encrypted\":true,"
+                                          "\"encryption_algorithm\":%u,\"encryption_key_id\":1,",
+                                          c + 1U);
+        if (c != 0U) {
+            off += (size_t)DSD_SNPRINTF(json + off, sizeof(json) - off, "\"encryption_mi\":\"ABCDEF1234567890\",");
+        }
+        off += (size_t)DSD_SNPRINTF(json + off, sizeof(json) - off, "\"frames\":[");
+        const size_t total = vectors[c].count * vectors[c].repeat;
+        for (size_t i = 0; i < total; i++) {
+            off += (size_t)DSD_SNPRINTF(json + off, sizeof(json) - off, "%s{", i ? "," : "");
+            if (i % 4U == 0U) {
+                off += (size_t)DSD_SNPRINTF(json + off, sizeof(json) - off, "\"tag\":\"SACCH %u\",",
+                                            (unsigned)((i / 4U) % 4U + 1U));
+            }
+            off += (size_t)DSD_SNPRINTF(json + off, sizeof(json) - off, "\"hex\":\"%s\"}",
+                                        vectors[c].frames[i % vectors[c].count]);
+        }
+        (void)DSD_SNPRINTF(json + off, sizeof(json) - off, "]}");
+        unsigned char records[64U * 8U];
+        size_t size = 0;
+        rc |= capture_sdrtrunk_replay_records("NXDN published vector", json, state, records, sizeof(records), &size);
+        rc |= expect_nxdn_tone_records(records, size, total);
+        // A manual key disarms the keyloader without clearing the old CSV contents.
+        // Stale indexed material must not override the newly selected manual key.
+        state->R = state->rkey_array[1];
+        state->K1 = state->rkey_array[1];
+        state->K2 = state->rkey_array[1 + 0x101];
+        state->K3 = state->rkey_array[1 + 0x201];
+        state->K4 = state->rkey_array[1 + 0x301];
+        state->rkey_array[1] ^= 0x10U;
+        state->keyloader = 0;
+        rc |= capture_sdrtrunk_replay_records("NXDN manual key overrides stale CSV", json, state, records,
+                                              sizeof(records), &size);
+        rc |= expect_nxdn_tone_records(records, size, total);
+        dsd_state_ext_free_all(state);
+        free(state);
+    }
+    return rc;
+}
+
+static int
+test_sdrtrunk_nxdn_missing_context_and_sacch_alignment(void) {
+    static const char missing_iv[] = "{\"protocol\":\"NXDN\",\"version\":2,\"encrypted\":true,"
+                                     "\"encryption_algorithm\":3,\"encryption_key_id\":1,"
+                                     "\"hex\":\"BD4503BDC7F187AF31\"}";
+    static const char missing_key[] = "{\"protocol\":\"NXDN\",\"version\":2,\"encrypted\":true,"
+                                      "\"encryption_algorithm\":3,\"encryption_key_id\":1,"
+                                      "\"encryption_mi\":\"ABCDEF1234567890\",\"frames\":["
+                                      "{\"hex\":\"BD4503BDC7F187AF31\"},"
+                                      "{\"encryption_key_id\":2,\"hex\":\"72FFC7506DB58330D0\"}]}";
+    dsd_state* state = nxdn_replay_test_state(3);
+    if (!state) {
+        return 1;
+    }
+    unsigned char records[32];
+    size_t size = 0;
+    int rc = capture_sdrtrunk_replay_records("NXDN missing IV", missing_iv, state, records, sizeof(records), &size);
+    rc |= expect_true("NXDN missing IV stays muted", size == 0U);
+    rc |= capture_sdrtrunk_replay_records("NXDN changed to unloaded key", missing_key, state, records, sizeof(records),
+                                          &size);
+    rc |= expect_nxdn_tone_records(records, size, 1U);
+    dsd_state_ext_free_all(state);
+    free(state);
+
+    dsd_state* scrambler_state = nxdn_replay_test_state(1);
+    if (!scrambler_state) {
+        return 1;
+    }
+    char json[512];
+    DSD_SNPRINTF(json, sizeof(json),
+                 "{\"protocol\":\"NXDN\",\"version\":2,\"encrypted\":true,"
+                 "\"encryption_algorithm\":1,\"encryption_key_id\":1,\"frames\":["
+                 "{\"tag\":\"SACCH 1\",\"hex\":\"%s\"},"
+                 "{\"tag\":\"SACCH 3\",\"hex\":\"%s\"}]}",
+                 nxdn_scrambler_frames[0], nxdn_scrambler_frames[8]);
+    rc |= capture_sdrtrunk_replay_records("NXDN skipped SACCH positions", json, scrambler_state, records,
+                                          sizeof(records), &size);
+    rc |= expect_nxdn_tone_records(records, size, 2U);
+    dsd_state_ext_free_all(scrambler_state);
+    free(scrambler_state);
     return rc;
 }
 
@@ -2515,6 +2514,164 @@ test_close_and_rename_wav_exports_rdio_sidecar(void) {
     return rc;
 }
 
+// Baofeng DM-32 captures from tylerwatt12/known-key-mbe-samples, revision
+// 2e15b86e305b7a3c71d52873518e2908747f6e09. Expected AMBE bits independently
+// checked with OpenSSL-backed AES/OFB and an RFC 6229-checked RC4 reference.
+static const char dmr_aes128_capture[][19] = {
+    "67282ED2DE24B6ADF5", "E63B68A8256257D9FF", "2A10FDEAAE02A6F5F2", "EEAC6AF93E74715054", "4E25455B03288D2BC6",
+    "FD0E031C4F91AA0D54", "E2B8C59F9C7CDC481A", "A9A128BA109CB802EA", "0854F0218F90E7DDC5", "95EE50B6FD6A8A28CC",
+    "151C7C77FC2C194CA2", "2DD813AD248AB7A3B2", "DB5E4E3C706AB0FCFC", "E6E88A8DA3B4F1DF95", "E4978DD01A68808530",
+    "5CE3185C5B63DC1F06", "B25E4C67FE32AE2398", "AFBC1307A022CBD958", "598F77265446FDE5AB", "D4C7D9F7FAA268298C",
+    "79147ED9DBA532751A", "137AE51A7FAA8C0309", "62325649F9DB6D0AFC", "6CA9FF606927809373", "E5EC46EA7B2A07AB1E",
+    "DD199288FB2F4D6177", "ED6971CA7069161497", "CEC9EC8B7106F7187C", "FA47C6EBFF75B2892E", "1206C57D5395E60EC1",
+    "71C26BC6B446E52FAB", "09628FE7FB6DE843BD", "439C6365FF2D2BDB29", "7621D886390BE1F388", "7E2B61BDF800F8E1E3",
+    "843DF668456D309A94", "AAD4F6D67093A12D30", "49387969E3FE39DE4B", "43BCB888EC466A071E", "978F4C7E153592F35B",
+};
+
+static const char dmr_aes256_capture[][19] = {
+    "978497BE91C3112AF3", "751981A381ECFA91A5", "ACBDA449FD0AEE79E3", "003DE8D7681FAD7C0D", "C1DB62EAF8E674E290",
+    "DAAC06D3CA7F9789FA", "C80E054A8493E2C62E", "D8D4EB84F13667157E", "DA225992D2933978CC", "EDB245AA13F7B04A82",
+    "002713273747005632", "8A114DFB40B4E7BA7E", "D9C915BCBC3313154B", "21ABC85FF93CA3C079", "B939503297C6F17A24",
+    "D9CA5689F2E9C4DA71", "372F4659F8FA01E51C", "C82EFB1FD7974B7752", "E9DAF61ACFCB0A05D3", "9FDDDC39FA86BD3327",
+    "6AFD22D1C1132F3C9F", "C744C4DDAF1B4E3E95",
+};
+
+static const char dmr_arc4_capture[][19] = {
+    "542736E0D4F0548357", "275B21BDD1608A9BFB", "BF1B30FD161795772D", "463A5B0984D5AA49B7", "8C927784D5A40DFA75",
+    "88E6419929FEF1D9DC", "D113059D16A11466B8", "D5DC079A0484A27742", "2B69FE8E947D8B9D2D", "42FD131D5A07057E07",
+    "64A28364FCFA6DBBDC", "74E5C37B433C58ED23", "429DB9FDFB010A627E", "84FB372BF8629C2F2D", "5184E1CB3183167254",
+    "A72307D35CC1855B27", "D21DF08AF8007CD964", "BEB17DCDA7607460FC", "DFE2B135BEAA505159", "808BD61CFA059EE7B5",
+    "C131FC61728C069AEC", "B273815A2711EC43A9", "891D325727C63830AB", "85EF4296E959EE0FE9", "09095BFF30D45477D6",
+    "B06A21C6FC8FC19AF7", "0FF29FB4DFCF7FFE1F", "0C743687174D931747", "49E531DA41DFEB6B45", "6DF906A6C189696753",
+    "9CA46D9E2BED68B77E", "A5D0BCAAA308BD49EC", "5079D0168EA801829B", "33CBFA0400BE38FB28", "191078C0E10EE6360A",
+    "A946685C02A19B3B80", "8A31C9A73B9DE058B6", "2AAB8886FEB03F7B98", "C9B9536F7A6480AA39", "DB91186FD0C2FD9C67",
+};
+
+static int
+test_sdrtrunk_dmr_capture_and_late_entry(void) {
+    static const struct {
+        const char (*frames)[19];
+        size_t first;
+        unsigned alg;
+        unsigned kid;
+        uint32_t mi;
+        unsigned long long key[4];
+        unsigned char plaintext[4][7];
+    } cases[] = {{dmr_aes128_capture,
+                  36,
+                  0x24,
+                  0x0002,
+                  0xAA6A4E7FU,
+                  {0x0000000000000000ULL, 0xBCDEFA1234567890ULL, 0x0000000000000000ULL, 0x0000000000000000ULL},
+                  {{0xE8, 0x12, 0x6E, 0x67, 0x87, 0x2A, 0x00},
+                   {0xE8, 0x10, 0xDF, 0x89, 0xE7, 0x77, 0x01},
+                   {0xF8, 0x28, 0xF0, 0x51, 0x8C, 0xCA, 0x00},
+                   {0xF8, 0x2B, 0x06, 0x5E, 0x04, 0x7D, 0x00}}},
+                 {dmr_aes256_capture,
+                  18,
+                  0x25,
+                  0x0001,
+                  0x090A47B6U,
+                  {0x0000000000000000ULL, 0x0000000000000000ULL, 0x0000000000000000ULL, 0xABCDEF1234567890ULL},
+                  {{0xF8, 0x1D, 0xF9, 0x9D, 0xAC, 0xA7, 0x01},
+                   {0xF8, 0x1D, 0xF3, 0xC1, 0xAC, 0x0D, 0x01},
+                   {0xF8, 0x1D, 0xF3, 0xC1, 0xAC, 0x28, 0x01},
+                   {0xF8, 0x16, 0x73, 0xC1, 0xA4, 0x3D, 0x00}}},
+                 {dmr_arc4_capture,
+                  36,
+                  0x21,
+                  0x0003,
+                  0xEA7E9D12U,
+                  {0x000000CDEFAB1234ULL, 0, 0, 0},
+                  {{0xF8, 0x1B, 0x10, 0x90, 0xEC, 0xB0, 0x00},
+                   {0xF8, 0x1D, 0x20, 0x90, 0xED, 0xA3, 0x01},
+                   {0xF8, 0x1D, 0x20, 0x90, 0xEC, 0xB6, 0x01},
+                   {0xF8, 0x17, 0x30, 0x90, 0xEC, 0xB6, 0x00}}}};
+
+    static const unsigned offsets[4] = {0, 0x101, 0x201, 0x301};
+    int rc = 0;
+    InitAllFecFunction();
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        for (int legacy = 0; legacy < 2; legacy++) {
+            dsd_state* state = calloc(1, sizeof(*state));
+            if (!state) {
+                return 1;
+            }
+            state->keyloader = legacy ? 0 : 1;
+            // Explicit metadata must override a conflicting forced fallback.
+            state->M = legacy ? (int)cases[c].alg : (cases[c].alg == 0x24 ? 0x25 : 0x24);
+            state->K1 = cases[c].key[0];
+            state->K2 = cases[c].key[1];
+            state->K3 = cases[c].key[2];
+            state->K4 = cases[c].key[3];
+            state->R = cases[c].key[0];
+            for (unsigned k = 0; k < 4U; k++) {
+                state->rkey_array[cases[c].kid + offsets[k]] = cases[c].key[k];
+                state->rkey_array_loaded[cases[c].kid + offsets[k]] = 1;
+            }
+            char json[4096];
+            size_t off =
+                (size_t)DSD_SNPRINTF(json, sizeof(json), "{\"protocol\":\"DMR\",\"version\":2,\"encrypted\":true,");
+            if (!legacy) {
+                // Metadata order differs from the producer: MI can precede ALG/KID.
+                off += (size_t)DSD_SNPRINTF(
+                    json + off, sizeof(json) - off,
+                    "\"encryption_mi\":\"%08X\",\"encryption_algorithm\":%u,\"encryption_key_id\":%u,", cases[c].mi,
+                    cases[c].alg, cases[c].kid);
+            }
+            off += (size_t)DSD_SNPRINTF(json + off, sizeof(json) - off, "\"frames\":[");
+            const size_t start = legacy ? 0U : cases[c].first;
+            for (size_t i = start; i < cases[c].first + 4U; i++) {
+                off += (size_t)DSD_SNPRINTF(json + off, sizeof(json) - off, "%s{\"hex\":\"%s\"}", i == start ? "" : ",",
+                                            cases[c].frames[i]);
+            }
+            (void)DSD_SNPRINTF(json + off, sizeof(json) - off, "]}");
+            unsigned char records[4U * 8U];
+            size_t size = 0;
+            rc |= capture_sdrtrunk_replay_records("DMR capture", json, state, records, sizeof(records), &size);
+            rc |= expect_true("DMR suppresses pre-context frames", size == sizeof(records));
+            for (size_t i = 0; i < 4U && size == sizeof(records); i++) {
+                rc |=
+                    expect_true("DMR capture plaintext", memcmp(records + i * 8U + 1U, cases[c].plaintext[i], 7U) == 0);
+            }
+            if (!legacy && cases[c].alg != 0x21) {
+                // An algorithm arriving after many context-less frames must not index
+                // past the LE fragment matrix and corrupt keys for later valid audio.
+                state->M = 0;
+                off = (size_t)DSD_SNPRINTF(json, sizeof(json),
+                                           "{\"protocol\":\"DMR\",\"version\":2,\"encrypted\":true,\"frames\":[");
+                for (unsigned i = 0; i < 45U; i++) {
+                    off += (size_t)DSD_SNPRINTF(json + off, sizeof(json) - off, "{\"hex\":\"000000000000000000\"},");
+                }
+                off += (size_t)DSD_SNPRINTF(
+                    json + off, sizeof(json) - off,
+                    "{\"encryption_algorithm\":%u,\"encryption_key_id\":%u,\"hex\":\"FFFFFFFFFFFFFFFFFF\"},",
+                    cases[c].alg, cases[c].kid);
+                for (unsigned i = 0; i < 3U; i++) {
+                    off += (size_t)DSD_SNPRINTF(json + off, sizeof(json) - off, "{\"hex\":\"FFFFFFFFFFFFFFFFFF\"},");
+                }
+                off +=
+                    (size_t)DSD_SNPRINTF(json + off, sizeof(json) - off, "{\"encryption_mi\":\"%08X\",\"hex\":\"%s\"}",
+                                         cases[c].mi, cases[c].frames[cases[c].first]);
+                for (size_t i = 1; i < 4U; i++) {
+                    off += (size_t)DSD_SNPRINTF(json + off, sizeof(json) - off, ",{\"hex\":\"%s\"}",
+                                                cases[c].frames[cases[c].first + i]);
+                }
+                (void)DSD_SNPRINTF(json + off, sizeof(json) - off, "]}");
+                rc |= capture_sdrtrunk_replay_records("late AES context", json, state, records, sizeof(records), &size);
+                rc |= expect_true("late AES context remains muted until IV", size == sizeof(records));
+                for (size_t i = 0; i < 4U && size == sizeof(records); i++) {
+                    rc |= expect_true("late AES context preserves subsequent plaintext",
+                                      memcmp(records + i * 8U + 1U, cases[c].plaintext[i], 7U) == 0);
+                }
+            }
+            dsd_state_ext_free_all(state);
+            free(state);
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2530,7 +2687,6 @@ main(void) {
     rc |= test_sdrtrunk_json_dmr_tg_key_map_settles_regardless_of_algorithm_order();
     rc |= test_sdrtrunk_json_dmr_tg_key_map_keys_forced_algid_keystream();
     rc |= test_sdrtrunk_forced_rc4_reports_no_keystream_without_an_iv();
-    rc |= test_sdrtrunk_forced_des_and_aes_never_report_a_keystream();
     rc |= test_sdrtrunk_json_private_call_never_keeps_a_map_row();
     rc |= test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup();
     rc |= test_sdrtrunk_json_p25_replay_keyloader_uses_full_width_key_id();
@@ -2542,7 +2698,9 @@ main(void) {
     rc |= test_sdrtrunk_json_hex_voice_writes_unencrypted_mbe_records();
     rc |= test_sdrtrunk_json_hex_voice_blocks_encrypted_without_keystream();
     rc |= test_sdrtrunk_json_encrypted_keystreams_write_voice_records();
-    rc |= test_sdrtrunk_json_dmr_late_entry_updates_mi();
+    rc |= test_sdrtrunk_nxdn_published_voice_vectors();
+    rc |= test_sdrtrunk_nxdn_missing_context_and_sacch_alignment();
+    rc |= test_sdrtrunk_dmr_capture_and_late_entry();
     rc |= test_open_mbe_out_file_creates_slot_files_and_closes();
     rc |= test_truncated_reads_fail();
     rc |= test_open_mbe_in_file_classifies_cookies();

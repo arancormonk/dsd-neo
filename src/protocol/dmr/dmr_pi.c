@@ -16,6 +16,7 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
@@ -345,54 +346,13 @@ LFSR64(dsd_state* state) {
 //Expand a 32-bit MI into a 128-bit IV for AES
 void
 LFSR128d(dsd_state* state) {
-    unsigned long long int lfsr = 0;
-
-    if (state->currentslot == 0) {
-        lfsr = state->payload_mi;
-    } else {
-        lfsr = state->payload_miR;
+    if (state->currentslot != 0 && state->currentslot != 1) {
+        return;
     }
-
-    unsigned long long int next_mi = 0;
-
-    //start packing aes_iv
-    if (state->currentslot == 0) {
-        state->aes_iv[0] = (lfsr >> 24) & 0xFF;
-        state->aes_iv[1] = (lfsr >> 16) & 0xFF;
-        state->aes_iv[2] = (lfsr >> 8) & 0xFF;
-        state->aes_iv[3] = (lfsr >> 0) & 0xFF;
-    } else if (state->currentslot == 1) {
-        state->aes_ivR[0] = (lfsr >> 24) & 0xFF;
-        state->aes_ivR[1] = (lfsr >> 16) & 0xFF;
-        state->aes_ivR[2] = (lfsr >> 8) & 0xFF;
-        state->aes_ivR[3] = (lfsr >> 0) & 0xFF;
-    }
-
-    int cnt = 0;
-    int x = 32;
-    for (cnt = 0; cnt < 96; cnt++) {
-        //32,22,2,1
-        unsigned long long int bit = ((lfsr >> 31) ^ (lfsr >> 21) ^ (lfsr >> 1) ^ (lfsr >> 0)) & 0x1;
-        lfsr = (lfsr << 1) | bit;
-
-        //continue packing aes_iv
-        if (state->currentslot == 0) {
-            state->aes_iv[x / 8] = (state->aes_iv[x / 8] << 1) + bit;
-        } else if (state->currentslot == 1) {
-            state->aes_ivR[x / 8] = (state->aes_ivR[x / 8] << 1) + bit;
-        }
-        x++;
-    }
-
-    //assign the next 32-bit short MI from 4,5,6,7 so it'll match up with OTA late entry
-    if (state->currentslot == 0) {
-        next_mi = ((unsigned long long int)state->aes_iv[4] << 24) | ((unsigned long long int)state->aes_iv[5] << 16)
-                  | ((unsigned long long int)state->aes_iv[6] << 8) | ((unsigned long long int)state->aes_iv[7] << 0);
-    }
-    if (state->currentslot == 1) {
-        next_mi = ((unsigned long long int)state->aes_ivR[4] << 24) | ((unsigned long long int)state->aes_ivR[5] << 16)
-                  | ((unsigned long long int)state->aes_ivR[6] << 8) | ((unsigned long long int)state->aes_ivR[7] << 0);
-    }
+    uint8_t* iv = state->currentslot == 0 ? state->aes_iv : state->aes_ivR;
+    const uint32_t mi = (uint32_t)(state->currentslot == 0 ? state->payload_mi : state->payload_miR);
+    const unsigned long long int next_mi = dmr_aes_expand_iv(mi, iv);
+    int x;
 
     if (state->currentslot == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);

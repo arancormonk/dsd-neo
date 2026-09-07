@@ -40,6 +40,12 @@ void PrintAMBEData(dsd_opts* opts, const dsd_state* state, const char* ambe_d);
 void PrintIMBEData(dsd_opts* opts, const dsd_state* state, const char* imbe_d);
 int readImbe4400Data(dsd_opts* opts, dsd_state* state, char* imbe_d);
 int readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d);
+/** Replay an SDRTrunk JSON MBE file from the start of opts->mbe_in_f.
+ * Supports P25, DMR, and NXDN enhanced-half-rate voice. Uses supplied keys;
+ * encrypted NXDN DES/AES frames without an IV and DMR AES frames without
+ * explicit or verified late-entry context remain muted. Caller initializes
+ * FEC tables and vocoder state as for ordinary MBE playback.
+ */
 void read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state);
 void openMbeInFile(dsd_opts* opts, dsd_state* state);
 void openMbeOutFile(dsd_opts* opts, dsd_state* state);

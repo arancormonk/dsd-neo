@@ -27,6 +27,27 @@ cmake --build --preset dev-debug -j
 ctest --preset dev-debug --output-on-failure
 ```
 
+### Known-key MBE playback
+
+`CORE_MBE_FILE_IO` checks decrypted AMBE payloads, not merely output-file existence. Its NXDN vectors come
+from [NXDN TS 1-D v1.3](https://www.qsl.net/kb9mwr/projects/dv/nxdn/NXDN-TS-1-D_v0103.pdf),
+§§7.2.1.1–7.2.1.3: every EHR frame decrypts to the published 1031 Hz tone. Scrambler repetitions cover the
+16-frame reset; DES/AES cover the 32-frame session. Missing-IV, changed-to-unloaded-key, manual-key versus
+stale-CSV, and skipped-SACCH cases defend against stale crypto context and incorrect positioning.
+
+The DMR AES-128/256 and RC4 excerpts come from the Baofeng DM-32 recordings in
+[known-key-mbe-samples](https://github.com/tylerwatt12/known-key-mbe-samples/tree/2e15b86e305b7a3c71d52873518e2908747f6e09).
+The tests compare exact plaintext voice bits independently checked with OpenSSL-backed AES/OFB and an
+[RFC 6229](https://www.rfc-editor.org/rfc/rfc6229)-checked RC4 reference, both with serialized MI metadata and
+with MI recovered from the preceding superframe's Golay/CRC-protected fragments. A late-arriving AES algorithm
+without an IV must not corrupt the keyring or the plaintext of subsequent valid frames. The short vectors
+are embedded in the test; running it requires neither a network nor a radio.
+
+For full-capture verification, replay the repository's `encrypted.mbe` and `encrypted_legacy.mbe` files with
+their supplied keys using the CLI examples in [cli.md](cli.md). Compare decrypted frame logs as well as audio:
+PCM need not be byte-identical across vocoder versions or synthesis histories. These exports validate playback
+and crypto, not RF reception or demodulator sensitivity.
+
 ### Full-chain modulation decode tests
 
 The `DECODE_IQ_*` cases (CTest label `iq-decode`) are end-to-end regression

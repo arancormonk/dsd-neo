@@ -17,6 +17,7 @@ target_sources(
         crypt-tyt.c
         dmr_mi.c
         md2ii.c
+        nxdn_keystream.c
 )
 
 target_include_directories(
