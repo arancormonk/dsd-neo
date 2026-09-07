@@ -1305,10 +1305,41 @@ test_history_viewport_helpers(void) {
 
     Event_History item;
     DSD_MEMSET(&item, 0, sizeof(item));
-    assert(ui_history_print_detail_line(1, UINT8_MAX, "Alias: ", "") == 1);
-    assert(ui_history_print_detail_line(1, UINT8_MAX, "Alias: ", NULL) == 1);
-    assert(ui_history_print_detail_line(0, UINT8_MAX, "Alias: ", "Unit") == 0);
-    assert(ui_history_print_detail_line(1, 0, "Alias: ", "Unit") == 1);
+    assert(ui_history_print_detail_line(1, NULL, "Alias: ", "") == 1);
+    assert(ui_history_print_detail_line(1, NULL, "Alias: ", NULL) == 1);
+    assert(ui_history_print_detail_line(0, NULL, "Alias: ", "Unit") == 0);
+    assert(ui_history_print_detail_line(1, "[S1] ", "Alias: ", "Unit") == 1);
+}
+
+static void
+test_history_merged_slot_tags(void) {
+    int draw_footer = 1;
+    ui_history_render_ctx ctx;
+    ui_history_setup_render_ctx(1, &draw_footer, &ctx);
+    Event_History item = {0};
+    DSD_SNPRINTF(item.event_string, sizeof(item.event_string), "%s", "DMR TGT: 100; SRC: 200;");
+    item.event_time = time(NULL);
+    item.systype = DSD_SYNC_DMR_BS_VOICE_POS;
+    reset_printw_capture();
+    ui_history_render_dual_slot_item(&item, 1, &ctx);
+    assert_capture_contains("|[S2] ");
+
+    item.systype = DSD_SYNC_P25P2_POS;
+    reset_printw_capture();
+    ui_history_render_dual_slot_item(&item, 0, &ctx);
+    assert_capture_contains("|[S1] ");
+
+    item.systype = DSD_SYNC_NXDN_POS;
+    reset_printw_capture();
+    ui_history_render_dual_slot_item(&item, 0, &ctx);
+    assert(strncmp(g_printw_capture, "|     ", 6) == 0);
+    assert(strstr(g_printw_capture, "[S1]") == NULL);
+
+    item.systype = DSD_SYNC_P25P1_POS;
+    DSD_SNPRINTF(item.text_message, sizeof(item.text_message), "%s", "MEET AT GATE");
+    reset_printw_capture();
+    ui_history_render_dual_slot_item(&item, 0, &ctx);
+    assert_capture_contains("|     \\-- MEET AT GATE");
 }
 
 static void
@@ -2116,6 +2147,7 @@ main(void) {
     test_loaded_scalar_key_status();
     test_edacs_tree_update_helpers();
     test_sync_tree_follows_scan_class();
+    test_history_merged_slot_tags();
     test_patch_and_slot_helpers();
     test_lock_and_protocol_helpers();
     test_canonical_p25_slot_and_recent_activity();

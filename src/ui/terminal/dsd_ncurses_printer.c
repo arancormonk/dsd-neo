@@ -24,6 +24,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/source_alias.h>
@@ -249,8 +250,7 @@ ui_synctype_in_scan_class(int synctype, dsd_scan_mode mode) {
 static int
 ui_scan_class_idle_synctype(dsd_scan_mode mode, const dsd_state* state) {
     switch (mode) {
-        case DSD_SCAN_MODE_P25:
-            return state->p25_cc_is_tdma == 1 ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
+        case DSD_SCAN_MODE_P25: return state->p25_cc_is_tdma == 1 ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
         case DSD_SCAN_MODE_DMR: return DSD_SYNC_DMR_BS_DATA_POS;
         case DSD_SCAN_MODE_NXDN96:
         case DSD_SCAN_MODE_NXDN48: return DSD_SYNC_NXDN_POS;
@@ -1783,7 +1783,7 @@ ui_history_print_event_summary(const Event_History* item, const char* line_prefi
 }
 
 static int
-ui_history_print_detail_line(int history_stop_y, uint8_t slot, const char* label, const char* value) {
+ui_history_print_detail_line(int history_stop_y, const char* slot_tag, const char* label, const char* value) {
     if (value == NULL || value[0] == '\0') {
         return 1;
     }
@@ -1792,11 +1792,11 @@ ui_history_print_detail_line(int history_stop_y, uint8_t slot, const char* label
     }
 
     attron(COLOR_PAIR(4));
-    if (slot < 2) {
+    if (slot_tag != NULL) {
         if (label && label[0] != '\0') {
-            printw("|[%d] \\-- %s%s \n", slot + 1, label, value);
+            printw("|%s\\-- %s%s \n", slot_tag, label, value);
         } else {
-            printw("|[%d] \\-- %s\n", slot + 1, value);
+            printw("|%s\\-- %s\n", slot_tag, value);
         }
     } else if (label && label[0] != '\0') {
         printw("|  \\-- %s%s \n", label, value);
@@ -1815,41 +1815,48 @@ ui_history_render_single_slot_item(const Event_History* item, const ui_history_r
     attron(COLOR_PAIR(4));
     ui_history_print_event_summary(item, line_prefix, line_prefix_len, ctx);
 
-    if (!ui_history_print_detail_line(ctx->history_stop_y, UINT8_MAX, "", item->text_message)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, NULL, "", item->text_message)) {
         return;
     }
-    if (!ui_history_print_detail_line(ctx->history_stop_y, UINT8_MAX, "Alias: ", item->alias)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, NULL, "Alias: ", item->alias)) {
         return;
     }
-    if (!ui_history_print_detail_line(ctx->history_stop_y, UINT8_MAX, "GPS: ", item->gps_s)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, NULL, "GPS: ", item->gps_s)) {
         return;
     }
-    (void)ui_history_print_detail_line(ctx->history_stop_y, UINT8_MAX, "DSD-neo: ", item->internal_str);
+    (void)ui_history_print_detail_line(ctx->history_stop_y, NULL, "DSD-neo: ", item->internal_str);
+}
+
+static void
+ui_history_slot_tag(const Event_History* item, uint8_t slot, char* tag, size_t size) {
+    if (dsd_event_systype_has_slots(item->systype)) {
+        DSD_SNPRINTF(tag, size, "[S%d] ", slot + 1);
+    } else {
+        DSD_SNPRINTF(tag, size, "%s", "     ");
+    }
 }
 
 static void
 ui_history_render_dual_slot_item(const Event_History* item, uint8_t slot, const ui_history_render_ctx* ctx) {
-    char line_prefix[16];
+    char line_prefix[24];
+    char slot_tag[6];
+    ui_history_slot_tag(item, slot, slot_tag, sizeof(slot_tag));
     const int show_enc_tag = (ctx->history_mode == 1 && item->enc != 0);
-    if (show_enc_tag) {
-        DSD_SNPRINTF(line_prefix, sizeof line_prefix, "|[%d] [ENC] ", slot + 1);
-    } else {
-        DSD_SNPRINTF(line_prefix, sizeof line_prefix, "|[%d] ", slot + 1);
-    }
+    DSD_SNPRINTF(line_prefix, sizeof(line_prefix), "|%s%s", slot_tag, show_enc_tag ? "[ENC] " : "");
 
     attron(COLOR_PAIR(4));
     ui_history_print_event_summary(item, line_prefix, (int)strlen(line_prefix), ctx);
 
-    if (!ui_history_print_detail_line(ctx->history_stop_y, slot, "", item->text_message)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, slot_tag, "", item->text_message)) {
         return;
     }
-    if (!ui_history_print_detail_line(ctx->history_stop_y, slot, "Alias: ", item->alias)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, slot_tag, "Alias: ", item->alias)) {
         return;
     }
-    if (!ui_history_print_detail_line(ctx->history_stop_y, slot, "GPS: ", item->gps_s)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, slot_tag, "GPS: ", item->gps_s)) {
         return;
     }
-    (void)ui_history_print_detail_line(ctx->history_stop_y, slot, "DSD-neo: ", item->internal_str);
+    (void)ui_history_print_detail_line(ctx->history_stop_y, slot_tag, "DSD-neo: ", item->internal_str);
 }
 
 static int

@@ -216,6 +216,8 @@ Windows console runs:
   appends a `Reacquired:` continuation carrying the stamp of the row it extends. While scanning a `-Y` list
   or rotating `--trunk-scan` targets, each line names the channel it was heard on in brackets between the
   timestamp and the protocol token; lines from a receiver that is not scanning a named channel are unchanged.
+  In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
+  P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]`, while FDMA rows carry no slot tag.
 
   ```text
   2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: 00050061; SRC: 00001234;

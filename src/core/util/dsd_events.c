@@ -341,17 +341,9 @@ write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
                                    &state->event_history_s[slot].Event_History_Items[0], NULL);
 }
 
-// Only the two-slot protocols annotate their log lines with a slot number. X2-TDMA belongs here for
-// the same reason the other two do: it carries two timeslots and its callers attribute every
-// observation through state->currentslot, so a log line without the annotation is ambiguous.
-static uint8_t
-watchdog_event_should_write_systype(int systype) {
-    return (DSD_SYNC_IS_DMR_BS(systype) || DSD_SYNC_IS_P25P2(systype) || DSD_SYNC_IS_X2TDMA(systype)) ? 1u : 0u;
-}
-
 static uint8_t
 watchdog_event_should_write_slot(const dsd_state* state) {
-    return watchdog_event_should_write_systype(state->lastsynctype);
+    return dsd_event_systype_has_slots(state->lastsynctype);
 }
 
 // Decoded per-transmission detail beyond identity: an alias, a position, a text message, or a
@@ -874,8 +866,8 @@ watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History
         // segment merges, lastsynctype may name a system the decoder moved on to, or have been
         // cleared entirely by no_carrier_reset_decode_state(). The row's own systype is what its
         // first commit was annotated from, so both halves of one transmission agree in the log.
-        watchdog_event_log_merge_continuation(opts, slot, watchdog_event_should_write_systype(retained->systype),
-                                              retained, &added, rendered_changed);
+        watchdog_event_log_merge_continuation(opts, slot, dsd_event_systype_has_slots(retained->systype), retained,
+                                              &added, rendered_changed);
         event_struct->commit_rev++;
         dsd_event_history_mark_dirty(event_struct);
         // The merged row is now this epoch's row too, so late enrichment for the reacquired
