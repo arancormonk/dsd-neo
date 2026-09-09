@@ -43,6 +43,7 @@ Window {
     property int currentTab: 0
     property bool wizardOpen: false
     property bool exploreSetupOpen: false
+    property bool diagnosticsOpen: false // WP-F5
     property bool importsOpen: false
     property bool radioReferenceOpen: false
     // Whether the RadioReference screen was pushed from the wizard. Coming back
@@ -316,7 +317,7 @@ Window {
 
         anchors.fill: safeArea
         opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen
-                  || mainRoot.importsOpen || mainRoot.radioReferenceOpen
+                  || mainRoot.diagnosticsOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen
                   || !prefs.onboardingDone) ? 0.0 : 1.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
@@ -368,6 +369,7 @@ Window {
             anchors.bottom: nav.top
             visible: mainRoot.currentTab === 2
 
+            onOpenDiagnostics: mainRoot.diagnosticsOpen = true
             onOpenImports: mainRoot.importsOpen = true
             onOpenRadioReference: mainRoot.openRadioReference(false)
         }
@@ -632,6 +634,15 @@ Window {
             mainRoot.currentTab = 0
             Qt.inputMethod.hide()
         }
+    }
+
+    // WP-F5 diagnostics overlay.
+    DiagnosticsScreen {
+        objectName: "diagnosticsScreen"
+        anchors.fill: safeArea
+        visible: mainRoot.diagnosticsOpen
+        enabled: visible
+        onClosed: mainRoot.diagnosticsOpen = false
     }
 
     // ---- Imported-files library (pushed from Settings) ----

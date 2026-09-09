@@ -18,6 +18,7 @@ target_sources(
         call_history_model.cpp
         command_bridge.cpp
         decoder_host.cpp
+        diagnostics_log.cpp
         imported_files_model.cpp
         json_store.cpp
         metrics_model.cpp
@@ -49,6 +50,7 @@ qt_add_resources(
         qml/CsvTypeBadge.qml
         qml/DashedActionButton.qml
         qml/DecodeChip.qml
+        qml/DiagnosticsScreen.qml
         qml/DisclosureRow.qml
         qml/EncTag.qml
         qml/ExploreSetupScreen.qml
@@ -129,4 +131,5 @@ set_property(
         DSD_QT_FOUNDATION_QML_TESTS
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_monitor_compact.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_session_initialized.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_diagnostics_screen.qml"
 )

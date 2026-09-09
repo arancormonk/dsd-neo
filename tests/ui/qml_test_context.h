@@ -62,6 +62,7 @@
 #include "call_history_model.h"
 #include "decode_mode_flag.h"
 #include "decoder_host.h"
+#include "diagnostics_log.h"
 #include "imported_files_model.h"
 #include "qml_spectrum_stub.h"
 #include "saved_systems_model.h"
@@ -1267,6 +1268,7 @@ class Setup : public QObject {
         m_app_prefs = app_prefs;
         auto* session_args = new dsd_qt::SessionArgsBuilder(app_prefs, engine);
         ctx->setContextProperty(QStringLiteral("importedFiles"), imported_files);
+        ctx->setContextProperty(QStringLiteral("diagnosticsLog"), new dsd_qt::DiagnosticsLogModel(nullptr, engine));
         ctx->setContextProperty(QStringLiteral("uiController"), new TestUiController(engine));
         ctx->setContextProperty(QStringLiteral("savedSystems"), saved_systems);
         ctx->setContextProperty(QStringLiteral("sessionArgs"), session_args);

@@ -518,6 +518,12 @@ Qt Quick frontend (`src/ui/qt`):
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. Skip shares this
   mutation path, preserving labels. Runtime's `dsd_rr_talkgroups_apply_categories()` supplies category names to
   both RadioReference frontends before CSV generation.
+- `diagnostics_log.{h,cpp}` owns the process ring, the sole redaction/capture stage,
+  and the asynchronous bounded tail writer. `DiagnosticsLogModel` refreshes before
+  the redraw consume in `UiController::tick`; it persists across decoder session
+  transitions. `qml/DiagnosticsScreen.qml` provides pause, copy, clear and host share.
+  Runtime's install-once log tap and Android's stderr/host paths feed `submit()`;
+  platform sharing remains behind `DecoderHost` in Android's diagnostics provider.
 - Platform-free by rule: it may include Qt and `include/dsd-neo/app_control/` headers, never engine/io/protocol
   internals, and never platform APIs (`QJniObject`, `<android/*.h>`). Platform specifics live behind the `DecoderHost`
   interface, implemented per host (`android/decoder_host_android.cpp` today).
