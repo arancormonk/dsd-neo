@@ -18,11 +18,15 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QList>
+#include <QModelIndex>
 #include <QSettings>
+#include <QSignalSpy>
 #include <QStandardPaths>
 #include <QString>
 #include <QTemporaryDir>
 #include <QVariant>
+#include <QVector>
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -285,12 +289,23 @@ test_reacquisition_merge_updates_in_place(void) {
     model.refresh(ring.state);
     expect("first fragment lands", model.count() == 1);
 
+    QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+    expect("dataChanged spy connects", changed.isValid());
     item->emergency = 1;
     item->priority = 3;
     ring.touchCommitted(0);
     model.refresh(ring.state);
     expect("late emergency alone updates the row",
            model.count() == 1 && model.data(model.index(0), CallHistoryModel::EmergencyRole).toBool());
+    expect("late emergency emits one dataChanged signal", changed.count() == 1);
+    if (changed.count() == 1) {
+        const QList<QVariant> arguments = changed.at(0);
+        expect("late emergency signals the existing row",
+               qvariant_cast<QModelIndex>(arguments.at(0)) == model.index(0)
+                   && qvariant_cast<QModelIndex>(arguments.at(1)) == model.index(0));
+        expect("late emergency notifies the emergency role",
+               qvariant_cast<QVector<int>>(arguments.at(2)).contains(CallHistoryModel::EmergencyRole));
+    }
 
     // The core's reacquisition merge: end extends, src fills, enc flips — in
     // place, same slot/seq/start.

@@ -507,7 +507,7 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate) {
     // at its sorted (newest-first) position. Never a reset — delegates and the
     // reader's scroll position survive every ingest.
     static const QVector<int> mergeRoles = {WhenRole,         SrcRole,      SourceNameRole, EncRole,
-                                            DurationSecsRole, DayLabelRole, TimeTextRole};
+                                            DurationSecsRole, DayLabelRole, TimeTextRole,   EmergencyRole};
     const int merged = tryMerge(row);
     if (merged >= 0) {
         const QModelIndex idx = index(merged);
