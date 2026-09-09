@@ -161,8 +161,10 @@ static const int k_ui_cmd_string_ids[] = {
    narrower argument: a segmented control taken twice in a second should land on
    the second answer without the decoder rebuilding timing for the first one on
    the way. */
+// Direct keys are deliberately absent: BASIC and RC4 update independent state,
+// and even HEX can select different destinations by width. An ID-only overwrite
+// would silently discard one requested key before its handler ever sees it.
 static const int k_ui_cmd_coalescible_setter_ids[] = {
-    DSD_APP_CMD_KEY_DIRECT_SET,
     DSD_APP_CMD_GAIN_SET,
     DSD_APP_CMD_AGAIN_SET,
     DSD_APP_CMD_INPUT_VOL_SET,

@@ -2569,6 +2569,53 @@ test_talkgroup_list_commands(void) {
 }
 
 static int
+test_direct_key_updates_preserve_fifo(void) {
+    dsd_opts opts;
+    dsd_state state;
+    init_test_context(&opts, &state);
+    dsd_app_key_direct_payload basic = {DSD_APP_KEY_TYPE_BASIC, "42"};
+    dsd_app_key_direct_payload rc4 = {DSD_APP_KEY_TYPE_RC4, "0011223344"};
+    int rc = 0;
+    rc |=
+        expect_int("BASIC direct key queued", dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &basic, sizeof basic),
+                   DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |=
+        expect_int("independent RC4 direct key queued",
+                   dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &rc4, sizeof rc4), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("different direct-key types both drain", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_true("both direct-key slots erased", dsd_app_command_test_storage_cleared());
+    DSD_SECURE_ZERO(&basic, sizeof basic);
+    DSD_SECURE_ZERO(&rc4, sizeof rc4);
+    freeState(&state);
+    return rc;
+}
+
+static int
+test_coalesced_setter_erases_old_tail(void) {
+    dsd_opts opts;
+    dsd_state state;
+    init_test_context(&opts, &state);
+    unsigned char padded[72];
+    const int32_t gain = 5;
+    DSD_MEMSET(padded, 0x5a, sizeof padded);
+    DSD_MEMCPY(padded, &gain, sizeof gain);
+    int rc = 0;
+    // Gain is coalescible. Fill the accepted envelope beyond its scalar value
+    // to prove a shorter overwrite erases bytes rather than only reducing n.
+    rc |= expect_int("padded setter queued", dsd_app_command_submit(DSD_APP_CMD_GAIN_SET, padded, sizeof padded),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("short setter coalesced", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 9),
+                     DSD_APP_COMMAND_SUBMIT_COALESCED);
+    rc |= expect_true("coalescing erased old payload tail", dsd_app_command_test_tail_padding_cleared());
+    rc |= expect_int("coalesced setter drains once", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("new setter value applied", (int)opts.audio_gain, 9);
+    rc |= expect_true("coalesced setter slot erased on drain", dsd_app_command_test_storage_cleared());
+    DSD_SECURE_ZERO(padded, sizeof padded);
+    freeState(&state);
+    return rc;
+}
+
+static int
 test_foundation_commands(void) {
     dsd_opts opts;
     dsd_state state;
@@ -2622,7 +2669,7 @@ test_foundation_commands(void) {
     rc |= expect_true("evicted sensitive slot erased", dsd_app_command_test_storage_cleared());
     key.value[1] = '\0';
     dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, 5);
-    rc |= expect_true("coalesced tail erased", dsd_app_command_test_tail_padding_cleared());
+    rc |= expect_true("short rejected key tail erased", dsd_app_command_test_tail_padding_cleared());
     rc |= expect_int("full queue drains including rejected key", dsd_app_drain_cmds(&opts, &state), 127);
     rc |= expect_true("rejected slot erased", dsd_app_command_test_storage_cleared());
     dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, NULL, sizeof key);
@@ -2640,6 +2687,8 @@ test_foundation_commands(void) {
 int
 main(void) {
     int rc = 0;
+    rc |= test_direct_key_updates_preserve_fifo();
+    rc |= test_coalesced_setter_erases_old_tail();
     rc |= test_foundation_commands();
     rc |= test_talkgroup_list_commands();
     rc |= test_source_alias_commands();
