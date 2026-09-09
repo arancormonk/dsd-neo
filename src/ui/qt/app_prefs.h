@@ -20,6 +20,7 @@
 #include <QSettings>
 #include <QString>
 #include <QTimer>
+#include <QtGlobal>
 
 namespace dsd_qt {
 

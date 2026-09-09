@@ -1,16 +1,19 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Source contract for the diagnostics provider; device URI grants need instrumentation."""
 from pathlib import Path
-import xml.etree.ElementTree as ET
+# Only checked-in repository fixtures are parsed; no external or off-air XML input.
+import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 
 root = Path(__file__).resolve().parents[2]
 package = root / 'android/package'
-paths = ET.parse(package / 'res/xml/diagnostics_paths.xml').getroot()
+# Trusted, checked-in fixture; keep the test runnable with the Python standard library.
+paths = ET.parse(package / 'res/xml/diagnostics_paths.xml').getroot()  # nosemgrep: python.lang.security.use-defused-xml-parse.use-defused-xml-parse
 assert len(paths) == 1
 assert paths[0].tag == 'cache-path'
 assert paths[0].attrib == {'name': 'diagnostics', 'path': 'diagnostics/'}
 android = '{http://schemas.android.com/apk/res/android}'
-providers = ET.parse(package / 'AndroidManifest.xml').findall('.//provider')
+# Trusted, checked-in fixture; no untrusted XML is accepted by this source-contract test.
+providers = ET.parse(package / 'AndroidManifest.xml').findall('.//provider')  # nosemgrep: python.lang.security.use-defused-xml-parse.use-defused-xml-parse
 provider = next(p for p in providers if p.get(android + 'authorities') == '${applicationId}.diagnostics')
 assert provider.get(android + 'exported') == 'false'
 assert provider.get(android + 'grantUriPermissions') == 'true'

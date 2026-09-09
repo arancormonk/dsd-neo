@@ -169,6 +169,8 @@ class SavedSystemsModel : public QAbstractListModel {
         QString srcCsvPath;
     };
 
+    static void fillRowKey(const QVariantMap& map, Row& row);
+    static void fillRowDetails(const QVariantMap& map, Row& row);
     static Row rowFromMap(const QVariantMap& map, const Row& base);
     static QVariant identityRoleValue(const Row& row, int role);
     static QVariant detailRoleValue(const Row& row, int role);

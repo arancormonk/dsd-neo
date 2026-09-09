@@ -5,6 +5,8 @@
 
 #include "session_args.h"
 
+#include <algorithm>
+
 #include <QChar>
 #include <QLatin1String>
 #include <QList>
@@ -153,16 +155,46 @@ append_flag_args(QStringList& args, const QVariantMap& system, const SessionArgP
     }
 }
 
+void
+append_key_args(QStringList& args, int keyIndex, const QString& keyValue, int force) {
+    if (keyIndex >= 0) {
+        const QStringList flags{QStringLiteral("-b"), QStringLiteral("-H"), QStringLiteral("-1"), QStringLiteral("-R")};
+        args << flags[keyIndex]
+             << ((keyIndex == 1 || keyIndex == 2) ? session_args_key_hex_normalize(keyValue) : keyValue.trimmed());
+    }
+    if (force != 0) {
+        args << (force == 1 ? QStringLiteral("-4") : QStringLiteral("-0"));
+    }
+}
+
+SessionArgsError
+validate_key_args(const QVariantMap& system, const QString& keyType, const QString& keyValue, int keyIndex) {
+    if ((!keyType.isEmpty() || !keyValue.isEmpty())
+        && !system.value(QStringLiteral("keyCsvPath")).toString().isEmpty()) {
+        return SessionArgsError::KeyConflict;
+    }
+    if (!session_args_key_valid(keyType, keyValue)) {
+        const SessionArgsError reasons[] = {SessionArgsError::KeyBasic, SessionArgsError::KeyHex,
+                                            SessionArgsError::KeyRc4, SessionArgsError::KeyScrambler};
+        return keyIndex < 0 ? SessionArgsError::KeyType : reasons[keyIndex];
+    }
+    bool forceOk = false;
+    const int force = system.value(QStringLiteral("encForceKey"), 0).toInt(&forceOk);
+    if (!forceOk || force < 0 || force > 2) {
+        return SessionArgsError::ForceKey;
+    }
+
+    return SessionArgsError::None;
+}
+
 } // namespace
 
 bool
 session_args_extra_safe(const QString& tokens) {
-    for (const auto& token : tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts)) {
-        if (token == QLatin1String("--show-keys") || token.startsWith(QLatin1String("--show-keys="))) {
-            return false;
-        }
-    }
-    return true;
+    const auto split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    return std::none_of(split.cbegin(), split.cend(), [](const QString& token) {
+        return token == QLatin1String("--show-keys") || token.startsWith(QLatin1String("--show-keys="));
+    });
 }
 
 bool
@@ -267,20 +299,11 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     const QStringList keyTypes{QStringLiteral("basic"), QStringLiteral("hex"), QStringLiteral("rc4"),
                                QStringLiteral("scrambler")};
     const int keyIndex = keyTypes.indexOf(keyType);
-    if ((!keyType.isEmpty() || !keyValue.isEmpty())
-        && !system.value(QStringLiteral("keyCsvPath")).toString().isEmpty()) {
-        return fail(SessionArgsError::KeyConflict);
+    const SessionArgsError keyError = validate_key_args(system, keyType, keyValue, keyIndex);
+    if (keyError != SessionArgsError::None) {
+        return fail(keyError);
     }
-    if (!session_args_key_valid(keyType, keyValue)) {
-        const SessionArgsError reasons[] = {SessionArgsError::KeyBasic, SessionArgsError::KeyHex,
-                                            SessionArgsError::KeyRc4, SessionArgsError::KeyScrambler};
-        return fail(keyIndex < 0 ? SessionArgsError::KeyType : reasons[keyIndex]);
-    }
-    bool forceOk = false;
-    const int force = system.value(QStringLiteral("encForceKey"), 0).toInt(&forceOk);
-    if (!forceOk || force < 0 || force > 2) {
-        return fail(SessionArgsError::ForceKey);
-    }
+    const int force = system.value(QStringLiteral("encForceKey"), 0).toInt();
 
     const int gainOverride = system.value(QStringLiteral("gainDb"), -1).toInt();
     const int gain = gainOverride >= 0 ? gainOverride : prefs.gainDb;
@@ -293,14 +316,7 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     append_input_args(args, system, sourceType, tail, bias);
     args << QStringLiteral("-o") << QStringLiteral("pulse");
     append_csv_args(args, system);
-    if (keyIndex >= 0) {
-        const QStringList flags{QStringLiteral("-b"), QStringLiteral("-H"), QStringLiteral("-1"), QStringLiteral("-R")};
-        args << flags[keyIndex]
-             << ((keyIndex == 1 || keyIndex == 2) ? session_args_key_hex_normalize(keyValue) : keyValue.trimmed());
-    }
-    if (force != 0) {
-        args << (force == 1 ? QStringLiteral("-4") : QStringLiteral("-0"));
-    }
+    append_key_args(args, keyIndex, keyValue, force);
     append_flag_args(args, system, prefs);
     return args;
 }

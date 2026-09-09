@@ -4,6 +4,11 @@
  */
 
 #include "metrics_model.h"
+#include "dsd-neo/app_control/p25_metrics.h"
+#include "dsd-neo/core/call_state.h"
+
+#include <algorithm>
+#include <iterator>
 
 #include <QChar>
 #include <QDateTime>
@@ -16,7 +21,6 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -249,6 +253,30 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
 }
 
 void
+MetricsModel::fillQualityView(View& next, const dsd_state* snapshot) {
+    dsd_app_p25_quality_from_state(snapshot, &next.quality);
+    const int line_states[] = {next.slot_call[0].state, next.slot_call[1].state};
+    const int lead = dsd_app_lead_slot(line_states, DSD_CALL_STATE_SLOT_COUNT);
+    next.voice_errs = next.quality.p1_voice;
+    if (lead >= 0) {
+        if (!next.voice_errs.valid) {
+            next.voice_errs = next.quality.p2_voice[lead];
+        }
+        next.last_frame = next.quality.last_frame[lead];
+    } else {
+        // Late-entry media may precede any decoded identity. The facade already
+        // limits these readings to active non-P25 media; keep the first valid
+        // slot until the call view can supply its usual identity-based lead.
+        const auto& frames = next.quality.last_frame;
+        const auto* frame = std::find_if(std::begin(frames), std::end(frames),
+                                         [](const dsd_app_frame_errs& item) { return item.valid != 0; });
+        if (frame != std::end(frames)) {
+            next.last_frame = *frame;
+        }
+    }
+}
+
+void
 MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
     dsd_frontend_metrics metrics;
     /* A missing snapshot is the real "nothing to show" case, and it has to be tested
@@ -316,26 +344,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     next.slot_call[0] = slotCallView(snapshot, 0, now_m);
     next.slot_call[1] = slotCallView(snapshot, 1, now_m);
 
-    dsd_app_p25_quality_from_state(snapshot, &next.quality);
-    const int line_states[] = {next.slot_call[0].state, next.slot_call[1].state};
-    const int lead = dsd_app_lead_slot(line_states, DSD_CALL_STATE_SLOT_COUNT);
-    next.voice_errs = next.quality.p1_voice;
-    if (lead >= 0) {
-        if (!next.voice_errs.valid) {
-            next.voice_errs = next.quality.p2_voice[lead];
-        }
-        next.last_frame = next.quality.last_frame[lead];
-    } else {
-        // Late-entry media may precede any decoded identity. The facade already
-        // limits these readings to active non-P25 media; keep the first valid
-        // slot until the call view can supply its usual identity-based lead.
-        for (const auto& frame : next.quality.last_frame) {
-            if (frame.valid) {
-                next.last_frame = frame;
-                break;
-            }
-        }
-    }
+    fillQualityView(next, snapshot);
 
     /* Engine truth for the monitor's toggle buttons. The engine owns both states
      * — commands only enqueue a request — and on Android the service outlives the

@@ -3,6 +3,9 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QLatin1String>
+#include <QtGlobal>
+#include <stddef.h>
 #include "command_bridge.h"
 
 #include <QByteArray>
@@ -255,6 +258,7 @@ CommandBridge::applyEncryptionKey(const QString& type, const QString& value) con
 }
 
 bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::setForceKeyMode(int mode) const {
     return mode >= 0 && mode <= 2 && accepted(dsd_app_command_set_i32(DSD_APP_CMD_FORCE_KEY_SET, mode));
 }

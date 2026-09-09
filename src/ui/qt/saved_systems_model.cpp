@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <qanystringview.h>
 #include "saved_systems_model.h"
 
 #include <QByteArray>
@@ -115,7 +116,7 @@ SavedSystemsModel::data(const QModelIndex& index, int role) const {
         return QVariant();
     }
     const Row& row = m_rows.at(index.row());
-    const QVariant identity = identityRoleValue(row, role);
+    QVariant identity = identityRoleValue(row, role);
     if (identity.isValid()) {
         return identity;
     }
@@ -191,15 +192,8 @@ map_take_bool(const QVariantMap& map, const QString& key, bool* target) {
 
 } // namespace
 
-SavedSystemsModel::Row
-SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
-    Row row = base;
-    // An edit cannot change identity. Loading can adopt a valid persisted UUID;
-    // add() replaces it afterwards so duplicating a row never duplicates identity.
-    if (row.uid.isEmpty()) {
-        const QUuid stored(map.value(QStringLiteral("uid")).toString());
-        row.uid = (stored.isNull() ? QUuid::createUuid() : stored).toString(QUuid::WithoutBraces);
-    }
+void
+SavedSystemsModel::fillRowKey(const QVariantMap& map, Row& row) {
     if (map.contains(QStringLiteral("encKeyValue"))) {
         row.encKeyValue = map.value(QStringLiteral("encKeyValue")).toString();
     }
@@ -221,6 +215,11 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     if (map.contains(QStringLiteral("encForceKey"))) {
         row.encForceKey = map.value(QStringLiteral("encForceKey")).toInt();
     }
+}
+
+void
+SavedSystemsModel::fillRowDetails(const QVariantMap& map, Row& row) {
+    fillRowKey(map, row);
     if (map.contains(QStringLiteral("rrSid"))) {
         row.rrSid = map.value(QStringLiteral("rrSid")).toInt();
     }
@@ -242,6 +241,18 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     if (map.contains(QStringLiteral("avoidSite"))) {
         row.avoidSite = map.value(QStringLiteral("avoidSite")).toBool();
     }
+}
+
+SavedSystemsModel::Row
+SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
+    Row row = base;
+    // An edit cannot change identity. Loading can adopt a valid persisted UUID;
+    // add() replaces it afterwards so duplicating a row never duplicates identity.
+    if (row.uid.isEmpty()) {
+        const QUuid stored(map.value(QStringLiteral("uid")).toString());
+        row.uid = (stored.isNull() ? QUuid::createUuid() : stored).toString(QUuid::WithoutBraces);
+    }
+    fillRowDetails(map, row);
 
     map_take_string(map, QStringLiteral("name"), &row.name);
     map_take_string(map, QStringLiteral("sourceType"), &row.sourceType);

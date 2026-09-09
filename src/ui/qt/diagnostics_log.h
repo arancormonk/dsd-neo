@@ -2,7 +2,12 @@
 #ifndef DSD_NEO_DIAGNOSTICS_LOG_H
 #define DSD_NEO_DIAGNOSTICS_LOG_H
 #include <QAbstractListModel>
+#include <QByteArray>
+#include <QList>
+#include <QObject>
+#include <QString>
 #include <QStringList>
+#include <QtGlobal>
 #include <condition_variable>
 #include <deque>
 #include <mutex>

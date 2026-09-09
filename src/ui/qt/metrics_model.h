@@ -780,6 +780,7 @@ class MetricsModel : public QObject {
 
     /** @brief Replace the published frame, signalling only the groups that moved. */
     void publish(const View& next);
+    static void fillQualityView(View& next, const dsd_state* snapshot);
 
     /** @brief Build one slot's structured call identity from the snapshot. */
     static SlotCall slotCallView(const dsd_state* snapshot, quint8 slot, double now_m);

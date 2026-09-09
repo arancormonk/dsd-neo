@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <QChar>
+#include <QHash>
+#include <QIODevice>
+#include <QVariant>
+#include <Qt>
+#include <utility>
 #include "diagnostics_log.h"
+
 #include <QClipboard>
 #include <QDateTime>
 #include <QDir>
@@ -44,11 +51,8 @@ DiagnosticsLog::instance() {
 
 void
 DiagnosticsLog::installTap() {
-    static const bool installed = [] {
-        dsd_neo_log_set_tap(capture, &instance());
-        return true;
-    }();
-    (void)installed;
+    static std::once_flag installed;
+    std::call_once(installed, [] { dsd_neo_log_set_tap(capture, &instance()); });
 }
 
 QString
@@ -72,7 +76,7 @@ DiagnosticsLog::redact(QString text) {
 DiagnosticsLog::DiagnosticsLog(const QString& directory) : m_directory(directory) {
     QDir().mkpath(directory);
     QFile old(directory + QStringLiteral("/tail.log"));
-    if (QFileInfo(old).lastModified().secsTo(QDateTime::currentDateTime()) > 7 * 24 * 3600) {
+    if (QFileInfo(old).lastModified().secsTo(QDateTime::currentDateTime()) > 7LL * 24 * 3600) {
         old.remove();
     }
     if (old.open(QIODevice::ReadOnly)) {
@@ -88,9 +92,8 @@ DiagnosticsLog::DiagnosticsLog(const QString& directory) : m_directory(directory
         }
         m_generation = static_cast<quint64>(m_ring.size());
     }
-    for (const auto& line : m_ring) {
-        m_initialTail += line.toUtf8() + '\n';
-    }
+    std::for_each(m_ring.cbegin(), m_ring.cend(),
+                  [this](const QString& line) { m_initialTail += line.toUtf8() + '\n'; });
     m_writer = std::thread(&DiagnosticsLog::writeLoop, this);
 }
 
@@ -169,9 +172,7 @@ DiagnosticsLog::writeLoop() {
             batch.swap(m_queue);
             m_writing = true;
         }
-        for (const auto& line : batch) {
-            tail += line;
-        }
+        std::for_each(batch.cbegin(), batch.cend(), [&tail](const QByteArray& line) { tail += line; });
         tail = boundedTail(tail);
         QSaveFile file(m_directory + QStringLiteral("/tail.log"));
         if (file.open(QIODevice::WriteOnly)) {
