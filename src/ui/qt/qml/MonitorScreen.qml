@@ -9,9 +9,11 @@ import "Util.js" as Util
 Item {
     id: screen
 
-    // Raised by the header's spectrum button; Main.qml owns the layer.
+    onVisibleChanged: { if (!visible) keySheet.visible = false }
+
     readonly property bool compactHeight: height < 500
 
+    // Raised by the header's spectrum button; Main.qml owns the layer.
     signal openSpectrum
     signal openTalkgroups
 
@@ -84,6 +86,7 @@ Item {
     // Header
     Item {
         id: header
+        enabled: !keySheet.visible
 
         anchors.top: parent.top
         anchors.left: parent.left
@@ -403,6 +406,7 @@ Item {
     // anchored at both ends assigned negative space to recent calls in landscape.
     Flickable {
         id: bodyScroll
+        enabled: !keySheet.visible
         objectName: "monitorBody"
         anchors.top: hero.bottom
         anchors.left: parent.left
@@ -459,6 +463,14 @@ Item {
                     enabled: decoderHost.running
                     onClicked: screen.openTalkgroups()
                 }
+            }
+
+            OutlineButton {
+                objectName: "openKeySheetButton"
+                width: parent.width
+                text: qsTr("Encryption key…")
+                enabled: decoderHost.running
+                onClicked: keySheet.open()
             }
 
             // Actions on the scan rotation (#380): the -Y list or the trunk-scan
@@ -853,6 +865,12 @@ Item {
         }
     }
 
+    // WP-D2: the modal consumes input above every monitor control.
+    KeySheet {
+        id: keySheet
+        z: 10
+    }
+
     GradientButton {
         id: stopButton
 
@@ -862,7 +880,7 @@ Item {
         anchors.margins: Theme.screenPadding
         anchors.bottomMargin: 22
         text: qsTr("Stop listening")
-        enabled: !decoderHost.transitioning
+        enabled: !decoderHost.transitioning && !keySheet.visible
         onClicked: decoderHost.stop()
     }
 }

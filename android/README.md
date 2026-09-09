@@ -619,3 +619,20 @@ The app's argv token gate rejects `--show-keys` (including assignment syntax).
 `session_args_extra_safe()` is the shared gate for future scan-list generation.
 Malformed CLI key diagnostics report the expected shape, never the value.
 QString/QML copies cannot promise erasure; only filtered content enters diagnostics.
+
+### Encryption key entry
+
+The saved-system wizard's Encryption panel accepts one direct key type, with a
+password-masked field and Show/Hide control. Choose a direct key or a key CSV;
+the wizard refuses to save both. Home marks saved direct keys and key CSVs as
+“key configured”. The monitor's Encryption key action applies a key and force
+mode to the current session only. It does not change the saved system or show a
+live key-status label. Direct-key changes in the wizard take effect at the next start;
+use “Apply to this session” for a direct key needed now.
+
+Calls the system's key can decrypt still play when Skip encrypted calls is on.
+Saved direct keys rest **unencrypted** in the app-private `systems.json` on
+Android (`allowBackup=false`), and under Qt's `AppDataLocation` on desktop.
+QString/QML copies cannot promise secure erasure; closing the session sheet
+clears its draft input but does not guarantee erasure of all memory copies.
+Key values are never shown in labels, toasts, diagnostics, or exports.
