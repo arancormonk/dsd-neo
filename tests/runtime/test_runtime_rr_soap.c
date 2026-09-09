@@ -58,7 +58,7 @@ expect_ll(const char* what, long long got, long long want) {
 #define RR_FIXTURE_CAP_BYTES ((size_t)8U * 1024U * 1024U)
 
 /**
- * @brief Read a fixture into a heap buffer.
+ * @brief Read a required fixture into a heap buffer, counting any failure.
  *
  * Resolved from a compile definition, never from cwd, __FILE__ or a run-time read
  * of CMAKE_CURRENT_SOURCE_DIR: ctest runs from the build tree.
@@ -67,25 +67,30 @@ static int
 read_fixture(const char* leaf, char** out, size_t* out_len) {
     char path[DSD_TEST_PATH_MAX];
     if (dsd_test_path_join(path, sizeof(path), g_fixture_dir, leaf) != 0) {
+        expect("fixture path must fit", 0);
         return -1;
     }
 
     FILE* fp = fopen(path, "rb");
     if (fp == NULL) {
         DSD_FPRINTF(stderr, "FAIL: cannot open fixture %s\n", path);
+        g_failures++;
         return -1;
     }
     char* buf = (char*)malloc(RR_FIXTURE_CAP_BYTES + 1U);
     if (buf == NULL) {
         fclose(fp);
+        expect("fixture buffer allocation must succeed", 0);
         return -1;
     }
     const size_t got = fread(buf, 1, RR_FIXTURE_CAP_BYTES, fp);
+    const int read_error = ferror(fp);
     const int hit_cap = (feof(fp) == 0);
-    fclose(fp);
-    if (hit_cap) {
-        /* Bigger than the cap, so what was read is a truncated body. */
+    const int close_error = fclose(fp);
+    if (read_error || hit_cap || close_error != 0) {
+        /* A read error or the size cap must not silently skip fixture assertions. */
         free(buf);
+        expect("fixture must be readable to EOF within the size cap and close successfully", 0);
         return -1;
     }
     /* Clamped explicitly: `got` cannot exceed the cap, but saying so is what
@@ -805,7 +810,6 @@ test_fault_classification(void) {
     char* body = NULL;
     size_t len = 0;
     if (read_fixture("fault_auth.xml", &body, &len) != 0) {
-        g_failures++;
         return;
     }
 
