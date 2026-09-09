@@ -838,6 +838,7 @@ Item {
 
                     OutlineButton {
                         objectName: "radioReferenceNearby"
+                        width: parent.width
                         text: qsTr("Use my location")
                         visible: decoderHost.locationSupported
                         enabled: !radioReference.busy

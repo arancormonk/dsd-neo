@@ -44,6 +44,7 @@
 #include <QList>
 #include <QQmlContext>
 #include <QQmlEngine>
+#include <QQmlPropertyMap>
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QString>
@@ -699,6 +700,21 @@ class CallLogStore : public QAbstractListModel {
     qint64 m_clock = 1'700'000'000;
 };
 
+// WP-D3: keep the fixture readings and record the nearby button's actual invocation.
+class RadioReferenceRecorder : public QQmlPropertyMap {
+    Q_OBJECT
+
+  public:
+    explicit RadioReferenceRecorder(QObject* parent) : QQmlPropertyMap(this, parent) {}
+
+    Q_INVOKABLE void
+    lookupNearby() {
+        nearbyCalls++;
+    }
+
+    int nearbyCalls = 0;
+};
+
 /** @brief Installs the context the screens expect before any QML is loaded. */
 class Setup : public QObject {
     Q_OBJECT
@@ -797,17 +813,20 @@ class Setup : public QObject {
     /**
      * @brief Set one radioReference key, so a case can flip a stubbed reading.
      *
-     * QML cannot mutate a QVariantMap in place, so without this a case could not
-     * drive "the entry point appears once `available` turns true". Reads only:
-     * any case that has to CALL radioReference.lookupZip(...) needs a small
-     * Q_OBJECT recorder instead, the way CommandRecorder works.
+     * The property map updates bindings and records lookupNearby calls. Keep
+     * the audit's QVariantMap in sync with the values QML actually reads.
      */
     Q_INVOKABLE void
     setRadioReference(const QString& key, const QVariant& value) {
         m_radio_reference[key] = value;
-        if (m_engine != nullptr) {
-            m_engine->rootContext()->setContextProperty(QStringLiteral("radioReference"), m_radio_reference);
+        if (m_radio_reference_recorder != nullptr) {
+            m_radio_reference_recorder->insert(key, value);
         }
+    }
+
+    Q_INVOKABLE int
+    radioReferenceNearbyCalls() const {
+        return m_radio_reference_recorder != nullptr ? m_radio_reference_recorder->nearbyCalls : 0;
     }
 
     /**
@@ -1275,7 +1294,11 @@ class Setup : public QObject {
         rr[QStringLiteral("systemDetails")] = QVariantMap();
         rr[QStringLiteral("talkgroupSummary")] = QVariantMap();
         m_radio_reference = rr;
-        ctx->setContextProperty(QStringLiteral("radioReference"), rr);
+        m_radio_reference_recorder = new RadioReferenceRecorder(engine);
+        for (auto it = rr.cbegin(); it != rr.cend(); ++it) {
+            m_radio_reference_recorder->insert(it.key(), it.value());
+        }
+        ctx->setContextProperty(QStringLiteral("radioReference"), m_radio_reference_recorder);
 
         /* The real SpectrumModel over the canned getter in qml_spectrum_stub.cpp:
          * the polling, viewport and tap-snapping under test are the production
@@ -1316,6 +1339,7 @@ class Setup : public QObject {
     QVariantMap m_prefs;
     QVariantMap m_host;
     QVariantMap m_radio_reference;
+    RadioReferenceRecorder* m_radio_reference_recorder = nullptr;
     QQmlEngine* m_engine = nullptr;
     dsd_qt::SpectrumModel* m_spectrum = nullptr;
     CommandRecorder* m_commands = nullptr;

@@ -15,13 +15,50 @@ import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
 import org.json.JSONObject
-import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.FutureTask
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+
+/** One executing geocoder and at most one queued replacement. Contains no Activity references. */
+internal class LocationGeocodeQueue(
+    private val executor: ThreadPoolExecutor = ThreadPoolExecutor(
+        1, 1, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue<Runnable>(1)
+    )
+) {
+    @Volatile private var current: FutureTask<Unit>? = null
+
+    @Synchronized fun submit(block: () -> Unit): FutureTask<Unit> {
+        current?.let { cancel(it) }
+        lateinit var task: FutureTask<Unit>
+        task = FutureTask(Runnable {
+            // Cancellation may race with dequeue. Retired requests must not enter the geocoder.
+            if (current === task) block()
+        }, Unit)
+        current = task
+        try {
+            executor.execute(task)
+        } catch (error: RejectedExecutionException) {
+            cancel(task)
+            throw error
+        }
+        return task
+    }
+
+    @Synchronized fun cancel(task: FutureTask<Unit>) {
+        if (current === task) current = null
+        task.cancel(true)
+        // Future cancellation alone leaves a tombstone in ThreadPoolExecutor's queue.
+        executor.remove(task)
+    }
+}
 
 /** One cancellable foreground request. All mutable request state belongs to the main looper. */
 object LocationSupport {
     private const val PERMISSION = 4303
     private val main = Handler(Looper.getMainLooper())
-    private val worker = Executors.newSingleThreadExecutor()
+    private val worker = LocationGeocodeQueue()
     private var active: Request? = null
     private var permissionActivity: Activity? = null
     private var result: String? = null
@@ -32,6 +69,7 @@ object LocationSupport {
         var listener: LocationListener? = null
         var fix: Location? = null
         var timeout: Runnable? = null
+        var geocodeTask: FutureTask<Unit>? = null
     }
 
     @JvmStatic fun requestCurrentLocation(activity: Activity, id: Long) {
@@ -106,25 +144,29 @@ object LocationSupport {
         val latitude = location.latitude
         val longitude = location.longitude
         val id = request.id
-        worker.execute {
-            var postal = ""
-            var country = ""
-            var ok = false
-            try {
-                if (Geocoder.isPresent()) {
-                    val address = Geocoder(context).getFromLocation(latitude, longitude, 1)?.firstOrNull()
-                    if (address != null) {
-                        postal = address.postalCode ?: ""
-                        country = address.countryCode ?: ""
-                        ok = true
+        try {
+            request.geocodeTask = worker.submit {
+                var postal = ""
+                var country = ""
+                var ok = false
+                try {
+                    if (Geocoder.isPresent()) {
+                        val address = Geocoder(context).getFromLocation(latitude, longitude, 1)?.firstOrNull()
+                        if (address != null) {
+                            postal = address.postalCode ?: ""
+                            country = address.countryCode ?: ""
+                            ok = true
+                        }
+                    }
+                } catch (_: Exception) { /* Never expose platform exception text. */ }
+                main.post {
+                    active?.takeIf { it.id == id }?.let {
+                        finish(it, ok, postal, country, if (ok) "" else "Geocoding unavailable; use Browse.")
                     }
                 }
-            } catch (_: Exception) { /* Never expose platform exception text. */ }
-            main.post {
-                active?.takeIf { it.id == id }?.let {
-                    finish(it, ok, postal, country, if (ok) "" else "Geocoding unavailable; use Browse.")
-                }
             }
+        } catch (_: RejectedExecutionException) {
+            finish(request, false, "", "", "Geocoding unavailable; use Browse.")
         }
     }
 
@@ -139,6 +181,8 @@ object LocationSupport {
 
     private fun release(request: Request) {
         active = null
+        request.geocodeTask?.let { worker.cancel(it) }
+        request.geocodeTask = null
         request.timeout?.let { main.removeCallbacks(it) }
         removeUpdates(request)
     }
