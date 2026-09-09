@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <dsd-neo/app_control/commands.h>
-#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -16,7 +15,6 @@ int dsd_test_diagnostics_direct_key_applied(dsd_opts* opts, dsd_state* state, in
 
 int
 dsd_test_diagnostics_direct_key_applied(dsd_opts* opts, dsd_state* state, int type, const char* value) {
-    dsd_app_frontend_runtime_start(opts, state);
     dsd_app_key_direct_payload payload = {0};
     switch (type) {
         case DSD_KEY_TYPE_BASIC: payload.key_type = DSD_APP_KEY_TYPE_BASIC; break;

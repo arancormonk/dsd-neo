@@ -39,7 +39,9 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFont>
 #include <QFontDatabase>
+#include <QGuiApplication>
 #include <QHash>
 #include <QIODevice>
 #include <QList>
@@ -104,7 +106,7 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     bool
     start(const QStringList& argv) override {
-        Q_UNUSED(argv)
+        (void)argv;
         if (acceptStart) {
             phase = startRunning ? Running : Starting;
             m_running = true;
@@ -182,11 +184,13 @@ class TestUiController : public QObject {
     using QObject::QObject;
 
     QVariantMap
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
     talkgroupExportResult() const {
         return {};
     }
 
     Q_INVOKABLE void
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
     flushHistory() {}
 };
 
@@ -282,23 +286,27 @@ class CommandRecorder : public QObject {
      * tune, only on the spectrum's manualTuneHz(). Counting it would be state no
      * assertion can ever fail on. */
     Q_INVOKABLE bool
-    tuneHz(unsigned int hz) {
-        Q_UNUSED(hz)
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    tuneHz(unsigned int hz) const {
+        (void)hz;
         return true;
     }
 
     Q_INVOKABLE bool
-    toggleMute() {
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    toggleMute() const {
         return true;
     }
 
     Q_INVOKABLE bool
-    holdTalkgroup(double) {
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    holdTalkgroup(double) const {
         return true;
     }
 
     Q_INVOKABLE bool
-    lockoutSlot(int) {
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    lockoutSlot(int) const {
         return true;
     }
 
@@ -359,7 +367,8 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
-    clearEncLockouts() {
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    clearEncLockouts() const {
         return true;
     }
 
@@ -439,11 +448,13 @@ class CommandRecorder : public QObject {
      * is 4) and 13 for "the rest" (which is ANALOG) -- so the case asserting that
      * the DMR chip sends DMR was really asserting the double's own arithmetic. */
     Q_INVOKABLE int
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
     decodeModeForFlag(const QString& flag) {
         return dsd_qt::decode_mode_for_flag(flag);
     }
 
     Q_INVOKABLE int
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
     cycleHistoryMode() {
         return 0;
     }
@@ -1005,6 +1016,7 @@ class Setup : public QObject {
      */
     /** @brief Frequency of the canned spectrum's peak, so a case need not hard-code it. */
     Q_INVOKABLE double
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
     spectrumPeakHz() const {
         return dsd_neo_qml_stub::spectrum_peak_hz();
     }
@@ -1184,6 +1196,16 @@ class Setup : public QObject {
     Q_INVOKABLE int
     lastPpm() const {
         return (m_commands != nullptr) ? m_commands->lastPpm() : 9999;
+    }
+
+    Q_INVOKABLE QFont
+    applicationFont() const {
+        return QGuiApplication::font();
+    }
+
+    Q_INVOKABLE void
+    setApplicationFont(const QFont& font) {
+        QGuiApplication::setFont(font);
     }
 
     Q_INVOKABLE QStringList

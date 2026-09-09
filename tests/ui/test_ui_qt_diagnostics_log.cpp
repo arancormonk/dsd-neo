@@ -8,12 +8,14 @@
 #include <QGuiApplication>
 #include <QIODevice>
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
+#include <QVariantMap>
 #include <Qt>
 #include <QtEnvironmentVariables>
 #include <QtGlobal>
@@ -28,8 +30,10 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/log.h>
+#include <initializer_list>
 #include <string.h>
 #include <thread>
+#include <utility>
 #include <vector>
 #include "command_bridge.h"
 #include "diagnostics_log.h"
@@ -38,7 +42,7 @@ extern "C" int dsd_test_diagnostics_drain(dsd_opts*, dsd_state*);
 #include "session_args.h"
 extern "C" int dsd_test_diagnostics_direct_key_applied(dsd_opts*, dsd_state*, int, const char*);
 #include <memory>
-#include "test_support.h"
+#include "../test_support/test_support.h"
 using namespace dsd_qt;
 static int failures = 0;
 
@@ -178,6 +182,7 @@ realKeySources() {
     auto state = std::make_unique<dsd_state>();
     initOpts(opts.get());
     initState(state.get());
+    dsd_app_frontend_runtime_start(opts.get(), state.get());
 
     struct KeyCase {
         int type = 0;
@@ -280,6 +285,7 @@ realKeySources() {
               && previous.allText().contains("stderr restart marker"));
         checkAbsent(previous.allText().toUtf8(), representations, "previous-run text contains a key representation");
     }
+    dsd_app_frontend_runtime_stop();
     freeState(state.get());
     DSD_SECURE_ZERO(state.get(), sizeof(*state));
 }
@@ -356,6 +362,7 @@ test_live_formatted_keys(void) {
     auto state = std::make_unique<dsd_state>();
     initOpts(opts.get());
     initState(state.get());
+    dsd_app_frontend_runtime_start(opts.get(), state.get());
     const dsd_qt::CommandBridge bridge;
 
     QStringList pairs;
@@ -397,6 +404,7 @@ test_live_formatted_keys(void) {
            !bridge.applyEncryptionKey("hex", QString(80, QLatin1Char('a'))));
     expect("embedded NUL remains refused", !bridge.applyEncryptionKey("hex", spaced + QChar(0) + QStringLiteral(" ")));
     expect("rejected bridge payloads never enter the queue", dsd_app_drain_cmds(opts.get(), state.get()) == 0);
+    dsd_app_frontend_runtime_stop();
     freeState(state.get());
     DSD_SECURE_ZERO(state.get(), sizeof(*state));
 }
@@ -415,8 +423,8 @@ main(int argc, char** argv) {
     DiagnosticsLog::installTap();
     earlyHostCaptureAndBridge();
     clearWithConcurrentSubmit();
-    realKeySources();
     test_live_formatted_keys();
+    realKeySources();
     {
         DiagnosticsLog log(dir.path());
         DiagnosticsLogModel model(&log);

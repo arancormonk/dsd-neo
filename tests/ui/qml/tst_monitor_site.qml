@@ -30,9 +30,23 @@ Item {
             testContext.setMetric("nxdnSiteCode", 0);
             testContext.setMetric("nxdnSysCode", 0);
             testContext.setMetric("edacsSiteText", "");
-            Ui.Theme.fontScale = 1;
+            Ui.Theme.resetFontScale();
             root.width = 411;
             root.height = 700;
+        }
+        function test_cleanup_restores_platform_font_binding() {
+            var previousFont = testContext.applicationFont();
+            try {
+                // Qt.application.font is CONSTANT: change the font before cleanup
+                // so the restored binding evaluates the platform's current value.
+                testContext.setApplicationFont(Qt.font({pixelSize: 24}));
+                Ui.Theme.fontScale = 1.6;
+                cleanup();
+                compare(Ui.Theme.fontScale, 1.5);
+            } finally {
+                testContext.setApplicationFont(previousFont);
+                Ui.Theme.resetFontScale();
+            }
         }
         function test_site_row_and_sheet() {
             verify(!item("siteRow").visible);
