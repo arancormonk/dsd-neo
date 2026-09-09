@@ -14,6 +14,20 @@ and one shared policy module (`include/dsd-neo/runtime/radioreference_import.h`)
 - **Terminal UI.** The generated files land in the imports directory next to your config file, and the
   import is applied to the running session immediately. See [Terminal UI](#terminal-ui).
 
+## Site position metadata
+
+The runtime SOAP client exposes site `lat` and `lon` in degrees and `range_mi` in miles.
+`has_position` is true only when all three fields are present and valid: latitude within
+[-90, 90], longitude within [-180, 180], and a finite nonnegative range. The `(0,0,0)`
+placeholder means no position; zero latitude or longitude alone is valid. Missing, nil,
+malformed or out-of-range fields become zero and clear `has_position`, while the site's
+frequencies remain available for import. Consumers must check `has_position` before using
+these values as a position.
+
+Decimals use an optional sign, digits, and an optional dot followed by fraction digits,
+independent of the process locale. Exponents, commas, whitespace and nonfinite values are
+not accepted. This metadata does not change site selection or saved-system grouping.
+
 ## Requirements
 
 - **Your own RadioReference premium subscription.** Every user authenticates with their own

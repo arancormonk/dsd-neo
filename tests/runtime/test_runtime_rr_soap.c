@@ -16,6 +16,7 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/radioreference.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -500,6 +501,20 @@ test_p25_sites(void) {
 
     const dsd_rr_site* first = &sites.items[0];
     expect_ll("siteId is the database row id", first->site_db_id, 16863);
+    expect("site position present", first->has_position == 1);
+    expect("site latitude", fabs(first->lat - 41.65503) < 1e-10);
+    expect("site longitude", fabs(first->lon + 91.60244) < 1e-10);
+    expect("site range in miles", first->range_mi == 20.0);
+    int sentinel_found = 0;
+    for (size_t i = 0; i < sites.count; i++) {
+        if (sites.items[i].site_db_id == 48391) {
+            sentinel_found = 1;
+            expect("zero sentinel has no position", sites.items[i].has_position == 0);
+            expect("zero sentinel values",
+                   sites.items[i].lat == 0 && sites.items[i].lon == 0 && sites.items[i].range_mi == 0);
+        }
+    }
+    expect("sentinel site present", sentinel_found);
     expect_ll("siteNumber is the RF site", first->site_number, 1);
     expect_str("site descr", first->descr, "Johnson Co Simulcast");
     expect_ll("zone number", first->zone_number, 52);
@@ -536,6 +551,78 @@ test_p25_sites(void) {
         expect_ll("Linn primary hz", linn->freqs[0].freq_hz, 851225000LL);
     }
     dsd_rr_site_list_free(&sites);
+}
+
+static void
+test_site_position_decimals(void) {
+    dsd_rr_site_list sites = {0};
+    dsd_rr_error err = {0};
+    if (parse_fixture("trs_sites_nil_lat.xml", RR_SHAPE_SITE_LIST, &sites, &err) == 0) {
+        expect("nil latitude fixture count", sites.count == 2);
+        if (sites.count == 2) {
+            expect("preceding site has position", sites.items[0].has_position == 1);
+            expect("nil latitude has no position", sites.items[1].has_position == 0);
+            expect("nil latitude remains zero", sites.items[1].lat == 0);
+            expect("nil latitude preserves longitude and range",
+                   fabs(sites.items[1].lon + 91.60244) < 1e-10 && sites.items[1].range_mi == 20);
+        }
+    }
+    dsd_rr_site_list_free(&sites);
+
+    static const struct {
+        const char* fields;
+        int valid;
+    } cases[] = {
+        {"<lat>+90.0</lat><lon>-180</lon><range>0</range>", 1},
+        {"<lat>-90</lat><lon>+180.0</lon><range>20.5</range>", 1},
+        {"<lat>0</lat><lon>0</lon><range>1</range>", 1},
+        {"<lat>0</lat><lon>-91</lon><range>0</range>", 1},
+        {"<lon>-91</lon><range>20</range>", 0},
+        {"<lat>41</lat><range>20</range>", 0},
+        {"<lat>41</lat><lon>-91</lon>", 0},
+        {"<lat>90.01</lat><lon>-91</lon><range>20</range>", 0},
+        {"<lat>-90.01</lat><lon>-91</lon><range>20</range>", 0},
+        {"<lat>41</lat><lon>180.01</lon><range>20</range>", 0},
+        {"<lat>41</lat><lon>-180.01</lon><range>20</range>", 0},
+        {"<lat>41</lat><lon>-91</lon><range>-1</range>", 0},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char body[512];
+        DSD_SNPRINTF(body, sizeof(body), "<Envelope><Body><return><item>%s</item></return></Body></Envelope>",
+                     cases[i].fields);
+        expect("position case parses", rr_soap_parse(body, strlen(body), RR_SHAPE_SITE_LIST, &sites, &err, NULL) == 0);
+        expect("position case count", sites.count == 1);
+        if (sites.count == 1) {
+            expect("position validity", sites.items[0].has_position == cases[i].valid);
+        }
+        dsd_rr_site_list_free(&sites);
+    }
+    static const char* invalid[] = {"",    "+",   "-",    ".5",  "1.",  "1e1", "NaN",
+                                    "Inf", "0x1", "41,5", "41x", " 41", "41 ", "4 1"};
+    static const char* fields[] = {"lat", "lon", "range"};
+    char overflow[401];
+    DSD_MEMSET(overflow, '9', sizeof(overflow) - 1);
+    overflow[sizeof(overflow) - 1] = '\0';
+    for (size_t f = 0; f < 3; f++) {
+        for (size_t i = 0; i <= sizeof(invalid) / sizeof(invalid[0]); i++) {
+            const char* value = i == sizeof(invalid) / sizeof(invalid[0]) ? overflow : invalid[i];
+            char body[1024];
+            DSD_SNPRINTF(body, sizeof(body),
+                         "<Envelope><Body><return><item><lat>41</lat><lon>-91</lon><range>20</range>"
+                         "<%s>%s</%s></item></return></Body></Envelope>",
+                         fields[f], value, fields[f]);
+            expect("invalid decimal response parses",
+                   rr_soap_parse(body, strlen(body), RR_SHAPE_SITE_LIST, &sites, &err, NULL) == 0);
+            expect("invalid decimal case count", sites.count == 1);
+            if (sites.count == 1) {
+                expect("invalid decimal has no position", sites.items[0].has_position == 0);
+                expect("public coordinates finite", isfinite(sites.items[0].lat) && isfinite(sites.items[0].lon)
+                                                        && isfinite(sites.items[0].range_mi));
+            }
+            dsd_rr_site_list_free(&sites);
+        }
+    }
 }
 
 static void
@@ -939,6 +1026,7 @@ main(void) {
     test_support_maps();
     test_trs_details();
     test_p25_sites();
+    test_site_position_decimals();
     test_dmr_and_nxdn_sites();
     test_nil_and_nonzoned_sites();
     test_talkgroups();
