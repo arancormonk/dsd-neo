@@ -4875,13 +4875,25 @@ add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
 
 # WP-D2: shared direct-key helper, real CLI and queue regression.
 add_executable(dsd-neo_test_core_key_direct core/test_core_key_direct.c)
-target_include_directories(dsd-neo_test_core_key_direct PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(
+    dsd-neo_test_core_key_direct
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
-    target_link_libraries(dsd-neo_test_core_key_direct PRIVATE "-Wl,--start-group"
-        ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} "-Wl,--end-group" ${LIBS} dsd-neo_test_support)
+    target_link_libraries(
+        dsd-neo_test_core_key_direct
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
 else()
-    target_link_libraries(dsd-neo_test_core_key_direct PRIVATE
-        ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support)
+    target_link_libraries(
+        dsd-neo_test_core_key_direct
+        PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+    )
 endif()
 add_test(NAME CORE_KEY_DIRECT COMMAND dsd-neo_test_core_key_direct)
 
@@ -10132,28 +10144,71 @@ add_executable(dsd-neo_test_runtime_log_tap runtime/test_runtime_log_tap.cpp)
 target_link_libraries(dsd-neo_test_runtime_log_tap PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_LOG_TAP COMMAND dsd-neo_test_runtime_log_tap)
 if(DSD_ENABLE_QT_UI)
-    add_executable(dsd-neo_test_ui_qt_diagnostics_log ui/test_ui_qt_diagnostics_log.cpp ui/diagnostics_key_source.c)
-    target_link_libraries(dsd-neo_test_ui_qt_diagnostics_log PRIVATE dsd-neo_ui_qt)
-    add_test(NAME UI_QT_DIAGNOSTICS_LOG COMMAND dsd-neo_test_ui_qt_diagnostics_log)
-    set_tests_properties(UI_QT_DIAGNOSTICS_LOG PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(
+        dsd-neo_test_ui_qt_diagnostics_log
+        ui/test_ui_qt_diagnostics_log.cpp
+        ui/diagnostics_key_source.c
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_diagnostics_log
+        PRIVATE dsd-neo_ui_qt
+    )
+    add_test(
+        NAME UI_QT_DIAGNOSTICS_LOG
+        COMMAND dsd-neo_test_ui_qt_diagnostics_log
+    )
+    set_tests_properties(
+        UI_QT_DIAGNOSTICS_LOG
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
 endif()
 
 # WP-F5 source-redaction test exercises the real CLI parser.
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
-    target_link_libraries(dsd-neo_test_core_secret_redaction PRIVATE "-Wl,--start-group" ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} "-Wl,--end-group" ${LIBS} dsd-neo_test_support)
+    target_link_libraries(
+        dsd-neo_test_core_secret_redaction
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
 else()
-    target_link_libraries(dsd-neo_test_core_secret_redaction PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support)
+    target_link_libraries(
+        dsd-neo_test_core_secret_redaction
+        PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+    )
 endif()
 
 if(DSD_ENABLE_QT_UI)
     if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
-        target_link_libraries(dsd-neo_test_ui_qt_diagnostics_log PRIVATE "-Wl,--start-group" ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} "-Wl,--end-group" ${LIBS} dsd-neo_test_support)
+        target_link_libraries(
+            dsd-neo_test_ui_qt_diagnostics_log
+            PRIVATE
+                "-Wl,--start-group"
+                ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+                "-Wl,--end-group"
+                ${LIBS}
+                dsd-neo_test_support
+        )
     else()
-        target_link_libraries(dsd-neo_test_ui_qt_diagnostics_log PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support)
+        target_link_libraries(
+            dsd-neo_test_ui_qt_diagnostics_log
+            PRIVATE
+                ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+                ${LIBS}
+                dsd-neo_test_support
+        )
     endif()
 endif()
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
-    add_test(NAME ANDROID_DIAGNOSTICS_SHARE_PATHS COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/ui/test_diagnostics_share_paths.py)
+    add_test(
+        NAME ANDROID_DIAGNOSTICS_SHARE_PATHS
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/ui/test_diagnostics_share_paths.py
+    )
 endif()
