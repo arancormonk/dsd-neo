@@ -14,7 +14,10 @@
 #include <dsd-neo/runtime/log.h>
 #include <thread>
 #include <vector>
+#include "../../src/app_control/commands_internal.h"
+#include "command_bridge.h"
 #include "diagnostics_log.h"
+#include "session_args.h"
 extern "C" int dsd_test_diagnostics_direct_key_applied(dsd_opts*, dsd_state*, int, const char*);
 #include <memory>
 #include "test_support.h"
@@ -285,6 +288,60 @@ clearWithConcurrentSubmit() {
     check(model.data(model.index(0), Qt::DisplayRole).toString().contains("during clear"));
 }
 
+// Use the production bridge and queue: the QML CommandRecorder cannot exercise
+// the UTF-8 payload bound. Report only assertions, never submitted key material.
+static void
+test_live_formatted_keys(void) {
+    const auto expect = [](const char* what, bool ok) { check(ok, what); };
+    auto opts = std::make_unique<dsd_opts>();
+    auto state = std::make_unique<dsd_state>();
+    initOpts(opts.get());
+    initState(state.get());
+    const dsd_qt::CommandBridge bridge;
+
+    QStringList pairs;
+    for (int i = 0; i < 32; ++i) {
+        pairs.append(QString::number(128 + i, 16));
+    }
+    const QString spaced = pairs.join(QLatin1Char(' '));
+    expect("AES-256 byte-pair entry exceeds the wire capacity before normalization", spaced.size() == 95);
+    const QString canonical = pairs.join(QString()).toUpper();
+    for (const auto& formatted : {spaced, QStringLiteral(" \t0x") + pairs.join(QStringLiteral(" \r\n"))}) {
+        QVariantMap sys{{QStringLiteral("sourceType"), QStringLiteral("usb")},
+                        {QStringLiteral("freqMhz"), QStringLiteral("851.375")}};
+        sys[QStringLiteral("encKeyType")] = QStringLiteral("hex");
+        sys[QStringLiteral("encKeyValue")] = formatted;
+        const auto args = session_args_build(sys, SessionArgPrefs(), nullptr);
+        const auto at = args.indexOf(QStringLiteral("-H"));
+        expect("formatted AES-256 starts with a normalized discrete key",
+               at >= 0 && at + 1 < args.size() && args[at + 1] == canonical);
+        expect("formatted AES-256 accepted through the production bridge", bridge.applyEncryptionKey("hex", formatted));
+        expect("formatted AES-256 reaches the real queue", dsd_app_drain_cmds(opts.get(), state.get()) == 1);
+        for (int slot = 0; slot < 2; ++slot) {
+            expect("formatted AES-256 arms both slots",
+                   state->aes_key_loaded[slot] && state->aes_key_segments[slot] == 4);
+        }
+        bool correct = true;
+        for (int i = 0; i < 32; ++i) {
+            correct = correct && state->aes_key[i] == 128 + i;
+        }
+        expect("formatted AES-256 retains every decoded key byte", correct);
+    }
+
+    const QString rc4 = QStringLiteral(" \t0x") + pairs.mid(0, 8).join(QString(10, QLatin1Char(' ')));
+    expect("formatted RC4 is valid before live submission", dsd_qt::session_args_key_valid("rc4", rc4));
+    expect("formatted RC4 accepted through the production bridge", bridge.applyEncryptionKey("rc4", rc4));
+    expect("formatted RC4 reaches the real queue", dsd_app_drain_cmds(opts.get(), state.get()) == 1);
+    expect("formatted RC4 loads the complete key", state->R == canonical.left(16).toULongLong(nullptr, 16));
+
+    expect("oversized normalized key remains refused",
+           !bridge.applyEncryptionKey("hex", QString(80, QLatin1Char('a'))));
+    expect("embedded NUL remains refused", !bridge.applyEncryptionKey("hex", spaced + QChar(0) + QStringLiteral(" ")));
+    expect("rejected bridge payloads never enter the queue", dsd_app_drain_cmds(opts.get(), state.get()) == 0);
+    freeState(state.get());
+    DSD_SECURE_ZERO(state.get(), sizeof(*state));
+}
+
 int
 main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
@@ -292,6 +349,7 @@ main(int argc, char** argv) {
     qputenv("XDG_DATA_HOME", dir.path().toUtf8());
     clearWithConcurrentSubmit();
     realKeySources();
+    test_live_formatted_keys();
     {
         DiagnosticsLog log(dir.path());
         DiagnosticsLogModel model(&log);

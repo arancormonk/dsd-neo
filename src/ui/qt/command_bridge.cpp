@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "decode_mode_flag.h"
+#include "session_args.h"
 
 namespace dsd_qt {
 
@@ -245,7 +246,10 @@ CommandBridge::applyEncryptionKey(const QString& type, const QString& value) con
     } else {
         return false;
     }
-    QByteArray bytes = value.toUtf8();
+    // Match startup validation before measuring the wire payload: byte-pair
+    // spacing and an optional 0x prefix must not make a valid AES key too large.
+    const bool hex = payload.key_type == DSD_APP_KEY_TYPE_HEX || payload.key_type == DSD_APP_KEY_TYPE_RC4;
+    QByteArray bytes = (hex ? session_args_key_hex_normalize(value) : value).toUtf8();
     const bool fits = bytes.size() < static_cast<qsizetype>(sizeof payload.value) && !bytes.contains('\0');
     int result = DSD_APP_COMMAND_SUBMIT_REJECTED;
     if (fits) {
