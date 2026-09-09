@@ -2946,6 +2946,9 @@ if(DSD_ENABLE_QT_UI)
             dsd-neo_test_ui_qt_qml
             ui/test_ui_qt_qml_main.cpp
             ui/qml_test_context.h
+            # WP-F2: real network fixture, using only the snapshot-copy facade.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/app_control/p25_network.c
             ui/qml_spectrum_stub.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
@@ -2988,6 +2991,7 @@ if(DSD_ENABLE_QT_UI)
                 Qt6::Qml
                 Qt6::Quick
                 Qt6::QuickTest
+                dsd-neo_proto_p25 # WP-F2 CFVA formatting
                 dsd-neo_core
                 dsd-neo_proto_dmr
         )
@@ -10088,6 +10092,7 @@ if(DSD_ENABLE_QT_UI)
     add_executable(
         dsd-neo_test_ui_qt_controller
         ui/test_ui_qt_controller.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp # WP-F2
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
@@ -10245,3 +10250,40 @@ add_test(
     NAME ENGINE_EMERGENCY_HISTORY
     COMMAND dsd-neo_test_engine_emergency_history
 )
+
+# WP-F2: bounded network views and sheet model.
+add_executable(
+    dsd-neo_test_app_control_p25_network
+    ui/test_app_control_p25_network.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_p25_network
+    PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS}
+)
+target_include_directories(
+    dsd-neo_test_app_control_p25_network
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control
+)
+add_test(
+    NAME APP_CONTROL_P25_NETWORK
+    COMMAND dsd-neo_test_app_control_p25_network
+)
+dsd_neo_add_public_header_smoke_test(
+    dsd-neo_test_headers_public_app_control_p25_network
+    HEADERS_PUBLIC_APP_CONTROL_P25_NETWORK
+    dsd-neo/app_control/p25_network.h C
+)
+if(DSD_ENABLE_QT_UI)
+    add_executable(
+        dsd-neo_test_ui_qt_p25_network_model
+        ui/test_ui_qt_p25_network_model.cpp
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_p25_network_model
+        PRIVATE dsd-neo_ui_qt ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS}
+    )
+    add_test(
+        NAME UI_QT_P25_NETWORK_MODEL
+        COMMAND dsd-neo_test_ui_qt_p25_network_model
+    )
+endif()

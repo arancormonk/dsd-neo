@@ -16,6 +16,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "metrics_model.h"
+#include "p25_network_model.h" // WP-F2
 #include "talkgroup_list_model.h"
 
 namespace dsd_qt {
@@ -100,6 +101,9 @@ UiController::onSessionStateChanged() {
 
 void
 UiController::clearLiveModels() {
+    if (m_network != nullptr) {
+        m_network->clear();
+    }
     if (m_metrics != nullptr) {
         m_metrics->clear();
     }
@@ -138,12 +142,18 @@ UiController::tick() {
         m_active_ordinal = snapshot->trunk_scan_active_ordinal;
         // The new target can be quiet; waiting for a new call would let the old
         // target's held sync/identity continue to caption this frequency.
+        if (m_network) {
+            m_network->clear();
+        }
         if (m_metrics) {
             m_metrics->clear();
         }
         if (m_talkgroups) {
             m_talkgroups->invalidateForTarget();
         }
+    }
+    if (live && m_network != nullptr) {
+        m_network->refresh(snapshot);
     }
     if (live && m_metrics != nullptr) {
         m_metrics->refresh(opts_snapshot, snapshot);

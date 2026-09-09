@@ -21,6 +21,8 @@
 #include "decoder_host.h"
 #include "diagnostics_log.h"
 #include "metrics_model.h"
+#include "p25_network_model.h"
+#include "snapshot_internal.h"
 #include "talkgroup_list_model.h"
 #include "ui_controller.h"
 
@@ -80,6 +82,9 @@ main(int argc, char** argv) {
     dsd_qt::TalkgroupListModel talkgroups(nullptr);
     dsd_qt::UiController controller(&host, &metrics, nullptr, &talkgroups);
     int resets = 0;
+    dsd_qt::P25NetworkModel network;
+    network.setActive(true);
+    controller.setP25Network(&network);
     controller.setPollIntervalMs(50);
     QTemporaryDir diagnosticsDir;
     dsd_qt::DiagnosticsLog diagnostics(diagnosticsDir.path());
@@ -99,11 +104,14 @@ main(int argc, char** argv) {
     check(dsd_tg_policy_make_exact_entry(1001, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
     check(dsd_tg_policy_append_exact(&state, &entry) == 0);
     state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_aff_rid[0] = 123;
     state.trunk_scan_active_ordinal = 1;
     tick();
     check(!metrics.syncLabel().isEmpty());
     check(talkgroups.count() == 1);
     QObject::connect(&talkgroups, &QAbstractItemModel::modelReset, [&]() { ++resets; });
+    check(network.radios().size() == 1);
+    network.setActive(false); // Clearing must also reach closed sheets.
     state.synctype = DSD_SYNC_NONE;
     state.lastsynctype = DSD_SYNC_NONE;
     state.trunk_scan_active_ordinal = 2;
@@ -111,6 +119,8 @@ main(int argc, char** argv) {
     check(resets == 0); // A scan hop must preserve the list view.
     check(talkgroups.count() == 1);
     check(metrics.syncLabel().isEmpty()); // Old target's sync hold must not survive.
+    check(network.radios().isEmpty());
+    network.setActive(true);
     diagnostics.submit("host", "info", "before next session");
     for (auto phase : {Host::Starting, Host::Idle, Host::Failed}) {
         host.setPhase(Host::Running);
@@ -122,13 +132,16 @@ main(int argc, char** argv) {
         check(metrics.p25NacValid() && !metrics.siteLine().isEmpty());
         check(metrics.qualityValid() && metrics.ccFecOkPct() == 75.0);
         check(!metrics.syncLabel().isEmpty());
+        check(network.radios().size() == 1);
         host.setPhase(phase);
+        check(network.radios().isEmpty());
         tick(); // The last engine snapshot is still published after stop.
         check(metrics.syncLabel().isEmpty());
         check(metrics.siteLine().isEmpty() && !metrics.p25NacValid() && !metrics.siteConfirmed());
         check(!metrics.qualityValid() && !metrics.ccFecValid());
         check(diagnosticsModel.allText().contains("before next session"));
         check(diagnosticsModel.allText().count("--- session starting ---") == 1);
+        check(network.radios().isEmpty());
         host.setPhase(phase); // Repeated state notification is not another boundary.
         check(diagnosticsModel.allText().count("--- session starting ---") == 1);
     }

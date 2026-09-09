@@ -7,6 +7,8 @@ ModalSheet {
     panelObjectName: "siteSheetPanel"
     spacing: 14
 
+    signal networkRequested()
+
     function hex(value, width) {
         return Number(value).toString(16).toUpperCase().padStart(width, "0");
     }
@@ -110,6 +112,16 @@ ModalSheet {
             { label: qsTr("CC"), name: "siteCcFreq", valid: metrics.ccFreqHz > 0, value: (metrics.ccFreqHz / 1000000).toFixed(6) + " MHz" },
             { label: qsTr("VC"), name: "siteVcFreq", valid: metrics.vcFreqHz > 0, value: (metrics.vcFreqHz / 1000000).toFixed(6) + " MHz" }
         ]
+    }
+    OutlineButton {
+        objectName: "siteNetworkButton"
+        width: parent.width
+        text: qsTr("Network")
+        visible: metrics.siteProtocol === "P25"
+        onClicked: {
+            sheet.visible = false;
+            sheet.networkRequested();
+        }
     }
     OutlineButton {
         width: parent.width

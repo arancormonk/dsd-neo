@@ -528,6 +528,12 @@ Qt Quick frontend (`src/ui/qt`):
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. Skip shares this
   mutation path, preserving labels. Runtime's `dsd_rr_talkgroups_apply_categories()` supplies category names to
   both RadioReference frontends before CSV generation.
+- `p25_network_model.{h,cpp}` copies four bounded lists through the frontend-neutral
+  `app_control/p25_network.h` facade using `UiController::tick`'s held snapshot.
+  `qml/NetworkSheet.qml` activates refresh only while visible; session edges and
+  scan-target changes clear it through `clearLiveModels()`. The C facade sorts
+  recent-first, resolves candidate flags from the snapshot's deep-copied extension,
+  formats CFVA through P25, and filters expired patches without mutating the snapshot.
 - `diagnostics_log.{h,cpp}` owns the process ring, the sole redaction/capture stage,
   and the asynchronous bounded tail writer. `DiagnosticsLogModel` refreshes before
   the redraw consume in `UiController::tick`; it persists across decoder session

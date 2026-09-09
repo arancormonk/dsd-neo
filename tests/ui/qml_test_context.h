@@ -64,6 +64,7 @@
 #include "decoder_host.h"
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
+#include "p25_network_model.h" // WP-F2
 #include "qml_spectrum_stub.h"
 #include "saved_systems_model.h"
 #include "session_args.h"
@@ -1347,6 +1348,7 @@ class Setup : public QObject {
         auto* session_args = new dsd_qt::SessionArgsBuilder(app_prefs, engine);
         session_args->setSavedSystems(saved_systems);
         ctx->setContextProperty(QStringLiteral("importedFiles"), imported_files);
+        ctx->setContextProperty(QStringLiteral("p25Network"), new dsd_qt::P25NetworkModel(engine)); // WP-F2
         ctx->setContextProperty(QStringLiteral("diagnosticsLog"), new dsd_qt::DiagnosticsLogModel(nullptr, engine));
         ctx->setContextProperty(QStringLiteral("uiController"), new TestUiController(engine));
         ctx->setContextProperty(QStringLiteral("savedSystems"), saved_systems);

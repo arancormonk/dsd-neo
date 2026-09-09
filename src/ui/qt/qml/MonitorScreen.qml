@@ -12,6 +12,8 @@ Item {
     // Raised by the header's spectrum button; Main.qml owns the layer.
     readonly property bool compactHeight: height < 500
 
+    onVisibleChanged: { if (!visible) networkSheet.visible = false; }
+
     signal openSpectrum
     signal openTalkgroups
 
@@ -913,6 +915,9 @@ Item {
     SiteSheet {
         id: siteSheet
         z: 10
+        onNetworkRequested: networkSheet.open()
     }
 
+    // WP-F2: read-only network sheet, opened from SiteSheet.
+    NetworkSheet { id: networkSheet; z: 100 }
 }
