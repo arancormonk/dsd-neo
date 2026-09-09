@@ -101,6 +101,7 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     start(const QStringList& argv) override {
         Q_UNUSED(argv)
         if (acceptStart) {
+            phase = Starting;
             m_running = true;
             Q_EMIT runningChanged();
             Q_EMIT sessionStateChanged();
@@ -110,8 +111,22 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     void
     stop() override {
+        phase = Idle;
         m_running = false;
         Q_EMIT runningChanged();
+        Q_EMIT sessionStateChanged();
+    }
+
+    SessionState phase = Idle;
+
+    SessionState
+    sessionState() const override {
+        return phase;
+    }
+
+    void
+    setPhase(SessionState value) {
+        phase = value;
         Q_EMIT sessionStateChanged();
     }
 
@@ -890,6 +905,11 @@ class Setup : public QObject {
     }
 
     Q_INVOKABLE void
+    setLifecyclePhase(int value) {
+        m_import_host->setPhase(static_cast<dsd_qt::DecoderHost::SessionState>(value));
+    }
+
+    Q_INVOKABLE void
     emitSessionInitialized() {
         Q_EMIT m_import_host->sessionInitialized();
     }
@@ -1295,6 +1315,7 @@ class Setup : public QObject {
         auto* app_prefs = new dsd_qt::AppPrefs(engine);
         m_app_prefs = app_prefs;
         auto* session_args = new dsd_qt::SessionArgsBuilder(app_prefs, engine);
+        session_args->setSavedSystems(saved_systems);
         ctx->setContextProperty(QStringLiteral("importedFiles"), imported_files);
         ctx->setContextProperty(QStringLiteral("diagnosticsLog"), new dsd_qt::DiagnosticsLogModel(nullptr, engine));
         ctx->setContextProperty(QStringLiteral("uiController"), new TestUiController(engine));

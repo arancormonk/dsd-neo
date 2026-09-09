@@ -28,7 +28,7 @@ Item {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             text: "‹"
-            font.pixelSize: 28
+            font.pixelSize: Theme.fontSize(28)
             color: Theme.textSecondary
 
             TapHandler {
@@ -43,7 +43,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: screen.systemName.length > 0 ? screen.systemName : qsTr("Talk groups")
             font.family: Theme.sans
-            font.pixelSize: 22
+            font.pixelSize: Theme.fontSize(22)
             font.weight: Font.Bold
             font.letterSpacing: -0.22
             color: Theme.textPrimary
@@ -132,7 +132,7 @@ Item {
             TextMetrics {
                 id: noTuneLabel
                 font.family: Theme.sans
-                font.pixelSize: 15
+                font.pixelSize: Theme.fontSize(15)
                 font.weight: Font.DemiBold
                 text: talkgroupView.filterTag.length > 0
                       ? qsTr("Do not tune all · %1").arg(talkgroupView.filterTag) : qsTr("Do not tune all")
@@ -152,7 +152,7 @@ Item {
             TextMetrics {
                 id: listenLabel
                 font.family: Theme.sans
-                font.pixelSize: 15
+                font.pixelSize: Theme.fontSize(15)
                 font.weight: Font.Bold
                 text: talkgroupView.filterTag.length > 0
                       ? qsTr("Listen all · %1").arg(talkgroupView.filterTag) : qsTr("Listen all")
@@ -196,7 +196,7 @@ Item {
             visible: talkgroups.count === 0
             text: qsTr("No talkgroups yet. Calls heard on this system will appear here.")
             font.family: Theme.sans
-            font.pixelSize: 14
+            font.pixelSize: Theme.fontSize(14)
             color: Theme.textSubdued
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignHCenter
@@ -226,7 +226,7 @@ Item {
             Text {
                 text: qsTr("Listening")
                 font.family: Theme.sans
-                font.pixelSize: 11
+                font.pixelSize: Theme.fontSize(11)
                 color: Theme.textSecondary
             }
 
@@ -241,7 +241,7 @@ Item {
             Text {
                 text: qsTr("Not tuned")
                 font.family: Theme.sans
-                font.pixelSize: 11
+                font.pixelSize: Theme.fontSize(11)
                 color: Theme.textSecondary
             }
         }
@@ -252,7 +252,7 @@ Item {
             visible: !talkgroups.persistent
             text: qsTr("Changes last for this session. Give the system a talkgroup list to keep them.")
             font.family: Theme.sans
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontSize(12)
             color: Theme.textSubdued
             wrapMode: Text.Wrap
         }
@@ -262,7 +262,7 @@ Item {
             visible: talkgroups.allowListMode
             text: qsTr("Allow list on: talkgroups not on this list are never tuned.")
             font.family: Theme.sans
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontSize(12)
             color: Theme.textSubdued
             wrapMode: Text.Wrap
         }

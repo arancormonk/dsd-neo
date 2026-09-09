@@ -417,7 +417,7 @@ Item {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             text: "‹"
-            font.pixelSize: 28
+            font.pixelSize: Theme.fontSize(28)
             color: Theme.textSecondary
 
             TapHandler {
@@ -436,7 +436,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: wizard.editRow >= 0 ? qsTr("Edit system") : qsTr("Add system")
             font.family: Theme.sans
-            font.pixelSize: 22
+            font.pixelSize: Theme.fontSize(22)
             font.weight: Font.Bold
             font.letterSpacing: -0.22
             color: Theme.textPrimary
@@ -499,7 +499,7 @@ Item {
                 Text {
                     text: qsTr("Where does the signal come from?")
                     font.family: Theme.sans
-                    font.pixelSize: 15
+                    font.pixelSize: Theme.fontSize(15)
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
                 }
@@ -537,7 +537,7 @@ Item {
                     visible: wizard.sourceType === "usb"
                     text: qsTr("An RTL-SDR dongle on a USB-OTG cable. Most public-safety listening starts here.")
                     font.family: Theme.sans
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSubdued
                     wrapMode: Text.Wrap
                 }
@@ -550,7 +550,7 @@ Item {
                     Text {
                         text: qsTr("Host")
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSecondary
                     }
 
@@ -571,7 +571,7 @@ Item {
                     Text {
                         text: wizard.sourceType === "udp" ? qsTr("Listen port") : qsTr("Port")
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSecondary
                     }
 
@@ -599,7 +599,7 @@ Item {
                     Text {
                         text: qsTr("Audio or capture file")
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSecondary
                     }
 
@@ -678,7 +678,7 @@ Item {
                         Text {
                             text: qsTr("Frequency")
                             font.family: Theme.sans
-                            font.pixelSize: 14
+                            font.pixelSize: Theme.fontSize(14)
                             color: Theme.textSecondary
                         }
 
@@ -713,7 +713,7 @@ Item {
                                      ? qsTr("Tune to the frequency you want to hear.")
                                      : qsTr("Tune to the frequency you want to hear — find it on RadioReference."))
                             font.family: Theme.sans
-                            font.pixelSize: 13
+                            font.pixelSize: Theme.fontSize(13)
                             color: Theme.textSubdued
                             wrapMode: Text.Wrap
                         }
@@ -723,7 +723,7 @@ Item {
                 Text {
                     text: qsTr("What should we decode?")
                     font.family: Theme.sans
-                    font.pixelSize: 15
+                    font.pixelSize: Theme.fontSize(15)
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
                 }
@@ -751,7 +751,7 @@ Item {
                     width: parent.width
                     text: Util.decodeHint(wizard.decodeFlag)
                     font.family: Theme.sans
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSubdued
                     wrapMode: Text.Wrap
                 }
@@ -775,7 +775,7 @@ Item {
                             // decision rule for anyone who does not.
                             text: qsTr("Trunking")
                             font.family: Theme.sans
-                            font.pixelSize: 15
+                            font.pixelSize: Theme.fontSize(15)
                             font.weight: Font.DemiBold
                             color: Theme.textPrimary
                             elide: Text.ElideRight
@@ -791,7 +791,7 @@ Item {
                             // user actually tuned.
                             text: qsTr("On when the system uses a control channel")
                             font.family: Theme.sans
-                            font.pixelSize: 13
+                            font.pixelSize: Theme.fontSize(13)
                             color: Theme.textSubdued
                             elide: Text.ElideRight
                         }
@@ -873,7 +873,7 @@ Item {
                             visible: wizard.csvNotice.length > 0
                             text: wizard.csvNotice
                             font.family: Theme.sans
-                            font.pixelSize: 12
+                            font.pixelSize: Theme.fontSize(12)
                             color: wizard.csvNoticeIsProblem ? Theme.magenta : Theme.textSubdued
                             wrapMode: Text.Wrap
                         }
@@ -885,7 +885,7 @@ Item {
                             bottomPadding: 6
                             text: qsTr("Imported files are shared between systems. Manage them in Settings.")
                             font.family: Theme.sans
-                            font.pixelSize: 12
+                            font.pixelSize: Theme.fontSize(12)
                             color: Theme.textSubdued
                             wrapMode: Text.Wrap
                         }
@@ -921,7 +921,7 @@ Item {
                                 width: parent.width
                                 text: qsTr("Advanced")
                                 font.family: Theme.sans
-                                font.pixelSize: 15
+                                font.pixelSize: Theme.fontSize(15)
                                 font.weight: Font.DemiBold
                                 color: Theme.textSecondary
                                 elide: Text.ElideRight
@@ -933,7 +933,7 @@ Item {
                                       ? qsTr("Gain, PPM, bandwidth, bias tee — defaults work")
                                       : qsTr("Extra decoder flags — defaults work")
                                 font.family: Theme.sans
-                                font.pixelSize: 13
+                                font.pixelSize: Theme.fontSize(13)
                                 color: Theme.textSubdued
                                 elide: Text.ElideRight
                             }
@@ -980,7 +980,7 @@ Item {
                                 Text {
                                     text: qsTr("Gain dB")
                                     font.family: Theme.sans
-                                    font.pixelSize: 12
+                                    font.pixelSize: Theme.fontSize(12)
                                     color: Theme.textSecondary
                                 }
 
@@ -1008,7 +1008,7 @@ Item {
                                 Text {
                                     text: qsTr("PPM")
                                     font.family: Theme.sans
-                                    font.pixelSize: 12
+                                    font.pixelSize: Theme.fontSize(12)
                                     color: Theme.textSecondary
                                 }
 
@@ -1035,7 +1035,7 @@ Item {
                                 Text {
                                     text: qsTr("BW kHz")
                                     font.family: Theme.sans
-                                    font.pixelSize: 12
+                                    font.pixelSize: Theme.fontSize(12)
                                     color: Theme.textSecondary
                                 }
 
@@ -1064,14 +1064,14 @@ Item {
                             Text {
                                 text: qsTr("Bias tee")
                                 font.family: Theme.sans
-                                font.pixelSize: 14
+                                font.pixelSize: Theme.fontSize(14)
                                 color: Theme.textPrimary
                             }
 
                             Text {
                                 text: qsTr("Powers an external LNA. Off wins over the app-wide setting.")
                                 font.family: Theme.sans
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontSize(12)
                                 color: Theme.textSubdued
                             }
 
@@ -1092,7 +1092,7 @@ Item {
                             Text {
                                 text: qsTr("Extra CLI flags")
                                 font.family: Theme.sans
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontSize(12)
                                 color: Theme.textSecondary
                             }
 
@@ -1124,7 +1124,7 @@ Item {
                 Text {
                     text: qsTr("What should we call it?")
                     font.family: Theme.sans
-                    font.pixelSize: 15
+                    font.pixelSize: Theme.fontSize(15)
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
                 }
@@ -1139,7 +1139,7 @@ Item {
                     width: parent.width
                     text: qsTr("The name is yours — county, agency, whatever you'll recognize on the home screen.")
                     font.family: Theme.sans
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSubdued
                     wrapMode: Text.Wrap
                 }
@@ -1245,7 +1245,7 @@ Item {
                                 width: parent.width
                                 text: modelData.name
                                 font.family: Theme.sans
-                                font.pixelSize: 15
+                                font.pixelSize: Theme.fontSize(15)
                                 font.weight: Font.DemiBold
                                 color: modelData.path === csvSheet.currentPath ? Theme.cyan : Theme.textPrimary
                                 elide: Text.ElideRight
@@ -1255,7 +1255,7 @@ Item {
                                 width: parent.width
                                 text: csvSheet.entrySummary(modelData)
                                 font.family: Theme.sans
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontSize(12)
                                 color: Theme.textSubdued
                                 elide: Text.ElideRight
                             }

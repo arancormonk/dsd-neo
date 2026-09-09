@@ -47,7 +47,7 @@ Item {
         anchors.centerIn: parent
         text: control.text
         font.family: Theme.sans
-        font.pixelSize: 15
+        font.pixelSize: Theme.fontSize(15)
         font.weight: Font.DemiBold
         color: Theme.cyan
     }

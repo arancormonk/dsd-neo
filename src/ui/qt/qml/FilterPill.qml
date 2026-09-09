@@ -29,7 +29,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             text: control.text
             font.family: Theme.sans
-            font.pixelSize: 13
+            font.pixelSize: Theme.fontSize(13)
             font.weight: Font.DemiBold
             color: control.active ? Theme.cyan : Theme.buttonSecondaryText
         }

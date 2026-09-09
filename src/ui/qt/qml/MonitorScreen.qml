@@ -102,7 +102,7 @@ Item {
                 width: parent.width
                 text: screen.systemName
                 font.family: Theme.sans
-                font.pixelSize: 20 * Theme.fontScale
+                font.pixelSize: Theme.fontSize(20)
                 font.weight: Font.DemiBold
                 color: Theme.textPrimary
                 elide: Text.ElideRight
@@ -112,7 +112,7 @@ Item {
                 width: parent.width
                 text: screen.system ? Util.monitorMeta(screen.system) : ""
                 font.family: Theme.mono
-                font.pixelSize: 11 * Theme.fontScale
+                font.pixelSize: Theme.fontSize(11)
                 font.letterSpacing: 0.8
                 color: Theme.textSubdued
                 elide: Text.ElideRight
@@ -152,7 +152,7 @@ Item {
                 anchors.centerIn: parent
                 text: qsTr("SPECTRUM")
                 font.family: Theme.mono
-                font.pixelSize: 11 * Theme.fontScale
+                font.pixelSize: Theme.fontSize(11)
                 font.letterSpacing: 1.4
                 color: Theme.textSecondary
             }
@@ -206,7 +206,7 @@ Item {
                 Text {
                     text: decoderHost.running ? qsTr("LIVE") : decoderHost.statusText.toUpperCase()
                     font.family: Theme.mono
-                    font.pixelSize: 11 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(11)
                     font.letterSpacing: 1.4
                     color: Theme.textPrimary
                 }
@@ -296,7 +296,7 @@ Item {
                 // absence of one is "no signal".
                 text: metrics.carrierLock ? qsTr("waiting for a call…") : qsTr("waiting for signal…")
                 font.family: Theme.sans
-                font.pixelSize: 20 * Theme.fontScale
+                font.pixelSize: Theme.fontSize(20)
                 color: Theme.textSubdued
             }
 
@@ -328,7 +328,7 @@ Item {
                         return parts.join(" · ");
                     }
                     font.family: Theme.mono
-                    font.pixelSize: 13 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSecondary
                 }
 
@@ -353,7 +353,7 @@ Item {
                     elide: Text.ElideRight
                     text: screen.heroEncText
                     font.family: Theme.mono
-                    font.pixelSize: 11 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(11)
                     color: Theme.textSubdued
                 }
 
@@ -371,7 +371,7 @@ Item {
                     elide: Text.ElideRight
                     text: "· " + screen.heroChannel
                     font.family: Theme.mono
-                    font.pixelSize: 13 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSecondary
                 }
             }
@@ -393,7 +393,7 @@ Item {
             text: Util.fmtDuration(screen.heroSeconds)
             visible: screen.heroSlot !== 0
             font.family: Theme.mono
-            font.pixelSize: (screen.compactHeight ? 14 : 24) * Theme.fontScale
+            font.pixelSize: Theme.fontSize(screen.compactHeight ? 14 : 24)
             font.weight: Font.Medium
             color: Theme.textPrimary
         }
@@ -512,7 +512,7 @@ Item {
                 visible: metrics.uiMessage.length > 0
                 text: metrics.uiMessage
                 font.family: Theme.mono
-                font.pixelSize: 12 * Theme.fontScale
+                font.pixelSize: Theme.fontSize(12)
                 color: Theme.cyan
                 elide: Text.ElideRight
             }
@@ -541,7 +541,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     text: screen.otherName.length > 0 ? screen.otherName + " · TG " + screen.otherTg : "TG " + screen.otherTg
                     font.family: Theme.sans
-                    font.pixelSize: 14 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(14)
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
                     elide: Text.ElideRight
@@ -588,14 +588,14 @@ Item {
                     Text {
                         text: qsTr("SNR")
                         font.family: Theme.mono
-                        font.pixelSize: 11 * Theme.fontScale
+                        font.pixelSize: Theme.fontSize(11)
                         color: Theme.textSubdued
                     }
 
                     Text {
                         text: metrics.snrValid ? metrics.snrDb.toFixed(1) + " dB" : "—"
                         font.family: Theme.mono
-                        font.pixelSize: 11 * Theme.fontScale
+                        font.pixelSize: Theme.fontSize(11)
                         color: metrics.snrValid ? Theme.cyan : Theme.textSubdued
                     }
                 }
@@ -606,7 +606,7 @@ Item {
                     Text {
                         text: qsTr("LOCK")
                         font.family: Theme.mono
-                        font.pixelSize: 11 * Theme.fontScale
+                        font.pixelSize: Theme.fontSize(11)
                         color: Theme.textSubdued
                     }
 
@@ -622,14 +622,14 @@ Item {
                 Text {
                     text: "CFO " + metrics.cfoHz.toFixed(0) + " Hz"
                     font.family: Theme.mono
-                    font.pixelSize: 11 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(11)
                     color: Theme.textSubdued
                 }
 
                 Text {
                     text: qsTr("GAIN") + " " + metrics.tunerGainText
                     font.family: Theme.mono
-                    font.pixelSize: 11 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(11)
                     color: Theme.textSubdued
                 }
 
@@ -641,14 +641,14 @@ Item {
                     Text {
                         text: qsTr("STREAM")
                         font.family: Theme.mono
-                        font.pixelSize: 11 * Theme.fontScale
+                        font.pixelSize: Theme.fontSize(11)
                         color: Theme.textSubdued
                     }
 
                     Text {
                         text: metrics.streamActive ? qsTr("ACTIVE") : qsTr("IDLE")
                         font.family: Theme.mono
-                        font.pixelSize: 11 * Theme.fontScale
+                        font.pixelSize: Theme.fontSize(11)
                         color: metrics.streamActive ? Theme.cyan : Theme.textSubdued
                     }
                 }
@@ -666,7 +666,7 @@ Item {
                     visible: metrics.ccFecValid
                     text: qsTr("CC FEC") + " " + metrics.ccFecOkPct.toFixed(0) + "%"
                     font.family: Theme.mono
-                    font.pixelSize: 11 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(11)
                     color: Theme.textSubdued
                 }
                 Text {
@@ -674,7 +674,7 @@ Item {
                     visible: metrics.voiceErrsValid
                     text: qsTr("VOICE") + " " + metrics.voiceErrsPerFrame.toFixed(1) + " err/fr"
                     font.family: Theme.mono
-                    font.pixelSize: 11 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(11)
                     color: Theme.cyan
                 }
                 Text {
@@ -682,7 +682,7 @@ Item {
                     visible: metrics.rsValid
                     text: qsTr("RS") + " " + metrics.rsOkPct.toFixed(0) + "%"
                     font.family: Theme.mono
-                    font.pixelSize: 11 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(11)
                     color: Theme.textSubdued
                 }
                 Text {
@@ -690,7 +690,7 @@ Item {
                     visible: metrics.lastFrameErrsValid
                     text: qsTr("ERR") + " " + metrics.lastFrameErrs + "/" + metrics.lastFrameErrs2
                     font.family: Theme.mono
-                    font.pixelSize: 11 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(11)
                     color: Theme.textSubdued
                 }
             }
@@ -719,7 +719,7 @@ Item {
                 Text {
                     text: qsTr("ENC LOCKOUT")
                     font.family: Theme.mono
-                    font.pixelSize: 11 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(11)
                     color: Theme.textSubdued
                 }
 
@@ -728,7 +728,7 @@ Item {
 
                     text: metrics.encLockoutCount.toString()
                     font.family: Theme.mono
-                    font.pixelSize: 11 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(11)
                     color: Theme.magenta
                 }
             }
@@ -749,7 +749,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     text: metrics.scanTargetAvoided ? qsTr("SCAN AVOIDS [avoided]") : qsTr("SCAN AVOIDS")
                     font.family: Theme.mono
-                    font.pixelSize: 11 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(11)
                     color: Theme.textSubdued
                 }
 
@@ -759,7 +759,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     text: metrics.scanAvoidCount.toString()
                     font.family: Theme.mono
-                    font.pixelSize: 11 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(11)
                     color: Theme.cyan
                 }
 
@@ -846,7 +846,7 @@ Item {
                     visible: recentList.count === 0
                     text: qsTr("Calls will appear here as they land.")
                     font.family: Theme.sans
-                    font.pixelSize: 13 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSubdued
                 }
             }

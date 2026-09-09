@@ -137,7 +137,7 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         text: Math.round(rail.lowHz / 1.0e6)
         font.family: Theme.mono
-        font.pixelSize: 10
+        font.pixelSize: Theme.fontSize(10)
         color: Theme.textSubdued
     }
 
@@ -148,7 +148,7 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         text: Math.round(rail.highHz / 1.0e6)
         font.family: Theme.mono
-        font.pixelSize: 10
+        font.pixelSize: Theme.fontSize(10)
         color: Theme.textSubdued
     }
 

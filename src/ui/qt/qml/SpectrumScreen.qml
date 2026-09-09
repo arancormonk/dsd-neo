@@ -332,7 +332,7 @@ Item {
                     // readout that drops a digit is worse than one that is tight.
                     text: screen.readoutHz > 0 ? Util.fmtMhz(screen.readoutHz) : "—"
                     font.family: Theme.mono
-                    font.pixelSize: 21
+                    font.pixelSize: Theme.fontSize(21)
                     font.weight: Font.Medium
                     // Cyan while it is a request rather than a fact, the same way
                     // every other in-flight thing on this screen reads — through
@@ -377,7 +377,7 @@ Item {
                 text: screen.viewOnly ? qsTr("VIEW ONLY")
                                       : screen.sweeping ? qsTr("SWEEPING") : qsTr("TAP TO TUNE")
                 font.family: Theme.mono
-                font.pixelSize: 11
+                font.pixelSize: Theme.fontSize(11)
                 font.letterSpacing: 1.4
                 color: screen.viewOnly ? Theme.magenta
                                        : screen.sweeping ? Theme.cyan : Theme.textSecondary
@@ -451,7 +451,7 @@ Item {
                         // expected is the whole explanation for silence.
                         text: metrics.syncedHere ? metrics.syncLabel.toUpperCase() : qsTr("NO SYNC")
                         font.family: Theme.mono
-                        font.pixelSize: 11
+                        font.pixelSize: Theme.fontSize(11)
                         font.letterSpacing: 1.0
                         color: metrics.syncedHere ? Theme.textPrimary : Theme.textSubdued
                     }
@@ -461,7 +461,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     text: metrics.snrValid ? metrics.snrDb.toFixed(1) + " dB" : "— dB"
                     font.family: Theme.mono
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.fontSize(11)
                     color: metrics.snrValid ? Theme.textSecondary : Theme.textSubdued
                 }
 
@@ -476,7 +476,7 @@ Item {
                     visible: metrics.syncedHere && Math.abs(metrics.cfoHz) >= 50
                     text: Math.round(metrics.cfoHz) + " Hz"
                     font.family: Theme.mono
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.fontSize(11)
                     // Loud once it is large enough to be why nothing decodes.
                     color: Math.abs(metrics.cfoHz) >= 500 ? Theme.magenta : Theme.textSecondary
                 }
@@ -494,7 +494,7 @@ Item {
                         return tg === "0" ? "" : tg
                     }
                     font.family: Theme.mono
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.fontSize(11)
                     color: Theme.cyan
                 }
             }
@@ -527,7 +527,7 @@ Item {
                     anchors.centerIn: parent
                     text: qsTr("RADIO")
                     font.family: Theme.mono
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.fontSize(10)
                     font.letterSpacing: 1.2
                     color: Theme.textSecondary
                 }
@@ -651,7 +651,7 @@ Item {
                 visible: !spectrum.hasData
                 text: qsTr("Waiting for signal data…")
                 font.family: Theme.mono
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontSize(12)
                 font.letterSpacing: 0.8
                 color: Theme.textSubdued
             }
@@ -851,7 +851,7 @@ Item {
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: spectrum.hasData ? (screen.stepHz / 1.0e6).toFixed(2) + " MHz" : "—"
                                     font.family: Theme.mono
-                                    font.pixelSize: 12
+                                    font.pixelSize: Theme.fontSize(12)
                                     color: screen.sweeping ? Theme.cyan : Theme.buttonSecondaryText
                                 }
                             }
@@ -1048,7 +1048,7 @@ Item {
                 // the engine has nothing to say about an empty band.
                 text: screen.hint.length > 0 ? screen.hint : metrics.uiMessage
                 font.family: Theme.mono
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontSize(12)
                 color: Theme.cyan
                 elide: Text.ElideRight
             }
@@ -1163,7 +1163,7 @@ Item {
             width: parent.width
             text: qsTr("Explore from here?")
             font.family: Theme.sans
-            font.pixelSize: 17
+            font.pixelSize: Theme.fontSize(17)
             font.weight: Font.Bold
             color: Theme.textPrimary
             wrapMode: Text.Wrap
@@ -1177,7 +1177,7 @@ Item {
                   ? qsTr("This stops stepping through the channel list for now. The saved system itself is unchanged.")
                   : qsTr("This stops following calls across channels for now. The saved system itself is unchanged.")
             font.family: Theme.sans
-            font.pixelSize: 14
+            font.pixelSize: Theme.fontSize(14)
             color: Theme.textSecondary
             wrapMode: Text.Wrap
         }

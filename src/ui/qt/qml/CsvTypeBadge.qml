@@ -28,7 +28,7 @@ Rectangle {
               : parent.type === "src" ? qsTr("RADIO IDS")
               : qsTr("FILE")
         font.family: Theme.mono
-        font.pixelSize: 10
+        font.pixelSize: Theme.fontSize(10)
         font.letterSpacing: 1
         color: Theme.textSecondary
     }

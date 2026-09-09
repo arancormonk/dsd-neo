@@ -31,7 +31,7 @@ Item {
             width: parent.width
             text: row.title
             font.family: Theme.sans
-            font.pixelSize: 15
+            font.pixelSize: Theme.fontSize(15)
             font.weight: Font.DemiBold
             color: Theme.textPrimary
             elide: Text.ElideRight
@@ -42,7 +42,7 @@ Item {
             visible: text.length > 0
             text: row.subtitle
             font.family: Theme.sans
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontSize(12)
             color: Theme.textSubdued
             // Wrapped rather than elided: the helper line is what makes the
             // question answerable, and 62px holds the two 12px lines a wrapped

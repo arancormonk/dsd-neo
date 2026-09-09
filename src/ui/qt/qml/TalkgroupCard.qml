@@ -27,7 +27,7 @@ Rectangle {
             width: parent.width
             text: card.idText
             font.family: Theme.mono
-            font.pixelSize: 15
+            font.pixelSize: Theme.fontSize(15)
             font.weight: Font.DemiBold
             color: Theme.textPrimary
             elide: Text.ElideRight
@@ -37,7 +37,7 @@ Rectangle {
             width: parent.width
             text: card.name
             font.family: Theme.sans
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontSize(12)
             color: Theme.textSecondary
             maximumLineCount: 2
             wrapMode: Text.Wrap
@@ -67,7 +67,7 @@ Rectangle {
                 width: parent.width - 11
                 text: card.listening ? qsTr("Listening") : qsTr("Not tuned")
                 font.family: Theme.sans
-                font.pixelSize: 11
+                font.pixelSize: Theme.fontSize(11)
                 color: card.listening ? Theme.cyan : Theme.textSubdued
                 elide: Text.ElideRight
             }

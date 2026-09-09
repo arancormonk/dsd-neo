@@ -32,7 +32,7 @@ Rectangle {
         anchors.rightMargin: 14
         verticalAlignment: TextInput.AlignVCenter
         font.family: control.mono ? Theme.mono : Theme.sans
-        font.pixelSize: 15 * Theme.fontScale
+        font.pixelSize: Theme.fontSize(15)
         color: Theme.textPrimary
         selectionColor: Qt.alpha(Theme.cyan, 0.35)
         selectedTextColor: Theme.textPrimary

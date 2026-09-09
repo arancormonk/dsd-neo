@@ -138,7 +138,12 @@ UiController::tick() {
         m_active_ordinal = snapshot->trunk_scan_active_ordinal;
         // The new target can be quiet; waiting for a new call would let the old
         // target's held sync/identity continue to caption this frequency.
-        clearLiveModels();
+        if (m_metrics) {
+            m_metrics->clear();
+        }
+        if (m_talkgroups) {
+            m_talkgroups->invalidateForTarget();
+        }
     }
     if (live && m_metrics != nullptr) {
         m_metrics->refresh(opts_snapshot, snapshot);

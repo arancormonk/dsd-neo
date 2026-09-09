@@ -41,7 +41,7 @@ Column {
 
             width: Math.max(implicitWidth, 60)
             font.family: Theme.mono
-            font.pixelSize: root.pixelSize
+            font.pixelSize: Theme.fontSize(root.pixelSize)
             font.weight: Font.Medium
             color: Theme.textPrimary
             inputMethodHints: Qt.ImhFormattedNumbersOnly
@@ -57,7 +57,7 @@ Column {
             text: "MHz"
             anchors.baseline: field.baseline
             font.family: Theme.mono
-            font.pixelSize: 15
+            font.pixelSize: Theme.fontSize(15)
             color: Theme.textSubdued
         }
     }

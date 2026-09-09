@@ -48,7 +48,7 @@ Item {
                 wrapMode: Text.WrapAnywhere
                 color: Theme.textPrimary
                 font.family: Theme.mono
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontSize(12)
             }
             ScrollBar.vertical: ScrollBar {}
         }

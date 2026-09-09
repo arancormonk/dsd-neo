@@ -37,7 +37,7 @@ Item {
             width: parent.width
             text: row.title
             font.family: Theme.sans
-            font.pixelSize: 15
+            font.pixelSize: Theme.fontSize(15)
             font.weight: Font.DemiBold
             color: Theme.textPrimary
             elide: Text.ElideRight
@@ -47,7 +47,7 @@ Item {
             width: parent.width
             text: row.subtitle
             font.family: Theme.sans
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontSize(12)
             color: row.subtitleColor
             elide: Text.ElideRight
         }

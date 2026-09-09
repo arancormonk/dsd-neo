@@ -41,7 +41,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("History")
                 font.family: Theme.sans
-                font.pixelSize: 24
+                font.pixelSize: Theme.fontSize(24)
                 font.weight: Font.Bold
                 font.letterSpacing: -0.24
                 color: Theme.textPrimary
@@ -53,7 +53,7 @@ Item {
                 visible: callHistory.count > 0
                 text: qsTr("Clear")
                 font.family: Theme.sans
-                font.pixelSize: 14
+                font.pixelSize: Theme.fontSize(14)
                 color: Theme.textSecondary
 
                 TapHandler {
@@ -239,7 +239,7 @@ Item {
             horizontalAlignment: Text.AlignHCenter
             text: parent.filtered ? qsTr("No matching activity") : qsTr("No calls yet")
             font.family: Theme.sans
-            font.pixelSize: 16
+            font.pixelSize: Theme.fontSize(16)
             font.weight: Font.DemiBold
             color: Theme.textSecondary
         }
@@ -252,7 +252,7 @@ Item {
             text: parent.filtered ? parent.hiddenText
                                   : qsTr("Start listening on a system and every call lands here.")
             font.family: Theme.sans
-            font.pixelSize: 13
+            font.pixelSize: Theme.fontSize(13)
             color: Theme.textSubdued
             wrapMode: Text.Wrap
         }
@@ -304,7 +304,7 @@ Item {
                     width: parent.width
                     text: qsTr("Clear call history?")
                     font.family: Theme.sans
-                    font.pixelSize: 17
+                    font.pixelSize: Theme.fontSize(17)
                     font.weight: Font.Bold
                     color: Theme.textPrimary
                 }
@@ -313,7 +313,7 @@ Item {
                     width: parent.width
                     text: qsTr("Every logged call and message is removed. A call playing right now still gets logged.")
                     font.family: Theme.sans
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSubdued
                     wrapMode: Text.Wrap
                 }

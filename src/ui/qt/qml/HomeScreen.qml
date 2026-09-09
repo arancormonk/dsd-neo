@@ -62,7 +62,7 @@ Item {
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
                     font.family: Theme.sans
-                    font.pixelSize: 24
+                    font.pixelSize: Theme.fontSize(24)
                     font.weight: Font.Bold
                     font.letterSpacing: -0.24
                     color: Theme.textPrimary
@@ -95,7 +95,7 @@ Item {
                         Text {
                             text: screen.dongleReady ? qsTr("DONGLE READY") : qsTr("NO DONGLE")
                             font.family: Theme.mono
-                            font.pixelSize: 11
+                            font.pixelSize: Theme.fontSize(11)
                             font.letterSpacing: 1.4
                             color: screen.dongleReady ? Theme.textPrimary : Theme.textSubdued
                         }
@@ -121,7 +121,7 @@ Item {
                     text: (typeof mainRoot !== "undefined" && mainRoot.showFailure) ? mainRoot.failureText : ""
                     wrapMode: Text.Wrap
                     font.family: Theme.sans
-                    font.pixelSize: 14
+                    font.pixelSize: Theme.fontSize(14)
                     color: Theme.textPrimary
                 }
 
@@ -131,7 +131,7 @@ Item {
                     anchors.rightMargin: Theme.cardPadding
                     anchors.verticalCenter: parent.verticalCenter
                     text: "✕"
-                    font.pixelSize: 15
+                    font.pixelSize: Theme.fontSize(15)
                     color: Theme.textSubdued
 
                     TapHandler {
@@ -176,7 +176,7 @@ Item {
                             width: parent.width
                             text: card.name
                             font.family: Theme.sans
-                            font.pixelSize: 17
+                            font.pixelSize: Theme.fontSize(17)
                             font.weight: Font.Bold
                             color: Theme.textPrimary
                             elide: Text.ElideRight
@@ -186,7 +186,7 @@ Item {
                             width: parent.width
                             text: Util.systemMeta(card)
                             font.family: Theme.mono
-                            font.pixelSize: 12
+                            font.pixelSize: Theme.fontSize(12)
                             color: Theme.textSubdued
                             elide: Text.ElideRight
                         }
@@ -196,7 +196,7 @@ Item {
                             // heardTick forces the minute-by-minute refresh.
                             text: (screen.heardTick, Util.heardText(card.lastHeard))
                             font.family: Theme.sans
-                            font.pixelSize: 13
+                            font.pixelSize: Theme.fontSize(13)
                             color: Theme.textSecondary
                             elide: Text.ElideRight
                         }
@@ -258,7 +258,7 @@ Item {
                         width: parent.width
                         text: qsTr("Explore the band")
                         font.family: Theme.sans
-                        font.pixelSize: 17
+                        font.pixelSize: Theme.fontSize(17)
                         font.weight: Font.Bold
                         color: Theme.textPrimary
                         elide: Text.ElideRight
@@ -312,7 +312,7 @@ Item {
                 horizontalAlignment: Text.AlignHCenter
                 text: qsTr("Network or file source ›")
                 font.family: Theme.sans
-                font.pixelSize: 13
+                font.pixelSize: Theme.fontSize(13)
                 color: Theme.textSubdued
 
                 TapHandler {
@@ -360,7 +360,7 @@ Item {
                     width: parent.width
                     text: manageMenu.systemName
                     font.family: Theme.sans
-                    font.pixelSize: 17
+                    font.pixelSize: Theme.fontSize(17)
                     font.weight: Font.Bold
                     color: Theme.textPrimary
                     elide: Text.ElideRight

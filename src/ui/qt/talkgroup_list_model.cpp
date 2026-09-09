@@ -207,6 +207,13 @@ TalkgroupListModel::updateCategories(const QSet<QString>& categoryTags) {
 }
 
 void
+TalkgroupListModel::invalidateForTarget() {
+    m_contextId = 0;
+    m_generation = 0;
+    m_heardDirty = true;
+}
+
+void
 TalkgroupListModel::clear() {
     const bool hadCounts = !m_rows.isEmpty() || m_notTunedCount != 0;
     if (!m_rows.isEmpty()) {

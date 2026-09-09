@@ -29,7 +29,7 @@ Item {
             width: parent.width
             text: row.name
             font.family: Theme.sans
-            font.pixelSize: 16
+            font.pixelSize: Theme.fontSize(16)
             font.weight: Font.DemiBold
             color: Theme.textPrimary
             elide: Text.ElideRight
@@ -39,7 +39,7 @@ Item {
             width: parent.width
             text: row.metaText
             font.family: Theme.mono
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontSize(12)
             color: Theme.textSubdued
             elide: Text.ElideRight
         }
@@ -68,7 +68,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: row.rightText
             font.family: Theme.mono
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontSize(12)
             color: Theme.textSubdued
         }
     }

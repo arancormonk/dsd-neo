@@ -51,7 +51,7 @@ Item {
         anchors.centerIn: parent
         text: control.text
         font.family: Theme.sans
-        font.pixelSize: 14
+        font.pixelSize: Theme.fontSize(14)
         font.weight: control.selected ? Font.Bold : Font.DemiBold
         color: control.selected ? Theme.textPrimary : Theme.buttonSecondaryText
     }

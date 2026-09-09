@@ -97,7 +97,7 @@ Rectangle {
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: modelData
                         font.family: Theme.sans
-                        font.pixelSize: 11
+                        font.pixelSize: Theme.fontSize(11)
                         font.weight: active ? Font.DemiBold : Font.Normal
                         color: tone
                     }

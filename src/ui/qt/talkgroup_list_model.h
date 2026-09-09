@@ -92,6 +92,8 @@ class TalkgroupListModel : public QAbstractListModel {
     void refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief Drop snapshot state, retaining the session's history cutoff. */
     void clear();
+    /** Re-read the new target without resetting the list view. */
+    void invalidateForTarget();
 
   Q_SIGNALS:
     void countChanged();

@@ -21,7 +21,11 @@ QtObject {
 
     // The fixed pixel type sizes otherwise ignore the platform's larger text
     // preference. Kept writable so compact-height tests can exercise that layout.
-    property real fontScale: Math.max(1, Qt.application.font.pixelSize / 16)
+    property real fontScale: Math.min(1.6, Math.max(1, Qt.application.font.pixelSize / 16))
+    function fontSize(pixels) { return pixels * fontScale }
+    function resetFontScale() {
+        fontScale = Qt.binding(function() { return Math.min(1.6, Math.max(1, Qt.application.font.pixelSize / 16)); })
+    }
 
     // Surfaces
     readonly property color bg: dark ? "#0E1116" : "#F2F4F8"

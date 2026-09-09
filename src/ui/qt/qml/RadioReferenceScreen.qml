@@ -429,13 +429,11 @@ Item {
             text: browseSheet.title
         }
 
-        Flickable {
+        Item {
             width: parent.width
-            height: Math.min(listColumn.height, 46 * 5)
+            // ModalSheet owns scrolling; retain every choice in its content extent.
+            height: listColumn.height
             visible: browseSheet.rowCount > 0
-            clip: true
-            contentHeight: listColumn.height
-            boundsBehavior: Flickable.StopAtBounds
 
             Column {
                 id: listColumn
@@ -447,6 +445,8 @@ Item {
 
                     Item {
                         id: sheetRow
+                        required property int index
+                        objectName: "browseRow" + index
 
                         required property var modelData
 
@@ -459,7 +459,7 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             text: sheetRow.modelData.name
                             font.family: Theme.sans
-                            font.pixelSize: 15
+                            font.pixelSize: Theme.fontSize(15)
                             color: sheetRow.modelData[browseSheet.idKey] === browseSheet.selectedId
                                    ? Theme.cyan : Theme.textPrimary
                             elide: Text.ElideRight
@@ -479,7 +479,7 @@ Item {
             visible: browseSheet.rowCount === 0
             text: qsTr("Loading…")
             font.family: Theme.sans
-            font.pixelSize: 13
+            font.pixelSize: Theme.fontSize(13)
             color: Theme.textSubdued
         }
     }
@@ -502,7 +502,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: browseRow.title
             font.family: Theme.sans
-            font.pixelSize: 15
+            font.pixelSize: Theme.fontSize(15)
             color: Theme.textPrimary
         }
 
@@ -515,7 +515,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 text: browseRow.value
                 font.family: Theme.sans
-                font.pixelSize: 14
+                font.pixelSize: Theme.fontSize(14)
                 color: Theme.textSecondary
             }
 
@@ -559,7 +559,7 @@ Item {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             text: "‹"
-            font.pixelSize: 28
+            font.pixelSize: Theme.fontSize(28)
             color: Theme.textSecondary
 
             TapHandler {
@@ -573,7 +573,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: qsTr("RadioReference")
             font.family: Theme.sans
-            font.pixelSize: 22
+            font.pixelSize: Theme.fontSize(22)
             font.weight: Font.Bold
             font.letterSpacing: -0.22
             color: Theme.textPrimary
@@ -607,7 +607,7 @@ Item {
                    : qsTr("RadioReference did not accept that username or password."))
                 : radioReference.errorText.length > 0 ? radioReference.errorText : screen.notice
         font.family: Theme.sans
-        font.pixelSize: 13
+        font.pixelSize: Theme.fontSize(13)
         color: (radioReference.errorText.length > 0 || screen.noticeIsProblem)
                ? Theme.magenta : Theme.textSubdued
         wrapMode: Text.Wrap
@@ -681,7 +681,7 @@ Item {
                         width: parent.width
                         text: qsTr("Username")
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSecondary
                     }
 
@@ -702,7 +702,7 @@ Item {
                         width: parent.width
                         text: qsTr("Password")
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSecondary
                     }
 
@@ -733,7 +733,7 @@ Item {
                         width: parent.width
                         text: qsTr("The password is kept only for this session and is never saved. A RadioReference premium subscription is required.")
                         font.family: Theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
@@ -743,7 +743,7 @@ Item {
                         visible: screen.offersAppKey
                         text: qsTr("Application key")
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSecondary
                     }
 
@@ -776,7 +776,7 @@ Item {
                         textFormat: Text.StyledText
                         linkColor: Theme.cyan
                         font.family: Theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                         onLinkActivated: function (link) { Qt.openUrlExternally(link) }
@@ -1022,7 +1022,7 @@ Item {
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
                         text: "‹"
-                        font.pixelSize: 22
+                        font.pixelSize: Theme.fontSize(22)
                         color: Theme.cyan
                     }
 
@@ -1032,7 +1032,7 @@ Item {
                         // is in hand, otherwise the find-a-system panel.
                         text: radioReference.systems.length > 0 ? qsTr("All systems") : qsTr("Search")
                         font.family: Theme.sans
-                        font.pixelSize: 14
+                        font.pixelSize: Theme.fontSize(14)
                         font.weight: Font.DemiBold
                         color: Theme.cyan
                     }
@@ -1070,7 +1070,7 @@ Item {
                         width: parent.width
                         text: screen.systemName()
                         font.family: Theme.sans
-                        font.pixelSize: 17
+                        font.pixelSize: Theme.fontSize(17)
                         font.weight: Font.Bold
                         color: Theme.textPrimary
                         wrapMode: Text.Wrap
@@ -1088,7 +1088,7 @@ Item {
                             return parts.join(" · ")
                         }
                         font.family: Theme.mono
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
@@ -1108,7 +1108,7 @@ Item {
                             return line
                         }
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSecondary
                         wrapMode: Text.Wrap
                     }
@@ -1154,7 +1154,7 @@ Item {
                         visible: radioReference.conventional
                         text: qsTr("%1 repeater(s) selected").arg(screen.selectedSites.length)
                         font.family: Theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
@@ -1167,7 +1167,7 @@ Item {
                         visible: radioReference.conventional && screen.selectedSites.length === 1
                         text: qsTr("One repeater tunes straight to its frequency — no scan list is written, which is what a single repeater wants.")
                         font.family: Theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
@@ -1203,7 +1203,7 @@ Item {
                                           : qsTr("Site %1 · %2").arg(siteRow.modelData.site.siteNumber)
                                                                 .arg(siteRow.modelData.site.descr)
                                     font.family: Theme.sans
-                                    font.pixelSize: 15
+                                    font.pixelSize: Theme.fontSize(15)
                                     font.weight: Font.DemiBold
                                     color: siteRow.chosen ? Theme.cyan : Theme.textPrimary
                                     elide: Text.ElideRight
@@ -1233,7 +1233,7 @@ Item {
                                         return line
                                     }
                                     font.family: Theme.sans
-                                    font.pixelSize: 12
+                                    font.pixelSize: Theme.fontSize(12)
                                     color: Theme.textSubdued
                                     elide: Text.ElideRight
                                 }
@@ -1371,7 +1371,7 @@ Item {
                             return parts.join(" · ")
                         }
                         font.family: Theme.mono
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSecondary
                         wrapMode: Text.Wrap
                     }
@@ -1390,7 +1390,7 @@ Item {
                                    : qsTr("No files — the session simply tunes this frequency.")
                         }
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
@@ -1408,7 +1408,7 @@ Item {
                         visible: screen.planBlockedReason().length > 0
                         text: screen.planBlockedReason()
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: screen.planAwaitingSelection() ? Theme.textSubdued : Theme.magenta
                         wrapMode: Text.Wrap
                     }
@@ -1418,7 +1418,7 @@ Item {
                         visible: radioReference.systemDetails.hasCustomBandplan === true
                         text: qsTr("This system publishes a custom band plan, which this import does not carry. Import a P25 band plan CSV (Imports → P25 band plan) if grants do not tune.")
                         font.family: Theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
@@ -1434,7 +1434,7 @@ Item {
                             width: previewColumn.width
                             text: "• " + warningLine.modelData
                             font.family: Theme.sans
-                            font.pixelSize: 12
+                            font.pixelSize: Theme.fontSize(12)
                             color: Theme.textSubdued
                             wrapMode: Text.Wrap
                         }
@@ -1528,7 +1528,7 @@ Item {
                 text: radioReference.statusText.length > 0
                       ? radioReference.statusText : qsTr("Talking to RadioReference…")
                 font.family: Theme.sans
-                font.pixelSize: 15
+                font.pixelSize: Theme.fontSize(15)
                 color: Theme.textPrimary
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.Wrap

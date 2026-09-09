@@ -18,7 +18,7 @@ Rectangle {
         anchors.centerIn: parent
         text: "ENC"
         font.family: Theme.mono
-        font.pixelSize: 10
+        font.pixelSize: Theme.fontSize(10)
         font.letterSpacing: 1
         color: Theme.magenta
     }

@@ -165,7 +165,7 @@ Item {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             text: "‹"
-            font.pixelSize: 28
+            font.pixelSize: Theme.fontSize(28)
             color: Theme.textSecondary
 
             TapHandler {
@@ -179,7 +179,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: qsTr("Imported files")
             font.family: Theme.sans
-            font.pixelSize: 22
+            font.pixelSize: Theme.fontSize(22)
             font.weight: Font.Bold
             font.letterSpacing: -0.22
             color: Theme.textPrimary
@@ -207,7 +207,7 @@ Item {
         visible: screen.notice.length > 0
         text: screen.notice
         font.family: Theme.sans
-        font.pixelSize: 13
+        font.pixelSize: Theme.fontSize(13)
         color: screen.noticeIsProblem ? Theme.magenta : Theme.textSubdued
         wrapMode: Text.Wrap
     }
@@ -269,7 +269,7 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         text: fileRow.name
                         font.family: Theme.sans
-                        font.pixelSize: 15
+                        font.pixelSize: Theme.fontSize(15)
                         font.weight: Font.DemiBold
                         color: Theme.textPrimary
                         elide: Text.ElideRight
@@ -287,7 +287,7 @@ Item {
                     width: parent.width
                     text: screen.summaryFor(fileRow.type, fileRow.accepted, fileRow.skipped, Number(fileRow.importedAt))
                     font.family: Theme.sans
-                    font.pixelSize: 12
+                    font.pixelSize: Theme.fontSize(12)
                     color: fileRow.accepted === 0 ? Theme.magenta : Theme.textSubdued
                     elide: Text.ElideRight
                 }
@@ -313,7 +313,7 @@ Item {
             visible: importedFiles.count === 0
             text: qsTr("No imported files yet. Import a channel map, talkgroup list, key file, P25 band plan, or radio ID list to use it in your systems.")
             font.family: Theme.sans
-            font.pixelSize: 14
+            font.pixelSize: Theme.fontSize(14)
             color: Theme.textSubdued
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignHCenter
@@ -375,7 +375,7 @@ Item {
             width: parent.width
             text: qsTr("What does this file contain?")
             font.family: Theme.sans
-            font.pixelSize: 15
+            font.pixelSize: Theme.fontSize(15)
             font.weight: Font.DemiBold
             color: Theme.textPrimary
             wrapMode: Text.Wrap
@@ -431,7 +431,7 @@ Item {
             width: parent.width
             text: screen.actionRow >= 0 ? importedFiles.get(screen.actionRow).name : ""
             font.family: Theme.sans
-            font.pixelSize: 15
+            font.pixelSize: Theme.fontSize(15)
             font.weight: Font.DemiBold
             color: Theme.textPrimary
             elide: Text.ElideRight
@@ -515,7 +515,7 @@ Item {
             text: screen.actionRow >= 0
                   ? qsTr("Remove %1?").arg(importedFiles.get(screen.actionRow).name) : ""
             font.family: Theme.sans
-            font.pixelSize: 15
+            font.pixelSize: Theme.fontSize(15)
             font.weight: Font.DemiBold
             color: Theme.textPrimary
             wrapMode: Text.Wrap
@@ -528,7 +528,7 @@ Item {
                   ? qsTr("Used by %1 — removing clears it from that system.").arg(removeSheet.usedBy[0])
                   : qsTr("Used by %1 — removing clears it from those systems.").arg(removeSheet.usedBy.join(", "))
             font.family: Theme.sans
-            font.pixelSize: 13
+            font.pixelSize: Theme.fontSize(13)
             color: Theme.textSubdued
             wrapMode: Text.Wrap
         }

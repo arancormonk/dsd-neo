@@ -167,7 +167,7 @@ ModalSheet {
             anchors.verticalCenter: parent.verticalCenter
             text: qsTr("Gain")
             font.family: Theme.sans
-            font.pixelSize: 14
+            font.pixelSize: Theme.fontSize(14)
             color: Theme.textSecondary
         }
 
@@ -183,7 +183,7 @@ ModalSheet {
                 horizontalAlignment: Text.AlignRight
                 text: sheet.autoGain ? qsTr("auto") : sheet.gainDb + " dB"
                 font.family: Theme.mono
-                font.pixelSize: 14
+                font.pixelSize: Theme.fontSize(14)
                 color: Theme.textPrimary
             }
 
@@ -215,7 +215,7 @@ ModalSheet {
             anchors.verticalCenter: parent.verticalCenter
             text: qsTr("Squelch")
             font.family: Theme.sans
-            font.pixelSize: 14
+            font.pixelSize: Theme.fontSize(14)
             color: Theme.textSecondary
         }
 
@@ -231,7 +231,7 @@ ModalSheet {
                 horizontalAlignment: Text.AlignRight
                 text: sheet.squelchOff ? qsTr("off") : Math.round(sheet.squelchDb) + " dB"
                 font.family: Theme.mono
-                font.pixelSize: 14
+                font.pixelSize: Theme.fontSize(14)
                 color: Theme.textPrimary
             }
 
@@ -267,7 +267,7 @@ ModalSheet {
             anchors.verticalCenter: parent.verticalCenter
             text: qsTr("PPM")
             font.family: Theme.sans
-            font.pixelSize: 14
+            font.pixelSize: Theme.fontSize(14)
             color: Theme.textSecondary
         }
 
@@ -283,7 +283,7 @@ ModalSheet {
                 horizontalAlignment: Text.AlignRight
                 text: String(sheet.ppm)
                 font.family: Theme.mono
-                font.pixelSize: 14
+                font.pixelSize: Theme.fontSize(14)
                 color: Theme.textPrimary
             }
 
@@ -320,7 +320,7 @@ ModalSheet {
     Text {
         text: qsTr("Modulation")
         font.family: Theme.sans
-        font.pixelSize: 14
+        font.pixelSize: Theme.fontSize(14)
         color: Theme.textSecondary
     }
 
@@ -340,7 +340,7 @@ ModalSheet {
     Text {
         text: qsTr("Listening for")
         font.family: Theme.sans
-        font.pixelSize: 14
+        font.pixelSize: Theme.fontSize(14)
         color: Theme.textSecondary
     }
 

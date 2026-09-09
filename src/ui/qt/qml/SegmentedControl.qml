@@ -42,7 +42,7 @@ Rectangle {
                     anchors.centerIn: parent
                     text: modelData
                     font.family: Theme.sans
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.fontSize(13)
                     font.weight: parent.active ? Font.DemiBold : Font.Normal
                     color: parent.active ? Theme.cyan : Theme.textSecondary
                 }

@@ -38,7 +38,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: valueRow.title
             font.family: Theme.sans
-            font.pixelSize: 15
+            font.pixelSize: Theme.fontSize(15)
             color: Theme.textPrimary
         }
 
@@ -54,7 +54,7 @@ Item {
                 width: Math.max(implicitWidth, 34)
                 horizontalAlignment: TextInput.AlignRight
                 font.family: Theme.mono
-                font.pixelSize: 14
+                font.pixelSize: Theme.fontSize(14)
                 color: Theme.textPrimary
                 selectionColor: Qt.alpha(Theme.cyan, 0.35)
                 selectedTextColor: Theme.textPrimary
@@ -66,7 +66,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 text: valueRow.unit
                 font.family: Theme.mono
-                font.pixelSize: 14
+                font.pixelSize: Theme.fontSize(14)
                 color: Theme.textSubdued
             }
         }
@@ -98,7 +98,7 @@ Item {
             Text {
                 text: qsTr("Settings")
                 font.family: Theme.sans
-                font.pixelSize: 24
+                font.pixelSize: Theme.fontSize(24)
                 font.weight: Font.Bold
                 font.letterSpacing: -0.24
                 color: Theme.textPrimary
@@ -134,7 +134,7 @@ Item {
                         visible: prefs.appearance === 0
                         text: qsTr("Follows your phone's dark mode schedule.")
                         font.family: Theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
@@ -171,7 +171,7 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             text: qsTr("Audio output")
                             font.family: Theme.sans
-                            font.pixelSize: 15
+                            font.pixelSize: Theme.fontSize(15)
                             font.weight: Font.DemiBold
                             color: Theme.textPrimary
                         }
@@ -186,7 +186,7 @@ Item {
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: qsTr("Speaker")
                                 font.family: Theme.sans
-                                font.pixelSize: 14
+                                font.pixelSize: Theme.fontSize(14)
                                 color: Theme.textSecondary
                             }
 
@@ -353,7 +353,7 @@ Item {
                             anchors.topMargin: 10
                             text: qsTr("Username")
                             font.family: Theme.sans
-                            font.pixelSize: 15
+                            font.pixelSize: Theme.fontSize(15)
                             color: Theme.textPrimary
                         }
 
@@ -395,7 +395,7 @@ Item {
                             anchors.topMargin: 10
                             text: qsTr("Application key")
                             font.family: Theme.sans
-                            font.pixelSize: 15
+                            font.pixelSize: Theme.fontSize(15)
                             color: Theme.textPrimary
                         }
 
@@ -424,7 +424,7 @@ Item {
                         bottomPadding: 6
                         text: qsTr("The password is asked for once per app session and is never saved. A RadioReference premium subscription is required.")
                         font.family: Theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
@@ -532,7 +532,7 @@ Item {
                             anchors.topMargin: 10
                             text: qsTr("Extra CLI args")
                             font.family: Theme.sans
-                            font.pixelSize: 15
+                            font.pixelSize: Theme.fontSize(15)
                             color: Theme.textPrimary
                         }
 
@@ -561,7 +561,7 @@ Item {
                 horizontalAlignment: Text.AlignHCenter
                 text: "DSD-neo " + appVersionText.replace(/^v/, "") + " · GPL-3.0 · " + qsTr("open source licenses")
                 font.family: Theme.mono
-                font.pixelSize: 11
+                font.pixelSize: Theme.fontSize(11)
                 color: Theme.textSubdued
                 wrapMode: Text.Wrap
             }

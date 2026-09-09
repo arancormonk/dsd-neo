@@ -76,7 +76,7 @@ Item {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             text: "‹"
-            font.pixelSize: 28
+            font.pixelSize: Theme.fontSize(28)
             color: Theme.textSecondary
 
             TapHandler {
@@ -90,7 +90,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: qsTr("Explore")
             font.family: Theme.sans
-            font.pixelSize: 22
+            font.pixelSize: Theme.fontSize(22)
             font.weight: Font.Bold
             font.letterSpacing: -0.22
             color: Theme.textPrimary
@@ -118,7 +118,7 @@ Item {
                 width: parent.width
                 text: qsTr("Which radio?")
                 font.family: Theme.sans
-                font.pixelSize: 15
+                font.pixelSize: Theme.fontSize(15)
                 font.weight: Font.DemiBold
                 color: Theme.textPrimary
             }
@@ -156,7 +156,7 @@ Item {
                 Text {
                     text: qsTr("Host")
                     font.family: Theme.sans
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSecondary
                 }
 
@@ -172,7 +172,7 @@ Item {
                 Text {
                     text: qsTr("Port")
                     font.family: Theme.sans
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSecondary
                 }
 
@@ -194,7 +194,7 @@ Item {
                 width: parent.width
                 text: qsTr("Start where?")
                 font.family: Theme.sans
-                font.pixelSize: 15
+                font.pixelSize: Theme.fontSize(15)
                 font.weight: Font.DemiBold
                 color: Theme.textPrimary
             }
@@ -250,7 +250,7 @@ Item {
                         width: parent.width
                         text: qsTr("Anywhere is fine — you can move around once the band is on screen.")
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }

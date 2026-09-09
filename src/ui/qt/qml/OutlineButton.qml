@@ -25,7 +25,7 @@ Rectangle {
         anchors.centerIn: parent
         text: control.text
         font.family: Theme.sans
-        font.pixelSize: 15 * Theme.fontScale
+        font.pixelSize: Theme.fontSize(15)
         font.weight: Font.DemiBold
         color: Theme.buttonSecondaryText
     }
