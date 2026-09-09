@@ -93,6 +93,11 @@ class SavedSystemsModel : public QAbstractListModel {
 
     /** @brief One system as a field map, for the wizard's edit path and argv building. */
     Q_INVOKABLE QVariantMap get(int row) const;
+    Q_INVOKABLE QVariantList siblingRows(int row) const;
+    Q_INVOKABLE int nearestRow(int row, double lat, double lon) const;
+    Q_INVOKABLE int siteCount(int row) const;
+    Q_INVOKABLE double distanceKm(int row, double lat, double lon) const;
+    Q_INVOKABLE void setAvoidSite(int row, bool avoid);
     Q_INVOKABLE int rowForUid(const QString& uid) const;
     Q_INVOKABLE QVariantMap getByUid(const QString& uid) const;
 
@@ -120,6 +125,7 @@ class SavedSystemsModel : public QAbstractListModel {
     Q_INVOKABLE void clearCsvPath(const QString& path);
 
   Q_SIGNALS:
+    void sitesChanged();
     void countChanged();
     void mostRecentRowChanged();
 

@@ -5,6 +5,7 @@
 
 #include <qanystringview.h>
 #include "saved_systems_model.h"
+#include "site_groups.h"
 
 #include <QByteArray>
 #include <QDateTime>
@@ -237,6 +238,15 @@ SavedSystemsModel::fillRowDetails(const QVariantMap& map, Row& row) {
     if (map.contains(QStringLiteral("hasSitePos"))) {
         row.hasSitePos = map.value(QStringLiteral("hasSitePos")).toBool();
     }
+    bool latOk = true;
+    bool lonOk = true;
+    if (map.contains(QStringLiteral("siteLat"))) {
+        map.value(QStringLiteral("siteLat")).toDouble(&latOk);
+    }
+    if (map.contains(QStringLiteral("siteLon"))) {
+        map.value(QStringLiteral("siteLon")).toDouble(&lonOk);
+    }
+    row.hasSitePos = row.hasSitePos && latOk && lonOk && site_position_valid(row.siteLat, row.siteLon);
     if (map.contains(QStringLiteral("avoidSite"))) {
         row.avoidSite = map.value(QStringLiteral("avoidSite")).toBool();
     }
@@ -252,6 +262,9 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
         row.uid = (stored.isNull() ? QUuid::createUuid() : stored).toString(QUuid::WithoutBraces);
     }
     fillRowDetails(map, row);
+    if (base.uid.isEmpty() && (!map.contains(QStringLiteral("siteLat")) || !map.contains(QStringLiteral("siteLon")))) {
+        row.hasSitePos = false;
+    }
 
     map_take_string(map, QStringLiteral("name"), &row.name);
     map_take_string(map, QStringLiteral("sourceType"), &row.sourceType);
@@ -325,6 +338,7 @@ SavedSystemsModel::add(const QVariantMap& system) {
     row.uid = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_rows.append(row);
     endInsertRows();
+    Q_EMIT sitesChanged();
     Q_EMIT countChanged();
     Q_EMIT mostRecentRowChanged();
     save();
@@ -335,10 +349,22 @@ SavedSystemsModel::update(int row, const QVariantMap& system) {
     if (row < 0 || row >= m_rows.size()) {
         return;
     }
+    // WP-D4: changed tuning/CSV content no longer describes the imported site.
+    QVariantMap fields = system;
+    const auto previous = get(row);
+    for (const char* key : {"freqMhz", "decodeFlag", "chanCsvPath", "groupCsvPath", "keyCsvPath", "keyCsvHex",
+                            "p25BandplanCsvPath", "srcCsvPath"}) {
+        if (previous.value("rrSid").toInt() > 0 && fields.contains(key) && fields.value(key) != previous.value(key)) {
+            fields.insert("rrSid", 0);
+            fields.insert("rrSiteId", 0);
+            break;
+        }
+    }
     // Missing encKeyValue means Keep; a present empty value explicitly clears it.
-    m_rows[row] = rowFromMap(system, m_rows.at(row));
+    m_rows[row] = rowFromMap(fields, m_rows.at(row));
     const QModelIndex idx = index(row);
     Q_EMIT dataChanged(idx, idx);
+    Q_EMIT sitesChanged();
     save();
 }
 
@@ -350,6 +376,7 @@ SavedSystemsModel::remove(int row) {
     beginRemoveRows(QModelIndex(), row, row);
     m_rows.removeAt(row);
     endRemoveRows();
+    Q_EMIT sitesChanged();
     Q_EMIT countChanged();
     Q_EMIT mostRecentRowChanged();
     save();
@@ -361,6 +388,42 @@ SavedSystemsModel::get(int row) const {
         return QVariantMap();
     }
     return mapFromRow(m_rows.at(row));
+}
+
+QVariantList
+SavedSystemsModel::siblingRows(int row) const {
+    QVariantList rows;
+    for (int i = 0; i < count(); ++i) {
+        rows.append(get(i));
+    }
+    return site_sibling_rows(rows, row);
+}
+
+int
+SavedSystemsModel::nearestRow(int row, double lat, double lon) const {
+    QVariantList rows;
+    for (int i = 0; i < count(); ++i) {
+        rows.append(get(i));
+    }
+    return site_nearest_row(rows, row, lat, lon);
+}
+
+int
+SavedSystemsModel::siteCount(int row) const {
+    return siblingRows(row).size();
+}
+
+double
+SavedSystemsModel::distanceKm(int row, double lat, double lon) const {
+    const auto site = get(row);
+    return site.value("hasSitePos").toBool()
+               ? site_distance_km(lat, lon, site.value("siteLat").toDouble(), site.value("siteLon").toDouble())
+               : -1;
+}
+
+void
+SavedSystemsModel::setAvoidSite(int row, bool avoid) {
+    update(row, {{"avoidSite", avoid}});
 }
 
 int
@@ -437,8 +500,11 @@ SavedSystemsModel::clearCsvPath(const QString& path) {
             rowChanged = true;
         }
         if (rowChanged) {
+            row.rrSid = 0;
+            row.rrSiteId = 0;
             const QModelIndex idx = index(i);
             Q_EMIT dataChanged(idx, idx);
+            Q_EMIT sitesChanged();
             changed = true;
         }
     }
@@ -503,6 +569,7 @@ SavedSystemsModel::load() {
             LOG_WARN("Saved-system migration could not be persisted; identities may change on restart.\n");
         }
     }
+    Q_EMIT sitesChanged();
     Q_EMIT countChanged();
     Q_EMIT mostRecentRowChanged();
 }

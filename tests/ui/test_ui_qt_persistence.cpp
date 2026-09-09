@@ -486,6 +486,32 @@ test_key_persistence() {
 }
 
 void
+test_site_provenance_edits() {
+    SavedSystemsModel model;
+    while (model.count()) {
+        model.remove(0);
+    }
+    const QVariantMap site{{"rrSid", 12},        {"rrSiteId", 16863},   {"siteLat", 41.65503}, {"siteLon", -91.60244},
+                           {"hasSitePos", true}, {"siteName", "North"}, {"freqMhz", "851"}};
+    for (const char* key :
+         {"freqMhz", "decodeFlag", "chanCsvPath", "groupCsvPath", "keyCsvPath", "p25BandplanCsvPath", "srcCsvPath"}) {
+        model.add(site);
+        const int row = model.count() - 1;
+        model.update(row, {{key, "changed"}});
+        SavedSystemsModel reloaded;
+        expect("site editing clears both persisted ids",
+               reloaded.get(row).value("rrSid").toInt() == 0 && reloaded.get(row).value("rrSiteId").toInt() == 0);
+    }
+    auto incomplete = site;
+    incomplete.remove("siteLon");
+    model.add(incomplete);
+    expect("missing coordinate is not a position", !model.get(model.count() - 1).value("hasSitePos").toBool());
+    model.add(site);
+    model.update(model.count() - 1, {{"siteLat", "invalid"}});
+    expect("malformed coordinates cannot become equator", !model.get(model.count() - 1).value("hasSitePos").toBool());
+}
+
+void
 test_foundation_key_type_migration() {
     QJsonArray rows;
     rows.append(QJsonObject{{"encKeyType", 0}, {"encKeyValue", ""}});
@@ -527,6 +553,7 @@ main(int argc, char** argv) {
     test_foundation_persistence();
     test_key_persistence();
     test_foundation_key_type_migration();
+    test_site_provenance_edits();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {
