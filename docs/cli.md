@@ -688,10 +688,12 @@ Examples
 
 By default, DSD-neo redacts radio keys and keystream material in logs and terminal status. Add `--show-keys` to reveal
 those values for the current CLI run only.
+The `-b`, `-H`, `-R`, and `-1` options accept zero as a supplied key and arm decryption; encrypted-lockout still controls audibility.
+Out-of-range decimal keys are rejected without changing the installed key.
 
-- Basic Privacy key (decimal): `-b <dec>`
+- Basic Privacy key (decimal, 0–255): `-b <dec>`
 - Hytera 10/32/64‑char BP or AES‑128/256 key (hex, groups of 16): `-H '<hex…>'`
-- dPMR/NXDN scrambler (decimal): `-R <dec>`
+- dPMR/NXDN scrambler (decimal, 0–32767): `-R <dec>`
 - RC4/DES key (hex): `-1 <hex>`
 - TYT Basic Privacy (16‑bit, hex, enforced): `-2 <hex>`
 - TYT Advanced Privacy PC4 (128/256-bit hex stream, groups of 16): `-! '<hex…>'`

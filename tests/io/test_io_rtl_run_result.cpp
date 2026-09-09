@@ -14,7 +14,6 @@ extern "C" int dsd_test_rtl_open_failure(void);
 
 static int open_calls = 0;
 
-struct rtlsdr_dev;
 // GNU ld --wrap requires external linkage and the reserved symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier, misc-use-internal-linkage)
 extern "C" int __wrap_rtlsdr_open(struct rtlsdr_dev** device, uint32_t index);

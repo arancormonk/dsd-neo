@@ -621,10 +621,16 @@ tg_policy_listen_fields_invalid(const dsd_tg_policy_entry* values, uint32_t mask
 
 static int
 tg_policy_other_fields_invalid(const dsd_tg_policy_entry* values, uint32_t mask) {
-    return ((mask & DSD_TG_POLICY_FIELD_PRIORITY) && (values->priority < 0 || values->priority > 100))
-           || ((mask & DSD_TG_POLICY_FIELD_PREEMPT) && values->preempt > 1)
-           || ((mask & DSD_TG_POLICY_FIELD_NAME) && !memchr(values->name, 0, sizeof values->name))
-           || ((mask & DSD_TG_POLICY_FIELD_TAGS) && !memchr(values->tags, 0, sizeof values->tags));
+    if ((mask & DSD_TG_POLICY_FIELD_PRIORITY) && (values->priority < 0 || values->priority > 100)) {
+        return 1;
+    }
+    if ((mask & DSD_TG_POLICY_FIELD_PREEMPT) && values->preempt > 1) {
+        return 1;
+    }
+    if ((mask & DSD_TG_POLICY_FIELD_NAME) && !memchr(values->name, 0, sizeof values->name)) {
+        return 1;
+    }
+    return (mask & DSD_TG_POLICY_FIELD_TAGS) && !memchr(values->tags, 0, sizeof values->tags);
 }
 
 static void

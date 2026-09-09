@@ -3374,6 +3374,13 @@ add_test(NAME RUNTIME_RR_IMPORT COMMAND dsd-neo_test_runtime_rr_import)
 # still fails if the parser ever starts refusing quietly.
 if(DSD_HAS_EXPAT)
     add_executable(dsd-neo_test_runtime_rr_soap runtime/test_runtime_rr_soap.c)
+    # Keep nonfinite-result assertions effective in fast-math builds too.
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(
+            dsd-neo_test_runtime_rr_soap
+            PRIVATE -fno-fast-math
+        )
+    endif()
     target_include_directories(
         dsd-neo_test_runtime_rr_soap
         PRIVATE
