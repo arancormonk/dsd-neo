@@ -47,6 +47,20 @@ Item {
             compare(savedSystems.get(0).sourceType, savedSystems.get(1).sourceType)
             verify(savedSystems.get(0).sourceType.length > 0)
         }
+        function test_explore_after_batch_data() {
+            return [{tag:"abandoned", save:false}, {tag:"saved", save:true}]
+        }
+        function test_explore_after_batch(data) {
+            loader.item.applyRadioReference({ok:true, rows:[site(16863,"851"),site(48391,"852")]})
+            if (data.save) loader.item.commit()
+            var before = savedSystems.count
+            loader.item.openForFound({sourceType:"rtltcp",host:"127.0.0.1",port:1234}, "853.25")
+            loader.item.pickDecodeFlag("-f1")
+            loader.item.commit()
+            compare(savedSystems.count, before + 1)
+            compare(savedSystems.get(before).freqMhz, "853.25")
+            compare(savedSystems.get(before).rrSiteId, 0)
+        }
         function openKeyedBatch() {
             savedSystems.add({name:"Earlier row"})
             var source = site(16863, "851")

@@ -97,10 +97,14 @@ Item {
             portField.text = defaultPortFor(sourceType)
     }
 
-    function openForAdd(preferNetwork) {
-        retainedKeySourceUid = ""
+    function resetImport() {
         importedSite = null
         importedSites = []
+    }
+
+    function openForAdd(preferNetwork) {
+        retainedKeySourceUid = ""
+        resetImport()
         editRow = -1
         step = 0
         sourceType = preferNetwork ? "rtltcp" : "usb"
@@ -141,6 +145,7 @@ Item {
      * work. @a sys supplies the source; it is the explore session's own map.
      */
     function openForFound(sys, freqMhz) {
+        resetImport()
         retainedKeySourceUid = ""
         editRow = -1
         step = 1
@@ -174,8 +179,7 @@ Item {
     }
 
     function openForEdit(row) {
-        importedSite = null
-        importedSites = []
+        resetImport()
         var sys = savedSystems.get(row)
         retainedKeySourceUid = sys.uid || ""
         editRow = row
