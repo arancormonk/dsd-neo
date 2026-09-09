@@ -183,6 +183,9 @@ UiController::tick() {
      * nothing, and "stopped" is exactly what the UI must notice. */
     if (m_host != nullptr) {
         m_host->refresh();
+        // Terminal lifecycle publication can race the first result poll. Consume
+        // its final retained export before queued QML restarts build their argv.
+        pollTalkgroupExport();
     }
 
     if (dsd_app_frontend_redraw_consume() == 0) {

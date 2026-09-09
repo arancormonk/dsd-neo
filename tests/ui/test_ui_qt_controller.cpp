@@ -4,6 +4,8 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QGuiApplication>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QMap>
 #include <QObject>
 #include <QQmlComponent>
@@ -28,10 +30,12 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <functional>
 #include <initializer_list>
 #include <memory>
 #include <stdint.h>
 #include <utility>
+#include "../../android/local_device_state.h"
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/snapshot_internal.h"
 #include "command_bridge.h"
@@ -39,6 +43,7 @@
 #include "diagnostics_log.h"
 #include "metrics_model.h"
 #include "p25_network_model.h"
+#include "session_args.h"
 #include "talkgroup_list_model.h"
 #include "ui_controller.h"
 
@@ -57,6 +62,14 @@ expect(bool condition, int line) {
 class Host : public dsd_qt::DecoderHost {
   public:
     SessionState phase = Running;
+    std::function<void()> onRefresh;
+
+    void
+    refresh() override {
+        if (onRefresh) {
+            onRefresh();
+        }
+    }
 
     bool
     isRunning() const override {
@@ -87,6 +100,32 @@ class Host : public dsd_qt::DecoderHost {
         Q_EMIT sessionStateChanged();
     }
 };
+
+static void
+test_initial_usb_record() {
+    for (const bool ready : {true, false}) {
+        Host host;
+        host.phase = Host::Idle;
+        dsd_android::LocalDeviceState usb;
+        int properties = 0;
+        int attachments = 0;
+        QObject::connect(&host, &dsd_qt::DecoderHost::localDeviceChanged, [&]() {
+            ++properties;
+            check(usb.ready == ready);
+            check(usb.text == (ready ? "Ready: RTL-SDR" : "Permission denied"));
+        });
+        QObject::connect(&host, &dsd_qt::DecoderHost::localDeviceAttached, [&]() { ++attachments; });
+        const QJsonObject record{{"ready", ready},
+                                 {"text", ready ? "Ready: RTL-SDR" : "Permission denied"},
+                                 {"kind", ready ? "" : "permission"},
+                                 {"name", "RTL-SDR"}};
+        usb.apply(host, record);
+        check(properties == 1 && attachments == 0);
+        usb.apply(host, record);
+        check(properties == 1 && attachments == 0);
+        check(usb.failureKind == (ready ? Host::NoDeviceFailure : Host::DevicePermission));
+    }
+}
 
 // Run the actual sheet against the real bridge and decoder queue, including CSV media overrides.
 static void
@@ -263,6 +302,7 @@ main(int argc, char** argv) {
     test_sheet_policy_edits();
     test_zero_bounds();
     test_auto_start_requests();
+    test_initial_usb_record();
     static dsd_opts opts;
     static dsd_state state;
     initOpts(&opts);
@@ -401,14 +441,45 @@ main(int argc, char** argv) {
     check(bridge.saveTalkgroupList(version, generation, exportPath));
     check(!QFile::exists(exportPath));
     check(controller.talkgroupExportResult().isEmpty());
-    check(dsd_app_drain_cmds(&opts, &state) == 1);
-    check(QFile::exists(exportPath));
+    bool restarted = false;
+    bool restartHasGroupFile = false;
+    QObject::connect(&host, &dsd_qt::DecoderHost::sessionStateChanged, &controller, [&]() {
+        if (host.phase != Host::Idle) {
+            return;
+        }
+        QTimer::singleShot(0, &controller, [&]() {
+            // The saved map is associated by the retained completion before argv is built.
+            const auto completion = controller.talkgroupExportResult();
+            QVariantMap system{{"sourceType", "rtltcp"},
+                               {"host", "127.0.0.1"},
+                               {"port", 1234},
+                               {"freqMhz", "851.5"},
+                               {"groupCsvPath", completion.value("path")}};
+            dsd_qt::SessionArgsBuilder builder(nullptr);
+            const auto built = builder.build(system);
+            const QStringList args = built.value("args").toStringList();
+            const int group = args.indexOf("-G");
+            restartHasGroupFile = built.value("ok").toBool() && group >= 0 && args.value(group + 1) == exportPath;
+            restarted = true;
+        });
+    });
+    host.onRefresh = [&]() {
+        if (host.phase == Host::Idle) {
+            return;
+        }
+        check(dsd_app_drain_cmds(&opts, &state) == 1);
+        check(QFile::exists(exportPath));
+        dsd_app_frontend_runtime_stop();
+        host.setPhase(Host::Idle);
+    };
     (void)dsd_app_frontend_redraw_consume();
     QEventLoop exportLoop;
     QTimer::singleShot(65, &exportLoop, &QEventLoop::quit);
     controller.start();
     exportLoop.exec();
     controller.stop();
+    check(restarted && restartHasGroupFile);
+    host.onRefresh = {};
     const auto exported = controller.talkgroupExportResult();
     check(exported.value("success").toBool());
     check(exported.value("path").toString() == exportPath);
@@ -416,7 +487,6 @@ main(int argc, char** argv) {
     check(exported.value("policyGeneration").toUInt() == generation);
     check(exported.value("sequence").toString() != "0");
     check(QString::fromUtf8(opts.group_in_file) == exportPath);
-    dsd_app_frontend_runtime_stop();
     check(!bridge.renameTalkgroup(42, 42, version, generation, "After stop"));
     check(dsd_app_drain_cmds(&opts, &state) == 0);
     freeState(&state);
