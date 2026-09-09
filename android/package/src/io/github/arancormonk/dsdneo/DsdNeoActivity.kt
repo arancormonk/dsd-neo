@@ -36,7 +36,15 @@ import org.qtproject.qt.android.bindings.QtActivity
  */
 class DsdNeoActivity : QtActivity() {
 
+    // WP-D3: location permission and Activity lifetime.
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        if (!LocationSupport.onRequestPermissionsResult(this, requestCode, grantResults)) {
+            super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        }
+    }
+
     override fun onDestroy() {
+        LocationSupport.onDestroy(this)
         // Not on a configuration change: those destroy and immediately recreate the
         // Activity, and Qt keeps the process across them (it skips its own teardown for
         // exactly this case). Quitting there would take the UI down on a rotation.

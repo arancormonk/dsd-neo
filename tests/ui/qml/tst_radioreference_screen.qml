@@ -13,8 +13,8 @@ import QtTest
 //
 // `testContext.setRadioReference()` drives those readings, which is the only way
 // to reach the later states from here: the suite registers `radioReference` as a
-// map of readings with no invokables (see qml_test_context.h), so nothing in QML
-// can call loadSystem() and have a system appear.
+// property-map recorder with only lookupNearby (see qml_test_context.h), so QML
+// cannot call loadSystem() and have a system appear.
 Item {
     id: root
 
@@ -56,6 +56,33 @@ Item {
 
         property var screen: null
 
+        function test_location_button_supported_and_busy() {
+            testContext.setRadioReference("credentialsReady", true)
+            testContext.setLocationSupported(true)
+            var button = findChild(tc.screen, "radioReferenceNearby")
+            verify(button !== null)
+            tryVerify(function () { return button.visible && button.enabled })
+            verify(button.width > 0, "nearby button needs a usable tap width")
+            verify(button.height > 0, "nearby button needs a usable tap height")
+            // The other test cases load Settings and Imports in sibling loaders.
+            // Raise this screen and let its layout settle before delivering input.
+            screenLoader.z = 1
+            waitForRendering(button)
+            var before = testContext.radioReferenceNearbyCalls()
+            mouseClick(button, button.width / 2, button.height / 2)
+            screenLoader.z = 0
+            compare(testContext.radioReferenceNearbyCalls(), before + 1)
+            testContext.setRadioReference("busy", true)
+            tryVerify(function () { return !button.enabled })
+            testContext.setLocationSupported(false)
+        }
+
+        function test_location_button_desktop_hidden() {
+            var button = findChild(tc.screen, "radioReferenceNearby")
+            verify(button !== null)
+            verify(!button.visible)
+        }
+
         function initTestCase() {
             tc.screen = screenLoader.item
             verify(tc.screen !== null, "RadioReferenceScreen.qml failed to load")
@@ -65,6 +92,7 @@ Item {
         // The map is shared by the whole suite, so a case that left a system
         // loaded would hand the next one a screen it never set up.
         function init() {
+            testContext.setLocationSupported(false)
             testContext.setRadioReference("hasAppKey", false)
             testContext.setRadioReference("buildHasAppKey", false)
             testContext.setRadioReference("credentialsReady", false)

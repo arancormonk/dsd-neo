@@ -17,6 +17,7 @@
 #include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -98,6 +99,24 @@ expect_int(const char* what, int got, int want) {
 
 class TestHost : public dsd_qt::DecoderHost {
   public:
+    qint64 requested = 0;
+    qint64 cancelled = 0;
+
+    bool
+    locationSupported() const override {
+        return true;
+    }
+
+    void
+    requestCurrentLocation(qint64 id) override {
+        requested = id;
+    }
+
+    void
+    cancelLocationRequest(qint64 id) override {
+        cancelled = id;
+    }
+
     bool
     isRunning() const override {
         return false;
@@ -1033,6 +1052,63 @@ test_results_and_loaded_system_stay_exclusive(void) {
 }
 
 void
+test_nearby() {
+    const struct {
+        const char* postal;
+        const char* country;
+        const char* zip;
+    } cases[] = {{"52401", "US", "52401"}, {"00501", "US", "00501"}, {"52401-1234", "US", ""}, {"1234", "US", ""},
+                 {"123456", "US", ""},     {"ABCDE", "US", ""},      {"12345", "CA", ""},      {"", "US", ""}};
+
+    for (const auto& c : cases) {
+        expect("postal accepts only US five digits", dsd_qt::rr_zip_from_postal(c.postal, c.country) == c.zip);
+    }
+    Harness h;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    h.model.lookupNearby();
+    expect("location is busy", h.model.busy());
+    Q_EMIT h.host.locationResult(h.host.requested, true, 41, -91, 150, now, true, "52401", "US", "");
+    pump(h.model);
+    expect("nearby resolves county systems", h.model.systems().size() == 24);
+    expect("fix persisted with accuracy", h.prefs.lastFixAt() == now && h.prefs.lastAccuracyM() == 150);
+    h.model.lookupNearby();
+    Q_EMIT h.host.locationResult(h.host.requested, true, 42, -92, 200, now, false, "", "", "Geocoding unavailable");
+    expect("geocode failure retains fix", h.prefs.lastLat() == 42 && !h.model.busy());
+    expect("geocode error visible", !h.model.errorText().isEmpty());
+    h.model.lookupNearby();
+    Q_EMIT h.host.locationResult(h.host.requested, false, 0, 0, 0, 0, false, "", "", "Location permission denied");
+    expect("denial settles without replacing fix", !h.model.busy() && h.prefs.lastLat() == 42);
+    h.model.lookupNearby();
+    const qint64 old = h.host.requested;
+    h.model.loadCountries();
+    pump(h.model);
+    const int calls = h.fake.calls;
+    Q_EMIT h.host.locationResult(old, true, 43, -93, 100, now, true, "52401", "US", "");
+    pump(h.model);
+    expect("new browse cancels location", h.host.cancelled == old);
+    expect("late fix cannot replace browse or prefs", h.fake.calls == calls && h.prefs.lastLat() == 42);
+    h.model.lookupNearby();
+    const qint64 beforeSearch = h.host.requested;
+    h.model.lookupZip("00501");
+    pump(h.model);
+    const int afterSearch = h.fake.calls;
+    Q_EMIT h.host.locationResult(beforeSearch, true, 43, -93, 100, now, true, "52401", "US", "");
+    pump(h.model);
+    expect("late location cannot replace newer ZIP search", h.fake.calls == afterSearch && h.prefs.lastLat() == 42);
+    h.model.lookupNearby();
+    Q_EMIT h.host.locationResult(h.host.requested, true, 44, -94, 100, now, true, "K1A0B1", "CA", "");
+    expect("non-US result retains fix and directs Browse",
+           h.prefs.lastLat() == 44
+               && h.model.errorText() == "RadioReference looks up US ZIP codes only; use Browse for CA.");
+    h.model.lookupNearby();
+    const qint64 first = h.host.requested;
+    h.model.lookupNearby();
+    expect("replacement has distinct id and cancels old", first != h.host.requested && h.host.cancelled == first);
+    h.model.cancel();
+    expect("explicit cancel settles", !h.model.busy() && h.host.cancelled == h.host.requested);
+}
+
+void
 test_destroy_with_requests_in_flight(void) {
     /* The client is destroyed first in ~RadioReferenceModel, which joins the
      * worker before any member it might read goes away. Under ASan this case is
@@ -1062,6 +1138,7 @@ main(int argc, char** argv) {
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dataDir).removeRecursively();
 
+    test_nearby();
     test_credentials_gate();
     test_browse_pipeline();
     test_trunked_system();

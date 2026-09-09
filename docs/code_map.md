@@ -520,7 +520,10 @@ Qt Quick frontend (`src/ui/qt`):
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. See
-  `docs/radioreference-import.md`.
+  `docs/radioreference-import.md`. Nearby import uses `DecoderHost` request IDs and
+  generation retirement; Android's `LocationSupport.kt` owns coarse permission, fix
+  acquisition and geocoding, with `decoder_host_android` polling terminal results.
+  `AppPrefs::setLocationFix` retains the private fix and accuracy for 24 hours.
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
   ingestion, merging listed rows with uncovered talkgroups heard this session. `talkgroup_filter_model.{h,cpp}`
   filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the monitor's **TG list** action.
