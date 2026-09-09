@@ -5,6 +5,7 @@
 
 #include "app_prefs.h"
 
+#include <QDateTime>
 #include <QLatin1String>
 #include <QVariant>
 
@@ -78,9 +79,40 @@ AppPrefs::AppPrefs(QObject* parent)
     // launched rather than on the app.
     : QObject(parent),
       m_settings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("dsd-neo"), QStringLiteral("dsd-neo-app")) {
+    m_locationExpiry.setSingleShot(true);
+    connect(&m_locationExpiry, &QTimer::timeout, this, [this]() {
+        armLocationExpiry(); // Re-arm if the wall clock moved backwards before the timer fired.
+        Q_EMIT locationChanged();
+    });
+    armLocationExpiry();
 }
 
 AppPrefs::~AppPrefs() = default;
+
+void
+AppPrefs::armLocationExpiry() {
+    m_locationExpiry.stop();
+    expireLocation();
+    const qint64 at = m_settings.value(QStringLiteral("location/lastFixAt"), 0).toLongLong();
+    if (at > 0) {
+        const qint64 remaining = 24LL * 60 * 60 * 1000 - (QDateTime::currentMSecsSinceEpoch() - at);
+        m_locationExpiry.start(static_cast<int>(qMax<qint64>(1, remaining)));
+    }
+}
+
+// Location is a short-lived private hint. Delete the whole fix on expiry so
+// stale coordinates cannot silently be reused or survive in a settings export.
+void
+AppPrefs::expireLocation() const {
+    const qint64 at = m_settings.value(QStringLiteral("location/lastFixAt"), 0).toLongLong();
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (at > 0 && at <= now && now - at < 24LL * 60 * 60 * 1000) {
+        return;
+    }
+    m_settings.remove(QStringLiteral("location/lastLat"));
+    m_settings.remove(QStringLiteral("location/lastLon"));
+    m_settings.remove(QStringLiteral("location/lastFixAt"));
+}
 
 int
 AppPrefs::appearance() const {
@@ -327,6 +359,103 @@ AppPrefs::setExploreFreqMhz(const QString& mhz) {
     }
     m_settings.setValue(QLatin1String(kExploreFreqMhz), mhz);
     Q_EMIT exploreChanged();
+}
+
+bool
+AppPrefs::autoStartOnAttach() const {
+    return m_settings.value(QStringLiteral("listen/autoStartOnAttach"), false).toBool();
+}
+
+void
+AppPrefs::setAutoStartOnAttach(bool value) {
+    if (m_settings.value(QStringLiteral("listen/autoStartOnAttach"), false).toBool() == value) {
+        return;
+    }
+    m_settings.setValue(QStringLiteral("listen/autoStartOnAttach"), value);
+    Q_EMIT autoStartOnAttachChanged();
+}
+
+QString
+AppPrefs::lastStartedKind() const {
+    return m_settings.value(QStringLiteral("listen/lastStartedKind"), QString()).toString();
+}
+
+void
+AppPrefs::setLastStartedKind(const QString& value) {
+    if (m_settings.value(QStringLiteral("listen/lastStartedKind"), QString()).toString() == value) {
+        return;
+    }
+    m_settings.setValue(QStringLiteral("listen/lastStartedKind"), value);
+    Q_EMIT lastStartedKindChanged();
+}
+
+QString
+AppPrefs::lastStartedUid() const {
+    return m_settings.value(QStringLiteral("listen/lastStartedUid"), QString()).toString();
+}
+
+void
+AppPrefs::setLastStartedUid(const QString& value) {
+    if (m_settings.value(QStringLiteral("listen/lastStartedUid"), QString()).toString() == value) {
+        return;
+    }
+    m_settings.setValue(QStringLiteral("listen/lastStartedUid"), value);
+    Q_EMIT lastStartedUidChanged();
+}
+
+double
+AppPrefs::lastLat() const {
+    expireLocation();
+    return m_settings.value(QStringLiteral("location/lastLat"), 0.0).toDouble();
+}
+
+void
+AppPrefs::setLastLat(double value) {
+    if (m_settings.value(QStringLiteral("location/lastLat"), 0.0).toDouble() == value) {
+        return;
+    }
+    m_settings.setValue(QStringLiteral("location/lastLat"), value);
+    Q_EMIT locationChanged();
+}
+
+double
+AppPrefs::lastLon() const {
+    expireLocation();
+    return m_settings.value(QStringLiteral("location/lastLon"), 0.0).toDouble();
+}
+
+void
+AppPrefs::setLastLon(double value) {
+    if (m_settings.value(QStringLiteral("location/lastLon"), 0.0).toDouble() == value) {
+        return;
+    }
+    m_settings.setValue(QStringLiteral("location/lastLon"), value);
+    Q_EMIT locationChanged();
+}
+
+void
+AppPrefs::setLocationFix(double lat, double lon, qint64 fixAtMs) {
+    m_settings.setValue(QStringLiteral("location/lastLat"), lat);
+    m_settings.setValue(QStringLiteral("location/lastLon"), lon);
+    m_settings.setValue(QStringLiteral("location/lastFixAt"), fixAtMs);
+    armLocationExpiry();
+    Q_EMIT locationChanged();
+}
+
+qint64
+AppPrefs::lastFixAt() const {
+    expireLocation();
+    return m_settings.value(QStringLiteral("location/lastFixAt"), 0).toLongLong();
+}
+
+void
+AppPrefs::setLastFixAt(qint64 value) {
+    if (m_settings.value(QStringLiteral("location/lastFixAt"), 0).toLongLong() == value) {
+        return;
+    }
+    m_settings.setValue(QStringLiteral("location/lastFixAt"), value);
+    armLocationExpiry();
+    Q_EMIT locationChanged();
 }
 
 } // namespace dsd_qt

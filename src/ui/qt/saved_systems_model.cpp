@@ -14,6 +14,8 @@
 #include <QLatin1String>
 #include <QMap>
 #include <QMetaType>
+#include <QSet>
+#include <QUuid>
 #include <QVariant>
 
 #include "json_store.h"
@@ -56,6 +58,17 @@ SavedSystemsModel::rowCount(const QModelIndex& parent) const {
 QVariant
 SavedSystemsModel::identityRoleValue(const Row& row, int role) {
     switch (role) {
+        case UidRole: return row.uid;
+        case EncKeyTypeRole: return row.encKeyType;
+        case EncKeyValueRole: return row.encKeyValue;
+        case EncForceKeyRole: return row.encForceKey;
+        case RrSidRole: return row.rrSid;
+        case RrSiteIdRole: return row.rrSiteId;
+        case SiteNameRole: return row.siteName;
+        case SiteLatRole: return row.siteLat;
+        case SiteLonRole: return row.siteLon;
+        case HasSitePosRole: return row.hasSitePos;
+        case AvoidSiteRole: return row.avoidSite;
         case NameRole: return row.name;
         case SourceTypeRole: return row.sourceType;
         case HostRole: return row.host;
@@ -121,6 +134,17 @@ SavedSystemsModel::roleNames() const {
     roles.insert(KeyCsvHexRole, QByteArrayLiteral("keyCsvHex"));
     roles.insert(P25BandplanCsvPathRole, QByteArrayLiteral("p25BandplanCsvPath"));
     roles.insert(SrcCsvPathRole, QByteArrayLiteral("srcCsvPath"));
+    roles.insert(UidRole, QByteArrayLiteral("uid"));
+    roles.insert(EncKeyTypeRole, QByteArrayLiteral("encKeyType"));
+    roles.insert(EncKeyValueRole, QByteArrayLiteral("encKeyValue"));
+    roles.insert(EncForceKeyRole, QByteArrayLiteral("encForceKey"));
+    roles.insert(RrSidRole, QByteArrayLiteral("rrSid"));
+    roles.insert(RrSiteIdRole, QByteArrayLiteral("rrSiteId"));
+    roles.insert(SiteNameRole, QByteArrayLiteral("siteName"));
+    roles.insert(SiteLatRole, QByteArrayLiteral("siteLat"));
+    roles.insert(SiteLonRole, QByteArrayLiteral("siteLon"));
+    roles.insert(HasSitePosRole, QByteArrayLiteral("hasSitePos"));
+    roles.insert(AvoidSiteRole, QByteArrayLiteral("avoidSite"));
     return roles;
 }
 
@@ -158,6 +182,43 @@ map_take_bool(const QVariantMap& map, const QString& key, bool* target) {
 SavedSystemsModel::Row
 SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     Row row = base;
+    // An edit cannot change identity. Loading can adopt a valid persisted UUID;
+    // add() replaces it afterwards so duplicating a row never duplicates identity.
+    if (row.uid.isEmpty()) {
+        const QUuid stored(map.value(QStringLiteral("uid")).toString());
+        row.uid = (stored.isNull() ? QUuid::createUuid() : stored).toString(QUuid::WithoutBraces);
+    }
+    if (map.contains(QStringLiteral("encKeyType"))) {
+        row.encKeyType = map.value(QStringLiteral("encKeyType")).toInt();
+    }
+    if (map.contains(QStringLiteral("encKeyValue"))) {
+        row.encKeyValue = map.value(QStringLiteral("encKeyValue")).toString();
+    }
+    if (map.contains(QStringLiteral("encForceKey"))) {
+        row.encForceKey = map.value(QStringLiteral("encForceKey")).toInt();
+    }
+    if (map.contains(QStringLiteral("rrSid"))) {
+        row.rrSid = map.value(QStringLiteral("rrSid")).toInt();
+    }
+    if (map.contains(QStringLiteral("rrSiteId"))) {
+        row.rrSiteId = map.value(QStringLiteral("rrSiteId")).toInt();
+    }
+    if (map.contains(QStringLiteral("siteName"))) {
+        row.siteName = map.value(QStringLiteral("siteName")).toString();
+    }
+    if (map.contains(QStringLiteral("siteLat"))) {
+        row.siteLat = map.value(QStringLiteral("siteLat")).toDouble();
+    }
+    if (map.contains(QStringLiteral("siteLon"))) {
+        row.siteLon = map.value(QStringLiteral("siteLon")).toDouble();
+    }
+    if (map.contains(QStringLiteral("hasSitePos"))) {
+        row.hasSitePos = map.value(QStringLiteral("hasSitePos")).toBool();
+    }
+    if (map.contains(QStringLiteral("avoidSite"))) {
+        row.avoidSite = map.value(QStringLiteral("avoidSite")).toBool();
+    }
+
     map_take_string(map, QStringLiteral("name"), &row.name);
     map_take_string(map, QStringLiteral("sourceType"), &row.sourceType);
     map_take_string(map, QStringLiteral("host"), &row.host);
@@ -188,6 +249,18 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
 QVariantMap
 SavedSystemsModel::mapFromRow(const Row& row) const {
     QVariantMap map;
+    map.insert(QStringLiteral("uid"), row.uid);
+    map.insert(QStringLiteral("encKeyType"), row.encKeyType);
+    map.insert(QStringLiteral("encKeyValue"), row.encKeyValue);
+    map.insert(QStringLiteral("encForceKey"), row.encForceKey);
+    map.insert(QStringLiteral("rrSid"), row.rrSid);
+    map.insert(QStringLiteral("rrSiteId"), row.rrSiteId);
+    map.insert(QStringLiteral("siteName"), row.siteName);
+    map.insert(QStringLiteral("siteLat"), row.siteLat);
+    map.insert(QStringLiteral("siteLon"), row.siteLon);
+    map.insert(QStringLiteral("hasSitePos"), row.hasSitePos);
+    map.insert(QStringLiteral("avoidSite"), row.avoidSite);
+
     map.insert(QStringLiteral("name"), row.name);
     map.insert(QStringLiteral("sourceType"), row.sourceType);
     map.insert(QStringLiteral("host"), row.host);
@@ -214,7 +287,9 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
 void
 SavedSystemsModel::add(const QVariantMap& system) {
     beginInsertRows(QModelIndex(), static_cast<int>(m_rows.size()), static_cast<int>(m_rows.size()));
-    m_rows.append(rowFromMap(system, Row()));
+    Row row = rowFromMap(system, Row());
+    row.uid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_rows.append(row);
     endInsertRows();
     Q_EMIT countChanged();
     Q_EMIT mostRecentRowChanged();
@@ -251,6 +326,23 @@ SavedSystemsModel::get(int row) const {
         return QVariantMap();
     }
     return mapFromRow(m_rows.at(row));
+}
+
+int
+SavedSystemsModel::rowForUid(const QString& uid) const {
+    if (!uid.isEmpty()) {
+        for (int i = 0; i < m_rows.size(); ++i) {
+            if (m_rows.at(i).uid == uid) {
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
+QVariantMap
+SavedSystemsModel::getByUid(const QString& uid) const {
+    return get(rowForUid(uid));
 }
 
 void
@@ -336,6 +428,8 @@ SavedSystemsModel::mostRecentRow() const {
 void
 SavedSystemsModel::load() {
     QList<Row> rows;
+    QSet<QString> seen;
+    bool migrated = false;
     const QJsonArray array = json_store_load_array(QLatin1String(kStoreFileName));
     // auto, not QJsonValue: iterating a QJsonArray yields a QJsonValueConstRef
     // proxy, and binding that to a QJsonValue reference converts — copying every
@@ -344,7 +438,13 @@ SavedSystemsModel::load() {
         if (!value.isObject()) {
             continue;
         }
-        Row row = rowFromMap(value.toObject().toVariantMap(), Row());
+        const QVariantMap stored = value.toObject().toVariantMap();
+        Row row = rowFromMap(stored, Row());
+        if (seen.contains(row.uid)) {
+            row.uid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        }
+        seen.insert(row.uid);
+        migrated |= stored.value(QStringLiteral("uid")).toString() != row.uid;
         // The P25 Simulcast chip used to carry "-f1 -mq", which pinned Phase 1 only;
         // -mq alone keeps the engine's default decode set (Phase 1 + Phase 2).
         if (row.decodeFlag == QLatin1String("-f1 -mq")) {
@@ -355,6 +455,9 @@ SavedSystemsModel::load() {
     beginResetModel();
     m_rows = rows;
     endResetModel();
+    if (migrated) {
+        save(); // Persist now: a read-only visit must not generate a new identity next launch.
+    }
     Q_EMIT countChanged();
     Q_EMIT mostRecentRowChanged();
 }

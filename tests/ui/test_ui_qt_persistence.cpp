@@ -9,6 +9,7 @@
  * when the Qt frontend is enabled (DSD_ENABLE_QT_UI), since these link Qt. */
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QIODevice>
@@ -23,6 +24,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QUuid>
 #include <QVariant>
 #include <QVariantMap>
 #include <stdio.h>
@@ -347,6 +349,57 @@ test_app_prefs(void) {
     expect("no RadioReference password preference exists", reloaded.metaObject()->indexOfProperty("rrPassword") == -1);
 }
 
+void
+test_foundation_persistence() {
+    const QString store = QStringLiteral("saved_systems.json");
+    json_store_save_array(store, QJsonArray{QJsonObject{{QStringLiteral("name"), QStringLiteral("legacy")}}});
+    SavedSystemsModel legacy;
+    const QString uid = legacy.get(0).value(QStringLiteral("uid")).toString();
+    expect("legacy gets a UUID", !QUuid(uid).isNull());
+    SavedSystemsModel migrated;
+    expect("migration persists without an edit", migrated.get(0).value(QStringLiteral("uid")).toString() == uid);
+    expect("UID lookup finds row", migrated.rowForUid(uid) == 0);
+    expect("unknown UID never selects a row",
+           migrated.rowForUid(QString()) == -1 && migrated.getByUid("missing").isEmpty());
+    QVariantMap fields{{"encKeyType", 2},    {"encKeyValue", "0011223344"},
+                       {"encForceKey", 2},   {"rrSid", 123},
+                       {"rrSiteId", 456},    {"siteName", "North"},
+                       {"siteLat", 42.5},    {"siteLon", -87.5},
+                       {"hasSitePos", true}, {"avoidSite", true}};
+    migrated.update(0, fields);
+    SavedSystemsModel reloaded;
+    for (auto it = fields.cbegin(); it != fields.cend(); ++it) {
+        expect("optional field survives reload", reloaded.getByUid(uid).value(it.key()) == it.value());
+    }
+    reloaded.add(reloaded.get(0));
+    expect("copy gets a distinct identity", reloaded.get(1).value("uid") != uid);
+    reloaded.remove(0);
+    expect("deleted UID cannot address a shifted row", reloaded.rowForUid(uid) == -1);
+
+    AppPrefs prefs;
+    expect("attach defaults off", !prefs.autoStartOnAttach());
+    prefs.setAutoStartOnAttach(true);
+    prefs.setLastStartedKind("saved");
+    prefs.setLastStartedUid(uid);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    bool coherentFix = false;
+    const auto connection = QObject::connect(&prefs, &AppPrefs::locationChanged, &prefs, [&]() {
+        coherentFix = prefs.lastLat() == 42.5 && prefs.lastLon() == -87.5 && prefs.lastFixAt() == now;
+    });
+    prefs.setLocationFix(42.5, -87.5, now);
+    expect("fix notification sees all coordinates and timestamp", coherentFix);
+    QObject::disconnect(connection);
+    AppPrefs fresh;
+    expect("attach and session prefs persist",
+           fresh.autoStartOnAttach() && fresh.lastStartedKind() == "saved" && fresh.lastStartedUid() == uid);
+    expect("fresh fix persists", fresh.lastLat() == 42.5 && fresh.lastLon() == -87.5 && fresh.lastFixAt() == now);
+    prefs.setLastFixAt(now - 24LL * 60 * 60 * 1000 - 1);
+    expect("expired fix reads absent", prefs.lastFixAt() == 0 && prefs.lastLat() == 0 && prefs.lastLon() == 0);
+    QSettings stored(QSettings::IniFormat, QSettings::UserScope, "dsd-neo", "dsd-neo-app");
+    expect("expired fix removed from disk", !stored.contains("location/lastLat") && !stored.contains("location/lastLon")
+                                                && !stored.contains("location/lastFixAt"));
+}
+
 } // namespace
 
 int
@@ -372,6 +425,7 @@ main(int argc, char** argv) {
     test_saved_systems();
     test_saved_systems_csv_fields();
     test_app_prefs();
+    test_foundation_persistence();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

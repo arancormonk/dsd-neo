@@ -54,7 +54,18 @@ class SavedSystemsModel : public QAbstractListModel {
         KeyCsvPathRole,         // imported key file (-k/-K); empty = none
         KeyCsvHexRole,          // true = hex keys (-K), false = decimal (-k)
         P25BandplanCsvPathRole, // imported P25 band plan (--p25-bandplan); empty = none
-        SrcCsvPathRole          // imported radio ID aliases (--src-csv); empty = none
+        SrcCsvPathRole,         // imported radio ID aliases (--src-csv); empty = none
+        UidRole,
+        EncKeyTypeRole,
+        EncKeyValueRole,
+        EncForceKeyRole,
+        RrSidRole,
+        RrSiteIdRole,
+        SiteNameRole,
+        SiteLatRole,
+        SiteLonRole,
+        HasSitePosRole,
+        AvoidSiteRole
     };
 
     explicit SavedSystemsModel(QObject* parent = nullptr);
@@ -79,6 +90,8 @@ class SavedSystemsModel : public QAbstractListModel {
 
     /** @brief One system as a field map, for the wizard's edit path and argv building. */
     Q_INVOKABLE QVariantMap get(int row) const;
+    Q_INVOKABLE int rowForUid(const QString& uid) const;
+    Q_INVOKABLE QVariantMap getByUid(const QString& uid) const;
 
     /** @brief Stamp lastHeard = now; called when a session on this system starts. */
     Q_INVOKABLE void touch(int row);
@@ -109,6 +122,21 @@ class SavedSystemsModel : public QAbstractListModel {
 
   private:
     struct Row {
+        // UUIDs survive row deletion/reordering; a pending start must never touch
+        // whichever unrelated row moved into its old index.
+        QString uid;
+        int encKeyType = 0;
+        QString encKeyValue;
+        int encForceKey = 0;
+        int rrSid = 0;
+        int rrSiteId = 0;
+        QString siteName;
+        double siteLat = 0;
+        double siteLon = 0;
+        bool hasSitePos = false;
+        bool avoidSite = false;
+        // QString copies cannot promise secret erasure. Key values belong only to
+        // private persistence and argv assembly, never labels or diagnostics.
         QString name;
         QString sourceType;
         QString host;
