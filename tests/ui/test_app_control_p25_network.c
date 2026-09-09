@@ -43,6 +43,8 @@ main(void) {
     s.p25_patch_last_update[7] = time(NULL) - 60;
     assert(dsd_app_p25_patches(&s, p, 8) == 0);
     assert(s.p25_patch_active[7] == 1); // Snapshot must not be swept in place.
+    s.p25_patch_last_update[7] = time(NULL);
+    assert(dsd_app_p25_patches(&s, p, 8) == 1);
     s.p25_patch_active[7] = 0;
     assert(dsd_app_p25_patches(&s, p, 8) == 0);
     dsd_app_p25_affiliation a[2];

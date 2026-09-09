@@ -12,8 +12,12 @@ Item {
     // Raised by the header's spectrum button; Main.qml owns the layer.
     readonly property bool compactHeight: height < 500
 
-    // WP-F2 fallback until SiteSheet is integrated.
-    readonly property string siteProtocol: metrics.syncLabel.indexOf("P25") === 0 ? "P25" : ""
+    // WP-F2 fallback until SiteSheet is integrated. Sync makes the first open
+    // possible; retained announcements keep it reachable after the hold expires.
+    readonly property bool hasP25NetworkData: networkSheet.network.neighbours.length > 0
+        || networkSheet.network.patches.length > 0 || networkSheet.network.affiliations.length > 0
+        || networkSheet.network.radios.length > 0
+    readonly property string siteProtocol: hasP25NetworkData || metrics.syncLabel.indexOf("P25") === 0 ? "P25" : ""
     onVisibleChanged: { if (!visible) networkSheet.visible = false; }
 
     signal openSpectrum

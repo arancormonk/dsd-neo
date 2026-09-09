@@ -13,10 +13,27 @@ Item {
         property var affiliations: [{rid: 12345, tg: 77}]
         property var radios: [{rid: 12345}]
     }
+    QtObject {
+        id: retained
+        property bool active: false
+        property var neighbours: []
+        property var patches: []
+        property var affiliations: []
+        property var radios: []
+    }
     Loader { id: monitor; anchors.fill: parent; source: uiDir + "/MonitorScreen.qml"; visible: false }
     TestCase {
         name: "NetworkSheet"
         when: windowShown
+        function cleanup() {
+            monitor.visible = false;
+            findChild(monitor.item, "networkSheet").network = p25Network;
+            retained.neighbours = [];
+            retained.patches = [];
+            retained.affiliations = [];
+            retained.radios = [];
+            testContext.setMetric("syncLabel", "");
+        }
         function textCount(item, text) {
             var count = item.text === text ? 1 : 0;
             for (var i = 0; i < item.children.length; ++i)
@@ -49,6 +66,30 @@ Item {
             monitor.visible = false;
             compare(p25Network.active, false);
             testContext.setMetric("syncLabel", "");
+        }
+        function test_monitor_entry_retains_announcements_data() {
+            return ["neighbours", "patches", "affiliations", "radios"].map(function (section) {
+                return {tag: section, section: section};
+            });
+        }
+        function test_monitor_entry_retains_announcements(data) {
+            var networkSheet = findChild(monitor.item, "networkSheet");
+            networkSheet.network = retained;
+            retained[data.section] = populated[data.section];
+            monitor.visible = true;
+            testContext.setMetric("syncLabel", "P25p1");
+            var button = findChild(monitor.item, "siteNetworkButton");
+            compare(button.visible, true);
+            testContext.setMetric("syncLabel", "");
+            compare(button.visible, true); // Announcements outlive the sync-label hold.
+            waitForRendering(monitor.item);
+            mouseClick(button);
+            compare(retained.active, true);
+            compare(networkSheet.visible, true);
+            networkSheet.visible = false;
+            compare(retained.active, false);
+            retained[data.section] = [];
+            compare(button.visible, false); // Session/target clear removes the evidence.
         }
         function test_empty_and_lifecycle() {
             compare(sheet.status, Loader.Ready);
