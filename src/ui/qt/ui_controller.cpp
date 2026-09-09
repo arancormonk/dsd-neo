@@ -7,6 +7,15 @@
 #include "diagnostics_log.h"
 
 #include <Qt>
+// WP0's C export payload uses a flexible array; only its fixed header is read in C++.
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
+#include <dsd-neo/app_control/commands.h>
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/state.h>
@@ -113,6 +122,18 @@ UiController::clearLiveModels() {
 
 void
 UiController::tick() {
+    // WP-D1: retained export completion is independent of redraw and host lifecycle.
+    dsd_app_tg_export_result result = {};
+    if (dsd_app_tg_export_result_get(&result) && result.sequence != m_talkgroupExportSequence) {
+        m_talkgroupExportSequence = result.sequence;
+        m_talkgroupExportResult = {{QStringLiteral("sequence"), QString::number(result.sequence)},
+                                   {QStringLiteral("policyContext"), QString::number(result.policy_context)},
+                                   {QStringLiteral("policyGeneration"), result.policy_generation},
+                                   {QStringLiteral("path"), QString::fromUtf8(result.path)},
+                                   {QStringLiteral("success"), result.success == 1}};
+        Q_EMIT talkgroupExportResultChanged();
+    }
+
     if (m_diagnostics) {
         m_diagnostics->refresh();
     }

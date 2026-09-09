@@ -635,6 +635,29 @@ test_legacy_store_without_provenance(void) {
     expect("legacy row is not prunable", model.takePrunedPaths().isEmpty());
 }
 
+void
+test_export_registration_in_place() {
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    const int before = model.count();
+    const QString path = model.newTalkgroupListPath();
+    expect("generated path is unique", path != model.newTalkgroupListPath());
+    expect("destination is not registered before completion", model.count() == before && !QFile::exists(path));
+    expect("missing export cannot be registered", !model.registerTalkgroupList(path));
+    const QByteArray csv("id,mode,name,priority,preempt\n42,A,Dispatch,50,1\n");
+    expect("write canonical export", write_file(path, csv));
+    expect("register existing export", model.registerTalkgroupList(path));
+    expect("same path and bytes retained", model.get(model.rowForPath(path)).value("path").toString() == path
+                                               && read_file(path) == csv && model.count() == before + 1);
+    expect("register completion only once", model.registerTalkgroupList(path) && model.count() == before + 1);
+    QTemporaryDir outside;
+    const QString external = outside.filePath("external.csv");
+    expect("write outside fixture", write_file(external, csv));
+    expect("outside path refused without deleting it",
+           !model.registerTalkgroupList(external) && QFile::exists(external));
+    model.remove(model.rowForPath(path));
+}
+
 } // namespace
 
 int
@@ -666,6 +689,7 @@ main(int argc, char** argv) {
         host.hostDiagnostic("test lifecycle line");
         expect("initialization signal is available", host.metaObject()->indexOfSignal("sessionInitialized()") >= 0);
     }
+    test_export_registration_in_place();
     test_import_document();
     test_imported_files_model();
     test_update_rejects_invalid_pick();

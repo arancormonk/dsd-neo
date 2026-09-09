@@ -63,6 +63,11 @@ class ImportedFilesModel : public QAbstractListModel {
         return static_cast<int>(m_rows.size());
     }
 
+    /** WP-D1: generate an app-owned destination without registering or writing a file. */
+    Q_INVOKABLE QString newTalkgroupListPath() const;
+    /** Register a successfully exported list in place; the engine keeps writing this path. */
+    Q_INVOKABLE bool registerTalkgroupList(const QString& path);
+
     /**
      * @brief Copy a picked document into the library, validate it, record a row.
      *

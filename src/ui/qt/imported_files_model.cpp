@@ -8,13 +8,16 @@
 #include <QByteArray>
 #include <QChar>
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QMap>
+#include <QUuid>
 #include <QVariant>
 
 #include <dsd-neo/core/csv_validate.h>
@@ -108,6 +111,44 @@ ImportedFilesModel::validate(const QString& path, const QString& type, int* acce
     }
     *accepted = static_cast<int>(counts.accepted);
     *skipped = static_cast<int>(counts.skipped);
+    return true;
+}
+
+QString
+ImportedFilesModel::newTalkgroupListPath() const {
+    QDir dir(json_store_path(QStringLiteral("imports")));
+    if (!dir.mkpath(QStringLiteral("."))) {
+        return {};
+    }
+    return dir.absoluteFilePath(
+        QStringLiteral("talkgroups-%1.csv").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
+}
+
+bool
+ImportedFilesModel::registerTalkgroupList(const QString& path) {
+    const QFileInfo file(path);
+    const QDir dir(json_store_path(QStringLiteral("imports")));
+    if (!file.isFile() || file.isSymLink()
+        || file.canonicalPath() != QFileInfo(dir.absolutePath()).canonicalFilePath()) {
+        return false;
+    }
+    if (rowForPath(path) >= 0) {
+        return true;
+    }
+    Row row;
+    row.path = path;
+    row.name = file.fileName();
+    row.type = QStringLiteral("group");
+    row.importedAt = QDateTime::currentSecsSinceEpoch();
+    // Unlike a staged import, failure must never delete the engine's active file.
+    if (!validate(path, row.type, &row.accepted, &row.skipped)) {
+        return false;
+    }
+    beginInsertRows({}, count(), count());
+    m_rows.append(row);
+    endInsertRows();
+    Q_EMIT countChanged();
+    save();
     return true;
 }
 

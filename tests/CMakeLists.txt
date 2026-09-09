@@ -10069,6 +10069,8 @@ if(DSD_ENABLE_QT_UI)
     add_executable(
         dsd-neo_test_ui_qt_controller
         ui/test_ui_qt_controller.cpp
+        # WP-D1: exercise the real bridge through the retained export result.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/command_bridge.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QCoreApplication>
 #include <QEventLoop>
+#include <QFile>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <cassert>
@@ -8,7 +9,11 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include "command_bridge.h"
+#include "commands_internal.h"
 #include "decoder_host.h"
 #include "diagnostics_log.h"
 #include "metrics_model.h"
@@ -114,6 +119,68 @@ main(int argc, char** argv) {
     diagnosticsModel.refresh();
     assert(diagnosticsModel.allText().count("--- session starting ---") == 2);
     assert(diagnosticsModel.allText().contains("idle diagnostic"));
+    // WP-D1: real bridge -> queue -> policy, then retained completion with no redraw.
+    dsd_qt::CommandBridge bridge;
+    // A session without a policy table reports version 0/0; adding its first heard row is valid.
+    static dsd_state emptyPolicyState;
+    assert(bridge.addTalkgroup(77, 77, QStringLiteral("0"), 0, "First heard", true, 0, false));
+    assert(dsd_app_drain_cmds(&opts, &emptyPolicyState) == 1);
+    assert(dsd_tg_policy_entry_count(&emptyPolicyState) == 1);
+    dsd_state_ext_free_all(&emptyPolicyState);
+    dsd_tg_policy_entry entry = {};
+    assert(dsd_tg_policy_make_exact_entry(42, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
+    assert(dsd_tg_policy_append_exact(&state, &entry) == 0);
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    dsd_tg_policy_table_version(&state, &context, &generation);
+    const QString version = QString::number(context);
+    assert(!bridge.renameTalkgroup(42, 42, version, generation, QString(50, QLatin1Char('x'))));
+    assert(!bridge.setTalkgroupPolicy(42, 42, version, generation, "Dispatch", true, 101, true));
+    assert(bridge.setTalkgroupPolicy(42, 42, version, generation, "Fire", true, 50, true));
+    assert(dsd_app_drain_cmds(&opts, &state) == 1);
+    assert(dsd_tg_policy_entry_at(&state, 0, &entry));
+    assert(entry.priority == 50 && entry.preempt == 1 && QString::fromUtf8(entry.name) == "Fire");
+    // The original sheet's generation must be forwarded unchanged and refused.
+    assert(bridge.renameTalkgroup(42, 42, version, generation, "Stale"));
+    (void)dsd_app_drain_cmds(&opts, &state);
+    assert(dsd_tg_policy_entry_at(&state, 0, &entry));
+    assert(QString::fromUtf8(entry.name) == "Fire");
+    assert(QString::fromUtf8(state.ui_msg).contains("stale", Qt::CaseInsensitive));
+    dsd_tg_policy_table_version(&state, &context, &generation);
+    assert(bridge.renameTalkgroup(42, 42, version, generation, "Renamed"));
+    assert(dsd_app_drain_cmds(&opts, &state) == 1);
+    assert(dsd_tg_policy_entry_at(&state, 0, &entry));
+    assert(entry.priority == 50 && entry.preempt == 1 && QString::fromUtf8(entry.name) == "Renamed");
+    dsd_tg_policy_table_version(&state, &context, &generation);
+    assert(bridge.addTalkgroup(55, 55, version, generation, "Heard", false, 25, false));
+    assert(dsd_app_drain_cmds(&opts, &state) == 1);
+    assert(dsd_tg_policy_entry_count(&state) == 2);
+    dsd_tg_policy_table_version(&state, &context, &generation);
+    assert(bridge.removeTalkgroup(55, 55, version, generation));
+    assert(dsd_app_drain_cmds(&opts, &state) == 1);
+    assert(dsd_tg_policy_entry_count(&state) == 1);
+    dsd_tg_policy_table_version(&state, &context, &generation);
+    QTemporaryDir exportDir;
+    assert(exportDir.isValid());
+    const QString exportPath = exportDir.filePath("groups.csv");
+    assert(bridge.saveTalkgroupList(version, generation, exportPath));
+    assert(!QFile::exists(exportPath));
+    assert(controller.talkgroupExportResult().isEmpty());
+    assert(dsd_app_drain_cmds(&opts, &state) == 1);
+    assert(QFile::exists(exportPath));
+    (void)dsd_app_frontend_redraw_consume();
+    QEventLoop exportLoop;
+    QTimer::singleShot(65, &exportLoop, &QEventLoop::quit);
+    controller.start();
+    exportLoop.exec();
+    controller.stop();
+    const auto exported = controller.talkgroupExportResult();
+    assert(exported.value("success").toBool());
+    assert(exported.value("path").toString() == exportPath);
+    assert(exported.value("policyContext").toString() == version);
+    assert(exported.value("policyGeneration").toUInt() == generation);
+    assert(exported.value("sequence").toString() != "0");
+    assert(QString::fromUtf8(opts.group_in_file) == exportPath);
     freeState(&state);
     return 0;
 }
