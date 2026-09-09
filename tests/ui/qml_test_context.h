@@ -894,6 +894,13 @@ class Setup : public QObject {
         Q_EMIT m_import_host->sessionInitialized();
     }
 
+    // WP-D3: platform capability gate for the nearby search button.
+    Q_INVOKABLE void
+    setLocationSupported(bool supported) {
+        m_host[QStringLiteral("locationSupported")] = supported;
+        m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host);
+    }
+
     /** @brief Publish a live/idle host so cases can exercise session-only actions. */
     Q_INVOKABLE void
     setHostRunning(bool running) {

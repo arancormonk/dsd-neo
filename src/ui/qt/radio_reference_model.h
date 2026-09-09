@@ -42,6 +42,8 @@
 
 namespace dsd_qt {
 
+QString rr_zip_from_postal(const QString& postalCode, const QString& countryCode);
+
 class AppPrefs;
 class DecoderHost;
 class ImportedFilesModel;
@@ -129,7 +131,7 @@ class RadioReferenceModel : public QObject {
 
     bool
     busy() const {
-        return m_outstanding > 0;
+        return m_outstanding > 0 || m_locationRequestId != 0;
     }
 
     QString
@@ -212,6 +214,8 @@ class RadioReferenceModel : public QObject {
     Q_INVOKABLE void checkAccount();
 
     /** @brief Resolve a ZIP to its county, then list that county's systems. */
+    Q_INVOKABLE void lookupNearby();
+
     Q_INVOKABLE void lookupZip(const QString& zip);
 
     Q_INVOKABLE void loadCountries();
@@ -347,6 +351,9 @@ class RadioReferenceModel : public QObject {
      * @brief Open a new request batch: cancel what is in flight, retire older
      *        replies by bumping the generation, and clear the error.
      */
+    void cancelLocation();
+    void applyLocation(qint64 id, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs, bool geocodeOk,
+                       const QString& postal, const QString& country, const QString& error);
     void startBatch(const QString& status);
 
     /** @brief Build a request context, or report why one could not be made. */
@@ -414,6 +421,8 @@ class RadioReferenceModel : public QObject {
      * after the user moved on is dropped instead of overwriting fresh state. */
     quint64 m_generation = 1;
     QList<quint64> m_pendingIds;
+    qint64 m_locationRequestId = 0;
+    quint64 m_locationGeneration = 0;
 
     QVariantList m_countries;
     QVariantList m_states;

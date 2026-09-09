@@ -328,3 +328,19 @@ Sourced from RadioReference's
 
 RadioReference publishes no rate limit. dsd-neo is conservative by construction: one worker thread
 per client, so a client has at most one request in flight at a time.
+
+### Use my location (Android)
+
+In **Find a system**, **Use my location** requests approximate foreground location.
+Granting coarse location permission is optional; ZIP, Browse and system ID searches
+remain available after denial. The request times out after 20 seconds, including
+reverse geocoding. A successful US five-digit postal code enters the existing ZIP
+lookup. Other countries, missing postal codes and geocoding errors direct you to Browse.
+Desktop hosts hide this button by default.
+
+A newer search or Browse request cancels the pending location lookup; late results
+cannot replace the newer results. Android Activity teardown also cancels it. A valid
+fix is retained privately (latitude, longitude, accuracy in metres and timestamp in
+milliseconds), even if geocoding fails, for later nearby-site selection. It expires
+after 24 hours using the existing preference expiry timer and load/read checks.
+Coordinates are not added to diagnostics or exports.

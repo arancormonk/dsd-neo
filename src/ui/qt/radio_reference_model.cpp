@@ -29,6 +29,7 @@
 #include <dsd-neo/runtime/radioreference_import.h>
 
 #include "app_prefs.h"
+#include "decoder_host.h"
 #include "imported_files_model.h"
 #include "json_store.h"
 
@@ -437,6 +438,9 @@ RadioReferenceModel::RadioReferenceModel(AppPrefs* prefs, ImportedFilesModel* im
         staging.removeRecursively();
     }
 
+    if (m_host != nullptr) {
+        connect(m_host, &DecoderHost::locationResult, this, &RadioReferenceModel::applyLocation);
+    }
     if (m_prefs != nullptr) {
         connect(m_prefs, &AppPrefs::rrUsernameChanged, this, &RadioReferenceModel::credentialsChanged);
         connect(m_prefs, &AppPrefs::rrAppKeyChanged, this, &RadioReferenceModel::credentialsChanged);
@@ -449,6 +453,7 @@ RadioReferenceModel::~RadioReferenceModel() {
      * The same rule ~CallHistoryModel() follows for its save pool. */
     dsd_rr_client_destroy(m_client);
     m_client = nullptr;
+    cancelLocation();
 
     dsd_rr_site_list_free(&m_siteData);
     dsd_rr_talkgroup_list_free(&m_talkgroupData);
@@ -582,6 +587,7 @@ RadioReferenceModel::startBatch(const QString& status) {
     }
     m_pendingIds.clear();
     const bool wasBusy = busy();
+    cancelLocation();
     m_outstanding = 0;
     m_systemPending = 0;
     m_generation++;
@@ -662,6 +668,7 @@ RadioReferenceModel::cancel() {
     }
     m_pendingIds.clear();
     const bool wasBusy = busy();
+    cancelLocation();
     m_outstanding = 0;
     m_systemPending = 0;
     m_generation++;
@@ -705,6 +712,70 @@ RadioReferenceModel::checkAccount() {
         return;
     }
     endFetch(dsd_rr_fetch_user_data(m_client, &request->auth, &onFetchDone, request), request);
+}
+
+QString
+rr_zip_from_postal(const QString& postalCode, const QString& countryCode) {
+    if (countryCode != QStringLiteral("US") || postalCode.size() != 5) {
+        return {};
+    }
+    for (const QChar c : postalCode) {
+        if (c < QLatin1Char('0') || c > QLatin1Char('9')) {
+            return {};
+        }
+    }
+    return postalCode;
+}
+
+void
+RadioReferenceModel::cancelLocation() {
+    const qint64 id = m_locationRequestId;
+    m_locationRequestId = 0;
+    if (id != 0 && m_host != nullptr) {
+        m_host->cancelLocationRequest(id);
+    }
+}
+
+void
+RadioReferenceModel::lookupNearby() {
+    startBatch(tr("Finding your location…"));
+    if (m_host == nullptr || !m_host->locationSupported()) {
+        setError(UnsupportedError, tr("Location is not supported on this platform."));
+        return;
+    }
+    m_locationGeneration = m_generation;
+    // Qt main thread only. IDs remain unique if the model is recreated while a
+    // platform worker is still retiring a cancelled geocoder.
+    static qint64 nextLocationRequestId = 0;
+    m_locationRequestId = ++nextLocationRequestId;
+    Q_EMIT busyChanged();
+    m_host->requestCurrentLocation(m_locationRequestId);
+}
+
+void
+RadioReferenceModel::applyLocation(qint64 id, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
+                                   bool geocodeOk, const QString& postal, const QString& country,
+                                   const QString& error) {
+    if (id == 0 || id != m_locationRequestId || m_locationGeneration != m_generation) {
+        return;
+    }
+    m_locationRequestId = 0;
+    Q_EMIT busyChanged();
+    setStatus(QString());
+    if (fixOk && m_prefs != nullptr) {
+        m_prefs->setLocationFix(lat, lon, fixAtMs, accuracyM);
+    }
+    if (!fixOk || !geocodeOk) {
+        setError(ConfigError, error.isEmpty() ? tr("Location lookup failed; use Browse.") : error);
+        return;
+    }
+    const QString zip = rr_zip_from_postal(postal, country);
+    if (zip.isEmpty()) {
+        setError(ConfigError, tr("RadioReference looks up US ZIP codes only; use Browse for %1.")
+                                  .arg(country.isEmpty() ? tr("this location") : country));
+        return;
+    }
+    lookupZip(zip);
 }
 
 void

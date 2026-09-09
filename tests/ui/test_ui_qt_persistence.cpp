@@ -386,7 +386,12 @@ test_foundation_persistence() {
     const auto connection = QObject::connect(&prefs, &AppPrefs::locationChanged, &prefs, [&]() {
         coherentFix = prefs.lastLat() == 42.5 && prefs.lastLon() == -87.5 && prefs.lastFixAt() == now;
     });
-    prefs.setLocationFix(42.5, -87.5, now);
+    prefs.setLocationFix(42.5, -87.5, now, 125);
+    expect("fix accuracy retained", prefs.lastAccuracyM() == 125);
+    {
+        dsd_qt::AppPrefs restored;
+        expect("fix accuracy survives reload", restored.lastAccuracyM() == 125);
+    }
     expect("fix notification sees all coordinates and timestamp", coherentFix);
     QObject::disconnect(connection);
     AppPrefs fresh;
@@ -397,7 +402,8 @@ test_foundation_persistence() {
     expect("expired fix reads absent", prefs.lastFixAt() == 0 && prefs.lastLat() == 0 && prefs.lastLon() == 0);
     QSettings stored(QSettings::IniFormat, QSettings::UserScope, "dsd-neo", "dsd-neo-app");
     expect("expired fix removed from disk", !stored.contains("location/lastLat") && !stored.contains("location/lastLon")
-                                                && !stored.contains("location/lastFixAt"));
+                                                && !stored.contains("location/lastFixAt")
+                                                && !stored.contains("location/lastAccuracyM"));
 }
 
 void

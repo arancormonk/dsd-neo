@@ -836,6 +836,14 @@ Item {
                         onSelected: function (index) { screen.sourceMode = index }
                     }
 
+                    OutlineButton {
+                        objectName: "radioReferenceNearby"
+                        text: qsTr("Use my location")
+                        visible: decoderHost.locationSupported
+                        enabled: !radioReference.busy
+                        onClicked: radioReference.lookupNearby()
+                    }
+
                     // Zip code
                     Row {
                         width: parent.width

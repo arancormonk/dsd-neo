@@ -56,6 +56,23 @@ Item {
 
         property var screen: null
 
+        function test_location_button_supported_and_busy() {
+            testContext.setRadioReference("credentialsReady", true)
+            testContext.setLocationSupported(true)
+            var button = findChild(tc.screen, "radioReferenceNearby")
+            verify(button !== null)
+            tryVerify(function () { return button.visible && button.enabled })
+            testContext.setRadioReference("busy", true)
+            tryVerify(function () { return !button.enabled })
+            testContext.setLocationSupported(false)
+        }
+
+        function test_location_button_desktop_hidden() {
+            var button = findChild(tc.screen, "radioReferenceNearby")
+            verify(button !== null)
+            verify(!button.visible)
+        }
+
         function initTestCase() {
             tc.screen = screenLoader.item
             verify(tc.screen !== null, "RadioReferenceScreen.qml failed to load")
@@ -65,6 +82,7 @@ Item {
         // The map is shared by the whole suite, so a case that left a system
         // loaded would hand the next one a screen it never set up.
         function init() {
+            testContext.setLocationSupported(false)
             testContext.setRadioReference("hasAppKey", false)
             testContext.setRadioReference("buildHasAppKey", false)
             testContext.setRadioReference("credentialsReady", false)

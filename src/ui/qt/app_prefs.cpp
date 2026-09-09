@@ -112,6 +112,7 @@ AppPrefs::expireLocation() const {
     m_settings.remove(QStringLiteral("location/lastLat"));
     m_settings.remove(QStringLiteral("location/lastLon"));
     m_settings.remove(QStringLiteral("location/lastFixAt"));
+    m_settings.remove(QStringLiteral("location/lastAccuracyM"));
 }
 
 int
@@ -434,12 +435,19 @@ AppPrefs::setLastLon(double value) {
 }
 
 void
-AppPrefs::setLocationFix(double lat, double lon, qint64 fixAtMs) {
+AppPrefs::setLocationFix(double lat, double lon, qint64 fixAtMs, double accuracyM) {
+    m_settings.setValue(QStringLiteral("location/lastAccuracyM"), accuracyM);
     m_settings.setValue(QStringLiteral("location/lastLat"), lat);
     m_settings.setValue(QStringLiteral("location/lastLon"), lon);
     m_settings.setValue(QStringLiteral("location/lastFixAt"), fixAtMs);
     armLocationExpiry();
     Q_EMIT locationChanged();
+}
+
+double
+AppPrefs::lastAccuracyM() const {
+    expireLocation();
+    return m_settings.value(QStringLiteral("location/lastAccuracyM"), 0.0).toDouble();
 }
 
 qint64

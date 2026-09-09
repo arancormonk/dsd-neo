@@ -78,7 +78,8 @@ class AppPrefs : public QObject {
     void setLastLon(double value);
     /** Publish coordinates and timestamp together. Separate property writes can
      * notify a reader before the timestamp makes the new coordinates valid. */
-    Q_INVOKABLE void setLocationFix(double lat, double lon, qint64 fixAtMs);
+    Q_INVOKABLE void setLocationFix(double lat, double lon, qint64 fixAtMs, double accuracyM = 0);
+    double lastAccuracyM() const;
     qint64 lastFixAt() const;
     void setLastFixAt(qint64 value);
 
