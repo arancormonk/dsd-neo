@@ -11,6 +11,9 @@ Rectangle {
     required property string tags
     required property bool listening
     required property bool listed
+    required property int priority
+    required property bool preempt
+    signal editRequested()
     signal clicked()
 
     radius: Theme.radiusPanel
@@ -25,7 +28,8 @@ Rectangle {
 
         Text {
             width: parent.width
-            text: card.idText
+            objectName: "talkgroupBadge"
+            text: card.idText + (card.priority > 0 ? "  P" + card.priority + (card.preempt ? " ⚡" : "") : "")
             font.family: Theme.mono
             font.pixelSize: Theme.fontSize(15)
             font.weight: Font.DemiBold
@@ -35,6 +39,7 @@ Rectangle {
 
         Text {
             width: parent.width
+            textFormat: Text.PlainText
             text: card.name
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(12)
@@ -76,5 +81,6 @@ Rectangle {
 
     TapHandler {
         onTapped: card.clicked()
+        onLongPressed: card.editRequested()
     }
 }

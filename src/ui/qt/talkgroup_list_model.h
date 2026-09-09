@@ -35,6 +35,9 @@ namespace dsd_qt {
 
 class TalkgroupListModel : public QAbstractListModel {
     Q_OBJECT
+    // WP-D1: keep 64-bit context lossless across JavaScript's number boundary.
+    Q_PROPERTY(QString policyContext READ policyContext NOTIFY policyChanged)
+    Q_PROPERTY(unsigned int policyGeneration READ policyGeneration NOTIFY policyChanged)
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     Q_PROPERTY(int notTunedCount READ notTunedCount NOTIFY countChanged)
     Q_PROPERTY(QStringList categories READ categories NOTIFY categoriesChanged)
@@ -51,6 +54,8 @@ class TalkgroupListModel : public QAbstractListModel {
         TagsRole,
         ListeningRole,
         ListedRole,
+        PriorityRole,
+        PreemptRole,
     };
 
     explicit TalkgroupListModel(QAbstractItemModel* history, QObject* parent = nullptr);
@@ -88,6 +93,16 @@ class TalkgroupListModel : public QAbstractListModel {
         return m_sinceWhen;
     }
 
+    QString
+    policyContext() const {
+        return QString::number(m_contextId);
+    }
+
+    unsigned int
+    policyGeneration() const {
+        return m_generation;
+    }
+
     void setSinceWhen(qint64 when);
     void refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief Drop snapshot state, retaining the session's history cutoff. */
@@ -109,6 +124,8 @@ class TalkgroupListModel : public QAbstractListModel {
         QString tags;
         bool listening = false;
         bool listed = false;
+        int priority = 0;
+        bool preempt = false;
     };
 
     static QVector<Row> listedRows(const dsd_state* snapshot, QSet<QString>& categoryTags);

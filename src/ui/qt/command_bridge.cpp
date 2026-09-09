@@ -10,7 +10,16 @@
 #include "command_bridge.h"
 
 #include <QByteArray>
+#include <QMetaType>
+// WP0's C export payload uses a flexible array; only its fixed header is read in C++.
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
 #include <dsd-neo/app_control/commands.h>
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/core/safe_api.h>
 #include <stdint.h>
@@ -33,6 +42,110 @@ accepted(int status) {
 CommandBridge::CommandBridge(QObject* parent) : QObject(parent) {}
 
 CommandBridge::~CommandBridge() = default;
+
+// WP-D1: typed policy edits; backend owns bounds, aliases and version validation.
+namespace {
+bool
+submitTalkgroupRow(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
+                   const QString& name, bool listen, int priority, bool preempt, uint32_t fields) {
+    bool ok = false;
+    dsd_app_tg_row_payload p = {};
+    p.policy_context = context.toULongLong(&ok);
+    const QByteArray utf8 = name.toUtf8();
+    if (!ok || end < start || priority < 0 || priority > 100 || utf8.size() >= static_cast<qsizetype>(sizeof p.name)
+        || utf8.contains('\0')) {
+        return false;
+    }
+    p.id_start = start;
+    p.id_end = end;
+    p.policy_generation = generation;
+    p.fields = fields;
+    p.listen = listen;
+    p.priority = priority;
+    p.preempt = preempt;
+    DSD_MEMCPY(p.name, utf8.constData(), static_cast<size_t>(utf8.size()));
+    return accepted(dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &p, sizeof p));
+}
+} // namespace
+
+bool
+CommandBridge::setTalkgroupPolicy(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
+                                  const QVariantMap& changes) const {
+    uint32_t fields = 0;
+    for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
+        if (it.key() == QStringLiteral("name") && it.value().typeId() == QMetaType::QString) {
+            fields |= DSD_APP_TG_FIELD_NAME;
+        } else if (it.key() == QStringLiteral("listening") && it.value().typeId() == QMetaType::Bool) {
+            fields |= DSD_APP_TG_FIELD_LISTEN;
+        } else if (it.key() == QStringLiteral("preempt") && it.value().typeId() == QMetaType::Bool) {
+            fields |= DSD_APP_TG_FIELD_PREEMPT;
+        } else if (it.key() == QStringLiteral("priority")) {
+            bool ok = false;
+            const double priority = it.value().toDouble(&ok);
+            if (!ok || !(priority >= 0 && priority <= 100) || priority != static_cast<int>(priority)) {
+                return false;
+            }
+            fields |= DSD_APP_TG_FIELD_PRIORITY;
+        } else {
+            return false;
+        }
+    }
+    if (!fields) {
+        return false;
+    }
+    return submitTalkgroupRow(start, end, context, generation, changes.value(QStringLiteral("name")).toString(),
+                              changes.value(QStringLiteral("listening")).toBool(),
+                              changes.value(QStringLiteral("priority")).toInt(),
+                              changes.value(QStringLiteral("preempt")).toBool(), fields);
+}
+
+bool
+CommandBridge::renameTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
+                               const QString& name) const {
+    return submitTalkgroupRow(start, end, context, generation, name, false, 0, false, DSD_APP_TG_FIELD_NAME);
+}
+
+bool
+CommandBridge::addTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
+                            const QString& name, bool listen, int priority, bool preempt) const {
+    return submitTalkgroupRow(start, end, context, generation, name, listen, priority, preempt,
+                              DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_PRIORITY
+                                  | DSD_APP_TG_FIELD_PREEMPT);
+}
+
+bool
+CommandBridge::removeTalkgroup(unsigned int start, unsigned int end, const QString& context,
+                               unsigned int generation) const {
+    bool ok = false;
+    dsd_app_tg_range_payload p = {};
+    p.policy_context = context.toULongLong(&ok);
+    if (!ok || end < start) {
+        return false;
+    }
+    p.id_start = start;
+    p.id_end = end;
+    p.policy_generation = generation;
+    return accepted(dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &p, sizeof p));
+}
+
+bool
+CommandBridge::saveTalkgroupList(const QString& context, unsigned int generation, const QString& path) const {
+    bool ok = false;
+    const uint64_t version = context.toULongLong(&ok);
+    const QByteArray utf8 = path.toUtf8();
+    if (!ok || utf8.isEmpty() || utf8.size() >= 1024 || utf8.contains('\0')) {
+        return false;
+    }
+    QByteArray payload(static_cast<qsizetype>(offsetof(dsd_app_tg_export_payload, path)) + utf8.size() + 1, '\0');
+    DSD_MEMCPY(payload.data() + offsetof(dsd_app_tg_export_payload, policy_context), &version, sizeof version);
+    DSD_MEMCPY(payload.data() + offsetof(dsd_app_tg_export_payload, policy_generation), &generation, sizeof generation);
+    DSD_MEMCPY(payload.data() + offsetof(dsd_app_tg_export_payload, path), utf8.constData(),
+               static_cast<size_t>(utf8.size()));
+    return accepted(
+        dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, payload.constData(), static_cast<size_t>(payload.size())));
+}
+
+// End WP-D1.
 
 bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)

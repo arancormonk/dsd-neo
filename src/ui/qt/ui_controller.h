@@ -18,6 +18,7 @@
 
 #include <QObject>
 #include <QTimer>
+#include <QVariantMap>
 
 #include "decoder_host.h"
 
@@ -31,12 +32,19 @@ class TalkgroupListModel;
 
 class UiController : public QObject {
     Q_OBJECT
+    // WP-D1: copied retained outcome, polled even without decoder redraw.
+    Q_PROPERTY(QVariantMap talkgroupExportResult READ talkgroupExportResult NOTIFY talkgroupExportResultChanged)
     Q_PROPERTY(int pollIntervalMs READ pollIntervalMs WRITE setPollIntervalMs NOTIFY pollIntervalChanged)
 
   public:
     UiController(DecoderHost* host, MetricsModel* metrics, CallHistoryModel* history, TalkgroupListModel* talkgroups,
                  QObject* parent = nullptr);
     ~UiController() override;
+
+    QVariantMap
+    talkgroupExportResult() const {
+        return m_talkgroupExportResult;
+    }
 
     int pollIntervalMs() const;
     void setPollIntervalMs(int interval_ms);
@@ -69,6 +77,7 @@ class UiController : public QObject {
 
   Q_SIGNALS:
     void pollIntervalChanged();
+    void talkgroupExportResultChanged();
 
   private:
     void tick();
@@ -82,6 +91,8 @@ class UiController : public QObject {
     DiagnosticsLogModel* m_diagnostics = nullptr;
     P25NetworkModel* m_network = nullptr; // WP-F2
     QTimer m_timer;
+    QVariantMap m_talkgroupExportResult;
+    quint64 m_talkgroupExportSequence = 0;
     unsigned int m_active_ordinal = 0;
     DecoderHost::SessionState m_session = DecoderHost::Idle;
 };

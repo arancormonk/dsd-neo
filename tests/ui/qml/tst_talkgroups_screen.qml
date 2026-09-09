@@ -82,6 +82,21 @@ Item {
             tryCompare(talkgroupView, "filterTag", "FIRE")
         }
 
+        function test_long_press_opens_captured_policy_without_toggling() {
+            var card = tc.grid.itemAtIndex(0)
+            var sheet = findChild(screenLoader.item, "talkgroupEditSheet")
+            verify(card !== null && sheet !== null)
+            mousePress(card, card.width / 2, card.height / 2)
+            wait(1000)
+            mouseRelease(card, card.width / 2, card.height / 2)
+            tryCompare(sheet, "visible", true)
+            compare(sheet.idStart, 1001)
+            compare(sheet.policyContext, talkgroups.policyContext)
+            compare(sheet.policyGeneration, talkgroups.policyGeneration)
+            compare(testContext.talkgroupListenCalls(), 0)
+            sheet.visible = false
+        }
+
         function test_rows_render_and_blocked_card_requests_listening() {
             var dispatch = tc.grid.itemAtIndex(0)
             var tactical = tc.grid.itemAtIndex(1)

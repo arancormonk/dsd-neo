@@ -59,14 +59,17 @@ TalkgroupListModel::data(const QModelIndex& index, int role) const {
         case TagsRole: return row.tags;
         case ListeningRole: return row.listening;
         case ListedRole: return row.listed;
+        case PriorityRole: return row.priority;
+        case PreemptRole: return row.preempt;
         default: return {};
     }
 }
 
 QHash<int, QByteArray>
 TalkgroupListModel::roleNames() const {
-    return {{IdStartRole, "idStart"}, {IdEndRole, "idEnd"},         {IdTextRole, "idText"}, {NameRole, "name"},
-            {TagsRole, "tags"},       {ListeningRole, "listening"}, {ListedRole, "listed"}};
+    return {{IdStartRole, "idStart"}, {IdEndRole, "idEnd"},       {IdTextRole, "idText"},
+            {NameRole, "name"},       {TagsRole, "tags"},         {ListeningRole, "listening"},
+            {ListedRole, "listed"},   {PriorityRole, "priority"}, {PreemptRole, "preempt"}};
 }
 
 void
@@ -100,6 +103,12 @@ TalkgroupListModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snap
         return;
     }
 
+    const bool versionChanged = contextId != m_contextId || generation != m_generation;
+    m_contextId = contextId;
+    m_generation = generation;
+    if (versionChanged) {
+        Q_EMIT policyChanged();
+    }
     QSet<QString> categoryTags;
     QVector<Row> rows = listedRows(snapshot, categoryTags);
     appendHeardRows(rows, allowListedOnly);
@@ -108,8 +117,6 @@ TalkgroupListModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snap
     });
     replaceRows(std::move(rows));
     updateCategories(categoryTags);
-    m_contextId = contextId;
-    m_generation = generation;
     m_heardDirty = false;
 }
 
@@ -125,7 +132,8 @@ TalkgroupListModel::listedRows(const dsd_state* snapshot, QSet<QString>& categor
             continue;
         }
         rows.push_back({entry.id_start, entry.id_end, QString::fromUtf8(entry.name), QString::fromUtf8(entry.tags),
-                        strcmp(entry.mode, "B") != 0 && strcmp(entry.mode, "DE") != 0, true});
+                        strcmp(entry.mode, "B") != 0 && strcmp(entry.mode, "DE") != 0, true, entry.priority,
+                        entry.preempt != 0});
         if (!rows.back().tags.isEmpty()) {
             categoryTags.insert(rows.back().tags);
         }
@@ -177,7 +185,7 @@ TalkgroupListModel::replaceRows(QVector<Row> rows) {
             const Row& row = rows.at(i);
             Row& old = m_rows[i];
             if (old.name != row.name || old.tags != row.tags || old.listening != row.listening
-                || old.listed != row.listed) {
+                || old.listed != row.listed || old.priority != row.priority || old.preempt != row.preempt) {
                 old = std::move(rows[i]);
                 Q_EMIT dataChanged(index(i, 0), index(i, 0));
             }
@@ -229,13 +237,14 @@ TalkgroupListModel::clear() {
         m_categories.clear();
         Q_EMIT categoriesChanged();
     }
-    if (m_allowListMode || m_persistent) {
+    const bool versionChanged = m_contextId != 0 || m_generation != 0;
+    m_contextId = 0;
+    m_generation = 0;
+    if (m_allowListMode || m_persistent || versionChanged) {
         m_allowListMode = false;
         m_persistent = false;
         Q_EMIT policyChanged();
     }
-    m_contextId = 0;
-    m_generation = 0;
     m_heardDirty = true;
 }
 

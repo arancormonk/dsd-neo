@@ -10093,6 +10093,8 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_controller
         ui/test_ui_qt_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp # WP-F2
+        # WP-D1: exercise the real bridge through the retained export result.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/command_bridge.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
@@ -10112,16 +10114,25 @@ if(DSD_ENABLE_QT_UI)
         PRIVATE
             Qt6::Core
             Qt6::Gui
+            Qt6::Qml
+            Qt6::Quick
             ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
             ${LIBS}
             dsd-neo_test_support
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_controller
-        PRIVATE QT_NO_KEYWORDS
+        PRIVATE
+            QT_NO_KEYWORDS
+            DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
     )
     set_target_properties(dsd-neo_test_ui_qt_controller PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_CONTROLLER COMMAND dsd-neo_test_ui_qt_controller)
+    set_tests_properties(
+        UI_QT_CONTROLLER
+        PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    )
 endif()
 
 # WP-F3: exercise the real vocoder producers and canonical call boundaries.

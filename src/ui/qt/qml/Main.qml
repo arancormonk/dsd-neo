@@ -548,6 +548,15 @@ Window {
         }
     }
 
+    // WP-D1: associate only the retained completion, using the captured system UUID.
+    TalkgroupSaveFlow {
+        id: talkgroupSave
+        onSaved: function(uid, path) {
+            if (mainRoot.sessionSystem && mainRoot.sessionSystem.uid === uid)
+                mainRoot.sessionSystem = Object.assign({}, mainRoot.sessionSystem, {groupCsvPath: path})
+        }
+    }
+
     // ---- Talkgroups (pushed over the monitor) ----
     TalkgroupsScreen {
         id: talkgroupsScreen
@@ -555,6 +564,11 @@ Window {
         objectName: "talkgroupsScreen"
         anchors.fill: safeArea
         systemName: monitor.systemName
+        canSaveList: !talkgroups.persistent && (talkgroupSave.pending === null || talkgroupSave.retryAvailable)
+        saveListText: talkgroupSave.retryAvailable ? qsTr("Try again") : qsTr("Save talkgroup list")
+        saveMessage: talkgroupSave.message
+        onSaveListRequested: talkgroupSave.save(mainRoot.sessionSystem ? mainRoot.sessionSystem.uid || "" : "",
+                                                talkgroups.policyContext, talkgroups.policyGeneration)
         opacity: mainRoot.monitorMode && mainRoot.talkgroupsOpen && !mainRoot.wizardOpen ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9 && mainRoot.monitorMode && mainRoot.talkgroupsOpen
