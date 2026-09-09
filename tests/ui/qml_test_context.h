@@ -72,6 +72,7 @@
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
 #include "session_args.h"
+#include "site_groups.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
 #include "talkgroup_filter_model.h"
@@ -114,9 +115,11 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return acceptStart;
     }
 
+    bool delayedStop = false; // WP-D4: stop acknowledgement is a separate edge.
+
     void
     stop() override {
-        phase = Idle;
+        phase = delayedStop ? Stopping : Idle;
         m_running = false;
         Q_EMIT runningChanged();
         Q_EMIT sessionStateChanged();
@@ -1054,6 +1057,11 @@ class Setup : public QObject {
     }
 
     Q_INVOKABLE void
+    setDelayedStop(bool enabled) {
+        m_lifecycle_host->delayedStop = enabled;
+    }
+
+    Q_INVOKABLE void
     setLifecyclePhase(int value) {
         m_lifecycle_host->setPhase(static_cast<dsd_qt::DecoderHost::SessionState>(value));
     }
@@ -1251,9 +1259,9 @@ class Setup : public QObject {
 
     void
     qmlEngineAvailable(QQmlEngine* engine) {
-        /* The spectrum's trace and waterfall are the only C++ types the QML
-         * instantiates itself, so they need the same registration ui_load()
-         * does before anything importing them is parsed. */
+        /* Match ui_load() registrations before parsing QML importers. */
+        // WP-D4: cancellation observes pointer, keyboard and shortcut input.
+        qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
         qmlRegisterType<dsd_qt::SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
         qmlRegisterType<dsd_qt::WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
 

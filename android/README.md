@@ -729,3 +729,14 @@ start does not change last-started preferences or list recency; those update onl
 after engine initialization. Monitor shows the active target ID, ordinal/count
 and hold state. Generated CSVs may contain keys, are private app inputs, and must
 not be exported or logged. QString/QML key copies cannot guarantee memory erasure.
+
+### Saved RadioReference sites
+
+The Qt import screen can import each selected trunked site as a separate saved system. Home groups
+these rows behind **n sites ›**. The chooser offers foreground **Use my location**, distances in km,
+**Nearest site**, and a persisted avoid switch. Rows without validated coordinates are excluded from
+nearest selection. Starts require Idle; while listening, **Sites › → Stop and switch** waits for the
+service's Idle acknowledgement before starting the selected site's saved configuration. Any intervening
+user input cancels that pending restart. This is a full session restart, with no live automatic hop.
+See [RadioReference import](../docs/radioreference-import.md#saved-sites-in-qt-and-android) for migration
+and editing behavior.

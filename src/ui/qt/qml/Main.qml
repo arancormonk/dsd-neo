@@ -30,9 +30,26 @@ Window {
     // asked. Cleared when access is granted (which resumes the pending start
     // below), when the banner is dismissed, or when another system starts.
     property bool awaitingUsbAccess: false
-    // The system map whose start is waiting on that grant, and the row it came
-    // from (-1 when it came from nowhere, i.e. an explore session). The map, not
-    // just the row: an explore start has no row to look up again.
+    // WP-D4: a restart waits for confirmed Idle and resolves stable identity then.
+    property var pendingRestart: null
+    function cancelPendingRestart() { pendingRestart = null }
+    function restartSite(uid) {
+        cancelPendingRestart()
+        if (decoderHost.sessionState !== 2 || savedSystems.rowForUid(uid) < 0) return
+        pendingStart = null
+        pendingStartRow = -1
+        awaitingUsbAccess = false
+        pendingRestart = {uid: uid}
+        decoderHost.stop()
+    }
+    function finishPendingRestart() {
+        if (!pendingRestart || decoderHost.sessionState !== 0) return
+        var uid = pendingRestart.uid
+        pendingRestart = null
+        var row = savedSystems.rowForUid(uid)
+        if (row >= 0 && !savedSystems.get(row).avoidSite) startSystem(row)
+    }
+    // The system map waiting for USB access and its row (-1 for exploration).
     property var pendingStart: null
     property int pendingStartRow: -1
     // WP-S1 shares the saved-session USB gate and initialization bookkeeping.
@@ -86,6 +103,10 @@ Window {
         target: decoderHost
         function onSessionInitialized() { mainRoot.recordSessionInitialized() }
         function onSessionStateChanged() {
+            if (decoderHost.sessionState === 4) mainRoot.cancelPendingRestart()
+            if (decoderHost.sessionState === 0 && mainRoot.pendingRestart)
+                Qt.callLater(mainRoot.finishPendingRestart)
+
             if (decoderHost.sessionState === 2) {
                 mainRoot.sessionReachedRunning = true
                 if (!decoderHost.signalsSessionInitialized)
@@ -184,18 +205,22 @@ Window {
     // when the host can; and when background listening is off, stop first so the
     // radio does not keep playing from a window the user just dismissed.
     onClosing: function (close) {
+        cancelPendingRestart()
         if (!prefs.backgroundListening && mainRoot.running)
             decoderHost.stop()
         close.accepted = !decoderHost.moveToBackground()
     }
 
     function startSystem(row) {
+        cancelPendingRestart()
+        if (row < 0 || decoderHost.sessionState !== 0) return
         var sys = savedSystems.get(row)
         if (sys)
             mainRoot.startWithMap(sys, row, false)
     }
 
     function startScanList(row) {
+        cancelPendingRestart()
         var list = scanLists.get(row)
         if (list && list.uid)
             mainRoot.startWithMap(list, row, true)
@@ -212,6 +237,7 @@ Window {
      * where it matters: a fresh one.
      */
     function startWithMap(sys, row, scan) {
+        cancelPendingRestart()
         mainRoot.awaitingSessionInitialized = false
         mainRoot.sessionReachedRunning = false
         if (!sys || !sys.sourceType)
@@ -295,6 +321,7 @@ Window {
      * whether the finished import fills in an open wizard or opens a fresh one.
      */
     function openRadioReference(fromWizard) {
+        cancelPendingRestart()
         mainRoot.radioReferenceFromWizard = fromWizard
         radioReferenceScreen.reset()
         mainRoot.radioReferenceOpen = true
@@ -302,6 +329,7 @@ Window {
 
     /** Start an explore session from the remembered source and frequency. */
     function startExploring() {
+        cancelPendingRestart()
         var source = prefs.exploreSourceType
         if (source !== "usb" && source !== "rtltcp") {
             // Nothing remembered to start from; ask instead of guessing.
@@ -360,7 +388,7 @@ Window {
                   || mainRoot.diagnosticsOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.scanListOpen
                   || !prefs.onboardingDone) ? 0.0 : 1.0
         visible: opacity > 0.0
-        enabled: opacity > 0.9
+        enabled: opacity > 0.9 && !siteChooser.visible
 
         Behavior on opacity {
             NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
@@ -381,6 +409,7 @@ Window {
                 wizard.openForAdd(true)
                 mainRoot.wizardOpen = true
             }
+            onChooseSites: function(row) { mainRoot.cancelPendingRestart(); siteChooser.openFor(row) }
             onPlaySystem: function (row) { mainRoot.startSystem(row) }
             onPlayScanList: function (row) { mainRoot.startScanList(row) }
             onEditScanList: function (row) { scanListEditor.openFor(row); mainRoot.scanListOpen = true }
@@ -424,7 +453,7 @@ Window {
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             currentIndex: mainRoot.currentTab
-            onSelected: function (index) { mainRoot.currentTab = index }
+            onSelected: function (index) { mainRoot.cancelPendingRestart(); mainRoot.currentTab = index }
         }
     }
 
@@ -509,6 +538,7 @@ Window {
         // down into a three-layer deadlock.
         enabled: opacity > 0.9 && !mainRoot.wizardOpen && !mainRoot.spectrumOpen
                  && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible
+                 && !siteChooser.visible
 
         Behavior on opacity {
             NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
@@ -800,6 +830,25 @@ Window {
             mainRoot.radioReferenceFromWizard = false
             wizard.applyRadioReference(result)
         }
+    }
+
+    SiteChooserSheet {
+        id: siteChooser
+        anchors.fill: safeArea
+        onUserAction: mainRoot.cancelPendingRestart()
+        onEditSite: function(row) { wizard.openForEdit(row); mainRoot.wizardOpen = true }
+        onStartSite: function(row) { mainRoot.startSystem(row) }
+        onRestartSite: function(uid) { mainRoot.restartSite(uid) }
+    }
+    OutlineButton {
+        anchors.top: safeArea.top
+        anchors.right: safeArea.right
+        visible: mainRoot.running && monitor.enabled && !mainRoot.diagnosticsOpen && !mainRoot.importsOpen
+                 && mainRoot.sessionSystem
+                 && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
+                 && !siteChooser.visible
+        text: qsTr("Sites ›")
+        onClicked: { mainRoot.cancelPendingRestart(); siteChooser.openFor(savedSystems.rowForUid(mainRoot.sessionSystem.uid)) }
     }
 
     // ---- First-run onboarding ----

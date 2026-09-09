@@ -32,6 +32,7 @@
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
 #include "session_args.h"
+#include "site_groups.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
 #include "talkgroup_filter_model.h"
@@ -124,9 +125,9 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     QObject::connect(prefs, &AppPrefs::keepScreenAwakeChanged, host,
                      [host, prefs]() { host->setKeepScreenAwake(prefs->keepScreenAwake()); });
 
-    /* The trace and waterfall are the only C++ types QML instantiates itself;
-     * everything else it sees is a context property below. They have to be
-     * registered before the engine loads any QML that imports them. */
+    /* Register the C++ types QML instantiates before loading their importers. */
+    // WP-D4: cancellation observes pointer, keyboard and shortcut input.
+    qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
     qmlRegisterType<SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
     qmlRegisterType<WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
 
