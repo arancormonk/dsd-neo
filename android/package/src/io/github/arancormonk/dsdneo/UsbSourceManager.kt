@@ -16,7 +16,6 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
-import org.json.JSONObject
 
 /**
  * Owns the USB-OTG side of a locally attached RTL-SDR.
@@ -66,8 +65,8 @@ object UsbSourceManager {
     private var connection: UsbDeviceConnection? = null
     private var attachedName: String? = null
     private var status: String = ""
-    private var attachmentSerial = 0L
-    private var lastAttachedDevice = ""
+    // WP-S2: application context only; never retain the Activity.
+    private var attachmentContext: Context? = null
     private var requestPending = false
     private var requestedAtMs = 0L
 
@@ -101,6 +100,10 @@ object UsbSourceManager {
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     val device = usbDeviceExtra(intent)
+                    synchronized(lock) {
+                        if (device != null) UsbAttachmentTracker.detach(identity(device))
+                        UsbAttachmentTracker.reconcile(currentDevices(context))
+                    }
                     val attached = synchronized(lock) { attachedName }
                     // The filter sees every device on the bus, so an unresolvable
                     // EXTRA_DEVICE counts as ours only when there is an "ours" to lose.
@@ -117,14 +120,7 @@ object UsbSourceManager {
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                    val device = usbDeviceExtra(intent) ?: return
-                    if (isKnown(device)) {
-                        synchronized(lock) {
-                            attachmentSerial += 1
-                            lastAttachedDevice = describe(device)
-                        }
-                        setStatus("Found ${describe(device)}")
-                    }
+                    reportAttachment(context, intent)
                 }
             }
         }
@@ -134,10 +130,37 @@ object UsbSourceManager {
     @JvmStatic
     fun statusText(): String = synchronized(lock) { status }
 
-    /** Retained attach edge for the UI's existing poll, independent of permission. */
+    // WP-S2: Activity intents and broadcasts share validation and dedupe.
+    fun initializeAttachments(context: Context) {
+        val app = context.applicationContext
+        synchronized(lock) { attachmentContext = app }
+        ensureReceiver(app)
+    }
+
+    fun reportAttachment(context: Context, intent: Intent?) {
+        if (intent?.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return
+        val device = usbDeviceExtra(intent) ?: return
+        if (!isKnown(device)) return
+        synchronized(lock) {
+            if (UsbAttachmentTracker.report(identity(device), currentDevices(context))) {
+                // Cold Activity startup may precede native library initialization.
+                status = "RTL-SDR attached"
+            }
+        }
+    }
+
     @JvmStatic
-    fun attachmentStatus(): String = synchronized(lock) {
-        JSONObject().put("serial", attachmentSerial).put("name", lastAttachedDevice).toString()
+    fun takeAttachment(): String = synchronized(lock) {
+        val context = attachmentContext ?: return@synchronized ""
+        UsbAttachmentTracker.take(currentDevices(context))
+    }
+
+    private fun identity(device: UsbDevice) =
+        UsbAttachmentTracker.Identity(device.deviceName, device.vendorId, device.productId)
+
+    private fun currentDevices(context: Context): Set<UsbAttachmentTracker.Identity> {
+        val manager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        return manager.deviceList.values.map { identity(it) }.toSet()
     }
 
     /** Whether a descriptor has been handed to the engine. */

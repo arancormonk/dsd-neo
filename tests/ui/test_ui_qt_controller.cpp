@@ -181,6 +181,48 @@ test_sheet_policy_edits() {
     }
 }
 
+// WP-S2: production controller emits only a usable stable target while idle.
+static void
+test_auto_start_requests() {
+    Host host;
+    host.phase = Host::Idle;
+    dsd_qt::UiController controller(&host, nullptr, nullptr, nullptr);
+    int requests = 0;
+    QString requestedKind;
+    QObject::connect(&controller, &dsd_qt::UiController::autoStartRequested,
+                     [&](const QString& kind, const QString& uid) {
+                         ++requests;
+                         requestedKind = kind;
+                         check(uid == "target");
+                     });
+    const QVariantMap usb{{"uid", "target"}, {"sourceType", "usb"}};
+    controller.requestAutoStart(true, true, "saved", "target", usb);
+    check(requests == 0); // No QML binding installed yet.
+    controller.setProperty("autoStartBlocked", false);
+    controller.requestAutoStart(true, true, "saved", "target", usb);
+    check(requests == 1 && requestedKind == "saved");
+    controller.requestAutoStart(true, true, "scan", "target", usb);
+    check(requests == 2 && requestedKind == "scan");
+    controller.requestAutoStart(true, true, "explore", "target", usb);
+    controller.requestAutoStart(true, true, "saved", "deleted", usb);
+    controller.requestAutoStart(true, true, "saved", "target", {});
+    controller.requestAutoStart(true, true, "saved", "", {});
+    for (const char* source : {"rtltcp", "udp", "tcp", "file", ""}) {
+        controller.requestAutoStart(true, true, "saved", "target", {{"uid", "target"}, {"sourceType", source}});
+    }
+    controller.requestAutoStart(false, true, "saved", "target", usb);
+    controller.requestAutoStart(true, false, "saved", "target", usb);
+    for (auto phase : {Host::Starting, Host::Running, Host::Stopping, Host::Failed}) {
+        host.phase = phase;
+        controller.requestAutoStart(true, true, "saved", "target", usb);
+    }
+    host.phase = Host::Idle;
+    controller.setProperty("autoStartBlocked", true);
+    controller.requestAutoStart(true, true, "saved", "target", usb);
+    controller.setProperty("autoStartBlocked", false);
+    check(requests == 2); // Suppressed requests do not retry when the gate opens.
+}
+
 static void
 test_zero_bounds() {
     dsd_qt::CommandBridge bridge;
@@ -220,6 +262,7 @@ main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     test_sheet_policy_edits();
     test_zero_bounds();
+    test_auto_start_requests();
     static dsd_opts opts;
     static dsd_state state;
     initOpts(&opts);

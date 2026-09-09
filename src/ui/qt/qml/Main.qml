@@ -62,6 +62,29 @@ Window {
     readonly property string failureText: startError.length > 0 ? startError
                                           : usbAccessText.length > 0 ? usbAccessText : hostFailure
 
+    // WP-S2: consume each attachment once; blocked events are never deferred.
+    Binding {
+        target: uiController
+        property: "autoStartBlocked"
+        value: mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen
+               || mainRoot.diagnosticsOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen
+               || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess
+               || homeScreen.managementSheetOpen
+    }
+    Connections {
+        target: uiController
+        function onAutoStartRequested(kind, uid) {
+            var row = kind === "saved" ? savedSystems.rowForUid(uid)
+                    : kind === "scan" ? scanLists.rowForUid(uid) : -1
+            if (row < 0)
+                return
+            if (kind === "saved")
+                mainRoot.startSystem(row)
+            else
+                mainRoot.startScanList(row)
+        }
+    }
+
     property int currentTab: 0
     property bool wizardOpen: false
     property bool exploreSetupOpen: false
@@ -395,6 +418,7 @@ Window {
         }
 
         HomeScreen {
+            id: homeScreen
             anchors.top: parent.top
             anchors.left: parent.left
             anchors.right: parent.right

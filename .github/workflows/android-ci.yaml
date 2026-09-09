@@ -318,6 +318,7 @@ jobs:
             dsd-neo_test_ui_qt_imported_files_model \
             dsd-neo_test_ui_qt_call_history_merge \
             dsd-neo_test_ui_qt_call_line \
+            dsd-neo_test_ui_qt_auto_start_policy \
             dsd-neo_test_ui_qt_session_state \
             dsd-neo_test_ui_qt_diagnostics_log \
             dsd-neo_test_runtime_log_tap \

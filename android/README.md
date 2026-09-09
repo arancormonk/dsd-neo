@@ -533,6 +533,42 @@ Attaching a listed dongle launches the app through the manifest's
 permission without a prompt. `res/xml/device_filter.xml` holds the same ids as the
 Kotlin table; add rebadged dongles to both.
 
+## Auto-start on USB attachment
+
+Settings → Listening → **Start when a dongle is attached** is off by default and
+appears only on hosts that broker local USB access. When enabled, an attachment
+resumes the last successfully initialized saved system or scan list if it still
+exists and uses USB. Explore and network/file sources are never selected. The
+app must have completed onboarding, be Idle (Failed does not qualify), and have
+no overlay or USB permission request open. A suppressed attachment is consumed;
+closing a sheet or enabling the preference does not retry it. Existing start and
+permission failures use the normal banner. Last-started identity changes only
+on confirmed session initialization, never when the service queues a start.
+
+Activity cold-start/new intents and receiver broadcasts share one dedupe tracker.
+It validates deviceName and VID/PID against the current USB device list, retains
+one pending attachment (newest wins), and forgets suppression on detach. Polling
+consumes that pending identity, including on the first host refresh. App-specific
+intent input supplies no decoder configuration or bypass of the opt-in policy.
+
+Host regressions: `UI_QT_AUTO_START_POLICY`, `UI_QT_CONTROLLER`,
+`UI_QT_PERSISTENCE`, and `UI_QT_QML_CALL_LISTS`. The Android-free Kotlin tracker
+has no Gradle unit-test task wired in this package; verify on a device:
+
+- Cold launch from the USB intent followed by the receiver's duplicate report
+  starts exactly once; an Activity recreation or duplicate new intent does not
+  restart it. Detach and reattach permits one new start.
+- Mismatched deviceName or VID/PID, unknown devices, and a device removed before
+  polling produce no start. With two devices, only the newest pending attachment
+  is delivered; detaching it cancels the pending delivery.
+- Opt-out, incomplete onboarding, Starting/Running/Stopping/Failed, an open
+  overlay, a pending permission request, a deleted target, and an Explore or
+  non-USB target suppress the start. Removing the blocker alone does not retry.
+- Saved USB systems and USB scan lists both resume through the existing permission
+  flow. Denial, invalid configuration, or failed tuner initialization shows the
+  existing banner and leaves last-started identity unchanged; successful
+  initialization updates it. Test both cold and already-running Activity intents.
+
 ## Power
 
 An RTL-SDR draws roughly 300 mA, and many phones cap what they will supply over

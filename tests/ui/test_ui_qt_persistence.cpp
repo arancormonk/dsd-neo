@@ -591,6 +591,19 @@ main(int argc, char** argv) {
     test_app_prefs();
     test_migration_write_failure();
     test_foundation_persistence();
+    // WP-S2: opting out preserves the last successful target, including scan lists.
+    {
+        AppPrefs prefs;
+        prefs.setLastStartedKind("scan");
+        prefs.setLastStartedUid("stable-scan-uid");
+        prefs.setAutoStartOnAttach(false);
+    }
+    {
+        AppPrefs restored;
+        expect("attach opt-out persists", !restored.autoStartOnAttach());
+        expect("opt-out retains scan target",
+               restored.lastStartedKind() == "scan" && restored.lastStartedUid() == "stable-scan-uid");
+    }
     test_key_persistence();
     test_foundation_key_type_migration();
     test_site_provenance_edits();

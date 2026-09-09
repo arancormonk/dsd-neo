@@ -45,8 +45,9 @@
              waits for but does not send. See DsdNeoActivity. -->
         <!-- The launcher activity has to be exported: it carries the MAIN/LAUNCHER filter
              and the USB_DEVICE_ATTACHED filter, and both are delivered by the system from
-             outside the app. It reads nothing from the intent beyond what Qt takes for its
-             own startup, so there is no control plane behind it to reach. Suppressed on
+             outside the app. The only app-specific input is a USB attachment, validated by deviceName
+             and VID/PID against UsbManager.deviceList and deduplicated until detach.
+             No intent extra supplies decoder options or bypasses the opt-in UI policy. Suppressed on
              this element and this rule only, rather than excluding the manifest from the
              scan. The finding predates DsdNeoActivity — it fires on the stock QtActivity
              declaration too — and only surfaces when a change touches this file. -->

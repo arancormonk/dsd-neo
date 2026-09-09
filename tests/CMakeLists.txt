@@ -2577,6 +2577,20 @@ target_include_directories(
 )
 add_test(NAME UI_QT_SESSION_STATE COMMAND dsd-neo_test_ui_qt_session_state)
 
+# WP-S2: platform-free attachment policy.
+add_executable(
+    dsd-neo_test_ui_qt_auto_start_policy
+    ui/test_ui_qt_auto_start_policy.cpp
+)
+target_include_directories(
+    dsd-neo_test_ui_qt_auto_start_policy
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+add_test(
+    NAME UI_QT_AUTO_START_POLICY
+    COMMAND dsd-neo_test_ui_qt_auto_start_policy
+)
+
 # Same arrangement for the slot-line decay: free of Qt so the hold window can be tested
 # without an Android build. call_line.h now delegates to app_control's call_view, so
 # this links the same call_view.c the app_control test below compiles, plus the
