@@ -3,8 +3,11 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include "radio_reference_model.h"
 #include <QSet>
+#include <algorithm>
+#include <initializer_list>
+#include <utility>
+#include "radio_reference_model.h"
 #include "site_groups.h"
 
 #include <QByteArray>
@@ -721,12 +724,9 @@ rr_zip_from_postal(const QString& postalCode, const QString& countryCode) {
     if (countryCode != QStringLiteral("US") || postalCode.size() != 5) {
         return {};
     }
-    for (const QChar c : postalCode) {
-        if (c < QLatin1Char('0') || c > QLatin1Char('9')) {
-            return {};
-        }
-    }
-    return postalCode;
+    const bool digits = std::all_of(postalCode.cbegin(), postalCode.cend(),
+                                    [](QChar c) { return c >= QLatin1Char('0') && c <= QLatin1Char('9'); });
+    return digits ? postalCode : QString();
 }
 
 void
@@ -736,6 +736,22 @@ RadioReferenceModel::cancelLocation() {
     if (id != 0 && m_host != nullptr) {
         m_host->cancelLocationRequest(id);
     }
+}
+
+qint64
+RadioReferenceModel::nextLocationRequestId() {
+    const bool hadLocation = m_locationRequestId != 0;
+    cancelLocation();
+    if (hadLocation) {
+        m_statusText.clear();
+        Q_EMIT statusChanged();
+        Q_EMIT busyChanged();
+    }
+    // One Qt-thread allocator for nearby lookup and the site chooser, across recreation.
+    static qint64 nextId = 0;
+    const qint64 id = ++nextId;
+    Q_EMIT locationRequestAllocated(id);
+    return id;
 }
 
 void
@@ -748,8 +764,7 @@ RadioReferenceModel::lookupNearby() {
     m_locationGeneration = m_generation;
     // Qt main thread only. IDs remain unique if the model is recreated while a
     // platform worker is still retiring a cancelled geocoder.
-    static qint64 nextLocationRequestId = 0;
-    m_locationRequestId = ++nextLocationRequestId;
+    m_locationRequestId = nextLocationRequestId();
     Q_EMIT busyChanged();
     m_host->requestCurrentLocation(m_locationRequestId);
 }
@@ -1270,35 +1285,40 @@ plan_into_map(const dsd_rr_import_plan& plan, QVariantMap* map) {
 } // namespace
 
 QVariantMap
+RadioReferenceModel::buildSiteImportPlans(const QVariantList& siteIndexes, const QVariantMap& options) {
+    QVariantList plans;
+    QVariantMap singleOptions = options;
+    singleOptions.remove("eachSite");
+    QSet<int> seen;
+    for (const auto& index : siteIndexes) {
+        bool valid = false;
+        const int row = index.toInt(&valid);
+        if (!valid || row < 0 || row >= static_cast<int>(m_siteData.count)) {
+            return {{"ok", false}, {"blockedReason", tr("Select valid sites.")}};
+        }
+        if (seen.contains(row)) {
+            continue;
+        }
+        seen.insert(row);
+        auto plan = buildImportPlan({row}, singleOptions);
+        if (!plan.value("ok").toBool()) {
+            return plan;
+        }
+        plans.append(plan);
+    }
+    if (plans.isEmpty()) {
+        return buildImportPlan({}, singleOptions);
+    }
+    auto result = plans[0].toMap();
+    result.insert("plans", plans);
+    result.insert("siteCount", plans.size());
+    return result;
+}
+
+QVariantMap
 RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVariantMap& options) {
     if (trunked() && options.value("eachSite").toBool()) {
-        QVariantList plans;
-        QVariantMap singleOptions = options;
-        singleOptions.remove("eachSite");
-        QSet<int> seen;
-        for (const auto& index : siteIndexes) {
-            bool valid = false;
-            const int row = index.toInt(&valid);
-            if (!valid || row < 0 || row >= static_cast<int>(m_siteData.count)) {
-                return {{"ok", false}, {"blockedReason", tr("Select valid sites.")}};
-            }
-            if (seen.contains(row)) {
-                continue;
-            }
-            seen.insert(row);
-            auto plan = buildImportPlan({row}, singleOptions);
-            if (!plan.value("ok").toBool()) {
-                return plan;
-            }
-            plans.append(plan);
-        }
-        if (plans.isEmpty()) {
-            return buildImportPlan({}, singleOptions);
-        }
-        auto result = plans[0].toMap();
-        result.insert("plans", plans);
-        result.insert("siteCount", plans.size());
-        return result;
+        return buildSiteImportPlans(siteIndexes, options);
     }
 
     dsd_rr_system_info info;
@@ -1374,31 +1394,37 @@ RadioReferenceModel::unwindImport(const QStringList& paths) {
     }
 }
 
+// Batch adoption is atomic: on failure retire every file already adopted.
+QVariantMap
+RadioReferenceModel::performSiteImports(const QVariantMap& plan, const QString& systemName) {
+
+    QVariantList rows;
+    QStringList adopted;
+    if (!plan.value("ok").toBool()) {
+        return {{"ok", false}, {"error", "state"}};
+    }
+    for (const auto& item : plan.value("plans").toList()) {
+        auto single = item.toMap();
+        single.remove("plans");
+        const auto result = performImport(single, systemName + " — " + single.value("siteName").toString(), -1);
+        if (!result.value("ok").toBool()) {
+            unwindImport(adopted);
+            return result;
+        }
+        for (const char* key : {"chanCsvPath", "groupCsvPath"}) {
+            if (!result.value(key).toString().isEmpty()) {
+                adopted.append(result.value(key).toString());
+            }
+        }
+        rows.append(result);
+    }
+    return {{"ok", !rows.isEmpty()}, {"rows", rows}, {"error", rows.isEmpty() ? "state" : ""}};
+}
+
 QVariantMap
 RadioReferenceModel::performImport(const QVariantMap& plan, const QString& systemName, int savedRow) {
-    // Batch adoption is atomic: on failure retire every file already adopted.
     if (plan.contains("plans")) {
-        QVariantList rows;
-        QStringList adopted;
-        if (!plan.value("ok").toBool()) {
-            return {{"ok", false}, {"error", "state"}};
-        }
-        for (const auto& item : plan.value("plans").toList()) {
-            auto single = item.toMap();
-            single.remove("plans");
-            const auto result = performImport(single, systemName + " — " + single.value("siteName").toString(), -1);
-            if (!result.value("ok").toBool()) {
-                unwindImport(adopted);
-                return result;
-            }
-            for (const char* key : {"chanCsvPath", "groupCsvPath"}) {
-                if (!result.value(key).toString().isEmpty()) {
-                    adopted.append(result.value(key).toString());
-                }
-            }
-            rows.append(result);
-        }
-        return {{"ok", !rows.isEmpty()}, {"rows", rows}, {"error", rows.isEmpty() ? "state" : ""}};
+        return performSiteImports(plan, systemName);
     }
 
     QVariantMap result;

@@ -47,6 +47,52 @@ Item {
             tryCompare(chooser, "visible", true)
             compare(chooser.groupUid, savedSystems.get(0).uid)
         }
+        function test_retry_saved_after_failure() {
+            testContext.setLifecyclePhase(4)
+            decoderHost.requestLocalDeviceAccess()
+            loader.item.startSystem(0)
+            compare(decoderHost.sessionState, 1)
+            testContext.setLifecyclePhase(2)
+            compare(loader.item.sessionSystem.uid, savedSystems.get(0).uid)
+        }
+        function test_failed_chooser_recovery() {
+            testContext.setDelayedStop(false)
+            testContext.setLifecyclePhase(4)
+            var chooser = findChild(loader.item, "siteChooserSheet")
+            chooser.openFor(0)
+            var recover = findChild(chooser, "siteRecoverButton")
+            verify(recover !== null)
+            verify(recover.visible)
+            recover.clicked()
+            compare(decoderHost.sessionState, 0)
+            chooser.choose(1)
+            compare(decoderHost.sessionState, 1)
+            compare(loader.item.sessionSystem.uid, savedSystems.get(1).uid)
+        }
+        function test_nearby_back_chooser_reopen() {
+            testContext.setLifecyclePhase(0)
+            loader.item.radioReferenceOpen = true
+            radioReference.lookupNearby()
+            verify(radioReference.busy)
+            findChild(loader.item, "radioReferenceScreen").closed()
+            verify(!radioReference.busy)
+            var chooser = findChild(loader.item, "siteChooserSheet")
+            chooser.openFor(0)
+            chooser.useLocation()
+            var first = chooser.locationId
+            verify(first > 0)
+            // A new D3 owner explicitly retires the chooser, even before dismissal.
+            loader.item.radioReferenceOpen = true
+            radioReference.lookupNearby()
+            compare(chooser.locationId, 0)
+            verify(radioReference.busy)
+            loader.item.radioReferenceOpen = false
+            verify(!radioReference.busy)
+            chooser.useLocation()
+            verify(chooser.locationId > first)
+            chooser.visible = false
+            compare(chooser.locationId, 0)
+        }
         function test_home_entry_opens_chooser() {
             testContext.setDelayedStop(false)
             decoderHost.stop()

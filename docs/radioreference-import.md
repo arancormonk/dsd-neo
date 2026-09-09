@@ -369,3 +369,7 @@ fix is retained privately (latitude, longitude, accuracy in metres and timestamp
 milliseconds), even if geocoding fails, for later nearby-site selection. It expires
 after 24 hours using the existing preference expiry timer and load/read checks.
 Coordinates are not added to diagnostics or exports.
+
+Nearby lookup and the site chooser share one location request owner. Leaving
+RadioReference cancels its pending lookup; asking for location in either screen
+retires the previous caller, and late replies cannot replace the current request.

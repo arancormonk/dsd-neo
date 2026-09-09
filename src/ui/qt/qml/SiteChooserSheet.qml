@@ -47,13 +47,25 @@ ModalSheet {
     function useLocation() {
         userAction()
         if (locationId) decoderHost.cancelLocationRequest(locationId)
-        locationId = interactionGuard.nextLocationRequestId()
+        locationId = radioReference.nextLocationRequestId()
         decoderHost.requestCurrentLocation(locationId)
     }
     onVisibleChanged: {
         if (!visible && locationId) {
             decoderHost.cancelLocationRequest(locationId)
             locationId = 0
+        }
+    }
+    Component.onDestruction: {
+        if (locationId) decoderHost.cancelLocationRequest(locationId)
+    }
+    Connections {
+        target: radioReference
+        function onLocationRequestAllocated(requestId) {
+            if (sheet.locationId && sheet.locationId !== requestId) {
+                decoderHost.cancelLocationRequest(sheet.locationId)
+                sheet.locationId = 0
+            }
         }
     }
     onDismissed: userAction()
@@ -85,6 +97,13 @@ ModalSheet {
         text: qsTr("Nearest site")
         enabled: sheet.sessionState === 0 && sheet.nearest >= 0
         onClicked: sheet.choose(sheet.nearest)
+    }
+    OutlineButton {
+        objectName: "siteRecoverButton"
+        width: parent.width
+        text: qsTr("Dismiss failure and choose a site")
+        visible: sheet.sessionState === 4
+        onClicked: { sheet.userAction(); decoderHost.stop() }
     }
     Repeater {
         model: sheet.rows

@@ -36,12 +36,15 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
+#include <algorithm>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <utility>
 
 #include "app_prefs.h"
 #include "decoder_host.h"
@@ -153,7 +156,7 @@ struct Fake {
 
 QByteArray
 read_fixture(const QString& leaf) {
-    QFile file(QStringLiteral(DSD_NEO_TEST_RR_FIXTURE_DIR "/") + leaf);
+    QFile file(QString::fromUtf8(DSD_NEO_TEST_RR_FIXTURE_DIR) + QLatin1Char('/') + leaf);
     if (!file.open(QIODevice::ReadOnly)) {
         DSD_FPRINTF(stderr, "FAIL: cannot open fixture %s\n", leaf.toUtf8().constData());
         g_failures++;
@@ -295,7 +298,7 @@ fake_perform(void* ctx, const dsd_rr_request* req, dsd_rr_response* resp) {
 
 /** @brief Run the event loop until the model goes idle or the deadline passes. */
 void
-pump(dsd_qt::RadioReferenceModel& model, int timeoutMs = 15000) {
+pump(const dsd_qt::RadioReferenceModel& model, int timeoutMs = 15000) {
     QElapsedTimer timer;
     timer.start();
     while (model.busy() && timer.elapsed() < timeoutMs) {
@@ -335,12 +338,8 @@ struct Harness {
 bool
 warned(const QVariantMap& plan, const QString& needle) {
     const QVariantList warnings = plan.value(QStringLiteral("warnings")).toList();
-    for (const QVariant& warning : warnings) {
-        if (warning.toString().contains(needle)) {
-            return true;
-        }
-    }
-    return false;
+    return std::any_of(warnings.cbegin(), warnings.cend(),
+                       [&needle](const QVariant& warning) { return warning.toString().contains(needle); });
 }
 
 /** @brief The bytes of a stored library file. */
@@ -1143,6 +1142,19 @@ test_nearby() {
     expect("replacement has distinct id and cancels old", first != h.host.requested && h.host.cancelled == first);
     h.model.cancel();
     expect("explicit cancel settles", !h.model.busy() && h.host.cancelled == h.host.requested);
+    h.model.lookupNearby();
+    const qint64 dismissed = h.host.requested;
+    const qint64 chooser = h.model.nextLocationRequestId();
+    expect("chooser ownership retires nearby caller", !h.model.busy() && h.host.cancelled == dismissed);
+    expect("shared allocator advances for chooser", chooser > dismissed);
+    Q_EMIT h.host.locationResult(dismissed, true, 45, -95, 100, now, true, "52401", "US", "");
+    expect("retired nearby result ignored", h.prefs.lastLat() == 44 && !h.model.busy());
+    h.model.lookupNearby();
+    expect("reopened nearby obtains a newer id", h.host.requested > chooser && h.model.busy());
+    h.model.cancel();
+    Harness recreated;
+    recreated.model.lookupNearby();
+    expect("requester recreation preserves allocation", recreated.host.requested > h.host.requested);
 }
 
 void

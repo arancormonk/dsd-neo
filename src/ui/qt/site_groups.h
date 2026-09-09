@@ -10,7 +10,6 @@ class SiteInteractionGuard : public QObject {
     Q_OBJECT
   public:
     explicit SiteInteractionGuard(QObject* parent = nullptr);
-    Q_INVOKABLE qint64 nextLocationRequestId();
   Q_SIGNALS:
     void interaction();
 

@@ -232,6 +232,7 @@ class RadioReferenceModel : public QObject {
 
     /** @brief Best-effort cancel of everything in flight. */
     Q_INVOKABLE void cancel();
+    Q_INVOKABLE qint64 nextLocationRequestId();
 
     /**
      * @brief Drop the loaded system, returning the screen to its results stage.
@@ -306,6 +307,7 @@ class RadioReferenceModel : public QObject {
     void setTransportForTests(const dsd_rr_transport* transport);
 
   Q_SIGNALS:
+    void locationRequestAllocated(qint64 requestId);
     void credentialsChanged();
     void busyChanged();
     void statusChanged();
@@ -389,6 +391,8 @@ class RadioReferenceModel : public QObject {
      * never saves a system, so a file adopted before the failure would be a row
      * nothing references and nothing prunes.
      */
+    QVariantMap buildSiteImportPlans(const QVariantList& siteIndexes, const QVariantMap& options);
+    QVariantMap performSiteImports(const QVariantMap& plan, const QString& systemName);
     void unwindImport(const QStringList& paths);
 
     /** @brief Regenerate and commit the pending refresh. GUI thread only. */

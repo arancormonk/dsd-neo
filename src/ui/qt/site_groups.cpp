@@ -1,22 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "site_groups.h"
 #include <QCoreApplication>
 #include <QEvent>
-#include <QVariantMap>
+#include <QList>
+#include <QMap>
+#include <QString>
+#include <QVariant>
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include "site_groups.h"
 
 namespace dsd_qt {
 SiteInteractionGuard::SiteInteractionGuard(QObject* parent) : QObject(parent) {
     QCoreApplication::instance()->installEventFilter(this);
-}
-
-qint64
-SiteInteractionGuard::nextLocationRequestId() {
-    // RR browse uses positive IDs. Keep site requests distinct across sheet recreation.
-    static qint64 nextId = 0;
-    return --nextId;
 }
 
 bool
