@@ -460,6 +460,11 @@ Important behavior:
   modeled fields. Existing extended policy headers remain extended; otherwise the output is `id,mode,name,tags`
   when categories exist, or `id,mode,name`. Unmodeled metadata/note columns are discarded. Android rewrites its
   app-private imported copy, not the original document.
+- A basic group-file header is promoted to the extended policy header when any canonical row has
+  `priority != 0` or `preempt` enabled, so those settings survive saving and reloading.
+- The decoder's talkgroup-list export writes the canonical table, including aliases, all modes and ranges,
+  to the requested path. After a successful write, subsequent edits persist there. Export refuses scan-row
+  contexts and stale context/generation pairs, as do row edits after the policy changes.
 - Without a group file, edits last only for the session. A scan row's own effective list is also edited only
   in memory, never written into the global group file. If saving fails, the decoder keeps the live edit and
   reports that it is session-only; the previous file remains intact.
