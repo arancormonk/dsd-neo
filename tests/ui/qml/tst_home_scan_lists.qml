@@ -91,6 +91,34 @@ Item {
             compare(uiController.autoStartBlocked, false);
         }
 
+        function test_auto_start_site_chooser() {
+            var onboardingDone = prefs.onboardingDone;
+            prefs.onboardingDone = true;
+            var enabled = prefs.autoStartOnAttach;
+            var row = savedSystems.count;
+            savedSystems.add({name:"Site",sourceType:"usb",freqMhz:"851.5",rrSid:12,rrSiteId:100});
+            var chooser = findChild(appLoader.item, "siteChooserSheet");
+            try {
+                prefs.autoStartOnAttach = true;
+                prefs.lastStartedKind = "saved";
+                prefs.lastStartedUid = savedSystems.get(row).uid;
+                testContext.setScanTestUsb(true, true);
+                chooser.openFor(row);
+                testContext.emitLocalDeviceAttached();
+                compare(decoderHost.sessionState, 0);
+                chooser.visible = false;
+                wait(300);
+                compare(decoderHost.sessionState, 0);
+                testContext.emitLocalDeviceAttached();
+                compare(decoderHost.sessionState, 1);
+            } finally {
+                chooser.visible = false;
+                prefs.autoStartOnAttach = enabled;
+                prefs.onboardingDone = onboardingDone;
+                savedSystems.remove(row);
+            }
+        }
+
         function test_auto_start_card_sheet_data() {
             return [{ tag: "saved management menu", kind: "saved" },
                     { tag: "scan list editor", kind: "scan" }];

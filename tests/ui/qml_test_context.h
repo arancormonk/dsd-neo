@@ -118,6 +118,19 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return acceptStart;
     }
 
+    qint64 locationRequested = 0;
+    qint64 locationCancelled = 0;
+
+    void
+    requestCurrentLocation(qint64 id) override {
+        locationRequested = id;
+    }
+
+    void
+    cancelLocationRequest(qint64 id) override {
+        locationCancelled = id;
+    }
+
     bool delayedStop = false; // WP-D4: stop acknowledgement is a separate edge.
 
     void
@@ -893,9 +906,26 @@ class RadioReferenceRecorder : public QQmlPropertyMap {
     Q_INVOKABLE void
     lookupNearby() {
         nearbyCalls++;
+        (void)nextLocationRequestId();
+        insert(QStringLiteral("busy"), true);
+    }
+
+    Q_INVOKABLE qint64
+    nextLocationRequestId() {
+        cancel();
+        static qint64 nextId = 0;
+        Q_EMIT locationRequestAllocated(++nextId);
+        return nextId;
+    }
+
+    Q_INVOKABLE void
+    cancel() {
+        insert(QStringLiteral("busy"), false);
     }
 
     int nearbyCalls = 0;
+  Q_SIGNALS:
+    void locationRequestAllocated(qint64 requestId);
 };
 
 /** @brief Installs the context the screens expect before any QML is loaded. */
@@ -1608,20 +1638,21 @@ class Setup : public QObject {
         auto* scan_lists = new dsd_qt::ScanListsModel(engine);
         // WP-S2: use the production pure policy for host attachment delivery in QML tests.
         // The real controller's emission/validation contract is covered by UI_QT_CONTROLLER.
-        for (ImportOnlyHost* host : {m_import_host, static_cast<ImportOnlyHost*>(m_initializing_host)}) {
-            QObject::connect(host, &dsd_qt::DecoderHost::localDeviceAttached, controller, [=](const QString&) {
-                const QString kind = app_prefs->lastStartedKind();
-                const QString uid = app_prefs->lastStartedUid();
-                const QVariantMap target = kind == QStringLiteral("saved")  ? saved_systems->getByUid(uid)
-                                           : kind == QStringLiteral("scan") ? scan_lists->getByUid(uid)
-                                                                            : QVariantMap();
-                if (dsd_qt::autoStartAllowed(app_prefs->autoStartOnAttach(), app_prefs->onboardingDone(),
-                                             host->sessionState(), controller->autoStartBlocked, !target.isEmpty(),
-                                             target.value(QStringLiteral("sourceType")).toString()
-                                                 == QStringLiteral("usb"))) {
-                    controller->requestAutoStart(kind, uid);
-                }
-            });
+        for (ImportOnlyHost* attachmentHost : {m_import_host, static_cast<ImportOnlyHost*>(m_initializing_host)}) {
+            QObject::connect(
+                attachmentHost, &dsd_qt::DecoderHost::localDeviceAttached, controller, [=](const QString&) {
+                    const QString kind = app_prefs->lastStartedKind();
+                    const QString uid = app_prefs->lastStartedUid();
+                    const QVariantMap target = kind == QStringLiteral("saved")  ? saved_systems->getByUid(uid)
+                                               : kind == QStringLiteral("scan") ? scan_lists->getByUid(uid)
+                                                                                : QVariantMap();
+                    if (dsd_qt::autoStartAllowed(
+                            app_prefs->autoStartOnAttach(), app_prefs->onboardingDone(), attachmentHost->sessionState(),
+                            controller->autoStartBlocked, !target.isEmpty(),
+                            target.value(QStringLiteral("sourceType")).toString() == QStringLiteral("usb"))) {
+                        controller->requestAutoStart(kind, uid);
+                    }
+                });
         }
         ctx->setContextProperty(QStringLiteral("uiController"), controller);
         ctx->setContextProperty(QStringLiteral("savedSystems"), saved_systems);

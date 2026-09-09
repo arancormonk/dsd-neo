@@ -69,7 +69,7 @@ Window {
         value: mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen
                || mainRoot.diagnosticsOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen
                || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess
-               || homeScreen.managementSheetOpen
+               || homeScreen.managementSheetOpen || siteChooser.visible
     }
     Connections {
         target: uiController
@@ -90,6 +90,7 @@ Window {
     property bool exploreSetupOpen: false
     property bool diagnosticsOpen: false // WP-F5
     property bool importsOpen: false
+    onRadioReferenceOpenChanged: { if (!radioReferenceOpen) radioReference.cancel() }
     property bool radioReferenceOpen: false
     // Whether the RadioReference screen was pushed from the wizard. Coming back
     // to an open wizard fills in the answers it is already asking for; coming
@@ -236,7 +237,7 @@ Window {
 
     function startSystem(row) {
         cancelPendingRestart()
-        if (row < 0 || decoderHost.sessionState !== 0) return
+        if (row < 0 || (decoderHost.sessionState !== 0 && decoderHost.sessionState !== 4)) return
         var sys = savedSystems.get(row)
         if (sys)
             mainRoot.startWithMap(sys, row, false)
