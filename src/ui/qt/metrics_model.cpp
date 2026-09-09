@@ -55,6 +55,21 @@ slot_enc_text(quint8 algid, quint16 kid) {
         .toUpper();
 }
 
+bool
+fecEquals(const dsd_app_fec_ratio& a, const dsd_app_fec_ratio& b) {
+    return a.valid == b.valid && a.ok == b.ok && a.err == b.err && a.ok_pct == b.ok_pct;
+}
+
+bool
+voiceEquals(const dsd_app_voice_errs& a, const dsd_app_voice_errs& b) {
+    return a.valid == b.valid && a.samples == b.samples && a.errs_per_frame == b.errs_per_frame;
+}
+
+bool
+frameEquals(const dsd_app_frame_errs& a, const dsd_app_frame_errs& b) {
+    return a.valid == b.valid && a.errs == b.errs && a.errs2 == b.errs2;
+}
+
 } // namespace
 
 /**
@@ -88,6 +103,18 @@ MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m)
     return out;
 }
 
+bool
+MetricsModel::View::qualityEquals(const View& other) const {
+    return quality.valid == other.quality.valid && fecEquals(quality.cc_fec, other.quality.cc_fec)
+           && fecEquals(quality.voice_fec, other.quality.voice_fec) && fecEquals(quality.rs, other.quality.rs)
+           && voiceEquals(quality.p1_voice, other.quality.p1_voice)
+           && voiceEquals(quality.p2_voice[0], other.quality.p2_voice[0])
+           && voiceEquals(quality.p2_voice[1], other.quality.p2_voice[1])
+           && frameEquals(quality.last_frame[0], other.quality.last_frame[0])
+           && frameEquals(quality.last_frame[1], other.quality.last_frame[1])
+           && voiceEquals(voice_errs, other.voice_errs) && frameEquals(last_frame, other.last_frame);
+}
+
 MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {
     m_messageTimer.setSingleShot(true);
     connect(&m_messageTimer, &QTimer::timeout, this, [this]() {
@@ -101,15 +128,19 @@ MetricsModel::~MetricsModel() = default;
 
 void
 MetricsModel::publish(const View& next) {
+    const bool qualityMoved = !next.qualityEquals(m_view);
     const bool tunerMoved = !next.tunerEquals(m_view);
     const bool slot1Moved = !(next.slot_call[0] == m_view.slot_call[0]);
     const bool slot2Moved = !(next.slot_call[1] == m_view.slot_call[1]);
     const bool controlMoved = !next.controlEquals(m_view);
     const bool messageMoved = next.ui_message != m_view.ui_message;
-    if (!tunerMoved && !slot1Moved && !slot2Moved && !controlMoved && !messageMoved) {
+    if (!qualityMoved && !tunerMoved && !slot1Moved && !slot2Moved && !controlMoved && !messageMoved) {
         return;
     }
     m_view = next;
+    if (qualityMoved) {
+        Q_EMIT qualityChanged();
+    }
     if (tunerMoved) {
         Q_EMIT tunerChanged();
     }
@@ -284,6 +315,17 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     const double now_m = dsd_time_now_monotonic_s();
     next.slot_call[0] = slotCallView(snapshot, 0, now_m);
     next.slot_call[1] = slotCallView(snapshot, 1, now_m);
+
+    dsd_app_p25_quality_from_state(snapshot, &next.quality);
+    const int line_states[] = {next.slot_call[0].state, next.slot_call[1].state};
+    const int lead = dsd_app_lead_slot(line_states, DSD_CALL_STATE_SLOT_COUNT);
+    next.voice_errs = next.quality.p1_voice;
+    if (lead >= 0) {
+        if (!next.voice_errs.valid) {
+            next.voice_errs = next.quality.p2_voice[lead];
+        }
+        next.last_frame = next.quality.last_frame[lead];
+    }
 
     /* Engine truth for the monitor's toggle buttons. The engine owns both states
      * — commands only enqueue a request — and on Android the service outlives the

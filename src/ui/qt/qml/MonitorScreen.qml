@@ -654,6 +654,47 @@ Item {
                 }
             }
 
+            // Decode quality also applies to PCM, network and file sources.
+            Flow {
+                objectName: "decodeQualityRow"
+                width: parent.width
+                visible: metrics.qualityValid
+                spacing: 10
+
+                Text {
+                    objectName: "ccFecQuality"
+                    visible: metrics.ccFecValid
+                    text: qsTr("CC FEC") + " " + metrics.ccFecOkPct.toFixed(0) + "%"
+                    font.family: Theme.mono
+                    font.pixelSize: 11 * Theme.fontScale
+                    color: Theme.textSubdued
+                }
+                Text {
+                    objectName: "voiceErrsQuality"
+                    visible: metrics.voiceErrsValid
+                    text: qsTr("VOICE") + " " + metrics.voiceErrsPerFrame.toFixed(1) + " err/fr"
+                    font.family: Theme.mono
+                    font.pixelSize: 11 * Theme.fontScale
+                    color: Theme.cyan
+                }
+                Text {
+                    objectName: "rsQuality"
+                    visible: metrics.rsValid
+                    text: qsTr("RS") + " " + metrics.rsOkPct.toFixed(0) + "%"
+                    font.family: Theme.mono
+                    font.pixelSize: 11 * Theme.fontScale
+                    color: Theme.textSubdued
+                }
+                Text {
+                    objectName: "lastFrameQuality"
+                    visible: metrics.lastFrameErrsValid
+                    text: qsTr("ERR") + " " + metrics.lastFrameErrs + "/" + metrics.lastFrameErrs2
+                    font.family: Theme.mono
+                    font.pixelSize: 11 * Theme.fontScale
+                    color: Theme.textSubdued
+                }
+            }
+
             // Why an empty log can still be a working decoder. On an almost entirely
             // encrypted site the control channel decodes, every grant is declined and
             // no call is ever logged, which is indistinguishable from a decoder that

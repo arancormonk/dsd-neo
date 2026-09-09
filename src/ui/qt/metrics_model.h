@@ -20,6 +20,7 @@
 #include <QTimer>
 #include <QtGlobal>
 #include <dsd-neo/app_control/call_view.h>
+#include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -29,6 +30,29 @@ namespace dsd_qt {
 
 class MetricsModel : public QObject {
     Q_OBJECT
+    /* WP-F3: one notification group for copied decode-quality readings. */
+    Q_PROPERTY(bool qualityValid READ qualityValid NOTIFY qualityChanged)
+    Q_PROPERTY(bool voiceErrsValid READ voiceErrsValid NOTIFY qualityChanged)
+    Q_PROPERTY(double voiceErrsPerFrame READ voiceErrsPerFrame NOTIFY qualityChanged)
+    Q_PROPERTY(int voiceErrsSamples READ voiceErrsSamples NOTIFY qualityChanged)
+    Q_PROPERTY(bool slot1VoiceErrsValid READ slot1VoiceErrsValid NOTIFY qualityChanged)
+    Q_PROPERTY(double slot1VoiceErrsPerFrame READ slot1VoiceErrsPerFrame NOTIFY qualityChanged)
+    Q_PROPERTY(int slot1VoiceErrsSamples READ slot1VoiceErrsSamples NOTIFY qualityChanged)
+    Q_PROPERTY(bool slot2VoiceErrsValid READ slot2VoiceErrsValid NOTIFY qualityChanged)
+    Q_PROPERTY(double slot2VoiceErrsPerFrame READ slot2VoiceErrsPerFrame NOTIFY qualityChanged)
+    Q_PROPERTY(int slot2VoiceErrsSamples READ slot2VoiceErrsSamples NOTIFY qualityChanged)
+    Q_PROPERTY(bool ccFecValid READ ccFecValid NOTIFY qualityChanged)
+    Q_PROPERTY(double ccFecOkPct READ ccFecOkPct NOTIFY qualityChanged)
+    Q_PROPERTY(bool voiceFecValid READ voiceFecValid NOTIFY qualityChanged)
+    Q_PROPERTY(double voiceFecOkPct READ voiceFecOkPct NOTIFY qualityChanged)
+    Q_PROPERTY(bool rsValid READ rsValid NOTIFY qualityChanged)
+    Q_PROPERTY(double rsOkPct READ rsOkPct NOTIFY qualityChanged)
+    Q_PROPERTY(qulonglong ccFecOk READ ccFecOk NOTIFY qualityChanged)
+    Q_PROPERTY(qulonglong ccFecErr READ ccFecErr NOTIFY qualityChanged)
+    Q_PROPERTY(bool lastFrameErrsValid READ lastFrameErrsValid NOTIFY qualityChanged)
+    Q_PROPERTY(int lastFrameErrs READ lastFrameErrs NOTIFY qualityChanged)
+    Q_PROPERTY(int lastFrameErrs2 READ lastFrameErrs2 NOTIFY qualityChanged)
+
     /* NOTIFY is grouped by what moves together, not one shared signal: the
      * per-second call timer and SNR jitter would otherwise re-evaluate every
      * binding in the status card on every poll tick. A signal-strip change must
@@ -119,7 +143,7 @@ class MetricsModel : public QObject {
     /**
      * @brief Whether a tuner sits under this session.
      *
-     * Signal quality, carrier lock, frequency offset and tuner gain only mean
+     * SNR, carrier lock, frequency offset and tuner gain only mean
      * something when one does. For a PCM feed or a file there is no estimator and no
      * tuner to report, so a frontend should leave those rows out rather than render
      * a row of dashes that reads as a fault.
@@ -507,6 +531,112 @@ class MetricsModel : public QObject {
         return m_view.ui_message;
     }
 
+    /** Corrected errors per voice frame, never a bit-error percentage. */
+    bool
+    qualityValid() const {
+        return m_view.quality.valid;
+    }
+
+    bool
+    voiceErrsValid() const {
+        return m_view.voice_errs.valid;
+    }
+
+    double
+    voiceErrsPerFrame() const {
+        return m_view.voice_errs.errs_per_frame;
+    }
+
+    int
+    voiceErrsSamples() const {
+        return m_view.voice_errs.samples;
+    }
+
+    bool
+    slot1VoiceErrsValid() const {
+        return m_view.quality.p2_voice[0].valid;
+    }
+
+    double
+    slot1VoiceErrsPerFrame() const {
+        return m_view.quality.p2_voice[0].errs_per_frame;
+    }
+
+    int
+    slot1VoiceErrsSamples() const {
+        return m_view.quality.p2_voice[0].samples;
+    }
+
+    bool
+    slot2VoiceErrsValid() const {
+        return m_view.quality.p2_voice[1].valid;
+    }
+
+    double
+    slot2VoiceErrsPerFrame() const {
+        return m_view.quality.p2_voice[1].errs_per_frame;
+    }
+
+    int
+    slot2VoiceErrsSamples() const {
+        return m_view.quality.p2_voice[1].samples;
+    }
+
+    bool
+    ccFecValid() const {
+        return m_view.quality.cc_fec.valid;
+    }
+
+    double
+    ccFecOkPct() const {
+        return m_view.quality.cc_fec.ok_pct;
+    }
+
+    bool
+    voiceFecValid() const {
+        return m_view.quality.voice_fec.valid;
+    }
+
+    double
+    voiceFecOkPct() const {
+        return m_view.quality.voice_fec.ok_pct;
+    }
+
+    bool
+    rsValid() const {
+        return m_view.quality.rs.valid;
+    }
+
+    double
+    rsOkPct() const {
+        return m_view.quality.rs.ok_pct;
+    }
+
+    qulonglong
+    ccFecOk() const {
+        return m_view.quality.cc_fec.ok;
+    }
+
+    qulonglong
+    ccFecErr() const {
+        return m_view.quality.cc_fec.err;
+    }
+
+    bool
+    lastFrameErrsValid() const {
+        return m_view.last_frame.valid;
+    }
+
+    int
+    lastFrameErrs() const {
+        return m_view.last_frame.errs;
+    }
+
+    int
+    lastFrameErrs2() const {
+        return m_view.last_frame.errs2;
+    }
+
     /**
      * @brief Re-read the boundary. Call from the UI poll tick only.
      *
@@ -530,6 +660,7 @@ class MetricsModel : public QObject {
     void clear();
 
   Q_SIGNALS:
+    void qualityChanged();
     void tunerChanged();
     void slot1Changed();
     void slot2Changed();
@@ -571,6 +702,12 @@ class MetricsModel : public QObject {
     };
 
     struct View {
+        dsd_app_p25_quality quality{};
+        dsd_app_voice_errs voice_errs{};
+        dsd_app_frame_errs last_frame{};
+
+        bool qualityEquals(const View& other) const;
+
         /* Group equally aligned fields; this private value is copied on each
          * refresh and is never serialized or initialized by member position. */
         double snr_db = 0.0;

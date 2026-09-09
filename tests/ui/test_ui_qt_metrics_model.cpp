@@ -23,6 +23,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/scan_mode.h>
 
@@ -76,9 +77,108 @@ dsd_app_frontend_snr_for_mod(const dsd_frontend_metrics* metrics, int rf_mod) {
     return out;
 }
 
+static void
+test_quality() {
+    static dsd_opts opts;
+    static dsd_state state;
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_p1_voice_err_hist_len = 50;
+    dsd_qt::MetricsModel model;
+    int quality_signals = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::qualityChanged, [&]() { ++quality_signals; });
+    model.refresh(&opts, &state);
+    expect("P25 sync alone has no quality reading", !model.qualityValid() && !model.voiceErrsValid());
+    state.p25_p1_fec_ok = 9;
+    state.p25_p1_fec_err = 1;
+    model.refresh(&opts, &state);
+    expect("CC quality is available on PCM", model.qualityValid() && !model.radioInput() && model.ccFecValid());
+    expect("CC counters and ok percent", model.ccFecOk() == 9 && model.ccFecErr() == 1 && model.ccFecOkPct() == 90.0);
+    expect("one quality notification", quality_signals == 1);
+    model.refresh(&opts, &state);
+    expect("identical quality is silent", quality_signals == 1);
+    state.synctype = DSD_SYNC_NONE;
+    model.refresh(&opts, &state);
+    expect("sync gap retains CC FEC", model.ccFecValid() && quality_signals == 1);
+    state.p25_p1_fec_ok = state.p25_p1_fec_err = 0;
+    model.refresh(&opts, &state);
+    expect("no-carrier counter reset clears CC FEC", !model.ccFecValid() && !model.qualityValid());
+
+    dsd_call_observation call = {};
+    call.protocol = DSD_SYNC_P25P1_POS;
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    call.ota_target_id = 101;
+    dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    state.p25_p1_voice_err_hist_count = 2;
+    state.p25_p1_voice_err_hist_sum = 9;
+    state.p25_p1_voice_fec_ok = 3;
+    state.p25_p1_voice_fec_err = 1;
+    model.refresh(&opts, &state);
+    expect("P1 uses populated count",
+           model.voiceErrsValid() && model.voiceErrsSamples() == 2 && model.voiceErrsPerFrame() == 4.5);
+    expect("voice FEC ok percent", model.voiceFecValid() && model.voiceFecOkPct() == 75.0);
+    const int before_samples = quality_signals;
+    state.p25_p1_voice_err_hist_count = 4;
+    state.p25_p1_voice_err_hist_sum = 18;
+    model.refresh(&opts, &state);
+    expect("sample count alone notifies", quality_signals == before_samples + 1 && model.voiceErrsSamples() == 4);
+    dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    model.refresh(&opts, &state);
+    expect("new call waits for fresh samples", !model.voiceErrsValid() && model.voiceErrsSamples() == 0);
+
+    call.protocol = DSD_SYNC_P25P2_POS;
+    state.synctype = call.protocol;
+    dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    call.slot = 1;
+    call.ota_target_id = 102;
+    dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    state.p25_p2_voice_err_hist_len = 50;
+    state.p25_p2_voice_err_hist_count[1] = 3;
+    state.p25_p2_voice_err_hist_sum[1] = 6;
+    state.p25_p2_rs_facch_ok = 2;
+    state.p25_p2_rs_sacch_ok = 1;
+    state.p25_p2_rs_ess_err = 1;
+    model.refresh(&opts, &state);
+    expect("unsampled lead slot does not borrow other slot", model.leadSlot() == 1 && !model.voiceErrsValid());
+    expect("P2 slot readings are independent", !model.slot1VoiceErrsValid() && model.slot2VoiceErrsValid()
+                                                   && model.slot2VoiceErrsSamples() == 3
+                                                   && model.slot2VoiceErrsPerFrame() == 2.0);
+    expect("P2 RS sums FACCH SACCH ESS", model.rsValid() && model.rsOkPct() == 75.0);
+    dsd_call_state_end(&state, 0, 0);
+    model.refresh(&opts, &state);
+    expect("P2 summary follows lead slot", model.leadSlot() == 2 && model.voiceErrsValid()
+                                               && model.voiceErrsPerFrame() == 2.0 && model.voiceErrsSamples() == 3);
+    dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    model.refresh(&opts, &state);
+    expect("P2 new call invalidates its samples", !model.slot2VoiceErrsValid() && !model.voiceErrsValid());
+
+    call.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.synctype = call.protocol;
+    dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    state.errsR = 2;
+    state.errs2R = 7;
+    dsd_call_state_update_media(&state, 1, 1, 0);
+    model.refresh(&opts, &state);
+    expect("non-P25 lead slot last-frame fallback", model.lastFrameErrsValid() && model.lastFrameErrs() == 2
+                                                        && model.lastFrameErrs2() == 7 && !model.voiceErrsValid());
+    model.clear();
+    expect("clear removes all quality", !model.qualityValid() && !model.ccFecValid() && !model.voiceFecValid()
+                                            && !model.rsValid() && !model.voiceErrsValid()
+                                            && !model.slot2VoiceErrsValid() && !model.lastFrameErrsValid()
+                                            && model.voiceErrsSamples() == 0);
+    const int cleared = quality_signals;
+    model.clear();
+    expect("repeated clear is silent", quality_signals == cleared);
+    model.refresh(&opts, &state);
+    model.refresh(nullptr, &state);
+    expect("missing snapshot clears quality", !model.qualityValid());
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    test_quality();
 
     static dsd_opts opts;
     static dsd_state state;

@@ -1136,6 +1136,29 @@ class Setup : public QObject {
         metrics[QStringLiteral("snrDb")] = 0.0;
         metrics[QStringLiteral("cfoHz")] = 0.0;
         metrics[QStringLiteral("tunerGainText")] = QStringLiteral("auto");
+        // WP-F3 decode quality: validity is independent of radioInput.
+        metrics[QStringLiteral("qualityValid")] = false;
+        metrics[QStringLiteral("voiceErrsValid")] = false;
+        metrics[QStringLiteral("voiceErrsPerFrame")] = 0.0;
+        metrics[QStringLiteral("voiceErrsSamples")] = 0;
+        metrics[QStringLiteral("slot1VoiceErrsValid")] = false;
+        metrics[QStringLiteral("slot1VoiceErrsPerFrame")] = 0.0;
+        metrics[QStringLiteral("slot1VoiceErrsSamples")] = 0;
+        metrics[QStringLiteral("slot2VoiceErrsValid")] = false;
+        metrics[QStringLiteral("slot2VoiceErrsPerFrame")] = 0.0;
+        metrics[QStringLiteral("slot2VoiceErrsSamples")] = 0;
+        metrics[QStringLiteral("ccFecValid")] = false;
+        metrics[QStringLiteral("ccFecOkPct")] = 0.0;
+        metrics[QStringLiteral("voiceFecValid")] = false;
+        metrics[QStringLiteral("voiceFecOkPct")] = 0.0;
+        metrics[QStringLiteral("rsValid")] = false;
+        metrics[QStringLiteral("rsOkPct")] = 0.0;
+        metrics[QStringLiteral("ccFecOk")] = 0;
+        metrics[QStringLiteral("ccFecErr")] = 0;
+        metrics[QStringLiteral("lastFrameErrsValid")] = false;
+        metrics[QStringLiteral("lastFrameErrs")] = 0;
+        metrics[QStringLiteral("lastFrameErrs2")] = 0;
+
         for (int slot = 1; slot <= 2; slot++) {
             const QString p = QStringLiteral("slot%1").arg(slot);
             metrics[p + QStringLiteral("CallState")] = 0;
