@@ -57,7 +57,6 @@ class SavedSystemsModel : public QAbstractListModel {
         SrcCsvPathRole,         // imported radio ID aliases (--src-csv); empty = none
         UidRole,
         EncKeyTypeRole,
-        EncKeyValueRole,
         EncForceKeyRole,
         RrSidRole,
         RrSiteIdRole,
@@ -67,6 +66,10 @@ class SavedSystemsModel : public QAbstractListModel {
         HasSitePosRole,
         AvoidSiteRole
     };
+
+    /** Private-store secret access for session argument assembly only. Not invokable from QML.
+     * QString copies cannot promise erasure. Never log or export the returned value. */
+    QString keyValueForUid(const QString& uid) const;
 
     explicit SavedSystemsModel(QObject* parent = nullptr);
     ~SavedSystemsModel() override;
@@ -178,7 +181,7 @@ class SavedSystemsModel : public QAbstractListModel {
     QVariantMap mapFromRow(const Row& row) const;
 
     void load();
-    void save() const;
+    bool save() const;
 
     QList<Row> m_rows;
 };

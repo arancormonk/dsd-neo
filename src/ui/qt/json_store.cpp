@@ -33,16 +33,16 @@ json_store_load_array(const QString& fileName) {
     return doc.isArray() ? doc.array() : QJsonArray();
 }
 
-void
+bool
 json_store_save_array(const QString& fileName, const QJsonArray& array) {
     const QString path = json_store_path(fileName);
     QDir().mkpath(QFileInfo(path).absolutePath());
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly)) {
-        return;
+        return false;
     }
-    file.write(QJsonDocument(array).toJson(QJsonDocument::Compact));
-    (void)file.commit();
+    const QByteArray data = QJsonDocument(array).toJson(QJsonDocument::Compact);
+    return file.write(data) == data.size() && file.commit();
 }
 
 } // namespace dsd_qt

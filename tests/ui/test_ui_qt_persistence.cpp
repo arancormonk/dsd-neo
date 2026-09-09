@@ -9,10 +9,12 @@
  * when the Qt frontend is enabled (DSD_ENABLE_QT_UI), since these link Qt. */
 
 #include <QAnyStringView>
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QHash>
 #include <QIODevice>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -34,6 +36,7 @@
 #include <stdio.h>
 #include <utility>
 
+#include <dsd-neo/runtime/log.h>
 #include "app_prefs.h"
 #include "dsd-neo/core/safe_api.h"
 #include "json_store.h"
@@ -61,6 +64,8 @@ void
 test_json_store(void) {
     expect("missing file loads as empty array", json_store_load_array(QStringLiteral("absent.json")).isEmpty());
 
+    QDir().mkpath(json_store_path(QStringLiteral("blocked.json")));
+    expect("save reports an unwritable destination", !json_store_save_array(QStringLiteral("blocked.json"), {}));
     QJsonArray array;
     QJsonObject obj;
     obj.insert(QStringLiteral("name"), QStringLiteral("Hamilton Co P25"));
@@ -355,6 +360,28 @@ test_app_prefs(void) {
 }
 
 void
+test_migration_write_failure() {
+    const QString store = QStringLiteral("saved_systems.json");
+    expect("legacy fixture saved", json_store_save_array(store, QJsonArray{QJsonObject{{"name", "legacy"}}}));
+    const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const auto permissions = QFile::permissions(directory);
+    expect("migration directory made read only", QFile::setPermissions(directory, QFile::ReadOwner | QFile::ExeOwner));
+    int warnings = 0;
+    dsd_neo_log_set_tap(
+        [](dsd_neo_log_level_t level, const char* text, void* context) {
+            if (level == LOG_LEVEL_WARN && QString::fromUtf8(text).contains("migration could not be persisted")) {
+                ++*static_cast<int*>(context);
+            }
+        },
+        &warnings);
+    SavedSystemsModel model;
+    dsd_neo_log_set_tap(nullptr, nullptr);
+    expect("migration warns once when write fails", warnings == 1);
+    expect("failed migration keeps readable row", model.count() == 1);
+    expect("migration permissions restored", QFile::setPermissions(directory, permissions));
+}
+
+void
 test_foundation_persistence() {
     const QString store = QStringLiteral("saved_systems.json");
     json_store_save_array(store, QJsonArray{QJsonObject{{QStringLiteral("name"), QStringLiteral("legacy")}}});
@@ -373,8 +400,13 @@ test_foundation_persistence() {
                        {"hasSitePos", true},  {"avoidSite", true}};
     migrated.update(0, fields);
     SavedSystemsModel reloaded;
+    expect("get map hides key", !reloaded.get(0).contains("encKeyValue"));
+    expect("UID map hides key", !reloaded.getByUid(uid).contains("encKeyValue"));
+    expect("model roles hide key", !reloaded.roleNames().values().contains("encKeyValue"));
     for (auto it = fields.cbegin(); it != fields.cend(); ++it) {
-        expect("optional field survives reload", reloaded.getByUid(uid).value(it.key()) == it.value());
+        expect("optional field survives reload", (it.key() == "encKeyValue" ? QVariant(reloaded.keyValueForUid(uid))
+                                                                            : reloaded.getByUid(uid).value(it.key()))
+                                                     == it.value());
     }
     reloaded.add(reloaded.get(0));
     expect("copy gets a distinct identity", reloaded.get(1).value("uid") != uid);
@@ -428,14 +460,14 @@ test_key_persistence() {
     for (int i = 0; i < types.size(); ++i) {
         const auto row = fresh.get(i);
         expect("key type round trip", row.value("encKeyType").toString() == types[i]);
-        expect("key value round trip",
-               row.value("encKeyValue").toString() == (types[i].isEmpty() ? QString() : QStringLiteral("0")));
+        expect("key value round trip", fresh.keyValueForUid(row.value("uid").toString())
+                                           == (types[i].isEmpty() ? QString() : QStringLiteral("0")));
         expect("force round trip", row.value("encForceKey").toInt() == 2);
     }
     fresh.update(1, {{"encKeyType", ""}, {"encKeyValue", ""}, {"encForceKey", 0}});
     SavedSystemsModel cleared;
     expect("key clearing persists", cleared.get(1).value("encKeyType").toString().isEmpty()
-                                        && cleared.get(1).value("encKeyValue").toString().isEmpty()
+                                        && cleared.keyValueForUid(cleared.get(1).value("uid").toString()).isEmpty()
                                         && cleared.get(1).value("encForceKey").toInt() == 0);
 }
 
@@ -477,6 +509,7 @@ main(int argc, char** argv) {
     test_saved_systems();
     test_saved_systems_csv_fields();
     test_app_prefs();
+    test_migration_write_failure();
     test_foundation_persistence();
     test_key_persistence();
     test_foundation_key_type_migration();

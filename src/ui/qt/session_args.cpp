@@ -4,6 +4,7 @@
  */
 
 #include "session_args.h"
+#include "saved_systems_model.h"
 
 #include <algorithm>
 
@@ -325,6 +326,11 @@ SessionArgsBuilder::SessionArgsBuilder(const AppPrefs* prefs, QObject* parent) :
 
 SessionArgsBuilder::~SessionArgsBuilder() = default;
 
+void
+SessionArgsBuilder::setSavedSystems(const SavedSystemsModel* systems) {
+    m_systems = systems;
+}
+
 QVariantMap
 SessionArgsBuilder::build(const QVariantMap& system) const {
     SessionArgPrefs prefs;
@@ -338,7 +344,12 @@ SessionArgsBuilder::build(const QVariantMap& system) const {
         prefs.extraArgs = m_prefs->extraArgs();
     }
     SessionArgsError error = SessionArgsError::None;
-    const QStringList args = session_args_build(system, prefs, &error);
+    QVariantMap input = system;
+    if (m_systems && !input.contains(QStringLiteral("encKeyValue"))) {
+        input.insert(QStringLiteral("encKeyValue"),
+                     m_systems->keyValueForUid(input.value(QStringLiteral("uid")).toString()));
+    }
+    const QStringList args = session_args_build(input, prefs, &error);
     QVariantMap result;
     result.insert(QStringLiteral("ok"), error == SessionArgsError::None);
     result.insert(QStringLiteral("args"), args);

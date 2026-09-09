@@ -25,6 +25,7 @@
 namespace dsd_qt {
 
 class AppPrefs;
+class SavedSystemsModel;
 
 /** @brief The app-wide defaults a saved system's overrides fall back to. */
 struct SessionArgPrefs {
@@ -88,6 +89,7 @@ class SessionArgsBuilder : public QObject {
   public:
     explicit SessionArgsBuilder(const AppPrefs* prefs, QObject* parent = nullptr);
     ~SessionArgsBuilder() override;
+    void setSavedSystems(const SavedSystemsModel* systems);
 
     /**
      * @brief Build the argv for one saved-system field map.
@@ -100,6 +102,7 @@ class SessionArgsBuilder : public QObject {
 
   private:
     const AppPrefs* m_prefs;
+    const SavedSystemsModel* m_systems = nullptr;
 };
 
 } // namespace dsd_qt

@@ -83,6 +83,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* prefs = new AppPrefs(&engine);
     auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
     auto* systems = new SavedSystemsModel(&engine);
+    sessionArgs->setSavedSystems(systems);
     auto* importedFiles = new ImportedFilesModel(host, &engine);
     auto* history = new CallHistoryModel(&engine);
     auto* talkgroups = new TalkgroupListModel(history, &engine);

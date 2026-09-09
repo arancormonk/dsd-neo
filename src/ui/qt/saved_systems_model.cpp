@@ -19,6 +19,7 @@
 #include <QUuid>
 #include <QVariant>
 
+#include <dsd-neo/runtime/log.h>
 #include "json_store.h"
 
 namespace dsd_qt {
@@ -76,7 +77,6 @@ QVariant
 SavedSystemsModel::detailRoleValue(const Row& row, int role) {
     switch (role) {
         case EncKeyTypeRole: return row.encKeyType;
-        case EncKeyValueRole: return row.encKeyValue;
         case EncForceKeyRole: return row.encForceKey;
         case RrSidRole: return row.rrSid;
         case RrSiteIdRole: return row.rrSiteId;
@@ -149,7 +149,6 @@ SavedSystemsModel::roleNames() const {
     roles.insert(SrcCsvPathRole, QByteArrayLiteral("srcCsvPath"));
     roles.insert(UidRole, QByteArrayLiteral("uid"));
     roles.insert(EncKeyTypeRole, QByteArrayLiteral("encKeyType"));
-    roles.insert(EncKeyValueRole, QByteArrayLiteral("encKeyValue"));
     roles.insert(EncForceKeyRole, QByteArrayLiteral("encForceKey"));
     roles.insert(RrSidRole, QByteArrayLiteral("rrSid"));
     roles.insert(RrSiteIdRole, QByteArrayLiteral("rrSiteId"));
@@ -286,7 +285,6 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     QVariantMap map;
     map.insert(QStringLiteral("uid"), row.uid);
     map.insert(QStringLiteral("encKeyType"), row.encKeyType);
-    map.insert(QStringLiteral("encKeyValue"), row.encKeyValue);
     map.insert(QStringLiteral("encForceKey"), row.encForceKey);
     map.insert(QStringLiteral("rrSid"), row.rrSid);
     map.insert(QStringLiteral("rrSiteId"), row.rrSiteId);
@@ -460,6 +458,12 @@ SavedSystemsModel::mostRecentRow() const {
     return best;
 }
 
+QString
+SavedSystemsModel::keyValueForUid(const QString& uid) const {
+    const int row = rowForUid(uid);
+    return row >= 0 ? m_rows.at(row).encKeyValue : QString();
+}
+
 void
 SavedSystemsModel::load() {
     QList<Row> rows;
@@ -493,19 +497,23 @@ SavedSystemsModel::load() {
     m_rows = rows;
     endResetModel();
     if (migrated) {
-        save(); // Persist now: a read-only visit must not generate a new identity next launch.
+        if (!save()) {
+            LOG_WARN("Saved-system migration could not be persisted; identities may change on restart.\n");
+        }
     }
     Q_EMIT countChanged();
     Q_EMIT mostRecentRowChanged();
 }
 
-void
+bool
 SavedSystemsModel::save() const {
     QJsonArray array;
     for (const Row& row : m_rows) {
-        array.append(QJsonObject::fromVariantMap(mapFromRow(row)));
+        auto stored = mapFromRow(row);
+        stored.insert(QStringLiteral("encKeyValue"), row.encKeyValue);
+        array.append(QJsonObject::fromVariantMap(stored));
     }
-    json_store_save_array(QLatin1String(kStoreFileName), array);
+    return json_store_save_array(QLatin1String(kStoreFileName), array);
 }
 
 } // namespace dsd_qt
