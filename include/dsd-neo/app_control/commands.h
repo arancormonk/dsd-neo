@@ -247,6 +247,9 @@ enum dsd_app_command_id {
     DSD_APP_CMD_TG_LISTEN_SET = 590, // payload: dsd_app_tg_listen_payload
     // Edit all rows except radio-ID aliases; a nonempty tag selects exact tag matches.
     DSD_APP_CMD_TG_LISTEN_SET_ALL = 591, // payload: dsd_app_tg_listen_all_payload
+    DSD_APP_CMD_TG_ROW_SET = 592,        // payload: dsd_app_tg_row_payload
+    DSD_APP_CMD_TG_ROW_REMOVE = 593,     // payload: dsd_app_tg_range_payload
+    DSD_APP_CMD_TG_LIST_EXPORT = 594,    // payload: dsd_app_tg_export_payload
 
     // UI display toggles
     DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE = 620,
@@ -275,6 +278,8 @@ enum dsd_app_command_id {
 
     // Encoders / protocol helpers
     DSD_APP_CMD_M17_USER_DATA_SET = 651, // payload: char s[] (<=49 chars)
+    DSD_APP_CMD_KEY_DIRECT_SET = 652,    // sensitive: dsd_app_key_direct_payload; erase every owned copy
+    DSD_APP_CMD_FORCE_KEY_SET = 653,     // payload: int32_t 0/1/2; configured scan-mode setting
 
     // DSP runtime (rtl_stream_*)
     DSD_APP_CMD_DSP_OP = 700,             // payload: dsd_app_dsp_payload
@@ -330,6 +335,54 @@ typedef struct {
     char tags[50]; /* Empty = all rows; otherwise an exact category match. */
 } dsd_app_tg_listen_all_payload;
 
+enum {
+    DSD_APP_TG_FIELD_LISTEN = 1U << 0,
+    DSD_APP_TG_FIELD_PRIORITY = 1U << 1,
+    DSD_APP_TG_FIELD_PREEMPT = 1U << 2,
+    DSD_APP_TG_FIELD_NAME = 1U << 3,
+    DSD_APP_TG_FIELD_TAGS = 1U << 4
+};
+
+/* Context and generation are both required: a row from a previous scan target
+ * can have the same ids and generation while belonging to a different policy. */
+typedef struct {
+    uint32_t id_start;
+    uint32_t id_end;
+    uint32_t fields; /* Bitmask below; absent fields keep the existing row value. */
+    int32_t listen;
+    int32_t priority;
+    int32_t preempt;
+    char name[50];
+    char tags[50];
+    uint64_t policy_context;
+    unsigned int policy_generation;
+} dsd_app_tg_row_payload;
+
+typedef struct {
+    uint32_t id_start;
+    uint32_t id_end;
+    uint64_t policy_context;
+    unsigned int policy_generation;
+} dsd_app_tg_range_payload;
+
+typedef struct {
+    uint64_t policy_context;
+    unsigned int policy_generation;
+    char path[]; /* NUL-terminated, bounded by the submitted payload size. */
+} dsd_app_tg_export_payload;
+
+typedef enum {
+    DSD_APP_KEY_TYPE_BASIC = 0,
+    DSD_APP_KEY_TYPE_HEX = 1, /* Hytera/AES determined by width. */
+    DSD_APP_KEY_TYPE_RC4 = 2,
+    DSD_APP_KEY_TYPE_SCRAMBLER = 3
+} dsd_app_key_type;
+
+typedef struct {
+    int32_t key_type; /* dsd_app_key_type; digits alone cannot distinguish BP/RC4/Hytera. */
+    char value[72];   /* Bounded, NUL-terminated; never echo to logs, toasts or snapshots. */
+} dsd_app_key_direct_payload;
+
 typedef struct {
     uint64_t H;
     uint64_t K1;
@@ -360,6 +413,8 @@ typedef enum {
 extern "C" {
 #endif
 
+/* The queue erases its owned payload copies on every disposal path. The caller
+ * still owns payload (including on rejection) and must erase its secret storage. */
 int dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz);
 int dsd_app_command_action(int cmd_id);
 int dsd_app_command_set_i32(int cmd_id, int32_t value);

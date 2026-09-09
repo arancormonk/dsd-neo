@@ -162,6 +162,7 @@ static const int k_ui_cmd_string_ids[] = {
    the second answer without the decoder rebuilding timing for the first one on
    the way. */
 static const int k_ui_cmd_coalescible_setter_ids[] = {
+    DSD_APP_CMD_KEY_DIRECT_SET,
     DSD_APP_CMD_GAIN_SET,
     DSD_APP_CMD_AGAIN_SET,
     DSD_APP_CMD_INPUT_VOL_SET,
@@ -212,7 +213,10 @@ ui_cmd_find_pending_tail_unlocked(int cmd_id) {
 
 static void
 ui_cmd_store_payload(struct dsd_app_command* c, int cmd_id, const void* payload, size_t payload_sz) {
-    size_t copy_sz = payload_sz;
+    // Erase before overwrite, including coalescing to a shorter rejected payload.
+    // Wiping all commands also covers legacy key setters and account credentials.
+    DSD_SECURE_ZERO(c, sizeof(*c));
+    size_t copy_sz = payload ? payload_sz : 0;
     if (copy_sz > sizeof c->data) {
         copy_sz = sizeof c->data;
     }
@@ -2518,6 +2522,9 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
         }
     }
     if (q_is_full_unlocked()) {
+        // Erase before advancing: the evicted slot is not the slot about to be
+        // written, so clearing only the insertion slot leaves a discarded key alive.
+        DSD_SECURE_ZERO(&g_q[g_head], sizeof(g_q[g_head]));
         // Drop the oldest command (advance head) and warn once per burst
         g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
         atomic_fetch_add(&g_overflow, 1);
@@ -2629,6 +2636,7 @@ static const int k_ui_cmd_action_ids[] = {
 };
 
 static const int k_ui_cmd_i32_ids[] = {
+    DSD_APP_CMD_FORCE_KEY_SET,
     DSD_APP_CMD_GAIN_DELTA,
     DSD_APP_CMD_AGAIN_DELTA,
     DSD_APP_CMD_SPEC_SIZE_DELTA,
@@ -2835,6 +2843,11 @@ struct ui_cmd_payload_min_size_rule {
 };
 
 static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules[] = {
+    {DSD_APP_CMD_TG_ROW_SET, sizeof(dsd_app_tg_row_payload)},
+    {DSD_APP_CMD_TG_ROW_REMOVE, sizeof(dsd_app_tg_range_payload)},
+    {DSD_APP_CMD_TG_LIST_EXPORT, offsetof(dsd_app_tg_export_payload, path) + 1U},
+    {DSD_APP_CMD_KEY_DIRECT_SET, sizeof(dsd_app_key_direct_payload)},
+    {DSD_APP_CMD_FORCE_KEY_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TG_HOLD_TOGGLE, sizeof(uint8_t)},
     {DSD_APP_CMD_CALL_ALERT_EVENTS_SET, sizeof(uint8_t)},
     {DSD_APP_CMD_LOCKOUT_SLOT, sizeof(uint8_t)},
@@ -3791,6 +3804,66 @@ tg_listen_release_blocked_calls(dsd_opts* opts, dsd_state* state) {
 }
 
 static int
+apply_cmd_foundation(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)opts;
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    switch (c->id) {
+        case DSD_APP_CMD_TG_ROW_SET: {
+            dsd_app_tg_row_payload p;
+            DSD_MEMCPY(&p, c->data, sizeof p);
+            context = p.policy_context;
+            generation = p.policy_generation;
+            break;
+        }
+        case DSD_APP_CMD_TG_ROW_REMOVE: {
+            dsd_app_tg_range_payload p;
+            DSD_MEMCPY(&p, c->data, sizeof p);
+            context = p.policy_context;
+            generation = p.policy_generation;
+            break;
+        }
+        case DSD_APP_CMD_TG_LIST_EXPORT:
+            // The flexible member can start before sizeof(struct) because of tail
+            // padding. Read header fields individually; never cast unaligned data.
+            DSD_MEMCPY(&context, c->data + offsetof(dsd_app_tg_export_payload, policy_context), sizeof context);
+            DSD_MEMCPY(&generation, c->data + offsetof(dsd_app_tg_export_payload, policy_generation),
+                       sizeof generation);
+            if (!memchr(c->data + offsetof(dsd_app_tg_export_payload, path), 0,
+                        c->n - offsetof(dsd_app_tg_export_payload, path))) {
+                ui_set_toast(state, 3, "Invalid export path");
+                return UI_CMD_APPLY_INVALID_PAYLOAD;
+            }
+            break;
+        case DSD_APP_CMD_KEY_DIRECT_SET: {
+            dsd_app_key_direct_payload p;
+            DSD_MEMCPY(&p, c->data, sizeof p);
+            const int valid = p.key_type >= DSD_APP_KEY_TYPE_BASIC && p.key_type <= DSD_APP_KEY_TYPE_SCRAMBLER
+                              && memchr(p.value, 0, sizeof p.value) != NULL;
+            DSD_SECURE_ZERO(&p, sizeof p);
+            ui_set_toast(state, 3, valid ? "not implemented" : "Invalid key payload");
+            return valid ? UI_CMD_APPLY_UNSUPPORTED : UI_CMD_APPLY_INVALID_PAYLOAD;
+        }
+        case DSD_APP_CMD_FORCE_KEY_SET: {
+            int32_t mode;
+            DSD_MEMCPY(&mode, c->data, sizeof mode);
+            ui_set_toast(state, 3, mode >= 0 && mode <= 2 ? "not implemented" : "Invalid force key mode");
+            return mode >= 0 && mode <= 2 ? UI_CMD_APPLY_UNSUPPORTED : UI_CMD_APPLY_INVALID_PAYLOAD;
+        }
+        default: return UI_CMD_APPLY_UNHANDLED;
+    }
+    uint64_t current_context = 0;
+    unsigned int current_generation = 0;
+    dsd_tg_policy_table_version(state, &current_context, &current_generation);
+    if (context != current_context || generation != current_generation) {
+        ui_set_toast(state, 3, "Talkgroup list changed: stale edit rejected");
+        return UI_CMD_APPLY_FAILED;
+    }
+    ui_set_toast(state, 3, "not implemented");
+    return UI_CMD_APPLY_UNSUPPORTED;
+}
+
+static int
 apply_cmd_tg_listen_one(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     dsd_app_tg_listen_payload payload;
     DSD_MEMCPY(&payload, c->data, sizeof payload);
@@ -4328,7 +4401,7 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
         apply_cmd_basic_a,      apply_cmd_slot_controls,  apply_cmd_payload_filters, apply_cmd_constellation,
         apply_cmd_eye_spectrum, apply_cmd_trunk_controls, apply_cmd_lockout_slot,    apply_cmd_tg_listen,
         apply_cmd_provoice_m17, apply_cmd_scan_controls,  apply_cmd_channel_cycle,   apply_cmd_capture_playback,
-        apply_cmd_misc_config,
+        apply_cmd_misc_config,  apply_cmd_foundation,
     };
     if (!c) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
@@ -4382,6 +4455,7 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
      * Live controls must continue to inspect the effective row, so suspending
      * every command and diffing afterward would change their behavior. */
     static const int commands[] = {
+        DSD_APP_CMD_FORCE_KEY_SET,
         DSD_APP_CMD_ALL_MUTES_TOGGLE,
         DSD_APP_CMD_FORCE_PRIV_TOGGLE,
         DSD_APP_CMD_FORCE_RC4_TOGGLE,
@@ -4453,6 +4527,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         dsd_mutex_lock(&g_mu);
         if (!q_is_empty_unlocked()) {
             cmd = g_q[g_head];
+            DSD_SECURE_ZERO(&g_q[g_head], sizeof(g_q[g_head]));
             g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
             have = 1;
         }
@@ -4465,10 +4540,12 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
             break;
         }
         if (!ui_cmd_payload_is_valid(&cmd)) {
+            DSD_SECURE_ZERO(&cmd, sizeof cmd);
             n_applied++;
             continue;
         }
         (void)apply_cmd(opts, state, &cmd);
+        DSD_SECURE_ZERO(&cmd, sizeof cmd);
         // After applying a command, publish updated snapshots so the UI can
         // render consistent opts/state without racing live structures.
         dsd_telemetry_publish_opts_snapshot(opts);
@@ -4479,3 +4556,41 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     }
     return n_applied;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+static int
+command_bytes_zero(const void* storage, size_t size) {
+    const unsigned char* bytes = storage;
+    for (size_t i = 0; i < size; ++i) {
+        if (bytes[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int
+dsd_app_command_test_storage_cleared(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    int clear = 1;
+    for (size_t i = g_tail; i != g_head; i = (i + 1) % DSD_APP_CMD_Q_CAP) {
+        clear &= command_bytes_zero(&g_q[i], sizeof g_q[i]);
+    }
+    if (g_head == g_tail) {
+        clear = command_bytes_zero(g_q, sizeof g_q);
+    }
+    dsd_mutex_unlock(&g_mu);
+    return clear;
+}
+
+int
+dsd_app_command_test_tail_padding_cleared(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    const struct dsd_app_command* c = &g_q[(g_tail + DSD_APP_CMD_Q_CAP - 1) % DSD_APP_CMD_Q_CAP];
+    int clear = command_bytes_zero(c->data + c->n, sizeof c->data - c->n);
+    dsd_mutex_unlock(&g_mu);
+    return clear;
+}
+#endif

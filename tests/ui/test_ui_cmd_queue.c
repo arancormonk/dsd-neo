@@ -2568,9 +2568,79 @@ test_talkgroup_list_commands(void) {
     return rc;
 }
 
+static int
+test_foundation_commands(void) {
+    dsd_opts opts;
+    dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+    rc |= expect_int("row set id", DSD_APP_CMD_TG_ROW_SET, 592);
+    rc |= expect_int("row remove id", DSD_APP_CMD_TG_ROW_REMOVE, 593);
+    rc |= expect_int("export id", DSD_APP_CMD_TG_LIST_EXPORT, 594);
+    rc |= expect_int("direct key id", DSD_APP_CMD_KEY_DIRECT_SET, 652);
+    rc |= expect_int("force key id", DSD_APP_CMD_FORCE_KEY_SET, 653);
+    dsd_app_tg_row_payload row = {0};
+    dsd_tg_policy_table_version(&state, &row.policy_context, &row.policy_generation);
+    row.id_start = row.id_end = 42;
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &row, sizeof row);
+    rc |= expect_int("row stub drains", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("row stub toast", state.ui_msg, "not implemented");
+    row.policy_generation++;
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &row, sizeof row);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_contains("stale row rejected", state.ui_msg, "stale");
+    dsd_app_tg_range_payload range = {42, 42, 0, 0};
+    dsd_tg_policy_table_version(&state, &range.policy_context, &range.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &range, sizeof range);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_contains("remove stub toast", state.ui_msg, "not implemented");
+
+    union {
+        uint64_t alignment;
+        unsigned char bytes[sizeof(dsd_app_tg_export_payload) + 32];
+    } export_storage = {0};
+
+    dsd_app_tg_export_payload* export_payload = (dsd_app_tg_export_payload*)export_storage.bytes;
+    export_payload->policy_context = range.policy_context;
+    export_payload->policy_generation = range.policy_generation;
+    strcpy(export_payload->path, "test.csv");
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, export_payload, sizeof export_storage);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_contains("export stub toast", state.ui_msg, "not implemented");
+    dsd_app_key_direct_payload key = {DSD_APP_KEY_TYPE_RC4, "0011223344"};
+    dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_contains("key stub toast", state.ui_msg, "not implemented");
+    rc |= expect_true("key absent from toast", strstr(state.ui_msg, key.value) == NULL);
+    rc |= expect_true("drained slot erased", dsd_app_command_test_storage_cleared());
+    // Put the secret at the eviction head, then fill all 127 usable slots.
+    dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
+    for (int i = 0; i < 126; ++i) {
+        post_empty(DSD_APP_CMD_TOGGLE_COMPACT);
+    }
+    dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
+    rc |= expect_true("evicted sensitive slot erased", dsd_app_command_test_storage_cleared());
+    key.value[1] = '\0';
+    dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, 5);
+    rc |= expect_true("coalesced tail erased", dsd_app_command_test_tail_padding_cleared());
+    rc |= expect_int("full queue drains including rejected key", dsd_app_drain_cmds(&opts, &state), 127);
+    rc |= expect_true("rejected slot erased", dsd_app_command_test_storage_cleared());
+    dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, NULL, sizeof key);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_true("null payload never reuses old key", dsd_app_command_test_storage_cleared());
+    rc |= expect_int("force setter queued", dsd_app_command_set_i32(DSD_APP_CMD_FORCE_KEY_SET, 2),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_contains("force stub toast", state.ui_msg, "not implemented");
+    DSD_SECURE_ZERO(&key, sizeof key);
+    freeState(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_foundation_commands();
     rc |= test_talkgroup_list_commands();
     rc |= test_source_alias_commands();
     rc |= test_scoped_direct_key_mutes();
