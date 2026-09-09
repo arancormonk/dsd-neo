@@ -125,8 +125,15 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 // stub only acknowledges the documented same-thread flush before a start.
 class TestUiController : public QObject {
     Q_OBJECT
+    // WP-D1: retained export result starts empty, like the real controller.
+    Q_PROPERTY(QVariantMap talkgroupExportResult READ talkgroupExportResult CONSTANT)
   public:
     using QObject::QObject;
+
+    QVariantMap
+    talkgroupExportResult() const {
+        return {};
+    }
 
     Q_INVOKABLE void
     flushHistory() {}
@@ -208,6 +215,44 @@ class CommandRecorder : public QObject {
     Q_INVOKABLE bool
     lockoutSlot(int) {
         return true;
+    }
+
+    // WP-D1: retain the captured version and requested fields for edit-sheet tests.
+    Q_INVOKABLE bool
+    setTalkgroupPolicy(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
+                       const QString& name, bool listen, int priority, bool preempt) {
+        m_talkgroupEdit = {start, end, context, generation, name, listen, priority, preempt};
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    renameTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
+                    const QString& name) {
+        m_talkgroupEdit = {start, end, context, generation, name};
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    addTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
+                 const QString& name, bool listen, int priority, bool preempt) {
+        return setTalkgroupPolicy(start, end, context, generation, name, listen, priority, preempt);
+    }
+
+    Q_INVOKABLE bool
+    removeTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation) {
+        m_talkgroupEdit = {start, end, context, generation};
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    saveTalkgroupList(const QString& context, unsigned int generation, const QString& path) {
+        m_talkgroupEdit = {context, generation, path};
+        return true;
+    }
+
+    Q_INVOKABLE QVariantList
+    lastTalkgroupEdit() const {
+        return m_talkgroupEdit;
     }
 
     Q_INVOKABLE bool
@@ -338,6 +383,7 @@ class CommandRecorder : public QObject {
         m_scan_avoid_calls = 0;
         m_scan_avoid_clear_calls = 0;
         m_next_channel_calls = 0;
+        m_talkgroupEdit.clear();
         m_talkgroup_listen_calls = 0;
         m_last_talkgroup_id_start = 0.0;
         m_last_talkgroup_id_end = 0.0;
@@ -484,6 +530,7 @@ class CommandRecorder : public QObject {
     int m_last_modulation = -1;
     int m_last_decode_mode = -1;
     int m_last_ppm = 9999;
+    QVariantList m_talkgroupEdit;
     int m_talkgroup_listen_calls = 0;
     double m_last_talkgroup_id_start = 0.0;
     double m_last_talkgroup_id_end = 0.0;

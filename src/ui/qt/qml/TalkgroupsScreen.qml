@@ -7,7 +7,14 @@ Item {
     id: screen
 
     property string systemName: ""
+    property string saveMessage: ""
+    property bool canSaveList: false
+    signal saveListRequested()
     signal closed()
+    onVisibleChanged: { if (!visible) editSheet.visible = false }
+    readonly property bool hostRunning: decoderHost.running
+    onHostRunningChanged: { if (!hostRunning) editSheet.visible = false }
+
 
     Rectangle {
         anchors.fill: parent
@@ -188,6 +195,8 @@ Item {
             height: GridView.view.cellHeight - 8
             // Snapshot truth, not a local toggle: the decoder may refuse an edit.
             onClicked: commands.setTalkgroupListening(idStart, idEnd, !listening)
+            onEditRequested: editSheet.openRow(idStart, idEnd, name, listening, listed, priority, preempt,
+                                               talkgroups.policyContext, talkgroups.policyGeneration)
         }
 
         Text {
@@ -246,6 +255,17 @@ Item {
             }
         }
 
+        OutlineButton {
+            objectName: "saveTalkgroupListButton"
+            width: parent.width; height: 44
+            visible: !talkgroups.persistent
+            enabled: decoderHost.running && screen.canSaveList
+            text: qsTr("Save talkgroup list")
+            onClicked: screen.saveListRequested()
+        }
+
+        Text { width: parent.width; text: screen.saveMessage; visible: text.length > 0; color: Theme.textSecondary; wrapMode: Text.Wrap }
+
         Text {
             objectName: "sessionOnlyNote"
             width: parent.width
@@ -266,5 +286,13 @@ Item {
             color: Theme.textSubdued
             wrapMode: Text.Wrap
         }
+    }
+
+    TalkgroupEditSheet {
+        id: editSheet
+        objectName: "talkgroupEditSheet"
+        saveMessage: screen.saveMessage
+        canSaveList: screen.canSaveList && !talkgroups.persistent && decoderHost.running
+        onSaveListRequested: screen.saveListRequested()
     }
 }

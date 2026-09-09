@@ -32,6 +32,25 @@ baseline; the row's own key remains effective until rotation restores globals.
 Force mode similarly updates configuration while an explicit row override wins.
 The encryption wizard and live entry sheet are supplied by a later UI package.
 
+### Editing and saving talkgroups
+
+Long-press a talkgroup card to rename it, change Listening/Not tuned, or set
+priority (0/25/50/100 presets and ±5 steps). Preempt is available above priority
+zero and affects P25 trunking only. The card shows `P<n>` and a lightning badge
+when preempt is set. Heard-only rows offer **Add to list**; listed rows require two
+taps on **Remove**. Decoder refusal messages remain visible in the sheet. If the
+policy changed while the sheet was open (including scan rotation), close and reopen
+it before trying again.
+
+When the running session has no group file, **Save talkgroup list** exports the
+canonical policy, including aliases and ranges, to app-owned Imports storage.
+The UI waits for the decoder's retained successful result before registering the
+file and setting the saved system's group-list path. Later edits write that same
+file. If the saved system was deleted or acquired another group file while saving,
+the export remains in Imports without changing that system. Explore sessions save
+to Imports for later selection in a saved system. Scan-row exports are refused by
+the decoder.
+
 ## The two-mode UI
 
 The shell has two modes, switched on `DecoderHost::sessionState` — a phone cannot
