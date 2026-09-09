@@ -43,6 +43,13 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     int localDeviceFailureKind() const override;
     void hostDiagnostic(const QString& line) override;
 
+    bool
+    shareSupported() const override {
+        return true;
+    }
+
+    void shareDiagnostics(const QString& text, const QString& title) override;
+
     /** @brief True: FLAG_KEEP_SCREEN_ON on the Activity window is available. */
     bool
     keepScreenAwakeSupported() const override {

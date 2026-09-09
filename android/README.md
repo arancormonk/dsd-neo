@@ -560,3 +560,31 @@ module behind it, so androiddeployqt has nothing extra to package.
   paced by the blocking `AAudioStream_write`, but it does mean the pump plus the
   AAudio mixer stay resident for as long as a run lasts rather than only while a
   call is on air. This is the first thing to measure in the battery soak below.
+
+## Diagnostics
+
+Settings → Diagnostics shows current-process decoder and host diagnostics plus a
+bounded redacted persistent tail from previous runs. It is not a native-crash or
+ANR capture. The process ring holds at most 2000 entries, each at most 512 UTF-8
+bytes. Pause freezes the displayed list while capture continues; Copy and Share
+include the current ring. Clear clears the process ring/view, not the persistent
+tail. Diagnostics deliberately survive decoder Starting/Idle/Failed transitions.
+
+A process-lifetime runtime log tap, the stderr pump, and host messages all enter
+`DiagnosticsLog::submit()`. It filters sensitive records before ring insertion and
+queues only redacted bytes to one asynchronous writer. The writer retains the
+newest 256 KiB in `files/diagnostics/tail.log`; a tail untouched for seven days is
+deleted at startup. Its bounded queue drops oldest queued records under sustained
+storage backpressure. Disk failures do not stop decoding. Oversized stderr lines
+are omitted rather than split into potentially unlabelled secret fragments.
+
+Sharing creates a temporary text file in `cacheDir/diagnostics/`, exposed through
+our separate, non-exported diagnostics FileProvider with a temporary read grant.
+Files older than one hour are removed on the next share. The API accepts text,
+not paths; systems, preferences, and imported CSVs are outside that provider.
+Qt's own provider paths are unchanged.
+
+The app's argv token gate rejects `--show-keys` (including assignment syntax).
+`session_args_extra_safe()` is the shared gate for future scan-list generation.
+Malformed CLI key diagnostics report the expected shape, never the value.
+QString/QML copies cannot promise erasure; only filtered content enters diagnostics.

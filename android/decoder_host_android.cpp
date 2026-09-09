@@ -4,6 +4,7 @@
  */
 
 #include "decoder_host_android.h"
+#include "diagnostics_log.h"
 
 #include <QCoreApplication>
 #include <QJniEnvironment>
@@ -95,6 +96,7 @@ phase_text(SessionPhase phase) {
 } // namespace
 
 DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : dsd_qt::DecoderHost(parent) {
+    dsd_qt::DiagnosticsLog::installTap();
     QJniObject context = android_context();
     if (context.isValid()) {
         QJniObject::callStaticMethod<void>(kSupportClass, "ensureNotificationPermission", "(Landroid/app/Activity;)V",
@@ -143,8 +145,28 @@ DecoderHostAndroid::localDeviceFailureKind() const {
 
 void
 DecoderHostAndroid::hostDiagnostic(const QString& line) {
-    const QByteArray text = line.toUtf8();
-    LOG_INFO("Android: %s\n", text.constData());
+    dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("host"), QStringLiteral("info"), line);
+}
+
+// WP-F5: share content only, never a caller-selected file path.
+void
+DecoderHostAndroid::shareDiagnostics(const QString& text, const QString& title) {
+    QStringList lines;
+    for (const auto& line : text.split(QLatin1Char('\n'))) {
+        lines.append(dsd_qt::DiagnosticsLog::redact(line));
+    }
+    const auto safeText = lines.join(QLatin1Char('\n'));
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([safeText, title]() -> QVariant {
+        const auto context = android_context();
+        if (!context.isValid()) {
+            return {};
+        }
+        QJniObject::callStaticMethod<void>("io/github/arancormonk/dsdneo/DiagnosticsShare", "share",
+                                           "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V",
+                                           context.object(), QJniObject::fromString(safeText).object(),
+                                           QJniObject::fromString(title).object());
+        return {};
+    });
 }
 
 void
@@ -370,10 +392,9 @@ JNIEXPORT void JNICALL
 Java_io_github_arancormonk_dsdneo_DsdNative_nativeHostDiagnostic(JNIEnv* env, jclass clazz, jstring line) {
     (void)env;
     (void)clazz;
-    // Use the same runtime log surface as hostDiagnostic(), so a diagnostics
-    // log tap also receives messages while the service has no Activity/Qt host.
-    const QByteArray text = QJniObject(line).toString().toUtf8();
-    LOG_INFO("Android: %s\n", text.constData());
+    dsd_qt::DiagnosticsLog::installTap();
+    dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("host"), QStringLiteral("info"),
+                                              QJniObject(line).toString());
 }
 
 /**
