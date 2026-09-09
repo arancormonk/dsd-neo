@@ -97,11 +97,6 @@ profile_copy_path(char* dest, size_t capacity, const char* path) {
     return 0;
 }
 
-static int
-profile_mute_dmr(const dsd_scan_options* options) {
-    return !(options->bp || options->hytera[0] || options->hytera[1] || options->hytera[2] || options->hytera[3]);
-}
-
 int
 dsd_scan_options_merge_keys(dsd_scan_options* options, const char* hex_file, const char* dec_file,
                             const char* single_hex, const char* single_dec, char* error, size_t error_size) {
@@ -128,11 +123,7 @@ dsd_scan_options_merge_keys(dsd_scan_options* options, const char* hex_file, con
     }
     if (rc == 0) {
         merged.values.present = combined;
-        /* Legacy columns only load keys. Only the option text's own `-b`/`-H` decide muting, and
-         * then from all of the row's privacy material, as the CLI switches do. */
-        if (combined & DSD_SCAN_OPT_MUTE_DMR) {
-            merged.values.mute_dmr = profile_mute_dmr(&merged);
-        }
+        /* Legacy columns only load material. Preserve the option text's policy. */
         *options = merged;
     }
     DSD_SECURE_ZERO(&merged, sizeof(merged));

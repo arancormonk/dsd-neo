@@ -1,14 +1,31 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Real generator -> parser -> coordinator -> policy/key installation. Only the
 // tuning side effect is replaced; no policy, profile or key stubs are linked.
+#include <QByteArray>
+#include <QChar>
+#include <QIODevice>
+#include <QList>
+#include <QMap>
+#include <QString>
+#include <QVariant>
+#include <QVariantList>
+#include <QVariantMap>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <initializer_list>
+#include <stdint.h>
+#include <utility>
 #include "scan_list_targets.h"
+#include "session_args.h"
 extern "C" {
+#include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 }
@@ -42,6 +59,94 @@ policy(const dsd_state* state, const char* name, const char* mode) {
     dsd_tg_policy_lookup found{};
     check(dsd_tg_policy_lookup_id(state, 123, &found) == 0 && !std::strcmp(found.entry.name, name)
           && !std::strcmp(found.entry.mode, mode));
+}
+
+// Compare actual standalone argv parsing with generated scoped options, including
+// initialized mute defaults and restoration across two complete rotations.
+static void
+keyMuteRotation(bool unmuteP25) {
+    QTemporaryDir dir;
+    QVariantList systems, entries;
+    for (const auto& type : {"basic", "hex", "rc4", "scrambler"}) {
+        for (int nonzero = 0; nonzero < 2; ++nonzero) {
+            const QString uid = QString::number(systems.size());
+            const QString value = QString(type) == "hex" ? QString(10, nonzero ? '1' : '0') : QString::number(nonzero);
+            systems << QVariantMap{{"uid", uid},
+                                   {"trunking", true},
+                                   {"decodeFlag", QString(type) == "scrambler" ? "-fi" : "-fs"},
+                                   {"freqMhz", QString::number(461 + systems.size())},
+                                   {"encKeyType", type},
+                                   {"encKeyValue", value}};
+            entries << QVariantMap{{"uid", uid}, {"kind", "system"}, {"systemUid", uid}};
+        }
+    }
+    systems << QVariantMap{{"uid", "plain"}, {"trunking", true}, {"decodeFlag", "-fs"}, {"freqMhz", "480"}};
+    entries << QVariantMap{{"uid", "plain"}, {"kind", "system"}, {"systemUid", "plain"}};
+    auto generated = dsd_qt::scan_list_targets({{"sourceType", "usb"}, {"entries", entries}}, systems);
+    check(generated.ok && generated.targetCount == systems.size());
+    const QString path = dir.path() + "/mute-targets.csv";
+    QFile file(path);
+    check(file.open(QIODevice::WriteOnly));
+    file.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
+    check(file.write(generated.csv) == generated.csv.size());
+    file.close();
+    auto* opts = new dsd_opts{};
+    auto* state = new dsd_state{};
+    initOpts(opts);
+    initState(state);
+    opts->unmute_encrypted_p25 = unmuteP25;
+    opts->trunk_scan_enabled = 1;
+    opts->use_rigctl = 1;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path.toUtf8().constData());
+    dsd_trunk_tuning_hooks hooks{};
+    hooks.tune_to_freq_request = tune;
+    hooks.tune_to_cc_request = tune;
+    dsd_trunk_tuning_hooks_set(hooks);
+    char error[256]{};
+    const bool initialized = dsd_engine_trunk_scan_init(opts, state, error, sizeof error) == 0;
+    check(initialized);
+    if (initialized) {
+        for (int i = 0; i < systems.size() * 2; ++i) {
+            auto* standaloneOpts = new dsd_opts{};
+            auto* standaloneState = new dsd_state{};
+            initOpts(standaloneOpts);
+            initState(standaloneState);
+            standaloneOpts->unmute_encrypted_p25 = unmuteP25;
+            auto system = systems[i % systems.size()].toMap();
+            system["sourceType"] = "usb";
+            auto args = dsd_qt::session_args_build(system, {}, nullptr);
+            QList<QByteArray> storage{QByteArray("scan-mute-test")};
+            for (const auto& arg : args) {
+                storage << arg.toUtf8();
+            }
+            QList<char*> argv;
+            for (auto& arg : storage) {
+                argv << arg.data();
+            }
+            int effective = 0, exitCode = 0;
+            check(dsd_parse_args(static_cast<int>(argv.size()), argv.data(), standaloneOpts, standaloneState,
+                                 &effective, &exitCode)
+                  == 0);
+            check(opts->dmr_mute_encL == standaloneOpts->dmr_mute_encL);
+            check(opts->dmr_mute_encR == standaloneOpts->dmr_mute_encR);
+            check(opts->unmute_encrypted_p25 == standaloneOpts->unmute_encrypted_p25);
+            for (auto& arg : storage) {
+                DSD_SECURE_ZERO(arg.data(), static_cast<size_t>(arg.size()));
+            }
+            freeState(standaloneState);
+            DSD_SECURE_ZERO(standaloneState, sizeof *standaloneState);
+            delete standaloneState;
+            delete standaloneOpts;
+            check(dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+        }
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_trunk_tuning_hooks_set({});
+    dsd_trunk_scan_hooks_set({});
+    freeState(state);
+    DSD_SECURE_ZERO(state, sizeof *state);
+    delete state;
+    delete opts;
 }
 
 int
@@ -81,6 +186,8 @@ main(int argc, char** argv) {
     auto* opts = static_cast<dsd_opts*>(std::calloc(1, sizeof(dsd_opts)));
     auto* state = static_cast<dsd_state*>(std::calloc(1, sizeof(dsd_state)));
     if (!opts || !state) {
+        std::free(opts);
+        std::free(state);
         return 1;
     }
     opts->trunk_scan_enabled = 1;
@@ -128,5 +235,7 @@ main(int argc, char** argv) {
     DSD_SECURE_ZERO(state, sizeof *state);
     std::free(state);
     std::free(opts);
+    keyMuteRotation(false);
+    keyMuteRotation(true);
     return failures ? 1 : 0;
 }

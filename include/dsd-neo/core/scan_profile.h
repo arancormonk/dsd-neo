@@ -25,7 +25,7 @@ typedef struct {
  * Returns -1 on a bad argument with @p out untouched. */
 int dsd_scan_options_keys(const dsd_scan_options* options, dsd_key_set* out);
 /** Merge legacy key columns into parsed options. Columns alone do not claim a mute override;
- * when option text contains `-b`/`-H`, all merged BP/Hytera material decides DMR muting. Rejects a
+ * direct option text retains its decryption policy regardless of merged material. Rejects a
  * column that duplicates an option or mixes direct keys with key files. No files are opened;
  * on failure @p options is untouched. */
 int dsd_scan_options_merge_keys(dsd_scan_options* options, const char* hex_file, const char* dec_file,

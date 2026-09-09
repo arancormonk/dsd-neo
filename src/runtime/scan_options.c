@@ -177,11 +177,6 @@ option_hytera_width(unsigned int digits, unsigned int mode) {
 }
 
 static int
-option_has_privacy_material(const dsd_scan_options* parsed) {
-    return parsed->bp || parsed->hytera[0] || parsed->hytera[1] || parsed->hytera[2] || parsed->hytera[3];
-}
-
-static int
 option_set_hex(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
     uint64_t words[4] = {0};
     unsigned int digits = 0;
@@ -398,11 +393,11 @@ dsd_scan_options_parse(const char* text, unsigned int mode, int conventional, ds
         rc = option_sources_valid(parsed.values.present, error, error_size);
     }
     if (rc == 0) {
-        /* The CLI `-b`/`-H` switches decide DMR encrypted-audio muting from whether any privacy
-         * material was supplied; explicit zero mutes. Only the option text claims that decision. */
-        if (parsed.values.present & (DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA)) {
-            parsed.values.present |= DSD_SCAN_OPT_MUTE_DMR;
-            parsed.values.mute_dmr = !option_has_privacy_material(&parsed);
+        /* Every accepted direct switch arms decryption, including zero-valued keys.
+         * Legacy material-only columns never acquire this policy override. */
+        if (parsed.values.present & DSD_SCAN_OPT_DIRECT) {
+            parsed.values.present |= DSD_SCAN_OPT_MUTE_DMR | DSD_SCAN_OPT_MUTE_P25;
+            parsed.values.mute_dmr = 0;
         }
         *out = parsed;
     }

@@ -225,11 +225,11 @@ clear/BP channel when forcing is configured globally. `-b 1` with normal signall
 There is no automatic choice between forced Motorola and Hytera privacy.
 
 The existing `single_key_dec` and `single_key_hex` columns load the `-b` and `-H` key values, respectively.
-They do not claim an encrypted-audio mute override by themselves. When `options` contains `-b` or `-H`, those
-switches decide DMR muting from all of the row's BP/Hytera material, including the legacy columns: all zero
-mutes, any nonzero material unmutes. For example, `-b 0` mutes by itself, but unmutes alongside a nonzero
-`single_key_hex`. `-1` mutes undecodable P25 audio as the CLI switch does. Use `options=-R 1` for a direct
-NXDN scrambler and `options=-1 0123456789` for direct RC4. Loading a key does not itself enable forcing. A
+They do not claim an encrypted-audio mute override by themselves. Direct switches in `options` (`-b`, `-H`,
+`-1`, `-R`) arm decryption for every accepted value, including zero: DMR encrypted-audio mute flags clear,
+and undecodable P25 audio stays muted, matching standalone and live direct-key entry. Material-only columns
+and key CSV files preserve the inherited mute policy. Use `options=-R 1` for a direct NXDN scrambler and
+`options=-1 0123456789` for direct RC4. Loading a key does not itself enable forcing. A
 direct source replaces the row's complete key set; unspecified families and keyring entries are cleared.
 Explicit zero is a supplied value. Direct and file-backed key sources cannot be mixed, including across
 columns and options. Compatible direct families may be combined, but duplicate definitions reject the import.

@@ -23,11 +23,13 @@ enum {
     DSD_SCAN_OPT_HEX_FILE = 1U << 9,
     DSD_SCAN_OPT_DEC_FILE = 1U << 10,
     DSD_SCAN_OPT_GROUP = 1U << 11,
-    /** The row decides DMR encrypted-audio muting. Set only by the `-b`/`-H` switches in the option text,
+    /** The row decides DMR encrypted-audio muting. Set by `-b`/`-H`/`-1`/`-R` in the option text,
      * so legacy single_key_dec/single_key_hex columns keep their key-only meaning. */
     DSD_SCAN_OPT_MUTE_DMR = 1U << 12,
     DSD_SCAN_OPT_DATA = 1U << 13,
     DSD_SCAN_OPT_ENC = 1U << 14,
+    /** Direct option text mutes undecodable P25 audio; material-only sources do not. */
+    DSD_SCAN_OPT_MUTE_P25 = 1U << 15,
     DSD_SCAN_OPT_DIRECT = DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA | DSD_SCAN_OPT_SCALAR | DSD_SCAN_OPT_SCRAMBLER,
     DSD_SCAN_OPT_FILES = DSD_SCAN_OPT_HEX_FILE | DSD_SCAN_OPT_DEC_FILE
 };
@@ -38,7 +40,7 @@ enum {
 #define DSD_SCAN_OPTIONS_GROUP_PATH_MAX 1024
 
 /** Nonsecret overrides copied into runtime/frontend scan scopes. A field is meaningful only when its
- * DSD_SCAN_OPT_* bit is set in `present`. `-1` (DSD_SCAN_OPT_SCALAR) always mutes undecodable P25 audio,
+ * DSD_SCAN_OPT_* bit is set in `present`. Direct option text (DSD_SCAN_OPT_MUTE_P25) always mutes undecodable P25 audio,
  * as the CLI switch does, so it carries no value here. */
 typedef struct {
     uint32_t present;

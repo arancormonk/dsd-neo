@@ -21,7 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "test_support.h"
+#include "../test_support/test_support.h"
 
 void dsd_tg_policy_test_alloc_reset(void);
 void dsd_tg_policy_test_alloc_fail_after(long fail_after);
@@ -30,8 +30,10 @@ static void
 write_file(const char* path, const char* contents) {
     FILE* fp = dsd_fopen_private(path, "w");
     assert(fp);
-    assert(fputs(contents, fp) >= 0);
-    assert(fclose(fp) == 0);
+    const int written = fputs(contents, fp);
+    assert(written >= 0);
+    const int closed = fclose(fp);
+    assert(closed == 0);
 }
 
 static void
@@ -132,7 +134,10 @@ test_group_ownership(void) {
     dsd_key_set keys = {0};
     dsd_scan_row_profile* row = NULL;
     assert(dsd_scan_profile_load(&parsed, 0, &row, &keys) == 0);
-    assert(remove(path) == 0); /* Entry must never reopen its file. */
+    {
+        const int removed = remove(path);
+        assert(removed == 0);
+    } /* Entry must never reopen its file. */
     assert(dsd_scan_groups_begin(state) == 0);
     dsd_scan_groups_enter(state, row);
     expect_label(state, "Row group");
@@ -233,8 +238,12 @@ test_csv_import(void) {
     assert(dsd_channel_profile_get(state, 0)->values.hold_ms == 4000);
     assert(dsd_channel_profile_get(state, 1) == NULL);
     /* Replacing the only option-bearing profile with an empty one releases the gate. */
-    dsd_scan_row_profile* blank = (dsd_scan_row_profile*)calloc(1, sizeof(*blank));
+    dsd_scan_row_profile* blank = NULL;
+    dsd_scan_options empty_options = {0};
+    dsd_key_set empty_keys = {0};
+    assert(dsd_scan_profile_load(&empty_options, 0, &blank, &empty_keys) == 0);
     assert(blank);
+    dsd_key_set_free(&empty_keys);
     assert(dsd_channel_profile_set(state, 0, blank) == 0);
     assert(!dsd_channel_modes_present(state));
     dsd_state_trunk_lcn_free(state);
@@ -255,12 +264,15 @@ test_csv_import(void) {
     assert((dsd_channel_profile_get(state, 1)->values.present & DSD_SCAN_OPT_MUTE_DMR)
            && dsd_channel_profile_get(state, 1)->values.mute_dmr == 0);
     assert((dsd_channel_profile_get(state, 2)->values.present & DSD_SCAN_OPT_MUTE_DMR)
-           && dsd_channel_profile_get(state, 2)->values.mute_dmr == 1);
+           && dsd_channel_profile_get(state, 2)->values.mute_dmr == 0);
     dsd_state_trunk_lcn_free(state);
     dsd_state_ext_free_all(state);
     free(state);
     free(opts);
-    assert(remove(path) == 0);
+    {
+        const int removed = remove(path);
+        assert(removed == 0);
+    }
 }
 
 /* Option-bearing rows with no declared mode: the scope applies the row's policy over the
@@ -273,19 +285,20 @@ test_legacy_columns_do_not_mute(void) {
     opts->wav_sample_rate = 48000;
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->dmr_mute_encL = opts->dmr_mute_encR = 1;
+    opts->unmute_encrypted_p25 = 1;
     dsd_scan_options parsed = {0};
     char error[192];
     assert(dsd_scan_options_parse("--no-force-key", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
     assert(dsd_scan_options_merge_keys(&parsed, "", "", "0000001f00", "5", error, sizeof(error)) == 0);
     assert(parsed.bp == 5 && parsed.hytera[0] == 0x1f00 && parsed.hytera_digits == 10);
-    assert(!(parsed.values.present & DSD_SCAN_OPT_MUTE_DMR));
+    assert(!(parsed.values.present & (DSD_SCAN_OPT_MUTE_DMR | DSD_SCAN_OPT_MUTE_P25)));
     dsd_key_set keys = {0};
     dsd_scan_row_profile* profile = NULL;
     assert(dsd_scan_profile_load(&parsed, 0, &profile, &keys) == 0);
     assert(keys.present && keys.scalars.K == 5 && keys.scalars.K1 == 0x1f00 && keys.scalars.hytera_key_segments == 1);
     assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_INHERIT) == 0);
     assert(dsd_scan_mode_options(opts, state, &profile->values) == 0);
-    assert(opts->dmr_mute_encL == 1 && opts->dmr_mute_encR == 1);
+    assert(opts->dmr_mute_encL == 1 && opts->dmr_mute_encR == 1 && opts->unmute_encrypted_p25 == 1);
     dsd_scan_profile_free(profile);
     profile = NULL;
     /* A rejected column leaves the options exactly as parsed. */
@@ -297,17 +310,17 @@ test_legacy_columns_do_not_mute(void) {
     assert(memcmp(before_merge, after_merge, sizeof(after_merge)) == 0);
     DSD_SECURE_ZERO(before_merge, sizeof(before_merge));
     DSD_SECURE_ZERO(after_merge, sizeof(after_merge));
-    /* `-b` in the option text decides muting from all of the row's material. */
+    /* Direct option policy is independent of the legacy material merged beside it. */
     DSD_SECURE_ZERO(&parsed, sizeof(parsed));
     assert(dsd_scan_options_parse("-b 0", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
-    assert((parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && parsed.values.mute_dmr == 1);
+    assert((parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && parsed.values.mute_dmr == 0);
     assert(dsd_scan_options_merge_keys(&parsed, "", "", "0000001f00", "", error, sizeof(error)) == 0);
     assert((parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && parsed.values.mute_dmr == 0);
     assert(dsd_scan_profile_load(&parsed, 0, &profile, &keys) == 0);
     assert(dsd_scan_mode_options(opts, state, &profile->values) == 0);
-    assert(opts->dmr_mute_encL == 0 && opts->dmr_mute_encR == 0);
+    assert(opts->dmr_mute_encL == 0 && opts->dmr_mute_encR == 0 && opts->unmute_encrypted_p25 == 0);
     dsd_scan_mode_leave(opts, state);
-    assert(opts->dmr_mute_encL == 1);
+    assert(opts->dmr_mute_encL == 1 && opts->unmute_encrypted_p25 == 1);
     dsd_scan_profile_free(profile);
     dsd_key_set_free(&keys);
     DSD_SECURE_ZERO(&parsed, sizeof(parsed));
@@ -375,7 +388,10 @@ test_group_load_failure(void) {
     free(probe);
     dsd_tg_policy_release(partial);
     dsd_tg_policy_release(original);
-    assert(remove(path) == 0);
+    {
+        const int removed = remove(path);
+        assert(removed == 0);
+    }
 }
 
 static void
@@ -504,7 +520,10 @@ test_slotless_options_validate_files(void) {
     dsd_state_ext_free_all(state);
     free(state);
     free(opts);
-    assert(remove(path) == 0);
+    {
+        const int removed = remove(path);
+        assert(removed == 0);
+    }
 }
 
 /* The column parser supplies the width even for prefixed, spaced and all-zero keys. */

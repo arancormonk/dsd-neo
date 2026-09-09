@@ -37,17 +37,17 @@ main(void) {
     assert(parsed.values.present & DSD_SCAN_OPT_BP);
     assert(parsed.bp == 0 && parsed.values.force == 0 && parsed.values.strict_crc == 1
            && parsed.values.voice_only == 0);
-    /* `-b`/`-H` decide DMR encrypted-audio muting as the CLI switches do: explicit zero mutes,
-     * material unmutes. `-1`/`-R` load keys without claiming that decision. */
-    assert((parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && parsed.values.mute_dmr == 1);
+    /* Every accepted direct switch arms decryption, including explicit zero. */
+    assert(parsed.values.present & DSD_SCAN_OPT_MUTE_P25);
+    assert((parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && parsed.values.mute_dmr == 0);
     assert(dsd_scan_options_parse("-b 7", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
     assert((parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && parsed.values.mute_dmr == 0);
     assert(dsd_scan_options_parse("-H 0000000000", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
-    assert((parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && parsed.values.mute_dmr == 1);
+    assert((parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && parsed.values.mute_dmr == 0);
     assert(dsd_scan_options_parse("-1 0123456789", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
-    assert(!(parsed.values.present & DSD_SCAN_OPT_MUTE_DMR));
+    assert((parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && parsed.values.mute_dmr == 0);
     assert(dsd_scan_options_parse("-R 5", DSD_SCAN_MODE_NXDN48, 1, &parsed, error, sizeof(error)) == 0);
-    assert(!(parsed.values.present & DSD_SCAN_OPT_MUTE_DMR));
+    assert((parsed.values.present & DSD_SCAN_OPT_MUTE_DMR) && parsed.values.mute_dmr == 0);
     /* Key-file paths share the legacy column limit; the group path is bounded by the option
      * it overrides, and an oversized argument never leaves a partial result behind. */
     {

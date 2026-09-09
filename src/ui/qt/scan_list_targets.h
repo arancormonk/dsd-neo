@@ -2,8 +2,12 @@
 #ifndef DSD_NEO_UI_QT_SCAN_LIST_TARGETS_H
 #define DSD_NEO_UI_QT_SCAN_LIST_TARGETS_H
 #include <QByteArray>
+#include <QList>
+#include <QString>
 #include <QStringList>
+#include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
 
 namespace dsd_qt {
 // No I/O or host dependency. QString copies cannot promise erasure; never display
