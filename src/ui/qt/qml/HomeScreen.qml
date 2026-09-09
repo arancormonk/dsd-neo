@@ -266,11 +266,12 @@ Item {
 
                     Text {
                         width: parent.width
+                        objectName: "homeExploreSubtitle"
                         text: exploreCard.configured
                               ? qsTr("%1 · from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz)
                               : qsTr("Tune around and find what is on the air")
                         font.family: exploreCard.configured ? Theme.mono : Theme.sans
-                        font.pixelSize: exploreCard.configured ? 12 : 13
+                        font.pixelSize: Theme.fontSize(exploreCard.configured ? 12 : 13)
                         color: Theme.textSubdued
                         elide: Text.ElideRight
                     }

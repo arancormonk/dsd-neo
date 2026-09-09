@@ -32,6 +32,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     SessionState sessionState() const override;
     QString failureText() const override;
 
+    /** @brief Native Running can precede initialization; wait for its explicit success signal. */
+    bool
+    signalsSessionInitialized() const override {
+        return true;
+    }
+
     /** @brief True: an app has to obtain the USB descriptor from Java. */
     bool
     localDeviceBrokered() const override {

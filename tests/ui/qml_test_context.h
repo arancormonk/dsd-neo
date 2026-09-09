@@ -101,7 +101,7 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     start(const QStringList& argv) override {
         Q_UNUSED(argv)
         if (acceptStart) {
-            phase = Starting;
+            phase = startRunning ? Running : Starting;
             m_running = true;
             Q_EMIT runningChanged();
             Q_EMIT sessionStateChanged();
@@ -131,9 +131,20 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     }
 
     bool acceptStart = false;
+    bool startRunning = false;
 
   private:
     bool m_running = false;
+};
+
+// Matches Android's contract: Running can be observed before initialization.
+// The ordinary import host inherits DecoderHost's fallback capability unchanged.
+class InitializingHost : public ImportOnlyHost {
+  public:
+    bool
+    signalsSessionInitialized() const override {
+        return true;
+    }
 };
 
 // The history model itself is already real in these fixtures; the controller
@@ -892,13 +903,16 @@ class Setup : public QObject {
     /** Use real QObject signals and QSettings for initialization bookkeeping tests;
      * plain context maps deliberately cannot validate writes or lifecycle edges. */
     Q_INVOKABLE void
-    useLifecycleHost(bool on) {
-        m_import_host->acceptStart = on;
+    useLifecycleHost(bool on, bool signals_initialized = false, bool start_running = false) {
+        m_lifecycle_host->stop();
+        m_lifecycle_host->acceptStart = false;
         if (on) {
-            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_import_host);
+            m_lifecycle_host = signals_initialized ? m_initializing_host : m_import_host;
+            m_lifecycle_host->acceptStart = true;
+            m_lifecycle_host->startRunning = start_running;
+            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_lifecycle_host);
             m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_app_prefs);
         } else {
-            m_import_host->stop();
             m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host);
             m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_prefs);
         }
@@ -906,12 +920,12 @@ class Setup : public QObject {
 
     Q_INVOKABLE void
     setLifecyclePhase(int value) {
-        m_import_host->setPhase(static_cast<dsd_qt::DecoderHost::SessionState>(value));
+        m_lifecycle_host->setPhase(static_cast<dsd_qt::DecoderHost::SessionState>(value));
     }
 
     Q_INVOKABLE void
     emitSessionInitialized() {
-        Q_EMIT m_import_host->sessionInitialized();
+        Q_EMIT m_lifecycle_host->sessionInitialized();
     }
 
     /** @brief Publish a live/idle host so cases can exercise session-only actions. */
@@ -1241,6 +1255,7 @@ class Setup : public QObject {
         /* The spectrum view gates production on a live session, so the fixture
          * has to claim one or its frames would never start. */
         host[QStringLiteral("sessionActive")] = true;
+        host[QStringLiteral("signalsSessionInitialized")] = false;
         /* Why the last session stopped, empty while nothing has failed. */
         host[QStringLiteral("failureText")] = QString();
         /* The Android-only capabilities the settings screen hides rows on: a
@@ -1310,6 +1325,9 @@ class Setup : public QObject {
          * setup all raised ReferenceError and rendered nothing. */
         m_import_host = new ImportOnlyHost();
         m_import_host->setParent(engine);
+        m_initializing_host = new InitializingHost();
+        m_initializing_host->setParent(engine);
+        m_lifecycle_host = m_import_host;
         auto* imported_files = new dsd_qt::ImportedFilesModel(m_import_host, engine);
         auto* saved_systems = new dsd_qt::SavedSystemsModel(engine);
         auto* app_prefs = new dsd_qt::AppPrefs(engine);
@@ -1334,6 +1352,8 @@ class Setup : public QObject {
     dsd_qt::SpectrumModel* m_spectrum = nullptr;
     CommandRecorder* m_commands = nullptr;
     ImportOnlyHost* m_import_host = nullptr;
+    ImportOnlyHost* m_initializing_host = nullptr;
+    ImportOnlyHost* m_lifecycle_host = nullptr;
     std::unique_ptr<dsd_opts> m_talkgroup_opts = std::make_unique<dsd_opts>();
     std::unique_ptr<dsd_state> m_talkgroup_state = std::make_unique<dsd_state>();
     dsd_qt::TalkgroupListModel* m_talkgroups = nullptr;
