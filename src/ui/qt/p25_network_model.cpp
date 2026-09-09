@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "p25_network_model.h"
+#include <QMap>
+#include <QString>
 #include <QVariantMap>
+#include <QtGlobal>
 #include <dsd-neo/app_control/p25_network.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <utility>
+#include "p25_network_model.h"
 
 namespace dsd_qt {
 void
-P25NetworkModel::setActive(bool active) {
-    if (m_active == active) {
+P25NetworkModel::setActive(bool enabled) {
+    if (m_active == enabled) {
         return;
     }
-    m_active = active;
+    m_active = enabled;
     Q_EMIT activeChanged();
 }
 
@@ -39,23 +44,23 @@ P25NetworkModel::refresh(const dsd_state* snapshot) {
         return;
     }
     constexpr int cap = 100;
-    QVariantList neighbours, patches, affiliations, radios;
+    QVariantList neighbourRows, patchRows, affiliationRows, radioRows;
     dsd_app_p25_neighbor nb[cap];
     int count = dsd_app_p25_neighbors(snapshot, nb, cap);
     for (int i = 0; i < count; ++i) {
         const auto& r = nb[i];
-        neighbours.append(QVariantMap{{"freqHz", QVariant::fromValue<qlonglong>(r.freq_hz)},
-                                      {"wacn", r.wacn},
-                                      {"sysid", r.sysid},
-                                      {"rfss", r.rfss},
-                                      {"site", r.site},
-                                      {"lra", r.lra},
-                                      {"wacnValid", bool(r.wacn_valid)},
-                                      {"lraValid", bool(r.lra_valid)},
-                                      {"isCurrentCc", bool(r.is_current_cc)},
-                                      {"isCandidate", bool(r.is_candidate)},
-                                      {"cfvaText", QString::fromLatin1(r.cfva_text)},
-                                      {"lastSeen", QVariant::fromValue<qlonglong>(r.last_seen)}});
+        neighbourRows.append(QVariantMap{{"freqHz", QVariant::fromValue<qlonglong>(r.freq_hz)},
+                                         {"wacn", r.wacn},
+                                         {"sysid", r.sysid},
+                                         {"rfss", r.rfss},
+                                         {"site", r.site},
+                                         {"lra", r.lra},
+                                         {"wacnValid", bool(r.wacn_valid)},
+                                         {"lraValid", bool(r.lra_valid)},
+                                         {"isCurrentCc", bool(r.is_current_cc)},
+                                         {"isCandidate", bool(r.is_candidate)},
+                                         {"cfvaText", QString::fromLatin1(r.cfva_text)},
+                                         {"lastSeen", QVariant::fromValue<qlonglong>(r.last_seen)}});
     }
     dsd_app_p25_patch patch[8];
     count = dsd_app_p25_patches(snapshot, patch, 8);
@@ -68,36 +73,37 @@ P25NetworkModel::refresh(const dsd_state* snapshot) {
         for (int j = 0; j < r.radio_count; ++j) {
             units.append(r.radios[j]);
         }
-        patches.append(QVariantMap{{"sgid", r.sgid},
-                                   {"isPatch", bool(r.is_patch)},
-                                   {"groups", groups},
-                                   {"radios", units},
-                                   {"lastSeen", QVariant::fromValue<qlonglong>(r.last_seen)}});
+        patchRows.append(QVariantMap{{"sgid", r.sgid},
+                                     {"isPatch", bool(r.is_patch)},
+                                     {"groups", groups},
+                                     {"radios", units},
+                                     {"lastSeen", QVariant::fromValue<qlonglong>(r.last_seen)}});
     }
     dsd_app_p25_affiliation aff[cap];
     count = dsd_app_p25_group_affiliations(snapshot, aff, cap);
     for (int i = 0; i < count; ++i) {
-        affiliations.append(QVariantMap{
+        affiliationRows.append(QVariantMap{
             {"rid", aff[i].rid}, {"tg", aff[i].tg}, {"lastSeen", QVariant::fromValue<qlonglong>(aff[i].last_seen)}});
     }
     count = dsd_app_p25_affiliated_rids(snapshot, aff, cap);
     for (int i = 0; i < count; ++i) {
-        radios.append(QVariantMap{{"rid", aff[i].rid}, {"lastSeen", QVariant::fromValue<qlonglong>(aff[i].last_seen)}});
+        radioRows.append(
+            QVariantMap{{"rid", aff[i].rid}, {"lastSeen", QVariant::fromValue<qlonglong>(aff[i].last_seen)}});
     }
-    if (m_neighbours != neighbours) {
-        m_neighbours = neighbours;
+    if (m_neighbours != neighbourRows) {
+        m_neighbours = neighbourRows;
         Q_EMIT neighboursChanged();
     }
-    if (m_patches != patches) {
-        m_patches = patches;
+    if (m_patches != patchRows) {
+        m_patches = patchRows;
         Q_EMIT patchesChanged();
     }
-    if (m_affiliations != affiliations) {
-        m_affiliations = affiliations;
+    if (m_affiliations != affiliationRows) {
+        m_affiliations = affiliationRows;
         Q_EMIT affiliationsChanged();
     }
-    if (m_radios != radios) {
-        m_radios = radios;
+    if (m_radios != radioRows) {
+        m_radios = radioRows;
         Q_EMIT radiosChanged();
     }
 }

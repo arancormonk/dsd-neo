@@ -3,6 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QMap>
+#include <QVariantMap>
 #include "qt_ui.h"
 
 #include <QFontDatabase>
@@ -75,6 +77,20 @@ load_fonts(QQmlContext* context) {
                                 mono_family.isEmpty() ? QStringLiteral("monospace") : mono_family);
 }
 
+void
+wire_attachment(DecoderHost* host, UiController* controller, const AppPrefs* prefs, const SavedSystemsModel* systems,
+                const ScanListsModel* scanLists) {
+    // WP-S2: resolve stable identities at the attachment edge; no recency writes here.
+    QObject::connect(host, &DecoderHost::localDeviceAttached, controller, [=](const QString&) {
+        const QString kind = prefs->lastStartedKind();
+        const QString uid = prefs->lastStartedUid();
+        const QVariantMap target = kind == QStringLiteral("saved")  ? systems->getByUid(uid)
+                                   : kind == QStringLiteral("scan") ? scanLists->getByUid(uid)
+                                                                    : QVariantMap();
+        controller->requestAutoStart(prefs->autoStartOnAttach(), prefs->onboardingDone(), kind, uid, target);
+    });
+}
+
 } // namespace
 
 void
@@ -117,15 +133,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* radioReference = new RadioReferenceModel(prefs, importedFiles, host, &engine);
     auto* controller = new UiController(host, metrics, history, talkgroups, &engine);
     controller->setP25Network(network); // WP-F2
-    // WP-S2: resolve stable identities at the attachment edge; no recency writes here.
-    QObject::connect(host, &DecoderHost::localDeviceAttached, controller, [=](const QString&) {
-        const QString kind = prefs->lastStartedKind();
-        const QString uid = prefs->lastStartedUid();
-        const QVariantMap target = kind == QStringLiteral("saved")  ? systems->getByUid(uid)
-                                   : kind == QStringLiteral("scan") ? scanLists->getByUid(uid)
-                                                                    : QVariantMap();
-        controller->requestAutoStart(prefs->autoStartOnAttach(), prefs->onboardingDone(), kind, uid, target);
-    });
+    wire_attachment(host, controller, prefs, systems, scanLists);
 
     // The library drops rows whose stored copy vanished behind the app's back;
     // saved systems that still point at one would build a `-G <missing>` argv and

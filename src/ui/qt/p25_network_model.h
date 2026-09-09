@@ -25,7 +25,7 @@ class P25NetworkModel : public QObject {
         return m_active;
     }
 
-    void setActive(bool active);
+    void setActive(bool enabled);
     void refresh(const dsd_state* snapshot);
     void clear();
 
