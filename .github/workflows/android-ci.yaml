@@ -311,6 +311,9 @@ jobs:
             dsd-neo_test_ui_qt_persistence \
             dsd-neo_test_ui_qt_call_history_model \
             dsd-neo_test_ui_qt_session_args \
+            dsd-neo_test_ui_qt_scan_list_targets \
+            dsd-neo_test_ui_qt_scan_list_roundtrip \
+            dsd-neo_test_engine_trunk_scan_scan_list \
             dsd-neo_test_ui_qt_imported_files_model \
             dsd-neo_test_ui_qt_call_history_merge \
             dsd-neo_test_ui_qt_call_line \
@@ -329,7 +332,7 @@ jobs:
       # here — a developer running ctest locally gets the same run.
       - name: Test
         shell: bash
-        run: ctest --preset dev-debug -R '^UI_QT_' --output-on-failure
+        run: ctest --preset dev-debug -R '^(UI_QT_|ENGINE_TRUNK_SCAN_SCAN_LIST$)' --output-on-failure
 
       # The baked RadioReference key is a compile-time constant, so the shipped
       # configuration — a build that carries its own key and must ignore any

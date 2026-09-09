@@ -2771,6 +2771,35 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_session_args PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_SESSION_ARGS COMMAND dsd-neo_test_ui_qt_session_args)
 
+    # WP-S1: pure scan-list preservation and token screening.
+    add_executable(
+        dsd-neo_test_ui_qt_scan_list_targets
+        ui/test_ui_qt_scan_list_targets.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_scan_list_targets
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_scan_list_targets
+        PRIVATE Qt6::Core
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_scan_list_targets
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_scan_list_targets
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_SCAN_LIST_TARGETS
+        COMMAND dsd-neo_test_ui_qt_scan_list_targets
+    )
+
     # The imported-files layer behind the CSV pickers: DecoderHost's desktop
     # importDocument() copy/unique-ify/replace semantics and the library model
     # the wizard and the imports screen share.
@@ -2956,6 +2985,10 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+            # WP-S1: production persistence/generator and starter.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
             # The decode-chip flag mapping (src/ui/qt/decode_mode_flag.h) is the
             # production one, so the preset a chip sends is really under test. It
@@ -2971,7 +3004,8 @@ if(DSD_ENABLE_QT_UI)
         )
         # dsd-neo_core carries the dry-run CSV validation ImportedFilesModel runs
         # on an import; dsd-neo_proto_dmr comes with it (same pairing as
-        # UI_QT_IMPORTED_FILES). Still nothing from the engine or app-control.
+        # UI_QT_IMPORTED_FILES). WP-S1 adds the real CSV-validation facade
+        # linkage below, after _DSD_RUNTIME_CONFIG_APPLY_LIBS is defined.
         target_link_libraries(
             dsd-neo_test_ui_qt_qml
             PRIVATE
@@ -10210,5 +10244,87 @@ if(Python3_Interpreter_FOUND)
         COMMAND
             ${Python3_EXECUTABLE}
             ${PROJECT_SOURCE_DIR}/tests/ui/test_diagnostics_share_paths.py
+    )
+endif()
+
+# WP-S1 roundtrip uses the real facade/parser, including secret cleanup.
+if(DSD_ENABLE_QT_UI)
+    add_executable(
+        dsd-neo_test_ui_qt_scan_list_roundtrip
+        ui/test_ui_qt_scan_list_roundtrip.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_scan_list_roundtrip
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_scan_list_roundtrip
+        PRIVATE
+            Qt6::Core
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_scan_list_roundtrip
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_scan_list_roundtrip
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_SCAN_LIST_ROUNDTRIP
+        COMMAND dsd-neo_test_ui_qt_scan_list_roundtrip
+    )
+endif()
+
+if(TARGET dsd-neo_test_ui_qt_qml)
+    # WP-S1: starts exercise the real preflight facade, without opening a tuner.
+    target_link_libraries(
+        dsd-neo_test_ui_qt_qml
+        PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS}
+    )
+endif()
+
+if(DSD_ENABLE_QT_UI)
+    # WP-S1: generated three-target CSV with real group/key ownership on rotation.
+    add_executable(
+        dsd-neo_test_engine_trunk_scan_scan_list
+        engine/test_engine_trunk_scan_scan_list.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_engine_trunk_scan_scan_list
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_trunk_scan_scan_list
+        PRIVATE
+            Qt6::Core
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_engine_trunk_scan_scan_list
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_engine_trunk_scan_scan_list
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME ENGINE_TRUNK_SCAN_SCAN_LIST
+        COMMAND dsd-neo_test_engine_trunk_scan_scan_list
     )
 endif()

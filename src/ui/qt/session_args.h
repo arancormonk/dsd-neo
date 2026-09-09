@@ -40,6 +40,9 @@ struct SessionArgPrefs {
 /** @brief Why session_args_build() refused; None means the argv is usable. */
 /** Shared token gate for saved-system and future scan-list argv generators. */
 bool session_args_extra_safe(const QString& tokens);
+bool session_args_scan_extra_safe(const QString& tokens);
+QStringList session_args_scan_build(const QVariantMap& list, const QString& firstFreqMhz, const QString& csvPath,
+                                    const SessionArgPrefs& prefs, QString* error);
 
 enum class SessionArgsError {
     None,
