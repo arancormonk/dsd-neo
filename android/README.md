@@ -624,3 +624,17 @@ The app's argv token gate rejects `--show-keys` (including assignment syntax).
 `session_args_extra_safe()` is the shared gate for future scan-list generation.
 Malformed CLI key diagnostics report the expected shape, never the value.
 QString/QML copies cannot promise erasure; only filtered content enters diagnostics.
+
+### Monitor site identity
+
+Tap the site row between the Monitor's call panel and action buttons to open the
+site details. P25 NAC, WACN, SYS and LRA appear independently when known; a
+conventional Phase 1 NAC alone is useful identity even without the complete
+Phase 2 parameter set. RFSS and SITE appear when nonzero. The sheet also shows
+DMR color code/site text/rest LSN, NXDN RAN and location codes (Area for IDAS),
+EDACS site information, and known control/voice frequencies.
+
+The row dims and the sheet labels identity as retained when current sync is lost.
+Starting, stopping to Idle, failure, and scan-target transitions clear the live
+identity through the existing controller lifecycle. Unknown fields are omitted;
+the row is hidden when no identity fields are available.

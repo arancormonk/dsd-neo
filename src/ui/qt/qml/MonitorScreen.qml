@@ -421,6 +421,31 @@ Item {
             width: bodyScroll.width
             spacing: Theme.gap
 
+            // WP-F1: site identity sits between the hero and action row.
+            UiPanel {
+                id: siteRow
+                objectName: "siteRow"
+                width: parent.width
+                height: Math.max(44, siteLabel.implicitHeight + 20)
+                visible: metrics.siteLine.length > 0
+                opacity: metrics.siteConfirmed ? 1 : 0.55
+                Accessible.role: Accessible.Button
+                Accessible.name: metrics.siteLine
+                Accessible.onPressAction: siteSheet.visible = true
+                Text {
+                    id: siteLabel
+                    anchors.centerIn: parent
+                    width: parent.width - 24
+                    text: metrics.siteLine + "  ›"
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.family: Theme.mono
+                    font.pixelSize: 12 * Theme.fontScale
+                    color: Theme.textPrimary
+                }
+                TapHandler { onTapped: siteSheet.visible = true }
+            }
+
             // Actions on the live engine.
             Row {
                 width: parent.width
@@ -865,4 +890,10 @@ Item {
         enabled: !decoderHost.transitioning
         onClicked: decoderHost.stop()
     }
+    // WP-F1: owned by Monitor, above its scrolling body and stop control.
+    SiteSheet {
+        id: siteSheet
+        z: 10
+    }
+
 }

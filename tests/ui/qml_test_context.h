@@ -1152,6 +1152,32 @@ class Setup : public QObject {
         /* Every key the monitor reads, at rest with no call up. Add to this when a
          * screen grows a reading — missingContextKeys() is what says so. */
         QVariantMap metrics;
+        // WP-F1: site identity fixture keys.
+        metrics[QStringLiteral("siteProtocol")] = QString();
+        metrics[QStringLiteral("p25NacValid")] = false;
+        metrics[QStringLiteral("p25Nac")] = 0;
+        metrics[QStringLiteral("p25WacnValid")] = false;
+        metrics[QStringLiteral("p25Wacn")] = 0;
+        metrics[QStringLiteral("p25SysIdValid")] = false;
+        metrics[QStringLiteral("p25SysId")] = 0;
+        metrics[QStringLiteral("p25Rfss")] = 0;
+        metrics[QStringLiteral("p25Site")] = 0;
+        metrics[QStringLiteral("p25LraValid")] = false;
+        metrics[QStringLiteral("p25Lra")] = 0;
+        metrics[QStringLiteral("p25Phase2ParamsReady")] = false;
+        metrics[QStringLiteral("dmrColorCode")] = -1;
+        metrics[QStringLiteral("dmrSiteText")] = QString();
+        metrics[QStringLiteral("dmrRestLsn")] = 0;
+        metrics[QStringLiteral("nxdnRan")] = -1;
+        metrics[QStringLiteral("nxdnLocationCategory")] = QString();
+        metrics[QStringLiteral("nxdnSysCode")] = 0;
+        metrics[QStringLiteral("nxdnSiteCode")] = 0;
+        metrics[QStringLiteral("edacsSiteText")] = QString();
+        metrics[QStringLiteral("ccFreqHz")] = 0;
+        metrics[QStringLiteral("vcFreqHz")] = 0;
+        metrics[QStringLiteral("siteLine")] = QString();
+        metrics[QStringLiteral("siteConfirmed")] = false;
+
         metrics[QStringLiteral("uiMessage")] = QString();
         metrics[QStringLiteral("audioMuted")] = false;
         metrics[QStringLiteral("heldTg")] = 0;

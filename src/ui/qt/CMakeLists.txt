@@ -73,6 +73,7 @@ qt_add_resources(
         qml/PlexTextField.qml
         qml/RadioReferenceScreen.qml
         qml/RadioSheet.qml
+        qml/SiteSheet.qml
         qml/SegmentedControl.qml
         qml/SettingsScreen.qml
         qml/SpectrumScreen.qml

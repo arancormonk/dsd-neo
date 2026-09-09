@@ -30,6 +30,32 @@ namespace dsd_qt {
 
 class MetricsModel : public QObject {
     Q_OBJECT
+    // WP-F1: copied site identity, with one notification group.
+    Q_PROPERTY(QString siteProtocol READ siteProtocol NOTIFY siteChanged)
+    Q_PROPERTY(bool p25NacValid READ p25NacValid NOTIFY siteChanged)
+    Q_PROPERTY(int p25Nac READ p25Nac NOTIFY siteChanged)
+    Q_PROPERTY(bool p25WacnValid READ p25WacnValid NOTIFY siteChanged)
+    Q_PROPERTY(int p25Wacn READ p25Wacn NOTIFY siteChanged)
+    Q_PROPERTY(bool p25SysIdValid READ p25SysIdValid NOTIFY siteChanged)
+    Q_PROPERTY(int p25SysId READ p25SysId NOTIFY siteChanged)
+    Q_PROPERTY(int p25Rfss READ p25Rfss NOTIFY siteChanged)
+    Q_PROPERTY(int p25Site READ p25Site NOTIFY siteChanged)
+    Q_PROPERTY(bool p25LraValid READ p25LraValid NOTIFY siteChanged)
+    Q_PROPERTY(int p25Lra READ p25Lra NOTIFY siteChanged)
+    Q_PROPERTY(bool p25Phase2ParamsReady READ p25Phase2ParamsReady NOTIFY siteChanged)
+    Q_PROPERTY(int dmrColorCode READ dmrColorCode NOTIFY siteChanged)
+    Q_PROPERTY(QString dmrSiteText READ dmrSiteText NOTIFY siteChanged)
+    Q_PROPERTY(int dmrRestLsn READ dmrRestLsn NOTIFY siteChanged)
+    Q_PROPERTY(int nxdnRan READ nxdnRan NOTIFY siteChanged)
+    Q_PROPERTY(QString nxdnLocationCategory READ nxdnLocationCategory NOTIFY siteChanged)
+    Q_PROPERTY(int nxdnSysCode READ nxdnSysCode NOTIFY siteChanged)
+    Q_PROPERTY(int nxdnSiteCode READ nxdnSiteCode NOTIFY siteChanged)
+    Q_PROPERTY(QString edacsSiteText READ edacsSiteText NOTIFY siteChanged)
+    Q_PROPERTY(double ccFreqHz READ ccFreqHz NOTIFY siteChanged)
+    Q_PROPERTY(double vcFreqHz READ vcFreqHz NOTIFY siteChanged)
+    Q_PROPERTY(QString siteLine READ siteLine NOTIFY siteChanged)
+    Q_PROPERTY(bool siteConfirmed READ siteConfirmed NOTIFY siteChanged)
+
     /* WP-F3: one notification group for copied decode-quality readings. */
     Q_PROPERTY(bool qualityValid READ qualityValid NOTIFY qualityChanged)
     Q_PROPERTY(bool voiceErrsValid READ voiceErrsValid NOTIFY qualityChanged)
@@ -111,6 +137,126 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
 
   public:
+    QString
+    siteProtocol() const {
+        return m_view.site.siteProtocol;
+    }
+
+    bool
+    p25NacValid() const {
+        return m_view.site.p25NacValid;
+    }
+
+    int
+    p25Nac() const {
+        return m_view.site.p25Nac;
+    }
+
+    bool
+    p25WacnValid() const {
+        return m_view.site.p25WacnValid;
+    }
+
+    int
+    p25Wacn() const {
+        return m_view.site.p25Wacn;
+    }
+
+    bool
+    p25SysIdValid() const {
+        return m_view.site.p25SysIdValid;
+    }
+
+    int
+    p25SysId() const {
+        return m_view.site.p25SysId;
+    }
+
+    int
+    p25Rfss() const {
+        return m_view.site.p25Rfss;
+    }
+
+    int
+    p25Site() const {
+        return m_view.site.p25Site;
+    }
+
+    bool
+    p25LraValid() const {
+        return m_view.site.p25LraValid;
+    }
+
+    int
+    p25Lra() const {
+        return m_view.site.p25Lra;
+    }
+
+    bool
+    p25Phase2ParamsReady() const {
+        return m_view.site.p25Phase2ParamsReady;
+    }
+
+    int
+    dmrColorCode() const {
+        return m_view.site.dmrColorCode;
+    }
+
+    QString
+    dmrSiteText() const {
+        return m_view.site.dmrSiteText;
+    }
+
+    int
+    dmrRestLsn() const {
+        return m_view.site.dmrRestLsn;
+    }
+
+    int
+    nxdnRan() const {
+        return m_view.site.nxdnRan;
+    }
+
+    QString
+    nxdnLocationCategory() const {
+        return m_view.site.nxdnLocationCategory;
+    }
+
+    int
+    nxdnSysCode() const {
+        return m_view.site.nxdnSysCode;
+    }
+
+    int
+    nxdnSiteCode() const {
+        return m_view.site.nxdnSiteCode;
+    }
+
+    QString
+    edacsSiteText() const {
+        return m_view.site.edacsSiteText;
+    }
+
+    double
+    ccFreqHz() const {
+        return m_view.site.ccFreqHz;
+    }
+
+    double
+    vcFreqHz() const {
+        return m_view.site.vcFreqHz;
+    }
+
+    QString
+    siteLine() const {
+        return m_view.site.siteLine;
+    }
+
+    bool
+    siteConfirmed() const {
+        return m_view.site.siteConfirmed;
+    }
+
     explicit MetricsModel(QObject* parent = nullptr);
     ~MetricsModel() override;
 
@@ -660,6 +806,7 @@ class MetricsModel : public QObject {
     void clear();
 
   Q_SIGNALS:
+    void siteChanged();
     void qualityChanged();
     void tunerChanged();
     void slot1Changed();
@@ -701,7 +848,36 @@ class MetricsModel : public QObject {
         }
     };
 
+    struct SiteView {
+        QString siteProtocol = {};
+        bool p25NacValid = false;
+        int p25Nac = 0;
+        bool p25WacnValid = false;
+        int p25Wacn = 0;
+        bool p25SysIdValid = false;
+        int p25SysId = 0;
+        int p25Rfss = 0;
+        int p25Site = 0;
+        bool p25LraValid = false;
+        int p25Lra = 0;
+        bool p25Phase2ParamsReady = false;
+        int dmrColorCode = -1;
+        QString dmrSiteText = {};
+        int dmrRestLsn = 0;
+        int nxdnRan = -1;
+        QString nxdnLocationCategory = {};
+        int nxdnSysCode = 0;
+        int nxdnSiteCode = 0;
+        QString edacsSiteText = {};
+        double ccFreqHz = 0;
+        double vcFreqHz = 0;
+        QString siteLine = {};
+        bool siteConfirmed = false;
+        bool operator==(const SiteView& other) const;
+    };
+
     struct View {
+        SiteView site;
         dsd_app_p25_quality quality{};
         dsd_app_voice_errs voice_errs{};
         dsd_app_frame_errs last_frame{};
@@ -780,6 +956,7 @@ class MetricsModel : public QObject {
 
     /** @brief Replace the published frame, signalling only the groups that moved. */
     void publish(const View& next);
+    void fillSiteView(View& next, const dsd_state* snapshot) const;
     static void fillQualityView(View& next, const dsd_state* snapshot);
 
     /** @brief Build one slot's structured call identity from the snapshot. */

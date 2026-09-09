@@ -7,8 +7,10 @@
 #include "dsd-neo/app_control/p25_metrics.h"
 #include "dsd-neo/core/call_state.h"
 
+#include <QStringList>
 #include <algorithm>
 #include <iterator>
+#include <tuple>
 
 #include <QChar>
 #include <QDateTime>
@@ -57,6 +59,12 @@ slot_enc_text(quint8 algid, quint16 kid) {
         .arg(algid, 2, 16, QLatin1Char('0'))
         .arg(kid, 4, 16, QLatin1Char('0'))
         .toUpper();
+}
+
+template <size_t N>
+QString
+siteText(const char (&text)[N]) {
+    return QString::fromUtf8(text, static_cast<int>(std::find(text, text + N, '\0') - text));
 }
 
 bool
@@ -119,6 +127,126 @@ MetricsModel::View::qualityEquals(const View& other) const {
            && voiceEquals(voice_errs, other.voice_errs) && frameEquals(last_frame, other.last_frame);
 }
 
+bool
+MetricsModel::SiteView::operator==(const SiteView& other) const {
+    return std::tie(siteProtocol, p25NacValid, p25Nac, p25WacnValid, p25Wacn, p25SysIdValid, p25SysId, p25Rfss, p25Site,
+                    p25LraValid, p25Lra, p25Phase2ParamsReady, dmrColorCode, dmrSiteText, dmrRestLsn, nxdnRan,
+                    nxdnLocationCategory, nxdnSysCode, nxdnSiteCode, edacsSiteText, ccFreqHz, vcFreqHz, siteLine,
+                    siteConfirmed)
+           == std::tie(other.siteProtocol, other.p25NacValid, other.p25Nac, other.p25WacnValid, other.p25Wacn,
+                       other.p25SysIdValid, other.p25SysId, other.p25Rfss, other.p25Site, other.p25LraValid,
+                       other.p25Lra, other.p25Phase2ParamsReady, other.dmrColorCode, other.dmrSiteText,
+                       other.dmrRestLsn, other.nxdnRan, other.nxdnLocationCategory, other.nxdnSysCode,
+                       other.nxdnSiteCode, other.edacsSiteText, other.ccFreqHz, other.vcFreqHz, other.siteLine,
+                       other.siteConfirmed);
+}
+
+void
+MetricsModel::fillSiteView(View& next, const dsd_state* snapshot) const {
+    auto& site = next.site;
+    // No snapshot pointer survives the tick. Retain the last copied identity on
+    // loss, even if the no-carrier path has already reset the decoder's fields.
+    if (snapshot->synctype == DSD_SYNC_NONE) {
+        site = m_view.site;
+        site.siteConfirmed = false;
+        return;
+    }
+    QStringList parts;
+    auto hexField = [&parts](const QString& label, int value, int width) {
+        parts << label + QLatin1Char(' ') + QStringLiteral("%1").arg(value, width, 16, QLatin1Char('0')).toUpper();
+    };
+    auto decimalField = [&parts](const QString& label, int value) {
+        parts << label + QLatin1Char(' ') + QString::number(value);
+    };
+    if (DSD_SYNC_IS_P25(snapshot->synctype)) {
+        site.siteProtocol = QStringLiteral("P25");
+        site.p25NacValid = snapshot->p2_cc > 0 && snapshot->p2_cc < 0xFFF;
+        site.p25WacnValid = snapshot->p2_wacn > 0 && snapshot->p2_wacn < 0xFFFFF;
+        site.p25SysIdValid = snapshot->p2_sysid > 0 && snapshot->p2_sysid < 0xFFF;
+        site.p25Nac = site.p25NacValid ? static_cast<int>(snapshot->p2_cc) : 0;
+        site.p25Wacn = site.p25WacnValid ? static_cast<int>(snapshot->p2_wacn) : 0;
+        site.p25SysId = site.p25SysIdValid ? static_cast<int>(snapshot->p2_sysid) : 0;
+        site.p25Rfss = snapshot->p2_rfssid <= 255 ? static_cast<int>(snapshot->p2_rfssid) : 0;
+        site.p25Site = snapshot->p2_siteid <= 255 ? static_cast<int>(snapshot->p2_siteid) : 0;
+        site.p25LraValid = snapshot->p25_site_lra_valid != 0;
+        site.p25Lra = site.p25LraValid ? snapshot->p25_site_lra : 0;
+        // The terminal's zero/all-ones parameter gate is independent of P1 identity.
+        site.p25Phase2ParamsReady = site.p25NacValid && site.p25WacnValid && site.p25SysIdValid;
+        if (site.p25WacnValid) {
+            hexField(QStringLiteral("WACN"), site.p25Wacn, 5);
+        }
+        if (site.p25SysIdValid) {
+            hexField(QStringLiteral("SYS"), site.p25SysId, 3);
+        }
+        if (site.p25NacValid) {
+            hexField(QStringLiteral("NAC"), site.p25Nac, 3);
+        }
+        if (site.p25Rfss) {
+            decimalField(QStringLiteral("RFSS"), site.p25Rfss);
+        }
+        if (site.p25Site) {
+            decimalField(QStringLiteral("SITE"), site.p25Site);
+        }
+        if (site.p25LraValid) {
+            hexField(QStringLiteral("LRA"), site.p25Lra, 2);
+        }
+    } else if (DSD_SYNC_IS_DMR(snapshot->synctype)) {
+        site.siteProtocol = QStringLiteral("DMR");
+        site.dmrColorCode = snapshot->dmr_color_code <= 15 ? static_cast<int>(snapshot->dmr_color_code) : -1;
+        site.dmrSiteText = siteText(snapshot->dmr_site_parms);
+        site.dmrRestLsn = qMax(0, snapshot->dmr_rest_channel);
+        if (site.dmrColorCode >= 0) {
+            decimalField(QStringLiteral("CC"), site.dmrColorCode);
+        }
+        if (!site.dmrSiteText.isEmpty()) {
+            parts << site.dmrSiteText;
+        }
+        if (site.dmrRestLsn > 0) {
+            decimalField(QStringLiteral("Rest LSN"), site.dmrRestLsn);
+        }
+    } else if (DSD_SYNC_IS_NXDN(snapshot->synctype)) {
+        site.nxdnRan = snapshot->nxdn_last_ran <= 63 ? static_cast<int>(snapshot->nxdn_last_ran) : -1;
+        site.nxdnLocationCategory = siteText(snapshot->nxdn_location_category);
+        const bool idas = site.nxdnLocationCategory == QStringLiteral("Type-D");
+        site.siteProtocol = idas ? QStringLiteral("IDAS") : QStringLiteral("NXDN");
+        site.nxdnSiteCode = snapshot->nxdn_location_site_code;
+        // As in the terminal, a decoded site code establishes location validity.
+        site.nxdnSysCode = site.nxdnSiteCode ? static_cast<int>(snapshot->nxdn_location_sys_code) : 0;
+        if (site.nxdnRan >= 0) {
+            decimalField(idas ? QStringLiteral("Area") : QStringLiteral("RAN"), site.nxdnRan);
+        }
+        if (site.nxdnSiteCode) {
+            if (!site.nxdnLocationCategory.isEmpty()) {
+                parts << site.nxdnLocationCategory;
+            }
+            decimalField(QStringLiteral("SYS"), site.nxdnSysCode);
+            decimalField(QStringLiteral("SITE"), site.nxdnSiteCode);
+        }
+    } else if (DSD_SYNC_IS_EDACS(snapshot->synctype)) {
+        site.siteProtocol = QStringLiteral("EDACS");
+        if (snapshot->edacs_site_id) {
+            site.edacsSiteText =
+                QStringLiteral("SITE %1 [%2] · %3 · %4")
+                    .arg(snapshot->edacs_site_id, 3, 10, QLatin1Char('0'))
+                    .arg(QStringLiteral("%1").arg(snapshot->edacs_site_id, 2, 16, QLatin1Char('0')).toUpper())
+                    .arg(snapshot->ea_mode == 1 ? QStringLiteral("Extended Addressing")
+                                                : QStringLiteral("Standard/Networked"))
+                    .arg(snapshot->esk_mask == 0xA0 ? QStringLiteral("ESK") : QStringLiteral("No ESK"));
+            parts << site.edacsSiteText;
+        }
+    }
+    if (!site.siteProtocol.isEmpty()) {
+        site.ccFreqHz = qMax(0L, snapshot->trunk_cc_freq != 0 ? snapshot->trunk_cc_freq : snapshot->p25_cc_freq);
+        site.vcFreqHz =
+            qMax(0L, snapshot->trunk_vc_freq[0] != 0 ? snapshot->trunk_vc_freq[0] : snapshot->p25_vc_freq[0]);
+    }
+    if (!parts.isEmpty()) {
+        parts.prepend(site.siteProtocol);
+        site.siteLine = parts.join(QStringLiteral(" · "));
+        site.siteConfirmed = true;
+    }
+}
+
 MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {
     m_messageTimer.setSingleShot(true);
     connect(&m_messageTimer, &QTimer::timeout, this, [this]() {
@@ -132,16 +260,20 @@ MetricsModel::~MetricsModel() = default;
 
 void
 MetricsModel::publish(const View& next) {
+    const bool siteMoved = !(next.site == m_view.site);
     const bool qualityMoved = !next.qualityEquals(m_view);
     const bool tunerMoved = !next.tunerEquals(m_view);
     const bool slot1Moved = !(next.slot_call[0] == m_view.slot_call[0]);
     const bool slot2Moved = !(next.slot_call[1] == m_view.slot_call[1]);
     const bool controlMoved = !next.controlEquals(m_view);
     const bool messageMoved = next.ui_message != m_view.ui_message;
-    if (!qualityMoved && !tunerMoved && !slot1Moved && !slot2Moved && !controlMoved && !messageMoved) {
+    if (!siteMoved && !qualityMoved && !tunerMoved && !slot1Moved && !slot2Moved && !controlMoved && !messageMoved) {
         return;
     }
     m_view = next;
+    if (siteMoved) {
+        Q_EMIT siteChanged();
+    }
     if (qualityMoved) {
         Q_EMIT qualityChanged();
     }
@@ -345,6 +477,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     next.slot_call[1] = slotCallView(snapshot, 1, now_m);
 
     fillQualityView(next, snapshot);
+    fillSiteView(next, snapshot);
 
     /* Engine truth for the monitor's toggle buttons. The engine owns both states
      * — commands only enqueue a request — and on Android the service outlives the
