@@ -95,7 +95,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool failStart(const QString& reason);
 
     void setStatus(const QString& text);
-    void refreshLocalDevice(bool first_poll);
+    void refreshLocalDevice();
     void setLocalDeviceState(bool ready, const QString& text);
     /** @brief Publish a phase; @p reason overrides the failure text when non-empty. */
     void setSessionPhase(SessionPhase phase, const QString& reason = QString());
@@ -103,7 +103,6 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool m_primed = false;
     uint64_t m_adopted_idle_session = 0;
     uint64_t m_initialized_session = 0;
-    uint64_t m_attachment_serial = 0;
     int m_device_error = 0;
     bool m_running = false;
     QString m_status = QStringLiteral("Idle");

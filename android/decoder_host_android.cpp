@@ -377,23 +377,20 @@ DecoderHostAndroid::refresh() {
                     first_poll || adopted_idle ? QString() : status.value(QStringLiteral("lastError")).toString());
     setStatus(phase_text(phase));
 
-    refreshLocalDevice(first_poll);
+    // Attachment delivery can synchronously call start() through QML.
     m_primed = true;
+    refreshLocalDevice();
 }
 
 void
-DecoderHostAndroid::refreshLocalDevice(bool first_poll) {
+DecoderHostAndroid::refreshLocalDevice() {
     const bool usb_ready = QJniObject::callStaticMethod<jboolean>(kUsbClass, "isReady", "()Z") != JNI_FALSE;
     QJniObject usb_status = QJniObject::callStaticObjectMethod(kUsbClass, "statusText", "()Ljava/lang/String;");
     setLocalDeviceState(usb_ready, usb_status.isValid() ? usb_status.toString() : QString());
-    const QJniObject attach = QJniObject::callStaticObjectMethod(kUsbClass, "attachmentStatus", "()Ljava/lang/String;");
-    const QJsonObject attachment = QJsonDocument::fromJson(attach.toString().toUtf8()).object();
-    const auto serial = static_cast<uint64_t>(attachment.value(QStringLiteral("serial")).toInteger());
-    if (serial > m_attachment_serial) {
-        m_attachment_serial = serial;
-        if (!first_poll) {
-            Q_EMIT localDeviceAttached(attachment.value(QStringLiteral("name")).toString());
-        }
+    // WP-S2: consuming also preserves the cold-start attachment on the first poll.
+    const QJniObject attach = QJniObject::callStaticObjectMethod(kUsbClass, "takeAttachment", "()Ljava/lang/String;");
+    if (attach.isValid() && !attach.toString().isEmpty()) {
+        Q_EMIT localDeviceAttached(attach.toString());
     }
 }
 

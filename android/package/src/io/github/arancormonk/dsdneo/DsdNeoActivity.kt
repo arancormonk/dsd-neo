@@ -6,6 +6,7 @@
 package io.github.arancormonk.dsdneo
 
 import android.content.Intent
+import android.os.Bundle
 import org.qtproject.qt.android.bindings.QtActivity
 
 /**
@@ -35,6 +36,19 @@ import org.qtproject.qt.android.bindings.QtActivity
  * "DSD-neo isn't responding".
  */
 class DsdNeoActivity : QtActivity() {
+
+    // WP-S2: intents carry only a validated USB attachment, never start options.
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        UsbSourceManager.initializeAttachments(this)
+        UsbSourceManager.reportAttachment(this, intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        UsbSourceManager.reportAttachment(this, intent)
+    }
+
 
     // WP-D3: location permission and Activity lifetime.
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
