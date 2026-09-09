@@ -11,6 +11,27 @@ service renders into its notification).
 Supported inputs: a directly attached RTL-SDR over USB-OTG, `rtl_tcp`, UDP PCM,
 TCP PCM, and local files.
 
+## Saved encryption keys
+
+Saved systems store `encKeyType` (`""`, `basic`, `hex`, `rc4`, or `scrambler`),
+`encKeyValue`, and `encForceKey` (0 normal, 1 force privacy, 2 force RC4).
+Keys rest **unencrypted** in the app-private systems store, `saved_systems.json`; Android sets
+`allowBackup=false`. On desktop the same file is under Qt's `AppDataLocation`.
+QString/QML copies cannot promise erasure. Native command payloads, parsed key
+sets, and owned JNI argv allocations are securely erased after use.
+
+Session assembly refuses a direct key together with a key CSV. Direct values
+become discrete `-b`/`-H`/`-1`/`-R` arguments; force modes use `-4`/`-0`.
+Startup and live commands share validation and overlay semantics: basic changes
+K, RC4 changes R/RR, scrambler changes R, and hex changes the Hytera/AES block.
+Other keys remain installed. Any valid value, including zero, arms decryption;
+encrypted-lockout policy still decides whether a call plays. Direct-key CLI
+messages and command toasts never echo key values, including with `--show-keys`.
+During a keyed scan row, a live direct-key command updates the saved global key
+baseline; the row's own key remains effective until rotation restores globals.
+Force mode similarly updates configuration while an explicit row override wins.
+The encryption wizard and live entry sheet are supplied by a later UI package.
+
 ## The two-mode UI
 
 The shell has two modes, switched on `DecoderHost::sessionState` — a phone cannot

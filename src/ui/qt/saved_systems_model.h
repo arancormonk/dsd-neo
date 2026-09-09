@@ -125,7 +125,7 @@ class SavedSystemsModel : public QAbstractListModel {
         // UUIDs survive row deletion/reordering; a pending start must never touch
         // whichever unrelated row moved into its old index.
         QString uid;
-        int encKeyType = 0;
+        QString encKeyType;
         QString encKeyValue;
         int encForceKey = 0;
         int rrSid = 0;

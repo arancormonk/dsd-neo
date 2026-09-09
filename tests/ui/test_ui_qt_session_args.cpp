@@ -279,10 +279,50 @@ test_network_and_file_sources(void) {
            input_spec(session_args_build(file, SessionArgPrefs(), &error)) == QStringLiteral("/sdcard/capture.wav"));
 }
 
+void
+test_keys() {
+    using namespace dsd_qt;
+    const QStringList types{"basic", "hex", "rc4", "scrambler"};
+    const QStringList values{"0", "0011223344", "ABC", "32767"};
+    const QStringList flags{"-b", "-H", "-1", "-R"};
+    for (int i = 0; i < types.size(); ++i) {
+        auto sys = usb_system();
+        sys["encKeyType"] = types[i];
+        sys["encKeyValue"] = values[i];
+        sys["encForceKey"] = i % 3;
+        SessionArgsError error;
+        const auto args = session_args_build(sys, SessionArgPrefs(), &error);
+        const auto at = args.indexOf(flags[i]);
+        expect("direct key is a discrete argument",
+               error == SessionArgsError::None && at >= 0 && at + 1 < args.size() && args[at + 1] == values[i]);
+        expect("force flags are discrete", args.contains("-4") == (i % 3 == 1) && args.contains("-0") == (i % 3 == 2));
+        sys["keyCsvPath"] = "keys.csv";
+        expect("direct key and CSV refused",
+               session_args_build(sys, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::KeyConflict);
+    }
+    expect("hex normalization", session_args_key_hex_normalize(" 0x ab cd\t ") == "ABCD");
+    expect("basic bounds", session_args_key_valid("basic", "255") && !session_args_key_valid("basic", "256")
+                               && !session_args_key_valid("basic", "-1"));
+    expect("hex widths", session_args_key_valid("hex", QString(32, '0'))
+                             && session_args_key_valid("hex", QString(64, '0'))
+                             && !session_args_key_valid("hex", QString(11, '0')));
+    expect("rc4 bounds", session_args_key_valid("rc4", "0") && session_args_key_valid("rc4", QString(16, 'F'))
+                             && !session_args_key_valid("rc4", QString(17, 'F')));
+    expect("scrambler bounds",
+           session_args_key_valid("scrambler", "0") && !session_args_key_valid("scrambler", "32768"));
+    expect("invalid types and text", !session_args_key_valid("other", "0") && !session_args_key_valid("basic", "1junk")
+                                         && !session_args_key_valid("rc4", "xyz"));
+    auto sys = usb_system();
+    sys["encKeyValue"] = "orphan";
+    SessionArgsError error;
+    expect("orphan key refused", session_args_build(sys, SessionArgPrefs(), &error).isEmpty());
+}
+
 } // namespace
 
 int
 main(void) {
+    test_keys();
     test_freq_validation();
     test_defaults_and_overrides();
     test_csv_args();

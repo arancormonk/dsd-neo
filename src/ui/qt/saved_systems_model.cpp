@@ -200,11 +200,23 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
         const QUuid stored(map.value(QStringLiteral("uid")).toString());
         row.uid = (stored.isNull() ? QUuid::createUuid() : stored).toString(QUuid::WithoutBraces);
     }
-    if (map.contains(QStringLiteral("encKeyType"))) {
-        row.encKeyType = map.value(QStringLiteral("encKeyType")).toInt();
-    }
     if (map.contains(QStringLiteral("encKeyValue"))) {
         row.encKeyValue = map.value(QStringLiteral("encKeyValue")).toString();
+    }
+    if (map.contains(QStringLiteral("encKeyType"))) {
+        const QVariant stored = map.value(QStringLiteral("encKeyType"));
+        row.encKeyType = stored.toString();
+        // WP0 persisted a wire-enum integer, with 0 also its untouched default.
+        // Preserve that default as absent while migrating actual typed keys.
+        if (stored.typeId() != QMetaType::QString) {
+            bool ok = false;
+            const int type = stored.toInt(&ok);
+            const QStringList types{QStringLiteral("basic"), QStringLiteral("hex"), QStringLiteral("rc4"),
+                                    QStringLiteral("scrambler")};
+            if (ok && type >= 0 && type < types.size()) {
+                row.encKeyType = type == 0 && row.encKeyValue.isEmpty() ? QString() : types[type];
+            }
+        }
     }
     if (map.contains(QStringLiteral("encForceKey"))) {
         row.encForceKey = map.value(QStringLiteral("encForceKey")).toInt();
@@ -457,6 +469,8 @@ SavedSystemsModel::load() {
         }
         seen.insert(row.uid);
         migrated |= stored.value(QStringLiteral("uid")).toString() != row.uid;
+        migrated |= stored.contains(QStringLiteral("encKeyType"))
+                    && stored.value(QStringLiteral("encKeyType")).typeId() != QMetaType::QString;
         // The P25 Simulcast chip used to carry "-f1 -mq", which pinned Phase 1 only;
         // -mq alone keeps the engine's default decode set (Phase 1 + Phase 2).
         if (row.decodeFlag == QLatin1String("-f1 -mq")) {

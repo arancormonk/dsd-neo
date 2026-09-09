@@ -38,7 +38,25 @@ struct SessionArgPrefs {
 };
 
 /** @brief Why session_args_build() refused; None means the argv is usable. */
-enum class SessionArgsError { None, Frequency, Ppm };
+enum class SessionArgsError {
+    None,
+    Frequency,
+    Ppm,
+    KeyType,
+    KeyBasic,
+    KeyHex,
+    KeyRc4,
+    KeyScrambler,
+    KeyConflict,
+    ForceKey
+};
+
+/** ASCII whitespace removed, optional 0x stripped, uppercase hex. QString copies
+ * cannot promise erasure; never expose returned key text in diagnostics. */
+QString session_args_key_hex_normalize(const QString& value);
+bool session_args_key_valid(const QString& type, const QString& value);
+/** Safe, complete validation sentence for the wizard/session rejection UI. */
+QString session_args_error_text(SessionArgsError error);
 
 /**
  * @brief Whether a saved system's frequency field parses as a positive MHz value.
@@ -69,7 +87,7 @@ class SessionArgsBuilder : public QObject {
 
     /**
      * @brief Build the argv for one saved-system field map.
-     * @return {"ok": bool, "args": QStringList, "error": ""|"frequency"|"ppm"}.
+     * @return {"ok": bool, "args": QStringList, "error": ""|"frequency"|"ppm"|"encryption", "errorText": sentence}.
      */
     Q_INVOKABLE QVariantMap build(const QVariantMap& system) const;
 
