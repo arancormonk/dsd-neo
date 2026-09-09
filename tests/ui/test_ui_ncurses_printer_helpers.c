@@ -52,6 +52,7 @@ WINDOW* stdscr;
 
 static char g_printw_capture[4096];
 static size_t g_printw_capture_len;
+static int g_voice_average_valid;
 
 static void
 reset_printw_capture(void) {
@@ -402,9 +403,9 @@ int
 compute_p25p1_voice_avg_err(const dsd_state* s, double* out_avg) { // NOLINT(misc-use-internal-linkage)
     (void)s;
     if (out_avg) {
-        *out_avg = 0.0;
+        *out_avg = 2.5;
     }
-    return 0;
+    return g_voice_average_valid;
 }
 
 size_t
@@ -2125,8 +2126,21 @@ test_source_alias_rendering(void) {
     free(opts);
 }
 
+static void
+test_voice_average_units(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    g_voice_average_valid = 1;
+    reset_printw_capture();
+    ui_render_voice_error_single_slot(&opts, &state, 0, 0);
+    assert_capture_contains("Avg errs/frame: 2.5");
+    assert(strchr(g_printw_capture, '%') == NULL);
+    g_voice_average_valid = 0;
+}
+
 int
 main(void) {
+    test_voice_average_units();
     test_source_alias_rendering();
     test_input_source_helpers();
     test_dmr_mono_override_terminal_reporting();

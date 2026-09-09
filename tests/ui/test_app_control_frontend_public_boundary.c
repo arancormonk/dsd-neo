@@ -7,6 +7,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/frontend_types.h>
@@ -37,6 +38,8 @@
 
 int
 main(void) {
+    (void)sizeof(dsd_app_p25_quality);
+    (void)&dsd_app_p25_quality_from_state;
     (void)sizeof(dsd_frontend_kind);
     (void)sizeof(dsd_frontend_metrics);
     (void)sizeof(dsd_app_endpoint_payload);

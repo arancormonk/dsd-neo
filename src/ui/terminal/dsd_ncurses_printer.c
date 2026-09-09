@@ -1262,7 +1262,7 @@ ui_render_voice_error_single_slot(const dsd_opts* opts, const dsd_state* state, 
         printw("[%X][%X]", errs & 0xF, errs2 & 0xF);
         double avgv = 0.0;
         if (compute_p25p1_voice_avg_err(state, &avgv)) {
-            printw(" Avg:%4.1f%%", avgv);
+            printw(" Avg errs/frame:%4.1f", avgv);
         }
         /* Keep slot toggle state at the end, as before */
         if (slot_on == 0) {
