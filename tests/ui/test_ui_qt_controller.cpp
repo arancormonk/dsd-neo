@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QCoreApplication>
 #include <QEventLoop>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <cassert>
 #include <dsd-neo/app_control/frontend_runtime.h>
@@ -9,6 +10,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include "decoder_host.h"
+#include "diagnostics_log.h"
 #include "metrics_model.h"
 #include "snapshot_internal.h"
 #include "ui_controller.h"
@@ -58,6 +60,10 @@ main(int argc, char** argv) {
     dsd_qt::MetricsModel metrics;
     dsd_qt::UiController controller(&host, &metrics, nullptr, nullptr);
     controller.setPollIntervalMs(50);
+    QTemporaryDir diagnosticsDir;
+    dsd_qt::DiagnosticsLog diagnostics(diagnosticsDir.path());
+    dsd_qt::DiagnosticsLogModel diagnosticsModel(&diagnostics);
+    controller.setDiagnosticsLog(&diagnosticsModel);
     auto tick = [&]() {
         dsd_app_telemetry_publish_opts_snapshot(&opts);
         dsd_app_telemetry_publish_snapshot(&state);
@@ -86,6 +92,15 @@ main(int argc, char** argv) {
         tick(); // The last engine snapshot is still published after stop.
         assert(metrics.syncLabel().isEmpty());
     }
+    // WP-F5: an idle decoder need not request redraw for process logs to refresh.
+    (void)dsd_app_frontend_redraw_consume();
+    diagnostics.submit("host", "info", "idle diagnostic");
+    QEventLoop idleLoop;
+    QTimer::singleShot(65, &idleLoop, &QEventLoop::quit);
+    controller.start();
+    idleLoop.exec();
+    controller.stop();
+    assert(diagnosticsModel.rowCount() == 1);
     freeState(&state);
     return 0;
 }

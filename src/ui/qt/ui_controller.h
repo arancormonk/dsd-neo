@@ -25,6 +25,7 @@ namespace dsd_qt {
 
 class CallHistoryModel;
 class MetricsModel;
+class DiagnosticsLogModel;
 class TalkgroupListModel;
 
 class UiController : public QObject {
@@ -38,6 +39,12 @@ class UiController : public QObject {
 
     int pollIntervalMs() const;
     void setPollIntervalMs(int interval_ms);
+
+    // WP-F5: process diagnostics refresh even when decoder redraw is idle.
+    void
+    setDiagnosticsLog(DiagnosticsLogModel* model) {
+        m_diagnostics = model;
+    }
 
     void start();
     void stop();
@@ -65,6 +72,7 @@ class UiController : public QObject {
     MetricsModel* m_metrics = nullptr;
     CallHistoryModel* m_history = nullptr;
     TalkgroupListModel* m_talkgroups = nullptr;
+    DiagnosticsLogModel* m_diagnostics = nullptr;
     QTimer m_timer;
     unsigned int m_active_ordinal = 0;
     DecoderHost::SessionState m_session = DecoderHost::Idle;

@@ -4,6 +4,7 @@
  */
 
 #include "ui_controller.h"
+#include "diagnostics_log.h"
 
 #include <Qt>
 #include <dsd-neo/app_control/frontend_runtime.h>
@@ -106,6 +107,9 @@ UiController::clearLiveModels() {
 
 void
 UiController::tick() {
+    if (m_diagnostics) {
+        m_diagnostics->refresh();
+    }
     /* Host state is not published through the redraw flag: a stopped engine raises
      * nothing, and "stopped" is exactly what the UI must notice. */
     if (m_host != nullptr) {
