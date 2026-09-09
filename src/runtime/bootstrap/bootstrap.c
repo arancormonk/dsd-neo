@@ -588,13 +588,17 @@ bootstrap_free_argv_copy(char** argv_copy, int argc) {
         return;
     }
     for (int i = 0; i < argc; i++) {
+        if (argv_copy[i]) {
+            DSD_SECURE_ZERO(argv_copy[i], strlen(argv_copy[i]));
+        }
         free(argv_copy[i]);
     }
     free((void*)argv_copy);
 }
 
 static int
-bootstrap_record_effective_cli_args(dsd_state* state, char** argv, int argc_effective, int* out_argc_effective) {
+bootstrap_record_effective_cli_args(dsd_state* state, char** argv, int argc_effective, int playback_start,
+                                    int* out_argc_effective) {
     if (!state || argc_effective < 0) {
         return DSD_BOOTSTRAP_ERROR;
     }
@@ -603,7 +607,10 @@ bootstrap_record_effective_cli_args(dsd_state* state, char** argv, int argc_effe
         return DSD_BOOTSTRAP_ERROR;
     }
     for (int i = 0; i < argc_effective; i++) {
-        argv_copy[i] = dsd_strdup(argv[i] ? argv[i] : "");
+        /* Retain only positional playback filenames. Parsed options can contain
+         * secrets (including attached/clustered short options); blank placeholders
+         * preserve getopt's playback indexing without retaining those bytes. */
+        argv_copy[i] = dsd_strdup(i >= playback_start && argv[i] ? argv[i] : "");
         if (!argv_copy[i]) {
             bootstrap_free_argv_copy(argv_copy, i);
             return DSD_BOOTSTRAP_ERROR;
@@ -749,15 +756,14 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
         return boot_rc;
     }
 
-    boot_rc = bootstrap_record_effective_cli_args(state, argv, argc_effective, out_argc_effective);
+    bootstrap_apply_runtime_config_after_cli(opts, state);
+    bootstrap_apply_trunk_cli_gating(opts, argc_effective, argv, user_cfg_loaded, explicit_profile_selected);
+    boot_rc = bootstrap_record_effective_cli_args(state, argv, argc_effective,
+                                                  opts->playfiles ? state->optind : argc_effective, out_argc_effective);
     if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {
         bootstrap_set_exit_rc(out_exit_rc, 1);
         return boot_rc;
     }
-    bootstrap_apply_runtime_config_after_cli(opts, state);
-    bootstrap_apply_trunk_cli_gating(opts, state->cli_argc_effective, state->cli_argv, user_cfg_loaded,
-                                     explicit_profile_selected);
-
     boot_rc = bootstrap_handle_post_parse_actions(&args, opts, state, config_env, out_exit_rc);
     if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {
         return boot_rc;

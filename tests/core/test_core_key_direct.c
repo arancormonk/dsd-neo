@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
 #include <stdio.h>
+#include <string.h>
 #include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -21,10 +25,40 @@ check(int ok, const char* label) {
     }
 }
 
+#ifdef DSD_NEO_TEST_ARGV_FREE_WRAP
+static void* watched_argv[8];
+static size_t watched_sizes[8];
+static int watched_frees;
+// GNU linker wrapper observes storage while still allocated; never prints bytes.
+// NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+void __real_free(void* ptr);
+void __wrap_free(void* ptr);
+
+void
+__wrap_free(void* ptr) {
+    for (size_t i = 0; i < 8; ++i) {
+        if (ptr && ptr == watched_argv[i]) {
+            const unsigned char* bytes = ptr;
+            int clear = 1;
+            for (size_t j = 0; j < watched_sizes[i]; ++j) {
+                clear &= bytes[j] == 0;
+            }
+            check(clear, "argv allocation securely erased before free");
+            watched_argv[i] = NULL;
+            ++watched_frees;
+        }
+    }
+    __real_free(ptr);
+}
+
+// NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+#endif
+
 static void
 seed(dsd_opts* opts, dsd_state* state) {
     initOpts(opts);
     initState(state);
+    dsd_app_frontend_runtime_start(opts, state);
     state->K = 17;
     state->R = 19;
     state->RR = 23;
@@ -51,8 +85,54 @@ expected(const dsd_opts* opts, const dsd_state* state, int type, size_t width) {
     check(opts->dmr_mute_encL == 0 && opts->dmr_mute_encR == 0, "every value arms decryption");
 }
 
+static void
+bootstrap_snapshot_secrets(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    char name[] = "test", keyflag[] = "-H", key[65], replay[] = "-r", file[] = "playback-marker.amb";
+    DSD_MEMSET(key, '1', 64);
+    key[64] = 0;
+    char* argv[] = {name, keyflag, key, replay, file, NULL};
+    int count = 0, exit_code = -1;
+    check(dsd_runtime_bootstrap(5, argv, &opts, &state, &count, &exit_code) == DSD_BOOTSTRAP_CONTINUE,
+          "full bootstrap accepted");
+    check(state.K1 != 0 && state.K4 != 0, "bootstrap installed key");
+    int absent = 1;
+    for (int i = 0; i < state.cli_argc_effective; ++i) {
+        if (strstr(state.cli_argv[i], key)) {
+            absent = 0;
+        }
+    }
+    check(absent, "retained argv contains no startup key");
+    check(count == 5 && state.optind == 4 && strcmp(state.cli_argv[state.optind], file) == 0,
+          "playback argument index preserved");
+    dsd_app_frontend_runtime_start(&opts, &state);
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && !snapshot->cli_argv && snapshot->cli_argc_effective == 0, "snapshot excludes argv ownership");
+    dsd_app_frontend_runtime_stop();
+#ifdef DSD_NEO_TEST_ARGV_FREE_WRAP
+    for (int i = 0; i < state.cli_argc_effective && i < 8; ++i) {
+        watched_argv[i] = state.cli_argv[i];
+        watched_sizes[i] = strlen(state.cli_argv[i]) + 1;
+    }
+#endif
+    freeState(&state);
+#ifdef DSD_NEO_TEST_ARGV_FREE_WRAP
+    check(watched_frees == count, "teardown released every retained argv allocation");
+#endif
+    check(!state.cli_argv && state.cli_argc_effective == 0, "teardown clears argv ownership");
+    snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && !snapshot->cli_argv, "retained snapshot has no dangling argv");
+    DSD_SECURE_ZERO(key, sizeof key);
+    DSD_SECURE_ZERO(&state, sizeof state);
+    DSD_SECURE_ZERO(&opts, sizeof opts);
+}
+
 int
 main(void) {
+    bootstrap_snapshot_secrets();
     static dsd_state state;
     static dsd_opts opts;
     const int types[] = {0, 1, 1, 1, 2, 3};

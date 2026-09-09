@@ -21,6 +21,7 @@
 #include <mbelib-neo/mbelib.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/call_state.h"
 #include "dsd-neo/core/dibit.h"
@@ -1279,6 +1280,9 @@ freeState(dsd_state* state) {
 
     if (state->cli_argv) {
         for (int i = 0; i < state->cli_argc_effective; i++) {
+            if (state->cli_argv[i]) {
+                DSD_SECURE_ZERO(state->cli_argv[i], strlen(state->cli_argv[i]));
+            }
             free(state->cli_argv[i]);
         }
         free((void*)state->cli_argv);

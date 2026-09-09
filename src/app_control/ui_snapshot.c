@@ -234,7 +234,11 @@ ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     (void)dsd_source_alias_copy_snapshot(dst, src);
 
     UI_SNAPSHOT_COPY_RANGE(dst, src, audio_out_idx, lastsample);
-    UI_SNAPSHOT_COPY_RANGE(dst, src, err_str, aout_gainA);
+    UI_SNAPSHOT_COPY_RANGE(dst, src, err_str, optind);
+    /* Decoder-owned argv is private, and may outlive neither session nor playback. */
+    dst->cli_argc_effective = 0;
+    dst->cli_argv = NULL;
+    UI_SNAPSHOT_COPY_RANGE(dst, src, config_autosave_enabled, aout_gainA);
     UI_SNAPSHOT_COPY_RANGE(dst, src, aout_max_buf_idx, last_dibit);
 
     UI_SNAPSHOT_COPY_RANGE(dst, src, input_sample_buffer, directmode);
