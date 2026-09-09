@@ -227,4 +227,36 @@ CommandBridge::clearSrcList() const {
     return accepted(dsd_app_command_action(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR));
 }
 
+// WP-D2: QString/QML copies cannot promise erasure. Wipe owned UTF-8 and wire copies.
+bool
+CommandBridge::applyEncryptionKey(const QString& type, const QString& value) const {
+    dsd_app_key_direct_payload payload = {};
+    if (type == QLatin1String("basic")) {
+        payload.key_type = DSD_APP_KEY_TYPE_BASIC;
+    } else if (type == QLatin1String("hex")) {
+        payload.key_type = DSD_APP_KEY_TYPE_HEX;
+    } else if (type == QLatin1String("rc4")) {
+        payload.key_type = DSD_APP_KEY_TYPE_RC4;
+    } else if (type == QLatin1String("scrambler")) {
+        payload.key_type = DSD_APP_KEY_TYPE_SCRAMBLER;
+    } else {
+        return false;
+    }
+    QByteArray bytes = value.toUtf8();
+    const bool fits = bytes.size() < static_cast<qsizetype>(sizeof payload.value) && !bytes.contains('\0');
+    int result = DSD_APP_COMMAND_SUBMIT_REJECTED;
+    if (fits) {
+        DSD_MEMCPY(payload.value, bytes.constData(), static_cast<size_t>(bytes.size()));
+        result = dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &payload, sizeof payload);
+    }
+    DSD_SECURE_ZERO(bytes.data(), static_cast<size_t>(bytes.size()));
+    DSD_SECURE_ZERO(&payload, sizeof payload);
+    return accepted(result);
+}
+
+bool
+CommandBridge::setForceKeyMode(int mode) const {
+    return mode >= 0 && mode <= 2 && accepted(dsd_app_command_set_i32(DSD_APP_CMD_FORCE_KEY_SET, mode));
+}
+
 } // namespace dsd_qt

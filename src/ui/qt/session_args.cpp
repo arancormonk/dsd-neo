@@ -162,6 +162,58 @@ session_args_freq_valid(const QString& freqMhz) {
     return ok && mhz > 0.0;
 }
 
+QString
+session_args_key_hex_normalize(const QString& value) {
+    QString normalized = value;
+    normalized.remove(QRegularExpression(QStringLiteral("[ \\t\\n\\r\\f\\v]")));
+    if (normalized.startsWith(QLatin1String("0x"), Qt::CaseInsensitive)) {
+        normalized.remove(0, 2);
+    }
+    return normalized.toUpper();
+}
+
+bool
+session_args_key_valid(const QString& type, const QString& value) {
+    if (type.isEmpty()) {
+        return value.isEmpty();
+    }
+    if (type == QLatin1String("basic") || type == QLatin1String("scrambler")) {
+        const QString decimal = value.trimmed();
+        if (!QRegularExpression(QStringLiteral("^[0-9]+$")).match(decimal).hasMatch()) {
+            return false;
+        }
+        bool ok = false;
+        const auto number = decimal.toUInt(&ok);
+        return ok && number <= (type == QLatin1String("basic") ? 255U : 32767U);
+    }
+    if (type != QLatin1String("hex") && type != QLatin1String("rc4")) {
+        return false;
+    }
+    const QString hex = session_args_key_hex_normalize(value);
+    if (!QRegularExpression(QStringLiteral("^[0-9A-F]+$")).match(hex).hasMatch()) {
+        return false;
+    }
+    const auto size = hex.size();
+    return type == QLatin1String("rc4") ? size >= 1 && size <= 16 : size == 10 || size == 32 || size == 64;
+}
+
+QString
+session_args_error_text(SessionArgsError error) {
+    switch (error) {
+        case SessionArgsError::None: return {};
+        case SessionArgsError::Frequency: return QStringLiteral("Enter a positive frequency in MHz.");
+        case SessionArgsError::Ppm: return QStringLiteral("Enter a whole number for PPM.");
+        case SessionArgsError::KeyType: return QStringLiteral("Choose one encryption key type.");
+        case SessionArgsError::KeyBasic: return QStringLiteral("Enter a basic key from 0 to 255.");
+        case SessionArgsError::KeyHex: return QStringLiteral("Enter 10, 32, or 64 hexadecimal digits.");
+        case SessionArgsError::KeyRc4: return QStringLiteral("Enter 1 to 16 hexadecimal digits.");
+        case SessionArgsError::KeyScrambler: return QStringLiteral("Enter a scrambler key from 0 to 32767.");
+        case SessionArgsError::KeyConflict: return QStringLiteral("Choose either a direct key or a key CSV file.");
+        case SessionArgsError::ForceKey: return QStringLiteral("Choose force key mode 0, 1, or 2.");
+    }
+    return {};
+}
+
 QStringList
 session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, SessionArgsError* error) {
     if (error != nullptr) {
@@ -191,6 +243,26 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
         return fail(SessionArgsError::Ppm);
     }
 
+    const QString keyType = system.value(QStringLiteral("encKeyType")).toString();
+    const QString keyValue = system.value(QStringLiteral("encKeyValue")).toString();
+    const QStringList keyTypes{QStringLiteral("basic"), QStringLiteral("hex"), QStringLiteral("rc4"),
+                               QStringLiteral("scrambler")};
+    const int keyIndex = keyTypes.indexOf(keyType);
+    if ((!keyType.isEmpty() || !keyValue.isEmpty())
+        && !system.value(QStringLiteral("keyCsvPath")).toString().isEmpty()) {
+        return fail(SessionArgsError::KeyConflict);
+    }
+    if (!session_args_key_valid(keyType, keyValue)) {
+        const SessionArgsError reasons[] = {SessionArgsError::KeyBasic, SessionArgsError::KeyHex,
+                                            SessionArgsError::KeyRc4, SessionArgsError::KeyScrambler};
+        return fail(keyIndex < 0 ? SessionArgsError::KeyType : reasons[keyIndex]);
+    }
+    bool forceOk = false;
+    const int force = system.value(QStringLiteral("encForceKey"), 0).toInt(&forceOk);
+    if (!forceOk || force < 0 || force > 2) {
+        return fail(SessionArgsError::ForceKey);
+    }
+
     const int gainOverride = system.value(QStringLiteral("gainDb"), -1).toInt();
     const int gain = gainOverride >= 0 ? gainOverride : prefs.gainDb;
     const int bwOverride = system.value(QStringLiteral("bandwidthKhz"), -1).toInt();
@@ -202,6 +274,14 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     append_input_args(args, system, sourceType, tail, bias);
     args << QStringLiteral("-o") << QStringLiteral("pulse");
     append_csv_args(args, system);
+    if (keyIndex >= 0) {
+        const QStringList flags{QStringLiteral("-b"), QStringLiteral("-H"), QStringLiteral("-1"), QStringLiteral("-R")};
+        args << flags[keyIndex]
+             << ((keyIndex == 1 || keyIndex == 2) ? session_args_key_hex_normalize(keyValue) : keyValue.trimmed());
+    }
+    if (force != 0) {
+        args << (force == 1 ? QStringLiteral("-4") : QStringLiteral("-0"));
+    }
     append_flag_args(args, system, prefs);
     return args;
 }
@@ -229,7 +309,9 @@ SessionArgsBuilder::build(const QVariantMap& system) const {
     result.insert(QStringLiteral("args"), args);
     result.insert(QStringLiteral("error"), error == SessionArgsError::Frequency ? QStringLiteral("frequency")
                                            : error == SessionArgsError::Ppm     ? QStringLiteral("ppm")
-                                                                                : QString());
+                                           : error == SessionArgsError::None    ? QString()
+                                                                                : QStringLiteral("encryption"));
+    result.insert(QStringLiteral("errorText"), session_args_error_text(error));
     return result;
 }
 

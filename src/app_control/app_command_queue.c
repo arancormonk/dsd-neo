@@ -423,11 +423,9 @@ ui_cmd_reset_key_mute_state(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
-    state->keyloader = 0;
-    state->payload_keyid = state->payload_keyidR = 0;
     /* Key ownership stays live; only the mute decision updates configured defaults. */
     const int scoped = dsd_scan_mode_suspend(opts, state);
-    opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
+    dsd_key_apply_mute_policy(opts, state);
     if (scoped) {
         (void)dsd_scan_mode_resume(opts, state);
     }
@@ -3986,24 +3984,74 @@ apply_cmd_tg_list_export(dsd_opts* opts, dsd_state* state, const struct dsd_app_
 
 /* End WP-D1 talkgroup edit/export handlers. */
 
+/* WP-D2: typed direct keys share CLI parsing and scan baseline ownership. */
 static int
-apply_cmd_key_direct_stub(dsd_state* state, const struct dsd_app_command* c) {
+apply_cmd_key_direct(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     dsd_app_key_direct_payload p;
     DSD_MEMCPY(&p, c->data, sizeof p);
-    const int valid = p.key_type >= DSD_APP_KEY_TYPE_BASIC && p.key_type <= DSD_APP_KEY_TYPE_SCRAMBLER
-                      && memchr(p.value, 0, sizeof p.value) != NULL;
+    dsd_key_type type;
+    const char* shape;
+    switch (p.key_type) {
+        case DSD_APP_KEY_TYPE_BASIC:
+            type = DSD_KEY_TYPE_BASIC;
+            shape = "Expected decimal 0..255";
+            break;
+        case DSD_APP_KEY_TYPE_HEX:
+            type = DSD_KEY_TYPE_HEX;
+            shape = "Expected 10, 32, or 64 hex digits";
+            break;
+        case DSD_APP_KEY_TYPE_RC4:
+            type = DSD_KEY_TYPE_RC4;
+            shape = "Expected 1..16 hex digits";
+            break;
+        case DSD_APP_KEY_TYPE_SCRAMBLER:
+            type = DSD_KEY_TYPE_SCRAMBLER;
+            shape = "Expected decimal 0..32767";
+            break;
+        default:
+            DSD_SECURE_ZERO(&p, sizeof p);
+            ui_set_toast(state, 3, "Invalid key type");
+            return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsd_key_direct_result result = DSD_KEY_DIRECT_INVALID_ARGUMENT;
+    if (memchr(p.value, 0, sizeof p.value)) {
+        result = dsd_scan_keys_apply_direct(state, type, p.value);
+        if (result == DSD_KEY_DIRECT_OK) {
+            // A global edit must not change an active row's signalled KIDs or
+            // loader. The common mute reset also serves unscoped direct edits.
+            const int row_keyloader = state->keyloader;
+            const int row_kid = state->payload_keyid;
+            const int row_kid_right = state->payload_keyidR;
+            ui_cmd_reset_key_mute_state(opts, state);
+            if (state->scan_keys_active_set) {
+                state->keyloader = row_keyloader;
+                state->payload_keyid = row_kid;
+                state->payload_keyidR = row_kid_right;
+            }
+        }
+    }
     DSD_SECURE_ZERO(&p, sizeof p);
-    ui_set_toast(state, 3, valid ? "not implemented" : "Invalid key payload");
-    return valid ? UI_CMD_APPLY_UNSUPPORTED : UI_CMD_APPLY_INVALID_PAYLOAD;
+    if (result != DSD_KEY_DIRECT_OK) {
+        ui_set_toast(state, 3, "%s", shape);
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    ui_set_toast(state, 3, "Key applied");
+    return UI_CMD_APPLY_COMPLETED;
 }
 
 static int
-apply_cmd_force_key_stub(dsd_state* state, const struct dsd_app_command* c) {
+apply_cmd_force_key(dsd_state* state, const struct dsd_app_command* c) {
     int32_t mode;
     DSD_MEMCPY(&mode, c->data, sizeof mode);
-    const int valid = mode >= 0 && mode <= 2;
-    ui_set_toast(state, 3, valid ? "not implemented" : "Invalid force key mode");
-    return valid ? UI_CMD_APPLY_UNSUPPORTED : UI_CMD_APPLY_INVALID_PAYLOAD;
+    const int previous = state->M;
+    if (dsd_key_apply_force(state, mode) != DSD_KEY_DIRECT_OK) {
+        ui_set_toast(state, 3, "Expected force key mode 0, 1, or 2");
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    if (state->M != previous) {
+        dsd_enc_lockout_bump_key_epoch(state);
+    }
+    return UI_CMD_APPLY_COMPLETED;
 }
 
 static int
@@ -4013,8 +4061,8 @@ apply_cmd_foundation(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
         case DSD_APP_CMD_TG_ROW_SET: return apply_cmd_tg_row_set(opts, state, c);
         case DSD_APP_CMD_TG_ROW_REMOVE: return apply_cmd_tg_row_remove(opts, state, c);
         case DSD_APP_CMD_TG_LIST_EXPORT: return apply_cmd_tg_list_export(opts, state, c);
-        case DSD_APP_CMD_KEY_DIRECT_SET: return apply_cmd_key_direct_stub(state, c);
-        case DSD_APP_CMD_FORCE_KEY_SET: return apply_cmd_force_key_stub(state, c);
+        case DSD_APP_CMD_KEY_DIRECT_SET: return apply_cmd_key_direct(opts, state, c);
+        case DSD_APP_CMD_FORCE_KEY_SET: return apply_cmd_force_key(state, c);
         default: return UI_CMD_APPLY_UNHANDLED;
     }
 }

@@ -361,11 +361,11 @@ test_foundation_persistence() {
     expect("UID lookup finds row", migrated.rowForUid(uid) == 0);
     expect("unknown UID never selects a row",
            migrated.rowForUid(QString()) == -1 && migrated.getByUid("missing").isEmpty());
-    QVariantMap fields{{"encKeyType", 2},    {"encKeyValue", "0011223344"},
-                       {"encForceKey", 2},   {"rrSid", 123},
-                       {"rrSiteId", 456},    {"siteName", "North"},
-                       {"siteLat", 42.5},    {"siteLon", -87.5},
-                       {"hasSitePos", true}, {"avoidSite", true}};
+    QVariantMap fields{{"encKeyType", "rc4"}, {"encKeyValue", "0011223344"},
+                       {"encForceKey", 2},    {"rrSid", 123},
+                       {"rrSiteId", 456},     {"siteName", "North"},
+                       {"siteLat", 42.5},     {"siteLon", -87.5},
+                       {"hasSitePos", true},  {"avoidSite", true}};
     migrated.update(0, fields);
     SavedSystemsModel reloaded;
     for (auto it = fields.cbegin(); it != fields.cend(); ++it) {
@@ -400,6 +400,49 @@ test_foundation_persistence() {
                                                 && !stored.contains("location/lastFixAt"));
 }
 
+void
+test_key_persistence() {
+    SavedSystemsModel model;
+    while (model.count()) {
+        model.remove(0);
+    }
+    const QStringList types{"", "basic", "hex", "rc4", "scrambler"};
+    for (const auto& type : types) {
+        QVariantMap row{{"name", "key persistence"},
+                        {"encKeyType", type},
+                        {"encKeyValue", type.isEmpty() ? QString() : QStringLiteral("0")},
+                        {"encForceKey", 2}};
+        model.add(row);
+    }
+    SavedSystemsModel fresh;
+    expect("all saved key types reload", fresh.count() == types.size());
+    for (int i = 0; i < types.size(); ++i) {
+        const auto row = fresh.get(i);
+        expect("key type round trip", row.value("encKeyType").toString() == types[i]);
+        expect("key value round trip",
+               row.value("encKeyValue").toString() == (types[i].isEmpty() ? QString() : QStringLiteral("0")));
+        expect("force round trip", row.value("encForceKey").toInt() == 2);
+    }
+    fresh.update(1, {{"encKeyType", ""}, {"encKeyValue", ""}, {"encForceKey", 0}});
+    SavedSystemsModel cleared;
+    expect("key clearing persists", cleared.get(1).value("encKeyType").toString().isEmpty()
+                                        && cleared.get(1).value("encKeyValue").toString().isEmpty()
+                                        && cleared.get(1).value("encForceKey").toInt() == 0);
+}
+
+void
+test_foundation_key_type_migration() {
+    QJsonArray rows;
+    rows.append(QJsonObject{{"encKeyType", 0}, {"encKeyValue", ""}});
+    rows.append(QJsonObject{{"encKeyType", 0}, {"encKeyValue", "0"}});
+    rows.append(QJsonObject{{"encKeyType", 2}, {"encKeyValue", "0"}});
+    json_store_save_array(QStringLiteral("saved_systems.json"), rows);
+    SavedSystemsModel model;
+    expect("foundation blank key remains absent", model.get(0).value("encKeyType").toString().isEmpty());
+    expect("foundation basic type converts", model.get(1).value("encKeyType").toString() == "basic");
+    expect("foundation rc4 type converts", model.get(2).value("encKeyType").toString() == "rc4");
+}
+
 } // namespace
 
 int
@@ -426,6 +469,8 @@ main(int argc, char** argv) {
     test_saved_systems_csv_fields();
     test_app_prefs();
     test_foundation_persistence();
+    test_key_persistence();
+    test_foundation_key_type_migration();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

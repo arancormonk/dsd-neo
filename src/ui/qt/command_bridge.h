@@ -143,6 +143,10 @@ class CommandBridge : public QObject {
     /** @brief Import a talkgroup list CSV into the running session (atomic swap). */
     Q_INVOKABLE bool importGroupList(const QString& path) const;
 
+    // WP-D2: secret input is only copied into an erased queue payload.
+    Q_INVOKABLE bool applyEncryptionKey(const QString& type, const QString& value) const;
+    Q_INVOKABLE bool setForceKeyMode(int mode) const;
+
     /** @brief Import an encryption key CSV; @p hex picks -K semantics over -k. */
     Q_INVOKABLE bool importKeys(const QString& path, bool hex) const;
 

@@ -695,3 +695,16 @@ supply focused wiring patches for serial application in orchestrator order. New
 live models join `clearLiveModels()` for lifecycle and trunk-scan target edges.
 Context registration placeholders in `qt_ui.cpp` keep those ownership decisions
 in one place. Every new UI_QT target also belongs in Android CI's explicit build list.
+
+### Direct key application
+
+`dsd_key_apply_direct` in `src/core/util/key_set.c` owns strict direct-key parsing
+and overlay/replace semantics. `dsd_key_apply_mute_policy` reconciles startup and
+live mute behavior; `dsd_key_apply_force` maps the three configured force modes.
+The CLI and `KEY_DIRECT_SET`/`FORCE_KEY_SET` handlers share these helpers.
+`dsd_scan_keys_apply_direct` validates a direct edit before changing the global
+baseline without allocating or swapping live keys. An active row retains its
+signalled key IDs and the scalar/AES state activated since row entry. `CORE_KEY_DIRECT` exercises the
+helper, real CLI parser, real command queue, and keyed/unkeyed rotation together.
+Qt's `session_args.cpp` validates saved string key types and emits discrete argv;
+`SessionArgsBuilder` returns a value-free `errorText` for the entry UI.

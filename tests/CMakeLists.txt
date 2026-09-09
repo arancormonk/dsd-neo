@@ -4872,6 +4872,18 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
 
+# WP-D2: shared direct-key helper, real CLI and queue regression.
+add_executable(dsd-neo_test_core_key_direct core/test_core_key_direct.c)
+target_include_directories(dsd-neo_test_core_key_direct PRIVATE ${PROJECT_SOURCE_DIR}/include)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(dsd-neo_test_core_key_direct PRIVATE "-Wl,--start-group"
+        ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} "-Wl,--end-group" ${LIBS} dsd-neo_test_support)
+else()
+    target_link_libraries(dsd-neo_test_core_key_direct PRIVATE
+        ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support)
+endif()
+add_test(NAME CORE_KEY_DIRECT COMMAND dsd-neo_test_core_key_direct)
+
 # Portable command-drain coverage: runtime hook installation, no linker wrapping.
 add_executable(dsd-neo_test_app_p25_cc_selection ui/test_app_p25_cc_selection.c)
 target_include_directories(
