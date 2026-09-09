@@ -10212,3 +10212,17 @@ if(Python3_Interpreter_FOUND)
             ${PROJECT_SOURCE_DIR}/tests/ui/test_diagnostics_share_paths.py
     )
 endif()
+
+# WP-F4: real event synchronization and published snapshots for late emergency metadata.
+add_executable(
+    dsd-neo_test_engine_emergency_history
+    engine/test_engine_emergency_history.c
+)
+target_link_libraries(
+    dsd-neo_test_engine_emergency_history
+    PRIVATE dsd-neo_app_control
+)
+add_test(
+    NAME ENGINE_EMERGENCY_HISTORY
+    COMMAND dsd-neo_test_engine_emergency_history
+)
