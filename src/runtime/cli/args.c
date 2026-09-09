@@ -383,7 +383,13 @@ cli_parse_long_option(const char* option_name, const char* in, int base, long* o
     if (cli_parse_long_base(in, base, out)) {
         return 1;
     }
-    LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    if (strcmp(option_name, "-b") == 0) {
+        LOG_ERROR("Invalid -b value (expected 8-bit decimal key)\n");
+    } else if (strcmp(option_name, "-R") == 0) {
+        LOG_ERROR("Invalid -R value (expected 15-bit decimal key)\n");
+    } else {
+        LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    }
     cli_set_exit_rc(out_exit_rc, 1);
     return 0;
 }
@@ -393,7 +399,11 @@ cli_parse_ulong_option(const char* option_name, const char* in, int base, unsign
     if (cli_parse_ulong_base(in, base, out)) {
         return 1;
     }
-    LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    if (strcmp(option_name, "-_") == 0) {
+        LOG_ERROR("Invalid -_ value (expected 9-bit decimal seed)\n");
+    } else {
+        LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    }
     cli_set_exit_rc(out_exit_rc, 1);
     return 0;
 }
@@ -403,7 +413,11 @@ cli_parse_u64_option(const char* option_name, const char* in, int base, unsigned
     if (cli_parse_u64_base(in, base, out)) {
         return 1;
     }
-    LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    if (strcmp(option_name, "-2") == 0) {
+        LOG_ERROR("Invalid -2 value (expected 64-bit hex key)\n");
+    } else {
+        LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    }
     cli_set_exit_rc(out_exit_rc, 1);
     return 0;
 }
@@ -2323,7 +2337,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             if (key < 0) {                                                                                             \
-                LOG_ERROR("Invalid -R value \"%s\"\n", optarg ? optarg : "");                                          \
+                LOG_ERROR("Invalid -R value (expected 15-bit decimal key)\n");                                          \
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \

@@ -156,6 +156,16 @@ append_flag_args(QStringList& args, const QVariantMap& system, const SessionArgP
 } // namespace
 
 bool
+session_args_extra_safe(const QString& tokens) {
+    for (const auto& token : tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts)) {
+        if (token == QLatin1String("--show-keys") || token.startsWith(QLatin1String("--show-keys="))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool
 session_args_freq_valid(const QString& freqMhz) {
     bool ok = false;
     const double mhz = freqMhz.trimmed().toDouble(&ok);
@@ -173,6 +183,13 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
         }
         return QStringList();
     };
+
+    // WP-F5: never permit a saved/pasted option to reveal keys in any sink.
+    const QString tokens = system.value(QStringLiteral("extraArgs")).toString() + QLatin1Char(' ') + prefs.extraArgs
+                           + QLatin1Char(' ') + system.value(QStringLiteral("decodeFlag")).toString();
+    if (!session_args_extra_safe(tokens)) {
+        return fail(SessionArgsError::UnsafeOption);
+    }
 
     const QString sourceType = system.value(QStringLiteral("sourceType")).toString();
     const bool radioSource = sourceType == QLatin1String("usb") || sourceType == QLatin1String("rtltcp");
@@ -227,9 +244,10 @@ SessionArgsBuilder::build(const QVariantMap& system) const {
     QVariantMap result;
     result.insert(QStringLiteral("ok"), error == SessionArgsError::None);
     result.insert(QStringLiteral("args"), args);
-    result.insert(QStringLiteral("error"), error == SessionArgsError::Frequency ? QStringLiteral("frequency")
-                                           : error == SessionArgsError::Ppm     ? QStringLiteral("ppm")
-                                                                                : QString());
+    result.insert(QStringLiteral("error"), error == SessionArgsError::Frequency      ? QStringLiteral("frequency")
+                                           : error == SessionArgsError::Ppm          ? QStringLiteral("ppm")
+                                           : error == SessionArgsError::UnsafeOption ? QStringLiteral("unsafe-option")
+                                                                                     : QString());
     return result;
 }
 

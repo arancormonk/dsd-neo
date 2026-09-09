@@ -38,7 +38,10 @@ struct SessionArgPrefs {
 };
 
 /** @brief Why session_args_build() refused; None means the argv is usable. */
-enum class SessionArgsError { None, Frequency, Ppm };
+/** Shared token gate for saved-system and future scan-list argv generators. */
+bool session_args_extra_safe(const QString& tokens);
+
+enum class SessionArgsError { None, Frequency, Ppm, UnsafeOption };
 
 /**
  * @brief Whether a saved system's frequency field parses as a positive MHz value.
