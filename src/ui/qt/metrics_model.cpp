@@ -325,6 +325,16 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
             next.voice_errs = next.quality.p2_voice[lead];
         }
         next.last_frame = next.quality.last_frame[lead];
+    } else {
+        // Late-entry media may precede any decoded identity. The facade already
+        // limits these readings to active non-P25 media; keep the first valid
+        // slot until the call view can supply its usual identity-based lead.
+        for (const auto& frame : next.quality.last_frame) {
+            if (frame.valid) {
+                next.last_frame = frame;
+                break;
+            }
+        }
     }
 
     /* Engine truth for the monitor's toggle buttons. The engine owns both states

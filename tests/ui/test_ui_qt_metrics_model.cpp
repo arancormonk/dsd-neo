@@ -78,6 +78,53 @@ dsd_app_frontend_snr_for_mod(const dsd_frontend_metrics* metrics, int rf_mod) {
 }
 
 static void
+test_quality_without_identity(int protocol, uint8_t slot) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    state.synctype = protocol;
+    state.errs = 3;
+    state.errs2 = 9;
+    state.errsR = 4;
+    state.errs2R = 11;
+    dsd_qt::MetricsModel model;
+
+    // The vocoder can establish media before a late-entry identity header arrives.
+    dsd_call_observation call = {};
+    call.protocol = protocol;
+    call.slot = slot;
+    call.kind = DSD_CALL_KIND_VOICE;
+    expect("provisional voice call opens", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    expect("provisional voice has media", dsd_call_state_update_media(&state, slot, 1, 0) == 1);
+    model.refresh(&opts, &state);
+    expect("provisional voice stays out of the identity headline", model.leadSlot() == 0);
+    expect("late-entry media exposes non-P25 quality without identity",
+           model.qualityValid() && model.lastFrameErrsValid() && model.lastFrameErrs() == (slot == 0 ? 3 : 4)
+               && model.lastFrameErrs2() == (slot == 0 ? 9 : 11));
+
+    if (slot == 1) {
+        call.slot = 0;
+        call.kind = DSD_CALL_KIND_GROUP_VOICE;
+        call.ota_target_id = 101;
+        expect("identified companion opens", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        model.refresh(&opts, &state);
+        expect("an identity lead retains priority before media arrives",
+               model.leadSlot() == 1 && !model.lastFrameErrsValid());
+        dsd_call_state_update_media(&state, 0, 1, 0);
+        model.refresh(&opts, &state);
+        expect("an identity lead keeps its own error readings", model.leadSlot() == 1 && model.lastFrameErrsValid()
+                                                                    && model.lastFrameErrs() == 3
+                                                                    && model.lastFrameErrs2() == 9);
+        dsd_call_state_end(&state, 0, 0);
+    }
+    dsd_call_state_end(&state, slot, 0);
+    model.refresh(&opts, &state);
+    expect("ended provisional media cannot supply fallback errors", !model.lastFrameErrsValid());
+    dsd_state_ext_free_all(&state);
+}
+
+static void
 test_quality() {
     static dsd_opts opts;
     static dsd_state state;
@@ -179,6 +226,9 @@ int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     test_quality();
+    test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 0);
+    test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 1);
+    test_quality_without_identity(DSD_SYNC_NXDN_POS, 0);
 
     static dsd_opts opts;
     static dsd_state state;
