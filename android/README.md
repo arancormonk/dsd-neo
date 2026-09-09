@@ -510,6 +510,22 @@ obtained in Java and injected:
    `dsd_engine_setup_enumerate_rtl_devices()` short-circuits to a single device at
    index 0 whenever a descriptor is set. The app is what selected the device.
 
+Onboarding and Home's dongle status show the USB diagnostic and a **Retry**
+button. If `UsbManager.openDevice()` returns null, the app rechecks the device
+list and permission: the result is `detached`, `permission`, or `open_failed`,
+in that order. A null return with permission still granted says
+“Android could not open <device> (open_failed).” Android supplies no numeric error
+or owner information for that return, so it cannot establish that another app
+holds the dongle. Only a native librtlsdr claim failure with libusb code `-6`
+is classified as `DeviceBusy` and says: “Android could not claim <device>. It may
+be held by another SDR app, or the OTG port may be under-powered — try a powered
+hub.” Other native failures say “Android could not open or claim <device>
+(code <code>).” Retry rechecks USB access (and can request permission again);
+after access is ready, tap Play to retry the native claim. The original run
+failure remains available in session diagnostics. Retry is disabled until the
+session has stopped. Detach and permission failures take precedence over an old
+native claim diagnostic; a successful new session clears that native error.
+
 Java keeps ownership of the descriptor throughout: `libusb_wrap_sys_device()` does
 not take it over. Closing the `UsbDeviceConnection` while the engine still has the
 descriptor wrapped is a use-after-close, so `UsbSourceManager.release()` clears the

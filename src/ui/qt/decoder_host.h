@@ -53,7 +53,13 @@ class DecoderHost : public QObject {
     enum SessionState { Idle = 0, Starting = 1, Running = 2, Stopping = 3, Failed = 4 };
     Q_ENUM(SessionState)
 
-    enum LocalDeviceFailureKind { NoDeviceFailure = 0, DeviceBusy = 1, DeviceOpenFailed = 2 };
+    enum LocalDeviceFailureKind {
+        NoDeviceFailure = 0,
+        DeviceBusy = 1,
+        DeviceOpenFailed = 2,
+        DeviceDetached = 3,
+        DevicePermission = 4
+    };
     Q_ENUM(LocalDeviceFailureKind)
 
     explicit DecoderHost(QObject* parent = nullptr);
