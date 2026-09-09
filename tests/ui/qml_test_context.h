@@ -88,7 +88,7 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
   public:
     bool
     isRunning() const override {
-        return false;
+        return m_running;
     }
 
     QString
@@ -99,11 +99,36 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     bool
     start(const QStringList& argv) override {
         Q_UNUSED(argv)
-        return false;
+        if (acceptStart) {
+            m_running = true;
+            Q_EMIT runningChanged();
+            Q_EMIT sessionStateChanged();
+        }
+        return acceptStart;
     }
 
     void
-    stop() override {}
+    stop() override {
+        m_running = false;
+        Q_EMIT runningChanged();
+        Q_EMIT sessionStateChanged();
+    }
+
+    bool acceptStart = false;
+
+  private:
+    bool m_running = false;
+};
+
+// The history model itself is already real in these fixtures; the controller
+// stub only acknowledges the documented same-thread flush before a start.
+class TestUiController : public QObject {
+    Q_OBJECT
+  public:
+    using QObject::QObject;
+
+    Q_INVOKABLE void
+    flushHistory() {}
 };
 
 /**
@@ -843,6 +868,26 @@ class Setup : public QObject {
         return path;
     }
 
+    /** Use real QObject signals and QSettings for initialization bookkeeping tests;
+     * plain context maps deliberately cannot validate writes or lifecycle edges. */
+    Q_INVOKABLE void
+    useLifecycleHost(bool on) {
+        m_import_host->acceptStart = on;
+        if (on) {
+            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_import_host);
+            m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_app_prefs);
+        } else {
+            m_import_host->stop();
+            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host);
+            m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_prefs);
+        }
+    }
+
+    Q_INVOKABLE void
+    emitSessionInitialized() {
+        Q_EMIT m_import_host->sessionInitialized();
+    }
+
     /** @brief Publish a live/idle host so cases can exercise session-only actions. */
     Q_INVOKABLE void
     setHostRunning(bool running) {
@@ -1069,6 +1114,12 @@ class Setup : public QObject {
          * production. Never assert persistence through it. */
         prefs[QStringLiteral("rrUsername")] = QString();
         prefs[QStringLiteral("rrAppKey")] = QString();
+        prefs[QStringLiteral("autoStartOnAttach")] = false;
+        prefs[QStringLiteral("lastStartedKind")] = QString();
+        prefs[QStringLiteral("lastStartedUid")] = QString();
+        prefs[QStringLiteral("lastLat")] = 0.0;
+        prefs[QStringLiteral("lastLon")] = 0.0;
+        prefs[QStringLiteral("lastFixAt")] = 0;
         m_prefs = prefs;
         ctx->setContextProperty(QStringLiteral("prefs"), prefs);
 
@@ -1150,6 +1201,10 @@ class Setup : public QObject {
         host[QStringLiteral("localDeviceBrokered")] = false;
         host[QStringLiteral("localDeviceReady")] = false;
         host[QStringLiteral("localDeviceStatus")] = QString();
+        host[QStringLiteral("locationSupported")] = false;
+        host[QStringLiteral("shareSupported")] = false;
+        host[QStringLiteral("localDeviceFailureKind")] = 0;
+        host[QStringLiteral("sessionState")] = 0;
         m_host = host;
         ctx->setContextProperty(QStringLiteral("decoderHost"), host);
 
@@ -1209,14 +1264,17 @@ class Setup : public QObject {
         auto* imported_files = new dsd_qt::ImportedFilesModel(m_import_host, engine);
         auto* saved_systems = new dsd_qt::SavedSystemsModel(engine);
         auto* app_prefs = new dsd_qt::AppPrefs(engine);
+        m_app_prefs = app_prefs;
         auto* session_args = new dsd_qt::SessionArgsBuilder(app_prefs, engine);
         ctx->setContextProperty(QStringLiteral("importedFiles"), imported_files);
+        ctx->setContextProperty(QStringLiteral("uiController"), new TestUiController(engine));
         ctx->setContextProperty(QStringLiteral("savedSystems"), saved_systems);
         ctx->setContextProperty(QStringLiteral("sessionArgs"), session_args);
         ctx->setContextProperty(QStringLiteral("appVersionText"), QStringLiteral("0.0.0-test"));
     }
 
   private:
+    dsd_qt::AppPrefs* m_app_prefs = nullptr;
     QVariantMap m_metrics;
     QVariantMap m_prefs;
     QVariantMap m_host;

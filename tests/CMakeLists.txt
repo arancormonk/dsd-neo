@@ -2989,6 +2989,15 @@ if(DSD_ENABLE_QT_UI)
         )
         set_target_properties(dsd-neo_test_ui_qt_qml PROPERTIES AUTOMOC ON)
         add_test(NAME UI_QT_QML_CALL_LISTS COMMAND dsd-neo_test_ui_qt_qml)
+        get_property(
+            _DSD_QT_FOUNDATION_QML_TESTS
+            GLOBAL
+            PROPERTY DSD_QT_FOUNDATION_QML_TESTS
+        )
+        set_tests_properties(
+            UI_QT_QML_CALL_LISTS
+            PROPERTIES REQUIRED_FILES "${_DSD_QT_FOUNDATION_QML_TESTS}"
+        )
         # Headless by construction: no window server and no GPU on a CI runner,
         # and the software renderer keeps the run off the host's GL stack
         # entirely.
@@ -4816,7 +4825,17 @@ else()
 endif()
 add_test(NAME RUNTIME_CONFIG_APPLY COMMAND dsd-neo_test_runtime_config_apply)
 
-add_executable(dsd-neo_test_app_command_queue ui/test_ui_cmd_queue.c)
+# Compile the queue here to enable private storage-erasure probes without adding
+# diagnostic accessors to the production library or public frontend API.
+add_executable(
+    dsd-neo_test_app_command_queue
+    ui/test_ui_cmd_queue.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/app_command_queue.c
+)
+target_compile_definitions(
+    dsd-neo_test_app_command_queue
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
 target_include_directories(
     dsd-neo_test_app_command_queue
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
@@ -9275,6 +9294,7 @@ if(DSD_HAS_RADIO)
     add_executable(
         dsd-neo_test_io_rtl_preopened_fd
         io/test_io_rtl_preopened_fd.c
+        io/rtl_open_failure_probe.cpp
     )
     target_include_directories(
         dsd-neo_test_io_rtl_preopened_fd
@@ -9284,6 +9304,21 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_io_rtl_preopened_fd
         PRIVATE dsd-neo_io_radio dsd-neo_core ${LIBS}
     )
+    if(
+        RTLSDR_FOUND
+        AND NOT APPLE
+        AND NOT WIN32
+        AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+    )
+        target_compile_definitions(
+            dsd-neo_test_io_rtl_preopened_fd
+            PRIVATE DSD_NEO_TEST_RTL_OPEN_WRAP
+        )
+        target_link_options(
+            dsd-neo_test_io_rtl_preopened_fd
+            PRIVATE "LINKER:--wrap=rtlsdr_open"
+        )
+    endif()
     add_test(NAME IO_RTL_PREOPENED_FD COMMAND dsd-neo_test_io_rtl_preopened_fd)
 endif()
 
@@ -9982,4 +10017,56 @@ if(DSD_HAS_RADIO)
             PROPERTIES LABELS iq-decode TIMEOUT 120
         )
     endforeach()
+endif()
+
+# The validation facade must exercise the real CSV parser and its cleanup path.
+add_executable(
+    dsd-neo_test_app_control_trunk_scan_validate
+    ui/test_app_control_trunk_scan_validate.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_trunk_scan_validate
+    PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME APP_CONTROL_TRUNK_SCAN_VALIDATE
+    COMMAND dsd-neo_test_app_control_trunk_scan_validate
+)
+dsd_neo_add_public_header_smoke_test(
+    dsd-neo_test_headers_public_app_control_trunk_scan_validate
+    HEADERS_PUBLIC_APP_CONTROL_TRUNK_SCAN_VALIDATE
+    dsd-neo/app_control/trunk_scan_validate.h C
+)
+
+if(DSD_ENABLE_QT_UI)
+    add_executable(
+        dsd-neo_test_ui_qt_controller
+        ui/test_ui_qt_controller.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_controller
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/ui/qt
+            ${PROJECT_SOURCE_DIR}/src/app_control
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_controller
+        PRIVATE
+            Qt6::Core
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_controller
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_controller PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_CONTROLLER COMMAND dsd-neo_test_ui_qt_controller)
 endif()

@@ -8,6 +8,7 @@
 #include <Qt>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/state.h>
 
 #include "call_history_model.h"
 #include "decoder_host.h"
@@ -86,13 +87,21 @@ UiController::onSessionStateChanged() {
      * before the monitoring view appears. Leaving one: the metrics describe a
      * decoder that no longer exists. See MetricsModel::clear(). */
     if (m_session == DecoderHost::Starting || m_session == DecoderHost::Idle || m_session == DecoderHost::Failed) {
-        if (m_metrics != nullptr) {
-            m_metrics->clear();
-        }
-        if (m_talkgroups != nullptr) {
-            m_talkgroups->clear();
-        }
+        m_active_ordinal = 0;
+        clearLiveModels();
     }
+}
+
+void
+UiController::clearLiveModels() {
+    if (m_metrics != nullptr) {
+        m_metrics->clear();
+    }
+    if (m_talkgroups != nullptr) {
+        m_talkgroups->clear();
+    }
+    // Later live models join this list. History is durable across sessions and
+    // targets; clearing it here would discard calls the operator asked to keep.
 }
 
 void
@@ -114,7 +123,14 @@ UiController::tick() {
     const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
     const dsd_state* snapshot = dsd_app_get_latest_snapshot();
 
-    if (m_metrics != nullptr) {
+    const bool live = !m_host || m_session == DecoderHost::Running || m_session == DecoderHost::Stopping;
+    if (snapshot && snapshot->trunk_scan_active_ordinal != m_active_ordinal) {
+        m_active_ordinal = snapshot->trunk_scan_active_ordinal;
+        // The new target can be quiet; waiting for a new call would let the old
+        // target's held sync/identity continue to caption this frequency.
+        clearLiveModels();
+    }
+    if (live && m_metrics != nullptr) {
         m_metrics->refresh(opts_snapshot, snapshot);
     }
     /* The call history is persistent by design, so unlike the metrics it is never
@@ -122,7 +138,7 @@ UiController::tick() {
     if (m_history != nullptr) {
         m_history->refresh(snapshot);
     }
-    if (m_talkgroups != nullptr) {
+    if (live && m_talkgroups != nullptr) {
         m_talkgroups->refresh(opts_snapshot, snapshot);
     }
 }

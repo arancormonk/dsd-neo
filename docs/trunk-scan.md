@@ -435,3 +435,16 @@ target itself.
 A row that names key material in `options` (`-b`, `-H`, `-1`, `-R`, `-K`, `-k`) may still fill the legacy key
 columns for the other families; the merge rejects a column that duplicates an option. Optional header names,
 including `options` and its `relevant_CLI_switches` alias, match ASCII case-insensitively.
+
+### Frontend validation boundary
+
+Qt validates target CSVs through `dsd_app_trunk_scan_validate_targets_csv` in
+`app_control/trunk_scan_validate.h`. It calls the same parser as the engine and
+always resets the owned target list, including parsed key material. It returns
+zero on success and a target count; failed validation resets the count to zero.
+Qt must not include engine headers. The architecture checker rejects that include
+at configure time as well as in `tools/check_arch_rules.sh`.
+
+The UI clears live model caches when `trunk_scan_active_ordinal` changes. A quiet
+new target must not inherit the old target's held sync indication. History keeps
+calls across these boundaries.

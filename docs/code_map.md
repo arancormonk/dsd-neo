@@ -663,3 +663,29 @@ External dependencies (resolved via CMake):
   resetting acquisition. Conventional trunk-scan targets take their voice-gate hold/qualify from the row profile.
 - App-control scopes force/CRC/voice configuration commands and group imports, while live row policy mutations stay
   with the active context. Configuration export reads saved group paths and voice settings from the configured scope.
+
+### Android foundation integration contracts
+
+Shared command IDs 592/593/594 reserve talkgroup row set/remove/export, using
+`policy_context` and `policy_generation` to reject edits from a stale list. The
+row `fields` mask selects listen/priority/preempt/name/tags. IDs 652/653 reserve a
+typed, bounded direct key and an int32 force-key mode. These five handlers currently
+report “not implemented”; force-key is registered as a configured scan-mode setting.
+Queue storage and drain temporaries are securely erased after use and on discard,
+including eviction, coalescing and rejection. Submitters own and must erase their
+original secret payloads.
+
+Saved-system UUIDs are persisted on migration and stable across updates. `rowForUid`
+and `getByUid` are the lookup boundary for work that can outlive a row index. The
+optional direct-key/site fields are private saved configuration, not diagnostics.
+`DecoderHost` owns the platform location/share/device interfaces; `UiController::tick`
+remains the single snapshot consumer. Its existing same-thread history flush before
+a new session label is the documented exception, not permission for another reader.
+
+WP0 owns integration edits to `qt_ui.cpp`, `ui_controller.*`, `decoder_host_android.*`,
+`UsbSourceManager.kt`, `app_command_queue.c`, `command_bridge.*`, `Main.qml`,
+`qml_test_context.h`, both Qt/test CMake lists and `android-ci.yaml`. Later packages
+supply focused wiring patches for serial application in orchestrator order. New
+live models join `clearLiveModels()` for lifecycle and trunk-scan target edges.
+Context registration placeholders in `qt_ui.cpp` keep those ownership decisions
+in one place. Every new UI_QT target also belongs in Android CI's explicit build list.

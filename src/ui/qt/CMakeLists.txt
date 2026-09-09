@@ -119,3 +119,14 @@ target_link_libraries(
 )
 
 set_target_properties(dsd-neo_ui_qt PROPERTIES AUTOMOC ON)
+
+# Source-only QuickTest cases stay out of the shipped resource bundle. Listing
+# them alongside the screens keeps new QML visible to the integration owner;
+# CTest also requires these files so a missing case cannot silently disappear.
+set_property(
+    GLOBAL
+    PROPERTY
+        DSD_QT_FOUNDATION_QML_TESTS
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_monitor_compact.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_session_initialized.qml"
+)

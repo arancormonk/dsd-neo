@@ -59,12 +59,14 @@ class UiController : public QObject {
   private:
     void tick();
     void onSessionStateChanged();
+    void clearLiveModels();
 
     DecoderHost* m_host = nullptr;
     MetricsModel* m_metrics = nullptr;
     CallHistoryModel* m_history = nullptr;
     TalkgroupListModel* m_talkgroups = nullptr;
     QTimer m_timer;
+    unsigned int m_active_ordinal = 0;
     DecoderHost::SessionState m_session = DecoderHost::Idle;
 };
 

@@ -34,7 +34,34 @@ is persistent and never cleared on session boundaries, only fed.
 
 The service state machine, the native `g_running` atomic and the failure path are
 folded into that one phase by `session_state_map.h`, which is deliberately free of
-Qt and JNI so `UI_QT_SESSION_STATE` can test it on the host.
+Qt and JNI so `UI_QT_SESSION_STATE` can test it on the host. Each accepted start
+has a monotonically increasing session id. `nativeLifecycleStatus` retains the
+post-initialization edge and terminal reason (pending/completed/cancelled/failed),
+run return code, and native USB open/claim error after cleanup. The service folds
+these into one `lifecycleStatus` record, including `lastError`; the existing UI
+tick reads it without consuming a decoder snapshot. Failures remain visible even
+when the run ends between polls or fails well after startup. USB claim error -6
+is surfaced as `DeviceBusy` without discarding the original code.
+
+`sessionInitialized()` comes from the engine lifecycle callback after initialization,
+not from `g_running`. Saved-system recency and `prefs.lastStartedKind/Uid` are
+written only on that edge. Saved systems carry stable UUIDs, so deleting another
+row during startup cannot stamp the wrong system. Starting/Idle/Failed and
+trunk-scan target changes clear live model caches; history remains persistent.
+
+The shared host also reserves location requests/cancellation, content-based
+diagnostics sharing, device-attach signals and a diagnostic sink. Location and
+sharing default to unsupported until their platform packages supply implementations.
+USB/lifecycle diagnostics use the runtime log surface, including when no Activity
+exists. The optional last location fix uses milliseconds since epoch and is deleted
+after 24 hours, on load/read and by a foreground timer. Location producers use
+`AppPrefs::setLocationFix` to publish the tuple with one coherent notification. Coordinates and direct
+key fields must never be included in diagnostic exports. QString/QML secret
+copies cannot guarantee erasure; command-owned key bytes are securely erased.
+
+The Monitor keeps its hero fixed and scrolls the rows below it; recent calls have
+a minimum pane height. Modal sheets constrain their height to the space above the
+keyboard, scroll their contents, and reveal the focused field.
 
 ## Imported files (trunking CSVs)
 
