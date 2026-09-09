@@ -392,9 +392,7 @@ JNIEXPORT void JNICALL
 Java_io_github_arancormonk_dsdneo_DsdNative_nativeHostDiagnostic(JNIEnv* env, jclass clazz, jstring line) {
     (void)env;
     (void)clazz;
-    dsd_qt::DiagnosticsLog::installTap();
-    dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("host"), QStringLiteral("info"),
-                                              QJniObject(line).toString());
+    dsd_qt::DiagnosticsLog::submitHostDiagnostic(QJniObject(line).toString());
 }
 
 /**

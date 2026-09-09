@@ -4895,6 +4895,16 @@ else()
         PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
     )
 endif()
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_core_key_direct
+        PRIVATE DSD_NEO_TEST_ARGV_FREE_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_core_key_direct
+        PRIVATE "LINKER:--wrap=free"
+    )
+endif()
 add_test(NAME CORE_KEY_DIRECT COMMAND dsd-neo_test_core_key_direct)
 
 # Portable command-drain coverage: runtime hook installation, no linker wrapping.

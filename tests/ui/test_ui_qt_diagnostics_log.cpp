@@ -1,20 +1,39 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <QAbstractListModel>
+#include <QByteArray>
+#include <QByteArrayView>
+#include <QChar>
 #include <QDateTime>
 #include <QFile>
 #include <QGuiApplication>
+#include <QIODevice>
+#include <QList>
+#include <QObject>
 #include <QStandardPaths>
+#include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
+#include <QVariant>
+#include <Qt>
+#include <QtEnvironmentVariables>
+#include <QtGlobal>
 #include <cstdio>
+#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/log.h>
+#include <string.h>
 #include <thread>
 #include <vector>
+#include "command_bridge.h"
 #include "diagnostics_log.h"
+extern "C" int dsd_test_diagnostics_drain(dsd_opts*, dsd_state*);
 extern "C" int dsd_test_diagnostics_direct_key_applied(dsd_opts*, dsd_state*, int, const char*);
 #include <memory>
 #include "test_support.h"
@@ -159,10 +178,10 @@ realKeySources() {
     initState(state.get());
 
     struct KeyCase {
-        int type;
-        const char* flag;
+        int type = 0;
+        const char* flag = nullptr;
         QByteArray value;
-        const char* error;
+        const char* error = nullptr;
     };
 
     const KeyCase cases[] = {
@@ -285,11 +304,60 @@ clearWithConcurrentSubmit() {
     check(model.data(model.index(0), Qt::DisplayRole).toString().contains("during clear"));
 }
 
+static void
+earlyHostCaptureAndBridge() {
+    {
+        auto& log = DiagnosticsLog::instance();
+        DiagnosticsLogModel model(&log);
+        model.refresh();
+        check(model.allText().count("usb: permission pending before init") == 1, "pre-init USB status captured once");
+        log.flush();
+        QFile tail(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/diagnostics/tail.log");
+        check(tail.open(QIODevice::ReadOnly), "pre-init USB tail uses initialized app location");
+        check(tail.readAll().count("usb: permission pending before init") == 1, "pre-init USB status persisted once");
+    }
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        initOpts(&opts);
+        initState(&state);
+        dsd_app_frontend_runtime_start(&opts, &state);
+        CommandBridge bridge;
+        QString formatted;
+        for (int i = 0; i < 32; ++i) {
+            if (i) {
+                formatted += ' ';
+            }
+            formatted += "11";
+        }
+        check(bridge.applyEncryptionKey("hex", formatted), "bridge accepts formatted AES-256 input");
+        check(dsd_test_diagnostics_drain(&opts, &state) == 1 && state.K1 == 0x1111111111111111ULL
+                  && state.K4 == state.K1,
+              "formatted bridge AES installs full width");
+        check(bridge.applyEncryptionKey("rc4", "0x 11 22 33 44"), "bridge accepts formatted RC4 input");
+        check(dsd_test_diagnostics_drain(&opts, &state) == 1 && state.R == 0x11223344ULL,
+              "formatted bridge RC4 installs normalized value");
+        dsd_app_frontend_runtime_stop();
+        DSD_SECURE_ZERO(formatted.data(), static_cast<size_t>(formatted.size()) * sizeof(QChar));
+        freeState(&state);
+        DSD_SECURE_ZERO(&state, sizeof state);
+        DSD_SECURE_ZERO(&opts, sizeof opts);
+    }
+}
+
 int
 main(int argc, char** argv) {
+    QTemporaryDir earlyDir;
+    qputenv("XDG_DATA_HOME", earlyDir.path().toUtf8());
+    dsd_neo_log_set_sink(DSD_NEO_LOG_SINK_STDERR);
+    // USB status may arrive before Qt establishes its app-data location and
+    // before nativeInit selects the platform sink or starts the stderr pump.
+    DiagnosticsLog::submitHostDiagnostic(QStringLiteral("usb: permission pending before init"));
     QGuiApplication app(argc, argv);
     QTemporaryDir dir;
     qputenv("XDG_DATA_HOME", dir.path().toUtf8());
+    DiagnosticsLog::installTap();
+    earlyHostCaptureAndBridge();
     clearWithConcurrentSubmit();
     realKeySources();
     {
@@ -320,6 +388,7 @@ main(int argc, char** argv) {
               && previous.contains("stderr record") && previous.contains("host record"));
         model.clear();
         std::vector<std::thread> threads;
+        threads.reserve(4);
         for (int i = 0; i < 4; ++i) {
             threads.emplace_back([&] {
                 for (int j = 0; j < 600; ++j) {
@@ -337,7 +406,7 @@ main(int argc, char** argv) {
         }
         log.flush();
         QFile tail(dir.filePath("tail.log"));
-        check(tail.size() <= 256 * 1024);
+        check(tail.size() <= 256LL * 1024);
         model.clear();
         check(model.rowCount() == 0);
         log.submit("host", "info", QString(600, QChar(0x03bb)));

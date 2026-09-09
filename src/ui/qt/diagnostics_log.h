@@ -20,6 +20,8 @@ class DiagnosticsLog {
   public:
     static DiagnosticsLog& instance();
     static void installTap();
+    // Safe before Qt/nativeInit: bounded redacted records wait for installTap().
+    static void submitHostDiagnostic(const QString& text);
     // Explicit directory supports isolated stores in restart/retention tests.
     explicit DiagnosticsLog(const QString& directory);
     ~DiagnosticsLog();

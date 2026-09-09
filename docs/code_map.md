@@ -283,7 +283,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 - Target: `dsd-neo_app_control`
 - Responsibilities:
   - Frontend metrics and raw telemetry snapshots used by the terminal renderer
-  - Command queue dispatch and menu service helpers
+  - Command queue dispatch and menu service helpers. Decoder-owner runtime start/stop opens/closes admission under
+    the queue mutex; stop securely cancels pending payloads. Evicted or cancelled talkgroup exports publish failed
+    completions. Successful inherited-policy scan exports update the configured persistence path.
+  - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
+    placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Source ID imports: `DSD_APP_CMD_IMPORT_SRC_LIST = 572` carries a path string;
     `DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR = 573` has no payload. Import validates one candidate, refuses zero usable
     rows, and adopts that same store and path on success; failure preserves both.

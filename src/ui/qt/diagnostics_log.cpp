@@ -23,6 +23,19 @@ namespace dsd_qt {
 namespace {
 constexpr int tailLimit = 256 * 1024;
 
+struct HostDiagnostics {
+    std::mutex mutex;
+    QStringList pending;
+    bool ready = false;
+};
+
+HostDiagnostics&
+hostDiagnostics() {
+    // JNI producers may arrive before Qt initialization and outlive its teardown.
+    static auto* host = new HostDiagnostics;
+    return *host;
+}
+
 QByteArray
 boundedTail(QByteArray text) {
     if (text.size() > tailLimit) {
@@ -52,7 +65,33 @@ DiagnosticsLog::instance() {
 void
 DiagnosticsLog::installTap() {
     static std::once_flag installed;
-    std::call_once(installed, [] { dsd_neo_log_set_tap(capture, &instance()); });
+    std::call_once(installed, [] {
+        auto& host = hostDiagnostics();
+        std::lock_guard<std::mutex> lock(host.mutex);
+        auto& log = instance();
+        dsd_neo_log_set_tap(capture, &log);
+        for (const auto& text : host.pending) {
+            log.submit(QStringLiteral("host"), QStringLiteral("info"), text);
+        }
+        host.pending.clear();
+        host.ready = true;
+    });
+}
+
+void
+DiagnosticsLog::submitHostDiagnostic(const QString& text) {
+    auto& host = hostDiagnostics();
+    std::lock_guard<std::mutex> lock(host.mutex);
+    if (!host.ready) {
+        // Do not resolve AppDataLocation before Qt has its application identity.
+        // Only bounded, redacted records can survive until tap installation.
+        host.pending.append(redact(text).left(512));
+        if (host.pending.size() > 2000) {
+            host.pending.removeFirst();
+        }
+        return;
+    }
+    instance().submit(QStringLiteral("host"), QStringLiteral("info"), text);
 }
 
 QString

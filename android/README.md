@@ -87,10 +87,11 @@ trunk-scan target changes clear live model caches; history remains persistent.
 The shared host also reserves location requests/cancellation, content-based
 diagnostics sharing, device-attach signals and a diagnostic sink. Location and
 sharing default to unsupported until their platform packages supply implementations.
-USB/lifecycle diagnostics use the runtime log surface, including when no Activity
-exists. The optional last location fix uses milliseconds since epoch and is deleted
+USB/lifecycle diagnostics enter the process capture directly, including when no Activity
+exists. Before Qt initialization installs the tap, bounded redacted host records wait in memory. The optional last location fix uses milliseconds since epoch and is deleted
 after 24 hours, on load/read and by a foreground timer. Location producers use
-`AppPrefs::setLocationFix` to publish the tuple with one coherent notification. Coordinates and direct
+`AppPrefs::setLocationFix` to publish the tuple with one coherent notification; the coordinate
+and timestamp properties are read-only to QML. Coordinates and direct
 key fields must never be included in diagnostic exports. QString/QML secret
 copies cannot guarantee erasure; command-owned key bytes are securely erased.
 
@@ -600,6 +601,10 @@ ANR capture. The process ring holds at most 2000 entries, each at most 512 UTF-8
 bytes. Pause freezes the displayed list while capture continues; Copy and Share
 include the current ring. Clear clears the process ring/view, not the persistent
 tail. Diagnostics deliberately survive decoder Starting/Idle/Failed transitions.
+
+Host records arriving before the first decode start do not depend on the runtime sink or
+stderr pump. Tap installation drains their bounded buffer to the ring and the tail at
+Qt's initialized application-data location.
 
 A process-lifetime runtime log tap, the stderr pump, and host messages all enter
 `DiagnosticsLog::submit()`. It filters sensitive records before ring insertion and
