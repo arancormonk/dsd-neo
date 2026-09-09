@@ -12,6 +12,7 @@
 #include "decoder_host.h"
 #include "diagnostics_log.h"
 #include "metrics_model.h"
+#include "p25_network_model.h"
 #include "snapshot_internal.h"
 #include "ui_controller.h"
 
@@ -59,6 +60,9 @@ main(int argc, char** argv) {
     Host host;
     dsd_qt::MetricsModel metrics;
     dsd_qt::UiController controller(&host, &metrics, nullptr, nullptr);
+    dsd_qt::P25NetworkModel network;
+    network.setActive(true);
+    controller.setP25Network(&network);
     controller.setPollIntervalMs(50);
     QTemporaryDir diagnosticsDir;
     dsd_qt::DiagnosticsLog diagnostics(diagnosticsDir.path());
@@ -75,14 +79,19 @@ main(int argc, char** argv) {
         controller.stop();
     };
     state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_aff_rid[0] = 123;
     state.trunk_scan_active_ordinal = 1;
     tick();
     assert(!metrics.syncLabel().isEmpty());
+    assert(network.radios().size() == 1);
+    network.setActive(false); // Clearing must also reach closed sheets.
     state.synctype = DSD_SYNC_NONE;
     state.lastsynctype = DSD_SYNC_NONE;
     state.trunk_scan_active_ordinal = 2;
     tick();
     assert(metrics.syncLabel().isEmpty()); // Old target's sync hold must not survive.
+    assert(network.radios().isEmpty());
+    network.setActive(true);
     diagnostics.submit("host", "info", "before next session");
     for (auto phase : {Host::Starting, Host::Idle, Host::Failed}) {
         host.setPhase(Host::Running);
@@ -92,8 +101,11 @@ main(int argc, char** argv) {
         tick();
         assert(metrics.qualityValid() && metrics.ccFecOkPct() == 75.0);
         assert(!metrics.syncLabel().isEmpty());
+        assert(network.radios().size() == 1);
         host.setPhase(phase);
+        assert(network.radios().isEmpty());
         tick(); // The last engine snapshot is still published after stop.
+        assert(network.radios().isEmpty());
         assert(metrics.syncLabel().isEmpty());
         assert(!metrics.qualityValid() && !metrics.ccFecValid());
         assert(diagnosticsModel.allText().contains("before next session"));

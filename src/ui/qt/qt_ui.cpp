@@ -26,6 +26,7 @@
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
 #include "metrics_model.h"
+#include "p25_network_model.h" // WP-F2
 #include "radio_reference_model.h"
 #include "saved_systems_model.h"
 #include "session_args.h"
@@ -77,6 +78,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     (void)load_font(":/dsdneo/fonts/IBMPlexMono-Medium.ttf");
 
     auto* metrics = new MetricsModel(&engine);
+    auto* network = new P25NetworkModel(&engine); // WP-F2
     auto* commands = new CommandBridge(&engine);
     DiagnosticsLog::installTap();
     auto* diagnostics = new DiagnosticsLogModel(nullptr, &engine);
@@ -97,6 +99,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     monitorView->setSourceModel(history);
     auto* radioReference = new RadioReferenceModel(prefs, importedFiles, host, &engine);
     auto* controller = new UiController(host, metrics, history, talkgroups, &engine);
+    controller->setP25Network(network); // WP-F2
 
     // The library drops rows whose stored copy vanished behind the app's back;
     // saved systems that still point at one would build a `-G <missing>` argv and
@@ -132,6 +135,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("diagnosticsLog"), diagnostics);
     context->setContextProperty(QStringLiteral("decoderHost"), host);
     context->setContextProperty(QStringLiteral("metrics"), metrics);
+    context->setContextProperty(QStringLiteral("p25Network"), network); // WP-F2
     context->setContextProperty(QStringLiteral("commands"), commands);
     context->setContextProperty(QStringLiteral("uiController"), controller);
     context->setContextProperty(QStringLiteral("prefs"), prefs);

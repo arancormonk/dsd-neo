@@ -317,6 +317,7 @@ jobs:
             dsd-neo_test_ui_qt_session_state \
             dsd-neo_test_ui_qt_diagnostics_log \
             dsd-neo_test_runtime_log_tap \
+            dsd-neo_test_ui_qt_p25_network_model \
             dsd-neo_test_ui_qt_controller \
             dsd-neo_test_ui_qt_spectrum_math \
             dsd-neo_test_ui_qt_spectrum_model \

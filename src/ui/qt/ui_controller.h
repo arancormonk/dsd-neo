@@ -25,6 +25,7 @@ namespace dsd_qt {
 
 class CallHistoryModel;
 class MetricsModel;
+class P25NetworkModel; // WP-F2
 class DiagnosticsLogModel;
 class TalkgroupListModel;
 
@@ -44,6 +45,12 @@ class UiController : public QObject {
     void
     setDiagnosticsLog(DiagnosticsLogModel* model) {
         m_diagnostics = model;
+    }
+
+    // WP-F2: sheet-only network refresh uses the same held snapshot.
+    void
+    setP25Network(P25NetworkModel* model) {
+        m_network = model;
     }
 
     void start();
@@ -73,6 +80,7 @@ class UiController : public QObject {
     CallHistoryModel* m_history = nullptr;
     TalkgroupListModel* m_talkgroups = nullptr;
     DiagnosticsLogModel* m_diagnostics = nullptr;
+    P25NetworkModel* m_network = nullptr; // WP-F2
     QTimer m_timer;
     unsigned int m_active_ordinal = 0;
     DecoderHost::SessionState m_session = DecoderHost::Idle;
