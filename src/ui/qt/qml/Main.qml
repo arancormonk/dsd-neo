@@ -35,6 +35,11 @@ Window {
     // just the row: an explore start has no row to look up again.
     property var pendingStart: null
     property int pendingStartRow: -1
+    // WP-S1 shares the saved-session USB gate and initialization bookkeeping.
+    property bool pendingScanList: false
+    property bool sessionScanList: false
+    property bool scanListOpen: false
+    property string scanWarnings: ""
     readonly property string usbAccessText:
         awaitingUsbAccess && decoderHost && !decoderHost.localDeviceReady ? decoderHost.localDeviceStatus : ""
     readonly property string failureText: startError.length > 0 ? startError
@@ -70,9 +75,11 @@ Window {
         mainRoot.awaitingSessionInitialized = false
         // Accepted argv is only a request. These writes belong to the engine's
         // post-initialization edge, after file validation and tuner open.
-        prefs.lastStartedKind = mainRoot.exploring ? "explore" : "saved"
+        prefs.lastStartedKind = mainRoot.sessionScanList ? "scan" : mainRoot.exploring ? "explore" : "saved"
         prefs.lastStartedUid = mainRoot.exploring ? "" : mainRoot.sessionSystem.uid || ""
-        if (!mainRoot.exploring)
+        if (mainRoot.sessionScanList)
+            scanLists.touch(scanLists.rowForUid(prefs.lastStartedUid))
+        else if (!mainRoot.exploring)
             savedSystems.touch(savedSystems.rowForUid(prefs.lastStartedUid))
     }
     Connections {
@@ -133,10 +140,11 @@ Window {
             mainRoot.awaitingUsbAccess = false
             var sys = mainRoot.pendingStart
             var row = mainRoot.pendingStartRow
+            var scan = mainRoot.pendingScanList
             mainRoot.pendingStart = null
             mainRoot.pendingStartRow = -1
             if (sys)
-                mainRoot.startWithMap(sys, row)
+                mainRoot.startWithMap(sys, row, scan)
         }
     }
 
@@ -183,7 +191,13 @@ Window {
     function startSystem(row) {
         var sys = savedSystems.get(row)
         if (sys)
-            mainRoot.startWithMap(sys, row)
+            mainRoot.startWithMap(sys, row, false)
+    }
+
+    function startScanList(row) {
+        var list = scanLists.get(row)
+        if (list && list.uid)
+            mainRoot.startWithMap(list, row, true)
     }
 
     /**
@@ -196,7 +210,7 @@ Window {
      * permission dance below, and would get it wrong on exactly the install
      * where it matters: a fresh one.
      */
-    function startWithMap(sys, row) {
+    function startWithMap(sys, row, scan) {
         mainRoot.awaitingSessionInitialized = false
         mainRoot.sessionReachedRunning = false
         if (!sys || !sys.sourceType)
@@ -211,6 +225,7 @@ Window {
             mainRoot.awaitingUsbAccess = true
             mainRoot.pendingStart = sys
             mainRoot.pendingStartRow = row
+            mainRoot.pendingScanList = !!scan
             decoderHost.requestLocalDeviceAccess()
             return
         }
@@ -219,17 +234,19 @@ Window {
         mainRoot.awaitingUsbAccess = false
         mainRoot.pendingStart = null
         mainRoot.pendingStartRow = -1
-        var built = sessionArgs.build(sys)
+        var built = scan ? scanListStarter.build(sys) : sessionArgs.build(sys)
         if (!built.ok) {
             // Match the rejected field without exposing a prohibited argument or a key.
-            if (built.error === "frequency") {
+            if (scan) {
+                mainRoot.startError = built.error
+            } else if (built.error === "frequency") {
                 mainRoot.startError = qsTr("“%1” has no valid frequency — long-press its card to edit it.").arg(sys.name)
             } else if (built.error === "ppm") {
                 mainRoot.startError = qsTr("“%1” has an invalid PPM correction — long-press its card to edit it.").arg(sys.name)
             } else if (built.error === "encryption") {
                 mainRoot.startError = qsTr("“%1” has an invalid encryption key — long-press its card to edit it.").arg(sys.name)
             } else if (built.error === "unsafe-option") {
-                mainRoot.startError = qsTr("The session contains a prohibited extra option. Review the extra options before starting.")
+                mainRoot.startError = qsTr("The session contains a prohibited extra option or grouped short options. Remove prohibited options and write each short option separately.")
             } else {
                 mainRoot.startError = qsTr("The session options are invalid. Review them before starting.")
             }
@@ -245,15 +262,17 @@ Window {
         }
         mainRoot.exploring = (row < 0)
         mainRoot.sessionSystem = sys
+        mainRoot.sessionScanList = !!scan
+        mainRoot.scanWarnings = scan ? built.warnings.join("\n") : ""
         mainRoot.awaitingSessionInitialized = true
         mainRoot.sessionReachedRunning = decoderHost.sessionState === 2
         if (mainRoot.sessionReachedRunning)
             mainRoot.recordSessionInitialized()
-        mainRoot.sessionRow = row
+        mainRoot.sessionRow = scan ? -1 : row
         // The session's intent, decided here and nowhere else: a system someone
         // saved is a thing to listen to, and the spectrum watches it. Only a
         // session with no saved system behind it is free to wander.
-        mainRoot.exploring = (row < 0)
+        mainRoot.exploring = !scan && (row < 0)
         // Belongs to the session that just ended. Carried into this one it would be
         // written back to prefs on stop as if it were where this exploring got to —
         // a frequency from two sessions ago, on a session that may never have moved.
@@ -289,7 +308,7 @@ Window {
             return
         }
         mainRoot.startWithMap(mainRoot.exploreSystem(source, prefs.exploreHost, prefs.explorePort,
-                                                     prefs.exploreFreqMhz), -1)
+                                                     prefs.exploreFreqMhz), -1, false)
     }
 
     /**
@@ -337,7 +356,7 @@ Window {
 
         anchors.fill: safeArea
         opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen
-                  || mainRoot.diagnosticsOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen
+                  || mainRoot.diagnosticsOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.scanListOpen
                   || !prefs.onboardingDone) ? 0.0 : 1.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
@@ -362,6 +381,9 @@ Window {
                 mainRoot.wizardOpen = true
             }
             onPlaySystem: function (row) { mainRoot.startSystem(row) }
+            onPlayScanList: function (row) { mainRoot.startScanList(row) }
+            onEditScanList: function (row) { scanListEditor.openFor(row); mainRoot.scanListOpen = true }
+            onAddScanList: { scanListEditor.openFor(-1); mainRoot.scanListOpen = true }
             onEditSystem: function (row) {
                 wizard.openForEdit(row)
                 mainRoot.wizardOpen = true
@@ -434,8 +456,36 @@ Window {
             prefs.explorePort = port
             prefs.exploreFreqMhz = freqMhz
             mainRoot.exploreSetupOpen = false
-            mainRoot.startWithMap(mainRoot.exploreSystem(sourceType, host, port, freqMhz), -1)
+            mainRoot.startWithMap(mainRoot.exploreSystem(sourceType, host, port, freqMhz), -1, false)
         }
+    }
+
+    UiPanel {
+        z: 21
+        visible: mainRoot.monitorMode && mainRoot.scanWarnings.length > 0
+        anchors.left: safeArea.left
+        anchors.right: safeArea.right
+        anchors.bottom: safeArea.bottom
+        height: scanWarningText.implicitHeight + 32
+        Text {
+            id: scanWarningText
+            anchors.fill: parent
+            anchors.margins: 16
+            text: mainRoot.scanWarnings + qsTr("\nTap to dismiss")
+            wrapMode: Text.Wrap
+            color: Theme.textPrimary
+            font.family: Theme.sans
+        }
+        TapHandler { onTapped: mainRoot.scanWarnings = "" }
+    }
+
+    // WP-S1 editor, kept instantiated so closing a keyboard does not discard edits.
+    ScanListScreen {
+        id: scanListEditor
+        anchors.fill: safeArea
+        visible: mainRoot.scanListOpen
+        z: 20
+        onClosed: mainRoot.scanListOpen = false
     }
 
     // ---- Live monitor (owns the screen while a session is active) ----

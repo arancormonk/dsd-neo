@@ -26,6 +26,9 @@ target_sources(
         qt_ui.cpp
         radio_reference_model.cpp
         saved_systems_model.cpp
+        scan_lists_model.cpp
+        scan_list_targets.cpp
+        scan_list_starter.cpp
         spectrum_model.cpp
         spectrum_view_item.cpp
         session_args.cpp
@@ -65,6 +68,9 @@ qt_add_resources(
         qml/GradientButton.qml
         qml/HistoryScreen.qml
         qml/HomeScreen.qml
+        qml/ScanListScreen.qml
+        qml/ScanListCard.qml
+        qml/ScanEntryRow.qml
         qml/ImportsScreen.qml
         qml/LevelMeter.qml
         qml/LogoMark.qml
@@ -138,6 +144,9 @@ set_property(
     GLOBAL
     PROPERTY
         DSD_QT_FOUNDATION_QML_TESTS
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_scan_list_screen.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_home_scan_lists.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_monitor_scan_target.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_monitor_compact.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_session_initialized.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_diagnostics_screen.qml"

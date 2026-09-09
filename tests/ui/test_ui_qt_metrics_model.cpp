@@ -518,9 +518,15 @@ main(int argc, char** argv) {
     expect("trunk scan hold reads the coordinator's flag", !model.scanHold());
     expect("trunk scan avoids read the coordinator's count", model.scanAvoidCount() == 7);
     expect("trunk scan reports the avoided fallback", model.scanTargetAvoided());
+    // WP-S1: the held snapshot supplies target identity and lifecycle clearing.
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof state.trunk_scan_active_id, "%s", "dispatch");
+    state.trunk_scan_active_ordinal = 2;
+    state.trunk_scan_target_count = 3;
     state.trunk_scan_hold = 1;
     model.refresh(&opts, &state);
     expect("trunk scan hold on", model.scanHold());
+    expect("scan target identity", model.scanTargetId() == QStringLiteral("dispatch") && model.scanTargetOrdinal() == 2
+                                       && model.scanTargetCount() == 3);
     /* Both flags set: --trunk-scan owns the tuner and the routing prefers it, so the
      * view reads the coordinator's fields, not the scan list's. */
     opts.scanner_mode = 1;
@@ -601,6 +607,8 @@ main(int argc, char** argv) {
     model.clear();
     expect("a cleared model reports no lock", !model.syncedHere());
     expect("a cleared model reports no tuner", !model.radioInput());
+    expect("clear removes scan identity",
+           model.scanTargetId().isEmpty() && model.scanTargetOrdinal() == 0 && model.scanTargetCount() == 0);
 
     /* The channel width rides the tuner group: it moves when the decoder changes
      * profile, not when the user changes a setting. It is also gated on a radio

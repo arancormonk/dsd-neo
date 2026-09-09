@@ -20,7 +20,8 @@
  * snapshot ring, which is covered by UI_QT_CALL_HISTORY_MODEL instead. The
  * engine-facing objects (metrics, decoderHost, commands, prefs) are plain maps
  * rather than the production QObject models, which is what keeps this test off
- * the app-control boundary and clear of the engine libraries.
+ * live engine lifecycle. WP-S1 additionally links the real CSV-validation facade
+ * for pre-start scan-list checks; it never opens a tuner.
  *
  * That last choice gives up one guarantee, and missingContextKeys() buys it back:
  * reading a key a QVariantMap does not carry yields `undefined` with no warning
@@ -68,6 +69,8 @@
 #include "p25_network_model.h" // WP-F2
 #include "qml_spectrum_stub.h"
 #include "saved_systems_model.h"
+#include "scan_list_starter.h"
+#include "scan_lists_model.h"
 #include "session_args.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
@@ -131,6 +134,26 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         phase = value;
         Q_EMIT sessionStateChanged();
     }
+
+    // WP-S1: exercise the same brokered-USB gate as saved-system starts.
+    bool
+    localDeviceBrokered() const override {
+        return usbBrokered;
+    }
+
+    bool
+    localDeviceReady() const override {
+        return usbReady;
+    }
+
+    void
+    requestLocalDeviceAccess() override {
+        ++usbRequests;
+    }
+
+    bool usbBrokered = false;
+    bool usbReady = false;
+    int usbRequests = 0;
 
     bool acceptStart = false;
 
@@ -1022,6 +1045,18 @@ class Setup : public QObject {
     }
 
     Q_INVOKABLE void
+    setScanTestUsb(bool brokered, bool ready) {
+        m_import_host->usbBrokered = brokered;
+        m_import_host->usbReady = ready;
+        Q_EMIT m_import_host->localDeviceChanged();
+    }
+
+    Q_INVOKABLE void
+    setScanTestAcceptStart(bool accept) {
+        m_import_host->acceptStart = accept;
+    }
+
+    Q_INVOKABLE void
     emitSessionInitialized() {
         Q_EMIT m_import_host->sessionInitialized();
     }
@@ -1354,6 +1389,9 @@ class Setup : public QObject {
         // On-the-fly scan controls (#380): no rotation running at rest.
         metrics[QStringLiteral("scanRotationActive")] = false;
         metrics[QStringLiteral("scanHold")] = false;
+        metrics[QStringLiteral("scanTargetId")] = QString();
+        metrics[QStringLiteral("scanTargetOrdinal")] = 0;
+        metrics[QStringLiteral("scanTargetCount")] = 0;
         metrics[QStringLiteral("scanAvoidCount")] = 0;
         metrics[QStringLiteral("scanTargetAvoided")] = false;
         // Whether an automatic controller owns the tuner, which one, and where it
@@ -1472,6 +1510,9 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("diagnosticsLog"), new dsd_qt::DiagnosticsLogModel(nullptr, engine));
         ctx->setContextProperty(QStringLiteral("uiController"), new TestUiController(engine));
         ctx->setContextProperty(QStringLiteral("savedSystems"), saved_systems);
+        ctx->setContextProperty(QStringLiteral("scanLists"), new dsd_qt::ScanListsModel(engine));
+        ctx->setContextProperty(QStringLiteral("scanListStarter"),
+                                new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine));
         ctx->setContextProperty(QStringLiteral("sessionArgs"), session_args);
         ctx->setContextProperty(QStringLiteral("appVersionText"), QStringLiteral("0.0.0-test"));
     }

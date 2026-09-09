@@ -709,3 +709,20 @@ Android (`allowBackup=false`), and under Qt's `AppDataLocation` on desktop.
 QString/QML copies cannot promise secure erasure; closing the session sheet
 clears its draft input but does not guarantee erasure of all memory copies.
 Key values are never shown in labels, toasts, diagnostics, or exports.
+
+### Scan lists
+
+Home → **Scan lists** combines saved systems and bare P25/DMR/NXDN frequencies
+into a single trunk-scan session. Long-press a card to edit entries, order, timing,
+modulation and gain. Choose one USB or RTL-TCP tuner for the list; it replaces
+individual systems' source, endpoint, PPM, bandwidth and bias-tee settings.
+The list editor can select imported group/source CSVs from the existing library.
+Per-system groups and keys remain isolated on rotation; source aliases are global
+and differing system alias files produce a warning. Unsupported settings are
+refused rather than dropped. See [scan-list rules](../docs/trunk-scan.md#qt-and-android-scan-lists).
+
+USB lists use the same permission gate as saved systems. A failed or cancelled
+start does not change last-started preferences or list recency; those update only
+after engine initialization. Monitor shows the active target ID, ordinal/count
+and hold state. Generated CSVs may contain keys, are private app inputs, and must
+not be exported or logged. QString/QML key copies cannot guarantee memory erasure.

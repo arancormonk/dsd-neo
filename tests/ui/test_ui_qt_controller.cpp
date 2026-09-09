@@ -296,7 +296,9 @@ main(int argc, char** argv) {
     assert(dsd_app_drain_cmds(&opts, &emptyPolicyState) == 1);
     assert(dsd_tg_policy_entry_count(&emptyPolicyState) == 1);
     dsd_state_ext_free_all(&emptyPolicyState);
-    dsd_tg_policy_entry entry = {};
+    // The lifecycle case above owns a separate policy fixture.
+    assert(dsd_tg_policy_clear(&state) == 0);
+    entry = {};
     assert(dsd_tg_policy_make_exact_entry(42, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
     assert(dsd_tg_policy_append_exact(&state, &entry) == 0);
     uint64_t context = 0;

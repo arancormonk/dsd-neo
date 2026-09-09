@@ -450,3 +450,52 @@ at configure time as well as in `tools/check_arch_rules.sh`.
 The UI clears live model caches when `trunk_scan_active_ordinal` changes. A quiet
 new target must not inherit the old target's held sync indication. History keeps
 calls across these boundaries.
+
+### Qt and Android scan lists
+
+Home's **Scan lists** section starts saved systems and bare frequencies as one
+`--trunk-scan` session. Long-press a list to edit, reorder, enable or remove entries.
+The editor selects USB or RTL-TCP and one tuner configuration for the entire list.
+System source, host, port, PPM, bandwidth and bias-tee settings are replaced by the
+list's settings. Entry gain overrides system gain; otherwise system gain overrides
+the list's default. Zero dwell/hold, negative-one gain/bandwidth/bias-tee and blank
+PPM/modulation inherit their corresponding defaults. Nonzero dwell/hold must be
+250–600000 ms.
+
+Lists persist in `scan_lists.json`. Lists and entries have stable UIDs; system
+entries reference saved-system UIDs, so deleting or reordering a saved system
+cannot silently select a different system. A missing referenced system prevents
+start. Frequency entries select P25, DMR, NXDN48 or NXDN96 conventional decoding.
+
+Saved P25 (`-ft`, `-f1`, `-mq`, `-^`), DMR (`-fs`), NXDN48 (`-fi`) and NXDN96
+(`-fn`) modes retain their trunked/conventional choice. `-mq` also selects CQPSK.
+Auto, `-Y`, D-STAR, YSF, M17 and EDACS are refused. Systems with extra options are
+refused because those options cannot be scoped safely. Channel maps require a
+trunked target; P25 band plans require a P25 trunked target.
+
+Each system's group file becomes a scoped `-G` option. The list's group file is
+only the fallback for entries without their own file. Key CSVs retain their
+hex/decimal interpretation. Direct keys become scoped `-b`, `-H`, `-1` or `-R`
+options, with `-4`/`-0` forcing when selected; the legacy `single_key_*` columns
+are not used. Combining a direct key with a key CSV is refused. Source aliases
+remain global: the list's source file wins, with a warning for differing system
+source files.
+
+The starter checks files and writes a private `<AppData>/scan_lists/<uid>.csv`
+using `QSaveFile`, then validates it through the app-control facade before asking
+the host to start. Missing/unreadable files, commas, double quotes,
+CR/LF in paths, duplicate type/frequency pairs and empty enabled lists are refused.
+Relative saved paths are resolved against the working directory before generating
+the target CSV, preserving their standalone meaning. Preference extra options are token-screened against session/scan/decode overrides
+and `--show-keys`. Runtime initialization failures use the host's existing failure
+surface. Recency and `lastStartedKind=scan`/`lastStartedUid` are written only on
+`sessionInitialized`, never merely because a start was queued.
+
+Monitor displays `SCANNING · <id> (n/m)` and `HOLD`. Existing Hold/Avoid/Next/Clear
+controls operate on these targets. Target identity clears with the other live
+metrics on lifecycle transitions.
+
+Generated CSVs can contain direct keys and are owner-readable/writable only. They
+are internal session inputs, not exports; removing a list removes its generated
+CSV. Owned UTF-8 generator storage is erased on disposal. QString/QML copies of
+keys cannot promise erasure and must never be displayed or included in diagnostics.

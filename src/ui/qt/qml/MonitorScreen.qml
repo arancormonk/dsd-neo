@@ -9,11 +9,14 @@ import "Util.js" as Util
 Item {
     id: screen
 
-    onVisibleChanged: { if (!visible) keySheet.visible = false }
+    onVisibleChanged: {
+        if (!visible) {
+            keySheet.visible = false
+            networkSheet.visible = false
+        }
+    }
 
     readonly property bool compactHeight: height < 500
-
-    onVisibleChanged: { if (!visible) networkSheet.visible = false; }
 
     // Raised by the header's spectrum button; Main.qml owns the layer.
     signal openSpectrum
@@ -117,7 +120,11 @@ Item {
 
             Text {
                 width: parent.width
-                text: screen.system ? Util.monitorMeta(screen.system) : ""
+                objectName: "scanTargetHeader"
+                text: metrics.scanTargetCount > 0
+                      ? qsTr("SCANNING · %1 (%2/%3)").arg(metrics.scanTargetId).arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount)
+                        + (metrics.scanHold ? qsTr(" · HOLD") : "")
+                      : screen.system ? Util.monitorMeta(screen.system) : ""
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(11)
                 font.letterSpacing: 0.8

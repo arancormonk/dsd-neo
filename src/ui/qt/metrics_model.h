@@ -125,6 +125,10 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool trunkingEnabled READ trunkingEnabled NOTIFY controlChanged)
     Q_PROPERTY(bool scannerMode READ scannerMode NOTIFY controlChanged)
     Q_PROPERTY(bool scanRotationActive READ scanRotationActive NOTIFY controlChanged)
+    // WP-S1: copied from the tick's held snapshot.
+    Q_PROPERTY(QString scanTargetId READ scanTargetId NOTIFY controlChanged)
+    Q_PROPERTY(int scanTargetOrdinal READ scanTargetOrdinal NOTIFY controlChanged)
+    Q_PROPERTY(int scanTargetCount READ scanTargetCount NOTIFY controlChanged)
     Q_PROPERTY(bool scanHold READ scanHold NOTIFY controlChanged)
     Q_PROPERTY(int scanAvoidCount READ scanAvoidCount NOTIFY controlChanged)
     Q_PROPERTY(bool scanTargetAvoided READ scanTargetAvoided NOTIFY controlChanged)
@@ -672,6 +676,22 @@ class MetricsModel : public QObject {
         return m_view.scan_hold;
     }
 
+    /** @brief Active trunk-scan identity, copied from the held snapshot. */
+    QString
+    scanTargetId() const {
+        return m_view.scan_target_id;
+    }
+
+    int
+    scanTargetOrdinal() const {
+        return m_view.scan_target_ordinal;
+    }
+
+    int
+    scanTargetCount() const {
+        return m_view.scan_target_count;
+    }
+
     /** @brief Channels or targets avoided for the session, whichever rotation is running. */
     int
     scanAvoidCount() const {
@@ -944,6 +964,9 @@ class MetricsModel : public QObject {
         bool trunking_enabled = false;
         bool scanner_mode = false;
         bool scan_rotation_active = false;
+        QString scan_target_id;
+        int scan_target_ordinal = 0;
+        int scan_target_count = 0;
         bool scan_hold = false;
         bool scan_target_avoided = false;
 
@@ -965,8 +988,10 @@ class MetricsModel : public QObject {
            neither comparison outgrows the complexity ceiling as readings are added. */
         bool
         scanControlEquals(const View& other) const {
-            return scan_rotation_active == other.scan_rotation_active && scan_hold == other.scan_hold
-                   && scan_avoid_count == other.scan_avoid_count && scan_target_avoided == other.scan_target_avoided;
+            return scan_target_id == other.scan_target_id && scan_target_ordinal == other.scan_target_ordinal
+                   && scan_target_count == other.scan_target_count && scan_rotation_active == other.scan_rotation_active
+                   && scan_hold == other.scan_hold && scan_avoid_count == other.scan_avoid_count
+                   && scan_target_avoided == other.scan_target_avoided;
         }
 
         bool
