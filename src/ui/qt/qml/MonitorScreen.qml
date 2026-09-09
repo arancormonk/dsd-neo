@@ -110,7 +110,11 @@ Item {
 
             Text {
                 width: parent.width
-                text: screen.system ? Util.monitorMeta(screen.system) : ""
+                objectName: "scanTargetHeader"
+                text: metrics.scanTargetCount > 0
+                      ? qsTr("SCANNING · %1 (%2/%3)").arg(metrics.scanTargetId).arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount)
+                        + (metrics.scanHold ? qsTr(" · HOLD") : "")
+                      : screen.system ? Util.monitorMeta(screen.system) : ""
                 font.family: Theme.mono
                 font.pixelSize: 11 * Theme.fontScale
                 font.letterSpacing: 0.8

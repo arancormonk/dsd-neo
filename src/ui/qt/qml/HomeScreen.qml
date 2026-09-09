@@ -9,6 +9,9 @@ import "Util.js" as Util
 Item {
     id: screen
 
+    signal addScanList()
+    signal playScanList(int row)
+    signal editScanList(int row)
     signal addSystem()
     signal playSystem(int row)
     signal editSystem(int row)
@@ -225,6 +228,27 @@ Item {
                 width: parent.width
                 text: qsTr("+ Add a system")
                 onClicked: screen.addSystem()
+            }
+
+            // WP-S1: same play/edit gestures as saved systems.
+            MicroLabel { text: qsTr("Scan lists") }
+            Repeater {
+                model: scanLists
+                ScanListCard {
+                    required property int index
+                    required property string name
+                    required property var entries
+                    width: content.width
+                    listName: name
+                    entryCount: entries.length
+                    onPlay: screen.playScanList(index)
+                    onEdit: screen.editScanList(index)
+                }
+            }
+            DashedActionButton {
+                width: parent.width
+                text: qsTr("+ Add a scan list")
+                onClicked: screen.addScanList()
             }
 
             MicroLabel {

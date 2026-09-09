@@ -689,3 +689,17 @@ The `--calc-lcn` one-shot tool is more flexible than the CSV imports above:
 - It scans each line for the first numeric field and treats it as a frequency.
 - Frequencies may be in **Hz** (e.g., `451237500`) or **MHz** (e.g., `451.2375`).
 - The output is printed to stdout as `lcn,freq` CSV.
+
+### Frontend-generated scan lists
+
+Qt/Android scan lists generate the trunk-scan target format described in
+[trunk-scan.md](trunk-scan.md#qt-and-android-scan-lists). Per-system group lists use
+scoped `-G`, and direct keys use scoped `-b`/`-H`/`-1`/`-R` so their activation and
+mute/force semantics match standalone sessions. Key CSVs use `keys_hex_csv` or
+`keys_dec_csv`; frontend generation never uses `single_key_*`.
+
+The generator refuses comma, double quote and line breaks in file paths. Spaces
+are supported: an options cell contains `-G "absolute path/group list.csv"`
+directly, without CSV-doubling those quotes. The engine target parser strips outer
+CSV quotes but does not perform RFC-style doubled-quote unescaping. Generated
+files containing keys are private internal inputs and are not shared exports.

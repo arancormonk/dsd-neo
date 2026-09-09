@@ -714,3 +714,21 @@ signalled key IDs and the scalar/AES state activated since row entry. `CORE_KEY_
 helper, real CLI parser, real command queue, and keyed/unkeyed rotation together.
 Qt's `session_args.cpp` validates saved string key types and emits discrete argv;
 `SessionArgsBuilder` returns a value-free `errorText` for the entry UI.
+
+#### Qt scan-list start path
+
+`scan_lists_model.{h,cpp}` persists list/entry UIDs and saved-system references
+through `json_store` (`scan_lists.json`). `scan_list_targets.{h,cpp}` is a pure
+QtCore generator with no filesystem or engine dependency. `scan_list_starter`
+checks imported paths, atomically writes the private CSV, validates through
+`app_control/trunk_scan_validate.h`, and delegates argv assembly to
+`session_args.cpp`. `Main.qml` shares the existing USB permission gate and extends
+the single `sessionInitialized` recency handler. `metrics_model` copies target
+identity from the tick's held snapshot; no extra snapshot reader is introduced.
+
+`UI_QT_SCAN_LIST_TARGETS` covers preservation/rejection and option screening;
+`UI_QT_SCAN_LIST_ROUNDTRIP` exercises persistence and the real facade.
+`ENGINE_TRUNK_SCAN_SCAN_LIST` sends a generated three-target CSV through the real
+coordinator, group-policy and key ownership code, replacing only tuning side
+effects. It verifies policy/keys on rotation and baseline restoration on shutdown.
+The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LISTS`.
