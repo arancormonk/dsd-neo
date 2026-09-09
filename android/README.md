@@ -24,6 +24,16 @@ do both at once:
   screen: the hero call, mute/hold/skip, the signal strip, and the session's
   recent calls.
 
+The Monitor's decode-quality row sits below the tuner strip and also works with
+PCM, network, and file inputs. `CC FEC` and P2 `RS` show successful blocks as a
+percentage; no blocks (0/0) means no reading. `VOICE x.x err/fr` is the average
+corrected-error count per voice frame, using only populated samples in the current
+call's ring (P1, or the lead P2 slot). It is not BER. A fresh call waits for its
+first voice sample; an unsampled slot never borrows the other slot's average.
+Non-P25 calls show the lead slot's last-frame `ERR a/b` instead. The row wraps
+inside the scrolling Monitor body on short screens and clears with the session.
+Protocol-specific true BER and DMR/NXDN windowed error rings remain follow-up work.
+
 Both layers stay instantiated and cross-fade, so nothing typed or scrolled is
 lost when a session ends. The live readings exist *only* in the monitoring view:
 nothing upstream invalidates the published snapshot on stop, so

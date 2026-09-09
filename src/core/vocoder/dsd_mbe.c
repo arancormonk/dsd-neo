@@ -67,6 +67,9 @@ p25p2_record_voice_err(dsd_state* state, int voice_err) {
     state->p25_p2_voice_err_hist_sum[slot] += val;
     state->p25_p2_voice_err_hist_sum[slot] -= old;
     state->p25_p2_voice_err_hist_pos[slot] = (hpos + 1) % len;
+    if (state->p25_p2_voice_err_hist_count[slot] < len) {
+        state->p25_p2_voice_err_hist_count[slot]++;
+    }
 
     dsd_rtl_stream_metrics_hook_p25p2_err_update(slot, 0, 0, 0, 0, (int)val);
 }
@@ -231,6 +234,9 @@ update_p25_p1_voice_err_hist(dsd_state* state) {
     state->p25_p1_voice_err_hist_sum += val;
     state->p25_p1_voice_err_hist_sum -= old;
     state->p25_p1_voice_err_hist_pos = (pos + 1) % len;
+    if (state->p25_p1_voice_err_hist_count < len) {
+        state->p25_p1_voice_err_hist_count++;
+    }
 }
 
 static void

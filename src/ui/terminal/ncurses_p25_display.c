@@ -10,6 +10,7 @@
 #include <curses.h>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
@@ -361,31 +362,20 @@ ui_match_iden_channel(const dsd_state* state, int ch16, long int freq, int* out_
 
 int
 compute_p25p1_voice_avg_err(const dsd_state* s, double* out_avg) {
-    int len = s->p25_p1_voice_err_hist_len;
-    if (len <= 0) {
-        return 0;
+    const dsd_app_voice_errs value = dsd_app_p25p1_voice_avg_errs(s);
+    if (value.valid && out_avg) {
+        *out_avg = value.errs_per_frame;
     }
-    double avg = (double)s->p25_p1_voice_err_hist_sum / (double)len;
-    if (out_avg) {
-        *out_avg = avg;
-    }
-    return 1;
+    return value.valid;
 }
 
 int
 compute_p25p2_voice_avg_err(const dsd_state* s, int slot, double* out_avg) {
-    if (slot < 0 || slot > 1) {
-        return 0;
+    const dsd_app_voice_errs value = dsd_app_p25p2_voice_avg_errs(s, slot);
+    if (value.valid && out_avg) {
+        *out_avg = value.errs_per_frame;
     }
-    int len = s->p25_p2_voice_err_hist_len;
-    if (len <= 0) {
-        return 0;
-    }
-    double avg = (double)s->p25_p2_voice_err_hist_sum[slot] / (double)len;
-    if (out_avg) {
-        *out_avg = avg;
-    }
-    return 1;
+    return value.valid;
 }
 
 static int
@@ -400,9 +390,9 @@ ui_print_p25_sync_metric(const dsd_state* state) {
 
 static int
 ui_print_p1_voice_err_metric(const dsd_state* state) {
-    double avg_ber = 0.0;
-    if (compute_p25p1_voice_avg_err(state, &avg_ber)) {
-        printw("| P1 Voice: ERR [%X][%X] Avg BER:%4.1f%%\n", state->errs & 0xF, state->errs2 & 0xF, avg_ber);
+    double avg_errs = 0.0;
+    if (compute_p25p1_voice_avg_err(state, &avg_errs)) {
+        printw("| P1 Voice: ERR [%X][%X] Avg errs/frame:%4.1f\n", state->errs & 0xF, state->errs2 & 0xF, avg_errs);
     } else {
         printw("| P1: ERR [%X][%X]\n", state->errs & 0xF, state->errs2 & 0xF);
     }
@@ -526,7 +516,7 @@ ui_print_p1_tail_erasure_metric(const dsd_state* state, int is_p25p1) {
 
 static int
 ui_print_p1_voice_percentile_metric(const dsd_state* state) {
-    int n = state->p25_p1_voice_err_hist_len;
+    int n = state->p25_p1_voice_err_hist_count;
     if (n <= 0) {
         return 0;
     }
@@ -535,7 +525,7 @@ ui_print_p1_voice_percentile_metric(const dsd_state* state) {
     if (!compute_percentiles_u8(state->p25_p1_voice_err_hist, n, &p50, &p95)) {
         return 0;
     }
-    printw("| P1 Voice: P50/P95: %4.1f/%4.1f%%\n", p50, p95);
+    printw("| P1 Voice: P50/P95 errs/frame: %4.1f/%4.1f\n", p50, p95);
     return 1;
 }
 
@@ -568,18 +558,18 @@ ui_print_p2_voice_avg_metric(const dsd_state* state) {
         return 0;
     }
     if (has_l && has_r) {
-        printw("| P2 Voice: Avg BER - S1:%4.1f%%, S2:%4.1f%%\n", avg_l, avg_r);
+        printw("| P2 Voice: Avg errs/frame - S1:%4.1f, S2:%4.1f\n", avg_l, avg_r);
     } else if (has_l) {
-        printw("| P2 Voice: Avg BER - S1:%4.1f%%\n", avg_l);
+        printw("| P2 Voice: Avg errs/frame - S1:%4.1f\n", avg_l);
     } else {
-        printw("| P2 Voice: Avg BER - S2:%4.1f%%\n", avg_r);
+        printw("| P2 Voice: Avg errs/frame - S2:%4.1f\n", avg_r);
     }
     return 1;
 }
 
 static int
 ui_print_p2_voice_percentile_metric(const dsd_state* state) {
-    int n = state->p25_p2_voice_err_hist_len;
+    int n = state->p25_p2_voice_err_hist_count[0] + state->p25_p2_voice_err_hist_count[1];
     if (n <= 0) {
         return 0;
     }
@@ -587,17 +577,19 @@ ui_print_p2_voice_percentile_metric(const dsd_state* state) {
     double l95 = 0.0;
     double r50 = 0.0;
     double r95 = 0.0;
-    int have_any = 0;
-    if (compute_percentiles_u8(state->p25_p2_voice_err_hist[0], n, &l50, &l95)) {
-        have_any = 1;
-    }
-    if (compute_percentiles_u8(state->p25_p2_voice_err_hist[1], n, &r50, &r95)) {
-        have_any = 1;
-    }
-    if (!have_any) {
+    int has_l =
+        compute_percentiles_u8(state->p25_p2_voice_err_hist[0], state->p25_p2_voice_err_hist_count[0], &l50, &l95);
+    int has_r =
+        compute_percentiles_u8(state->p25_p2_voice_err_hist[1], state->p25_p2_voice_err_hist_count[1], &r50, &r95);
+    if (has_l && has_r) {
+        printw("| P2 Voice: P50/P95 errs/frame - S1:%4.1f/%4.1f S2:%4.1f/%4.1f\n", l50, l95, r50, r95);
+    } else if (has_l) {
+        printw("| P2 Voice: P50/P95 errs/frame - S1:%4.1f/%4.1f\n", l50, l95);
+    } else if (has_r) {
+        printw("| P2 Voice: P50/P95 errs/frame - S2:%4.1f/%4.1f\n", r50, r95);
+    } else {
         return 0;
     }
-    printw("| P2 Voice: P50/P95 - S1:%4.1f/%4.1f%% S2:%4.1f/%4.1f%%\n", l50, l95, r50, r95);
     return 1;
 }
 

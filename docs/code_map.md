@@ -300,6 +300,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   Such sessions therefore report the defaults — no carrier lock, no CFO, no output/symbol rate, and the
   invalid-SNR sentinel — and a frontend should omit those rows rather than render them as zeros. Applies to
   every frontend, not just the Android app
+- Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
+  copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
+  errors from the caller's held snapshot. The core vocoder maintains ring counts;
+  canonical call starts reset the affected slot. Qt publishes one `qualityChanged`
+  group, and the terminal average helpers wrap the same arithmetic. Counts are
+  corrected errors per voice frame, not BER; 0/0 FEC ratios are invalid.
 - Build files: `src/app_control/CMakeLists.txt`
 
 ## DSP

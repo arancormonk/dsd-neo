@@ -835,6 +835,13 @@ test_process_mbe_frame_p25p1_suppresses_tail_erasure_hard(void) {
     state.errs = 31;
     state.errs2 = 32;
     DSD_SNPRINTF(state.err_str, sizeof(state.err_str), "%s", "stale");
+    // Seed an existing call's samples: the first voice frame of a new epoch
+    // intentionally resets the ring, while tail suppression must preserve it.
+    dsd_call_observation call = {0};
+    call.protocol = state.synctype;
+    call.kind = DSD_CALL_KIND_VOICE;
+    (void)dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    state.p25_p1_voice_err_hist_count = 2;
     state.p25_p1_voice_err_hist_len = 4;
     state.p25_p1_voice_err_hist_pos = 2;
     state.p25_p1_voice_err_hist_sum = 7U;
@@ -857,6 +864,7 @@ test_process_mbe_frame_p25p1_suppresses_tail_erasure_hard(void) {
         expect_eq_mem("p25p1-tail-hard enhanced history", &prev_enhanced, &prev_enhanced_before, sizeof(prev_enhanced));
     rc |= expect_eq_mem("p25p1-tail-hard rolling history", state.p25_p1_voice_err_hist, history_before,
                         sizeof(history_before));
+    rc |= expect_eq_int("p25p1-tail-hard history count", state.p25_p1_voice_err_hist_count, 2);
     rc |= expect_eq_int("p25p1-tail-hard history position", state.p25_p1_voice_err_hist_pos, 2);
     rc |= expect_eq_int("p25p1-tail-hard history sum", (int)state.p25_p1_voice_err_hist_sum, 7);
     rc |= expect_eq_int("p25p1-tail-hard errs", state.errs, 0);
@@ -914,6 +922,13 @@ test_process_mbe_frame_p25p1_suppresses_tail_erasure_soft(void) {
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     state.p25vc = 8;
     state.debug_audio_errors = 5U;
+    // Seed an existing call's samples: the first voice frame of a new epoch
+    // intentionally resets the ring, while tail suppression must preserve it.
+    dsd_call_observation call = {0};
+    call.protocol = state.synctype;
+    call.kind = DSD_CALL_KIND_VOICE;
+    (void)dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    state.p25_p1_voice_err_hist_count = 1;
     state.p25_p1_voice_err_hist_len = 3;
     state.p25_p1_voice_err_hist_pos = 1;
     state.p25_p1_voice_err_hist_sum = 6U;
@@ -935,6 +950,7 @@ test_process_mbe_frame_p25p1_suppresses_tail_erasure_soft(void) {
         expect_eq_mem("p25p1-tail-soft enhanced history", &prev_enhanced, &prev_enhanced_before, sizeof(prev_enhanced));
     rc |= expect_eq_mem("p25p1-tail-soft rolling history", state.p25_p1_voice_err_hist, history_before,
                         sizeof(history_before));
+    rc |= expect_eq_int("p25p1-tail-soft history count", state.p25_p1_voice_err_hist_count, 1);
     rc |= expect_eq_int("p25p1-tail-soft history position", state.p25_p1_voice_err_hist_pos, 1);
     rc |= expect_eq_int("p25p1-tail-soft history sum", (int)state.p25_p1_voice_err_hist_sum, 6);
     rc |= expect_eq_int("p25p1-tail-soft errs", state.errs, 0);

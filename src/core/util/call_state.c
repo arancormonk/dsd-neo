@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -573,6 +574,23 @@ call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observa
     }
 }
 
+/* Voice-error windows belong to a call, including late-entry epochs opened by
+ * the vocoder. Keep capacity, but clear the slot before its first voice frame;
+ * an identity specialization within the same epoch must keep its samples. */
+static void
+call_state_reset_voice_errors(dsd_state* state, uint8_t slot) {
+    if (slot == 0) {
+        DSD_MEMSET(state->p25_p1_voice_err_hist, 0, sizeof(state->p25_p1_voice_err_hist));
+        state->p25_p1_voice_err_hist_count = 0;
+        state->p25_p1_voice_err_hist_pos = 0;
+        state->p25_p1_voice_err_hist_sum = 0;
+    }
+    DSD_MEMSET(state->p25_p2_voice_err_hist[slot], 0, sizeof(state->p25_p2_voice_err_hist[slot]));
+    state->p25_p2_voice_err_hist_count[slot] = 0;
+    state->p25_p2_voice_err_hist_pos[slot] = 0;
+    state->p25_p2_voice_err_hist_sum[slot] = 0;
+}
+
 int
 dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation, dsd_call_boundary boundary) {
     if (!state || !observation || observation->slot >= DSD_CALL_STATE_SLOT_COUNT) {
@@ -593,6 +611,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     // assignment below (reacquires_ended_epoch implies begins_epoch), so no zeroing is needed.
     dsd_call_snapshot previous;
     if (begins_epoch) {
+        call_state_reset_voice_errors(state, observation->slot);
         previous = *snapshot;
         DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
         ext->epoch_sequence[observation->slot] = call_state_next_nonzero(ext->epoch_sequence[observation->slot]);

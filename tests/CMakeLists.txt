@@ -2027,6 +2027,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_ncurses_p25_display_helpers
         ui/test_ui_ncurses_p25_display_helpers.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
     )
     target_compile_definitions(
         dsd-neo_test_ui_ncurses_p25_display_helpers
@@ -2660,6 +2661,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_metrics_model
@@ -10070,3 +10072,42 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_controller PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_CONTROLLER COMMAND dsd-neo_test_ui_qt_controller)
 endif()
+
+# WP-F3: exercise the real vocoder producers and canonical call boundaries.
+add_executable(
+    dsd-neo_test_core_p25_voice_error_ring
+    core/test_core_p25_voice_error_ring.c
+)
+target_link_libraries(
+    dsd-neo_test_core_p25_voice_error_ring
+    PRIVATE
+        dsd-neo_core
+        dsd-neo_proto_nxdn
+        dsd-neo_proto_dmr
+        dsd-neo_feature_codec2
+        ${LIBS}
+)
+add_test(
+    NAME CORE_P25_VOICE_ERROR_RING
+    COMMAND dsd-neo_test_core_p25_voice_error_ring
+)
+
+# WP-F3: frontend-neutral quality arithmetic over the held snapshot.
+add_executable(
+    dsd-neo_test_app_control_p25_metrics
+    ui/test_app_control_p25_metrics.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_p25_metrics
+    PRIVATE dsd-neo_test_call_state_support
+)
+add_test(
+    NAME APP_CONTROL_P25_METRICS
+    COMMAND dsd-neo_test_app_control_p25_metrics
+)
+dsd_neo_add_public_header_smoke_test(
+    dsd-neo_test_headers_public_app_control_p25_metrics
+    HEADERS_PUBLIC_APP_CONTROL_P25_METRICS
+    dsd-neo/app_control/p25_metrics.h C
+)
