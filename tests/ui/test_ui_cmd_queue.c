@@ -2570,6 +2570,109 @@ test_talkgroup_list_commands(void) {
     return rc;
 }
 
+/* An export completion must survive the rest of a drain before the UI polls. */
+static int
+test_talkgroup_export_result(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    const char* path = "dsd_neo_test_d1_retained_export.csv";
+    remove(path);
+    int rc = expect_int("seed retained export policy", dsd_tg_policy_set_mode(state, 42, 42, "A"), 0);
+
+    union {
+        uint64_t align;
+        unsigned char bytes[sizeof(dsd_app_tg_export_payload) + 128];
+    } storage = {0};
+
+    dsd_app_tg_export_payload* request = (dsd_app_tg_export_payload*)storage.bytes;
+    dsd_tg_policy_table_version(state, &request->policy_context, &request->policy_generation);
+    DSD_SNPRINTF(request->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", path);
+    rc |= expect_int("retained export queued",
+                     dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, sizeof storage),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+    rc |= expect_int("export and unrelated command drain together", dsd_app_drain_cmds(opts, state), 2);
+    rc |= expect_str("unrelated command overwrote export toast", state->ui_msg, "Applied: Source ID list cleared");
+    dsd_app_tg_export_result result;
+    rc |= expect_int("completion available on first poll", dsd_app_tg_export_result_get(&result), 1);
+    rc |= expect_true("first completion has sequence", result.sequence != 0);
+    rc |= expect_int("retained export succeeded", result.success, 1);
+    rc |= expect_true("retained request context", result.policy_context == request->policy_context);
+    rc |= expect_true("retained request generation", result.policy_generation == request->policy_generation);
+    rc |= expect_str("retained written path", result.path, path);
+    rc |= expect_str("persistence activated before success", opts->group_in_file, result.path);
+    const dsd_app_tg_export_result success = result;
+    post_empty(DSD_APP_CMD_UI_MSG_CLEAR);
+    dsd_app_drain_cmds(opts, state);
+    dsd_app_tg_export_result_get(&result);
+    rc |= expect_true("unrelated drain preserves sequence", result.sequence == success.sequence);
+    rc |= expect_str("unrelated drain preserves path", result.path, path);
+    rc |= expect_int("null completion output refused", dsd_app_tg_export_result_get(NULL), 0);
+
+    /* Failures retain the request identity too, including refused contexts. */
+    for (int failure = 0; failure < 4; ++failure) {
+        dsd_scan_row_profile profile = {0};
+        if (failure == 2) {
+            profile.values.present = DSD_SCAN_OPT_GROUP;
+            dsd_scan_groups_begin(state);
+            dsd_scan_groups_enter(state, &profile);
+        }
+        dsd_tg_policy_table_version(state, &request->policy_context, &request->policy_generation);
+        if (failure == 0) {
+            request->policy_context++;
+        } else if (failure == 1) {
+            request->policy_generation++;
+        } else if (failure == 3) {
+            DSD_SNPRINTF(request->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path),
+                         "%s/missing.csv", path);
+        }
+        uint64_t sequence = result.sequence;
+        dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, sizeof storage);
+        post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+        rc |= expect_int("failed export and unrelated command drained", dsd_app_drain_cmds(opts, state), 2);
+        rc |= expect_int("failed export result available", dsd_app_tg_export_result_get(&result), 1);
+        rc |= expect_true("each completion advances sequence", result.sequence > sequence);
+        rc |= expect_int("retained failure", result.success, 0);
+        rc |= expect_true("failed request context retained", result.policy_context == request->policy_context);
+        rc |= expect_true("failed request generation retained", result.policy_generation == request->policy_generation);
+        rc |= expect_str("failed destination retained", result.path, request->path);
+        rc |= expect_str("failed export keeps successful persistence", opts->group_in_file, path);
+        if (failure == 2) {
+            dsd_scan_groups_leave(state);
+        }
+    }
+    /* Identical requests are still distinct completions; reads return owned copies. */
+    DSD_SNPRINTF(request->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", path);
+    dsd_tg_policy_table_version(state, &request->policy_context, &request->policy_generation);
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        uint64_t sequence = result.sequence;
+        dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, sizeof storage);
+        post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+        dsd_app_drain_cmds(opts, state);
+        dsd_app_tg_export_result_get(&result);
+        rc |= expect_true("repeated successful export advances sequence", result.sequence > sequence && result.success);
+        rc |= expect_str("prior owned copy preserved", success.path, path);
+    }
+    uint64_t sequence = result.sequence;
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, offsetof(dsd_app_tg_export_payload, path));
+    post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+    dsd_app_drain_cmds(opts, state);
+    dsd_app_tg_export_result_get(&result);
+    rc |= expect_true("invalid envelope publishes failure", result.sequence > sequence && !result.success);
+    rc |= expect_str("invalid path is not published", result.path, "");
+    freeState(state);
+    free(state);
+    free(opts);
+    remove(path);
+    return rc;
+}
+
 /* WP-D1: exercise the decoder-thread API, including the resulting effective policy. */
 static int
 test_talkgroup_row_commands(void) {
@@ -2893,6 +2996,7 @@ main(void) {
     rc |= test_foundation_commands();
     rc |= test_talkgroup_list_commands();
     rc |= test_talkgroup_row_commands();
+    rc |= test_talkgroup_export_result();
     rc |= test_source_alias_commands();
     rc |= test_scoped_direct_key_mutes();
     rc |= test_scoped_row_option_commands();

@@ -465,6 +465,10 @@ Important behavior:
 - The decoder's talkgroup-list export writes the canonical table, including aliases, all modes and ranges,
   to the requested path. After a successful write, subsequent edits persist there. Export refuses scan-row
   contexts and stale context/generation pairs, as do row edits after the policy changes.
+  App-control retains the export result separately from toasts: `dsd_app_tg_export_result_get` copies its
+  sequence, success/failure, request context/generation, and destination path. A frontend keeps one export
+  outstanding and waits for a newer matching successful result before registering the file; unrelated
+  commands, toast updates, or session stops cannot erase that result.
 - Without a group file, edits last only for the session. A scan row's own effective list is also edited only
   in memory, never written into the global group file. If saving fails, the decoder keeps the live edit and
   reports that it is session-only; the previous file remains intact.

@@ -95,6 +95,11 @@ static dsd_mutex_t g_mu;
 static atomic_int g_mu_init = 0;
 static atomic_int g_overflow = 0;
 static atomic_int g_overflow_warn_gate = 0;
+/* WP-D1: the last export completion is independent of transient decoder toasts.
+ * Protected by g_mu; retained without a reader first having to arm publication. */
+static dsd_app_tg_export_result g_tg_export_result;
+_Static_assert(sizeof(g_tg_export_result.path) == sizeof(((dsd_opts*)0)->group_in_file),
+               "retained export path must fit every accepted group-file path");
 
 /* 0 = uninitialized, 1 = initialization in flight, 2 = ready. The loser of the
  * first-call race must wait: taking a mutex another thread has not finished
@@ -113,6 +118,53 @@ ensure_mu_init(void) {
     while (atomic_load(&g_mu_init) != 2) {
         dsd_thread_yield();
     }
+}
+
+int
+dsd_app_tg_export_result_get(dsd_app_tg_export_result* out) {
+    if (!out) {
+        return 0;
+    }
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    DSD_MEMCPY(out, &g_tg_export_result, sizeof(*out));
+    dsd_mutex_unlock(&g_mu);
+    return out->sequence != 0;
+}
+
+/* Called after dispatch, including envelope rejection, before erasing the queued
+ * request. Publish only export fields; other command payloads may carry secrets. */
+static void
+tg_export_publish_result(const struct dsd_app_command* cmd, int status) {
+    if (cmd->id != DSD_APP_CMD_TG_LIST_EXPORT) {
+        return;
+    }
+    dsd_app_tg_export_result result = {0};
+    const size_t context_offset = offsetof(dsd_app_tg_export_payload, policy_context);
+    const size_t generation_offset = offsetof(dsd_app_tg_export_payload, policy_generation);
+    const size_t path_offset = offsetof(dsd_app_tg_export_payload, path);
+    if (cmd->n >= context_offset + sizeof result.policy_context) {
+        DSD_MEMCPY(&result.policy_context, cmd->data + context_offset, sizeof result.policy_context);
+    }
+    if (cmd->n >= generation_offset + sizeof result.policy_generation) {
+        DSD_MEMCPY(&result.policy_generation, cmd->data + generation_offset, sizeof result.policy_generation);
+    }
+    if (cmd->n > path_offset) {
+        const char* path = (const char*)cmd->data + path_offset;
+        const char* end = memchr(path, 0, cmd->n - path_offset);
+        if (end && (size_t)(end - path) < sizeof result.path) {
+            DSD_MEMCPY(result.path, path, (size_t)(end - path));
+        }
+    }
+    result.success = status == UI_CMD_APPLY_COMPLETED;
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    result.sequence = g_tg_export_result.sequence + 1U;
+    if (result.sequence == 0) {
+        result.sequence = 1;
+    }
+    g_tg_export_result = result;
+    dsd_mutex_unlock(&g_mu);
 }
 
 // Dispatch commands via per-domain registries
@@ -4644,11 +4696,13 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
             break;
         }
         if (!ui_cmd_payload_is_valid(&cmd)) {
+            tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
             DSD_SECURE_ZERO(&cmd, sizeof cmd);
             n_applied++;
             continue;
         }
-        (void)apply_cmd(opts, state, &cmd);
+        const int result = apply_cmd(opts, state, &cmd);
+        tg_export_publish_result(&cmd, result);
         DSD_SECURE_ZERO(&cmd, sizeof cmd);
         // After applying a command, publish updated snapshots so the UI can
         // render consistent opts/state without racing live structures.
