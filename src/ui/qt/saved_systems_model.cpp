@@ -54,21 +54,11 @@ SavedSystemsModel::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : static_cast<int>(m_rows.size());
 }
 
-/** @brief The identity half of the role switch; see tuningRoleValue(). */
+/** @brief Identity roles; each group reads one field without copying the whole row into a map. */
 QVariant
 SavedSystemsModel::identityRoleValue(const Row& row, int role) {
     switch (role) {
         case UidRole: return row.uid;
-        case EncKeyTypeRole: return row.encKeyType;
-        case EncKeyValueRole: return row.encKeyValue;
-        case EncForceKeyRole: return row.encForceKey;
-        case RrSidRole: return row.rrSid;
-        case RrSiteIdRole: return row.rrSiteId;
-        case SiteNameRole: return row.siteName;
-        case SiteLatRole: return row.siteLat;
-        case SiteLonRole: return row.siteLon;
-        case HasSitePosRole: return row.hasSitePos;
-        case AvoidSiteRole: return row.avoidSite;
         case NameRole: return row.name;
         case SourceTypeRole: return row.sourceType;
         case HostRole: return row.host;
@@ -80,7 +70,25 @@ SavedSystemsModel::identityRoleValue(const Row& row, int role) {
     }
 }
 
-/** @brief The tuning/recency half of the role switch, split to keep each simple. */
+/** @brief Optional direct-key and site metadata, separate from the identity and tuner groups. */
+QVariant
+SavedSystemsModel::detailRoleValue(const Row& row, int role) {
+    switch (role) {
+        case EncKeyTypeRole: return row.encKeyType;
+        case EncKeyValueRole: return row.encKeyValue;
+        case EncForceKeyRole: return row.encForceKey;
+        case RrSidRole: return row.rrSid;
+        case RrSiteIdRole: return row.rrSiteId;
+        case SiteNameRole: return row.siteName;
+        case SiteLatRole: return row.siteLat;
+        case SiteLonRole: return row.siteLon;
+        case HasSitePosRole: return row.hasSitePos;
+        case AvoidSiteRole: return row.avoidSite;
+        default: return QVariant();
+    }
+}
+
+/** @brief Tuning, imports and recency roles. */
 QVariant
 SavedSystemsModel::tuningRoleValue(const Row& row, int role) {
     switch (role) {
@@ -108,7 +116,11 @@ SavedSystemsModel::data(const QModelIndex& index, int role) const {
     }
     const Row& row = m_rows.at(index.row());
     const QVariant identity = identityRoleValue(row, role);
-    return identity.isValid() ? identity : tuningRoleValue(row, role);
+    if (identity.isValid()) {
+        return identity;
+    }
+    const QVariant detail = detailRoleValue(row, role);
+    return detail.isValid() ? detail : tuningRoleValue(row, role);
 }
 
 QHash<int, QByteArray>

@@ -3805,55 +3805,10 @@ tg_listen_release_blocked_calls(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* Every talkgroup stub checks the same pair: comparing only the generation
+ * would allow a row from the previous scan target to address a different list. */
 static int
-apply_cmd_foundation(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    (void)opts;
-    uint64_t context = 0;
-    unsigned int generation = 0;
-    switch (c->id) {
-        case DSD_APP_CMD_TG_ROW_SET: {
-            dsd_app_tg_row_payload p;
-            DSD_MEMCPY(&p, c->data, sizeof p);
-            context = p.policy_context;
-            generation = p.policy_generation;
-            break;
-        }
-        case DSD_APP_CMD_TG_ROW_REMOVE: {
-            dsd_app_tg_range_payload p;
-            DSD_MEMCPY(&p, c->data, sizeof p);
-            context = p.policy_context;
-            generation = p.policy_generation;
-            break;
-        }
-        case DSD_APP_CMD_TG_LIST_EXPORT:
-            // The flexible member can start before sizeof(struct) because of tail
-            // padding. Read header fields individually; never cast unaligned data.
-            DSD_MEMCPY(&context, c->data + offsetof(dsd_app_tg_export_payload, policy_context), sizeof context);
-            DSD_MEMCPY(&generation, c->data + offsetof(dsd_app_tg_export_payload, policy_generation),
-                       sizeof generation);
-            if (!memchr(c->data + offsetof(dsd_app_tg_export_payload, path), 0,
-                        c->n - offsetof(dsd_app_tg_export_payload, path))) {
-                ui_set_toast(state, 3, "Invalid export path");
-                return UI_CMD_APPLY_INVALID_PAYLOAD;
-            }
-            break;
-        case DSD_APP_CMD_KEY_DIRECT_SET: {
-            dsd_app_key_direct_payload p;
-            DSD_MEMCPY(&p, c->data, sizeof p);
-            const int valid = p.key_type >= DSD_APP_KEY_TYPE_BASIC && p.key_type <= DSD_APP_KEY_TYPE_SCRAMBLER
-                              && memchr(p.value, 0, sizeof p.value) != NULL;
-            DSD_SECURE_ZERO(&p, sizeof p);
-            ui_set_toast(state, 3, valid ? "not implemented" : "Invalid key payload");
-            return valid ? UI_CMD_APPLY_UNSUPPORTED : UI_CMD_APPLY_INVALID_PAYLOAD;
-        }
-        case DSD_APP_CMD_FORCE_KEY_SET: {
-            int32_t mode;
-            DSD_MEMCPY(&mode, c->data, sizeof mode);
-            ui_set_toast(state, 3, mode >= 0 && mode <= 2 ? "not implemented" : "Invalid force key mode");
-            return mode >= 0 && mode <= 2 ? UI_CMD_APPLY_UNSUPPORTED : UI_CMD_APPLY_INVALID_PAYLOAD;
-        }
-        default: return UI_CMD_APPLY_UNHANDLED;
-    }
+tg_edit_stub_result(dsd_state* state, uint64_t context, unsigned int generation) {
     uint64_t current_context = 0;
     unsigned int current_generation = 0;
     dsd_tg_policy_table_version(state, &current_context, &current_generation);
@@ -3863,6 +3818,69 @@ apply_cmd_foundation(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
     }
     ui_set_toast(state, 3, "not implemented");
     return UI_CMD_APPLY_UNSUPPORTED;
+}
+
+static int
+apply_cmd_tg_row_set_stub(dsd_state* state, const struct dsd_app_command* c) {
+    dsd_app_tg_row_payload p;
+    DSD_MEMCPY(&p, c->data, sizeof p);
+    return tg_edit_stub_result(state, p.policy_context, p.policy_generation);
+}
+
+static int
+apply_cmd_tg_row_remove_stub(dsd_state* state, const struct dsd_app_command* c) {
+    dsd_app_tg_range_payload p;
+    DSD_MEMCPY(&p, c->data, sizeof p);
+    return tg_edit_stub_result(state, p.policy_context, p.policy_generation);
+}
+
+static int
+apply_cmd_tg_list_export_stub(dsd_state* state, const struct dsd_app_command* c) {
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    // The flexible member can start before sizeof(struct) because of tail
+    // padding. Read header fields individually; never cast unaligned data.
+    DSD_MEMCPY(&context, c->data + offsetof(dsd_app_tg_export_payload, policy_context), sizeof context);
+    DSD_MEMCPY(&generation, c->data + offsetof(dsd_app_tg_export_payload, policy_generation), sizeof generation);
+    if (!memchr(c->data + offsetof(dsd_app_tg_export_payload, path), 0,
+                c->n - offsetof(dsd_app_tg_export_payload, path))) {
+        ui_set_toast(state, 3, "Invalid export path");
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    return tg_edit_stub_result(state, context, generation);
+}
+
+static int
+apply_cmd_key_direct_stub(dsd_state* state, const struct dsd_app_command* c) {
+    dsd_app_key_direct_payload p;
+    DSD_MEMCPY(&p, c->data, sizeof p);
+    const int valid = p.key_type >= DSD_APP_KEY_TYPE_BASIC && p.key_type <= DSD_APP_KEY_TYPE_SCRAMBLER
+                      && memchr(p.value, 0, sizeof p.value) != NULL;
+    DSD_SECURE_ZERO(&p, sizeof p);
+    ui_set_toast(state, 3, valid ? "not implemented" : "Invalid key payload");
+    return valid ? UI_CMD_APPLY_UNSUPPORTED : UI_CMD_APPLY_INVALID_PAYLOAD;
+}
+
+static int
+apply_cmd_force_key_stub(dsd_state* state, const struct dsd_app_command* c) {
+    int32_t mode;
+    DSD_MEMCPY(&mode, c->data, sizeof mode);
+    const int valid = mode >= 0 && mode <= 2;
+    ui_set_toast(state, 3, valid ? "not implemented" : "Invalid force key mode");
+    return valid ? UI_CMD_APPLY_UNSUPPORTED : UI_CMD_APPLY_INVALID_PAYLOAD;
+}
+
+static int
+apply_cmd_foundation(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)opts;
+    switch (c->id) {
+        case DSD_APP_CMD_TG_ROW_SET: return apply_cmd_tg_row_set_stub(state, c);
+        case DSD_APP_CMD_TG_ROW_REMOVE: return apply_cmd_tg_row_remove_stub(state, c);
+        case DSD_APP_CMD_TG_LIST_EXPORT: return apply_cmd_tg_list_export_stub(state, c);
+        case DSD_APP_CMD_KEY_DIRECT_SET: return apply_cmd_key_direct_stub(state, c);
+        case DSD_APP_CMD_FORCE_KEY_SET: return apply_cmd_force_key_stub(state, c);
+        default: return UI_CMD_APPLY_UNHANDLED;
+    }
 }
 
 static int

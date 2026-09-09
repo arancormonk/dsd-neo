@@ -171,6 +171,7 @@ class SavedSystemsModel : public QAbstractListModel {
 
     static Row rowFromMap(const QVariantMap& map, const Row& base);
     static QVariant identityRoleValue(const Row& row, int role);
+    static QVariant detailRoleValue(const Row& row, int role);
     static QVariant tuningRoleValue(const Row& row, int role);
     QVariantMap mapFromRow(const Row& row) const;
 
