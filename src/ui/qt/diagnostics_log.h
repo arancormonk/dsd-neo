@@ -20,7 +20,8 @@ class DiagnosticsLog {
     ~DiagnosticsLog();
     void submit(const QString& source, const QString& level, const QString& text);
     QStringList snapshot(quint64* generation = nullptr) const;
-    void clear();
+    // Return the generation of the cleared ring while still holding its lock.
+    quint64 clear();
     void flush();
     static QString redact(QString text);
 
@@ -60,6 +61,7 @@ class DiagnosticsLogModel : public QAbstractListModel {
         return m_pending;
     }
 
+    void markSessionStarting();
     Q_INVOKABLE void refresh();
     Q_INVOKABLE QString allText() const;
     Q_INVOKABLE void copyAll() const;

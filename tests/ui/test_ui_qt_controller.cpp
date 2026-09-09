@@ -83,6 +83,7 @@ main(int argc, char** argv) {
     state.trunk_scan_active_ordinal = 2;
     tick();
     assert(metrics.syncLabel().isEmpty()); // Old target's sync hold must not survive.
+    diagnostics.submit("host", "info", "before next session");
     for (auto phase : {Host::Starting, Host::Idle, Host::Failed}) {
         host.setPhase(Host::Running);
         state.synctype = DSD_SYNC_P25P1_POS;
@@ -91,6 +92,10 @@ main(int argc, char** argv) {
         host.setPhase(phase);
         tick(); // The last engine snapshot is still published after stop.
         assert(metrics.syncLabel().isEmpty());
+        assert(diagnosticsModel.allText().contains("before next session"));
+        assert(diagnosticsModel.allText().count("--- session starting ---") == 1);
+        host.setPhase(phase); // Repeated state notification is not another boundary.
+        assert(diagnosticsModel.allText().count("--- session starting ---") == 1);
     }
     // WP-F5: an idle decoder need not request redraw for process logs to refresh.
     (void)dsd_app_frontend_redraw_consume();
@@ -100,7 +105,11 @@ main(int argc, char** argv) {
     controller.start();
     idleLoop.exec();
     controller.stop();
-    assert(diagnosticsModel.rowCount() == 1);
+    assert(diagnosticsModel.rowCount() == 3);
+    host.setPhase(Host::Starting);
+    diagnosticsModel.refresh();
+    assert(diagnosticsModel.allText().count("--- session starting ---") == 2);
+    assert(diagnosticsModel.allText().contains("idle diagnostic"));
     freeState(&state);
     return 0;
 }

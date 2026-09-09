@@ -140,11 +140,11 @@ DiagnosticsLog::snapshot(quint64* generation) const {
     return m_ring;
 }
 
-void
+quint64
 DiagnosticsLog::clear() {
     std::lock_guard<std::mutex> lock(m_ringMutex);
     m_ring.clear();
-    ++m_generation;
+    return ++m_generation;
 }
 
 void
@@ -221,6 +221,11 @@ DiagnosticsLogModel::setPaused(bool value) {
 }
 
 void
+DiagnosticsLogModel::markSessionStarting() {
+    m_log->submit(QStringLiteral("session"), QStringLiteral("info"), QStringLiteral("--- session starting ---"));
+}
+
+void
 DiagnosticsLogModel::refresh() {
     quint64 generation = 0;
     const auto rows = m_log->snapshot(&generation);
@@ -252,10 +257,10 @@ DiagnosticsLogModel::copyAll() const {
 
 void
 DiagnosticsLogModel::clear() {
-    m_log->clear();
+    const quint64 clearedGeneration = m_log->clear();
     beginResetModel();
     m_rows.clear();
-    m_log->snapshot(&m_seen);
+    m_seen = clearedGeneration;
     endResetModel();
     m_pending = 0;
     Q_EMIT pendingCountChanged();

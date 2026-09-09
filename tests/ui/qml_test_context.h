@@ -706,6 +706,11 @@ class Setup : public QObject {
   public:
     ~Setup() override { dsd_state_ext_free_all(m_talkgroup_state.get()); }
 
+    Q_INVOKABLE void
+    pushDiagnostic(const QString& text) {
+        dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("fixture"), QStringLiteral("info"), text);
+    }
+
     Q_INVOKABLE bool
     pushTalkgroup(double id, const QString& mode, const QString& name, const QString& tags) {
         dsd_tg_policy_entry entry{};

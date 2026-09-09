@@ -84,9 +84,14 @@ UiController::onSessionStateChanged() {
         return;
     }
 
+    if (m_session == DecoderHost::Starting && m_diagnostics != nullptr) {
+        m_diagnostics->markSessionStarting();
+    }
+
     /* Entering a session: the incoming run owns the screen, so the readings clear
      * before the monitoring view appears. Leaving one: the metrics describe a
-     * decoder that no longer exists. See MetricsModel::clear(). */
+     * decoder that no longer exists. See MetricsModel::clear(). Diagnostics are
+     * exempt: process history must retain what preceded a stopped or failed session. */
     if (m_session == DecoderHost::Starting || m_session == DecoderHost::Idle || m_session == DecoderHost::Failed) {
         m_active_ordinal = 0;
         clearLiveModels();
@@ -103,6 +108,7 @@ UiController::clearLiveModels() {
     }
     // Later live models join this list. History is durable across sessions and
     // targets; clearing it here would discard calls the operator asked to keep.
+    // Diagnostics are also exempt so a stopped/failed session retains its context.
 }
 
 void
