@@ -30,6 +30,14 @@ namespace {
 /** Sentinel stored until the sink has been resolved from the environment. */
 constexpr int kLogSinkUnresolved = -1;
 
+struct LogTap {
+    dsd_neo_log_tap_fn fn;
+    void* ctx;
+};
+
+std::atomic<const LogTap*> g_log_tap{nullptr};
+thread_local bool g_in_tap = false;
+
 std::atomic<int> g_log_sink{kLogSinkUnresolved};
 
 /**
@@ -90,6 +98,18 @@ log_write_android(dsd_neo_log_level_t level, const char* text) {
 } // namespace
 
 extern "C" void
+dsd_neo_log_set_tap(dsd_neo_log_tap_fn fn, void* ctx) {
+    if (!fn) {
+        return;
+    }
+    const auto* record = new LogTap{fn, ctx};
+    const LogTap* expected = nullptr;
+    if (!g_log_tap.compare_exchange_strong(expected, record, std::memory_order_release, std::memory_order_relaxed)) {
+        delete record;
+    }
+}
+
+extern "C" void
 dsd_neo_log_set_sink(dsd_neo_log_sink_t sink) {
     g_log_sink.store((int)sink, std::memory_order_relaxed);
 }
@@ -122,6 +142,13 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     if (!dsd_unicode_supported()) {
         dsd_ascii_fallback(buf, safe, sizeof(safe));
         out = safe;
+    }
+
+    const auto* tap = g_log_tap.load(std::memory_order_acquire);
+    if (tap && !g_in_tap) {
+        g_in_tap = true;
+        tap->fn(level, out, tap->ctx);
+        g_in_tap = false;
     }
 
     const int sink = log_sink_current();

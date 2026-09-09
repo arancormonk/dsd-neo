@@ -47,6 +47,13 @@ typedef enum DSD_ATTR_PACKED { DSD_NEO_LOG_SINK_STDERR = 0, DSD_NEO_LOG_SINK_PLA
 extern "C" {
 #endif
 
+/** Install once before producers start. The callback and ctx must have process-lifetime
+ * storage; the tap is never removed or replaced. Called outside logger locks,
+ * concurrently on producer threads, with recursive tap invocation suppressed.
+ * text is borrowed for the duration of the callback; callbacks must not throw. */
+typedef void (*dsd_neo_log_tap_fn)(dsd_neo_log_level_t level, const char* text, void* ctx);
+void dsd_neo_log_set_tap(dsd_neo_log_tap_fn fn, void* ctx);
+
 /**
  * @brief Write a formatted log message to the active log sink.
  *
