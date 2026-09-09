@@ -383,7 +383,7 @@ class DecoderService : Service() {
         // opposite of what is happening.
         val leadName = lead?.name?.takeIf { it.isNotEmpty() && it != "0" }
         builder.setContentTitle(
-            when {
+            (if (lead?.emergency == true) getString(R.string.decoder_emergency_prefix) else "") + when {
                 leadName != null -> leadName
                 lead != null -> text
                 else -> getString(R.string.decoder_listening)

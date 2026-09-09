@@ -363,7 +363,7 @@ dsd_app_notification_encode(char* out, size_t out_size) {
        whole record: a reader must never be handed a prefix it could parse as a complete,
        shorter record. */
     char scratch[DSD_APP_NOTIFICATION_RECORD_SIZE];
-    int used = DSD_SNPRINTF(scratch, sizeof(scratch), "v1\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld\t%d", protocol,
+    int used = DSD_SNPRINTF(scratch, sizeof(scratch), "v2\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld\t%d", protocol,
                             (unsigned)status.radio_input, (unsigned)status.trunking, (unsigned)status.trunk_tuned,
                             (long long)status.cc_freq_hz, (long long)status.vc_freq_hz,
                             (long long)status.center_freq_hz, (int)status.lead_slot);
@@ -383,10 +383,10 @@ dsd_app_notification_encode(char* out, size_t out_size) {
         sanitize_field(tg, sizeof(tg), call->tg_text);
         sanitize_field(src, sizeof(src), call->src_text);
 
-        const int added =
-            DSD_SNPRINTF(scratch + used, sizeof(scratch) - (size_t)used, "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u",
-                         call->state, name, tg, src, (unsigned long long)call->tg_id, (unsigned)call->enc,
-                         (unsigned)call->algid, (unsigned)call->kid, (unsigned)call->elapsed_ms);
+        const int added = DSD_SNPRINTF(
+            scratch + used, sizeof(scratch) - (size_t)used, "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u\t%u\t%u",
+            call->state, name, tg, src, (unsigned long long)call->tg_id, (unsigned)call->enc, (unsigned)call->algid,
+            (unsigned)call->kid, (unsigned)call->elapsed_ms, (unsigned)call->emergency, (unsigned)call->priority);
         if (added < 0 || (size_t)added >= sizeof(scratch) - (size_t)used) {
             return 0;
         }

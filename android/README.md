@@ -619,3 +619,12 @@ The app's argv token gate rejects `--show-keys` (including assignment syntax).
 `session_args_extra_safe()` is the shared gate for future scan-list generation.
 Malformed CLI key diagnostics report the expected shape, never the value.
 QString/QML copies cannot promise erasure; only filtered content enters diagnostics.
+
+Emergency calls carry an EMERGENCY badge on the monitor (including the other TDMA
+slot), recent calls, and history. The notification title prefixes the lead call
+with EMERGENCY. Native notification records and `DecoderStatus.kt` use wire v2:
+each of the two slot records appends emergency and priority (11 slot fields).
+Call-history JSON stores `"em": true` only for emergency rows; older history
+without that optional key remains readable. Emergency indication persists when
+later fragments enrich a history row. The notification channel remains
+`IMPORTANCE_LOW`; an opt-in heads-up channel is a follow-up.
