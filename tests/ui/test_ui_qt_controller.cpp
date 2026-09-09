@@ -105,6 +105,7 @@ test_sheet_policy_edits() {
 
     for (const auto& media :
          {MediaCase{"A", 0, 0, 0}, MediaCase{"A", 1, 0, 1}, MediaCase{"A", 1, 1, 0}, MediaCase{"DE", 0, 0, 0}}) {
+        dsd_app_frontend_runtime_start(nullptr, nullptr);
         const char* mode = media.mode;
         dsd_tg_policy_entry entry = {};
         assert(dsd_tg_policy_make_exact_entry(42, mode, "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
@@ -162,6 +163,7 @@ test_sheet_policy_edits() {
         assert(dsd_app_drain_cmds(&opts, &state) == 1);
         assert(dsd_tg_policy_entry_at(&state, 0, &entry));
         assert(QString::fromUtf8(entry.mode) == (QString::fromUtf8(mode) == "A" ? "B" : "A"));
+        dsd_app_frontend_runtime_stop();
         dsd_state_ext_free_all(&state);
     }
 }
@@ -172,6 +174,7 @@ test_zero_bounds() {
     static dsd_opts opts;
     static dsd_state state;
     for (unsigned int end : {0U, 999U}) {
+        dsd_app_frontend_runtime_start(nullptr, nullptr);
         dsd_tg_policy_entry entry = {};
         assert(dsd_tg_policy_make_exact_entry(0, "A", "Zero", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
         entry.id_end = end;
@@ -193,6 +196,7 @@ test_zero_bounds() {
         assert(bridge.removeTalkgroup(0, end, QString::number(context), generation));
         assert(dsd_app_drain_cmds(&opts, &state) == 1);
         assert(dsd_tg_policy_entry_count(&state) == 0);
+        dsd_app_frontend_runtime_stop();
         dsd_state_ext_free_all(&state);
     }
 }
@@ -290,6 +294,9 @@ main(int argc, char** argv) {
     check(diagnosticsModel.allText().contains("idle diagnostic"));
     // WP-D1: real bridge -> queue -> policy, then retained completion with no redraw.
     dsd_qt::CommandBridge bridge;
+    check(!bridge.addTalkgroup(77, 77, QStringLiteral("0"), 0, "While idle", true, 0, false));
+    check(dsd_app_drain_cmds(&opts, &state) == 0);
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
     // A session without a policy table reports version 0/0; adding its first heard row is valid.
     static dsd_state emptyPolicyState;
     assert(bridge.addTalkgroup(77, 77, QStringLiteral("0"), 0, "First heard", true, 0, false));
@@ -353,6 +360,9 @@ main(int argc, char** argv) {
     assert(exported.value("policyGeneration").toUInt() == generation);
     assert(exported.value("sequence").toString() != "0");
     assert(QString::fromUtf8(opts.group_in_file) == exportPath);
+    dsd_app_frontend_runtime_stop();
+    check(!bridge.renameTalkgroup(42, 42, version, generation, "After stop"));
+    check(dsd_app_drain_cmds(&opts, &state) == 0);
     freeState(&state);
     return 0;
 }
