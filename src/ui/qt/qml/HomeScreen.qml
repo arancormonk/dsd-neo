@@ -32,7 +32,8 @@ Item {
     }
 
     readonly property bool showDonglePill: decoderHost && decoderHost.localDeviceBrokered
-    readonly property bool dongleReady: decoderHost && decoderHost.localDeviceReady
+    readonly property bool dongleFailed: decoderHost && decoderHost.localDeviceFailureKind !== 0
+    readonly property bool dongleReady: decoderHost && decoderHost.localDeviceReady && !dongleFailed
 
     Rectangle {
         anchors.fill: parent
@@ -40,6 +41,7 @@ Item {
     }
 
     Flickable {
+        objectName: "dongleScrollBody"
         anchors.fill: parent
         contentHeight: content.height + 2 * Theme.screenPadding
         clip: true
@@ -96,12 +98,42 @@ Item {
                         }
 
                         Text {
-                            text: screen.dongleReady ? qsTr("DONGLE READY") : qsTr("NO DONGLE")
+                            text: screen.dongleFailed ? qsTr("DONGLE ERROR") : screen.dongleReady ? qsTr("DONGLE READY") : qsTr("NO DONGLE")
                             font.family: Theme.mono
                             font.pixelSize: Theme.fontSize(11)
                             font.letterSpacing: 1.4
                             color: screen.dongleReady ? Theme.textPrimary : Theme.textSubdued
                         }
+                    }
+                }
+            }
+
+            // WP-D5: keep the complete USB diagnostic next to the dongle pill.
+            UiPanel {
+                width: parent.width
+                visible: screen.showDonglePill && !screen.dongleReady
+                height: visible ? dongleDetails.implicitHeight + 2 * Theme.cardPadding : 0
+                Column {
+                    id: dongleDetails
+                    x: Theme.cardPadding
+                    y: Theme.cardPadding
+                    width: parent.width - 2 * Theme.cardPadding
+                    spacing: 12
+                    Text {
+                        objectName: "dongleStatusText"
+                        width: parent.width
+                        text: decoderHost.localDeviceStatus || qsTr("Plug in an RTL-SDR, then tap Connect.")
+                        wrapMode: Text.Wrap
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(14)
+                        color: Theme.textPrimary
+                    }
+                    OutlineButton {
+                        objectName: "dongleRetry"
+                        width: 110
+                        text: screen.dongleFailed ? qsTr("Retry") : qsTr("Connect")
+                        enabled: !decoderHost.sessionActive
+                        onClicked: decoderHost.requestLocalDeviceAccess()
                     }
                 }
             }
