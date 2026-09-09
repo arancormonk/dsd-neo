@@ -2640,7 +2640,10 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_persistence
         PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
     )
-    target_link_libraries(dsd-neo_test_ui_qt_persistence PRIVATE Qt6::Core)
+    target_link_libraries(
+        dsd-neo_test_ui_qt_persistence
+        PRIVATE Qt6::Core dsd-neo_runtime
+    )
     target_compile_definitions(
         dsd-neo_test_ui_qt_persistence
         PRIVATE QT_NO_KEYWORDS
@@ -2756,6 +2759,8 @@ if(DSD_ENABLE_QT_UI)
     add_executable(
         dsd-neo_test_ui_qt_session_args
         ui/test_ui_qt_session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
     )
@@ -2763,7 +2768,10 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_session_args
         PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
     )
-    target_link_libraries(dsd-neo_test_ui_qt_session_args PRIVATE Qt6::Core)
+    target_link_libraries(
+        dsd-neo_test_ui_qt_session_args
+        PRIVATE Qt6::Core dsd-neo_runtime
+    )
     target_compile_definitions(
         dsd-neo_test_ui_qt_session_args
         PRIVATE QT_NO_KEYWORDS

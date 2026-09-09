@@ -368,7 +368,7 @@ typedef struct {
 typedef struct {
     uint64_t policy_context;
     unsigned int policy_generation;
-    char path[]; /* NUL-terminated, bounded by the submitted payload size. */
+    char path[1]; /* NUL-terminated, bounded by the submitted payload size. */
 } dsd_app_tg_export_payload;
 
 /** Retained outcome of the most recently drained TG_LIST_EXPORT command.

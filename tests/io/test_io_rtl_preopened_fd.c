@@ -166,6 +166,8 @@ main(void) {
 
 #ifdef DSD_NEO_TEST_RTL_OPEN_WRAP
     rc |= test_native_open_error();
+#else
+    DSD_FPRINTF(stderr, "IO_RTL_PREOPENED_FD: skipped native open-error probe (no --wrap support)\n");
 #endif
     rc |= test_slot_starts_empty();
     rc |= test_set_and_clear_round_trip();

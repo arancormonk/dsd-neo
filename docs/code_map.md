@@ -718,3 +718,10 @@ signalled key IDs and the scalar/AES state activated since row entry. `CORE_KEY_
 helper, real CLI parser, real command queue, and keyed/unkeyed rotation together.
 Qt's `session_args.cpp` validates saved string key types and emits discrete argv;
 `SessionArgsBuilder` returns a value-free `errorText` for the entry UI.
+
+### Qt QML editing convention
+
+Preserve each file's existing QML formatting and use focused manual edits. Do not
+run whole-file `qmlformat` during a functional change; no automatic QML formatting
+settings are prescribed. MonitorScreen's existing expanded style is retained.
+Text sizes use `Theme.fontSize(pixels)`, with the platform scale bounded to 1–1.6.

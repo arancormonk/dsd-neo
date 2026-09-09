@@ -438,10 +438,12 @@ including `options` and its `relevant_CLI_switches` alias, match ASCII case-inse
 
 ### Frontend validation boundary
 
-Qt validates target CSVs through `dsd_app_trunk_scan_validate_targets_csv` in
+The facade reserved for future Qt target-CSV validation is `dsd_app_trunk_scan_validate_targets_csv` in
 `app_control/trunk_scan_validate.h`. It calls the same parser as the engine and
 always resets the owned target list, including parsed key material. It returns
 zero on success and a target count; failed validation resets the count to zero.
+Only the target CSV itself is parsed. Referenced channel/key CSVs and profiles
+are not opened or checked for readability; startup can still fail on those files.
 Qt must not include engine headers. The architecture checker rejects that include
 at configure time as well as in `tools/check_arch_rules.sh`.
 

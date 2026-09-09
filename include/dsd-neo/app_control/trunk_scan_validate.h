@@ -10,7 +10,8 @@ extern "C" {
 
 /** Validate with the engine's CSV parser without exposing owned targets or decoder
  * state to frontends. Returns 0 on success; count is zero on failure. Optional
- * output pointers may be NULL. Parsed key storage is erased before returning. */
+ * output pointers may be NULL. Referenced side files (channel/key CSVs and
+ * profiles) are not opened or checked for readability. Parsed key storage is erased before returning. */
 int dsd_app_trunk_scan_validate_targets_csv(const char* path, int* target_count, char* err, size_t err_sz);
 
 #ifdef __cplusplus
