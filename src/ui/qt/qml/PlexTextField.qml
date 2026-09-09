@@ -18,7 +18,7 @@ Rectangle {
     // to run per keystroke (persisted preferences, argv rebuilds).
     signal editingFinished()
 
-    implicitHeight: 44
+    implicitHeight: Math.max(44, 30 * Theme.fontScale)
     radius: 10
     color: Theme.dark ? Theme.bg : Theme.panel
     border.width: 1
@@ -32,7 +32,7 @@ Rectangle {
         anchors.rightMargin: 14
         verticalAlignment: TextInput.AlignVCenter
         font.family: control.mono ? Theme.mono : Theme.sans
-        font.pixelSize: 15
+        font.pixelSize: 15 * Theme.fontScale
         color: Theme.textPrimary
         selectionColor: Qt.alpha(Theme.cyan, 0.35)
         selectedTextColor: Theme.textPrimary

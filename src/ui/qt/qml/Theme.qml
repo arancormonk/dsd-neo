@@ -19,6 +19,10 @@ QtObject {
     readonly property string sans: (typeof sansFontFamily !== "undefined") ? sansFontFamily : "sans-serif"
     readonly property string mono: (typeof monoFontFamily !== "undefined") ? monoFontFamily : "monospace"
 
+    // The fixed pixel type sizes otherwise ignore the platform's larger text
+    // preference. Kept writable so compact-height tests can exercise that layout.
+    property real fontScale: Math.max(1, Qt.application.font.pixelSize / 16)
+
     // Surfaces
     readonly property color bg: dark ? "#0E1116" : "#F2F4F8"
     readonly property color panel: dark ? "#12161E" : "#FFFFFF"
@@ -35,6 +39,9 @@ QtObject {
     // Accents — icon hues, darkened in light mode so they hold contrast on white.
     readonly property color cyan: dark ? "#22DCF5" : "#0797C8"
     readonly property color magenta: dark ? "#EC1FDC" : "#B306A6"
+
+    readonly property color alert: dark ? "#FFAC88" : "#9C3600"
+    readonly property color alertBorder: Qt.alpha(alert, dark ? 0.55 : 0.45)
 
     // Derived fills
     readonly property color toggleOnTrack: Qt.alpha(cyan, dark ? 0.25 : 0.22)

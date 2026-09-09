@@ -117,6 +117,13 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     qmlRegisterType<SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
     qmlRegisterType<WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
 
+    // Integration slots: register later packages' owned context objects here,
+    // before QML loads. Keeping these in one place prevents parallel packages
+    // from creating duplicate owners or reading the decoder snapshot separately.
+    // Location context registration (location package).
+    // Trunk-scan context registration (scan package).
+    // Diagnostics context registration (diagnostics package; exclude keys/location).
+    // Recording/playback context registration (media packages).
     QQmlContext* context = engine.rootContext();
     context->setContextProperty(QStringLiteral("decoderHost"), host);
     context->setContextProperty(QStringLiteral("metrics"), metrics);

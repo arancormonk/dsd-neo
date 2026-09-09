@@ -10,7 +10,7 @@ Rectangle {
     property string text: ""
     signal clicked()
 
-    implicitHeight: 44
+    implicitHeight: Math.max(44, 30 * Theme.fontScale)
     radius: Theme.radiusButton
     color: tap.pressed && control.enabled ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
     border.width: 1
@@ -25,7 +25,7 @@ Rectangle {
         anchors.centerIn: parent
         text: control.text
         font.family: Theme.sans
-        font.pixelSize: 15
+        font.pixelSize: 15 * Theme.fontScale
         font.weight: Font.DemiBold
         color: Theme.buttonSecondaryText
     }

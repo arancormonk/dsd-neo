@@ -400,11 +400,9 @@ Item {
     // below are its only consumers and always will be: no other screen browses
     // places.
     //
-    // ModalSheet sizes its panel to its content and neither clips nor scrolls,
-    // so an uncapped list pushes the title off the top and everything else off
-    // the bottom with no way back to either. The cap and the Flickable are what
-    // keep the list inside the panel; written once because a level that got it
-    // wrong would be a sheet with no way out of it.
+    // Keep long browse lists bounded inside ModalSheet's outer scroll area so
+    // browsing rows does not immediately scroll the title out of sight. The
+    // outer sheet additionally handles short windows and the soft keyboard.
     component BrowseSheet: ModalSheet {
         id: browseSheet
 

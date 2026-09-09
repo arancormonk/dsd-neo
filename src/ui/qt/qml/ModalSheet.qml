@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import QtQuick.Window
 
 // A centred panel over a dimmed screen, dismissed by tapping outside it.
 //
@@ -21,6 +22,34 @@ Rectangle {
     property alias spacing: column.spacing
     /** Names the panel item itself, for tests that address it directly. */
     property alias panelObjectName: panelItem.objectName
+
+    // keyboardRectangle is in window coordinates. Mapping it avoids subtracting
+    // the keyboard twice when Android has already resized the usable window.
+    property real keyboardTop: Qt.inputMethod.visible && Qt.inputMethod.keyboardRectangle.height > 0 ? mapFromItem(null, 0, Qt.inputMethod.keyboardRectangle.y).y : height
+    property real maximumHeight: Math.max(0, Math.min(height, keyboardTop) - 2 * Theme.screenPadding)
+
+    function revealFocus() {
+        var focus = sheet.Window.window ? sheet.Window.window.activeFocusItem : null;
+        var ancestor = focus;
+        while (ancestor && ancestor !== column)
+            ancestor = ancestor.parent;
+        if (!focus || ancestor !== column)
+            return;
+        var p = focus.mapToItem(column, 0, 0);
+        var next = scroll.contentY;
+        if (p.y < next)
+            next = p.y;
+        else if (p.y + focus.height > next + scroll.height)
+            next = p.y + focus.height - scroll.height;
+        scroll.contentY = Math.max(0, Math.min(next, scroll.contentHeight - scroll.height));
+    }
+
+    Connections {
+        target: sheet.Window.window
+        function onActiveFocusItemChanged() {
+            Qt.callLater(sheet.revealFocus);
+        }
+    }
 
     /** Emitted after a tap on the scrim has hidden the sheet. */
     signal dismissed
@@ -50,18 +79,29 @@ Rectangle {
     UiPanel {
         id: panelItem
 
-        anchors.centerIn: parent
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: Math.max(0, (Math.min(sheet.height, sheet.keyboardTop) - height) / 2)
         width: parent.width - 2 * Theme.screenPadding
-        height: column.height + 2 * Theme.cardPadding
+        height: Math.min(sheet.maximumHeight, column.height + 2 * Theme.cardPadding)
 
-        Column {
-            id: column
+        Flickable {
+            id: scroll
+            objectName: "modalSheetScroll"
+            x: Theme.cardPadding
+            y: Theme.cardPadding
+            width: Math.max(0, parent.width - 2 * Theme.cardPadding)
+            height: Math.max(0, parent.height - 2 * Theme.cardPadding)
+            clip: true
+            contentWidth: width
+            contentHeight: column.height
+            boundsBehavior: Flickable.StopAtBounds
+            onHeightChanged: Qt.callLater(sheet.revealFocus)
 
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.margins: Theme.cardPadding
-            spacing: 12
+            Column {
+                id: column
+                width: scroll.width
+                spacing: 12
+            }
         }
     }
 }

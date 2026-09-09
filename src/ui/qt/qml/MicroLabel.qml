@@ -7,7 +7,7 @@ import QtQuick
 // tracking, uppercase, subdued.
 Text {
     font.family: Theme.mono
-    font.pixelSize: 11
+    font.pixelSize: 11 * Theme.fontScale
     font.letterSpacing: 11 * 0.18
     font.capitalization: Font.AllUppercase
     color: Theme.textSubdued
