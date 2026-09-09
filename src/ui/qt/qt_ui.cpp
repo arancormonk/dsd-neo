@@ -28,6 +28,8 @@
 #include "metrics_model.h"
 #include "radio_reference_model.h"
 #include "saved_systems_model.h"
+#include "scan_list_starter.h"
+#include "scan_lists_model.h"
 #include "session_args.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
@@ -83,6 +85,9 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* prefs = new AppPrefs(&engine);
     auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
     auto* systems = new SavedSystemsModel(&engine);
+    // WP-S1: persisted lists and the pre-start validation facade.
+    auto* scanLists = new ScanListsModel(&engine);
+    auto* scanListStarter = new ScanListStarter(prefs, systems, &engine);
     auto* importedFiles = new ImportedFilesModel(host, &engine);
     auto* history = new CallHistoryModel(&engine);
     auto* talkgroups = new TalkgroupListModel(history, &engine);
@@ -137,6 +142,8 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("prefs"), prefs);
     context->setContextProperty(QStringLiteral("sessionArgs"), sessionArgs);
     context->setContextProperty(QStringLiteral("savedSystems"), systems);
+    context->setContextProperty(QStringLiteral("scanLists"), scanLists);
+    context->setContextProperty(QStringLiteral("scanListStarter"), scanListStarter);
     context->setContextProperty(QStringLiteral("importedFiles"), importedFiles);
     context->setContextProperty(QStringLiteral("radioReference"), radioReference);
     context->setContextProperty(QStringLiteral("callHistory"), history);

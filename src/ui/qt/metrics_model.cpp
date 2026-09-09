@@ -191,6 +191,11 @@ MetricsModel::clear() {
 void
 MetricsModel::fillScanControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
     const bool trunk_scan = opts_snapshot->trunk_scan_enabled != 0;
+    if (trunk_scan) {
+        next.scan_target_id = QString::fromUtf8(snapshot->trunk_scan_active_id);
+        next.scan_target_ordinal = snapshot->trunk_scan_active_ordinal;
+        next.scan_target_count = snapshot->trunk_scan_target_count;
+    }
     next.scan_rotation_active = opts_snapshot->scanner_mode != 0 || trunk_scan;
     next.scan_hold = trunk_scan ? (snapshot->trunk_scan_hold != 0) : (snapshot->lcn_scan_hold != 0);
     next.scan_avoid_count = trunk_scan ? snapshot->trunk_scan_avoided_count : snapshot->lcn_avoid_count;
