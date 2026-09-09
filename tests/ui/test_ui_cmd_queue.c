@@ -2660,7 +2660,7 @@ test_foundation_commands(void) {
     dsd_app_key_direct_payload key = {DSD_APP_KEY_TYPE_RC4, "0011223344"};
     dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
     dsd_app_drain_cmds(&opts, &state);
-    rc |= expect_contains("key stub toast", state.ui_msg, "not implemented");
+    rc |= expect_true("direct key applied", state.R == 0x0011223344ULL && state.RR == state.R);
     rc |= expect_true("key absent from toast", strstr(state.ui_msg, key.value) == NULL);
     rc |= expect_true("drained slot erased", dsd_app_command_test_storage_cleared());
     // Put the secret at the eviction head, then fill all 127 usable slots.
@@ -2681,15 +2681,70 @@ test_foundation_commands(void) {
     rc |= expect_int("force setter queued", dsd_app_command_set_i32(DSD_APP_CMD_FORCE_KEY_SET, 2),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     dsd_app_drain_cmds(&opts, &state);
-    rc |= expect_contains("force stub toast", state.ui_msg, "not implemented");
+    rc |= expect_true("force setter applied", state.M == 0x21);
     DSD_SECURE_ZERO(&key, sizeof key);
+    freeState(&state);
+    return rc;
+}
+
+/* WP-D2: configured force, effective row override, epoch and rejection contracts. */
+static int
+test_direct_key_and_force_scope(void) {
+    static dsd_state state;
+    dsd_opts opts;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    int rc = 0;
+    rc |= expect_int("enter force scope", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    dsd_scan_option_values row = {.present = DSD_SCAN_OPT_FORCE | DSD_SCAN_OPT_MUTE_DMR, .force = 0x21, .mute_dmr = 1};
+    (void)dsd_scan_mode_options(&opts, &state, &row);
+    uint64_t epoch = state.enc_lockout_key_epoch;
+    dsd_app_command_set_i32(DSD_APP_CMD_FORCE_KEY_SET, 1);
+    dsd_app_drain_cmds(&opts, &state);
+    dsd_scan_settings configured;
+    dsd_scan_mode_configured(&opts, &state, &configured);
+    rc |= expect_true("force configured and effective scopes", configured.force_key == 1 && state.M == 0x21);
+    rc |= expect_true("force change bumps epoch", state.enc_lockout_key_epoch != epoch);
+    epoch = state.enc_lockout_key_epoch;
+    dsd_app_command_set_i32(DSD_APP_CMD_FORCE_KEY_SET, 1);
+    dsd_app_command_set_i32(DSD_APP_CMD_FORCE_KEY_SET, 3);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_true("idempotent or invalid force keeps epoch", state.enc_lockout_key_epoch == epoch);
+    dsd_app_key_direct_payload key = {DSD_APP_KEY_TYPE_BASIC, "0"};
+    dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
+    dsd_app_drain_cmds(&opts, &state);
+    dsd_scan_mode_configured(&opts, &state, &configured);
+    rc |= expect_true("direct zero arms configured decryption",
+                      configured.dmr_mute_encL == 0 && configured.dmr_mute_encR == 0);
+    rc |= expect_true("direct respects row mute", opts.dmr_mute_encL == 1 && opts.dmr_mute_encR == 1);
+    rc |= expect_true("direct bumps epoch", state.enc_lockout_key_epoch != epoch);
+    epoch = state.enc_lockout_key_epoch;
+    for (int type = 0; type < 4; ++type) {
+        key.key_type = type;
+        memset(key.value, 'Z', sizeof key.value);
+        key.value[sizeof key.value - 1] = 0;
+        dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
+        dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_true("invalid direct is atomic", state.K == 0 && state.enc_lockout_key_epoch == epoch);
+        rc |= expect_true("invalid text never in toast", strstr(state.ui_msg, key.value) == NULL);
+        rc |= expect_contains("invalid toast names shape", state.ui_msg, "Expected");
+    }
+    memset(key.value, 'Z', sizeof key.value);
+    dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_true("unterminated direct rejected", state.enc_lockout_key_epoch == epoch);
+    DSD_SECURE_ZERO(&key, sizeof key);
+    (void)dsd_scan_mode_options(&opts, &state, NULL);
+    rc |= expect_true("unkeyed row inherits force and mute", state.M == 1 && opts.dmr_mute_encL == 0);
+    dsd_scan_mode_leave(&opts, &state);
     freeState(&state);
     return rc;
 }
 
 int
 main(void) {
-    int rc = 0;
+    int rc = test_direct_key_and_force_scope();
     rc |= test_direct_key_updates_preserve_fifo();
     rc |= test_coalesced_setter_erases_old_tail();
     rc |= test_foundation_commands();
