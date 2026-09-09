@@ -25,6 +25,7 @@ namespace {
 
 constexpr const char* kServiceClass = "io/github/arancormonk/dsdneo/DecoderService";
 constexpr const char* kSupportClass = "io/github/arancormonk/dsdneo/AppSupport";
+constexpr const char* kLocationClass = "io/github/arancormonk/dsdneo/LocationSupport";
 constexpr const char* kUsbClass = "io/github/arancormonk/dsdneo/UsbSourceManager";
 
 /* android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON. Namespace scope,
@@ -298,8 +299,40 @@ DecoderHostAndroid::importDocument(const QString& reference, const QString& file
     return result.isValid() ? result.toString() : QString();
 }
 
+// WP-D3: Kotlin owns permissions, timeout and cancellation; polling emits on the Qt thread.
+void
+DecoderHostAndroid::requestCurrentLocation(qint64 requestId) {
+    const auto context = android_context();
+    if (!context.isValid()) {
+        Q_EMIT locationResult(requestId, false, 0, 0, 0, 0, false, {}, {}, QStringLiteral("No Android context"));
+        return;
+    }
+    QJniObject::callStaticMethod<void>(kLocationClass, "requestCurrentLocation", "(Landroid/app/Activity;J)V",
+                                       context.object(), static_cast<jlong>(requestId));
+}
+
+void
+DecoderHostAndroid::cancelLocationRequest(qint64 requestId) {
+    QJniObject::callStaticMethod<void>(kLocationClass, "cancelLocationRequest", "(J)V", static_cast<jlong>(requestId));
+}
+
 void
 DecoderHostAndroid::refresh() {
+    // WP-D3: drain a single terminal location result, independently of decoder state.
+    const auto locationRecord =
+        QJniObject::callStaticObjectMethod(kLocationClass, "pollResult", "()Ljava/lang/String;");
+    const auto location = QJsonDocument::fromJson(locationRecord.toString().toUtf8()).object();
+    if (!location.isEmpty()) {
+        Q_EMIT locationResult(
+            location.value(QStringLiteral("id")).toInteger(), location.value(QStringLiteral("fixOk")).toBool(),
+            location.value(QStringLiteral("lat")).toDouble(), location.value(QStringLiteral("lon")).toDouble(),
+            location.value(QStringLiteral("accuracyM")).toDouble(),
+            location.value(QStringLiteral("fixAtMs")).toInteger(), location.value(QStringLiteral("geocodeOk")).toBool(),
+            location.value(QStringLiteral("postalCode")).toString(),
+            location.value(QStringLiteral("countryCode")).toString(),
+            location.value(QStringLiteral("error")).toString());
+    }
+
     const bool running = engine_is_running();
     if (running != m_running) {
         m_running = running;

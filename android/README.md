@@ -84,11 +84,17 @@ written only on that edge. Saved systems carry stable UUIDs, so deleting another
 row during startup cannot stamp the wrong system. Starting/Idle/Failed and
 trunk-scan target changes clear live model caches; history remains persistent.
 
-The shared host also reserves location requests/cancellation, content-based
-diagnostics sharing, device-attach signals and a diagnostic sink. Location and
-sharing default to unsupported until their platform packages supply implementations.
+The shared host provides location requests/cancellation, content-based diagnostics
+sharing, device-attach signals and a diagnostic sink. Android's `LocationSupport.kt`
+brokers **Use my location** for RadioReference with coarse foreground permission on
+the Android main thread. API 30+ uses `getCurrentLocation`; API 29 uses
+`requestSingleUpdate` and removes its listener on completion/cancellation. A 20-second
+timeout covers fix acquisition and worker-thread reverse geocoding. Request IDs and
+separate fix/geocode status preserve a usable fix when geocoding fails and prevent
+late responses from replacing a newer search. Activity teardown cancels the request.
+Desktop location defaults to unsupported.
 USB/lifecycle diagnostics use the runtime log surface, including when no Activity
-exists. The optional last location fix uses milliseconds since epoch and is deleted
+exists. The optional last location fix includes accuracy in metres, uses milliseconds since epoch and is deleted
 after 24 hours, on load/read and by a foreground timer. Location producers use
 `AppPrefs::setLocationFix` to publish the tuple with one coherent notification. Coordinates and direct
 key fields must never be included in diagnostic exports. QString/QML secret

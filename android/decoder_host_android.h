@@ -27,6 +27,15 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     explicit DecoderHostAndroid(QObject* parent = nullptr);
     ~DecoderHostAndroid() override;
 
+    // WP-D3: foreground location broker.
+    bool
+    locationSupported() const override {
+        return true;
+    }
+
+    void requestCurrentLocation(qint64 requestId) override;
+    void cancelLocationRequest(qint64 requestId) override;
+
     bool isRunning() const override;
     QString statusText() const override;
     SessionState sessionState() const override;
