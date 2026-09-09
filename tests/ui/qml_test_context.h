@@ -564,6 +564,7 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::TgRole: return row.tg;
             case CallHistoryModel::SrcRole: return row.src;
             case CallHistoryModel::SourceNameRole: return row.sourceName;
+            case CallHistoryModel::EmergencyRole: return false;
             case CallHistoryModel::EncRole: return row.enc;
             case CallHistoryModel::WhenRole: return row.when;
             case CallHistoryModel::DurationSecsRole: return row.durationSecs;
@@ -584,6 +585,7 @@ class CallLogStore : public QAbstractListModel {
                 {CallHistoryModel::SrcRole, "src"},
                 {CallHistoryModel::SourceNameRole, "srcName"},
                 {CallHistoryModel::EncRole, "enc"},
+                {CallHistoryModel::EmergencyRole, "emergency"},
                 {CallHistoryModel::WhenRole, "when"},
                 {CallHistoryModel::DurationSecsRole, "durationSecs"},
                 {CallHistoryModel::SystemNameRole, "systemName"},
@@ -1172,6 +1174,8 @@ class Setup : public QObject {
             // The scan channel the slot's call was heard on; empty when not scanning.
             metrics[p + QStringLiteral("Channel")] = QString();
             metrics[p + QStringLiteral("CallEnc")] = false;
+            metrics[p + QStringLiteral("CallEmergency")] = false;
+            metrics[p + QStringLiteral("CallPriority")] = 0;
             metrics[p + QStringLiteral("CallSeconds")] = 0;
             metrics[p + QStringLiteral("TgText")] = QString();
             metrics[p + QStringLiteral("SrcText")] = QString();

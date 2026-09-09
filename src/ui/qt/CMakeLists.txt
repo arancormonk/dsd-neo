@@ -53,6 +53,7 @@ qt_add_resources(
         qml/DiagnosticsScreen.qml
         qml/DisclosureRow.qml
         qml/EncTag.qml
+        qml/EmergencyTag.qml
         qml/ExploreSetupScreen.qml
         qml/FilterPill.qml
         qml/FollowLatest.qml

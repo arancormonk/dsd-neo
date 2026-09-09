@@ -12,6 +12,7 @@ Item {
     property string metaText: ""
     property string rightText: ""
     property bool enc: false
+    property bool emergency: false
     property bool showDivider: true
 
     implicitHeight: Theme.rowHeight
@@ -51,8 +52,17 @@ Item {
         anchors.right: parent.right
         anchors.rightMargin: 18
         anchors.verticalCenter: parent.verticalCenter
-        width: Math.max(encTag.visible ? encTag.implicitWidth : 0, timeText.visible ? timeText.implicitWidth : 0)
+        width: (emergencyTag.visible ? emergencyTag.implicitWidth + 6 : 0) + Math.max(encTag.visible ? encTag.implicitWidth : 0, timeText.visible ? timeText.implicitWidth : 0)
         height: parent.height
+
+        EmergencyTag {
+            id: emergencyTag
+            objectName: "rowEmergencyTag"
+            visible: row.emergency
+            anchors.right: encTag.visible ? encTag.left : timeText.left
+            anchors.rightMargin: 6
+            anchors.verticalCenter: parent.verticalCenter
+        }
 
         EncTag {
             id: encTag
