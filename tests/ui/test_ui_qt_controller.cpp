@@ -87,14 +87,17 @@ main(int argc, char** argv) {
     for (auto phase : {Host::Starting, Host::Idle, Host::Failed}) {
         host.setPhase(Host::Running);
         state.synctype = DSD_SYNC_P25P1_POS;
+        state.p2_cc = 0x293;
         state.p25_p1_fec_ok = 3;
         state.p25_p1_fec_err = 1;
         tick();
+        assert(metrics.p25NacValid() && !metrics.siteLine().isEmpty());
         assert(metrics.qualityValid() && metrics.ccFecOkPct() == 75.0);
         assert(!metrics.syncLabel().isEmpty());
         host.setPhase(phase);
         tick(); // The last engine snapshot is still published after stop.
         assert(metrics.syncLabel().isEmpty());
+        assert(metrics.siteLine().isEmpty() && !metrics.p25NacValid() && !metrics.siteConfirmed());
         assert(!metrics.qualityValid() && !metrics.ccFecValid());
         assert(diagnosticsModel.allText().contains("before next session"));
         assert(diagnosticsModel.allText().count("--- session starting ---") == 1);

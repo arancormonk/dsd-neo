@@ -222,9 +222,106 @@ test_quality() {
     dsd_state_ext_free_all(&state);
 }
 
+static void
+test_site() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int signals = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::siteChanged, [&]() { ++signals; });
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p2_cc = 0x293;
+    model.refresh(&opts, &state);
+    expect("NAC-only P1 identity", model.p25NacValid() && model.p25Nac() == 0x293 && !model.p25WacnValid()
+                                       && !model.p25SysIdValid() && !model.p25Phase2ParamsReady()
+                                       && model.siteLine() == QStringLiteral("P25 · NAC 293") && model.siteConfirmed());
+    const int first = signals;
+    model.refresh(&opts, &state);
+    expect("identical site does not notify", signals == first);
+    state.p2_wacn = 0xBEE00;
+    state.p2_sysid = 0x123;
+    state.p2_rfssid = 2;
+    state.p2_siteid = 3;
+    state.p25_site_lra_valid = 1;
+    state.p25_site_lra = 0;
+    state.trunk_cc_freq = 851000000;
+    state.trunk_vc_freq[0] = 852000000;
+    model.refresh(&opts, &state);
+    expect("full P25", model.p25WacnValid() && model.p25Wacn() == 0xBEE00 && model.p25SysIdValid()
+                           && model.p25SysId() == 0x123 && model.p25Rfss() == 2 && model.p25Site() == 3
+                           && model.p25LraValid() && model.p25Lra() == 0 && model.p25Phase2ParamsReady()
+                           && model.ccFreqHz() == 851000000 && model.vcFreqHz() == 852000000);
+    const int beforeFrequency = signals;
+    state.trunk_cc_freq += 12500;
+    model.refresh(&opts, &state);
+    expect("frequency-only site change notifies", signals == beforeFrequency + 1 && model.ccFreqHz() == 851012500);
+    state.synctype = DSD_SYNC_P25P2_POS;
+    model.refresh(&opts, &state);
+    expect("full P2 parameters ready", model.p25Phase2ParamsReady());
+    state.p2_wacn = 0xFFFFF;
+    state.p2_sysid = 0xFFF;
+    model.refresh(&opts, &state);
+    expect("invalid system fields do not hide NAC", !model.p25WacnValid() && !model.p25SysIdValid()
+                                                        && model.p25NacValid() && model.siteLine().contains("NAC 293")
+                                                        && !model.p25Phase2ParamsReady());
+    state.p2_wacn = 0xBEE00;
+    state.p2_sysid = 0x123;
+    state.p25_site_lra_valid = 0;
+    model.refresh(&opts, &state);
+    expect("LRA validity alone updates", !model.p25LraValid() && !model.siteLine().contains("LRA"));
+    for (auto nac : {0ULL, 0xFFFULL, 0x1000ULL}) {
+        state.p2_cc = nac;
+        model.refresh(&opts, &state);
+        expect("invalid NAC omitted independently", !model.p25NacValid() && !model.p25Phase2ParamsReady()
+                                                        && model.p25WacnValid() && !model.siteLine().contains("NAC"));
+    }
+    const QString retained = model.siteLine();
+    state.synctype = DSD_SYNC_NONE;
+    state.p2_wacn = 0;
+    model.refresh(&opts, &state);
+    expect("loss retains copied identity but withdraws confirmation",
+           model.siteLine() == retained && !model.siteConfirmed());
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state.dmr_color_code = 7;
+    DSD_SNPRINTF(state.dmr_site_parms, sizeof(state.dmr_site_parms), "%s", "Net 12 Site 3; ");
+    state.dmr_rest_channel = 4;
+    model.refresh(&opts, &state);
+    expect("DMR verbatim site", model.siteProtocol() == "DMR" && model.dmrColorCode() == 7
+                                    && model.dmrSiteText() == "Net 12 Site 3; " && model.dmrRestLsn() == 4
+                                    && !model.p25WacnValid());
+    state.synctype = DSD_SYNC_NXDN_POS;
+    state.nxdn_last_ran = 64;
+    model.refresh(&opts, &state);
+    expect("unknown NXDN RAN hidden", model.nxdnRan() == -1 && model.siteLine().isEmpty());
+    state.nxdn_last_ran = 0;
+    DSD_SNPRINTF(state.nxdn_location_category, sizeof(state.nxdn_location_category), "%s", "Type-D");
+    state.nxdn_location_sys_code = 12;
+    state.nxdn_location_site_code = 3;
+    model.refresh(&opts, &state);
+    expect("IDAS area and location", model.siteProtocol() == "IDAS" && model.nxdnRan() == 0
+                                         && model.nxdnLocationCategory() == "Type-D" && model.nxdnSysCode() == 12
+                                         && model.nxdnSiteCode() == 3 && model.siteLine().contains("Area 0"));
+    state.synctype = DSD_SYNC_EDACS_POS;
+    state.edacs_site_id = 7;
+    model.refresh(&opts, &state);
+    expect("EDACS site", model.siteProtocol() == "EDACS" && model.edacsSiteText().contains("007"));
+    model.clear();
+    expect("stop clears every site group", model.siteLine().isEmpty() && model.siteProtocol().isEmpty()
+                                               && !model.siteConfirmed() && model.ccFreqHz() == 0
+                                               && model.vcFreqHz() == 0 && model.dmrSiteText().isEmpty()
+                                               && model.edacsSiteText().isEmpty() && model.nxdnRan() == -1);
+    const int cleared = signals;
+    model.clear();
+    expect("repeated site clear silent", signals == cleared);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    test_site();
     test_quality();
     test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 0);
     test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 1);
