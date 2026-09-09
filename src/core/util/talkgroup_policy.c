@@ -612,19 +612,47 @@ tg_policy_row_editable(const dsd_tg_policy_entry* entry) {
     return entry->source != DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS && strcmp(entry->mode, "D") != 0;
 }
 
+static int
+tg_policy_listen_fields_invalid(const dsd_tg_policy_entry* values, uint32_t mask) {
+    return ((mask & DSD_TG_POLICY_FIELD_LISTEN)
+            && (!memchr(values->mode, 0, sizeof values->mode)
+                || (strcmp(values->mode, "A") != 0 && strcmp(values->mode, "B") != 0)));
+}
+
+static int
+tg_policy_other_fields_invalid(const dsd_tg_policy_entry* values, uint32_t mask) {
+    return ((mask & DSD_TG_POLICY_FIELD_PRIORITY) && (values->priority < 0 || values->priority > 100))
+           || ((mask & DSD_TG_POLICY_FIELD_PREEMPT) && values->preempt > 1)
+           || ((mask & DSD_TG_POLICY_FIELD_NAME) && !memchr(values->name, 0, sizeof values->name))
+           || ((mask & DSD_TG_POLICY_FIELD_TAGS) && !memchr(values->tags, 0, sizeof values->tags));
+}
+
+static void
+tg_policy_apply_fields(dsd_tg_policy_entry* entry, const dsd_tg_policy_entry* values, uint32_t mask) {
+    if (mask & DSD_TG_POLICY_FIELD_LISTEN) {
+        tg_policy_entry_apply_mode(entry, values->mode);
+    }
+    if (mask & DSD_TG_POLICY_FIELD_PRIORITY) {
+        entry->priority = values->priority;
+    }
+    if (mask & DSD_TG_POLICY_FIELD_PREEMPT) {
+        entry->preempt = values->preempt;
+    }
+    if (mask & DSD_TG_POLICY_FIELD_NAME) {
+        tg_policy_safe_copy(entry->name, sizeof entry->name, values->name);
+    }
+    if (mask & DSD_TG_POLICY_FIELD_TAGS) {
+        tg_policy_safe_copy(entry->tags, sizeof entry->tags, values->tags);
+    }
+}
+
 int
 dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_end, const dsd_tg_policy_entry* values,
                          uint32_t mask) {
     const uint32_t all = DSD_TG_POLICY_FIELD_LISTEN | DSD_TG_POLICY_FIELD_PRIORITY | DSD_TG_POLICY_FIELD_PREEMPT
                          | DSD_TG_POLICY_FIELD_NAME | DSD_TG_POLICY_FIELD_TAGS;
     if (!state || !values || id_start > id_end || !mask || (mask & ~all)
-        || ((mask & DSD_TG_POLICY_FIELD_LISTEN)
-            && (!memchr(values->mode, 0, sizeof values->mode)
-                || (strcmp(values->mode, "A") != 0 && strcmp(values->mode, "B") != 0)))
-        || ((mask & DSD_TG_POLICY_FIELD_PRIORITY) && (values->priority < 0 || values->priority > 100))
-        || ((mask & DSD_TG_POLICY_FIELD_PREEMPT) && values->preempt > 1)
-        || ((mask & DSD_TG_POLICY_FIELD_NAME) && !memchr(values->name, 0, sizeof values->name))
-        || ((mask & DSD_TG_POLICY_FIELD_TAGS) && !memchr(values->tags, 0, sizeof values->tags))) {
+        || tg_policy_listen_fields_invalid(values, mask) || tg_policy_other_fields_invalid(values, mask)) {
         return 1;
     }
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
@@ -643,21 +671,7 @@ dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_end, c
         entry.id_end = id_end;
         entry.is_range = id_start != id_end;
     }
-    if (mask & DSD_TG_POLICY_FIELD_LISTEN) {
-        tg_policy_entry_apply_mode(&entry, values->mode);
-    }
-    if (mask & DSD_TG_POLICY_FIELD_PRIORITY) {
-        entry.priority = values->priority;
-    }
-    if (mask & DSD_TG_POLICY_FIELD_PREEMPT) {
-        entry.preempt = values->preempt;
-    }
-    if (mask & DSD_TG_POLICY_FIELD_NAME) {
-        tg_policy_safe_copy(entry.name, sizeof entry.name, values->name);
-    }
-    if (mask & DSD_TG_POLICY_FIELD_TAGS) {
-        tg_policy_safe_copy(entry.tags, sizeof entry.tags, values->tags);
-    }
+    tg_policy_apply_fields(&entry, values, mask);
     if (index < 0) {
         return dsd_tg_policy_store_append(ctx, &entry);
     }
@@ -676,8 +690,8 @@ dsd_tg_policy_remove_bounds(dsd_state* state, uint32_t id_start, uint32_t id_end
     if (index < 0 || !tg_policy_row_editable(&ctx->table.entries[index])) {
         return 1;
     }
-    memmove(&ctx->table.entries[index], &ctx->table.entries[index + 1],
-            (ctx->table.count - (size_t)index - 1) * sizeof(*ctx->table.entries));
+    DSD_MEMMOVE(&ctx->table.entries[index], &ctx->table.entries[index + 1],
+                (ctx->table.count - (size_t)index - 1) * sizeof(*ctx->table.entries));
     --ctx->table.count;
     tg_policy_table_note_mutation(ctx);
     return 0;

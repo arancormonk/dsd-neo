@@ -6,6 +6,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
+#include <stddef.h>
+#include <stdint.h>
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static void
 begin(dsd_state* state, int protocol, unsigned slot, unsigned target) {

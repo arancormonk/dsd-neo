@@ -2537,7 +2537,8 @@ test_talkgroup_list_commands(void) {
     if (file) {
         size_t bytes = fread(contents, 1, sizeof contents - 1U, file);
         contents[bytes] = '\0';
-        rc |= expect_int("close rewritten groups", fclose(file), 0);
+        const int close_result = fclose(file);
+        rc |= expect_int("close rewritten groups", close_result, 0);
     } else {
         rc = 1;
     }
@@ -2587,8 +2588,9 @@ test_talkgroup_export_result(void) {
     int rc = expect_int("seed retained export policy", dsd_tg_policy_set_mode(state, 42, 42, "A"), 0);
 
     union {
-        uint64_t align;
         unsigned char bytes[sizeof(dsd_app_tg_export_payload) + 128];
+        // cppcheck-suppress unusedStructMember -- this member provides alignment for the payload header.
+        uint64_t align;
     } storage = {0};
 
     dsd_app_tg_export_payload* request = (dsd_app_tg_export_payload*)storage.bytes;
@@ -2736,7 +2738,7 @@ test_talkgroup_row_commands(void) {
     seed_active_p25_voice(opts, state, 851000000L, 852000000L, 1001);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
     block.fields = DSD_APP_TG_FIELD_NAME;
-    strcpy(block.name, "Renamed");
+    DSD_SNPRINTF(block.name, sizeof block.name, "%s", "Renamed");
     dsd_tg_policy_table_version(state, &block.policy_context, &block.policy_generation);
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &block, sizeof block);
     dsd_app_drain_cmds(opts, state);
@@ -2756,7 +2758,7 @@ test_talkgroup_row_commands(void) {
     e.id_start = 4000;
     e.id_end = 4099;
     e.is_range = 1;
-    strcpy(e.mode, "A");
+    DSD_SNPRINTF(e.mode, sizeof e.mode, "%s", "A");
     e.source = DSD_TG_POLICY_SOURCE_IMPORTED;
     dsd_tg_policy_add_range_entry(state, &e);
     dsd_app_tg_row_payload edit = {
@@ -2785,12 +2787,13 @@ test_talkgroup_row_commands(void) {
     rc |= expect_int("mode D remove refused", (int)dsd_tg_policy_entry_count(state), 6);
 
     union {
-        uint64_t align;
         unsigned char bytes[sizeof(dsd_app_tg_export_payload) + 128];
+        // cppcheck-suppress unusedStructMember -- this member provides alignment for the payload header.
+        uint64_t align;
     } storage = {0};
 
     dsd_app_tg_export_payload* exp = (dsd_app_tg_export_payload*)storage.bytes;
-    strcpy(exp->path, path);
+    DSD_SNPRINTF(exp->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", path);
     dsd_tg_policy_table_version(state, &exp->policy_context, &exp->policy_generation);
     exp->policy_context++;
     dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
@@ -2818,7 +2821,8 @@ test_talkgroup_row_commands(void) {
         rc |= expect_int("export range roundtrip", actual.id_end, e.id_end);
     }
     /* A failed export cannot redirect subsequent persistence. */
-    strcpy(exp->path, "dsd_neo_d1_missing_dir/groups.csv");
+    DSD_SNPRINTF(exp->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s",
+                 "dsd_neo_d1_missing_dir/groups.csv");
     dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
     dsd_app_drain_cmds(opts, state);
     rc |= expect_str("failed export keeps path", opts->group_in_file, path);
@@ -2827,11 +2831,11 @@ test_talkgroup_row_commands(void) {
     dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
     dsd_app_drain_cmds(opts, state);
     rc |= expect_contains("empty export path refused", state->ui_msg, "Invalid");
-    strcpy(exp->path, path);
+    DSD_SNPRINTF(exp->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", path);
     edit.id_start = edit.id_end = 2000;
     edit.fields = DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_TAGS;
-    strcpy(edit.name, "Persisted");
-    strcpy(edit.tags, "FIRE");
+    DSD_SNPRINTF(edit.name, sizeof edit.name, "%s", "Persisted");
+    DSD_SNPRINTF(edit.tags, sizeof edit.tags, "%s", "FIRE");
     dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
     dsd_app_drain_cmds(opts, state);
@@ -2931,7 +2935,7 @@ test_foundation_commands(void) {
     dsd_tg_policy_table_version(&state, &row.policy_context, &row.policy_generation);
     row.id_start = row.id_end = 42;
     row.fields = DSD_APP_TG_FIELD_NAME;
-    strcpy(row.name, "Dispatch");
+    DSD_SNPRINTF(row.name, sizeof row.name, "%s", "Dispatch");
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &row, sizeof row);
     rc |= expect_int("row stub drains", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_contains("row applied toast", state.ui_msg, "Applied:");
@@ -2946,8 +2950,9 @@ test_foundation_commands(void) {
     rc |= expect_contains("remove applied toast", state.ui_msg, "Applied:");
 
     union {
-        uint64_t alignment;
         unsigned char bytes[sizeof(dsd_app_tg_export_payload) + 32];
+        // cppcheck-suppress unusedStructMember -- this member provides alignment for the payload header.
+        uint64_t alignment;
     } export_storage = {0};
 
     dsd_app_tg_export_payload* export_payload = (dsd_app_tg_export_payload*)export_storage.bytes;
@@ -2993,7 +2998,7 @@ test_foundation_commands(void) {
 static int
 test_direct_key_and_force_scope(void) {
     static dsd_state state;
-    dsd_opts opts;
+    static dsd_opts opts;
     init_test_context(&opts, &state);
     opts.audio_in_type = AUDIO_IN_WAV;
     opts.wav_sample_rate = 48000;
@@ -3024,7 +3029,7 @@ test_direct_key_and_force_scope(void) {
     epoch = state.enc_lockout_key_epoch;
     for (int type = 0; type < 4; ++type) {
         key.key_type = type;
-        memset(key.value, 'Z', sizeof key.value);
+        DSD_MEMSET(key.value, 'Z', sizeof key.value);
         key.value[sizeof key.value - 1] = 0;
         dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
         dsd_app_drain_cmds(&opts, &state);
@@ -3032,7 +3037,7 @@ test_direct_key_and_force_scope(void) {
         rc |= expect_true("invalid text never in toast", strstr(state.ui_msg, key.value) == NULL);
         rc |= expect_contains("invalid toast names shape", state.ui_msg, "Expected");
     }
-    memset(key.value, 'Z', sizeof key.value);
+    DSD_MEMSET(key.value, 'Z', sizeof key.value);
     dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
     dsd_app_drain_cmds(&opts, &state);
     rc |= expect_true("unterminated direct rejected", state.enc_lockout_key_epoch == epoch);
@@ -3048,7 +3053,7 @@ test_direct_key_and_force_scope(void) {
 static int
 test_direct_key_preserves_active_keyring(int reject) {
     static dsd_state state;
-    dsd_opts opts;
+    static dsd_opts opts;
     int rc = 0;
     for (int type = DSD_APP_KEY_TYPE_BASIC; type <= DSD_APP_KEY_TYPE_SCRAMBLER; ++type) {
         init_test_context(&opts, &state);
@@ -3073,7 +3078,7 @@ test_direct_key_preserves_active_keyring(int reject) {
             for (int segment = 0; segment < 4; ++segment) {
                 dsd_key_set_entry* entry = &row.entries[slot * 4 + segment];
                 entry->index = (uint32_t)((slot ? 11 : 7) + offsets[segment]);
-                entry->value = (uint64_t)(17 + slot * 4 + segment);
+                entry->value = 17U + (uint64_t)slot * 4U + (uint64_t)segment;
                 entry->loaded = 1;
             }
         }

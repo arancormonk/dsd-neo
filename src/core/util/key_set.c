@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/key_set.h>
+#include "dsd-neo/core/opts_fwd.h"
 
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
@@ -528,19 +529,19 @@ key_scalars_overlay_direct(dsd_key_scalars* target, const dsd_key_scalars* parse
 }
 
 dsd_key_direct_result
-dsd_key_apply_direct(dsd_state* state, dsd_key_type type, const char* text, dsd_key_apply_mode mode) {
+dsd_key_apply_direct(dsd_state* state, dsd_key_type key_type, const char* text, dsd_key_apply_mode mode) {
     if (!state || (mode != DSD_KEY_APPLY_OVERLAY && mode != DSD_KEY_APPLY_REPLACE)) {
         return DSD_KEY_DIRECT_INVALID_ARGUMENT;
     }
     dsd_key_set parsed = {0};
-    const dsd_key_direct_result result = key_set_parse_typed_direct(&parsed, type, text);
+    const dsd_key_direct_result result = key_set_parse_typed_direct(&parsed, key_type, text);
     if (result == DSD_KEY_DIRECT_OK) {
         if (mode == DSD_KEY_APPLY_REPLACE) {
             dsd_key_set_install(state, &parsed);
         } else {
             dsd_key_scalars overlay = {0};
             key_scalars_capture(&overlay, state);
-            key_scalars_overlay_direct(&overlay, &parsed.scalars, type);
+            key_scalars_overlay_direct(&overlay, &parsed.scalars, key_type);
             key_scalars_install(state, &overlay);
             DSD_SECURE_ZERO(&overlay, sizeof overlay);
         }

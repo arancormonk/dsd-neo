@@ -160,6 +160,7 @@ tg_export_publish_result(const struct dsd_app_command* cmd, int status) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     result.sequence = g_tg_export_result.sequence + 1U;
+    // cppcheck-suppress knownConditionTrueFalse -- unsigned sequence wraps to zero at UINT64_MAX.
     if (result.sequence == 0) {
         result.sequence = 1;
     }
@@ -3834,7 +3835,7 @@ tg_listen_row_is_editable(const dsd_tg_policy_entry* entry) {
 
 /* Only mode/allow-list denial can change as a result of a row edit. */
 static unsigned int
-tg_listen_blocked_slots(dsd_opts* opts, dsd_state* state) {
+tg_listen_blocked_slots(const dsd_opts* opts, const dsd_state* state) {
     unsigned int blocked = 0;
     for (unsigned int slot = 0; slot < 2U; ++slot) {
         dsd_call_snapshot call;
@@ -3880,16 +3881,22 @@ tg_edit_check_version(dsd_state* state, uint64_t context, unsigned int generatio
 }
 
 static int
+tg_row_fields_valid(const dsd_app_tg_row_payload* p) {
+    const uint32_t all = DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_PRIORITY | DSD_APP_TG_FIELD_PREEMPT
+                         | DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_TAGS;
+    return !(!p->fields || (p->fields & ~all)
+             || ((p->fields & DSD_APP_TG_FIELD_LISTEN) && p->listen != 0 && p->listen != 1)
+             || ((p->fields & DSD_APP_TG_FIELD_PREEMPT) && p->preempt != 0 && p->preempt != 1));
+}
+
+static int
 apply_cmd_tg_row_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     dsd_app_tg_row_payload p;
     DSD_MEMCPY(&p, c->data, sizeof p);
     if (tg_edit_check_version(state, p.policy_context, p.policy_generation) != UI_CMD_APPLY_COMPLETED) {
         return UI_CMD_APPLY_FAILED;
     }
-    const uint32_t all = DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_PRIORITY | DSD_APP_TG_FIELD_PREEMPT
-                         | DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_TAGS;
-    if (!p.fields || (p.fields & ~all) || ((p.fields & DSD_APP_TG_FIELD_LISTEN) && p.listen != 0 && p.listen != 1)
-        || ((p.fields & DSD_APP_TG_FIELD_PREEMPT) && p.preempt != 0 && p.preempt != 1)) {
+    if (!tg_row_fields_valid(&p)) {
         ui_set_toast(state, 3, "Invalid talkgroup fields");
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }

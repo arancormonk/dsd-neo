@@ -1063,7 +1063,7 @@ test_group_file_rewrite(void) {
         fclose(fp);
         dsd_tg_policy_clear(st);
         init_entry(&e, 1, "A", "Tagged", DSD_TG_POLICY_SOURCE_IMPORTED);
-        strcpy(e.tags, "FIRE");
+        DSD_SNPRINTF(e.tags, sizeof e.tags, "%s", "FIRE");
         dsd_tg_policy_append_exact(st, &e);
         init_entry(&e, 2, "A", "Priority", DSD_TG_POLICY_SOURCE_IMPORTED);
         e.priority = trigger ? 0 : 25;
@@ -1107,8 +1107,8 @@ test_set_fields_remove_bounds(void) {
     if (!st) {
         return 1;
     }
-    strcpy(value.mode, "B");
-    strcpy(value.name, "Dispatch");
+    DSD_SNPRINTF(value.mode, sizeof value.mode, "%s", "B");
+    DSD_SNPRINTF(value.name, sizeof value.name, "%s", "Dispatch");
     value.priority = 25;
     value.preempt = 1;
     rc |= expect_true("add fields", dsd_tg_policy_set_fields(st, 42, 42, &value,

@@ -7,8 +7,9 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/cli.h>
 #include <stdio.h>
-#include <string.h>
 #include "../../src/app_control/commands_internal.h"
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 static int failures;
 
@@ -33,7 +34,7 @@ seed(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-expected(dsd_opts* opts, dsd_state* state, int type, size_t width) {
+expected(const dsd_opts* opts, const dsd_state* state, int type, size_t width) {
     check(state->rkey_array[7] == 29 && state->rkey_array_loaded[7] == 1, "overlay preserves keyring");
     check(state->K == (type == 0 ? 0 : 17), "named basic scalar");
     check(state->R == (type == 2 ? 0xAB : type == 3 ? 32767 : 19), "named R scalar");
@@ -53,14 +54,14 @@ expected(dsd_opts* opts, dsd_state* state, int type, size_t width) {
 int
 main(void) {
     static dsd_state state;
-    dsd_opts opts;
+    static dsd_opts opts;
     const int types[] = {0, 1, 1, 1, 2, 3};
     const size_t widths[] = {1, 10, 32, 64, 2, 5};
     const char* flags[] = {"-b", "-H", "-H", "-H", "-1", "-R"};
     for (size_t i = 0; i < 6; ++i) {
         char value[72] = {0};
         if (types[i] == 1) {
-            memset(value, '1', widths[i]);
+            DSD_MEMSET(value, '1', widths[i]);
         } else {
             DSD_SNPRINTF(value, sizeof value, "%s", types[i] == 0 ? "0" : types[i] == 2 ? "AB" : "32767");
         }
@@ -104,7 +105,7 @@ main(void) {
             seed(&opts, &state);
             dsd_app_key_direct_payload zero = {0};
             zero.key_type = types[i];
-            memset(zero.value, '0', types[i] == 1 ? widths[i] : 1);
+            DSD_MEMSET(zero.value, '0', types[i] == 1 ? widths[i] : 1);
             if (path == 0) {
                 char name[] = "test";
                 char flag[3];

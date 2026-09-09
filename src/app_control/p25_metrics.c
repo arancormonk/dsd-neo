@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <dsd-neo/app_control/p25_metrics.h>
+#include "dsd-neo/core/state_fwd.h"
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/safe_api.h>
@@ -48,6 +49,24 @@ dsd_app_p25p2_voice_avg_errs(const dsd_state* state, int slot) {
                          state->p25_p2_voice_err_hist_len, (int)sizeof(state->p25_p2_voice_err_hist[slot]));
 }
 
+static void
+p25_quality_slot(const dsd_state* state, dsd_app_p25_quality* out, int slot) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return;
+    }
+    if (DSD_SYNC_IS_P25P1(call.protocol) && slot == 0) {
+        out->p1_voice = dsd_app_p25p1_voice_avg_errs(state);
+    } else if (DSD_SYNC_IS_P25P2(call.protocol)) {
+        out->p2_voice[slot] = dsd_app_p25p2_voice_avg_errs(state, slot);
+    } else if (!DSD_SYNC_IS_P25(call.protocol) && call.protocol != DSD_SYNC_NONE && call.media_active) {
+        out->last_frame[slot].valid = 1;
+        out->last_frame[slot].errs = slot == 0 ? state->errs : state->errsR;
+        out->last_frame[slot].errs2 = slot == 0 ? state->errs2 : state->errs2R;
+    }
+    out->valid |= out->p1_voice.valid || out->p2_voice[slot].valid || out->last_frame[slot].valid;
+}
+
 void
 dsd_app_p25_quality_from_state(const dsd_state* state, dsd_app_p25_quality* out) {
     if (!out) {
@@ -64,19 +83,6 @@ dsd_app_p25_quality_from_state(const dsd_state* state, dsd_app_p25_quality* out)
         (uint64_t)state->p25_p2_rs_facch_err + state->p25_p2_rs_sacch_err + state->p25_p2_rs_ess_err);
     out->valid = out->cc_fec.valid || out->voice_fec.valid || out->rs.valid;
     for (int slot = 0; slot < 2; ++slot) {
-        dsd_call_snapshot call;
-        if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
-            continue;
-        }
-        if (DSD_SYNC_IS_P25P1(call.protocol) && slot == 0) {
-            out->p1_voice = dsd_app_p25p1_voice_avg_errs(state);
-        } else if (DSD_SYNC_IS_P25P2(call.protocol)) {
-            out->p2_voice[slot] = dsd_app_p25p2_voice_avg_errs(state, slot);
-        } else if (!DSD_SYNC_IS_P25(call.protocol) && call.protocol != DSD_SYNC_NONE && call.media_active) {
-            out->last_frame[slot].valid = 1;
-            out->last_frame[slot].errs = slot == 0 ? state->errs : state->errsR;
-            out->last_frame[slot].errs2 = slot == 0 ? state->errs2 : state->errs2R;
-        }
-        out->valid |= out->p1_voice.valid || out->p2_voice[slot].valid || out->last_frame[slot].valid;
+        p25_quality_slot(state, out, slot);
     }
 }

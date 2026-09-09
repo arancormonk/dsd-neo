@@ -12,7 +12,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
 
 static int
@@ -28,7 +30,7 @@ static int
 test_redacted_default(void) {
     char buf[64];
     uint8_t bytes[2] = {0x12U, 0xABU};
-    unsigned long long segments[2] = {0x1ULL, 0x2ULL};
+    const unsigned long long segments[2] = {0x1ULL, 0x2ULL};
     int rc = 0;
     rc |=
         expect_str("redacted decimal", dsd_secret_format_decimal(buf, sizeof buf, 0, 123ULL, 5U), DSD_SECRET_REDACTED);
@@ -55,7 +57,7 @@ test_revealed_decimal_and_hex(void) {
 static int
 test_revealed_segments_and_bytes(void) {
     char buf[128];
-    unsigned long long segments[2] = {0x1122ULL, 0xAABBULL};
+    const unsigned long long segments[2] = {0x1122ULL, 0xAABBULL};
     uint8_t bytes[3] = {0x12U, 0xABU, 0x00U};
     int rc = 0;
     rc |= expect_str("segments", dsd_secret_format_u64_segments(buf, sizeof buf, 1, segments, 2U),
@@ -80,12 +82,12 @@ test_cli_key_errors(void) {
     const char* flags[] = {"-b", "-R", "-H", "-1", "-_", "-2"};
     for (size_t i = 0; i < sizeof flags / sizeof flags[0]; ++i) {
         char malformed[40];
-        memset(malformed, '7', sizeof malformed - 2);
+        DSD_MEMSET(malformed, '7', sizeof malformed - 2);
         malformed[sizeof malformed - 2] = 'z';
         malformed[sizeof malformed - 1] = 0;
         char name[] = "diagnostics-test";
         char option[3];
-        memcpy(option, flags[i], sizeof option);
+        DSD_MEMCPY(option, flags[i], sizeof option);
         char* argv[] = {name, option, malformed, NULL};
         dsd_test_capture_stderr capture;
         if (dsd_test_capture_stderr_begin(&capture, "secret_errors") != 0) {

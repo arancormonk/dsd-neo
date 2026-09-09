@@ -618,6 +618,11 @@ rr_fail(rr_parse_ctx* ctx, dsd_rr_status status, const char* detail) {
     rr_copy_field(ctx->fail_detail, sizeof(ctx->fail_detail), detail);
 }
 
+static int
+rr_decimal_digit(unsigned char c) {
+    return c >= '0' && c <= '9';
+}
+
 /** Parse [+-]?[0-9]+(\.[0-9]+)? without consulting or changing the locale.
  * Leave missing/invalid values as an internal NaN until site finalization. */
 static int
@@ -628,11 +633,11 @@ rr_parse_decimal_strict(const char* text, double* out) {
         negative = *p == '-';
         p++;
     }
-    if (*p < '0' || *p > '9') {
+    if (!rr_decimal_digit(*p)) {
         return -1;
     }
     double value = 0;
-    while (*p >= '0' && *p <= '9') {
+    while (rr_decimal_digit(*p)) {
         value = value * 10.0 + (*p++ - '0');
         if (!isfinite(value)) {
             return -1;
@@ -640,11 +645,11 @@ rr_parse_decimal_strict(const char* text, double* out) {
     }
     if (*p == '.') {
         p++;
-        if (*p < '0' || *p > '9') {
+        if (!rr_decimal_digit(*p)) {
             return -1;
         }
         double place = 0.1;
-        while (*p >= '0' && *p <= '9') {
+        while (rr_decimal_digit(*p)) {
             value += (*p++ - '0') * place;
             place *= 0.1;
         }

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <atomic>
-#include <cstdio>
 #include <cstdlib>
 #include <dsd-neo/runtime/log.h>
 #include <thread>
@@ -8,6 +7,7 @@
 static std::atomic<int> calls{0};
 
 static void
+// cppcheck-suppress constParameterCallback -- signature must match dsd_neo_log_tap_fn.
 tap(dsd_neo_log_level_t level, const char* text, void* ctx) {
     if (level != LOG_LEVEL_WARN || !text || ctx != &calls) {
         std::abort();
@@ -20,6 +20,7 @@ int
 main() {
     dsd_neo_log_set_tap(tap, &calls);
     std::vector<std::thread> threads;
+    threads.reserve(4);
     for (int i = 0; i < 4; ++i) {
         threads.emplace_back([] {
             for (int j = 0; j < 100; ++j) {

@@ -98,6 +98,7 @@ log_write_android(dsd_neo_log_level_t level, const char* text) {
 } // namespace
 
 extern "C" void
+// cppcheck-suppress funcArgNamesDifferentUnnamed -- runtime/log.h declares the same named ctx parameter.
 dsd_neo_log_set_tap(dsd_neo_log_tap_fn fn, void* ctx) {
     if (!fn) {
         return;

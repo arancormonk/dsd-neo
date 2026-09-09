@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <dsd-neo/app_control/p25_metrics.h>
+#include <stddef.h>
+#include <stdint.h>
+#include "dsd-neo/core/state_fwd.h"
 
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
@@ -7,7 +10,6 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <limits.h>
-#include <math.h>
 
 static void
 begin(dsd_state* state, int protocol, unsigned slot) {
