@@ -107,6 +107,15 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* radioReference = new RadioReferenceModel(prefs, importedFiles, host, &engine);
     auto* controller = new UiController(host, metrics, history, talkgroups, &engine);
     controller->setP25Network(network); // WP-F2
+    // WP-S2: resolve stable identities at the attachment edge; no recency writes here.
+    QObject::connect(host, &DecoderHost::localDeviceAttached, controller, [=](const QString&) {
+        const QString kind = prefs->lastStartedKind();
+        const QString uid = prefs->lastStartedUid();
+        const QVariantMap target = kind == QStringLiteral("saved")  ? systems->getByUid(uid)
+                                   : kind == QStringLiteral("scan") ? scanLists->getByUid(uid)
+                                                                    : QVariantMap();
+        controller->requestAutoStart(prefs->autoStartOnAttach(), prefs->onboardingDone(), kind, uid, target);
+    });
 
     // The library drops rows whose stored copy vanished behind the app's back;
     // saved systems that still point at one would build a `-G <missing>` argv and

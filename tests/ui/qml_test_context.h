@@ -176,6 +176,8 @@ class InitializingHost : public ImportOnlyHost {
 // stub only acknowledges the documented same-thread flush before a start.
 class TestUiController : public QObject {
     Q_OBJECT
+    // WP-S2: exercise Main.qml signal routing and overlay binding.
+    Q_PROPERTY(bool autoStartBlocked MEMBER autoStartBlocked)
     // WP-D1: retained export result starts empty, like the real controller.
     Q_PROPERTY(QVariantMap talkgroupExportResult READ talkgroupExportResult CONSTANT)
   public:
@@ -186,8 +188,18 @@ class TestUiController : public QObject {
         return {};
     }
 
+    bool autoStartBlocked = true;
+
+    Q_INVOKABLE void
+    requestAutoStart(const QString& kind, const QString& uid) {
+        Q_EMIT autoStartRequested(kind, uid);
+    }
+
     Q_INVOKABLE void
     flushHistory() {}
+
+  Q_SIGNALS:
+    void autoStartRequested(const QString& kind, const QString& uid);
 };
 
 /**

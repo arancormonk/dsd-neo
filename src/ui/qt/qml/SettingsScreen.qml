@@ -210,8 +210,18 @@ Item {
                         title: qsTr("Keep listening in background")
                         subtitle: qsTr("Shows a persistent notification")
                         checked: prefs.backgroundListening
-                        showDivider: decoderHost.keepScreenAwakeSupported
+                        showDivider: decoderHost.keepScreenAwakeSupported || decoderHost.localDeviceBrokered
                         onToggled: function (state) { prefs.backgroundListening = state }
+                    }
+
+                    // WP-S2: opt-in applies only to hosts that broker local USB devices.
+                    ToggleRow {
+                        visible: decoderHost.localDeviceBrokered
+                        title: qsTr("Start when a dongle is attached")
+                        subtitle: qsTr("Resume the last USB system or scan list")
+                        checked: prefs.autoStartOnAttach
+                        showDivider: decoderHost.keepScreenAwakeSupported
+                        onToggled: function (state) { prefs.autoStartOnAttach = state }
                     }
 
                     ToggleRow {

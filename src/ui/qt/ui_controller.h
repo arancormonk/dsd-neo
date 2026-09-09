@@ -32,6 +32,8 @@ class TalkgroupListModel;
 
 class UiController : public QObject {
     Q_OBJECT
+    // WP-S2: QML supplies its complete overlay/pending-permission gate.
+    Q_PROPERTY(bool autoStartBlocked MEMBER m_autoStartBlocked)
     // WP-D1: copied retained outcome, polled even without decoder redraw.
     Q_PROPERTY(QVariantMap talkgroupExportResult READ talkgroupExportResult NOTIFY talkgroupExportResultChanged)
     Q_PROPERTY(int pollIntervalMs READ pollIntervalMs WRITE setPollIntervalMs NOTIFY pollIntervalChanged)
@@ -61,6 +63,10 @@ class UiController : public QObject {
         m_network = model;
     }
 
+    // WP-S2: called for a consumed host attachment, never on preference changes.
+    void requestAutoStart(bool enabled, bool onboardingDone, const QString& kind, const QString& uid,
+                          const QVariantMap& target);
+
     void start();
     void stop();
 
@@ -76,6 +82,7 @@ class UiController : public QObject {
     Q_INVOKABLE void flushHistory();
 
   Q_SIGNALS:
+    void autoStartRequested(const QString& kind, const QString& uid);
     void pollIntervalChanged();
     void talkgroupExportResultChanged();
 
@@ -84,6 +91,7 @@ class UiController : public QObject {
     void onSessionStateChanged();
     void clearLiveModels();
 
+    bool m_autoStartBlocked = true; // Closed until Main.qml installs its binding.
     DecoderHost* m_host = nullptr;
     MetricsModel* m_metrics = nullptr;
     CallHistoryModel* m_history = nullptr;

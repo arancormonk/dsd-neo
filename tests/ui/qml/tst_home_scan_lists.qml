@@ -66,6 +66,62 @@ Item {
             verify(scanLists.get(0).lastHeard > 0);
         }
 
+        // WP-S2: signal routing reuses permission handling and initialization recency.
+        function test_auto_start_scan_request() {
+            scanLists.update(0, { "sourceType": "usb" });
+            testContext.setScanTestUsb(true, false);
+            uiController.requestAutoStart("scan", scanLists.get(0).uid);
+            compare(appLoader.item.awaitingUsbAccess, true);
+            compare(uiController.autoStartBlocked, true);
+            compare(prefs.lastStartedUid, "");
+            testContext.setScanTestUsb(true, true);
+            testContext.emitSessionInitialized();
+            compare(prefs.lastStartedKind, "scan");
+            compare(prefs.lastStartedUid, scanLists.get(0).uid);
+        }
+
+        function test_auto_start_overlay_gate() {
+            var overlays = ["wizardOpen", "scanListOpen", "exploreSetupOpen", "diagnosticsOpen",
+                            "importsOpen", "radioReferenceOpen", "spectrumOpen", "talkgroupsOpen"];
+            for (var i = 0; i < overlays.length; ++i) {
+                appLoader.item[overlays[i]] = true;
+                compare(uiController.autoStartBlocked, true);
+                appLoader.item[overlays[i]] = false;
+            }
+            compare(uiController.autoStartBlocked, false);
+        }
+
+        function test_auto_start_saved_request() {
+            var row = savedSystems.count;
+            savedSystems.add({ "name": "Attached saved system", "sourceType": "usb", "freqMhz": "851.5" });
+            var uid = savedSystems.get(row).uid;
+            try {
+                testContext.setScanTestUsb(true, true);
+                uiController.requestAutoStart("saved", uid);
+                compare(prefs.lastStartedUid, "");
+                testContext.emitSessionInitialized();
+                compare(prefs.lastStartedKind, "saved");
+                compare(prefs.lastStartedUid, uid);
+            } finally {
+                savedSystems.remove(savedSystems.rowForUid(uid));
+            }
+        }
+
+        function test_auto_start_failure_banner() {
+            testContext.setScanTestAcceptStart(false);
+            uiController.requestAutoStart("scan", scanLists.get(0).uid);
+            verify(appLoader.item.startError.length > 0);
+            verify(appLoader.item.showFailure);
+            testContext.emitSessionInitialized();
+            compare(prefs.lastStartedUid, "");
+        }
+
+        function test_auto_start_deleted_target() {
+            uiController.requestAutoStart("scan", "deleted");
+            compare(prefs.lastStartedUid, "");
+            compare(scanLists.get(0).lastHeard, 0);
+        }
+
         function test_usb_grant_resumes_scan_list() {
             scanLists.update(0, {
                 "sourceType": "usb"

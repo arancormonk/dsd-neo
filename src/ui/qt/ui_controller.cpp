@@ -4,6 +4,7 @@
  */
 
 #include "ui_controller.h"
+#include "auto_start_policy.h"
 #include "diagnostics_log.h"
 
 #include <Qt>
@@ -52,6 +53,19 @@ UiController::UiController(DecoderHost* host, MetricsModel* metrics, CallHistory
 }
 
 UiController::~UiController() = default;
+
+// WP-S2: attachment consumption and target lookup happen outside this pure decision.
+void
+UiController::requestAutoStart(bool enabled, bool onboardingDone, const QString& kind, const QString& uid,
+                               const QVariantMap& target) {
+    const bool exists = !uid.isEmpty() && target.value(QStringLiteral("uid")).toString() == uid
+                        && (kind == QStringLiteral("saved") || kind == QStringLiteral("scan"));
+    if (m_host
+        && autoStartAllowed(enabled, onboardingDone, m_host->sessionState(), m_autoStartBlocked, exists,
+                            target.value(QStringLiteral("sourceType")).toString() == QStringLiteral("usb"))) {
+        Q_EMIT autoStartRequested(kind, uid);
+    }
+}
 
 int
 UiController::pollIntervalMs() const {
