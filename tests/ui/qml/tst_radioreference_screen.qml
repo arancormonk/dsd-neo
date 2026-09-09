@@ -92,6 +92,7 @@ Item {
         // The map is shared by the whole suite, so a case that left a system
         // loaded would hand the next one a screen it never set up.
         function init() {
+            tc.screen.eachSite = false
             testContext.setLocationSupported(false)
             testContext.setRadioReference("hasAppKey", false)
             testContext.setRadioReference("buildHasAppKey", false)
@@ -161,6 +162,16 @@ Item {
 
         // A trunked system takes one site: a second tap moves the choice rather
         // than adding to it, because the generator uses only the first.
+        function test_per_site_operation_allows_multiple_trunked_sites() {
+            tc.screen.eachSite = true
+            tc.screen.toggleSite(0)
+            tc.screen.toggleSite(1)
+            compare(tc.screen.selectedSites.length, 2)
+            tc.screen.toggleSite(0)
+            compare(tc.screen.selectedSites.length, 1)
+            compare(tc.screen.selectedSites[0], 1)
+        }
+
         function test_03_a_trunked_system_selects_one_site() {
             testContext.setRadioReference("hasAppKey", true)
             testContext.setRadioReference("credentialsReady", true)

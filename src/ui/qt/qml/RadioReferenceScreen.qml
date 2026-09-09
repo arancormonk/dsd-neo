@@ -44,6 +44,8 @@ Item {
     // buildImportPlan() takes. One entry for a trunked system; a conventional
     // networked import selects several repeaters.
     property var selectedSites: []
+    property bool eachSite: false
+    onEachSiteChanged: { selectedSites = []; refreshPlan() }
 
     // Import options. The two overrides are tri-state: -1 follows what the
     // RadioReference record says, 0 and 1 are the user's own answer. Without
@@ -208,6 +210,7 @@ Item {
             return
         }
         screen.plan = radioReference.buildImportPlan(screen.selectedSites, {
+                                                         "eachSite": screen.eachSite,
                                                          "partialEncAsDe": screen.partialEncAsDe,
                                                          "simulcast": screen.simulcast,
                                                          "esk": screen.esk
@@ -225,7 +228,7 @@ Item {
     // A trunked import is one site, so a tap replaces the selection; a
     // conventional one is a set of repeaters, so a tap adds or removes.
     function toggleSite(index) {
-        if (!radioReference.conventional) {
+        if (!radioReference.conventional && !screen.eachSite) {
             screen.selectedSites = [index]
             return
         }
@@ -1152,6 +1155,13 @@ Item {
                     // neither is guessable from the list itself. The third — that
                     // scanning needs an RTL-SDR or a rigctl radio — rides in
                     // plan.warnings with every other warning.
+                    OutlineButton {
+                        width: parent.width
+                        visible: radioReference.trunked
+                        text: (screen.eachSite ? "✓ " : "") + qsTr("Import each selected site as its own system")
+                        onClicked: screen.eachSite = !screen.eachSite
+                    }
+
                     Text {
                         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                         objectName: "radioReferenceRepeaterCount"
