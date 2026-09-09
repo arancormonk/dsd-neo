@@ -595,6 +595,42 @@ test_conventional_system(void) {
 }
 
 void
+test_per_site_import() {
+    Harness h;
+    h.model.loadSystem(6673);
+    pump(h.model);
+    const auto plan = h.model.buildImportPlan({0, 1}, {{"eachSite", true}});
+    expect("multi site plan valid", plan.value("ok").toBool());
+    const auto result = h.model.performImport(plan, "SARA", -1);
+    const auto rows = result.value("rows").toList();
+    expect("multi site import succeeds", result.value("ok").toBool());
+    const int beforeRollback = h.library.rowCount();
+    auto broken = plan;
+    auto plans = broken.value("plans").toList();
+    if (plans.size() > 1) {
+        plans[1] = QVariantMap{{"ok", false}};
+        broken.insert("plans", plans);
+        expect("batch failure reported", !h.model.performImport(broken, "Failed batch", -1).value("ok").toBool());
+        expect_int("batch failure retires adopted files", h.library.rowCount(), beforeRollback);
+    }
+    expect("invalid batch selection rejected",
+           !h.model.buildImportPlan({-1, 0}, {{"eachSite", true}}).value("ok").toBool());
+    expect_int("multi site import returns N rows", rows.size(), 2);
+    if (rows.size() == 2) {
+        expect_int("database id not RF number", rows[0].toMap().value("rrSiteId").toInt(), 16863);
+        expect_int("second database id", rows[1].toMap().value("rrSiteId").toInt(), 23581);
+        expect("first site coordinates", rows[0].toMap().value("hasSitePos").toBool());
+        expect("exact RR coordinates retained",
+               qAbs(rows[0].toMap().value("siteLat").toDouble() - 41.65503) < 1e-8
+                   && qAbs(rows[0].toMap().value("siteLon").toDouble() + 91.60244) < 1e-8);
+        expect("second site has position", rows[1].toMap().value("hasSitePos").toBool());
+        const auto sentinel = h.model.buildImportPlan({h.model.sites().size() - 1}, {});
+        expect("sentinel site lacks position", !sentinel.value("hasSitePos").toBool());
+        expect("site-specific files", rows[0].toMap().value("chanCsvPath") != rows[1].toMap().value("chanCsvPath"));
+    }
+}
+
+void
 test_import_lands_in_the_library(void) {
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
 
@@ -607,6 +643,7 @@ test_import_lands_in_the_library(void) {
 
     const QVariantMap result = h.model.performImport(plan, QStringLiteral("SARA Network"), -1);
     expect("import ok", result.value(QStringLiteral("ok")).toBool());
+    expect_int("single import site identity", result.value("rrSiteId").toInt(), 16863);
     expect("import returns a channel map path", !result.value(QStringLiteral("chanCsvPath")).toString().isEmpty());
     expect("import returns a talkgroup path", !result.value(QStringLiteral("groupCsvPath")).toString().isEmpty());
     expect_str("import carries the decode flag", result.value(QStringLiteral("decodeFlag")).toString(),
@@ -1144,6 +1181,7 @@ main(int argc, char** argv) {
     test_trunked_system();
     test_conventional_system();
     test_import_lands_in_the_library();
+    test_per_site_import();
     test_refresh_replaces_a_row_in_place();
     test_refresh_survives_a_row_removed_mid_flight();
     test_site_numbers_are_ambiguous();

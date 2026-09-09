@@ -486,6 +486,72 @@ test_key_persistence() {
 }
 
 void
+test_add_with_retained_key() {
+    SavedSystemsModel model;
+    while (model.count()) {
+        model.remove(0);
+    }
+    const QString key = QString::number(17 * 3);
+    model.add({{"name", "Private source"}, {"encKeyType", "basic"}, {"encKeyValue", key}});
+    const QString sourceUid = model.get(0).value("uid").toString();
+    auto site = model.get(0);
+    expect("source map hides retained key", !site.contains("encKeyValue"));
+    site.insert("rrSid", 12);
+    site.insert("rrSiteId", 16863);
+    expect("retained key copy accepts first site", model.addWithKeyFrom(sourceUid, site));
+    site.insert("rrSiteId", 48391);
+    expect("retained key copy accepts second site", model.addWithKeyFrom(sourceUid, site));
+    SavedSystemsModel reloaded;
+    expect("source and both sites persist", reloaded.count() == 3);
+    for (int row = 1; row < reloaded.count(); ++row) {
+        const auto stored = reloaded.get(row);
+        const QString uid = stored.value("uid").toString();
+        expect("copied site receives a new identity", uid != sourceUid && !uid.isEmpty());
+        expect("private key copied and persisted", reloaded.keyValueForUid(uid) == key);
+        expect("copied maps hide private key",
+               !stored.contains("encKeyValue") && !reloaded.getByUid(uid).contains("encKeyValue"));
+    }
+    expect("model roles hide copied key", !reloaded.roleNames().values().contains("encKeyValue"));
+    auto mismatched = site;
+    mismatched.insert("encKeyType", "rc4");
+    expect("retained copy rejects a different type", !model.addWithKeyFrom(sourceUid, mismatched));
+    auto replacement = site;
+    replacement.insert("encKeyValue", key);
+    expect("replacement uses ordinary add", !model.addWithKeyFrom(sourceUid, replacement));
+    expect("rejected copies do not append", model.count() == 3);
+    model.remove(0);
+    const int before = model.count();
+    expect("deleted source cannot copy from shifted row", !model.addWithKeyFrom(sourceUid, site));
+    expect("failed copy creates no incomplete row", model.count() == before);
+}
+
+void
+test_site_provenance_edits() {
+    SavedSystemsModel model;
+    while (model.count()) {
+        model.remove(0);
+    }
+    const QVariantMap site{{"rrSid", 12},        {"rrSiteId", 16863},   {"siteLat", 41.65503}, {"siteLon", -91.60244},
+                           {"hasSitePos", true}, {"siteName", "North"}, {"freqMhz", "851"}};
+    for (const char* key :
+         {"freqMhz", "decodeFlag", "chanCsvPath", "groupCsvPath", "keyCsvPath", "p25BandplanCsvPath", "srcCsvPath"}) {
+        model.add(site);
+        const int row = model.count() - 1;
+        model.update(row, {{key, "changed"}});
+        SavedSystemsModel reloaded;
+        expect("site editing clears both persisted ids",
+               reloaded.get(row).value("rrSid").toInt() == 0 && reloaded.get(row).value("rrSiteId").toInt() == 0);
+    }
+    auto incomplete = site;
+    incomplete.remove("siteLon");
+    model.add(incomplete);
+    expect("missing coordinate is not a position", !model.get(model.count() - 1).value("hasSitePos").toBool());
+    model.add(site);
+    model.update(model.count() - 1, {{"siteLat", "invalid"}});
+    expect("malformed coordinates cannot become equator", !model.get(model.count() - 1).value("hasSitePos").toBool());
+}
+
+void
 test_foundation_key_type_migration() {
     QJsonArray rows;
     rows.append(QJsonObject{{"encKeyType", 0}, {"encKeyValue", ""}});
@@ -527,6 +593,8 @@ main(int argc, char** argv) {
     test_foundation_persistence();
     test_key_persistence();
     test_foundation_key_type_migration();
+    test_site_provenance_edits();
+    test_add_with_retained_key();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

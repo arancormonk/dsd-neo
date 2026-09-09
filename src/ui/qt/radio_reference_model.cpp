@@ -4,6 +4,8 @@
  */
 
 #include "radio_reference_model.h"
+#include <QSet>
+#include "site_groups.h"
 
 #include <QByteArray>
 #include <QDir>
@@ -1269,6 +1271,36 @@ plan_into_map(const dsd_rr_import_plan& plan, QVariantMap* map) {
 
 QVariantMap
 RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVariantMap& options) {
+    if (trunked() && options.value("eachSite").toBool()) {
+        QVariantList plans;
+        QVariantMap singleOptions = options;
+        singleOptions.remove("eachSite");
+        QSet<int> seen;
+        for (const auto& index : siteIndexes) {
+            bool valid = false;
+            const int row = index.toInt(&valid);
+            if (!valid || row < 0 || row >= static_cast<int>(m_siteData.count)) {
+                return {{"ok", false}, {"blockedReason", tr("Select valid sites.")}};
+            }
+            if (seen.contains(row)) {
+                continue;
+            }
+            seen.insert(row);
+            auto plan = buildImportPlan({row}, singleOptions);
+            if (!plan.value("ok").toBool()) {
+                return plan;
+            }
+            plans.append(plan);
+        }
+        if (plans.isEmpty()) {
+            return buildImportPlan({}, singleOptions);
+        }
+        auto result = plans[0].toMap();
+        result.insert("plans", plans);
+        result.insert("siteCount", plans.size());
+        return result;
+    }
+
     dsd_rr_system_info info;
     fill_system_info(m_protocol, m_recordSaysEsk, &info);
 
@@ -1293,6 +1325,17 @@ RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVar
         return map;
     }
     plan_into_map(plan, &map);
+    if (plan.site_count == 1 && !selected.empty() && selected[0] < m_siteData.count) {
+        const auto& site = m_siteData.items[selected[0]];
+        map.insert("rrSid", m_sid);
+        map.insert("rrSiteId", site.site_db_id);
+        map.insert("siteName", field(site.descr));
+        const bool positioned = site.has_position && site_position_valid(site.lat, site.lon);
+        map.insert("hasSitePos", positioned);
+        map.insert("siteLat", positioned ? site.lat : 0);
+        map.insert("siteLon", positioned ? site.lon : 0);
+    }
+
     dsd_rr_import_plan_free(&plan);
     return map;
 }
@@ -1333,6 +1376,31 @@ RadioReferenceModel::unwindImport(const QStringList& paths) {
 
 QVariantMap
 RadioReferenceModel::performImport(const QVariantMap& plan, const QString& systemName, int savedRow) {
+    // Batch adoption is atomic: on failure retire every file already adopted.
+    if (plan.contains("plans")) {
+        QVariantList rows;
+        QStringList adopted;
+        if (!plan.value("ok").toBool()) {
+            return {{"ok", false}, {"error", "state"}};
+        }
+        for (const auto& item : plan.value("plans").toList()) {
+            auto single = item.toMap();
+            single.remove("plans");
+            const auto result = performImport(single, systemName + " — " + single.value("siteName").toString(), -1);
+            if (!result.value("ok").toBool()) {
+                unwindImport(adopted);
+                return result;
+            }
+            for (const char* key : {"chanCsvPath", "groupCsvPath"}) {
+                if (!result.value(key).toString().isEmpty()) {
+                    adopted.append(result.value(key).toString());
+                }
+            }
+            rows.append(result);
+        }
+        return {{"ok", !rows.isEmpty()}, {"rows", rows}, {"error", rows.isEmpty() ? "state" : ""}};
+    }
+
     QVariantMap result;
     result.insert(QStringLiteral("ok"), false);
     result.insert(QStringLiteral("error"), QStringLiteral("state"));
@@ -1400,6 +1468,12 @@ RadioReferenceModel::performImport(const QVariantMap& plan, const QString& syste
     result.insert(QStringLiteral("decodeFlag"), plan.value(QStringLiteral("decodeFlag")));
     result.insert(QStringLiteral("trunking"), plan.value(QStringLiteral("trunking")));
     result.insert(QStringLiteral("savedRow"), savedRow);
+    for (const char* key : {"rrSid", "rrSiteId", "siteName", "siteLat", "siteLon", "hasSitePos"}) {
+        if (plan.contains(key)) {
+            result.insert(key, plan.value(key));
+        }
+    }
+
     return result;
 }
 

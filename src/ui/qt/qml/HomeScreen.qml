@@ -13,6 +13,19 @@ Item {
     signal playScanList(int row)
     signal editScanList(int row)
     signal addSystem()
+    signal chooseSites(int row)
+    property int siteRevision: 0
+    Connections { target: savedSystems; function onSitesChanged() { screen.siteRevision++ } }
+    Connections { target: importedFiles; function onCountChanged() { screen.siteRevision++ } }
+    function needsSiteRefresh(row) {
+        var sys = savedSystems.get(row)
+        if (sys.rrSid > 0 && sys.rrSiteId > 0) return false
+        for (var path of [sys.chanCsvPath, sys.groupCsvPath]) {
+            var libraryRow = importedFiles.rowForPath(path || "")
+            if (libraryRow >= 0 && importedFiles.get(libraryRow).origin === "radioreference") return true
+        }
+        return false
+    }
     signal playSystem(int row)
     signal editSystem(int row)
     signal networkSource()
@@ -167,7 +180,10 @@ Item {
                     required property double lastHeard
 
                     width: content.width
-                    height: 92
+                    property var siblings: (screen.siteRevision, savedSystems.siblingRows(index))
+                    visible: siblings.length === 0 || siblings[0] === index
+                    height: visible ? (refreshHint ? 154 : 122) : 0
+                    property bool refreshHint: (screen.siteRevision, screen.needsSiteRefresh(index))
 
                     Column {
                         anchors.left: parent.left
@@ -175,6 +191,7 @@ Item {
                         anchors.leftMargin: Theme.cardPadding
                         anchors.rightMargin: 12
                         anchors.verticalCenter: parent.verticalCenter
+                        anchors.verticalCenterOffset: card.refreshHint ? -20 : -10
                         spacing: 4
 
                         Text {
@@ -210,6 +227,27 @@ Item {
                         }
                     }
 
+                    Text {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.margins: Theme.cardPadding
+                        visible: card.refreshHint
+                        text: qsTr("Refresh from RadioReference to enable site grouping")
+                        wrapMode: Text.Wrap
+                        color: Theme.textSecondary
+                        font.pixelSize: Theme.fontSize(12)
+                    }
+                    OutlineButton {
+                        objectName: "homeSiteChooserButton"
+                        width: implicitWidth
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.margins: 4
+                        text: qsTr("%1 sites ›").arg(card.siblings.length)
+                        visible: card.siblings.length > 0
+                        onClicked: screen.chooseSites(card.index)
+                    }
                     PlayCircle {
                         id: play
                         anchors.right: parent.right
@@ -217,7 +255,7 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         featured: index === savedSystems.mostRecentRow
                         enabled: !mainRoot.transitioning
-                        onClicked: screen.playSystem(card.index)
+                        onClicked: card.siblings.length > 0 ? screen.chooseSites(card.index) : screen.playSystem(card.index)
                     }
 
                     // Long-press manages the card: the design keeps card faces clean,

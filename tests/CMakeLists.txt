@@ -2634,6 +2634,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_persistence.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
     )
     target_include_directories(
@@ -2650,6 +2651,29 @@ if(DSD_ENABLE_QT_UI)
     )
     set_target_properties(dsd-neo_test_ui_qt_persistence PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_PERSISTENCE COMMAND dsd-neo_test_ui_qt_persistence)
+
+    # WP-D4 site grouping and saved-row provenance.
+    add_executable(
+        dsd-neo_test_ui_qt_site_groups
+        ui/test_ui_qt_site_groups.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_site_groups
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_site_groups
+        PRIVATE Qt6::Core dsd-neo_runtime
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_site_groups
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_site_groups PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_SITE_GROUPS COMMAND dsd-neo_test_ui_qt_site_groups)
 
     # What MetricsModel makes of a decoder snapshot: the readings screens gate
     # on. The sync hold in particular -- a lock that outlives the decoder finding
@@ -2760,6 +2784,7 @@ if(DSD_ENABLE_QT_UI)
     add_executable(
         dsd-neo_test_ui_qt_session_args
         ui/test_ui_qt_session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
@@ -2786,6 +2811,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
@@ -2850,6 +2876,7 @@ if(DSD_ENABLE_QT_UI)
     add_executable(
         dsd-neo_test_ui_qt_radio_reference_model
         ui/test_ui_qt_radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
@@ -2998,6 +3025,7 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
             # WP-S1: production persistence/generator and starter.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
@@ -10129,6 +10157,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_controller
         ui/test_ui_qt_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp # WP-F2
@@ -10346,6 +10375,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
@@ -10392,6 +10422,7 @@ if(DSD_ENABLE_QT_UI)
         engine/test_engine_trunk_scan_scan_list.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp

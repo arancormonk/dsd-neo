@@ -11,6 +11,9 @@ Item {
     id: wizard
 
     signal closed()
+    property var importedSite: null
+    property var importedSites: []
+    property string retainedKeySourceUid: ""
     signal saved(int row)
     // Asks Main.qml to push the RadioReference screen over this one; the result
     // comes back through applyRadioReference().
@@ -95,6 +98,9 @@ Item {
     }
 
     function openForAdd(preferNetwork) {
+        retainedKeySourceUid = ""
+        importedSite = null
+        importedSites = []
         editRow = -1
         step = 0
         sourceType = preferNetwork ? "rtltcp" : "usb"
@@ -135,6 +141,7 @@ Item {
      * work. @a sys supplies the source; it is the explore session's own map.
      */
     function openForFound(sys, freqMhz) {
+        retainedKeySourceUid = ""
         editRow = -1
         step = 1
         sourceType = (sys && sys.sourceType === "rtltcp") ? "rtltcp" : "usb"
@@ -167,7 +174,10 @@ Item {
     }
 
     function openForEdit(row) {
+        importedSite = null
+        importedSites = []
         var sys = savedSystems.get(row)
+        retainedKeySourceUid = sys.uid || ""
         editRow = row
         step = 0
         sourceType = sys.sourceType
@@ -301,6 +311,37 @@ Item {
         }
         if (!encryptionEditor.keepingKey)
             sys.encKeyValue = encryptionEditor.clearingKey ? "" : encKeyValue
+        if (importedSites.length > 0) {
+            // Every site receives the source/tuner answers; its protocol and CSVs stay site-specific.
+            for (var i = 0; i < importedSites.length; ++i) {
+                var site = i === 0 ? Object.assign({}, importedSites[i], sys)
+                                   : Object.assign({}, sys, importedSites[i])
+                if (site.freqMhz !== importedSites[i].freqMhz || site.decodeFlag !== importedSites[i].decodeFlag
+                        || site.chanCsvPath !== (importedSites[i].chanCsvPath || "")
+                        || site.groupCsvPath !== (importedSites[i].groupCsvPath || "")) {
+                    site.rrSid = 0
+                    site.rrSiteId = 0
+                }
+                if (encryptionEditor.keepingKey) {
+                    if (!savedSystems.addWithKeyFrom(retainedKeySourceUid, site)) {
+                        csvNotice = qsTr("The retained key is unavailable. Choose Replace or Clear before saving.")
+                        csvNoticeIsProblem = true
+                        return
+                    }
+                } else {
+                    savedSystems.add(site)
+                }
+            }
+            wizard.saved(savedSystems.count - importedSites.length)
+            return
+        }
+        if (importedSite && importedSite.rrSiteId > 0
+                && sys.freqMhz === importedSite.freqMhz && sys.decodeFlag === importedSite.decodeFlag
+                && sys.chanCsvPath === (importedSite.chanCsvPath || "")
+                && sys.groupCsvPath === (importedSite.groupCsvPath || "")) {
+            for (var key of ["rrSid", "rrSiteId", "siteName", "siteLat", "siteLon", "hasSitePos"])
+                sys[key] = importedSite[key]
+        }
         if (editRow >= 0) {
             savedSystems.update(editRow, sys)
             wizard.saved(editRow)
@@ -358,6 +399,13 @@ Item {
      * silently strip a hand-picked -C from a system they were only editing.
      */
     function applyRadioReference(result) {
+        importedSites = result.rows || []
+        if (importedSites.length > 0) {
+            editRow = -1
+            result = importedSites[0]
+        }
+        importedSite = result
+
         if (result.chanCsvPath !== undefined && result.chanCsvPath.length > 0)
             wizard.assignCsvPath("chan", result.chanCsvPath, false)
         if (result.groupCsvPath !== undefined && result.groupCsvPath.length > 0)

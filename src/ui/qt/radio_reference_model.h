@@ -251,8 +251,9 @@ class RadioReferenceModel : public QObject {
      *
      * @param siteIndexes Indexes into sites(). A list, not an index, because a
      *                    Conventional Networked import selects several repeaters;
-     *                    a trunked protocol uses the first and warns about the rest.
-     * @param options     partialEncAsDe, simulcast, esk. simulcast and esk default
+     *                    a trunked protocol selects one site, or builds one plan per site
+     *                    when options.eachSite is true.
+     * @param options     eachSite, partialEncAsDe, simulcast, esk. simulcast and esk default
      *                    to what the RadioReference record says when absent.
      * @return {ok, protocol, protocolName, conventional, scanList, siteCount,
      *          decodeFlag, trunking, freqMhz, groupCsvText, chanCsvText, chanNeed,
@@ -269,7 +270,9 @@ class RadioReferenceModel : public QObject {
      * @param systemName Name for the saved system.
      * @param savedRow   Existing saved-system row to update, or -1 for a new one.
      * @return The saved-system field map for QML to merge into a wizard-shaped
-     *         map, plus {ok, error}. Never calls savedSystems.add() itself.
+     *         map, plus {ok, error}; a per-site batch returns {ok, error, rows}.
+     *         Every single-site row carries the RR database IDs and position.
+     *         Never calls savedSystems.add() itself.
      */
     Q_INVOKABLE QVariantMap performImport(const QVariantMap& plan, const QString& systemName, int savedRow);
 

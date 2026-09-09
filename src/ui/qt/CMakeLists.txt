@@ -25,6 +25,7 @@ target_sources(
         metrics_model.cpp
         qt_ui.cpp
         radio_reference_model.cpp
+        site_groups.cpp # WP-D4
         saved_systems_model.cpp
         scan_lists_model.cpp
         scan_list_targets.cpp
@@ -47,6 +48,8 @@ qt_add_resources(
         qml/Theme.qml
         qml/Util.js
         qml/Main.qml
+        # WP-D4 site chooser. Keep resource paths on their own lines for the audit.
+        qml/SiteChooserSheet.qml
         qml/BandRail.qml
         qml/BottomNav.qml
         qml/CallRow.qml

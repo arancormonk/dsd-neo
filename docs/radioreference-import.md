@@ -108,6 +108,31 @@ The import screen is a drill-down with two stages, and shows one or the other, n
   back to it. The results list survives that, so importing several systems from one search is a
   tap each.
 
+## Saved sites in Qt and Android
+
+For trunked systems, enable **Import each selected site as its own system**, select the sites, and import.
+The setup wizard saves one row per site with its own frequency and CSV files, using the source and tuner
+settings you choose. Frequency, protocol and channel/group CSV edits in that wizard apply to the first
+site; the other sites retain their individual import settings. A single-site import records the same
+site identity. Identity uses RadioReference's database site ID, not the RF site number.
+
+Home groups sibling sites under one card with an **n sites ›** chooser. **Use my location** requests a
+foreground fix; valid site distances appear in kilometers. **Nearest site** skips avoided sites and
+sites without valid coordinates. Missing `(0, 0)` coordinates and nonfinite or out-of-range values never
+participate in distance calculations. The avoid switch is saved locally.
+
+Site buttons and **Nearest site** start only while Idle. While listening, open **Sites ›**, then use
+**Stop and switch** for the desired site. It stops the session, waits for confirmed Idle, and starts the
+selected saved UID with that site's files. Any intervening pointer, keyboard, shortcut or wheel action
+cancels the pending restart. There is no live automatic hop: tuning alone would retain the old site's
+channel and group files, including site-specific DMR LCN maps.
+
+Editing a saved site's frequency, decode flag or CSV selections clears its RadioReference grouping IDs.
+Renaming or avoiding a site preserves them. Older imports with provenance only on the library file show
+**Refresh from RadioReference to enable site grouping** and stay ungrouped; re-import the site to create
+the saved-row identity. Refreshing only a library CSV cannot infer which saved row represents which site.
+Manual rows never group.
+
 ## Terminal UI
 
 Open the menu overlay with `Enter`, then **Trunking -> Channels & groups -> Import from
