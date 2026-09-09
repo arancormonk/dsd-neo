@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QChar>
 #include <QLatin1String>
 #include <QtGlobal>
 #include <stddef.h>
@@ -15,6 +16,7 @@
 #include <stdint.h>
 
 #include "decode_mode_flag.h"
+#include "session_args.h"
 
 namespace dsd_qt {
 
@@ -245,7 +247,11 @@ CommandBridge::applyEncryptionKey(const QString& type, const QString& value) con
     } else {
         return false;
     }
-    QByteArray bytes = value.toUtf8();
+    QString normalized = (payload.key_type == DSD_APP_KEY_TYPE_HEX || payload.key_type == DSD_APP_KEY_TYPE_RC4)
+                             ? session_args_key_hex_normalize(value)
+                             : value.trimmed();
+    QByteArray bytes = normalized.toUtf8();
+    DSD_SECURE_ZERO(normalized.data(), static_cast<size_t>(normalized.size()) * sizeof(QChar));
     const bool fits = bytes.size() < static_cast<qsizetype>(sizeof payload.value) && !bytes.contains('\0');
     int result = DSD_APP_COMMAND_SUBMIT_REJECTED;
     if (fits) {
