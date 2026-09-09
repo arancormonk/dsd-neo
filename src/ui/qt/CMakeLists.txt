@@ -21,6 +21,7 @@ target_sources(
         diagnostics_log.cpp
         imported_files_model.cpp
         json_store.cpp
+        p25_network_model.cpp # WP-F2
         metrics_model.cpp
         qt_ui.cpp
         radio_reference_model.cpp
@@ -66,6 +67,7 @@ qt_add_resources(
         qml/MicroLabel.qml
         qml/ModalSheet.qml
         qml/MonitorScreen.qml
+        qml/NetworkSheet.qml
         qml/OnboardingScreen.qml
         qml/OutlineButton.qml
         qml/PlayCircle.qml
@@ -132,4 +134,5 @@ set_property(
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_monitor_compact.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_session_initialized.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_diagnostics_screen.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_network_sheet.qml" # WP-F2
 )

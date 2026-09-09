@@ -619,3 +619,18 @@ The app's argv token gate rejects `--show-keys` (including assignment syntax).
 `session_args_extra_safe()` is the shared gate for future scan-list generation.
 Malformed CLI key diagnostics report the expected shape, never the value.
 QString/QML copies cannot promise erasure; only filtered content enters diagnostics.
+
+### P25 network announcements
+
+During P25 reception, the Monitor's **P25 Site → Network** entry opens a read-only
+sheet with Neighbours, Patches, Affiliations and Radios. Empty sections show
+“(none announced)”. Neighbours show the current control channel `[CC]`, candidate
+`[C]`, frequency, site identity and CFVA status. Each list shows at most 100 recent
+records and refreshes only while the sheet is open. Starting, Idle, Failed and
+trunk-scan target changes clear these live records.
+
+The Monitor entry is the WP-F2 fallback until WP-F1's SiteSheet is integrated;
+move the entry there with the `siteProtocol === "P25"` guard. There is no Tune
+control in v1. The deferred neighbour Tune work must restrict `RTL_SET_FREQ` to a
+running single-system P25 trunk session with the same WACN/SYS. CC selection
+preserves user lists but clears site metadata; crossing systems requires restart.

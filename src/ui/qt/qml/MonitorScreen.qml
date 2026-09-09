@@ -12,6 +12,10 @@ Item {
     // Raised by the header's spectrum button; Main.qml owns the layer.
     readonly property bool compactHeight: height < 500
 
+    // WP-F2 fallback until SiteSheet is integrated.
+    readonly property string siteProtocol: metrics.syncLabel.indexOf("P25") === 0 ? "P25" : ""
+    onVisibleChanged: { if (!visible) networkSheet.visible = false; }
+
     signal openSpectrum
     signal openTalkgroups
 
@@ -420,6 +424,22 @@ Item {
             id: body
             width: bodyScroll.width
             spacing: Theme.gap
+
+            // WP-F2: site row; move Network entry to SiteSheet when WP-F1 lands.
+            Row {
+                visible: screen.siteProtocol === "P25"
+                width: parent.width
+                height: visible ? 44 : 0
+                spacing: 12
+                MicroLabel { text: qsTr("P25 Site"); anchors.verticalCenter: parent.verticalCenter }
+                OutlineButton {
+                    objectName: "siteNetworkButton"
+                    text: qsTr("Network")
+                    width: 120
+                    height: 44
+                    onClicked: networkSheet.open()
+                }
+            }
 
             // Actions on the live engine.
             Row {
@@ -865,4 +885,6 @@ Item {
         enabled: !decoderHost.transitioning
         onClicked: decoderHost.stop()
     }
+    // WP-F2: local overlay avoids shared Main.qml edits.
+    NetworkSheet { id: networkSheet; z: 100 }
 }
