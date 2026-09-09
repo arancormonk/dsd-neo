@@ -1247,7 +1247,8 @@ struct dsd_state {
 
     // P25 Phase 1 voice error moving average (last N IMBE frames)
     uint8_t p25_p1_voice_err_hist[64];
-    int p25_p1_voice_err_hist_len;          // window length (<=64), default 50
+    int p25_p1_voice_err_hist_len;          // ring capacity (<=64), default 50
+    int p25_p1_voice_err_hist_count;        // populated frames this call (<=capacity)
     int p25_p1_voice_err_hist_pos;          // ring head
     unsigned int p25_p1_voice_err_hist_sum; // sum of values in window
 
@@ -1330,7 +1331,8 @@ struct dsd_state {
 
     // P25 Phase 2 voice error moving average per slot (errs2 from AMBE decode)
     uint8_t p25_p2_voice_err_hist[2][64];
-    int p25_p2_voice_err_hist_len; // window length (<=64), default 50
+    int p25_p2_voice_err_hist_len;      // ring capacity (<=64), default 50
+    int p25_p2_voice_err_hist_count[2]; // populated frames per slot this call
     int p25_p2_voice_err_hist_pos[2];
     unsigned int p25_p2_voice_err_hist_sum[2];
 
