@@ -105,6 +105,10 @@ class MetricsModel : public QObject {
     Q_PROPERTY(qulonglong slot2TgId READ slot2TgId NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1SrcText READ slot1SrcText NOTIFY slot1Changed)
     Q_PROPERTY(QString slot2SrcText READ slot2SrcText NOTIFY slot2Changed)
+    Q_PROPERTY(bool slot1CallEmergency READ slot1CallEmergency NOTIFY slot1Changed)
+    Q_PROPERTY(int slot1CallPriority READ slot1CallPriority NOTIFY slot1Changed)
+    Q_PROPERTY(bool slot2CallEmergency READ slot2CallEmergency NOTIFY slot2Changed)
+    Q_PROPERTY(int slot2CallPriority READ slot2CallPriority NOTIFY slot2Changed)
     Q_PROPERTY(bool slot1CallEnc READ slot1CallEnc NOTIFY slot1Changed)
     Q_PROPERTY(bool slot2CallEnc READ slot2CallEnc NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1EncText READ slot1EncText NOTIFY slot1Changed)
@@ -560,6 +564,26 @@ class MetricsModel : public QObject {
     }
 
     bool
+    slot1CallEmergency() const {
+        return m_view.slot_call[0].emergency;
+    }
+
+    int
+    slot1CallPriority() const {
+        return m_view.slot_call[0].priority;
+    }
+
+    bool
+    slot2CallEmergency() const {
+        return m_view.slot_call[1].emergency;
+    }
+
+    int
+    slot2CallPriority() const {
+        return m_view.slot_call[1].priority;
+    }
+
+    bool
     slot1CallEnc() const {
         return m_view.slot_call[0].enc;
     }
@@ -838,13 +862,15 @@ class MetricsModel : public QObject {
         QString enc_text;     // "ALG 84 · KID 0001", empty when clear or unlearned
         qulonglong tg_id = 0; // numeric talkgroup, 0 when the call has none
         bool enc = false;
+        bool emergency = false;
+        int priority = 0;
         int seconds = 0;
 
         bool
         operator==(const SlotCall& other) const {
             return state == other.state && name == other.name && tg_text == other.tg_text && src_text == other.src_text
                    && channel == other.channel && enc_text == other.enc_text && tg_id == other.tg_id && enc == other.enc
-                   && seconds == other.seconds;
+                   && seconds == other.seconds && emergency == other.emergency && priority == other.priority;
         }
     };
 

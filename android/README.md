@@ -638,3 +638,11 @@ The row dims and the sheet labels identity as retained when current sync is lost
 Starting, stopping to Idle, failure, and scan-target transitions clear the live
 identity through the existing controller lifecycle. Unknown fields are omitted;
 the row is hidden when no identity fields are available.
+Emergency calls carry an EMERGENCY badge on the monitor (including the other TDMA
+slot), recent calls, and history. The notification title prefixes the lead call
+with EMERGENCY. Native notification records and `DecoderStatus.kt` use wire v2:
+each of the two slot records appends emergency and priority (11 slot fields).
+Call-history JSON stores `"em": true` only for emergency rows; older history
+without that optional key remains readable. Emergency indication persists when
+later fragments enrich a history row. The notification channel remains
+`IMPORTANCE_LOW`; an opt-in heads-up channel is a follow-up.

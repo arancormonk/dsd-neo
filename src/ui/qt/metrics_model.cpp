@@ -108,6 +108,8 @@ MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m)
     out.name = QString::fromUtf8(view.name);
     out.channel = QString::fromUtf8(view.channel);
     out.enc = view.enc != 0U;
+    out.emergency = view.emergency != 0U;
+    out.priority = view.priority;
     if (out.enc) {
         out.enc_text = slot_enc_text(view.algid, view.kid);
     }

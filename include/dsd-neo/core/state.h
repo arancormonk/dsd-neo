@@ -151,6 +151,8 @@ typedef struct {
     uint32_t sys_id4;   //
     uint32_t sys_id5;   //
     int8_t gi;          //group or individual
+    uint8_t emergency;  // emergency indication observed during this call
+    uint8_t priority;   // observed service priority
     uint8_t enc;        //clear or encrypted
     uint8_t enc_alg;    //alg if encrypted
     uint16_t enc_key;   //enc key id value, if encrypted (not key value or key variable)

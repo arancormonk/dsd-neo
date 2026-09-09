@@ -2726,6 +2726,7 @@ if(DSD_ENABLE_QT_UI)
     # The call-history model's ring ingest, driven against synthetic event
     # rings: the slot/seq row keying, merge-versus-duplicate decisions, the
     # commit_rev rescan gate, and the relaunch (Activity restart) path.
+    find_package(Qt6 REQUIRED COMPONENTS Test)
     add_executable(
         dsd-neo_test_ui_qt_call_history_model
         ui/test_ui_qt_call_history_model.cpp
@@ -2738,7 +2739,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_call_history_model
-        PRIVATE Qt6::Core
+        PRIVATE Qt6::Core Qt6::Test
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_call_history_model
@@ -10230,3 +10231,17 @@ if(Python3_Interpreter_FOUND)
             ${PROJECT_SOURCE_DIR}/tests/ui/test_diagnostics_share_paths.py
     )
 endif()
+
+# WP-F4: real event synchronization and published snapshots for late emergency metadata.
+add_executable(
+    dsd-neo_test_engine_emergency_history
+    engine/test_engine_emergency_history.c
+)
+target_link_libraries(
+    dsd-neo_test_engine_emergency_history
+    PRIVATE dsd-neo_app_control
+)
+add_test(
+    NAME ENGINE_EMERGENCY_HISTORY
+    COMMAND dsd-neo_test_engine_emergency_history
+)

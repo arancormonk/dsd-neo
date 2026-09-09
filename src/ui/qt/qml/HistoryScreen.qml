@@ -161,6 +161,8 @@ Item {
                 // rule the monitor's hero applies — so it is not printed under a
                 // row that the scan channel already names.
                 var meta = []
+                if (model.emergency)
+                    meta.push(qsTr("EMERGENCY"))
                 if (model.tg > 0)
                     meta.push("TG " + model.tg)
                 if (model.src > 0 || model.srcName)
@@ -178,6 +180,7 @@ Item {
             }
             rightText: model.timeText
             enc: model.enc
+            emergency: model.emergency
         }
     }
 

@@ -142,6 +142,7 @@ row_role_value(const CallHistoryModel::Row& row, int role) {
         case CallHistoryModel::TgRole: return row.tg;
         case CallHistoryModel::SrcRole: return row.src;
         case CallHistoryModel::SourceNameRole: return row.sourceName;
+        case CallHistoryModel::EmergencyRole: return row.emergency;
         case CallHistoryModel::EncRole: return row.enc;
         case CallHistoryModel::WhenRole: return row.when;
         case CallHistoryModel::DurationSecsRole: return row.durationSecs;
@@ -173,6 +174,7 @@ CallHistoryModel::roleNames() const {
     roles.insert(TgRole, QByteArrayLiteral("tg"));
     roles.insert(SrcRole, QByteArrayLiteral("src"));
     roles.insert(SourceNameRole, QByteArrayLiteral("srcName"));
+    roles.insert(EmergencyRole, QByteArrayLiteral("emergency"));
     roles.insert(EncRole, QByteArrayLiteral("enc"));
     roles.insert(WhenRole, QByteArrayLiteral("when"));
     roles.insert(DurationSecsRole, QByteArrayLiteral("durationSecs"));
@@ -264,6 +266,7 @@ row_from_item(const Event_History* item, const QString& sessionLabel, int slot, 
     row.src = static_cast<qulonglong>(item->source_id);
     row.sourceName = QString::fromUtf8(item->s_name[0] ? item->s_name : item->src_str);
     row.enc = item->enc != 0U;
+    row.emergency = item->emergency != 0U;
     row.kind = item->category == DSD_EVENT_CATEGORY_VOICE ? CallHistoryModel::KindVoice : CallHistoryModel::KindNotice;
     if (row.kind == CallHistoryModel::KindNotice) {
         /* The emitter's summary line names what happened ("SMS from 1234",
@@ -315,11 +318,11 @@ row_from_item(const Event_History* item, const QString& sessionLabel, int slot, 
 } // namespace
 
 int
-CallHistoryModel::noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool enc, bool voice,
-                           const QString& sourceName) {
+CallHistoryModel::noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool emergency, bool enc,
+                           bool voice, const QString& sourceName) {
     auto seen = m_seen.find(key);
     if (seen == m_seen.end()) {
-        m_seen.insert(key, SeenState{when, end, src, enc, sourceName});
+        m_seen.insert(key, SeenState{when, end, src, emergency, enc, sourceName});
         return SeenNew;
     }
     // Seen is not final: the core merges a reacquired segment into its committed
@@ -332,7 +335,8 @@ CallHistoryModel::noteSeen(const QString& key, qint64 when, qint64 end, qulonglo
     int64_t storedEnd = seen->end;
     uint64_t storedSrc = seen->src;
     bool storedEnc = seen->enc;
-    const bool advanced = call_history_seen_absorb(&storedEnd, &storedSrc, &storedEnc, end, src, enc);
+    const bool advanced =
+        call_history_seen_absorb(&storedEnd, &storedSrc, &storedEnc, end, src, enc, &seen->emergency, emergency);
     const bool labelAdvanced = !sourceName.isEmpty() && sourceName != seen->sourceName && src == storedSrc;
     if (!advanced && !labelAdvanced) {
         return SeenUnchanged;
@@ -381,7 +385,7 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2]) {
             // Must match keyFor() on the equivalent Row, or a relaunched UI would
             // re-ingest every row its predecessor already logged.
             const QString key = seen_key(slot, seq, when, item->target_id, kind);
-            const int verdict = noteSeen(key, when, end, src, item->enc != 0U, voice,
+            const int verdict = noteSeen(key, when, end, src, item->emergency != 0U, item->enc != 0U, voice,
                                          QString::fromUtf8(item->s_name[0] ? item->s_name : item->src_str));
             if (verdict == SeenUnchanged) {
                 continue;
@@ -477,6 +481,7 @@ CallHistoryModel::tryMerge(const Row& row) {
             existing.durationSecs = static_cast<int>(span);
         }
         existing.enc = existing.enc || row.enc;
+        existing.emergency = existing.emergency || row.emergency;
         if (existing.src == 0) {
             existing.src = row.src;
         }
@@ -502,7 +507,7 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate) {
     // at its sorted (newest-first) position. Never a reset — delegates and the
     // reader's scroll position survive every ingest.
     static const QVector<int> mergeRoles = {WhenRole,         SrcRole,      SourceNameRole, EncRole,
-                                            DurationSecsRole, DayLabelRole, TimeTextRole};
+                                            DurationSecsRole, DayLabelRole, TimeTextRole,   EmergencyRole};
     const int merged = tryMerge(row);
     if (merged >= 0) {
         const QModelIndex idx = index(merged);
@@ -647,6 +652,7 @@ CallHistoryModel::load() {
         row.src = obj.value(QLatin1String("src")).toVariant().toULongLong();
         row.sourceName = obj.value(QLatin1String("srcName")).toString();
         row.enc = obj.value(QLatin1String("enc")).toBool();
+        row.emergency = obj.value(QLatin1String("em")).toBool();
         row.durationSecs = obj.value(QLatin1String("durationSecs")).toInt(-1);
         row.systemName = obj.value(QLatin1String("systemName")).toString();
         row.kind = obj.value(QLatin1String("kind")).toInt(KindVoice);
@@ -670,8 +676,8 @@ CallHistoryModel::load() {
     // Oldest first through the same merge the ingest path uses, so a log written
     // before fragment-coalescing existed collapses on its first load.
     for (auto it = rows.crbegin(); it != rows.crend(); ++it) {
-        m_seen.insert(keyFor(*it),
-                      SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->enc, it->sourceName});
+        m_seen.insert(keyFor(*it), SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->emergency,
+                                             it->enc, it->sourceName});
         if (tryMerge(*it) < 0) {
             m_rows.prepend(*it);
         }
@@ -696,6 +702,7 @@ CallHistoryModel::load() {
         state.end = obj.value(QLatin1String("end")).toVariant().toLongLong();
         state.src = obj.value(QLatin1String("src")).toVariant().toULongLong();
         state.enc = obj.value(QLatin1String("enc")).toBool();
+        state.emergency = obj.value(QLatin1String("em")).toBool();
         state.sourceName = obj.value(QLatin1String("srcName")).toString();
         m_seen.insert(key, state);
     }
@@ -724,6 +731,9 @@ CallHistoryModel::rowsToJson() const {
         obj.insert(QLatin1String("srcNameSeq"), static_cast<qint64>(row.sourceNameSeq));
         obj.insert(QLatin1String("srcNameSlot"), row.sourceNameSlot);
         obj.insert(QLatin1String("enc"), row.enc);
+        if (row.emergency) {
+            obj.insert(QLatin1String("em"), true);
+        }
         obj.insert(QLatin1String("durationSecs"), row.durationSecs);
         obj.insert(QLatin1String("systemName"), row.systemName);
         obj.insert(QLatin1String("kind"), row.kind);
@@ -763,6 +773,9 @@ CallHistoryModel::seenToJson() const {
         obj.insert(QLatin1String("src"), static_cast<qint64>(state.src));
         obj.insert(QLatin1String("srcName"), state.sourceName);
         obj.insert(QLatin1String("enc"), state.enc);
+        if (state.emergency) {
+            obj.insert(QLatin1String("em"), true);
+        }
         seenArray.append(obj);
     }
     return seenArray;

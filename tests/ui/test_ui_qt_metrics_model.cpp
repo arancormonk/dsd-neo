@@ -18,6 +18,7 @@
 
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -339,6 +340,19 @@ main(int argc, char** argv) {
     opts.mod_qpsk = 0;
 
     dsd_qt::MetricsModel model;
+
+    dsd_call_observation emergency = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 123U, 456U);
+    emergency.kind = DSD_CALL_KIND_GROUP_VOICE;
+    emergency.has_service_metadata = 1;
+    emergency.emergency = 1;
+    emergency.priority = 3;
+    emergency.observed_m = dsd_time_now_monotonic_s();
+    dsd_call_state_observe(&state, &emergency, DSD_CALL_BOUNDARY_BEGIN);
+    model.refresh(&opts, &state);
+    expect("emergency and priority reach metrics", model.slot1CallEmergency() && model.slot1CallPriority() == 3);
+    model.clear();
+    expect("clear resets emergency and priority", !model.slot1CallEmergency() && model.slot1CallPriority() == 0);
+    dsd_state_ext_free_all(&state);
 
     /* Nothing has synced: the strip must say so rather than default to a lock. */
     state.synctype = DSD_SYNC_NONE;

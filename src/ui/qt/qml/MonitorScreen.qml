@@ -40,6 +40,8 @@ Item {
     readonly property string heroTg: heroSlot === 1 ? metrics.slot1TgText : heroSlot === 2 ? metrics.slot2TgText : ""
     readonly property string heroSrc: heroSlot === 1 ? metrics.slot1SrcText : heroSlot === 2 ? metrics.slot2SrcText : ""
     readonly property double heroTgId: heroSlot === 1 ? metrics.slot1TgId : heroSlot === 2 ? metrics.slot2TgId : 0
+    readonly property bool heroEmergency: heroSlot === 1 ? metrics.slot1CallEmergency : heroSlot === 2 ? metrics.slot2CallEmergency : false
+    readonly property bool otherEmergency: otherSlot === 1 ? metrics.slot1CallEmergency : otherSlot === 2 ? metrics.slot2CallEmergency : false
     readonly property bool heroEnc: heroSlot === 1 ? metrics.slot1CallEnc : heroSlot === 2 ? metrics.slot2CallEnc : false
     readonly property string heroEncText: heroSlot === 1 ? metrics.slot1EncText : heroSlot === 2 ? metrics.slot2EncText : ""
     readonly property int heroSeconds: heroSlot === 1 ? metrics.slot1CallSeconds : heroSlot === 2 ? metrics.slot2CallSeconds : 0
@@ -317,7 +319,7 @@ Item {
                     objectName: "heroIds"
                     anchors.verticalCenter: parent.verticalCenter
                     visible: text.length > 0
-                    width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0) - (heroAlgorithm.visible ? heroAlgorithm.width + heroSubline.spacing : 0)))
+                    width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroEmergencyTag.visible ? heroEmergencyTag.width + heroSubline.spacing : 0) - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0) - (heroAlgorithm.visible ? heroAlgorithm.width + heroSubline.spacing : 0)))
                     elide: Text.ElideRight
                     text: {
                         var parts = [];
@@ -335,6 +337,13 @@ Item {
                 // The hero must say when the call it is captioning is
                 // encrypted — hearing silence over a normal-looking talkgroup
                 // otherwise reads as the decoder failing.
+                EmergencyTag {
+                    id: heroEmergencyTag
+                    objectName: "heroEmergencyTag"
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: screen.heroEmergency
+                }
+
                 EncTag {
                     id: heroEncTag
                     objectName: "heroEncTag"
@@ -349,7 +358,7 @@ Item {
                     objectName: "heroAlgorithm"
                     anchors.verticalCenter: parent.verticalCenter
                     visible: screen.heroEnc && screen.heroEncText.length > 0
-                    width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0)))
+                    width: Math.max(0, Math.min(implicitWidth, heroSubline.width - (heroEmergencyTag.visible ? heroEmergencyTag.width + heroSubline.spacing : 0) - (heroEncTag.visible ? heroEncTag.width + heroSubline.spacing : 0)))
                     elide: Text.ElideRight
                     text: screen.heroEncText
                     font.family: Theme.mono
@@ -561,7 +570,7 @@ Item {
                 Text {
                     anchors.left: otherSlotLabel.right
                     anchors.leftMargin: 10
-                    anchors.right: otherEncTag.visible ? otherEncTag.left : otherSkip.left
+                    anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
                     anchors.rightMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
                     text: screen.otherName.length > 0 ? screen.otherName + " · TG " + screen.otherTg : "TG " + screen.otherTg
@@ -570,6 +579,15 @@ Item {
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
                     elide: Text.ElideRight
+                }
+
+                EmergencyTag {
+                    id: otherEmergencyTag
+                    objectName: "otherEmergencyTag"
+                    visible: screen.otherEmergency
+                    anchors.right: otherEncTag.visible ? otherEncTag.left : otherSkip.left
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
                 }
 
                 EncTag {
@@ -853,6 +871,7 @@ Item {
                         // the clock, which is not a binding dependency by itself.
                         rightText: (screen.ageTick, Util.shortAge(model.when))
                         enc: model.enc
+                        emergency: model.emergency
                     }
                 }
 
