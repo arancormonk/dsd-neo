@@ -20,6 +20,26 @@ Item {
             starts.clear(); switches.clear()
         }
         function cleanup() { sheet.visible = false; testContext.useLifecycleHost(false); while (savedSystems.count) savedSystems.remove(0) }
+        function test_reopen_same_uid_after_reindexing() {
+            // Place a one-site group immediately before another group, so a stale
+            // row index would select the other group after removing an earlier row.
+            savedSystems.add({name:"Chosen", rrSid:20, rrSiteId:200, siteName:"Chosen"})
+            savedSystems.add({name:"Unrelated", rrSid:30, rrSiteId:300, siteName:"Unrelated"})
+            var uid = savedSystems.get(2).uid
+            sheet.openFor(2)
+            compare(sheet.rows.length, 1)
+            sheet.visible = false
+            savedSystems.remove(0)
+            sheet.openFor(savedSystems.rowForUid(uid))
+            verify(sheet.visible)
+            compare(sheet.groupUid, uid)
+            compare(sheet.groupRow, 1)
+            compare(sheet.rows.length, 1)
+            compare(savedSystems.get(sheet.rows[0]).uid, uid)
+            sheet.choose(sheet.rows[0])
+            compare(starts.count, 1)
+            compare(savedSystems.get(starts.signalArguments[0][0]).uid, uid)
+        }
         function test_idle_starts() { sheet.choose(1); compare(starts.count, 1); compare(switches.count, 0) }
         function test_running_requires_restart() {
             sheet.sessionState = 2; sheet.choose(1)

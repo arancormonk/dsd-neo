@@ -13,6 +13,7 @@ Item {
     signal closed()
     property var importedSite: null
     property var importedSites: []
+    property string retainedKeySourceUid: ""
     signal saved(int row)
     // Asks Main.qml to push the RadioReference screen over this one; the result
     // comes back through applyRadioReference().
@@ -97,6 +98,7 @@ Item {
     }
 
     function openForAdd(preferNetwork) {
+        retainedKeySourceUid = ""
         importedSite = null
         importedSites = []
         editRow = -1
@@ -139,6 +141,7 @@ Item {
      * work. @a sys supplies the source; it is the explore session's own map.
      */
     function openForFound(sys, freqMhz) {
+        retainedKeySourceUid = ""
         editRow = -1
         step = 1
         sourceType = (sys && sys.sourceType === "rtltcp") ? "rtltcp" : "usb"
@@ -174,6 +177,7 @@ Item {
         importedSite = null
         importedSites = []
         var sys = savedSystems.get(row)
+        retainedKeySourceUid = sys.uid || ""
         editRow = row
         step = 0
         sourceType = sys.sourceType
@@ -318,7 +322,15 @@ Item {
                     site.rrSid = 0
                     site.rrSiteId = 0
                 }
-                savedSystems.add(site)
+                if (encryptionEditor.keepingKey) {
+                    if (!savedSystems.addWithKeyFrom(retainedKeySourceUid, site)) {
+                        csvNotice = qsTr("The retained key is unavailable. Choose Replace or Clear before saving.")
+                        csvNoticeIsProblem = true
+                        return
+                    }
+                } else {
+                    savedSystems.add(site)
+                }
             }
             wizard.saved(savedSystems.count - importedSites.length)
             return

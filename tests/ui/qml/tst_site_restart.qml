@@ -18,10 +18,48 @@ Item {
             testContext.setLifecyclePhase(2)
         }
         function cleanup() {
+            findChild(loader.item, "siteChooserSheet").visible = false
             loader.item.cancelPendingRestart()
             testContext.setDelayedStop(false)
             testContext.useLifecycleHost(false)
             while (savedSystems.count) savedSystems.remove(0)
+        }
+        function visualNamed(item, name) {
+            if (!item) return null
+            if (item.objectName === name) return item
+            var children = item.children || []
+            for (var i = 0; i < children.length; ++i) {
+                var found = visualNamed(children[i], name)
+                if (found) return found
+            }
+            return item.contentItem ? visualNamed(item.contentItem, name) : null
+        }
+        function clickChooserEntry(name) {
+            var button = null
+            tryVerify(function() { button = visualNamed(loader.item.contentItem, name); return button !== null })
+            var chooser = findChild(loader.item, "siteChooserSheet")
+            verify(button !== null && chooser !== null)
+            tryCompare(button, "visible", true)
+            tryCompare(button, "enabled", true)
+            waitForRendering(button)
+            verify(button.width >= 44 && button.height >= 44, "Site entry must have a touch target")
+            mouseClick(button, button.width / 2, button.height / 2)
+            tryCompare(chooser, "visible", true)
+            compare(chooser.groupUid, savedSystems.get(0).uid)
+        }
+        function test_home_entry_opens_chooser() {
+            testContext.setDelayedStop(false)
+            decoderHost.stop()
+            var onboardingDone = prefs.onboardingDone
+            prefs.onboardingDone = true
+            try {
+                clickChooserEntry("homeSiteChooserButton")
+            } finally {
+                prefs.onboardingDone = onboardingDone
+            }
+        }
+        function test_running_entry_opens_chooser() {
+            clickChooserEntry("runningSiteChooserButton")
         }
         function test_waits_for_idle_and_resolves_uid() {
             var uid = savedSystems.get(1).uid

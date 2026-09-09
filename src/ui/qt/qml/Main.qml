@@ -841,6 +841,8 @@ Window {
         onRestartSite: function(uid) { mainRoot.restartSite(uid) }
     }
     OutlineButton {
+        objectName: "runningSiteChooserButton"
+        width: implicitWidth
         anchors.top: safeArea.top
         anchors.right: safeArea.right
         visible: mainRoot.running && monitor.enabled && !mainRoot.diagnosticsOpen && !mainRoot.importsOpen

@@ -344,6 +344,24 @@ SavedSystemsModel::add(const QVariantMap& system) {
     save();
 }
 
+bool
+SavedSystemsModel::addWithKeyFrom(const QString& sourceUid, const QVariantMap& system) {
+    const int source = rowForUid(sourceUid);
+    if (source < 0 || system.contains(QStringLiteral("encKeyValue"))) {
+        return false;
+    }
+    const Row& stored = m_rows.at(source);
+    if (stored.encKeyType.isEmpty() || stored.encKeyValue.isEmpty()
+        || system.value(QStringLiteral("encKeyType")).toString() != stored.encKeyType) {
+        return false;
+    }
+    // This map stays in C++; add() assigns a fresh UID and persists the private value.
+    QVariantMap fields = system;
+    fields.insert(QStringLiteral("encKeyValue"), stored.encKeyValue);
+    add(fields);
+    return true;
+}
+
 void
 SavedSystemsModel::update(int row, const QVariantMap& system) {
     if (row < 0 || row >= m_rows.size()) {

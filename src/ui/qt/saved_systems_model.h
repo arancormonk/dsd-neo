@@ -86,6 +86,12 @@ class SavedSystemsModel : public QAbstractListModel {
     /** @brief Append a system from the wizard's field map. Persists immediately. */
     Q_INVOKABLE void add(const QVariantMap& system);
 
+    /** Append with a retained private key, resolved by stable source UID. No key
+     * value crosses the QML boundary. Returns false without adding a row when
+     * the source/key is absent, the type differs, or a replacement value is supplied.
+     * QString copies retain the private store's existing erasure limitations. */
+    Q_INVOKABLE bool addWithKeyFrom(const QString& sourceUid, const QVariantMap& system);
+
     /** @brief Replace one system's fields. Unknown keys are ignored. */
     Q_INVOKABLE void update(int row, const QVariantMap& system);
 

@@ -10,6 +10,7 @@ Rectangle {
     property string text: ""
     signal clicked()
 
+    implicitWidth: Math.max(44, label.implicitWidth + 2 * Theme.cardPadding)
     implicitHeight: Math.max(44, 30 * Theme.fontScale)
     radius: Theme.radiusButton
     color: tap.pressed && control.enabled ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
@@ -22,6 +23,7 @@ Rectangle {
     }
 
     Text {
+        id: label
         anchors.centerIn: parent
         text: control.text
         font.family: Theme.sans

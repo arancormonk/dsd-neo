@@ -12,7 +12,7 @@ ModalSheet {
     property double locationId: 0
     SiteInteractionGuard { id: interactionGuard; onInteraction: sheet.userAction() }
     property string notice: ""
-    readonly property int groupRow: savedSystems.rowForUid(groupUid)
+    readonly property int groupRow: (revision, savedSystems.rowForUid(groupUid))
     readonly property int nearest: (revision, prefs.lastFixAt > 0
                                     ? savedSystems.nearestRow(groupRow, prefs.lastLat, prefs.lastLon) : -1)
     signal startSite(int row)

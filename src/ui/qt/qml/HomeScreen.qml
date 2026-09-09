@@ -239,6 +239,8 @@ Item {
                         font.pixelSize: Theme.fontSize(12)
                     }
                     OutlineButton {
+                        objectName: "homeSiteChooserButton"
+                        width: implicitWidth
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
                         anchors.margins: 4
