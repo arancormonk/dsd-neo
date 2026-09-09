@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/rtl_device.h>
+#include <stdint.h>
 #include <stdio.h>
 
 static int
@@ -134,6 +135,8 @@ test_in_use_is_not_implied_by_the_slot(void) {
 #ifdef DSD_NEO_TEST_RTL_OPEN_WRAP
 int dsd_test_rtl_open_failure(void);
 struct rtlsdr_dev;
+// GNU ld --wrap requires external linkage and the reserved symbol name on both declarations.
+// NOLINTBEGIN(bugprone-reserved-identifier, misc-use-internal-linkage)
 int __wrap_rtlsdr_open(struct rtlsdr_dev** device, uint32_t index);
 
 int
@@ -142,6 +145,8 @@ __wrap_rtlsdr_open(struct rtlsdr_dev** device, uint32_t index) {
     (void)index;
     return -6; // LIBUSB_ERROR_BUSY at interface claim, without physical hardware.
 }
+
+// NOLINTEND(bugprone-reserved-identifier, misc-use-internal-linkage)
 
 static int
 test_native_open_error(void) {

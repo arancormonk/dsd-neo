@@ -27,6 +27,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2570,8 +2571,8 @@ test_talkgroup_list_commands(void) {
 
 static int
 test_direct_key_updates_preserve_fifo(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     init_test_context(&opts, &state);
     dsd_app_key_direct_payload basic = {DSD_APP_KEY_TYPE_BASIC, "42"};
     dsd_app_key_direct_payload rc4 = {DSD_APP_KEY_TYPE_RC4, "0011223344"};
@@ -2592,8 +2593,8 @@ test_direct_key_updates_preserve_fifo(void) {
 
 static int
 test_coalesced_setter_erases_old_tail(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     init_test_context(&opts, &state);
     unsigned char padded[72];
     const int32_t gain = 5;
@@ -2617,8 +2618,8 @@ test_coalesced_setter_erases_old_tail(void) {
 
 static int
 test_foundation_commands(void) {
-    dsd_opts opts;
-    dsd_state state;
+    static dsd_opts opts;
+    static dsd_state state;
     init_test_context(&opts, &state);
     int rc = 0;
     rc |= expect_int("row set id", DSD_APP_CMD_TG_ROW_SET, 592);
@@ -2650,7 +2651,9 @@ test_foundation_commands(void) {
     dsd_app_tg_export_payload* export_payload = (dsd_app_tg_export_payload*)export_storage.bytes;
     export_payload->policy_context = range.policy_context;
     export_payload->policy_generation = range.policy_generation;
-    strcpy(export_payload->path, "test.csv");
+    // The flexible path member owns only the bytes remaining after the header.
+    DSD_SNPRINTF(export_payload->path, sizeof export_storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s",
+                 "test.csv");
     dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, export_payload, sizeof export_storage);
     dsd_app_drain_cmds(&opts, &state);
     rc |= expect_contains("export stub toast", state.ui_msg, "not implemented");

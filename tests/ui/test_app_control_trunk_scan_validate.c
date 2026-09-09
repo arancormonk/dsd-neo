@@ -2,8 +2,8 @@
 #include <assert.h>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <stdio.h>
-#include <string.h>
 #include "../test_support/test_support.h"
+#include "dsd-neo/platform/file_compat.h"
 
 int
 main(void) {
@@ -15,7 +15,7 @@ main(void) {
     const int fd = dsd_test_mkstemp(path, sizeof path, "wp0-validate-");
     assert(fd >= 0);
     dsd_close(fd);
-    FILE* fp = fopen(path, "w");
+    FILE* fp = dsd_fopen_private(path, "w");
     assert(fp);
     fputs("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
           "conv,p25-conventional,851500000,,1500,1200,simplex\n",
@@ -24,7 +24,7 @@ main(void) {
     assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) == 0);
     assert(count == 1 && err[0] == '\0');
     assert(dsd_app_trunk_scan_validate_targets_csv(path, NULL, NULL, 0) == 0);
-    fp = fopen(path, "w");
+    fp = dsd_fopen_private(path, "w");
     assert(fp);
     fputs("invalid header\n", fp);
     fclose(fp);

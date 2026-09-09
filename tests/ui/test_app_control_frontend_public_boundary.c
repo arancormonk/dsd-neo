@@ -52,5 +52,6 @@ main(void) {
     (void)&dsd_app_get_latest_snapshot;
     (void)&dsd_app_get_latest_opts_snapshot;
     (void)&dsd_app_frontend_get_metrics_for_snapshot;
+    (void)&dsd_app_trunk_scan_validate_targets_csv;
     return 0;
 }
