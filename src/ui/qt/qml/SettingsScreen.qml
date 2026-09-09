@@ -247,7 +247,7 @@ Item {
 
                     ToggleRow {
                         title: qsTr("Skip encrypted calls")
-                        subtitle: qsTr("You'd only hear noise")
+                        subtitle: qsTr("Calls your system's key can decrypt still play.")
                         checked: prefs.skipEncrypted
                         showDivider: true
                         onToggled: function (state) { prefs.skipEncrypted = state }

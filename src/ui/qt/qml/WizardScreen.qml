@@ -49,6 +49,11 @@ Item {
     property string groupCsvPath: ""
     property string keyCsvPath: ""
     property bool keyCsvHex: false
+    // WP-D2: the editor is the sole owner of the draft key text.
+    property alias encKeyType: encryptionEditor.keyType
+    property alias encKeyValue: encryptionEditor.keyValue
+    property alias encForceKey: encryptionEditor.forceMode
+    readonly property bool encryptionValid: encryptionEditor.valid
     property string p25BandplanCsvPath: ""
     property string srcCsvPath: ""
     // Which field the shared FileDialog is serving: "source" is the step-1
@@ -113,6 +118,7 @@ Item {
         groupCsvPath = ""
         keyCsvPath = ""
         keyCsvHex = false
+        encryptionEditor.reset()
         p25BandplanCsvPath = ""
         srcCsvPath = ""
         csvNotice = ""
@@ -153,6 +159,7 @@ Item {
         groupCsvPath = ""
         keyCsvPath = ""
         keyCsvHex = false
+        encryptionEditor.reset()
         p25BandplanCsvPath = ""
         srcCsvPath = ""
         csvNotice = ""
@@ -183,6 +190,10 @@ Item {
         groupCsvPath = sys.groupCsvPath
         keyCsvPath = sys.keyCsvPath
         keyCsvHex = sys.keyCsvHex
+        encryptionEditor.reset()
+        encKeyType = sys.encKeyType || ""
+        encKeyValue = sys.encKeyValue || ""
+        encForceKey = sys.encForceKey || 0
         p25BandplanCsvPath = sys.p25BandplanCsvPath
         srcCsvPath = sys.srcCsvPath
         csvNotice = ""
@@ -257,11 +268,13 @@ Item {
             return true
         }
         if (step === 1)
-            return !radioSource || sessionArgs.freqValid(freqText)
-        return nameText.trim().length > 0
+            return encryptionValid && (!radioSource || sessionArgs.freqValid(freqText))
+        return encryptionValid && nameText.trim().length > 0
     }
 
     function commit() {
+        if (!encryptionValid)
+            return
         var sys = {
             name: nameText.trim(),
             sourceType: sourceType,
@@ -280,6 +293,9 @@ Item {
             groupCsvPath: groupCsvPath,
             keyCsvPath: keyCsvPath,
             keyCsvHex: keyCsvHex,
+            encKeyType: encKeyType,
+            encKeyValue: encKeyValue,
+            encForceKey: encForceKey,
             p25BandplanCsvPath: p25BandplanCsvPath,
             srcCsvPath: srcCsvPath
         }
@@ -804,6 +820,19 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         checked: wizard.trunking
                         onToggled: function (state) { wizard.answerTrunking(state) }
+                    }
+                }
+
+                UiPanel {
+                    width: parent.width
+                    height: encryptionEditor.height + 2 * Theme.cardPadding
+                    EncryptionEditor {
+                        id: encryptionEditor
+                        objectName: "wizardEncryptionEditor"
+                        x: Theme.cardPadding
+                        y: Theme.cardPadding
+                        width: parent.width - 2 * Theme.cardPadding
+                        csvPath: wizard.keyCsvPath
                     }
                 }
 

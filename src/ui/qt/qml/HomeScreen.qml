@@ -159,6 +159,8 @@ Item {
                     required property string decodeFlag
                     required property bool trunking
                     required property string filePath
+                    required property string encKeyType
+                    required property string keyCsvPath
                     required property double lastHeard
 
                     width: content.width
@@ -194,7 +196,10 @@ Item {
                         Text {
                             width: parent.width
                             // heardTick forces the minute-by-minute refresh.
-                            text: (screen.heardTick, Util.heardText(card.lastHeard))
+                            objectName: "savedSystemMeta"
+                            text: ((card.encKeyType.length > 0 || card.keyCsvPath.length > 0)
+                                   ? qsTr("key configured") + " · " : "")
+                                  + (screen.heardTick, Util.heardText(card.lastHeard))
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(13)
                             color: Theme.textSecondary

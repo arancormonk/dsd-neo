@@ -682,3 +682,19 @@ move the entry there with the `siteProtocol === "P25"` guard. There is no Tune
 control in v1. The deferred neighbour Tune work must restrict `RTL_SET_FREQ` to a
 running single-system P25 trunk session with the same WACN/SYS. CC selection
 preserves user lists but clears site metadata; crossing systems requires restart.
+### Encryption key entry
+
+The saved-system wizard's Encryption panel accepts one direct key type, with a
+password-masked field and Show/Hide control. Choose a direct key or a key CSV;
+the wizard refuses to save both. Home marks saved direct keys and key CSVs as
+“key configured”. The monitor's Encryption key action applies a key and force
+mode to the current session only. It does not change the saved system or show a
+live key-status label. Direct-key changes in the wizard take effect at the next start;
+use “Apply to this session” for a direct key needed now.
+
+Calls the system's key can decrypt still play when Skip encrypted calls is on.
+Saved direct keys rest **unencrypted** in the app-private `systems.json` on
+Android (`allowBackup=false`), and under Qt's `AppDataLocation` on desktop.
+QString/QML copies cannot promise secure erasure; closing the session sheet
+clears its draft input but does not guarantee erasure of all memory copies.
+Key values are never shown in labels, toasts, diagnostics, or exports.

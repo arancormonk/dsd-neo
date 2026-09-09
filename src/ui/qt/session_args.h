@@ -100,6 +100,9 @@ class SessionArgsBuilder : public QObject {
     /** @brief Frequency validity for the wizard's step gating; see session_args_freq_valid(). */
     Q_INVOKABLE bool freqValid(const QString& freqMhz) const;
 
+    /** Safe encryption-only validation; never builds or returns secret argv. */
+    Q_INVOKABLE QString keyError(const QString& type, const QString& value, const QString& csvPath, int force) const;
+
   private:
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems = nullptr;

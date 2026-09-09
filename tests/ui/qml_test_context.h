@@ -173,6 +173,40 @@ class CommandRecorder : public QObject {
     Q_OBJECT
 
   public:
+    // WP-D2: record only non-secret command outcomes, never key text.
+    Q_INVOKABLE bool
+    applyEncryptionKey(const QString& type, const QString& value) {
+        ++m_key_apply_calls;
+        m_key_payload_valid = dsd_qt::session_args_key_valid(type, value);
+        return m_key_accepted;
+    }
+
+    Q_INVOKABLE bool
+    setForceKeyMode(int mode) {
+        m_last_force_mode = mode;
+        return m_key_accepted;
+    }
+
+    Q_INVOKABLE int
+    keyApplyCalls() const {
+        return m_key_apply_calls;
+    }
+
+    Q_INVOKABLE bool
+    keyPayloadValid() const {
+        return m_key_payload_valid;
+    }
+
+    Q_INVOKABLE int
+    lastForceMode() const {
+        return m_last_force_mode;
+    }
+
+    Q_INVOKABLE void
+    setKeyAccepted(bool accepted) {
+        m_key_accepted = accepted;
+    }
+
     Q_INVOKABLE bool
     importSrcList(const QString& path) {
         m_src_import_calls++;
@@ -381,6 +415,10 @@ class CommandRecorder : public QObject {
 
     void
     reset() {
+        m_key_apply_calls = 0;
+        m_key_payload_valid = false;
+        m_key_accepted = true;
+        m_last_force_mode = -1;
         m_src_import_calls = 0;
         m_src_clear_calls = 0;
         m_last_src_path.clear();
@@ -528,6 +566,10 @@ class CommandRecorder : public QObject {
     }
 
   private:
+    int m_key_apply_calls = 0;
+    bool m_key_payload_valid = false;
+    bool m_key_accepted = true;
+    int m_last_force_mode = -1;
     int m_src_import_calls = 0;
     int m_src_clear_calls = 0;
     QString m_last_src_path;
