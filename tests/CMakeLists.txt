@@ -9448,6 +9448,34 @@ if(DSD_HAS_RADIO)
         )
     endif()
     add_test(NAME IO_RTL_PREOPENED_FD COMMAND dsd-neo_test_io_rtl_preopened_fd)
+
+    # Exercise Android's production run-result collector with a real RTL open
+    # failure. The driver boundary is wrapped; no Qt, JNI or USB hardware needed.
+    if(
+        RTLSDR_FOUND
+        AND NOT APPLE
+        AND NOT WIN32
+        AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+    )
+        add_executable(
+            dsd-neo_test_io_rtl_run_result
+            io/test_io_rtl_run_result.cpp
+            io/rtl_open_failure_probe.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_io_rtl_run_result
+            PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/android
+        )
+        target_link_libraries(
+            dsd-neo_test_io_rtl_run_result
+            PRIVATE dsd-neo_io_radio dsd-neo_core ${LIBS}
+        )
+        target_link_options(
+            dsd-neo_test_io_rtl_run_result
+            PRIVATE "LINKER:--wrap=rtlsdr_open"
+        )
+        add_test(NAME IO_RTL_RUN_RESULT COMMAND dsd-neo_test_io_rtl_run_result)
+    endif()
 endif()
 
 add_executable(

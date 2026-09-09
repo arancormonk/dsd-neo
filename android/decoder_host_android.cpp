@@ -12,6 +12,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaObject>
+#include <QSignalBlocker>
 #include <QVariant>
 #include <dsd-neo/runtime/log.h>
 
@@ -134,6 +135,15 @@ DecoderHostAndroid::localDeviceReady() const {
 
 QString
 DecoderHostAndroid::localDeviceStatus() const {
+    // WP-D5: only a native claim error may suggest another app owns the device.
+    if (m_usb_ready && m_usb_failure_kind == NoDeviceFailure && m_device_error) {
+        if (m_device_error == -6) {
+            return tr("Android could not claim %1. It may be held by another SDR app, or the OTG port may be "
+                      "under-powered — try a powered hub.")
+                .arg(m_usb_device_name);
+        }
+        return tr("Android could not open or claim %1 (code %2).").arg(m_usb_device_name).arg(m_device_error);
+    }
     return m_usb_status;
 }
 
@@ -141,6 +151,9 @@ int
 DecoderHostAndroid::localDeviceFailureKind() const {
     // libusb's BUSY value survives librtlsdr's claim failure; other native codes
     // remain in the terminal result for diagnostics without guessing a cause.
+    if (m_usb_failure_kind != NoDeviceFailure || !m_usb_ready) {
+        return m_usb_failure_kind;
+    }
     return m_device_error == -6 ? DeviceBusy : (m_device_error ? DeviceOpenFailed : NoDeviceFailure);
 }
 
@@ -172,6 +185,13 @@ DecoderHostAndroid::shareDiagnostics(const QString& text, const QString& title) 
 
 void
 DecoderHostAndroid::requestLocalDeviceAccess() {
+    // WP-D5: keep the service's run result intact, but acknowledge its old USB
+    // diagnostic so Retry can reacquire access and the next Play can claim again.
+    if (!sessionActive() && m_device_error) {
+        m_retried_device_session = m_device_error_session;
+        m_device_error = 0;
+        Q_EMIT localDeviceChanged();
+    }
     QJniObject context = android_context();
     if (!context.isValid()) {
         return;
@@ -364,7 +384,9 @@ DecoderHostAndroid::refresh() {
     const SessionPhase phase = status.isEmpty() ? m_phase.update(name.constData(), running)
                                                 : m_phase.update(name.constData(), running, session, reason);
     const bool adopted_idle = session != 0 && session == m_adopted_idle_session;
-    const int device_error = adopted_idle ? 0 : status.value(QStringLiteral("deviceError")).toInt();
+    m_device_error_session = session;
+    const int device_error =
+        adopted_idle || session == m_retried_device_session ? 0 : status.value(QStringLiteral("deviceError")).toInt();
     if (m_device_error != device_error) {
         m_device_error = device_error;
         Q_EMIT localDeviceChanged();
@@ -379,14 +401,29 @@ DecoderHostAndroid::refresh() {
 
     // Attachment delivery can synchronously call start() through QML.
     m_primed = true;
-    refreshLocalDevice();
+    refreshLocalDevice(first_poll);
 }
 
 void
-DecoderHostAndroid::refreshLocalDevice() {
-    const bool usb_ready = QJniObject::callStaticMethod<jboolean>(kUsbClass, "isReady", "()Z") != JNI_FALSE;
-    QJniObject usb_status = QJniObject::callStaticObjectMethod(kUsbClass, "statusText", "()Ljava/lang/String;");
-    setLocalDeviceState(usb_ready, usb_status.isValid() ? usb_status.toString() : QString());
+DecoderHostAndroid::refreshLocalDevice(bool first_poll) {
+    // WP-D5: readiness, name and failure classification belong to one USB record.
+    const auto usb_record = QJniObject::callStaticObjectMethod(kUsbClass, "deviceStatus", "()Ljava/lang/String;");
+    const auto usb = QJsonDocument::fromJson(usb_record.toString().toUtf8()).object();
+    const QString kind = usb.value(QStringLiteral("kind")).toString();
+    const int failure_kind = kind == QStringLiteral("detached")      ? DeviceDetached
+                             : kind == QStringLiteral("permission")  ? DevicePermission
+                             : kind == QStringLiteral("open_failed") ? DeviceOpenFailed
+                                                                     : NoDeviceFailure;
+    {
+        // Adopt retained USB status silently on a fresh host. Attachment events
+        // remain consumable on this poll, after the record is fully installed.
+        QSignalBlocker blocker(this);
+        if (!first_poll) {
+            blocker.unblock();
+        }
+        setLocalDeviceState(usb.value(QStringLiteral("ready")).toBool(), usb.value(QStringLiteral("text")).toString(),
+                            failure_kind, usb.value(QStringLiteral("name")).toString(QStringLiteral("RTL-SDR")));
+    }
     // WP-S2: consuming also preserves the cold-start attachment on the first poll.
     const QJniObject attach = QJniObject::callStaticObjectMethod(kUsbClass, "takeAttachment", "()Ljava/lang/String;");
     if (attach.isValid() && !attach.toString().isEmpty()) {
@@ -431,12 +468,15 @@ DecoderHostAndroid::setSessionPhase(SessionPhase phase, const QString& reason) {
 }
 
 void
-DecoderHostAndroid::setLocalDeviceState(bool ready, const QString& text) {
-    if (m_usb_ready == ready && m_usb_status == text) {
+DecoderHostAndroid::setLocalDeviceState(bool ready, const QString& text, int failureKind, const QString& deviceName) {
+    if (m_usb_ready == ready && m_usb_status == text && m_usb_failure_kind == failureKind
+        && m_usb_device_name == deviceName) {
         return;
     }
     m_usb_ready = ready;
     m_usb_status = text;
+    m_usb_failure_kind = failureKind;
+    m_usb_device_name = deviceName;
     Q_EMIT localDeviceChanged();
 }
 

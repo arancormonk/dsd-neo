@@ -16,6 +16,7 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
+import org.json.JSONObject
 
 /**
  * Owns the USB-OTG side of a locally attached RTL-SDR.
@@ -67,6 +68,9 @@ object UsbSourceManager {
     private var status: String = ""
     // WP-S2: application context only; never retain the Activity.
     private var attachmentContext: Context? = null
+    // WP-D5: Android openDevice supplies no claim-owner information.
+    private var failureKind: String = ""
+    private var deviceLabel: String = "RTL-SDR"
     private var requestPending = false
     private var requestedAtMs = 0L
 
@@ -94,8 +98,8 @@ object UsbSourceManager {
                     } else if (granted) {
                         open(context, device)
                     } else {
-                        // Not an error state: the user said no, and rtl_tcp still works.
-                        setStatus("USB permission denied")
+                        // Declined USB permission does not prevent using rtl_tcp.
+                        setStatus("USB permission denied", "permission")
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
@@ -116,7 +120,7 @@ object UsbSourceManager {
                         // once it has actually unwound.
                         DsdNative.nativeStop()
                         release()
-                        setStatus("Device detached")
+                        setStatus("Device detached", "detached")
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
@@ -149,6 +153,14 @@ object UsbSourceManager {
         }
     }
 
+    /** WP-D5: publish diagnostic fields together for the UI's existing poll. */
+    @JvmStatic
+    fun deviceStatus(): String = synchronized(lock) {
+        JSONObject().put("ready", connection != null).put("text", status)
+            .put("kind", failureKind).put("name", deviceLabel).toString()
+    }
+
+    /** Retained attach edge for the UI's existing poll, independent of permission. */
     @JvmStatic
     fun takeAttachment(): String = synchronized(lock) {
         val context = attachmentContext ?: return@synchronized ""
@@ -185,7 +197,7 @@ object UsbSourceManager {
         val manager = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
         val device = manager.deviceList.values.firstOrNull { isKnown(it) }
         if (device == null) {
-            setStatus("No RTL-SDR attached")
+            setStatus("No RTL-SDR attached", "detached")
             return
         }
 
@@ -284,7 +296,7 @@ object UsbSourceManager {
         // broadcast claiming permission was granted is not by itself trustworthy. Ask
         // the framework rather than believing the extra.
         if (!manager.hasPermission(device)) {
-            setStatus("No permission for ${describe(device)}")
+            setStatus("No permission for ${describe(device)}", "permission")
             return
         }
 
@@ -312,23 +324,36 @@ object UsbSourceManager {
 
     /** Body of [open], with the open slot claimed so nothing else can install one. */
     private fun openClaimed(manager: UsbManager, device: UsbDevice) {
-        val opened = manager.openDevice(device)
+        synchronized(lock) { deviceLabel = describe(device) }
+        val opened = try {
+            manager.openDevice(device)
+        } catch (e: SecurityException) {
+            setStatus("No permission for ${describe(device)}", "permission")
+            return
+        }
         if (opened == null) {
-            setStatus("Could not open ${describe(device)}")
+            // Recheck after open: detach or permission revocation can race it.
+            when {
+                !manager.deviceList.containsKey(device.deviceName) ->
+                    setStatus("Device detached: ${describe(device)}", "detached")
+                !manager.hasPermission(device) ->
+                    setStatus("No permission for ${describe(device)}", "permission")
+                else -> setStatus("Android could not open ${describe(device)} (open_failed).", "open_failed")
+            }
             return
         }
 
         val fd = opened.fileDescriptor
         if (fd < 0) {
             opened.close()
-            setStatus("No descriptor for ${describe(device)}")
+            setStatus("No descriptor for ${describe(device)} (open_failed)", "open_failed")
             return
         }
 
         val rc = DsdNative.nativeSetUsbFd(fd)
         if (rc != DsdNative.STATUS_OK) {
             opened.close()
-            setStatus("Engine rejected the descriptor ($rc)")
+            setStatus("Engine rejected the descriptor ($rc)", "open_failed")
             return
         }
 
@@ -377,8 +402,11 @@ object UsbSourceManager {
     private fun describe(device: UsbDevice): String =
         device.productName ?: String.format("%04x:%04x", device.vendorId, device.productId)
 
-    private fun setStatus(text: String) {
-        synchronized(lock) { status = text }
+    private fun setStatus(text: String, kind: String = "") {
+        synchronized(lock) {
+            status = text
+            failureKind = kind
+        }
         Log.i(TAG, "usb: $text")
         DsdNative.nativeHostDiagnostic("usb: $text")
     }

@@ -157,6 +157,20 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         ++usbRequests;
     }
 
+    // WP-D5: rendering fixture; native error propagation has its own test.
+    QString
+    localDeviceStatus() const override {
+        return usbStatus;
+    }
+
+    int
+    localDeviceFailureKind() const override {
+        return usbFailureKind;
+    }
+
+    QString usbStatus;
+    int usbFailureKind = 0;
+
     bool usbBrokered = false;
     bool usbReady = false;
     int usbRequests = 0;
@@ -1112,6 +1126,21 @@ class Setup : public QObject {
     Q_INVOKABLE void
     emitSessionInitialized() {
         Q_EMIT m_lifecycle_host->sessionInitialized();
+    }
+
+    // WP-D5: drive the brokered diagnostic and count Retry requests.
+    Q_INVOKABLE void
+    setDongleStatus(bool ready, int kind, const QString& text) {
+        m_lifecycle_host->usbBrokered = true;
+        m_lifecycle_host->usbReady = ready;
+        m_lifecycle_host->usbFailureKind = kind;
+        m_lifecycle_host->usbStatus = text;
+        Q_EMIT m_lifecycle_host->localDeviceChanged();
+    }
+
+    Q_INVOKABLE int
+    dongleRetryRequests() const {
+        return m_lifecycle_host->usbRequests;
     }
 
     // WP-D3: platform capability gate for the nearby search button.

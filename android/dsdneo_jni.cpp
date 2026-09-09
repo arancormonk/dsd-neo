@@ -511,13 +511,9 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeRun(JNIEnv* env, jclass clazz)
     dsd_app_frontend_runtime_stop();
     {
         std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
-        int device_error = 0;
-#ifdef USE_RADIO
-        device_error = rtl_device_last_open_error();
-#endif
         // Retained until the next configure: even a failure shorter than one
         // status poll must survive cleanup and reach the UI with its own session id.
-        g_run_status.finish(rc, g_stop_requested.load(), device_error);
+        dsd_android::collect_run_result(g_run_status, rc, g_stop_requested.load());
     }
 
     {
