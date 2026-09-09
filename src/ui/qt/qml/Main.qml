@@ -88,7 +88,8 @@ Window {
         function onSessionStateChanged() {
             if (decoderHost.sessionState === 2) {
                 mainRoot.sessionReachedRunning = true
-                mainRoot.recordSessionInitialized()
+                if (!decoderHost.signalsSessionInitialized)
+                    mainRoot.recordSessionInitialized()
             } else if (decoderHost.sessionState === 0 && mainRoot.sessionReachedRunning) {
                 mainRoot.awaitingSessionInitialized = false
             }
@@ -266,7 +267,7 @@ Window {
         mainRoot.scanWarnings = scan ? built.warnings.join("\n") : ""
         mainRoot.awaitingSessionInitialized = true
         mainRoot.sessionReachedRunning = decoderHost.sessionState === 2
-        if (mainRoot.sessionReachedRunning)
+        if (mainRoot.sessionReachedRunning && !decoderHost.signalsSessionInitialized)
             mainRoot.recordSessionInitialized()
         mainRoot.sessionRow = scan ? -1 : row
         // The session's intent, decided here and nowhere else: a system someone

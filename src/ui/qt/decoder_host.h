@@ -27,6 +27,7 @@ namespace dsd_qt {
 class DecoderHost : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool running READ isRunning NOTIFY runningChanged)
+    Q_PROPERTY(bool signalsSessionInitialized READ signalsSessionInitialized CONSTANT)
     Q_PROPERTY(QString statusText READ statusText NOTIFY statusTextChanged)
     Q_PROPERTY(SessionState sessionState READ sessionState NOTIFY sessionStateChanged)
     Q_PROPERTY(bool sessionActive READ sessionActive NOTIFY sessionStateChanged)
@@ -58,8 +59,20 @@ class DecoderHost : public QObject {
     explicit DecoderHost(QObject* parent = nullptr);
     ~DecoderHost() override;
 
-    /** @brief Whether the engine is configured and decoding. */
+    /** @brief Whether the engine is running; initialization may still be pending. */
     virtual bool isRunning() const = 0;
+
+    /**
+     * @brief Whether sessionInitialized() reports successful engine initialization.
+     *
+     * Running can precede tuner/file initialization on these hosts, so recency
+     * bookkeeping must wait for the signal. Other hosts use Running as their
+     * readiness edge. This capability is constant for the lifetime of a host.
+     */
+    virtual bool
+    signalsSessionInitialized() const {
+        return false;
+    }
 
     /** @brief Short human-readable host state (also used for platform notifications). */
     virtual QString statusText() const = 0;

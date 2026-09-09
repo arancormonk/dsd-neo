@@ -28,10 +28,13 @@ Item {
     }
     Ui.MicroLabel { id: scaledLabel; text: "Label" }
     Ui.RadioReferenceScreen { id: rr; visible: false; width: 640; height: 360 }
+    Ui.HomeScreen { id: home; visible: false; width: 420; height: 900 }
     TestCase {
         name: "MonitorCompactHeight"
         when: windowShown
+        property string originalExploreSource: ""
         function init() {
+            originalExploreSource = prefs.exploreSourceType;
             testContext.setHostRunning(true);
             testContext.setMetric("leadSlot", 1);
             testContext.setMetric("slot1CallState", 2);
@@ -40,12 +43,26 @@ Item {
             testContext.setMetric("slot2CallName", "Fireground");
         }
         function cleanup() {
+            testContext.setPrefs("exploreSourceType", originalExploreSource);
             Ui.Theme.resetFontScale();
             sheet.visible = false;
             testContext.setMetric("slot1CallState", 0);
             testContext.setMetric("slot2CallState", 0);
             testContext.setMetric("leadSlot", 0);
             testContext.setHostRunning(false);
+        }
+        function test_explore_subtitle_scales_data() {
+            return [{tag: "unconfigured", sourceType: "", pixels: 13},
+                    {tag: "configured", sourceType: "usb", pixels: 12}];
+        }
+        function test_explore_subtitle_scales(data) {
+            testContext.setPrefs("exploreSourceType", data.sourceType);
+            var subtitle = findChild(home, "homeExploreSubtitle");
+            verify(subtitle !== null);
+            Ui.Theme.fontScale = 1;
+            compare(subtitle.font.pixelSize, data.pixels);
+            Ui.Theme.fontScale = 1.6;
+            compare(subtitle.font.pixelSize, Math.round(Ui.Theme.fontSize(data.pixels)));
         }
         function test_platform_font_default() {
             compare(Ui.Theme.fontScale, Math.min(1.6, Math.max(1, Qt.application.font.pixelSize / 16)));
