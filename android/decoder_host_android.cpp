@@ -186,8 +186,11 @@ DecoderHostAndroid::start(const QStringList& argv) {
     QJniObject record = QJniObject::callStaticObjectMethod(kServiceClass, "lifecycleStatus", "()Ljava/lang/String;");
     const auto status = QJsonDocument::fromJson(record.toString().toUtf8()).object();
     const auto last_session = static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger());
+    const QByteArray service_state = status.value(QStringLiteral("state")).toString().toUtf8();
+    if (!m_phase.note_start_requested(last_session, service_state.constData())) {
+        return false;
+    }
     m_initialized_session = last_session;
-    m_phase.note_start_requested(last_session);
 
     QJniObject context = android_context();
     if (!context.isValid()) {

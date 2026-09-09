@@ -813,6 +813,9 @@ class DecoderService : Service() {
         fun lifecycleStatus(): String = synchronized(lock) {
             val native = DsdNative.nativeLifecycleStatus()
             val matches = native[0] == sessionId && sessionId != 0L
+            // A native result may arrive before the worker releases its wake lock
+            // and publishes IDLE. Preserve it beside the actual service state;
+            // the host must keep restart disabled until that state becomes IDLE.
             val reason = if (terminalReason != DsdNative.RUN_PENDING) terminalReason
                          else if (matches) native[2].toInt() else DsdNative.RUN_PENDING
             val usbError = if (matches) native[4].toInt() else deviceError

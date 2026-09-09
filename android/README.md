@@ -40,7 +40,11 @@ post-initialization edge and terminal reason (pending/completed/cancelled/failed
 run return code, and native USB open/claim error after cleanup. The service folds
 these into one `lifecycleStatus` record, including `lastError`; the existing UI
 tick reads it without consuming a decoder snapshot. Failures remain visible even
-when the run ends between polls or fails well after startup. USB claim error -6
+when the run ends between polls or fails well after startup. While a native terminal
+result is present but the service is still RUNNING/STOPPING, the UI stays Stopping.
+Restart remains disabled until the service releases its wake lock and publishes
+IDLE; the host also checks a fresh service record before accepting a retry.
+USB claim error -6
 is surfaced as `DeviceBusy` without discarding the original code.
 
 `sessionInitialized()` comes from the engine lifecycle callback after initialization,

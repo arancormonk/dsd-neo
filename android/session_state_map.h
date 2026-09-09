@@ -81,6 +81,19 @@ class SessionPhaseTracker {
         m_waiting_for_session = true;
     }
 
+    /** A native return does not release the service's wake lock or worker slot.
+     * The host must check a fresh service record before submitting a retry, even
+     * if its last published UI phase still allowed starting. A rejected retry
+     * leaves the failure/session latch and start grace period untouched. */
+    bool
+    note_start_requested(uint64_t last_session, const char* service_state) {
+        if (!service_state || strcmp(service_state, "IDLE") != 0) {
+            return false;
+        }
+        note_start_requested(last_session);
+        return true;
+    }
+
     SessionPhase
     update(const char* service_state, bool engine_running, uint64_t session_id, RunReason reason) {
         if (m_waiting_for_session && session_id <= m_last_session) {
@@ -95,17 +108,20 @@ class SessionPhaseTracker {
             m_waiting_for_session = false;
             m_failed = false;
         }
-        // Terminal facts outrank every sampled service/running combination. This
-        // catches runs that failed entirely between polls and long-running failures.
-        if (reason == kRunFailed) {
-            m_phase = latch_failure();
-            return m_phase;
-        }
-        if (reason == kRunCompleted || reason == kRunCancelled) {
-            m_attempting = false;
-            m_saw_running = false;
-            m_grace = 0;
-            m_phase = m_failed ? kSessionFailed : kSessionIdle;
+        // Retain the terminal outcome immediately, but only service IDLE means
+        // the wake lock and worker slot have been released. Publishing Failed or
+        // Idle earlier enables a retry the service would reject, followed by a
+        // misleading start timeout. Stopping keeps restart disabled in that gap.
+        if (reason == kRunFailed || reason == kRunCompleted || reason == kRunCancelled) {
+            if (reason == kRunFailed) {
+                (void)latch_failure();
+            } else {
+                m_attempting = false;
+                m_saw_running = false;
+                m_grace = 0;
+            }
+            const bool service_idle = service_state && strcmp(service_state, "IDLE") == 0;
+            m_phase = service_idle ? (m_failed ? kSessionFailed : kSessionIdle) : kSessionStopping;
             return m_phase;
         }
         return update(service_state, engine_running);
@@ -164,7 +180,7 @@ class SessionPhaseTracker {
         return m_phase;
     }
 
-    /** @brief Whether the last attempt ended without the engine ever running. */
+    /** @brief Whether the current session has a latched failure, including during teardown. */
     bool
     failed() const {
         return m_failed;

@@ -54,10 +54,65 @@ poll_idle(SessionPhaseTracker& tracker, int count) {
     return phase;
 }
 
+/* A native terminal result can precede wake-lock release and service IDLE.
+ * Retry controls follow the published phase, so neither a quick failure nor a
+ * completed/cancelled run may enable them while that teardown is in flight. */
+void
+test_terminal_waits_for_service_idle() {
+    for (const auto reason : {dsd_android::kRunFailed, dsd_android::kRunCompleted, dsd_android::kRunCancelled}) {
+        for (const bool saw_running : {false, true}) {
+            SessionPhaseTracker tracker;
+            tracker.note_start_requested(40);
+            if (saw_running) {
+                expect("session running before native return",
+                       tracker.update("RUNNING", true, 41, dsd_android::kRunPending), kSessionRunning);
+            }
+            int premature_retries = 0;
+            for (const char* service_state : {"RUNNING", "STOPPING"}) {
+                // More than the start grace period: teardown must not become a
+                // failed retry simply because several status polls passed.
+                for (int poll = 0; poll < dsd_android::kStartGraceTicks + 2; ++poll) {
+                    const SessionPhase phase = tracker.update(service_state, false, 41, reason);
+                    expect("native terminal result waits for service teardown", phase, kSessionStopping);
+                    if (phase == kSessionIdle || phase == kSessionFailed) {
+                        ++premature_retries;
+                        tracker.note_start_requested(41);
+                    }
+                    // The host rechecks the service record even for a retry
+                    // arriving before the next UI refresh has disabled its button.
+                    if (tracker.note_start_requested(41, service_state)) {
+                        DSD_FPRINTF(stderr, "host accepted retry before service IDLE\n");
+                        ++g_failures;
+                    }
+                    expect("rejected retry leaves teardown pending", tracker.phase(), kSessionStopping);
+                }
+            }
+            if (premature_retries != 0) {
+                DSD_FPRINTF(stderr, "terminal result enabled %d premature retry attempt(s)\n", premature_retries);
+                ++g_failures;
+            }
+            const SessionPhase final_phase = reason == dsd_android::kRunFailed ? kSessionFailed : kSessionIdle;
+            expect("teardown publishes the retained terminal outcome", tracker.update("IDLE", false, 41, reason),
+                   final_phase);
+            if (!tracker.note_start_requested(41, "IDLE")) {
+                DSD_FPRINTF(stderr, "host rejected retry after service IDLE\n");
+                ++g_failures;
+            }
+            expect("retry waits for the next service session", tracker.update("IDLE", false, 41, reason),
+                   kSessionStarting);
+            expect("retry starts after teardown", tracker.update("STARTING", false, 42, dsd_android::kRunPending),
+                   kSessionStarting);
+            expect("retry reaches running", tracker.update("RUNNING", true, 42, dsd_android::kRunPending),
+                   kSessionRunning);
+        }
+    }
+}
+
 } // namespace
 
 int
 main(void) {
+    test_terminal_waits_for_service_idle();
     // Terminal results cannot be inferred from elapsed time or a sampled running
     // flag: an entire failed run can fit between two UI ticks.
     for (int polls : {0, 12, 20}) {
