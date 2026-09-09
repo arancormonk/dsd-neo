@@ -357,4 +357,13 @@ SessionArgsBuilder::freqValid(const QString& freqMhz) const {
     return session_args_freq_valid(freqMhz);
 }
 
+// cppcheck-suppress functionStatic // Q_INVOKABLE: QML validation uses the shared startup rules.
+QString
+SessionArgsBuilder::keyError(const QString& type, const QString& value, const QString& csvPath, int force) const {
+    const QStringList types{QStringLiteral("basic"), QStringLiteral("hex"), QStringLiteral("rc4"),
+                            QStringLiteral("scrambler")};
+    const QVariantMap fields{{QStringLiteral("keyCsvPath"), csvPath}, {QStringLiteral("encForceKey"), force}};
+    return session_args_error_text(validate_key_args(fields, type, value, types.indexOf(type)));
+}
+
 } // namespace dsd_qt

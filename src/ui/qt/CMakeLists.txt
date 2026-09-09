@@ -53,6 +53,9 @@ qt_add_resources(
         qml/DiagnosticsScreen.qml
         qml/DisclosureRow.qml
         qml/EncTag.qml
+        # WP-D2 encryption entry surfaces.
+        qml/EncryptionEditor.qml
+        qml/KeySheet.qml
         qml/ExploreSetupScreen.qml
         qml/FilterPill.qml
         qml/FollowLatest.qml
@@ -132,4 +135,6 @@ set_property(
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_monitor_compact.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_session_initialized.qml"
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_diagnostics_screen.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_wizard_encryption.qml"
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_key_sheet.qml"
 )
