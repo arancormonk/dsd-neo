@@ -192,7 +192,8 @@ Item {
         keyCsvHex = sys.keyCsvHex
         encryptionEditor.reset()
         encKeyType = sys.encKeyType || ""
-        encKeyValue = sys.encKeyValue || ""
+        encryptionEditor.configuredKeyType = encKeyType
+        encryptionEditor.keyConfigured = sys.encKeyConfigured === true
         encForceKey = sys.encForceKey || 0
         p25BandplanCsvPath = sys.p25BandplanCsvPath
         srcCsvPath = sys.srcCsvPath
@@ -293,12 +294,13 @@ Item {
             groupCsvPath: groupCsvPath,
             keyCsvPath: keyCsvPath,
             keyCsvHex: keyCsvHex,
-            encKeyType: encKeyType,
-            encKeyValue: encKeyValue,
+            encKeyType: encryptionEditor.clearingKey ? "" : encKeyType,
             encForceKey: encForceKey,
             p25BandplanCsvPath: p25BandplanCsvPath,
             srcCsvPath: srcCsvPath
         }
+        if (!encryptionEditor.keepingKey)
+            sys.encKeyValue = encryptionEditor.clearingKey ? "" : encKeyValue
         if (editRow >= 0) {
             savedSystems.update(editRow, sys)
             wizard.saved(editRow)

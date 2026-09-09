@@ -10,22 +10,63 @@ Column {
     property int forceMode: 0
     property string csvPath: ""
     property bool revealed: false
-    readonly property string errorText: sessionArgs.keyError(keyType, keyValue, csvPath, forceMode)
+    property string configuredKeyType: ""
+    property bool keyConfigured: false
+    property string keyAction: "keep"
+    readonly property bool keepingKey: keyConfigured && keyAction === "keep"
+    readonly property bool clearingKey: keyConfigured && keyAction === "clear"
+    readonly property string errorText: keepingKey
+        ? (csvPath.length > 0 ? qsTr("Choose either a direct key or a key CSV.")
+                              : sessionArgs.keyError("", "", "", forceMode))
+        : sessionArgs.keyError(clearingKey ? "" : keyType, clearingKey ? "" : keyValue, csvPath, forceMode)
     readonly property bool valid: errorText.length === 0
     spacing: 10
 
     function reset() {
+        keyConfigured = false;
+        configuredKeyType = "";
+        keyAction = "keep";
         keyType = "";
         keyValue = "";
         forceMode = 0;
         revealed = false;
     }
     onKeyTypeChanged: revealed = false
+    onKeyActionChanged: {
+        if (keyConfigured && keyAction === "keep")
+            keyType = configuredKeyType;
+        keyValue = "";
+        revealed = false;
+    }
 
     MicroLabel {
         text: qsTr("Encryption")
     }
+    MicroLabel {
+        objectName: "configuredKeyLabel"
+        visible: editor.keyConfigured
+        text: qsTr("Key configured")
+    }
+    Row {
+        width: parent.width
+        spacing: 8
+        visible: editor.keyConfigured
+        Repeater {
+            model: [ { action: "keep", label: qsTr("Keep") },
+                     { action: "replace", label: qsTr("Replace") },
+                     { action: "clear", label: qsTr("Clear") } ]
+            OutlineButton {
+                required property var modelData
+                objectName: "encryptionAction_" + modelData.action
+                width: (editor.width - 16) / 3
+                text: modelData.label
+                border.color: editor.keyAction === modelData.action ? Theme.cyan : Theme.controlBorder
+                onClicked: editor.keyAction = modelData.action
+            }
+        }
+    }
     Flow {
+        visible: !editor.keyConfigured || editor.keyAction === "replace"
         width: parent.width
         spacing: 8
         Repeater {
@@ -72,7 +113,7 @@ Column {
     Row {
         width: parent.width
         spacing: 8
-        visible: editor.keyType.length > 0
+        visible: editor.keyType.length > 0 && !editor.keepingKey && !editor.clearingKey
         PlexTextField {
             id: keyField
             objectName: "encryptionKeyField"

@@ -470,6 +470,14 @@ test_key_persistence() {
                                            == (types[i].isEmpty() ? QString() : QStringLiteral("0")));
         expect("force round trip", row.value("encForceKey").toInt() == 2);
     }
+    const QString uid = fresh.get(1).value("uid").toString();
+    auto edit = fresh.getByUid(uid);
+    edit.insert("name", "Renamed keyed system");
+    fresh.update(1, edit);
+    dsd_qt::SavedSystemsModel kept;
+    expect("redacted update preserves key in memory", fresh.keyValueForUid(uid) == "0");
+    expect("redacted update preserves key on disk", kept.keyValueForUid(uid) == "0");
+    expect("configured flag survives update", kept.getByUid(uid).value("encKeyConfigured").toBool());
     fresh.update(1, {{"encKeyType", ""}, {"encKeyValue", ""}, {"encForceKey", 0}});
     SavedSystemsModel cleared;
     expect("key clearing persists", cleared.get(1).value("encKeyType").toString().isEmpty()

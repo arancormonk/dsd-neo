@@ -697,7 +697,10 @@ preserves user lists but clears site metadata; crossing systems requires restart
 
 The saved-system wizard's Encryption panel accepts one direct key type, with a
 password-masked field and Show/Hide control. Choose a direct key or a key CSV;
-the wizard refuses to save both. Home marks saved direct keys and key CSVs as
+the wizard refuses to save both. Editing an existing direct key shows “Key configured”
+with Keep (default), Replace, and Clear. Keep preserves the stored value without
+reading it into the wizard; Replace accepts a new masked value; Clear removes
+the direct key type and value. Home marks saved direct keys and key CSVs as
 “key configured”. The monitor's Encryption key action applies a key and force
 mode to the current session only. It does not change the saved system or show a
 live key-status label. Direct-key changes in the wizard take effect at the next start;

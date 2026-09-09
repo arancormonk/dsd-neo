@@ -28,6 +28,7 @@ Item {
             verify(wizard !== null);
             wizard.openForAdd(false);
             wizard.nameText = "Encryption test";
+            wizard.freqText = "851.375";
             wizard.step = 1;
         }
         function cleanup() {
@@ -35,6 +36,17 @@ Item {
             if (savedRow >= 0)
                 savedSystems.remove(savedRow);
             savedRow = -1;
+        }
+        // The production builder retrieves the secret by UID through keyValueForUid.
+        // Compare only a boolean so a failure never prints the secret argv.
+        function verifySavedKey(uid, expected) {
+            var sys = savedSystems.getByUid(uid);
+            verify(!("encKeyValue" in sys));
+            var result = sessionArgs.build(sys);
+            verify(result.ok);
+            var keyIndex = result.args.indexOf("-b");
+            verify(keyIndex >= 0);
+            verify(result.args[keyIndex + 1] === expected, "Private saved key round trip");
         }
         function test_roundtrip_and_reset() {
             wizard.encKeyType = "basic";
@@ -45,13 +57,55 @@ Item {
             savedRow = savedSystems.count - 1;
             var sys = savedSystems.get(savedRow);
             compare(sys.encKeyType, "basic");
-            verify(sys.encKeyValue === wizard.encKeyValue, "Saved key mismatch");
+            verify(!("encKeyValue" in sys));
+            verify(!("encKeyValue" in savedSystems.getByUid(sys.uid)));
+            verify(sys.encKeyConfigured);
             compare(sys.encForceKey, 1);
             wizard.openForAdd(false);
             verify(wizard.encKeyValue.length === 0);
             compare(wizard.encForceKey, 0);
             wizard.openForEdit(savedRow);
-            verify(wizard.encKeyValue === sys.encKeyValue, "Edited key mismatch");
+            wizard.step = 1;
+            verify(wizard.encKeyValue.length === 0);
+            var editor = findChild(wizard, "wizardEncryptionEditor");
+            compare(editor.keyAction, "keep");
+            verify(findChild(editor, "configuredKeyLabel").visible);
+            verify(!findChild(editor, "encryptionKeyField").visible);
+            verify(wizard.encryptionValid);
+            findChild(editor, "encryptionAction_replace").clicked();
+            wizard.encKeyType = "rc4";
+            wizard.encKeyValue = "AB";
+            findChild(editor, "encryptionAction_keep").clicked();
+            compare(wizard.encKeyType, "basic");
+            verify(wizard.encKeyValue.length === 0);
+            wizard.nameText = "Renamed keyed system";
+            wizard.commit();
+            verifySavedKey(sys.uid, String(17 * 3));
+            wizard.openForEdit(savedRow);
+            wizard.step = 1;
+            wizard.assignCsvPath("keys", "/imports/keys.csv", true);
+            verify(!wizard.encryptionValid);
+            wizard.assignCsvPath("keys", "", false);
+            findChild(editor, "encryptionAction_replace").clicked();
+            verify(!wizard.encryptionValid);
+            compare(findChild(editor, "encryptionKeyField").input.echoMode, TextInput.Password);
+            wizard.encKeyValue = "73";
+            verify(wizard.encryptionValid);
+            wizard.commit();
+            verifySavedKey(sys.uid, "73");
+            wizard.openForEdit(savedRow);
+            wizard.step = 1;
+            compare(editor.keyAction, "keep");
+            findChild(editor, "encryptionAction_clear").clicked();
+            verify(wizard.encryptionValid);
+            wizard.commit();
+            var cleared = savedSystems.getByUid(sys.uid);
+            compare(cleared.encKeyType, "");
+            verify(!cleared.encKeyConfigured);
+            verify(!("encKeyValue" in cleared));
+            var result = sessionArgs.build(cleared);
+            verify(result.ok);
+            verify(result.args.indexOf("-b") < 0);
             wizard.openForFound(null, "851.375");
             verify(wizard.encKeyValue.length === 0);
             compare(wizard.encKeyType, "");

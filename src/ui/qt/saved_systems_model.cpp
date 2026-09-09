@@ -285,6 +285,7 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     QVariantMap map;
     map.insert(QStringLiteral("uid"), row.uid);
     map.insert(QStringLiteral("encKeyType"), row.encKeyType);
+    map.insert(QStringLiteral("encKeyConfigured"), !row.encKeyType.isEmpty());
     map.insert(QStringLiteral("encForceKey"), row.encForceKey);
     map.insert(QStringLiteral("rrSid"), row.rrSid);
     map.insert(QStringLiteral("rrSiteId"), row.rrSiteId);
@@ -334,6 +335,7 @@ SavedSystemsModel::update(int row, const QVariantMap& system) {
     if (row < 0 || row >= m_rows.size()) {
         return;
     }
+    // Missing encKeyValue means Keep; a present empty value explicitly clears it.
     m_rows[row] = rowFromMap(system, m_rows.at(row));
     const QModelIndex idx = index(row);
     Q_EMIT dataChanged(idx, idx);
