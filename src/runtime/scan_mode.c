@@ -369,8 +369,8 @@ scan_options_apply(dsd_opts* opts, dsd_state* state, const dsd_scan_option_value
         opts->dmr_mute_encL = values->mute_dmr;
         opts->dmr_mute_encR = values->mute_dmr;
     }
-    if (present & DSD_SCAN_OPT_SCALAR) {
-        /* `-1` loads a key for decryption; undecodable P25 audio stays muted, as on the CLI. */
+    if (present & DSD_SCAN_OPT_MUTE_P25) {
+        /* Direct option text arms decryption; undecodable P25 audio stays muted. */
         opts->unmute_encrypted_p25 = 0;
     }
     if (present & DSD_SCAN_OPT_DATA) {

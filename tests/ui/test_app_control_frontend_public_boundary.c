@@ -39,6 +39,8 @@
 
 int
 main(void) {
+    (void)sizeof(dsd_app_p25_neighbor);
+    (void)&dsd_app_p25_neighbors;
     (void)sizeof(dsd_app_p25_quality);
     (void)&dsd_app_p25_quality_from_state;
     (void)sizeof(dsd_frontend_kind);

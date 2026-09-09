@@ -5,6 +5,8 @@
 
 #include <QChar>
 #include <QLatin1String>
+#include <QMap>
+#include <QVariant>
 #include <QtGlobal>
 #include <stddef.h>
 #include "command_bridge.h"
@@ -69,8 +71,8 @@ submitTalkgroupRow(unsigned int start, unsigned int end, const QString& context,
 } // namespace
 
 bool
-CommandBridge::setTalkgroupPolicy(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
-                                  const QVariantMap& changes) const {
+CommandBridge::setTalkgroupPolicy(unsigned int idStart, unsigned int idEnd, const QString& context,
+                                  unsigned int generation, const QVariantMap& changes) const {
     uint32_t fields = 0;
     for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
         if (it.key() == QStringLiteral("name") && it.value().typeId() == QMetaType::QString) {
@@ -93,37 +95,38 @@ CommandBridge::setTalkgroupPolicy(unsigned int start, unsigned int end, const QS
     if (!fields) {
         return false;
     }
-    return submitTalkgroupRow(start, end, context, generation, changes.value(QStringLiteral("name")).toString(),
+    return submitTalkgroupRow(idStart, idEnd, context, generation, changes.value(QStringLiteral("name")).toString(),
                               changes.value(QStringLiteral("listening")).toBool(),
                               changes.value(QStringLiteral("priority")).toInt(),
                               changes.value(QStringLiteral("preempt")).toBool(), fields);
 }
 
 bool
-CommandBridge::renameTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
-                               const QString& name) const {
-    return submitTalkgroupRow(start, end, context, generation, name, false, 0, false, DSD_APP_TG_FIELD_NAME);
+CommandBridge::renameTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,
+                               unsigned int generation, const QString& name) const {
+    return submitTalkgroupRow(idStart, idEnd, context, generation, name, false, 0, false, DSD_APP_TG_FIELD_NAME);
 }
 
 bool
-CommandBridge::addTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
+// cppcheck-suppress functionStatic // Q_INVOKABLE: QML submits additions through this context object.
+CommandBridge::addTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context, unsigned int generation,
                             const QString& name, bool listen, int priority, bool preempt) const {
-    return submitTalkgroupRow(start, end, context, generation, name, listen, priority, preempt,
+    return submitTalkgroupRow(idStart, idEnd, context, generation, name, listen, priority, preempt,
                               DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_PRIORITY
                                   | DSD_APP_TG_FIELD_PREEMPT);
 }
 
 bool
-CommandBridge::removeTalkgroup(unsigned int start, unsigned int end, const QString& context,
+CommandBridge::removeTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,
                                unsigned int generation) const {
     bool ok = false;
     dsd_app_tg_range_payload p = {};
     p.policy_context = context.toULongLong(&ok);
-    if (!ok || end < start) {
+    if (!ok || idEnd < idStart) {
         return false;
     }
-    p.id_start = start;
-    p.id_end = end;
+    p.id_start = idStart;
+    p.id_end = idEnd;
     p.policy_generation = generation;
     return accepted(dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &p, sizeof p));
 }

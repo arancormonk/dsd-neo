@@ -2,6 +2,11 @@
 #ifndef DSD_NEO_UI_QT_SCAN_LISTS_MODEL_H
 #define DSD_NEO_UI_QT_SCAN_LISTS_MODEL_H
 #include <QAbstractListModel>
+#include <QList>
+#include <QMap>
+#include <QObject>
+#include <QString>
+#include <QVariant>
 #include <QVariantMap>
 
 namespace dsd_qt {

@@ -2,12 +2,15 @@
 #include <assert.h>
 #include <dsd-neo/app_control/p25_network.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <string.h>
-#include "snapshot_internal.h"
+#include <time.h>
+#include "../../src/app_control/snapshot_internal.h"
 
 int
 main(void) {
@@ -59,7 +62,7 @@ main(void) {
     assert(dsd_app_p25_affiliated_rids(&s, a, 1) == 1);
     assert(a[0].rid == 2 && a[0].tg == 0);
     // Real protocol producers -> snapshot deep copy -> read-only facade.
-    memset(&s, 0, sizeof(s));
+    DSD_MEMSET(&s, 0, sizeof(s));
     p25_aff_register(&s, 12345);
     p25_ga_add(&s, 12345, 77);
     p25_patch_update(&s, 88, 1, 1);

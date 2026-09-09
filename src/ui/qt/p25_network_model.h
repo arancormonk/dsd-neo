@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #ifndef DSD_NEO_SRC_UI_QT_P25_NETWORK_MODEL_H_
 #define DSD_NEO_SRC_UI_QT_P25_NETWORK_MODEL_H_
+// Export the container and element definitions used by the inline QVariantList getters.
+#include <QList> // IWYU pragma: export
 #include <QObject>
+#include <QVariant> // IWYU pragma: export
 #include <QVariantList>
 #include <dsd-neo/core/state_fwd.h>
 

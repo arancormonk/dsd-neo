@@ -7,7 +7,6 @@
 
 #include <QFontDatabase>
 #include <QLatin1String>
-#include <QList>
 #include <QObject>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -59,6 +58,22 @@ load_font(const char* resource) {
     return families.isEmpty() ? QString() : families.first();
 }
 
+void
+load_fonts(QQmlContext* context) {
+    // The weight variants register into the same family, so one name per family is
+    // enough; Qt resolves font.weight against whichever variants are loaded.
+    const QString sans_family = load_font(":/dsdneo/fonts/IBMPlexSans-Regular.ttf");
+    (void)load_font(":/dsdneo/fonts/IBMPlexSans-SemiBold.ttf");
+    (void)load_font(":/dsdneo/fonts/IBMPlexSans-Bold.ttf");
+    const QString mono_family = load_font(":/dsdneo/fonts/IBMPlexMono-Regular.ttf");
+    (void)load_font(":/dsdneo/fonts/IBMPlexMono-Medium.ttf");
+
+    context->setContextProperty(QStringLiteral("sansFontFamily"),
+                                sans_family.isEmpty() ? QStringLiteral("sans-serif") : sans_family);
+    context->setContextProperty(QStringLiteral("monoFontFamily"),
+                                mono_family.isEmpty() ? QStringLiteral("monospace") : mono_family);
+}
+
 } // namespace
 
 void
@@ -71,13 +86,7 @@ ui_apply_style(void) {
 
 bool
 ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
-    // The weight variants register into the same family, so one name per family is
-    // enough; Qt resolves font.weight against whichever variants are loaded.
-    const QString sans_family = load_font(":/dsdneo/fonts/IBMPlexSans-Regular.ttf");
-    (void)load_font(":/dsdneo/fonts/IBMPlexSans-SemiBold.ttf");
-    (void)load_font(":/dsdneo/fonts/IBMPlexSans-Bold.ttf");
-    const QString mono_family = load_font(":/dsdneo/fonts/IBMPlexMono-Regular.ttf");
-    (void)load_font(":/dsdneo/fonts/IBMPlexMono-Medium.ttf");
+    load_fonts(engine.rootContext());
 
     auto* metrics = new MetricsModel(&engine);
     auto* network = new P25NetworkModel(&engine); // WP-F2
@@ -158,10 +167,6 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("talkgroups"), talkgroups);
     context->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
     context->setContextProperty(QStringLiteral("spectrum"), spectrum);
-    context->setContextProperty(QStringLiteral("sansFontFamily"),
-                                sans_family.isEmpty() ? QStringLiteral("sans-serif") : sans_family);
-    context->setContextProperty(QStringLiteral("monoFontFamily"),
-                                mono_family.isEmpty() ? QStringLiteral("monospace") : mono_family);
     context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
 
     engine.load(QUrl(QStringLiteral("qrc:/dsdneo/qml/Main.qml")));

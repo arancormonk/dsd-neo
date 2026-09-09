@@ -17,6 +17,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 #include <QtGlobal>
 #include <dsd-neo/app_control/call_view.h>
@@ -928,6 +929,7 @@ class MetricsModel : public QObject {
         dsd_app_voice_errs voice_errs{};
         dsd_app_frame_errs last_frame{};
 
+        bool operator==(const View& other) const;
         bool qualityEquals(const View& other) const;
 
         /* Group equally aligned fields; this private value is copied on each
@@ -1007,6 +1009,11 @@ class MetricsModel : public QObject {
 
     /** @brief Replace the published frame, signalling only the groups that moved. */
     void publish(const View& next);
+    static void fillP25Identity(SiteView& site, const dsd_state* snapshot);
+    static QStringList p25SiteParts(const SiteView& site);
+    static QStringList fillDmrSite(SiteView& site, const dsd_state* snapshot);
+    static QStringList fillNxdnSite(SiteView& site, const dsd_state* snapshot);
+    static QStringList fillEdacsSite(SiteView& site, const dsd_state* snapshot);
     void fillSiteView(View& next, const dsd_state* snapshot) const;
     static void fillQualityView(View& next, const dsd_state* snapshot);
 

@@ -3,8 +3,10 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include "session_args.h"
+#include <initializer_list>
+#include <utility>
 #include "saved_systems_model.h"
+#include "session_args.h"
 
 #include <algorithm>
 
@@ -218,39 +220,37 @@ session_args_scan_extra_safe(const QString& tokens) {
         return false;
     }
     const auto parts = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-    for (const auto& token : parts) {
-        for (const auto& prefix : QStringList{"-C", "-Y", "-T", "-i", "-f", "-m", "--trunk-scan", "--p25-bandplan",
-                                              "--iq-replay", "--scan-voice-only", "--no-scan-voice-only"}) {
-            if (token.startsWith(prefix)) {
-                return false;
-            }
-        }
-    }
-    return true;
+    const QStringList prefixes{"-C",
+                               "-Y",
+                               "-T",
+                               "-i",
+                               "-f",
+                               "-m",
+                               "--trunk-scan",
+                               "--p25-bandplan",
+                               "--iq-replay",
+                               "--scan-voice-only",
+                               "--no-scan-voice-only"};
+    return std::none_of(parts.cbegin(), parts.cend(), [&prefixes](const QString& token) {
+        return std::any_of(prefixes.cbegin(), prefixes.cend(),
+                           [&token](const QString& prefix) { return token.startsWith(prefix); });
+    });
 }
 
-QStringList
-session_args_scan_build(const QVariantMap& list, const QString& firstFreqMhz, const QString& csvPath,
-                        const SessionArgPrefs& prefs, QString* error) {
-    if (error) {
-        error->clear();
-    }
-    if (!session_args_scan_extra_safe(prefs.extraArgs)) {
-        if (error) {
-            *error = session_args_error_text(SessionArgsError::UnsafeOption);
-        }
-        return {};
-    }
+static QString
+validateScanEndpoint(const QVariantMap& list) {
     if (list.value("sourceType") == "rtltcp") {
         const QString host = list.value("host").toString().trimmed();
         const int port = list.value("port").toInt();
         if (host.isEmpty() || host.contains(QRegularExpression(QStringLiteral("[:\\s]"))) || port < 1 || port > 65535) {
-            if (error) {
-                *error = QStringLiteral("Enter an RTL-TCP host and port from 1 to 65535.");
-            }
-            return {};
+            return QStringLiteral("Enter an RTL-TCP host and port from 1 to 65535.");
         }
     }
+    return {};
+}
+
+static QString
+validateScanTuner(const QVariantMap& list) {
     for (const auto& field : {"gainDb", "bandwidthKhz", "biasTee"}) {
         const QVariant stored = list.value(field, -1);
         if (QString(field) == "biasTee" && stored.typeId() == QMetaType::Bool) {
@@ -260,32 +260,15 @@ session_args_scan_build(const QVariantMap& list, const QString& firstFreqMhz, co
         const int value = stored.toString().toInt(&ok);
         if (!ok || value < -1 || (QString(field) == "gainDb" && value > 49)
             || (QString(field) == "biasTee" && value > 1)) {
-            if (error) {
-                *error = QStringLiteral(
-                    "Enter whole-number tuner settings: gain -1..49, bandwidth -1 or nonnegative, bias tee -1..1.");
-            }
-            return {};
+            return QStringLiteral(
+                "Enter whole-number tuner settings: gain -1..49, bandwidth -1 or nonnegative, bias tee -1..1.");
         }
     }
-    QVariantMap tuner;
-    for (const auto& field : {"sourceType", "host", "port", "gainDb", "ppm", "bandwidthKhz", "biasTee"}) {
-        if (list.contains(field)) {
-            tuner[field] = list.value(field);
-        }
-    }
-    tuner["freqMhz"] = firstFreqMhz;
-    SessionArgsError reason;
-    SessionArgPrefs tunerPrefs = prefs;
-    tunerPrefs.skipEncrypted = false;
-    tunerPrefs.autoPpm = false;
-    tunerPrefs.extraArgs.clear();
-    QStringList args = session_args_build(tuner, tunerPrefs, &reason);
-    if (reason != SessionArgsError::None) {
-        if (error) {
-            *error = session_args_error_text(reason);
-        }
-        return {};
-    }
+    return {};
+}
+
+static void
+appendScanOptions(QStringList& args, const QVariantMap& list, const QString& csvPath, const SessionArgPrefs& prefs) {
     args << QStringLiteral("--trunk-scan") << csvPath;
     for (const auto& field : {"groupCsvPath", "srcCsvPath"}) {
         if (!list.value(field).toString().isEmpty()) {
@@ -309,6 +292,50 @@ session_args_scan_build(const QVariantMap& list, const QString& firstFreqMhz, co
         args << QStringLiteral("--auto-ppm");
     }
     args << prefs.extraArgs.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+}
+
+QStringList
+session_args_scan_build(const QVariantMap& list, const QString& firstFreqMhz, const QString& csvPath,
+                        const SessionArgPrefs& prefs, QString* error) {
+    if (error) {
+        error->clear();
+    }
+    if (!session_args_scan_extra_safe(prefs.extraArgs)) {
+        if (error) {
+            *error = session_args_error_text(SessionArgsError::UnsafeOption);
+        }
+        return {};
+    }
+    QString validation = validateScanEndpoint(list);
+    if (validation.isEmpty()) {
+        validation = validateScanTuner(list);
+    }
+    if (!validation.isEmpty()) {
+        if (error) {
+            *error = validation;
+        }
+        return {};
+    }
+    QVariantMap tuner;
+    for (const auto& field : {"sourceType", "host", "port", "gainDb", "ppm", "bandwidthKhz", "biasTee"}) {
+        if (list.contains(field)) {
+            tuner[field] = list.value(field);
+        }
+    }
+    tuner["freqMhz"] = firstFreqMhz;
+    SessionArgsError reason;
+    SessionArgPrefs tunerPrefs = prefs;
+    tunerPrefs.skipEncrypted = false;
+    tunerPrefs.autoPpm = false;
+    tunerPrefs.extraArgs.clear();
+    QStringList args = session_args_build(tuner, tunerPrefs, &reason);
+    if (reason != SessionArgsError::None) {
+        if (error) {
+            *error = session_args_error_text(reason);
+        }
+        return {};
+    }
+    appendScanOptions(args, list, csvPath, prefs);
     return args;
 }
 
