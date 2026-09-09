@@ -19,6 +19,12 @@ static dsd_telemetry_hooks g_hooks;
 static int g_snapshot_calls;
 static int g_opts_snapshot_calls;
 static int g_notification_resets;
+static int g_session_open;
+
+void
+dsd_app_command_session_set_open(int open) { // NOLINT(misc-use-internal-linkage)
+    g_session_open = open;
+}
 
 void
 dsd_app_notification_reset(void) { // NOLINT(misc-use-internal-linkage)
@@ -81,9 +87,12 @@ main(void) {
        that outlives the session, and the Android service polls it again before the next
        session has published anything -- a stale record would caption the new run with
        the previous one's last call. */
+    dsd_app_frontend_runtime_start(NULL, NULL);
+    assert(g_session_open == 1);
     assert(g_notification_resets == 0);
     dsd_app_frontend_runtime_stop();
     assert(g_notification_resets == 1);
+    assert(g_session_open == 0);
     assert(g_hooks.publish_snapshot == NULL);
     assert(g_hooks.publish_opts_snapshot == NULL);
     assert(g_hooks.request_redraw == NULL);

@@ -3,6 +3,7 @@
 
 #include <assert.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
@@ -86,6 +87,7 @@ static void
 setup(dsd_opts* opts, dsd_state* state) {
     initOpts(opts);
     initState(state);
+    dsd_app_frontend_runtime_start(opts, state);
     state->cli_argc_effective = 0;
     state->cli_argv = NULL;
     assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_TDMA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);

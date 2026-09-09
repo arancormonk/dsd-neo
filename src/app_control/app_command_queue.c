@@ -90,6 +90,7 @@ enum {
 
 static struct dsd_app_command g_q[DSD_APP_CMD_Q_CAP];
 static size_t g_head = 0; // pop index
+static int g_session_open = 0;
 static size_t g_tail = 0; // push index
 static dsd_mutex_t g_mu;
 static atomic_int g_mu_init = 0;
@@ -135,7 +136,7 @@ dsd_app_tg_export_result_get(dsd_app_tg_export_result* out) {
 /* Called after dispatch, including envelope rejection, before erasing the queued
  * request. Publish only export fields; other command payloads may carry secrets. */
 static void
-tg_export_publish_result(const struct dsd_app_command* cmd, int status) {
+tg_export_publish_result_unlocked(const struct dsd_app_command* cmd, int status) {
     if (cmd->id != DSD_APP_CMD_TG_LIST_EXPORT) {
         return;
     }
@@ -157,14 +158,36 @@ tg_export_publish_result(const struct dsd_app_command* cmd, int status) {
         }
     }
     result.success = status == UI_CMD_APPLY_COMPLETED;
-    ensure_mu_init();
-    dsd_mutex_lock(&g_mu);
     result.sequence = g_tg_export_result.sequence + 1U;
     // cppcheck-suppress knownConditionTrueFalse -- unsigned sequence wraps to zero at UINT64_MAX.
     if (result.sequence == 0) {
         result.sequence = 1;
     }
     g_tg_export_result = result;
+}
+
+static void
+tg_export_publish_result(const struct dsd_app_command* cmd, int status) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    tg_export_publish_result_unlocked(cmd, status);
+    dsd_mutex_unlock(&g_mu);
+}
+
+void
+dsd_app_command_session_set_open(int open) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    /* Lifecycle edges run on the decoder owner, serialized with command drain.
+     * Admission and disposal share the producer lock: a racing late submission
+     * is either erased here or rejected after the session closes. */
+    while (g_head != g_tail) {
+        tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
+        DSD_SECURE_ZERO(&g_q[g_head], sizeof g_q[g_head]);
+        g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
+    }
+    g_session_open = open != 0;
+    atomic_store(&g_overflow_warn_gate, 0);
     dsd_mutex_unlock(&g_mu);
 }
 
@@ -2566,6 +2589,10 @@ int
 dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
+    if (!g_session_open) {
+        dsd_mutex_unlock(&g_mu);
+        return DSD_APP_COMMAND_SUBMIT_REJECTED;
+    }
     if (ui_cmd_is_coalescible_setter(cmd_id)) {
         struct dsd_app_command* pending = ui_cmd_find_pending_tail_unlocked(cmd_id);
         if (pending) {
@@ -2575,6 +2602,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
         }
     }
     if (q_is_full_unlocked()) {
+        tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
         // Erase before advancing: the evicted slot is not the slot about to be
         // written, so clearing only the insertion slot leaves a discarded key alive.
         DSD_SECURE_ZERO(&g_q[g_head], sizeof(g_q[g_head]));
@@ -4666,6 +4694,7 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
      * Live controls must continue to inspect the effective row, so suspending
      * every command and diffing afterward would change their behavior. */
     static const int commands[] = {
+        DSD_APP_CMD_TG_LIST_EXPORT,
         DSD_APP_CMD_FORCE_KEY_SET,
         DSD_APP_CMD_ALL_MUTES_TOGGLE,
         DSD_APP_CMD_FORCE_PRIV_TOGGLE,

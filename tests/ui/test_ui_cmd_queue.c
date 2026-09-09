@@ -8,6 +8,7 @@
  */
 
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/enc_lockout.h>
@@ -40,6 +41,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/config.h"
+#include "test_support.h"
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 static int g_io_control_tune_result = RTL_STREAM_TUNE_OK;
@@ -173,6 +175,7 @@ init_test_context(dsd_opts* opts, dsd_state* state) {
     initState(state);
     state->cli_argc_effective = 0;
     state->cli_argv = NULL;
+    dsd_app_frontend_runtime_start(opts, state);
 }
 
 static int
@@ -2801,6 +2804,7 @@ test_talkgroup_row_commands(void) {
     rc |= expect_contains("stale export refused", state->ui_msg, "stale");
     rc |= expect_str("stale export keeps empty path", opts->group_in_file, "");
     dsd_tg_policy_table_version(state, &exp->policy_context, &exp->policy_generation);
+    rc |= expect_int("inherited policy scan scope", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR), 0);
     dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
     dsd_app_drain_cmds(opts, state);
     rc |= expect_str("export sets persistence path", opts->group_in_file, path);
@@ -2820,6 +2824,11 @@ test_talkgroup_row_commands(void) {
         rc |= expect_int("export preempt roundtrip", actual.preempt, e.preempt);
         rc |= expect_int("export range roundtrip", actual.id_end, e.id_end);
     }
+    dsd_scan_mode_leave(opts, state);
+    rc |= expect_int("rotate inherited policy row", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48), 0);
+    post_empty(DSD_APP_CMD_ALL_MUTES_TOGGLE);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("export path survives rotation and scoped command", opts->group_in_file, path);
     /* A failed export cannot redirect subsequent persistence. */
     DSD_SNPRINTF(exp->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s",
                  "dsd_neo_d1_missing_dir/groups.csv");
@@ -3152,9 +3161,99 @@ test_direct_key_preserves_active_keyring(int reject) {
     return rc;
 }
 
+static int
+test_session_queue_cancellation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+    for (int failed = 0; failed < 2; ++failed) {
+        dsd_app_frontend_runtime_start(&opts, &state);
+        dsd_app_key_direct_payload key = {DSD_APP_KEY_TYPE_BASIC, "73"};
+        rc |= expect_true("session key accepted",
+                          dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key) > 0);
+        dsd_app_frontend_runtime_stop();
+        rc |= expect_true("stop or failure erases pending storage", dsd_app_command_test_storage_cleared());
+        rc |= expect_int("closed session rejects late key",
+                         dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key),
+                         DSD_APP_COMMAND_SUBMIT_REJECTED);
+        DSD_SECURE_ZERO(&key, sizeof key);
+        state.K = 19;
+        dsd_app_frontend_runtime_start(&opts, &state);
+        rc |= expect_int("restart has no stale commands", dsd_app_drain_cmds(&opts, &state), 0);
+        rc |= expect_true("restart keeps new system key", state.K == 19);
+        dsd_app_frontend_runtime_stop();
+    }
+    freeState(&state);
+    DSD_SECURE_ZERO(&state, sizeof state);
+    return rc;
+}
+
+static int
+test_export_disposal(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+
+    struct {
+        uint64_t context;
+        unsigned int generation;
+    } request = {0};
+
+    /* Use byte offsets because the flexible wire member can precede tail padding. */
+    unsigned char wire[offsetof(dsd_app_tg_export_payload, path) + 1024] = {0};
+    dsd_tg_policy_table_version(&state, &request.context, &request.generation);
+    DSD_MEMCPY(wire + offsetof(dsd_app_tg_export_payload, policy_context), &request.context, sizeof request.context);
+    DSD_MEMCPY(wire + offsetof(dsd_app_tg_export_payload, policy_generation), &request.generation,
+               sizeof request.generation);
+    char path[1024];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "cancelled_export");
+    if (fd < 0) {
+        dsd_app_frontend_runtime_stop();
+        freeState(&state);
+        return expect_true("export temporary path available", 0);
+    }
+    dsd_close(fd);
+    DSD_SNPRINTF((char*)wire + offsetof(dsd_app_tg_export_payload, path),
+                 sizeof wire - offsetof(dsd_app_tg_export_payload, path), "%s", path);
+    remove(path);
+    for (int cancel = 0; cancel < 2; ++cancel) {
+        dsd_app_frontend_runtime_start(&opts, &state);
+        dsd_app_tg_export_result before = {0}, after = {0};
+        dsd_app_tg_export_result_get(&before);
+        rc |= expect_true("export accepted before disposal",
+                          dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, wire, sizeof wire) > 0);
+        if (cancel) {
+            dsd_app_frontend_runtime_stop();
+        } else {
+            for (int i = 0; i < 127; ++i) {
+                post_empty(DSD_APP_CMD_TOGGLE_COMPACT);
+            }
+        }
+        dsd_app_tg_export_result_get(&after);
+        rc |= expect_true("discarded export completes as failure", after.sequence > before.sequence && !after.success);
+        rc |= expect_true("discarded export remains identifiable", after.policy_context == request.context
+                                                                       && after.policy_generation == request.generation
+                                                                       && strcmp(after.path, path) == 0);
+        rc |= expect_str("discarded export preserves path", opts.group_in_file, "");
+        FILE* file = fopen(path, "rb");
+        rc |= expect_true("discarded export writes no file", !file);
+        if (file) {
+            fclose(file);
+        }
+        dsd_app_drain_cmds(&opts, &state);
+        dsd_app_frontend_runtime_stop();
+    }
+    freeState(&state);
+    return rc;
+}
+
 int
 main(void) {
-    int rc = test_direct_key_preserves_active_keyring(0);
+    int rc = test_session_queue_cancellation();
+    rc |= test_export_disposal();
+    rc |= test_direct_key_preserves_active_keyring(0);
     rc |= test_direct_key_preserves_active_keyring(1);
     rc |= test_direct_key_and_force_scope();
     rc |= test_direct_key_updates_preserve_fifo();

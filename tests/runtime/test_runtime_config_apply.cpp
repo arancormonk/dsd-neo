@@ -18,6 +18,7 @@
  */
 
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/frontend_types.h>
@@ -202,6 +203,7 @@ static void
 init_test_runtime(dsd_opts* opts, dsd_state* state) {
     initOpts(opts);
     initState(state);
+    dsd_app_frontend_runtime_start(opts, state);
 }
 
 typedef struct test_runtime {

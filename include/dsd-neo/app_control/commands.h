@@ -427,6 +427,8 @@ extern "C" {
 
 /* The queue erases its owned payload copies on every disposal path. The caller
  * still owns payload (including on rejection) and must erase its secret storage. */
+/* Submission is rejected outside a frontend runtime session. Pending commands
+ * are securely discarded at stop, and exports receive a failed completion. */
 int dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz);
 int dsd_app_command_action(int cmd_id);
 int dsd_app_command_set_i32(int cmd_id, int32_t value);
