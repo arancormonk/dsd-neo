@@ -211,10 +211,12 @@ Window {
         mainRoot.pendingStartRow = -1
         var built = sessionArgs.build(sys)
         if (!built.ok) {
-            // The builder refuses for exactly two reasons; blame the field that
-            // is actually wrong or the user re-checks a frequency that was fine.
+            // All four direct key kinds (and key/CSV or force-mode errors)
+            // arrive through the builder's value-free encryption error token.
             mainRoot.startError = built.error === "frequency"
                 ? qsTr("“%1” has no valid frequency — long-press its card to edit it.").arg(sys.name)
+                : built.error === "encryption"
+                ? qsTr("“%1” has an invalid encryption key — long-press its card to edit it.").arg(sys.name)
                 : qsTr("“%1” has an invalid PPM correction — long-press its card to edit it.").arg(sys.name)
             return
         }
