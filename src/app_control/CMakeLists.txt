@@ -9,6 +9,7 @@ target_sources(
         actions/actions_logging.c
         app_command_queue.c
         call_view.c
+        p25_network.c # WP-F2
         p25_metrics.c
         trunk_scan_validate.c
         frontend.c
