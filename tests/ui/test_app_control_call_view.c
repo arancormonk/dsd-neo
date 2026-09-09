@@ -665,8 +665,29 @@ test_source_labels_keep_identity(void) {
     destroy_state(state);
 }
 
+static void
+test_service_metadata(void) {
+    dsd_state* state = make_state();
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0, 123, 456);
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.has_service_metadata = 1;
+    observation.emergency = 1;
+    observation.priority = 3;
+    observation.observed_m = 100;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0, 101, &view);
+    assert(view.has_service_metadata == 1);
+    assert(view.emergency == 1);
+    assert(view.priority == 3);
+    dsd_app_slot_call_view(NULL, 0, 101, &view);
+    assert(view.has_service_metadata == 0 && view.emergency == 0 && view.priority == 0);
+    destroy_state(state);
+}
+
 int
 main(void) {
+    test_service_metadata();
     test_source_labels_keep_identity();
     test_idle_slot_reports_none();
     test_active_call_reports_identity();

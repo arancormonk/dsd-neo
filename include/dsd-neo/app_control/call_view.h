@@ -111,7 +111,10 @@ typedef struct {
     uint32_t elapsed_ms; /**< Since the epoch started; frozen at the end for ENDED. */
     uint16_t kid;
     uint8_t algid;
-    uint8_t enc; /**< Non-zero when the call reads as encrypted over the air. */
+    uint8_t emergency;
+    uint8_t priority;
+    uint8_t has_service_metadata; /**< Distinguishes an observed zero from unknown service metadata. */
+    uint8_t enc;                  /**< Non-zero when the call reads as encrypted over the air. */
 } dsd_app_slot_call;
 
 /**
