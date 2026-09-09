@@ -52,6 +52,7 @@ Window {
         value: mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen
                || mainRoot.diagnosticsOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen
                || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess
+               || homeScreen.managementSheetOpen
     }
     Connections {
         target: uiController
@@ -389,6 +390,7 @@ Window {
         }
 
         HomeScreen {
+            id: homeScreen
             anchors.top: parent.top
             anchors.left: parent.left
             anchors.right: parent.right

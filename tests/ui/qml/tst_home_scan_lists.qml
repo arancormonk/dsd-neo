@@ -40,7 +40,7 @@ Item {
         }
 
         function visualChild(item, name) {
-            if (item.objectName === name)
+            if (typeof name === "function" ? name(item) : item.objectName === name)
                 return item;
 
             var kids = item.contentItem ? [item.contentItem] : item.children || [];
@@ -89,6 +89,77 @@ Item {
                 appLoader.item[overlays[i]] = false;
             }
             compare(uiController.autoStartBlocked, false);
+        }
+
+        function test_auto_start_card_sheet_data() {
+            return [{ tag: "saved management menu", kind: "saved" },
+                    { tag: "scan list editor", kind: "scan" }];
+        }
+
+        function test_auto_start_card_sheet(data) {
+            var onboardingDone = prefs.onboardingDone;
+            var enabled = prefs.autoStartOnAttach;
+            var targetModel = data.kind === "saved" ? savedSystems : scanLists;
+            var row = data.kind === "saved" ? savedSystems.count : 0;
+            if (data.kind === "saved")
+                savedSystems.add({ "name": "Manage attached system", "sourceType": "usb", "freqMhz": "851.5" });
+            else
+                scanLists.update(row, { "sourceType": "usb" });
+            var uid = targetModel.get(row).uid;
+            var sheet = null;
+            try {
+                prefs.onboardingDone = true;
+                prefs.autoStartOnAttach = true;
+                prefs.lastStartedKind = data.kind;
+                prefs.lastStartedUid = uid;
+                testContext.setScanTestUsb(true, true);
+                appLoader.item.currentTab = 0;
+                compare(decoderHost.sessionState, 0);
+                tryCompare(uiController, "autoStartBlocked", false);
+                var card = visualChild(appLoader.item, data.kind === "scan" ? "scanListCard" : function(item) {
+                    return item.name === "Manage attached system" && item.sourceType === "usb";
+                });
+                verify(card !== null);
+                wait(200); // Let the shell's onboarding transition finish before the gesture.
+                mousePress(card, card.width / 4, card.height / 2);
+                wait(1000);
+                mouseRelease(card, card.width / 4, card.height / 2);
+                sheet = visualChild(appLoader.item, function(item) {
+                    return data.kind === "saved" ? item.systemName === "Manage attached system"
+                                                 : item.editUid === uid;
+                });
+                verify(sheet !== null);
+                tryCompare(sheet, "visible", true);
+                testContext.emitLocalDeviceAttached();
+                compare(decoderHost.sessionState, 0, "attachment must be consumed while a card sheet is open");
+                compare(uiController.autoStartBlocked, true);
+                compare(targetModel.getByUid(uid).lastHeard, 0);
+                if (data.kind === "saved") {
+                    var cancel = visualChild(sheet, function(item) {
+                        return item.text === "Cancel" && typeof item.clicked === "function";
+                    });
+                    verify(cancel !== null);
+                    mouseClick(cancel, cancel.width / 2, cancel.height / 2);
+                } else {
+                    sheet.closed();
+                }
+                tryCompare(sheet, "visible", false);
+                tryCompare(uiController, "autoStartBlocked", false);
+                wait(300); // A dismissed sheet must not retry the consumed attachment.
+                compare(decoderHost.sessionState, 0);
+                compare(targetModel.getByUid(uid).lastHeard, 0);
+                // Positive control: a fresh attachment after dismissal is still actionable.
+                testContext.emitLocalDeviceAttached();
+                compare(decoderHost.sessionState, 1);
+            } finally {
+                if (sheet && data.kind === "saved")
+                    sheet.visible = false;
+                appLoader.item.scanListOpen = false;
+                prefs.autoStartOnAttach = enabled;
+                prefs.onboardingDone = onboardingDone;
+                if (data.kind === "saved")
+                    savedSystems.remove(savedSystems.rowForUid(uid));
+            }
         }
 
         function test_auto_start_saved_request() {

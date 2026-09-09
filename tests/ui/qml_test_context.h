@@ -60,6 +60,7 @@
 #include <memory>
 
 #include "app_prefs.h"
+#include "auto_start_policy.h"
 #include "call_history_filter.h"
 #include "call_history_model.h"
 #include "decode_mode_flag.h"
@@ -1082,6 +1083,12 @@ class Setup : public QObject {
         m_import_host->acceptStart = accept;
     }
 
+    // WP-S2: deliver a consumed host event, rather than bypassing policy with a start signal.
+    Q_INVOKABLE void
+    emitLocalDeviceAttached() {
+        Q_EMIT m_lifecycle_host->localDeviceAttached(QStringLiteral("fixture-usb"));
+    }
+
     Q_INVOKABLE void
     emitSessionInitialized() {
         Q_EMIT m_lifecycle_host->sessionInitialized();
@@ -1538,9 +1545,28 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("importedFiles"), imported_files);
         ctx->setContextProperty(QStringLiteral("p25Network"), new dsd_qt::P25NetworkModel(engine)); // WP-F2
         ctx->setContextProperty(QStringLiteral("diagnosticsLog"), new dsd_qt::DiagnosticsLogModel(nullptr, engine));
-        ctx->setContextProperty(QStringLiteral("uiController"), new TestUiController(engine));
+        auto* controller = new TestUiController(engine);
+        auto* scan_lists = new dsd_qt::ScanListsModel(engine);
+        // WP-S2: use the production pure policy for host attachment delivery in QML tests.
+        // The real controller's emission/validation contract is covered by UI_QT_CONTROLLER.
+        for (ImportOnlyHost* host : {m_import_host, static_cast<ImportOnlyHost*>(m_initializing_host)}) {
+            QObject::connect(host, &dsd_qt::DecoderHost::localDeviceAttached, controller, [=](const QString&) {
+                const QString kind = app_prefs->lastStartedKind();
+                const QString uid = app_prefs->lastStartedUid();
+                const QVariantMap target = kind == QStringLiteral("saved")  ? saved_systems->getByUid(uid)
+                                           : kind == QStringLiteral("scan") ? scan_lists->getByUid(uid)
+                                                                            : QVariantMap();
+                if (dsd_qt::autoStartAllowed(app_prefs->autoStartOnAttach(), app_prefs->onboardingDone(),
+                                             host->sessionState(), controller->autoStartBlocked, !target.isEmpty(),
+                                             target.value(QStringLiteral("sourceType")).toString()
+                                                 == QStringLiteral("usb"))) {
+                    controller->requestAutoStart(kind, uid);
+                }
+            });
+        }
+        ctx->setContextProperty(QStringLiteral("uiController"), controller);
         ctx->setContextProperty(QStringLiteral("savedSystems"), saved_systems);
-        ctx->setContextProperty(QStringLiteral("scanLists"), new dsd_qt::ScanListsModel(engine));
+        ctx->setContextProperty(QStringLiteral("scanLists"), scan_lists);
         ctx->setContextProperty(QStringLiteral("scanListStarter"),
                                 new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine));
         ctx->setContextProperty(QStringLiteral("sessionArgs"), session_args);

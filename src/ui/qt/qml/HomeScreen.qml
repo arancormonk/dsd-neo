@@ -31,6 +31,9 @@ Item {
         onTriggered: screen.heardTick++
     }
 
+    // WP-S2: the saved-card menu is a Home-owned modal; scan cards open the root editor.
+    readonly property bool managementSheetOpen: manageMenu.visible
+
     readonly property bool showDonglePill: decoderHost && decoderHost.localDeviceBrokered
     readonly property bool dongleReady: decoderHost && decoderHost.localDeviceReady
 
