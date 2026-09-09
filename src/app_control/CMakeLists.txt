@@ -9,6 +9,7 @@ target_sources(
         actions/actions_logging.c
         app_command_queue.c
         call_view.c
+        trunk_scan_validate.c
         frontend.c
         frontend_snr.c
         notification_status.c

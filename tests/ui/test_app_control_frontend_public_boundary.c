@@ -8,6 +8,7 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/frontend_types.h>
 
 #if defined(DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H)

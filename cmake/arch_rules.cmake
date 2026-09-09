@@ -386,7 +386,10 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         endif()
 
         if(
-            _ARCH_RULES_UI_FORBIDDEN_AREA
+            (
+                _ARCH_RULES_UI_FORBIDDEN_AREA
+                OR _ARCH_RULES_REL MATCHES "^src/ui/qt/"
+            )
             AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/engine/"
         )
             message(
