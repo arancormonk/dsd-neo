@@ -1032,7 +1032,7 @@ test_group_file_rewrite(void) {
         rc = 1;
         goto cleanup;
     }
-    DSD_FPRINTF(fp, "id,mode,name,priority,preempt,audio,record,stream,tags\n");
+    DSD_FPRINTF(fp, "id,mode,name\n");
     fclose(fp);
     rc |= expect_true("clear rewrite fixture", dsd_tg_policy_clear(st) == 0);
     init_entry(&e, 2001, "A", "EMS Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED);
@@ -1043,7 +1043,7 @@ test_group_file_rewrite(void) {
     rc |= expect_true("seed extended rewrite", dsd_tg_policy_append_exact(st, &e) == 0);
     rc |= expect_true("rewrite extended table", dsd_tg_policy_write_group_file(opts, st) == 0);
     rc |= expect_true("read extended table", read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
-    rc |= expect_true("extended header preserved",
+    rc |= expect_true("basic header promoted",
                       strcmp(l1, "id,mode,name,priority,preempt,audio,record,stream,tags\n") == 0);
     rc |= expect_true("extended row media", strcmp(l2, "2001,A,EMS Dispatch,17,true,on,off,on,EMS\n") == 0);
     dsd_state_ext_free_all(loaded);
@@ -1052,6 +1052,35 @@ test_group_file_rewrite(void) {
     rc |= expect_true("extended roundtrip row", dsd_tg_policy_entry_at(loaded, 0, &row) == 1);
     rc |= expect_true("extended roundtrip policy", row.priority == 17 && row.preempt && row.audio && !row.record
                                                        && row.stream && strcmp(row.tags, "EMS") == 0);
+    /* Each trigger alone promotes, even when an earlier row already has tags. */
+    for (int trigger = 0; trigger < 2; ++trigger) {
+        fp = dsd_fopen_private(path, "w");
+        if (!fp) {
+            rc = 1;
+            goto cleanup;
+        }
+        DSD_FPRINTF(fp, "id,mode,name,tags\n");
+        fclose(fp);
+        dsd_tg_policy_clear(st);
+        init_entry(&e, 1, "A", "Tagged", DSD_TG_POLICY_SOURCE_IMPORTED);
+        strcpy(e.tags, "FIRE");
+        dsd_tg_policy_append_exact(st, &e);
+        init_entry(&e, 2, "A", "Priority", DSD_TG_POLICY_SOURCE_IMPORTED);
+        e.priority = trigger ? 0 : 25;
+        e.preempt = trigger ? 1 : 0;
+        dsd_tg_policy_append_exact(st, &e);
+        rc |= expect_true("single trigger rewrite", dsd_tg_policy_write_group_file(opts, st) == 0);
+        rc |= expect_true("single trigger reload", dsd_tg_policy_reload_group_file(opts, loaded) == 0);
+        dsd_tg_policy_entry_at(loaded, 1, &row);
+        rc |= expect_true("single trigger survives promotion", row.priority == e.priority && row.preempt == e.preempt);
+        e.priority = 0;
+        e.preempt = 0;
+        dsd_tg_policy_set_fields(st, 2, 2, &e, DSD_TG_POLICY_FIELD_PRIORITY | DSD_TG_POLICY_FIELD_PREEMPT);
+        dsd_tg_policy_write_group_file(opts, st);
+        read_file_lines(path, l1, sizeof(l1), NULL, 0, NULL, 0);
+        rc |= expect_true("extended header stays extended",
+                          strcmp(l1, "id,mode,name,priority,preempt,audio,record,stream,tags\n") == 0);
+    }
     (void)remove(path);
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s/groups.csv", path);
     rc |= expect_true("missing directory rewrite fails", dsd_tg_policy_write_group_file(opts, st) == -1);
@@ -1067,6 +1096,50 @@ cleanup:
     free(opts);
     free_test_state(st);
     free_test_state(loaded);
+    return rc;
+}
+
+static int
+test_set_fields_remove_bounds(void) {
+    int rc = 0;
+    dsd_state* st = calloc(1, sizeof(*st));
+    dsd_tg_policy_entry value = {0}, row;
+    if (!st) {
+        return 1;
+    }
+    strcpy(value.mode, "B");
+    strcpy(value.name, "Dispatch");
+    value.priority = 25;
+    value.preempt = 1;
+    rc |= expect_true("add fields", dsd_tg_policy_set_fields(st, 42, 42, &value,
+                                                             DSD_TG_POLICY_FIELD_NAME | DSD_TG_POLICY_FIELD_PRIORITY
+                                                                 | DSD_TG_POLICY_FIELD_PREEMPT)
+                                        == 0);
+    rc |= expect_true("read added fields", dsd_tg_policy_entry_at(st, 0, &row));
+    rc |= expect_true("absent mode defaults allow", strcmp(row.mode, "A") == 0);
+    rc |= expect_true("selected fields applied", row.priority == 25 && row.preempt && !strcmp(row.name, "Dispatch"));
+    rc |= expect_true("listen only", dsd_tg_policy_set_fields(st, 42, 42, &value, DSD_TG_POLICY_FIELD_LISTEN) == 0);
+    dsd_tg_policy_entry_at(st, 0, &row);
+    rc |= expect_true("metadata preserved and media derived",
+                      row.priority == 25 && row.preempt && !row.audio && !strcmp(row.mode, "B"));
+    rc |= expect_true("add range", dsd_tg_policy_set_fields(st, 40, 49, &value, DSD_TG_POLICY_FIELD_LISTEN) == 0);
+    rc |= expect_true("remove exact", dsd_tg_policy_remove_bounds(st, 42, 42) == 0);
+    dsd_tg_policy_lookup found;
+    dsd_tg_policy_lookup_id(st, 42, &found);
+    rc |= expect_true("remove exposes range", found.match == DSD_TG_POLICY_MATCH_RANGE);
+    rc |= expect_true("missing remove refused", dsd_tg_policy_remove_bounds(st, 42, 42) == 1);
+    value.priority = 101;
+    rc |= expect_true("invalid priority refused",
+                      dsd_tg_policy_set_fields(st, 40, 49, &value, DSD_TG_POLICY_FIELD_PRIORITY) == 1);
+    rc |= expect_true("invalid mask refused", dsd_tg_policy_set_fields(st, 1, 1, &value, 32) == 1);
+    rc |= expect_true("reversed bounds refused",
+                      dsd_tg_policy_set_fields(st, 2, 1, &value, DSD_TG_POLICY_FIELD_NAME) == 1);
+    dsd_tg_policy_make_exact_entry(99, "D", "Alias", DSD_TG_POLICY_SOURCE_IMPORTED, &row);
+    dsd_tg_policy_append_exact(st, &row);
+    rc |=
+        expect_true("alias edit refused", dsd_tg_policy_set_fields(st, 99, 99, &value, DSD_TG_POLICY_FIELD_NAME) == 1);
+    rc |= expect_true("alias remove refused", dsd_tg_policy_remove_bounds(st, 99, 99) == 1);
+    free_test_state(st);
     return rc;
 }
 
@@ -1096,6 +1169,7 @@ test_scan_row_policy_activity(void) {
 int
 main(void) {
     int rc = 0;
+    rc |= test_set_fields_remove_bounds();
     rc |= test_block_reason_labels();
     rc |= test_snapshot_reclones_recreated_context();
     rc |= test_snapshot_reclones_recreated_empty_reload_context();

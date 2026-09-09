@@ -869,6 +869,64 @@ main(void) {
     rc |= expect_true("high preempt candidate reused carrier",
                       st.p25_sm_tune_count == before && p25_sm_get_ctx()->vc_tg == 1202);
 
+    /* WP-D1: a policy edit must drive actual cross-frequency P25 preemption. */
+    p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
+    mark_cc_reacquired(&st);
+    dsd_tg_policy_clear(&st);
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "750", 1);
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "1000", 1);
+    seed_fdma_iden(&st, 7);
+    const int d1_channel = 0x7010;
+    rc |= expect_true("seed D1 active", seed_exact(&st, 1600, "A", "D1 active", 25, 0) == 0);
+    rc |= expect_true("seed D1 candidate", seed_exact(&st, 1601, "A", "D1 candidate", 75, 0) == 0);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = d1_channel,
+                                   .tg = 1600,
+                                   .src = 2600,
+                                   .svc_bits = 0,
+                                   .is_group = 1});
+    st.synctype = DSD_SYNC_P25P1_POS;
+    p25_sm_event_t voice = p25_sm_ev_active(0);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st, &voice);
+    before = st.p25_sm_tune_count;
+    p25_sm_event_t candidate = {.type = P25_SM_EV_GRANT,
+                                .slot = -1,
+                                .channel = d1_channel + 1,
+                                .tg = 1601,
+                                .src = 2601,
+                                .svc_bits = 0,
+                                .is_group = 1};
+    /* Age only the policy bookkeeping; no wall-clock sleep or timing race. */
+    dsd_tg_policy_decision active_decision;
+    dsd_tg_policy_evaluate_group_call(&opts, &st, 1600, 2600, 0, 0, &active_decision);
+    dsd_tg_policy_call_route active_route = {
+        .target_id = 1600, .source_id = 2600, .freq_hz = st.p25_vc_freq[0], .channel = d1_channel, .slot = -1};
+    dsd_tg_policy_clear_active_call(&st, -1);
+    dsd_tg_policy_note_active_call(&st, &active_route, &active_decision, dsd_time_now_monotonic_s() - 2.0);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st, &candidate);
+    rc |= expect_true("[P25 SM] preempt-flag-off preserves active lower priority call",
+                      st.p25_sm_tune_count == before && p25_sm_get_ctx()->vc_tg == 1600);
+    dsd_tg_policy_entry edited = {.preempt = 1};
+    rc |= expect_true("enable D1 preempt through policy API",
+                      dsd_tg_policy_set_fields(&st, 1601, 1601, &edited, DSD_TG_POLICY_FIELD_PREEMPT) == 0);
+    dsd_tg_policy_clear_active_call(&st, -1);
+    dsd_tg_policy_note_active_call(&st, &active_route, &active_decision, dsd_time_now_monotonic_s());
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st, &candidate);
+    rc |= expect_true("D1 preempt respects dwell", st.p25_sm_tune_count == before);
+    dsd_tg_policy_clear_active_call(&st, -1);
+    dsd_tg_policy_note_active_call(&st, &active_route, &active_decision, dsd_time_now_monotonic_s() - 2.0);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st, &candidate);
+    rc |= expect_true("[P25 SM] preempt-policy-allow",
+                      st.p25_sm_tune_count == before + 1 && p25_sm_get_ctx()->vc_tg == 1601);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st, &voice);
+    rc |= expect_true("D1 preempt canonical call replaced",
+                      active_call_matches(&st, 0, DSD_CALL_KIND_GROUP_VOICE, 1601, 1601, 2601));
+
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS", "0", 1);
+    (void)dsd_setenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS", "0", 1);
+
     // Patch-member priority/preempt displaces using the matched member policy, not the OTA SG's default priority.
     p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     mark_cc_reacquired(&st);

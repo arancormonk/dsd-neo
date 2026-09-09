@@ -15,6 +15,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -2569,6 +2570,304 @@ test_talkgroup_list_commands(void) {
     return rc;
 }
 
+/* An export completion must survive the rest of a drain before the UI polls. */
+static int
+test_talkgroup_export_result(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    const char* path = "dsd_neo_test_d1_retained_export.csv";
+    remove(path);
+    int rc = expect_int("seed retained export policy", dsd_tg_policy_set_mode(state, 42, 42, "A"), 0);
+
+    union {
+        uint64_t align;
+        unsigned char bytes[sizeof(dsd_app_tg_export_payload) + 128];
+    } storage = {0};
+
+    dsd_app_tg_export_payload* request = (dsd_app_tg_export_payload*)storage.bytes;
+    dsd_tg_policy_table_version(state, &request->policy_context, &request->policy_generation);
+    DSD_SNPRINTF(request->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", path);
+    rc |= expect_int("retained export queued",
+                     dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, sizeof storage),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+    rc |= expect_int("export and unrelated command drain together", dsd_app_drain_cmds(opts, state), 2);
+    rc |= expect_str("unrelated command overwrote export toast", state->ui_msg, "Applied: Source ID list cleared");
+    dsd_app_tg_export_result result;
+    rc |= expect_int("completion available on first poll", dsd_app_tg_export_result_get(&result), 1);
+    rc |= expect_true("first completion has sequence", result.sequence != 0);
+    rc |= expect_int("retained export succeeded", result.success, 1);
+    rc |= expect_true("retained request context", result.policy_context == request->policy_context);
+    rc |= expect_true("retained request generation", result.policy_generation == request->policy_generation);
+    rc |= expect_str("retained written path", result.path, path);
+    rc |= expect_str("persistence activated before success", opts->group_in_file, result.path);
+    const dsd_app_tg_export_result success = result;
+    post_empty(DSD_APP_CMD_UI_MSG_CLEAR);
+    dsd_app_drain_cmds(opts, state);
+    dsd_app_tg_export_result_get(&result);
+    rc |= expect_true("unrelated drain preserves sequence", result.sequence == success.sequence);
+    rc |= expect_str("unrelated drain preserves path", result.path, path);
+    rc |= expect_int("null completion output refused", dsd_app_tg_export_result_get(NULL), 0);
+
+    /* Failures retain the request identity too, including refused contexts. */
+    for (int failure = 0; failure < 4; ++failure) {
+        dsd_scan_row_profile profile = {0};
+        if (failure == 2) {
+            profile.values.present = DSD_SCAN_OPT_GROUP;
+            dsd_scan_groups_begin(state);
+            dsd_scan_groups_enter(state, &profile);
+        }
+        dsd_tg_policy_table_version(state, &request->policy_context, &request->policy_generation);
+        if (failure == 0) {
+            request->policy_context++;
+        } else if (failure == 1) {
+            request->policy_generation++;
+        } else if (failure == 3) {
+            DSD_SNPRINTF(request->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path),
+                         "%s/missing.csv", path);
+        }
+        uint64_t sequence = result.sequence;
+        dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, sizeof storage);
+        post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+        rc |= expect_int("failed export and unrelated command drained", dsd_app_drain_cmds(opts, state), 2);
+        rc |= expect_int("failed export result available", dsd_app_tg_export_result_get(&result), 1);
+        rc |= expect_true("each completion advances sequence", result.sequence > sequence);
+        rc |= expect_int("retained failure", result.success, 0);
+        rc |= expect_true("failed request context retained", result.policy_context == request->policy_context);
+        rc |= expect_true("failed request generation retained", result.policy_generation == request->policy_generation);
+        rc |= expect_str("failed destination retained", result.path, request->path);
+        rc |= expect_str("failed export keeps successful persistence", opts->group_in_file, path);
+        if (failure == 2) {
+            dsd_scan_groups_leave(state);
+        }
+    }
+    /* Identical requests are still distinct completions; reads return owned copies. */
+    DSD_SNPRINTF(request->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", path);
+    dsd_tg_policy_table_version(state, &request->policy_context, &request->policy_generation);
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        uint64_t sequence = result.sequence;
+        dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, sizeof storage);
+        post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+        dsd_app_drain_cmds(opts, state);
+        dsd_app_tg_export_result_get(&result);
+        rc |= expect_true("repeated successful export advances sequence", result.sequence > sequence && result.success);
+        rc |= expect_str("prior owned copy preserved", success.path, path);
+    }
+    uint64_t sequence = result.sequence;
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, offsetof(dsd_app_tg_export_payload, path));
+    post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+    dsd_app_drain_cmds(opts, state);
+    dsd_app_tg_export_result_get(&result);
+    rc |= expect_true("invalid envelope publishes failure", result.sequence > sequence && !result.success);
+    rc |= expect_str("invalid path is not published", result.path, "");
+    freeState(state);
+    free(state);
+    free(opts);
+    remove(path);
+    return rc;
+}
+
+/* WP-D1: exercise the decoder-thread API, including the resulting effective policy. */
+static int
+test_talkgroup_row_commands(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_state* loaded = calloc(1, sizeof(*loaded));
+    if (!opts || !state || !loaded) {
+        free(opts);
+        free(state);
+        free(loaded);
+        return 1;
+    }
+    init_test_context(opts, state);
+    int rc = 0;
+    const char* path = "dsd_neo_test_d1_export.csv";
+    remove(path);
+    /* Exact A deletion: blocked range, allowed range in allowlist, last allowlist row. */
+    for (int scenario = 0; scenario < 3; ++scenario) {
+        dsd_tg_policy_clear(state);
+        opts->trunk_use_allow_list = scenario != 0;
+        opts->trunk_tune_group_calls = 1;
+        dsd_tg_policy_entry e;
+        if (scenario < 2) {
+            dsd_tg_policy_make_exact_entry(1000, scenario == 0 ? "B" : "A", "Range", DSD_TG_POLICY_SOURCE_IMPORTED, &e);
+            e.id_end = 1099;
+            e.is_range = 1;
+            dsd_tg_policy_add_range_entry(state, &e);
+        }
+        dsd_tg_policy_set_mode(state, 1001, 1001, "A");
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+        seed_active_p25_voice(opts, state, 851000000L, 852000000L, 1001);
+        reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+#endif
+        dsd_app_tg_range_payload p = {1001, 1001, 0, 0};
+        dsd_tg_policy_table_version(state, &p.policy_context, &p.policy_generation);
+        dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &p, sizeof p);
+        rc |= expect_int("remove drains", dsd_app_drain_cmds(opts, state), 1);
+        dsd_tg_policy_decision decision;
+        dsd_tg_policy_evaluate_group_call(opts, state, 1001, 0, 0, 0, &decision);
+        rc |= expect_int("resulting policy allow", decision.tune_allowed, scenario == 1);
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+        rc |= expect_int("exact-over-range and allowlist release", g_cc_tune_calls, scenario != 1);
+        dsd_call_snapshot call;
+        dsd_call_state_get(state, 0, &call);
+        rc |= expect_int("canonical active state after removal", call.phase == DSD_CALL_PHASE_ACTIVE, scenario == 1);
+#endif
+    }
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    /* Row-set release, and a metadata edit must not release an already blocked call. */
+    dsd_tg_policy_clear(state);
+    opts->trunk_use_allow_list = 0;
+    dsd_tg_policy_set_mode(state, 1001, 1001, "A");
+    seed_active_p25_voice(opts, state, 851000000L, 852000000L, 1001);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_app_tg_row_payload block = {.id_start = 1001, .id_end = 1001, .fields = DSD_APP_TG_FIELD_LISTEN, .listen = 0};
+    dsd_tg_policy_table_version(state, &block.policy_context, &block.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &block, sizeof block);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_int("row set releases newly blocked call", g_cc_tune_calls, 1);
+    seed_active_p25_voice(opts, state, 851000000L, 852000000L, 1001);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    block.fields = DSD_APP_TG_FIELD_NAME;
+    strcpy(block.name, "Renamed");
+    dsd_tg_policy_table_version(state, &block.policy_context, &block.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &block, sizeof block);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_int("metadata edit does not newly block call", g_cc_tune_calls, 0);
+#endif
+    dsd_tg_policy_clear(state);
+    dsd_tg_policy_entry e;
+    const char* modes[] = {"A", "B", "D", "DE"};
+    for (int i = 0; i < 4; ++i) {
+        dsd_tg_policy_make_exact_entry(2000 + i, modes[i], "Named", DSD_TG_POLICY_SOURCE_IMPORTED, &e);
+        e.priority = i * 25;
+        e.preempt = i == 1;
+        dsd_tg_policy_append_exact(state, &e);
+    }
+    dsd_tg_policy_make_exact_entry(3000, "D", "Learned", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &e);
+    dsd_tg_policy_append_exact(state, &e);
+    e.id_start = 4000;
+    e.id_end = 4099;
+    e.is_range = 1;
+    strcpy(e.mode, "A");
+    e.source = DSD_TG_POLICY_SOURCE_IMPORTED;
+    dsd_tg_policy_add_range_entry(state, &e);
+    dsd_app_tg_row_payload edit = {
+        .id_start = 2000, .id_end = 2000, .fields = DSD_APP_TG_FIELD_PRIORITY, .priority = 50};
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    edit.policy_context++;
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_contains("stale context set refused", state->ui_msg, "stale");
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    edit.policy_generation++;
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_contains("stale generation set refused", state->ui_msg, "stale");
+    edit.priority = 99;
+    edit.id_start = edit.id_end = 2002;
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
+    dsd_app_drain_cmds(opts, state);
+    dsd_tg_policy_lookup lookup;
+    dsd_tg_policy_lookup_id(state, 2002, &lookup);
+    rc |= expect_int("alias priority unchanged", lookup.entry.priority, 50);
+    dsd_app_tg_range_payload rem = {2002, 2002, edit.policy_context, edit.policy_generation};
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_int("mode D remove refused", (int)dsd_tg_policy_entry_count(state), 6);
+
+    union {
+        uint64_t align;
+        unsigned char bytes[sizeof(dsd_app_tg_export_payload) + 128];
+    } storage = {0};
+
+    dsd_app_tg_export_payload* exp = (dsd_app_tg_export_payload*)storage.bytes;
+    strcpy(exp->path, path);
+    dsd_tg_policy_table_version(state, &exp->policy_context, &exp->policy_generation);
+    exp->policy_context++;
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_contains("stale export refused", state->ui_msg, "stale");
+    rc |= expect_str("stale export keeps empty path", opts->group_in_file, "");
+    dsd_tg_policy_table_version(state, &exp->policy_context, &exp->policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("export sets persistence path", opts->group_in_file, path);
+    rc |= expect_contains("export completion toast", state->ui_msg, "Applied:");
+    rc |= expect_int("reload export", dsd_tg_policy_reload_group_file(opts, loaded), 0);
+    rc |= expect_int("canonical rows exported", (int)dsd_tg_policy_entry_count(loaded), 6);
+    for (size_t i = 0; i < 6; ++i) {
+        dsd_tg_policy_entry actual;
+        dsd_tg_policy_entry_at(state, i, &e);
+        if (!dsd_tg_policy_entry_at(loaded, i, &actual)) {
+            rc = 1;
+            continue;
+        }
+        rc |= expect_str("export mode roundtrip", actual.mode, e.mode);
+        rc |= expect_str("export name roundtrip", actual.name, e.name);
+        rc |= expect_int("export priority roundtrip", actual.priority, e.priority);
+        rc |= expect_int("export preempt roundtrip", actual.preempt, e.preempt);
+        rc |= expect_int("export range roundtrip", actual.id_end, e.id_end);
+    }
+    /* A failed export cannot redirect subsequent persistence. */
+    strcpy(exp->path, "dsd_neo_d1_missing_dir/groups.csv");
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("failed export keeps path", opts->group_in_file, path);
+    rc |= expect_contains("failed export toast", state->ui_msg, "failed");
+    exp->path[0] = 0;
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_contains("empty export path refused", state->ui_msg, "Invalid");
+    strcpy(exp->path, path);
+    edit.id_start = edit.id_end = 2000;
+    edit.fields = DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_TAGS;
+    strcpy(edit.name, "Persisted");
+    strcpy(edit.tags, "FIRE");
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
+    dsd_app_drain_cmds(opts, state);
+    dsd_tg_policy_reload_group_file(opts, loaded);
+    dsd_tg_policy_lookup_id(loaded, 2000, &lookup);
+    rc |= expect_str("edit persists to exported file", lookup.entry.name, "Persisted");
+    rc |= expect_str("tags persist to exported file", lookup.entry.tags, "FIRE");
+    rem.id_start = rem.id_end = 2000;
+    dsd_tg_policy_table_version(state, &rem.policy_context, &rem.policy_generation);
+    rem.policy_generation++;
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_contains("stale remove refused", state->ui_msg, "stale");
+    dsd_tg_policy_table_version(state, &rem.policy_context, &rem.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem);
+    dsd_app_drain_cmds(opts, state);
+    dsd_tg_policy_reload_group_file(opts, loaded);
+    dsd_tg_policy_lookup_id(loaded, 2000, &lookup);
+    rc |= expect_int("remove persists to exported file", lookup.match, DSD_TG_POLICY_MATCH_NONE);
+    dsd_scan_row_profile profile = {0};
+    profile.values.present = DSD_SCAN_OPT_GROUP;
+    dsd_scan_groups_begin(state);
+    dsd_scan_groups_enter(state, &profile);
+    dsd_tg_policy_table_version(state, &exp->policy_context, &exp->policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_contains("scan export refused", state->ui_msg, "scan");
+    dsd_scan_groups_leave(state);
+    remove(path);
+    freeState(loaded);
+    free(loaded);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 static int
 test_direct_key_updates_preserve_fifo(void) {
     static dsd_opts opts;
@@ -2630,10 +2929,12 @@ test_foundation_commands(void) {
     dsd_app_tg_row_payload row = {0};
     dsd_tg_policy_table_version(&state, &row.policy_context, &row.policy_generation);
     row.id_start = row.id_end = 42;
+    row.fields = DSD_APP_TG_FIELD_NAME;
+    strcpy(row.name, "Dispatch");
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &row, sizeof row);
     rc |= expect_int("row stub drains", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_contains("row stub toast", state.ui_msg, "not implemented");
-    row.policy_generation++;
+    rc |= expect_contains("row applied toast", state.ui_msg, "Applied:");
+    row.policy_context++;
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &row, sizeof row);
     dsd_app_drain_cmds(&opts, &state);
     rc |= expect_contains("stale row rejected", state.ui_msg, "stale");
@@ -2641,7 +2942,7 @@ test_foundation_commands(void) {
     dsd_tg_policy_table_version(&state, &range.policy_context, &range.policy_generation);
     dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &range, sizeof range);
     dsd_app_drain_cmds(&opts, &state);
-    rc |= expect_contains("remove stub toast", state.ui_msg, "not implemented");
+    rc |= expect_contains("remove applied toast", state.ui_msg, "Applied:");
 
     union {
         uint64_t alignment;
@@ -2649,14 +2950,14 @@ test_foundation_commands(void) {
     } export_storage = {0};
 
     dsd_app_tg_export_payload* export_payload = (dsd_app_tg_export_payload*)export_storage.bytes;
-    export_payload->policy_context = range.policy_context;
-    export_payload->policy_generation = range.policy_generation;
+    dsd_tg_policy_table_version(&state, &export_payload->policy_context, &export_payload->policy_generation);
     // The flexible path member owns only the bytes remaining after the header.
     DSD_SNPRINTF(export_payload->path, sizeof export_storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s",
                  "test.csv");
     dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, export_payload, sizeof export_storage);
     dsd_app_drain_cmds(&opts, &state);
-    rc |= expect_contains("export stub toast", state.ui_msg, "not implemented");
+    rc |= expect_contains("export applied toast", state.ui_msg, "Applied:");
+    remove("test.csv");
     dsd_app_key_direct_payload key = {DSD_APP_KEY_TYPE_RC4, "0011223344"};
     dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
     dsd_app_drain_cmds(&opts, &state);
@@ -2694,6 +2995,8 @@ main(void) {
     rc |= test_coalesced_setter_erases_old_tail();
     rc |= test_foundation_commands();
     rc |= test_talkgroup_list_commands();
+    rc |= test_talkgroup_row_commands();
+    rc |= test_talkgroup_export_result();
     rc |= test_source_alias_commands();
     rc |= test_scoped_direct_key_mutes();
     rc |= test_scoped_row_option_commands();

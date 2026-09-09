@@ -95,6 +95,11 @@ static dsd_mutex_t g_mu;
 static atomic_int g_mu_init = 0;
 static atomic_int g_overflow = 0;
 static atomic_int g_overflow_warn_gate = 0;
+/* WP-D1: the last export completion is independent of transient decoder toasts.
+ * Protected by g_mu; retained without a reader first having to arm publication. */
+static dsd_app_tg_export_result g_tg_export_result;
+_Static_assert(sizeof(g_tg_export_result.path) == sizeof(((dsd_opts*)0)->group_in_file),
+               "retained export path must fit every accepted group-file path");
 
 /* 0 = uninitialized, 1 = initialization in flight, 2 = ready. The loser of the
  * first-call race must wait: taking a mutex another thread has not finished
@@ -113,6 +118,53 @@ ensure_mu_init(void) {
     while (atomic_load(&g_mu_init) != 2) {
         dsd_thread_yield();
     }
+}
+
+int
+dsd_app_tg_export_result_get(dsd_app_tg_export_result* out) {
+    if (!out) {
+        return 0;
+    }
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    DSD_MEMCPY(out, &g_tg_export_result, sizeof(*out));
+    dsd_mutex_unlock(&g_mu);
+    return out->sequence != 0;
+}
+
+/* Called after dispatch, including envelope rejection, before erasing the queued
+ * request. Publish only export fields; other command payloads may carry secrets. */
+static void
+tg_export_publish_result(const struct dsd_app_command* cmd, int status) {
+    if (cmd->id != DSD_APP_CMD_TG_LIST_EXPORT) {
+        return;
+    }
+    dsd_app_tg_export_result result = {0};
+    const size_t context_offset = offsetof(dsd_app_tg_export_payload, policy_context);
+    const size_t generation_offset = offsetof(dsd_app_tg_export_payload, policy_generation);
+    const size_t path_offset = offsetof(dsd_app_tg_export_payload, path);
+    if (cmd->n >= context_offset + sizeof result.policy_context) {
+        DSD_MEMCPY(&result.policy_context, cmd->data + context_offset, sizeof result.policy_context);
+    }
+    if (cmd->n >= generation_offset + sizeof result.policy_generation) {
+        DSD_MEMCPY(&result.policy_generation, cmd->data + generation_offset, sizeof result.policy_generation);
+    }
+    if (cmd->n > path_offset) {
+        const char* path = (const char*)cmd->data + path_offset;
+        const char* end = memchr(path, 0, cmd->n - path_offset);
+        if (end && (size_t)(end - path) < sizeof result.path) {
+            DSD_MEMCPY(result.path, path, (size_t)(end - path));
+        }
+    }
+    result.success = status == UI_CMD_APPLY_COMPLETED;
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    result.sequence = g_tg_export_result.sequence + 1U;
+    if (result.sequence == 0) {
+        result.sequence = 1;
+    }
+    g_tg_export_result = result;
+    dsd_mutex_unlock(&g_mu);
 }
 
 // Dispatch commands via per-domain registries
@@ -3782,8 +3834,10 @@ tg_listen_row_is_editable(const dsd_tg_policy_entry* entry) {
     return entry->source != DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS && strcmp(entry->mode, "D") != 0;
 }
 
-static void
-tg_listen_release_blocked_calls(dsd_opts* opts, dsd_state* state) {
+/* Only mode/allow-list denial can change as a result of a row edit. */
+static unsigned int
+tg_listen_blocked_slots(dsd_opts* opts, dsd_state* state) {
+    unsigned int blocked = 0;
     for (unsigned int slot = 0; slot < 2U; ++slot) {
         dsd_call_snapshot call;
         if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
@@ -3796,19 +3850,27 @@ tg_listen_release_blocked_calls(dsd_opts* opts, dsd_state* state) {
         }
         dsd_tg_policy_decision decision;
         if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)target, 0, 0, 0, &decision) == 0
-            && (decision.block_reasons & DSD_TG_POLICY_BLOCK_MODE)) {
-            if (apply_lockout_decoder_transition(opts, state) == UI_CMD_APPLY_FAILED) {
-                ui_set_toast(state, 4, "TG %u not tuned; return-to-CC tune failed", (unsigned)target);
-            }
-            return;
+            && (decision.block_reasons & (DSD_TG_POLICY_BLOCK_MODE | DSD_TG_POLICY_BLOCK_ALLOWLIST))) {
+            blocked |= 1U << slot;
         }
+    }
+    return blocked;
+}
+
+static void
+tg_listen_release_blocked_calls(dsd_opts* opts, dsd_state* state, unsigned int eligible_slots) {
+    if (!(tg_listen_blocked_slots(opts, state) & eligible_slots)) {
+        return;
+    }
+    if (apply_lockout_decoder_transition(opts, state) == UI_CMD_APPLY_FAILED) {
+        ui_set_toast(state, 4, "Talkgroup not tuned; return-to-CC tune failed");
     }
 }
 
-/* Every talkgroup stub checks the same pair: comparing only the generation
+/* WP-D1: Every talkgroup edit checks the same pair: comparing only the generation
  * would allow a row from the previous scan target to address a different list. */
 static int
-tg_edit_stub_result(dsd_state* state, uint64_t context, unsigned int generation) {
+tg_edit_check_version(dsd_state* state, uint64_t context, unsigned int generation) {
     uint64_t current_context = 0;
     unsigned int current_generation = 0;
     dsd_tg_policy_table_version(state, &current_context, &current_generation);
@@ -3816,39 +3878,113 @@ tg_edit_stub_result(dsd_state* state, uint64_t context, unsigned int generation)
         ui_set_toast(state, 3, "Talkgroup list changed: stale edit rejected");
         return UI_CMD_APPLY_FAILED;
     }
-    ui_set_toast(state, 3, "not implemented");
-    return UI_CMD_APPLY_UNSUPPORTED;
+    return UI_CMD_APPLY_COMPLETED;
 }
 
 static int
-apply_cmd_tg_row_set_stub(dsd_state* state, const struct dsd_app_command* c) {
+apply_cmd_tg_row_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     dsd_app_tg_row_payload p;
     DSD_MEMCPY(&p, c->data, sizeof p);
-    return tg_edit_stub_result(state, p.policy_context, p.policy_generation);
+    if (tg_edit_check_version(state, p.policy_context, p.policy_generation) != UI_CMD_APPLY_COMPLETED) {
+        return UI_CMD_APPLY_FAILED;
+    }
+    const uint32_t all = DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_PRIORITY | DSD_APP_TG_FIELD_PREEMPT
+                         | DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_TAGS;
+    if (!p.fields || (p.fields & ~all) || ((p.fields & DSD_APP_TG_FIELD_LISTEN) && p.listen != 0 && p.listen != 1)
+        || ((p.fields & DSD_APP_TG_FIELD_PREEMPT) && p.preempt != 0 && p.preempt != 1)) {
+        ui_set_toast(state, 3, "Invalid talkgroup fields");
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsd_tg_policy_entry values = {0};
+    uint32_t mask = 0;
+    if (p.fields & DSD_APP_TG_FIELD_LISTEN) {
+        mask |= DSD_TG_POLICY_FIELD_LISTEN;
+    }
+    if (p.fields & DSD_APP_TG_FIELD_PRIORITY) {
+        mask |= DSD_TG_POLICY_FIELD_PRIORITY;
+    }
+    if (p.fields & DSD_APP_TG_FIELD_PREEMPT) {
+        mask |= DSD_TG_POLICY_FIELD_PREEMPT;
+    }
+    if (p.fields & DSD_APP_TG_FIELD_NAME) {
+        mask |= DSD_TG_POLICY_FIELD_NAME;
+    }
+    if (p.fields & DSD_APP_TG_FIELD_TAGS) {
+        mask |= DSD_TG_POLICY_FIELD_TAGS;
+    }
+    DSD_SNPRINTF(values.mode, sizeof values.mode, "%s", p.listen ? "A" : "B");
+    values.priority = p.priority;
+    values.preempt = (uint8_t)p.preempt;
+    DSD_MEMCPY(values.name, p.name, sizeof values.name);
+    DSD_MEMCPY(values.tags, p.tags, sizeof values.tags);
+    const unsigned int eligible_slots = ~tg_listen_blocked_slots(opts, state);
+    if (dsd_tg_policy_set_fields(state, p.id_start, p.id_end, &values, mask) != 0) {
+        ui_set_toast(state, 3, "Talkgroup edit refused: invalid fields or alias row");
+        return UI_CMD_APPLY_FAILED;
+    }
+    ui_set_toast(state, 3, "Applied: Talkgroup updated");
+    tg_listen_persist(opts, state);
+    tg_listen_release_blocked_calls(opts, state, eligible_slots);
+    return UI_CMD_APPLY_COMPLETED;
 }
 
 static int
-apply_cmd_tg_row_remove_stub(dsd_state* state, const struct dsd_app_command* c) {
+apply_cmd_tg_row_remove(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     dsd_app_tg_range_payload p;
     DSD_MEMCPY(&p, c->data, sizeof p);
-    return tg_edit_stub_result(state, p.policy_context, p.policy_generation);
+    if (tg_edit_check_version(state, p.policy_context, p.policy_generation) != UI_CMD_APPLY_COMPLETED) {
+        return UI_CMD_APPLY_FAILED;
+    }
+    const unsigned int eligible_slots = ~tg_listen_blocked_slots(opts, state);
+    if (dsd_tg_policy_remove_bounds(state, p.id_start, p.id_end) != 0) {
+        ui_set_toast(state, 3, "Talkgroup remove refused: missing or alias row");
+        return UI_CMD_APPLY_FAILED;
+    }
+    ui_set_toast(state, 3, "Applied: Talkgroup removed");
+    tg_listen_persist(opts, state);
+    tg_listen_release_blocked_calls(opts, state, eligible_slots);
+    return UI_CMD_APPLY_COMPLETED;
 }
 
 static int
-apply_cmd_tg_list_export_stub(dsd_state* state, const struct dsd_app_command* c) {
+apply_cmd_tg_list_export(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     uint64_t context = 0;
     unsigned int generation = 0;
-    // The flexible member can start before sizeof(struct) because of tail
-    // padding. Read header fields individually; never cast unaligned data.
+    /* Flexible member can precede tail padding; read fields without unaligned casts. */
     DSD_MEMCPY(&context, c->data + offsetof(dsd_app_tg_export_payload, policy_context), sizeof context);
     DSD_MEMCPY(&generation, c->data + offsetof(dsd_app_tg_export_payload, policy_generation), sizeof generation);
-    if (!memchr(c->data + offsetof(dsd_app_tg_export_payload, path), 0,
-                c->n - offsetof(dsd_app_tg_export_payload, path))) {
+    if (tg_edit_check_version(state, context, generation) != UI_CMD_APPLY_COMPLETED) {
+        return UI_CMD_APPLY_FAILED;
+    }
+    const char* path = (const char*)c->data + offsetof(dsd_app_tg_export_payload, path);
+    const char* end = memchr(path, 0, c->n - offsetof(dsd_app_tg_export_payload, path));
+    if (!opts || !end || end == path || (size_t)(end - path) >= sizeof opts->group_in_file) {
         ui_set_toast(state, 3, "Invalid export path");
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
-    return tg_edit_stub_result(state, context, generation);
+    if (dsd_scan_groups_row_active(state)) {
+        ui_set_toast(state, 3, "Talkgroup export refused in scan-row context");
+        return UI_CMD_APPLY_FAILED;
+    }
+    /* Only the output path is needed; do not copy unrelated options or secrets. */
+    dsd_opts* output = calloc(1, sizeof(*output));
+    if (!output) {
+        ui_set_toast(state, 3, "Talkgroup export failed: out of memory");
+        return UI_CMD_APPLY_FAILED;
+    }
+    DSD_SNPRINTF(output->group_in_file, sizeof output->group_in_file, "%s", path);
+    int rc = dsd_tg_policy_write_group_file(output, state);
+    free(output);
+    if (rc != 0) {
+        ui_set_toast(state, 3, "Talkgroup export failed");
+        return UI_CMD_APPLY_FAILED;
+    }
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    ui_set_toast(state, 3, "Applied: Talkgroup list exported");
+    return UI_CMD_APPLY_COMPLETED;
 }
+
+/* End WP-D1 talkgroup edit/export handlers. */
 
 static int
 apply_cmd_key_direct_stub(dsd_state* state, const struct dsd_app_command* c) {
@@ -3874,9 +4010,9 @@ static int
 apply_cmd_foundation(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)opts;
     switch (c->id) {
-        case DSD_APP_CMD_TG_ROW_SET: return apply_cmd_tg_row_set_stub(state, c);
-        case DSD_APP_CMD_TG_ROW_REMOVE: return apply_cmd_tg_row_remove_stub(state, c);
-        case DSD_APP_CMD_TG_LIST_EXPORT: return apply_cmd_tg_list_export_stub(state, c);
+        case DSD_APP_CMD_TG_ROW_SET: return apply_cmd_tg_row_set(opts, state, c);
+        case DSD_APP_CMD_TG_ROW_REMOVE: return apply_cmd_tg_row_remove(opts, state, c);
+        case DSD_APP_CMD_TG_LIST_EXPORT: return apply_cmd_tg_list_export(opts, state, c);
         case DSD_APP_CMD_KEY_DIRECT_SET: return apply_cmd_key_direct_stub(state, c);
         case DSD_APP_CMD_FORCE_KEY_SET: return apply_cmd_force_key_stub(state, c);
         default: return UI_CMD_APPLY_UNHANDLED;
@@ -3903,7 +4039,7 @@ apply_cmd_tg_listen_one(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     }
     tg_listen_persist(opts, state);
     if (!payload.listen) {
-        tg_listen_release_blocked_calls(opts, state);
+        tg_listen_release_blocked_calls(opts, state, 3U);
     }
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -3927,7 +4063,7 @@ apply_cmd_tg_listen_all(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     ui_set_toast(state, 3, "%zu talkgroups %s", applied, payload.listen ? "listening" : "not tuned");
     tg_listen_persist(opts, state);
     if (!payload.listen) {
-        tg_listen_release_blocked_calls(opts, state);
+        tg_listen_release_blocked_calls(opts, state, 3U);
     }
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -4560,11 +4696,13 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
             break;
         }
         if (!ui_cmd_payload_is_valid(&cmd)) {
+            tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
             DSD_SECURE_ZERO(&cmd, sizeof cmd);
             n_applied++;
             continue;
         }
-        (void)apply_cmd(opts, state, &cmd);
+        const int result = apply_cmd(opts, state, &cmd);
+        tg_export_publish_result(&cmd, result);
         DSD_SECURE_ZERO(&cmd, sizeof cmd);
         // After applying a command, publish updated snapshots so the UI can
         // render consistent opts/state without racing live structures.

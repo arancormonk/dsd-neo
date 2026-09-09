@@ -371,6 +371,18 @@ typedef struct {
     char path[]; /* NUL-terminated, bounded by the submitted payload size. */
 } dsd_app_tg_export_payload;
 
+/** Retained outcome of the most recently drained TG_LIST_EXPORT command.
+ * The context/generation identify the submitted request, including on failure.
+ * path is the requested destination (written only when success == 1), or empty
+ * if the submitted path was invalid. sequence is nonzero and advances per result. */
+typedef struct {
+    uint64_t sequence;
+    uint64_t policy_context;
+    unsigned int policy_generation;
+    int success;
+    char path[1024];
+} dsd_app_tg_export_result;
+
 typedef enum {
     DSD_APP_KEY_TYPE_BASIC = 0,
     DSD_APP_KEY_TYPE_HEX = 1, /* Hytera/AES determined by width. */
@@ -428,6 +440,14 @@ int dsd_app_command_set_endpoint(int cmd_id, const char* host, int32_t port);
 int dsd_app_command_set_p25_p2_params(const dsd_app_p25_p2_params_payload* payload);
 int dsd_app_command_set_tg_listen(const dsd_app_tg_listen_payload* payload);
 int dsd_app_command_set_tg_listen_all(const dsd_app_tg_listen_all_payload* payload);
+/** Copy the last export result under a mutex without consuming a decoder snapshot.
+ * Returns 1 if a result exists, 0 otherwise (out is zeroed), or 0 for NULL out.
+ * Results are retained across unrelated commands, toasts, reads and session stops;
+ * only another drained export replaces them. Sequence numbers are process-wide.
+ * The UI should retain the pre-submit sequence, allow one outstanding export, and
+ * accept a newer result matching its context/generation/path before registering
+ * the file. Submission rejection must still be handled from the submit return. */
+int dsd_app_tg_export_result_get(dsd_app_tg_export_result* out);
 int dsd_app_command_set_hytera_key(const dsd_app_hytera_key_payload* payload);
 int dsd_app_command_set_aes_key(const dsd_app_aes_key_payload* payload);
 int dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload);
