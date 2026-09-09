@@ -10,13 +10,18 @@ Item {
         property int edits: 0
         property int removes: 0
         property var last: []
-        function setTalkgroupPolicy(a, b, c, g, n, l, p, e) {
+        function setTalkgroupPolicy(a, b, c, g, changes) {
             edits++;
-            last = [a, b, c, g, n, l, p, e];
+            last = [a, b, c, g, changes];
             return true;
         }
         function addTalkgroup(a, b, c, g, n, l, p, e) {
-            return setTalkgroupPolicy(a, b, c, g, n, l, p, e);
+            return setTalkgroupPolicy(a, b, c, g, {
+                name: n,
+                listening: l,
+                priority: p,
+                preempt: e
+            });
         }
         function removeTalkgroup(a, b, c, g) {
             removes++;
@@ -60,8 +65,22 @@ Item {
             compare(recorder.edits, 1);
             compare(recorder.last[2], "18446744073709551614");
             compare(recorder.last[3], 9);
-            compare(recorder.last[6], 100);
-            compare(recorder.last[7], true);
+            compare(recorder.last[4].priority, 100);
+            compare(recorder.last[4].preempt, true);
+            compare(Object.keys(recorder.last[4]).sort(), ["preempt", "priority"]);
+        }
+        function test_only_changed_fields_and_no_op() {
+            mouseClick(findChild(loader.item, "saveTalkgroup"));
+            compare(recorder.edits, 0);
+            findChild(loader.item, "talkgroupName").text = "Renamed";
+            mouseClick(findChild(loader.item, "saveTalkgroup"));
+            compare(recorder.edits, 1);
+            compare(Object.keys(recorder.last[4]), ["name"]);
+            mouseClick(findChild(loader.item, "listeningToggle"));
+            mouseClick(findChild(loader.item, "saveTalkgroup"));
+            compare(recorder.edits, 2);
+            compare(Object.keys(recorder.last[4]).sort(), ["listening", "name"]);
+            compare(recorder.last[4].listening, false);
         }
         function test_remove_requires_two_taps_and_reopen_resets() {
             var button = findChild(loader.item, "removeTalkgroup");

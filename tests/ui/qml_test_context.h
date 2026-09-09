@@ -220,8 +220,8 @@ class CommandRecorder : public QObject {
     // WP-D1: retain the captured version and requested fields for edit-sheet tests.
     Q_INVOKABLE bool
     setTalkgroupPolicy(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
-                       const QString& name, bool listen, int priority, bool preempt) {
-        m_talkgroupEdit = {start, end, context, generation, name, listen, priority, preempt};
+                       const QVariantMap& changes) {
+        m_talkgroupEdit = {start, end, context, generation, changes};
         return true;
     }
 
@@ -235,7 +235,8 @@ class CommandRecorder : public QObject {
     Q_INVOKABLE bool
     addTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
                  const QString& name, bool listen, int priority, bool preempt) {
-        return setTalkgroupPolicy(start, end, context, generation, name, listen, priority, preempt);
+        m_talkgroupEdit = {start, end, context, generation, name, listen, priority, preempt};
+        return true;
     }
 
     Q_INVOKABLE bool

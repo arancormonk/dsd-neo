@@ -13,9 +13,11 @@ ModalSheet {
     property double policyGeneration: 0
     property int priorityValue: 0
     property bool listed: false
+    property var original: ({})
     property bool removeArmed: false
     property string saveMessage: ""
     property bool canSaveList: false
+    property string saveListText: qsTr("Save talkgroup list")
     signal saveListRequested
 
     function openRow(start, end, name, listening, isListed, priority, preempt, context, generation) {
@@ -23,6 +25,12 @@ ModalSheet {
         idEnd = end;
         policyContext = context;
         policyGeneration = generation;
+        original = {
+            name: name,
+            listening: listening,
+            priority: priority,
+            preempt: preempt
+        };
         nameField.text = name;
         listenToggle.checked = listening;
         listed = isListed;
@@ -33,7 +41,20 @@ ModalSheet {
         visible = true;
     }
     function saveRow() {
-        var ok = listed ? bridge.setTalkgroupPolicy(idStart, idEnd, policyContext, policyGeneration, nameField.text, listenToggle.checked, priorityValue, preemptToggle.checked) : bridge.addTalkgroup(idStart, idEnd, policyContext, policyGeneration, nameField.text, listenToggle.checked, priorityValue, preemptToggle.checked);
+        var changes = {};
+        if (nameField.text !== original.name)
+            changes.name = nameField.text;
+        if (listenToggle.checked !== original.listening)
+            changes.listening = listenToggle.checked;
+        if (priorityValue !== original.priority)
+            changes.priority = priorityValue;
+        if (preemptToggle.checked !== original.preempt)
+            changes.preempt = preemptToggle.checked;
+        if (listed && Object.keys(changes).length === 0) {
+            localMessage = qsTr("No changes to apply");
+            return;
+        }
+        var ok = listed ? bridge.setTalkgroupPolicy(idStart, idEnd, policyContext, policyGeneration, changes) : bridge.addTalkgroup(idStart, idEnd, policyContext, policyGeneration, nameField.text, listenToggle.checked, priorityValue, preemptToggle.checked);
         localMessage = ok ? qsTr("Update requested") : qsTr("Update refused. Use a name shorter than 50 UTF-8 bytes.");
     }
 
@@ -124,7 +145,7 @@ ModalSheet {
         width: parent.width
         height: 44
         visible: sheet.canSaveList
-        text: qsTr("Save talkgroup list")
+        text: sheet.saveListText
         onClicked: sheet.saveListRequested()
     }
     Text {

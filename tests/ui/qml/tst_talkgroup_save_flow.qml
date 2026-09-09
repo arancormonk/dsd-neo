@@ -6,8 +6,10 @@ Item {
     QtObject {
         id: library
         property int registrations: 0
+        property int paths: 0
         function newTalkgroupListPath() {
-            return "/owned/list.csv";
+            paths++;
+            return paths === 1 ? "/owned/list.csv" : "/owned/list-" + paths + ".csv";
         }
         function registerTalkgroupList(path) {
             registrations++;
@@ -45,6 +47,7 @@ Item {
         source: uiDir + "/TalkgroupSaveFlow.qml"
     }
     TestCase {
+        when: windowShown
         name: "TalkgroupSaveFlow"
         function init() {
             verify(loader.item !== null, "save flow must load");
@@ -56,6 +59,10 @@ Item {
                 sequence: "5"
             };
             library.registrations = 0;
+            library.paths = 0;
+            loader.item.sessionState = 2;
+            loader.item.timeoutMs = 15000;
+            loader.item.retryAvailable = false;
             systems.updates = 0;
             bridge.accept = true;
         }
@@ -94,10 +101,51 @@ Item {
             compare(loader.item.pending, null);
             bridge.accept = true;
             verify(loader.item.save("original", "7", 1));
-            loader.item.result = result("6", "7", 1, "/owned/list.csv", false);
+            loader.item.result = result("6", "7", 1, loader.item.pending.path, false);
             compare(library.registrations, 0);
             compare(systems.updates, 0);
             compare(loader.item.pending, null);
+        }
+        function test_session_edges_recover_missing_completion() {
+            verify(loader.item.hasOwnProperty("sessionState"));
+            for (var phase of [0, 4]) {
+                library.paths = 0;
+                loader.item.sessionState = 2;
+                verify(loader.item.save("original", "7", 1));
+                loader.item.sessionState = phase;
+                compare(loader.item.pending, null);
+                verify(loader.item.message.length > 0);
+                loader.item.result = result("6", "7", 1, "/owned/list.csv", true);
+                compare(systems.updates, 0);
+                compare(library.registrations, 0);
+                loader.item.result = {
+                    sequence: "5"
+                };
+            }
+        }
+        function test_missing_completion_offers_retry() {
+            verify(loader.item.hasOwnProperty("timeoutMs"));
+            loader.item.timeoutMs = 50;
+            loader.item.sessionState = 2;
+            verify(loader.item.save("original", "7", 1));
+            verify(!loader.item.save("original", "7", 1));
+            tryCompare(loader.item, "retryAvailable", true);
+            verify(loader.item.message.indexOf("Try again") >= 0);
+            compare(library.registrations, 0);
+            compare(systems.updates, 0);
+            verify(loader.item.save("original", "7", 1));
+            compare(loader.item.retryAvailable, false);
+            // A late success for the abandoned destination must not complete this retry.
+            loader.item.result = result("6", "7", 1, "/owned/list.csv", true);
+            verify(loader.item.pending !== null);
+            compare(systems.updates, 0);
+            loader.item.result = result("7", "7", 1, loader.item.pending.path, false);
+            compare(loader.item.pending, null);
+            verify(loader.item.message.indexOf("Try again") >= 0);
+            verify(loader.item.save("original", "7", 1));
+            loader.item.result = result("8", "7", 1, loader.item.pending.path, true);
+            compare(systems.updates, 1);
+            compare(library.registrations, 1);
         }
         function test_deleted_system_does_not_modify_replacement_row() {
             verify(loader.item.save("deleted", "7", 1));

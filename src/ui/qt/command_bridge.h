@@ -16,6 +16,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QVariantMap>
 
 namespace dsd_qt {
 
@@ -27,9 +28,9 @@ class CommandBridge : public QObject {
     ~CommandBridge() override;
 
     // WP-D1: callers capture the model version when opening an edit sheet.
+    /** Changed fields only: name, listening, priority, preempt. One map is one atomic edit. */
     Q_INVOKABLE bool setTalkgroupPolicy(unsigned int idStart, unsigned int idEnd, const QString& context,
-                                        unsigned int generation, const QString& name, bool listen, int priority,
-                                        bool preempt) const;
+                                        unsigned int generation, const QVariantMap& changes) const;
     Q_INVOKABLE bool renameTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,
                                      unsigned int generation, const QString& name) const;
     Q_INVOKABLE bool addTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,

@@ -9,6 +9,7 @@
 #include "command_bridge.h"
 
 #include <QByteArray>
+#include <QMetaType>
 // WP0's C export payload uses a flexible array; only its fixed header is read in C++.
 #if defined(__GNUC__)
 #pragma GCC diagnostic push
@@ -49,8 +50,8 @@ submitTalkgroupRow(unsigned int start, unsigned int end, const QString& context,
     dsd_app_tg_row_payload p = {};
     p.policy_context = context.toULongLong(&ok);
     const QByteArray utf8 = name.toUtf8();
-    if (!ok || start == 0 || end < start || priority < 0 || priority > 100
-        || utf8.size() >= static_cast<qsizetype>(sizeof p.name) || utf8.contains('\0')) {
+    if (!ok || end < start || priority < 0 || priority > 100 || utf8.size() >= static_cast<qsizetype>(sizeof p.name)
+        || utf8.contains('\0')) {
         return false;
     }
     p.id_start = start;
@@ -67,10 +68,33 @@ submitTalkgroupRow(unsigned int start, unsigned int end, const QString& context,
 
 bool
 CommandBridge::setTalkgroupPolicy(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
-                                  const QString& name, bool listen, int priority, bool preempt) const {
-    return submitTalkgroupRow(start, end, context, generation, name, listen, priority, preempt,
-                              DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_PRIORITY
-                                  | DSD_APP_TG_FIELD_PREEMPT);
+                                  const QVariantMap& changes) const {
+    uint32_t fields = 0;
+    for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
+        if (it.key() == QStringLiteral("name") && it.value().typeId() == QMetaType::QString) {
+            fields |= DSD_APP_TG_FIELD_NAME;
+        } else if (it.key() == QStringLiteral("listening") && it.value().typeId() == QMetaType::Bool) {
+            fields |= DSD_APP_TG_FIELD_LISTEN;
+        } else if (it.key() == QStringLiteral("preempt") && it.value().typeId() == QMetaType::Bool) {
+            fields |= DSD_APP_TG_FIELD_PREEMPT;
+        } else if (it.key() == QStringLiteral("priority")) {
+            bool ok = false;
+            const double priority = it.value().toDouble(&ok);
+            if (!ok || !(priority >= 0 && priority <= 100) || priority != static_cast<int>(priority)) {
+                return false;
+            }
+            fields |= DSD_APP_TG_FIELD_PRIORITY;
+        } else {
+            return false;
+        }
+    }
+    if (!fields) {
+        return false;
+    }
+    return submitTalkgroupRow(start, end, context, generation, changes.value(QStringLiteral("name")).toString(),
+                              changes.value(QStringLiteral("listening")).toBool(),
+                              changes.value(QStringLiteral("priority")).toInt(),
+                              changes.value(QStringLiteral("preempt")).toBool(), fields);
 }
 
 bool
@@ -82,7 +106,9 @@ CommandBridge::renameTalkgroup(unsigned int start, unsigned int end, const QStri
 bool
 CommandBridge::addTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
                             const QString& name, bool listen, int priority, bool preempt) const {
-    return setTalkgroupPolicy(start, end, context, generation, name, listen, priority, preempt);
+    return submitTalkgroupRow(start, end, context, generation, name, listen, priority, preempt,
+                              DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_LISTEN | DSD_APP_TG_FIELD_PRIORITY
+                                  | DSD_APP_TG_FIELD_PREEMPT);
 }
 
 bool
@@ -91,7 +117,7 @@ CommandBridge::removeTalkgroup(unsigned int start, unsigned int end, const QStri
     bool ok = false;
     dsd_app_tg_range_payload p = {};
     p.policy_context = context.toULongLong(&ok);
-    if (!ok || start == 0 || end < start) {
+    if (!ok || end < start) {
         return false;
     }
     p.id_start = start;

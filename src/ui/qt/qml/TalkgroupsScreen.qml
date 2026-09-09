@@ -9,6 +9,7 @@ Item {
     property string systemName: ""
     property string saveMessage: ""
     property bool canSaveList: false
+    property string saveListText: qsTr("Save talkgroup list")
     signal saveListRequested()
     signal closed()
     onVisibleChanged: { if (!visible) editSheet.visible = false }
@@ -260,7 +261,7 @@ Item {
             width: parent.width; height: 44
             visible: !talkgroups.persistent
             enabled: decoderHost.running && screen.canSaveList
-            text: qsTr("Save talkgroup list")
+            text: screen.saveListText
             onClicked: screen.saveListRequested()
         }
 
@@ -291,6 +292,7 @@ Item {
     TalkgroupEditSheet {
         id: editSheet
         objectName: "talkgroupEditSheet"
+        saveListText: screen.saveListText
         saveMessage: screen.saveMessage
         canSaveList: screen.canSaveList && !talkgroups.persistent && decoderHost.running
         onSaveListRequested: screen.saveListRequested()
