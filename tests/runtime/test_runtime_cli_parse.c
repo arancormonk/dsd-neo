@@ -8,7 +8,6 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -755,7 +754,8 @@ test_H_zero_key_arms_dmr_decryption(void) {
 }
 
 static int
-expect_H_log_key_material(const char* key_arg, int show_keys, const char* expected, const char* unexpected) {
+expect_H_load_without_logging(const char* key_arg, int show_keys, unsigned long long first_segment,
+                              unsigned int segment_count) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
     if (!opts || !state) {
@@ -784,19 +784,20 @@ expect_H_log_key_material(const char* key_arg, int show_keys, const char* expect
     int rc = parse_args_capture_stderr(argc, argv, opts, state, &argc_effective, &exit_rc, output, sizeof(output));
 
     int test_rc = 0;
-    if (rc != DSD_PARSE_CONTINUE) {
-        DSD_FPRINTF(stderr, "expected rc=%d for -H %s, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, key_buf, rc,
-                    exit_rc);
+    if (rc != DSD_PARSE_CONTINUE || argc_effective != 3 || opts->show_keys != show_keys) {
+        DSD_FPRINTF(stderr, "unexpected -H parse result or key-display policy\n");
         test_rc = 1;
     }
-    if (expected != NULL && strstr(output, expected) == NULL) {
-        DSD_FPRINTF(stderr, "expected -H log to contain \"%s\", got \"%s\"\n", expected, output);
+    if (state->K1 != first_segment || state->hytera_key_segments != segment_count) {
+        DSD_FPRINTF(stderr, "successful -H parse did not install the expected key\n");
         test_rc = 1;
     }
-    if (unexpected != NULL && strstr(output, unexpected) != NULL) {
-        DSD_FPRINTF(stderr, "expected -H log to hide \"%s\", got \"%s\"\n", unexpected, output);
+    if (output[0] != '\0') {
+        DSD_FPRINTF(stderr, "successful -H key loading must not emit diagnostics\n");
         test_rc = 1;
     }
+    DSD_SECURE_ZERO(key_buf, sizeof key_buf);
+    DSD_SECURE_ZERO(output, sizeof output);
 
     freeState(state);
     free(opts);
@@ -805,17 +806,14 @@ expect_H_log_key_material(const char* key_arg, int show_keys, const char* expect
 }
 
 static int
-test_H_show_keys_log_reveals_key_material(void) {
+test_H_loading_is_silent_with_or_without_show_keys(void) {
     int rc = 0;
-    rc |= expect_H_log_key_material("0123456789", 1, "0123456789", DSD_SECRET_REDACTED);
-    rc |= expect_H_log_key_material("736B9A9C5645288B 243AD5CB8701EF8A", 1, "736B9A9C5645288B 243AD5CB8701EF8A",
-                                    DSD_SECRET_REDACTED);
-    rc |= expect_H_log_key_material("20029736A5D91042 C923EB0697484433 005EFC58A1905195 E28E9C7836AA2DB8", 1,
-                                    "E28E9C7836AA2DB8", DSD_SECRET_REDACTED);
-    rc |= expect_H_log_key_material("0123456789", 0, DSD_SECRET_REDACTED, "0123456789");
-    rc |= expect_H_log_key_material("736B9A9C5645288B 243AD5CB8701EF8A", 0, DSD_SECRET_REDACTED, "736B9A9C5645288B");
-    rc |= expect_H_log_key_material("20029736A5D91042 C923EB0697484433 005EFC58A1905195 E28E9C7836AA2DB8", 0,
-                                    DSD_SECRET_REDACTED, "E28E9C7836AA2DB8");
+    for (int show_keys = 0; show_keys <= 1; ++show_keys) {
+        rc |= expect_H_load_without_logging("0123456789", show_keys, 0x0123456789ULL, 1);
+        rc |= expect_H_load_without_logging("736B9A9C5645288B 243AD5CB8701EF8A", show_keys, 0x736B9A9C5645288BULL, 2);
+        rc |= expect_H_load_without_logging("20029736A5D91042 C923EB0697484433 005EFC58A1905195 E28E9C7836AA2DB8",
+                                            show_keys, 0x20029736A5D91042ULL, 4);
+    }
     return rc;
 }
 
@@ -7829,7 +7827,7 @@ main(void) {
     rc |= test_numeric_options_reject_trailing_junk();
     rc |= test_H_loads_aes256_key_for_both_slots();
     rc |= test_H_zero_key_arms_dmr_decryption();
-    rc |= test_H_show_keys_log_reveals_key_material();
+    rc |= test_H_loading_is_silent_with_or_without_show_keys();
     rc |= test_b_loads_basic_privacy_key_and_unmutes_dmr();
     rc |= test_b_zero_key_arms_dmr_decryption();
     rc |= test_b_accepts_basic_privacy_table_max();

@@ -52,22 +52,6 @@ extern int optind;
 extern char* optarg;
 
 static void
-cli_log_hex_key(const dsd_opts* opts, const dsd_state* state) {
-    char text[80];
-    if (state->aes_key_segments[0] == 0) {
-        LOG_INFO("NOTICE: Hytera BP key loaded (40-bit): %s\n",
-                 dsd_secret_format_hex(text, sizeof text, opts->show_keys, state->K1, 10U, 0));
-    } else {
-        unsigned long long segments[] = {state->K1, state->K2, state->K3, state->K4};
-        LOG_INFO(
-            "NOTICE: Hytera/AES key loaded: %s\n",
-            dsd_secret_format_u64_segments(text, sizeof text, opts->show_keys, segments, state->aes_key_segments[0]));
-        DSD_SECURE_ZERO(segments, sizeof segments);
-    }
-    DSD_SECURE_ZERO(text, sizeof text);
-}
-
-static void
 cli_set_exit_rc(int* out_exit_rc, int rc) {
     if (out_exit_rc) {
         *out_exit_rc = rc;
@@ -1982,7 +1966,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             dsd_key_apply_mute_policy(opts, state);                                                                    \
-            cli_log_hex_key(opts, state);                                                                             \
             break;                                                                                                     \
         case 'V': {                                                                                                    \
             /* Enable TDMA voice synthesis for selected slot(s) */                                                     \

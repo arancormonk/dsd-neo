@@ -687,7 +687,7 @@ Examples
 ## Keys & Privacy (advanced)
 
 By default, DSD-neo redacts radio keys and keystream material in logs and terminal status. Add `--show-keys` to reveal
-those values for the current CLI run only.
+those values for the current CLI run only. Successful direct-key loading itself does not emit diagnostics.
 The `-b`, `-H`, `-R`, and `-1` options accept zero as a supplied key and arm decryption; encrypted-lockout still controls audibility.
 Out-of-range decimal keys are rejected without changing the installed key.
 
