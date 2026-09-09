@@ -34,7 +34,7 @@ object DsdNative {
     external fun nativeConfigure(args: Array<String>, sessionId: Long): Int
 
     /** session id, initialized, terminal reason, run code, native USB open/claim error. */
-    external fun nativeLifecycleStatus(): LongArray
+    external fun nativeLifecycleStatus(): LongArray?
 
     /** Lifecycle/USB messages only, never argv, credentials or key material. */
     external fun nativeHostDiagnostic(line: String)

@@ -20,6 +20,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QtGlobal>
 
 namespace dsd_qt {
 

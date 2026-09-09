@@ -65,6 +65,8 @@ class SessionPhaseTracker {
      */
     void
     note_start_requested() {
+        m_observed = true;
+        m_ignore_retained = false;
         m_waiting_for_session = false;
         m_failed = false;
         m_attempting = true;
@@ -87,7 +89,7 @@ class SessionPhaseTracker {
      * leaves the failure/session latch and start grace period untouched. */
     bool
     note_start_requested(uint64_t last_session, const char* service_state) {
-        if (!service_state || strcmp(service_state, "IDLE") != 0) {
+        if (service_state && service_state[0] && strcmp(service_state, "IDLE") != 0) {
             return false;
         }
         note_start_requested(last_session);
@@ -96,6 +98,17 @@ class SessionPhaseTracker {
 
     SessionPhase
     update(const char* service_state, bool engine_running, uint64_t session_id, RunReason reason) {
+        if (!m_observed) {
+            m_observed = true;
+            m_last_session = session_id;
+            if (!service_state || strcmp(service_state, "IDLE") == 0) {
+                m_ignored_session = session_id;
+                m_ignore_retained = true;
+            }
+        }
+        if (m_ignore_retained && session_id == m_ignored_session) {
+            return update(service_state, engine_running);
+        }
         if (m_waiting_for_session && session_id <= m_last_session) {
             m_phase = idle_phase();
             return m_phase;
@@ -220,6 +233,9 @@ class SessionPhaseTracker {
 
     SessionPhase m_phase = kSessionIdle;
     uint64_t m_last_session = 0;
+    bool m_observed = false;
+    bool m_ignore_retained = false;
+    uint64_t m_ignored_session = 0;
     bool m_waiting_for_session = false;
     bool m_failed = false;
     bool m_attempting = false;

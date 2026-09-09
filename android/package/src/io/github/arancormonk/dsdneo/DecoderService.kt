@@ -128,6 +128,7 @@ class DecoderService : Service() {
     private fun startDecoding(args: Array<String>) {
         synchronized(lock) {
             if (state != State.IDLE) {
+                lastError = getString(R.string.error_busy)
                 Log.w(TAG, "start rejected in state $state")
                 return
             }
@@ -181,8 +182,10 @@ class DecoderService : Service() {
             releaseWakeLock()
             synchronized(lock) {
                 val result = DsdNative.nativeLifecycleStatus()
-                terminalReason = result[2].toInt()
-                deviceError = result[4].toInt()
+                if (result != null && result.size >= 5 && result[0] == sessionId) {
+                    terminalReason = result[2].toInt()
+                    deviceError = result[4].toInt()
+                }
                 if (terminalReason == DsdNative.RUN_FAILED || rc != DsdNative.STATUS_OK && terminalReason == DsdNative.RUN_PENDING) {
                     terminalReason = DsdNative.RUN_FAILED
                     // Codes only: raw configuration/argv text can contain keys.
@@ -812,19 +815,20 @@ class DecoderService : Service() {
         @JvmStatic
         fun lifecycleStatus(): String = synchronized(lock) {
             val native = DsdNative.nativeLifecycleStatus()
-            val matches = native[0] == sessionId && sessionId != 0L
+            val fields = native?.takeIf { it.size >= 5 } ?: LongArray(5)
+            val matches = fields.size >= 5 && fields[0] == sessionId && sessionId != 0L
             // A native result may arrive before the worker releases its wake lock
             // and publishes IDLE. Preserve it beside the actual service state;
             // the host must keep restart disabled until that state becomes IDLE.
             val reason = if (terminalReason != DsdNative.RUN_PENDING) terminalReason
-                         else if (matches) native[2].toInt() else DsdNative.RUN_PENDING
-            val usbError = if (matches) native[4].toInt() else deviceError
+                         else if (matches) fields[2].toInt() else DsdNative.RUN_PENDING
+            val usbError = if (matches) fields[4].toInt() else deviceError
             val error = if (lastError.isNotEmpty()) lastError
-                        else if (reason == DsdNative.RUN_FAILED) "Decoder run failed (${native[3]})" +
+                        else if (reason == DsdNative.RUN_FAILED) "Decoder run failed (${fields[3]})" +
                             if (usbError != 0) "; USB open/claim error $usbError" else ""
                         else ""
             JSONObject().put("sessionId", sessionId).put("state", state.name)
-                .put("initialized", matches && native[1] != 0L)
+                .put("initialized", matches && fields[1] != 0L)
                 .put("reason", reason).put("deviceError", usbError).put("lastError", error).toString()
         }
 

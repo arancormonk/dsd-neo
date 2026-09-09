@@ -539,8 +539,14 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeLifecycleStatus(JNIEnv* env, j
     const jlong fields[] = {static_cast<jlong>(status.session_id), status.initialized ? 1 : 0,
                             static_cast<jlong>(status.reason), status.run_code, status.device_error};
     jlongArray out = env->NewLongArray(5);
-    if (out) {
-        env->SetLongArrayRegion(out, 0, 5, fields);
+    if (!out) {
+        clear_pending_exception(env);
+        return nullptr;
+    }
+    env->SetLongArrayRegion(out, 0, 5, fields);
+    if (clear_pending_exception(env)) {
+        env->DeleteLocalRef(out);
+        return nullptr;
     }
     return out;
 }

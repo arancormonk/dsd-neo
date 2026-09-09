@@ -8,9 +8,9 @@
 #include <initializer_list>
 #include <stdio.h>
 
+#include "../../android/run_status.h"
+#include "../../android/session_state_map.h"
 #include "dsd-neo/core/safe_api.h"
-#include "run_status.h"
-#include "session_state_map.h"
 
 using dsd_android::kSessionFailed;
 using dsd_android::kSessionIdle;
@@ -113,6 +113,20 @@ test_terminal_waits_for_service_idle() {
 int
 main(void) {
     test_terminal_waits_for_service_idle();
+    {
+        SessionPhaseTracker tracker;
+        expect("retained failure is not this UI attempt", tracker.update("IDLE", false, 77, dsd_android::kRunFailed),
+               kSessionIdle);
+        expect("retained failure remains ignored", tracker.update("IDLE", false, 77, dsd_android::kRunFailed),
+               kSessionIdle);
+    }
+    {
+        SessionPhaseTracker tracker;
+        if (!tracker.note_start_requested(77, nullptr)) {
+            ++g_failures;
+        }
+        expect("missing record admits start", tracker.phase(), kSessionStarting);
+    }
     // Terminal results cannot be inferred from elapsed time or a sampled running
     // flag: an entire failed run can fit between two UI ticks.
     for (int polls : {0, 12, 20}) {

@@ -62,22 +62,29 @@ Window {
     property var sessionSystem: null
     property bool awaitingSessionInitialized: false
 
+    property bool sessionReachedRunning: false
+
+    function recordSessionInitialized() {
+        if (!mainRoot.awaitingSessionInitialized || !mainRoot.sessionSystem)
+            return
+        mainRoot.awaitingSessionInitialized = false
+        // Accepted argv is only a request. These writes belong to the engine's
+        // post-initialization edge, after file validation and tuner open.
+        prefs.lastStartedKind = mainRoot.exploring ? "explore" : "saved"
+        prefs.lastStartedUid = mainRoot.exploring ? "" : mainRoot.sessionSystem.uid || ""
+        if (!mainRoot.exploring)
+            savedSystems.touch(savedSystems.rowForUid(prefs.lastStartedUid))
+    }
     Connections {
         target: decoderHost
-        function onSessionInitialized() {
-            if (!mainRoot.awaitingSessionInitialized || !mainRoot.sessionSystem)
-                return
-            mainRoot.awaitingSessionInitialized = false
-            // Accepted argv is only a request. These writes belong to the engine's
-            // post-initialization edge, after file validation and tuner open.
-            prefs.lastStartedKind = mainRoot.exploring ? "explore" : "saved"
-            prefs.lastStartedUid = mainRoot.exploring ? "" : mainRoot.sessionSystem.uid || ""
-            if (!mainRoot.exploring)
-                savedSystems.touch(savedSystems.rowForUid(prefs.lastStartedUid))
-        }
+        function onSessionInitialized() { mainRoot.recordSessionInitialized() }
         function onSessionStateChanged() {
-            if (!decoderHost.sessionActive)
+            if (decoderHost.sessionState === 2) {
+                mainRoot.sessionReachedRunning = true
+                mainRoot.recordSessionInitialized()
+            } else if (decoderHost.sessionState === 0 && mainRoot.sessionReachedRunning) {
                 mainRoot.awaitingSessionInitialized = false
+            }
         }
     }
     // Whether this session is free to be retuned by hand. False for anything
@@ -190,6 +197,8 @@ Window {
      * where it matters: a fresh one.
      */
     function startWithMap(sys, row) {
+        mainRoot.awaitingSessionInitialized = false
+        mainRoot.sessionReachedRunning = false
         if (!sys || !sys.sourceType)
             return
         if (sys.sourceType === "usb" && decoderHost.localDeviceBrokered && !decoderHost.localDeviceReady) {
@@ -234,8 +243,12 @@ Window {
                 mainRoot.startError = qsTr("“%1” could not be started.").arg(sys.name)
             return
         }
+        mainRoot.exploring = (row < 0)
         mainRoot.sessionSystem = sys
         mainRoot.awaitingSessionInitialized = true
+        mainRoot.sessionReachedRunning = decoderHost.sessionState === 2
+        if (mainRoot.sessionReachedRunning)
+            mainRoot.recordSessionInitialized()
         mainRoot.sessionRow = row
         // The session's intent, decided here and nowhere else: a system someone
         // saved is a thing to listen to, and the spectrum watches it. Only a

@@ -204,12 +204,19 @@ DecoderHostAndroid::setKeepScreenAwake(bool on) {
 
 bool
 DecoderHostAndroid::start(const QStringList& argv) {
+    if (!m_primed) {
+        refresh();
+    }
     /* Clears the previous attempt's reason; setSessionPhase publishes that. */
     QJniObject record = QJniObject::callStaticObjectMethod(kServiceClass, "lifecycleStatus", "()Ljava/lang/String;");
-    const auto status = QJsonDocument::fromJson(record.toString().toUtf8()).object();
+    const QJsonObject status =
+        record.isValid() ? QJsonDocument::fromJson(record.toString().toUtf8()).object() : QJsonObject();
     const auto last_session = static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger());
-    const QByteArray service_state = status.value(QStringLiteral("state")).toString().toUtf8();
+    const QByteArray service_state = status.value(QStringLiteral("state")).toString(QStringLiteral("IDLE")).toUtf8();
     if (!m_phase.note_start_requested(last_session, service_state.constData())) {
+        const QString reason = QStringLiteral("A previous session is still stopping");
+        setSessionPhase(m_phase.phase(), reason);
+        setStatus(reason);
         return false;
     }
     m_initialized_session = last_session;
@@ -300,6 +307,7 @@ DecoderHostAndroid::importDocument(const QString& reference, const QString& file
 
 void
 DecoderHostAndroid::refresh() {
+    const bool first_poll = !m_primed;
     const bool running = engine_is_running();
     if (running != m_running) {
         m_running = running;
@@ -309,23 +317,39 @@ DecoderHostAndroid::refresh() {
     // One record prevents a return-to-IDLE poll from pairing with the previous
     // session's error or initialization flag. No decoder snapshot is consumed here.
     QJniObject record = QJniObject::callStaticObjectMethod(kServiceClass, "lifecycleStatus", "()Ljava/lang/String;");
-    const QJsonObject status = QJsonDocument::fromJson(record.toString().toUtf8()).object();
+    const QJsonObject status =
+        record.isValid() ? QJsonDocument::fromJson(record.toString().toUtf8()).object() : QJsonObject();
     const uint64_t session = static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger());
-    const QByteArray name = status.value(QStringLiteral("state")).toString().toUtf8();
+    const QByteArray name = status.value(QStringLiteral("state")).toString(QStringLiteral("IDLE")).toUtf8();
     const auto reason = static_cast<RunReason>(status.value(QStringLiteral("reason")).toInt());
-    const SessionPhase phase = m_phase.update(name.constData(), running, session, reason);
-    const int device_error = status.value(QStringLiteral("deviceError")).toInt();
+    if (first_poll) {
+        m_initialized_session = session;
+        if (name == "IDLE") {
+            m_adopted_idle_session = session;
+        }
+    }
+    const SessionPhase phase = status.isEmpty() ? m_phase.update(name.constData(), running)
+                                                : m_phase.update(name.constData(), running, session, reason);
+    const bool adopted_idle = session != 0 && session == m_adopted_idle_session;
+    const int device_error = adopted_idle ? 0 : status.value(QStringLiteral("deviceError")).toInt();
     if (m_device_error != device_error) {
         m_device_error = device_error;
         Q_EMIT localDeviceChanged();
     }
-    if (status.value(QStringLiteral("initialized")).toBool() && session > m_initialized_session) {
+    if (!first_poll && status.value(QStringLiteral("initialized")).toBool() && session > m_initialized_session) {
         m_initialized_session = session;
         Q_EMIT sessionInitialized();
     }
-    setSessionPhase(phase, status.value(QStringLiteral("lastError")).toString());
+    setSessionPhase(phase,
+                    first_poll || adopted_idle ? QString() : status.value(QStringLiteral("lastError")).toString());
     setStatus(phase_text(phase));
 
+    refreshLocalDevice(first_poll);
+    m_primed = true;
+}
+
+void
+DecoderHostAndroid::refreshLocalDevice(bool first_poll) {
     const bool usb_ready = QJniObject::callStaticMethod<jboolean>(kUsbClass, "isReady", "()Z") != JNI_FALSE;
     QJniObject usb_status = QJniObject::callStaticObjectMethod(kUsbClass, "statusText", "()Ljava/lang/String;");
     setLocalDeviceState(usb_ready, usb_status.isValid() ? usb_status.toString() : QString());
@@ -334,7 +358,9 @@ DecoderHostAndroid::refresh() {
     const auto serial = static_cast<uint64_t>(attachment.value(QStringLiteral("serial")).toInteger());
     if (serial > m_attachment_serial) {
         m_attachment_serial = serial;
-        Q_EMIT localDeviceAttached(attachment.value(QStringLiteral("name")).toString());
+        if (!first_poll) {
+            Q_EMIT localDeviceAttached(attachment.value(QStringLiteral("name")).toString());
+        }
     }
 }
 
@@ -349,7 +375,7 @@ DecoderHostAndroid::setStatus(const QString& text) {
 
 void
 DecoderHostAndroid::setSessionPhase(SessionPhase phase, const QString& reason) {
-    QString failure;
+    QString failure = reason;
     if (phase == kSessionFailed) {
         /* A reason the host produced itself wins: the service never saw that attempt,
          * so its own record would be stale. */

@@ -83,8 +83,23 @@ Item {
             verify(appLoader.item.startError.indexOf("PPM") < 0);
             compare(savedSystems.get(0).lastHeard, 0);
         }
+        function test_late_initialization_after_grace_failure() {
+            appLoader.item.startSystem(0);
+            verify(decoderHost.running);
+            testContext.setLifecyclePhase(4);
+            compare(savedSystems.get(0).lastHeard, 0);
+            testContext.emitSessionInitialized();
+            verify(savedSystems.get(0).lastHeard > 0);
+        }
+        function test_running_host_without_initialization_signal() {
+            appLoader.item.startSystem(0);
+            verify(decoderHost.running);
+            testContext.setLifecyclePhase(2);
+            verify(savedSystems.get(0).lastHeard > 0);
+        }
         function test_failed_start_does_not_update_recency() {
             appLoader.item.startSystem(0);
+            verify(decoderHost.running);
             decoderHost.stop();
             compare(savedSystems.get(0).lastHeard, 0);
             compare(prefs.lastStartedUid, "");
