@@ -8,6 +8,7 @@
  * trip and reload path, and AppPrefs defaults and persistence. Registered only
  * when the Qt frontend is enabled (DSD_ENABLE_QT_UI), since these link Qt. */
 
+#include <QAnyStringView>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -18,6 +19,7 @@
 #include <QJsonValue>
 #include <QList>
 #include <QMap>
+#include <QMetaProperty>
 #include <QObject>
 #include <QSettings>
 #include <QStandardPaths>
@@ -27,7 +29,10 @@
 #include <QUuid>
 #include <QVariant>
 #include <QVariantMap>
+#include <QtGlobal>
+#include <initializer_list>
 #include <stdio.h>
+#include <utility>
 
 #include "app_prefs.h"
 #include "dsd-neo/core/safe_api.h"
@@ -377,6 +382,10 @@ test_foundation_persistence() {
     expect("deleted UID cannot address a shifted row", reloaded.rowForUid(uid) == -1);
 
     AppPrefs prefs;
+    for (const char* property : {"lastLat", "lastLon", "lastFixAt"}) {
+        expect("location properties require atomic fix publication",
+               !prefs.metaObject()->property(prefs.metaObject()->indexOfProperty(property)).isWritable());
+    }
     expect("attach defaults off", !prefs.autoStartOnAttach());
     prefs.setAutoStartOnAttach(true);
     prefs.setLastStartedKind("saved");

@@ -29,9 +29,9 @@ class AppPrefs : public QObject {
     Q_PROPERTY(bool autoStartOnAttach READ autoStartOnAttach WRITE setAutoStartOnAttach NOTIFY autoStartOnAttachChanged)
     Q_PROPERTY(QString lastStartedKind READ lastStartedKind WRITE setLastStartedKind NOTIFY lastStartedKindChanged)
     Q_PROPERTY(QString lastStartedUid READ lastStartedUid WRITE setLastStartedUid NOTIFY lastStartedUidChanged)
-    Q_PROPERTY(double lastLat READ lastLat WRITE setLastLat NOTIFY locationChanged)
-    Q_PROPERTY(double lastLon READ lastLon WRITE setLastLon NOTIFY locationChanged)
-    Q_PROPERTY(qint64 lastFixAt READ lastFixAt WRITE setLastFixAt NOTIFY locationChanged)
+    Q_PROPERTY(double lastLat READ lastLat NOTIFY locationChanged)
+    Q_PROPERTY(double lastLon READ lastLon NOTIFY locationChanged)
+    Q_PROPERTY(qint64 lastFixAt READ lastFixAt NOTIFY locationChanged)
 
     Q_PROPERTY(int appearance READ appearance WRITE setAppearance NOTIFY appearanceChanged)
     Q_PROPERTY(bool onboardingDone READ onboardingDone WRITE setOnboardingDone NOTIFY onboardingDoneChanged)
