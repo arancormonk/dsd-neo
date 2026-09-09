@@ -43,6 +43,7 @@ Window {
     property int currentTab: 0
     property bool wizardOpen: false
     property bool exploreSetupOpen: false
+    property bool diagnosticsOpen: false // WP-F5
     property bool importsOpen: false
     property bool radioReferenceOpen: false
     // Whether the RadioReference screen was pushed from the wizard. Coming back
@@ -211,13 +212,18 @@ Window {
         mainRoot.pendingStartRow = -1
         var built = sessionArgs.build(sys)
         if (!built.ok) {
-            // All four direct key kinds (and key/CSV or force-mode errors)
-            // arrive through the builder's value-free encryption error token.
-            mainRoot.startError = built.error === "frequency"
-                ? qsTr("“%1” has no valid frequency — long-press its card to edit it.").arg(sys.name)
-                : built.error === "encryption"
-                ? qsTr("“%1” has an invalid encryption key — long-press its card to edit it.").arg(sys.name)
-                : qsTr("“%1” has an invalid PPM correction — long-press its card to edit it.").arg(sys.name)
+            // Match the rejected field without exposing a prohibited argument or a key.
+            if (built.error === "frequency") {
+                mainRoot.startError = qsTr("“%1” has no valid frequency — long-press its card to edit it.").arg(sys.name)
+            } else if (built.error === "ppm") {
+                mainRoot.startError = qsTr("“%1” has an invalid PPM correction — long-press its card to edit it.").arg(sys.name)
+            } else if (built.error === "encryption") {
+                mainRoot.startError = qsTr("“%1” has an invalid encryption key — long-press its card to edit it.").arg(sys.name)
+            } else if (built.error === "unsafe-option") {
+                mainRoot.startError = qsTr("The session contains a prohibited extra option. Review the extra options before starting.")
+            } else {
+                mainRoot.startError = qsTr("The session options are invalid. Review them before starting.")
+            }
             return
         }
         // Side effects only after the host accepts: a refused start must not
@@ -318,7 +324,7 @@ Window {
 
         anchors.fill: safeArea
         opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen
-                  || mainRoot.importsOpen || mainRoot.radioReferenceOpen
+                  || mainRoot.diagnosticsOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen
                   || !prefs.onboardingDone) ? 0.0 : 1.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
@@ -370,6 +376,7 @@ Window {
             anchors.bottom: nav.top
             visible: mainRoot.currentTab === 2
 
+            onOpenDiagnostics: mainRoot.diagnosticsOpen = true
             onOpenImports: mainRoot.importsOpen = true
             onOpenRadioReference: mainRoot.openRadioReference(false)
         }
@@ -634,6 +641,15 @@ Window {
             mainRoot.currentTab = 0
             Qt.inputMethod.hide()
         }
+    }
+
+    // WP-F5 diagnostics overlay.
+    DiagnosticsScreen {
+        objectName: "diagnosticsScreen"
+        anchors.fill: safeArea
+        visible: mainRoot.diagnosticsOpen
+        enabled: visible
+        onClosed: mainRoot.diagnosticsOpen = false
     }
 
     // ---- Imported-files library (pushed from Settings) ----

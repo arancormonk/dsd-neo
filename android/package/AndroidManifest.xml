@@ -102,5 +102,14 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/qtprovider_paths"/>
         </provider>
+        <!-- WP-F5: separate narrow provider, leaving Qt's paths unchanged. -->
+        <provider
+            android:name="io.github.arancormonk.dsdneo.DiagnosticsProvider"
+            android:authorities="${applicationId}.diagnostics"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/diagnostics_paths"/>
+        </provider>
     </application>
 </manifest>

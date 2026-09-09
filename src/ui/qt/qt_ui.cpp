@@ -23,6 +23,7 @@
 #include "call_history_model.h"
 #include "command_bridge.h"
 #include "decoder_host.h"
+#include "diagnostics_log.h"
 #include "imported_files_model.h"
 #include "metrics_model.h"
 #include "radio_reference_model.h"
@@ -77,6 +78,8 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
 
     auto* metrics = new MetricsModel(&engine);
     auto* commands = new CommandBridge(&engine);
+    DiagnosticsLog::installTap();
+    auto* diagnostics = new DiagnosticsLogModel(nullptr, &engine);
     auto* prefs = new AppPrefs(&engine);
     auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
     auto* systems = new SavedSystemsModel(&engine);
@@ -125,6 +128,8 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     // Diagnostics context registration (diagnostics package; exclude keys/location).
     // Recording/playback context registration (media packages).
     QQmlContext* context = engine.rootContext();
+    controller->setDiagnosticsLog(diagnostics);
+    context->setContextProperty(QStringLiteral("diagnosticsLog"), diagnostics);
     context->setContextProperty(QStringLiteral("decoderHost"), host);
     context->setContextProperty(QStringLiteral("metrics"), metrics);
     context->setContextProperty(QStringLiteral("commands"), commands);

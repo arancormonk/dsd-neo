@@ -10,6 +10,7 @@ Item {
 
     property bool advancedOpen: false
 
+    signal openDiagnostics()
     signal openImports()
     signal openRadioReference()
 
@@ -285,6 +286,22 @@ Item {
                         title: qsTr("Imported files")
                         subtitle: qsTr("Channel maps, talkgroups, and keys")
                         onTapped: screen.openImports()
+                    }
+                }
+            }
+
+            UiPanel {
+                width: parent.width
+                height: diagnosticsColumn.implicitHeight + 24
+                Column {
+                    id: diagnosticsColumn
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.margins: 12
+                    DisclosureRow {
+                        title: qsTr("Diagnostics")
+                        subtitle: qsTr("Current process and previous-run tail; not crash/ANR capture")
+                        onTapped: screen.openDiagnostics()
                     }
                 }
             }

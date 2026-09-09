@@ -46,6 +46,7 @@
 #include <dsd-neo/io/rtl_device.h>
 #endif
 
+#include "diagnostics_log.h"
 #include "dsdneo_jni.h"
 #include "run_status.h"
 
@@ -83,7 +84,7 @@ std::atomic<bool> g_initialized{false};
 std::atomic<bool> g_stop_requested{false};
 
 /**
- * @brief Drains the redirected stdout/stderr pipe into logcat, one line per record.
+ * @brief Drains redirected stdout/stderr into the single redacted capture stage.
  *
  * Most decode output is written straight to stderr (not through the LOG_* funnel),
  * and Android drops both streams for an app process. LOG_* messages keep their own
@@ -94,6 +95,7 @@ void*
 log_pump_thread(void* arg) {
     const int read_fd = static_cast<int>(reinterpret_cast<intptr_t>(arg));
     std::string line;
+    bool oversized = false;
     char buf[512];
 
     for (;;) {
@@ -107,22 +109,33 @@ log_pump_thread(void* arg) {
         for (ssize_t i = 0; i < n; i++) {
             const char c = buf[i];
             if (c == '\n' || c == '\r') {
+                if (oversized) {
+                    dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("stderr"), QStringLiteral("info"),
+                                                              QStringLiteral("[oversized diagnostic omitted]"));
+                    oversized = false;
+                }
                 if (!line.empty()) {
-                    __android_log_write(ANDROID_LOG_INFO, kLogTag, line.c_str());
+                    dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("stderr"), QStringLiteral("info"),
+                                                              QString::fromUtf8(line.c_str()));
                     line.clear();
                 }
                 continue;
             }
+            if (oversized) {
+                continue;
+            }
             line.push_back(c);
             if (line.size() >= 1024U) {
-                __android_log_write(ANDROID_LOG_INFO, kLogTag, line.c_str());
+                // Do not split a secret-bearing record into unlabelled fragments.
+                oversized = true;
                 line.clear();
             }
         }
     }
 
     if (!line.empty()) {
-        __android_log_write(ANDROID_LOG_INFO, kLogTag, line.c_str());
+        dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("stderr"), QStringLiteral("info"),
+                                                  QString::fromUtf8(line.c_str()));
     }
     (void)close(read_fd);
     return nullptr;
@@ -391,6 +404,9 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeInit(JNIEnv* env, jclass clazz
                                                        jstring cache_dir) {
     (void)clazz;
 
+    // WP-F5: LOG_* enters through the tap only; choose the platform sink before the pump starts.
+    dsd_qt::DiagnosticsLog::installTap();
+    dsd_neo_log_set_sink(DSD_NEO_LOG_SINK_PLATFORM);
     start_log_pump();
 
     /* The app owns the paths and must not steal the process signal dispositions. */
@@ -398,10 +414,6 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeInit(JNIEnv* env, jclass clazz
     set_env_from_jstring(env, "XDG_CONFIG_HOME", config_dir);
     set_env_from_jstring(env, "DSD_NEO_CACHE_DIR", cache_dir);
     (void)setenv("DSD_NEO_NO_SIGNAL_HANDLERS", "1", 1);
-
-    /* Without this the LOG_* funnel writes stderr and the pump above re-logs every
-     * message at INFO, losing the severity and duplicating nothing useful. */
-    dsd_neo_log_set_sink(DSD_NEO_LOG_SINK_PLATFORM);
 
     std::lock_guard<std::mutex> guard(g_lock);
     if (g_opts != nullptr || g_state != nullptr) {

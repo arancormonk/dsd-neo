@@ -38,6 +38,9 @@ struct SessionArgPrefs {
 };
 
 /** @brief Why session_args_build() refused; None means the argv is usable. */
+/** Shared token gate for saved-system and future scan-list argv generators. */
+bool session_args_extra_safe(const QString& tokens);
+
 enum class SessionArgsError {
     None,
     Frequency,
@@ -48,7 +51,8 @@ enum class SessionArgsError {
     KeyRc4,
     KeyScrambler,
     KeyConflict,
-    ForceKey
+    ForceKey,
+    UnsafeOption
 };
 
 /** ASCII whitespace removed, optional 0x stripped, uppercase hex. QString copies

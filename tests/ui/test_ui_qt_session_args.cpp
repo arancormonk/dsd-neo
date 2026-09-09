@@ -323,6 +323,16 @@ test_keys() {
 int
 main(void) {
     test_keys();
+    for (const auto& token : {QStringLiteral("--show-keys"), QStringLiteral("--show-keys=1")}) {
+        expect("shared scan token gate refuses key display", !dsd_qt::session_args_extra_safe(token));
+        auto sys = usb_system();
+        sys.insert(QStringLiteral("extraArgs"), token);
+        expect("key display is refused", session_args_build(sys, SessionArgPrefs(), nullptr).isEmpty());
+        sys.remove(QStringLiteral("extraArgs"));
+        SessionArgPrefs prefs;
+        prefs.extraArgs = token;
+        expect("global key display is refused", session_args_build(sys, prefs, nullptr).isEmpty());
+    }
     test_freq_validation();
     test_defaults_and_overrides();
     test_csv_args();
