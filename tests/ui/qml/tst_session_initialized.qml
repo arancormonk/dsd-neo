@@ -50,6 +50,15 @@ Item {
             compare(prefs.lastStartedKind, "saved");
             compare(prefs.lastStartedUid, uid);
         }
+        function test_prohibited_extra_option_message() {
+            var sys = savedSystems.get(0);
+            sys.extraArgs = "--show-keys";
+            appLoader.item.startWithMap(sys, 0);
+            verify(appLoader.item.startError.indexOf("prohibited extra option") >= 0);
+            verify(appLoader.item.startError.indexOf(sys.extraArgs) < 0);
+            verify(appLoader.item.startError.indexOf("PPM") < 0);
+            compare(savedSystems.get(0).lastHeard, 0);
+        }
         function test_failed_start_does_not_update_recency() {
             appLoader.item.startSystem(0);
             decoderHost.stop();

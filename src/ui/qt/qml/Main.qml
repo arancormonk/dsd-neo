@@ -212,11 +212,16 @@ Window {
         mainRoot.pendingStartRow = -1
         var built = sessionArgs.build(sys)
         if (!built.ok) {
-            // The builder refuses for exactly two reasons; blame the field that
-            // is actually wrong or the user re-checks a frequency that was fine.
-            mainRoot.startError = built.error === "frequency"
-                ? qsTr("“%1” has no valid frequency — long-press its card to edit it.").arg(sys.name)
-                : qsTr("“%1” has an invalid PPM correction — long-press its card to edit it.").arg(sys.name)
+            // Match the rejected field without exposing a prohibited argument.
+            if (built.error === "frequency") {
+                mainRoot.startError = qsTr("“%1” has no valid frequency — long-press its card to edit it.").arg(sys.name)
+            } else if (built.error === "ppm") {
+                mainRoot.startError = qsTr("“%1” has an invalid PPM correction — long-press its card to edit it.").arg(sys.name)
+            } else if (built.error === "unsafe-option") {
+                mainRoot.startError = qsTr("The session contains a prohibited extra option. Review the extra options before starting.")
+            } else {
+                mainRoot.startError = qsTr("The session options are invalid. Review them before starting.")
+            }
             return
         }
         // Side effects only after the host accepts: a refused start must not
