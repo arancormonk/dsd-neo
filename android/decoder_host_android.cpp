@@ -3,18 +3,24 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QByteArray>
+#include <QChar>
+#include <QJsonValue>
+#include <QList>
+#include <QObject>
+#include <Qt>
+#include <functional>
+#include <qcoreapplication_platform.h>
 #include "decoder_host_android.h"
 #include "diagnostics_log.h"
+#include "run_status.h"
 
 #include <QCoreApplication>
 #include <QJniEnvironment>
 #include <QJniObject>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QMetaObject>
-#include <QSignalBlocker>
 #include <QVariant>
-#include <dsd-neo/runtime/log.h>
 
 #include <jni.h>
 
@@ -130,29 +136,29 @@ DecoderHostAndroid::failureText() const {
 
 bool
 DecoderHostAndroid::localDeviceReady() const {
-    return m_usb_ready;
+    return m_usb.ready;
 }
 
 QString
 DecoderHostAndroid::localDeviceStatus() const {
     // WP-D5: only a native claim error may suggest another app owns the device.
-    if (m_usb_ready && m_usb_failure_kind == NoDeviceFailure && m_device_error) {
+    if (m_usb.ready && m_usb.failureKind == NoDeviceFailure && m_device_error) {
         if (m_device_error == -6) {
             return tr("Android could not claim %1. It may be held by another SDR app, or the OTG port may be "
                       "under-powered — try a powered hub.")
-                .arg(m_usb_device_name);
+                .arg(m_usb.name);
         }
-        return tr("Android could not open or claim %1 (code %2).").arg(m_usb_device_name).arg(m_device_error);
+        return tr("Android could not open or claim %1 (code %2).").arg(m_usb.name).arg(m_device_error);
     }
-    return m_usb_status;
+    return m_usb.text;
 }
 
 int
 DecoderHostAndroid::localDeviceFailureKind() const {
     // libusb's BUSY value survives librtlsdr's claim failure; other native codes
     // remain in the terminal result for diagnostics without guessing a cause.
-    if (m_usb_failure_kind != NoDeviceFailure || !m_usb_ready) {
-        return m_usb_failure_kind;
+    if (m_usb.failureKind != NoDeviceFailure || !m_usb.ready) {
+        return m_usb.failureKind;
     }
     return m_device_error == -6 ? DeviceBusy : (m_device_error ? DeviceOpenFailed : NoDeviceFailure);
 }
@@ -274,6 +280,18 @@ DecoderHostAndroid::failStart(const QString& reason) {
 
 void
 DecoderHostAndroid::stop() {
+    if (m_phase.phase() == kSessionFailed) {
+        const auto record =
+            QJniObject::callStaticObjectMethod(kServiceClass, "lifecycleStatus", "()Ljava/lang/String;");
+        const auto status = QJsonDocument::fromJson(record.toString().toUtf8()).object();
+        const auto name = status.value(QStringLiteral("state")).toString().toUtf8();
+        const auto session = static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger());
+        if (!status.isEmpty() && m_phase.acknowledge_failure(session, name.constData())) {
+            setSessionPhase(kSessionIdle);
+            setStatus(phase_text(kSessionIdle));
+            return;
+        }
+    }
     QJniObject context = android_context();
     if (!context.isValid()) {
         return;
@@ -344,7 +362,7 @@ DecoderHostAndroid::cancelLocationRequest(qint64 requestId) {
 }
 
 void
-DecoderHostAndroid::refresh() {
+DecoderHostAndroid::refreshLocation() {
     // WP-D3: drain a single terminal location result, independently of decoder state.
     const auto locationRecord =
         QJniObject::callStaticObjectMethod(kLocationClass, "pollResult", "()Ljava/lang/String;");
@@ -359,6 +377,11 @@ DecoderHostAndroid::refresh() {
             location.value(QStringLiteral("countryCode")).toString(),
             location.value(QStringLiteral("error")).toString());
     }
+}
+
+void
+DecoderHostAndroid::refresh() {
+    refreshLocation();
 
     const bool first_poll = !m_primed;
     const bool running = engine_is_running();
@@ -401,29 +424,15 @@ DecoderHostAndroid::refresh() {
 
     // Attachment delivery can synchronously call start() through QML.
     m_primed = true;
-    refreshLocalDevice(first_poll);
+    refreshLocalDevice();
 }
 
 void
-DecoderHostAndroid::refreshLocalDevice(bool first_poll) {
+DecoderHostAndroid::refreshLocalDevice() {
     // WP-D5: readiness, name and failure classification belong to one USB record.
     const auto usb_record = QJniObject::callStaticObjectMethod(kUsbClass, "deviceStatus", "()Ljava/lang/String;");
     const auto usb = QJsonDocument::fromJson(usb_record.toString().toUtf8()).object();
-    const QString kind = usb.value(QStringLiteral("kind")).toString();
-    const int failure_kind = kind == QStringLiteral("detached")      ? DeviceDetached
-                             : kind == QStringLiteral("permission")  ? DevicePermission
-                             : kind == QStringLiteral("open_failed") ? DeviceOpenFailed
-                                                                     : NoDeviceFailure;
-    {
-        // Adopt retained USB status silently on a fresh host. Attachment events
-        // remain consumable on this poll, after the record is fully installed.
-        QSignalBlocker blocker(this);
-        if (!first_poll) {
-            blocker.unblock();
-        }
-        setLocalDeviceState(usb.value(QStringLiteral("ready")).toBool(), usb.value(QStringLiteral("text")).toString(),
-                            failure_kind, usb.value(QStringLiteral("name")).toString(QStringLiteral("RTL-SDR")));
-    }
+    m_usb.apply(*this, usb);
     // WP-S2: consuming also preserves the cold-start attachment on the first poll.
     const QJniObject attach = QJniObject::callStaticObjectMethod(kUsbClass, "takeAttachment", "()Ljava/lang/String;");
     if (attach.isValid() && !attach.toString().isEmpty()) {
@@ -465,19 +474,6 @@ DecoderHostAndroid::setSessionPhase(SessionPhase phase, const QString& reason) {
     m_published_phase = phase;
     m_failure = failure;
     Q_EMIT sessionStateChanged();
-}
-
-void
-DecoderHostAndroid::setLocalDeviceState(bool ready, const QString& text, int failureKind, const QString& deviceName) {
-    if (m_usb_ready == ready && m_usb_status == text && m_usb_failure_kind == failureKind
-        && m_usb_device_name == deviceName) {
-        return;
-    }
-    m_usb_ready = ready;
-    m_usb_status = text;
-    m_usb_failure_kind = failureKind;
-    m_usb_device_name = deviceName;
-    Q_EMIT localDeviceChanged();
 }
 
 } // namespace dsd_android

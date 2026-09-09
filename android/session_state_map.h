@@ -126,16 +126,7 @@ class SessionPhaseTracker {
         // Idle earlier enables a retry the service would reject, followed by a
         // misleading start timeout. Stopping keeps restart disabled in that gap.
         if (reason == kRunFailed || reason == kRunCompleted || reason == kRunCancelled) {
-            if (reason == kRunFailed) {
-                (void)latch_failure();
-            } else {
-                m_attempting = false;
-                m_saw_running = false;
-                m_grace = 0;
-            }
-            const bool service_idle = service_state && strcmp(service_state, "IDLE") == 0;
-            m_phase = service_idle ? (m_failed ? kSessionFailed : kSessionIdle) : kSessionStopping;
-            return m_phase;
+            return terminal_phase(service_state, reason);
         }
         return update(service_state, engine_running);
     }
@@ -188,6 +179,17 @@ class SessionPhaseTracker {
         return m_phase;
     }
 
+    /** Explicit dismissal adopts only a confirmed inactive service's retained result. */
+    bool
+    acknowledge_failure(uint64_t session, const char* service_state) {
+        if (m_phase != kSessionFailed || !service_state || strcmp(service_state, "IDLE") != 0) {
+            return false;
+        }
+        *this = SessionPhaseTracker();
+        (void)update(service_state, false, session, kRunPending);
+        return true;
+    }
+
     SessionPhase
     phase() const {
         return m_phase;
@@ -200,12 +202,26 @@ class SessionPhaseTracker {
     }
 
   private:
+    SessionPhase
+    terminal_phase(const char* service_state, RunReason reason) {
+        if (reason == kRunFailed) {
+            (void)latch_failure();
+        } else {
+            m_attempting = false;
+            m_saw_running = false;
+            m_grace = 0;
+        }
+        const bool service_idle = service_state && strcmp(service_state, "IDLE") == 0;
+        m_phase = service_idle ? (m_failed ? kSessionFailed : kSessionIdle) : kSessionStopping;
+        return m_phase;
+    }
+
     /**
      * @brief Resolve an IDLE poll, which is three different things.
      *
      * Before the service has seen the intent it means "not yet"; after a start that
      * reached STARTING but never ran it means the start failed; otherwise it is a
-     * genuine idle. A failure latches until the next start request so the reason
+     * genuine idle. A failure latches until a start request or explicit dismissal so the reason
      * stays on screen instead of flashing past in one 250 ms tick.
      */
     SessionPhase

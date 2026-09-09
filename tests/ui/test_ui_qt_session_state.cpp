@@ -44,6 +44,21 @@ expect(const char* what, SessionPhase got, SessionPhase want) {
     }
 }
 
+void
+test_failure_recovery() {
+    SessionPhaseTracker tracker;
+    tracker.note_start_requested(40);
+    expect("native failure", tracker.update("IDLE", false, 41, dsd_android::kRunFailed), kSessionFailed);
+    (void)tracker.acknowledge_failure(41, "STOPPING");
+    expect("teardown cannot be acknowledged", tracker.phase(), kSessionFailed);
+    (void)tracker.acknowledge_failure(41, "IDLE");
+    expect("acknowledged failure is idle", tracker.phase(), kSessionIdle);
+    expect("retained result stays acknowledged", tracker.update("IDLE", false, 41, dsd_android::kRunFailed),
+           kSessionIdle);
+    (void)tracker.note_start_requested(41, "IDLE");
+    expect("retry starts", tracker.update("RUNNING", true, 42, dsd_android::kRunPending), kSessionRunning);
+}
+
 /* Burn the whole start grace period on IDLE polls. */
 SessionPhase
 poll_idle(SessionPhaseTracker& tracker, int count) {
@@ -276,6 +291,7 @@ main(void) {
         expect("unknown name", tracker.update("SOMETHING_NEW", false), kSessionIdle);
     }
 
+    test_failure_recovery();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "session state map: %d failure(s)\n", g_failures);
         return 1;

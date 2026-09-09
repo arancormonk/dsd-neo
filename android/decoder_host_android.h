@@ -16,9 +16,14 @@
 
 #include <QString>
 #include <QStringList>
+#include <QtGlobal>
+#include <stdint.h>
 
 #include "decoder_host.h"
+#include "local_device_state.h"
 #include "session_state_map.h"
+
+class QObject;
 
 namespace dsd_android {
 
@@ -95,8 +100,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool failStart(const QString& reason);
 
     void setStatus(const QString& text);
-    void refreshLocalDevice(bool first_poll);
-    void setLocalDeviceState(bool ready, const QString& text, int failureKind, const QString& deviceName);
+    void refreshLocation();
+    void refreshLocalDevice();
     /** @brief Publish a phase; @p reason overrides the failure text when non-empty. */
     void setSessionPhase(SessionPhase phase, const QString& reason = QString());
 
@@ -107,15 +112,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     // WP-D5: Retry acknowledges only the retained error of this session.
     uint64_t m_device_error_session = 0;
     uint64_t m_retried_device_session = 0;
-    int m_usb_failure_kind = NoDeviceFailure;
-    QString m_usb_device_name = QStringLiteral("RTL-SDR");
+    LocalDeviceState m_usb;
     bool m_running = false;
     QString m_status = QStringLiteral("Idle");
     SessionPhaseTracker m_phase;
     SessionPhase m_published_phase = kSessionIdle;
     QString m_failure;
-    bool m_usb_ready = false;
-    QString m_usb_status;
 };
 
 } // namespace dsd_android

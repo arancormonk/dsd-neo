@@ -792,3 +792,8 @@ service's Idle acknowledgement before starting the selected site's saved configu
 user input cancels that pending restart. This is a full session restart, with no live automatic hop.
 See [RadioReference import](../docs/radioreference-import.md#saved-sites-in-qt-and-android) for migration
 and editing behavior.
+
+After a failed run, Retry acknowledges the USB diagnostic and Play can start the
+saved system again once the service is inactive. The site chooser also offers
+“Dismiss failure and choose a site”; it returns to Idle only after the host confirms
+that the service has finished stopping.
