@@ -216,9 +216,11 @@ void dsd_scan_keys_suspend(dsd_state* state);
 /** Re-capture the baseline from live state, reinstall the active set. */
 void dsd_scan_keys_resume(dsd_state* state);
 
-/** Resume after a direct scalar edit only: update the saved scalar block and
- * keyloader without allocating or changing its keyring, then restore the row. */
-void dsd_scan_keys_resume_scalars(dsd_state* state);
+/** Validate into erased temporary storage, then overlay a direct key onto globals.
+ * With an active scan row, only the baseline scalars/keyloader change; effective
+ * keys and signalled call identifiers stay untouched. Without a row this uses
+ * dsd_key_apply_direct in overlay mode. No allocation or live key swap. */
+dsd_key_direct_result dsd_scan_keys_apply_direct(dsd_state* state, dsd_key_type type, const char* text);
 
 /**
  * `-Y` helper: look up the row's set; present sets enter, absent sets leave.

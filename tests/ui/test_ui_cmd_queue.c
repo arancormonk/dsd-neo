@@ -14,6 +14,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -2742,9 +2743,114 @@ test_direct_key_and_force_scope(void) {
     return rc;
 }
 
+/* A CSV row has activated both signalled KIDs before the global edit arrives. */
+static int
+test_direct_key_preserves_active_keyring(int reject) {
+    static dsd_state state;
+    dsd_opts opts;
+    int rc = 0;
+    for (int type = DSD_APP_KEY_TYPE_BASIC; type <= DSD_APP_KEY_TYPE_SCRAMBLER; ++type) {
+        init_test_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_WAV;
+        opts.wav_sample_rate = 48000;
+        state.K = 23;
+        state.R = 83;
+        state.RR = 89;
+        state.rkey_array[3] = 19;
+        state.rkey_array_loaded[3] = 1;
+        rc |= expect_int("enter active key test scope", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+        dsd_scan_option_values row_options = {.present = DSD_SCAN_OPT_MUTE_DMR, .mute_dmr = 1};
+        (void)dsd_scan_mode_options(&opts, &state, &row_options);
+        dsd_key_set row = {.count = 8, .present = 1, .keyloader = 1};
+        row.entries = calloc(row.count, sizeof(*row.entries));
+        if (!row.entries) {
+            freeState(&state);
+            return 1;
+        }
+        const int offsets[] = {0, 0x101, 0x201, 0x301};
+        for (int slot = 0; slot < 2; ++slot) {
+            for (int segment = 0; segment < 4; ++segment) {
+                dsd_key_set_entry* entry = &row.entries[slot * 4 + segment];
+                entry->index = (uint32_t)((slot ? 11 : 7) + offsets[segment]);
+                entry->value = (uint64_t)(17 + slot * 4 + segment);
+                entry->loaded = 1;
+            }
+        }
+        rc |= expect_true("enter populated CSV key row", dsd_scan_keys_enter(&state, &row));
+        state.payload_keyid = 7;
+        state.payload_keyidR = 11;
+        keyring_activate_slot(&opts, &state, 0);
+        keyring_activate_slot(&opts, &state, 1);
+        // The vocoder can have filled this derived AES buffer since row entry, too.
+        DSD_MEMSET(state.aes_key, 0x5a, sizeof state.aes_key);
+        rc |= expect_true("positive key activation marker", state.R == 17 && state.RR == 21 && state.A4[0] == 20
+                                                                && state.A4[1] == 24 && state.aes_key_segments[0] == 4
+                                                                && state.aes_key_segments[1] == 4);
+        dsd_key_set effective = {0}, baseline = {0}, after = {0};
+        rc |= expect_int("capture activated keys", dsd_key_set_capture(&effective, &state), 0);
+        rc |= expect_int("capture configured keys", dsd_key_set_copy(&baseline, &state.scan_keys_baseline), 0);
+        const uint64_t epoch = state.enc_lockout_key_epoch;
+        dsd_scan_settings configured;
+        dsd_scan_mode_configured(&opts, &state, &configured);
+        dsd_app_key_direct_payload key = {.key_type = type};
+        DSD_SNPRINTF(key.value, sizeof key.value, "%s",
+                     reject                         ? "invalid"
+                     : type == DSD_APP_KEY_TYPE_HEX ? "0000000000"
+                                                    : "0");
+        rc |= expect_int("post global key during active call",
+                         dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        DSD_SECURE_ZERO(&key, sizeof key);
+        rc |= expect_int("drain global key during active call", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_true(reject ? "rejection preserves signalled KIDs" : "global edit preserves signalled KIDs",
+                          state.payload_keyid == 7 && state.payload_keyidR == 11);
+        rc |= expect_int("capture effective keys after command", dsd_key_set_capture(&after, &state), 0);
+        rc |= expect_true(reject ? "rejection preserves activated scalar and AES state"
+                                 : "global edit preserves activated scalar and AES state",
+                          dsd_key_set_equal(&effective, &after));
+        rc |= expect_true("row identity preserved",
+                          state.scan_keys_active_set && dsd_key_set_equal(&row, &state.scan_keys_active));
+        if (reject) {
+            rc |= expect_true("rejection preserves baseline", dsd_key_set_equal(&baseline, &state.scan_keys_baseline));
+            rc |= expect_true("rejection preserves epoch", state.enc_lockout_key_epoch == epoch);
+            dsd_scan_settings after_settings;
+            dsd_scan_mode_configured(&opts, &state, &after_settings);
+            rc |= expect_true("rejection preserves configured mutes",
+                              after_settings.dmr_mute_encL == configured.dmr_mute_encL
+                                  && after_settings.dmr_mute_encR == configured.dmr_mute_encR
+                                  && after_settings.unmute_encrypted_p25 == configured.unmute_encrypted_p25);
+        } else {
+            rc |= expect_true("accepted baseline edit bumps epoch", state.enc_lockout_key_epoch != epoch);
+            rc |= expect_true("global basic baseline overlay",
+                              state.scan_keys_baseline.scalars.K == (type == DSD_APP_KEY_TYPE_BASIC ? 0 : 23));
+            rc |= expect_true("global scalar baseline overlay",
+                              state.scan_keys_baseline.scalars.R == (type >= DSD_APP_KEY_TYPE_RC4 ? 0 : 83));
+            rc |= expect_true("global right baseline overlay",
+                              state.scan_keys_baseline.scalars.RR == (type == DSD_APP_KEY_TYPE_RC4 ? 0 : 89));
+        }
+        keyring_activate_slot(&opts, &state, 0);
+        keyring_activate_slot(&opts, &state, 1);
+        rc |= expect_true("next vocoder activation uses signalled row keys",
+                          state.R == 17 && state.RR == 21 && state.A4[0] == 20 && state.A4[1] == 24
+                              && state.aes_key_loaded[0] && state.aes_key_loaded[1]);
+        rc |= expect_true("active CSV keyloader retained", state.keyloader == 1);
+        rc |= expect_true("active row mute retained", opts.dmr_mute_encL == 1 && opts.dmr_mute_encR == 1);
+        dsd_key_set_free(&effective);
+        dsd_key_set_free(&baseline);
+        dsd_key_set_free(&after);
+        dsd_key_set_free(&row);
+        dsd_scan_keys_leave(&state);
+        dsd_scan_mode_leave(&opts, &state);
+        freeState(&state);
+    }
+    return rc;
+}
+
 int
 main(void) {
-    int rc = test_direct_key_and_force_scope();
+    int rc = test_direct_key_preserves_active_keyring(0);
+    rc |= test_direct_key_preserves_active_keyring(1);
+    rc |= test_direct_key_and_force_scope();
     rc |= test_direct_key_updates_preserve_fifo();
     rc |= test_coalesced_setter_erases_old_tail();
     rc |= test_foundation_commands();

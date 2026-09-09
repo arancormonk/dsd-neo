@@ -474,21 +474,21 @@ key_parse_bounded_decimal(const char* text, unsigned int limit, unsigned long lo
     return result;
 }
 
-dsd_key_direct_result
-dsd_key_apply_direct(dsd_state* state, dsd_key_type type, const char* text, dsd_key_apply_mode mode) {
-    if (!state || !text || (mode != DSD_KEY_APPLY_OVERLAY && mode != DSD_KEY_APPLY_REPLACE)) {
+/* Parsed storage belongs to the caller and is securely erased on every return. */
+static dsd_key_direct_result
+key_set_parse_typed_direct(dsd_key_set* parsed, dsd_key_type type, const char* text) {
+    if (!text) {
         return DSD_KEY_DIRECT_INVALID_ARGUMENT;
     }
-    dsd_key_set parsed = {0};
     dsd_key_direct_result result = DSD_KEY_DIRECT_OK;
     size_t digits = 0;
     if (type == DSD_KEY_TYPE_BASIC || type == DSD_KEY_TYPE_SCRAMBLER) {
-        unsigned long long* slot = type == DSD_KEY_TYPE_BASIC ? &parsed.scalars.K : &parsed.scalars.R;
+        unsigned long long* slot = type == DSD_KEY_TYPE_BASIC ? &parsed->scalars.K : &parsed->scalars.R;
         if (key_parse_bounded_decimal(text, type == DSD_KEY_TYPE_BASIC ? 255U : 32767U, slot)) {
             result = DSD_KEY_DIRECT_INVALID_DEC;
         }
     } else if (type == DSD_KEY_TYPE_HEX) {
-        if (key_set_parse_direct_hex(text, &parsed.scalars, &digits)) {
+        if (key_set_parse_direct_hex(text, &parsed->scalars, &digits)) {
             result = DSD_KEY_DIRECT_INVALID_HEX;
         }
     } else if (type == DSD_KEY_TYPE_RC4) {
@@ -498,32 +498,49 @@ dsd_key_apply_direct(dsd_state* state, dsd_key_type type, const char* text, dsd_
             || dsd_parse_hex_u64_n(hex, digits, &value)) {
             result = DSD_KEY_DIRECT_INVALID_HEX;
         } else {
-            parsed.scalars.R = parsed.scalars.RR = value;
+            parsed->scalars.R = parsed->scalars.RR = value;
         }
         DSD_SECURE_ZERO(&value, sizeof value);
         DSD_SECURE_ZERO(hex, sizeof hex);
     } else {
         result = DSD_KEY_DIRECT_INVALID_ARGUMENT;
     }
+    return result;
+}
+
+static void
+key_scalars_overlay_direct(dsd_key_scalars* target, const dsd_key_scalars* parsed, dsd_key_type type) {
+    if (type == DSD_KEY_TYPE_BASIC) {
+        target->K = parsed->K;
+    } else if (type == DSD_KEY_TYPE_RC4) {
+        target->R = parsed->R;
+        target->RR = parsed->RR;
+    } else if (type == DSD_KEY_TYPE_SCRAMBLER) {
+        target->R = parsed->R;
+    } else {
+        dsd_key_scalars overlay = *parsed;
+        overlay.K = target->K;
+        overlay.R = target->R;
+        overlay.RR = target->RR;
+        *target = overlay;
+        DSD_SECURE_ZERO(&overlay, sizeof overlay);
+    }
+}
+
+dsd_key_direct_result
+dsd_key_apply_direct(dsd_state* state, dsd_key_type type, const char* text, dsd_key_apply_mode mode) {
+    if (!state || (mode != DSD_KEY_APPLY_OVERLAY && mode != DSD_KEY_APPLY_REPLACE)) {
+        return DSD_KEY_DIRECT_INVALID_ARGUMENT;
+    }
+    dsd_key_set parsed = {0};
+    const dsd_key_direct_result result = key_set_parse_typed_direct(&parsed, type, text);
     if (result == DSD_KEY_DIRECT_OK) {
         if (mode == DSD_KEY_APPLY_REPLACE) {
             dsd_key_set_install(state, &parsed);
         } else {
             dsd_key_scalars overlay = {0};
             key_scalars_capture(&overlay, state);
-            if (type == DSD_KEY_TYPE_BASIC) {
-                overlay.K = parsed.scalars.K;
-            } else if (type == DSD_KEY_TYPE_RC4) {
-                overlay.R = parsed.scalars.R;
-                overlay.RR = parsed.scalars.RR;
-            } else if (type == DSD_KEY_TYPE_SCRAMBLER) {
-                overlay.R = parsed.scalars.R;
-            } else {
-                parsed.scalars.K = overlay.K;
-                parsed.scalars.R = overlay.R;
-                parsed.scalars.RR = overlay.RR;
-                overlay = parsed.scalars;
-            }
+            key_scalars_overlay_direct(&overlay, &parsed.scalars, type);
             key_scalars_install(state, &overlay);
             DSD_SECURE_ZERO(&overlay, sizeof overlay);
         }
@@ -746,14 +763,21 @@ dsd_scan_keys_resume(dsd_state* state) {
     dsd_key_set_install(state, &state->scan_keys_active);
 }
 
-void
-dsd_scan_keys_resume_scalars(dsd_state* state) {
+dsd_key_direct_result
+dsd_scan_keys_apply_direct(dsd_state* state, dsd_key_type type, const char* text) {
     if (state == NULL || state->scan_keys_active_set == 0) {
-        return;
+        return dsd_key_apply_direct(state, type, text, DSD_KEY_APPLY_OVERLAY);
     }
-    key_scalars_capture(&state->scan_keys_baseline.scalars, state);
-    state->scan_keys_baseline.keyloader = state->keyloader;
-    dsd_key_set_install(state, &state->scan_keys_active);
+    dsd_key_set parsed = {0};
+    const dsd_key_direct_result result = key_set_parse_typed_direct(&parsed, type, text);
+    if (result == DSD_KEY_DIRECT_OK) {
+        /* Edit only globals. Installing the row again would discard scalar/AES
+         * activation performed since entry, even if the input was rejected. */
+        key_scalars_overlay_direct(&state->scan_keys_baseline.scalars, &parsed.scalars, type);
+        state->scan_keys_baseline.keyloader = 0;
+    }
+    dsd_key_set_free(&parsed);
+    return result;
 }
 
 int

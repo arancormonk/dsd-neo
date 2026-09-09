@@ -3879,12 +3879,20 @@ apply_cmd_key_direct(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
     }
     dsd_key_direct_result result = DSD_KEY_DIRECT_INVALID_ARGUMENT;
     if (memchr(p.value, 0, sizeof p.value)) {
-        dsd_scan_keys_suspend(state);
-        result = dsd_key_apply_direct(state, type, p.value, DSD_KEY_APPLY_OVERLAY);
+        result = dsd_scan_keys_apply_direct(state, type, p.value);
         if (result == DSD_KEY_DIRECT_OK) {
+            // A global edit must not change an active row's signalled KIDs or
+            // loader. The common mute reset also serves unscoped direct edits.
+            const int row_keyloader = state->keyloader;
+            const int row_kid = state->payload_keyid;
+            const int row_kid_right = state->payload_keyidR;
             ui_cmd_reset_key_mute_state(opts, state);
+            if (state->scan_keys_active_set) {
+                state->keyloader = row_keyloader;
+                state->payload_keyid = row_kid;
+                state->payload_keyidR = row_kid_right;
+            }
         }
-        dsd_scan_keys_resume_scalars(state);
     }
     DSD_SECURE_ZERO(&p, sizeof p);
     if (result != DSD_KEY_DIRECT_OK) {
