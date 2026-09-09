@@ -172,5 +172,17 @@ main(int argc, char** argv) {
         check(!session_args_scan_extra_safe(token));
     }
     check(session_args_scan_extra_safe("--enc-lockout"));
+    for (const auto& token :
+         QStringList{"-FT", "-FY", "-Fiother-input", "-FTZ", "-FCT.csv", "-Ff1", "-Fmq", "-Fv2", "-FZ"}) {
+        check(!session_args_scan_extra_safe(token));
+        prefs.extraArgs = token;
+        check(session_args_scan_build(list, "851.5", "/targets.csv", prefs, &error).isEmpty());
+        check(error.contains("each short option separately"));
+    }
+    check(session_args_scan_extra_safe("-GFT.csv")); // G consumes the attached filename, including T.
+    prefs.extraArgs = "-F -e -v2";
+    args = session_args_scan_build(list, "851.5", "/targets.csv", prefs, &error);
+    check(session_args_scan_extra_safe(prefs.extraArgs) && error.isEmpty() && args.contains("-F") && args.contains("-e")
+          && args.last() == "-v2");
     return failures ? 1 : 0;
 }

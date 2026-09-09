@@ -22,6 +22,19 @@ namespace dsd_qt {
 
 namespace {
 
+bool
+short_option_grouped(const QString& token) {
+    if (token.size() <= 2 || !token.startsWith(QLatin1Char('-')) || token.startsWith(QLatin1String("--"))) {
+        return false;
+    }
+    // Argument-taking letters from src/runtime/cli/args.c's getopt optstring.
+    // For one of these leading options, all remaining characters are its
+    // argument (e.g. -ft or -GFT.csv), not more options. Otherwise refuse the
+    // group outright, including unknown letters, in both frontend start paths.
+    const QString argumentOptions = QStringLiteral("stvziodcgnwBCRfmxASMGDLVUKbHXQ@!12567_9kIJ");
+    return !argumentOptions.contains(token.at(1));
+}
+
 /**
  * @brief Effective bias-tee setting from the per-system tri-state.
  *
@@ -193,7 +206,8 @@ bool
 session_args_extra_safe(const QString& tokens) {
     const auto split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
     return std::none_of(split.cbegin(), split.cend(), [](const QString& token) {
-        return token == QLatin1String("--show-keys") || token.startsWith(QLatin1String("--show-keys="));
+        return short_option_grouped(token) || token == QLatin1String("--show-keys")
+               || token.startsWith(QLatin1String("--show-keys="));
     });
 }
 
@@ -353,7 +367,8 @@ session_args_error_text(SessionArgsError error) {
         case SessionArgsError::KeyConflict: return QStringLiteral("Choose either a direct key or a key CSV file.");
         case SessionArgsError::ForceKey: return QStringLiteral("Choose force key mode 0, 1, or 2.");
         case SessionArgsError::UnsafeOption:
-            return QStringLiteral("Extra options contain a prohibited option. Remove it before starting.");
+            return QStringLiteral("Extra options contain a prohibited option or grouped short options. "
+                                  "Remove prohibited options and write each short option separately.");
     }
     return {};
 }

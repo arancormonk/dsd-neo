@@ -318,11 +318,42 @@ test_keys() {
     expect("orphan key refused", session_args_build(sys, SessionArgPrefs(), &error).isEmpty());
 }
 
+void
+test_extra_short_options(void) {
+    // Grouping is refused in both gates, including groups ending in an option
+    // with an attached argument. The single-option attached form stays usable.
+    for (const auto& token :
+         QStringList{"-FT", "-FY", "-Fiother-input", "-FTZ", "-FCT.csv", "-Ff1", "-Fmq", "-Fv2", "-FZ"}) {
+        expect("shared gate refuses grouped short options", !dsd_qt::session_args_extra_safe(token));
+        auto sys = usb_system();
+        sys["extraArgs"] = token;
+        SessionArgsError error = SessionArgsError::None;
+        expect("saved extra group refuses argv",
+               session_args_build(sys, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::UnsafeOption);
+        sys.remove("extraArgs");
+        SessionArgPrefs prefs;
+        prefs.extraArgs = token;
+        expect("preference extra group refuses argv",
+               session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::UnsafeOption);
+    }
+    expect("rejection explains separate short options",
+           dsd_qt::session_args_error_text(SessionArgsError::UnsafeOption).contains("each short option separately"));
+    for (const auto& token : QStringList{"-F -e -v2", "-GFT.csv", "-ft", "-mq", "--enc-lockout"}) {
+        expect("single options and attached arguments remain accepted", dsd_qt::session_args_extra_safe(token));
+        auto sys = usb_system();
+        sys["extraArgs"] = token;
+        SessionArgsError error = SessionArgsError::UnsafeOption;
+        expect("permitted extra options still build argv",
+               !session_args_build(sys, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::None);
+    }
+}
+
 } // namespace
 
 int
 main(void) {
     test_keys();
+    test_extra_short_options();
     for (const auto& token : {QStringLiteral("--show-keys"), QStringLiteral("--show-keys=1")}) {
         expect("shared scan token gate refuses key display", !dsd_qt::session_args_extra_safe(token));
         auto sys = usb_system();

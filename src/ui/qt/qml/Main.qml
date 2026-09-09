@@ -237,7 +237,7 @@ Window {
             } else if (built.error === "encryption") {
                 mainRoot.startError = qsTr("“%1” has an invalid encryption key — long-press its card to edit it.").arg(sys.name)
             } else if (built.error === "unsafe-option") {
-                mainRoot.startError = qsTr("The session contains a prohibited extra option. Review the extra options before starting.")
+                mainRoot.startError = qsTr("The session contains a prohibited extra option or grouped short options. Remove prohibited options and write each short option separately.")
             } else {
                 mainRoot.startError = qsTr("The session options are invalid. Review them before starting.")
             }

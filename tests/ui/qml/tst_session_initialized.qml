@@ -74,11 +74,19 @@ Item {
             compare(prefs.lastStartedKind, "saved");
             compare(prefs.lastStartedUid, uid);
         }
-        function test_prohibited_extra_option_message() {
+        function test_prohibited_extra_option_message_data() {
+            return [
+                {tag: "key display", token: "--show-keys"},
+                {tag: "grouped input", token: "-Fiother-input"},
+                {tag: "grouped trunking", token: "-FTZ"}
+            ];
+        }
+        function test_prohibited_extra_option_message(data) {
             var sys = savedSystems.get(0);
-            sys.extraArgs = "--show-keys";
+            sys.extraArgs = data.token;
             appLoader.item.startWithMap(sys, 0);
             verify(appLoader.item.startError.indexOf("prohibited extra option") >= 0);
+            verify(appLoader.item.startError.indexOf("each short option separately") >= 0);
             verify(appLoader.item.startError.indexOf(sys.extraArgs) < 0);
             verify(appLoader.item.startError.indexOf("PPM") < 0);
             compare(savedSystems.get(0).lastHeard, 0);
