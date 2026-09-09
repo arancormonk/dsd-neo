@@ -15,6 +15,7 @@ ModalSheet {
     property bool listed: false
     property var original: ({})
     property bool removeArmed: false
+    property bool submitted: false
     property string saveMessage: ""
     property bool canSaveList: false
     property string saveListText: qsTr("Save talkgroup list")
@@ -37,10 +38,13 @@ ModalSheet {
         priorityValue = priority;
         preemptToggle.checked = preempt;
         removeArmed = false;
+        submitted = false;
         localMessage = "";
         visible = true;
     }
     function saveRow() {
+        if (submitted)
+            return;
         var changes = {};
         if (nameField.text !== original.name)
             changes.name = nameField.text;
@@ -56,6 +60,12 @@ ModalSheet {
         }
         var ok = listed ? bridge.setTalkgroupPolicy(idStart, idEnd, policyContext, policyGeneration, changes) : bridge.addTalkgroup(idStart, idEnd, policyContext, policyGeneration, nameField.text, listenToggle.checked, priorityValue, preemptToggle.checked);
         localMessage = ok ? qsTr("Update requested") : qsTr("Update refused. Use a name shorter than 50 UTF-8 bytes.");
+        if (ok) {
+            // A submitted edit can advance generation; reopen from fresh model state.
+            submitted = true;
+            visible = false;
+            Qt.inputMethod.hide();
+        }
     }
 
     Text {
@@ -133,12 +143,20 @@ ModalSheet {
         visible: sheet.listed
         text: sheet.removeArmed ? qsTr("Tap again to remove") : qsTr("Remove")
         onClicked: {
+            if (sheet.submitted)
+                return;
             if (!sheet.removeArmed) {
                 sheet.removeArmed = true;
                 return;
             }
             sheet.removeArmed = false;
-            sheet.localMessage = sheet.bridge.removeTalkgroup(sheet.idStart, sheet.idEnd, sheet.policyContext, sheet.policyGeneration) ? qsTr("Removal requested") : qsTr("Removal refused");
+            var ok = sheet.bridge.removeTalkgroup(sheet.idStart, sheet.idEnd, sheet.policyContext, sheet.policyGeneration);
+            sheet.localMessage = ok ? qsTr("Removal requested") : qsTr("Removal refused");
+            if (ok) {
+                sheet.submitted = true;
+                sheet.visible = false;
+                Qt.inputMethod.hide();
+            }
         }
     }
     OutlineButton {

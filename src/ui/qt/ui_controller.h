@@ -16,9 +16,14 @@
 #ifndef DSD_NEO_SRC_UI_QT_UI_CONTROLLER_H_
 #define DSD_NEO_SRC_UI_QT_UI_CONTROLLER_H_
 
+#include <QMap>
 #include <QObject>
+#include <QString>
 #include <QTimer>
+#include <QVariant>
 #include <QVariantMap>
+#include <QtGlobal>
+#include <dsd-neo/core/state_fwd.h>
 
 #include "decoder_host.h"
 
@@ -81,6 +86,8 @@ class UiController : public QObject {
 
   private:
     void tick();
+    void pollTalkgroupExport();
+    void invalidateForTarget(const dsd_state* snapshot);
     void onSessionStateChanged();
     void clearLiveModels();
 

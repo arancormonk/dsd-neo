@@ -31,11 +31,9 @@ Item {
         retryAvailable = retry;
         message = text;
     }
-    onSessionStateChanged: {
-        // DecoderHost::Idle / Failed. Starting and Stopping can still finish an export.
-        if ((sessionState === 0 || sessionState === 4) && pending !== null)
-            clearPending(qsTr("Talkgroup list save canceled when the session ended. Try again."), true);
-    }
+    // Keep the request tuple through Idle/Failed: export may complete between
+    // the controller's result poll and host refresh. The retained result on the
+    // next tick still belongs to this request. Timeout permits an explicit retry.
     onPendingChanged: {
         if (pending === null)
             completionTimeout.stop();

@@ -76,11 +76,14 @@ Item {
             mouseClick(findChild(loader.item, "saveTalkgroup"));
             compare(recorder.edits, 1);
             compare(Object.keys(recorder.last[4]), ["name"]);
-            mouseClick(findChild(loader.item, "listeningToggle"));
-            mouseClick(findChild(loader.item, "saveTalkgroup"));
-            compare(recorder.edits, 2);
-            compare(Object.keys(recorder.last[4]).sort(), ["listening", "name"]);
-            compare(recorder.last[4].listening, false);
+            verify(!loader.item.visible);
+            // Consecutive actions on the submitted form cannot reuse its generation.
+            loader.item.saveRow();
+            compare(recorder.edits, 1);
+            var remove = findChild(loader.item, "removeTalkgroup");
+            remove.clicked();
+            remove.clicked();
+            compare(recorder.removes, 0);
         }
         function test_remove_requires_two_taps_and_reopen_resets() {
             var button = findChild(loader.item, "removeTalkgroup");
@@ -121,7 +124,7 @@ Item {
             compare(findChild(loader.item, "talkgroupEditToast").text, loader.item.backendMessage);
             mouseClick(findChild(loader.item, "saveTalkgroup"));
             compare(recorder.edits, 1);
-            verify(loader.item.visible); // Retain the sheet to show decoder refusal.
+            verify(!loader.item.visible); // Reopen through the model for a fresh version.
         }
     }
 }

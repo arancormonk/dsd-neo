@@ -106,18 +106,21 @@ Item {
             compare(systems.updates, 0);
             compare(loader.item.pending, null);
         }
-        function test_session_edges_recover_missing_completion() {
+        function test_completion_between_polls_survives_terminal_edge() {
             verify(loader.item.hasOwnProperty("sessionState"));
             for (var phase of [0, 4]) {
                 library.paths = 0;
                 loader.item.sessionState = 2;
                 verify(loader.item.save("original", "7", 1));
                 loader.item.sessionState = phase;
-                compare(loader.item.pending, null);
-                verify(loader.item.message.length > 0);
+                verify(loader.item.pending !== null);
+                // Export completes after the result poll but before host refresh.
                 loader.item.result = result("6", "7", 1, "/owned/list.csv", true);
-                compare(systems.updates, 0);
-                compare(library.registrations, 0);
+                compare(systems.updates, 1);
+                compare(library.registrations, 1);
+                compare(loader.item.pending, null);
+                systems.updates = 0;
+                library.registrations = 0;
                 loader.item.result = {
                     sequence: "5"
                 };

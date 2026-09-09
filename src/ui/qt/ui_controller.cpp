@@ -3,8 +3,9 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include "ui_controller.h"
+#include <utility>
 #include "diagnostics_log.h"
+#include "ui_controller.h"
 
 #include <Qt>
 // WP0's C export payload uses a flexible array; only its fixed header is read in C++.
@@ -125,7 +126,7 @@ UiController::clearLiveModels() {
 }
 
 void
-UiController::tick() {
+UiController::pollTalkgroupExport() {
     // WP-D1: retained export completion is independent of redraw and host lifecycle.
     dsd_app_tg_export_result result = {};
     if (dsd_app_tg_export_result_get(&result) && result.sequence != m_talkgroupExportSequence) {
@@ -137,6 +138,29 @@ UiController::tick() {
                                    {QStringLiteral("success"), result.success == 1}};
         Q_EMIT talkgroupExportResultChanged();
     }
+}
+
+void
+UiController::invalidateForTarget(const dsd_state* snapshot) {
+    if (snapshot && snapshot->trunk_scan_active_ordinal != m_active_ordinal) {
+        m_active_ordinal = snapshot->trunk_scan_active_ordinal;
+        // The new target can be quiet; waiting for a new call would let the old
+        // target's held sync/identity continue to caption this frequency.
+        if (m_network) {
+            m_network->clear();
+        }
+        if (m_metrics) {
+            m_metrics->clear();
+        }
+        if (m_talkgroups) {
+            m_talkgroups->invalidateForTarget();
+        }
+    }
+}
+
+void
+UiController::tick() {
+    pollTalkgroupExport();
 
     if (m_diagnostics) {
         m_diagnostics->refresh();
@@ -159,20 +183,7 @@ UiController::tick() {
     const dsd_state* snapshot = dsd_app_get_latest_snapshot();
 
     const bool live = !m_host || m_session == DecoderHost::Running || m_session == DecoderHost::Stopping;
-    if (snapshot && snapshot->trunk_scan_active_ordinal != m_active_ordinal) {
-        m_active_ordinal = snapshot->trunk_scan_active_ordinal;
-        // The new target can be quiet; waiting for a new call would let the old
-        // target's held sync/identity continue to caption this frequency.
-        if (m_network) {
-            m_network->clear();
-        }
-        if (m_metrics) {
-            m_metrics->clear();
-        }
-        if (m_talkgroups) {
-            m_talkgroups->invalidateForTarget();
-        }
-    }
+    invalidateForTarget(snapshot);
     if (live && m_network != nullptr) {
         m_network->refresh(snapshot);
     }

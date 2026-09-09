@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QAbstractListModel>
-#include <QCoreApplication>
+#include <QChar>
 #include <QEventLoop>
 #include <QFile>
 #include <QGuiApplication>
+#include <QMap>
 #include <QObject>
 #include <QQmlComponent>
 #include <QQmlContext>
@@ -14,7 +15,9 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
-#include <cassert>
+#include <QVariantMap>
+#include <Qt>
+#include <cstdio>
 #include <cstdlib>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/init.h>
@@ -27,24 +30,29 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <initializer_list>
 #include <memory>
+#include <stdint.h>
+#include <utility>
+#include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/snapshot_internal.h"
 #include "command_bridge.h"
-#include "commands_internal.h"
 #include "decoder_host.h"
 #include "diagnostics_log.h"
 #include "metrics_model.h"
 #include "p25_network_model.h"
-#include "snapshot_internal.h"
 #include "talkgroup_list_model.h"
 #include "ui_controller.h"
 
 namespace {
+
 void
-check(bool passed) {
-    if (!passed) {
+expect(bool condition, int line) {
+    if (!condition) {
+        std::fprintf(stderr, "controller assertion failed at line %d\n", line);
         std::abort();
     }
 }
+
+#define check(condition) expect(!!(condition), __LINE__)
 
 class Host : public dsd_qt::DecoderHost {
   public:
@@ -89,10 +97,10 @@ test_sheet_policy_edits() {
     engine.rootContext()->setContextProperty("metrics", QVariantMap{{"uiMessage", QString()}});
     QQmlComponent component(&engine, QUrl::fromLocalFile(QStringLiteral(DSD_QML_UI_DIR "/TalkgroupEditSheet.qml")));
     std::unique_ptr<QObject> sheet(component.create());
-    assert(sheet);
+    check(sheet);
     QObject* name = sheet->findChild<QObject*>("talkgroupName");
     QObject* listen = sheet->findChild<QObject*>("listeningToggle");
-    assert(name && listen);
+    check(name && listen);
     static dsd_opts opts;
     static dsd_state state;
 
@@ -108,14 +116,14 @@ test_sheet_policy_edits() {
         dsd_app_frontend_runtime_start(nullptr, nullptr);
         const char* mode = media.mode;
         dsd_tg_policy_entry entry = {};
-        assert(dsd_tg_policy_make_exact_entry(42, mode, "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
+        check(dsd_tg_policy_make_exact_entry(42, mode, "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
         entry.priority = 25;
         entry.audio = media.audio;
         entry.record = media.record;
         entry.stream = media.stream;
-        assert(dsd_tg_policy_append_exact(&state, &entry) == 0);
-        assert(dsd_tg_policy_entry_at(&state, 0, &entry));
-        assert(entry.audio == media.audio && entry.record == media.record && entry.stream == media.stream);
+        check(dsd_tg_policy_append_exact(&state, &entry) == 0);
+        check(dsd_tg_policy_entry_at(&state, 0, &entry));
+        check(entry.audio == media.audio && entry.record == media.record && entry.stream == media.stream);
         const auto open = [&]() {
             uint64_t context = 0;
             unsigned int generation = 0;
@@ -128,41 +136,46 @@ test_sheet_policy_edits() {
                                           .arg(context)
                                           .arg(generation));
             expression.evaluate();
-            assert(!expression.hasError());
+            check(!expression.hasError());
         };
         open();
         name->setProperty("text", "Renamed");
-        assert(QMetaObject::invokeMethod(sheet.get(), "saveRow"));
-        assert(dsd_app_drain_cmds(&opts, &state) == 1);
-        assert(dsd_tg_policy_entry_at(&state, 0, &entry));
-        assert(QString::fromUtf8(entry.name) == "Renamed");
-        assert(QString::fromUtf8(entry.mode) == mode && entry.audio == media.audio && entry.record == media.record
-               && entry.stream == media.stream);
+        check(QMetaObject::invokeMethod(sheet.get(), "saveRow"));
+        check(dsd_app_drain_cmds(&opts, &state) == 1);
+        check(dsd_tg_policy_entry_at(&state, 0, &entry));
+        check(QString::fromUtf8(entry.name) == "Renamed");
+        check(QString::fromUtf8(entry.mode) == mode && entry.audio == media.audio && entry.record == media.record
+              && entry.stream == media.stream);
+        check(sheet->property("submitted").toBool());
+        // Consecutive operations on the submitted sheet must not queue a stale edit.
+        check(QMetaObject::invokeMethod(sheet.get(), "saveRow"));
+        check(dsd_app_drain_cmds(&opts, &state) == 0);
         open();
+        check(!sheet->property("submitted").toBool());
         sheet->setProperty("priorityValue", 50);
-        assert(QMetaObject::invokeMethod(sheet.get(), "saveRow"));
-        assert(dsd_app_drain_cmds(&opts, &state) == 1);
-        assert(dsd_tg_policy_entry_at(&state, 0, &entry));
-        assert(entry.priority == 50 && QString::fromUtf8(entry.name) == "Renamed");
-        assert(QString::fromUtf8(entry.mode) == mode && entry.audio == media.audio && entry.record == media.record
-               && entry.stream == media.stream);
+        check(QMetaObject::invokeMethod(sheet.get(), "saveRow"));
+        check(dsd_app_drain_cmds(&opts, &state) == 1);
+        check(dsd_tg_policy_entry_at(&state, 0, &entry));
+        check(entry.priority == 50 && QString::fromUtf8(entry.name) == "Renamed");
+        check(QString::fromUtf8(entry.mode) == mode && entry.audio == media.audio && entry.record == media.record
+              && entry.stream == media.stream);
         open();
         name->setProperty("text", "Combined");
         sheet->setProperty("priorityValue", 100);
-        assert(QMetaObject::invokeMethod(sheet.get(), "saveRow"));
-        assert(dsd_app_drain_cmds(&opts, &state) == 1); // Name + priority must be one atomic edit.
-        assert(dsd_tg_policy_entry_at(&state, 0, &entry));
-        assert(entry.priority == 100 && QString::fromUtf8(entry.name) == "Combined");
-        assert(QString::fromUtf8(entry.mode) == mode && entry.audio == media.audio && entry.record == media.record
-               && entry.stream == media.stream);
+        check(QMetaObject::invokeMethod(sheet.get(), "saveRow"));
+        check(dsd_app_drain_cmds(&opts, &state) == 1); // Name + priority must be one atomic edit.
+        check(dsd_tg_policy_entry_at(&state, 0, &entry));
+        check(entry.priority == 100 && QString::fromUtf8(entry.name) == "Combined");
+        check(QString::fromUtf8(entry.mode) == mode && entry.audio == media.audio && entry.record == media.record
+              && entry.stream == media.stream);
         open();
-        assert(QMetaObject::invokeMethod(sheet.get(), "saveRow"));
-        assert(dsd_app_drain_cmds(&opts, &state) == 0); // Unchanged form submits nothing.
+        check(QMetaObject::invokeMethod(sheet.get(), "saveRow"));
+        check(dsd_app_drain_cmds(&opts, &state) == 0); // Unchanged form submits nothing.
         listen->setProperty("checked", QString::fromUtf8(mode) != "A");
-        assert(QMetaObject::invokeMethod(sheet.get(), "saveRow"));
-        assert(dsd_app_drain_cmds(&opts, &state) == 1);
-        assert(dsd_tg_policy_entry_at(&state, 0, &entry));
-        assert(QString::fromUtf8(entry.mode) == (QString::fromUtf8(mode) == "A" ? "B" : "A"));
+        check(QMetaObject::invokeMethod(sheet.get(), "saveRow"));
+        check(dsd_app_drain_cmds(&opts, &state) == 1);
+        check(dsd_tg_policy_entry_at(&state, 0, &entry));
+        check(QString::fromUtf8(entry.mode) == (QString::fromUtf8(mode) == "A" ? "B" : "A"));
         dsd_app_frontend_runtime_stop();
         dsd_state_ext_free_all(&state);
     }
@@ -176,26 +189,26 @@ test_zero_bounds() {
     for (unsigned int end : {0U, 999U}) {
         dsd_app_frontend_runtime_start(nullptr, nullptr);
         dsd_tg_policy_entry entry = {};
-        assert(dsd_tg_policy_make_exact_entry(0, "A", "Zero", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
+        check(dsd_tg_policy_make_exact_entry(0, "A", "Zero", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
         entry.id_end = end;
         entry.is_range = end != 0;
-        assert((end ? dsd_tg_policy_add_range_entry(&state, &entry) : dsd_tg_policy_append_exact(&state, &entry)) == 0);
+        check((end ? dsd_tg_policy_add_range_entry(&state, &entry) : dsd_tg_policy_append_exact(&state, &entry)) == 0);
         uint64_t context = 0;
         unsigned int generation = 0;
         dsd_tg_policy_table_version(&state, &context, &generation);
-        assert(bridge.renameTalkgroup(0, end, QString::number(context), generation, "Edited zero"));
-        assert(dsd_app_drain_cmds(&opts, &state) == 1);
-        assert(dsd_tg_policy_entry_at(&state, 0, &entry));
-        assert(entry.id_start == 0 && entry.id_end == end && QString::fromUtf8(entry.name) == "Edited zero");
+        check(bridge.renameTalkgroup(0, end, QString::number(context), generation, "Edited zero"));
+        check(dsd_app_drain_cmds(&opts, &state) == 1);
+        check(dsd_tg_policy_entry_at(&state, 0, &entry));
+        check(entry.id_start == 0 && entry.id_end == end && QString::fromUtf8(entry.name) == "Edited zero");
         dsd_tg_policy_table_version(&state, &context, &generation);
-        assert(bridge.setTalkgroupPolicy(0, end, QString::number(context), generation, {{"priority", 50}}));
-        assert(dsd_app_drain_cmds(&opts, &state) == 1);
-        assert(dsd_tg_policy_entry_at(&state, 0, &entry));
-        assert(entry.id_start == 0 && entry.id_end == end && entry.priority == 50);
+        check(bridge.setTalkgroupPolicy(0, end, QString::number(context), generation, {{"priority", 50}}));
+        check(dsd_app_drain_cmds(&opts, &state) == 1);
+        check(dsd_tg_policy_entry_at(&state, 0, &entry));
+        check(entry.id_start == 0 && entry.id_end == end && entry.priority == 50);
         dsd_tg_policy_table_version(&state, &context, &generation);
-        assert(bridge.removeTalkgroup(0, end, QString::number(context), generation));
-        assert(dsd_app_drain_cmds(&opts, &state) == 1);
-        assert(dsd_tg_policy_entry_count(&state) == 0);
+        check(bridge.removeTalkgroup(0, end, QString::number(context), generation));
+        check(dsd_app_drain_cmds(&opts, &state) == 1);
+        check(dsd_tg_policy_entry_count(&state) == 0);
         dsd_app_frontend_runtime_stop();
         dsd_state_ext_free_all(&state);
     }
@@ -299,54 +312,54 @@ main(int argc, char** argv) {
     dsd_app_frontend_runtime_start(nullptr, nullptr);
     // A session without a policy table reports version 0/0; adding its first heard row is valid.
     static dsd_state emptyPolicyState;
-    assert(bridge.addTalkgroup(77, 77, QStringLiteral("0"), 0, "First heard", true, 0, false));
-    assert(dsd_app_drain_cmds(&opts, &emptyPolicyState) == 1);
-    assert(dsd_tg_policy_entry_count(&emptyPolicyState) == 1);
+    check(bridge.addTalkgroup(77, 77, QStringLiteral("0"), 0, "First heard", true, 0, false));
+    check(dsd_app_drain_cmds(&opts, &emptyPolicyState) == 1);
+    check(dsd_tg_policy_entry_count(&emptyPolicyState) == 1);
     dsd_state_ext_free_all(&emptyPolicyState);
     // The lifecycle case above owns a separate policy fixture.
-    assert(dsd_tg_policy_clear(&state) == 0);
+    check(dsd_tg_policy_clear(&state) == 0);
     entry = {};
-    assert(dsd_tg_policy_make_exact_entry(42, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
-    assert(dsd_tg_policy_append_exact(&state, &entry) == 0);
+    check(dsd_tg_policy_make_exact_entry(42, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
+    check(dsd_tg_policy_append_exact(&state, &entry) == 0);
     uint64_t context = 0;
     unsigned int generation = 0;
     dsd_tg_policy_table_version(&state, &context, &generation);
     const QString version = QString::number(context);
-    assert(!bridge.renameTalkgroup(42, 42, version, generation, QString(50, QLatin1Char('x'))));
-    assert(!bridge.setTalkgroupPolicy(42, 42, version, generation, {{"priority", 101}}));
-    assert(bridge.setTalkgroupPolicy(42, 42, version, generation,
-                                     {{"name", "Fire"}, {"listening", true}, {"priority", 50}, {"preempt", true}}));
-    assert(dsd_app_drain_cmds(&opts, &state) == 1);
-    assert(dsd_tg_policy_entry_at(&state, 0, &entry));
-    assert(entry.priority == 50 && entry.preempt == 1 && QString::fromUtf8(entry.name) == "Fire");
+    check(!bridge.renameTalkgroup(42, 42, version, generation, QString(50, QLatin1Char('x'))));
+    check(!bridge.setTalkgroupPolicy(42, 42, version, generation, {{"priority", 101}}));
+    check(bridge.setTalkgroupPolicy(42, 42, version, generation,
+                                    {{"name", "Fire"}, {"listening", true}, {"priority", 50}, {"preempt", true}}));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_at(&state, 0, &entry));
+    check(entry.priority == 50 && entry.preempt == 1 && QString::fromUtf8(entry.name) == "Fire");
     // The original sheet's generation must be forwarded unchanged and refused.
-    assert(bridge.renameTalkgroup(42, 42, version, generation, "Stale"));
+    check(bridge.renameTalkgroup(42, 42, version, generation, "Stale"));
     (void)dsd_app_drain_cmds(&opts, &state);
-    assert(dsd_tg_policy_entry_at(&state, 0, &entry));
-    assert(QString::fromUtf8(entry.name) == "Fire");
-    assert(QString::fromUtf8(state.ui_msg).contains("stale", Qt::CaseInsensitive));
+    check(dsd_tg_policy_entry_at(&state, 0, &entry));
+    check(QString::fromUtf8(entry.name) == "Fire");
+    check(QString::fromUtf8(state.ui_msg).contains("stale", Qt::CaseInsensitive));
     dsd_tg_policy_table_version(&state, &context, &generation);
-    assert(bridge.renameTalkgroup(42, 42, version, generation, "Renamed"));
-    assert(dsd_app_drain_cmds(&opts, &state) == 1);
-    assert(dsd_tg_policy_entry_at(&state, 0, &entry));
-    assert(entry.priority == 50 && entry.preempt == 1 && QString::fromUtf8(entry.name) == "Renamed");
+    check(bridge.renameTalkgroup(42, 42, version, generation, "Renamed"));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_at(&state, 0, &entry));
+    check(entry.priority == 50 && entry.preempt == 1 && QString::fromUtf8(entry.name) == "Renamed");
     dsd_tg_policy_table_version(&state, &context, &generation);
-    assert(bridge.addTalkgroup(55, 55, version, generation, "Heard", false, 25, false));
-    assert(dsd_app_drain_cmds(&opts, &state) == 1);
-    assert(dsd_tg_policy_entry_count(&state) == 2);
+    check(bridge.addTalkgroup(55, 55, version, generation, "Heard", false, 25, false));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_count(&state) == 2);
     dsd_tg_policy_table_version(&state, &context, &generation);
-    assert(bridge.removeTalkgroup(55, 55, version, generation));
-    assert(dsd_app_drain_cmds(&opts, &state) == 1);
-    assert(dsd_tg_policy_entry_count(&state) == 1);
+    check(bridge.removeTalkgroup(55, 55, version, generation));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_entry_count(&state) == 1);
     dsd_tg_policy_table_version(&state, &context, &generation);
     QTemporaryDir exportDir;
-    assert(exportDir.isValid());
+    check(exportDir.isValid());
     const QString exportPath = exportDir.filePath("groups.csv");
-    assert(bridge.saveTalkgroupList(version, generation, exportPath));
-    assert(!QFile::exists(exportPath));
-    assert(controller.talkgroupExportResult().isEmpty());
-    assert(dsd_app_drain_cmds(&opts, &state) == 1);
-    assert(QFile::exists(exportPath));
+    check(bridge.saveTalkgroupList(version, generation, exportPath));
+    check(!QFile::exists(exportPath));
+    check(controller.talkgroupExportResult().isEmpty());
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(QFile::exists(exportPath));
     (void)dsd_app_frontend_redraw_consume();
     QEventLoop exportLoop;
     QTimer::singleShot(65, &exportLoop, &QEventLoop::quit);
@@ -354,12 +367,12 @@ main(int argc, char** argv) {
     exportLoop.exec();
     controller.stop();
     const auto exported = controller.talkgroupExportResult();
-    assert(exported.value("success").toBool());
-    assert(exported.value("path").toString() == exportPath);
-    assert(exported.value("policyContext").toString() == version);
-    assert(exported.value("policyGeneration").toUInt() == generation);
-    assert(exported.value("sequence").toString() != "0");
-    assert(QString::fromUtf8(opts.group_in_file) == exportPath);
+    check(exported.value("success").toBool());
+    check(exported.value("path").toString() == exportPath);
+    check(exported.value("policyContext").toString() == version);
+    check(exported.value("policyGeneration").toUInt() == generation);
+    check(exported.value("sequence").toString() != "0");
+    check(QString::fromUtf8(opts.group_in_file) == exportPath);
     dsd_app_frontend_runtime_stop();
     check(!bridge.renameTalkgroup(42, 42, version, generation, "After stop"));
     check(dsd_app_drain_cmds(&opts, &state) == 0);
