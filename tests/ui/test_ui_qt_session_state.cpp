@@ -5,9 +5,11 @@
 
 /* Unit tests: Android session-phase mapping consumed by the Qt Quick UI. */
 
+#include <initializer_list>
 #include <stdio.h>
 
 #include "dsd-neo/core/safe_api.h"
+#include "run_status.h"
 #include "session_state_map.h"
 
 using dsd_android::kSessionFailed;
@@ -56,6 +58,48 @@ poll_idle(SessionPhaseTracker& tracker, int count) {
 
 int
 main(void) {
+    // Terminal results cannot be inferred from elapsed time or a sampled running
+    // flag: an entire failed run can fit between two UI ticks.
+    for (int polls : {0, 12, 20}) {
+        SessionPhaseTracker tracker;
+        tracker.note_start_requested(10);
+        for (int i = 0; i < polls; ++i) {
+            tracker.update("RUNNING", true, 11, dsd_android::kRunPending);
+        }
+        expect("failure before first poll / after 3s / after startup",
+               tracker.update("IDLE", false, 11, dsd_android::kRunFailed), kSessionFailed);
+        expect("terminal failure stays latched", tracker.update("IDLE", false, 11, dsd_android::kRunFailed),
+               kSessionFailed);
+        tracker.note_start_requested(11);
+        expect("retry ignores previous terminal result", tracker.update("IDLE", false, 11, dsd_android::kRunFailed),
+               kSessionStarting);
+        expect("cancel is not failure", tracker.update("IDLE", false, 12, dsd_android::kRunCancelled), kSessionIdle);
+        tracker.note_start_requested(12);
+        expect("short normal run is not failure", tracker.update("IDLE", false, 13, dsd_android::kRunCompleted),
+               kSessionIdle);
+    }
+    {
+        dsd_android::RunStatus result;
+        result.begin(42);
+        if (result.initialized || result.reason != dsd_android::kRunPending) {
+            ++g_failures;
+        }
+        result.mark_initialized();
+        result.finish(1, false, -6);
+        if (!result.initialized || result.session_id != 42 || result.reason != dsd_android::kRunFailed
+            || result.device_error != -6 || result.run_code != 1) {
+            ++g_failures;
+        }
+        result.begin(43);
+        if (result.initialized || result.device_error != 0) {
+            ++g_failures;
+        }
+        result.finish(1, true, 0);
+        if (result.reason != dsd_android::kRunCancelled) {
+            ++g_failures;
+        }
+    }
+
     /* A fresh tracker is idle, and stays idle however often it is polled. */
     {
         SessionPhaseTracker tracker;

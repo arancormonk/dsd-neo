@@ -57,6 +57,12 @@ struct rtl_soapy_config {
  */
 struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* input_ring);
 
+/** Last local USB open/claim error, preserving librtlsdr/libusb's negative code
+ * (including LIBUSB_ERROR_BUSY). Atomic, safe to read after engine cleanup.
+ * Clear at session start so a non-USB run cannot inherit a previous USB failure. */
+int rtl_device_last_open_error(void);
+void rtl_device_clear_open_error(void);
+
 /**
  * @brief Hand the next USB open an already-open device file descriptor.
  *

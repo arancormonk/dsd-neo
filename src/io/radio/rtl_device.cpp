@@ -4905,6 +4905,18 @@ rtl_device_cleanup_common_state(struct rtl_device* dev) {
  * Descriptor handed down from an Android app (USB-OTG). Written before the engine
  * starts and read on the engine/open path, so the two threads need it atomic.
  */
+static std::atomic<int> g_last_usb_open_error{0};
+
+int
+rtl_device_last_open_error(void) {
+    return g_last_usb_open_error.load(std::memory_order_acquire);
+}
+
+void
+rtl_device_clear_open_error(void) {
+    g_last_usb_open_error.store(0, std::memory_order_release);
+}
+
 static std::atomic<int> g_preopened_usb_fd{-1};
 
 /*
@@ -4953,6 +4965,7 @@ rtl_device_preopened_fd_supported(void) {
  */
 struct rtl_device*
 rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
+    rtl_device_clear_open_error();
     if (!input_ring) {
         return NULL;
     }
@@ -4998,6 +5011,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
         g_preopened_usb_fd_in_use.store(1, std::memory_order_release);
         r = rtlsdr_open_fd(&dev->dev, preopened_fd);
         if (r < 0) {
+            g_last_usb_open_error.store(r, std::memory_order_release);
             g_preopened_usb_fd_in_use.store(0, std::memory_order_release);
             DSD_FPRINTF(stderr, "Failed to open rtlsdr device from descriptor %d.\n", preopened_fd);
             rtl_device_cleanup_common_state(dev);
@@ -5023,6 +5037,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
 #endif
     // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (r < 0) {
+        g_last_usb_open_error.store(r, std::memory_order_release);
         DSD_FPRINTF(stderr, "Failed to open rtlsdr device %d.\n", dev_index);
         rtl_device_cleanup_common_state(dev);
         free(dev);

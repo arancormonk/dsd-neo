@@ -649,6 +649,23 @@ main(int argc, char** argv) {
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dataDir).removeRecursively();
 
+    {
+        TestHost host;
+        expect("desktop has no location/share capability", !host.locationSupported() && !host.shareSupported());
+        expect("desktop has no local device failure", host.localDeviceFailureKind() == 0);
+        bool answered = false;
+        QObject::connect(&host, &dsd_qt::DecoderHost::locationResult, &host,
+                         [&answered](qint64 id, bool fixOk, double, double, double, qint64, bool geocodeOk,
+                                     const QString&, const QString&, const QString& error) {
+                             answered = id == 42 && !fixOk && !geocodeOk && !error.isEmpty();
+                         });
+        host.requestCurrentLocation(42);
+        expect("unsupported location answers with same request id", answered);
+        host.cancelLocationRequest(42);
+        host.shareDiagnostics("content", "title");
+        host.hostDiagnostic("test lifecycle line");
+        expect("initialization signal is available", host.metaObject()->indexOfSignal("sessionInitialized()") >= 0);
+    }
     test_import_document();
     test_imported_files_model();
     test_update_rejects_invalid_pick();

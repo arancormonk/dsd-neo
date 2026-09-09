@@ -20,6 +20,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import java.util.Locale
+import org.json.JSONObject
 
 /**
  * Foreground service that owns the decoder.
@@ -131,6 +132,9 @@ class DecoderService : Service() {
                 return
             }
             state = State.STARTING
+            sessionId += 1
+            terminalReason = DsdNative.RUN_PENDING
+            deviceError = 0
             lastError = ""
         }
 
@@ -146,7 +150,19 @@ class DecoderService : Service() {
             initialized = true
         }
 
-        val configureRc = DsdNative.nativeConfigure(args)
+        val configureRc = DsdNative.nativeConfigure(args, synchronized(lock) { sessionId })
+        if (configureRc == DsdNative.STATUS_CONFIG_EXIT) {
+            // Help and other successful one-shot configuration flows did not
+            // initialize a session; publish completion without stamping recency.
+            releaseWakeLock()
+            synchronized(lock) {
+                terminalReason = DsdNative.RUN_COMPLETED
+                state = State.IDLE
+            }
+            stopForegroundCompat()
+            stopSelfLatest()
+            return
+        }
         if (configureRc != DsdNative.STATUS_OK) {
             failStart(
                 "nativeConfigure failed ($configureRc)",
@@ -158,11 +174,20 @@ class DecoderService : Service() {
         val thread = Thread({
             val rc = DsdNative.nativeRun()
             Log.i(TAG, "engine run returned $rc")
+            DsdNative.nativeHostDiagnostic("engine run returned $rc")
             // Released before the state drops to IDLE. acquireWakeLock is a no-op while
             // a lock is held, so a start that observes IDLE first would find the lock
             // still ours and decode with nothing keeping the CPU awake.
             releaseWakeLock()
             synchronized(lock) {
+                val result = DsdNative.nativeLifecycleStatus()
+                terminalReason = result[2].toInt()
+                deviceError = result[4].toInt()
+                if (terminalReason == DsdNative.RUN_FAILED || rc != DsdNative.STATUS_OK && terminalReason == DsdNative.RUN_PENDING) {
+                    terminalReason = DsdNative.RUN_FAILED
+                    // Codes only: raw configuration/argv text can contain keys.
+                    lastError = "Decoder run failed ($rc)" + if (deviceError != 0) "; USB open/claim error $deviceError" else ""
+                }
                 state = State.IDLE
                 // Only if it is still ours: a start that raced a timed-out join has
                 // already installed its own thread here.
@@ -187,11 +212,13 @@ class DecoderService : Service() {
      */
     private fun failStart(reason: String, userMessage: String) {
         Log.e(TAG, reason)
+        DsdNative.nativeHostDiagnostic(reason)
         // Released before IDLE, for the same reason as the engine thread does it.
         releaseWakeLock()
         synchronized(lock) {
             state = State.IDLE
             lastError = userMessage
+            terminalReason = DsdNative.RUN_FAILED
         }
         // No stopStatusPolling() here: stopForegroundCompat() does it first thing, and it
         // has to, because stopIfIdle() reaches it by a path that does not come through
@@ -722,6 +749,9 @@ class DecoderService : Service() {
         private var engineThread: Thread? = null
         private var initialized = false
         private var lastError = ""
+        private var sessionId = 0L
+        private var terminalReason = DsdNative.RUN_PENDING
+        private var deviceError = 0
 
         /** Newest start id handed to onStartCommand; see [stopSelfLatest]. */
         private var lastStartId = 0
@@ -774,6 +804,25 @@ class DecoderService : Service() {
         fun stopDecoder(context: Context) {
             val intent = Intent(context, DecoderService::class.java).setAction(ACTION_STOP)
             context.startService(intent)
+        }
+
+        /** One coherent lifecycle record for the UI's existing tick. Reading the
+         * native record here uses its short-held status lock, never the configure
+         * lock or the single-consumer decoder snapshot. */
+        @JvmStatic
+        fun lifecycleStatus(): String = synchronized(lock) {
+            val native = DsdNative.nativeLifecycleStatus()
+            val matches = native[0] == sessionId && sessionId != 0L
+            val reason = if (terminalReason != DsdNative.RUN_PENDING) terminalReason
+                         else if (matches) native[2].toInt() else DsdNative.RUN_PENDING
+            val usbError = if (matches) native[4].toInt() else deviceError
+            val error = if (lastError.isNotEmpty()) lastError
+                        else if (reason == DsdNative.RUN_FAILED) "Decoder run failed (${native[3]})" +
+                            if (usbError != 0) "; USB open/claim error $usbError" else ""
+                        else ""
+            JSONObject().put("sessionId", sessionId).put("state", state.name)
+                .put("initialized", matches && native[1] != 0L)
+                .put("reason", reason).put("deviceError", usbError).put("lastError", error).toString()
         }
 
         /** Service-side view of the lifecycle, for UI status text. */

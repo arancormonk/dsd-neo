@@ -8,8 +8,11 @@
 #include <QCoreApplication>
 #include <QJniEnvironment>
 #include <QJniObject>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMetaObject>
 #include <QVariant>
+#include <dsd-neo/runtime/log.h>
 
 #include <jni.h>
 
@@ -131,6 +134,19 @@ DecoderHostAndroid::localDeviceStatus() const {
     return m_usb_status;
 }
 
+int
+DecoderHostAndroid::localDeviceFailureKind() const {
+    // libusb's BUSY value survives librtlsdr's claim failure; other native codes
+    // remain in the terminal result for diagnostics without guessing a cause.
+    return m_device_error == -6 ? DeviceBusy : (m_device_error ? DeviceOpenFailed : NoDeviceFailure);
+}
+
+void
+DecoderHostAndroid::hostDiagnostic(const QString& line) {
+    const QByteArray text = line.toUtf8();
+    LOG_INFO("Android: %s\n", text.constData());
+}
+
 void
 DecoderHostAndroid::requestLocalDeviceAccess() {
     QJniObject context = android_context();
@@ -167,7 +183,11 @@ DecoderHostAndroid::setKeepScreenAwake(bool on) {
 bool
 DecoderHostAndroid::start(const QStringList& argv) {
     /* Clears the previous attempt's reason; setSessionPhase publishes that. */
-    m_phase.note_start_requested();
+    QJniObject record = QJniObject::callStaticObjectMethod(kServiceClass, "lifecycleStatus", "()Ljava/lang/String;");
+    const auto status = QJsonDocument::fromJson(record.toString().toUtf8()).object();
+    const auto last_session = static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger());
+    m_initialized_session = last_session;
+    m_phase.note_start_requested(last_session);
 
     QJniObject context = android_context();
     if (!context.isValid()) {
@@ -261,18 +281,36 @@ DecoderHostAndroid::refresh() {
         Q_EMIT runningChanged();
     }
 
-    /* The service owns the transitions; native running-state alone cannot tell
-     * "starting" from "idle", nor a failed start from one that never happened. */
-    QJniObject state = QJniObject::callStaticObjectMethod(kServiceClass, "stateName", "()Ljava/lang/String;");
-    const QByteArray name = state.isValid() ? state.toString().toUtf8() : QByteArrayLiteral("IDLE");
-
-    const SessionPhase phase = m_phase.update(name.constData(), running);
-    setSessionPhase(phase);
+    // One record prevents a return-to-IDLE poll from pairing with the previous
+    // session's error or initialization flag. No decoder snapshot is consumed here.
+    QJniObject record = QJniObject::callStaticObjectMethod(kServiceClass, "lifecycleStatus", "()Ljava/lang/String;");
+    const QJsonObject status = QJsonDocument::fromJson(record.toString().toUtf8()).object();
+    const uint64_t session = static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger());
+    const QByteArray name = status.value(QStringLiteral("state")).toString().toUtf8();
+    const auto reason = static_cast<RunReason>(status.value(QStringLiteral("reason")).toInt());
+    const SessionPhase phase = m_phase.update(name.constData(), running, session, reason);
+    const int device_error = status.value(QStringLiteral("deviceError")).toInt();
+    if (m_device_error != device_error) {
+        m_device_error = device_error;
+        Q_EMIT localDeviceChanged();
+    }
+    if (status.value(QStringLiteral("initialized")).toBool() && session > m_initialized_session) {
+        m_initialized_session = session;
+        Q_EMIT sessionInitialized();
+    }
+    setSessionPhase(phase, status.value(QStringLiteral("lastError")).toString());
     setStatus(phase_text(phase));
 
     const bool usb_ready = QJniObject::callStaticMethod<jboolean>(kUsbClass, "isReady", "()Z") != JNI_FALSE;
     QJniObject usb_status = QJniObject::callStaticObjectMethod(kUsbClass, "statusText", "()Ljava/lang/String;");
     setLocalDeviceState(usb_ready, usb_status.isValid() ? usb_status.toString() : QString());
+    const QJniObject attach = QJniObject::callStaticObjectMethod(kUsbClass, "attachmentStatus", "()Ljava/lang/String;");
+    const QJsonObject attachment = QJsonDocument::fromJson(attach.toString().toUtf8()).object();
+    const auto serial = static_cast<uint64_t>(attachment.value(QStringLiteral("serial")).toInteger());
+    if (serial > m_attachment_serial) {
+        m_attachment_serial = serial;
+        Q_EMIT localDeviceAttached(attachment.value(QStringLiteral("name")).toString());
+    }
 }
 
 void
@@ -324,6 +362,16 @@ DecoderHostAndroid::setLocalDeviceState(bool ready, const QString& text) {
 } // namespace dsd_android
 
 extern "C" {
+
+JNIEXPORT void JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeHostDiagnostic(JNIEnv* env, jclass clazz, jstring line) {
+    (void)env;
+    (void)clazz;
+    // Use the same runtime log surface as hostDiagnostic(), so a diagnostics
+    // log tap also receives messages while the service has no Activity/Qt host.
+    const QByteArray text = QJniObject(line).toString().toUtf8();
+    LOG_INFO("Android: %s\n", text.constData());
+}
 
 /**
  * @brief Asks the Qt event loop to quit, so main() can return.

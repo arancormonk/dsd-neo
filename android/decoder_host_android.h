@@ -40,6 +40,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     bool localDeviceReady() const override;
     QString localDeviceStatus() const override;
+    int localDeviceFailureKind() const override;
+    void hostDiagnostic(const QString& line) override;
 
     /** @brief True: FLAG_KEEP_SCREEN_ON on the Activity window is available. */
     bool
@@ -75,6 +77,9 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief Publish a phase; @p reason overrides the failure text when non-empty. */
     void setSessionPhase(SessionPhase phase, const QString& reason = QString());
 
+    uint64_t m_initialized_session = 0;
+    uint64_t m_attachment_serial = 0;
+    int m_device_error = 0;
     bool m_running = false;
     QString m_status = QStringLiteral("Idle");
     SessionPhaseTracker m_phase;

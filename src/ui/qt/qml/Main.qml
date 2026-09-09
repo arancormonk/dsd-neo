@@ -59,6 +59,26 @@ Window {
     property bool talkgroupsOpen: false
     // The saved-system map the running session was started from.
     property var sessionSystem: null
+    property bool awaitingSessionInitialized: false
+
+    Connections {
+        target: decoderHost
+        function onSessionInitialized() {
+            if (!mainRoot.awaitingSessionInitialized || !mainRoot.sessionSystem)
+                return
+            mainRoot.awaitingSessionInitialized = false
+            // Accepted argv is only a request. These writes belong to the engine's
+            // post-initialization edge, after file validation and tuner open.
+            prefs.lastStartedKind = mainRoot.exploring ? "explore" : "saved"
+            prefs.lastStartedUid = mainRoot.exploring ? "" : mainRoot.sessionSystem.uid || ""
+            if (!mainRoot.exploring)
+                savedSystems.touch(savedSystems.rowForUid(prefs.lastStartedUid))
+        }
+        function onSessionStateChanged() {
+            if (!decoderHost.sessionActive)
+                mainRoot.awaitingSessionInitialized = false
+        }
+    }
     // Whether this session is free to be retuned by hand. False for anything
     // started from a saved system — its card names a frequency, and wandering off
     // it makes the card a lie and mis-files the calls heard afterwards. Set at
@@ -207,6 +227,7 @@ Window {
             return
         }
         mainRoot.sessionSystem = sys
+        mainRoot.awaitingSessionInitialized = true
         mainRoot.sessionRow = row
         // The session's intent, decided here and nowhere else: a system someone
         // saved is a thing to listen to, and the spectrum watches it. Only a
@@ -224,7 +245,6 @@ Window {
         // The monitor's recent-calls pane shows this session, not the whole log.
         monitorView.minWhen = Math.floor(Date.now() / 1000)
         talkgroups.sinceWhen = monitorView.minWhen
-        savedSystems.touch(row)
     }
 
     /**

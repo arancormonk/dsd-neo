@@ -21,6 +21,7 @@
 #define DSD_NEO_ANDROID_SESSION_STATE_MAP_H_
 
 #include <string.h>
+#include "run_status.h"
 
 namespace dsd_android {
 
@@ -64,11 +65,50 @@ class SessionPhaseTracker {
      */
     void
     note_start_requested() {
+        m_waiting_for_session = false;
         m_failed = false;
         m_attempting = true;
         m_saw_running = false;
         m_grace = kStartGraceTicks;
         m_phase = kSessionStarting;
+    }
+
+    /** Ignore the previous session's retained result while an intent is in flight. */
+    void
+    note_start_requested(uint64_t last_session) {
+        note_start_requested();
+        m_last_session = last_session;
+        m_waiting_for_session = true;
+    }
+
+    SessionPhase
+    update(const char* service_state, bool engine_running, uint64_t session_id, RunReason reason) {
+        if (m_waiting_for_session && session_id <= m_last_session) {
+            m_phase = idle_phase();
+            return m_phase;
+        }
+        if (session_id < m_last_session) {
+            return m_phase;
+        }
+        if (session_id > m_last_session) {
+            m_last_session = session_id;
+            m_waiting_for_session = false;
+            m_failed = false;
+        }
+        // Terminal facts outrank every sampled service/running combination. This
+        // catches runs that failed entirely between polls and long-running failures.
+        if (reason == kRunFailed) {
+            m_phase = latch_failure();
+            return m_phase;
+        }
+        if (reason == kRunCompleted || reason == kRunCancelled) {
+            m_attempting = false;
+            m_saw_running = false;
+            m_grace = 0;
+            m_phase = m_failed ? kSessionFailed : kSessionIdle;
+            return m_phase;
+        }
+        return update(service_state, engine_running);
     }
 
     /**
@@ -163,6 +203,8 @@ class SessionPhaseTracker {
     }
 
     SessionPhase m_phase = kSessionIdle;
+    uint64_t m_last_session = 0;
+    bool m_waiting_for_session = false;
     bool m_failed = false;
     bool m_attempting = false;
     bool m_saw_running = false;

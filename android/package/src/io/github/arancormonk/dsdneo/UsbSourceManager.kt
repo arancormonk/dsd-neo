@@ -16,6 +16,7 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
+import org.json.JSONObject
 
 /**
  * Owns the USB-OTG side of a locally attached RTL-SDR.
@@ -65,6 +66,8 @@ object UsbSourceManager {
     private var connection: UsbDeviceConnection? = null
     private var attachedName: String? = null
     private var status: String = ""
+    private var attachmentSerial = 0L
+    private var lastAttachedDevice = ""
     private var requestPending = false
     private var requestedAtMs = 0L
 
@@ -116,6 +119,10 @@ object UsbSourceManager {
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
                     val device = usbDeviceExtra(intent) ?: return
                     if (isKnown(device)) {
+                        synchronized(lock) {
+                            attachmentSerial += 1
+                            lastAttachedDevice = describe(device)
+                        }
                         setStatus("Found ${describe(device)}")
                     }
                 }
@@ -126,6 +133,12 @@ object UsbSourceManager {
     /** Short human-readable attachment/permission state for the UI. */
     @JvmStatic
     fun statusText(): String = synchronized(lock) { status }
+
+    /** Retained attach edge for the UI's existing poll, independent of permission. */
+    @JvmStatic
+    fun attachmentStatus(): String = synchronized(lock) {
+        JSONObject().put("serial", attachmentSerial).put("name", lastAttachedDevice).toString()
+    }
 
     /** Whether a descriptor has been handed to the engine. */
     @JvmStatic
@@ -344,6 +357,7 @@ object UsbSourceManager {
     private fun setStatus(text: String) {
         synchronized(lock) { status = text }
         Log.i(TAG, "usb: $text")
+        DsdNative.nativeHostDiagnostic("usb: $text")
     }
 
     @Suppress("DEPRECATION")

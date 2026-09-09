@@ -35,6 +35,9 @@ class DecoderHost : public QObject {
     Q_PROPERTY(bool localDeviceReady READ localDeviceReady NOTIFY localDeviceChanged)
     Q_PROPERTY(QString localDeviceStatus READ localDeviceStatus NOTIFY localDeviceChanged)
     Q_PROPERTY(bool keepScreenAwakeSupported READ keepScreenAwakeSupported CONSTANT)
+    Q_PROPERTY(bool locationSupported READ locationSupported CONSTANT)
+    Q_PROPERTY(bool shareSupported READ shareSupported CONSTANT)
+    Q_PROPERTY(int localDeviceFailureKind READ localDeviceFailureKind NOTIFY localDeviceChanged)
 
   public:
     /**
@@ -47,6 +50,9 @@ class DecoderHost : public QObject {
      */
     enum SessionState { Idle = 0, Starting = 1, Running = 2, Stopping = 3, Failed = 4 };
     Q_ENUM(SessionState)
+
+    enum LocalDeviceFailureKind { NoDeviceFailure = 0, DeviceBusy = 1, DeviceOpenFailed = 2 };
+    Q_ENUM(LocalDeviceFailureKind)
 
     explicit DecoderHost(QObject* parent = nullptr);
     ~DecoderHost() override;
@@ -135,7 +141,48 @@ class DecoderHost : public QObject {
         return false;
     }
 
+    virtual bool
+    locationSupported() const {
+        return false;
+    }
+
+    virtual bool
+    shareSupported() const {
+        return false;
+    }
+
+    virtual int
+    localDeviceFailureKind() const {
+        return NoDeviceFailure;
+    }
+
   public Q_SLOTS:
+
+    /** Unsupported hosts still answer, so a caller cannot wait forever for a fix. */
+    virtual void
+    requestCurrentLocation(qint64 requestId) {
+        Q_EMIT locationResult(requestId, false, 0, 0, 0, 0, false, QString(), QString(),
+                              QStringLiteral("Location is not supported on this platform"));
+    }
+
+    virtual void
+    cancelLocationRequest(qint64 requestId) {
+        (void)requestId;
+    }
+
+    /** Content, never an arbitrary path. Platform hosts own their narrow share cache. */
+    virtual void
+    shareDiagnostics(const QString& text, const QString& title) {
+        (void)text;
+        (void)title;
+    }
+
+    /** Platform lifecycle/USB diagnostics enter through the host, not a UI platform include. */
+    virtual void
+    hostDiagnostic(const QString& line) {
+        (void)line;
+    }
+
     /**
      * @brief Configure the engine with a CLI-shaped argv and start decoding.
      * @param argv Options without the program name; the host prepends it.
@@ -246,6 +293,10 @@ class DecoderHost : public QObject {
     }
 
   Q_SIGNALS:
+    void sessionInitialized();
+    void locationResult(qint64 requestId, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
+                        bool geocodeOk, const QString& postalCode, const QString& countryCode, const QString& error);
+    void localDeviceAttached(const QString& deviceName);
     void runningChanged();
     void statusTextChanged();
     void sessionStateChanged();
