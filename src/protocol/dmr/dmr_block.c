@@ -527,6 +527,7 @@ dmr_dheader_sanitize_blocks(dsd_state* state, uint8_t slot) {
 static void
 dmr_dheader_reset_irrecoverable(dsd_state* state, uint8_t slot) {
     state->data_header_valid[slot] = 0;
+    state->data_header_crc_invalid[slot] = 0;
     DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "%s", "");
     state->data_p_head[slot] = 0;
     state->data_conf_data[slot] = 0;
@@ -590,6 +591,7 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
     }
 
     if (!(CRCCorrect == 1 || opts->aggressive_framesync == 0 || opts->dmr_crc_relaxed_default)) {
+        dmr_dheader_reset_irrecoverable(state, slot);
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }
@@ -597,7 +599,10 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
     state->data_dbsn_have[slot] = 0;
     state->data_dbsn_expected[slot] = 0;
     dmr_dheader_parse_fields(state, dheader_bits, &f);
+    // A proprietary extension inherits the standard header's addressing and integrity.
+    // Acceptance under relaxed CRC must not turn either header into a verified one.
     if (f.dpf != 15) {
+        state->data_header_crc_invalid[slot] = 0;
         state->dmr_lrrp_source[slot] = f.source;
         state->dmr_lrrp_target[slot] = f.target;
         state->dmr_data_target_is_group[slot] = (uint8_t)(f.gi == 1);
@@ -607,6 +612,10 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
         // --dmr-tg-key-csv lookup degrades to unmapped rather than to the wrong talkgroup.
         state->dmr_data_target_is_group[slot] = 0;
     }
+    state->data_header_crc_invalid[slot] |= (uint8_t)(CRCCorrect != 1);
+    state->data_block_crc_valid[slot][0] = (uint8_t)(state->data_header_crc_invalid[slot] == 0);
+    const uint8_t saved_crc_invalid = state->event_crc_invalid[slot];
+    state->event_crc_invalid[slot] |= state->data_header_crc_invalid[slot];
     if (f.dpf == 2 || f.dpf == 3) {
         state->data_block_poc[slot] = f.poc;
     } else if (f.dpf == 15) {
@@ -641,6 +650,7 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
         }
     }
     state->data_header_sap[slot] = f.sap;
+    state->event_crc_invalid[slot] = saved_crc_invalid;
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
@@ -1038,10 +1048,16 @@ dmr_udt_finalize(dmr_udt_ctx* ctx) {
 static void DSD_ATTR_USED
 dmr_udt_decoder(dsd_opts* opts, dsd_state* state, const uint8_t* block_bytes, uint32_t CRCCorrect) {
     dmr_udt_ctx ctx;
-    UNUSED(CRCCorrect);
+    if (CRCCorrect != 1 && opts->aggressive_framesync != 0 && !opts->dmr_crc_relaxed_default) {
+        return;
+    }
+    const uint8_t slot = (uint8_t)(state->currentslot & 1);
+    const uint8_t saved_crc_invalid = state->event_crc_invalid[slot];
+    state->event_crc_invalid[slot] |= (uint8_t)(CRCCorrect != 1);
     dmr_udt_prepare_context(&ctx, opts, state, block_bytes);
     dmr_udt_decode_format(&ctx);
     dmr_udt_finalize(&ctx);
+    state->event_crc_invalid[slot] = saved_crc_invalid;
 }
 
 static void DSD_ATTR_USED
@@ -1113,11 +1129,6 @@ dmr_block_assembler_init_ctx(dmr_block_assembler_ctx* ctx, dsd_opts* opts, dsd_s
     }
 }
 
-static int
-dmr_block_type1_offset(const dmr_block_assembler_ctx* ctx) {
-    return (ctx->state->data_p_head[ctx->slot] == 1) ? 12 : 0;
-}
-
 static uint8_t
 dmr_block_type1_complete(const dmr_block_assembler_ctx* ctx) {
     return (uint8_t)(ctx->state->data_block_counter[ctx->slot] == ctx->state->data_header_blocks[ctx->slot]
@@ -1151,38 +1162,21 @@ dmr_block_type1_extract_crc32(const dsd_state* state, uint8_t slot_idx, uint16_t
            | ((uint32_t)state->dmr_pdu_sf[slot_idx][ctr - 1] << 0U);
 }
 
-static void DSD_ATTR_USED
-dmr_block_type1_pack_crc_bits(const dsd_state* state, uint8_t slot, uint8_t block_len, uint16_t ctr, int offset,
-                              uint8_t bits[]) {
-    for (int i = 0, j = 0; i < ctr; i += 2, j += 16) {
-        if ((i + 1) < ctr) {
-            bits[j + 0] = (state->dmr_pdu_sf[slot][i + 1] >> 7) & 0x01;
-            bits[j + 1] = (state->dmr_pdu_sf[slot][i + 1] >> 6) & 0x01;
-            bits[j + 2] = (state->dmr_pdu_sf[slot][i + 1] >> 5) & 0x01;
-            bits[j + 3] = (state->dmr_pdu_sf[slot][i + 1] >> 4) & 0x01;
-            bits[j + 4] = (state->dmr_pdu_sf[slot][i + 1] >> 3) & 0x01;
-            bits[j + 5] = (state->dmr_pdu_sf[slot][i + 1] >> 2) & 0x01;
-            bits[j + 6] = (state->dmr_pdu_sf[slot][i + 1] >> 1) & 0x01;
-            bits[j + 7] = (state->dmr_pdu_sf[slot][i + 1] >> 0) & 0x01;
-        }
-
-        bits[j + 8] = (state->dmr_pdu_sf[slot][i] >> 7) & 0x01;
-        bits[j + 9] = (state->dmr_pdu_sf[slot][i] >> 6) & 0x01;
-        bits[j + 10] = (state->dmr_pdu_sf[slot][i] >> 5) & 0x01;
-        bits[j + 11] = (state->dmr_pdu_sf[slot][i] >> 4) & 0x01;
-        bits[j + 12] = (state->dmr_pdu_sf[slot][i] >> 3) & 0x01;
-        bits[j + 13] = (state->dmr_pdu_sf[slot][i] >> 2) & 0x01;
-        bits[j + 14] = (state->dmr_pdu_sf[slot][i] >> 1) & 0x01;
-        bits[j + 15] = (state->dmr_pdu_sf[slot][i] >> 0) & 0x01;
-
-        if (i == (block_len - 1 + offset) && state->data_conf_data[slot] == 1) {
-            i += 2;
+static void
+dmr_block_type1_pack_crc_bits(const uint8_t* bytes, uint16_t count, uint8_t bits[]) {
+    // Confirmed DBSN/CRC9 octets have already been removed by the burst decoder.
+    // TS 102 361-1 B.3.9 processes the second octet of each word before the first.
+    for (uint16_t i = 0; i < count; i += 2) {
+        const uint8_t second = (i + 1U < count) ? bytes[i + 1U] : 0;
+        for (unsigned bit = 0; bit < 8; bit++) {
+            bits[(size_t)i * 8U + bit] = (uint8_t)((second >> (7U - bit)) & 1U);
+            bits[(size_t)i * 8U + 8U + bit] = (uint8_t)((bytes[i] >> (7U - bit)) & 1U);
         }
     }
 }
 
 static void
-dmr_block_type1_update_crc(dmr_block_assembler_ctx* ctx, uint16_t ctr, int offset) {
+dmr_block_type1_update_crc(dmr_block_assembler_ctx* ctx, uint16_t ctr) {
     uint8_t slot_idx = (ctx->slot >= 2) ? 1 : ctx->slot;
 
     // Bound the byte count by whichever is tighter: the stored superframe or the bit buffer.
@@ -1193,17 +1187,25 @@ dmr_block_type1_update_crc(dmr_block_assembler_ctx* ctx, uint16_t ctr, int offse
         ctr = cap;
     }
 
-    DSD_UNPACK_ARRAY_TO_BITS(ctx->state->dmr_pdu_sf[slot_idx], ctx->dmr_pdu_sf_bits, ctr);
-    ctx->crc_extracted = dmr_block_type1_extract_crc32(ctx->state, slot_idx, ctr);
-    dmr_block_type1_pack_crc_bits(ctx->state, ctx->slot, ctx->block_len, ctr, offset, ctx->dmr_pdu_sf_bits);
-    // NbData is uint32_t, so a ctr below the 4-octet CRC trailer would underflow into a
-    // ~4 billion element read. dmr_block_type1_extract_crc32() already guards the same way.
-    const uint32_t crc_bits = (ctr >= 4U) ? (uint32_t)(((uint32_t)ctr * 8U) - 32U) : 0U;
-    ctx->crc_computed = (uint32_t)ComputeCrc32Bit(ctx->dmr_pdu_sf_bits, crc_bits);
-    if (ctx->crc_computed == ctx->crc_extracted
-        || (ctx->state->data_header_format[ctx->slot] == 0xF && ctx->state->data_header_sap[ctx->slot] == 1)) {
-        ctx->crc_correct = 1;
+    const uint8_t* pdu = ctx->state->dmr_pdu_sf[slot_idx];
+    const int mnis = ctx->state->data_header_format[slot_idx] == 0xFU && ctx->state->data_header_sap[slot_idx] == 1U
+                     && ctr >= 10U && pdu[1] == 0x10U && pdu[2] == 0x02U;
+    // Motorola compressed data excludes the first three proprietary-header octets and the
+    // octet immediately before the CRC32. The stored header already excludes its own CRC16.
+    // This proprietary span is corroborated by node-dmr-lib DataBlock.getBuffer() and the
+    // untouched LRRP packet in lwvmobile/dsd-fme#283 (wire CRC 0FE81D14). ETSI does not define
+    // MNIS syntax; applying the ordinary span here was the reason for the old blanket bypass.
+    const uint16_t skip = mnis ? 3U : 0U;
+    const uint16_t overhead = mnis ? 8U : 4U;
+    if (ctr < overhead) {
+        return;
     }
+    const uint16_t crc_bytes = (uint16_t)(ctr - overhead);
+    ctx->crc_extracted = dmr_block_type1_extract_crc32(ctx->state, slot_idx, ctr);
+    dmr_block_type1_pack_crc_bits(pdu + skip, crc_bytes, ctx->dmr_pdu_sf_bits);
+    const uint32_t crc_bits = ((uint32_t)(crc_bytes + 1U) & ~1U) * 8U;
+    ctx->crc_computed = ComputeCrc32Bit(ctx->dmr_pdu_sf_bits, crc_bits);
+    ctx->crc_correct = (ctx->crc_computed == ctx->crc_extracted);
 }
 
 static uint8_t
@@ -1343,9 +1345,7 @@ dmr_block_type1_handle_mnis(dmr_block_assembler_ctx* ctx) {
     // ~65k and then clamp to 150, handing the payload handlers a length far past the received
     // bytes; treat it as empty instead.
     uint16_t avail = (byte_count > 11U) ? (uint16_t)(byte_count - 11U) : 0U;
-    // MNIS PDUs are accepted with a failed CRC32 (see dmr_block_type1_update_crc), so the pad
-    // octet count is unverified. Trust the octets that actually arrived over a pad count that
-    // claims more of them than exist.
+    // Relaxed decoding may accept an unverified pad count. Bound it by received octets.
     uint16_t len = (poc <= avail) ? (uint16_t)(avail - poc) : avail;
     uint32_t msrc = ctx->state->dmr_lrrp_source[ctx->slot];
     uint32_t mdst = ctx->state->dmr_lrrp_target[ctx->slot];
@@ -1463,6 +1463,13 @@ dmr_block_type1_handle_sap(dmr_block_assembler_ctx* ctx) {
 
 static void
 dmr_block_type1_process_payload(dmr_block_assembler_ctx* ctx) {
+    const uint8_t crc_invalid = (uint8_t)(!ctx->crc_correct || ctx->state->data_header_crc_invalid[ctx->slot]
+                                          || !dmr_block_type1_lrrp_crc_ok(ctx->state, ctx->slot));
+    if (crc_invalid && ctx->opts->aggressive_framesync != 0 && !ctx->opts->dmr_crc_relaxed_default) {
+        return;
+    }
+    const uint8_t saved_crc_invalid = ctx->state->event_crc_invalid[ctx->slot];
+    ctx->state->event_crc_invalid[ctx->slot] |= crc_invalid;
     uint8_t enc_check = dmr_block_type1_encryption_required(ctx);
     uint8_t decrypted_pdu = enc_check ? 0 : 1;
 
@@ -1471,9 +1478,10 @@ dmr_block_type1_process_payload(dmr_block_assembler_ctx* ctx) {
     }
     if (enc_check == 1 && decrypted_pdu == 0) {
         dmr_block_type1_handle_encrypted_notice(ctx);
-    } else if (ctx->crc_correct || ctx->opts->aggressive_framesync == 0 || ctx->opts->dmr_crc_relaxed_default) {
+    } else {
         dmr_block_type1_handle_sap(ctx);
     }
+    ctx->state->event_crc_invalid[ctx->slot] = saved_crc_invalid;
 }
 
 static void DSD_ATTR_USED
@@ -1502,6 +1510,7 @@ dmr_block_type1_clear_header_state(dmr_block_assembler_ctx* ctx) {
     ctx->state->data_header_format[ctx->slot] = 7;
     ctx->state->data_header_sap[ctx->slot] = 0;
     ctx->state->data_header_valid[ctx->slot] = 0;
+    ctx->state->data_header_crc_invalid[ctx->slot] = 0;
     ctx->state->data_conf_data[ctx->slot] = 0;
     ctx->state->data_block_poc[ctx->slot] = 0;
     ctx->state->data_header_dd_format[ctx->slot] = 0;
@@ -1513,15 +1522,11 @@ dmr_block_type1_clear_header_state(dmr_block_assembler_ctx* ctx) {
 static void
 dmr_block_assembler_handle_type1(dmr_block_assembler_ctx* ctx) {
     uint16_t ctr = 0;
-    // Only the CRC32 bit-reordering walk needs this: it locates the confirmed-data DBSN octets
-    // past the 12 octet proprietary header.
-    int offset = dmr_block_type1_offset(ctx);
-
     dmr_block_type1_append_bytes(ctx, &ctr);
     if (!dmr_block_type1_complete(ctx)) {
         return;
     }
-    dmr_block_type1_update_crc(ctx, ctr, offset);
+    dmr_block_type1_update_crc(ctx, ctr);
     dmr_block_type1_process_payload(ctx);
     dmr_block_type1_log_crc_and_payload(ctx);
     dmr_block_type1_clear_header_state(ctx);
@@ -1652,8 +1657,13 @@ dmr_block_type2_update_crc(dmr_block_assembler_ctx* ctx) {
         ctx->irrecoverable_errors = 0;
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
-        DSD_FPRINTF(stderr, "\n Slot %d - Multi Block Control Message CRC16 ERR", ctx->slot + 1);
-        DSD_FPRINTF(stderr, " %X - %X", ctx->crc_extracted, ctx->crc_computed);
+        if (!ctx->mbc_crc_good[0]) {
+            DSD_FPRINTF(stderr, "\n Slot %d - MBC/UDT Header CRC16 ERR", ctx->slot + 1);
+        }
+        if (!ctx->mbc_crc_good[1]) {
+            DSD_FPRINTF(stderr, "\n Slot %d - Multi Block Control Message CRC16 ERR", ctx->slot + 1);
+            DSD_FPRINTF(stderr, " %X - %X", ctx->crc_extracted, ctx->crc_computed);
+        }
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
 }
@@ -1661,8 +1671,16 @@ dmr_block_type2_update_crc(dmr_block_assembler_ctx* ctx) {
 static void
 dmr_block_type2_dispatch(dmr_block_assembler_ctx* ctx) {
     if (!ctx->is_udt && !ctx->pf) {
-        dmr_cspdu(ctx->opts, ctx->state, ctx->dmr_pdu_sf_bits, ctx->state->dmr_pdu_sf[ctx->slot], ctx->crc_correct,
-                  ctx->irrecoverable_errors);
+        // A RAS-accepted MBC header may still be followed by a checked continuation. Keep
+        // that existing decode path without promoting its stored header CRC to a match.
+        const uint32_t accepted = ctx->crc_correct
+                                  || (ctx->opts->aggressive_framesync == 0 && ctx->mbc_crc_good[1]
+                                      && ctx->state->data_header_valid[ctx->slot]);
+        const uint8_t saved_crc_invalid = ctx->state->event_crc_invalid[ctx->slot];
+        ctx->state->event_crc_invalid[ctx->slot] |= (uint8_t)(!ctx->crc_correct);
+        dmr_cspdu(ctx->opts, ctx->state, ctx->dmr_pdu_sf_bits, ctx->state->dmr_pdu_sf[ctx->slot], accepted,
+                  accepted ? 0U : ctx->irrecoverable_errors);
+        ctx->state->event_crc_invalid[ctx->slot] = saved_crc_invalid;
     }
     if (ctx->is_udt && !ctx->pf) {
         dmr_udt_decoder(ctx->opts, ctx->state, ctx->state->dmr_pdu_sf[ctx->slot], ctx->crc_correct);
@@ -1733,6 +1751,7 @@ dmr_block_assembler_reset_type1(dmr_block_assembler_ctx* ctx) {
     ctx->state->data_header_format[ctx->slot] = 7;
     ctx->state->data_header_sap[ctx->slot] = 0;
     ctx->state->data_header_valid[ctx->slot] = 0;
+    ctx->state->data_header_crc_invalid[ctx->slot] = 0;
     ctx->state->data_conf_data[ctx->slot] = 0;
     ctx->state->data_p_head[ctx->slot] = 0;
     ctx->state->data_block_poc[ctx->slot] = 0;
@@ -1751,6 +1770,7 @@ dmr_block_assembler_reset_type2(dmr_block_assembler_ctx* ctx) {
     ctx->state->data_header_format[ctx->slot] = 7;
     ctx->state->data_header_sap[ctx->slot] = 0;
     ctx->state->data_header_valid[ctx->slot] = 0;
+    ctx->state->data_header_crc_invalid[ctx->slot] = 0;
     ctx->state->data_conf_data[ctx->slot] = 0;
     ctx->state->data_p_head[ctx->slot] = 0;
     ctx->state->data_header_dd_format[ctx->slot] = 0;
@@ -1815,6 +1835,7 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));
     DSD_MEMSET(state->cap_plus_block_num, 0, sizeof(state->cap_plus_block_num));
     DSD_MEMSET(state->data_header_valid, 0, sizeof(state->data_header_valid));
+    DSD_MEMSET(state->data_header_crc_invalid, 0, sizeof(state->data_header_crc_invalid));
     DSD_MEMSET(state->data_header_format, 7, sizeof(state->data_header_format));
     DSD_MEMSET(state->data_header_sap, 0, sizeof(state->data_header_sap));
     DSD_MEMSET(state->data_dbsn_expected, 0, sizeof(state->data_dbsn_expected));

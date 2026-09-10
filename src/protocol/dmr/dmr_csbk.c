@@ -232,13 +232,27 @@ dmr_heuristic_fill_gaps(dsd_state* state, const dmr_heuristic_anchor_stats* stat
     return filled;
 }
 
+// Channel-map notices deliberately use history slot 0 even when learned on slot 1.
+// Carry the originating burst's CRC failure across that attribution change.
+static void
+dmr_cspdu_emit_channel_notice(dsd_opts* opts, dsd_state* state, const char* msg) {
+    const int prev_alert = opts->call_alert;
+    const uint8_t saved_crc_invalid = state->event_crc_invalid[0];
+    opts->call_alert = 0;
+    state->event_crc_invalid[0] |= state->event_crc_invalid[state->currentslot & 1];
+    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, 0xFFFFFFU, 0xFFFFFFU);
+    (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, msg);
+    state->event_crc_invalid[0] = saved_crc_invalid;
+    opts->call_alert = prev_alert;
+    dsd_event_sync_slot(opts, state, 0);
+}
+
 static void
 dmr_heuristic_report_fill(dsd_opts* opts, dsd_state* state, const dmr_heuristic_anchor_stats* stats, long step,
                           int filled) {
     char msg[160];
     double mhz0;
     double step_khz;
-    int prev_alert;
 
     if (!opts || !state || !stats || filled <= 0) {
         return;
@@ -248,12 +262,7 @@ dmr_heuristic_report_fill(dsd_opts* opts, dsd_state* state, const dmr_heuristic_
     step_khz = (double)step / 1000.0;
     DSD_SNPRINTF(msg, sizeof(msg), "DMR TIII: Heuristic filled %d LCNs (%0.3f kHz step) from %04d@%0.6f MHz;", filled,
                  step_khz, stats->first_lcn, mhz0);
-    prev_alert = opts->call_alert;
-    opts->call_alert = 0;
-    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, 0xFFFFFFU, 0xFFFFFFU);
-    (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, msg);
-    opts->call_alert = prev_alert;
-    dsd_event_sync_slot(opts, state, 0);
+    dmr_cspdu_emit_channel_notice(opts, state, msg);
 }
 
 // Attempt to fill missing LCNs heuristically from learned anchors.
@@ -315,13 +324,7 @@ dmr_learn_chan_map(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int fre
         // Print in MHz with 6 decimal places
         double mhz = (double)freq / 1000000.0;
         DSD_SNPRINTF(msg, sizeof(msg), "DMR TIII: Learned LCN %04u -> %010.6f MHz;", lpcn, mhz);
-        int prev_alert = opts->call_alert;
-        opts->call_alert = 0; // suppress beeper for system-status events
-        const dsd_call_observation observation =
-            dsd_call_observation_data(state->lastsynctype, 0U, 0xFFFFFFU, 0xFFFFFFU);
-        (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, msg);
-        opts->call_alert = prev_alert;
-        dsd_event_sync_slot(opts, state, 0);
+        dmr_cspdu_emit_channel_notice(opts, state, msg);
     }
 
     // Try heuristic gap fill after learning a new anchor

@@ -234,12 +234,20 @@ Windows console runs:
   timestamp and the protocol token; lines from a receiver that is not scanning a named channel are unchanged.
   In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
   P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]`, while FDMA rows carry no slot tag.
+  DMR and P25 Phase 1 data accepted with a failed header, packet, or confirmed-block CRC under `-F`
+  carry `[CRC ERR]` after the timestamp, on both the event and its detail lines. History exposes these
+  as warnings. Strict CRC mode does not publish these failed data PDUs, including MNIS, UDT and
+  encrypted-PDU notices. DMR's separate relaxed-CRC configuration follows the same marking policy.
+  Suspected RAS voice events also retain the marker through delayed commits and reacquisition.
+  The marker means a CRC check failed, not that every decoded field is wrong: RAS can intentionally
+  alter the check. Absence of the marker is not a universal verification guarantee for every protocol.
 
   ```text
   2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: 00050061; SRC: 00001234;
   2026-04-30 09:12:04 Talker Alias: ENGINE 12
   2026-04-30 09:12:11 TMS SRC: 1234; DST: 42; Slot 1;
   2026-04-30 09:12:11 Text: MEET AT THE NORTH GATE
+  2026-04-30 09:12:15 [CRC ERR] MNIS TGT: 42; SRC: 1234; IP ID: 5501;
   2026-04-30 09:12:20 DMR TGT: 00000100; SRC: 00000000; Slot 1;
   2026-04-30 09:12:20 Reacquired: DMR TGT: 00000100; SRC: 00004321; Slot 1;
   ```
@@ -450,7 +458,7 @@ Notes
 - Disable DMR/dPMR/NXDN/M17 input filtering: `-l`
 - Analog filter bitmap (advanced): `-v <hex>` (bitmask for HPF/LPF/PBF)
 - Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps)
-- Relax CRC checks: `-F` (P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT). No effect on NXDN, which always requires
+- Relax CRC checks: `-F` (P25p1 data, P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT). No effect on NXDN, which always requires
   CRC-verified content (see the NXDN note under "Modes & Decoders" above).
 - M17 signed voice-stream verification: `--m17-signature-public-key <hex>` accepts a 64-byte secp256r1 public key as
   raw `X||Y` hex.
