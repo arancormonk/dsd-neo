@@ -2,6 +2,11 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 .pragma library
 
+// Only numeric talkgroups get the TG prefix; callsigns remain names in their own right.
+function talkgroupHeadline(name, tgText, tgId) {
+    return tgId > 0 && name === tgText ? "TG " + tgText : name.length > 0 ? name : tgText;
+}
+
 // Decode chip catalog: label ↔ CLI flags. The empty flag is the engine's own
 // default (P25 Phase 1+2, DMR and YSF enabled together), so "Auto" passes
 // nothing. Each entry carries the whole flag set its system type needs — the

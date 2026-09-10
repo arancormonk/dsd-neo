@@ -52,6 +52,8 @@ Item {
     readonly property string heroTg: heroSlot === 1 ? metrics.slot1TgText : heroSlot === 2 ? metrics.slot2TgText : ""
     readonly property string heroSrc: heroSlot === 1 ? metrics.slot1SrcText : heroSlot === 2 ? metrics.slot2SrcText : ""
     readonly property double heroTgId: heroSlot === 1 ? metrics.slot1TgId : heroSlot === 2 ? metrics.slot2TgId : 0
+    readonly property bool heroDuplicate: heroTgId > 0 && heroName === heroTg
+    readonly property string heroHeadline: Util.talkgroupHeadline(heroName, heroTg, heroTgId)
     readonly property bool heroEmergency: heroSlot === 1 ? metrics.slot1CallEmergency : heroSlot === 2 ? metrics.slot2CallEmergency : false
     readonly property bool otherEmergency: otherSlot === 1 ? metrics.slot1CallEmergency : otherSlot === 2 ? metrics.slot2CallEmergency : false
     readonly property bool heroEnc: heroSlot === 1 ? metrics.slot1CallEnc : heroSlot === 2 ? metrics.slot2CallEnc : false
@@ -65,6 +67,7 @@ Item {
     readonly property bool otherActive: otherSlot === 1 ? metrics.slot1CallState === 2 : otherSlot === 2 ? metrics.slot2CallState === 2 : false
     readonly property string otherName: otherSlot === 1 ? metrics.slot1CallName : otherSlot === 2 ? metrics.slot2CallName : ""
     readonly property string otherTg: otherSlot === 1 ? metrics.slot1TgText : otherSlot === 2 ? metrics.slot2TgText : ""
+    readonly property double otherTgId: otherSlot === 1 ? metrics.slot1TgId : otherSlot === 2 ? metrics.slot2TgId : 0
     readonly property bool otherEnc: otherSlot === 1 ? metrics.slot1CallEnc : otherSlot === 2 ? metrics.slot2CallEnc : false
 
     // Ticks the recent-calls age labels ("now", "1m", "2h") once a minute:
@@ -88,7 +91,7 @@ Item {
     readonly property bool holding: metrics ? metrics.heldTg > 0 : false
     readonly property bool scanHeld: metrics ? metrics.scanHold : false
 
-    onHeroNameChanged: heroText.requestPaint()
+    onHeroHeadlineChanged: heroText.requestPaint()
 
     Rectangle {
         anchors.fill: parent
@@ -320,7 +323,7 @@ Item {
                 onPaint: {
                     var ctx = getContext("2d");
                     ctx.reset();
-                    var label = screen.heroName.length > 0 ? screen.heroName : screen.heroTg;
+                    var label = screen.heroHeadline;
                     ctx.font = "bold " + Theme.fontSize(screen.compactHeight ? 25 : 31) + "px \"" + Theme.sans + "\"";
                     ctx.textBaseline = "middle";
                     var gradient = ctx.createLinearGradient(0, 0, Math.max(ctx.measureText(label).width, 1), 0);
@@ -371,7 +374,7 @@ Item {
                     elide: Text.ElideRight
                     text: {
                         var parts = [];
-                        if (screen.heroTg.length > 0 && screen.heroTg !== "0")
+                        if (!screen.heroDuplicate && screen.heroTg.length > 0 && screen.heroTg !== "0")
                             parts.push("TG " + screen.heroTg);
                         if (screen.heroSrc.length > 0 && screen.heroSrc !== "0")
                             parts.push("SRC " + screen.heroSrc);
@@ -594,12 +597,13 @@ Item {
                 }
 
                 Text {
+                    objectName: "otherSlotIdentity"
                     anchors.left: otherSlotLabel.right
                     anchors.leftMargin: 10
                     anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
                     anchors.rightMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
-                    text: screen.otherName.length > 0 ? screen.otherName + " · TG " + screen.otherTg : "TG " + screen.otherTg
+                    text: screen.otherTgId > 0 && screen.otherName === screen.otherTg ? Util.talkgroupHeadline(screen.otherName, screen.otherTg, screen.otherTgId) : screen.otherName.length > 0 ? screen.otherName + " · TG " + screen.otherTg : "TG " + screen.otherTg
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(14)
                     font.weight: Font.DemiBold
