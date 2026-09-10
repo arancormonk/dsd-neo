@@ -2,6 +2,11 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 .pragma library
 
+// Only numeric talkgroups get the TG prefix; callsigns remain names in their own right.
+function talkgroupHeadline(name, tgText, tgId) {
+    return tgId > 0 && name === tgText ? "TG " + tgText : name.length > 0 ? name : tgText;
+}
+
 // Decode chip catalog: label ↔ CLI flags. The empty flag is the engine's own
 // default (P25 Phase 1+2, DMR and YSF enabled together), so "Auto" passes
 // nothing. Each entry carries the whole flag set its system type needs — the
@@ -141,6 +146,14 @@ function mhzText(hz) {
 // The same number with its unit: "769.76875 MHz".
 function fmtMhz(hz) {
     return mhzText(hz) + " MHz"
+}
+
+// Site calculations stay in kilometers; convert only the displayed distance.
+function fmtDistanceKm(km, metricUnits) {
+    if (typeof km !== "number" || !isFinite(km) || km < 0)
+        return ""
+    return metricUnits ? qsTr("%1 km").arg(km.toFixed(1))
+                       : qsTr("%1 mi").arg((km / 1.609344).toFixed(1))
 }
 
 // The catalog entry a chip flag names, or null. One lookup for every question

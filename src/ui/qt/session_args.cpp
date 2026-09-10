@@ -82,6 +82,15 @@ normalized_ppm(const QVariantMap& system, const SessionArgPrefs& prefs) {
     return ppm;
 }
 
+/** Resolve the optional system override before any argv is emitted. */
+bool
+resolve_hangtime(const QVariantMap& system, const SessionArgPrefs& prefs, double& seconds) {
+    const QString overrideText = system.value(QStringLiteral("hangtime")).toString().trimmed();
+    bool ok = true;
+    seconds = overrideText.isEmpty() ? prefs.hangtimeSec : overrideText.toDouble(&ok);
+    return ok && std::isfinite(seconds) && seconds >= 0.0 && seconds <= 30.0;
+}
+
 /** @brief Append "-i <spec>" for the system's source type. */
 void
 append_input_args(QStringList& args, const QVariantMap& system, const QString& sourceType, const QString& tail,
@@ -153,7 +162,7 @@ append_csv_args(QStringList& args, const QVariantMap& system) {
 
 /** @brief Append the decode chip, trunking, policy flags, and extra CLI args. */
 void
-append_flag_args(QStringList& args, const QVariantMap& system, const SessionArgPrefs& prefs) {
+append_flag_args(QStringList& args, const QVariantMap& system, const SessionArgPrefs& prefs, double hangtime) {
     const QString decodeFlag = system.value(QStringLiteral("decodeFlag")).toString().trimmed();
     if (!decodeFlag.isEmpty()) {
         // A chip may carry several flags, so split rather than push whole.
@@ -168,6 +177,7 @@ append_flag_args(QStringList& args, const QVariantMap& system, const SessionArgP
     if (prefs.autoPpm) {
         args << QStringLiteral("--auto-ppm");
     }
+    args << QStringLiteral("-t") << QString::number(hangtime, 'f', 1);
     const QString extra =
         (system.value(QStringLiteral("extraArgs")).toString() + QLatin1Char(' ') + prefs.extraArgs).trimmed();
     if (!extra.isEmpty()) {
@@ -420,6 +430,7 @@ session_args_error_text(SessionArgsError error) {
                 "Enter an M17 AES key with 32, 48, or 64 hex digits; an all-zero key is unavailable to the decoder.");
         case SessionArgsError::Frequency: return QStringLiteral("Enter a positive frequency in MHz.");
         case SessionArgsError::Ppm: return QStringLiteral("Enter a whole number for PPM.");
+        case SessionArgsError::Hangtime: return QStringLiteral("Enter hang time in seconds from 0 to 30.");
         case SessionArgsError::KeyType: return QStringLiteral("Choose one encryption key type.");
         case SessionArgsError::KeyBasic: return QStringLiteral("Enter a basic key from 0 to 255.");
         case SessionArgsError::KeyHex: return QStringLiteral("Enter 10, 32, or 64 hexadecimal digits.");
@@ -523,6 +534,11 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
         return fail(SessionArgsError::Ppm);
     }
 
+    double hangtime = 0.0;
+    if (!resolve_hangtime(system, prefs, hangtime)) {
+        return fail(SessionArgsError::Hangtime);
+    }
+
     if (!session_args_profile_compatible(system)) {
         return fail(SessionArgsError::KeyType);
     }
@@ -554,7 +570,7 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     if (!system.value("decryptionProfileRef").toString().isEmpty()) {
         args << "--key-profile-ref" << system.value("decryptionProfileRef").toString();
     }
-    append_flag_args(args, system, prefs);
+    append_flag_args(args, system, prefs, hangtime);
     return args;
 }
 
@@ -577,6 +593,7 @@ SessionArgsBuilder::buildArgs(const QVariantMap& system, SessionArgsError* error
         prefs.biasTee = m_prefs->biasTee();
         prefs.skipEncrypted = m_prefs->skipEncrypted();
         prefs.autoPpm = m_prefs->autoPpm();
+        prefs.hangtimeSec = m_prefs->hangtimeSec();
         prefs.extraArgs = m_prefs->extraArgs();
     }
     QVariantMap input = system;
@@ -613,6 +630,7 @@ validationResult(SessionArgsError error) {
     result.insert(QStringLiteral("ok"), error == SessionArgsError::None);
     result.insert(QStringLiteral("error"), error == SessionArgsError::Frequency      ? QStringLiteral("frequency")
                                            : error == SessionArgsError::Ppm          ? QStringLiteral("ppm")
+                                           : error == SessionArgsError::Hangtime     ? QStringLiteral("hangtime")
                                            : error == SessionArgsError::UnsafeOption ? QStringLiteral("unsafe-option")
                                            : error == SessionArgsError::None         ? QString()
                                                                                      : QStringLiteral("encryption"));

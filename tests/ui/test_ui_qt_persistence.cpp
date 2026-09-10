@@ -134,6 +134,7 @@ full_system_map(void) {
     map.insert(QStringLiteral("trunking"), true);
     map.insert(QStringLiteral("gainDb"), 36);
     map.insert(QStringLiteral("ppm"), QStringLiteral("-2"));
+    map.insert(QStringLiteral("hangtime"), QStringLiteral("1.5"));
     map.insert(QStringLiteral("bandwidthKhz"), 12);
     map.insert(QStringLiteral("biasTee"), true);
     map.insert(QStringLiteral("extraArgs"), QStringLiteral("-C chan.csv"));
@@ -158,6 +159,7 @@ test_saved_systems(void) {
         expect("tuning overrides round-trip",
                got.value(QStringLiteral("gainDb")).toInt() == 36
                    && got.value(QStringLiteral("ppm")).toString() == QStringLiteral("-2")
+                   && got.value(QStringLiteral("hangtime")).toString() == QStringLiteral("1.5")
                    && got.value(QStringLiteral("bandwidthKhz")).toInt() == 12
                    && got.value(QStringLiteral("biasTee")).toInt() == 1
                    && got.value(QStringLiteral("extraArgs")).toString() == QStringLiteral("-C chan.csv"));
@@ -215,10 +217,21 @@ test_saved_systems(void) {
         expect("explicit bias-tee off persists as off", model.get(3).value(QStringLiteral("biasTee")).toInt() == 0);
     }
 
+    auto legacyRows = json_store_load_array(QStringLiteral("saved_systems.json"));
+    auto legacyRow = legacyRows.at(1).toObject();
+    legacyRow.remove(QStringLiteral("hangtime"));
+    legacyRows.replace(1, legacyRow);
+    expect("legacy system stored without hang time",
+           json_store_save_array(QStringLiteral("saved_systems.json"), legacyRows));
+
     /* A second instance is the Activity-restart path: everything above must
      * come back from disk, including the legacy decode-flag migration. */
     SavedSystemsModel reloaded;
     expect("reload restores every row", reloaded.count() == 4);
+    expect("hang time persists through partial edits and reload",
+           reloaded.get(0).value("hangtime") == "1.5"
+               && reloaded.data(reloaded.index(0), SavedSystemsModel::HangtimeRole) == "1.5");
+    expect("legacy hang time follows app default", reloaded.get(1).value("hangtime").toString().isEmpty());
     expect("reload restores fields",
            reloaded.get(0).value(QStringLiteral("name")).toString() == QStringLiteral("Renamed")
                && reloaded.get(0).value(QStringLiteral("extraArgs")).toString() == QStringLiteral("-C chan.csv"));
@@ -326,6 +339,12 @@ test_app_prefs(void) {
         expect("background listening defaults on", prefs.backgroundListening());
         expect("skip-encrypted defaults on", prefs.skipEncrypted());
         expect("auto-ppm defaults off", !prefs.autoPpm());
+        expect("hang time defaults to two seconds", prefs.hangtimeSec() == 2.0);
+        prefs.setHangtimeSec(99);
+        expect("hang time is clamped", prefs.hangtimeSec() == 30.0);
+        prefs.setHangtimeSec(-1);
+        expect("hang time has a zero lower bound", prefs.hangtimeSec() == 0.0);
+        prefs.setHangtimeSec(3.5);
         expect("bias tee defaults off", !prefs.biasTee());
         expect("gain defaults to 30 dB", prefs.gainDb() == 30);
         expect("ppm defaults to 0", prefs.ppm() == 0);
@@ -369,6 +388,7 @@ test_app_prefs(void) {
 
     AppPrefs reloaded;
     expect("gain persists across instances", reloaded.gainDb() == 42);
+    expect("hang time persists across instances", reloaded.hangtimeSec() == 3.5);
     expect("extra args persist across instances", reloaded.extraArgs() == QStringLiteral("--enc-lockout"));
     expect("onboarding flag persists", reloaded.onboardingDone());
     expect("explore source persists", reloaded.exploreSourceType() == QStringLiteral("rtltcp"));
@@ -382,6 +402,29 @@ test_app_prefs(void) {
      * session and re-prompted next launch, so it can never reach a settings file
      * or a device backup. */
     expect("no RadioReference password preference exists", reloaded.metaObject()->indexOfProperty("rrPassword") == -1);
+}
+
+void
+test_units_preference() {
+    {
+        AppPrefs prefs;
+        expect("units default to imperial", !prefs.metricUnits());
+        int changes = 0;
+        QObject::connect(&prefs, &AppPrefs::metricUnitsChanged, &prefs, [&changes]() { ++changes; });
+        prefs.setMetricUnits(false);
+        expect("unchanged units do not notify", changes == 0);
+        prefs.setMetricUnits(true);
+        expect("metric selection updates and notifies", prefs.metricUnits() && changes == 1);
+        prefs.setMetricUnits(true);
+        expect("repeated metric selection does not notify", changes == 1);
+    }
+    {
+        AppPrefs reloaded;
+        expect("metric units persist across instances", reloaded.metricUnits());
+        reloaded.setMetricUnits(false);
+    }
+    AppPrefs restored;
+    expect("switching back to imperial persists", !restored.metricUnits());
 }
 
 void
@@ -615,6 +658,7 @@ main(int argc, char** argv) {
     test_saved_systems();
     test_saved_systems_csv_fields();
     test_app_prefs();
+    test_units_preference();
     test_migration_write_failure();
     test_foundation_persistence();
     // WP-S2: opting out preserves the last successful target, including scan lists.

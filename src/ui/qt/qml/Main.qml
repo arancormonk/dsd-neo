@@ -498,6 +498,8 @@ Window {
                 mainRoot.startError = qsTr("“%1” has no valid frequency. Edit the source to correct it.").arg(sys.name);
             } else if (built.error === "ppm") {
                 mainRoot.startError = qsTr("“%1” has an invalid PPM correction. Edit the source to correct it.").arg(sys.name);
+            } else if (built.error === "hangtime") {
+                mainRoot.startError = qsTr("Enter hang time in seconds from 0 to 30.");
             } else if (built.error === "encryption") {
                 mainRoot.startError = qsTr("“%1” has an invalid decryption configuration. Edit the source to correct it.").arg(sys.name);
             } else if (built.error === "unsafe-option") {
@@ -537,6 +539,7 @@ Window {
         // or its tail calls read as the new system's.
         uiController.flushHistory();
         callHistory.sessionLabel = sys.name;
+        callHistory.sessionUid = (!scan && sys.uid) ? sys.uid : "";
         // The monitor's recent-calls pane shows this session, not the whole log.
         monitorView.minWhen = Math.floor(Date.now() / 1000);
         talkgroups.sinceWhen = monitorView.minWhen;
@@ -845,6 +848,7 @@ Window {
         id: spectrumScreen
 
         SpectrumScreen {
+            objectName: "spectrumScreen"
             exploring: mainRoot.exploring
 
             onClosed: mainRoot.spectrumOpen = false
@@ -877,6 +881,7 @@ Window {
                 mainRoot.sessionRow = -1;
                 uiController.flushHistory();
                 callHistory.sessionLabel = qsTr("Exploring");
+                callHistory.sessionUid = "";
             }
             onSaveAsSystem: function (freqHz) {
                 wizard.openForFound(mainRoot.sessionSystem, Util.mhzText(freqHz));

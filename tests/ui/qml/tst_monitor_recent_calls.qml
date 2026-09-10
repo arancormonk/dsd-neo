@@ -48,6 +48,59 @@ Item {
             tryVerify(function () { return tc.atTop() })
         }
 
+        function cleanup() {
+            findChild(screenLoader.item, "monitorHistoryDetail").visible = false
+            for (var slot = 1; slot <= 2; ++slot) {
+                for (var field of ["CallName", "TgText", "SrcText"])
+                    testContext.setMetric("slot" + slot + field, "")
+                testContext.setMetric("slot" + slot + "TgId", 0)
+                testContext.setMetric("slot" + slot + "CallState", 0)
+            }
+            testContext.setMetric("leadSlot", 0)
+        }
+
+        function test_headline_deduplication_data() {
+            return [
+                {tag: "number", name: "4001", tg: "4001", id: 4001, headline: "TG 4001", ids: "SRC 7001", other: "TG 4001"},
+                {tag: "callsign", name: "KC1ABC", tg: "KC1ABC", id: 0, headline: "KC1ABC", ids: "TG KC1ABC · SRC 7001", other: "KC1ABC · TG KC1ABC"},
+                {tag: "alias", name: "Fire", tg: "4001", id: 4001, headline: "Fire", ids: "TG 4001 · SRC 7001", other: "Fire · TG 4001"},
+                {tag: "empty-name", name: "", tg: "4001", id: 4001, headline: "4001", ids: "TG 4001 · SRC 7001", other: "TG 4001"}
+            ]
+        }
+
+        function test_headline_deduplication(data) {
+            var ids = findChild(screenLoader.item, "heroIds")
+            var other = findChild(screenLoader.item, "otherSlotIdentity")
+            for (var slot = 1; slot <= 2; ++slot) {
+                testContext.setMetric("slot" + slot + "CallState", 2)
+                testContext.setMetric("slot" + slot + "CallName", data.name)
+                testContext.setMetric("slot" + slot + "TgText", data.tg)
+                testContext.setMetric("slot" + slot + "TgId", data.id)
+                testContext.setMetric("slot" + slot + "SrcText", "7001")
+            }
+            for (var lead = 1; lead <= 2; ++lead) {
+                testContext.setMetric("leadSlot", lead)
+                compare(screenLoader.item.heroHeadline, data.headline)
+                compare(ids.text, data.ids)
+                compare(other.text, data.other)
+            }
+        }
+
+        function test_recent_row_opens_details() {
+            callHistory.sessionUid = "test-system"
+            var name = callHistory.push("TODAY")
+            tc.list.positionViewAtBeginning()
+            var row = null
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === name })
+            verify(row.interactive)
+            waitForRendering(row)
+            mouseClick(row, row.width / 2, row.height / 2)
+            var sheet = findChild(screenLoader.item, "monitorHistoryDetail")
+            tryCompare(sheet, "visible", true)
+            compare(sheet.record.name, name)
+            compare(sheet.record.systemUid, "test-system")
+        }
+
         function test_source_alias_is_visible() {
             var newest = callHistory.pushWithSourceName("Radio 1201")
             tryVerify(function () {

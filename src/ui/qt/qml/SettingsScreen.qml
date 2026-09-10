@@ -3,7 +3,7 @@
 
 import QtQuick
 
-// Settings: appearance, listening, decoding, and the advanced tuner defaults
+// Settings: appearance, units, listening, decoding, and the advanced tuner defaults
 // folded shut. Every row writes straight through to the persisted preference.
 Item {
     id: screen
@@ -42,6 +42,34 @@ Item {
             onEditingFinished: {
                 if (!error.length)
                     valueRow.edited(text);
+            }
+        }
+    }
+
+    component DecimalRow: Item {
+        id: decimalRow
+        property string title: ""
+        property string subtitle: ""
+        property string unit: ""
+        property alias text: decimalInput.text
+        signal edited(string text)
+        width: parent ? parent.width : 0
+        height: decimalInput.implicitHeight + 16
+        PlexTextField {
+            id: decimalInput
+            objectName: "hangtimePreferenceField"
+            x: Theme.cardPadding
+            y: 8
+            width: parent.width - 2 * Theme.cardPadding
+            label: decimalRow.title
+            hint: decimalRow.subtitle
+            unit: decimalRow.unit
+            mono: true
+            inputMethodHints: Qt.ImhFormattedNumbersOnly
+            error: /^\d{1,2}(\.\d)?$/.test(text) && Number(text) <= 30 ? "" : qsTr("Enter seconds from 0 to 30, e.g. 2.0.")
+            onEditingFinished: {
+                if (!error.length)
+                    decimalRow.edited(text);
             }
         }
     }
@@ -105,6 +133,40 @@ Item {
                         font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
+                    }
+                }
+            }
+
+            // UNITS
+            UiPanel {
+                width: parent.width
+                height: unitsColumn.height + Theme.cardPadding + 4
+
+                Column {
+                    id: unitsColumn
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: Theme.cardPadding
+                    spacing: 0
+
+                    MicroLabel {
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: qsTr("Units")
+                        leftPadding: Theme.cardPadding
+                        bottomPadding: 6
+                    }
+
+                    ToggleRow {
+                        objectName: "metricUnitsToggle"
+                        title: qsTr("Use metric units")
+                        subtitle: prefs.metricUnits ? qsTr("Distances in kilometers (km)") : qsTr("Distances in miles (mi)")
+                        checked: prefs.metricUnits
+                        onToggled: function (state) {
+                            prefs.metricUnits = state;
+                        }
                     }
                 }
             }
@@ -230,6 +292,16 @@ Item {
                         checked: prefs.autoPpm
                         onToggled: function (state) {
                             prefs.autoPpm = state;
+                        }
+                    }
+
+                    DecimalRow {
+                        title: qsTr("Voice hang time")
+                        subtitle: qsTr("Keeps a call's channel after voice stops. Also sets channel-scanning dwell (-Y); scan lists have separate dwell settings.")
+                        unit: "s"
+                        text: prefs.hangtimeSec.toFixed(1)
+                        onEdited: function (value) {
+                            prefs.hangtimeSec = Number(value);
                         }
                     }
                 }

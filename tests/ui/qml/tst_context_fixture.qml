@@ -16,7 +16,7 @@ TestCase {
         // The screens the other cases load, plus Theme.qml: the screens pull it
         // in as a singleton and it reads prefs itself.
         var missing = testContext.missingContextKeys(
-            ["HistoryScreen.qml", "MonitorScreen.qml", "SpectrumScreen.qml", "ExploreSetupScreen.qml", "RadioSheet.qml",
+            ["HistoryScreen.qml", "HistoryDetailSheet.qml", "MonitorScreen.qml", "SpectrumScreen.qml", "ExploreSetupScreen.qml", "RadioSheet.qml",
              "ImportsScreen.qml", "WizardScreen.qml", "HomeScreen.qml", "SettingsScreen.qml", "Main.qml",
              "SiteChooserSheet.qml", "ScanListScreen.qml", "ScanListCard.qml", "ScanEntryRow.qml", "DiagnosticsScreen.qml", "RadioReferenceScreen.qml", "TalkgroupsScreen.qml", "TalkgroupCard.qml", "TalkgroupEditSheet.qml", "TalkgroupSaveFlow.qml", "Theme.qml"])
 

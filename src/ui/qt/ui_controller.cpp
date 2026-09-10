@@ -99,7 +99,9 @@ UiController::flushHistory() {
     if (m_history == nullptr) {
         return;
     }
-    m_history->refresh(dsd_app_get_latest_snapshot());
+    const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    m_history->refresh(snapshot, opts_snapshot);
 }
 
 void
@@ -246,7 +248,7 @@ UiController::tick() {
     /* The call history is persistent by design, so unlike the metrics it is never
      * cleared on session boundaries — only fed. */
     if (m_history != nullptr) {
-        m_history->refresh(snapshot);
+        m_history->refresh(snapshot, opts_snapshot);
     }
     if (live && m_talkgroups != nullptr) {
         m_talkgroups->refresh(opts_snapshot, snapshot);

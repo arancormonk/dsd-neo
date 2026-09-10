@@ -679,6 +679,10 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * the last one costs no binding re-evaluation. See MetricsModel::View. */
     View next;
 
+    // Published atomically with the scan flags. Until this first valid snapshot,
+    // a cleared model cannot prove that a new session is not scanning.
+    next.options_known = true;
+
     /* Drives whether the tuner-facing rows are shown at all. Taken from the options
      * the running session was configured with, which is the same authority the
      * metrics fetch above uses to decide whether any of them mean anything. */

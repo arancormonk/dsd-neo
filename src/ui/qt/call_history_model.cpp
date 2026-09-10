@@ -18,6 +18,8 @@
 #include <QVariant>
 #include <QtGlobal>
 #include <algorithm>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <iterator>
 #include <stdint.h>
@@ -33,6 +35,7 @@ namespace {
 
 constexpr const char kStoreFileName[] = "call_history.json";
 constexpr const char kSeenStoreFileName[] = "call_history_seen.json";
+constexpr const char kSessionUidKey[] = "callHistory/sessionUid";
 constexpr const char kSessionLabelKey[] = "callHistory/sessionLabel";
 constexpr const char kClearedThroughKey[] = "callHistory/clearedThrough";
 constexpr int kMaxRows = 1000;
@@ -84,6 +87,7 @@ CallHistoryModel::CallHistoryModel(QObject* parent) : QAbstractListModel(parent)
      * session is still decoding, and its backlog lands before any start button is
      * pressed. Without the persisted label those rows would be attributed to "". */
     m_sessionLabel = m_settings.value(QLatin1String(kSessionLabelKey)).toString();
+    m_sessionUid = m_settings.value(QLatin1String(kSessionUidKey)).toString();
     /* Restored for the same reason: Clear must survive an Activity restart while
      * the service's ring still holds the cleared rows. */
     m_clearedThrough = m_settings.value(QLatin1String(kClearedThroughKey)).toLongLong();
@@ -135,26 +139,35 @@ CallHistoryModel::rowCount(const QModelIndex& parent) const {
 
 namespace {
 
-/** @brief One row's value for @p role; an unknown role reads as null. */
+/** Identity roles shared by the history views and their saved row details. */
 QVariant
-row_role_value(const CallHistoryModel::Row& row, int role) {
+row_identity_value(const CallHistoryModel::Row& row, int role) {
     switch (role) {
         case CallHistoryModel::NameRole: return row.name;
         case CallHistoryModel::TgRole: return row.tg;
         case CallHistoryModel::SrcRole: return row.src;
         case CallHistoryModel::SourceNameRole: return row.sourceName;
+        case CallHistoryModel::SystemNameRole: return row.systemName;
+        case CallHistoryModel::SystemUidRole: return row.systemUid;
+        default: return QVariant();
+    }
+}
+
+/** @brief One row's value for @p role; an unknown role reads as null. */
+QVariant
+row_role_value(const CallHistoryModel::Row& row, int role) {
+    switch (role) {
         case CallHistoryModel::EmergencyRole: return row.emergency;
         case CallHistoryModel::EncRole: return row.enc;
         case CallHistoryModel::WhenRole: return row.when;
         case CallHistoryModel::DurationSecsRole: return row.durationSecs;
-        case CallHistoryModel::SystemNameRole: return row.systemName;
         case CallHistoryModel::DayLabelRole: return day_label(row.when);
         case CallHistoryModel::TimeTextRole:
             return QDateTime::fromSecsSinceEpoch(row.when).toString(QStringLiteral("HH:mm"));
         case CallHistoryModel::KindRole: return row.kind;
         case CallHistoryModel::DetailRole: return row.detail;
         case CallHistoryModel::ChannelRole: return row.channel;
-        default: return QVariant();
+        default: return row_identity_value(row, role);
     }
 }
 
@@ -180,6 +193,7 @@ CallHistoryModel::roleNames() const {
     roles.insert(WhenRole, QByteArrayLiteral("when"));
     roles.insert(DurationSecsRole, QByteArrayLiteral("durationSecs"));
     roles.insert(SystemNameRole, QByteArrayLiteral("systemName"));
+    roles.insert(SystemUidRole, QByteArrayLiteral("systemUid"));
     roles.insert(DayLabelRole, QByteArrayLiteral("dayLabel"));
     roles.insert(TimeTextRole, QByteArrayLiteral("timeText"));
     roles.insert(KindRole, QByteArrayLiteral("kind"));
@@ -196,6 +210,16 @@ CallHistoryModel::setSessionLabel(const QString& label) {
     m_sessionLabel = label;
     m_settings.setValue(QLatin1String(kSessionLabelKey), label);
     Q_EMIT sessionLabelChanged();
+}
+
+void
+CallHistoryModel::setSessionUid(const QString& uid) {
+    if (uid == m_sessionUid) {
+        return;
+    }
+    m_sessionUid = uid;
+    m_settings.setValue(QLatin1String(kSessionUidKey), uid);
+    Q_EMIT sessionUidChanged();
 }
 
 QStringList
@@ -259,7 +283,8 @@ notice_summary(const Event_History* item) {
 
 /** @brief One committed ring item as a display row. */
 CallHistoryModel::Row
-row_from_item(const Event_History* item, const QString& sessionLabel, int slot, qulonglong seq) {
+row_from_item(const Event_History* item, const QString& sessionLabel, const QString& systemUid, int slot,
+              qulonglong seq) {
     CallHistoryModel::Row row;
     row.slot = slot;
     row.seq = seq;
@@ -299,6 +324,8 @@ row_from_item(const Event_History* item, const QString& sessionLabel, int slot, 
      * role: the row's meta line shows it, search matches it, and a talkgroup heard
      * on two channels stays two rows. */
     row.systemName = sessionLabel;
+    // Retained scan rows remain ineligible even if rotation has since stopped.
+    row.systemUid = item->channel_label[0] == '\0' ? systemUid : QString();
     row.channel = QString::fromUtf8(item->channel_label);
     /* The ring stamps both ends of the transmission: event_start_time when the
      * epoch began, event_time as its last render (its end, once committed). Their
@@ -352,7 +379,7 @@ CallHistoryModel::noteSeen(const QString& key, qint64 when, qint64 end, qulonglo
 }
 
 QList<CallHistoryModel::FreshRow>
-CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2]) {
+CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid) {
     QList<FreshRow> fresh;
     for (int slot = 0; slot < 2; slot++) {
         if (!scan[slot]) {
@@ -391,7 +418,7 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2]) {
             if (verdict == SeenUnchanged) {
                 continue;
             }
-            fresh.append(FreshRow{row_from_item(item, m_sessionLabel, slot, seq), verdict == SeenAdvanced});
+            fresh.append(FreshRow{row_from_item(item, m_sessionLabel, systemUid, slot, seq), verdict == SeenAdvanced});
         }
     }
     return fresh;
@@ -410,7 +437,7 @@ rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Ro
     // them would leave one conversation split across two rows.
     const bool srcCompatible = existing.src == row.src || existing.src == 0 || row.src == 0;
     if (existing.tg != row.tg || !srcCompatible || existing.systemName != row.systemName
-        || existing.channel != row.channel) {
+        || existing.systemUid != row.systemUid || existing.channel != row.channel) {
         return false;
     }
     // Textual targets (M17/D-STAR/YSF callsigns, dPMR dial strings) all share
@@ -545,7 +572,7 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate) {
 }
 
 void
-CallHistoryModel::refresh(const dsd_state* snapshot) {
+CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot) {
     if (snapshot == nullptr || snapshot->event_history_s == nullptr) {
         return;
     }
@@ -567,7 +594,10 @@ CallHistoryModel::refresh(const dsd_state* snapshot) {
         return;
     }
 
-    const QList<FreshRow> fresh = collectFresh(snapshot, scan);
+    // The effective options cover scans started from a saved system's extra
+    // arguments as well as the list UI. Unknown options cannot establish identity.
+    const bool singleSystem = opts_snapshot && !opts_snapshot->scanner_mode && !opts_snapshot->trunk_scan_enabled;
+    const QList<FreshRow> fresh = collectFresh(snapshot, scan, singleSystem ? m_sessionUid : QString());
 
     if (fresh.isEmpty()) {
         return;
@@ -656,6 +686,7 @@ CallHistoryModel::load() {
         row.emergency = obj.value(QLatin1String("em")).toBool();
         row.durationSecs = obj.value(QLatin1String("durationSecs")).toInt(-1);
         row.systemName = obj.value(QLatin1String("systemName")).toString();
+        row.systemUid = obj.value(QLatin1String("systemUid")).toString();
         row.kind = obj.value(QLatin1String("kind")).toInt(KindVoice);
         row.detail = obj.value(QLatin1String("detail")).toString();
         row.channel = obj.value(QLatin1String("channel")).toString();
@@ -737,6 +768,7 @@ CallHistoryModel::rowsToJson() const {
         }
         obj.insert(QLatin1String("durationSecs"), row.durationSecs);
         obj.insert(QLatin1String("systemName"), row.systemName);
+        obj.insert(QLatin1String("systemUid"), row.systemUid);
         obj.insert(QLatin1String("kind"), row.kind);
         if (!row.detail.isEmpty()) {
             obj.insert(QLatin1String("detail"), row.detail);

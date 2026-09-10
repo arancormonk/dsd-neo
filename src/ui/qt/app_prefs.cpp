@@ -8,6 +8,7 @@
 #include <QDateTime>
 #include <QLatin1String>
 #include <QVariant>
+#include <cmath>
 
 namespace dsd_qt {
 
@@ -16,10 +17,12 @@ namespace {
 // Keys are flat and stable: renaming one silently resets that preference for
 // every existing install, so treat them as a persistence format.
 constexpr const char kAppearance[] = "ui/appearance";
+constexpr const char kMetricUnits[] = "ui/metricUnits";
 constexpr const char kOnboardingDone[] = "ui/onboardingDone";
 constexpr const char kBackgroundListening[] = "listen/background";
 constexpr const char kKeepScreenAwake[] = "listen/keepAwake";
 constexpr const char kSkipEncrypted[] = "decode/skipEncrypted";
+constexpr const char kHangtimeSec[] = "decode/hangtimeSec";
 constexpr const char kAutoPpm[] = "decode/autoPpm";
 constexpr const char kGainDb[] = "tuner/gainDb";
 constexpr const char kPpm[] = "tuner/ppm";
@@ -39,12 +42,21 @@ constexpr const char kExplorePort[] = "explore/port";
 constexpr const char kExploreFreqMhz[] = "explore/freqMhz";
 
 /*
- * Three preferences are range-checked on the way out. They are checked on the way
+ * Preferences are range-checked on the way out. They are checked on the way
  * in as well, and the setters below compare against what is *stored* rather than
  * against the checked reading — otherwise an out-of-range write persists (the
  * getter hides it) and the corrective write that follows looks like a no-op and is
  * dropped, leaving the file permanently disagreeing with the app.
  */
+
+/** @brief Finite seconds in the UI range, rounded to the displayed precision. */
+double
+sane_hangtime(double seconds) {
+    if (!std::isfinite(seconds)) {
+        return 2.0;
+    }
+    return std::round(qBound(0.0, seconds, 30.0) * 10.0) / 10.0;
+}
 
 /** @brief @p mode if it names an appearance, else the default. */
 int
@@ -131,6 +143,20 @@ AppPrefs::setAppearance(int mode) {
 }
 
 bool
+AppPrefs::metricUnits() const {
+    return m_settings.value(QLatin1String(kMetricUnits), false).toBool();
+}
+
+void
+AppPrefs::setMetricUnits(bool on) {
+    if (on == metricUnits()) {
+        return;
+    }
+    m_settings.setValue(QLatin1String(kMetricUnits), on);
+    Q_EMIT metricUnitsChanged();
+}
+
+bool
 AppPrefs::onboardingDone() const {
     return m_settings.value(QLatin1String(kOnboardingDone), false).toBool();
 }
@@ -201,6 +227,21 @@ AppPrefs::setSkipEncrypted(bool on) {
     }
     m_settings.setValue(QLatin1String(kSkipEncrypted), on);
     Q_EMIT skipEncryptedChanged();
+}
+
+double
+AppPrefs::hangtimeSec() const {
+    return sane_hangtime(m_settings.value(QLatin1String(kHangtimeSec), 2.0).toDouble());
+}
+
+void
+AppPrefs::setHangtimeSec(double seconds) {
+    const double value = sane_hangtime(seconds);
+    if (value == m_settings.value(QLatin1String(kHangtimeSec), 2.0).toDouble()) {
+        return;
+    }
+    m_settings.setValue(QLatin1String(kHangtimeSec), value);
+    Q_EMIT hangtimeSecChanged();
 }
 
 bool

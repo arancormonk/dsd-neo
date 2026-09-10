@@ -105,6 +105,7 @@ SavedSystemsModel::tuningRoleValue(const Row& row, int role) {
         case TrunkingRole: return row.trunking;
         case GainDbRole: return row.gainDb;
         case PpmRole: return row.ppm;
+        case HangtimeRole: return row.hangtime;
         case BandwidthKhzRole: return row.bandwidthKhz;
         case BiasTeeRole: return row.biasTee;
         case ExtraArgsRole: return row.extraArgs;
@@ -145,6 +146,7 @@ SavedSystemsModel::roleNames() const {
     roles.insert(TrunkingRole, QByteArrayLiteral("trunking"));
     roles.insert(GainDbRole, QByteArrayLiteral("gainDb"));
     roles.insert(PpmRole, QByteArrayLiteral("ppm"));
+    roles.insert(HangtimeRole, QByteArrayLiteral("hangtime"));
     roles.insert(BandwidthKhzRole, QByteArrayLiteral("bandwidthKhz"));
     roles.insert(BiasTeeRole, QByteArrayLiteral("biasTee"));
     roles.insert(ExtraArgsRole, QByteArrayLiteral("extraArgs"));
@@ -283,6 +285,7 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     map_take_bool(map, QStringLiteral("trunking"), &row.trunking);
     map_take_int(map, QStringLiteral("gainDb"), &row.gainDb);
     map_take_string(map, QStringLiteral("ppm"), &row.ppm);
+    map_take_string(map, QStringLiteral("hangtime"), &row.hangtime);
     map_take_int(map, QStringLiteral("bandwidthKhz"), &row.bandwidthKhz);
     if (map.contains(QStringLiteral("biasTee"))) {
         row.biasTee = bias_tee_from_stored(map.value(QStringLiteral("biasTee")));
@@ -327,6 +330,7 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     map.insert(QStringLiteral("trunking"), row.trunking);
     map.insert(QStringLiteral("gainDb"), row.gainDb);
     map.insert(QStringLiteral("ppm"), row.ppm);
+    map.insert(QStringLiteral("hangtime"), row.hangtime);
     map.insert(QStringLiteral("bandwidthKhz"), row.bandwidthKhz);
     map.insert(QStringLiteral("biasTee"), row.biasTee);
     map.insert(QStringLiteral("extraArgs"), row.extraArgs);

@@ -32,13 +32,17 @@
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <initializer_list>
+#include <memory>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include "../test_support/qt_test_paths.h"
+#include "json_store.h"
 
 #include "call_history_model.h"
 #include "dsd-neo/core/safe_api.h"
@@ -139,6 +143,93 @@ struct RingFixture {
         rings[slot].revision++;
     }
 };
+
+void
+test_system_identity_persistence(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    const time_t when = 1754500800;
+    {
+        CallHistoryModel model;
+        model.setSessionLabel("Same name");
+        model.setSessionUid("system-a");
+        ring.commit(0, 1001, 2001, when, when + 4);
+        model.refresh(ring.state, opts.get());
+        expect("ingest exposes saved identity",
+               model.data(model.index(0), CallHistoryModel::SystemUidRole) == "system-a");
+        model.setSessionUid("system-b");
+        ring.commit(0, 1001, 2001, when + 5, when + 9);
+        model.refresh(ring.state, opts.get());
+        expect("same-named systems do not merge", model.count() == 2);
+        expect("changing session identity preserves old rows",
+               model.data(model.index(1), CallHistoryModel::SystemUidRole) == "system-a");
+        expect("new calls carry the new identity",
+               model.data(model.index(0), CallHistoryModel::SystemUidRole) == "system-b");
+    }
+    {
+        CallHistoryModel restored;
+        expect("session identity persists", restored.sessionUid() == "system-b");
+        expect("row identity persists",
+               restored.data(restored.index(0), CallHistoryModel::SystemUidRole) == "system-b"
+                   && restored.data(restored.index(1), CallHistoryModel::SystemUidRole) == "system-a");
+        restored.refresh(ring.state, opts.get());
+        expect("identity does not change ring deduplication", restored.count() == 2);
+    }
+    auto rows = dsd_qt::json_store_load_array("call_history.json");
+    auto legacy = rows.at(1).toObject();
+    legacy.remove("systemUid");
+    rows.replace(1, legacy);
+    expect("legacy history fixture saved", dsd_qt::json_store_save_array("call_history.json", rows));
+    CallHistoryModel legacyModel;
+    expect("legacy row has no hold identity",
+           legacyModel.data(legacyModel.index(1), CallHistoryModel::SystemUidRole).toString().isEmpty());
+}
+
+void
+test_scanning_rows_never_gain_hold_identity(void) {
+    for (int scanMode = 0; scanMode < 2; ++scanMode) {
+        resetStorage();
+        RingFixture ring;
+        auto opts = std::make_unique<dsd_opts>();
+        opts->scanner_mode = scanMode == 0;
+        opts->trunk_scan_enabled = scanMode == 1;
+        const time_t when = 1754500900;
+        {
+            CallHistoryModel model;
+            // A saved system can carry -Y or --trunk-scan in extra arguments.
+            model.setSessionLabel("Saved source");
+            model.setSessionUid("saved-source");
+            ring.commit(0, 1001, 2001, when, when + 4);
+            model.refresh(ring.state, opts.get());
+            expect("effective scanning excludes row identity even without a channel label",
+                   model.count() == 1
+                       && model.data(model.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
+        }
+        CallHistoryModel restored;
+        expect("scanned row remains ineligible after reload",
+               restored.count() == 1
+                   && restored.data(restored.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
+        opts->scanner_mode = 0;
+        opts->trunk_scan_enabled = 0;
+        ring.commit(0, 1001, 2001, when + 5, when + 9);
+        restored.refresh(ring.state, opts.get());
+        expect("later single-system call is eligible and cannot merge into a scan row",
+               restored.count() == 2
+                   && restored.data(restored.index(0), CallHistoryModel::SystemUidRole) == "saved-source"
+                   && restored.data(restored.index(1), CallHistoryModel::SystemUidRole).toString().isEmpty());
+        ring.commit(0, 3001, 4001, when + 20, when + 24, "", "", "Retained scan target");
+        restored.refresh(ring.state, opts.get());
+        expect("retained scan-labelled rows stay ineligible after rotation stops",
+               restored.count() == 3
+                   && restored.data(restored.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
+        ring.commit(0, 5001, 6001, when + 30, when + 34);
+        restored.refresh(ring.state);
+        expect("unknown effective options cannot grant hold identity",
+               restored.count() == 4
+                   && restored.data(restored.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
+    }
+}
 
 void
 test_two_slots_same_second_same_talkgroup(void) {
@@ -533,6 +624,8 @@ main(int argc, char** argv) {
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
     QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, settingsDir.path());
 
+    test_system_identity_persistence();
+    test_scanning_rows_never_gain_hold_identity();
     test_source_labels_survive_merge_and_relaunch();
     test_source_label_is_independent_of_refresh_timing();
     test_source_label_provenance_survives_merged_span_and_relaunch();

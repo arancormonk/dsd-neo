@@ -117,9 +117,10 @@ site; the other sites retain their individual import settings. A single-site imp
 site identity. Identity uses RadioReference's database site ID, not the RF site number.
 
 Home groups sibling sites under one card with an **n sites ›** chooser. **Use my location** requests a
-foreground fix; valid site distances appear in kilometers. **Nearest site** skips avoided sites and
-sites without valid coordinates. Missing `(0, 0)` coordinates and nonfinite or out-of-range values never
-participate in distance calculations. The avoid switch is saved locally.
+foreground fix; valid site distances appear in miles by default. Enable **Settings → Units → Use metric
+units** to display kilometers. The preference is saved locally and updates displayed distances immediately.
+**Nearest site** skips avoided sites and sites without valid coordinates. Missing `(0, 0)` coordinates and
+nonfinite or out-of-range values never participate in distance calculations. The avoid switch is saved locally.
 
 Site buttons and **Nearest site** start only while Idle. While listening, open **Sites ›**, then use
 **Stop and switch** for the desired site. It stops the session, waits for confirmed Idle, and starts the

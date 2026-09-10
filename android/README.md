@@ -773,7 +773,21 @@ imports' exclusion behavior). Supplying keys never silently unblocks a talkgroup
 Android Back dismisses input, then the top dialog, then the pushed screen or
 wizard step. Root Back follows the background-listening preference. Monitor's
 More menu reaches History, Settings and Diagnostics without stopping the session.
-Preferences identify changes that apply at the next start.
+Preferences identify changes that apply at the next start. **Decoding → Voice hang time**
+defaults to 2.0 seconds (0.0–30.0); a saved system can override it under Advanced,
+or leave its field empty to follow the app default. Extra decoder arguments containing
+`-t` take precedence. Channel scanning enabled with `-Y` also uses this value as
+its dwell timer; scan lists have separate dwell settings.
+
+To check P25 timing, Extra decoder arguments must include a writable filename,
+for example `--p25-sm-log /data/user/0/io.github.arancormonk.dsdneo/files/p25-sm.log`.
+Effective hang time and carrier-release events are appended to that file, not
+the Diagnostics screen. Stop listening before retrieving it. On a rooted test
+emulator, use `adb root` followed by `adb pull` with that path; a debuggable build
+can use `adb exec-out run-as io.github.arancormonk.dsdneo cat files/p25-sm.log > p25-sm.log`.
+Production builds on non-rooted devices do not expose app-private files through
+adb. Remove the argument after testing to stop the log growing. Argument
+construction is also covered by the host tests.
 
 Controls expose named accessibility actions, keyboard focus and 48 dp targets.
 Text uses Android's per-size SP conversion, including nonlinear large-text scaling.
@@ -793,13 +807,24 @@ File details show the basename, size and modification time. Replay completion is
 retained with a Play again action. Progress is not invented when the input backend
 cannot report it. History rows open full details, including timestamps and messages.
 
+Tap a row in History or Monitor's Recent calls to **Hold TG** while listening to
+the same saved system. The held talkgroup follows the decoder's state; release it
+from the details or Monitor. Explore sessions and scans (including scans enabled
+through Extra decoder arguments) cannot start a history hold. Hold waits for
+the effective session settings to arrive after startup. Rows heard during
+those sessions or saved before system identities were recorded remain ineligible,
+even after starting a single saved system. A running session can still release an
+existing hold, including from a different system's row with the same talkgroup ID.
+
 ### Scan lists
 
 Home → **Scan lists** combines saved systems and bare P25/DMR/NXDN frequencies
 into a single trunk-scan session. Use the visible Edit action (or long-press) to edit entries, order, timing,
 modulation and gain. Choose one USB or RTL-TCP tuner for the list; it replaces
 individual systems' source, endpoint, PPM, bandwidth and bias-tee settings.
-The list editor can select imported group/source CSVs from the existing library.
+Scan lists use the app's voice hang time; per-system hang-time overrides do not apply.
+`-t` is separate from idle dwell on every target and the activity hold on conventional
+targets. The list editor can select imported group/source CSVs from the existing library.
 Per-system groups and keys remain isolated on rotation; source aliases are global
 and differing system alias files produce a warning. Unsupported settings are
 refused rather than dropped. See [scan-list rules](../docs/trunk-scan.md#qt-and-android-scan-lists).

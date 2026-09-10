@@ -129,6 +129,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool tunerControlled READ tunerControlled NOTIFY controlChanged)
     Q_PROPERTY(bool trunkingEnabled READ trunkingEnabled NOTIFY controlChanged)
     Q_PROPERTY(bool scannerMode READ scannerMode NOTIFY controlChanged)
+    Q_PROPERTY(bool optionsKnown READ optionsKnown NOTIFY controlChanged)
     Q_PROPERTY(bool scanRotationActive READ scanRotationActive NOTIFY controlChanged)
     Q_PROPERTY(int configuredForce READ configuredForce NOTIFY controlChanged)
     Q_PROPERTY(int effectiveForce READ effectiveForce NOTIFY controlChanged)
@@ -681,6 +682,12 @@ class MetricsModel : public QObject {
         return m_view.scan_rotation_active;
     }
 
+    /** @brief Effective options have arrived; cleared scan flags alone are not authoritative. */
+    bool
+    optionsKnown() const {
+        return m_view.options_known;
+    }
+
     /** @brief The operator hold on the channel or target on air, read from the engine. */
     bool
     scanHold() const {
@@ -1011,6 +1018,7 @@ class MetricsModel : public QObject {
         bool tuner_controlled = false;
         bool trunking_enabled = false;
         bool scanner_mode = false;
+        bool options_known = false;
         bool scan_rotation_active = false;
         QString scan_target_id;
         int scan_target_ordinal = 0;
@@ -1036,10 +1044,10 @@ class MetricsModel : public QObject {
            neither comparison outgrows the complexity ceiling as readings are added. */
         bool
         scanControlEquals(const View& other) const {
-            return scan_target_id == other.scan_target_id && scan_target_ordinal == other.scan_target_ordinal
-                   && scan_target_count == other.scan_target_count && scan_rotation_active == other.scan_rotation_active
-                   && scan_hold == other.scan_hold && scan_avoid_count == other.scan_avoid_count
-                   && scan_target_avoided == other.scan_target_avoided;
+            return options_known == other.options_known && scan_target_id == other.scan_target_id
+                   && scan_target_ordinal == other.scan_target_ordinal && scan_target_count == other.scan_target_count
+                   && scan_rotation_active == other.scan_rotation_active && scan_hold == other.scan_hold
+                   && scan_avoid_count == other.scan_avoid_count && scan_target_avoided == other.scan_target_avoided;
         }
 
         bool

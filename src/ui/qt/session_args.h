@@ -38,6 +38,7 @@ struct SessionArgPrefs {
     bool biasTee = false;
     bool skipEncrypted = true;
     bool autoPpm = false;
+    double hangtimeSec = 2.0;
     QString extraArgs;
 };
 
@@ -53,6 +54,7 @@ enum class SessionArgsError {
     None,
     Frequency,
     Ppm,
+    Hangtime,
     KeyType,
     KeyBasic,
     KeyHex,
@@ -87,7 +89,7 @@ bool session_args_freq_valid(const QString& freqMhz);
  *
  * Per-system overrides fall back to the app-wide defaults (-1 / empty string
  * mean "no override"; biasTee is -1 follow / 0 off / 1 on). A malformed
- * frequency or PPM must fail here, not downstream as a silently mistuned or
+ * frequency, PPM or hang time must fail here, not downstream as a silently mistuned or
  * uncorrected session.
  */
 QStringList session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, SessionArgsError* error);

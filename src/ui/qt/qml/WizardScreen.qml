@@ -34,7 +34,7 @@ Item {
         }
     }
     function draftFingerprint() {
-        return JSON.stringify([sourceType, hostText, portText, fileText, freqText, decodeFlag, trunking, gainText, ppmText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
+        return JSON.stringify([sourceType, hostText, portText, fileText, freqText, decodeFlag, trunking, gainText, ppmText, hangtimeText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
     }
     function requestBack() {
         Navigation.clearInput(wizard.Window.window);
@@ -77,6 +77,7 @@ Item {
     property bool advancedOpen: false
     property alias gainText: gainField.text
     property alias ppmText: ppmField.text
+    property alias hangtimeText: hangtimeField.text
     property alias bwText: bwField.text
     // Tri-state: -1 follows the app-wide Settings pref, 0 forces off, 1 forces
     // on. An explicit Off must survive a global On — it means this dongle or
@@ -176,6 +177,7 @@ Item {
         advancedOpen = false;
         gainField.text = "";
         ppmField.text = "";
+        hangtimeField.text = "";
         bwField.text = "";
         biasTee = -1;
         extraField.text = "";
@@ -221,6 +223,7 @@ Item {
         advancedOpen = false;
         gainField.text = "";
         ppmField.text = "";
+        hangtimeField.text = "";
         bwField.text = "";
         biasTee = -1;
         extraField.text = "";
@@ -256,6 +259,7 @@ Item {
         advancedOpen = false;
         gainField.text = sys.gainDb >= 0 ? String(sys.gainDb) : "";
         ppmField.text = sys.ppm;
+        hangtimeField.text = sys.hangtime || "";
         bwField.text = sys.bandwidthKhz > 0 ? String(sys.bandwidthKhz) : "";
         biasTee = sys.biasTee;
         extraField.text = sys.extraArgs;
@@ -333,6 +337,10 @@ Item {
         return /^[0-9]+$/.test(portText) && p >= 1 && p <= 65535;
     }
 
+    function hangtimeValid() {
+        return hangtimeText.length === 0 || (/^\d{1,2}(\.\d)?$/.test(hangtimeText) && Number(hangtimeText) <= 30);
+    }
+
     function stepValid() {
         if (step === 0) {
             if (sourceType === "rtltcp" || sourceType === "tcp")
@@ -344,12 +352,12 @@ Item {
             return true;
         }
         if (step === 1)
-            return encryptionValid && (!radioSource || sessionArgs.freqValid(freqText));
-        return encryptionValid && nameText.trim().length > 0;
+            return hangtimeValid() && encryptionValid && (!radioSource || sessionArgs.freqValid(freqText));
+        return hangtimeValid() && encryptionValid && nameText.trim().length > 0;
     }
 
     function commit() {
-        if (!encryptionValid)
+        if (!hangtimeValid() || !encryptionValid)
             return;
         var sys = {
             name: nameText.trim(),
@@ -361,6 +369,7 @@ Item {
             trunking: trunking,
             gainDb: gainText.length > 0 ? intOr(gainText, -1) : -1,
             ppm: ppmText,
+            hangtime: hangtimeText,
             bandwidthKhz: bwText.length > 0 ? intOr(bwText, -1) : -1,
             biasTee: biasTee,
             extraArgs: extraText.trim(),
@@ -1245,6 +1254,19 @@ Item {
                                     }
                                 }
                             }
+                        }
+
+                        PlexTextField {
+                            id: hangtimeField
+                            objectName: "systemHangtimeField"
+                            width: parent.width
+                            label: qsTr("Voice hang time")
+                            unit: "s"
+                            mono: true
+                            placeholderText: prefs.hangtimeSec.toFixed(1)
+                            hint: qsTr("Leave empty to follow the app default · next start. Scan lists always use the app default.")
+                            inputMethodHints: Qt.ImhFormattedNumbersOnly
+                            error: wizard.hangtimeValid() ? "" : qsTr("Enter hang time in seconds from 0 to 30.")
                         }
 
                         Column {

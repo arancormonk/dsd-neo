@@ -34,6 +34,7 @@ class AppPrefs : public QObject {
     Q_PROPERTY(qint64 lastFixAt READ lastFixAt NOTIFY locationChanged)
 
     Q_PROPERTY(int appearance READ appearance WRITE setAppearance NOTIFY appearanceChanged)
+    Q_PROPERTY(bool metricUnits READ metricUnits WRITE setMetricUnits NOTIFY metricUnitsChanged)
     Q_PROPERTY(bool onboardingDone READ onboardingDone WRITE setOnboardingDone NOTIFY onboardingDoneChanged)
     Q_PROPERTY(bool notificationExplained READ notificationExplained WRITE setNotificationExplained NOTIFY
                    notificationExplainedChanged)
@@ -41,6 +42,7 @@ class AppPrefs : public QObject {
                    backgroundListeningChanged)
     Q_PROPERTY(bool keepScreenAwake READ keepScreenAwake WRITE setKeepScreenAwake NOTIFY keepScreenAwakeChanged)
     Q_PROPERTY(bool skipEncrypted READ skipEncrypted WRITE setSkipEncrypted NOTIFY skipEncryptedChanged)
+    Q_PROPERTY(double hangtimeSec READ hangtimeSec WRITE setHangtimeSec NOTIFY hangtimeSecChanged)
     Q_PROPERTY(bool autoPpm READ autoPpm WRITE setAutoPpm NOTIFY autoPpmChanged)
     Q_PROPERTY(int gainDb READ gainDb WRITE setGainDb NOTIFY gainDbChanged)
     Q_PROPERTY(int ppm READ ppm WRITE setPpm NOTIFY ppmChanged)
@@ -88,6 +90,10 @@ class AppPrefs : public QObject {
     int appearance() const;
     void setAppearance(int mode);
 
+    /** @brief Display metric units when enabled; imperial is the default. */
+    bool metricUnits() const;
+    void setMetricUnits(bool on);
+
     bool onboardingDone() const;
     void setOnboardingDone(bool done);
 
@@ -101,6 +107,9 @@ class AppPrefs : public QObject {
 
     bool skipEncrypted() const;
     void setSkipEncrypted(bool on);
+
+    double hangtimeSec() const;
+    void setHangtimeSec(double seconds);
 
     bool autoPpm() const;
     void setAutoPpm(bool on);
@@ -151,11 +160,13 @@ class AppPrefs : public QObject {
     void locationChanged();
 
     void appearanceChanged();
+    void metricUnitsChanged();
     void onboardingDoneChanged();
     void notificationExplainedChanged();
     void backgroundListeningChanged();
     void keepScreenAwakeChanged();
     void skipEncryptedChanged();
+    void hangtimeSecChanged();
     void autoPpmChanged();
     void gainDbChanged();
     void ppmChanged();

@@ -398,8 +398,9 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
-    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
-    holdTalkgroup(double) const {
+    holdTalkgroup(double tg) {
+        ++m_hold_calls;
+        m_last_hold_tg = tg;
         return true;
     }
 
@@ -571,6 +572,8 @@ class CommandRecorder : public QObject {
 
     void
     reset() {
+        m_hold_calls = 0;
+        m_last_hold_tg = 0;
         m_key_apply_calls = 0;
         m_key_payload_valid = false;
         m_key_accepted = true;
@@ -687,6 +690,16 @@ class CommandRecorder : public QObject {
     }
 
     int
+    holdCalls() const {
+        return m_hold_calls;
+    }
+
+    double
+    lastHoldTg() const {
+        return m_last_hold_tg;
+    }
+
+    int
     talkgroupListenCalls() const {
         return m_talkgroup_listen_calls;
     }
@@ -722,6 +735,8 @@ class CommandRecorder : public QObject {
     }
 
   private:
+    int m_hold_calls = 0;
+    double m_last_hold_tg = 0;
     int m_key_apply_calls = 0;
     bool m_key_payload_valid = false;
     bool m_key_accepted = true;
@@ -766,6 +781,7 @@ class CallLogStore : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     Q_PROPERTY(QString sessionLabel READ sessionLabel WRITE setSessionLabel NOTIFY sessionLabelChanged)
+    Q_PROPERTY(QString sessionUid READ sessionUid WRITE setSessionUid NOTIFY sessionUidChanged)
     Q_PROPERTY(QStringList systemLabels READ systemLabels NOTIFY countChanged)
 
   public:
@@ -779,6 +795,7 @@ class CallLogStore : public QAbstractListModel {
         qint64 when = 0;
         int durationSecs = 4;
         QString systemName;
+        QString systemUid;
         QString dayLabel;
         QString timeText;
         int kind = CallHistoryModel::KindVoice;
@@ -811,6 +828,20 @@ class CallLogStore : public QAbstractListModel {
         Q_EMIT sessionLabelChanged();
     }
 
+    QString
+    sessionUid() const {
+        return m_sessionUid;
+    }
+
+    void
+    setSessionUid(const QString& uid) {
+        if (uid == m_sessionUid) {
+            return;
+        }
+        m_sessionUid = uid;
+        Q_EMIT sessionUidChanged();
+    }
+
     QStringList
     systemLabels() const {
         return m_rows.isEmpty() ? QStringList() : QStringList{m_systemName};
@@ -832,6 +863,7 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::WhenRole: return row.when;
             case CallHistoryModel::DurationSecsRole: return row.durationSecs;
             case CallHistoryModel::SystemNameRole: return row.systemName;
+            case CallHistoryModel::SystemUidRole: return row.systemUid;
             case CallHistoryModel::DayLabelRole: return row.dayLabel;
             case CallHistoryModel::TimeTextRole: return row.timeText;
             case CallHistoryModel::KindRole: return row.kind;
@@ -852,6 +884,7 @@ class CallLogStore : public QAbstractListModel {
                 {CallHistoryModel::WhenRole, "when"},
                 {CallHistoryModel::DurationSecsRole, "durationSecs"},
                 {CallHistoryModel::SystemNameRole, "systemName"},
+                {CallHistoryModel::SystemUidRole, "systemUid"},
                 {CallHistoryModel::DayLabelRole, "dayLabel"},
                 {CallHistoryModel::TimeTextRole, "timeText"},
                 {CallHistoryModel::KindRole, "kind"},
@@ -872,6 +905,7 @@ class CallLogStore : public QAbstractListModel {
         row.src = 200000 + static_cast<qulonglong>(m_seq);
         row.when = m_clock++;
         row.systemName = m_systemName;
+        row.systemUid = m_sessionUid;
         row.dayLabel = dayLabel.isEmpty() ? QStringLiteral("TODAY") : dayLabel;
         row.timeText = QStringLiteral("12:%1").arg(m_seq % 60, 2, 10, QLatin1Char('0'));
         beginInsertRows(QModelIndex(), 0, 0);
@@ -963,10 +997,12 @@ class CallLogStore : public QAbstractListModel {
   Q_SIGNALS:
     void countChanged();
     void sessionLabelChanged();
+    void sessionUidChanged();
 
   private:
     QList<StoreRow> m_rows;
     QString m_systemName = QStringLiteral("Test Site");
+    QString m_sessionUid = QStringLiteral("test-system");
     QString m_sessionLabel = QStringLiteral("Test Site");
     int m_seq = 0;
     /* Fixed, ascending stamps: nothing here should depend on the wall clock. */
@@ -1077,6 +1113,16 @@ class Setup : public QObject {
         }
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
         return true;
+    }
+
+    Q_INVOKABLE int
+    holdCalls() const {
+        return m_commands->holdCalls();
+    }
+
+    Q_INVOKABLE double
+    lastHoldTg() const {
+        return m_commands->lastHoldTg();
     }
 
     Q_INVOKABLE int
@@ -1509,6 +1555,7 @@ class Setup : public QObject {
          * scheme; the token set is the only thing that reads it. */
         QVariantMap prefs;
         prefs[QStringLiteral("appearance")] = 2;
+        prefs[QStringLiteral("metricUnits")] = false;
         prefs[QStringLiteral("onboardingDone")] = true;
         prefs[QStringLiteral("backgroundListening")] = false;
         prefs[QStringLiteral("notificationExplained")] = true;
@@ -1518,6 +1565,7 @@ class Setup : public QObject {
          * AppPrefs' own defaults, so a case that reads one sees what a fresh
          * install would. */
         prefs[QStringLiteral("autoPpm")] = false;
+        prefs[QStringLiteral("hangtimeSec")] = 2.0;
         prefs[QStringLiteral("gainDb")] = 30;
         prefs[QStringLiteral("ppm")] = 0;
         prefs[QStringLiteral("bandwidthKhz")] = 48;
@@ -1636,6 +1684,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("encLockoutCount")] = 0;
         // On-the-fly scan controls (#380): no rotation running at rest.
         metrics[QStringLiteral("scanRotationActive")] = false;
+        metrics[QStringLiteral("optionsKnown")] = false;
         metrics[QStringLiteral("scanHold")] = false;
         metrics[QStringLiteral("scanTargetId")] = QString();
         metrics[QStringLiteral("scanTargetOrdinal")] = 0;

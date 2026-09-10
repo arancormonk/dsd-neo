@@ -45,6 +45,7 @@ class SavedSystemsModel : public QAbstractListModel {
         DecodeFlagRole,
         TrunkingRole,
         GainDbRole,       // -1 = use the app-wide default
+        HangtimeRole,     // seconds as a string; empty = app default
         PpmRole,          // INT_MIN sentinel avoided; stored as string, empty = default
         BandwidthKhzRole, // -1 = default
         BiasTeeRole,      // tri-state: -1 = follow the app-wide pref, 0 = off, 1 = on
@@ -171,6 +172,7 @@ class SavedSystemsModel : public QAbstractListModel {
         bool trunking = false;
         int gainDb = -1;
         QString ppm;
+        QString hangtime;
         int bandwidthKhz = -1;
         /* -1 follows the app-wide pref, 0 is explicitly off, 1 explicitly on. An
          * explicit off must survive a global on: it is the operator saying this

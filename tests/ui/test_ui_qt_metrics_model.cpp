@@ -375,9 +375,44 @@ test_decryption_metadata() {
     dsd_state_ext_free_all(&state);
 }
 
+static void
+test_options_readiness() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int changes = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() { ++changes; });
+    expect("fresh metrics do not establish single-system options",
+           !model.optionsKnown() && !model.scanRotationActive());
+    model.refresh(nullptr, &state);
+    expect("state without options is not ready", !model.optionsKnown());
+    model.refresh(&opts, nullptr);
+    expect("options without a state snapshot are not ready", !model.optionsKnown());
+    model.refresh(&opts, &state);
+    expect("valid quiet snapshot establishes options", model.optionsKnown() && !model.scanRotationActive());
+    expect("readiness notifies controls", changes > 0);
+    const int unchanged = changes;
+    model.refresh(&opts, &state);
+    expect("unchanged options do not notify twice", changes == unchanged);
+    for (int mode = 0; mode < 2; ++mode) {
+        model.clear();
+        expect("clear forgets the previous session's options", !model.optionsKnown());
+        opts.scanner_mode = mode == 0;
+        opts.trunk_scan_enabled = mode == 1;
+        model.refresh(&opts, &state);
+        expect("both effective scan modes arrive with readiness", model.optionsKnown() && model.scanRotationActive());
+        model.refresh(nullptr, &state);
+        expect("losing a snapshot resets readiness", !model.optionsKnown());
+    }
+    freeState(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    test_options_readiness();
     test_decryption_metadata();
     test_site();
     test_quality();

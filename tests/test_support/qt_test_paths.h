@@ -18,6 +18,7 @@ dsd_test_qt_isolate_paths() {
     QStandardPaths::setTestModeEnabled(false);
     qputenv("XDG_DATA_HOME", directory.path().toUtf8());
     qputenv("XDG_CONFIG_HOME", directory.path().toUtf8());
+    qputenv("XDG_CACHE_HOME", (directory.path() + "/cache").toUtf8());
 #else
     QStandardPaths::setTestModeEnabled(true);
 #endif

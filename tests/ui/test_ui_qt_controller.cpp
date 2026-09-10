@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QAbstractListModel>
 #include <QChar>
+#include <QCoreApplication>
 #include <QEventLoop>
 #include <QFile>
 #include <QGuiApplication>
@@ -39,6 +40,8 @@
 #include "../../android/local_device_state.h"
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/snapshot_internal.h"
+#include "../test_support/qt_test_paths.h"
+#include "call_history_model.h"
 #include "command_bridge.h"
 #include "decoder_host.h"
 #include "diagnostics_log.h"
@@ -126,6 +129,96 @@ test_initial_usb_record() {
         check(properties == 1 && attachments == 0);
         check(usb.failureKind == (ready ? Host::NoDeviceFailure : Host::DevicePermission));
     }
+}
+
+static void
+test_history_receives_effective_scan_options() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::CallHistoryModel history;
+    history.setSessionLabel("Saved source");
+    history.setSessionUid("saved-source");
+    dsd_qt::UiController controller(nullptr, nullptr, &history, nullptr);
+    controller.setPollIntervalMs(50);
+    for (int mode = 0; mode < 3; ++mode) {
+        opts.scanner_mode = mode == 0;
+        opts.trunk_scan_enabled = mode == 1;
+        for (bool flush : {false, true}) {
+            auto& ring = state.event_history_s[0];
+            auto& item = ring.Event_History_Items[1];
+            item.category = DSD_EVENT_CATEGORY_VOICE;
+            item.target_id = 9001 + mode * 2 + flush;
+            item.source_id = 8001;
+            item.event_start_time = 1754500000 + mode * 20 + (flush ? 10 : 0);
+            item.event_time = item.event_start_time + 4;
+            ++ring.push_seq;
+            ++ring.commit_rev;
+            ++ring.revision;
+            dsd_app_telemetry_publish_opts_snapshot(&opts);
+            dsd_app_telemetry_publish_snapshot(&state);
+            if (flush) {
+                controller.flushHistory();
+            } else {
+                dsd_app_request_redraw();
+                QEventLoop loop;
+                QTimer::singleShot(65, &loop, &QEventLoop::quit);
+                controller.start();
+                loop.exec();
+                controller.stop();
+            }
+            check(history.count() == mode * 2 + (flush ? 2 : 1));
+            check(history.data(history.index(0), dsd_qt::CallHistoryModel::SystemUidRole).toString()
+                  == (mode == 2 ? "saved-source" : ""));
+        }
+    }
+    freeState(&state);
+}
+
+// Reproduce the options-publication/redraw gap during Android input startup.
+static void
+test_startup_options_wait_for_redraw() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    Host host;
+    dsd_qt::MetricsModel metrics;
+    dsd_qt::UiController controller(&host, &metrics, nullptr, nullptr);
+    controller.setPollIntervalMs(50);
+    const auto poll = [&]() {
+        QEventLoop loop;
+        QTimer::singleShot(65, &loop, &QEventLoop::quit);
+        controller.start();
+        loop.exec();
+        controller.stop();
+    };
+    for (int mode = 0; mode < 3; ++mode) {
+        // A completed single-system session left a valid, non-scanning view.
+        opts.scanner_mode = 0;
+        opts.trunk_scan_enabled = 0;
+        metrics.refresh(&opts, &state);
+        check(metrics.optionsKnown() && !metrics.scanRotationActive());
+        host.setPhase(Host::Starting);
+        check(!metrics.optionsKnown());
+        (void)dsd_app_frontend_redraw_consume();
+        opts.scanner_mode = mode == 0;
+        opts.trunk_scan_enabled = mode == 1;
+        // Runtime admission and snapshots precede the slow input open. Android
+        // already reports Running, but no decoder redraw has arrived yet.
+        dsd_app_frontend_runtime_start(&opts, &state);
+        host.setPhase(Host::Running);
+        poll();
+        check(!metrics.optionsKnown() && !metrics.scanRotationActive());
+        dsd_app_request_redraw();
+        poll();
+        check(metrics.optionsKnown() && metrics.scanRotationActive() == (mode != 2));
+        host.setPhase(Host::Idle);
+        check(!metrics.optionsKnown());
+        dsd_app_frontend_runtime_stop();
+    }
+    freeState(&state);
 }
 
 // Run the actual sheet against the real bridge and decoder queue, including CSV media overrides.
@@ -300,6 +393,11 @@ test_zero_bounds() {
 int
 main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
+    QCoreApplication::setOrganizationName("dsd-neo-test");
+    QCoreApplication::setApplicationName("dsd-neo-controller");
+    dsd_test_qt_isolate_paths();
+    test_history_receives_effective_scan_options();
+    test_startup_options_wait_for_redraw();
     test_sheet_policy_edits();
     test_zero_bounds();
     test_auto_start_requests();
