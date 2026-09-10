@@ -14,16 +14,37 @@
 #ifndef DSD_NEO_SRC_UI_QT_COMMAND_BRIDGE_H_
 #define DSD_NEO_SRC_UI_QT_COMMAND_BRIDGE_H_
 
+// Complete types are needed by inline Qt container and metatype instantiations.
+#include <QList>
 #include <QObject>
+#include <QSharedPointer> // IWYU pragma: keep
 #include <QString>
+#include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
+class QTemporaryFile;
 
 namespace dsd_qt {
+class DecryptionProfileProvider;
 
 class CommandBridge : public QObject {
     Q_OBJECT
 
   public:
+    void
+    setDecryptionProfiles(DecryptionProfileProvider* profiles) {
+        m_profiles = profiles;
+    }
+
+    void acknowledgeDecryptionResult(quint64 requestId);
+    Q_INVOKABLE QVariantMap decryptionContext(const QString& targetId, const QString& keyEpoch) const;
+    Q_INVOKABLE QString applyDecryptionDraft(const QString& type, const QString& value, bool forceChanged, int force,
+                                             const QVariantMap& context);
+    Q_INVOKABLE QString applyDecryptionProfile(const QString& uid, int scope, const QVariantMap& context);
+    Q_INVOKABLE QString applyDmrKeyMap(const QString& path, int scope, const QVariantMap& context);
+    Q_INVOKABLE bool setTalkgroupSelection(bool listening, const QString& context, unsigned int generation,
+                                           const QVariantList& rows);
+    void clearSessionInputs();
     explicit CommandBridge(QObject* parent = nullptr);
     ~CommandBridge() override;
 
@@ -193,6 +214,13 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool clearKeys() const;
     /** @brief Unload the running session's source radio ID aliases. */
     Q_INVOKABLE bool clearSrcList() const;
+
+  private:
+    QString submitDecryption(const QVariantMap& fields, int scope, const QVariantMap& context);
+    DecryptionProfileProvider* m_profiles = nullptr;
+    quint64 m_pendingKeyRequest = 0;
+    quint64 m_pendingKeySession = 0;
+    QList<QSharedPointer<QTemporaryFile>> m_selectionFiles;
 };
 
 } // namespace dsd_qt

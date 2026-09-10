@@ -71,6 +71,8 @@ typedef struct {
     int keyloader;   /* state->keyloader to install with the entries */
     /* Captured for the baseline or parsed directly; zeroed for file-backed sets. */
     dsd_key_scalars scalars;
+    /** Optional opaque identity of the installed collection, never key material. */
+    char profile_ref[64];
 } dsd_key_set;
 
 /**
@@ -102,10 +104,16 @@ typedef enum {
     DSD_KEY_TYPE_BASIC = 0,
     DSD_KEY_TYPE_HEX = 1,
     DSD_KEY_TYPE_RC4 = 2,
-    DSD_KEY_TYPE_SCRAMBLER = 3
+    DSD_KEY_TYPE_SCRAMBLER = 3,
+    DSD_KEY_TYPE_M17_SCRAMBLER = 4,
+    DSD_KEY_TYPE_M17_AES = 5
 } dsd_key_type;
 
 typedef enum { DSD_KEY_APPLY_OVERLAY, DSD_KEY_APPLY_REPLACE } dsd_key_apply_mode;
+
+/** Prepare a typed direct source without mutating decoder state. Failure leaves
+ * out untouched. M17 accepts 2/4/6 hex-digit seeds and 32/48/64-digit AES keys. */
+dsd_key_direct_result dsd_key_set_load_typed(dsd_key_set* out, dsd_key_type type, const char* text);
 
 /** Parse before mutating. Overlay preserves the keyring and unrelated scalars;
  * hex replaces the Hytera/AES block, RC4 writes R/RR, scrambler writes R only.

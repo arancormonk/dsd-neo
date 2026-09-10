@@ -250,6 +250,7 @@ enum dsd_app_command_id {
     DSD_APP_CMD_TG_ROW_SET = 592,        // payload: dsd_app_tg_row_payload
     DSD_APP_CMD_TG_ROW_REMOVE = 593,     // payload: dsd_app_tg_range_payload
     DSD_APP_CMD_TG_LIST_EXPORT = 594,    // payload: dsd_app_tg_export_payload
+    DSD_APP_CMD_TG_SELECTION_SET = 595,  // payload: dsd_app_tg_selection_payload
 
     // UI display toggles
     DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE = 620,
@@ -280,6 +281,7 @@ enum dsd_app_command_id {
     DSD_APP_CMD_M17_USER_DATA_SET = 651, // payload: char s[] (<=49 chars)
     DSD_APP_CMD_KEY_DIRECT_SET = 652,    // sensitive: dsd_app_key_direct_payload; erase every owned copy
     DSD_APP_CMD_FORCE_KEY_SET = 653,     // payload: int32_t 0/1/2; configured scan-mode setting
+    DSD_APP_CMD_DECRYPTION_APPLY = 654,  // sensitive: dsd_app_decryption_payload; retained result
 
     // DSP runtime (rtl_stream_*)
     DSD_APP_CMD_DSP_OP = 700,             // payload: dsd_app_dsp_payload
@@ -371,6 +373,14 @@ typedef struct {
     char path[1]; /* NUL-terminated, bounded by the submitted payload size. */
 } dsd_app_tg_export_payload;
 
+typedef struct {
+    uint64_t policy_context;
+    uint32_t policy_generation;
+    uint32_t count;
+    int32_t listening;
+    char selection_path[1024]; /**< Private frontend-owned rows: table_index,start,end. */
+} dsd_app_tg_selection_payload;
+
 /** Retained outcome of the most recently drained TG_LIST_EXPORT command.
  * The context/generation identify the submitted request, including on failure.
  * path is the requested destination (written only when success == 1), or empty
@@ -387,13 +397,66 @@ typedef enum {
     DSD_APP_KEY_TYPE_BASIC = 0,
     DSD_APP_KEY_TYPE_HEX = 1, /* Hytera/AES determined by width. */
     DSD_APP_KEY_TYPE_RC4 = 2,
-    DSD_APP_KEY_TYPE_SCRAMBLER = 3
+    DSD_APP_KEY_TYPE_SCRAMBLER = 3,
+    DSD_APP_KEY_TYPE_M17_SCRAMBLER = 4,
+    DSD_APP_KEY_TYPE_M17_AES = 5
 } dsd_app_key_type;
 
 typedef struct {
     int32_t key_type; /* dsd_app_key_type; digits alone cannot distinguish BP/RC4/Hytera. */
     char value[72];   /* Bounded, NUL-terminated; never echo to logs, toasts or snapshots. */
 } dsd_app_key_direct_payload;
+
+enum { DSD_APP_DECRYPTION_MATERIAL = 1U << 0, DSD_APP_DECRYPTION_MAP = 1U << 1, DSD_APP_DECRYPTION_FORCE = 1U << 2 };
+
+enum { DSD_APP_KEY_SCOPE_DEFAULTS = 0, DSD_APP_KEY_SCOPE_TARGET = 1 };
+
+enum {
+    DSD_APP_KEY_SOURCE_NONE = 0,
+    DSD_APP_KEY_SOURCE_COLLECTION = 1,
+    DSD_APP_KEY_SOURCE_DIRECT = 2,
+    DSD_APP_KEY_SOURCE_DIRECT_OVERLAY = 3
+};
+
+enum {
+    DSD_APP_KEY_APPLIED = 1,
+    DSD_APP_KEY_INVALID = -1,
+    DSD_APP_KEY_STALE = -2,
+    DSD_APP_KEY_UNAVAILABLE = -3,
+    DSD_APP_KEY_FILE_ERROR = -4,
+    DSD_APP_KEY_BUSY = -5,
+    DSD_APP_KEY_CANCELLED = -6
+};
+
+/** Mutations are applied together on the decoder thread. Missing field bits
+ * preserve current settings. Target requests include the context captured when
+ * opening the editor; default edits never replace an explicit scan target. */
+typedef struct {
+    uint64_t request_id;
+    uint64_t session_generation;
+    uint64_t tune_generation;
+    uint64_t key_epoch;
+    uint32_t fields;
+    int32_t scope;
+    int32_t source;
+    int32_t key_type;
+    int32_t force;
+    char target_id[64];
+    char profile_ref[64];
+    char value[72];
+    char keys_hex[1024];
+    char keys_dec[1024];
+    char map_file[2048];
+} dsd_app_decryption_payload;
+
+/** Contains only request identity and outcome, never material or paths. */
+typedef struct {
+    uint64_t sequence;
+    uint64_t request_id;
+    uint64_t session_generation;
+    int status;
+    int scope;
+} dsd_app_decryption_result;
 
 typedef struct {
     uint64_t H;
@@ -450,6 +513,8 @@ int dsd_app_command_set_tg_listen_all(const dsd_app_tg_listen_all_payload* paylo
  * accept a newer result matching its context/generation/path before registering
  * the file. Submission rejection must still be handled from the submit return. */
 int dsd_app_tg_export_result_get(dsd_app_tg_export_result* out);
+uint64_t dsd_app_command_session_generation(void);
+int dsd_app_decryption_result_get(dsd_app_decryption_result* out);
 int dsd_app_command_set_hytera_key(const dsd_app_hytera_key_payload* payload);
 int dsd_app_command_set_aes_key(const dsd_app_aes_key_payload* payload);
 int dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload);

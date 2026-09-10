@@ -21,27 +21,29 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
+#include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/net_audio_input_hooks.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <errno.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
-#include "dsd-neo/core/dibit.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/dsp/resampler.h"
 #include "dsd_audio_internal.h"
 
 static int
@@ -1004,6 +1006,7 @@ dsd_audio_open_headless_wav_input(dsd_opts* opts, int sample_rate_hz, int includ
     opts->audio_in_file_info = dsd_audio_alloc_pcm16_mono_info_exact_rate(sample_rate_hz);
     if (opts->audio_in_file_info == NULL) {
         LOG_ERROR("Error, couldn't allocate memory for audio input\n");
+        dsd_input_failure_report(DSD_INPUT_FAILURE_FILE, errno);
         return -1;
     }
 
@@ -1016,6 +1019,7 @@ dsd_audio_open_headless_wav_input(dsd_opts* opts, int sample_rate_hz, int includ
         }
         free(opts->audio_in_file_info);
         opts->audio_in_file_info = NULL;
+        dsd_input_failure_report(DSD_INPUT_FAILURE_FILE, errno);
         return -1;
     }
     return 0;
@@ -1039,16 +1043,19 @@ dsd_audio_open_symbol_input(dsd_opts* opts, dsd_state* state, int symbol_type, c
 
     if (dsd_stat_path(opts->audio_in_dev, &stat_buf) != 0) {
         LOG_ERROR("Error, couldn't open %s file %s\n", label, opts->audio_in_dev);
+        dsd_input_failure_report(DSD_INPUT_FAILURE_FILE, errno);
         return -1;
     }
     if (!dsd_stat_is_regular(&stat_buf)) {
         LOG_ERROR("Error, %s input path is not a regular file: %s\n", label, opts->audio_in_dev);
+        dsd_input_failure_report(DSD_INPUT_FAILURE_FILE, errno);
         return -1;
     }
 
     opts->symbolfile = dsd_fopen_existing_regular_file(opts->audio_in_dev, "rb");
     if (opts->symbolfile == NULL) {
         LOG_ERROR("Error, couldn't open %s file %s\n", label, opts->audio_in_dev);
+        dsd_input_failure_report(DSD_INPUT_FAILURE_FILE, errno);
         return -1;
     }
 
@@ -1065,10 +1072,12 @@ dsd_audio_open_fallback_file_input(dsd_opts* opts, dsd_state* state, int old_eff
 
     if (dsd_stat_path(opts->audio_in_dev, &stat_buf) != 0) {
         LOG_ERROR("Error, couldn't open input file %s\n", opts->audio_in_dev);
+        dsd_input_failure_report(DSD_INPUT_FAILURE_FILE, errno);
         return -1;
     }
     if (!dsd_stat_is_regular(&stat_buf)) {
         LOG_ERROR("Error, couldn't open input file.\n");
+        dsd_input_failure_report(DSD_INPUT_FAILURE_FILE, errno);
         return -1;
     }
 
@@ -1080,6 +1089,7 @@ dsd_audio_open_fallback_file_input(dsd_opts* opts, dsd_state* state, int old_eff
                                        &opts->audio_in_file_info, &active_sample_rate, &opened_as_container)
         != 0) {
         LOG_ERROR("Error, couldn't open input file %s\n", opts->audio_in_dev);
+        dsd_input_failure_report(DSD_INPUT_FAILURE_FILE, errno);
         return -1;
     }
 

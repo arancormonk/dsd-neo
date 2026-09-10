@@ -1328,7 +1328,7 @@ rr_refresh_regenerate(RrWizardCore* w, const size_t* selected, size_t selected_c
                       size_t* out_len) {
     /* The mandatory initialiser: a zeroed struct would mean "force simulcast and
      * ESK off", not "follow the record". */
-    dsd_rr_import_options options = {-1, -1, w->refresh.partial_enc_as_de};
+    dsd_rr_import_options options = {-1, -1, w->refresh.partial_enc_as_de, DSD_RR_TG_POLICY_LEGACY};
     dsd_rr_import_plan plan;
     const char* src = NULL;
     size_t len = 0;

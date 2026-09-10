@@ -3,9 +3,19 @@
 
 /* Hosts that deliberately stub talkgroup policy do not load row group files.
  * Production ownership and import are exercised by CORE_SCAN_PROFILE. */
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <stddef.h>
+
+/* The isolated coordinator fixtures do not load mapping files. Real parsing,
+ * profile ownership and scope restoration are covered by CORE_SCAN_PROFILE. */
+int
+dsd_dmr_key_map_load(const char* path, dsd_dmr_key_map* out) {
+    (void)path;
+    (void)out;
+    return -1;
+}
 
 dsd_tg_policy_store*
 dsd_tg_policy_retain(const dsd_state* state) {

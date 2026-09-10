@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -551,11 +552,75 @@ test_legacy_hex_widths(void) {
     }
 }
 
+static void
+test_dmr_mapping_scope(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state);
+    dsd_dmr_key_map baseline = {0};
+    baseline.count = 1;
+    baseline.tg[0] = 123;
+    baseline.kid[0] = 1;
+    assert(dsd_dmr_key_map_install(state, &baseline) == 0);
+    assert(dsd_scan_groups_begin(state) == 0);
+    dsd_scan_row_profile first = {0}, second = {0}, empty = {0};
+    first.values.present = second.values.present = empty.values.present = DSD_SCAN_OPT_DMR_MAP;
+    first.dmr_map = second.dmr_map = baseline;
+    first.dmr_map.kid[0] = 2;
+    second.dmr_map.kid[0] = 3;
+    assert(dsd_scan_maps_enter(state, &first));
+    assert(state->dmr_tg_key_map_kid[0] == 2);
+    assert(dsd_scan_maps_enter(state, &second));
+    assert(state->dmr_tg_key_map_kid[0] == 3);
+    assert(dsd_scan_maps_enter(state, &empty));
+    assert(state->dmr_tg_key_map_count == 0);
+    assert(dsd_scan_maps_enter(state, NULL));
+    assert(state->dmr_tg_key_map_count == 1 && state->dmr_tg_key_map_kid[0] == 1);
+    assert(dsd_scan_maps_enter(state, &first));
+    assert(dsd_scan_maps_suspend(state));
+    baseline.kid[0] = 4;
+    assert(dsd_dmr_key_map_install(state, &baseline) == 0);
+    dsd_scan_maps_resume(state);
+    assert(state->dmr_tg_key_map_kid[0] == 2);
+    dsd_scan_maps_leave(state);
+    assert(state->dmr_tg_key_map_kid[0] == 4);
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+static void
+test_dmr_map_profile_import(void) {
+    char path[1024], options[1200], error[192];
+    const int fd = dsd_test_mkstemp(path, sizeof(path), "dsd_scan_key_map");
+    assert(fd >= 0);
+    dsd_close(fd);
+    write_file(path, "tg_dec,keyid_hex\n123,02\n456,03\n");
+    DSD_SNPRINTF(options, sizeof(options), "--dmr-tg-key-csv '%s'", path);
+    dsd_scan_options parsed = {0};
+    assert(dsd_scan_options_parse(options, DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
+    dsd_scan_row_profile* profile = NULL;
+    dsd_key_set keys = {0};
+    assert(dsd_scan_profile_load(&parsed, 0, &profile, &keys) == 0);
+    assert(profile->dmr_map.count == 2 && profile->dmr_map.kid[0] == 2);
+    dsd_scan_profile_free(profile);
+    profile = NULL;
+    write_file(path, "tg_dec,keyid_hex\n123,02\ninvalid,03\n");
+    assert(dsd_scan_profile_load(&parsed, 0, &profile, &keys) != 0);
+    assert(profile == NULL);
+    assert(dsd_scan_options_parse("--dmr-tg-key-clear", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
+    assert(dsd_scan_profile_load(&parsed, 0, &profile, &keys) == 0);
+    assert(profile->dmr_map.count == 0 && (profile->values.present & DSD_SCAN_OPT_DMR_MAP));
+    dsd_scan_profile_free(profile);
+    dsd_key_set_free(&keys);
+    assert(remove(path) == 0);
+}
+
 int
 main(void) {
     test_move_unwinds_both_group_scopes();
     test_slotless_options_validate_files();
     test_legacy_hex_widths();
+    test_dmr_mapping_scope();
+    test_dmr_map_profile_import();
     test_keys_and_scope();
     test_prepared_key_rollback();
     test_group_load_failure();

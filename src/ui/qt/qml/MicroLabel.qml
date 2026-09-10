@@ -6,6 +6,11 @@ import QtQuick
 // The mono micro-label that names every section: 10.5px IBM Plex Mono, wide
 // tracking, uppercase, subdued.
 Text {
+    id: label
+    Accessible.role: Accessible.Heading
+    Accessible.name: text
+    readonly property bool navigationAllowed: Navigation.allows(label)
+    Accessible.ignored: !visible || !navigationAllowed
     font.family: Theme.mono
     font.pixelSize: Theme.fontSize(11)
     font.letterSpacing: Theme.fontSize(11) * 0.18

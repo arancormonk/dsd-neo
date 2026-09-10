@@ -177,6 +177,18 @@ int dsd_tg_policy_set_mode(dsd_state* state, uint32_t id_start, uint32_t id_end,
  * Returns 0 applied, 1 bad index or mode. */
 int dsd_tg_policy_set_mode_at(dsd_state* state, size_t index, const char* mode);
 
+typedef struct {
+    int32_t policy_index; /**< -1 for a heard-only exact ID; otherwise the captured table row. */
+    uint32_t id_start;
+    uint32_t id_end;
+} dsd_tg_policy_selection;
+
+/** Apply an exact captured selection atomically. Context/generation mismatches
+ * or invalid rows return 1; allocation failure returns -1, leaving policy intact.
+ * Existing aliases, ranges, priority and preemption are retained. */
+int dsd_tg_policy_set_listening_selection(dsd_state* state, uint64_t context, unsigned int generation,
+                                          const dsd_tg_policy_selection* selection, size_t count, int listening);
+
 enum {
     DSD_TG_POLICY_FIELD_LISTEN = 1U << 0,
     DSD_TG_POLICY_FIELD_PRIORITY = 1U << 1,

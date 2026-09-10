@@ -7,6 +7,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -24,9 +25,16 @@
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #endif
+#include <dsd-neo/core/enc_lockout.h>
+#include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/trunk_tuning.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/log.h>
@@ -43,13 +51,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "dsd-neo/core/enc_lockout.h"
-#include "dsd-neo/core/key_set.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/platform.h"
-#include "dsd-neo/protocol/p25/p25_cc_candidates.h"
 #if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
@@ -2203,6 +2204,11 @@ trunk_scan_load_profile(dsd_trunk_scan_target_runtime* rt, char* error, size_t e
         scan_set_error(error, error_size, "failed to load group policy for target '%s'", rt->target.id);
         return -1;
     }
+    if ((rt->profile->values.present & DSD_SCAN_OPT_DMR_MAP) && rt->profile->values.dmr_map_file[0]
+        && dsd_dmr_key_map_load(rt->profile->values.dmr_map_file, &rt->profile->dmr_map)) {
+        scan_set_error(error, error_size, "failed to import DMR key mapping for target '%s'", rt->target.id);
+        return -1;
+    }
     return 0;
 }
 
@@ -2258,6 +2264,7 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
                 return -1;
             }
         }
+        DSD_SNPRINTF(rt->keys.profile_ref, sizeof(rt->keys.profile_ref), "%s", rt->target.row_options.key_profile_ref);
         p25_sm_init_ctx(&rt->p25_ctx, opts, state);
         dmr_sm_init_ctx(&rt->dmr_ctx, opts, state);
         trunk_scan_save_snapshot(state, &rt->snapshot);
@@ -2452,6 +2459,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     (void)dsd_scan_key_change_commit(state, &key_change);
     (void)dsd_scan_mode_options(opts, state, rt->profile ? &rt->profile->values : NULL);
     dsd_scan_groups_enter(state, rt->profile);
+    (void)dsd_scan_maps_enter(state, rt->profile);
     trunk_scan_apply_target_demod(opts, state, &rt->target);
     trunk_scan_sync_active_sm_mode(state, rt);
     dsd_frame_sync_reset_acquisition(opts, state, 0);
@@ -2569,6 +2577,7 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     const dsd_scan_row_profile* restored_profile = coord->targets[coord->active].profile;
     (void)dsd_scan_mode_options(opts, state, restored_profile ? &restored_profile->values : NULL);
     dsd_scan_groups_enter(state, restored_profile);
+    (void)dsd_scan_maps_enter(state, restored_profile);
     trunk_scan_apply_target_demod(opts, state, &coord->targets[coord->active].target);
     trunk_scan_sync_active_sm_mode(state, &coord->targets[coord->active]);
 }
@@ -2917,6 +2926,103 @@ dsd_engine_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
     }
 }
 
+static int
+validate_target_decryption(dsd_trunk_scan_target_type type, uint32_t fields, const dsd_key_set* keys,
+                           const dsd_dmr_key_map* map, int force) {
+    const unsigned int mode = (unsigned int)trunk_scan_target_mode(type);
+    if (((fields & DSD_TRUNK_KEY_MATERIAL) && !dsd_scan_keys_compatible(keys, mode))
+        || ((fields & DSD_TRUNK_KEY_MAP) && map->count && mode != DSD_SCAN_MODE_DMR)) {
+        return DSD_TRUNK_KEY_INVALID;
+    }
+    if ((fields & ~(DSD_TRUNK_KEY_MATERIAL | DSD_TRUNK_KEY_MAP | DSD_TRUNK_KEY_FORCE))
+        || ((fields & DSD_TRUNK_KEY_MAP) && dsd_dmr_key_map_validate(map))
+        || ((fields & DSD_TRUNK_KEY_FORCE) && (force < 0 || force > 255 || (force > 1 && force < 32)))) {
+        return DSD_TRUNK_KEY_INVALID;
+    }
+    return DSD_TRUNK_KEY_APPLIED;
+}
+
+static void
+target_decryption_mute_policy(dsd_trunk_scan_target_runtime* rt) {
+    const dsd_key_scalars* scalar = &rt->keys.scalars;
+    const int direct = !rt->keys.keyloader
+                       && (scalar->basic_key_present || scalar->scalar_key_present[0] || scalar->scalar_key_present[1]
+                           || scalar->aes_key_loaded[0] || scalar->hytera_key_segments);
+    rt->profile->values.present &= ~(DSD_SCAN_OPT_MUTE_DMR | DSD_SCAN_OPT_MUTE_P25);
+    if (direct) {
+        rt->profile->values.present |= DSD_SCAN_OPT_MUTE_DMR | DSD_SCAN_OPT_MUTE_P25;
+        rt->profile->values.mute_dmr = 0;
+    }
+}
+
+static int
+commit_target_decryption(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, uint32_t fields,
+                         const dsd_key_set* keys, const dsd_dmr_key_map* map, int force) {
+    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    dsd_key_set replacement = {0};
+    dsd_scan_key_change change = {0};
+    int result = DSD_TRUNK_KEY_INVALID;
+    if ((fields & DSD_TRUNK_KEY_MATERIAL)
+        && (dsd_key_set_copy(&replacement, keys) || dsd_scan_key_change_prepare(state, keys, &change))) {
+        goto done;
+    }
+    /* Preparation is complete before publishing a new owned profile. No
+     * fallible operation follows this ownership transfer. */
+    if (dsd_scan_profile_ensure(&rt->profile)) {
+        goto done;
+    }
+    if (fields & DSD_TRUNK_KEY_MATERIAL) {
+        dsd_key_set_free(&rt->keys);
+        rt->keys = replacement;
+        DSD_MEMSET(&replacement, 0, sizeof(replacement));
+        (void)dsd_scan_key_change_commit(state, &change);
+        target_decryption_mute_policy(rt);
+    }
+    if (fields & DSD_TRUNK_KEY_MAP) {
+        rt->profile->dmr_map = *map;
+        rt->profile->values.present |= DSD_SCAN_OPT_DMR_MAP;
+        rt->profile->values.dmr_map_file[0] = '\0';
+    }
+    if (fields & DSD_TRUNK_KEY_FORCE) {
+        rt->profile->values.present |= DSD_SCAN_OPT_FORCE;
+        rt->profile->values.force = force;
+    }
+    (void)dsd_scan_mode_options(opts, state, &rt->profile->values);
+    (void)dsd_scan_maps_enter(state, rt->profile);
+    if (fields) {
+        dsd_enc_lockout_bump_key_epoch(state);
+        trunk_scan_clear_enc_lockout_snapshots(state);
+    }
+    result = DSD_TRUNK_KEY_APPLIED;
+done:
+    dsd_key_set_free(&replacement);
+    dsd_scan_key_change_clear(&change);
+    return result;
+}
+
+static int
+trunk_scan_apply_decryption(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
+                            uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map, int force) {
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!opts || !state || !coord || coord->active >= coord->count || !keys || !map) {
+        return DSD_TRUNK_KEY_UNAVAILABLE;
+    }
+    if (validate_target_decryption(coord->targets[coord->active].target.type, fields, keys, map, force)
+        != DSD_TRUNK_KEY_APPLIED) {
+        return DSD_TRUNK_KEY_INVALID;
+    }
+    if (!target_id || strcmp(coord->targets[coord->active].target.id, target_id) != 0
+        || !dsd_trunk_tuning_frame_is_current(generation)) {
+        return DSD_TRUNK_KEY_STALE;
+    }
+    if (!p25_sm_tick_guard_try_enter()) {
+        return DSD_TRUNK_KEY_BUSY;
+    }
+    const int result = commit_target_decryption(opts, state, coord, fields, keys, map, force);
+    p25_sm_tick_guard_leave();
+    return result;
+}
+
 void*
 dsd_engine_trunk_scan_active_p25_ctx(void) {
     if (!g_trunk_scan_coord || g_trunk_scan_coord->count == 0) {
@@ -3080,6 +3186,7 @@ trunk_scan_install_runtime_hooks(dsd_trunk_scan_coord* coord) {
     hooks.active_chan_csv = dsd_engine_trunk_scan_active_chan_csv;
     hooks.enc_lockout_clear_snapshots = trunk_scan_clear_enc_lockout_snapshots;
     hooks.control = dsd_engine_trunk_scan_control;
+    hooks.decryption_apply = trunk_scan_apply_decryption;
     dsd_trunk_scan_hooks_set(hooks);
 }
 
@@ -3149,6 +3256,7 @@ trunk_scan_init_release(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
     dsd_engine_channel_scan_leave(opts, state);
     trunk_scan_restore_saved_opts(opts, coord);
     dsd_scan_groups_leave(state);
+    dsd_scan_maps_leave(state);
     dsd_scan_keys_leave(state);
     trunk_scan_coord_free(coord);
     dsd_trunk_scan_target_list_reset(list);
@@ -3231,6 +3339,7 @@ dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state) {
     dsd_engine_channel_scan_leave(opts, state);
     trunk_scan_restore_saved_opts(opts, coord);
     dsd_scan_groups_leave(state);
+    dsd_scan_maps_leave(state);
     dsd_scan_keys_leave(state);
     trunk_scan_uninstall_runtime_hooks(coord);
     trunk_scan_clear_published_target(state);

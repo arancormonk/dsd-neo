@@ -13,20 +13,21 @@
  */
 
 #include <dsd-neo/core/channel_mode.h>
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
 
 /* Shared geometric growth for the positional stores. Allocation and ownership
  * remain with each store (key arrays must securely erase the old allocation). */
@@ -446,6 +447,10 @@ typedef struct {
     dsd_tg_policy_store* group_suspended_row;
     int group_active;
     int group_suspended;
+    dsd_dmr_key_map map_baseline;
+    dsd_dmr_key_map map_row;
+    int map_active;
+    int map_suspended;
 } channel_modes;
 
 static void
@@ -520,6 +525,7 @@ dsd_channel_mode_set(dsd_state* state, size_t row, dsd_scan_mode mode) {
 void
 dsd_channel_modes_clear(dsd_state* state) {
     dsd_scan_groups_leave(state);
+    dsd_scan_maps_leave(state);
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_CORE_CHANNEL_MODES, NULL, NULL);
 }
 
@@ -530,6 +536,8 @@ dsd_channel_modes_move(dsd_state* dst, dsd_state* src) {
     }
     dsd_scan_groups_leave(dst);
     dsd_scan_groups_leave(src);
+    dsd_scan_maps_leave(dst);
+    dsd_scan_maps_leave(src);
     void* ptr = dsd_state_ext_get(src, DSD_STATE_EXT_CORE_CHANNEL_MODES);
     /* Detach without cleanup before the source's normal teardown. */
     src->state_ext[DSD_STATE_EXT_CORE_CHANNEL_MODES] = NULL;
@@ -654,4 +662,114 @@ dsd_scan_groups_resume(dsd_state* state) {
     dsd_tg_policy_release(modes->group_suspended_row);
     modes->group_suspended_row = NULL;
     modes->group_suspended = 0;
+}
+
+void
+dsd_dmr_key_map_capture(const dsd_state* state, dsd_dmr_key_map* out) {
+    if (!state || !out) {
+        return;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    const int count = state->dmr_tg_key_map_count;
+    if (count < 0 || count > DSD_DMR_TG_KEY_MAP_MAX) {
+        return;
+    }
+    out->count = count;
+    DSD_MEMCPY(out->tg, state->dmr_tg_key_map_tg, (size_t)count * sizeof(out->tg[0]));
+    DSD_MEMCPY(out->kid, state->dmr_tg_key_map_kid, (size_t)count * sizeof(out->kid[0]));
+}
+
+int
+dsd_dmr_key_map_validate(const dsd_dmr_key_map* map) {
+    if (!map || map->count < 0 || map->count > DSD_DMR_TG_KEY_MAP_MAX) {
+        return -1;
+    }
+    for (int i = 0; i < map->count; ++i) {
+        if (!map->tg[i] || map->tg[i] > 0xFFFFFFU) {
+            return -1;
+        }
+        for (int j = 0; j < i; ++j) {
+            if (map->tg[j] == map->tg[i]) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+int
+dsd_dmr_key_map_install(dsd_state* state, const dsd_dmr_key_map* map) {
+    if (!state || dsd_dmr_key_map_validate(map)) {
+        return -1;
+    }
+    DSD_MEMSET(state->dmr_tg_key_map_tg, 0, sizeof(state->dmr_tg_key_map_tg));
+    DSD_MEMSET(state->dmr_tg_key_map_kid, 0, sizeof(state->dmr_tg_key_map_kid));
+    state->dmr_tg_key_map_count = map->count;
+    DSD_MEMCPY(state->dmr_tg_key_map_tg, map->tg, (size_t)map->count * sizeof(map->tg[0]));
+    DSD_MEMCPY(state->dmr_tg_key_map_kid, map->kid, (size_t)map->count * sizeof(map->kid[0]));
+    DSD_MEMSET(state->dmr_tg_key_note_epoch, 0, sizeof(state->dmr_tg_key_note_epoch));
+    DSD_MEMSET(state->dmr_tg_key_skip_epoch, 0, sizeof(state->dmr_tg_key_skip_epoch));
+    return 0;
+}
+
+void
+dsd_scan_maps_leave(dsd_state* state) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes || !modes->map_active) {
+        return;
+    }
+    if (!modes->map_suspended) {
+        (void)dsd_dmr_key_map_install(state, &modes->map_baseline);
+    }
+    modes->map_active = modes->map_suspended = 0;
+    DSD_MEMSET(&modes->map_baseline, 0, sizeof(modes->map_baseline));
+    DSD_MEMSET(&modes->map_row, 0, sizeof(modes->map_row));
+}
+
+int
+dsd_scan_maps_enter(dsd_state* state, const dsd_scan_row_profile* profile) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes) {
+        return 0;
+    }
+    dsd_dmr_key_map before = {0};
+    dsd_dmr_key_map_capture(state, &before);
+    if (!profile || !(profile->values.present & DSD_SCAN_OPT_DMR_MAP)) {
+        dsd_scan_maps_leave(state);
+    } else {
+        if (dsd_dmr_key_map_install(state, &profile->dmr_map)) {
+            return 0;
+        }
+        if (!modes->map_active) {
+            modes->map_baseline = before;
+        }
+        modes->map_active = 1;
+        modes->map_row = profile->dmr_map;
+    }
+    dsd_dmr_key_map after = {0};
+    dsd_dmr_key_map_capture(state, &after);
+    return before.count != after.count || memcmp(before.tg, after.tg, sizeof(before.tg)) != 0
+           || memcmp(before.kid, after.kid, sizeof(before.kid)) != 0;
+}
+
+int
+dsd_scan_maps_suspend(dsd_state* state) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes || !modes->map_active || modes->map_suspended) {
+        return 0;
+    }
+    (void)dsd_dmr_key_map_install(state, &modes->map_baseline);
+    modes->map_suspended = 1;
+    return 1;
+}
+
+void
+dsd_scan_maps_resume(dsd_state* state) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes || !modes->map_suspended) {
+        return;
+    }
+    dsd_dmr_key_map_capture(state, &modes->map_baseline);
+    (void)dsd_dmr_key_map_install(state, &modes->map_row);
+    modes->map_suspended = 0;
 }

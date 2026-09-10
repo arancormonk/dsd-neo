@@ -28,6 +28,7 @@
 #include <QtGlobal>
 
 namespace dsd_qt {
+struct CsvBundleImport;
 
 class DecoderHost;
 
@@ -77,6 +78,8 @@ class ImportedFilesModel : public QAbstractListModel {
      *         the user can fix the file and update, but the UI should warn.
      */
     Q_INVOKABLE QVariantMap importFile(const QString& reference, const QString& fileName, const QString& type);
+    Q_INVOKABLE QVariantMap importBundle(const QString& reference, const QString& fileName, const QString& type,
+                                         const QVariantMap& companions, int replaceRow = -1);
 
     /**
      * @brief Re-pick flow: replace the row's stored file and re-validate.
@@ -118,6 +121,7 @@ class ImportedFilesModel : public QAbstractListModel {
     Q_INVOKABLE QVariantMap refreshGeneratedFile(int row, const QString& sourcePath);
 
     /** @brief Delete the stored file, then the row. Persists immediately. */
+    Q_INVOKABLE QVariantMap channelProfiles(int row) const;
     Q_INVOKABLE void remove(int row);
 
     /** @brief One library row as a field map. */
@@ -146,6 +150,8 @@ class ImportedFilesModel : public QAbstractListModel {
     void countChanged();
 
   private:
+    QVariantMap replaceBundle(int replaceRow, const CsvBundleImport& bundle, const QString& type);
+
     struct Row {
         QString name;
         QString path;
@@ -173,6 +179,8 @@ class ImportedFilesModel : public QAbstractListModel {
          * — blocked from tuning — the first time they refresh. Defaults to true,
          * which is what a row written before this existed was generated with. */
         bool rrPartialEnc = true;
+        int rrEncryptionPolicy = 0;
+        QString bundleRoot;
     };
 
     static Row rowFromMap(const QVariantMap& map);
@@ -210,7 +218,8 @@ class ImportedFilesModel : public QAbstractListModel {
     QVariantMap commitReplacedRow(int row, int accepted, int skipped, bool keepProvenance = true);
 
     void load();
-    void save() const;
+    bool save() const;
+    bool saveRows(const QList<Row>& rows) const;
 
     DecoderHost* m_host = nullptr;
     QList<Row> m_rows;

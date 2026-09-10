@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QChar>
 #include <QMap>
+#include <QPair>
 #include <QRegularExpression>
 #include <QSet>
 #include <QVariant>
@@ -105,7 +106,8 @@ collectPaths(const QVariantMap& sys, const Target& target, ScanListTargets& out)
     if (!band.isEmpty() && target.type != "p25-trunk") {
         return QStringLiteral("A P25 band plan requires a P25 trunked type.");
     }
-    for (const auto& field : {"chanCsvPath", "groupCsvPath", "keyCsvPath", "p25BandplanCsvPath"}) {
+    for (const auto& field : {"chanCsvPath", "groupCsvPath", "keyCsvPath", "p25BandplanCsvPath", "keysHexCsvPath",
+                              "keysDecCsvPath", "dmrTgKeyCsvPath"}) {
         const QString path = sys.value(field).toString();
         if (!safePath(path)) {
             return QStringLiteral("CSV paths cannot contain comma, quote, CR or LF.");
@@ -117,19 +119,66 @@ collectPaths(const QVariantMap& sys, const Target& target, ScanListTargets& out)
     return {};
 }
 
-QString
-buildOptions(const QVariantMap& sys, QStringList& options) {
-    if (sys.value("decodeFlag").toString().simplified().split(QLatin1Char(' ')).contains(QStringLiteral("-^"))) {
-        options << QStringLiteral("-^");
+void
+appendProfileOptions(const QVariantMap& sys, QStringList& options) {
+    for (const auto& file : {qMakePair(QStringLiteral("keysHexCsvPath"), QStringLiteral("-K")),
+                             qMakePair(QStringLiteral("keysDecCsvPath"), QStringLiteral("-k")),
+                             qMakePair(QStringLiteral("dmrTgKeyCsvPath"), QStringLiteral("--dmr-tg-key-csv"))}) {
+        if (!sys.value(file.first).toString().isEmpty()) {
+            options << file.second << ('"' + sys.value(file.first).toString() + '"');
+        }
     }
-    const QString keyType = sys.value("encKeyType").toString();
-    const QString key = sys.value("encKeyValue").toString();
-    const QString keyCsv = sys.value("keyCsvPath").toString();
+    if (sys.value("dmrTgKeyClear").toBool() && sys.value("decodeFlag").toString() == "-fs") {
+        options << "--dmr-tg-key-clear";
+    }
+    if (sys.value("decryptionClearKeys").toBool()) {
+        options << "--no-decryption-keys";
+    }
+    if (sys.contains("decryptionForce")) {
+        const int value = sys.value("decryptionForce").toInt();
+        if (value == 0) {
+            options << "--no-force-key";
+        } else if (value == 1) {
+            options << "-4";
+        } else if (value > 1) {
+            options << "--dmr-force-algid" << QString::number(value, 16);
+        }
+    }
+    if (!sys.value("decryptionProfileRef").toString().isEmpty()) {
+        options << "--key-profile-ref" << sys.value("decryptionProfileRef").toString();
+    }
+}
+
+QString
+validateDirectKeyChoice(const QVariantMap& sys, const QString& keyType, const QString& key) {
+    const QString keyCsv = sys.value("keyCsvPath").toString() + sys.value("keysHexCsvPath").toString()
+                           + sys.value("keysDecCsvPath").toString();
     if ((!keyType.isEmpty() || !key.isEmpty()) && !keyCsv.isEmpty()) {
         return session_args_error_text(SessionArgsError::KeyConflict);
     }
     if (!session_args_key_valid(keyType, key)) {
         return QStringLiteral("Invalid direct key shape for the selected type.");
+    }
+    return {};
+}
+
+QString
+buildOptions(const QVariantMap& sys, QStringList& options) {
+    if (sys.value("decodeFlag").toString().simplified().split(QLatin1Char(' ')).contains(QStringLiteral("-^"))) {
+        options << QStringLiteral("-^");
+    }
+    if (!session_args_profile_compatible(sys)) {
+        return QStringLiteral("The decryption profile protocol does not match this scan entry.");
+    }
+    if (sys.value("decryptionSelectionMode").toString() == "vendor") {
+        return QStringLiteral(
+            "Vendor keystream profiles require a standalone session; scan restoration is unavailable.");
+    }
+    const QString keyType = sys.value("encKeyType").toString();
+    const QString key = sys.value("encKeyValue").toString();
+    QString keyError = validateDirectKeyChoice(sys, keyType, key);
+    if (!keyError.isEmpty()) {
+        return keyError;
     }
     bool forceOk = false;
     const int force = sys.value("encForceKey", 0).toInt(&forceOk);
@@ -142,9 +191,13 @@ buildOptions(const QVariantMap& sys, QStringList& options) {
     }
     if (!keyType.isEmpty()) {
         const QMap<QString, QString> flags{{"basic", "-b"}, {"hex", "-H"}, {"rc4", "-1"}, {"scrambler", "-R"}};
+        if (!flags.contains(keyType)) {
+            return QStringLiteral("This key type cannot be scoped in a scan list.");
+        }
         options << flags.value(keyType)
                 << ((keyType == "hex" || keyType == "rc4") ? session_args_key_hex_normalize(key) : key.trimmed());
     }
+    appendProfileOptions(sys, options);
     if (force) {
         options << (force == 1 ? QStringLiteral("-4") : QStringLiteral("-0"));
     }
@@ -171,6 +224,28 @@ validateTuning(const QVariantMap& entry, const QVariantMap& sys, Target& target)
     return {};
 }
 
+QStringList
+targetCells(const QVariantMap& entry, const QVariantMap& sys, const Target& target, const QStringList& options) {
+    const int gain =
+        entry.value("gainDb", -1).toInt() >= 0 ? entry.value("gainDb").toInt() : sys.value("gainDb", -1).toInt();
+    const int dwell = entry.value("dwellMs", 0).toInt();
+    const int hold = entry.value("holdMs", 0).toInt();
+    const QStringList cells{target.id,
+                            target.type,
+                            target.hzText,
+                            sys.value("chanCsvPath").toString(),
+                            dwell ? QString::number(dwell) : QString(),
+                            hold ? QString::number(hold) : QString(),
+                            QString(),
+                            sys.value("keyCsvHex").toBool() ? sys.value("keyCsvPath").toString() : QString(),
+                            sys.value("keyCsvHex").toBool() ? QString() : sys.value("keyCsvPath").toString(),
+                            sys.value("p25BandplanCsvPath").toString(),
+                            target.modulation,
+                            gain >= 0 ? QString::number(gain) : QString(),
+                            options.join(QLatin1Char(' '))};
+    return cells;
+}
+
 QString
 appendTarget(const QVariantMap& entry, const QVariantList& systems, const QVariantMap& list, QSet<QString>& seen,
              QSet<QString>& ids, QString& csv, ScanListTargets& out) {
@@ -178,6 +253,10 @@ appendTarget(const QVariantMap& entry, const QVariantList& systems, const QVaria
     QString error = resolveSystem(entry, systems, sys);
     if (!error.isEmpty()) {
         return error;
+    }
+    const auto decryption = entry.value("decryptionConfiguration").toMap();
+    for (auto i = decryption.cbegin(); i != decryption.cend(); ++i) {
+        sys.insert(i.key(), i.value());
     }
     Target target;
     QStringList options;
@@ -199,23 +278,7 @@ appendTarget(const QVariantMap& entry, const QVariantList& systems, const QVaria
         out.warnings << sys.value("name").toString()
                             + QStringLiteral(": the list's source aliases replace this system's source aliases.");
     }
-    const int gain =
-        entry.value("gainDb", -1).toInt() >= 0 ? entry.value("gainDb").toInt() : sys.value("gainDb", -1).toInt();
-    const int dwell = entry.value("dwellMs", 0).toInt();
-    const int hold = entry.value("holdMs", 0).toInt();
-    const QStringList cells{target.id,
-                            target.type,
-                            target.hzText,
-                            sys.value("chanCsvPath").toString(),
-                            dwell ? QString::number(dwell) : QString(),
-                            hold ? QString::number(hold) : QString(),
-                            QString(),
-                            sys.value("keyCsvHex").toBool() ? sys.value("keyCsvPath").toString() : QString(),
-                            sys.value("keyCsvHex").toBool() ? QString() : sys.value("keyCsvPath").toString(),
-                            sys.value("p25BandplanCsvPath").toString(),
-                            target.modulation,
-                            gain >= 0 ? QString::number(gain) : QString(),
-                            options.join(QLatin1Char(' '))};
+    const auto cells = targetCells(entry, sys, target, options);
     // The parser strips outer CSV quotes but does not unescape doubled
     // quotes. Keep the scoped path quotes directly in the options cell;
     // commas/newlines in paths have already been refused.

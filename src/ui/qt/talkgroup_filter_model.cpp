@@ -3,6 +3,10 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QList>
+#include <QMap>
+#include <QVariantMap>
+#include <utility>
 #include "talkgroup_filter_model.h"
 
 #include <QAbstractListModel>
@@ -50,6 +54,18 @@ TalkgroupFilterModel::filterAcceptsRow(int source_row, const QModelIndex& source
     return m_filterText.isEmpty()
            || source->data(idx, TalkgroupListModel::NameRole).toString().contains(m_filterText, Qt::CaseInsensitive)
            || source->data(idx, TalkgroupListModel::IdTextRole).toString().contains(m_filterText);
+}
+
+QVariantList
+TalkgroupFilterModel::snapshotSelection() const {
+    QVariantList rows;
+    for (int i = 0; i < rowCount(); ++i) {
+        const auto at = index(i, 0);
+        rows.append(QVariantMap{{"index", data(at, TalkgroupListModel::PolicyIndexRole)},
+                                {"first", data(at, TalkgroupListModel::IdStartRole)},
+                                {"last", data(at, TalkgroupListModel::IdEndRole)}});
+    }
+    return rows;
 }
 
 } // namespace dsd_qt

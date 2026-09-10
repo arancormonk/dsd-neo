@@ -12,8 +12,11 @@
  */
 
 #include <QCoreApplication>
+#include <QList>
+#include <QMap>
 #include <QObject>
 #include <QString>
+#include <QVariant>
 #include <cmath>
 #include <initializer_list>
 #include <stdint.h>
@@ -31,8 +34,8 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/scan_mode.h>
 
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 #include "metrics_model.h"
 
 namespace {
@@ -322,9 +325,60 @@ test_site() {
     dsd_state_ext_free_all(&state);
 }
 
+static void
+test_decryption_metadata() {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    state.enc_lockout_key_epoch = 10;
+    DSD_SNPRINTF(state.key_profile_ref, sizeof(state.key_profile_ref), "%s", "opaque-profile");
+    dsd_qt::MetricsModel model;
+    for (uint8_t slot = 0; slot < 2; ++slot) {
+        dsd_call_observation observation = {};
+        observation.protocol = DSD_SYNC_P25P2_POS;
+        observation.slot = slot;
+        observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+        observation.ota_target_id = 123;
+        observation.observed_m = 4.0;
+        dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        dsd_call_crypto_update crypto = {};
+        crypto.classification = DSD_CALL_CRYPTO_DECRYPTABLE;
+        crypto.algid = 0x84;
+        crypto.kid = 2 + slot;
+        crypto.observed_m = 4.0;
+        dsd_call_state_update_crypto(&state, slot, &crypto);
+        dsd_call_snapshot before = {}, after = {};
+        dsd_call_state_get(&state, slot, &before);
+        expect("resolver note accepted",
+               dsd_call_state_note_key_selection(&state, slot, before.epoch, DSD_CALL_KEY_SIGNALED, crypto.kid,
+                                                 crypto.kid, 1, 0)
+                   == 1);
+        dsd_call_state_get(&state, slot, &after);
+        expect("selection does not extend activity", before.updated_m == after.updated_m);
+        expect("wrong call epoch rejected",
+               dsd_call_state_note_key_selection(&state, slot, before.epoch + 100, DSD_CALL_KEY_SIGNALED, 99, 99, 1, 0)
+                   == 0);
+    }
+    model.refresh(&opts, &state);
+    const auto slots = model.decryptionSlots();
+    expect("two independent key selections",
+           slots.size() == 2 && slots[0].toMap().value("keyId") == "2" && slots[1].toMap().value("keyId") == "3");
+    expect("only opaque profile association published",
+           slots[0].toMap().value("profileRef") == "opaque-profile" && !slots[0].toMap().contains("material"));
+    state.enc_lockout_key_epoch++;
+    model.refresh(&opts, &state);
+    expect("old key result becomes pending",
+           model.decryptionSlots()[0].toMap().value("availability") == "Waiting for key reevaluation");
+    model.clear();
+    expect("stopped session has no live key metadata", model.decryptionSlots().isEmpty());
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    test_decryption_metadata();
     test_site();
     test_quality();
     test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 0);

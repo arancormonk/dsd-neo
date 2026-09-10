@@ -28,6 +28,7 @@ namespace dsd_qt {
 class AppPrefs;
 class DecoderHost;
 class SavedSystemsModel;
+class DecryptionProfileProvider;
 
 /** @brief The app-wide defaults a saved system's overrides fall back to. */
 struct SessionArgPrefs {
@@ -57,6 +58,8 @@ enum class SessionArgsError {
     KeyHex,
     KeyRc4,
     KeyScrambler,
+    KeyM17Scrambler,
+    KeyM17Aes,
     KeyConflict,
     ForceKey,
     UnsafeOption
@@ -76,6 +79,7 @@ QString session_args_error_text(SessionArgsError error);
  * spliced verbatim into the rtl input spec where dsd_parse_freq_hz would read
  * garbage as 0 Hz and the session would come up silently mistuned.
  */
+bool session_args_profile_compatible(const QVariantMap& system);
 bool session_args_freq_valid(const QString& freqMhz);
 
 /**
@@ -97,6 +101,11 @@ class SessionArgsBuilder : public QObject {
     ~SessionArgsBuilder() override;
     void setSavedSystems(const SavedSystemsModel* systems);
 
+    void
+    setDecryptionProfiles(DecryptionProfileProvider* profiles) {
+        m_profiles = profiles;
+    }
+
     /**
      * @brief Validate one saved-system field map without returning key-bearing argv.
      * @return {"ok": bool, "error": category, "errorText": sentence}.
@@ -115,6 +124,7 @@ class SessionArgsBuilder : public QObject {
     QStringList buildArgs(const QVariantMap& system, SessionArgsError* error) const;
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems = nullptr;
+    DecryptionProfileProvider* m_profiles = nullptr;
 };
 
 } // namespace dsd_qt

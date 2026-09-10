@@ -3,6 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QIODevice>
+#include <utility>
 #include "imported_files_model.h"
 
 #include <QByteArray>
@@ -22,6 +24,10 @@
 
 #include <dsd-neo/core/csv_validate.h>
 
+#include <QSaveFile>
+#include <QTemporaryFile>
+#include <dsd-neo/core/dmr_key_map.h>
+#include "csv_bundle_import.h"
 #include "decoder_host.h"
 #include "json_store.h"
 
@@ -101,6 +107,12 @@ ImportedFilesModel::validate(const QString& path, const QString& type, int* acce
         rc = dsd_csv_validate_key_file_dec(local.constData(), &counts);
     } else if (type == QLatin1String("keysHex")) {
         rc = dsd_csv_validate_key_file_hex(local.constData(), &counts);
+    } else if (type == QLatin1String("vertexKeys")) {
+        rc = dsd_csv_validate_vertex_file(local.constData(), &counts);
+    } else if (type == QLatin1String("dmrTgKeys")) {
+        dsd_dmr_key_map map = {};
+        rc = dsd_dmr_key_map_load(local.constData(), &map);
+        counts.accepted = counts.total = static_cast<unsigned int>(map.count);
     } else if (type == QLatin1String("p25Bandplan")) {
         rc = dsd_csv_validate_p25_bandplan_file(local.constData(), &counts);
     } else if (type == QLatin1String("src")) {
@@ -152,6 +164,105 @@ ImportedFilesModel::registerTalkgroupList(const QString& path) {
     return true;
 }
 
+static bool
+writePrivateCsv(const QString& path, const QByteArray& data) {
+    QSaveFile file(path);
+    return file.open(QIODevice::WriteOnly) && file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)
+           && file.write(data) == data.size() && file.commit();
+}
+
+QVariantMap
+ImportedFilesModel::importBundle(const QString& reference, const QString& fileName, const QString& type,
+                                 const QVariantMap& companions, int replaceRow) {
+    if (type != "chan") {
+        return replaceRow >= 0 ? updateFile(replaceRow, reference, fileName) : importFile(reference, fileName, type);
+    }
+    const Row previous = replaceRow >= 0 && replaceRow < count() ? m_rows[replaceRow] : Row();
+    if (replaceRow >= 0 && previous.path.isEmpty()) {
+        return {{"ok", false}, {"error", "removed"}};
+    }
+    const auto bundle = stage_csv_bundle(m_host, reference, fileName, companions, previous.bundleRoot);
+    if (!bundle.error.isEmpty()) {
+        return {{"ok", false}, {"error", bundle.error}, {"required", bundle.required}};
+    }
+    if (replaceRow < 0) {
+        auto result = adoptStoredFile(bundle.path, type, {{"bundleRoot", bundle.root}});
+        if (!result.value("ok").toBool()) {
+            discard_csv_bundle(bundle);
+        }
+        return result;
+    }
+    return replaceBundle(replaceRow, bundle, type);
+}
+
+static bool
+replacementBundleBytes(const CsvBundleImport& bundle, const QString& destination, QByteArray& bytes) {
+    QFile staged(bundle.path);
+    if (!staged.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    bytes = staged.readAll();
+    staged.close();
+    if (!bundle.root.isEmpty()) {
+        const QString prefix = QDir(QFileInfo(destination).absolutePath()).relativeFilePath(bundle.root);
+        if (prefix != ".") {
+            bytes.replace((bundle.revision + '/').toUtf8(), (prefix + '/' + bundle.revision + '/').toUtf8());
+        }
+    }
+    return true;
+}
+
+QVariantMap
+ImportedFilesModel::replaceBundle(int replaceRow, const CsvBundleImport& bundle, const QString& type) {
+    const Row previous = m_rows.at(replaceRow);
+    // Versioned companions are immutable. Only the existing primary path is
+    // replaced, so every saved reference changes together after validation.
+    QByteArray bytes;
+    if (!replacementBundleBytes(bundle, previous.path, bytes)) {
+        discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
+        return {{"ok", false}, {"error", "open"}};
+    }
+    QTemporaryFile check(QFileInfo(previous.path).absolutePath() + "/.bundle-check-XXXXXX.csv");
+    if (!check.open() || check.write(bytes) != bytes.size() || !check.flush()) {
+        discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
+        return {{"ok", false}, {"error", "copy"}};
+    }
+    int accepted = 0, skipped = 0;
+    if (!validate(check.fileName(), type, &accepted, &skipped)) {
+        discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
+        return {{"ok", false}, {"error", "format"}};
+    }
+    QFile old(previous.path);
+    if (!old.open(QIODevice::ReadOnly)) {
+        discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
+        return {{"ok", false}, {"error", "open"}};
+    }
+    const QByteArray backup = old.readAll();
+    old.close();
+    if (!writePrivateCsv(previous.path, bytes)) {
+        discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
+        return {{"ok", false}, {"error", "copy"}};
+    }
+    auto next = m_rows;
+    next[replaceRow].accepted = accepted;
+    next[replaceRow].skipped = skipped;
+    next[replaceRow].bundleRoot = bundle.root.isEmpty() ? previous.bundleRoot : bundle.root;
+    next[replaceRow].importedAt = QDateTime::currentSecsSinceEpoch();
+    next[replaceRow].origin.clear();
+    if (!saveRows(next)) {
+        if (writePrivateCsv(previous.path, backup)) {
+            discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
+        }
+        return {{"ok", false}, {"error", "copy"}};
+    }
+    QFile::remove(bundle.path);
+    m_rows = std::move(next);
+    Q_EMIT dataChanged(index(replaceRow), index(replaceRow));
+    Q_EMIT countChanged();
+    return {{"ok", true},           {"path", previous.path}, {"name", previous.name},           {"type", type},
+            {"accepted", accepted}, {"skipped", skipped},    {"error", accepted ? "" : "empty"}};
+}
+
 QVariantMap
 ImportedFilesModel::adoptStoredFile(const QString& path, const QString& type, const QVariantMap& origin) {
     QVariantMap result;
@@ -179,12 +290,19 @@ ImportedFilesModel::adoptStoredFile(const QString& path, const QString& type, co
     row.rrKind = origin.value(QStringLiteral("rrKind")).toString();
     row.rrSiteIds = origin.value(QStringLiteral("rrSiteIds")).toString();
     row.rrPartialEnc = origin.value(QStringLiteral("rrPartialEnc"), true).toBool();
+    row.bundleRoot = origin.value(QStringLiteral("bundleRoot")).toString();
+    row.rrEncryptionPolicy = origin.value(QStringLiteral("rrEncryptionPolicy"), row.rrPartialEnc ? 3 : 2).toInt();
 
+    auto next = m_rows;
+    next.append(row);
+    if (!saveRows(next)) {
+        QFile::remove(path);
+        return result;
+    }
     beginInsertRows(QModelIndex(), static_cast<int>(m_rows.size()), static_cast<int>(m_rows.size()));
-    m_rows.append(row);
+    m_rows = std::move(next);
     endInsertRows();
     Q_EMIT countChanged();
-    save();
 
     result.insert(QStringLiteral("ok"), true);
     result.insert(QStringLiteral("error"), accepted == 0 ? QStringLiteral("empty") : QString());
@@ -234,7 +352,8 @@ ImportedFilesModel::importGeneratedFile(const QString& sourcePath, const QString
  */
 QVariantMap
 ImportedFilesModel::commitReplacedRow(int row, int accepted, int skipped, bool keepProvenance) {
-    Row& stored = m_rows[row];
+    auto next = m_rows;
+    Row& stored = next[row];
     stored.importedAt = QDateTime::currentSecsSinceEpoch();
     stored.accepted = accepted;
     stored.skipped = skipped;
@@ -247,21 +366,54 @@ ImportedFilesModel::commitReplacedRow(int row, int accepted, int skipped, bool k
         stored.rrKind.clear();
         stored.rrSiteIds.clear();
         stored.rrPartialEnc = true;
+        stored.rrEncryptionPolicy = 0;
     }
-    const QModelIndex idx = index(row);
-    Q_EMIT dataChanged(idx, idx);
-    save();
-
+    if (!saveRows(next)) {
+        return {{"ok", false}, {"error", "save"}};
+    }
+    m_rows = std::move(next);
+    const Row& committed = m_rows[row];
     QVariantMap result;
     result.insert(QStringLiteral("ok"), true);
     result.insert(QStringLiteral("error"), accepted == 0 ? QStringLiteral("empty") : QString());
-    result.insert(QStringLiteral("path"), stored.path);
-    result.insert(QStringLiteral("name"), stored.name);
-    result.insert(QStringLiteral("type"), stored.type);
+    result.insert(QStringLiteral("path"), committed.path);
+    result.insert(QStringLiteral("name"), committed.name);
+    result.insert(QStringLiteral("type"), committed.type);
     result.insert(QStringLiteral("accepted"), accepted);
     result.insert(QStringLiteral("skipped"), skipped);
+    const QModelIndex idx = index(row);
+    Q_EMIT dataChanged(idx, idx);
     return result;
 }
+
+namespace {
+struct CsvReplacementBackup {
+    QString path;
+    QByteArray bytes;
+    bool existed, valid = true;
+
+    explicit CsvReplacementBackup(const QString& destination) : path(destination), existed(QFile::exists(path)) {
+        if (!existed) {
+            return;
+        }
+        QFile file(path);
+        valid = file.open(QIODevice::ReadOnly);
+        if (valid) {
+            bytes = file.readAll();
+            valid = file.error() == QFileDevice::NoError;
+        }
+    }
+
+    void
+    restore() const {
+        if (existed) {
+            (void)writePrivateCsv(path, bytes);
+        } else {
+            QFile::remove(path);
+        }
+    }
+};
+} // namespace
 
 QVariantMap
 ImportedFilesModel::updateFile(int row, const QString& reference, const QString& fileName) {
@@ -292,11 +444,14 @@ ImportedFilesModel::updateFile(int row, const QString& reference, const QString&
     }
 
     if (staged == snapshot.path) {
-        // The staging name resolved to the row's own file, so it is already
-        // committed and validated.
         return commitReplacedRow(row, accepted, skipped, false);
     }
 
+    CsvReplacementBackup backup(snapshot.path);
+    if (!backup.valid) {
+        QFile::remove(staged);
+        return result;
+    }
     const QString path = m_host->importLocalFile(staged, snapshot.name, snapshot.path);
     QFile::remove(staged);
     if (path != snapshot.path || path.isEmpty()) {
@@ -308,7 +463,11 @@ ImportedFilesModel::updateFile(int row, const QString& reference, const QString&
         }
         return result;
     }
-    return commitReplacedRow(row, accepted, skipped, false);
+    result = commitReplacedRow(row, accepted, skipped, false);
+    if (!result.value("ok").toBool()) {
+        backup.restore();
+    }
+    return result;
 }
 
 QVariantMap
@@ -330,6 +489,10 @@ ImportedFilesModel::refreshGeneratedFile(int row, const QString& sourcePath) {
     }
 
     // The path is preserved so saved systems referencing it stay valid.
+    CsvReplacementBackup backup(snapshot.path);
+    if (!backup.valid) {
+        return result;
+    }
     const QString path = m_host->importLocalFile(sourcePath, snapshot.name, snapshot.path);
     if (path != snapshot.path || path.isEmpty()) {
         if (!path.isEmpty()) {
@@ -337,7 +500,35 @@ ImportedFilesModel::refreshGeneratedFile(int row, const QString& sourcePath) {
         }
         return result;
     }
-    return commitReplacedRow(row, accepted, skipped);
+    result = commitReplacedRow(row, accepted, skipped);
+    if (!result.value("ok").toBool()) {
+        backup.restore();
+    }
+    return result;
+}
+
+static void
+appendChannelProfile(const dsd_csv_channel_profile* row, void* context) {
+    auto* rows = static_cast<QVariantList*>(context);
+    rows->append(QVariantMap{{"index", static_cast<int>(row->index)},
+                             {"name", QString::fromUtf8(row->name)},
+                             {"frequency", QString::number(row->frequency_hz / 1e6, 'f', 6)},
+                             {"mode", QString::fromUtf8(row->mode)},
+                             {"keySource", row->key_source},
+                             {"force", row->force},
+                             {"mappings", row->dmr_mapping_count},
+                             {"profileRef", QString::fromUtf8(row->profile_ref)}});
+}
+
+QVariantMap
+ImportedFilesModel::channelProfiles(int row) const {
+    if (row < 0 || row >= count() || m_rows[row].type != "chan") {
+        return {{"ok", false}, {"rows", QVariantList()}};
+    }
+    QVariantList rows;
+    const bool ok =
+        dsd_csv_inspect_channel_profiles(m_rows[row].path.toUtf8().constData(), &rows, appendChannelProfile) == 0;
+    return {{"ok", ok}, {"rows", rows}};
 }
 
 void
@@ -345,7 +536,13 @@ ImportedFilesModel::remove(int row) {
     if (row < 0 || row >= m_rows.size()) {
         return;
     }
-    QFile::remove(m_rows.at(row).path);
+    const auto item = m_rows.at(row);
+    QFile::remove(item.path);
+    if (!item.bundleRoot.isEmpty()) {
+        CsvBundleImport bundle;
+        bundle.root = item.bundleRoot;
+        discard_csv_bundle(bundle);
+    }
     beginRemoveRows(QModelIndex(), row, row);
     m_rows.removeAt(row);
     endRemoveRows();
@@ -396,6 +593,8 @@ ImportedFilesModel::rowFromMap(const QVariantMap& map) {
     row.rrKind = map.value(QStringLiteral("rrKind")).toString();
     row.rrSiteIds = map.value(QStringLiteral("rrSiteIds")).toString();
     row.rrPartialEnc = map.value(QStringLiteral("rrPartialEnc"), true).toBool();
+    row.bundleRoot = map.value(QStringLiteral("bundleRoot")).toString();
+    row.rrEncryptionPolicy = map.value(QStringLiteral("rrEncryptionPolicy"), row.rrPartialEnc ? 3 : 2).toInt();
     return row;
 }
 
@@ -415,6 +614,8 @@ ImportedFilesModel::mapFromRow(const Row& row) {
     map.insert(QStringLiteral("rrKind"), row.rrKind);
     map.insert(QStringLiteral("rrSiteIds"), row.rrSiteIds);
     map.insert(QStringLiteral("rrPartialEnc"), row.rrPartialEnc);
+    map.insert(QStringLiteral("rrEncryptionPolicy"), row.rrEncryptionPolicy);
+    map.insert(QStringLiteral("bundleRoot"), row.bundleRoot);
     return map;
 }
 
@@ -456,13 +657,18 @@ ImportedFilesModel::takePrunedPaths() {
     return paths;
 }
 
-void
+bool
 ImportedFilesModel::save() const {
+    return saveRows(m_rows);
+}
+
+bool
+ImportedFilesModel::saveRows(const QList<Row>& rows) const {
     QJsonArray array;
-    for (const Row& row : m_rows) {
+    for (const Row& row : rows) {
         array.append(QJsonObject::fromVariantMap(mapFromRow(row)));
     }
-    json_store_save_array(QLatin1String(kStoreFileName), array);
+    return json_store_save_array(QLatin1String(kStoreFileName), array);
 }
 
 } // namespace dsd_qt

@@ -5,11 +5,14 @@
 
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
@@ -17,9 +20,6 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "dsd-neo/core/call_state.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
 #include "snapshot_internal.h"
 
 static dsd_state g_pub;     // latest published by demod thread
@@ -230,6 +230,9 @@ static void
 ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, dibit_buf, trunk_lcn_freq);
     ui_snapshot_copy_trunk_chan_map(dst, src);
+    dst->keyloader = src->keyloader;
+    DSD_MEMCPY(dst->key_profile_ref, src->key_profile_ref, sizeof(dst->key_profile_ref));
+    dst->key_profile_ref[sizeof(dst->key_profile_ref) - 1U] = '\0';
     (void)dsd_tg_policy_copy_snapshot(dst, src);
     (void)dsd_source_alias_copy_snapshot(dst, src);
 

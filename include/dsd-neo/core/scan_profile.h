@@ -4,6 +4,7 @@
 /** @file @brief Materialized row options; companion files are read only at import. */
 #ifndef DSD_NEO_CORE_SCAN_PROFILE_H
 #define DSD_NEO_CORE_SCAN_PROFILE_H
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -18,12 +19,20 @@ extern "C" {
 typedef struct {
     dsd_scan_option_values values;
     dsd_tg_policy_store* groups;
+    dsd_dmr_key_map dmr_map;
 } dsd_scan_row_profile;
+
+/** Ensure an owned empty profile exists. Existing profiles are unchanged;
+ * failure leaves *profile unchanged. Release with dsd_scan_profile_free(). */
+int dsd_scan_profile_ensure(dsd_scan_row_profile** profile);
 
 /** Materialize the direct key values (`-b`, `-H`, `-1`, `-R`, or the merged legacy columns) into
  * @p out, releasing whatever @p out held. `present` is set only when a direct source exists.
  * Returns -1 on a bad argument with @p out untouched. */
 int dsd_scan_options_keys(const dsd_scan_options* options, dsd_key_set* out);
+/** Whether a prepared direct source can serve the target protocol. Collections
+ * retain their normal per-call material checks. Does not mutate live state. */
+int dsd_scan_keys_compatible(const dsd_key_set* keys, unsigned int mode);
 /** Merge legacy key columns into parsed options. Columns alone do not claim a mute override;
  * direct option text retains its decryption policy regardless of merged material. Rejects a
  * column that duplicates an option or mixes direct keys with key files. No files are opened;
@@ -69,6 +78,10 @@ int dsd_scan_groups_begin(dsd_state* state);
  * entry), or restore the baseline for a profile without groups. No allocation; the scope must
  * have been reserved with dsd_scan_groups_begin(). */
 void dsd_scan_groups_enter(dsd_state* state, const dsd_scan_row_profile* profile);
+/** Install an explicit row mapping, or restore globals for inheritance. The
+ * shared profile scope must be reserved by dsd_scan_groups_begin before tuning.
+ * Returns nonzero when the effective map changed. No allocation or file I/O. */
+int dsd_scan_maps_enter(dsd_state* state, const dsd_scan_row_profile* profile);
 /** Restore the baseline policy and drop the scope. Safe when no scope is active. */
 void dsd_scan_groups_leave(dsd_state* state);
 /** Park the row policy so a group import edits the global baseline beneath it. Returns 1 when

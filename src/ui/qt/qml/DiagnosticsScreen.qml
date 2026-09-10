@@ -2,16 +2,27 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+
 Item {
     id: screen
-    signal closed()
-    Rectangle { anchors.fill: parent; color: Theme.bg }
+    signal closed
+    Rectangle {
+        anchors.fill: parent
+        color: Theme.bg
+    }
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 16
         RowLayout {
-            Button { text: qsTr("Back"); onClicked: screen.closed() }
-            Label { text: qsTr("Diagnostics"); color: Theme.textPrimary; Layout.fillWidth: true }
+            OutlineButton {
+                text: qsTr("Back")
+                onClicked: screen.closed()
+            }
+            Label {
+                text: qsTr("Diagnostics")
+                color: Theme.textPrimary
+                Layout.fillWidth: true
+            }
         }
         Label {
             Layout.fillWidth: true
@@ -20,15 +31,23 @@ Item {
             color: Theme.textPrimary
         }
         RowLayout {
-            Button {
+            OutlineButton {
                 objectName: "diagnosticsPause"
                 text: diagnosticsLog.paused ? qsTr("Resume (%1)").arg(diagnosticsLog.pendingCount) : qsTr("Pause")
                 onClicked: diagnosticsLog.paused = !diagnosticsLog.paused
             }
-            Button { objectName: "diagnosticsCopy"; text: qsTr("Copy"); onClicked: diagnosticsLog.copyAll() }
-            Button { objectName: "diagnosticsClear"; text: qsTr("Clear"); onClicked: diagnosticsLog.clear() }
+            OutlineButton {
+                objectName: "diagnosticsCopy"
+                text: qsTr("Copy")
+                onClicked: diagnosticsLog.copyAll()
+            }
+            OutlineButton {
+                objectName: "diagnosticsClear"
+                text: qsTr("Clear")
+                onClicked: diagnosticsLog.clear()
+            }
         }
-        Button {
+        OutlineButton {
             objectName: "diagnosticsShare"
             visible: decoderHost.shareSupported
             text: qsTr("Share diagnostics")
@@ -55,5 +74,6 @@ Item {
     }
     Keys.onEscapePressed: screen.closed()
     Keys.onBackPressed: screen.closed()
-    onVisibleChanged: if (visible) forceActiveFocus()
+    onVisibleChanged: if (visible)
+        forceActiveFocus()
 }

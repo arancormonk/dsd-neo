@@ -18,9 +18,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
 
 #define P25_P1_LOCKOUT_ESS_REPEAT_WINDOW_S 1.0
 
@@ -251,6 +251,15 @@ p25_crypto_publish_canonical(const dsd_opts* opts, dsd_state* state, int slot) {
         .audio_permitted = (uint8_t)(p25_crypto_audio_permitted(opts, state, slot) ? 1 : 0),
     };
     (void)dsd_call_state_update_crypto(state, (uint8_t)slot, &update);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0) {
+        const int available = update.classification == DSD_CALL_CRYPTO_DECRYPTABLE ? 1
+                              : update.classification == DSD_CALL_CRYPTO_ENCRYPTED ? 0
+                                                                                   : -1;
+        (void)dsd_call_state_note_key_selection(
+            state, (uint8_t)slot, call.epoch, state->keyloader ? DSD_CALL_KEY_SIGNALED : DSD_CALL_KEY_DIRECT,
+            update.kid, state->keyloader ? update.kid : -1, available, DSD_CALL_KEY_FALLBACK_NONE);
+    }
 }
 
 static void

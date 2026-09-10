@@ -6,7 +6,7 @@ import QtQuick
 // Emergency indication shared by live calls and history.
 Rectangle {
     implicitWidth: tag.implicitWidth + 14
-    implicitHeight: 20
+    implicitHeight: Math.max(20, tag.implicitHeight + 8)
     radius: 5
     color: "transparent"
     border.width: 1
@@ -17,7 +17,7 @@ Rectangle {
         anchors.centerIn: parent
         text: qsTr("EMERGENCY")
         font.family: Theme.mono
-        font.pixelSize: 10
+        font.pixelSize: Theme.fontSize(10)
         font.letterSpacing: 1
         color: Theme.alert
     }

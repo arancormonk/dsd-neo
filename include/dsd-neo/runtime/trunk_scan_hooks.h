@@ -14,6 +14,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TRUNK_SCAN_HOOKS_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TRUNK_SCAN_HOOKS_H_
 
+#include <dsd-neo/core/dmr_key_map.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
@@ -35,6 +37,16 @@ typedef enum {
     DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR = 3,  /**< Put every avoided target back into the rotation */
     DSD_TRUNK_SCAN_CONTROL_ADVANCE = 4,      /**< Move to the next eligible target now */
 } dsd_trunk_scan_control_op;
+
+enum { DSD_TRUNK_KEY_MATERIAL = 1U, DSD_TRUNK_KEY_MAP = 2U, DSD_TRUNK_KEY_FORCE = 4U };
+
+enum {
+    DSD_TRUNK_KEY_APPLIED = 1,
+    DSD_TRUNK_KEY_INVALID = -1,
+    DSD_TRUNK_KEY_STALE = -2,
+    DSD_TRUNK_KEY_UNAVAILABLE = -3,
+    DSD_TRUNK_KEY_BUSY = -4
+};
 
 enum {
     DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE = -3, /**< Trunk scan is not installed */
@@ -58,9 +70,14 @@ typedef struct {
     const char* (*active_chan_csv)(const dsd_state* state);
     void (*enc_lockout_clear_snapshots)(const dsd_state* state);
     int (*control)(dsd_opts* opts, dsd_state* state, int op);
+    int (*decryption_apply)(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
+                            uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map, int force);
 } dsd_trunk_scan_hooks;
 
 void dsd_trunk_scan_hooks_set(dsd_trunk_scan_hooks hooks);
+int dsd_trunk_scan_hook_decryption_apply(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
+                                         uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map,
+                                         int force);
 
 void* dsd_trunk_scan_hook_p25_ctx(void);
 void* dsd_trunk_scan_hook_dmr_ctx(void);

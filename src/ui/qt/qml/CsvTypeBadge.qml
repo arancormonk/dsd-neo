@@ -11,7 +11,7 @@ Rectangle {
     property string type: ""
 
     implicitWidth: tag.implicitWidth + 14
-    implicitHeight: 20
+    implicitHeight: Math.max(20, tag.implicitHeight + 8)
     radius: 5
     color: "transparent"
     border.width: 1
@@ -20,13 +20,7 @@ Rectangle {
     Text {
         id: tag
         anchors.centerIn: parent
-        text: parent.type === "chan" ? qsTr("CHANNELS")
-              : parent.type === "group" ? qsTr("TALKGROUPS")
-              : parent.type === "keysDec" ? qsTr("KEYS · DEC")
-              : parent.type === "keysHex" ? qsTr("KEYS · HEX")
-              : parent.type === "p25Bandplan" ? qsTr("P25 BAND PLAN")
-              : parent.type === "src" ? qsTr("RADIO IDS")
-              : qsTr("FILE")
+        text: parent.type === "chan" ? qsTr("CHANNELS") : parent.type === "group" ? qsTr("TALKGROUPS") : parent.type === "keysDec" ? qsTr("KEYS · DEC") : parent.type === "keysHex" ? qsTr("KEYS · HEX") : parent.type === "vertexKeys" ? qsTr("VERTEX KEYS") : parent.type === "dmrTgKeys" ? qsTr("DMR KEY MAP") : parent.type === "p25Bandplan" ? qsTr("P25 BAND PLAN") : parent.type === "src" ? qsTr("RADIO IDS") : qsTr("FILE")
         font.family: Theme.mono
         font.pixelSize: Theme.fontSize(10)
         font.letterSpacing: 1

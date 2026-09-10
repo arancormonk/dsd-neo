@@ -7,8 +7,11 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -18,9 +21,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
 #include "talkgroup_policy_internal.h"
 
 typedef struct {
@@ -687,6 +687,128 @@ dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_end, c
         return dsd_tg_policy_store_append(ctx, &entry);
     }
     ctx->table.entries[index] = entry;
+    tg_policy_table_note_mutation(ctx);
+    return 0;
+}
+
+static int
+selection_key_compare(const void* left, const void* right) {
+    const uint64_t a = *(const uint64_t*)left, b = *(const uint64_t*)right;
+    return (a > b) - (a < b);
+}
+
+static int
+selection_has_duplicates(const dsd_tg_policy_selection* selection, size_t count) {
+    if (count > SIZE_MAX / sizeof(uint64_t)) {
+        return -1;
+    }
+    uint64_t* keys = tg_policy_calloc(count, sizeof(*keys));
+    if (!keys) {
+        return -1;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        keys[i] = selection[i].policy_index >= 0 ? (uint64_t)selection[i].policy_index
+                                                 : (UINT64_C(1) << 63) | selection[i].id_start;
+    }
+    qsort(keys, count, sizeof(*keys), selection_key_compare);
+    int duplicate = 0;
+    for (size_t i = 1; i < count; ++i) {
+        duplicate |= keys[i] == keys[i - 1];
+    }
+    free(keys);
+    return duplicate;
+}
+
+static int
+prepare_selection_entry(const dsd_tg_policy_context* ctx, dsd_tg_policy_entry* entries, size_t old_count, size_t* used,
+                        const dsd_tg_policy_selection* item, int listening) {
+    if (!item->id_start || item->id_start > item->id_end || item->policy_index < -1) {
+        return 1;
+    }
+    size_t row;
+    if (item->policy_index >= 0) {
+        row = (size_t)item->policy_index;
+        if (row >= old_count || entries[row].id_start != item->id_start || entries[row].id_end != item->id_end
+            || !tg_policy_row_editable(&entries[row])) {
+            return 1;
+        }
+    } else {
+        if (item->id_start != item->id_end) {
+            return 1;
+        }
+        int existing = ctx ? tg_policy_find_bounds_idx_first(ctx, item->id_start, item->id_end) : -1;
+        if (existing >= 0) {
+            return 1;
+        }
+        row = (*used)++;
+        dsd_tg_policy_make_exact_entry(item->id_start, "A", "", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &entries[row]);
+    }
+    tg_policy_entry_apply_mode(&entries[row], listening ? "A" : "B");
+    return 0;
+}
+
+static dsd_tg_policy_context*
+selection_new_context(dsd_state* state) {
+    dsd_tg_policy_context* ctx = tg_policy_context_alloc();
+    if (ctx && dsd_state_ext_set(state, DSD_STATE_EXT_CORE_TG_POLICY, ctx, tg_policy_context_free)) {
+        tg_policy_context_free(ctx);
+        return NULL;
+    }
+    return ctx;
+}
+
+static int
+selection_version_matches(const dsd_state* state, uint64_t context, unsigned int generation) {
+    uint64_t current_context = 0;
+    unsigned int current_generation = 0;
+    dsd_tg_policy_table_version(state, &current_context, &current_generation);
+    return context == current_context && generation == current_generation;
+}
+
+int
+dsd_tg_policy_set_listening_selection(dsd_state* state, uint64_t context, unsigned int generation,
+                                      const dsd_tg_policy_selection* selection, size_t count, int listening) {
+    if (!state || !selection || !count || (unsigned int)listening > 1U) {
+        return 1;
+    }
+    if (!selection_version_matches(state, context, generation)) {
+        return 1;
+    }
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
+    const int duplicates = selection_has_duplicates(selection, count);
+    if (duplicates) {
+        return duplicates;
+    }
+    const size_t old_count = ctx ? ctx->table.count : 0;
+    if (count > SIZE_MAX / sizeof(dsd_tg_policy_entry) - old_count) {
+        return -1;
+    }
+    const size_t capacity = old_count + count;
+    dsd_tg_policy_entry* entries = tg_policy_calloc(capacity, sizeof(*entries));
+    if (!entries) {
+        return -1;
+    }
+    if (old_count) {
+        DSD_MEMCPY(entries, ctx->table.entries, old_count * sizeof(*entries));
+    }
+    size_t used = old_count;
+    for (size_t i = 0; i < count; ++i) {
+        if (prepare_selection_entry(ctx, entries, old_count, &used, &selection[i], listening)) {
+            free(entries);
+            return 1;
+        }
+    }
+    if (!ctx) {
+        ctx = selection_new_context(state);
+    }
+    if (!ctx) {
+        free(entries);
+        return -1;
+    }
+    free(ctx->table.entries);
+    ctx->table.entries = entries;
+    ctx->table.count = used;
+    ctx->table.capacity = capacity;
     tg_policy_table_note_mutation(ctx);
     return 0;
 }

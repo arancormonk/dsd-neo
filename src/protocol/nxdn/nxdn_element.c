@@ -39,6 +39,10 @@
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/secret_redaction.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -48,10 +52,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/secret_redaction.h"
-#include "dsd-neo/core/state_fwd.h"
 #include "nxdn_confirm.h"
 #include "nxdn_crc.h"
 
@@ -2260,6 +2260,27 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type,
         .audio_permitted = (uint8_t)(cipher_type == 0U || has_key),
     };
     if (dsd_call_state_update_crypto(state, 0U, &update) > 0) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, 0, &call) > 0) {
+            dsd_call_key_source source = DSD_CALL_KEY_DIRECT;
+            int selected = -1;
+            if (state->keyloader == 1) {
+                source = DSD_CALL_KEY_DEFAULT;
+                if (state->rkey_array[key_id] != 0) {
+                    source = DSD_CALL_KEY_SIGNALED;
+                    selected = key_id;
+                } else if (cipher_type == 1
+                           && call.ota_target_id < sizeof(state->rkey_array) / sizeof(state->rkey_array[0])
+                           && state->rkey_array[call.ota_target_id] != 0) {
+                    source = DSD_CALL_KEY_DESTINATION;
+                    selected = (int)call.ota_target_id;
+                } else if (cipher_type == 3) {
+                    selected = 0;
+                }
+            }
+            (void)dsd_call_state_note_key_selection(state, 0, call.epoch, source, key_id, selected,
+                                                    cipher_type ? has_key : -1, 0);
+        }
         dsd_event_sync_slot(opts, state, 0U);
     }
 }

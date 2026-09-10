@@ -7,7 +7,7 @@ import QtQuick
 // outline. Deliberately not an error treatment.
 Rectangle {
     implicitWidth: tag.implicitWidth + 14
-    implicitHeight: 20
+    implicitHeight: Math.max(20, tag.implicitHeight + 8)
     radius: 5
     color: "transparent"
     border.width: 1

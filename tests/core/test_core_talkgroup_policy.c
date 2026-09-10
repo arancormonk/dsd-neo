@@ -5,9 +5,12 @@
 
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -16,9 +19,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_true(const char* tag, int cond) {
@@ -1264,10 +1264,52 @@ done:
     return rc;
 }
 
+static int
+test_captured_selection(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int rc = 0;
+    dsd_tg_policy_entry first, second, after;
+    init_entry(&first, 123, "A", "First alias", DSD_TG_POLICY_SOURCE_USER_LOCKOUT);
+    init_entry(&second, 123, "A", "Second alias", DSD_TG_POLICY_SOURCE_USER_LOCKOUT);
+    first.priority = 25;
+    second.priority = 75;
+    second.preempt = 1;
+    rc |= expect_true("append first duplicate", dsd_tg_policy_append_exact(state, &first) == 0);
+    rc |= expect_true("append second duplicate", dsd_tg_policy_append_exact(state, &second) == 0);
+    uint64_t context;
+    unsigned int generation;
+    dsd_tg_policy_table_version(state, &context, &generation);
+    dsd_tg_policy_selection selected[] = {{1, 123, 123}, {-1, 456, 456}};
+    rc |= expect_true("exact captured selection",
+                      dsd_tg_policy_set_listening_selection(state, context, generation, selected, 2, 0) == 0);
+    rc |= expect_true("first duplicate unchanged",
+                      dsd_tg_policy_entry_at(state, 0, &after) && strcmp(after.mode, "A") == 0 && after.priority == 25);
+    rc |= expect_true("selected duplicate preserves metadata",
+                      dsd_tg_policy_entry_at(state, 1, &after) && strcmp(after.mode, "B") == 0
+                          && strcmp(after.name, "Second alias") == 0 && after.priority == 75 && after.preempt == 1);
+    rc |=
+        expect_true("heard-only selection creates exact policy",
+                    dsd_tg_policy_entry_at(state, 2, &after) && after.id_start == 456 && strcmp(after.mode, "B") == 0);
+    rc |= expect_true("stale selection refused",
+                      dsd_tg_policy_set_listening_selection(state, context, generation, selected, 2, 1) == 1);
+    dsd_tg_policy_table_version(state, &context, &generation);
+    dsd_tg_policy_selection invalid[] = {{0, 123, 123}, {1, 999, 999}};
+    rc |= expect_true("bad selection rejected atomically",
+                      dsd_tg_policy_set_listening_selection(state, context, generation, invalid, 2, 0) == 1);
+    rc |= expect_true("bad later row leaves earlier unchanged",
+                      dsd_tg_policy_entry_at(state, 0, &after) && strcmp(after.mode, "A") == 0);
+    free_test_state(state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_snapshot_chain_identity();
+    rc |= test_captured_selection();
     rc |= test_set_fields_remove_bounds();
     rc |= test_block_reason_labels();
     rc |= test_snapshot_reclones_recreated_context();

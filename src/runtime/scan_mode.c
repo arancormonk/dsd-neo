@@ -576,6 +576,12 @@ dsd_scan_mode_configured_view(const dsd_state* state) {
     return scope && !scope->suspended ? &scope->configured : NULL;
 }
 
+uint32_t
+dsd_scan_mode_option_fields(const dsd_state* state) {
+    const scan_scope* scope = scan_scope_get(state);
+    return scope ? scope->options.present : 0;
+}
+
 void
 dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src) {
     if (!dst || dst == src) {

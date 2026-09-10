@@ -373,3 +373,17 @@ Coordinates are not added to diagnostics or exports.
 Nearby lookup and the site chooser share one location request owner. Leaving
 RadioReference cancels its pending lookup; asking for location in either screen
 retires the previous caller, and late replies cannot replace the current request.
+
+### Android encryption review
+
+New Qt/Android imports default to keeping encrypted and partly encrypted talkgroups
+enabled. The review can instead exclude fully encrypted groups, or fully and partly
+encrypted groups. Exclusion disables the entire group, including its clear calls;
+installing keys does not override that listening policy. Refresh retains the policy
+stored with each import, including legacy exclusion choices. The terminal wizard
+and legacy generation API retain their previous default behavior.
+
+Country/state/county and site/repeater pickers support search. Selection is retained
+while filtering, and the final review lists sites, modulation, source requirements,
+policy and generated files before import. Cancelling a request keeps earlier search
+results available. Location denial leaves ZIP, Browse and direct system ID usable.

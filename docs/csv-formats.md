@@ -705,3 +705,23 @@ are supported: an options cell contains `-G "absolute path/group list.csv"`
 directly, without CSV-doubling those quotes. The engine target parser strips outer
 CSV quotes but does not perform RFC-style doubled-quote unescaping. Generated
 files containing keys are private internal inputs and are not shared exports.
+
+### Scoped decryption maps and companion files
+
+The `options` column of supported conventional channel maps and trunk-scan targets
+accepts `--dmr-tg-key-csv <file>` or `--dmr-tg-key-clear` for DMR rows. Map files are
+resolved relative to the containing CSV, validated before installation, and restored
+with the target's key/force scope on exit. An explicit clear differs from inheritance.
+`--no-decryption-keys` selects an empty key set and rejects simultaneous key material.
+`--key-profile-ref <opaque-id>` carries an optional nonsecret profile revision.
+
+Android channel-map imports copy referenced `keys_hex_csv`, `keys_dec_csv` and
+`-k`/`-K`/`-G`/`--dmr-tg-key-csv` option files into a private bundle and rewrite their
+paths. If the document provider cannot resolve a companion automatically, select
+each requested file explicitly. References with the same basename remain distinct.
+The complete bundle is validated before registration or replacing an existing map;
+a rejected update retains the prior files. Removing the map removes its owned bundle.
+
+The file library also accepts **DMR key mappings** and **Vertex keystreams** as
+separate kinds. Vertex files are used by standalone vendor profiles, not by the
+standard scoped key set. See [decryption profiles](decryption-profiles.md).

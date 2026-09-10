@@ -18,8 +18,8 @@
  * filtering and change signalling are under test. Behind them sits CallLogStore, a stand-in for CallHistoryModel that
  * prepends rows on demand — the real store only grows by ingesting a decoder
  * snapshot ring, which is covered by UI_QT_CALL_HISTORY_MODEL instead. The
- * engine-facing objects (metrics, decoderHost, commands, prefs) are plain maps
- * rather than the production QObject models, which is what keeps this test off
+ * engine-facing readings (metrics and the default decoderHost) use QObject-backed maps
+ * rather than the production models, which is what keeps this test off
  * live engine lifecycle. WP-S1 additionally links the real CSV-validation facade
  * for pre-start scan-list checks; it never opens a tuner.
  *
@@ -61,6 +61,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <memory>
 #include "../test_support/qt_test_paths.h"
+#include "decryption_profiles_model.h"
 
 #include "app_prefs.h"
 #include "auto_start_policy.h"
@@ -130,6 +131,13 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     void
     cancelLocationRequest(qint64 id) override {
         locationCancelled = id;
+    }
+
+    qreal keyboardBoundary = -1;
+
+    qreal
+    keyboardTop() const override {
+        return keyboardBoundary;
     }
 
     bool delayedStop = false; // WP-D4: stop acknowledgement is a separate edge.
@@ -214,6 +222,7 @@ class TestUiController : public QObject {
     Q_PROPERTY(bool autoStartBlocked MEMBER autoStartBlocked)
     // WP-D1: retained export result starts empty, like the real controller.
     Q_PROPERTY(QVariantMap talkgroupExportResult READ talkgroupExportResult CONSTANT)
+    Q_PROPERTY(QVariantMap decryptionResult MEMBER decryptionResult NOTIFY decryptionResultChanged)
   public:
     using QObject::QObject;
 
@@ -221,6 +230,14 @@ class TestUiController : public QObject {
     // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
     talkgroupExportResult() const {
         return {};
+    }
+
+    QVariantMap decryptionResult;
+
+    Q_INVOKABLE void
+    finishDecryption(const QString& id, int status) {
+        decryptionResult = {{"requestId", id}, {"session", "1"}, {"status", status}, {"scope", 0}};
+        Q_EMIT decryptionResultChanged();
     }
 
     bool autoStartBlocked = true;
@@ -236,6 +253,7 @@ class TestUiController : public QObject {
 
   Q_SIGNALS:
     void autoStartRequested(const QString& kind, const QString& uid);
+    void decryptionResultChanged();
 };
 
 /**
@@ -254,8 +272,45 @@ class TestUiController : public QObject {
  */
 class CommandRecorder : public QObject {
     Q_OBJECT
+    quint64 m_next_key_request = 1;
+    QString m_last_key_request;
+    QVariantList m_last_selection;
 
   public:
+    Q_INVOKABLE QVariantMap
+    decryptionContext(const QString& target, const QString& epoch) const {
+        return {{"session", "1"}, {"tuning", "1"}, {"target", target}, {"keyEpoch", epoch}};
+    }
+
+    Q_INVOKABLE QString
+    lastDecryptionRequest() const {
+        return m_last_key_request;
+    }
+
+    Q_INVOKABLE QString
+    applyDecryptionDraft(const QString& type, const QString& value, bool forceChanged, int force, const QVariantMap&) {
+        if (!type.isEmpty() && !applyEncryptionKey(type, value)) {
+            return {};
+        }
+        if (forceChanged && !setForceKeyMode(force == 33 ? 2 : force)) {
+            return {};
+        }
+        m_last_key_request = QString::number(m_next_key_request++);
+        return m_last_key_request;
+    }
+
+    Q_INVOKABLE QString
+    applyDecryptionProfile(const QString&, int, const QVariantMap&) {
+        m_last_key_request = QString::number(m_next_key_request++);
+        return m_last_key_request;
+    }
+
+    Q_INVOKABLE QString
+    applyDmrKeyMap(const QString&, int, const QVariantMap&) {
+        m_last_key_request = QString::number(m_next_key_request++);
+        return m_last_key_request;
+    }
+
     // WP-D2: record only non-secret command outcomes, never key text.
     Q_INVOKABLE bool
     applyEncryptionKey(const QString& type, const QString& value) {
@@ -400,6 +455,17 @@ class CommandRecorder : public QObject {
         m_last_talkgroup_id_end = idEnd;
         m_last_talkgroup_listen = listen;
         return true;
+    }
+
+    Q_INVOKABLE bool
+    setTalkgroupSelection(bool listen, const QString&, unsigned int, const QVariantList& rows) {
+        m_last_selection = rows;
+        return setAllTalkgroupsListening(listen, QString());
+    }
+
+    Q_INVOKABLE QVariantList
+    selectionRows() const {
+        return m_last_selection;
     }
 
     Q_INVOKABLE bool
@@ -908,6 +974,30 @@ class CallLogStore : public QAbstractListModel {
 };
 
 // WP-D3: keep the fixture readings and record the nearby button's actual invocation.
+/** QObject-backed readings: Connections cannot target QVariantMap values.
+ * Lifecycle tests still switch to the dedicated DecoderHost implementation. */
+class ReadingMap : public QQmlPropertyMap {
+    Q_OBJECT
+  public:
+    explicit ReadingMap(QObject* parent) : QQmlPropertyMap(this, parent) {}
+
+  Q_SIGNALS:
+    void tunerChanged();
+    void controlChanged();
+    void siteChanged();
+    void qualityChanged();
+    void runningChanged();
+    void sessionStateChanged();
+    void sessionInitialized();
+    void localDeviceChanged();
+    void typographyChanged();
+    void keyboardChanged();
+    void backRequested();
+    void runResultChanged();
+    void locationResult(qint64 requestId, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
+                        bool geocodeOk, const QString& postal, const QString& country, const QString& error);
+};
+
 class RadioReferenceRecorder : public QQmlPropertyMap {
     Q_OBJECT
 
@@ -1036,7 +1126,10 @@ class Setup : public QObject {
     setMetric(const QString& key, const QVariant& value) {
         m_metrics[key] = value;
         if (m_engine != nullptr) {
-            m_engine->rootContext()->setContextProperty(QStringLiteral("metrics"), m_metrics);
+            m_metric_readings->insert(key, value);
+            if (key == QStringLiteral("centerFreqHz")) {
+                Q_EMIT m_metric_readings->tunerChanged();
+            }
         }
     }
 
@@ -1137,9 +1230,15 @@ class Setup : public QObject {
             m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_lifecycle_host);
             m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_app_prefs);
         } else {
-            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host);
+            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
             m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_prefs);
         }
+    }
+
+    Q_INVOKABLE void
+    setKeyboardBoundary(qreal value) {
+        m_lifecycle_host->keyboardBoundary = value;
+        Q_EMIT m_lifecycle_host->keyboardChanged();
     }
 
     Q_INVOKABLE void
@@ -1194,15 +1293,18 @@ class Setup : public QObject {
     Q_INVOKABLE void
     setLocationSupported(bool supported) {
         m_host[QStringLiteral("locationSupported")] = supported;
-        m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host);
+        m_host_readings->insert(QStringLiteral("locationSupported"), supported);
+        m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
     }
 
     /** @brief Publish a live/idle host so cases can exercise session-only actions. */
     Q_INVOKABLE void
     setHostRunning(bool running) {
         m_host[QStringLiteral("running")] = running;
+        m_host_readings->insert(QStringLiteral("running"), running);
+        Q_EMIT m_host_readings->runningChanged();
         if (m_engine != nullptr) {
-            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host);
+            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
         }
     }
 
@@ -1409,6 +1511,7 @@ class Setup : public QObject {
         prefs[QStringLiteral("appearance")] = 2;
         prefs[QStringLiteral("onboardingDone")] = true;
         prefs[QStringLiteral("backgroundListening")] = false;
+        prefs[QStringLiteral("notificationExplained")] = true;
         prefs[QStringLiteral("keepScreenAwake")] = false;
         prefs[QStringLiteral("skipEncrypted")] = false;
         /* The radio defaults the settings screen and the explore setup edit.
@@ -1445,6 +1548,12 @@ class Setup : public QObject {
         /* Every key the monitor reads, at rest with no call up. Add to this when a
          * screen grows a reading — missingContextKeys() is what says so. */
         QVariantMap metrics;
+        metrics[QStringLiteral("configuredForce")] = 0;
+        metrics[QStringLiteral("effectiveForce")] = 0;
+        metrics[QStringLiteral("keyProfileRef")] = QString();
+        metrics[QStringLiteral("keyEpoch")] = QStringLiteral("1");
+        metrics[QStringLiteral("automaticKeys")] = false;
+        metrics[QStringLiteral("decryptionSlots")] = QVariantList();
         // WP-F1: site identity fixture keys.
         metrics[QStringLiteral("siteProtocol")] = QString();
         metrics[QStringLiteral("p25NacValid")] = false;
@@ -1555,7 +1664,11 @@ class Setup : public QObject {
         metrics[QStringLiteral("ppm")] = 0;
         m_metrics = metrics;
         m_engine = engine;
-        ctx->setContextProperty(QStringLiteral("metrics"), metrics);
+        m_metric_readings = new ReadingMap(engine);
+        for (auto it = metrics.cbegin(); it != metrics.cend(); ++it) {
+            m_metric_readings->insert(it.key(), it.value());
+        }
+        ctx->setContextProperty(QStringLiteral("metrics"), m_metric_readings);
         ctx->setContextProperty(QStringLiteral("testContext"), this);
 
         QVariantMap host;
@@ -1566,6 +1679,12 @@ class Setup : public QObject {
          * has to claim one or its frames would never start. */
         host[QStringLiteral("sessionActive")] = true;
         host[QStringLiteral("signalsSessionInitialized")] = false;
+        host[QStringLiteral("fontRevision")] = 0;
+        host[QStringLiteral("inputFailureKind")] = 0;
+        host[QStringLiteral("inputFailureCode")] = 0;
+        host[QStringLiteral("terminalReason")] = 0;
+        host[QStringLiteral("audioRoute")] = QStringLiteral("System default");
+        host[QStringLiteral("usesPlatformFontScaling")] = false;
         /* Why the last session stopped, empty while nothing has failed. */
         host[QStringLiteral("failureText")] = QString();
         /* The Android-only capabilities the settings screen hides rows on: a
@@ -1579,8 +1698,13 @@ class Setup : public QObject {
         host[QStringLiteral("shareSupported")] = false;
         host[QStringLiteral("localDeviceFailureKind")] = 0;
         host[QStringLiteral("sessionState")] = 0;
+        host[QStringLiteral("keyboardTop")] = -1;
         m_host = host;
-        ctx->setContextProperty(QStringLiteral("decoderHost"), host);
+        m_host_readings = new ReadingMap(engine);
+        for (auto it = host.cbegin(); it != host.cend(); ++it) {
+            m_host_readings->insert(it.key(), it.value());
+        }
+        ctx->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
 
         /* Every property key the RadioReference screen reads, at rest. `available`
          * is false so an ungated entry point shows up as a visible row rather
@@ -1674,14 +1798,21 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("uiController"), controller);
         ctx->setContextProperty(QStringLiteral("savedSystems"), saved_systems);
         ctx->setContextProperty(QStringLiteral("scanLists"), scan_lists);
-        ctx->setContextProperty(QStringLiteral("scanListStarter"),
-                                new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine));
+        auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
+        profiles->setReferences(saved_systems, scan_lists);
+        auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);
+        starter->setDecryptionProfiles(profiles);
+        session_args->setDecryptionProfiles(profiles);
+        ctx->setContextProperty(QStringLiteral("decryptionProfiles"), profiles);
+        ctx->setContextProperty(QStringLiteral("scanListStarter"), starter);
         ctx->setContextProperty(QStringLiteral("sessionArgs"), session_args);
         ctx->setContextProperty(QStringLiteral("appVersionText"), QStringLiteral("0.0.0-test"));
     }
 
   private:
     dsd_qt::AppPrefs* m_app_prefs = nullptr;
+    ReadingMap* m_metric_readings = nullptr;
+    ReadingMap* m_host_readings = nullptr;
     QVariantMap m_metrics;
     QVariantMap m_prefs;
     QVariantMap m_host;

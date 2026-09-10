@@ -18,6 +18,7 @@ target_sources(
         freq_parse.c
         input_spec.c
         input_level.c
+        input_failure.c
         path_policy.c
         frame_sync_hooks.c
         trunk_scan_hooks.c

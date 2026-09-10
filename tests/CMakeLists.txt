@@ -312,6 +312,18 @@ function(
 endfunction()
 
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_dmr_key_map
+  HEADERS_PUBLIC_CORE_DMR_KEY_MAP
+  dsd-neo/core/dmr_key_map.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_input_failure
+  HEADERS_PUBLIC_RUNTIME_INPUT_FAILURE
+  dsd-neo/runtime/input_failure.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_bootstrap
   HEADERS_PUBLIC_RUNTIME_BOOTSTRAP
   dsd-neo/runtime/bootstrap.h
@@ -1713,6 +1725,7 @@ add_executable(
     dsd-neo_test_ui_menu_services
     test_support/scan_group_stubs.c
     ui/test_ui_menu_services.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
     # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().
     ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c
@@ -2666,6 +2679,39 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_persistence PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_PERSISTENCE COMMAND dsd-neo_test_ui_qt_persistence)
 
+    add_executable(
+        dsd-neo_test_ui_qt_decryption_profiles
+        ui/test_ui_qt_decryption_profiles.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_decryption_profiles
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_decryption_profiles
+        PRIVATE Qt6::Core dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_decryption_profiles
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_decryption_profiles
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_DECRYPTION_PROFILES
+        COMMAND dsd-neo_test_ui_qt_decryption_profiles
+    )
+
     # WP-D4 site grouping and saved-row provenance.
     add_executable(
         dsd-neo_test_ui_qt_site_groups
@@ -2861,6 +2907,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_imported_files_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
     target_include_directories(
@@ -2897,6 +2944,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
     target_include_directories(
@@ -3054,10 +3102,12 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
             # WP-S1: production persistence/generator and starter.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp

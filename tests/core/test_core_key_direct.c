@@ -8,8 +8,10 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -19,8 +21,6 @@
 #include <stdio.h>
 #include <string.h>
 #include "../../src/app_control/commands_internal.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
 
 static int failures;
 
@@ -259,6 +259,113 @@ presence_follows_material(void) {
     freeState(&state);
 }
 
+static void
+test_m17_key_widths(void) {
+    static dsd_state state;
+    static dsd_opts opts;
+    const char* aes192 = "000000000000000100000000000000020000000000000003";
+    for (int path = 0; path < 3; ++path) {
+        seed(&opts, &state);
+        if (path == 0) {
+            check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_M17_SCRAMBLER, "ABCDEF", DSD_KEY_APPLY_OVERLAY)
+                      == DSD_KEY_DIRECT_OK,
+                  "M17 typed 24-bit seed");
+            check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_M17_AES, aes192, DSD_KEY_APPLY_OVERLAY)
+                      == DSD_KEY_DIRECT_OK,
+                  "M17 typed AES192");
+        } else if (path == 1) {
+            char name[] = "test", seed_flag[] = "--m17-scrambler-key", seed_value[] = "ABCDEF";
+            char aes_flag[] = "--m17-aes-key";
+            char aes_value[65];
+            DSD_SNPRINTF(aes_value, sizeof(aes_value), "%s", aes192);
+            char* argv[] = {name, seed_flag, seed_value, aes_flag, aes_value, NULL};
+            check(dsd_parse_args(5, argv, &opts, &state, NULL, NULL) == DSD_PARSE_CONTINUE, "M17 CLI typed widths");
+        } else {
+            dsd_app_key_direct_payload payload = {0};
+            payload.key_type = DSD_APP_KEY_TYPE_M17_SCRAMBLER;
+            DSD_SNPRINTF(payload.value, sizeof(payload.value), "%s", "ABCDEF");
+            check(dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &payload, sizeof(payload)) > 0, "M17 seed queued");
+            payload.key_type = DSD_APP_KEY_TYPE_M17_AES;
+            DSD_SNPRINTF(payload.value, sizeof(payload.value), "%s", aes192);
+            check(dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &payload, sizeof(payload)) > 0, "M17 AES queued");
+            dsd_app_drain_cmds(&opts, &state);
+            DSD_SECURE_ZERO(&payload, sizeof(payload));
+        }
+        check(state.R == 0xABCDEF, "M17 seed retains all 24 bits");
+        check(state.aes_key_loaded[0] && state.aes_key_segments[0] == 3 && state.A3[0] == 3,
+              "M17 AES192 retains three segments");
+        check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_M17_SCRAMBLER, "000000", DSD_KEY_APPLY_OVERLAY)
+                  != DSD_KEY_DIRECT_OK,
+              "M17 zero seed follows resolver availability");
+        check(state.R == 0xABCDEF, "invalid M17 input preserves previous seed");
+        check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_HEX, aes192, DSD_KEY_APPLY_OVERLAY) != DSD_KEY_DIRECT_OK,
+              "generic hex does not acquire unsupported width");
+        freeState(&state);
+    }
+}
+
+static void
+test_retained_decryption_request(void) {
+    static dsd_state state;
+    static dsd_opts opts;
+    seed(&opts, &state);
+    state.K = 19;
+    state.M = 0x24;
+    state.keyloader = 1;
+    DSD_SNPRINTF(state.key_profile_ref, sizeof(state.key_profile_ref), "%s", "existing-profile");
+    dsd_app_decryption_payload p = {0};
+    p.request_id = 1001;
+    p.session_generation = dsd_app_command_session_generation();
+    check(p.session_generation != 0, "live session has a command generation");
+    check(dsd_app_command_submit(DSD_APP_CMD_DECRYPTION_APPLY, &p, sizeof(p)) > 0, "unchanged request queued");
+    dsd_app_drain_cmds(&opts, &state);
+    dsd_app_decryption_result result = {0};
+    check(dsd_app_decryption_result_get(&result) && result.request_id == p.request_id
+              && result.status == DSD_APP_KEY_APPLIED,
+          "retained no-op result");
+    check(state.K == 19 && state.M == 0x24 && state.keyloader == 1
+              && strcmp(state.key_profile_ref, "existing-profile") == 0,
+          "unchanged request preserves keys, loader and force");
+    p.request_id++;
+    p.fields = DSD_APP_DECRYPTION_MATERIAL | DSD_APP_DECRYPTION_MAP | DSD_APP_DECRYPTION_FORCE;
+    p.source = DSD_APP_KEY_SOURCE_DIRECT_OVERLAY;
+    p.key_type = DSD_APP_KEY_TYPE_BASIC;
+    p.force = 0x21;
+    DSD_SNPRINTF(p.value, sizeof(p.value), "%s", "73");
+    DSD_SNPRINTF(p.map_file, sizeof(p.map_file), "%s", "dsd-neo-missing-map-fixture.csv");
+    check(dsd_app_command_submit(DSD_APP_CMD_DECRYPTION_APPLY, &p, sizeof(p)) > 0, "invalid map request queued");
+    dsd_app_drain_cmds(&opts, &state);
+    dsd_app_decryption_result_get(&result);
+    check(result.status == DSD_APP_KEY_FILE_ERROR && state.K == 19 && state.M == 0x24 && state.keyloader == 1,
+          "failed preparation preserves all prior fields");
+    p.request_id++;
+    p.fields &= ~DSD_APP_DECRYPTION_MAP;
+    p.map_file[0] = '\0';
+    check(dsd_app_command_submit(DSD_APP_CMD_DECRYPTION_APPLY, &p, sizeof(p)) > 0, "valid defaults request queued");
+    dsd_app_drain_cmds(&opts, &state);
+    dsd_app_decryption_result_get(&result);
+    check(result.status == DSD_APP_KEY_APPLIED && state.K == 73 && state.M == 0x21 && state.keyloader == 0,
+          "decoder-owned completion applies changed fields");
+    dsd_app_command_session_set_open(0);
+    dsd_app_command_session_set_open(1);
+    p.request_id++;
+    DSD_SNPRINTF(p.value, sizeof(p.value), "%s", "92");
+    check(dsd_app_command_submit(DSD_APP_CMD_DECRYPTION_APPLY, &p, sizeof(p)) > 0,
+          "old session request admitted for validation");
+    dsd_app_drain_cmds(&opts, &state);
+    dsd_app_decryption_result_get(&result);
+    check(result.status == DSD_APP_KEY_STALE && state.K == 73, "old session cannot mutate the replacement session");
+    p.session_generation = dsd_app_command_session_generation();
+    p.request_id++;
+    check(dsd_app_command_submit(DSD_APP_CMD_DECRYPTION_APPLY, &p, sizeof(p)) > 0, "pending request queued");
+    dsd_app_command_session_set_open(0);
+    dsd_app_decryption_result_get(&result);
+    check(result.request_id == p.request_id && result.status == DSD_APP_KEY_CANCELLED && state.K == 73,
+          "session close retains cancellation without mutation");
+    DSD_SECURE_ZERO(&p, sizeof(p));
+    freeState(&state);
+}
+
 int
 main(void) {
     bootstrap_snapshot_secrets();
@@ -381,5 +488,7 @@ main(void) {
             freeState(&state);
         }
     }
+    test_retained_decryption_request();
+    test_m17_key_widths();
     return failures ? 1 : 0;
 }

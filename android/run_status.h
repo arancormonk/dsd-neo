@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #ifndef DSD_NEO_ANDROID_RUN_STATUS_H_
 #define DSD_NEO_ANDROID_RUN_STATUS_H_
+#include <dsd-neo/runtime/input_failure.h>
 #include <stdint.h>
 
 #ifdef USE_RADIO
@@ -20,6 +21,7 @@ struct RunStatus {
     RunReason reason = kRunPending;
     int run_code = 0;
     int device_error = 0;
+    dsd_input_failure input_failure = {};
 
     void
     begin(uint64_t id) {
@@ -50,6 +52,7 @@ collect_run_result(RunStatus& status, int code, bool cancelled) {
     device_error = rtl_device_last_open_error();
 #endif
     status.finish(code, cancelled, device_error);
+    dsd_input_failure_get(&status.input_failure);
 }
 } // namespace dsd_android
 #endif

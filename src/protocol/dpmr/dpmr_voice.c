@@ -26,7 +26,11 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
@@ -39,10 +43,6 @@
 #include <stdio.h>
 #include "dpmr_confirm.h"
 #include "dpmr_internal.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/secret_redaction.h"
-#include "dsd-neo/core/state_fwd.h"
 
 typedef struct {
     uint8_t CCH[NB_OF_DPMR_VOICE_FRAME_TO_DECODE][72];
@@ -375,6 +375,16 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
         crypto.audio_permitted = dsd_key_scalar_present(state, 0);
     }
     (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, 0, &call) > 0) {
+            const int available = crypto.classification == DSD_CALL_CRYPTO_DECRYPTABLE ? 1
+                                  : crypto.classification == DSD_CALL_CRYPTO_ENCRYPTED ? 0
+                                                                                       : -1;
+            (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DIRECT, call.kid, -1, available,
+                                                    0);
+        }
+    }
     dsd_event_sync_slot(opts, state, 0U);
 }
 

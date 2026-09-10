@@ -5,9 +5,23 @@ import QtQuick
 // Only the TextInput holds/displays key material; labels contain shapes only.
 Column {
     id: editor
+    property string protocol: "mixed"
+    readonly property var allowedTypes: protocol === "m17" ? ["", "m17Scrambler", "m17Aes"] : protocol === "dpmr" ? ["", "scrambler"] : protocol === "dstar" || protocol === "ysf" ? [""] : protocol === "p25" ? ["", "hex", "rc4"] : protocol === "dmr" ? ["", "basic", "hex", "rc4"] : protocol === "nxdn" ? ["", "hex", "rc4", "scrambler"] : ["", "basic", "hex", "rc4", "scrambler", "m17Scrambler", "m17Aes"]
+    readonly property bool privacySupported: protocol === "dmr" || protocol === "nxdn" || protocol === "mixed"
+    readonly property bool fallbackSupported: protocol === "dmr" || protocol === "mixed"
+    readonly property string capabilityError: allowedTypes.indexOf(keyType) < 0 ? qsTr("Choose a key format supported by this protocol, or keep this draft and return to its previous decode mode.") : protocol === "p25" && keyType === "hex" && normalizedKey.length === 10 ? qsTr("P25 AES needs 32 or 64 hex digits.") : protocol === "nxdn" && keyType === "hex" && normalizedKey.length > 0 && normalizedKey.length !== 64 ? qsTr("NXDN AES needs 64 hex digits.") : ""
+    readonly property string normalizedKey: keyValue.replace(/\s/g, "").replace(/^0x/i, "")
     property string keyType: ""
     property alias keyValue: keyField.text
     property int forceMode: 0
+    property bool liveMode: false
+    property bool forceChanged: false
+    property bool resetting: false
+    property string currentForceSummary: ""
+    onForceModeChanged: {
+        if (liveMode && !resetting)
+            forceChanged = true;
+    }
     property string csvPath: ""
     property bool revealed: false
     property string configuredKeyType: ""
@@ -15,14 +29,12 @@ Column {
     property string keyAction: "keep"
     readonly property bool keepingKey: keyConfigured && keyAction === "keep"
     readonly property bool clearingKey: keyConfigured && keyAction === "clear"
-    readonly property string errorText: keepingKey
-        ? (csvPath.length > 0 ? qsTr("Choose either a direct key or a key CSV.")
-                              : sessionArgs.keyError("", "", "", forceMode))
-        : sessionArgs.keyError(clearingKey ? "" : keyType, clearingKey ? "" : keyValue, csvPath, forceMode)
+    readonly property string errorText: !keepingKey && !clearingKey && capabilityError.length ? capabilityError : keepingKey ? (csvPath.length > 0 ? qsTr("Choose either a direct key or a key CSV.") : sessionArgs.keyError("", "", "", liveMode && !forceChanged ? 0 : forceMode)) : sessionArgs.keyError(clearingKey ? "" : keyType, clearingKey ? "" : keyValue, csvPath, liveMode && !forceChanged ? 0 : forceMode)
     readonly property bool valid: errorText.length === 0
     spacing: 10
 
     function reset() {
+        resetting = true;
         keyConfigured = false;
         configuredKeyType = "";
         keyAction = "keep";
@@ -30,6 +42,8 @@ Column {
         keyValue = "";
         forceMode = 0;
         revealed = false;
+        forceChanged = false;
+        resetting = false;
     }
     onKeyTypeChanged: revealed = false
     onKeyActionChanged: {
@@ -40,7 +54,7 @@ Column {
     }
 
     MicroLabel {
-        text: qsTr("Encryption")
+        text: qsTr("Advanced direct key")
     }
     MicroLabel {
         objectName: "configuredKeyLabel"
@@ -52,9 +66,20 @@ Column {
         spacing: 8
         visible: editor.keyConfigured
         Repeater {
-            model: [ { action: "keep", label: qsTr("Keep") },
-                     { action: "replace", label: qsTr("Replace") },
-                     { action: "clear", label: qsTr("Clear") } ]
+            model: [
+                {
+                    action: "keep",
+                    label: qsTr("Keep")
+                },
+                {
+                    action: "replace",
+                    label: qsTr("Replace")
+                },
+                {
+                    action: "clear",
+                    label: qsTr("Clear")
+                }
+            ]
             OutlineButton {
                 required property var modelData
                 objectName: "encryptionAction_" + modelData.action
@@ -73,7 +98,7 @@ Column {
             model: [
                 {
                     kind: "",
-                    label: qsTr("None")
+                    label: editor.liveMode ? qsTr("Keep current material") : qsTr("None")
                 },
                 {
                     kind: "basic",
@@ -85,24 +110,28 @@ Column {
                 },
                 {
                     kind: "rc4",
-                    label: qsTr("RC4")
+                    label: editor.protocol === "p25" || editor.protocol === "nxdn" ? qsTr("RC4 / DES") : qsTr("RC4")
                 },
                 {
                     kind: "scrambler",
                     label: qsTr("Scrambler")
+                },
+                {
+                    kind: "m17Scrambler",
+                    label: qsTr("M17 scrambler")
+                },
+                {
+                    kind: "m17Aes",
+                    label: qsTr("M17 AES")
                 }
-            ]
+            ].filter(function (type) {
+                return editor.allowedTypes.indexOf(type.kind) >= 0;
+            })
             OutlineButton {
                 required property var modelData
-                width: implicitLabel.implicitWidth + 24
+                width: Math.min(editor.width, implicitWidth)
                 text: modelData.label
                 border.color: editor.keyType === modelData.kind ? Theme.cyan : Theme.controlBorder
-                Text {
-                    id: implicitLabel
-                    visible: false
-                    text: modelData.label
-                    font.pixelSize: 15 * Theme.fontScale
-                }
                 onClicked: {
                     editor.keyType = modelData.kind;
                     editor.keyValue = "";
@@ -159,30 +188,44 @@ Column {
         text: editor.errorText
         wrapMode: Text.Wrap
         font.family: Theme.sans
-        font.pixelSize: 13 * Theme.fontScale
+        font.pixelSize: Theme.fontSize(13)
         color: Theme.textSecondary
     }
     ToggleRow {
         objectName: "forceKeyToggle"
-        title: qsTr("Force key")
-        subtitle: qsTr("Override signaled privacy identifiers")
-        checked: editor.forceMode !== 0
+        visible: editor.liveMode || editor.privacySupported || editor.forceMode !== 0
+        title: editor.liveMode ? qsTr("Change identifier policy") : qsTr("Force key")
+        subtitle: editor.liveMode && !editor.forceChanged ? qsTr("Keeping %1").arg(editor.currentForceSummary) : qsTr("Override signaled privacy identifiers")
+        checked: editor.liveMode ? editor.forceChanged : editor.forceMode !== 0
         onToggled: function (on) {
-            editor.forceMode = on ? (editor.keyType === "rc4" ? 2 : 1) : 0;
+            if (editor.liveMode) {
+                editor.forceChanged = on;
+                return;
+            }
+            editor.forceMode = on ? (editor.keyType === "rc4" && editor.fallbackSupported ? 2 : editor.privacySupported ? 1 : 0) : 0;
         }
     }
     Row {
         width: parent.width
         spacing: 8
-        visible: editor.forceMode !== 0
+        visible: editor.liveMode ? editor.forceChanged : editor.forceMode !== 0
         OutlineButton {
-            width: (parent.width - 8) / 2
+            visible: editor.liveMode
+            width: (parent.width - 16) / 3
+            text: qsTr("Normal")
+            border.color: editor.forceMode === 0 ? Theme.cyan : Theme.controlBorder
+            onClicked: editor.forceMode = 0
+        }
+        OutlineButton {
+            width: editor.liveMode ? (parent.width - 16) / 3 : (parent.width - 8) / 2
+            visible: editor.privacySupported
             text: qsTr("Privacy")
             border.color: editor.forceMode === 1 ? Theme.cyan : Theme.controlBorder
             onClicked: editor.forceMode = 1
         }
         OutlineButton {
-            width: (parent.width - 8) / 2
+            width: editor.liveMode ? (parent.width - 16) / 3 : (parent.width - 8) / 2
+            visible: editor.fallbackSupported
             text: qsTr("RC4")
             border.color: editor.forceMode === 2 ? Theme.cyan : Theme.controlBorder
             onClicked: editor.forceMode = 2

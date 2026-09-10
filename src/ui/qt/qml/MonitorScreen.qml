@@ -11,8 +11,9 @@ Item {
 
     onVisibleChanged: {
         if (!visible) {
-            keySheet.visible = false
-            networkSheet.visible = false
+            keySheet.visible = false;
+            siteSheet.visible = false;
+            networkSheet.visible = false;
         }
     }
 
@@ -23,6 +24,7 @@ Item {
     property string scanTargetName: ""
     property bool sitesAvailable: false
     signal openSites
+    signal openSessionMenu
     signal openTalkgroups
 
     // Raised by a long-press on the header title, the same gesture that edits a
@@ -104,8 +106,7 @@ Item {
         anchors.right: parent.right
         anchors.margins: Theme.screenPadding
         readonly property bool stacked: width < 500 && !screen.compactHeight
-        height: stacked ? heading.implicitHeight + 8 + headerActions.height
-                        : Math.max(heading.implicitHeight, headerActions.height)
+        height: stacked ? heading.implicitHeight + 8 + headerActions.height : Math.max(heading.implicitHeight, headerActions.height)
 
         Column {
             id: heading
@@ -129,11 +130,7 @@ Item {
             Text {
                 width: parent.width
                 objectName: "scanTargetHeader"
-                text: metrics.scanTargetCount > 0
-                      ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount)
-                        + (metrics.scanHold ? qsTr(" · HOLD") : "")
-                        + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "")
-                      : screen.system ? Util.monitorMeta(screen.system) : ""
+                text: metrics.scanTargetCount > 0 ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount) + (metrics.scanHold ? qsTr(" · HOLD") : "") + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "") : screen.system ? Util.monitorMeta(screen.system) : ""
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(11)
                 font.letterSpacing: 0.8
@@ -155,9 +152,15 @@ Item {
 
             OutlineButton {
                 objectName: "runningSiteChooserButton"
-                visible: screen.sitesAvailable
+                visible: screen.sitesAvailable && (!screen.compactHeight || screen.width >= 450)
                 text: qsTr("Sites ›")
                 onClicked: screen.openSites()
+            }
+
+            IconButton {
+                icon: "more"
+                accessibleName: qsTr("Session options")
+                onClicked: screen.openSessionMenu()
             }
 
             // Only an RTL front end has a band around the tuned frequency to show;
@@ -166,9 +169,21 @@ Item {
                 id: spectrumPill
 
                 objectName: "openSpectrumButton"
-                visible: metrics.radioInput
+                activeFocusOnTab: enabled && Navigation.allows(spectrumPill)
+                Accessible.role: Accessible.Button
+                Accessible.name: qsTr("Spectrum")
+                readonly property bool navigationAllowed: Navigation.allows(spectrumPill)
+                Accessible.ignored: !navigationAllowed
+                Accessible.onPressAction: {
+                    if (Navigation.allows(spectrumPill))
+                        screen.openSpectrum();
+                }
+                Keys.onReturnPressed: screen.openSpectrum()
+                Keys.onSpacePressed: screen.openSpectrum()
+                FocusFrame {}
+                visible: metrics.radioInput && (!screen.compactHeight || screen.width >= 450)
                 width: spectrumLabel.implicitWidth + 22
-                height: Math.max(44, 30 * Theme.fontScale)
+                height: Math.max(48, 30 * Theme.fontScale)
                 radius: Theme.radiusButton
                 color: spectrumTap.pressed ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
                 border.width: 1
@@ -202,7 +217,7 @@ Item {
 
                 objectName: "monitorLiveStatus"
                 width: liveRow.implicitWidth + 24
-                height: Math.max(44, 30 * Theme.fontScale)
+                height: Math.max(48, 30 * Theme.fontScale)
                 radius: Theme.radiusButton
                 color: Theme.panel
                 border.width: 1
@@ -237,7 +252,7 @@ Item {
                     }
 
                     Text {
-                        text: decoderHost.running ? qsTr("LIVE") : decoderHost.statusText.toUpperCase()
+                        text: decoderHost.running ? (screen.system && screen.system.sourceType === "file" ? qsTr("PLAYING") : qsTr("LIVE")) : decoderHost.statusText.toUpperCase()
                         font.family: Theme.mono
                         font.pixelSize: Theme.fontSize(11)
                         font.letterSpacing: 1.4
@@ -260,7 +275,8 @@ Item {
 
         // Reserve space for scrolling even in landscape. The meter stands down
         // and duration moves to the title line so neither covers call identity.
-        height: screen.compactHeight ? 110 + 40 * (Theme.fontScale - 1) : 170 * Theme.fontScale
+        visible: !(screen.compactHeight && !screen.heroActive)
+        height: !visible ? 0 : screen.compactHeight ? Math.min(110 + 40 * (Theme.fontScale - 1), screen.height * 0.25) : 170 * Theme.fontScale
 
         // Faint diagonal cyan→magenta wash over the panel.
         Rectangle {
@@ -298,14 +314,14 @@ Item {
                 id: heroText
 
                 width: parent.width
-                height: (screen.compactHeight ? 30 : 40) * Theme.fontScale
+                height: Theme.fontSize(screen.compactHeight ? 30 : 40)
                 visible: screen.heroSlot !== 0
 
                 onPaint: {
                     var ctx = getContext("2d");
                     ctx.reset();
                     var label = screen.heroName.length > 0 ? screen.heroName : screen.heroTg;
-                    ctx.font = "bold " + ((screen.compactHeight ? 25 : 31) * Theme.fontScale) + "px \"" + Theme.sans + "\"";
+                    ctx.font = "bold " + Theme.fontSize(screen.compactHeight ? 25 : 31) + "px \"" + Theme.sans + "\"";
                     ctx.textBaseline = "middle";
                     var gradient = ctx.createLinearGradient(0, 0, Math.max(ctx.measureText(label).width, 1), 0);
                     gradient.addColorStop(0, String(Theme.cyan));
@@ -324,7 +340,7 @@ Item {
 
             Text {
                 visible: screen.heroSlot === 0
-                height: (screen.compactHeight ? 30 : 40) * Theme.fontScale
+                height: Theme.fontSize(screen.compactHeight ? 30 : 40)
                 verticalAlignment: Text.AlignVCenter
                 // A locked carrier means the site is there and quiet; only the
                 // absence of one is "no signal".
@@ -442,14 +458,14 @@ Item {
 
     // The hero stays visible while controls and recent calls scroll. A column
     // anchored at both ends assigned negative space to recent calls in landscape.
-    Flickable {
+    PlexFlickable {
         id: bodyScroll
         enabled: !keySheet.visible
         objectName: "monitorBody"
         anchors.top: hero.bottom
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.bottom: stopButton.top
+        anchors.bottom: compactActions.top
         anchors.margins: Theme.screenPadding
         anchors.topMargin: Theme.gap
         anchors.bottomMargin: 14
@@ -468,12 +484,17 @@ Item {
                 id: siteRow
                 objectName: "siteRow"
                 width: parent.width
-                height: Math.max(44, siteLabel.implicitHeight + 20)
+                height: Math.max(48, siteLabel.implicitHeight + 20)
                 visible: metrics.siteLine.length > 0
                 opacity: metrics.siteConfirmed ? 1 : 0.55
                 Accessible.role: Accessible.Button
                 Accessible.name: metrics.siteLine
-                Accessible.onPressAction: siteSheet.visible = true
+                readonly property bool navigationAllowed: Navigation.allows(siteRow)
+                Accessible.ignored: !navigationAllowed
+                Accessible.onPressAction: {
+                    if (Navigation.allows(siteRow))
+                        siteSheet.visible = true;
+                }
                 Text {
                     id: siteLabel
                     anchors.centerIn: parent
@@ -482,56 +503,20 @@ Item {
                     textFormat: Text.PlainText
                     wrapMode: Text.Wrap
                     font.family: Theme.mono
-                    font.pixelSize: 12 * Theme.fontScale
+                    font.pixelSize: Theme.fontSize(12)
                     color: Theme.textPrimary
                 }
-                TapHandler { onTapped: siteSheet.visible = true }
-            }
-
-            // Actions on the live engine.
-            Row {
-                width: parent.width
-                spacing: 10
-
-                OutlineButton {
-                    width: (parent.width - 30) / 4
-                    text: screen.muted ? qsTr("Unmute") : qsTr("Mute")
-                    enabled: decoderHost.running
-                    // The label follows metrics.audioMuted once the engine applies the
-                    // command — the button never guesses at the outcome.
-                    onClicked: commands.toggleMute()
-                }
-
-                OutlineButton {
-                    width: (parent.width - 30) / 4
-                    text: screen.holding ? qsTr("Release") : qsTr("Hold TG")
-                    // Disabled, not a silent no-op, when the call has no numeric
-                    // talkgroup (M17/D-STAR callsigns, dPMR dial strings).
-                    enabled: decoderHost.running && (screen.holding || screen.heroTgId > 0)
-                    border.color: screen.holding ? Theme.cyan : Theme.controlBorder
-                    onClicked: commands.holdTalkgroup(screen.holding ? 0 : screen.heroTgId)
-                }
-
-                OutlineButton {
-                    width: (parent.width - 30) / 4
-                    text: qsTr("Skip")
-                    enabled: decoderHost.running && screen.heroSlot !== 0
-                    onClicked: commands.lockoutSlot(screen.heroSlot === 2 ? 1 : 0)
-                }
-
-                OutlineButton {
-                    objectName: "talkgroupsButton"
-                    width: (parent.width - 30) / 4
-                    text: qsTr("TG list")
-                    enabled: decoderHost.running
-                    onClicked: screen.openTalkgroups()
+                TapHandler {
+                    onTapped: siteSheet.visible = true
                 }
             }
+
+            // Actions on the live engine; short windows keep them beside Stop.
 
             OutlineButton {
                 objectName: "openKeySheetButton"
                 width: parent.width
-                text: qsTr("Encryption key…")
+                text: qsTr("Decryption keys…")
                 enabled: decoderHost.running
                 onClicked: keySheet.open()
             }
@@ -941,9 +926,62 @@ Item {
     // WP-D2: the modal consumes input above every monitor control.
     KeySheet {
         id: keySheet
+        protocol: Util.decryptionProtocol(screen.system ? screen.system.decodeFlag : "")
+        targetName: screen.scanTargetName
         z: 10
     }
 
+    Item {
+        id: compactActions
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: stopButton.top
+        anchors.leftMargin: Theme.screenPadding
+        anchors.rightMargin: Theme.screenPadding
+        anchors.bottomMargin: 8
+        height: liveActions.implicitHeight
+        Row {
+            id: liveActions
+            objectName: "monitorLiveActions"
+            width: parent.width
+            spacing: 10
+
+            OutlineButton {
+                width: screen.compactHeight ? (parent.width - 20) / 3 : (parent.width - 30) / 4
+                text: screen.muted ? qsTr("Unmute") : qsTr("Mute")
+                enabled: decoderHost.running
+                // The label follows metrics.audioMuted once the engine applies the
+                // command — the button never guesses at the outcome.
+                onClicked: commands.toggleMute()
+            }
+
+            OutlineButton {
+                width: screen.compactHeight ? (parent.width - 20) / 3 : (parent.width - 30) / 4
+                text: screen.holding ? qsTr("Release") : qsTr("Hold TG")
+                // Disabled, not a silent no-op, when the call has no numeric
+                // talkgroup (M17/D-STAR callsigns, dPMR dial strings).
+                enabled: decoderHost.running && (screen.holding || screen.heroTgId > 0)
+                border.color: screen.holding ? Theme.cyan : Theme.controlBorder
+                onClicked: commands.holdTalkgroup(screen.holding ? 0 : screen.heroTgId)
+            }
+
+            OutlineButton {
+                width: screen.compactHeight ? (parent.width - 20) / 3 : (parent.width - 30) / 4
+                text: qsTr("Skip")
+                enabled: decoderHost.running && screen.heroSlot !== 0
+                onClicked: commands.lockoutSlot(screen.heroSlot === 2 ? 1 : 0)
+            }
+
+            OutlineButton {
+                objectName: "talkgroupsButton"
+                visible: !screen.compactHeight
+                width: screen.compactHeight ? (parent.width - 20) / 3 : (parent.width - 30) / 4
+                text: qsTr("TG list")
+                enabled: decoderHost.running
+                onClicked: screen.openTalkgroups()
+            }
+        }
+    }
     GradientButton {
         id: stopButton
         objectName: "stopListeningButton"
@@ -953,7 +991,7 @@ Item {
         anchors.bottom: parent.bottom
         anchors.margins: Theme.screenPadding
         anchors.bottomMargin: 22
-        text: qsTr("Stop listening")
+        text: screen.system && screen.system.sourceType === "file" ? qsTr("Stop replay") : qsTr("Stop listening")
         enabled: !decoderHost.transitioning && !keySheet.visible
         onClicked: decoderHost.stop()
     }
@@ -965,5 +1003,8 @@ Item {
     }
 
     // WP-F2: read-only network sheet, opened from SiteSheet.
-    NetworkSheet { id: networkSheet; z: 100 }
+    NetworkSheet {
+        id: networkSheet
+        z: 100
+    }
 }

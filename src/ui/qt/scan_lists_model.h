@@ -32,15 +32,17 @@ class ScanListsModel : public QAbstractListModel {
         return get(rowForUid(uid));
     }
 
-    Q_INVOKABLE void add(const QVariantMap& list);
-    Q_INVOKABLE void update(int row, const QVariantMap& list);
-    Q_INVOKABLE void remove(int row);
+    Q_INVOKABLE QVariantMap newDraft() const;
+    Q_INVOKABLE QString newEntryId() const;
+    Q_INVOKABLE bool add(const QVariantMap& list);
+    Q_INVOKABLE bool update(int row, const QVariantMap& list);
+    Q_INVOKABLE bool remove(int row);
     Q_INVOKABLE void touch(int row);
   Q_SIGNALS:
     void countChanged();
 
   private:
-    void save() const;
+    bool save(const QList<QVariantMap>& rows) const;
     QList<QVariantMap> m_rows;
 };
 } // namespace dsd_qt

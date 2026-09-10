@@ -34,6 +34,10 @@ static const scan_option_spec specifications[] = {
     {"-K", DSD_SCAN_OPT_HEX_FILE, DMR | P25 | NXDN, 1, 0, 0},
     {"-k", DSD_SCAN_OPT_DEC_FILE, DMR | P25 | NXDN, 1, 0, 0},
     {"-G", DSD_SCAN_OPT_GROUP, ALL_MODES, 1, 0, 0},
+    {"--dmr-tg-key-csv", DSD_SCAN_OPT_DMR_MAP, DMR, 1, 0, 0},
+    {"--dmr-tg-key-clear", DSD_SCAN_OPT_DMR_MAP, DMR, 0, 0, 0},
+    {"--no-decryption-keys", DSD_SCAN_OPT_CLEAR_KEYS, ALL_MODES, 0, 0, 0},
+    {"--key-profile-ref", DSD_SCAN_OPT_KEY_PROFILE_REF, ALL_MODES, 1, 0, 0},
     {"-4", DSD_SCAN_OPT_FORCE, DMR | NXDN, 0, 0, 1},
     {"-0", DSD_SCAN_OPT_FORCE, DMR, 0, 0, 0x21},
     {"--dmr-force-algid", DSD_SCAN_OPT_FORCE, DMR, 1, 0, 0},
@@ -241,6 +245,21 @@ static int
 option_set_path(const scan_option_spec* spec, const char* argument, dsd_scan_options* parsed) {
     char* path = parsed->values.group_file;
     size_t capacity = sizeof(parsed->values.group_file);
+    if (spec->field == DSD_SCAN_OPT_KEY_PROFILE_REF) {
+        path = parsed->values.key_profile_ref;
+        capacity = sizeof(parsed->values.key_profile_ref);
+        if (strspn(argument, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != strlen(argument)) {
+            return -1;
+        }
+    }
+    if (spec->field == DSD_SCAN_OPT_DMR_MAP) {
+        path = parsed->values.dmr_map_file;
+        capacity = sizeof(parsed->values.dmr_map_file);
+        if (!spec->argument) {
+            path[0] = '\0';
+            return 0;
+        }
+    }
     if (spec->field == DSD_SCAN_OPT_HEX_FILE) {
         path = parsed->hex_file;
         capacity = sizeof(parsed->hex_file);
@@ -257,6 +276,9 @@ option_set_path(const scan_option_spec* spec, const char* argument, dsd_scan_opt
 
 static int
 option_set(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
+    if (spec->field == DSD_SCAN_OPT_CLEAR_KEYS) {
+        return 0;
+    }
     switch (spec->field) {
         case DSD_SCAN_OPT_FORCE:
             if (spec->argument) {
@@ -369,6 +391,9 @@ done:
 
 static int
 option_sources_valid(uint32_t present, char* error, size_t size) {
+    if ((present & DSD_SCAN_OPT_CLEAR_KEYS) && (present & (DSD_SCAN_OPT_DIRECT | DSD_SCAN_OPT_FILES))) {
+        return option_error(error, size, "options", "no-keys cannot be combined with key material");
+    }
     if ((present & DSD_SCAN_OPT_DIRECT) && (present & DSD_SCAN_OPT_FILES)) {
         return option_error(error, size, "options", "direct keys cannot be combined with key files");
     }

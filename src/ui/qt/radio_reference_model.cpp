@@ -1125,7 +1125,7 @@ RadioReferenceModel::setTransportForTests(const dsd_rr_transport* transport) {
 /* ------------------------------------------------------------------------- */
 
 bool
-RadioReferenceModel::generateFiles(const QList<dsd_rr_site>& chosen, bool partialEncAsDe, QVariantMap* plan,
+RadioReferenceModel::generateFiles(const QList<dsd_rr_site>& chosen, int encryptionPolicy, QVariantMap* plan,
                                    QVariantList* warnings) const {
     dsd_rr_warning_list generated;
     DSD_MEMSET(&generated, 0, sizeof(generated));
@@ -1149,8 +1149,9 @@ RadioReferenceModel::generateFiles(const QList<dsd_rr_site>& chosen, bool partia
     char* groupText = nullptr;
     size_t groupLen = 0;
     if (m_talkgroupData.count > 0
-        && dsd_rr_generate_group_csv(m_talkgroupData.items, m_talkgroupData.count, partialEncAsDe ? 1 : 0, &groupText,
-                                     &groupLen, &generated)
+        && dsd_rr_generate_group_csv_with_policy(m_talkgroupData.items, m_talkgroupData.count,
+                                                 static_cast<dsd_rr_encrypted_tg_policy>(encryptionPolicy), &groupText,
+                                                 &groupLen, &generated)
                == 0
         && groupText != nullptr) {
         plan->insert(QStringLiteral("groupCsvText"), QString::fromUtf8(groupText, static_cast<int>(groupLen)));
@@ -1193,6 +1194,10 @@ fill_system_info(dsd_rr_protocol protocol, bool recordSaysEsk, dsd_rr_system_inf
  */
 void
 fill_import_options(const QVariantMap& options, dsd_rr_import_options* opts) {
+    if (options.contains(QStringLiteral("encryptionPolicy"))) {
+        opts->encrypted_tg_policy =
+            static_cast<dsd_rr_encrypted_tg_policy>(options.value(QStringLiteral("encryptionPolicy")).toInt());
+    }
     if (options.contains(QStringLiteral("simulcast"))) {
         opts->simulcast = options.value(QStringLiteral("simulcast")).toBool() ? 1 : 0;
     }
@@ -1262,6 +1267,7 @@ plan_into_map(const dsd_rr_import_plan& plan, QVariantMap* map) {
     map->insert(QStringLiteral("siteCount"), plan.site_count);
     map->insert(QStringLiteral("siteIds"), field(plan.site_ids));
     map->insert(QStringLiteral("partialEncAsDe"), plan.partial_enc_as_de != 0);
+    map->insert(QStringLiteral("encryptionPolicy"), static_cast<int>(plan.encrypted_tg_policy));
     if (plan.chan_csv_text != nullptr) {
         map->insert(QStringLiteral("chanCsvText"),
                     QString::fromUtf8(plan.chan_csv_text, static_cast<int>(plan.chan_csv_len)));
@@ -1324,7 +1330,7 @@ RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVar
     dsd_rr_system_info info;
     fill_system_info(m_protocol, m_recordSaysEsk, &info);
 
-    dsd_rr_import_options opts = {-1, -1, 1};
+    dsd_rr_import_options opts = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     fill_import_options(options, &opts);
 
     const std::vector<size_t> selected = selected_indexes(siteIndexes);
@@ -1446,6 +1452,7 @@ RadioReferenceModel::performImport(const QVariantMap& plan, const QString& syste
     origin.insert(QStringLiteral("rrSid"), m_sid);
     origin.insert(QStringLiteral("rrSiteIds"), plan.value(QStringLiteral("siteIds")).toString());
     origin.insert(QStringLiteral("rrPartialEnc"), plan.value(QStringLiteral("partialEncAsDe"), true).toBool());
+    origin.insert(QStringLiteral("rrEncryptionPolicy"), plan.value(QStringLiteral("encryptionPolicy")));
 
     static const struct {
         const char* planKey;
@@ -1574,7 +1581,12 @@ RadioReferenceModel::refreshRow(int row) {
     m_refreshRow = row;
     m_refreshPath = entry.value(QStringLiteral("path")).toString();
     m_refreshKind = entry.value(QStringLiteral("rrKind")).toString();
-    m_refreshPartialEnc = entry.value(QStringLiteral("rrPartialEnc"), true).toBool();
+    m_refreshEncryptionPolicy =
+        entry
+            .value(QStringLiteral("rrEncryptionPolicy"), entry.value(QStringLiteral("rrPartialEnc"), true).toBool()
+                                                             ? DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL
+                                                             : DSD_RR_TG_EXCLUDE_FULL)
+            .toInt();
     m_refreshSiteIds = wanted;
     return true;
 }
@@ -1586,7 +1598,7 @@ RadioReferenceModel::endRefresh(const QVariantMap& result) {
     m_refreshPath.clear();
     m_refreshKind.clear();
     m_refreshSiteIds.clear();
-    m_refreshPartialEnc = true;
+    m_refreshEncryptionPolicy = DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL;
     Q_EMIT refreshFinished(row, result);
 }
 
@@ -1620,7 +1632,7 @@ RadioReferenceModel::completeRefresh() {
     /* The answer the original import was given, read back from provenance: the
      * UI default would silently re-block every partly-encrypted talkgroup for a
      * user who had turned it off. */
-    if (!generateFiles(chosen, m_refreshPartialEnc, &plan, &warnings)) {
+    if (!generateFiles(chosen, m_refreshEncryptionPolicy, &plan, &warnings)) {
         setError(ParseError, tr("The refreshed data could not be turned into a file."));
         endRefresh(result);
         return;

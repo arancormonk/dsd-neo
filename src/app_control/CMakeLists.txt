@@ -8,6 +8,7 @@ target_sources(
         actions/actions_radio.c
         actions/actions_trunk.c
         app_command_queue.c
+        key_commands.c
         call_view.c
         p25_network.c # WP-F2
         p25_metrics.c

@@ -9,8 +9,8 @@ import QtQuick
 Item {
     id: screen
 
-    signal getStarted()
-    signal networkSource()
+    signal getStarted
+    signal networkSource
 
     readonly property bool dongleFailed: decoderHost && decoderHost.localDeviceFailureKind !== 0
     readonly property bool dongleReady: decoderHost && (!decoderHost.localDeviceBrokered || (decoderHost.localDeviceReady && !dongleFailed))
@@ -21,9 +21,9 @@ Item {
     }
 
     // WP-D5: long diagnostics remain reachable on short screens.
-    Flickable {
-        objectName: "dongleScrollBody"
+    PlexFlickable {
         id: body
+        objectName: "dongleScrollBody"
         anchors.fill: parent
         clip: true
         contentHeight: bottomBlock.y + bottomBlock.height + 22
@@ -40,6 +40,10 @@ Item {
             LogoMark {}
 
             Text {
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
+                readonly property bool navigationAllowed: Navigation.allows(screen)
+                Accessible.ignored: !visible || !navigationAllowed
                 width: parent.width
                 text: qsTr("Hear your local airwaves")
                 font.family: Theme.sans
@@ -51,6 +55,10 @@ Item {
             }
 
             Text {
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
+                readonly property bool navigationAllowed: Navigation.allows(screen)
+                Accessible.ignored: !visible || !navigationAllowed
                 width: parent.width
                 text: qsTr("Police, fire, EMS and ham digital radio — decoded live on your phone.")
                 font.family: Theme.sans
@@ -64,13 +72,10 @@ Item {
                 spacing: 16
 
                 Repeater {
-                    model: [
-                        qsTr("Plug an RTL-SDR dongle into USB"),
-                        qsTr("Pick a system near you"),
-                        qsTr("Listen")
-                    ]
+                    model: [qsTr("Connect USB, use a network source, or replay a file"), qsTr("Pick a system near you"), qsTr("Listen")]
 
                     Row {
+                        width: parent.width
                         required property int index
                         required property var modelData
 
@@ -86,6 +91,10 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
 
                             Text {
+                                Accessible.role: Accessible.StaticText
+                                Accessible.name: text
+                                readonly property bool navigationAllowed: Navigation.allows(screen)
+                                Accessible.ignored: !visible || !navigationAllowed
                                 anchors.centerIn: parent
                                 text: index + 1
                                 font.family: Theme.mono
@@ -95,6 +104,12 @@ Item {
                         }
 
                         Text {
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: text
+                            readonly property bool navigationAllowed: Navigation.allows(screen)
+                            Accessible.ignored: !visible || !navigationAllowed
+                            width: parent.width - 40
+                            wrapMode: Text.Wrap
                             text: modelData
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(15)
@@ -124,9 +139,12 @@ Item {
                     width: parent.width - 2 * Theme.cardPadding
                     spacing: 12
                     Text {
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: text
+                        readonly property bool navigationAllowed: Navigation.allows(screen)
+                        Accessible.ignored: !visible || !navigationAllowed
                         width: parent.width
-                        text: screen.dongleFailed ? qsTr("RTL-SDR needs attention")
-                              : screen.dongleReady ? qsTr("RTL-SDR dongle connected") : qsTr("No dongle detected")
+                        text: screen.dongleFailed ? qsTr("RTL-SDR needs attention") : screen.dongleReady ? qsTr("RTL-SDR dongle connected") : qsTr("No dongle detected")
                         wrapMode: Text.Wrap
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(15)
@@ -134,11 +152,13 @@ Item {
                         color: Theme.textPrimary
                     }
                     Text {
+                        Accessible.role: Accessible.StaticText
+                        Accessible.name: text
+                        readonly property bool navigationAllowed: Navigation.allows(screen)
+                        Accessible.ignored: !visible || !navigationAllowed
                         objectName: "dongleStatusText"
                         width: parent.width
-                        text: decoderHost.localDeviceStatus || (screen.dongleReady
-                              ? "RTL2832U · USB-OTG · " + qsTr("ready")
-                              : qsTr("plug one in, then tap Connect"))
+                        text: decoderHost.localDeviceStatus || (screen.dongleReady ? "RTL2832U · USB-OTG · " + qsTr("ready") : qsTr("plug one in, then tap Connect"))
                         wrapMode: Text.Wrap
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(14)
@@ -156,6 +176,10 @@ Item {
             }
 
             Text {
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
+                readonly property bool navigationAllowed: Navigation.allows(screen)
+                Accessible.ignored: !visible || !navigationAllowed
                 width: parent.width
                 text: qsTr("Long sessions? A powered OTG hub keeps the dongle fed and your battery out of it.")
                 font.family: Theme.sans
@@ -170,17 +194,10 @@ Item {
                 onClicked: screen.getStarted()
             }
 
-            Text {
+            OutlineButton {
                 width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                text: qsTr("I use a network source instead")
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(14)
-                color: Theme.textSecondary
-
-                TapHandler {
-                    onTapped: screen.networkSource()
-                }
+                text: qsTr("Use a network source or file")
+                onClicked: screen.networkSource()
             }
         }
     }

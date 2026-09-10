@@ -307,24 +307,24 @@ function systemMeta(sys) {
     return parts.join(" · ")
 }
 
-// "Heard 2 minutes ago" / "Heard yesterday" / "Never heard".
+// "Last listened 2 minutes ago" / "Last listened yesterday" / "Not yet listened".
 function heardText(lastHeardSecs) {
     if (!lastHeardSecs || lastHeardSecs <= 0)
-        return qsTr("Never heard")
+        return qsTr("Not yet listened")
     var delta = Math.floor(Date.now() / 1000) - lastHeardSecs
     if (delta < 60)
-        return qsTr("Heard just now")
+        return qsTr("Last listened just now")
     if (delta < 3600) {
         var minutes = Math.floor(delta / 60)
-        return minutes === 1 ? qsTr("Heard a minute ago") : qsTr("Heard %1 minutes ago").arg(minutes)
+        return minutes === 1 ? qsTr("Last listened a minute ago") : qsTr("Last listened %1 minutes ago").arg(minutes)
     }
     if (delta < 86400) {
         var hours = Math.floor(delta / 3600)
-        return hours === 1 ? qsTr("Heard an hour ago") : qsTr("Heard %1 hours ago").arg(hours)
+        return hours === 1 ? qsTr("Last listened an hour ago") : qsTr("Last listened %1 hours ago").arg(hours)
     }
     if (delta < 172800)
-        return qsTr("Heard yesterday")
-    return qsTr("Heard %1 days ago").arg(Math.floor(delta / 86400))
+        return qsTr("Last listened yesterday")
+    return qsTr("Last listened %1 days ago").arg(Math.floor(delta / 86400))
 }
 
 // Compact age for a call row's right edge: "1m", "2h", "3d".
@@ -355,6 +355,8 @@ function fmtDuration(secs) {
 
 // Uppercased mono meta for the monitor header: "851.375 MHZ · TRUNKED · USB".
 function monitorMeta(sys) {
+    if (sys.sourceType === "file")
+        return qsTr("Replay") + " · " + String(sys.filePath || "").split('/').pop()
     var parts = []
     if ((sys.sourceType === "usb" || sys.sourceType === "rtltcp") && sys.freqMhz && sys.freqMhz.length > 0)
         parts.push(sys.freqMhz + " MHz")
@@ -378,4 +380,17 @@ function sourceText(id, name) {
     if (!name || name === String(id))
         return id > 0 ? String(id) : ""
     return id > 0 ? name + " (" + id + ")" : name
+}
+
+// Profile forms describe decoder capabilities; protocol and modulation stay distinct.
+function decryptionProtocol(flags) {
+    var value = flags || ""
+    if (value.indexOf("-ft") >= 0 || value.indexOf("-f1") >= 0 || value.indexOf("-f2") >= 0 || value.indexOf("-mq") >= 0) return "p25"
+    if (value.indexOf("-fs") >= 0) return "dmr"
+    if (value.indexOf("-fi") >= 0 || value.indexOf("-fn") >= 0) return "nxdn"
+    if (value.indexOf("-fz") >= 0) return "m17"
+    if (value.indexOf("-fp") >= 0) return "dpmr"
+    if (value.indexOf("-fd") >= 0) return "dstar"
+    if (value.indexOf("-fy") >= 0) return "ysf"
+    return "mixed"
 }

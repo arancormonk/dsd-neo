@@ -54,6 +54,8 @@ Item {
             compare(commands.keyApplyCalls(), 1);
             verify(commands.keyPayloadValid());
             compare(commands.lastForceMode(), 2);
+            verify(sheet.visible, "submission stays Pending until the decoder result");
+            uiController.finishDecryption(commands.lastDecryptionRequest(), 1);
             verify(!sheet.visible);
             verify(editor.keyValue.length === 0);
             sheet.open();
@@ -86,6 +88,22 @@ Item {
             sheet.apply();
             compare(commands.keyApplyCalls(), 0);
             compare(commands.lastForceMode(), 1);
+            verify(sheet.visible);
+            uiController.finishDecryption(commands.lastDecryptionRequest(), 1);
+            verify(!sheet.visible);
+        }
+        function test_unchanged_apply_preserves_force_and_keyloader() {
+            sheet.apply();
+            compare(commands.keyApplyCalls(), 0);
+            compare(commands.lastForceMode(), -1);
+            verify(!sheet.visible);
+        }
+        function test_stale_result_remains_visible() {
+            var editor = findChild(sheet, "sessionEncryptionEditor");
+            editor.forceMode = 1;
+            sheet.apply();
+            uiController.finishDecryption(commands.lastDecryptionRequest(), -2);
+            verify(sheet.visible && sheet.notice.length > 0);
         }
         function test_invalid_stopped_and_rejected() {
             var editor = findChild(sheet, "sessionEncryptionEditor");

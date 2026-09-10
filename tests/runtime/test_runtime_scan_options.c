@@ -11,6 +11,15 @@ int
 main(void) {
     dsd_scan_options parsed = {0};
     char error[192] = {0};
+    assert(dsd_scan_options_parse("--dmr-tg-key-csv mapping.csv", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))
+           == 0);
+    assert((parsed.values.present & DSD_SCAN_OPT_DMR_MAP) && strcmp(parsed.values.dmr_map_file, "mapping.csv") == 0);
+    assert(dsd_scan_options_parse("--dmr-tg-key-clear", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
+    assert((parsed.values.present & DSD_SCAN_OPT_DMR_MAP) && !parsed.values.dmr_map_file[0]);
+    assert(dsd_scan_options_parse("--dmr-tg-key-clear", DSD_SCAN_MODE_P25, 0, &parsed, error, sizeof(error)) != 0);
+    assert(dsd_scan_options_parse("--dmr-tg-key-clear --dmr-tg-key-csv map.csv", DSD_SCAN_MODE_DMR, 1, &parsed, error,
+                                  sizeof(error))
+           != 0);
     assert(dsd_scan_options_parse("", DSD_SCAN_MODE_INHERIT, 1, &parsed, error, sizeof(error)) == 0);
     assert(parsed.values.present == 0);
     assert(dsd_scan_options_parse("-^", DSD_SCAN_MODE_P25, 0, &parsed, error, sizeof(error)) == 0);

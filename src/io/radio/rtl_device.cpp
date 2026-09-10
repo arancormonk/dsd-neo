@@ -12,7 +12,8 @@
  * u8 I/Q samples into normalized float and feeds the `input_ring_state`.
  */
 
-#include "dsd-neo/core/input_level.h"
+#include <dsd-neo/core/input_level.h>
+#include <dsd-neo/runtime/input_failure.h>
 
 #include <algorithm>
 #include <atomic>
@@ -51,8 +52,8 @@
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <sys/socket.h>
 #endif
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/platform/platform.h"
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/platform/platform.h>
 #include "rtl_capture_phase.h"
 #include "rtl_perf.h"
 #include "rtl_replay_device.h"
@@ -3271,11 +3272,17 @@ static DSD_THREAD_RETURN_TYPE
 
 /* ---- rtl_tcp backend helpers ---- */
 
+static int
+tcp_connect_cancelled(void*) {
+    return dsd_exitflag_load();
+}
+
 /* Connect to rtl_tcp server */
 static dsd_socket_t
 tcp_connect_host(const char* host, int port) {
     dsd_socket_t sockfd = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
     if (sockfd == DSD_INVALID_SOCKET) {
+        dsd_input_failure_report(DSD_INPUT_FAILURE_NETWORK, dsd_socket_get_error());
         DSD_FPRINTF(stderr, "rtl_tcp: ERROR opening socket\n");
         return DSD_INVALID_SOCKET;
     }
@@ -3303,15 +3310,21 @@ tcp_connect_host(const char* host, int port) {
     }
     struct sockaddr_in serveraddr;
     if (dsd_socket_resolve(host, port, &serveraddr) != 0) {
+        dsd_input_failure_report(DSD_INPUT_FAILURE_RESOLVE, dsd_socket_get_error());
         DSD_FPRINTF(stderr, "rtl_tcp: ERROR, no such host as %s\n", host);
         dsd_socket_close(sockfd);
         return DSD_INVALID_SOCKET;
     }
-    if (dsd_socket_connect(sockfd, reinterpret_cast<const struct sockaddr*>(&serveraddr), sizeof(serveraddr)) != 0) {
+    int code = 0;
+    if (dsd_socket_connect_bounded(sockfd, reinterpret_cast<const struct sockaddr*>(&serveraddr), sizeof(serveraddr),
+                                   10000U, tcp_connect_cancelled, nullptr, &code)
+        != 0) {
+        dsd_input_failure_report(dsd_input_failure_classify_socket(code), code);
         DSD_FPRINTF(stderr, "rtl_tcp: ERROR connecting to %s:%d\n", host, port);
         dsd_socket_close(sockfd);
         return DSD_INVALID_SOCKET;
     }
+    dsd_input_failure_clear();
     return sockfd;
 }
 

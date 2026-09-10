@@ -1,17 +1,68 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/path_policy.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "key_set_internal.h"
+
+int
+dsd_scan_profile_ensure(dsd_scan_row_profile** profile) {
+    if (!profile) {
+        return -1;
+    }
+    if (*profile) {
+        return 0;
+    }
+    dsd_scan_row_profile* fresh = calloc(1, sizeof(*fresh));
+    if (!fresh) {
+        return -1;
+    }
+    *profile = fresh;
+    return 0;
+}
+
+static int
+scan_aes_compatible(const dsd_key_scalars* k, unsigned int mode, int nxdn) {
+    if (k->hytera_key_segments == 1 && mode != DSD_SCAN_MODE_DMR) {
+        return 0;
+    }
+    if (k->aes_key_loaded[0]
+        && (k->aes_key_segments[0] != 2 && k->aes_key_segments[0] != 4
+            && !(mode == DSD_SCAN_MODE_P25 && k->aes_key_segments[0] == 3))) {
+        return 0;
+    }
+    if (nxdn && k->aes_key_loaded[0] && k->aes_key_segments[0] != 4) {
+        return 0;
+    }
+    return 1;
+}
+
+int
+dsd_scan_keys_compatible(const dsd_key_set* keys, unsigned int mode) {
+    if (!keys || !keys->present || keys->keyloader) {
+        return keys != NULL;
+    }
+    const dsd_key_scalars* k = &keys->scalars;
+    const int nxdn = mode == DSD_SCAN_MODE_NXDN48 || mode == DSD_SCAN_MODE_NXDN96;
+    if (k->basic_key_present && (mode != DSD_SCAN_MODE_DMR || k->K > 255U)) {
+        return 0;
+    }
+    if (k->scalar_key_present[0] && !k->scalar_key_present[1]
+        && ((!nxdn && mode != DSD_SCAN_MODE_DPMR) || k->R > 32767U)) {
+        return 0;
+    }
+    return scan_aes_compatible(k, mode, nxdn);
+}
 
 static int
 profile_error(char* error, size_t size, const char* field, const char* reason) {
@@ -28,7 +79,7 @@ dsd_scan_options_keys(const dsd_scan_options* options, dsd_key_set* out) {
     }
     dsd_key_set keys = {0};
     const uint32_t present = options->values.present;
-    keys.present = (present & DSD_SCAN_OPT_DIRECT) != 0;
+    keys.present = (present & (DSD_SCAN_OPT_DIRECT | DSD_SCAN_OPT_CLEAR_KEYS)) != 0;
     keys.scalars.K = options->bp;
     keys.scalars.basic_key_present = (present & DSD_SCAN_OPT_BP) != 0;
     if (present & (DSD_SCAN_OPT_SCALAR | DSD_SCAN_OPT_SCRAMBLER)) {
@@ -111,6 +162,9 @@ dsd_scan_options_merge_keys(dsd_scan_options* options, const char* hex_file, con
         return profile_error(error, error_size, "options", "duplicate key source");
     }
     const uint32_t combined = legacy | options->values.present;
+    if ((combined & DSD_SCAN_OPT_CLEAR_KEYS) && (combined & (DSD_SCAN_OPT_DIRECT | DSD_SCAN_OPT_FILES))) {
+        return profile_error(error, error_size, "options", "no-keys cannot be combined with key material");
+    }
     if ((combined & DSD_SCAN_OPT_DIRECT) && (combined & DSD_SCAN_OPT_FILES)) {
         return profile_error(error, error_size, "options", "direct keys cannot be combined with key files");
     }
@@ -163,6 +217,7 @@ dsd_scan_options_resolve(dsd_scan_options* options, const char* base, char* erro
         {resolved.hex_file, sizeof(resolved.hex_file), "keys_hex_csv/-K"},
         {resolved.dec_file, sizeof(resolved.dec_file), "keys_dec_csv/-k"},
         {resolved.values.group_file, sizeof(resolved.values.group_file), "-G"},
+        {resolved.values.dmr_map_file, sizeof(resolved.values.dmr_map_file), "--dmr-tg-key-csv"},
     };
 
     int rc = 0;
@@ -193,6 +248,9 @@ dsd_scan_profile_load(const dsd_scan_options* options, int show_keys, dsd_scan_r
     if (options->values.present & DSD_SCAN_OPT_GROUP) {
         rc = dsd_tg_policy_load(options->values.group_file, &loaded->groups);
     }
+    if (!rc && (options->values.present & DSD_SCAN_OPT_DMR_MAP) && options->values.dmr_map_file[0]) {
+        rc = dsd_dmr_key_map_load(options->values.dmr_map_file, &loaded->dmr_map);
+    }
     dsd_key_set loaded_keys = {0};
     if (!rc && (options->values.present & DSD_SCAN_OPT_FILES)) {
         rc = dsd_key_set_load_csv(&loaded_keys, options->hex_file, options->dec_file, show_keys);
@@ -205,6 +263,7 @@ dsd_scan_profile_load(const dsd_scan_options* options, int show_keys, dsd_scan_r
         return -1;
     }
     *profile = loaded;
+    DSD_SNPRINTF(loaded_keys.profile_ref, sizeof(loaded_keys.profile_ref), "%s", options->values.key_profile_ref);
     dsd_key_set_free(keys);
     *keys = loaded_keys;
     DSD_SECURE_ZERO(&loaded_keys, sizeof(loaded_keys));

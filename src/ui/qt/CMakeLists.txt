@@ -18,8 +18,10 @@ target_sources(
         call_history_model.cpp
         command_bridge.cpp
         decoder_host.cpp
+        decryption_profiles_model.cpp
         diagnostics_log.cpp
         imported_files_model.cpp
+        csv_bundle_import.cpp
         json_store.cpp
         p25_network_model.cpp # WP-F2
         metrics_model.cpp
@@ -46,6 +48,22 @@ qt_add_resources(
     FILES
         qml/qmldir
         qml/Theme.qml
+        qml/Navigation.qml
+        qml/NavigationLayer.qml
+        qml/FocusFrame.qml
+        qml/IconButton.qml
+        qml/DiscardDialog.qml
+        qml/ChoiceSheet.qml
+        qml/DecryptionProfileEditor.qml
+        qml/DecryptionProfileSelector.qml
+        qml/DecryptionApplyFlow.qml
+        qml/FailureCard.qml
+        qml/CsvImportFlow.qml
+        qml/HistoryDetailSheet.qml
+        qml/PlexComboBox.qml
+        qml/PlexCheckBox.qml
+        qml/PlexInput.qml
+        qml/PlexToggle.qml
         qml/Util.js
         qml/Main.qml
         qml/PointerBarrier.qml
@@ -86,7 +104,8 @@ qt_add_resources(
         qml/OutlineButton.qml
         qml/PlayCircle.qml
         qml/PlexSwitch.qml
-        qml/PlexTextField.qml
+        qml/PlexFlickable.qml
+            qml/PlexTextField.qml
         qml/RadioReferenceScreen.qml
         qml/RadioSheet.qml
         qml/SiteSheet.qml
@@ -121,6 +140,20 @@ qt_add_resources(
 target_include_directories(
     dsd-neo_ui_qt
     PUBLIC ${PROJECT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+qt_add_resources(
+    dsd-neo_ui_qt
+    "dsd_neo_notices"
+    PREFIX "/dsdneo/notices"
+    BASE "${PROJECT_SOURCE_DIR}"
+    FILES
+        "${PROJECT_SOURCE_DIR}/LICENSE"
+        "${PROJECT_SOURCE_DIR}/COPYRIGHT"
+        "${PROJECT_SOURCE_DIR}/THIRD_PARTY.md"
+        "${PROJECT_SOURCE_DIR}/src/ui/qt/fonts/IBMPlex-LICENSE.txt"
+        "${PROJECT_SOURCE_DIR}/src/third_party/ezpwd/lesser.txt"
+        "${PROJECT_SOURCE_DIR}/src/third_party/pffft/COPYING"
 )
 
 # Qt's unprefixed `signals`/`slots`/`emit` macros collide with project C headers

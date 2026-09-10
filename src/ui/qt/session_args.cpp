@@ -3,13 +3,16 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QPair>
 #include <initializer_list>
 #include <utility>
 #include "decoder_host.h"
+#include "decryption_profile_provider.h"
 #include "saved_systems_model.h"
 #include "session_args.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include <QChar>
 #include <QLatin1String>
@@ -175,9 +178,15 @@ append_flag_args(QStringList& args, const QVariantMap& system, const SessionArgP
 void
 append_key_args(QStringList& args, int keyIndex, const QString& keyValue, int force) {
     if (keyIndex >= 0) {
-        const QStringList flags{QStringLiteral("-b"), QStringLiteral("-H"), QStringLiteral("-1"), QStringLiteral("-R")};
+        const QStringList flags{QStringLiteral("-b"),
+                                QStringLiteral("-H"),
+                                QStringLiteral("-1"),
+                                QStringLiteral("-R"),
+                                QStringLiteral("--m17-scrambler-key"),
+                                QStringLiteral("--m17-aes-key")};
         args << flags[keyIndex]
-             << ((keyIndex == 1 || keyIndex == 2) ? session_args_key_hex_normalize(keyValue) : keyValue.trimmed());
+             << ((keyIndex == 1 || keyIndex == 2 || keyIndex >= 4) ? session_args_key_hex_normalize(keyValue)
+                                                                   : keyValue.trimmed());
     }
     if (force != 0) {
         args << (force == 1 ? QStringLiteral("-4") : QStringLiteral("-0"));
@@ -191,8 +200,9 @@ validate_key_args(const QVariantMap& system, const QString& keyType, const QStri
         return SessionArgsError::KeyConflict;
     }
     if (!session_args_key_valid(keyType, keyValue)) {
-        const SessionArgsError reasons[] = {SessionArgsError::KeyBasic, SessionArgsError::KeyHex,
-                                            SessionArgsError::KeyRc4, SessionArgsError::KeyScrambler};
+        const SessionArgsError reasons[] = {SessionArgsError::KeyBasic,        SessionArgsError::KeyHex,
+                                            SessionArgsError::KeyRc4,          SessionArgsError::KeyScrambler,
+                                            SessionArgsError::KeyM17Scrambler, SessionArgsError::KeyM17Aes};
         return keyIndex < 0 ? SessionArgsError::KeyType : reasons[keyIndex];
     }
     bool forceOk = false;
@@ -344,7 +354,7 @@ bool
 session_args_freq_valid(const QString& freqMhz) {
     bool ok = false;
     const double mhz = freqMhz.trimmed().toDouble(&ok);
-    return ok && mhz > 0.0;
+    return ok && std::isfinite(mhz) && mhz > 0.0;
 }
 
 QString
@@ -357,35 +367,57 @@ session_args_key_hex_normalize(const QString& value) {
     return normalized.toUpper();
 }
 
+static bool
+decimal_key_valid(const QString& type, const QString& value) {
+    const QString decimal = value.trimmed();
+    if (!QRegularExpression(QStringLiteral("^[0-9]+$")).match(decimal).hasMatch()) {
+        return false;
+    }
+    bool ok = false;
+    const auto number = decimal.toUInt(&ok);
+    return ok && number <= (type == QLatin1String("basic") ? 255U : 32767U);
+}
+
+static bool
+hex_key_width_valid(const QString& type, const QString& hex) {
+    const auto size = hex.size();
+    if (type == QLatin1String("m17Scrambler")) {
+        return (size == 2 || size == 4 || size == 6) && hex.count(QLatin1Char('0')) != size;
+    }
+    if (type == QLatin1String("m17Aes")) {
+        return (size == 32 || size == 48 || size == 64) && hex.count(QLatin1Char('0')) != size;
+    }
+    return type == QLatin1String("rc4") ? size >= 1 && size <= 16 : size == 10 || size == 32 || size == 64;
+}
+
 bool
 session_args_key_valid(const QString& type, const QString& value) {
     if (type.isEmpty()) {
         return value.isEmpty();
     }
     if (type == QLatin1String("basic") || type == QLatin1String("scrambler")) {
-        const QString decimal = value.trimmed();
-        if (!QRegularExpression(QStringLiteral("^[0-9]+$")).match(decimal).hasMatch()) {
-            return false;
-        }
-        bool ok = false;
-        const auto number = decimal.toUInt(&ok);
-        return ok && number <= (type == QLatin1String("basic") ? 255U : 32767U);
+        return decimal_key_valid(type, value);
     }
-    if (type != QLatin1String("hex") && type != QLatin1String("rc4")) {
+    if (type != QLatin1String("hex") && type != QLatin1String("rc4") && type != QLatin1String("m17Scrambler")
+        && type != QLatin1String("m17Aes")) {
         return false;
     }
     const QString hex = session_args_key_hex_normalize(value);
     if (!QRegularExpression(QStringLiteral("^[0-9A-F]+$")).match(hex).hasMatch()) {
         return false;
     }
-    const auto size = hex.size();
-    return type == QLatin1String("rc4") ? size >= 1 && size <= 16 : size == 10 || size == 32 || size == 64;
+    return hex_key_width_valid(type, hex);
 }
 
 QString
 session_args_error_text(SessionArgsError error) {
     switch (error) {
         case SessionArgsError::None: return {};
+        case SessionArgsError::KeyM17Scrambler:
+            return QStringLiteral("Enter a nonzero M17 seed with 2, 4, or 6 hex digits.");
+        case SessionArgsError::KeyM17Aes:
+            return QStringLiteral(
+                "Enter an M17 AES key with 32, 48, or 64 hex digits; an all-zero key is unavailable to the decoder.");
         case SessionArgsError::Frequency: return QStringLiteral("Enter a positive frequency in MHz.");
         case SessionArgsError::Ppm: return QStringLiteral("Enter a whole number for PPM.");
         case SessionArgsError::KeyType: return QStringLiteral("Choose one encryption key type.");
@@ -400,6 +432,59 @@ session_args_error_text(SessionArgsError error) {
                                   "Remove prohibited options and write each short option separately.");
     }
     return {};
+}
+
+bool
+session_args_profile_compatible(const QVariantMap& system) {
+    const QString protocol = system.value("decryptionProtocol").toString();
+    if (protocol.isEmpty() || protocol == "mixed" || system.value("decryptionLegacy").toBool()) {
+        return true;
+    }
+    const QString flags = system.value("decodeFlag").toString();
+    QString expected = "mixed";
+    if (flags.contains("-ft") || flags.contains("-f1") || flags.contains("-f2")) {
+        expected = "p25";
+    } else if (flags.contains("-fs")) {
+        expected = "dmr";
+    } else if (flags.contains("-fi") || flags.contains("-fn")) {
+        expected = "nxdn";
+    } else if (flags.contains("-fp")) {
+        expected = "dpmr";
+    } else if (flags.contains("-fz")) {
+        expected = "m17";
+    } else if (flags.contains("-fd")) {
+        expected = "dstar";
+    } else if (flags.contains("-fy")) {
+        expected = "ysf";
+    }
+    return expected == "mixed" || expected == protocol;
+}
+
+static void
+append_profile_args(QStringList& args, const QVariantMap& system) {
+    for (const auto& file : {qMakePair(QStringLiteral("keysHexCsvPath"), QStringLiteral("-K")),
+                             qMakePair(QStringLiteral("keysDecCsvPath"), QStringLiteral("-k")),
+                             qMakePair(QStringLiteral("dmrTgKeyCsvPath"), QStringLiteral("--dmr-tg-key-csv"))}) {
+        if (!system.value(file.first).toString().isEmpty()) {
+            args << file.second << system.value(file.first).toString();
+        }
+    }
+    if (system.value("dmrTgKeyClear").toBool()) {
+        args << QStringLiteral("--dmr-tg-key-clear");
+    }
+    if (system.value("decryptionClearKeys").toBool()) {
+        args << QStringLiteral("--no-decryption-keys");
+    }
+    if (system.contains("decryptionForce")) {
+        const int profileForce = system.value("decryptionForce").toInt();
+        if (profileForce == 0) {
+            args << QStringLiteral("--no-force-key");
+        } else if (profileForce == 1) {
+            args << QStringLiteral("-4");
+        } else if (profileForce > 1) {
+            args << QStringLiteral("--dmr-force-algid") << QString::number(profileForce, 16);
+        }
+    }
 }
 
 QStringList
@@ -438,10 +523,13 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
         return fail(SessionArgsError::Ppm);
     }
 
+    if (!session_args_profile_compatible(system)) {
+        return fail(SessionArgsError::KeyType);
+    }
     const QString keyType = system.value(QStringLiteral("encKeyType")).toString();
     const QString keyValue = system.value(QStringLiteral("encKeyValue")).toString();
-    const QStringList keyTypes{QStringLiteral("basic"), QStringLiteral("hex"), QStringLiteral("rc4"),
-                               QStringLiteral("scrambler")};
+    const QStringList keyTypes{QStringLiteral("basic"),     QStringLiteral("hex"),          QStringLiteral("rc4"),
+                               QStringLiteral("scrambler"), QStringLiteral("m17Scrambler"), QStringLiteral("m17Aes")};
     const int keyIndex = keyTypes.indexOf(keyType);
     const SessionArgsError keyError = validate_key_args(system, keyType, keyValue, keyIndex);
     if (keyError != SessionArgsError::None) {
@@ -460,7 +548,12 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     append_input_args(args, system, sourceType, tail, bias);
     args << QStringLiteral("-o") << QStringLiteral("pulse");
     append_csv_args(args, system);
+    append_profile_args(args, system);
     append_key_args(args, keyIndex, keyValue, force);
+    args << system.value("decryptionVendorArgs").toStringList();
+    if (!system.value("decryptionProfileRef").toString().isEmpty()) {
+        args << "--key-profile-ref" << system.value("decryptionProfileRef").toString();
+    }
     append_flag_args(args, system, prefs);
     return args;
 }
@@ -491,6 +584,26 @@ SessionArgsBuilder::buildArgs(const QVariantMap& system, SessionArgsError* error
         input.insert(QStringLiteral("encKeyValue"),
                      m_systems->keyValueForUid(input.value(QStringLiteral("uid")).toString()));
     }
+    const QString profile = input.value(QStringLiteral("decryptionProfileUid")).toString();
+    if (!profile.isEmpty()) {
+        QString profileError;
+        if (!m_profiles) {
+            if (error) {
+                *error = SessionArgsError::KeyType;
+            }
+            return {};
+        }
+        const auto configuration = m_profiles->configuration(profile, &profileError);
+        if (!profileError.isEmpty() || configuration.isEmpty()) {
+            if (error) {
+                *error = SessionArgsError::KeyType;
+            }
+            return {};
+        }
+        for (auto i = configuration.cbegin(); i != configuration.cend(); ++i) {
+            input.insert(i.key(), i.value());
+        }
+    }
     return session_args_build(input, prefs, error);
 }
 
@@ -519,7 +632,11 @@ SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host) const {
     SessionArgsError error = SessionArgsError::None;
     const QStringList args = buildArgs(system, &error);
     auto result = validationResult(error);
-    result.insert(QStringLiteral("started"), error == SessionArgsError::None && host && host->start(args));
+    const bool started = error == SessionArgsError::None && host && host->start(args);
+    result.insert(QStringLiteral("started"), started);
+    if (started && host->sessionActive() && m_profiles) {
+        m_profiles->retainForSession(system.value("decryptionProfileUid").toString());
+    }
     return result;
 }
 
@@ -532,8 +649,8 @@ SessionArgsBuilder::freqValid(const QString& freqMhz) const {
 // cppcheck-suppress functionStatic // Q_INVOKABLE: QML validation uses the shared startup rules.
 QString
 SessionArgsBuilder::keyError(const QString& type, const QString& value, const QString& csvPath, int force) const {
-    const QStringList types{QStringLiteral("basic"), QStringLiteral("hex"), QStringLiteral("rc4"),
-                            QStringLiteral("scrambler")};
+    const QStringList types{QStringLiteral("basic"),     QStringLiteral("hex"),          QStringLiteral("rc4"),
+                            QStringLiteral("scrambler"), QStringLiteral("m17Scrambler"), QStringLiteral("m17Aes")};
     const QVariantMap fields{{QStringLiteral("keyCsvPath"), csvPath}, {QStringLiteral("encForceKey"), force}};
     return session_args_error_text(validate_key_args(fields, type, value, types.indexOf(type)));
 }

@@ -340,7 +340,7 @@ test_plan_trunked_p25(void) {
     info_set(&info, DSD_RR_PROTO_P25, 0);
 
     const size_t selected[] = {0U};
-    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_options options = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     dsd_rr_import_plan plan;
     DSD_MEMSET(&plan, 0, sizeof(plan));
 
@@ -380,7 +380,7 @@ test_plan_simulcast_and_esk(void) {
     const size_t selected[] = {0U};
     dsd_rr_import_plan plan;
 
-    dsd_rr_import_options forced = {1, -1, 1};
+    dsd_rr_import_options forced = {1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     DSD_MEMSET(&plan, 0, sizeof(plan));
     expect("forced simulcast plan built",
            dsd_rr_import_plan_build(&info, sites, 1U, selected, 1U, NULL, 0U, &forced, &plan) == 0);
@@ -391,14 +391,14 @@ test_plan_simulcast_and_esk(void) {
     /* The record's own answer, not an override: siteModulation reads "CQPSK
      * Phase 1" on a real simulcast site. */
     (void)DSD_SNPRINTF(sites[0].modulation, sizeof(sites[0].modulation), "%s", "CQPSK Phase 1");
-    dsd_rr_import_options follow = {-1, -1, 1};
+    dsd_rr_import_options follow = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     DSD_MEMSET(&plan, 0, sizeof(plan));
     expect("record simulcast plan built",
            dsd_rr_import_plan_build(&info, sites, 1U, selected, 1U, NULL, 0U, &follow, &plan) == 0);
     expect_str("record simulcast flag", plan.decode_flag, "-mq -^");
     dsd_rr_import_plan_free(&plan);
 
-    dsd_rr_import_options off = {0, -1, 1};
+    dsd_rr_import_options off = {0, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     DSD_MEMSET(&plan, 0, sizeof(plan));
     expect("simulcast override off plan built",
            dsd_rr_import_plan_build(&info, sites, 1U, selected, 1U, NULL, 0U, &off, &plan) == 0);
@@ -421,7 +421,7 @@ test_plan_edacs_esk_and_tune_fallback(void) {
     dsd_rr_system_info info;
     info_set(&info, DSD_RR_PROTO_EDACS_EA, 1);
     const size_t selected[] = {0U};
-    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_options options = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     dsd_rr_import_plan plan;
     DSD_MEMSET(&plan, 0, sizeof(plan));
 
@@ -438,7 +438,7 @@ test_plan_edacs_esk_and_tune_fallback(void) {
     expect("no talkgroups means no group file", plan.group_csv_text == NULL);
     dsd_rr_import_plan_free(&plan);
 
-    dsd_rr_import_options no_esk = {-1, 0, 1};
+    dsd_rr_import_options no_esk = {-1, 0, 1, DSD_RR_TG_POLICY_LEGACY};
     DSD_MEMSET(&plan, 0, sizeof(plan));
     expect("edacs without esk built",
            dsd_rr_import_plan_build(&info, sites, 1U, selected, 1U, NULL, 0U, &no_esk, &plan) == 0);
@@ -465,7 +465,7 @@ test_plan_conventional(void) {
     dsd_rr_system_info info;
     info_set(&info, DSD_RR_PROTO_DMR_CONV, 0);
     const size_t selected[] = {0U, 1U, 2U};
-    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_options options = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     dsd_rr_import_plan plan;
     DSD_MEMSET(&plan, 0, sizeof(plan));
 
@@ -524,7 +524,7 @@ test_plan_site_label(void) {
 
     dsd_rr_system_info info;
     info_set(&info, DSD_RR_PROTO_P25, 0);
-    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_options options = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     dsd_rr_import_plan plan;
 
     const size_t first[] = {0U};
@@ -565,7 +565,7 @@ test_plan_site_label_conventional(void) {
 
     dsd_rr_system_info info;
     info_set(&info, DSD_RR_PROTO_DMR_CONV, 0);
-    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_options options = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     dsd_rr_import_plan plan;
 
     const size_t all[] = {0U, 1U, 2U};
@@ -596,7 +596,7 @@ test_plan_selection_hygiene(void) {
 
     dsd_rr_system_info info;
     info_set(&info, DSD_RR_PROTO_DMR_CONV, 0);
-    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_options options = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     dsd_rr_import_plan plan;
 
     /* Out of range warns and is skipped; a repeat of an index already taken is
@@ -647,7 +647,7 @@ test_plan_awaiting_a_selection_is_not_a_refusal(void) {
     site_init(&sites[0], freqs, 1U);
 
     dsd_rr_system_info info;
-    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_options options = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     dsd_rr_import_plan plan;
 
     info_set(&info, DSD_RR_PROTO_P25, 0);
@@ -699,7 +699,7 @@ test_plan_blocked(void) {
     sites[0].site_db_id = 6673;
 
     const size_t selected[] = {0U};
-    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_options options = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     dsd_rr_import_plan plan;
 
     dsd_rr_system_info unsupported;
@@ -764,7 +764,7 @@ test_plan_site_ids_large_selection(void) {
 
     dsd_rr_system_info info;
     info_set(&info, DSD_RR_PROTO_DMR_CONV, 0);
-    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_options options = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     dsd_rr_import_plan plan;
     DSD_MEMSET(&plan, 0, sizeof(plan));
 
@@ -810,7 +810,7 @@ test_plan_site_ids_overflow(void) {
 
     dsd_rr_system_info info;
     info_set(&info, DSD_RR_PROTO_DMR_CONV, 0);
-    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_options options = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     dsd_rr_import_plan plan;
     DSD_MEMSET(&plan, 0, sizeof(plan));
 
@@ -835,7 +835,7 @@ test_plan_argument_validation(void) {
     dsd_rr_system_info info;
     info_set(&info, DSD_RR_PROTO_P25, 0);
     const size_t selected[] = {0U};
-    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_options options = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     dsd_rr_import_plan plan;
     DSD_MEMSET(&plan, 0, sizeof(plan));
 

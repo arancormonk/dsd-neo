@@ -476,6 +476,11 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
     }
 
     g_configured = false;
+    if (rc != DSD_BOOTSTRAP_EXIT || exit_rc != 0) {
+        dsd_input_failure_report(DSD_INPUT_FAILURE_CONFIGURATION, exit_rc);
+        std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
+        dsd_android::collect_run_result(g_run_status, kStatusError, false);
+    }
     /* EXIT is not a failure: one-shot flows such as -h take it. */
     return (rc == DSD_BOOTSTRAP_EXIT && exit_rc == 0) ? kStatusConfigExit : kStatusError;
 }
@@ -532,14 +537,19 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeLifecycleStatus(JNIEnv* env, j
         std::lock_guard<std::mutex> guard(g_lifecycle_lock);
         status = g_run_status;
     }
-    const jlong fields[] = {static_cast<jlong>(status.session_id), status.initialized ? 1 : 0,
-                            static_cast<jlong>(status.reason), status.run_code, status.device_error};
-    jlongArray out = env->NewLongArray(5);
+    const jlong fields[] = {static_cast<jlong>(status.session_id),
+                            status.initialized ? 1 : 0,
+                            static_cast<jlong>(status.reason),
+                            status.run_code,
+                            status.device_error,
+                            status.input_failure.kind,
+                            status.input_failure.native_code};
+    jlongArray out = env->NewLongArray(7);
     if (!out) {
         clear_pending_exception(env);
         return nullptr;
     }
-    env->SetLongArrayRegion(out, 0, 5, fields);
+    env->SetLongArrayRegion(out, 0, 7, fields);
     if (clear_pending_exception(env)) {
         env->DeleteLocalRef(out);
         return nullptr;

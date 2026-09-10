@@ -1031,3 +1031,8 @@ dsd_audio_backend_name(void) {
 }
 
 #endif /* DSD_USE_PORTAUDIO */
+
+int
+dsd_audio_output_device_id(void) {
+    return -1;
+}

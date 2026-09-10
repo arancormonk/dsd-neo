@@ -121,6 +121,14 @@ DecoderHostAndroid::applyLifecycleStatus(const QJsonObject& status, bool running
     const uint64_t session = static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger());
     const QByteArray name = status.value(QStringLiteral("state")).toString(QStringLiteral("IDLE")).toUtf8();
     const auto reason = static_cast<RunReason>(status.value(QStringLiteral("reason")).toInt());
+    const int input_failure = status.value(QStringLiteral("inputFailure")).toInt();
+    const int input_error = status.value(QStringLiteral("inputError")).toInt();
+    if (m_input_failure != input_failure || m_input_error != input_error || m_terminal_reason != reason) {
+        m_input_failure = input_failure;
+        m_input_error = input_error;
+        m_terminal_reason = reason;
+        Q_EMIT runResultChanged();
+    }
     if (first_poll) {
         m_initialized_session = session;
         if (name == "IDLE") {
@@ -172,6 +180,7 @@ DecoderHostAndroid::stop() {
 
 void
 DecoderHostAndroid::refresh() {
+    refreshPresentation();
     refreshLocation();
     const bool running = readEngineRunning();
     const auto status = readLifecycleStatus();

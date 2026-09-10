@@ -708,7 +708,7 @@ Out-of-range decimal keys are rejected without changing the installed key.
 - TYT Basic Privacy (16‑bit, hex, enforced): `-2 <hex>`
 - TYT Advanced Privacy PC4 (128/256-bit hex stream, groups of 16): `-! '<hex…>'`
 - Retevis Advanced Privacy RC2 (128/256-bit hex stream, groups of 16): `-@ '<hex…>'`
-- TYT Enhanced Privacy AES‑128 (hex stream): `-5 '<hex…>'`
+- TYT Enhanced Privacy AES‑128: `-5 '<16 hex digits> <16 hex digits>'` (two words, one quoted argument)
 - Baofeng AP PC5 key override (hex): `--dmr-baofeng-pc5 <hex>` (32 or 64 hex chars)
 - Connect Systems EE72 key override (hex): `--dmr-csi-ee72 <hex>` (18 hex chars)
 - Vertex ALG `0x07` key->keystream map CSV: `--dmr-vertex-ks-csv <file>` (`key_hex,bits:hex[:offset[:step]]`)
@@ -717,12 +717,20 @@ Out-of-range decimal keys are rejected without changing the installed key.
 - Generic keystream (length:hexbytes, optional frame align): `-S <bits:hex[:offset[:step]]>` (e.g., `-S 49:123456789ABC80`, `-S 168:<hex>:0:49`)
 - For Vertex Std voice ALG `0x07`, prefer `--dmr-vertex-ks-csv` for repeatable key->keystream mapping. Use `-S` for
   one-off manual keystream experiments.
+- M17 stream scrambler: `--m17-scrambler-key <hex>` accepts a nonzero seed of 2, 4 or 6 hex digits (8/16/24 bit).
+- M17 stream AES: `--m17-aes-key <hex>` accepts 32, 48 or 64 hex digits (128/192/256 bit). These are separate
+  from M17 signature-verification keys. The generic `-H` grammar remains unchanged.
+- `--no-decryption-keys` explicitly installs an empty set, including in supported scan-row options.
+- `--dmr-tg-key-clear` explicitly clears group-to-key selection overrides. Scoped rows restore their baseline on exit.
+- `--key-profile-ref <opaque-id>` attaches a nonsecret frontend profile revision (1–63 letters, digits, `_` or `-`)
+  to the installed key set. It does not supply key material.
 - Import keys CSV (decimal): `-k <file>`
 - Import keys CSV (hex): `-K <file>`
 - A runtime key import or clear (Keys menu, `IMPORT_KEYS_*` commands) edits the global keys even while a keyed
   `-Y` row or trunk-scan target is parked, so the change survives the next hop. Scalar key commands (`-b`/`-1`/
-  `-H`/`-R` style entries) are not preserved this way: they disarm the keyloader and a keyed row overwrites them
-  on the next hop.
+  `-H`/`-R` legacy menu entries) can disarm the keyloader and be overwritten by a keyed hop. The typed
+  `KEY_DIRECT_SET`/`DECRYPTION_APPLY` frontend entry points instead update the global baseline beneath an
+  active keyed row; the row keeps its effective keys. See [decryption scope](decryption-profiles.md).
 - Force key over identifiers: `-4` (DMR BP/NXDN scrambler), `-0` (DMR RC4 when PI/LE missing),
   `--dmr-force-algid <hex>` (DMR ALGID when PI/LE missing; a fallback only — an ALG ID or KEY ID
   received over the air via PI header/LE always takes precedence; `-M` is reserved for M17 in DSD-neo).

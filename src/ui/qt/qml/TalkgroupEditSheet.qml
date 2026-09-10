@@ -17,11 +17,20 @@ ModalSheet {
     property bool removeArmed: false
     property bool submitted: false
     property string saveMessage: ""
+    property var observedCrypto: ({})
+    readonly property var keyProfile: {
+        if (typeof decryptionProfiles === "undefined")
+            return ({});
+        var count = decryptionProfiles.count;
+        return decryptionProfiles.forRuntimeReference(observedCrypto.profileRef || metrics.keyProfileRef || "");
+    }
+    readonly property bool canAssignDmrKey: idStart === idEnd && (keyProfile.uid || "").length > 0 && keyProfile.mode === "automatic" && (observedCrypto.dmr === true || (listed && keyProfile.protocol === "dmr"))
     property bool canSaveList: false
     property string saveListText: qsTr("Save talkgroup list")
     signal saveListRequested
 
     function openRow(start, end, name, listening, isListed, priority, preempt, context, generation) {
+        observedCrypto = typeof talkgroups !== "undefined" && typeof talkgroups.observedDecryption === "function" ? talkgroups.observedDecryption(Number(start)) : ({});
         idStart = start;
         idEnd = end;
         policyContext = context;
@@ -41,6 +50,19 @@ ModalSheet {
         submitted = false;
         localMessage = "";
         visible = true;
+    }
+    function requestClose() {
+        if (!submitted && (nameField.text !== original.name || listenToggle.checked !== original.listening || priorityValue !== original.priority || preemptToggle.checked !== original.preempt)) {
+            discard.ask(function () {
+                sheet.visible = false;
+            });
+        } else
+            visible = false;
+    }
+    dismissHandler: requestClose
+    DiscardDialog {
+        id: discard
+        parent: sheet
     }
     function saveRow() {
         if (submitted)
@@ -71,7 +93,31 @@ ModalSheet {
     Text {
         text: qsTr("Talkgroup %1").arg(sheet.idStart === sheet.idEnd ? sheet.idStart : sheet.idStart + "–" + sheet.idEnd)
         color: Theme.textPrimary
-        font.pixelSize: 20
+        font.pixelSize: Theme.fontSize(20)
+    }
+    Text {
+        width: parent.width
+        visible: sheet.observedCrypto.algorithm !== undefined
+        text: sheet.observedCrypto.crypto === 1 ? qsTr("Last observed: unencrypted") : qsTr("Last observed algorithm: %1").arg(sheet.observedCrypto.algorithm || "") + (sheet.observedCrypto.keyId ? qsTr(" · key ID %1").arg(sheet.observedCrypto.keyId) : "")
+        wrapMode: Text.Wrap
+        color: Theme.textSecondary
+        font.pixelSize: Theme.fontSize(13)
+    }
+    OutlineButton {
+        width: parent.width
+        visible: typeof decryptionProfiles !== "undefined" && (sheet.canAssignDmrKey || (sheet.observedCrypto.keyId || "").length > 0)
+        text: sheet.canAssignDmrKey ? qsTr("Decryption key selection") : qsTr("Manage matching decryption key")
+        onClicked: {
+            var profile = sheet.keyProfile;
+            if (sheet.canAssignDmrKey)
+                profileEditor.openTalkgroup(profile.uid, "dmr", Number(sheet.idStart));
+            else if (sheet.observedCrypto.keyId.length)
+                profileEditor.openMatching(profile.uid || "", sheet.observedCrypto.dmr ? "dmr" : "p25", parseInt(sheet.observedCrypto.keyId, 16), "scalar");
+        }
+    }
+    DecryptionProfileEditor {
+        id: profileEditor
+        parent: sheet
     }
     PlexTextField {
         id: nameField
@@ -79,7 +125,7 @@ ModalSheet {
         width: parent.width
         placeholderText: qsTr("Name")
     }
-    Switch {
+    PlexToggle {
         id: listenToggle
         objectName: "listeningToggle"
         text: checked ? qsTr("Listening") : qsTr("Not tuned")
@@ -97,7 +143,7 @@ ModalSheet {
                 required property int modelData
                 objectName: "priorityPreset" + modelData
                 width: (parent.width - 18) / 4
-                height: 44
+                height: Math.max(48, implicitHeight)
                 text: String(modelData)
                 onClicked: sheet.priorityValue = modelData
             }
@@ -108,19 +154,19 @@ ModalSheet {
         OutlineButton {
             objectName: "priorityMinus"
             width: 80
-            height: 44
+            height: Math.max(48, implicitHeight)
             text: "−5"
             onClicked: sheet.priorityValue = Math.max(0, sheet.priorityValue - 5)
         }
         OutlineButton {
             objectName: "priorityPlus"
             width: 80
-            height: 44
+            height: Math.max(48, implicitHeight)
             text: "+5"
             onClicked: sheet.priorityValue = Math.min(100, sheet.priorityValue + 5)
         }
     }
-    Switch {
+    PlexToggle {
         id: preemptToggle
         objectName: "preemptToggle"
         text: qsTr("Preempt")
@@ -139,7 +185,7 @@ ModalSheet {
     OutlineButton {
         objectName: "removeTalkgroup"
         width: parent.width
-        height: 44
+        height: Math.max(48, implicitHeight)
         visible: sheet.listed
         text: sheet.removeArmed ? qsTr("Tap again to remove") : qsTr("Remove")
         onClicked: {
@@ -161,7 +207,7 @@ ModalSheet {
     }
     OutlineButton {
         width: parent.width
-        height: 44
+        height: Math.max(48, implicitHeight)
         visible: sheet.canSaveList
         text: sheet.saveListText
         onClicked: sheet.saveListRequested()
@@ -183,11 +229,8 @@ ModalSheet {
     }
     OutlineButton {
         width: parent.width
-        height: 44
+        height: Math.max(48, implicitHeight)
         text: qsTr("Close")
-        onClicked: {
-            sheet.visible = false;
-            Qt.inputMethod.hide();
-        }
+        onClicked: sheet.requestClose()
     }
 }

@@ -145,6 +145,20 @@ AppPrefs::setOnboardingDone(bool done) {
 }
 
 bool
+AppPrefs::notificationExplained() const {
+    return m_settings.value(QStringLiteral("ui/notificationExplained"), false).toBool();
+}
+
+void
+AppPrefs::setNotificationExplained(bool value) {
+    if (value == notificationExplained()) {
+        return;
+    }
+    m_settings.setValue(QStringLiteral("ui/notificationExplained"), value);
+    Q_EMIT notificationExplainedChanged();
+}
+
+bool
 AppPrefs::backgroundListening() const {
     return m_settings.value(QLatin1String(kBackgroundListening), true).toBool();
 }

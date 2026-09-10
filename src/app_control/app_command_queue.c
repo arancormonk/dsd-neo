@@ -14,15 +14,20 @@
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frontend_types.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
@@ -36,11 +41,14 @@
 #include <dsd-neo/io/udp_input.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -51,6 +59,7 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <errno.h>
 #include <limits.h>
 #include <sndfile.h>
 #include <stdarg.h>
@@ -62,14 +71,7 @@
 #include <time.h>
 #include "command_dispatch.h"
 #include "commands_internal.h"
-#include "dsd-neo/core/dibit.h"
-#include "dsd-neo/core/key_set.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/platform.h"
-#include "dsd-neo/platform/sockets.h"
-#include "dsd-neo/runtime/call_alert.h"
+#include "key_commands.h"
 #include "services.h"
 
 #define DSD_APP_CMD_Q_CAP 128
@@ -91,6 +93,7 @@ enum {
 static struct dsd_app_command g_q[DSD_APP_CMD_Q_CAP];
 static size_t g_head = 0; // pop index
 static int g_session_open = 0;
+static uint64_t g_session_generation = 0;
 static size_t g_tail = 0; // push index
 static dsd_mutex_t g_mu;
 static atomic_int g_mu_init = 0;
@@ -119,6 +122,15 @@ ensure_mu_init(void) {
     while (atomic_load(&g_mu_init) != 2) {
         dsd_thread_yield();
     }
+}
+
+uint64_t
+dsd_app_command_session_generation(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    const uint64_t generation = g_session_open ? g_session_generation : 0;
+    dsd_mutex_unlock(&g_mu);
+    return generation;
 }
 
 int
@@ -183,8 +195,12 @@ dsd_app_command_session_set_open(int open) {
      * is either erased here or rejected after the session closes. */
     while (g_head != g_tail) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
+        dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
         DSD_SECURE_ZERO(&g_q[g_head], sizeof g_q[g_head]);
         g_head = (g_head + 1) % DSD_APP_CMD_Q_CAP;
+    }
+    if (open) {
+        g_session_generation = g_session_generation == UINT64_MAX ? 1 : g_session_generation + 1;
     }
     g_session_open = open != 0;
     atomic_store(&g_overflow_warn_gate, 0);
@@ -447,6 +463,7 @@ ui_cmd_reset_key_mute_state(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return;
     }
+    state->key_profile_ref[0] = '\0';
     /* Key ownership stays live; only the mute decision updates configured defaults. */
     const int scoped = dsd_scan_mode_suspend(opts, state);
     dsd_key_apply_mute_policy(opts, state);
@@ -2611,6 +2628,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
     }
     if (q_is_full_unlocked()) {
         tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
+        dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
         // Erase before advancing: the evicted slot is not the slot about to be
         // written, so clearing only the insertion slot leaves a discarded key alive.
         DSD_SECURE_ZERO(&g_q[g_head], sizeof(g_q[g_head]));
@@ -2935,7 +2953,9 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_TG_ROW_SET, sizeof(dsd_app_tg_row_payload)},
     {DSD_APP_CMD_TG_ROW_REMOVE, sizeof(dsd_app_tg_range_payload)},
     {DSD_APP_CMD_TG_LIST_EXPORT, offsetof(dsd_app_tg_export_payload, path) + 1U},
+    {DSD_APP_CMD_TG_SELECTION_SET, sizeof(dsd_app_tg_selection_payload)},
     {DSD_APP_CMD_KEY_DIRECT_SET, sizeof(dsd_app_key_direct_payload)},
+    {DSD_APP_CMD_DECRYPTION_APPLY, sizeof(dsd_app_decryption_payload)},
     {DSD_APP_CMD_FORCE_KEY_SET, sizeof(int32_t)},
     {DSD_APP_CMD_TG_HOLD_TOGGLE, sizeof(uint8_t)},
     {DSD_APP_CMD_CALL_ALERT_EVENTS_SET, sizeof(uint8_t)},
@@ -4051,6 +4071,14 @@ apply_cmd_key_direct(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
             type = DSD_KEY_TYPE_SCRAMBLER;
             shape = "Expected decimal 0..32767";
             break;
+        case DSD_APP_KEY_TYPE_M17_SCRAMBLER:
+            type = DSD_KEY_TYPE_M17_SCRAMBLER;
+            shape = "Expected a nonzero M17 seed with 2, 4, or 6 hex digits";
+            break;
+        case DSD_APP_KEY_TYPE_M17_AES:
+            type = DSD_KEY_TYPE_M17_AES;
+            shape = "Expected a nonzero M17 AES key with 32, 48, or 64 hex digits";
+            break;
         default:
             DSD_SECURE_ZERO(&p, sizeof p);
             ui_set_toast(state, 3, "Invalid key type");
@@ -4065,11 +4093,14 @@ apply_cmd_key_direct(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
             const int row_keyloader = state->keyloader;
             const int row_kid = state->payload_keyid;
             const int row_kid_right = state->payload_keyidR;
+            char row_profile_ref[64];
+            DSD_MEMCPY(row_profile_ref, state->key_profile_ref, sizeof(row_profile_ref));
             ui_cmd_reset_key_mute_state(opts, state);
             if (state->scan_keys_active_set) {
                 state->keyloader = row_keyloader;
                 state->payload_keyid = row_kid;
                 state->payload_keyidR = row_kid_right;
+                DSD_MEMCPY(state->key_profile_ref, row_profile_ref, sizeof(row_profile_ref));
             }
         }
     }
@@ -4098,13 +4129,101 @@ apply_cmd_force_key(dsd_state* state, const struct dsd_app_command* c) {
 }
 
 static int
+parse_selection_uint(char** cursor, uint32_t* value, int final) {
+    const char* at = *cursor;
+    char* end = NULL;
+    if (*at < '0' || *at > '9') {
+        return 0;
+    }
+    errno = 0;
+    const unsigned long long parsed = strtoull(at, &end, 10);
+    if (errno || end == at || parsed > UINT32_MAX) {
+        return 0;
+    }
+    if (final) {
+        if (*end && strcmp(end, "\n") != 0 && strcmp(end, "\r\n") != 0) {
+            return 0;
+        }
+    } else if (*end != ',') {
+        return 0;
+    }
+    *value = (uint32_t)parsed;
+    *cursor = end + (final ? 0 : 1);
+    return 1;
+}
+
+static int
+parse_selection_line(const char* line, dsd_tg_policy_selection* entry) {
+    char* at = NULL;
+    errno = 0;
+    const long long index = strtoll(line, &at, 10);
+    if (errno || at == line || *at != ',' || index < -1 || index > INT32_MAX) {
+        return 0;
+    }
+    ++at;
+    entry->policy_index = (int32_t)index;
+    return parse_selection_uint(&at, &entry->id_start, 0) && parse_selection_uint(&at, &entry->id_end, 1);
+}
+
+static int
+read_tg_selection(FILE* file, dsd_tg_policy_selection* entries, size_t expected) {
+    char line[128];
+    size_t count = 0;
+    while (fgets(line, sizeof(line), file)) {
+        if (count >= expected || !parse_selection_line(line, &entries[count])) {
+            return 0;
+        }
+        ++count;
+    }
+    return !ferror(file) && count == expected;
+}
+
+static int
+apply_cmd_tg_selection(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* command) {
+    dsd_app_tg_selection_payload p;
+    DSD_MEMCPY(&p, command->data, sizeof(p));
+    if (!p.count || p.count > 1000000U || !memchr(p.selection_path, 0, sizeof(p.selection_path))
+        || (p.listening != 0 && p.listening != 1)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    FILE* file = dsd_fopen_existing_regular_file(p.selection_path, "rb");
+    if (!file) {
+        ui_set_toast(state, 4, "Could not read the captured talkgroup selection");
+        return UI_CMD_APPLY_FAILED;
+    }
+    dsd_tg_policy_selection* entries = calloc(p.count, sizeof(*entries));
+    if (!entries) {
+        fclose(file);
+        return UI_CMD_APPLY_FAILED;
+    }
+    const int valid = read_tg_selection(file, entries, p.count) && !dsd_exitflag_load();
+    fclose(file);
+    const int rc = valid ? dsd_tg_policy_set_listening_selection(state, p.policy_context, p.policy_generation, entries,
+                                                                 p.count, p.listening)
+                         : 1;
+    free(entries);
+    if (rc) {
+        ui_set_toast(state, 4, "The talkgroup selection changed or could not be applied. Review it again.");
+        return UI_CMD_APPLY_FAILED;
+    }
+    tg_listen_persist(opts, state);
+    if (!p.listening) {
+        tg_listen_release_blocked_calls(opts, state, 3U);
+    }
+    ui_set_toast(state, 4, "%u selected talkgroups %s", p.count, p.listening ? "listening" : "not tuned");
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+static int
 apply_cmd_foundation(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)opts;
     switch (c->id) {
         case DSD_APP_CMD_TG_ROW_SET: return apply_cmd_tg_row_set(opts, state, c);
+        case DSD_APP_CMD_TG_SELECTION_SET: return apply_cmd_tg_selection(opts, state, c);
         case DSD_APP_CMD_TG_ROW_REMOVE: return apply_cmd_tg_row_remove(opts, state, c);
         case DSD_APP_CMD_TG_LIST_EXPORT: return apply_cmd_tg_list_export(opts, state, c);
         case DSD_APP_CMD_KEY_DIRECT_SET: return apply_cmd_key_direct(opts, state, c);
+        case DSD_APP_CMD_DECRYPTION_APPLY: return dsd_app_apply_decryption(opts, state, c);
         case DSD_APP_CMD_FORCE_KEY_SET: return apply_cmd_force_key(state, c);
         default: return UI_CMD_APPLY_UNHANDLED;
     }
@@ -4697,6 +4816,14 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
 
 static int
 command_updates_scan_mode(const struct dsd_app_command* c) {
+    if (c && c->id == DSD_APP_CMD_DECRYPTION_APPLY && c->n == sizeof(dsd_app_decryption_payload)) {
+        int32_t scope;
+        uint32_t fields;
+        DSD_MEMCPY(&scope, c->data + offsetof(dsd_app_decryption_payload, scope), sizeof(scope));
+        DSD_MEMCPY(&fields, c->data + offsetof(dsd_app_decryption_payload, fields), sizeof(fields));
+        return scope == DSD_APP_KEY_SCOPE_DEFAULTS
+               && (fields & (DSD_APP_DECRYPTION_FORCE | DSD_APP_DECRYPTION_MATERIAL));
+    }
     /* Commands that edit configuration in place run against the saved baseline.
      * Ownership changes (including RR import) release the scope before editing.
      * Live controls must continue to inspect the effective row, so suspending
@@ -4790,12 +4917,14 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         }
         if (!ui_cmd_payload_is_valid(&cmd)) {
             tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
+            dsd_app_publish_decryption_result(&cmd, DSD_APP_KEY_INVALID);
             DSD_SECURE_ZERO(&cmd, sizeof cmd);
             n_applied++;
             continue;
         }
         const int result = apply_cmd(opts, state, &cmd);
         tg_export_publish_result(&cmd, result);
+        dsd_app_publish_decryption_result(&cmd, result);
         DSD_SECURE_ZERO(&cmd, sizeof cmd);
         // After applying a command, publish updated snapshots so the UI can
         // render consistent opts/state without racing live structures.

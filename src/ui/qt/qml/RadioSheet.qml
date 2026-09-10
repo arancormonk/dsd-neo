@@ -54,18 +54,18 @@ ModalSheet {
     function open() {
         // Whatever was outstanding belongs to the last time this was open, and on
         // Android the service may have been driven from elsewhere since.
-        forgetRequests()
-        visible = true
+        forgetRequests();
+        visible = true;
     }
 
     /** Drop every outstanding request and go back to reading the engine. */
     function forgetRequests() {
-        pendingGain = NaN
-        pendingPpm = NaN
-        pendingSquelch = NaN
-        gainTtl.stop()
-        ppmTtl.stop()
-        squelchTtl.stop()
+        pendingGain = NaN;
+        pendingPpm = NaN;
+        pendingSquelch = NaN;
+        gainTtl.stop();
+        ppmTtl.stop();
+        squelchTtl.stop();
     }
 
     /**
@@ -77,30 +77,30 @@ ModalSheet {
      * on a button press at the end of the range that changes no setting.
      */
     function stepGain(delta) {
-        var next = gainDb + delta
+        var next = gainDb + delta;
         if (next < 0)
-            next = 0
+            next = 0;
         if (next > 49)
-            next = 49
+            next = 49;
         if (next === gainDb)
-            return
-        pendingGain = next
-        gainTtl.restart()
-        commands.setTunerGain(next)
+            return;
+        pendingGain = next;
+        gainTtl.restart();
+        commands.setTunerGain(next);
     }
 
     /** Nudge the crystal correction. Real dongles land within about ±100 ppm. */
     function stepPpm(delta) {
-        var next = ppm + delta
+        var next = ppm + delta;
         if (next < -200)
-            next = -200
+            next = -200;
         if (next > 200)
-            next = 200
+            next = 200;
         if (next === ppm)
-            return
-        pendingPpm = next
-        ppmTtl.restart()
-        commands.setPpm(next)
+            return;
+        pendingPpm = next;
+        ppmTtl.restart();
+        commands.setPpm(next);
     }
 
     /**
@@ -114,22 +114,22 @@ ModalSheet {
      * floor. Above it, -5 dB is the last real threshold, because 0 is off.
      */
     function stepSquelch(delta) {
-        var cur = squelchOff ? -125 : squelchDb
-        var next = cur + delta
+        var cur = squelchOff ? -125 : squelchDb;
+        var next = cur + delta;
         if (next < -120) {
             if (squelchOff)
-                return
-            next = 0
+                return;
+            next = 0;
         } else if (next > -5) {
-            next = -5
+            next = -5;
         }
         // The reading is a float that has been through dB_to_pwr and back, so
         // "already there" is a tolerance, not an equality.
         if (!squelchOff && Math.abs(next - squelchDb) < 0.001)
-            return
-        pendingSquelch = next
-        squelchTtl.restart()
-        commands.setSquelchDb(next)
+            return;
+        pendingSquelch = next;
+        squelchTtl.restart();
+        commands.setSquelchDb(next);
     }
 
     Timer {
@@ -157,149 +157,112 @@ ModalSheet {
         text: qsTr("Radio")
     }
 
-    // ---- Gain ----
-    Item {
+    Column {
         width: parent.width
-        height: 34
-
+        spacing: 8
         Text {
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
             text: qsTr("Gain")
-            font.family: Theme.sans
-            font.pixelSize: Theme.fontSize(14)
             color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(14)
         }
-
         Row {
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width
             spacing: 10
-
             Text {
                 objectName: "radioGainValue"
+                width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
-                width: 74
-                horizontalAlignment: Text.AlignRight
                 text: sheet.autoGain ? qsTr("auto") : sheet.gainDb + " dB"
+                color: Theme.textPrimary
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(14)
-                color: Theme.textPrimary
             }
-
             OutlineButton {
                 objectName: "radioGainDown"
-                width: 44
-                height: 34
+                width: 48
                 text: "−"
+                accessibleName: qsTr("Decrease Gain")
                 onClicked: sheet.stepGain(-1)
             }
-
             OutlineButton {
                 objectName: "radioGainUp"
-                width: 44
-                height: 34
+                width: 48
                 text: "+"
+                accessibleName: qsTr("Increase Gain")
                 onClicked: sheet.stepGain(1)
             }
         }
     }
 
-    // ---- Squelch ----
-    Item {
+    Column {
         width: parent.width
-        height: 34
-
+        spacing: 8
         Text {
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
             text: qsTr("Squelch")
-            font.family: Theme.sans
-            font.pixelSize: Theme.fontSize(14)
             color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(14)
         }
-
         Row {
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width
             spacing: 10
-
             Text {
                 objectName: "radioSquelchValue"
+                width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
-                width: 74
-                horizontalAlignment: Text.AlignRight
                 text: sheet.squelchOff ? qsTr("off") : Math.round(sheet.squelchDb) + " dB"
+                color: Theme.textPrimary
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(14)
-                color: Theme.textPrimary
             }
-
             OutlineButton {
                 objectName: "radioSquelchDown"
-                width: 44
-                height: 34
+                width: 48
                 text: "−"
+                accessibleName: qsTr("Decrease Squelch")
                 onClicked: sheet.stepSquelch(-5)
             }
-
             OutlineButton {
                 objectName: "radioSquelchUp"
-                width: 44
-                height: 34
+                width: 48
                 text: "+"
+                accessibleName: qsTr("Increase Squelch")
                 onClicked: sheet.stepSquelch(5)
             }
         }
     }
 
-    // ---- PPM ----
-    // The dongle's crystal error. Chosen once when the system was added,
-    // by someone who had no way to tell whether it was right: the symptom
-    // is a frequency offset the decoder cannot close, and that only shows
-    // up with a signal on screen. Which is here.
-    Item {
+    Column {
         width: parent.width
-        height: 34
-
+        spacing: 8
         Text {
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
             text: qsTr("PPM")
-            font.family: Theme.sans
-            font.pixelSize: Theme.fontSize(14)
             color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(14)
         }
-
         Row {
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
+            width: parent.width
             spacing: 10
-
             Text {
                 objectName: "radioPpmValue"
+                width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
-                width: 74
-                horizontalAlignment: Text.AlignRight
                 text: String(sheet.ppm)
+                color: Theme.textPrimary
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(14)
-                color: Theme.textPrimary
             }
-
             OutlineButton {
                 objectName: "radioPpmDown"
-                width: 44
-                height: 34
+                width: 48
                 text: "−"
+                accessibleName: qsTr("Decrease PPM")
                 onClicked: sheet.stepPpm(-1)
             }
-
             OutlineButton {
                 objectName: "radioPpmUp"
-                width: 44
-                height: 34
+                width: 48
                 text: "+"
+                accessibleName: qsTr("Increase PPM")
                 onClicked: sheet.stepPpm(1)
             }
         }
@@ -333,7 +296,9 @@ ModalSheet {
         width: parent.width
         model: [qsTr("C4FM"), qsTr("QPSK / simulcast"), qsTr("GFSK")]
         currentIndex: metrics.modulation
-        onSelected: function (index) { commands.setModulation(index) }
+        onSelected: function (index) {
+            commands.setModulation(index);
+        }
     }
 
     // ---- Decode ----
@@ -352,7 +317,9 @@ ModalSheet {
             // The simulcast entry is a modulation choice wearing a decode
             // chip's clothes; it has its own control above, so it would
             // appear here as a duplicate that changes nothing.
-            model: Util.DECODE_MODES.filter(function (m) { return m.flag !== "-mq" })
+            model: Util.DECODE_MODES.filter(function (m) {
+                return m.flag !== "-mq";
+            })
 
             DecodeChip {
                 required property var modelData
@@ -364,7 +331,7 @@ ModalSheet {
                 selected: mode >= 0 && mode === metrics.decodeMode
                 onClicked: {
                     if (mode >= 0)
-                        commands.setDecodeMode(mode)
+                        commands.setDecodeMode(mode);
                 }
             }
         }

@@ -16,14 +16,17 @@
 #ifndef DSD_NEO_SRC_UI_QT_UI_CONTROLLER_H_
 #define DSD_NEO_SRC_UI_QT_UI_CONTROLLER_H_
 
+// Complete types are needed by inline Qt container and metatype instantiations.
 #include <QMap>
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QTimer>
 #include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
 #include <dsd-neo/core/state_fwd.h>
+#include <type_traits> // IWYU pragma: keep
 
 #include "decoder_host.h"
 
@@ -34,6 +37,7 @@ class MetricsModel;
 class P25NetworkModel; // WP-F2
 class DiagnosticsLogModel;
 class TalkgroupListModel;
+class CommandBridge;
 
 class UiController : public QObject {
     Q_OBJECT
@@ -41,12 +45,19 @@ class UiController : public QObject {
     Q_PROPERTY(bool autoStartBlocked MEMBER m_autoStartBlocked)
     // WP-D1: copied retained outcome, polled even without decoder redraw.
     Q_PROPERTY(QVariantMap talkgroupExportResult READ talkgroupExportResult NOTIFY talkgroupExportResultChanged)
+    Q_PROPERTY(QVariantMap decryptionResult READ decryptionResult NOTIFY decryptionResultChanged)
     Q_PROPERTY(int pollIntervalMs READ pollIntervalMs WRITE setPollIntervalMs NOTIFY pollIntervalChanged)
 
   public:
     UiController(DecoderHost* host, MetricsModel* metrics, CallHistoryModel* history, TalkgroupListModel* talkgroups,
                  QObject* parent = nullptr);
     ~UiController() override;
+    void setCommandBridge(CommandBridge* commands);
+
+    QVariantMap
+    decryptionResult() const {
+        return m_decryptionResult;
+    }
 
     QVariantMap
     talkgroupExportResult() const {
@@ -90,10 +101,12 @@ class UiController : public QObject {
     void autoStartRequested(const QString& kind, const QString& uid);
     void pollIntervalChanged();
     void talkgroupExportResultChanged();
+    void decryptionResultChanged();
 
   private:
     void tick();
     void pollTalkgroupExport();
+    void pollDecryptionResult();
     void invalidateForTarget(const dsd_state* snapshot);
     void onSessionStateChanged();
     void clearLiveModels();
@@ -108,6 +121,9 @@ class UiController : public QObject {
     QTimer m_timer;
     QVariantMap m_talkgroupExportResult;
     quint64 m_talkgroupExportSequence = 0;
+    QPointer<CommandBridge> m_commands;
+    QVariantMap m_decryptionResult;
+    quint64 m_decryptionSequence = 0;
     unsigned int m_active_ordinal = 0;
     DecoderHost::SessionState m_session = DecoderHost::Idle;
 };

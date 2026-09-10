@@ -748,36 +748,63 @@ move the entry there with the `siteProtocol === "P25"` guard. There is no Tune
 control in v1. The deferred neighbour Tune work must restrict `RTL_SET_FREQ` to a
 running single-system P25 trunk session with the same WACN/SYS. CC selection
 preserves user lists but clears site metadata; crossing systems requires restart.
-### Encryption key entry
+### Decryption profiles
 
-The saved-system wizard's Encryption panel accepts one direct key type, with a
-password-masked field and Show/Hide control. Choose a direct key or a key CSV;
-the wizard refuses to save both. Editing an existing direct key shows “Key configured”
-with Keep (default), Replace, and Clear. Keep preserves the stored value without
-reading it into the wizard; Replace accepts a new masked value; Clear removes
-the direct key type and value. Home marks saved direct keys and key CSVs as
-“key configured”. The monitor's Encryption key action applies a key and force
-mode to the current session only. It does not change the saved system or show a
-live key-status label. Direct-key changes in the wizard take effect at the next start;
-use “Apply to this session” for a direct key needed now.
+Saved systems and scan entries can select shared **Decryption keys** profiles.
+Automatic collections select by received key ID where the protocol supports it;
+DMR profiles can also map group calls to a stored key ID. Direct channel/stream
+keys and vendor modes are explicit alternatives. Formats, storage, migration and
+scope are documented in [decryption profiles](../docs/decryption-profiles.md).
 
-Calls the system's key can decrypt still play when Skip encrypted calls is on.
-Saved direct keys rest **unencrypted** in the app-private `systems.json` on
-Android (`allowBackup=false`), and under Qt's `AppDataLocation` on desktop.
-QString/QML copies cannot promise secure erasure; closing the session sheet
-clears its draft input but does not guarantee erasure of all memory copies.
-Key values are never shown in labels, toasts, diagnostics, or exports.
+Monitor → More → Decryption shows per-slot received identifiers, selected key
+source and availability separately from listening policy. Key material availability
+is not proof of successful decryption. Live changes remain Pending until the
+decoder answers. Applying an unchanged direct draft does nothing. Profile changes
+can update session defaults or the active supported scan target; the dialog names
+that scope. Saved profile edits take effect on the next start or explicit Apply.
+
+New RadioReference imports keep encrypted and partly encrypted talkgroups enabled.
+The review also offers explicit exclusions; those exclude entire talkgroups,
+including clear calls. Refresh keeps the import's saved choice (including older
+imports' exclusion behavior). Supplying keys never silently unblocks a talkgroup.
+
+### Navigation, accessibility and replay
+
+Android Back dismisses input, then the top dialog, then the pushed screen or
+wizard step. Root Back follows the background-listening preference. Monitor's
+More menu reaches History, Settings and Diagnostics without stopping the session.
+Preferences identify changes that apply at the next start.
+
+Controls expose named accessibility actions, keyboard focus and 48 dp targets.
+Text uses Android's per-size SP conversion, including nonlinear large-text scaling.
+The app's effective theme controls system-bar icons. Expanded windows use a
+navigation rail; short Monitor windows keep frequent controls above Stop.
+
+Source failures identify the attempted input and offer Retry, Edit source and
+Details. RTL-TCP connection establishment is bounded to ten seconds after DNS
+resolution and checks cancellation during the connection attempt. Notifications
+are explained when background listening first becomes useful; denial leaves the
+foreground UI usable. Audio output reports the active device route and follows
+Android's routing controls.
+
+New replay picks are copied to durable app-private storage. Existing saved cache
+copies are migrated when available; missing files can be reselected through Edit.
+File details show the basename, size and modification time. Replay completion is
+retained with a Play again action. Progress is not invented when the input backend
+cannot report it. History rows open full details, including timestamps and messages.
 
 ### Scan lists
 
 Home → **Scan lists** combines saved systems and bare P25/DMR/NXDN frequencies
-into a single trunk-scan session. Long-press a card to edit entries, order, timing,
+into a single trunk-scan session. Use the visible Edit action (or long-press) to edit entries, order, timing,
 modulation and gain. Choose one USB or RTL-TCP tuner for the list; it replaces
 individual systems' source, endpoint, PPM, bandwidth and bias-tee settings.
 The list editor can select imported group/source CSVs from the existing library.
 Per-system groups and keys remain isolated on rotation; source aliases are global
 and differing system alias files produce a warning. Unsupported settings are
 refused rather than dropped. See [scan-list rules](../docs/trunk-scan.md#qt-and-android-scan-lists).
+
+Validate checks a draft without saving. Save validates first; Save draft retains incomplete lists as **Not ready**, which cannot start. Cancel discards only unapplied edits, and removal asks for confirmation.
 
 USB lists use the same permission gate as saved systems. A failed or cancelled
 start does not change last-started preferences or list recency; those update only

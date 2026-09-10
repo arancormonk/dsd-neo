@@ -12,7 +12,17 @@ Rectangle {
     property int currentIndex: 0
     signal selected(int index)
 
-    implicitHeight: 38
+    property real labelHeight: 0
+    function measureLabels() {
+        var measured = 0;
+        for (var i = 0; i < segments.count; ++i) {
+            var item = segments.itemAt(i);
+            if (item)
+                measured = Math.max(measured, item.textHeight);
+        }
+        labelHeight = measured;
+    }
+    implicitHeight: Math.max(54, labelHeight + 30)
     radius: Theme.radiusButton
     color: Theme.dark ? Theme.bg : Theme.panel
     border.width: 1
@@ -23,12 +33,32 @@ Rectangle {
         anchors.margins: 3
 
         Repeater {
+            id: segments
             model: control.model
+            onItemAdded: Qt.callLater(control.measureLabels)
+            onItemRemoved: Qt.callLater(control.measureLabels)
 
             Rectangle {
                 required property int index
                 required property var modelData
+                readonly property real textHeight: segmentLabel.implicitHeight
+                onTextHeightChanged: Qt.callLater(control.measureLabels)
 
+                activeFocusOnTab: enabled && Navigation.allows(control)
+                Accessible.role: Accessible.RadioButton
+                Accessible.name: modelData
+                Accessible.checkable: true
+                Accessible.checked: active
+                readonly property bool navigationAllowed: Navigation.allows(control)
+                Accessible.ignored: !visible || !navigationAllowed
+                Accessible.onPressAction: choose()
+                function choose() {
+                    if (enabled && Navigation.allows(control))
+                        control.selected(index);
+                }
+                Keys.onSpacePressed: choose()
+                Keys.onReturnPressed: choose()
+                FocusFrame {}
                 readonly property bool active: control.currentIndex === index
 
                 width: (control.width - 6) / control.model.length
@@ -39,7 +69,11 @@ Rectangle {
                 border.color: Theme.cyan
 
                 Text {
+                    id: segmentLabel
                     anchors.centerIn: parent
+                    width: parent.width - 12
+                    wrapMode: Text.Wrap
+                    horizontalAlignment: Text.AlignHCenter
                     text: modelData
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(13)
@@ -48,7 +82,7 @@ Rectangle {
                 }
 
                 TapHandler {
-                    onTapped: control.selected(index)
+                    onTapped: choose()
                 }
             }
         }

@@ -3,9 +3,16 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QLatin1String>
+#include <QList>
+#include <QMap>
+#include <QVariant>
+#include <initializer_list>
+#include <utility>
 #include "decoder_host.h"
 
 #include <QByteArray>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -112,6 +119,34 @@ DecoderHost::DecoderHost(QObject* parent) : QObject(parent) {
 }
 
 DecoderHost::~DecoderHost() = default;
+
+QVariantMap
+DecoderHost::documentInfo(const QString& path) const {
+    const QFileInfo info(path);
+    return {{"name", info.fileName()},
+            {"exists", info.isFile()},
+            {"sizeBytes", info.size()},
+            {"modified", info.lastModified().toString(Qt::ISODate)}};
+}
+
+QString
+DecoderHost::licenseNotices() const {
+    QStringList notices;
+    for (const auto* name : {"LICENSE", "COPYRIGHT", "THIRD_PARTY.md", "src/ui/qt/fonts/IBMPlex-LICENSE.txt",
+                             "src/third_party/ezpwd/lesser.txt", "src/third_party/pffft/COPYING"}) {
+        QFile file(QStringLiteral(":/dsdneo/notices/") + QLatin1String(name));
+        if (file.open(QIODevice::ReadOnly)) {
+            notices.append(QLatin1String(name) + QStringLiteral("\n\n") + QString::fromUtf8(file.readAll()));
+        }
+    }
+    for (const auto* name : {"libusb-LGPL-2.1-or-later.txt", "librtlsdr-GPL-2.0-or-later.txt"}) {
+        QFile file(QStringLiteral("assets:/doc/dsd-neo/licenses/") + QLatin1String(name));
+        if (file.open(QIODevice::ReadOnly)) {
+            notices.append(QString::fromUtf8(file.readAll()));
+        }
+    }
+    return notices.join(QStringLiteral("\n\n"));
+}
 
 QString
 DecoderHost::importDocument(const QString& reference, const QString& fileName, const QString& replacePath) {

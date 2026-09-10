@@ -829,7 +829,9 @@ class DecoderService : Service() {
                         else ""
             JSONObject().put("sessionId", sessionId).put("state", state.name)
                 .put("initialized", matches && fields[1] != 0L)
-                .put("reason", reason).put("deviceError", usbError).put("lastError", error).toString()
+                .put("reason", reason).put("deviceError", usbError).put("lastError", error)
+                .put("inputFailure", if (matches && fields.size >= 7) fields[5].toInt() else 0)
+                .put("inputError", if (matches && fields.size >= 7) fields[6].toInt() else 0).toString()
         }
 
         /** Service-side view of the lifecycle, for UI status text. */

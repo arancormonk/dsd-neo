@@ -15,6 +15,7 @@
 #include <QFile>
 #include <QIODevice>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QList>
 #include <QMap>
@@ -31,10 +32,11 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <stdio.h>
+#include <utility>
 #include "../test_support/qt_test_paths.h"
 
+#include <dsd-neo/core/safe_api.h>
 #include "decoder_host.h"
-#include "dsd-neo/core/safe_api.h"
 #include "imported_files_model.h"
 #include "json_store.h"
 
@@ -661,7 +663,93 @@ test_export_registration_in_place() {
     model.remove(model.rowForPath(path));
 }
 
+void
+test_metadata_failure_keeps_file() {
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QTemporaryDir fixtures;
+    const auto original = fixtures.filePath("original.csv");
+    const auto replacement = fixtures.filePath("replacement.csv");
+    const QByteArray before("id,mode,name\n123,A,Original\n");
+    expect("metadata fixture", write_file(original, before));
+    expect("metadata replacement", write_file(replacement, "id,mode,name\n321,B,Replacement\n"));
+    const auto imported = model.importFile(original, "atomic.csv", "group");
+    expect("metadata baseline import", imported.value("ok").toBool());
+    const auto path = imported.value("path").toString();
+    const int row = model.rowForPath(path);
+    if (row < 0) {
+        return;
+    }
+    const auto store = dsd_qt::json_store_path("imported_files.json");
+    expect("move metadata store", QFile::rename(store, store + ".held"));
+    expect("block metadata write", QDir().mkdir(store));
+    expect("update reports metadata failure",
+           !model.updateFile(row, replacement, "replacement.csv").value("ok").toBool());
+    expect("metadata failure preserves original bytes", read_file(path) == before);
+    expect("metadata failure preserves counts", model.get(row).value("accepted").toInt() == 1);
+    expect("unblock metadata write", QDir().rmdir(store) && QFile::rename(store + ".held", store));
+    model.remove(row);
+}
+
 } // namespace
+
+static void
+test_channel_bundle() {
+    QTemporaryDir source;
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    const auto write = [&](const QString& name, const QByteArray& bytes) {
+        QFile file(source.filePath(name));
+        expect("write bundle fixture", file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size());
+        return source.filePath(name);
+    };
+    const QString keys = write("keys.csv", "keyid,value\n02,ABCDE\n");
+    const QString map = write("map.csv", "tg_dec,keyid_hex\n123,02\n");
+    const QString channels =
+        write("channels.csv",
+              "channel,frequency_hz,mode,keys_hex_csv,options\n1,461000000,dmr,keys.csv,--dmr-tg-key-csv 'map.csv'\n");
+    auto result = model.importBundle(channels, "Bundle.csv", "chan", {});
+    expect("bundle imports with local companions", result.value("ok").toBool());
+    const QString stored = result.value("path").toString();
+    const int row = model.rowForPath(stored);
+    expect("bundle registered", row >= 0);
+    if (row < 0) {
+        return;
+    }
+    const QString root = model.get(row).value("bundleRoot").toString();
+    expect("bundle has private ownership", !root.isEmpty());
+    const auto review = model.channelProfiles(row);
+    const auto profileRows = review.value("rows").toList();
+    expect("bundle row review succeeds", review.value("ok").toBool() && profileRows.size() == 1);
+    if (!profileRows.isEmpty()) {
+        const auto profile = profileRows.first().toMap();
+        expect("row review identifies collection and mapping",
+               profile.value("keySource").toInt() == 2 && profile.value("mappings").toInt() == 1);
+        expect("row review never contains key material",
+               !QJsonDocument::fromVariant(profile).toJson().contains("ABCDE"));
+    }
+    QFile primary(stored);
+    expect("open stored bundle", primary.open(QIODevice::ReadOnly));
+    const QByteArray original = primary.readAll();
+    primary.close();
+    expect("companion paths rewritten", original.contains("/0.csv") && original.contains("/1.csv"));
+    QFile::remove(keys);
+    QFile::remove(map);
+    result = model.importBundle(channels, "Bundle.csv", "chan", {}, row);
+    expect("missing companions are requested",
+           !result.value("ok").toBool() && result.value("error").toString() == "companions");
+    expect("missing update keeps previous file", primary.open(QIODevice::ReadOnly) && primary.readAll() == original);
+    primary.close();
+    const QString replacementKey = write("replacement.csv", "keyid,value\n02,12345\n");
+    const QString badMap = write("invalid.csv", "tg_dec,keyid_hex\ninvalid,02\n");
+    result =
+        model.importBundle(channels, "Bundle.csv", "chan", {{"keys.csv", replacementKey}, {"map.csv", badMap}}, row);
+    expect("invalid companion rejects whole update", !result.value("ok").toBool());
+    expect("failed update keeps previous bundle", primary.open(QIODevice::ReadOnly) && primary.readAll() == original);
+    primary.close();
+    model.remove(row);
+    expect("removing bundle frees companions", !QDir(root).exists());
+}
 
 int
 main(int argc, char** argv) {
@@ -692,6 +780,8 @@ main(int argc, char** argv) {
         host.hostDiagnostic("test lifecycle line");
         expect("initialization signal is available", host.metaObject()->indexOfSignal("sessionInitialized()") >= 0);
     }
+    test_metadata_failure_keeps_file();
+    test_channel_bundle();
     test_export_registration_in_place();
     test_import_document();
     test_imported_files_model();

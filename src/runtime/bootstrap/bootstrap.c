@@ -5,12 +5,17 @@
 
 #include <ctype.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/git_ver.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
@@ -18,10 +23,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/runtime/config_schema.h"
 
 static void
 bootstrap_set_exit_rc(int* out_exit_rc, int rc) {
@@ -728,6 +729,7 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
         return DSD_BOOTSTRAP_ERROR;
     }
 
+    dsd_input_failure_clear();
     int argc_effective = argc;
     bootstrap_cli_args args;
     bootstrap_parse_cli_args(argc, argv, &args);

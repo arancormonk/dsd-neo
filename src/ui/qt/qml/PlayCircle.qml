@@ -9,7 +9,21 @@ Item {
     id: control
 
     property bool featured: false
-    signal clicked()
+    property string accessibleName: qsTr("Listen")
+    signal clicked
+    activeFocusOnTab: enabled && Navigation.allows(control)
+    Accessible.role: Accessible.Button
+    Accessible.name: accessibleName
+    readonly property bool navigationAllowed: Navigation.allows(control)
+    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.onPressAction: activate()
+    function activate() {
+        if (enabled && Navigation.allows(control))
+            clicked();
+    }
+    Keys.onSpacePressed: activate()
+    Keys.onReturnPressed: activate()
+    FocusFrame {}
 
     implicitWidth: 52
     implicitHeight: 52
@@ -26,8 +40,14 @@ Item {
         Gradient {
             id: fillGradient
             orientation: Gradient.Horizontal
-            GradientStop { position: 0.0; color: Theme.cyan }
-            GradientStop { position: 1.0; color: Theme.magenta }
+            GradientStop {
+                position: 0.0
+                color: Theme.cyan
+            }
+            GradientStop {
+                position: 1.0
+                color: Theme.magenta
+            }
         }
     }
 
@@ -37,23 +57,23 @@ Item {
         width: 18
         height: 18
         onPaint: {
-            var ctx = getContext("2d")
-            ctx.reset()
-            ctx.fillStyle = control.featured
-                    ? (Theme.dark ? "#0E1116" : "#FFFFFF")
-                    : String(Theme.textSubdued)
+            var ctx = getContext("2d");
+            ctx.reset();
+            ctx.fillStyle = control.featured ? (Theme.dark ? "#0E1116" : "#FFFFFF") : String(Theme.textSubdued);
             // Nudged right of center: an exactly centered triangle reads left-heavy.
-            ctx.beginPath()
-            ctx.moveTo(4, 1.5)
-            ctx.lineTo(16, 9)
-            ctx.lineTo(4, 16.5)
-            ctx.closePath()
-            ctx.fill()
+            ctx.beginPath();
+            ctx.moveTo(4, 1.5);
+            ctx.lineTo(16, 9);
+            ctx.lineTo(4, 16.5);
+            ctx.closePath();
+            ctx.fill();
         }
 
         Connections {
             target: Theme
-            function onDarkChanged() { glyph.requestPaint() }
+            function onDarkChanged() {
+                glyph.requestPaint();
+            }
         }
         onVisibleChanged: requestPaint()
     }
@@ -63,6 +83,6 @@ Item {
 
     TapHandler {
         enabled: control.enabled
-        onTapped: control.clicked()
+        onTapped: control.activate()
     }
 }

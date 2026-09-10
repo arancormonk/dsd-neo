@@ -371,6 +371,8 @@ dsd_cli_usage_section_advanced_key_options(void) {
     printf("\n");
     printf("  -0            Force RC4 Key over Missing PI header/LE Encryption Identifiers (DMR)\n");
     printf("\n");
+    printf("      --m17-scrambler-key <hex>  M17 8/16/24-bit nonzero scrambler seed (2/4/6 digits)\n");
+    printf("      --m17-aes-key <hex>  M17 AES-128/192/256 key (32/48/64 digits); separate from signature keys\n");
     printf("      --dmr-force-algid <hex>  Force DMR ALG ID over Missing PI header/LE Encryption Identifiers.\n");
     printf("\n");
     printf("  -3            Disable DMR Late Entry Encryption Identifiers (VC6 Single Burst)\n");

@@ -86,6 +86,9 @@ main(int argc, char** argv) {
     const auto relative = starter.build(list);
     check(relative.value("ok").toBool() && relative.value("args").toStringList().contains(dir.path() + "/groups.csv"));
     check(QDir::setCurrent(previousDirectory));
+    check(file.open(QIODevice::ReadOnly));
+    const auto lastValidCsv = file.readAll();
+    file.close();
     // The facade's protocol-specific rejection reaches the caller safely.
     SavedSystemsModel systems;
     systems.add(
@@ -96,7 +99,9 @@ main(int argc, char** argv) {
     ScanListStarter keyedStarter(nullptr, &systems);
     const auto rejected = keyedStarter.build(list);
     check(!rejected.value("ok").toBool() && rejected.value("error").toString().startsWith("Scan list rejected: "));
-    check(!QFile::exists(path));
+    check(file.open(QIODevice::ReadOnly));
+    check(file.readAll() == lastValidCsv);
+    file.close();
     // INT-3 redacts QML maps; a supported saved key must still reach the private CSV.
     const QString directKey = QStringLiteral("123456789A");
     systems.update(0, {{"encKeyType", "rc4"}, {"encKeyValue", directKey}});

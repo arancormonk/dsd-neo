@@ -7,33 +7,64 @@ Rectangle {
 
     property int editRow: -1
     property string editUid: ""
-    property var draft: ({
-    })
+    property var draft: ({})
     property var entries: []
     property string validationText: ""
 
-    signal closed()
+    signal closed
+    property string initialDraft: ""
+    function fingerprint() {
+        return JSON.stringify({
+            draft: draft,
+            entries: entries
+        });
+    }
+    function requestClose() {
+        if (initialDraft !== fingerprint())
+            discardDialog.ask(function () {
+                screen.closed();
+            });
+        else
+            closed();
+    }
+    DiscardDialog {
+        id: discardDialog
+    }
+    ModalSheet {
+        id: removeDialog
+        accessibleName: qsTr("Remove scan list")
+        Text {
+            width: parent.width
+            text: qsTr("Remove %1?").arg(screen.draft.name || "")
+            wrapMode: Text.Wrap
+            color: Theme.textPrimary
+            font.pixelSize: Theme.fontSize(18)
+        }
+        OutlineButton {
+            width: parent.width
+            text: qsTr("Cancel")
+            onClicked: removeDialog.visible = false
+        }
+        OutlineButton {
+            width: parent.width
+            text: qsTr("Remove list")
+            onClicked: {
+                removeDialog.visible = false;
+                if (scanLists.remove(scanLists.rowForUid(screen.editUid)))
+                    screen.closed();
+                else
+                    screen.validationText = qsTr("Could not remove the scan list.");
+            }
+        }
+    }
 
     function openFor(row) {
         editRow = row;
-        draft = row >= 0 ? scanLists.get(row) : {
-            "name": "",
-            "sourceType": "usb",
-            "host": "",
-            "port": 1234,
-            "gainDb": -1,
-            "ppm": "",
-            "bandwidthKhz": -1,
-            "biasTee": -1,
-            "voiceOnly": false,
-            "defaultDwellMs": 0,
-            "defaultHoldMs": 0,
-            "groupCsvPath": "",
-            "srcCsvPath": ""
-        };
-        editUid = draft.uid || "";
+        draft = row >= 0 ? scanLists.get(row) : scanLists.newDraft();
+        editUid = row >= 0 ? draft.uid || "" : "";
         entries = draft.entries || [];
         validationText = "";
+        initialDraft = fingerprint();
     }
 
     function setEntry(row, field, value) {
@@ -42,29 +73,35 @@ Rectangle {
     }
 
     function addFrequency(name, protocol, freq) {
-        entries = entries.concat([{
-            "kind": "freq",
-            "name": name,
-            "protocol": protocol,
-            "freqMhz": freq,
-            "enabled": true,
-            "dwellMs": 0,
-            "holdMs": 0,
-            "modulation": "",
-            "gainDb": -1
-        }]);
+        entries = entries.concat([
+            {
+                "uid": scanLists.newEntryId(),
+                "kind": "freq",
+                "name": name,
+                "protocol": protocol,
+                "freqMhz": freq,
+                "enabled": true,
+                "dwellMs": 0,
+                "holdMs": 0,
+                "modulation": "",
+                "gainDb": -1
+            }
+        ]);
     }
 
     function addSystem(uid) {
-        entries = entries.concat([{
-            "kind": "system",
-            "systemUid": uid,
-            "enabled": true,
-            "dwellMs": 0,
-            "holdMs": 0,
-            "modulation": "",
-            "gainDb": -1
-        }]);
+        entries = entries.concat([
+            {
+                "uid": scanLists.newEntryId(),
+                "kind": "system",
+                "systemUid": uid,
+                "enabled": true,
+                "dwellMs": 0,
+                "holdMs": 0,
+                "modulation": "",
+                "gainDb": -1
+            }
+        ]);
     }
 
     function removeEntry(row) {
@@ -76,7 +113,7 @@ Rectangle {
     function moveEntry(row, delta) {
         var dest = row + delta;
         if (dest < 0 || dest >= entries.length)
-            return ;
+            return;
 
         var copy = entries.slice();
         var value = copy.splice(row, 1)[0];
@@ -96,9 +133,15 @@ Rectangle {
             return false;
         }
         if (row >= 0) {
-            scanLists.update(row, draft);
+            if (!scanLists.update(row, draft)) {
+                validationText = qsTr("Could not save the scan list.");
+                return false;
+            }
         } else {
-            scanLists.add(draft);
+            if (!scanLists.add(draft)) {
+                validationText = qsTr("Could not save the scan list.");
+                return false;
+            }
             row = scanLists.count - 1;
         }
         editRow = row;
@@ -108,10 +151,25 @@ Rectangle {
         return true;
     }
 
+    function validate() {
+        var result = scanListStarter.validate(Object.assign({}, draft, {
+            entries: entries,
+            isDraft: false
+        }));
+        validationText = result.ok ? qsTr("%1 targets ready.").arg(result.targetCount) + "\n" + result.warnings.join("\n") : result.error;
+        return result.ok;
+    }
     function save() {
+        if (!validate())
+            return;
+        draft.isDraft = false;
         if (persist())
             closed();
-
+    }
+    function saveDraft() {
+        draft.isDraft = true;
+        if (persist())
+            closed();
     }
 
     function entryLabel(entry) {
@@ -124,16 +182,16 @@ Rectangle {
 
     function rebuildEntryRows() {
         entryRows.clear();
-        for (var i = 0; i < entries.length; ++i) entryRows.append({
-            "entryData": entries[i]
-        })
+        for (var i = 0; i < entries.length; ++i)
+            entryRows.append({
+                "entryData": entries[i]
+            });
     }
 
     // A stable model updates fields without destroying the focused editor.
     onEntriesChanged: {
         if (entryRows)
             rebuildEntryRows();
-
     }
     Component.onCompleted: rebuildEntryRows()
     color: Theme.bg
@@ -144,7 +202,7 @@ Rectangle {
         dynamicRoles: true
     }
 
-    Flickable {
+    PlexFlickable {
         anchors.fill: parent
         clip: true
         contentHeight: content.implicitHeight + 32
@@ -152,16 +210,16 @@ Rectangle {
         Column {
             id: content
 
-            x: 16
+            x: (parent.width - width) / 2
             y: 16
-            width: parent.width - 32
+            width: Math.min(Theme.formWidth, parent.width - 32)
             spacing: 10
 
             Text {
                 text: qsTr("Scan list")
                 color: Theme.textPrimary
                 font.family: Theme.sans
-                font.pixelSize: 24
+                font.pixelSize: Theme.fontSize(24)
             }
 
             Text {
@@ -172,26 +230,26 @@ Rectangle {
                 font.family: Theme.sans
             }
 
-            TextField {
+            PlexInput {
                 width: parent.width
                 placeholderText: qsTr("List name")
                 text: screen.draft.name || ""
                 onTextEdited: screen.draft.name = text
             }
 
-            ComboBox {
+            PlexComboBox {
                 width: parent.width
+                Accessible.name: qsTr("Input source")
                 model: ["usb", "rtltcp"]
                 currentIndex: screen.draft.sourceType === "rtltcp" ? 1 : 0
                 onActivated: {
                     var copy = screen.draft;
                     copy.sourceType = currentText;
-                    screen.draft = Object.assign({
-                    }, copy);
+                    screen.draft = Object.assign({}, copy);
                 }
             }
 
-            TextField {
+            PlexInput {
                 width: parent.width
                 visible: screen.draft.sourceType === "rtltcp"
                 placeholderText: qsTr("RTL-TCP host")
@@ -199,7 +257,7 @@ Rectangle {
                 onTextEdited: screen.draft.host = text
             }
 
-            TextField {
+            PlexInput {
                 width: parent.width
                 visible: screen.draft.sourceType === "rtltcp"
                 placeholderText: qsTr("Port")
@@ -210,31 +268,36 @@ Rectangle {
                     bottom: 1
                     top: 65535
                 }
-
             }
 
             Repeater {
-                model: [{
-                    "key": "gainDb",
-                    "label": qsTr("Gain dB (-1 inherits)"),
-                    "fallback": -1
-                }, {
-                    "key": "ppm",
-                    "label": qsTr("PPM (blank inherits)"),
-                    "fallback": ""
-                }, {
-                    "key": "bandwidthKhz",
-                    "label": qsTr("Bandwidth kHz (-1 inherits)"),
-                    "fallback": -1
-                }, {
-                    "key": "defaultDwellMs",
-                    "label": qsTr("Default dwell ms (0 inherits)"),
-                    "fallback": 0
-                }, {
-                    "key": "defaultHoldMs",
-                    "label": qsTr("Default hold ms (0 inherits)"),
-                    "fallback": 0
-                }]
+                model: [
+                    {
+                        "key": "gainDb",
+                        "label": qsTr("Gain dB (-1 inherits)"),
+                        "fallback": -1
+                    },
+                    {
+                        "key": "ppm",
+                        "label": qsTr("PPM (blank inherits)"),
+                        "fallback": ""
+                    },
+                    {
+                        "key": "bandwidthKhz",
+                        "label": qsTr("Bandwidth kHz (-1 inherits)"),
+                        "fallback": -1
+                    },
+                    {
+                        "key": "defaultDwellMs",
+                        "label": qsTr("Default dwell ms (0 inherits)"),
+                        "fallback": 0
+                    },
+                    {
+                        "key": "defaultHoldMs",
+                        "label": qsTr("Default hold ms (0 inherits)"),
+                        "fallback": 0
+                    }
+                ]
 
                 Column {
                     required property var modelData
@@ -248,40 +311,43 @@ Rectangle {
                         font.family: Theme.sans
                     }
 
-                    TextField {
+                    PlexInput {
                         width: parent.width
+                        Accessible.name: modelData.label
                         text: screen.draft[modelData.key] === undefined ? modelData.fallback : screen.draft[modelData.key]
                         inputMethodHints: Qt.ImhFormattedNumbersOnly
                         onTextEdited: screen.draft[modelData.key] = text
                     }
-
                 }
-
             }
 
-            ComboBox {
+            PlexComboBox {
                 width: parent.width
+                Accessible.name: qsTr("Bias tee")
                 model: [qsTr("Bias tee: inherit"), qsTr("Bias tee: off"), qsTr("Bias tee: on")]
                 currentIndex: (screen.draft.biasTee === undefined ? -1 : screen.draft.biasTee) + 1
                 onActivated: screen.draft.biasTee = currentIndex - 1
             }
 
-            CheckBox {
+            PlexCheckBox {
                 text: qsTr("Voice only")
                 checked: screen.draft.voiceOnly || false
                 onToggled: screen.draft.voiceOnly = checked
             }
 
             Repeater {
-                model: [{
-                    "key": "groupCsvPath",
-                    "type": "group",
-                    "label": qsTr("Fallback group list")
-                }, {
-                    "key": "srcCsvPath",
-                    "type": "src",
-                    "label": qsTr("Global source aliases")
-                }]
+                model: [
+                    {
+                        "key": "groupCsvPath",
+                        "type": "group",
+                        "label": qsTr("Fallback group list")
+                    },
+                    {
+                        "key": "srcCsvPath",
+                        "type": "src",
+                        "label": qsTr("Global source aliases")
+                    }
+                ]
 
                 Column {
                     required property var modelData
@@ -295,86 +361,90 @@ Rectangle {
                         font.family: Theme.sans
                     }
 
-                    ComboBox {
+                    PlexComboBox {
                         property var files: (importedFiles.count, importedFiles.entriesForType(modelData.type))
 
                         width: parent.width
-                        model: [{
-                            "name": qsTr("None"),
-                            "path": ""
-                        }].concat(files)
+                        Accessible.name: modelData.label
+                        model: [
+                            {
+                                "name": qsTr("None"),
+                                "path": ""
+                            }
+                        ].concat(files)
                         textRole: "name"
                         currentIndex: {
-                            for (var i = 0; i < model.length; ++i) if (model[i].path === (screen.draft[modelData.key] || "")) {
-                                return i;
-                            }
+                            for (var i = 0; i < model.length; ++i)
+                                if (model[i].path === (screen.draft[modelData.key] || "")) {
+                                    return i;
+                                }
                             return -1;
                         }
                         onActivated: screen.draft[modelData.key] = model[currentIndex].path
                     }
-
                 }
-
             }
 
             Text {
                 text: qsTr("Entries")
                 color: Theme.textPrimary
                 font.family: Theme.sans
-                font.pixelSize: 19
+                font.pixelSize: Theme.fontSize(19)
             }
 
             Repeater {
                 model: entryRows
 
                 ScanEntryRow {
+                    overlayParent: screen
                     required property int index
                     required property var entryData
 
                     width: content.width
                     entry: entryData
                     label: screen.entryLabel(entryData)
-                    onChanged: function(field, value) {
+                    onChanged: function (field, value) {
                         screen.setEntry(index, field, value);
                     }
-                    onMove: function(delta) {
+                    onMove: function (delta) {
                         screen.moveEntry(index, delta);
                     }
                     onRemove: screen.removeEntry(index)
                 }
-
             }
 
-            ComboBox {
+            PlexComboBox {
                 id: systemPicker
 
                 width: parent.width
+                Accessible.name: qsTr("Saved system to add")
                 model: savedSystems
                 textRole: "name"
             }
 
-            Button {
+            OutlineButton {
                 width: parent.width
                 text: qsTr("Add saved system")
                 enabled: systemPicker.currentIndex >= 0
                 onClicked: screen.addSystem(savedSystems.get(systemPicker.currentIndex).uid)
             }
 
-            TextField {
+            PlexInput {
                 id: freqName
 
                 width: parent.width
                 placeholderText: qsTr("Frequency name")
             }
 
-            ComboBox {
+            PlexComboBox {
                 id: protocol
 
                 width: parent.width
+                Accessible.name: qsTr("Frequency protocol")
                 model: ["p25", "dmr", "nxdn48", "nxdn"]
             }
 
-            TextField {
+            PlexInput {
                 id: frequency
 
                 width: parent.width
@@ -382,7 +452,7 @@ Rectangle {
                 inputMethodHints: Qt.ImhFormattedNumbersOnly
             }
 
-            Button {
+            OutlineButton {
                 width: parent.width
                 text: qsTr("Add frequency")
                 enabled: sessionArgs.freqValid(frequency.text)
@@ -402,41 +472,36 @@ Rectangle {
                 font.family: Theme.sans
             }
 
-            Button {
+            OutlineButton {
                 width: parent.width
-                text: qsTr("Save and validate")
-                onClicked: {
-                    if (screen.persist()) {
-                        var result = scanListStarter.build(screen.draft);
-                        screen.validationText = result.ok ? qsTr("%1 targets ready.").arg(result.targetCount) + "\n" + result.warnings.join("\n") : result.error;
-                    }
-                }
+                text: qsTr("Validate")
+                objectName: "validateScanDraft"
+                onClicked: screen.validate()
+            }
+            OutlineButton {
+                width: parent.width
+                text: qsTr("Save draft")
+                onClicked: screen.saveDraft()
             }
 
-            Button {
+            OutlineButton {
                 width: parent.width
                 text: qsTr("Save")
                 onClicked: screen.save()
             }
 
-            Button {
+            OutlineButton {
                 width: parent.width
                 text: qsTr("Remove list")
                 visible: screen.editUid.length > 0
-                onClicked: {
-                    scanLists.remove(scanLists.rowForUid(screen.editUid));
-                    screen.closed();
-                }
+                onClicked: removeDialog.visible = true
             }
 
-            Button {
+            OutlineButton {
                 width: parent.width
                 text: qsTr("Cancel")
-                onClicked: screen.closed()
+                onClicked: screen.requestClose()
             }
-
         }
-
     }
-
 }

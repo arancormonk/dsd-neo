@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtQuick.Controls
+import "Util.js" as Util
 
 UiPanel {
     id: row
 
-    property var entry: ({
-    })
+    property var entry: ({})
     property string label: ""
+    property var overlayParent: parent
 
     signal changed(string field, var value)
     signal move(int delta)
-    signal remove()
+    signal remove
 
     objectName: "scanEntryRow"
     height: fields.implicitHeight + 24
@@ -25,7 +26,7 @@ UiPanel {
         y: 12
         spacing: 6
 
-        CheckBox {
+        PlexCheckBox {
             width: parent.width
             text: row.label
             checked: row.entry.enabled !== false
@@ -35,24 +36,23 @@ UiPanel {
         Row {
             spacing: 6
 
-            Button {
+            OutlineButton {
                 text: qsTr("↑")
                 onClicked: row.move(-1)
             }
 
-            Button {
+            OutlineButton {
                 text: qsTr("↓")
                 onClicked: row.move(1)
             }
 
-            Button {
+            OutlineButton {
                 text: qsTr("Remove")
                 onClicked: row.remove()
             }
-
         }
 
-        TextField {
+        PlexInput {
             objectName: "scanFrequencyName"
             width: parent.width
             visible: row.entry.kind === "freq"
@@ -66,21 +66,42 @@ UiPanel {
             visible: row.entry.kind === "freq"
             spacing: 6
 
-            ComboBox {
+            PlexComboBox {
                 width: (fields.width - 6) / 2
+                Accessible.name: qsTr("Entry protocol")
                 model: ["p25", "dmr", "nxdn48", "nxdn"]
                 currentIndex: model.indexOf(row.entry.protocol || "p25")
                 onActivated: row.changed("protocol", currentText)
             }
 
-            TextField {
+            PlexInput {
                 width: (fields.width - 6) / 2
                 placeholderText: qsTr("MHz")
                 text: row.entry.freqMhz || ""
                 inputMethodHints: Qt.ImhFormattedNumbersOnly
                 onTextEdited: row.changed("freqMhz", text)
             }
+        }
 
+        MicroLabel {
+            text: qsTr("Decryption profile")
+        }
+        PlexComboBox {
+            width: parent.width
+            Accessible.name: qsTr("Scan entry decryption scope")
+            model: [row.entry.kind === "system" ? qsTr("Inherit saved-system profile") : qsTr("Inherit session defaults"), qsTr("Use a profile"), qsTr("No keys")]
+            currentIndex: Math.max(0, ["inherit", "profile", "none"].indexOf(row.entry.decryptionMode || "inherit"))
+            onActivated: row.changed("decryptionMode", ["inherit", "profile", "none"][currentIndex])
+        }
+        DecryptionProfileSelector {
+            width: parent.width
+            visible: row.entry.decryptionMode === "profile" && available
+            overlayParent: row.overlayParent
+            profileUid: row.entry.decryptionProfileUid || ""
+            protocol: row.entry.kind === "system" ? Util.decryptionProtocol(savedSystems.getByUid(row.entry.systemUid).decodeFlag) : String(row.entry.protocol || "mixed").indexOf("nxdn") === 0 ? "nxdn" : row.entry.protocol || "mixed"
+            onSelected: function (uid) {
+                row.changed("decryptionProfileUid", uid);
+            }
         }
 
         Text {
@@ -92,7 +113,7 @@ UiPanel {
         Row {
             spacing: 6
 
-            TextField {
+            PlexInput {
                 width: (fields.width - 6) / 2
                 placeholderText: qsTr("Dwell")
                 text: row.entry.dwellMs || "0"
@@ -102,10 +123,9 @@ UiPanel {
                     bottom: 0
                     top: 600000
                 }
-
             }
 
-            TextField {
+            PlexInput {
                 width: (fields.width - 6) / 2
                 placeholderText: qsTr("Hold")
                 text: row.entry.holdMs || "0"
@@ -115,22 +135,21 @@ UiPanel {
                     bottom: 0
                     top: 600000
                 }
-
             }
-
         }
 
         Row {
             spacing: 6
 
-            ComboBox {
+            PlexComboBox {
                 width: (fields.width - 6) / 2
+                Accessible.name: qsTr("Entry modulation")
                 model: [qsTr("Inherit modulation"), "c4fm", "cqpsk", "gfsk"]
                 currentIndex: Math.max(0, ["", "c4fm", "cqpsk", "gfsk"].indexOf(row.entry.modulation || ""))
                 onActivated: row.changed("modulation", ["", "c4fm", "cqpsk", "gfsk"][currentIndex])
             }
 
-            TextField {
+            PlexInput {
                 width: (fields.width - 6) / 2
                 placeholderText: qsTr("Gain (-1 inherits)")
                 text: row.entry.gainDb === undefined ? "-1" : row.entry.gainDb
@@ -140,11 +159,7 @@ UiPanel {
                     bottom: -1
                     top: 49
                 }
-
             }
-
         }
-
     }
-
 }

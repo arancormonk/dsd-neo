@@ -1445,12 +1445,38 @@ test_chan_argument_validation(void) {
     dsd_rr_warning_list_free(&warnings);
 }
 
+static void
+test_group_listening_policy(void) {
+    dsd_rr_talkgroup groups[3] = {{0}};
+    for (int i = 0; i < 3; ++i) {
+        groups[i].tg_dec = (uint32_t)(100 + i);
+        groups[i].enc = i;
+    }
+    for (int policy = DSD_RR_TG_KEEP_ENABLED; policy <= DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL; ++policy) {
+        char* text = NULL;
+        size_t length = 0;
+        expect(
+            "explicit policy generates groups",
+            dsd_rr_generate_group_csv_with_policy(groups, 3, (dsd_rr_encrypted_tg_policy)policy, &text, &length, NULL)
+                == 0);
+        if (text != NULL) {
+            expect("clear group always remains enabled", strstr(text, "100,A,") != NULL);
+            expect("partly encrypted policy is explicit",
+                   strstr(text, policy == DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL ? "101,DE," : "101,A,") != NULL);
+            expect("fully encrypted policy is explicit",
+                   strstr(text, policy == DSD_RR_TG_KEEP_ENABLED ? "102,A," : "102,DE,") != NULL);
+        }
+        free(text);
+    }
+}
+
 int
 main(void) {
     test_protocol_table();
     test_protocol_tokens();
     test_classify_strings();
     test_classify_from_fixtures();
+    test_group_listening_policy();
     test_group_csv();
     test_group_csv_fixture();
     test_chan_p25_ranking();

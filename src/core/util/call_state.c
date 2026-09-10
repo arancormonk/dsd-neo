@@ -17,9 +17,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
 #include "call_state_internal.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
 
 _Static_assert(offsetof(dsd_call_state_ext, mutex) == 0U,
                "event-history transactions require the call-state mutex at offset zero");
@@ -708,6 +708,51 @@ call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_u
     // that order by recency.
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+static int
+key_selection_equal(const dsd_call_key_selection* a, const dsd_call_key_selection* b) {
+    return a->valid == b->valid && a->key_epoch == b->key_epoch && a->source == b->source
+           && a->signaled_id == b->signaled_id && a->effective_id == b->effective_id && a->available == b->available
+           && a->fallback == b->fallback && a->algorithm == b->algorithm && strcmp(a->profile_ref, b->profile_ref) == 0;
+}
+
+int
+dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
+                                  int signaled_id, int effective_id, int available, int fallback) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || !epoch || (unsigned int)source > DSD_CALL_KEY_DEFAULT
+        || available < -1 || available > 1 || fallback < 0 || fallback > DSD_CALL_KEY_FALLBACK_UNKNOWN_ALGORITHM) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_key_selection selection;
+    DSD_MEMSET(&selection, 0, sizeof(selection));
+    selection.valid = 1;
+    selection.key_epoch = state->enc_lockout_key_epoch;
+    selection.source = (uint8_t)source;
+    selection.signaled_id = (uint16_t)signaled_id;
+    selection.effective_id = effective_id;
+    selection.available = (int8_t)available;
+    selection.fallback = (uint8_t)fallback;
+    DSD_MEMCPY(selection.profile_ref, state->key_profile_ref, sizeof(selection.profile_ref));
+    selection.profile_ref[sizeof(selection.profile_ref) - 1U] = '\0';
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* call = &ext->calls.slots[slot];
+    if (call->epoch != epoch || call->phase == DSD_CALL_PHASE_IDLE) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    selection.algorithm = call->algid;
+    if (!key_selection_equal(&call->key_selection, &selection)) {
+        call->key_selection = selection;
+        call->revision = call_state_next_nonzero(call->revision);
+        ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    }
     dsd_call_state_ext_unlock(ext);
     return 1;
 }

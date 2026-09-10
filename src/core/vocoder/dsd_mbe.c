@@ -27,7 +27,10 @@
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
@@ -44,9 +47,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "../mbe_result_context.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
 
 static void
 p25p2_record_voice_err(dsd_state* state, int voice_err) {
@@ -924,6 +924,8 @@ mbeslot_left_autoload_keys(dsd_opts* opts, dsd_state* state) {
             state->K2 = state->K3 = state->K4 = 0ULL;
             state->hytera_key_segments = 1U;
             opts->dmr_mute_encL = 0;
+            (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
+                                                    (int)target, 1, 0);
         }
     }
 }
@@ -942,6 +944,8 @@ mbeslot_right_autoload_keys(dsd_opts* opts, dsd_state* state) {
             state->K2 = state->K3 = state->K4 = 0ULL;
             state->hytera_key_segments = 1U;
             opts->dmr_mute_encR = 0;
+            (void)dsd_call_state_note_key_selection(state, 1, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
+                                                    (int)target, 1, 0);
         }
     }
 }

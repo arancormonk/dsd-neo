@@ -25,6 +25,7 @@
 #include <time.h>
 
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/key_set.h>
 
@@ -45,7 +46,6 @@ enum DSD_ATTR_PACKED {
      * tail behind dsd_state_trunk_lcn_slot(). */
     DSD_TRUNK_LCN_EMBEDDED = 26,
     DSD_VERTEX_KS_MAP_MAX = 64,
-    DSD_DMR_TG_KEY_MAP_MAX = 256,
     DSD_RTL_SYMBOL_CACHE_CAP = 512,
 };
 
@@ -1477,7 +1477,8 @@ struct dsd_state {
     long int nxdn_grant_freq;
 
     //multi-key array
-    int keyloader; //let us know the keyloader is active
+    int keyloader;            //let us know the keyloader is active
+    char key_profile_ref[64]; /**< Opaque material-source identity, safe for frontend metadata. */
 
     //dmr late entry mi
 

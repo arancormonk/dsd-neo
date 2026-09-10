@@ -32,6 +32,9 @@ enum {
     DSD_SCAN_OPT_MUTE_P25 = 1U << 15,
     /** Prefer learned P25 control-channel candidates (-^). */
     DSD_SCAN_OPT_P25_CANDIDATES = 1U << 16,
+    DSD_SCAN_OPT_DMR_MAP = 1U << 17,
+    DSD_SCAN_OPT_CLEAR_KEYS = 1U << 18,
+    DSD_SCAN_OPT_KEY_PROFILE_REF = 1U << 19,
     DSD_SCAN_OPT_DIRECT = DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA | DSD_SCAN_OPT_SCALAR | DSD_SCAN_OPT_SCRAMBLER,
     DSD_SCAN_OPT_FILES = DSD_SCAN_OPT_HEX_FILE | DSD_SCAN_OPT_DEC_FILE
 };
@@ -55,6 +58,9 @@ typedef struct {
     int tune_data_calls;
     int tune_enc_calls;
     char group_file[DSD_SCAN_OPTIONS_GROUP_PATH_MAX];
+    /** Empty with DSD_SCAN_OPT_DMR_MAP set explicitly clears the row mapping. */
+    char dmr_map_file[DSD_SCAN_OPTIONS_KEY_PATH_MAX];
+    char key_profile_ref[64];
 } dsd_scan_option_values;
 
 /** Parsed import metadata. Wipe after materializing; never publish this object to a frontend. */

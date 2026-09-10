@@ -9,6 +9,7 @@
 #include <QObject>
 #include <QSortFilterProxyModel>
 #include <QString>
+#include <QVariantList>
 #include <QtGlobal>
 
 namespace dsd_qt {
@@ -39,6 +40,7 @@ class TalkgroupFilterModel : public QSortFilterProxyModel {
 
     void setFilterText(const QString& text);
     void setFilterTag(const QString& tag);
+    Q_INVOKABLE QVariantList snapshotSelection() const;
 
   Q_SIGNALS:
     void countChanged();

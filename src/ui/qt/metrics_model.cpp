@@ -4,9 +4,14 @@
  */
 
 #include <QList>
+#include <QMap>
+#include <QVariantMap>
+#include <dsd-neo/app_control/p25_metrics.h>
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/key_material.h>
 #include <stddef.h>
-#include "dsd-neo/app_control/p25_metrics.h"
-#include "dsd-neo/core/call_state.h"
+#include <stdint.h>
+#include <utility>
 #include "metrics_model.h"
 
 #include <QStringList>
@@ -19,16 +24,18 @@
 #include <QtGlobal>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 
 namespace dsd_qt {
 
@@ -381,8 +388,201 @@ MetricsModel::fillScanControlView(View& next, const dsd_opts* opts_snapshot, con
     next.scan_target_avoided = trunk_scan && snapshot->trunk_scan_active_avoided != 0;
 }
 
+namespace {
+struct DecryptionView {
+    const dsd_call_snapshot& call;
+    const dsd_call_key_selection& selected;
+    const dsd_opts* opts;
+    const dsd_state* state;
+    bool current, encrypted, dmr;
+
+    DecryptionView(const dsd_call_snapshot& c, const dsd_opts* o, const dsd_state* s)
+        : call(c), selected(c.key_selection), opts(o), state(s),
+          current(selected.valid && selected.key_epoch == s->enc_lockout_key_epoch && selected.signaled_id == c.kid
+                  && selected.algorithm == c.algid),
+          encrypted(c.crypto >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING), dmr(DSD_SYNC_IS_DMR(c.protocol)) {}
+
+    QString
+    source() const {
+        const QStringList sources{QStringLiteral("Source not reported"), QStringLiteral("Direct key override"),
+                                  QStringLiteral("Received key ID"),     QStringLiteral("Talkgroup override"),
+                                  QStringLiteral("Destination lookup"),  QStringLiteral("Default / existing material")};
+        const QString source = current && selected.source < sources.size() ? sources[selected.source]
+                               : state->keyloader ? QStringLiteral("Automatic key collection")
+                                                  : QStringLiteral("Direct / existing material");
+        return source;
+    }
+
+    QString
+    availability() const {
+        if (call.crypto == DSD_CALL_CRYPTO_CLEAR) {
+            return QStringLiteral("No decryption needed");
+        }
+        if (!current && selected.valid) {
+            return QStringLiteral("Waiting for key reevaluation");
+        }
+        if (current && selected.available >= 0) {
+            return selected.available == 1 ? QStringLiteral("Key material available")
+                                           : QStringLiteral("No usable key material");
+        }
+        return call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE ? QStringLiteral("Key material available")
+                                                          : QStringLiteral("Key availability not yet known");
+    }
+
+    QString
+    fallback() const {
+        QString fallback;
+        if (current && selected.fallback == DSD_CALL_KEY_FALLBACK_MAPPED_MISSING) {
+            fallback = QStringLiteral("Mapped key is absent; using received key ID.");
+        }
+        if (current && selected.fallback == DSD_CALL_KEY_FALLBACK_MAPPED_INCOMPATIBLE) {
+            fallback = QStringLiteral("Mapped material is incompatible; using received key ID.");
+        }
+        if (current && selected.fallback == DSD_CALL_KEY_FALLBACK_UNKNOWN_ALGORITHM) {
+            fallback = QStringLiteral("This algorithm does not use the standard keyring mapping.");
+        }
+        return fallback;
+    }
+
+    QString
+    block() const {
+        QString block;
+        if ((call.kind == DSD_CALL_KIND_GROUP_VOICE || call.kind == DSD_CALL_KIND_PRIVATE_VOICE)
+            && call.policy_target_id > 0 && call.policy_target_id <= UINT32_MAX && call.ota_source_id <= UINT32_MAX) {
+            dsd_tg_policy_decision policy = {};
+            const int needs_key = encrypted && call.crypto != DSD_CALL_CRYPTO_DECRYPTABLE;
+            if (call.kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+                dsd_tg_policy_evaluate_private_call(opts, state, static_cast<uint32_t>(call.ota_source_id),
+                                                    static_cast<uint32_t>(call.policy_target_id), needs_key, 0,
+                                                    &policy);
+            } else {
+                dsd_tg_policy_evaluate_group_call(opts, state, static_cast<uint32_t>(call.policy_target_id),
+                                                  static_cast<uint32_t>(call.ota_source_id), needs_key, 0, &policy);
+            }
+            if (policy.block_reasons) {
+                block = QString::fromUtf8(dsd_tg_policy_block_reason_label(policy.block_reasons));
+            }
+        }
+        return block;
+    }
+
+    QString
+    materialKind() const {
+        const auto need = dsd_dmr_alg_key_need(call.algid);
+        QString materialKind = need == DSD_KEY_NEED_AES_2                                   ? QStringLiteral("aes128")
+                               : need == DSD_KEY_NEED_AES_3                                 ? QStringLiteral("tdea")
+                               : need == DSD_KEY_NEED_AES_4 || need == DSD_KEY_NEED_QUARTET ? QStringLiteral("aes256")
+                                                                                            : QStringLiteral("scalar");
+        if (DSD_SYNC_IS_NXDN(call.protocol)) {
+            materialKind = call.algid == 1   ? QStringLiteral("scrambler")
+                           : call.algid == 3 ? QStringLiteral("aes256")
+                                             : QStringLiteral("scalar");
+        }
+        return materialKind;
+    }
+
+    QString
+    kid() const {
+        const bool keyedProtocol =
+            DSD_SYNC_IS_P25(call.protocol) || DSD_SYNC_IS_DMR(call.protocol) || DSD_SYNC_IS_NXDN(call.protocol);
+        const QString kid = keyedProtocol && encrypted && (!dmr || call.kid <= 255)
+                                    && (!current || selected.source != DSD_CALL_KEY_DESTINATION)
+                                ? QString::number(call.kid, 16).toUpper()
+                                : QString();
+        return kid;
+    }
+
+    QString
+    effective() const {
+        const QString effective =
+            current && selected.effective_id >= 0
+                    && (selected.source == DSD_CALL_KEY_DESTINATION || !dmr || selected.effective_id <= 255)
+                ? QString::number(selected.effective_id, selected.source == DSD_CALL_KEY_DESTINATION ? 10 : 16)
+                      .toUpper()
+                : QString();
+        return effective;
+    }
+
+    QString
+    protocol() const {
+        if (DSD_SYNC_IS_P25(call.protocol)) {
+            return "p25";
+        }
+        if (dmr) {
+            return "dmr";
+        }
+        if (DSD_SYNC_IS_NXDN(call.protocol)) {
+            return "nxdn";
+        }
+        if (DSD_SYNC_IS_M17(call.protocol)) {
+            return "m17";
+        }
+        if (DSD_SYNC_IS_DPMR(call.protocol)) {
+            return "dpmr";
+        }
+        if (DSD_SYNC_IS_DSTAR(call.protocol)) {
+            return "dstar";
+        }
+        if (DSD_SYNC_IS_YSF(call.protocol)) {
+            return "ysf";
+        }
+        return "unknown";
+    }
+
+    QString
+    status() const {
+        if (call.crypto == DSD_CALL_CRYPTO_CLEAR) {
+            return QStringLiteral("Unencrypted");
+        }
+        if (call.crypto == DSD_CALL_CRYPTO_UNKNOWN) {
+            return QStringLiteral("Unknown / waiting for signaling");
+        }
+        return QStringLiteral("Encrypted");
+    }
+};
+} // namespace
+
+static QVariantList
+decryption_slot_views(const dsd_opts* opts, const dsd_state* state) {
+    QVariantList result;
+    for (uint8_t slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; ++slot) {
+        dsd_call_snapshot call = {};
+        if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase == DSD_CALL_PHASE_IDLE) {
+            continue;
+        }
+        const DecryptionView view(call, opts, state);
+        result.append(QVariantMap{
+            {"slot", slot + 1},
+            {"status", view.status()},
+            {"protocol", view.protocol()},
+            {"lastObserved", call.phase == DSD_CALL_PHASE_ENDED},
+            {"algorithm", view.encrypted && call.algid ? QString::number(call.algid, 16).toUpper() : QString()},
+            {"keyId", view.kid()},
+            {"effectiveId", view.effective()},
+            {"source", view.source()},
+            {"availability", view.availability()},
+            {"fallback", view.fallback()},
+            {"blockReason", view.block()},
+            {"materialKind", view.materialKind()},
+            {"targetId", QString::number(call.ota_target_id)},
+            {"group", call.kind == DSD_CALL_KIND_GROUP_VOICE},
+            {"privateCall", call.kind == DSD_CALL_KIND_PRIVATE_VOICE},
+            {"dmr", view.dmr},
+            {"profileRef", view.current ? QString::fromUtf8(call.key_selection.profile_ref)
+                                        : QString::fromUtf8(state->key_profile_ref)}});
+    }
+    return result;
+}
+
 void
 MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) {
+    const auto* configured = dsd_scan_mode_configured_view(snapshot);
+    next.configured_force = configured ? configured->force_key : snapshot->M;
+    next.effective_force = snapshot->M;
+    next.key_profile_ref = QString::fromUtf8(snapshot->key_profile_ref);
+    next.key_epoch = snapshot->enc_lockout_key_epoch;
+    next.automatic_keys = snapshot->keyloader == 1;
+    next.decryption_slots = decryption_slot_views(opts_snapshot, snapshot);
     next.scan_mode = QString::fromLatin1(dsd_scan_mode_name(dsd_scan_mode_active(snapshot)));
     next.decode_mode = static_cast<int>(dsd_scan_mode_configured_preset(opts_snapshot, snapshot));
 
@@ -417,7 +617,6 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
      * select, and folding it into C4FM made a control bound to this reading show
      * C4FM as already-selected on a session that was never on it. Through the
      * shared helper so this and ui_handle_mod_set()'s skip test cannot drift. */
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(snapshot);
     next.modulation = configured
                           ? dsd_modulation_from_flags(configured->mod_c4fm, configured->mod_qpsk, configured->mod_gfsk)
                           : dsd_opts_modulation(opts_snapshot);

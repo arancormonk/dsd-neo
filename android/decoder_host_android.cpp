@@ -16,11 +16,15 @@
 #include "run_status.h"
 
 #include <QCoreApplication>
+#include <QGuiApplication>
 #include <QJniEnvironment>
 #include <QJniObject>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QScreen>
 #include <QVariant>
+#include <cmath>
+#include <dsd-neo/platform/audio.h>
 
 #include <jni.h>
 
@@ -95,11 +99,94 @@ to_java_string_array(QJniEnvironment& env, const QStringList& values) {
 
 DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : dsd_qt::DecoderHost(parent) {
     dsd_qt::DiagnosticsLog::installTap();
-    QJniObject context = android_context();
-    if (context.isValid()) {
-        QJniObject::callStaticMethod<void>(kSupportClass, "ensureNotificationPermission", "(Landroid/app/Activity;)V",
-                                           context.object());
+    refreshPresentation();
+}
+
+void
+DecoderHostAndroid::refreshPresentation() {
+    const auto context = android_context();
+    if (!context.isValid()) {
+        return;
     }
+    const QString configuration =
+        QJniObject::callStaticObjectMethod(kSupportClass, "fontConfiguration",
+                                           "(Landroid/content/Context;)Ljava/lang/String;", context.object())
+            .toString();
+    if (configuration != m_font_configuration) {
+        m_font_configuration = configuration;
+        m_font_sizes.clear();
+        const qreal ratio = QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->devicePixelRatio() : 1;
+        for (int sp = 0; sp <= 128; ++sp) {
+            m_font_sizes.append(QJniObject::callStaticMethod<jfloat>(kSupportClass, "fontPixels",
+                                                                     "(Landroid/content/Context;F)F", context.object(),
+                                                                     static_cast<jfloat>(sp))
+                                / ratio);
+        }
+        ++m_font_revision;
+        Q_EMIT typographyChanged();
+    }
+    const auto route = QJniObject::callStaticObjectMethod(
+                           kSupportClass, "audioRouteName", "(Landroid/content/Context;I)Ljava/lang/String;",
+                           context.object(), static_cast<jint>(dsd_audio_output_device_id()))
+                           .toString();
+    if (route != m_audio_route) {
+        m_audio_route = route;
+        Q_EMIT audioRouteChanged();
+    }
+    const int keyboardPixels = QJniObject::callStaticMethod<jint>(kSupportClass, "keyboardTopPixels", "()I");
+    const qreal ratio = QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->devicePixelRatio() : 1;
+    const qreal top = keyboardPixels < 0 ? -1 : keyboardPixels / ratio;
+    if (top != m_keyboard_top) {
+        m_keyboard_top = top;
+        Q_EMIT keyboardChanged();
+    }
+    const int requests = QJniObject::callStaticMethod<jint>(kSupportClass, "takeBackRequests", "()I");
+    for (int i = 0; i < requests; ++i) {
+        Q_EMIT backRequested();
+    }
+}
+
+qreal
+DecoderHostAndroid::fontPixelSize(qreal sp) const {
+    if (!std::isfinite(sp) || sp <= 0) {
+        return 0;
+    }
+    const int low = static_cast<int>(std::floor(qMin(sp, qreal(127))));
+    if (sp <= 128 && m_font_sizes.size() == 129) {
+        return m_font_sizes[low] + (m_font_sizes[low + 1] - m_font_sizes[low]) * (sp - low);
+    }
+    const auto context = android_context();
+    if (!context.isValid()) {
+        return sp;
+    }
+    const qreal ratio = QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->devicePixelRatio() : 1;
+    return QJniObject::callStaticMethod<jfloat>(kSupportClass, "fontPixels", "(Landroid/content/Context;F)F",
+                                                context.object(), static_cast<jfloat>(sp))
+           / ratio;
+}
+
+void
+DecoderHostAndroid::setDarkAppearance(bool dark) {
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([dark]() -> QVariant {
+        const auto context = android_context();
+        if (context.isValid()) {
+            QJniObject::callStaticMethod<void>(kSupportClass, "setDarkAppearance", "(Landroid/app/Activity;Z)V",
+                                               context.object(), static_cast<jboolean>(dark));
+        }
+        return {};
+    });
+}
+
+void
+DecoderHostAndroid::requestNotificationPermission() {
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([]() -> QVariant {
+        const auto context = android_context();
+        if (context.isValid()) {
+            QJniObject::callStaticMethod<void>(kSupportClass, "ensureNotificationPermission",
+                                               "(Landroid/app/Activity;)V", context.object());
+        }
+        return {};
+    });
 }
 
 void
@@ -232,17 +319,7 @@ DecoderHostAndroid::moveToBackground() {
 
 QString
 DecoderHostAndroid::importContentUri(const QString& reference, const QString& fileName) {
-    QJniObject context = android_context();
-    if (!context.isValid()) {
-        return QString();
-    }
-    QJniObject uri = QJniObject::fromString(reference);
-    QJniObject name = QJniObject::fromString(fileName);
-    QJniObject result = QJniObject::callStaticObjectMethod(
-        kSupportClass, "copyContentUriToCache",
-        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", context.object(),
-        uri.object(), name.object());
-    return result.isValid() ? result.toString() : QString();
+    return importDocument(reference, fileName, QString());
 }
 
 QString

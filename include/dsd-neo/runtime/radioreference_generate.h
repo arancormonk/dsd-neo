@@ -228,6 +228,19 @@ int dsd_rr_site_is_simulcast(const dsd_rr_site* site);
  * @param warnings        Optional; receives preview warnings.
  * @return 0 on success, -1 on invalid argument or allocation failure.
  */
+typedef enum {
+    DSD_RR_TG_POLICY_LEGACY = 0,
+    DSD_RR_TG_KEEP_ENABLED = 1,
+    DSD_RR_TG_EXCLUDE_FULL = 2,
+    DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL = 3
+} dsd_rr_encrypted_tg_policy;
+
+/** Explicit whole-talkgroup policy. KEEP_ENABLED delegates individual calls to
+ * the canonical listening/key-availability policy; exclusions emit DE rows. */
+int dsd_rr_generate_group_csv_with_policy(const dsd_rr_talkgroup* talkgroups, size_t count,
+                                          dsd_rr_encrypted_tg_policy policy, char** out, size_t* out_len,
+                                          dsd_rr_warning_list* warnings);
+
 int dsd_rr_generate_group_csv(const dsd_rr_talkgroup* talkgroups, size_t count, int partial_enc_as_de, char** out,
                               size_t* out_len, dsd_rr_warning_list* warnings);
 

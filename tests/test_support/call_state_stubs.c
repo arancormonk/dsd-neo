@@ -311,3 +311,17 @@ dsd_event_enrich_gps(dsd_state* state, uint8_t slot, uint64_t epoch, const char*
     state->event_history_s[slot].revision++;
     return 1;
 }
+
+int
+dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
+                                  int signaled_id, int effective_id, int available, int fallback) {
+    (void)state;
+    (void)slot;
+    (void)epoch;
+    (void)source;
+    (void)signaled_id;
+    (void)effective_id;
+    (void)available;
+    (void)fallback;
+    return 0;
+}

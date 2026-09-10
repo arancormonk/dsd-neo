@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: ISC
-#include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
+#include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -24,10 +28,6 @@
 #include "../util/key_set_internal.h"
 #include "../util/talkgroup_policy_internal.h"
 #include "csv_parse_internal.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/secret_redaction.h"
-#include "dsd-neo/core/state_fwd.h"
 
 static int
 csv_rkey_index(unsigned long long keynumber, unsigned long long offset, size_t* out_index) {
@@ -597,14 +597,8 @@ csv_key_import_dec_normalize_keynumber(const char* field, int* id_ok) {
         return keynumber;
     }
 
-    uint8_t hash_bits[24];
-    keynumber &= 0xFFFFFFULL; // truncate to 24-bits (max allowed)
-    for (int i = 0; i < 24; i++) {
-        hash_bits[i] = (uint8_t)(((keynumber << i) & 0x800000ULL) >> 23); // load into array for CRC16
-    }
-    const uint16_t hash = dsd_crc_ccitt16_bits(hash_bits, 24U);
     LOG_INFO("Hashed ");
-    return hash & 0xFFFFULL; // make sure its no larger than 16-bits
+    return keyring_destination_index((uint32_t)(keynumber & 0xFFFFFFULL));
 }
 
 static int
@@ -1476,6 +1470,64 @@ dsd_csv_validate_chan_file(const char* path, dsd_csv_validation* out) {
     return csv_validate_into_throwaway(path, out, chan_validate_run);
 }
 
+static int
+csv_profile_key_source(const dsd_key_set* keys) {
+    if (!keys || !keys->present) {
+        return 0;
+    }
+    if (keys->keyloader) {
+        return keys->count ? 2 : 3;
+    }
+    const dsd_key_scalars* key = &keys->scalars;
+    return key->basic_key_present || key->scalar_key_present[0] || key->scalar_key_present[1] || key->aes_key_loaded[0]
+                   || key->hytera_key_segments
+               ? 1
+               : 3;
+}
+
+static void
+csv_describe_channel_profile(const dsd_state* state, int index, dsd_csv_channel_profile* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->index = (size_t)index;
+    const long int hz = *dsd_state_trunk_lcn_slot_const(state, index);
+    out->frequency_hz = hz > 0 ? (uint64_t)hz : 0;
+    DSD_SNPRINTF(out->name, sizeof(out->name), "%s", dsd_state_trunk_lcn_name_get(state, (size_t)index));
+    DSD_SNPRINTF(out->mode, sizeof(out->mode), "%s", dsd_scan_mode_name(dsd_channel_mode_get(state, (size_t)index)));
+    const dsd_key_set* keys = dsd_state_trunk_lcn_keys_get(state, (size_t)index);
+    out->key_source = csv_profile_key_source(keys);
+    if (keys) {
+        DSD_SNPRINTF(out->profile_ref, sizeof(out->profile_ref), "%s", keys->profile_ref);
+    }
+    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)index);
+    out->force = profile && (profile->values.present & DSD_SCAN_OPT_FORCE) ? profile->values.force : -1;
+    out->dmr_mapping_count = profile && (profile->values.present & DSD_SCAN_OPT_DMR_MAP) ? profile->dmr_map.count : -1;
+}
+
+int
+dsd_csv_inspect_channel_profiles(const char* path, void* context, dsd_csv_channel_profile_cb callback) {
+    if (!path || !callback) {
+        return -1;
+    }
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!state) {
+        return -1;
+    }
+    dsd_csv_validation stats = {0};
+    const int result = chan_validate_run(path, state, &stats);
+    if (result == 0) {
+        for (int i = 0; i < state->lcn_freq_count; ++i) {
+            dsd_csv_channel_profile row;
+            csv_describe_channel_profile(state, i, &row);
+            callback(&row, context);
+        }
+    }
+    dsd_state_ext_free_all(state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_key_state_secure_wipe(state);
+    free(state);
+    return result;
+}
+
 int
 dsd_csv_validate_key_file_dec(const char* path, dsd_csv_validation* out) {
     return csv_validate_into_throwaway(path, out, csv_validate_run_key_dec);
@@ -1486,11 +1538,7 @@ dsd_csv_validate_key_file_hex(const char* path, dsd_csv_validation* out) {
     return csv_validate_into_throwaway(path, out, csv_validate_run_key_hex);
 }
 
-typedef struct {
-    uint32_t tg[DSD_DMR_TG_KEY_MAP_MAX];
-    uint8_t kid[DSD_DMR_TG_KEY_MAP_MAX];
-    int count;
-} dmr_tg_key_tmp_t;
+typedef dsd_dmr_key_map dmr_tg_key_tmp_t;
 
 static int
 dmr_tg_key_parse_row(const char* path, int row_count, char* line, void* ctx) {
@@ -1609,6 +1657,21 @@ csv_mapping_import_rows(const char* csv_label, const char* open_label, const cha
 }
 
 int
+dsd_dmr_key_map_load(const char* path, dsd_dmr_key_map* out) {
+    if (!path || !*path || !out) {
+        return -1;
+    }
+    dsd_dmr_key_map parsed = {0};
+    char filename[CSV_IMPORT_PATH_MAX] = {0};
+    const int rc = csv_mapping_import_rows("DMR TG key ID map CSV", "DMR TG key ID mapping file", path, filename,
+                                           sizeof(filename), dmr_tg_key_parse_row, &parsed);
+    if (rc == 0) {
+        *out = parsed;
+    }
+    return rc;
+}
+
+int
 csvDmrTgKeyImport(dsd_state* state, const char* path) {
     if (state == NULL || path == NULL || path[0] == '\0') {
         LOG_ERROR("DMR TG key ID map CSV path is missing.\n");
@@ -1647,6 +1710,31 @@ csvVertexKsImport(dsd_state* state, const char* path) {
         vertex_ks_apply_to_state(state, tmp, filename);
     }
 
+    DSD_SECURE_ZERO(tmp, sizeof(*tmp));
+    free(tmp);
+    return rc;
+}
+
+int
+dsd_csv_validate_vertex_file(const char* path, dsd_csv_validation* out) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!path || !*path) {
+        return -1;
+    }
+    vertex_map_tmp_t* tmp = (vertex_map_tmp_t*)calloc(1, sizeof(*tmp));
+    if (!tmp) {
+        return -1;
+    }
+    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
+    const int rc = csv_mapping_import_rows("Vertex KS CSV", "Vertex KS mapping file", path, filename, sizeof filename,
+                                           vertex_ks_parse_row, tmp);
+    if (rc == 0) {
+        out->accepted = out->total = (unsigned int)tmp->count;
+    }
+    DSD_SECURE_ZERO(tmp, sizeof(*tmp));
     free(tmp);
     return rc;
 }

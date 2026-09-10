@@ -20,6 +20,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QVariantMap>
 #include <QtGlobal>
 
 namespace dsd_qt {
@@ -40,6 +41,13 @@ class DecoderHost : public QObject {
     Q_PROPERTY(bool locationSupported READ locationSupported CONSTANT)
     Q_PROPERTY(bool shareSupported READ shareSupported CONSTANT)
     Q_PROPERTY(int localDeviceFailureKind READ localDeviceFailureKind NOTIFY localDeviceChanged)
+    Q_PROPERTY(bool usesPlatformFontScaling READ usesPlatformFontScaling CONSTANT)
+    Q_PROPERTY(qreal keyboardTop READ keyboardTop NOTIFY keyboardChanged)
+    Q_PROPERTY(int fontRevision READ fontRevision NOTIFY typographyChanged)
+    Q_PROPERTY(int inputFailureKind READ inputFailureKind NOTIFY runResultChanged)
+    Q_PROPERTY(int inputFailureCode READ inputFailureCode NOTIFY runResultChanged)
+    Q_PROPERTY(int terminalReason READ terminalReason NOTIFY runResultChanged)
+    Q_PROPERTY(QString audioRoute READ audioRoute NOTIFY audioRouteChanged)
 
   public:
     /**
@@ -64,6 +72,58 @@ class DecoderHost : public QObject {
 
     explicit DecoderHost(QObject* parent = nullptr);
     ~DecoderHost() override;
+
+    virtual bool
+    usesPlatformFontScaling() const {
+        return false;
+    }
+
+    virtual qreal
+    keyboardTop() const {
+        return -1;
+    }
+
+    virtual int
+    fontRevision() const {
+        return 0;
+    }
+
+    Q_INVOKABLE virtual qreal
+    fontPixelSize(qreal sp) const {
+        return sp;
+    }
+
+    Q_INVOKABLE virtual void
+    setDarkAppearance(bool dark) {
+        (void)dark;
+    }
+
+    Q_INVOKABLE virtual void
+    requestNotificationPermission() {}
+
+    Q_INVOKABLE QString licenseNotices() const;
+
+    virtual int
+    inputFailureKind() const {
+        return 0;
+    }
+
+    virtual int
+    inputFailureCode() const {
+        return 0;
+    }
+
+    virtual int
+    terminalReason() const {
+        return 0;
+    }
+
+    virtual QString
+    audioRoute() const {
+        return QStringLiteral("System default");
+    }
+
+    Q_INVOKABLE QVariantMap documentInfo(const QString& path) const;
 
     /** @brief Whether the engine is running; initialization may still be pending. */
     virtual bool isRunning() const = 0;
@@ -313,6 +373,11 @@ class DecoderHost : public QObject {
     }
 
   Q_SIGNALS:
+    void backRequested();
+    void typographyChanged();
+    void keyboardChanged();
+    void runResultChanged();
+    void audioRouteChanged();
     void sessionInitialized();
     void locationResult(qint64 requestId, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
                         bool geocodeOk, const QString& postalCode, const QString& countryCode, const QString& error);

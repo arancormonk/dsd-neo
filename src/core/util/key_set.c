@@ -4,7 +4,9 @@
  */
 
 #include <dsd-neo/core/key_set.h>
-#include "dsd-neo/core/opts_fwd.h"
+#include <dsd-neo/core/opts_fwd.h>
+#include <stdint.h>
+#include <string.h>
 
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
@@ -17,8 +19,8 @@
 
 #include <stdlib.h>
 
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
 #include "key_set_internal.h"
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -152,6 +154,8 @@ dsd_key_set_capture(dsd_key_set* out, const dsd_state* state) {
     out->present = 0;
     out->keyloader = state->keyloader;
     key_scalars_capture(&out->scalars, state);
+    DSD_MEMCPY(out->profile_ref, state->key_profile_ref, sizeof(out->profile_ref));
+    out->profile_ref[sizeof(out->profile_ref) - 1U] = '\0';
     return 0;
 }
 
@@ -175,6 +179,8 @@ dsd_key_set_install(dsd_state* state, const dsd_key_set* ks) {
     }
     state->keyloader = ks->keyloader;
     key_scalars_install(state, &ks->scalars);
+    DSD_MEMCPY(state->key_profile_ref, ks->profile_ref, sizeof(state->key_profile_ref));
+    state->key_profile_ref[sizeof(state->key_profile_ref) - 1U] = '\0';
 }
 
 int
@@ -202,6 +208,7 @@ dsd_key_set_copy(dsd_key_set* dst, const dsd_key_set* src) {
     dst->present = src->present;
     dst->keyloader = src->keyloader;
     dst->scalars = src->scalars;
+    DSD_MEMCPY(dst->profile_ref, src->profile_ref, sizeof(dst->profile_ref));
     return 0;
 }
 
@@ -238,6 +245,17 @@ key_scalars_equal(const dsd_key_scalars* a, const dsd_key_scalars* b) {
     return 1;
 }
 
+static int
+key_entries_equal(const dsd_key_set* a, const dsd_key_set* b) {
+    for (size_t i = 0; i < a->count; i++) {
+        if (a->entries[i].index != b->entries[i].index || a->entries[i].value != b->entries[i].value
+            || a->entries[i].loaded != b->entries[i].loaded) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 int
 dsd_key_set_equal(const dsd_key_set* a, const dsd_key_set* b) {
     if (a == NULL || b == NULL) {
@@ -247,19 +265,14 @@ dsd_key_set_equal(const dsd_key_set* a, const dsd_key_set* b) {
         return 1;
     }
     if (a->present != b->present || a->keyloader != b->keyloader || a->count != b->count
+        || strncmp(a->profile_ref, b->profile_ref, sizeof(a->profile_ref)) != 0
         || !key_scalars_equal(&a->scalars, &b->scalars)) {
         return 0;
     }
     if (a->count > 0U && (a->entries == NULL || b->entries == NULL)) {
         return 0;
     }
-    for (size_t i = 0; i < a->count; i++) {
-        if (a->entries[i].index != b->entries[i].index || a->entries[i].value != b->entries[i].value
-            || a->entries[i].loaded != b->entries[i].loaded) {
-            return 0;
-        }
-    }
-    return 1;
+    return key_entries_equal(a, b);
 }
 
 static int
@@ -388,7 +401,7 @@ key_set_parse_direct_hex(const char* text, dsd_key_scalars* scalars, size_t* dig
 
 void
 dsd_key_scalars_store_direct_hex(dsd_key_scalars* scalars, const uint64_t segments[4], size_t nhex) {
-    if (scalars == NULL || segments == NULL || !key_set_direct_hex_width_valid(nhex)) {
+    if (scalars == NULL || segments == NULL || (!key_set_direct_hex_width_valid(nhex) && nhex != 48U)) {
         return;
     }
     const size_t segment_count = nhex == 10U ? 1U : nhex / 16U;
@@ -473,7 +486,62 @@ key_parse_bounded_decimal(const char* text, unsigned int limit, unsigned long lo
     return result;
 }
 
+static dsd_key_direct_result
+key_set_parse_m17(dsd_key_scalars* scalars, dsd_key_type type, const char* text) {
+    char hex[65] = {0};
+    size_t digits = 0;
+    uint64_t words[4] = {0};
+    dsd_key_direct_result rc = DSD_KEY_DIRECT_INVALID_HEX;
+    if (key_set_collect_direct_hex(text, hex, &digits)) {
+        goto done;
+    }
+    if (type == DSD_KEY_TYPE_M17_SCRAMBLER) {
+        if ((digits != 2 && digits != 4 && digits != 6) || dsd_parse_hex_u64_n(hex, digits, &words[0]) || !words[0]) {
+            goto done;
+        }
+        scalars->R = words[0];
+        scalars->scalar_key_present[0] = 1;
+    } else {
+        if (digits != 32 && digits != 48 && digits != 64) {
+            goto done;
+        }
+        for (size_t i = 0; i < digits / 16; ++i) {
+            if (dsd_parse_hex_u64_n(hex + i * 16, 16, &words[i])) {
+                goto done;
+            }
+        }
+        /* Match M17's existing availability rule; other protocols still accept zero. */
+        if (!(words[0] | words[1] | words[2] | words[3])) {
+            goto done;
+        }
+        dsd_key_scalars_store_direct_hex(scalars, words, digits);
+    }
+    rc = DSD_KEY_DIRECT_OK;
+done:
+    DSD_SECURE_ZERO(hex, sizeof(hex));
+    DSD_SECURE_ZERO(words, sizeof(words));
+    return rc;
+}
+
 /* Parsed storage belongs to the caller and is securely erased on every return. */
+static int
+key_set_parse_rc4(dsd_key_set* parsed, const char* text) {
+    size_t digits = 0;
+    int result = DSD_KEY_DIRECT_OK;
+    char hex[65] = {0};
+    uint64_t value = 0;
+    if (key_set_collect_direct_hex(text, hex, &digits) || digits < 1 || digits > 16
+        || dsd_parse_hex_u64_n(hex, digits, &value)) {
+        result = DSD_KEY_DIRECT_INVALID_HEX;
+    } else {
+        parsed->scalars.R = parsed->scalars.RR = value;
+        parsed->scalars.scalar_key_present[0] = parsed->scalars.scalar_key_present[1] = 1;
+    }
+    DSD_SECURE_ZERO(&value, sizeof value);
+    DSD_SECURE_ZERO(hex, sizeof hex);
+    return result;
+}
+
 static dsd_key_direct_result
 key_set_parse_typed_direct(dsd_key_set* parsed, dsd_key_type type, const char* text) {
     if (!text) {
@@ -491,26 +559,34 @@ key_set_parse_typed_direct(dsd_key_set* parsed, dsd_key_type type, const char* t
         } else {
             parsed->scalars.scalar_key_present[0] = 1;
         }
+    } else if (type == DSD_KEY_TYPE_M17_SCRAMBLER || type == DSD_KEY_TYPE_M17_AES) {
+        result = key_set_parse_m17(&parsed->scalars, type, text);
     } else if (type == DSD_KEY_TYPE_HEX) {
         if (key_set_parse_direct_hex(text, &parsed->scalars, &digits)) {
             result = DSD_KEY_DIRECT_INVALID_HEX;
         }
     } else if (type == DSD_KEY_TYPE_RC4) {
-        char hex[65] = {0};
-        uint64_t value = 0;
-        if (key_set_collect_direct_hex(text, hex, &digits) || digits < 1 || digits > 16
-            || dsd_parse_hex_u64_n(hex, digits, &value)) {
-            result = DSD_KEY_DIRECT_INVALID_HEX;
-        } else {
-            parsed->scalars.R = parsed->scalars.RR = value;
-            parsed->scalars.scalar_key_present[0] = parsed->scalars.scalar_key_present[1] = 1;
-        }
-        DSD_SECURE_ZERO(&value, sizeof value);
-        DSD_SECURE_ZERO(hex, sizeof hex);
+        result = key_set_parse_rc4(parsed, text);
     } else {
         result = DSD_KEY_DIRECT_INVALID_ARGUMENT;
     }
     return result;
+}
+
+dsd_key_direct_result
+dsd_key_set_load_typed(dsd_key_set* out, dsd_key_type type, const char* text) {
+    if (!out) {
+        return DSD_KEY_DIRECT_INVALID_ARGUMENT;
+    }
+    dsd_key_set parsed = {0};
+    const dsd_key_direct_result rc = key_set_parse_typed_direct(&parsed, type, text);
+    if (rc == DSD_KEY_DIRECT_OK) {
+        parsed.present = 1;
+        dsd_key_set_free(out);
+        *out = parsed;
+    }
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+    return rc;
 }
 
 static void
@@ -522,7 +598,7 @@ key_scalars_overlay_direct(dsd_key_scalars* target, const dsd_key_scalars* parse
         target->R = parsed->R;
         target->RR = parsed->RR;
         DSD_MEMCPY(target->scalar_key_present, parsed->scalar_key_present, sizeof target->scalar_key_present);
-    } else if (type == DSD_KEY_TYPE_SCRAMBLER) {
+    } else if (type == DSD_KEY_TYPE_SCRAMBLER || type == DSD_KEY_TYPE_M17_SCRAMBLER) {
         target->R = parsed->R;
         target->scalar_key_present[0] = parsed->scalar_key_present[0];
     } else {
@@ -545,6 +621,7 @@ dsd_key_apply_direct(dsd_state* state, dsd_key_type key_type, const char* text, 
     dsd_key_set parsed = {0};
     const dsd_key_direct_result result = key_set_parse_typed_direct(&parsed, key_type, text);
     if (result == DSD_KEY_DIRECT_OK) {
+        state->key_profile_ref[0] = '\0';
         if (mode == DSD_KEY_APPLY_REPLACE) {
             dsd_key_set_install(state, &parsed);
         } else {
@@ -785,6 +862,7 @@ dsd_scan_keys_apply_direct(dsd_state* state, dsd_key_type type, const char* text
          * activation performed since entry, even if the input was rejected. */
         key_scalars_overlay_direct(&state->scan_keys_baseline.scalars, &parsed.scalars, type);
         state->scan_keys_baseline.keyloader = 0;
+        state->scan_keys_baseline.profile_ref[0] = '\0';
     }
     dsd_key_set_free(&parsed);
     return result;

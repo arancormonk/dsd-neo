@@ -15,12 +15,14 @@ Item {
 
     TestCase {
         function init() {
-            while (scanLists.count)scanLists.remove(0)
+            while (scanLists.count)
+                scanLists.remove(0);
             screen.openFor(-1);
         }
 
         function cleanup() {
-            while (scanLists.count)scanLists.remove(0)
+            while (scanLists.count)
+                scanLists.remove(0);
         }
 
         function test_edit_entries_and_persist() {
@@ -33,8 +35,9 @@ Item {
             screen.openFor(0);
             compare(screen.entries[0].freqMhz, "851.5");
             screen.setEntry(0, "enabled", false);
-            screen.save();
+            screen.saveDraft();
             compare(scanLists.getByUid(uid).entries[0].enabled, false);
+            verify(scanLists.getByUid(uid).isDraft);
         }
 
         function visualChild(item, name) {
@@ -46,7 +49,6 @@ Item {
                 var found = visualChild(kids[i], name);
                 if (found)
                     return found;
-
             }
             return null;
         }
@@ -67,7 +69,10 @@ Item {
             screen.draft.name = "Typing";
             screen.addFrequency("First", "dmr", "461");
             var field = null;
-            tryVerify(function() { field = visualChild(screen, "scanFrequencyName"); return field !== null; });
+            tryVerify(function () {
+                field = visualChild(screen, "scanFrequencyName");
+                return field !== null;
+            });
             field.forceActiveFocus();
             field.cursorPosition = 2;
             keyClick(Qt.Key_X, Qt.ShiftModifier);
@@ -92,8 +97,27 @@ Item {
             compare(screen.entries.length, 1);
         }
 
+        function test_validate_never_persists() {
+            screen.draft.name = "Unsaved";
+            screen.addFrequency("Simplex", "p25", "851.5");
+            verify(screen.validate(), screen.validationText);
+            compare(scanLists.count, 0);
+            screen.closed();
+            compare(scanLists.count, 0);
+        }
+
+        function test_invalid_requires_explicit_draft() {
+            screen.draft.name = "Incomplete";
+            screen.save();
+            compare(scanLists.count, 0);
+            verify(screen.validationText.length > 0);
+            screen.saveDraft();
+            compare(scanLists.count, 1);
+            verify(scanLists.get(0).isDraft);
+            verify(!scanListStarter.start(scanLists.get(0), null).ok);
+        }
+
         name: "ScanListScreen"
         when: windowShown
     }
-
 }

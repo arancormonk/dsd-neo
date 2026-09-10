@@ -6,20 +6,29 @@
 #include <ctype.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/lrrp_ports.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/ecdsa.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
+#include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
@@ -32,14 +41,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "dsd-neo/core/frontend_types.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/secret_redaction.h"
-#include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/io/iq_types.h"
-#include "dsd-neo/platform/platform.h"
-#include "dsd-neo/runtime/call_alert.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <unistd.h>
@@ -1126,6 +1127,50 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             dmr_force_algid_cli = argv[i] + 18;                                                                        \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--key-profile-ref") == 0 || strncmp(argv[i], "--key-profile-ref=", 18) == 0) {            \
+            key_profile_ref_cli =                                                                                      \
+                argv[i][17] == '=' ? argv[i] + 18 : (i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL);                 \
+            if (!key_profile_ref_cli || !*key_profile_ref_cli || strlen(key_profile_ref_cli) >= 64                     \
+                || strspn(key_profile_ref_cli, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")     \
+                       != strlen(key_profile_ref_cli)) {                                                               \
+                LOG_ERROR("Invalid key profile reference\n");                                                          \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--no-decryption-keys") == 0) {                                                            \
+            no_decryption_keys_cli = 1;                                                                                \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--dmr-tg-key-clear") == 0) {                                                              \
+            dmr_tg_key_clear_cli = 1;                                                                                  \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--m17-scrambler-key") == 0 || strncmp(argv[i], "--m17-scrambler-key=", 20) == 0) {        \
+            const char* value = argv[i][19] == '=' ? argv[i] + 20 : (i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL); \
+            if (!value                                                                                                 \
+                || dsd_key_apply_direct(state, DSD_KEY_TYPE_M17_SCRAMBLER, value, DSD_KEY_APPLY_OVERLAY)               \
+                       != DSD_KEY_DIRECT_OK) {                                                                         \
+                LOG_ERROR("--m17-scrambler-key expects a nonzero 2/4/6-digit hex seed\n");                             \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            dsd_key_apply_mute_policy(opts, state);                                                                    \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--m17-aes-key") == 0 || strncmp(argv[i], "--m17-aes-key=", 14) == 0) {                    \
+            const char* value = argv[i][13] == '=' ? argv[i] + 14 : (i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL); \
+            if (!value                                                                                                 \
+                || dsd_key_apply_direct(state, DSD_KEY_TYPE_M17_AES, value, DSD_KEY_APPLY_OVERLAY)                     \
+                       != DSD_KEY_DIRECT_OK) {                                                                         \
+                LOG_ERROR("--m17-aes-key expects a nonzero 32/48/64-digit hex key\n");                                 \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            dsd_key_apply_mute_policy(opts, state);                                                                    \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--m17-signature-public-key") == 0) {                                                      \
             if (i + 1 >= argc) {                                                                                       \
                 LOG_ERROR("--m17-signature-public-key requires a 64-byte hex P-256 public key\n");                     \
@@ -1717,10 +1762,8 @@ cli_reset_getopt(void) {
 
 int
 dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_exit_rc) {
-
     dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-
     // CLI long options (pre-scan) ------------------------------------------------
     const char* calc_csv_cli = NULL;
     const char* calc_step_cli = NULL;
@@ -1749,6 +1792,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* dmr_force_algid_cli = NULL;
     int long_force_conflict_cli = 0;
     int no_force_key_cli = 0;
+    const char* key_profile_ref_cli = NULL;
+    int no_decryption_keys_cli = 0;
+    int dmr_tg_key_clear_cli = 0;
     int strict_crc_cli = 0;
     const char* m17_signature_public_key_cli = NULL;
     const char* iq_capture_cli = NULL;
@@ -1767,10 +1813,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int chan_csv_cli_seen = 0;
     int p25_bandplan_cli_seen = 0;
     int config_one_shot_cli_seen = cli_has_config_one_shot_arg(argc, argv);
-
     DSD_PARSE_ARGS_PRESCAN_BLOCK();
     DSD_PARSE_ARGS_IQ_PRE_BLOCK();
-
     if (opts->iq_replay_requested) {
 #ifndef USE_RADIO
         LOG_ERROR("--iq-replay requires a build with radio pipeline support\n");
@@ -1781,14 +1825,22 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
 #endif
     }
     DSD_PARSE_ARGS_TRAILING_BLOCK();
-
     int new_argc = dsd_cli_compact_args(argc, argv);
     cli_reset_getopt();
-
     unsigned int force_choices = 0U;
     const int long_force = state->M;
     int parse_rc = dsd_parse_short_opts(new_argc, argv, opts, state, out_exit_rc, &chan_csv_cli_seen, &force_choices);
     if (parse_rc == DSD_PARSE_CONTINUE) {
+        if (no_decryption_keys_cli) {
+            dsd_key_set empty = {0};
+            dsd_key_set_install(state, &empty);
+        }
+        if (dmr_tg_key_clear_cli) {
+            keyring_dmr_tg_map_reset(state);
+        }
+        if (key_profile_ref_cli) {
+            DSD_SNPRINTF(state->key_profile_ref, sizeof(state->key_profile_ref), "%s", key_profile_ref_cli);
+        }
         cli_finish_force_options(opts, state, force_choices, long_force, dmr_force_algid_cli != NULL, no_force_key_cli,
                                  strict_crc_cli, long_force_conflict_cli);
         parse_rc = cli_validate_trunk_scan_runtime_args(opts, trunk_scan_cli_seen, chan_csv_cli_seen,
@@ -1809,7 +1861,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
 }
 
 // Short-option getopt loop migrated to runtime
-
 // clang-format off
 #define DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK()                                                                            \
     switch (c) {                                                                                                       \

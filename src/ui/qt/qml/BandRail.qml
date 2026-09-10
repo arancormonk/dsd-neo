@@ -41,15 +41,34 @@ Item {
     // and the knob moves off centre instead — the alternative is a window that
     // runs off the end of what the hardware can reach.
     readonly property real lowHz: {
-        var lo = Math.max(Util.TUNER_LOW_HZ, rail.tunedHz - (rail.windowHz / 2))
-        var hi = Math.min(Util.TUNER_HIGH_HZ, lo + rail.windowHz)
-        return Math.max(Util.TUNER_LOW_HZ, hi - rail.windowHz)
+        var lo = Math.max(Util.TUNER_LOW_HZ, rail.tunedHz - (rail.windowHz / 2));
+        var hi = Math.min(Util.TUNER_HIGH_HZ, lo + rail.windowHz);
+        return Math.max(Util.TUNER_LOW_HZ, hi - rail.windowHz);
     }
     readonly property real highHz: Math.min(Util.TUNER_HIGH_HZ, rail.lowHz + rail.windowHz)
-    readonly property real displayHz: rail.dragging ? rail.pendingHz
-                                                    : (rail.settling ? rail.settleHz : rail.tunedHz)
+    readonly property real displayHz: rail.dragging ? rail.pendingHz : (rail.settling ? rail.settleHz : rail.tunedHz)
 
-    implicitHeight: 32
+    implicitHeight: Math.max(48, Theme.fontSize(10) + 24)
+    activeFocusOnTab: enabled && Navigation.allows(rail)
+    Accessible.role: Accessible.Slider
+    Accessible.name: qsTr("Coarse tuning: %1 MHz").arg((displayHz / 1e6).toFixed(3))
+    readonly property real value: displayHz / 1e6
+    readonly property real minimumValue: Util.TUNER_LOW_HZ / 1e6
+    readonly property real maximumValue: Util.TUNER_HIGH_HZ / 1e6
+    readonly property bool navigationAllowed: Navigation.allows(rail)
+    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.onIncreaseAction: nudge(1e6)
+    Accessible.onDecreaseAction: nudge(-1e6)
+    Keys.onRightPressed: nudge(1e6)
+    Keys.onLeftPressed: nudge(-1e6)
+    FocusFrame {}
+    function nudge(delta) {
+        if (!enabled || !Navigation.allows(rail))
+            return;
+        beginDrag();
+        pendingHz = Math.max(Util.TUNER_LOW_HZ, Math.min(Util.TUNER_HIGH_HZ, dragStartHz + delta));
+        endDrag(false);
+    }
 
     /**
      * Take hold at the frequency the rail is showing.
@@ -61,9 +80,9 @@ Item {
      * fine-tune a move undoes it instead.
      */
     function beginDrag() {
-        rail.dragStartHz = rail.displayHz
-        rail.pendingHz = rail.displayHz
-        rail.dragging = true
+        rail.dragStartHz = rail.displayHz;
+        rail.pendingHz = rail.displayHz;
+        rail.dragging = true;
     }
 
     /**
@@ -76,9 +95,9 @@ Item {
      */
     function dragBy(dx, trackWidth) {
         if (!rail.dragging || !(trackWidth > 0))
-            return
-        var want = rail.dragStartHz + ((dx / trackWidth) * (rail.highHz - rail.lowHz))
-        rail.pendingHz = Math.max(Util.TUNER_LOW_HZ, Math.min(Util.TUNER_HIGH_HZ, want))
+            return;
+        var want = rail.dragStartHz + ((dx / trackWidth) * (rail.highHz - rail.lowHz));
+        rail.pendingHz = Math.max(Util.TUNER_LOW_HZ, Math.min(Util.TUNER_HIGH_HZ, want));
     }
 
     /**
@@ -88,19 +107,19 @@ Item {
      * not a request to move the receiver.
      */
     function endDrag(cancelled) {
-        var want = rail.pendingHz
-        var moved = rail.dragging && Math.round(want) !== Math.round(rail.tunedHz)
-        rail.dragging = false
+        var want = rail.pendingHz;
+        var moved = rail.dragging && Math.round(want) !== Math.round(rail.tunedHz);
+        rail.dragging = false;
         if (!cancelled && moved) {
-            rail.settleHz = want
-            rail.settling = true
+            rail.settleHz = want;
+            rail.settling = true;
             // Restarted rather than left to the `running` binding: a second drag
             // released while the first is still settling assigns `settling` the
             // value it already has, so the binding does not re-evaluate and the
             // timer would fire on the first drag's deadline — snapping the readout
             // back to the old frequency with the second retune still in flight.
-            settleTimer.restart()
-            rail.tuneRequested(want)
+            settleTimer.restart();
+            rail.tuneRequested(want);
         }
     }
 
@@ -112,7 +131,7 @@ Item {
      * readout shows a frequency nobody is on for the full settle timeout.
      */
     function cancelSettle() {
-        rail.settling = false
+        rail.settling = false;
     }
 
     // The tune landed: the truth takes over and the knob eases to its real
@@ -186,11 +205,11 @@ Item {
             border.width: Theme.dark ? 0 : 1
             border.color: Theme.controlBorder
             x: {
-                var span = rail.highHz - rail.lowHz
+                var span = rail.highHz - rail.lowHz;
                 if (!(span > 0))
-                    return 0
-                var t = (rail.displayHz - rail.lowHz) / span
-                return Math.round(Math.max(0, Math.min(1, t)) * (track.width - width))
+                    return 0;
+                var t = (rail.displayHz - rail.lowHz) / span;
+                return Math.round(Math.max(0, Math.min(1, t)) * (track.width - width));
             }
 
             // Eases back to centre after a retune, which reads as the window
@@ -198,25 +217,29 @@ Item {
             // finger.
             Behavior on x {
                 enabled: !rail.dragging
-                NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+                NumberAnimation {
+                    duration: 180
+                    easing.type: Easing.OutCubic
+                }
             }
         }
     }
 
     DragHandler {
+        enabled: rail.enabled && Navigation.allows(rail)
         target: null
         xAxis.enabled: true
         yAxis.enabled: false
 
         onActiveChanged: {
             if (active)
-                rail.beginDrag()
+                rail.beginDrag();
             else
-                rail.endDrag(false)
+                rail.endDrag(false);
         }
         onActiveTranslationChanged: {
             if (active)
-                rail.dragBy(activeTranslation.x, track.width)
+                rail.dragBy(activeTranslation.x, track.width);
         }
     }
 }

@@ -49,6 +49,20 @@ DecoderHostAndroid::requestServiceStop() {
 }
 
 void
+DecoderHostAndroid::refreshPresentation() {}
+
+qreal
+DecoderHostAndroid::fontPixelSize(qreal sp) const {
+    return sp;
+}
+
+void
+DecoderHostAndroid::setDarkAppearance(bool) {}
+
+void
+DecoderHostAndroid::requestNotificationPermission() {}
+
+void
 DecoderHostAndroid::refreshLocation() {}
 
 void
@@ -115,10 +129,13 @@ main(int argc, char** argv) {
         running = true;
         host.refresh();
         check(host.sessionState() == dsd_qt::DecoderHost::Running, "new session reaches Running");
-        retained_record() = {
-            {"sessionId", session}, {"state", "IDLE"}, {"reason", kRunFailed}, {"lastError", "Radio open failed"}};
+        retained_record() = {{"sessionId", session}, {"state", "IDLE"},
+                             {"reason", kRunFailed}, {"lastError", "Radio open failed"},
+                             {"inputFailure", 1},    {"inputError", 111}};
         running = false;
         host.refresh();
+        check(host.inputFailureKind() == 1 && host.inputFailureCode() == 111,
+              "structured network error survives terminal lifecycle record");
         check(host.sessionState() == dsd_qt::DecoderHost::Failed && !host.failureText().isEmpty(),
               "new session failure remains visible");
         host.stop();

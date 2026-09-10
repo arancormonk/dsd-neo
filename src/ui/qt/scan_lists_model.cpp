@@ -35,7 +35,8 @@ normalize(const QVariantMap& input, const QVariantMap& base = {}) {
             : base;
     const QStringList fields{"name",          "sourceType",   "host",       "port",      "gainDb",
                              "ppm",           "bandwidthKhz", "biasTee",    "voiceOnly", "defaultDwellMs",
-                             "defaultHoldMs", "groupCsvPath", "srcCsvPath", "lastHeard", "entries"};
+                             "defaultHoldMs", "groupCsvPath", "srcCsvPath", "lastHeard", "entries",
+                             "isDraft"};
     for (const auto& field : fields) {
         if (input.contains(field)) {
             result[field] = input.value(field);
@@ -43,6 +44,9 @@ normalize(const QVariantMap& input, const QVariantMap& base = {}) {
     }
     if (!result.contains("uid")) {
         result["uid"] = input.value("uid", uuid());
+    }
+    if (!result.contains("isDraft")) {
+        result["isDraft"] = false;
     }
     if (!result.contains("lastHeard")) {
         result["lastHeard"] = 0;
@@ -54,7 +58,7 @@ normalize(const QVariantMap& input, const QVariantMap& base = {}) {
         QVariantMap entry{{"kind", "freq"}, {"enabled", true},  {"dwellMs", 0},
                           {"holdMs", 0},    {"modulation", ""}, {"gainDb", -1}};
         for (const auto& field : {"uid", "kind", "systemUid", "name", "protocol", "freqMhz", "enabled", "dwellMs",
-                                  "holdMs", "modulation", "gainDb"}) {
+                                  "holdMs", "modulation", "gainDb", "decryptionMode", "decryptionProfileUid"}) {
             if (old.contains(field)) {
                 entry[field] = old.value(field);
             }
@@ -101,7 +105,8 @@ ScanListsModel::roleNames() const {
     return {{Qt::UserRole + 1, "name"},
             {Qt::UserRole + 2, "uid"},
             {Qt::UserRole + 3, "lastHeard"},
-            {Qt::UserRole + 4, "entries"}};
+            {Qt::UserRole + 4, "entries"},
+            {Qt::UserRole + 5, "isDraft"}};
 }
 
 QVariant
@@ -124,42 +129,79 @@ ScanListsModel::rowForUid(const QString& uid) const {
     return -1;
 }
 
-void
+QVariantMap
+ScanListsModel::newDraft() const {
+    return normalize({{"isDraft", true}});
+}
+
+QString
+ScanListsModel::newEntryId() const {
+    QSet<QString> existing;
+    for (const auto& list : m_rows) {
+        for (const auto& entry : list.value("entries").toList()) {
+            existing.insert(entry.toMap().value("uid").toString());
+        }
+    }
+    QString id;
+    do {
+        id = uuid();
+    } while (existing.contains(id));
+    return id;
+}
+
+bool
 ScanListsModel::add(const QVariantMap& list) {
     auto row = normalize(list);
-    row["uid"] = uuid();
+    if (rowForUid(row.value("uid").toString()) >= 0) {
+        row["uid"] = uuid();
+    }
     row["lastHeard"] = 0;
+    auto next = m_rows;
+    next << row;
+    if (!save(next)) {
+        return false;
+    }
     beginInsertRows({}, count(), count());
-    m_rows << row;
+    m_rows = std::move(next);
     endInsertRows();
-    save();
     Q_EMIT countChanged();
+    return true;
 }
 
-void
+bool
 ScanListsModel::update(int row, const QVariantMap& list) {
     if (row < 0 || row >= count()) {
-        return;
+        return false;
     }
-    m_rows[row] = normalize(list, m_rows[row]);
-    save();
+    auto next = m_rows;
+    next[row] = normalize(list, next[row]);
+    if (!save(next)) {
+        return false;
+    }
+    m_rows = std::move(next);
     Q_EMIT dataChanged(index(row), index(row));
+    return true;
 }
 
-void
+bool
 ScanListsModel::remove(int row) {
     if (row < 0 || row >= count()) {
-        return;
+        return false;
     }
     const QString uid = m_rows[row].value("uid").toString();
+    auto next = m_rows;
+    next.removeAt(row);
+    if (!save(next)) {
+        return false;
+    }
+    beginRemoveRows({}, row, row);
+    m_rows = std::move(next);
+    endRemoveRows();
     if (QRegularExpression(QStringLiteral("^[A-Za-z0-9_-]{1,63}$")).match(uid).hasMatch()) {
         QFile::remove(json_store_path(QStringLiteral("scan_lists/") + uid + QStringLiteral(".csv")));
     }
-    beginRemoveRows({}, row, row);
-    m_rows.removeAt(row);
-    endRemoveRows();
-    save();
     Q_EMIT countChanged();
+    return true;
 }
 
 void
@@ -167,12 +209,12 @@ ScanListsModel::touch(int row) {
     update(row, {{"lastHeard", QDateTime::currentSecsSinceEpoch()}});
 }
 
-void
-ScanListsModel::save() const {
+bool
+ScanListsModel::save(const QList<QVariantMap>& rows) const {
     QJsonArray array;
-    for (const auto& row : m_rows) {
+    for (const auto& row : rows) {
         array.append(QJsonObject::fromVariantMap(row));
     }
-    json_store_save_array(QStringLiteral("scan_lists.json"), array);
+    return json_store_save_array(QStringLiteral("scan_lists.json"), array);
 }
 } // namespace dsd_qt

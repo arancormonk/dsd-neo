@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QChar>
 #include <initializer_list>
 #include <qanystringview.h>
 #include <utility>
@@ -22,7 +23,12 @@
 #include <QUuid>
 #include <QVariant>
 
+#include <QFile>
+#include <QFileInfo>
+#include <QStandardPaths>
+#include <QUrl>
 #include <dsd-neo/runtime/log.h>
+#include "decoder_host.h"
 #include "json_store.h"
 
 namespace dsd_qt {
@@ -283,6 +289,7 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     }
     map_take_string(map, QStringLiteral("extraArgs"), &row.extraArgs);
     map_take_string(map, QStringLiteral("filePath"), &row.filePath);
+    map_take_string(map, QStringLiteral("decryptionProfileUid"), &row.decryptionProfileUid);
     if (map.contains(QStringLiteral("lastHeard"))) {
         row.lastHeard = map.value(QStringLiteral("lastHeard")).toLongLong();
     }
@@ -299,6 +306,7 @@ QVariantMap
 SavedSystemsModel::mapFromRow(const Row& row) const {
     QVariantMap map;
     map.insert(QStringLiteral("uid"), row.uid);
+    map.insert(QStringLiteral("decryptionProfileUid"), row.decryptionProfileUid);
     map.insert(QStringLiteral("encKeyType"), row.encKeyType);
     map.insert(QStringLiteral("encKeyConfigured"), !row.encKeyType.isEmpty());
     map.insert(QStringLiteral("encForceKey"), row.encForceKey);
@@ -333,17 +341,22 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     return map;
 }
 
-void
+bool
 SavedSystemsModel::add(const QVariantMap& system) {
-    beginInsertRows(QModelIndex(), static_cast<int>(m_rows.size()), static_cast<int>(m_rows.size()));
     Row row = rowFromMap(system, Row());
     row.uid = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    m_rows.append(row);
+    auto next = m_rows;
+    next.append(row);
+    if (!saveRows(next)) {
+        return false;
+    }
+    beginInsertRows(QModelIndex(), count(), count());
+    m_rows = std::move(next);
     endInsertRows();
     Q_EMIT sitesChanged();
     Q_EMIT countChanged();
     Q_EMIT mostRecentRowChanged();
-    save();
+    return true;
 }
 
 bool
@@ -353,6 +366,10 @@ SavedSystemsModel::addWithKeyFrom(const QString& sourceUid, const QVariantMap& s
         return false;
     }
     const Row& stored = m_rows.at(source);
+    if (!stored.decryptionProfileUid.isEmpty()
+        && system.value("decryptionProfileUid").toString() == stored.decryptionProfileUid) {
+        return add(system);
+    }
     if (stored.encKeyType.isEmpty() || stored.encKeyValue.isEmpty()
         || system.value(QStringLiteral("encKeyType")).toString() != stored.encKeyType) {
         return false;
@@ -360,14 +377,13 @@ SavedSystemsModel::addWithKeyFrom(const QString& sourceUid, const QVariantMap& s
     // This map stays in C++; add() assigns a fresh UID and persists the private value.
     QVariantMap fields = system;
     fields.insert(QStringLiteral("encKeyValue"), stored.encKeyValue);
-    add(fields);
-    return true;
+    return add(fields);
 }
 
-void
+bool
 SavedSystemsModel::update(int row, const QVariantMap& system) {
     if (row < 0 || row >= m_rows.size()) {
-        return;
+        return false;
     }
     // WP-D4: changed tuning/CSV content no longer describes the imported site.
     QVariantMap fields = system;
@@ -381,11 +397,16 @@ SavedSystemsModel::update(int row, const QVariantMap& system) {
         }
     }
     // Missing encKeyValue means Keep; a present empty value explicitly clears it.
-    m_rows[row] = rowFromMap(fields, m_rows.at(row));
+    auto next = m_rows;
+    next[row] = rowFromMap(fields, m_rows.at(row));
+    if (!saveRows(next)) {
+        return false;
+    }
+    m_rows = std::move(next);
     const QModelIndex idx = index(row);
     Q_EMIT dataChanged(idx, idx);
     Q_EMIT sitesChanged();
-    save();
+    return true;
 }
 
 void
@@ -552,6 +573,53 @@ SavedSystemsModel::keyValueForUid(const QString& uid) const {
     return row >= 0 ? m_rows.at(row).encKeyValue : QString();
 }
 
+bool
+SavedSystemsModel::migrateCachedReplayFiles(DecoderHost* host) {
+    if (!host) {
+        return false;
+    }
+    const QString cache =
+        QFileInfo(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)).canonicalFilePath();
+    if (cache.isEmpty()) {
+        return true;
+    }
+    auto next = m_rows;
+    QMap<QString, QString> copies;
+    for (auto& row : next) {
+        if (row.sourceType != "file") {
+            continue;
+        }
+        const QFileInfo original(row.filePath);
+        const QString source = original.canonicalFilePath();
+        if (source.isEmpty() || !source.startsWith(cache + '/') || !original.isFile()) {
+            continue;
+        }
+        if (!copies.contains(source)) {
+            const QString stored =
+                host->importDocument(QUrl::fromLocalFile(source).toString(), original.fileName(), QString());
+            if (stored.isEmpty() || QFileInfo(stored).canonicalFilePath() == source) {
+                continue;
+            }
+            copies.insert(source, stored);
+        }
+        row.filePath = copies.value(source);
+    }
+    if (copies.isEmpty()) {
+        return true;
+    }
+    if (!saveRows(next)) {
+        for (const auto& path : copies) {
+            QFile::remove(path);
+        }
+        return false;
+    }
+    m_rows = std::move(next);
+    if (!m_rows.isEmpty()) {
+        Q_EMIT dataChanged(index(0), index(count() - 1));
+    }
+    return true;
+}
+
 void
 SavedSystemsModel::load() {
     QList<Row> rows;
@@ -596,8 +664,13 @@ SavedSystemsModel::load() {
 
 bool
 SavedSystemsModel::save() const {
+    return saveRows(m_rows);
+}
+
+bool
+SavedSystemsModel::saveRows(const QList<Row>& rows) const {
     QJsonArray array;
-    for (const Row& row : m_rows) {
+    for (const Row& row : rows) {
         auto stored = mapFromRow(row);
         stored.insert(QStringLiteral("encKeyValue"), row.encKeyValue);
         array.append(QJsonObject::fromVariantMap(stored));

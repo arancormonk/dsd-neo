@@ -24,6 +24,7 @@
 #include "call_history_model.h"
 #include "command_bridge.h"
 #include "decoder_host.h"
+#include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
 #include "metrics_model.h"
@@ -101,6 +102,30 @@ ui_apply_style(void) {
     QQuickStyle::setStyle(QStringLiteral("Basic"));
 }
 
+static DecryptionProfilesModel*
+wire_decryption_profiles(QQmlApplicationEngine& engine, DecoderHost* host, SavedSystemsModel* systems,
+                         ScanListsModel* scanLists, SessionArgsBuilder* sessionArgs, ScanListStarter* scanListStarter,
+                         CommandBridge* commands, MetricsModel* metrics) {
+    auto* decryptionProfiles = new DecryptionProfilesModel(&engine);
+    decryptionProfiles->setReferences(systems, scanLists);
+    sessionArgs->setDecryptionProfiles(decryptionProfiles);
+    scanListStarter->setDecryptionProfiles(decryptionProfiles);
+    commands->setDecryptionProfiles(decryptionProfiles);
+    (void)decryptionProfiles->migrateLegacySystems();
+    QObject::connect(host, &DecoderHost::sessionStateChanged, decryptionProfiles, [host, decryptionProfiles]() {
+        if (!host->sessionActive()) {
+            decryptionProfiles->releaseSessionReferences();
+        }
+    });
+    QObject::connect(metrics, &MetricsModel::controlChanged, decryptionProfiles, [host, metrics, decryptionProfiles]() {
+        if (host->sessionActive()) {
+            decryptionProfiles->retainForSession(
+                decryptionProfiles->forRuntimeReference(metrics->keyProfileRef()).value("uid").toString());
+        }
+    });
+    return decryptionProfiles;
+}
+
 bool
 ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     load_fonts(engine.rootContext());
@@ -113,12 +138,15 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* prefs = new AppPrefs(&engine);
     auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
     auto* systems = new SavedSystemsModel(&engine);
+    (void)systems->migrateCachedReplayFiles(host);
     sessionArgs->setSavedSystems(systems);
 
     // WP-S1: persisted lists and the pre-start validation facade.
     auto* scanLists = new ScanListsModel(&engine);
     auto* scanListStarter = new ScanListStarter(prefs, systems, &engine);
     auto* importedFiles = new ImportedFilesModel(host, &engine);
+    auto* decryptionProfiles =
+        wire_decryption_profiles(engine, host, systems, scanLists, sessionArgs, scanListStarter, commands, metrics);
     auto* history = new CallHistoryModel(&engine);
     auto* talkgroups = new TalkgroupListModel(history, &engine);
     auto* talkgroupView = new TalkgroupFilterModel(&engine);
@@ -132,6 +160,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     monitorView->setSourceModel(history);
     auto* radioReference = new RadioReferenceModel(prefs, importedFiles, host, &engine);
     auto* controller = new UiController(host, metrics, history, talkgroups, &engine);
+    controller->setCommandBridge(commands);
     controller->setP25Network(network); // WP-F2
     wire_attachment(host, controller, prefs, systems, scanLists);
 
@@ -173,6 +202,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("commands"), commands);
     context->setContextProperty(QStringLiteral("uiController"), controller);
     context->setContextProperty(QStringLiteral("prefs"), prefs);
+    context->setContextProperty(QStringLiteral("decryptionProfiles"), decryptionProfiles);
     context->setContextProperty(QStringLiteral("sessionArgs"), sessionArgs);
     context->setContextProperty(QStringLiteral("savedSystems"), systems);
     context->setContextProperty(QStringLiteral("scanLists"), scanLists);

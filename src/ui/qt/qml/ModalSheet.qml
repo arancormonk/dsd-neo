@@ -17,31 +17,73 @@ Rectangle {
     property alias spacing: column.spacing
     /** Names the panel item itself, for tests that address it directly. */
     property alias panelObjectName: panelItem.objectName
+    property string accessibleName: qsTr("Dialog")
+    property var previousFocus: null
+    property var dismissHandler: null
+    property bool adjustingFocus: false
+    readonly property bool isTopModal: Navigation.topModal === sheet
+    Accessible.role: Accessible.Dialog
+    Accessible.name: accessibleName
+    Accessible.ignored: !visible || !isTopModal
+    z: 100 + Math.max(0, Navigation.modals.indexOf(sheet))
+
+    function requestDismiss() {
+        if (dismissHandler) {
+            dismissHandler();
+            return;
+        }
+        visible = false;
+        dismissed();
+    }
+    function focusInside() {
+        if (!visible || !isTopModal || adjustingFocus)
+            return;
+        var window = sheet.Window.window;
+        if (window && !Navigation.contains(sheet, window.activeFocusItem)) {
+            adjustingFocus = true;
+            sheet.forceActiveFocus();
+            adjustingFocus = false;
+        }
+    }
+    Connections {
+        target: sheet
+        function onVisibleChanged() {
+            var window = sheet.Window.window;
+            if (sheet.visible) {
+                sheet.previousFocus = window ? window.activeFocusItem : null;
+                Navigation.clearInput(window);
+                Navigation.addModal(sheet);
+                sheet.forceActiveFocus();
+            } else {
+                Navigation.removeModal(sheet);
+                Navigation.clearInput(window);
+                if (sheet.previousFocus && sheet.previousFocus !== sheet && Navigation.presented(sheet.previousFocus) && sheet.previousFocus.enabled && Navigation.allows(sheet.previousFocus))
+                    sheet.previousFocus.forceActiveFocus();
+                sheet.previousFocus = null;
+            }
+        }
+    }
+    Component.onCompleted: {
+        if (visible)
+            Navigation.addModal(sheet);
+    }
+    Component.onDestruction: Navigation.removeModal(sheet)
+    Keys.onEscapePressed: Navigation.back(sheet.Window.window)
+    Keys.onBackPressed: Navigation.back(sheet.Window.window)
 
     // keyboardRectangle is in window coordinates. Mapping it avoids subtracting
     // the keyboard twice when Android has already resized the usable window.
-    property real keyboardTop: Qt.inputMethod.visible && Qt.inputMethod.keyboardRectangle.height > 0 ? mapFromItem(null, 0, Qt.inputMethod.keyboardRectangle.y).y : height
+    property real keyboardTop: Theme.keyboardTop(sheet)
     property real maximumHeight: Math.max(0, Math.min(height, keyboardTop) - 2 * Theme.screenPadding)
 
     function revealFocus() {
-        var focus = sheet.Window.window ? sheet.Window.window.activeFocusItem : null;
-        var ancestor = focus;
-        while (ancestor && ancestor !== column)
-            ancestor = ancestor.parent;
-        if (!focus || ancestor !== column)
-            return;
-        var p = focus.mapToItem(column, 0, 0);
-        var next = scroll.contentY;
-        if (p.y < next)
-            next = p.y;
-        else if (p.y + focus.height > next + scroll.height)
-            next = p.y + focus.height - scroll.height;
-        scroll.contentY = Math.max(0, Math.min(next, scroll.contentHeight - scroll.height));
+        Theme.revealFocus(scroll, column, sheet.Window.window ? sheet.Window.window.activeFocusItem : null);
     }
 
     Connections {
         target: sheet.Window.window
         function onActiveFocusItemChanged() {
+            Qt.callLater(sheet.focusInside);
             Qt.callLater(sheet.revealFocus);
         }
     }
@@ -63,11 +105,10 @@ Rectangle {
         onClicked: function (mouse) {
             if (sheet.hitsPanel(mouse.x, mouse.y))
                 return;
-            sheet.visible = false;
+            sheet.requestDismiss();
             // A sheet dismissed with a field still focused leaves the soft
             // keyboard standing over the screen it went back to.
             Qt.inputMethod.hide();
-            sheet.dismissed();
         }
     }
 
@@ -76,10 +117,10 @@ Rectangle {
 
         anchors.horizontalCenter: parent.horizontalCenter
         y: Math.max(0, (Math.min(sheet.height, sheet.keyboardTop) - height) / 2)
-        width: parent.width - 2 * Theme.screenPadding
+        width: Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
         height: Math.min(sheet.maximumHeight, column.height + 2 * Theme.cardPadding)
 
-        Flickable {
+        PlexFlickable {
             id: scroll
             objectName: "modalSheetScroll"
             x: Theme.cardPadding

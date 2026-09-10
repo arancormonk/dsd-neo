@@ -4,9 +4,28 @@
 import QtQuick
 
 // One call in a list — monitor's recent panel and the history screen share it.
-// Encrypted rows dim and carry the ENC tag; they are never styled as errors.
+// Encrypted rows carry the ENC tag while retaining readable text contrast.
 Item {
     id: row
+    property string accessibleName: name
+    property bool interactive: false
+    signal activated
+    activeFocusOnTab: interactive && enabled && Navigation.allows(row)
+    Accessible.role: interactive ? Accessible.Button : Accessible.StaticText
+    Accessible.name: accessibleName
+    readonly property bool navigationAllowed: Navigation.allows(row)
+    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.onPressAction: activate()
+    function activate() {
+        if (interactive && enabled && Navigation.allows(row))
+            activated();
+    }
+    Keys.onSpacePressed: activate()
+    Keys.onReturnPressed: activate()
+    FocusFrame {}
+    TapHandler {
+        onTapped: row.activate()
+    }
 
     property string name: ""
     property string metaText: ""
@@ -15,16 +34,16 @@ Item {
     property bool emergency: false
     property bool showDivider: true
 
-    implicitHeight: Theme.rowHeight
+    implicitHeight: Math.max(Theme.rowHeight, labels.implicitHeight + 24)
 
     Column {
+        id: labels
         anchors.left: parent.left
         anchors.right: right.left
         anchors.leftMargin: 18
         anchors.rightMargin: 12
         anchors.verticalCenter: parent.verticalCenter
         spacing: 3
-        opacity: row.enc ? 0.55 : 1.0
 
         Text {
             width: parent.width

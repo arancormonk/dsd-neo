@@ -5,6 +5,7 @@
 
 #include <utility>
 #include "auto_start_policy.h"
+#include "command_bridge.h"
 #include "diagnostics_log.h"
 #include "ui_controller.h"
 
@@ -22,10 +23,10 @@
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/state.h>
 
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 #include "call_history_model.h"
 #include "decoder_host.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
 #include "talkgroup_list_model.h"
@@ -113,6 +114,7 @@ UiController::onSessionStateChanged() {
     // Idle. Associate its last export before that attachment builds a new session.
     if (m_session == DecoderHost::Idle || m_session == DecoderHost::Failed) {
         pollTalkgroupExport();
+        pollDecryptionResult();
     }
 
     if (m_session == DecoderHost::Starting && m_diagnostics != nullptr) {
@@ -131,6 +133,9 @@ UiController::onSessionStateChanged() {
 
 void
 UiController::clearLiveModels() {
+    if (m_commands) {
+        m_commands->clearSessionInputs();
+    }
     if (m_network != nullptr) {
         m_network->clear();
     }
@@ -161,6 +166,29 @@ UiController::pollTalkgroupExport() {
 }
 
 void
+UiController::pollDecryptionResult() {
+    dsd_app_decryption_result result = {};
+    if (!dsd_app_decryption_result_get(&result) || result.sequence == m_decryptionSequence) {
+        return;
+    }
+    m_decryptionSequence = result.sequence;
+    m_decryptionResult = {{"sequence", QString::number(result.sequence)},
+                          {"requestId", QString::number(result.request_id)},
+                          {"session", QString::number(result.session_generation)},
+                          {"status", result.status},
+                          {"scope", result.scope}};
+    if (m_commands) {
+        m_commands->acknowledgeDecryptionResult(result.request_id);
+    }
+    Q_EMIT decryptionResultChanged();
+}
+
+void
+UiController::setCommandBridge(CommandBridge* commands) {
+    m_commands = commands;
+}
+
+void
 UiController::invalidateForTarget(const dsd_state* snapshot) {
     if (snapshot && snapshot->trunk_scan_active_ordinal != m_active_ordinal) {
         m_active_ordinal = snapshot->trunk_scan_active_ordinal;
@@ -181,6 +209,7 @@ UiController::invalidateForTarget(const dsd_state* snapshot) {
 void
 UiController::tick() {
     pollTalkgroupExport();
+    pollDecryptionResult();
 
     if (m_diagnostics) {
         m_diagnostics->refresh();
@@ -192,6 +221,7 @@ UiController::tick() {
         // Terminal lifecycle publication can race the first result poll. Consume
         // its final retained export before queued QML restarts build their argv.
         pollTalkgroupExport();
+        pollDecryptionResult();
     }
 
     if (dsd_app_frontend_redraw_consume() == 0) {

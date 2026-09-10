@@ -110,9 +110,9 @@ Item {
                 preempt: true
             });
             verify(card !== null);
-            compare(findChild(card, "talkgroupBadge").text, "42  P50 ⚡");
+            compare(findChild(card, "talkgroupBadge").text, "42 · Priority 50 · Preempt");
             card.preempt = false;
-            compare(findChild(card, "talkgroupBadge").text, "42  P50");
+            compare(findChild(card, "talkgroupBadge").text, "42 · Priority 50");
             card.destroy();
         }
 

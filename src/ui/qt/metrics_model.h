@@ -15,10 +15,14 @@
 #ifndef DSD_NEO_SRC_UI_QT_METRICS_MODEL_H_
 #define DSD_NEO_SRC_UI_QT_METRICS_MODEL_H_
 
+// Complete types are needed by inline Qt container and metatype instantiations.
+#include <QList> // IWYU pragma: keep
 #include <QObject>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
+#include <QVariant> // IWYU pragma: keep
+#include <QVariantList>
 #include <QtGlobal>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/p25_metrics.h>
@@ -126,6 +130,12 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool trunkingEnabled READ trunkingEnabled NOTIFY controlChanged)
     Q_PROPERTY(bool scannerMode READ scannerMode NOTIFY controlChanged)
     Q_PROPERTY(bool scanRotationActive READ scanRotationActive NOTIFY controlChanged)
+    Q_PROPERTY(int configuredForce READ configuredForce NOTIFY controlChanged)
+    Q_PROPERTY(int effectiveForce READ effectiveForce NOTIFY controlChanged)
+    Q_PROPERTY(QString keyProfileRef READ keyProfileRef NOTIFY controlChanged)
+    Q_PROPERTY(QString keyEpoch READ keyEpoch NOTIFY controlChanged)
+    Q_PROPERTY(bool automaticKeys READ automaticKeys NOTIFY controlChanged)
+    Q_PROPERTY(QVariantList decryptionSlots READ decryptionSlots NOTIFY controlChanged)
     // WP-S1: copied from the tick's held snapshot.
     Q_PROPERTY(QString scanTargetId READ scanTargetId NOTIFY controlChanged)
     Q_PROPERTY(int scanTargetOrdinal READ scanTargetOrdinal NOTIFY controlChanged)
@@ -840,6 +850,36 @@ class MetricsModel : public QObject {
      */
     void refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot);
 
+    int
+    configuredForce() const {
+        return m_view.configured_force;
+    }
+
+    int
+    effectiveForce() const {
+        return m_view.effective_force;
+    }
+
+    QString
+    keyProfileRef() const {
+        return m_view.key_profile_ref;
+    }
+
+    QString
+    keyEpoch() const {
+        return QString::number(m_view.key_epoch);
+    }
+
+    bool
+    automaticKeys() const {
+        return m_view.automatic_keys;
+    }
+
+    QVariantList
+    decryptionSlots() const {
+        return m_view.decryption_slots;
+    }
+
     /**
      * @brief Return every reading to its unknown state.
      *
@@ -949,6 +989,12 @@ class MetricsModel : public QObject {
         SlotCall slot_call[DSD_CALL_STATE_SLOT_COUNT];
         int channel_bandwidth_hz = 0;
         int decode_mode = 0;
+        int configured_force = 0;
+        int effective_force = 0;
+        QString key_profile_ref;
+        quint64 key_epoch = 0;
+        bool automatic_keys = false;
+        QVariantList decryption_slots;
         int modulation = 0;
         int tuner_gain_db = 0;
         int ppm = 0;
@@ -997,12 +1043,19 @@ class MetricsModel : public QObject {
         }
 
         bool
+        decryptionEquals(const View& other) const {
+            return configured_force == other.configured_force && effective_force == other.effective_force
+                   && key_profile_ref == other.key_profile_ref && key_epoch == other.key_epoch
+                   && automatic_keys == other.automatic_keys && decryption_slots == other.decryption_slots;
+        }
+
+        bool
         controlEquals(const View& other) const {
             return audio_muted == other.audio_muted && held_tg == other.held_tg
                    && enc_lockout_count == other.enc_lockout_count && tuner_controlled == other.tuner_controlled
                    && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
                    && scanControlEquals(other) && scan_mode == other.scan_mode && decode_mode == other.decode_mode
-                   && modulation == other.modulation && tuner_gain_db == other.tuner_gain_db
+                   && decryptionEquals(other) && modulation == other.modulation && tuner_gain_db == other.tuner_gain_db
                    && squelch_db == other.squelch_db && squelch_off == other.squelch_off && ppm == other.ppm;
         }
     };

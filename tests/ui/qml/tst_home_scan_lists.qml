@@ -16,7 +16,8 @@ Item {
     TestCase {
         function init() {
             testContext.useLifecycleHost(true);
-            while (scanLists.count)scanLists.remove(0)
+            while (scanLists.count)
+                scanLists.remove(0);
             prefs.lastStartedKind = "";
             prefs.lastStartedUid = "";
             scanLists.add({
@@ -24,20 +25,23 @@ Item {
                 "sourceType": "rtltcp",
                 "host": "127.0.0.1",
                 "port": 1234,
-                "entries": [{
-                    "kind": "freq",
-                    "name": "Simplex",
-                    "protocol": "p25",
-                    "freqMhz": "851.5",
-                    "enabled": true
-                }]
+                "entries": [
+                    {
+                        "kind": "freq",
+                        "name": "Simplex",
+                        "protocol": "p25",
+                        "freqMhz": "851.5",
+                        "enabled": true
+                    }
+                ]
             });
         }
 
         function cleanup() {
             testContext.setScanTestUsb(false, false);
             testContext.useLifecycleHost(false);
-            while (scanLists.count)scanLists.remove(0)
+            while (scanLists.count)
+                scanLists.remove(0);
         }
 
         function visualChild(item, name) {
@@ -49,25 +53,33 @@ Item {
                 var found = visualChild(kids[i], name);
                 if (found)
                     return found;
-
             }
             return null;
         }
 
-        function test_grouped_card_has_one_unobscured_action() {
+        function test_single_site_has_listen_and_management() {
             var row = savedSystems.count;
             var oldOnboarding = prefs.onboardingDone;
             try {
                 prefs.onboardingDone = true;
                 Ui.Theme.fontScale = 1.6;
-                savedSystems.add({name:"Grouped system", sourceType:"usb", freqMhz:"851.5", rrSid:12, rrSiteId:100});
-                var card = visualChild(appLoader.item, function(item) { return item.name === "Grouped system" && item.sourceType === "usb"; });
+                savedSystems.add({
+                    name: "Grouped system",
+                    sourceType: "usb",
+                    freqMhz: "851.5",
+                    rrSid: 12,
+                    rrSiteId: 100
+                });
+                var card = visualChild(appLoader.item, function (item) {
+                    return item.name === "Grouped system" && item.sourceType === "usb";
+                });
                 verify(card !== null);
                 var sites = findChild(card, "homeSiteChooserButton");
                 var play = findChild(card, "savedSystemPlay");
                 var title = findChild(card, "savedSystemTitle");
                 tryCompare(sites, "visible", true);
-                compare(play.visible, false);
+                compare(play.visible, true);
+                verify(sites.x + sites.width <= play.x, "site management and Listen do not overlap");
                 var start = title.mapToItem(card, 0, 0);
                 verify(start.x + title.width <= sites.x, "title and site action do not overlap");
                 verify(sites.y >= 0 && sites.y + sites.height <= card.height, "site action fits card");
@@ -92,10 +104,24 @@ Item {
                 var monitor = visualChild(app, "monitorScreen");
                 tryCompare(monitor, "scanTargetName", "Simplex");
                 entry.name = "";
-                app.sessionSystem = {entries: [entry]};
+                app.sessionSystem = {
+                    entries: [entry]
+                };
                 tryCompare(monitor, "scanTargetName", "851.5 MHz");
-                savedSystems.add({name: "Benton Simulcast", sourceType: "usb", freqMhz: "769.76875"});
-                app.sessionSystem = {entries: [{uid: entry.uid, kind: "system", systemUid: savedSystems.get(row).uid}]};
+                savedSystems.add({
+                    name: "Benton Simulcast",
+                    sourceType: "usb",
+                    freqMhz: "769.76875"
+                });
+                app.sessionSystem = {
+                    entries: [
+                        {
+                            uid: entry.uid,
+                            kind: "system",
+                            systemUid: savedSystems.get(row).uid
+                        }
+                    ]
+                };
                 tryCompare(monitor, "scanTargetName", "Benton Simulcast");
                 // A recreated Activity can recover the label from the last confirmed list.
                 prefs.lastStartedKind = "scan";
@@ -115,7 +141,7 @@ Item {
         }
 
         function test_home_card_and_confirmed_start() {
-            tryVerify(function() {
+            tryVerify(function () {
                 return visualChild(appLoader.item, "scanListCard") !== null;
             });
             appLoader.item.startScanList(0);
@@ -129,7 +155,9 @@ Item {
 
         // WP-S2: signal routing reuses permission handling and initialization recency.
         function test_auto_start_scan_request() {
-            scanLists.update(0, { "sourceType": "usb" });
+            scanLists.update(0, {
+                "sourceType": "usb"
+            });
             testContext.setScanTestUsb(true, false);
             uiController.requestAutoStart("scan", scanLists.get(0).uid);
             compare(appLoader.item.awaitingUsbAccess, true);
@@ -142,8 +170,7 @@ Item {
         }
 
         function test_auto_start_overlay_gate() {
-            var overlays = ["wizardOpen", "scanListOpen", "exploreSetupOpen", "diagnosticsOpen",
-                            "importsOpen", "radioReferenceOpen", "spectrumOpen", "talkgroupsOpen"];
+            var overlays = ["wizardOpen", "scanListOpen", "exploreSetupOpen", "diagnosticsOpen", "importsOpen", "radioReferenceOpen", "spectrumOpen", "talkgroupsOpen"];
             for (var i = 0; i < overlays.length; ++i) {
                 appLoader.item[overlays[i]] = true;
                 compare(uiController.autoStartBlocked, true);
@@ -157,7 +184,13 @@ Item {
             prefs.onboardingDone = true;
             var enabled = prefs.autoStartOnAttach;
             var row = savedSystems.count;
-            savedSystems.add({name:"Site",sourceType:"usb",freqMhz:"851.5",rrSid:12,rrSiteId:100});
+            savedSystems.add({
+                name: "Site",
+                sourceType: "usb",
+                freqMhz: "851.5",
+                rrSid: 12,
+                rrSiteId: 100
+            });
             var chooser = findChild(appLoader.item, "siteChooserSheet");
             try {
                 prefs.autoStartOnAttach = true;
@@ -181,8 +214,16 @@ Item {
         }
 
         function test_auto_start_card_sheet_data() {
-            return [{ tag: "saved management menu", kind: "saved" },
-                    { tag: "scan list editor", kind: "scan" }];
+            return [
+                {
+                    tag: "saved management menu",
+                    kind: "saved"
+                },
+                {
+                    tag: "scan list editor",
+                    kind: "scan"
+                }
+            ];
         }
 
         function test_auto_start_card_sheet(data) {
@@ -191,9 +232,15 @@ Item {
             var targetModel = data.kind === "saved" ? savedSystems : scanLists;
             var row = data.kind === "saved" ? savedSystems.count : 0;
             if (data.kind === "saved")
-                savedSystems.add({ "name": "Manage attached system", "sourceType": "usb", "freqMhz": "851.5" });
+                savedSystems.add({
+                    "name": "Manage attached system",
+                    "sourceType": "usb",
+                    "freqMhz": "851.5"
+                });
             else
-                scanLists.update(row, { "sourceType": "usb" });
+                scanLists.update(row, {
+                    "sourceType": "usb"
+                });
             var uid = targetModel.get(row).uid;
             var sheet = null;
             try {
@@ -205,7 +252,7 @@ Item {
                 appLoader.item.currentTab = 0;
                 compare(decoderHost.sessionState, 0);
                 tryCompare(uiController, "autoStartBlocked", false);
-                var card = visualChild(appLoader.item, data.kind === "scan" ? "scanListCard" : function(item) {
+                var card = visualChild(appLoader.item, data.kind === "scan" ? "scanListCard" : function (item) {
                     return item.name === "Manage attached system" && item.sourceType === "usb";
                 });
                 verify(card !== null);
@@ -213,9 +260,8 @@ Item {
                 mousePress(card, card.width / 4, card.height / 2);
                 wait(1000);
                 mouseRelease(card, card.width / 4, card.height / 2);
-                sheet = visualChild(appLoader.item, function(item) {
-                    return data.kind === "saved" ? item.systemName === "Manage attached system"
-                                                 : item.editUid === uid;
+                sheet = visualChild(appLoader.item, function (item) {
+                    return data.kind === "saved" ? item.systemName === "Manage attached system" : item.editUid === uid;
                 });
                 verify(sheet !== null);
                 tryCompare(sheet, "visible", true);
@@ -224,7 +270,7 @@ Item {
                 compare(uiController.autoStartBlocked, true);
                 compare(targetModel.getByUid(uid).lastHeard, 0);
                 if (data.kind === "saved") {
-                    var cancel = visualChild(sheet, function(item) {
+                    var cancel = visualChild(sheet, function (item) {
                         return item.text === "Cancel" && typeof item.clicked === "function";
                     });
                     verify(cancel !== null);
@@ -253,7 +299,11 @@ Item {
 
         function test_auto_start_saved_request() {
             var row = savedSystems.count;
-            savedSystems.add({ "name": "Attached saved system", "sourceType": "usb", "freqMhz": "851.5" });
+            savedSystems.add({
+                "name": "Attached saved system",
+                "sourceType": "usb",
+                "freqMhz": "851.5"
+            });
             var uid = savedSystems.get(row).uid;
             try {
                 testContext.setScanTestUsb(true, true);
@@ -349,5 +399,4 @@ Item {
         name: "HomeScanLists"
         when: windowShown
     }
-
 }

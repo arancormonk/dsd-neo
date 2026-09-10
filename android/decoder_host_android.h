@@ -16,6 +16,7 @@
 
 #include <QString>
 #include <QStringList>
+#include <QVector>
 #include <QtGlobal>
 #include <stdint.h>
 
@@ -32,6 +33,46 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
   public:
     explicit DecoderHostAndroid(QObject* parent = nullptr);
     ~DecoderHostAndroid() override;
+
+    bool
+    usesPlatformFontScaling() const override {
+        return true;
+    }
+
+    int
+    fontRevision() const override {
+        return m_font_revision;
+    }
+
+    qreal fontPixelSize(qreal sp) const override;
+
+    qreal
+    keyboardTop() const override {
+        return m_keyboard_top;
+    }
+
+    void setDarkAppearance(bool dark) override;
+    void requestNotificationPermission() override;
+
+    int
+    inputFailureKind() const override {
+        return m_input_failure;
+    }
+
+    int
+    inputFailureCode() const override {
+        return m_input_error;
+    }
+
+    int
+    terminalReason() const override {
+        return m_terminal_reason;
+    }
+
+    QString
+    audioRoute() const override {
+        return m_audio_route;
+    }
 
     // WP-D3: foreground location broker.
     bool
@@ -84,7 +125,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void requestLocalDeviceAccess() override;
     void setKeepScreenAwake(bool on) override;
 
-    /** @brief Materialize a SAF content URI into cacheDir; returns "" on failure. */
+    /** @brief Materialize a replay document into durable app-private storage; returns "" on failure. */
     QString importContentUri(const QString& reference, const QString& fileName) override;
 
     /**
@@ -110,6 +151,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     void setStatus(const QString& text);
     void refreshLocation();
+    void refreshPresentation();
     void refreshLocalDevice();
     /** @brief Publish a phase; @p reason overrides the failure text when non-empty. */
     void setSessionPhase(SessionPhase phase, const QString& reason = QString());
@@ -127,6 +169,14 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     SessionPhaseTracker m_phase;
     SessionPhase m_published_phase = kSessionIdle;
     QString m_failure;
+    QString m_font_configuration;
+    QVector<qreal> m_font_sizes;
+    int m_font_revision = 0;
+    qreal m_keyboard_top = -1;
+    int m_input_failure = 0;
+    int m_input_error = 0;
+    int m_terminal_reason = 0;
+    QString m_audio_route = QStringLiteral("System default");
 };
 
 } // namespace dsd_android

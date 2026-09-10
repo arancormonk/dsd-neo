@@ -505,3 +505,19 @@ Generated CSVs can contain direct keys and are owner-readable/writable only. The
 are internal session inputs, not exports; removing a list removes its generated
 CSV. Owned UTF-8 generator storage is erased on disposal. QString/QML copies of
 keys cannot promise erasure and must never be displayed or included in diagnostics.
+
+### Live decryption changes from Qt/Android
+
+Scan entries may inherit a saved system's decryption profile, select a different
+profile, or explicitly select no keys. Profile compatibility and all referenced
+files are checked before the generated CSV becomes usable. Vendor keystream modes
+are rejected because their state is outside the scoped key-set ownership contract.
+
+The retained `DECRYPTION_APPLY` result distinguishes session-default changes from
+active-target changes. A target request carries its stable ID, tuning generation
+and key epoch. Stale requests are rejected. A successful target update survives
+leaving and returning to that target; other targets and the global baseline retain
+their own keys and DMR maps. Session defaults change beneath explicit target profiles.
+These live changes do not rewrite the saved profile or alter talkgroup exclusions.
+Legacy `-Y` rows support their configured per-row profiles; live target replacement
+is exposed for the trunk-scan coordinator's stable target IDs only.

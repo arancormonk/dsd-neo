@@ -381,7 +381,7 @@ class RadioReferenceModel : public QObject {
      * @return false only on a hard generator failure; an empty channel map is a
      *         valid outcome, not an error.
      */
-    bool generateFiles(const QList<dsd_rr_site>& chosen, bool partialEncAsDe, QVariantMap* plan,
+    bool generateFiles(const QList<dsd_rr_site>& chosen, int encryptionPolicy, QVariantMap* plan,
                        QVariantList* warnings) const;
 
     /**
@@ -468,7 +468,7 @@ class RadioReferenceModel : public QObject {
     QList<int> m_refreshSiteIds;
     /* The partial-encryption answer the original import was given, so a refresh
      * regenerates the same group CSV instead of the UI default. */
-    bool m_refreshPartialEnc = true;
+    int m_refreshEncryptionPolicy = DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL;
 };
 
 } // namespace dsd_qt

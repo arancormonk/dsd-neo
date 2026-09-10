@@ -28,6 +28,7 @@
 #include <QtGlobal>
 
 namespace dsd_qt {
+class DecoderHost;
 
 class SavedSystemsModel : public QAbstractListModel {
     Q_OBJECT
@@ -71,6 +72,7 @@ class SavedSystemsModel : public QAbstractListModel {
     /** Private-store secret access for session argument assembly only. Not invokable from QML.
      * QString copies cannot promise erasure. Never log or export the returned value. */
     QString keyValueForUid(const QString& uid) const;
+    bool migrateCachedReplayFiles(DecoderHost* host);
 
     explicit SavedSystemsModel(QObject* parent = nullptr);
     ~SavedSystemsModel() override;
@@ -85,7 +87,7 @@ class SavedSystemsModel : public QAbstractListModel {
     }
 
     /** @brief Append a system from the wizard's field map. Persists immediately. */
-    Q_INVOKABLE void add(const QVariantMap& system);
+    Q_INVOKABLE bool add(const QVariantMap& system);
 
     /** Append with a retained private key, resolved by stable source UID. No key
      * value crosses the QML boundary. Returns false without adding a row when
@@ -94,7 +96,7 @@ class SavedSystemsModel : public QAbstractListModel {
     Q_INVOKABLE bool addWithKeyFrom(const QString& sourceUid, const QVariantMap& system);
 
     /** @brief Replace one system's fields. Unknown keys are ignored. */
-    Q_INVOKABLE void update(int row, const QVariantMap& system);
+    Q_INVOKABLE bool update(int row, const QVariantMap& system);
 
     Q_INVOKABLE void remove(int row);
 
@@ -176,6 +178,7 @@ class SavedSystemsModel : public QAbstractListModel {
         int biasTee = -1;
         QString extraArgs;
         QString filePath;
+        QString decryptionProfileUid;
         qint64 lastHeard = 0;
         QString chanCsvPath;
         QString groupCsvPath;
@@ -195,6 +198,7 @@ class SavedSystemsModel : public QAbstractListModel {
 
     void load();
     bool save() const;
+    bool saveRows(const QList<Row>& rows) const;
 
     QList<Row> m_rows;
 };

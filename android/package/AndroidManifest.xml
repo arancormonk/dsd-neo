@@ -37,7 +37,7 @@
         android:icon="-- %%INSERT_APP_ICON%% --"
         android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.DsdNeo"
-        android:enableOnBackInvokedCallback="false"
+        android:enableOnBackInvokedCallback="true"
         android:allowBackup="false"
         android:fullBackupOnly="false">
 

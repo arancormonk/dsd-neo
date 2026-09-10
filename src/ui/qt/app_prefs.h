@@ -35,6 +35,8 @@ class AppPrefs : public QObject {
 
     Q_PROPERTY(int appearance READ appearance WRITE setAppearance NOTIFY appearanceChanged)
     Q_PROPERTY(bool onboardingDone READ onboardingDone WRITE setOnboardingDone NOTIFY onboardingDoneChanged)
+    Q_PROPERTY(bool notificationExplained READ notificationExplained WRITE setNotificationExplained NOTIFY
+                   notificationExplainedChanged)
     Q_PROPERTY(bool backgroundListening READ backgroundListening WRITE setBackgroundListening NOTIFY
                    backgroundListeningChanged)
     Q_PROPERTY(bool keepScreenAwake READ keepScreenAwake WRITE setKeepScreenAwake NOTIFY keepScreenAwakeChanged)
@@ -89,6 +91,8 @@ class AppPrefs : public QObject {
     bool onboardingDone() const;
     void setOnboardingDone(bool done);
 
+    bool notificationExplained() const;
+    void setNotificationExplained(bool value);
     bool backgroundListening() const;
     void setBackgroundListening(bool on);
 
@@ -148,6 +152,7 @@ class AppPrefs : public QObject {
 
     void appearanceChanged();
     void onboardingDoneChanged();
+    void notificationExplainedChanged();
     void backgroundListeningChanged();
     void keepScreenAwakeChanged();
     void skipEncryptedChanged();
