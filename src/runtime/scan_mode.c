@@ -93,6 +93,7 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
     out->unmute_encrypted_p25 = opts->unmute_encrypted_p25;
     out->trunk_tune_data_calls = opts->trunk_tune_data_calls;
     out->trunk_tune_enc_calls = opts->trunk_tune_enc_calls;
+    out->p25_prefer_candidates = opts->p25_prefer_candidates;
     DSD_MEMCPY(out->group_in_file, opts->group_in_file, sizeof(out->group_in_file));
     out->frame_dstar = opts->frame_dstar;
     out->frame_x2tdma = opts->frame_x2tdma;
@@ -149,6 +150,7 @@ scan_settings_restore_row_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
     opts->unmute_encrypted_p25 = saved->unmute_encrypted_p25;
     opts->trunk_tune_data_calls = saved->trunk_tune_data_calls;
     opts->trunk_tune_enc_calls = saved->trunk_tune_enc_calls;
+    opts->p25_prefer_candidates = (uint8_t)saved->p25_prefer_candidates;
     DSD_MEMCPY(opts->group_in_file, saved->group_in_file, sizeof(opts->group_in_file));
 }
 
@@ -167,6 +169,7 @@ scan_settings_copy_row_opts(dsd_scan_settings* dst, const dsd_scan_settings* src
     dst->unmute_encrypted_p25 = src->unmute_encrypted_p25;
     dst->trunk_tune_data_calls = src->trunk_tune_data_calls;
     dst->trunk_tune_enc_calls = src->trunk_tune_enc_calls;
+    dst->p25_prefer_candidates = src->p25_prefer_candidates;
     DSD_MEMCPY(dst->group_in_file, src->group_in_file, sizeof(dst->group_in_file));
 }
 
@@ -375,6 +378,9 @@ scan_options_apply(dsd_opts* opts, dsd_state* state, const dsd_scan_option_value
     }
     if (present & DSD_SCAN_OPT_DATA) {
         opts->trunk_tune_data_calls = values->tune_data_calls;
+    }
+    if (present & DSD_SCAN_OPT_P25_CANDIDATES) {
+        opts->p25_prefer_candidates = 1;
     }
     if (present & DSD_SCAN_OPT_ENC) {
         opts->trunk_tune_enc_calls = values->tune_enc_calls;

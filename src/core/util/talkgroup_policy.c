@@ -94,6 +94,7 @@ struct dsd_tg_policy_store {
     dsd_tg_policy_active_table active;
     uint64_t context_id;
     uint64_t snapshot_source_context_id;
+    uint64_t snapshot_parent_context_id;
 };
 typedef struct dsd_tg_policy_store dsd_tg_policy_context;
 
@@ -855,7 +856,9 @@ tg_policy_context_clone(const dsd_tg_policy_context* src, dsd_tg_policy_context*
     clone->table.capacity = src->table.count;
     clone->table.generation = src->table.generation;
     clone->active = src->active;
-    clone->snapshot_source_context_id = src->context_id;
+    /* Frontend commands must retain the live identity through publish/consume copies. */
+    clone->snapshot_source_context_id = src->snapshot_source_context_id;
+    clone->snapshot_parent_context_id = src->context_id;
     if (src->table.count > 0) {
         clone->table.entries = (dsd_tg_policy_entry*)tg_policy_calloc(src->table.count, sizeof(*clone->table.entries));
         if (!clone->table.entries) {
@@ -886,8 +889,8 @@ dsd_tg_policy_copy_snapshot(dsd_state* dst, const dsd_state* src) {
     }
 
     dst_ctx = tg_policy_ctx_get_mut(dst, 0);
-    if (dst_ctx && dst_ctx != src_ctx && src_ctx->context_id != 0u && dst_ctx->snapshot_source_context_id != 0u
-        && dst_ctx->snapshot_source_context_id == src_ctx->context_id
+    if (dst_ctx && dst_ctx != src_ctx && src_ctx->context_id != 0u && dst_ctx->snapshot_parent_context_id != 0u
+        && dst_ctx->snapshot_parent_context_id == src_ctx->context_id
         && dst_ctx->table.generation == src_ctx->table.generation && dst_ctx->table.count == src_ctx->table.count) {
         dst_ctx->active = src_ctx->active;
         return 0;

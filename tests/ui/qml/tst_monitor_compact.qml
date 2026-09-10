@@ -113,6 +113,7 @@ Item {
             });
             verify(other.visible);
             verify(recent.height >= 120);
+            waitForRendering(monitor);
             var heroY = hero.mapToItem(monitor, 0, 0).y;
             body.contentY = body.contentHeight - body.height;
             wait(20);

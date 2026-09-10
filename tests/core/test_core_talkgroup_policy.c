@@ -1221,9 +1221,53 @@ test_scan_row_policy_activity(void) {
     return rc;
 }
 
+/* Exercise both publication stages, including cached copies and a replaced live table. */
+static int
+test_snapshot_chain_identity(void) {
+    int rc = 0;
+    dsd_state* live = (dsd_state*)calloc(1, sizeof(*live));
+    dsd_state* published = (dsd_state*)calloc(1, sizeof(*published));
+    dsd_state* consumer = (dsd_state*)calloc(1, sizeof(*consumer));
+    if (!live || !published || !consumer) {
+        rc = 1;
+        goto done;
+    }
+    uint64_t previous = 0;
+    for (int pass = 0; pass < 3; ++pass) {
+        dsd_tg_policy_entry entry;
+        init_entry(&entry, 1001, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED);
+        if (pass == 2) {
+            dsd_state_ext_free_all(live);
+        }
+        rc |= expect_true("seed live table", dsd_tg_policy_set_mode(live, 1001, 1001, pass == 1 ? "B" : "A") == 0);
+        uint64_t context = 0, copied_context = 0;
+        unsigned int generation = 0, copied_generation = 0;
+        dsd_tg_policy_table_version(live, &context, &generation);
+        if (pass == 2) {
+            rc |= expect_true("replacement has new origin", context != previous);
+        }
+        for (int repeat = 0; repeat < 2; ++repeat) {
+            rc |= expect_true("publish table", dsd_tg_policy_copy_snapshot(published, live) == 0);
+            rc |= expect_true("consume table", dsd_tg_policy_copy_snapshot(consumer, published) == 0);
+            dsd_tg_policy_table_version(consumer, &copied_context, &copied_generation);
+            rc |= expect_true("consumer retains live version",
+                              context == copied_context && generation == copied_generation);
+            rc |= expect_true("consumer has live row", dsd_tg_policy_entry_at(consumer, 0, &entry) == 1);
+            rc |= expect_true("consumer row refreshed", strcmp(entry.mode, pass == 1 ? "B" : "A") == 0);
+        }
+        previous = context;
+    }
+done:
+    free_test_state(live);
+    free_test_state(published);
+    free_test_state(consumer);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_snapshot_chain_identity();
     rc |= test_set_fields_remove_bounds();
     rc |= test_block_reason_labels();
     rc |= test_snapshot_reclones_recreated_context();

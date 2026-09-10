@@ -4710,6 +4710,7 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
         DSD_APP_CMD_AGGR_SYNC_TOGGLE,
         DSD_APP_CMD_TRUNK_DATA_TOGGLE,
         DSD_APP_CMD_TRUNK_ENC_TOGGLE,
+        DSD_APP_CMD_P25_CC_CAND_TOGGLE,
         DSD_APP_CMD_SCAN_VOICE_ONLY_SET,
         DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET,
         DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET,

@@ -26,6 +26,7 @@ extern "C" {
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 }
@@ -149,6 +150,59 @@ keyMuteRotation(bool unmuteP25) {
     delete opts;
 }
 
+static void
+p25CandidateRotation(int configured) {
+    QTemporaryDir dir;
+    QVariantList systems, entries;
+    for (const auto& flag : {"-mq -^", "-ft -^", "-ft"}) {
+        const QString uid = QString::number(systems.size());
+        systems << QVariantMap{
+            {"uid", uid}, {"decodeFlag", flag}, {"trunking", true}, {"freqMhz", QString::number(850 + systems.size())}};
+        entries << QVariantMap{{"uid", uid}, {"kind", "system"}, {"systemUid", uid}};
+    }
+    const auto generated = dsd_qt::scan_list_targets({{"sourceType", "usb"}, {"entries", entries}}, systems);
+    check(generated.ok && generated.targetCount == 3);
+    QFile file(dir.filePath("p25.csv"));
+    check(file.open(QIODevice::WriteOnly));
+    check(file.write(generated.csv) == generated.csv.size());
+    file.close();
+    auto* opts = new dsd_opts{};
+    auto* state = new dsd_state{};
+    initOpts(opts);
+    initState(state);
+    opts->p25_prefer_candidates = static_cast<uint8_t>(configured);
+    opts->trunk_scan_enabled = 1;
+    opts->use_rigctl = 1;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s",
+                 file.fileName().toUtf8().constData());
+    dsd_trunk_tuning_hooks hooks{};
+    hooks.tune_to_freq_request = tune;
+    hooks.tune_to_cc_request = tune;
+    dsd_trunk_tuning_hooks_set(hooks);
+    char error[256]{};
+    const bool initialized = dsd_engine_trunk_scan_init(opts, state, error, sizeof error) == 0;
+    check(initialized);
+    if (initialized) {
+        for (int i = 0; i < 6; ++i) {
+            check(opts->p25_prefer_candidates == (i % 3 == 2 ? configured : 1));
+            dsdneoUserConfig config{};
+            dsd_snapshot_opts_to_user_config(opts, state, &config);
+            check(config.trunk_p25_prefer_candidates == configured);
+            if (i % 3 == 0) {
+                check(opts->mod_qpsk == 1 && state->rf_mod == 1);
+            }
+            check(dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+        }
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    check(opts->p25_prefer_candidates == configured);
+    dsd_trunk_tuning_hooks_set({});
+    dsd_trunk_scan_hooks_set({});
+    freeState(state);
+    delete state;
+    delete opts;
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -235,6 +289,8 @@ main(int argc, char** argv) {
     DSD_SECURE_ZERO(state, sizeof *state);
     std::free(state);
     std::free(opts);
+    p25CandidateRotation(0);
+    p25CandidateRotation(1);
     keyMuteRotation(false);
     keyMuteRotation(true);
     return failures ? 1 : 0;

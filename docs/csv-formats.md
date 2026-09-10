@@ -205,6 +205,7 @@ Options are parsed once when the list is loaded. They are a restricted argument 
 | `-4` | Force loaded privacy keys over signalling; DMR/NXDN. |
 | `-0`, `--dmr-force-algid <hex>` | DMR algorithm fallback when identifiers are missing. `-0` means ALGID `21`. |
 | `-F` | Relax CRC checks; DMR/P25/M17. |
+| `-^` | Prefer learned P25 control-channel candidates for this target; P25. Restores the configured default on target exit. |
 | `--strict-crc` | Restore strict CRC checks; all modes, including inherited mode. |
 | `--no-force-key` | Disable privacy forcing and algorithm fallback for this row. |
 | `-e`, `--no-data-calls` | Enable/disable data-call tuning and conventional data-header holds; all modes. |

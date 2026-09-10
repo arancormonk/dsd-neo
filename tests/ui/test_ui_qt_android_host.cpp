@@ -34,7 +34,7 @@ DecoderHostAndroid::readLifecycleStatus() const {
 }
 
 bool
-DecoderHostAndroid::readEngineRunning() const {
+DecoderHostAndroid::readEngineRunning() {
     return running;
 }
 

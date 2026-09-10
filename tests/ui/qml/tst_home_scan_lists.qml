@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 Item {
     width: 420
@@ -51,6 +52,66 @@ Item {
 
             }
             return null;
+        }
+
+        function test_grouped_card_has_one_unobscured_action() {
+            var row = savedSystems.count;
+            var oldOnboarding = prefs.onboardingDone;
+            try {
+                prefs.onboardingDone = true;
+                Ui.Theme.fontScale = 1.6;
+                savedSystems.add({name:"Grouped system", sourceType:"usb", freqMhz:"851.5", rrSid:12, rrSiteId:100});
+                var card = visualChild(appLoader.item, function(item) { return item.name === "Grouped system" && item.sourceType === "usb"; });
+                verify(card !== null);
+                var sites = findChild(card, "homeSiteChooserButton");
+                var play = findChild(card, "savedSystemPlay");
+                var title = findChild(card, "savedSystemTitle");
+                tryCompare(sites, "visible", true);
+                compare(play.visible, false);
+                var start = title.mapToItem(card, 0, 0);
+                verify(start.x + title.width <= sites.x, "title and site action do not overlap");
+                verify(sites.y >= 0 && sites.y + sites.height <= card.height, "site action fits card");
+            } finally {
+                savedSystems.remove(row);
+                prefs.onboardingDone = oldOnboarding;
+                Ui.Theme.resetFontScale();
+            }
+        }
+
+        function test_scan_target_uses_names_including_reattachment() {
+            var app = appLoader.item;
+            var previousSystem = app.sessionSystem;
+            var row = savedSystems.count;
+            try {
+                var list = scanLists.get(0);
+                var entry = list.entries[0];
+                testContext.setMetric("scanTargetCount", 1);
+                testContext.setMetric("scanTargetOrdinal", 1);
+                testContext.setMetric("scanTargetId", entry.uid);
+                app.sessionSystem = list;
+                var monitor = visualChild(app, "monitorScreen");
+                tryCompare(monitor, "scanTargetName", "Simplex");
+                entry.name = "";
+                app.sessionSystem = {entries: [entry]};
+                tryCompare(monitor, "scanTargetName", "851.5 MHz");
+                savedSystems.add({name: "Benton Simulcast", sourceType: "usb", freqMhz: "769.76875"});
+                app.sessionSystem = {entries: [{uid: entry.uid, kind: "system", systemUid: savedSystems.get(row).uid}]};
+                tryCompare(monitor, "scanTargetName", "Benton Simulcast");
+                // A recreated Activity can recover the label from the last confirmed list.
+                prefs.lastStartedKind = "scan";
+                prefs.lastStartedUid = list.uid;
+                app.sessionSystem = null;
+                tryCompare(monitor, "scanTargetName", "Simplex");
+                testContext.setMetric("scanTargetId", "unknown-uid");
+                tryCompare(monitor, "scanTargetName", "Target 1");
+                verify(visualChild(monitor, "scanTargetHeader").text.indexOf("unknown-uid") < 0);
+            } finally {
+                savedSystems.remove(row);
+                app.sessionSystem = previousSystem;
+                testContext.setMetric("scanTargetId", "");
+                testContext.setMetric("scanTargetOrdinal", 0);
+                testContext.setMetric("scanTargetCount", 0);
+            }
         }
 
         function test_home_card_and_confirmed_start() {

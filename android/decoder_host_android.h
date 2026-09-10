@@ -102,7 +102,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool acknowledgeFailure(const QJsonObject& status);
 
     QJsonObject readLifecycleStatus() const;
-    bool readEngineRunning() const;
+    static bool readEngineRunning();
     void requestServiceStop();
     QString serviceFailureText() const;
     /** @brief Record a start that never reached the service. Always returns false. */

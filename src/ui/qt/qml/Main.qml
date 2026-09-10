@@ -243,6 +243,21 @@ Window {
             mainRoot.startWithMap(sys, row, false)
     }
 
+    function scanTargetLabel() {
+        var list = mainRoot.sessionSystem;
+        if (!list || !list.entries)
+            list = prefs.lastStartedKind === "scan" ? scanLists.getByUid(prefs.lastStartedUid) : null;
+        var entries = list && list.entries ? list.entries : [];
+        for (var i = 0; i < entries.length; ++i) {
+            var entry = entries[i];
+            if (entry.uid !== metrics.scanTargetId) continue;
+            if (entry.kind === "system")
+                return savedSystems.getByUid(entry.systemUid).name || qsTr("Saved system");
+            return entry.name || (entry.freqMhz ? entry.freqMhz + " MHz" : qsTr("Frequency"));
+        }
+        return qsTr("Target %1").arg(metrics.scanTargetOrdinal);
+    }
+
     function startScanList(row) {
         cancelPendingRestart()
         var list = scanLists.get(row)
@@ -550,6 +565,14 @@ Window {
         objectName: "monitorScreen"
         anchors.fill: safeArea
         system: mainRoot.sessionSystem
+        scanTargetName: mainRoot.scanTargetLabel()
+        sitesAvailable: mainRoot.running && !mainRoot.diagnosticsOpen && !mainRoot.importsOpen
+                        && mainRoot.sessionSystem
+                        && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
+        onOpenSites: {
+            mainRoot.cancelPendingRestart()
+            siteChooser.openFor(savedSystems.rowForUid(mainRoot.sessionSystem.uid))
+        }
         opacity: mainRoot.monitorMode ? 1.0 : 0.0
         visible: opacity > 0.0
         // The wizard ("Save as a system"), the spectrum, and the RadioReference
@@ -864,20 +887,6 @@ Window {
         onEditSite: function(row) { wizard.openForEdit(row); mainRoot.wizardOpen = true }
         onStartSite: function(row) { mainRoot.startSystem(row) }
         onRestartSite: function(uid) { mainRoot.restartSite(uid) }
-    }
-    OutlineButton {
-        objectName: "runningSiteChooserButton"
-        parent: monitor
-        z: 1
-        width: implicitWidth
-        anchors.top: parent.top
-        anchors.right: parent.right
-        visible: mainRoot.running && monitor.enabled && !mainRoot.diagnosticsOpen && !mainRoot.importsOpen
-                 && mainRoot.sessionSystem
-                 && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
-                 && !siteChooser.visible
-        text: qsTr("Sites ›")
-        onClicked: { mainRoot.cancelPendingRestart(); siteChooser.openFor(savedSystems.rowForUid(mainRoot.sessionSystem.uid)) }
     }
 
     // ---- First-run onboarding ----

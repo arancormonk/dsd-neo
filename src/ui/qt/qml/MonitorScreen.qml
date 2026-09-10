@@ -20,6 +20,9 @@ Item {
 
     // Raised by the header's spectrum button; Main.qml owns the layer.
     signal openSpectrum
+    property string scanTargetName: ""
+    property bool sitesAvailable: false
+    signal openSites
     signal openTalkgroups
 
     // Raised by a long-press on the header title, the same gesture that edits a
@@ -93,23 +96,28 @@ Item {
     // Header
     Item {
         id: header
+        objectName: "monitorHeader"
         enabled: !keySheet.visible
 
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.margins: Theme.screenPadding
-        height: 48
+        readonly property bool stacked: width < 500 && !screen.compactHeight
+        height: stacked ? heading.implicitHeight + 8 + headerActions.height
+                        : Math.max(heading.implicitHeight, headerActions.height)
 
         Column {
+            id: heading
             anchors.left: parent.left
-            anchors.right: spectrumPill.visible ? spectrumPill.left : livePill.left
+            anchors.right: header.stacked ? parent.right : headerActions.left
             anchors.rightMargin: 12
-            anchors.verticalCenter: parent.verticalCenter
+            anchors.top: parent.top
             spacing: 3
 
             Text {
                 width: parent.width
+                objectName: "monitorHeaderTitle"
                 text: screen.systemName
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(20)
@@ -122,8 +130,9 @@ Item {
                 width: parent.width
                 objectName: "scanTargetHeader"
                 text: metrics.scanTargetCount > 0
-                      ? qsTr("SCANNING · %1 (%2/%3)").arg(metrics.scanTargetId).arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount)
+                      ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount)
                         + (metrics.scanHold ? qsTr(" · HOLD") : "")
+                        + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "")
                       : screen.system ? Util.monitorMeta(screen.system) : ""
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(11)
@@ -137,92 +146,103 @@ Item {
             }
         }
 
-        // Only an RTL front end has a band around the tuned frequency to show;
-        // a PCM feed or a file has nothing to draw.
-        Rectangle {
-            id: spectrumPill
-
-            objectName: "openSpectrumButton"
-            anchors.right: livePill.left
-            anchors.rightMargin: 8
-            anchors.verticalCenter: parent.verticalCenter
-            visible: metrics.radioInput
-            width: spectrumLabel.implicitWidth + 22
-            height: 30
-            radius: Theme.radiusButton
-            color: spectrumTap.pressed ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
-            border.width: 1
-            border.color: Theme.panelBorder
-
-            Behavior on color {
-                ColorAnimation {
-                    duration: 120
-                }
-            }
-
-            Text {
-                id: spectrumLabel
-
-                anchors.centerIn: parent
-                text: qsTr("SPECTRUM")
-                font.family: Theme.mono
-                font.pixelSize: Theme.fontSize(11)
-                font.letterSpacing: 1.4
-                color: Theme.textSecondary
-            }
-
-            TapHandler {
-                id: spectrumTap
-                onTapped: screen.openSpectrum()
-            }
-        }
-
-        Rectangle {
-            id: livePill
-
+        Row {
+            id: headerActions
             anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            width: liveRow.implicitWidth + 24
-            height: 30
-            radius: Theme.radiusButton
-            color: Theme.panel
-            border.width: 1
-            border.color: Theme.panelBorder
+            anchors.top: header.stacked ? heading.bottom : parent.top
+            anchors.topMargin: header.stacked ? 8 : 0
+            spacing: 8
 
-            Row {
-                id: liveRow
-                anchors.centerIn: parent
-                spacing: 7
+            OutlineButton {
+                objectName: "runningSiteChooserButton"
+                visible: screen.sitesAvailable
+                text: qsTr("Sites ›")
+                onClicked: screen.openSites()
+            }
 
-                Item {
-                    width: 8
-                    height: 8
-                    anchors.verticalCenter: parent.verticalCenter
+            // Only an RTL front end has a band around the tuned frequency to show;
+            // a PCM feed or a file has nothing to draw.
+            Rectangle {
+                id: spectrumPill
 
-                    Rectangle {
-                        anchors.centerIn: parent
-                        width: 18
-                        height: 18
-                        radius: 9
-                        visible: Theme.dark && decoderHost.running
-                        color: Qt.alpha(Theme.cyan, 0.25)
-                    }
+                objectName: "openSpectrumButton"
+                visible: metrics.radioInput
+                width: spectrumLabel.implicitWidth + 22
+                height: Math.max(44, 30 * Theme.fontScale)
+                radius: Theme.radiusButton
+                color: spectrumTap.pressed ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
+                border.width: 1
+                border.color: Theme.panelBorder
 
-                    Rectangle {
-                        anchors.centerIn: parent
-                        width: 8
-                        height: 8
-                        radius: 4
-                        color: decoderHost.running ? Theme.cyan : Theme.textSubdued
+                Behavior on color {
+                    ColorAnimation {
+                        duration: 120
                     }
                 }
 
                 Text {
-                    text: decoderHost.running ? qsTr("LIVE") : decoderHost.statusText.toUpperCase()
+                    id: spectrumLabel
+
+                    anchors.centerIn: parent
+                    text: qsTr("SPECTRUM")
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     font.letterSpacing: 1.4
-                    color: Theme.textPrimary
+                    color: Theme.textSecondary
+                }
+
+                TapHandler {
+                    id: spectrumTap
+                    onTapped: screen.openSpectrum()
+                }
+            }
+
+            Rectangle {
+                id: livePill
+
+                objectName: "monitorLiveStatus"
+                width: liveRow.implicitWidth + 24
+                height: Math.max(44, 30 * Theme.fontScale)
+                radius: Theme.radiusButton
+                color: Theme.panel
+                border.width: 1
+                border.color: Theme.panelBorder
+
+                Row {
+                    id: liveRow
+                    anchors.centerIn: parent
+                    spacing: 7
+
+                    Item {
+                        width: 8
+                        height: 8
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: 18
+                            height: 18
+                            radius: 9
+                            visible: Theme.dark && decoderHost.running
+                            color: Qt.alpha(Theme.cyan, 0.25)
+                        }
+
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: 8
+                            height: 8
+                            radius: 4
+                            color: decoderHost.running ? Theme.cyan : Theme.textSubdued
+                        }
+                    }
+
+                    Text {
+                        text: decoderHost.running ? qsTr("LIVE") : decoderHost.statusText.toUpperCase()
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSize(11)
+                        font.letterSpacing: 1.4
+                        color: Theme.textPrimary
+                    }
                 }
             }
         }

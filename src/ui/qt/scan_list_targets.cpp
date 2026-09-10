@@ -63,9 +63,10 @@ resolveSystem(const QVariantMap& entry, const QVariantList& systems, QVariantMap
 QString
 validateIdentity(const QVariantMap& sys, const QVariantMap& entry, QSet<QString>& seen, QSet<QString>& ids,
                  Target& target) {
-    target.decode = sys.value("decodeFlag").toString().trimmed();
-    const QMap<QString, QString> types{{"-ft", "p25"}, {"-f1", "p25"},    {"-mq", "p25"}, {"-^", "p25"},
-                                       {"-fs", "dmr"}, {"-fi", "nxdn48"}, {"-fn", "nxdn"}};
+    target.decode = sys.value("decodeFlag").toString().simplified();
+    const QMap<QString, QString> types{{"-ft", "p25"},    {"-f1", "p25"},    {"-mq", "p25"},   {"-^", "p25"},
+                                       {"-fs", "dmr"},    {"-fi", "nxdn48"}, {"-fn", "nxdn"},  {"-ft -^", "p25"},
+                                       {"-mq -^", "p25"}, {"-^ -ft", "p25"}, {"-^ -mq", "p25"}};
     if (!types.contains(target.decode)) {
         return QStringLiteral("This decode mode cannot be used in a scan list.");
     }
@@ -118,6 +119,9 @@ collectPaths(const QVariantMap& sys, const Target& target, ScanListTargets& out)
 
 QString
 buildOptions(const QVariantMap& sys, QStringList& options) {
+    if (sys.value("decodeFlag").toString().simplified().split(QLatin1Char(' ')).contains(QStringLiteral("-^"))) {
+        options << QStringLiteral("-^");
+    }
     const QString keyType = sys.value("encKeyType").toString();
     const QString key = sys.value("encKeyValue").toString();
     const QString keyCsv = sys.value("keyCsvPath").toString();
@@ -155,7 +159,7 @@ validateTuning(const QVariantMap& entry, const QVariantMap& sys, Target& target)
         }
     }
     target.modulation = entry.value("modulation").toString();
-    if (target.modulation.isEmpty() && target.decode == "-mq") {
+    if (target.modulation.isEmpty() && target.decode.split(QLatin1Char(' ')).contains(QStringLiteral("-mq"))) {
         target.modulation = QStringLiteral("cqpsk");
     }
     if (!target.modulation.isEmpty() && !QStringList{"c4fm", "cqpsk", "gfsk"}.contains(target.modulation)) {

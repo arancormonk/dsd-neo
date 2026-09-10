@@ -447,6 +447,9 @@ are not opened or checked for readability; startup can still fail on those files
 Qt must not include engine headers. The architecture checker rejects that include
 at configure time as well as in `tools/check_arch_rules.sh`.
 
+The Qt/Android monitor labels the active target with its saved-system name or frequency-entry name
+(falling back to the frequency), alongside its ordinal/count and hold state. Internal entry UIDs are not displayed.
+
 The UI clears live model caches when `trunk_scan_active_ordinal` changes. A quiet
 new target must not inherit the old target's held sync indication. History keeps
 calls across these boundaries.
@@ -469,6 +472,9 @@ start. Frequency entries select P25, DMR, NXDN48 or NXDN96 conventional decoding
 
 Saved P25 (`-ft`, `-f1`, `-mq`, `-^`), DMR (`-fs`), NXDN48 (`-fi`) and NXDN96
 (`-fn`) modes retain their trunked/conventional choice. `-mq` also selects CQPSK.
+RadioReference P25 imports (`-ft -^` and `-mq -^`) retain both their modulation
+and their per-target preference for learned control-channel candidates. That
+preference is restored to the configured default when leaving the target.
 Auto, `-Y`, D-STAR, YSF, M17 and EDACS are refused. Systems with extra options are
 refused because those options cannot be scoped safely. Channel maps require a
 trunked target; P25 band plans require a P25 trunked target.

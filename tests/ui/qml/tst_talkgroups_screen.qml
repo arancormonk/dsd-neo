@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 Item {
     id: root
@@ -56,6 +57,7 @@ Item {
         }
 
         function cleanup() {
+            Ui.Theme.resetFontScale();
             tc.search.text = ""
             talkgroupView.filterText = ""
             talkgroupView.filterTag = ""
@@ -64,6 +66,21 @@ Item {
             testContext.setGroupFileConfigured(false)
             testContext.setHostRunning(false)
             testContext.resetCommands()
+        }
+
+        function test_long_names_fit_cards_data() {
+            return [{tag: "normal", scale: 1}, {tag: "large", scale: 1.6}];
+        }
+        function test_long_names_fit_cards(data) {
+            Ui.Theme.fontScale = data.scale;
+            verify(testContext.pushTalkgroup(3001, "A", "Regional Dispatch Operations", "DISPATCH"));
+            tc.search.text = "Regional";
+            tryCompare(tc.grid, "count", 1);
+            tryVerify(function() { return tc.grid.itemAtIndex(0) !== null; });
+            var card = tc.grid.itemAtIndex(0);
+            var content = findChild(card, "talkgroupCardContent");
+            tryVerify(function() { return content.implicitHeight <= content.height + 1; }, 5000,
+                      "two-line name must leave the Listening status inside the card");
         }
 
         function selectFire() {

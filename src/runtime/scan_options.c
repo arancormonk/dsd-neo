@@ -40,6 +40,7 @@ static const scan_option_spec specifications[] = {
     {"--no-force-key", DSD_SCAN_OPT_FORCE, ALL_MODES, 0, 0, 0},
     {"-F", DSD_SCAN_OPT_CRC, DMR | P25 | MODE_BIT(DSD_SCAN_MODE_M17), 0, 0, 0},
     {"--strict-crc", DSD_SCAN_OPT_CRC, ALL_MODES, 0, 0, 1},
+    {"-^", DSD_SCAN_OPT_P25_CANDIDATES, P25, 0, 0, 1},
     {"-e", DSD_SCAN_OPT_DATA, ALL_MODES, 0, 0, 1},
     {"--no-data-calls", DSD_SCAN_OPT_DATA, ALL_MODES, 0, 0, 0},
     {"--enc-follow", DSD_SCAN_OPT_ENC, ALL_MODES, 0, 0, 1},
@@ -273,6 +274,7 @@ option_set(const scan_option_spec* spec, const char* argument, unsigned int mode
         case DSD_SCAN_OPT_VOICE: parsed->values.voice_only = spec->value; return 0;
         case DSD_SCAN_OPT_DATA: parsed->values.tune_data_calls = spec->value; return 0;
         case DSD_SCAN_OPT_ENC: parsed->values.tune_enc_calls = spec->value; return 0;
+        case DSD_SCAN_OPT_P25_CANDIDATES: return 0;
         default: return option_set_path(spec, argument, parsed);
     }
 }

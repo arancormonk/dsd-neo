@@ -13,6 +13,9 @@ main(void) {
     char error[192] = {0};
     assert(dsd_scan_options_parse("", DSD_SCAN_MODE_INHERIT, 1, &parsed, error, sizeof(error)) == 0);
     assert(parsed.values.present == 0);
+    assert(dsd_scan_options_parse("-^", DSD_SCAN_MODE_P25, 0, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_P25_CANDIDATES);
+    assert(dsd_scan_options_parse("-^", DSD_SCAN_MODE_DMR, 0, &parsed, error, sizeof(error)) != 0);
     assert(
         dsd_scan_options_parse("--dmr-force-algid 0x21 -0 -G ./-F", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))
         == 0);

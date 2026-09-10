@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -406,7 +407,14 @@ main(int argc, char** argv) {
     check(dsd_tg_policy_append_exact(&state, &entry) == 0);
     uint64_t context = 0;
     unsigned int generation = 0;
-    dsd_tg_policy_table_version(&state, &context, &generation);
+    // Use the same publish -> consumer -> model path as the Android editor.
+    const auto refreshVersion = [&]() {
+        dsd_app_telemetry_publish_snapshot(&state);
+        talkgroups.refresh(&opts, dsd_app_get_latest_snapshot());
+        context = talkgroups.policyContext().toULongLong();
+        generation = talkgroups.policyGeneration();
+    };
+    refreshVersion();
     const QString version = QString::number(context);
     check(!bridge.renameTalkgroup(42, 42, version, generation, QString(50, QLatin1Char('x'))));
     check(!bridge.setTalkgroupPolicy(42, 42, version, generation, {{"priority", 101}}));
@@ -421,20 +429,20 @@ main(int argc, char** argv) {
     check(dsd_tg_policy_entry_at(&state, 0, &entry));
     check(QString::fromUtf8(entry.name) == "Fire");
     check(QString::fromUtf8(state.ui_msg).contains("stale", Qt::CaseInsensitive));
-    dsd_tg_policy_table_version(&state, &context, &generation);
+    refreshVersion();
     check(bridge.renameTalkgroup(42, 42, version, generation, "Renamed"));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(dsd_tg_policy_entry_at(&state, 0, &entry));
     check(entry.priority == 50 && entry.preempt == 1 && QString::fromUtf8(entry.name) == "Renamed");
-    dsd_tg_policy_table_version(&state, &context, &generation);
+    refreshVersion();
     check(bridge.addTalkgroup(55, 55, version, generation, "Heard", false, 25, false));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(dsd_tg_policy_entry_count(&state) == 2);
-    dsd_tg_policy_table_version(&state, &context, &generation);
+    refreshVersion();
     check(bridge.removeTalkgroup(55, 55, version, generation));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(dsd_tg_policy_entry_count(&state) == 1);
-    dsd_tg_policy_table_version(&state, &context, &generation);
+    refreshVersion();
     QTemporaryDir exportDir;
     check(exportDir.isValid());
     const QString exportPath = exportDir.filePath("groups.csv");

@@ -49,6 +49,7 @@ typedef struct {
     int unmute_encrypted_p25;
     int trunk_tune_data_calls;
     int trunk_tune_enc_calls;
+    int p25_prefer_candidates;
     char group_in_file[1024];
     int frame_dstar;
     int frame_x2tdma;

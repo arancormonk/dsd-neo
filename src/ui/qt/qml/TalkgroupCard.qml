@@ -22,6 +22,7 @@ Rectangle {
     border.color: listening ? Theme.cyan : Theme.controlBorder
 
     Column {
+        objectName: "talkgroupCardContent"
         anchors.fill: parent
         anchors.margins: 10
         spacing: 4

@@ -170,6 +170,11 @@ Item {
         }
     }
 
+    FontMetrics { id: cardIdMetrics; font.family: Theme.mono; font.pixelSize: Theme.fontSize(15) }
+    FontMetrics { id: cardNameMetrics; font.family: Theme.sans; font.pixelSize: Theme.fontSize(12) }
+    FontMetrics { id: cardTagMetrics; font.family: Theme.mono; font.pixelSize: Theme.fontSize(11) }
+    FontMetrics { id: cardStatusMetrics; font.family: Theme.sans; font.pixelSize: Theme.fontSize(11) }
+
     GridView {
         id: grid
         objectName: "talkgroupGrid"
@@ -185,7 +190,9 @@ Item {
         clip: true
         model: talkgroupView
         cellWidth: Math.floor(width / 3)
-        cellHeight: 122
+        // Two name lines, all badges/status, padding, spacing and the inter-card gap.
+        cellHeight: Math.ceil(40 + cardIdMetrics.height + 2 * cardNameMetrics.height
+                              + cardTagMetrics.height + cardStatusMetrics.height)
         enabled: decoderHost.running
 
         delegate: TalkgroupCard {

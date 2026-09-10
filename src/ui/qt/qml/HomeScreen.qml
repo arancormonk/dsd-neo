@@ -222,7 +222,7 @@ Item {
 
                     Column {
                         anchors.left: parent.left
-                        anchors.right: play.left
+                        anchors.right: siteButton.visible ? siteButton.left : play.left
                         anchors.leftMargin: Theme.cardPadding
                         anchors.rightMargin: 12
                         anchors.verticalCenter: parent.verticalCenter
@@ -231,6 +231,7 @@ Item {
 
                         Text {
                             width: parent.width
+                            objectName: "savedSystemTitle"
                             text: card.name
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(17)
@@ -274,17 +275,20 @@ Item {
                         font.pixelSize: Theme.fontSize(12)
                     }
                     OutlineButton {
+                        id: siteButton
                         objectName: "homeSiteChooserButton"
                         width: implicitWidth
                         anchors.right: parent.right
-                        anchors.bottom: parent.bottom
-                        anchors.margins: 4
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.rightMargin: Theme.cardPadding
                         text: qsTr("%1 sites ›").arg(card.siblings.length)
                         visible: card.siblings.length > 0
                         onClicked: screen.chooseSites(card.index)
                     }
                     PlayCircle {
                         id: play
+                        objectName: "savedSystemPlay"
+                        visible: card.siblings.length === 0
                         anchors.right: parent.right
                         anchors.rightMargin: Theme.cardPadding
                         anchors.verticalCenter: parent.verticalCenter

@@ -393,7 +393,7 @@ DecoderHostAndroid::readLifecycleStatus() const {
 }
 
 bool
-DecoderHostAndroid::readEngineRunning() const {
+DecoderHostAndroid::readEngineRunning() {
     return engine_is_running();
 }
 } // namespace dsd_android

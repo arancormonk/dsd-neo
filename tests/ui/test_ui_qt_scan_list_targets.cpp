@@ -33,7 +33,8 @@ main(int argc, char** argv) {
     auto build = [&]() { return scan_list_targets(list, QVariantList{sys}); };
     auto result = build();
     check(result.ok && result.targetCount == 1 && result.csv.contains("p25-conventional,851500000"));
-    for (const auto& flag : QStringList{"", "-Y", "-fd", "-fy", "-fm", "-fe"}) {
+    for (const auto& flag :
+         QStringList{"", "-Y", "-fd", "-fy", "-fm", "-fe", "-mq -Y", "-mq -^ --show-keys", "-fs -^"}) {
         sys["decodeFlag"] = flag;
         check(!build().ok && build().error.contains("Example"));
     }
@@ -48,6 +49,13 @@ main(int argc, char** argv) {
     }
     sys["decodeFlag"] = "-mq";
     check(build().csv.contains("cqpsk"));
+    for (const auto& flag : QStringList{"-mq -^", "-^ -mq", "  -mq   -^  ", "-ft -^", "-^ -ft"}) {
+        sys["decodeFlag"] = flag;
+        const auto imported = build();
+        check(imported.ok && imported.csv.contains("p25-trunk") && imported.csv.contains("-^"));
+        check(imported.csv.contains("cqpsk") == flag.contains("-mq"));
+    }
+    sys["decodeFlag"] = "-mq";
     sys["extraArgs"] = "-F";
     check(!build().ok);
     sys.remove("extraArgs");

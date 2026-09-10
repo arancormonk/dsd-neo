@@ -105,6 +105,13 @@ main(int argc, char** argv) {
     check(file.open(QIODevice::ReadOnly));
     check(file.readAll().contains(QByteArray("-1 ") + directKey.toUtf8()));
     file.close();
+    // RadioReference's combined P25 flags pass the real target parser with their scoped preference.
+    systems.update(0, {{"decodeFlag", "-mq -^"}, {"trunking", true}});
+    check(keyedStarter.build(list).value("ok").toBool());
+    check(file.open(QIODevice::ReadOnly));
+    const auto importedCsv = file.readAll();
+    check(importedCsv.contains("p25-trunk") && importedCsv.contains("cqpsk") && importedCsv.contains("-^"));
+    file.close();
     // A list replaces each system's source aliases; unused paths cannot block it.
     QFile aliases(dir.filePath("sources.csv"));
     check(aliases.open(QIODevice::WriteOnly));

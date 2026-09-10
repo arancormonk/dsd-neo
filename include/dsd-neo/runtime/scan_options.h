@@ -30,6 +30,8 @@ enum {
     DSD_SCAN_OPT_ENC = 1U << 14,
     /** Direct option text mutes undecodable P25 audio; material-only sources do not. */
     DSD_SCAN_OPT_MUTE_P25 = 1U << 15,
+    /** Prefer learned P25 control-channel candidates (-^). */
+    DSD_SCAN_OPT_P25_CANDIDATES = 1U << 16,
     DSD_SCAN_OPT_DIRECT = DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA | DSD_SCAN_OPT_SCALAR | DSD_SCAN_OPT_SCRAMBLER,
     DSD_SCAN_OPT_FILES = DSD_SCAN_OPT_HEX_FILE | DSD_SCAN_OPT_DEC_FILE
 };
