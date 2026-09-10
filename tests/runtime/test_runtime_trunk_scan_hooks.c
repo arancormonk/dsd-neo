@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -56,6 +57,38 @@ fake_p25_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
     assert(target == 1001U && source == 2002U);
     assert(is_private == 1 && encrypted == 1 && data_call == 0);
     g_activity_calls++;
+}
+
+static void
+test_recovery_ownership(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    opts.trunk_enable = 1;
+    opts.frame_dmr = opts.frame_p25p1 = opts.frame_p25p2 = 1;
+    state.p25_cc_freq = state.trunk_cc_freq = 451000000L;
+    state.synctype = state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    assert(!dsd_trunk_dmr_recovery_allowed(&opts, &state)); // Raw sync cannot claim ownership.
+    dsd_trunk_recovery_note_protocol(&state, DSD_TRUNK_RECOVERY_DMR);
+    assert(dsd_trunk_dmr_recovery_allowed(&opts, &state));
+    assert(!dsd_trunk_p25_recovery_allowed(&opts, &state));
+    state.synctype = state.lastsynctype = DSD_SYNC_NONE;
+    state.p25_cc_is_tdma = 2;
+    assert(dsd_trunk_dmr_recovery_allowed(&opts, &state));
+    assert(!dsd_trunk_p25_recovery_allowed(&opts, &state));
+    dsd_trunk_recovery_note_protocol(&state, DSD_TRUNK_RECOVERY_P25);
+    state.synctype = state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    assert(dsd_trunk_p25_recovery_allowed(&opts, &state)); // Stray sync cannot evict P25.
+    assert(!dsd_trunk_dmr_recovery_allowed(&opts, &state));
+    state.synctype = state.lastsynctype = DSD_SYNC_NONE;
+    assert(dsd_trunk_p25_recovery_allowed(&opts, &state));
+    opts.trunk_scan_enabled = 1;
+    assert(!dsd_trunk_p25_recovery_allowed(&opts, &state)); // No installed owner during startup/shutdown.
+    opts.trunk_scan_enabled = 0;
+    opts.trunk_enable = 0;
+    assert(!dsd_trunk_p25_recovery_allowed(&opts, &state));
+    assert(!dsd_trunk_dmr_recovery_allowed(&opts, &state));
+    assert(!dsd_trunk_p25_recovery_allowed(NULL, &state));
+    assert(!dsd_trunk_dmr_recovery_allowed(&opts, NULL));
 }
 
 int
@@ -110,5 +143,6 @@ main(void) {
     assert(g_control_calls == 4);
     dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, 1001U, 2002U, 1, 1, 0);
     assert(g_activity_calls == 1);
+    test_recovery_ownership();
     return 0;
 }

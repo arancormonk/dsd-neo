@@ -4594,6 +4594,10 @@ add_test(
     NAME ENGINE_PROTOCOL_DISPATCH
     COMMAND dsd-neo_test_engine_protocol_dispatch
 )
+target_link_libraries(
+    dsd-neo_test_engine_protocol_dispatch
+    PRIVATE dsd-neo_runtime
+)
 
 add_executable(
     dsd-neo_test_engine_no_carrier_reset
@@ -4865,6 +4869,29 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
 )
 add_test(NAME ENGINE_TRUNK_SCAN COMMAND dsd-neo_test_engine_trunk_scan)
+
+add_executable(
+    dsd-neo_test_engine_dmr_cc_recovery
+    engine/test_engine_dmr_cc_recovery.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
+    ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+)
+target_include_directories(
+    dsd-neo_test_engine_dmr_cc_recovery
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp ${PROJECT_SOURCE_DIR}/src/engine
+)
+target_compile_definitions(
+    dsd-neo_test_engine_dmr_cc_recovery
+    PRIVATE DSD_NEO_TEST_HOOKS DSD_TRUNK_SCAN_TEST_CLOCK=1
+)
+target_link_libraries(
+    dsd-neo_test_engine_dmr_cc_recovery
+    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME ENGINE_DMR_CC_RECOVERY
+    COMMAND dsd-neo_test_engine_dmr_cc_recovery
+)
 
 add_executable(
     dsd-neo_test_engine_scan_voice_gate
@@ -5443,7 +5470,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_p25_p1_tsbk_handlers
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_test_support
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_test_support dsd-neo_runtime
 )
 target_compile_options(
     dsd-neo_test_p25_p1_tsbk_handlers
@@ -5810,6 +5837,7 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 add_test(NAME P25_P2_XCCH_HELPERS COMMAND dsd-neo_test_p25_p2_xcch_helpers)
+target_link_libraries(dsd-neo_test_p25_p2_xcch_helpers PRIVATE dsd-neo_runtime)
 
 # Core synthesized-audio playback dispatch matrix
 add_executable(
@@ -5899,6 +5927,7 @@ target_link_libraries(
     PRIVATE dsd-neo_test_call_state_support
 )
 add_test(NAME P25_P1_TSBK_SEQUENCE COMMAND dsd-neo_test_p25_p1_tsbk_sequence)
+target_link_libraries(dsd-neo_test_p25_p1_tsbk_sequence PRIVATE dsd-neo_runtime)
 
 # P25 P1 TDU state cleanup and status-symbol handoff
 add_executable(
@@ -6729,7 +6758,9 @@ add_test(NAME M17_CONFIRM COMMAND dsd-neo_test_m17_confirm)
 add_executable(
     dsd-neo_test_dmr_t3_sm_clamp
     protocol/dmr/test_dmr_t3_sm_clamp.c
+    test_support/scan_group_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
 target_include_directories(
     dsd-neo_test_dmr_t3_sm_clamp
@@ -6747,7 +6778,9 @@ add_test(NAME DMR_T3_SM_CLAMP COMMAND dsd-neo_test_dmr_t3_sm_clamp)
 add_executable(
     dsd-neo_test_dmr_t3_sm_release
     protocol/dmr/test_dmr_t3_sm_release.c
+    test_support/scan_group_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
 target_include_directories(
     dsd-neo_test_dmr_t3_sm_release
@@ -6765,7 +6798,9 @@ add_test(NAME DMR_T3_SM_RELEASE COMMAND dsd-neo_test_dmr_t3_sm_release)
 add_executable(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
     protocol/dmr/test_dmr_t3_sm_return_to_cc_matrix.c
+    test_support/scan_group_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
 target_include_directories(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
@@ -6787,7 +6822,9 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_t3_shim
     protocol/dmr/test_dmr_t3_shim.c
+    test_support/scan_group_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
 target_include_directories(
     dsd-neo_test_dmr_t3_shim
@@ -8367,7 +8404,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_p25_p1_pdu_private_allowlist
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform dsd-neo_runtime
 )
 add_test(
     NAME P25_P1_PDU_PRIVATE_ALLOWLIST

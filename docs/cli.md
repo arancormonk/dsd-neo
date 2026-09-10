@@ -517,7 +517,7 @@ Notes
     group/private and encrypted-call policy. PDU data never refreshes its hold, so `-e` has no effect on that row.
     Phase 1 decode captures are available for replay checks, not proof of on-air target holds; Phase 2 conventional
     parking is untested on air.
-  - Voice-only scan (`--scan-voice-only` with the qualify/hold flags above): conventional targets hold only from
+  - Voice-only scan (`--scan-voice-only`): conventional targets hold only from
     decoded voice, with `dwell_ms` as the qualify window and `activity_hold_ms` as the hold; trunked targets are
     unchanged (control-only rotates after dwell) and show no `Voice:` marker on the status line. A conventional
     target shows `VOICE` while its call is active and `TAIL` after the call ends while the hold remains.
@@ -556,6 +556,8 @@ Notes
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode)
 - Hang time after voice/sync loss (seconds): `-t <secs>`
+  - This is not the idle dwell between `--trunk-scan` targets. DMR control/rest-channel acquisition has its own
+    two-second window; use target `dwell_ms` to budget each visit. See [trunk-scan timing](trunk-scan.md).
   - P25 Talk Complete, TDU, TDULC, MAC_END_PTT, MAC_IDLE, and MAC_HANGTIME mark a transmission boundary. They close
     that slot's media and start or refresh the traffic-carrier inactivity timer without returning to the control
     channel. A follow-up PTT/ACTIVE on the retained carrier opens a clean call epoch without retuning.

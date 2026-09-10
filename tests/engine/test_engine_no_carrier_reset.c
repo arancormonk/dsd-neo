@@ -16,13 +16,16 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdbool.h>
@@ -285,6 +288,42 @@ free_test_runtime(dsd_opts* opts, dsd_state* state) {
 }
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+static int
+test_dmr_explicit_return_destination(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    opts->trunk_enable = opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_NULL;
+    opts->audio_out_type = 9;
+    opts->setmod_bw = 0;
+    state->trunk_cc_freq = 451000000L;
+    state->p25_cc_freq = 450000000L;
+    dmr_sm_ctx_t ctx;
+    dmr_sm_init_ctx(&ctx, opts, state);
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.return_to_cc_request = dsd_engine_return_to_cc_request});
+    g_rigctl_setfreq_ok = 0;
+    int rc = expect_true("dmr-return-failure",
+                         dmr_sm_return_to_cc(&ctx, opts, state, 452000000L) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_true("dmr-failed-return-keeps-aliases",
+                      state->trunk_cc_freq == 451000000L && state->p25_cc_freq == 450000000L);
+    g_rigctl_setfreq_ok = 1;
+    rc |= expect_true("dmr-return-success",
+                      dmr_sm_return_to_cc(&ctx, opts, state, 452000000L) == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("dmr-return-actual-frequency",
+                      g_rigctl_setfreq_freq == 452000000L && state->trunk_cc_freq == 452000000L
+                          && ctx.cc_probe_freq_hz == 452000000L && ctx.cc_rx_freq_hz == 452000000L && ctx.cc_acquiring);
+    rc |= expect_true("dmr-return-clears-obsolete-alias", state->p25_cc_freq == 0);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 static int
 test_trunk_cache_with_mode_metadata(void) {
     dsd_opts* opts = NULL;
@@ -567,6 +606,7 @@ main(void) {
 
     p25_sm_ctx_t* recovery_ctx = p25_sm_get_ctx();
     p25_sm_init_ctx(recovery_ctx, opts, state);
+    dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_P25);
     recovery_ctx->state = P25_SM_TUNED;
     recovery_ctx->vc_freq_hz = 851012500;
     recovery_ctx->vc_channel = (2 << 12) | 2;
@@ -588,6 +628,7 @@ main(void) {
     rc |= expect_true("p25-vc-reacquire-hold-preserves-sync-deadline",
                       fabs(state->last_vc_sync_time_m - (recovery_now_m - 11.0)) <= 1.0e-9);
 
+    dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_UNKNOWN);
     recovery_ctx->t_vc_reacquire_m = 0.0;
     opts->audio_in_type = saved_audio_in_type;
     p25_sm_init_ctx(recovery_ctx, opts, state);
@@ -2066,6 +2107,7 @@ main(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_typed_scan_tune_boundaries();
     rc |= test_trunk_cache_with_mode_metadata();
+    rc |= test_dmr_explicit_return_destination();
 #endif
 
     if (rc == 0) {

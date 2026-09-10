@@ -28,9 +28,9 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
-#include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdbool.h>
@@ -1602,11 +1602,13 @@ typedef struct {
 } dmr_slco_data;
 
 static void
-dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
+dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state, int control_channel) {
     if (state->trunk_cc_freq == 0) {
         return;
     }
-    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0, NULL);
+    uint64_t request_id = 0U;
+    dsd_trunk_tune_result tune_result =
+        dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0, &request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return;
     }
@@ -1614,6 +1616,13 @@ dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     dmr_reset_blocks(opts, state);
+    if (control_channel) {
+        dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, state->trunk_cc_freq, request_id);
+    } else {
+        /* XPT has no dedicated control channel. A free-channel hop must not
+         * start (or inherit) Tier III control-channel hunting. */
+        dmr_sm_init_ctx(dmr_sm_get_ctx(), opts, NULL);
+    }
 }
 
 static void
@@ -1715,12 +1724,7 @@ dmr_slco_handle_c_sys_parms(const dsd_opts* opts, dsd_state* state, uint8_t slco
     DSD_FPRINTF(stderr, " SYS: %04X;", syscode);
     dmr_slco_print_tiii_site_parms(state, data, syscode);
 
-    if (opts->use_rigctl == 1 && state->trunk_cc_freq == 0) {
-        long int ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
-        if (ccfreq != 0) {
-            state->trunk_cc_freq = ccfreq;
-        }
-    }
+    dmr_sm_note_cc_activity(opts, state, 0);
 }
 
 static void
@@ -1765,12 +1769,16 @@ dmr_slco_handle_cap_plus(dsd_opts* opts, dsd_state* state, const dmr_slco_data* 
     DSD_FPRINTF(stderr, " SLCO Capacity Plus Site: %d - Rest LSN: %d - RS: %02X", data->capsite, data->restchannel,
                 data->cap_reserved);
 
+    if (state->trunk_chan_map[data->restchannel] > 0) {
+        dmr_sm_note_cc_activity(opts, state, state->trunk_chan_map[data->restchannel]);
+    }
+
     if (state->tg_hold != 0 && opts->trunk_enable == 1 && dmr_slco_cap_plus_busy(state)
         && dmr_slco_tg_hold_not_on_slot(state)) {
         if (state->trunk_chan_map[data->restchannel] != 0) {
             state->trunk_cc_freq = state->trunk_chan_map[data->restchannel];
         }
-        dmr_slco_tune_and_reset(opts, state);
+        dmr_slco_tune_and_reset(opts, state, 1);
     }
 }
 
@@ -1801,7 +1809,7 @@ dmr_slco_handle_xpt(dsd_opts* opts, dsd_state* state, const dmr_slco_data* data)
         if (state->trunk_chan_map[xpt_lsn] != 0) {
             state->trunk_cc_freq = state->trunk_chan_map[xpt_lsn];
         }
-        dmr_slco_tune_and_reset(opts, state);
+        dmr_slco_tune_and_reset(opts, state, 0);
     }
 }
 
@@ -1811,18 +1819,7 @@ dmr_slco_handle_con_plus_control(dsd_opts* opts, dsd_state* state, const dmr_slc
                 data->con_siteid);
     DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "%d-%d ", data->con_netid, data->con_siteid);
 
-    if (opts->use_rigctl == 1 && opts->trunk_is_tuned == 0) {
-        long int ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
-        if (ccfreq != 0) {
-            state->trunk_cc_freq = ccfreq;
-        }
-    }
-    if (opts->audio_in_type == AUDIO_IN_RTL && opts->trunk_is_tuned == 0) {
-        long int ccfreq = (long int)opts->rtlsdr_center_freq;
-        if (ccfreq != 0) {
-            state->trunk_cc_freq = ccfreq;
-        }
-    }
+    dmr_sm_note_cc_activity(opts, state, 0);
     if ((time(NULL) - state->last_vc_sync_time) > 2) {
         rotate_symbol_out_file(opts, state);
     }

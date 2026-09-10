@@ -70,6 +70,7 @@ typedef struct {
     unsigned long long p2_rfssid;
     long int p25_cc_freq;
     long int trunk_cc_freq;
+    int trunk_recovery_protocol;
     uint64_t trunk_chan_map_seq;
     time_t p25_sys_time;
     long p25_cc_eval_freq;
@@ -1414,6 +1415,7 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     snapshot->p2_rfssid = state->p2_rfssid;
     snapshot->p25_cc_freq = state->p25_cc_freq;
     snapshot->trunk_cc_freq = state->trunk_cc_freq;
+    snapshot->trunk_recovery_protocol = state->trunk_recovery_protocol;
     DSD_MEMCPY(snapshot->p25_vc_freq, state->p25_vc_freq, sizeof(snapshot->p25_vc_freq));
     DSD_MEMCPY(snapshot->trunk_vc_freq, state->trunk_vc_freq, sizeof(snapshot->trunk_vc_freq));
     trunk_scan_save_enc_lockout_snapshot(state, snapshot);
@@ -1462,6 +1464,7 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     state->p2_rfssid = snapshot->p2_rfssid;
     state->p25_cc_freq = snapshot->p25_cc_freq;
     state->trunk_cc_freq = snapshot->trunk_cc_freq;
+    state->trunk_recovery_protocol = snapshot->trunk_recovery_protocol;
     DSD_MEMCPY(state->p25_vc_freq, snapshot->p25_vc_freq, sizeof(state->p25_vc_freq));
     DSD_MEMCPY(state->trunk_vc_freq, snapshot->trunk_vc_freq, sizeof(state->trunk_vc_freq));
     trunk_scan_restore_enc_lockout_snapshot(state, snapshot);
@@ -2477,6 +2480,11 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
         return -1;
     }
 
+    if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
+        dmr_sm_begin_cc_acquisition(&rt->dmr_ctx, opts, state, trunk_scan_retune_freq(state, &rt->target),
+                                    tune_request_id);
+    }
+
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
         if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING && tune_request_id != 0U) {
             (void)p25_sm_await_pending_cc_tune(&rt->p25_ctx, opts, state, tune_request_id, "scan-retune");
@@ -2634,7 +2642,8 @@ trunk_scan_active_is_held(const dsd_opts* opts, const dsd_trunk_scan_coord* coor
                 || p25_sm_get_state(&rt->p25_ctx) == P25_SM_TUNED);
     }
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
-        return (opts->trunk_is_tuned == 1 || dmr_sm_get_state(&rt->dmr_ctx) == DMR_SM_TUNED);
+        return (rt->dmr_ctx.cc_tune_request_id != 0U || opts->trunk_is_tuned == 1
+                || dmr_sm_get_state(&rt->dmr_ctx) == DMR_SM_TUNED);
     }
     if (trunk_scan_type_is_nxdn_trunk(rt->target.type)) {
         return opts->trunk_is_tuned == 1;
@@ -2801,6 +2810,11 @@ static void
 trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
     double now_m = trunk_scan_now_m();
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (rt->tune_pending && rt->dmr_ctx.cc_tune_request_id != 0U) {
+        /* Resolve the DMR backend deadline even while the initial park keeps
+         * the coordinator waiting for its request. */
+        trunk_scan_tick_active_target_sm(opts, state, rt);
+    }
     int pending_status = trunk_scan_resolve_pending_retune(state, rt, now_m);
     if (pending_status == 0) {
         return;

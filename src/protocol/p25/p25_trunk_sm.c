@@ -2457,6 +2457,8 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
         return;
     }
 
+    dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_P25);
+
     // Check grant policy
     if (!grant_allowed(ctx, opts, state, ev, &decision, &eval_ctx, 1)) {
         return;
@@ -6127,7 +6129,15 @@ p25_sm_tick_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
 
     switch (ctx->state) {
         case P25_SM_IDLE:
-            // Nothing to do
+            /* Control blocks can establish a CC before the first voice grant.
+             * Use their actual decode time so sync loss still expires normally. */
+            if (state && state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25 && state->p25_cc_freq > 0
+                && state->p25_last_cc_msg_time_m > 0.0) {
+                ctx->t_cc_sync_m = state->p25_last_cc_msg_time_m;
+                p25_sm_set_expected_cc_nac(ctx, state, 0);
+                set_state(ctx, opts, state, P25_SM_ON_CC, "decoded-cc");
+                p25_sm_tick_on_cc(ctx, opts, state, now_m, ctx->config.cc_grace_s);
+            }
             break;
 
         case P25_SM_ON_CC: p25_sm_tick_on_cc(ctx, opts, state, now_m, ctx->config.cc_grace_s); break;

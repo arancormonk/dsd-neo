@@ -3581,7 +3581,6 @@ frame_sync_no_sync_try_p25_release(dsd_opts* opts, dsd_state* state, time_t now)
     frame_sync_p25_slot_activity(opts, state, now, fallback_nowm, mac_hold, ring_hold, dt, &left_active, &right_active);
     int both_slots_idle = (!is_p2_vc) ? 1 : !(left_active || right_active);
     if (dt >= opts->trunk_hangtime && both_slots_idle && dt_since_tune >= vc_grace) {
-        state->p25_sm_force_release = 1;
         dsd_frame_sync_hook_p25_sm_release(opts, state);
     }
 }

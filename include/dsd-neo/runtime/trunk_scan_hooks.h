@@ -81,6 +81,24 @@ int dsd_trunk_scan_hook_decryption_apply(dsd_opts* opts, dsd_state* state, const
 
 void* dsd_trunk_scan_hook_p25_ctx(void);
 void* dsd_trunk_scan_hook_dmr_ctx(void);
+
+typedef enum {
+    DSD_TRUNK_RECOVERY_UNKNOWN = 0,
+    DSD_TRUNK_RECOVERY_P25,
+    DSD_TRUNK_RECOVERY_DMR,
+} dsd_trunk_recovery_protocol;
+
+/** Publish validated protocol evidence under the decoder/SM guard (or while stopped).
+ * Only P25/DMR control or grant evidence transfers ownership. Other protocol decodes,
+ * raw sync detection and no-carrier resets must not change this retained owner. */
+void dsd_trunk_recovery_note_protocol(dsd_state* state, dsd_trunk_recovery_protocol protocol);
+
+/** Recovery ownership: a parked target overrides retained standalone ownership.
+ * Decoder-thread callers may inspect their retained owner directly; other threads
+ * must hold the decoder/SM guard. These predicates do not read volatile
+ * sync, modulation or CC hints written outside that guard by frame acquisition. */
+int dsd_trunk_p25_recovery_allowed(const dsd_opts* opts, const dsd_state* state);
+int dsd_trunk_dmr_recovery_allowed(const dsd_opts* opts, const dsd_state* state);
 void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
 /**
  * @brief Report decoded conventional DMR/NXDN/P25 activity to the scan coordinator.

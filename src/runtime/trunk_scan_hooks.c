@@ -5,7 +5,9 @@
 
 #include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
@@ -19,6 +21,45 @@ dsd_trunk_scan_hook_decryption_apply(dsd_opts* opts, dsd_state* state, const cha
     return g_trunk_scan_hooks.decryption_apply
                ? g_trunk_scan_hooks.decryption_apply(opts, state, target_id, generation, fields, keys, map, force)
                : DSD_TRUNK_KEY_UNAVAILABLE;
+}
+
+void
+dsd_trunk_recovery_note_protocol(dsd_state* state, dsd_trunk_recovery_protocol protocol) {
+    if (state) {
+        state->trunk_recovery_protocol = (int)protocol;
+    }
+}
+
+int
+dsd_trunk_p25_recovery_allowed(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || opts->trunk_enable != 1) {
+        return 0;
+    }
+    if (opts->trunk_scan_enabled == 1) {
+        return dsd_trunk_scan_hook_p25_ctx() != NULL;
+    }
+    if (!opts->frame_p25p1 && !opts->frame_p25p2) {
+        return 0;
+    }
+    return state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25
+           || (state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_UNKNOWN && !opts->frame_dmr && !opts->frame_nxdn48
+               && !opts->frame_nxdn96 && !opts->frame_provoice);
+}
+
+int
+dsd_trunk_dmr_recovery_allowed(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || opts->trunk_enable != 1) {
+        return 0;
+    }
+    if (opts->trunk_scan_enabled == 1) {
+        return dsd_trunk_scan_hook_dmr_ctx() != NULL;
+    }
+    if (!opts->frame_dmr) {
+        return 0;
+    }
+    return state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_DMR
+           || (state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_UNKNOWN && !opts->frame_p25p1 && !opts->frame_p25p2
+               && !opts->frame_nxdn48 && !opts->frame_nxdn96 && !opts->frame_provoice);
 }
 
 void

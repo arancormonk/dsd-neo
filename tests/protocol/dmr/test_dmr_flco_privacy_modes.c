@@ -2325,6 +2325,37 @@ test_completed_slco_capacity_plus_hold_returns_to_rest_channel(void) {
     dsd_state_ext_free_all(&state);
 }
 
+static void
+test_completed_slco_xpt_hold_does_not_start_cc_hunt(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slco[36] = {0};
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_enable = opts.frame_dmr = 1;
+    opts.trunk_is_tuned = 1;
+    state.tg_hold = 99U;
+    state.dmrburstL = state.dmrburstR = 16;
+    state.trunk_cc_freq = 851000000L;
+    state.trunk_chan_map[11] = 852000000L; // Free LCN 6 maps to LSN 11.
+    dmr_sm_init(&opts, &state);
+    dsd_trunk_recovery_note_protocol(&state, DSD_TRUNK_RECOVERY_DMR);
+    s_tune_to_cc_calls = 0;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = capture_tune_to_cc});
+    write_bits_u64(slco, 0U, 0x8U, 4U);
+    write_bits_u64(slco, 12U, 6U, 4U);
+    run_completed_slco(&opts, &state, slco);
+    assert(s_tune_to_cc_calls == 1 && s_tune_to_cc_freq == 852000000L);
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(ctx->state == DMR_SM_IDLE && !ctx->cc_acquiring && !ctx->cc_freq_hz);
+    ctx->cc_acquire_start_m = ctx->t_cc_sync_m = dsd_time_now_monotonic_s() - 10.0;
+    dmr_sm_tick_ctx(ctx, &opts, &state);
+    dmr_sm_tick_ctx(ctx, &opts, &state);
+    assert(s_tune_to_cc_calls == 1 && ctx->state == DMR_SM_IDLE);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_state_ext_free_all(&state);
+}
+
 // The voice LC header repeats through the start of a transmission for late
 // entry, always before the first voice superframe. Repeats that re-describe the
 // running call stay in its epoch; a second epoch would commit the first one's
@@ -2575,6 +2606,7 @@ main(void) {
     test_completed_slco_activity_uses_each_slot_value();
     test_completed_slco_connect_plus_and_xpt_update_site_state();
     test_completed_slco_capacity_plus_hold_returns_to_rest_channel();
+    test_completed_slco_xpt_hold_does_not_start_cc_hunt();
     printf("DMR FLCO privacy modes: OK\n");
     return 0;
 }
