@@ -18,6 +18,7 @@
  */
 
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/frontend_types.h>
@@ -202,6 +203,7 @@ static void
 init_test_runtime(dsd_opts* opts, dsd_state* state) {
     initOpts(opts);
     initState(state);
+    dsd_app_frontend_runtime_start(opts, state);
 }
 
 typedef struct test_runtime {
@@ -1183,8 +1185,8 @@ test_ui_aes_key_command_handles_zero_and_short_payloads(void) {
     rc |= expect_int_eq("zero AES key command is drained", applied, 1);
     rc |= expect_u64_eq("zero AES clears A1 slot 0", state->A1[0], 0ULL);
     rc |= expect_u64_eq("zero AES clears A4 slot 1", state->A4[1], 0ULL);
-    rc |= expect_int_eq("zero AES leaves slot 0 unloaded", state->aes_key_loaded[0], 0);
-    rc |= expect_int_eq("zero AES leaves slot 1 unloaded", state->aes_key_loaded[1], 0);
+    rc |= expect_int_eq("zero AES remains supplied in slot 0", state->aes_key_loaded[0], 1);
+    rc |= expect_int_eq("zero AES remains supplied in slot 1", state->aes_key_loaded[1], 1);
     rc |= expect_int_eq("zero AES records full segment width slot 0", (int)state->aes_key_segments[0], 4);
     rc |= expect_int_eq("zero AES records full segment width slot 1", (int)state->aes_key_segments[1], 4);
     rc |= expect_u64_eq("zero AES clears Hytera H", state->H, 0ULL);
@@ -1254,7 +1256,7 @@ test_ui_hytera_key_command_records_segment_variants(void) {
 
     int rc = 0;
     rc |= expect_int_eq("zero Hytera command is drained", applied, 1);
-    rc |= expect_int_eq("zero Hytera clears segment count", (int)state->hytera_key_segments, 0);
+    rc |= expect_int_eq("zero Hytera remains a supplied legacy segment", (int)state->hytera_key_segments, 1);
     rc |= expect_int_eq("zero Hytera clears keyloader", state->keyloader, 0);
     rc |= expect_int_eq("zero Hytera unmutes encrypted left", opts->dmr_mute_encL, 0);
     rc |= expect_int_eq("zero Hytera unmutes encrypted right", opts->dmr_mute_encR, 0);

@@ -23,7 +23,8 @@ dsd_key_direct_result dsd_key_set_load_direct_width(dsd_key_set* out, const char
  * Store already-parsed direct `-H` segments (10, 32 or 64 hex digits, big-endian 64-bit
  * words, unused words zero) into the scalar block: H/K1..K4, the Hytera segment count and,
  * for multi-segment keys, the AES slots. The single owner of that mapping; the CSV column
- * parser and the scoped-options materializer both route through it. Ignores other widths.
+ * parser and the scoped-options materializer both route through it. Also accepts the
+ * typed M17 AES-192 width (48 digits); the generic -H parser still rejects that width.
  */
 void dsd_key_scalars_store_direct_hex(dsd_key_scalars* scalars, const uint64_t segments[4], size_t nhex);
 

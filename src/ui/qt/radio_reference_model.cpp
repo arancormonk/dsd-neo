@@ -3,7 +3,12 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QSet>
+#include <algorithm>
+#include <initializer_list>
+#include <utility>
 #include "radio_reference_model.h"
+#include "site_groups.h"
 
 #include <QByteArray>
 #include <QDir>
@@ -29,6 +34,7 @@
 #include <dsd-neo/runtime/radioreference_import.h>
 
 #include "app_prefs.h"
+#include "decoder_host.h"
 #include "imported_files_model.h"
 #include "json_store.h"
 
@@ -437,6 +443,9 @@ RadioReferenceModel::RadioReferenceModel(AppPrefs* prefs, ImportedFilesModel* im
         staging.removeRecursively();
     }
 
+    if (m_host != nullptr) {
+        connect(m_host, &DecoderHost::locationResult, this, &RadioReferenceModel::applyLocation);
+    }
     if (m_prefs != nullptr) {
         connect(m_prefs, &AppPrefs::rrUsernameChanged, this, &RadioReferenceModel::credentialsChanged);
         connect(m_prefs, &AppPrefs::rrAppKeyChanged, this, &RadioReferenceModel::credentialsChanged);
@@ -449,6 +458,7 @@ RadioReferenceModel::~RadioReferenceModel() {
      * The same rule ~CallHistoryModel() follows for its save pool. */
     dsd_rr_client_destroy(m_client);
     m_client = nullptr;
+    cancelLocation();
 
     dsd_rr_site_list_free(&m_siteData);
     dsd_rr_talkgroup_list_free(&m_talkgroupData);
@@ -582,6 +592,7 @@ RadioReferenceModel::startBatch(const QString& status) {
     }
     m_pendingIds.clear();
     const bool wasBusy = busy();
+    cancelLocation();
     m_outstanding = 0;
     m_systemPending = 0;
     m_generation++;
@@ -662,6 +673,7 @@ RadioReferenceModel::cancel() {
     }
     m_pendingIds.clear();
     const bool wasBusy = busy();
+    cancelLocation();
     m_outstanding = 0;
     m_systemPending = 0;
     m_generation++;
@@ -705,6 +717,82 @@ RadioReferenceModel::checkAccount() {
         return;
     }
     endFetch(dsd_rr_fetch_user_data(m_client, &request->auth, &onFetchDone, request), request);
+}
+
+QString
+rr_zip_from_postal(const QString& postalCode, const QString& countryCode) {
+    if (countryCode != QStringLiteral("US") || postalCode.size() != 5) {
+        return {};
+    }
+    const bool digits = std::all_of(postalCode.cbegin(), postalCode.cend(),
+                                    [](QChar c) { return c >= QLatin1Char('0') && c <= QLatin1Char('9'); });
+    return digits ? postalCode : QString();
+}
+
+void
+RadioReferenceModel::cancelLocation() {
+    const qint64 id = m_locationRequestId;
+    m_locationRequestId = 0;
+    if (id != 0 && m_host != nullptr) {
+        m_host->cancelLocationRequest(id);
+    }
+}
+
+qint64
+RadioReferenceModel::nextLocationRequestId() {
+    const bool hadLocation = m_locationRequestId != 0;
+    cancelLocation();
+    if (hadLocation) {
+        m_statusText.clear();
+        Q_EMIT statusChanged();
+        Q_EMIT busyChanged();
+    }
+    // One Qt-thread allocator for nearby lookup and the site chooser, across recreation.
+    static qint64 nextId = 0;
+    const qint64 id = ++nextId;
+    Q_EMIT locationRequestAllocated(id);
+    return id;
+}
+
+void
+RadioReferenceModel::lookupNearby() {
+    startBatch(tr("Finding your location…"));
+    if (m_host == nullptr || !m_host->locationSupported()) {
+        setError(UnsupportedError, tr("Location is not supported on this platform."));
+        return;
+    }
+    m_locationGeneration = m_generation;
+    // Qt main thread only. IDs remain unique if the model is recreated while a
+    // platform worker is still retiring a cancelled geocoder.
+    m_locationRequestId = nextLocationRequestId();
+    Q_EMIT busyChanged();
+    m_host->requestCurrentLocation(m_locationRequestId);
+}
+
+void
+RadioReferenceModel::applyLocation(qint64 id, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
+                                   bool geocodeOk, const QString& postal, const QString& country,
+                                   const QString& error) {
+    if (id == 0 || id != m_locationRequestId || m_locationGeneration != m_generation) {
+        return;
+    }
+    m_locationRequestId = 0;
+    Q_EMIT busyChanged();
+    setStatus(QString());
+    if (fixOk && m_prefs != nullptr) {
+        m_prefs->setLocationFix(lat, lon, fixAtMs, accuracyM);
+    }
+    if (!fixOk || !geocodeOk) {
+        setError(ConfigError, error.isEmpty() ? tr("Location lookup failed; use Browse.") : error);
+        return;
+    }
+    const QString zip = rr_zip_from_postal(postal, country);
+    if (zip.isEmpty()) {
+        setError(ConfigError, tr("RadioReference looks up US ZIP codes only; use Browse for %1.")
+                                  .arg(country.isEmpty() ? tr("this location") : country));
+        return;
+    }
+    lookupZip(zip);
 }
 
 void
@@ -1037,7 +1125,7 @@ RadioReferenceModel::setTransportForTests(const dsd_rr_transport* transport) {
 /* ------------------------------------------------------------------------- */
 
 bool
-RadioReferenceModel::generateFiles(const QList<dsd_rr_site>& chosen, bool partialEncAsDe, QVariantMap* plan,
+RadioReferenceModel::generateFiles(const QList<dsd_rr_site>& chosen, int encryptionPolicy, QVariantMap* plan,
                                    QVariantList* warnings) const {
     dsd_rr_warning_list generated;
     DSD_MEMSET(&generated, 0, sizeof(generated));
@@ -1061,8 +1149,9 @@ RadioReferenceModel::generateFiles(const QList<dsd_rr_site>& chosen, bool partia
     char* groupText = nullptr;
     size_t groupLen = 0;
     if (m_talkgroupData.count > 0
-        && dsd_rr_generate_group_csv(m_talkgroupData.items, m_talkgroupData.count, partialEncAsDe ? 1 : 0, &groupText,
-                                     &groupLen, &generated)
+        && dsd_rr_generate_group_csv_with_policy(m_talkgroupData.items, m_talkgroupData.count,
+                                                 static_cast<dsd_rr_encrypted_tg_policy>(encryptionPolicy), &groupText,
+                                                 &groupLen, &generated)
                == 0
         && groupText != nullptr) {
         plan->insert(QStringLiteral("groupCsvText"), QString::fromUtf8(groupText, static_cast<int>(groupLen)));
@@ -1105,6 +1194,10 @@ fill_system_info(dsd_rr_protocol protocol, bool recordSaysEsk, dsd_rr_system_inf
  */
 void
 fill_import_options(const QVariantMap& options, dsd_rr_import_options* opts) {
+    if (options.contains(QStringLiteral("encryptionPolicy"))) {
+        opts->encrypted_tg_policy =
+            static_cast<dsd_rr_encrypted_tg_policy>(options.value(QStringLiteral("encryptionPolicy")).toInt());
+    }
     if (options.contains(QStringLiteral("simulcast"))) {
         opts->simulcast = options.value(QStringLiteral("simulcast")).toBool() ? 1 : 0;
     }
@@ -1174,6 +1267,7 @@ plan_into_map(const dsd_rr_import_plan& plan, QVariantMap* map) {
     map->insert(QStringLiteral("siteCount"), plan.site_count);
     map->insert(QStringLiteral("siteIds"), field(plan.site_ids));
     map->insert(QStringLiteral("partialEncAsDe"), plan.partial_enc_as_de != 0);
+    map->insert(QStringLiteral("encryptionPolicy"), static_cast<int>(plan.encrypted_tg_policy));
     if (plan.chan_csv_text != nullptr) {
         map->insert(QStringLiteral("chanCsvText"),
                     QString::fromUtf8(plan.chan_csv_text, static_cast<int>(plan.chan_csv_len)));
@@ -1197,11 +1291,46 @@ plan_into_map(const dsd_rr_import_plan& plan, QVariantMap* map) {
 } // namespace
 
 QVariantMap
+RadioReferenceModel::buildSiteImportPlans(const QVariantList& siteIndexes, const QVariantMap& options) {
+    QVariantList plans;
+    QVariantMap singleOptions = options;
+    singleOptions.remove("eachSite");
+    QSet<int> seen;
+    for (const auto& index : siteIndexes) {
+        bool valid = false;
+        const int row = index.toInt(&valid);
+        if (!valid || row < 0 || row >= static_cast<int>(m_siteData.count)) {
+            return {{"ok", false}, {"blockedReason", tr("Select valid sites.")}};
+        }
+        if (seen.contains(row)) {
+            continue;
+        }
+        seen.insert(row);
+        auto plan = buildImportPlan({row}, singleOptions);
+        if (!plan.value("ok").toBool()) {
+            return plan;
+        }
+        plans.append(plan);
+    }
+    if (plans.isEmpty()) {
+        return buildImportPlan({}, singleOptions);
+    }
+    auto result = plans[0].toMap();
+    result.insert("plans", plans);
+    result.insert("siteCount", plans.size());
+    return result;
+}
+
+QVariantMap
 RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVariantMap& options) {
+    if (trunked() && options.value("eachSite").toBool()) {
+        return buildSiteImportPlans(siteIndexes, options);
+    }
+
     dsd_rr_system_info info;
     fill_system_info(m_protocol, m_recordSaysEsk, &info);
 
-    dsd_rr_import_options opts = {-1, -1, 1};
+    dsd_rr_import_options opts = {-1, -1, 1, DSD_RR_TG_POLICY_LEGACY};
     fill_import_options(options, &opts);
 
     const std::vector<size_t> selected = selected_indexes(siteIndexes);
@@ -1222,6 +1351,17 @@ RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVar
         return map;
     }
     plan_into_map(plan, &map);
+    if (plan.site_count == 1 && !selected.empty() && selected[0] < m_siteData.count) {
+        const auto& site = m_siteData.items[selected[0]];
+        map.insert("rrSid", m_sid);
+        map.insert("rrSiteId", site.site_db_id);
+        map.insert("siteName", field(site.descr));
+        const bool positioned = site.has_position && site_position_valid(site.lat, site.lon);
+        map.insert("hasSitePos", positioned);
+        map.insert("siteLat", positioned ? site.lat : 0);
+        map.insert("siteLon", positioned ? site.lon : 0);
+    }
+
     dsd_rr_import_plan_free(&plan);
     return map;
 }
@@ -1260,8 +1400,39 @@ RadioReferenceModel::unwindImport(const QStringList& paths) {
     }
 }
 
+// Batch adoption is atomic: on failure retire every file already adopted.
+QVariantMap
+RadioReferenceModel::performSiteImports(const QVariantMap& plan, const QString& systemName) {
+
+    QVariantList rows;
+    QStringList adopted;
+    if (!plan.value("ok").toBool()) {
+        return {{"ok", false}, {"error", "state"}};
+    }
+    for (const auto& item : plan.value("plans").toList()) {
+        auto single = item.toMap();
+        single.remove("plans");
+        const auto result = performImport(single, systemName + " — " + single.value("siteName").toString(), -1);
+        if (!result.value("ok").toBool()) {
+            unwindImport(adopted);
+            return result;
+        }
+        for (const char* key : {"chanCsvPath", "groupCsvPath"}) {
+            if (!result.value(key).toString().isEmpty()) {
+                adopted.append(result.value(key).toString());
+            }
+        }
+        rows.append(result);
+    }
+    return {{"ok", !rows.isEmpty()}, {"rows", rows}, {"error", rows.isEmpty() ? "state" : ""}};
+}
+
 QVariantMap
 RadioReferenceModel::performImport(const QVariantMap& plan, const QString& systemName, int savedRow) {
+    if (plan.contains("plans")) {
+        return performSiteImports(plan, systemName);
+    }
+
     QVariantMap result;
     result.insert(QStringLiteral("ok"), false);
     result.insert(QStringLiteral("error"), QStringLiteral("state"));
@@ -1281,6 +1452,7 @@ RadioReferenceModel::performImport(const QVariantMap& plan, const QString& syste
     origin.insert(QStringLiteral("rrSid"), m_sid);
     origin.insert(QStringLiteral("rrSiteIds"), plan.value(QStringLiteral("siteIds")).toString());
     origin.insert(QStringLiteral("rrPartialEnc"), plan.value(QStringLiteral("partialEncAsDe"), true).toBool());
+    origin.insert(QStringLiteral("rrEncryptionPolicy"), plan.value(QStringLiteral("encryptionPolicy")));
 
     static const struct {
         const char* planKey;
@@ -1329,6 +1501,12 @@ RadioReferenceModel::performImport(const QVariantMap& plan, const QString& syste
     result.insert(QStringLiteral("decodeFlag"), plan.value(QStringLiteral("decodeFlag")));
     result.insert(QStringLiteral("trunking"), plan.value(QStringLiteral("trunking")));
     result.insert(QStringLiteral("savedRow"), savedRow);
+    for (const char* key : {"rrSid", "rrSiteId", "siteName", "siteLat", "siteLon", "hasSitePos"}) {
+        if (plan.contains(key)) {
+            result.insert(key, plan.value(key));
+        }
+    }
+
     return result;
 }
 
@@ -1403,7 +1581,12 @@ RadioReferenceModel::refreshRow(int row) {
     m_refreshRow = row;
     m_refreshPath = entry.value(QStringLiteral("path")).toString();
     m_refreshKind = entry.value(QStringLiteral("rrKind")).toString();
-    m_refreshPartialEnc = entry.value(QStringLiteral("rrPartialEnc"), true).toBool();
+    m_refreshEncryptionPolicy =
+        entry
+            .value(QStringLiteral("rrEncryptionPolicy"), entry.value(QStringLiteral("rrPartialEnc"), true).toBool()
+                                                             ? DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL
+                                                             : DSD_RR_TG_EXCLUDE_FULL)
+            .toInt();
     m_refreshSiteIds = wanted;
     return true;
 }
@@ -1415,7 +1598,7 @@ RadioReferenceModel::endRefresh(const QVariantMap& result) {
     m_refreshPath.clear();
     m_refreshKind.clear();
     m_refreshSiteIds.clear();
-    m_refreshPartialEnc = true;
+    m_refreshEncryptionPolicy = DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL;
     Q_EMIT refreshFinished(row, result);
 }
 
@@ -1449,7 +1632,7 @@ RadioReferenceModel::completeRefresh() {
     /* The answer the original import was given, read back from provenance: the
      * UI default would silently re-block every partly-encrypted talkgroup for a
      * user who had turned it off. */
-    if (!generateFiles(chosen, m_refreshPartialEnc, &plan, &warnings)) {
+    if (!generateFiles(chosen, m_refreshEncryptionPolicy, &plan, &warnings)) {
         setError(ParseError, tr("The refreshed data could not be turned into a file."));
         endRefresh(result);
         return;

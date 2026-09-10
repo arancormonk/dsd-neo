@@ -8,25 +8,40 @@
  * trip and reload path, and AppPrefs defaults and persistence. Registered only
  * when the Qt frontend is enabled (DSD_ENABLE_QT_UI), since these link Qt. */
 
+#include <QAnyStringView>
+#include <QByteArray>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QHash>
 #include <QIODevice>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QList>
 #include <QMap>
+#include <QMetaProperty>
 #include <QObject>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QUuid>
 #include <QVariant>
 #include <QVariantMap>
+#include <QtGlobal>
+#include <initializer_list>
 #include <stdio.h>
+#include <utility>
+#include "../test_support/qt_test_paths.h"
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <sys/types.h>
+#endif
 
+#include <dsd-neo/runtime/log.h>
 #include "app_prefs.h"
 #include "dsd-neo/core/safe_api.h"
 #include "json_store.h"
@@ -54,6 +69,8 @@ void
 test_json_store(void) {
     expect("missing file loads as empty array", json_store_load_array(QStringLiteral("absent.json")).isEmpty());
 
+    QDir().mkpath(json_store_path(QStringLiteral("blocked.json")));
+    expect("save reports an unwritable destination", !json_store_save_array(QStringLiteral("blocked.json"), {}));
     QJsonArray array;
     QJsonObject obj;
     obj.insert(QStringLiteral("name"), QStringLiteral("Hamilton Co P25"));
@@ -83,6 +100,26 @@ test_json_store(void) {
     /* Overwrite, not append: a shrunk list must not leave the old tail behind. */
     json_store_save_array(QStringLiteral("roundtrip.json"), QJsonArray());
     expect("save replaces the previous content", json_store_load_array(QStringLiteral("roundtrip.json")).isEmpty());
+}
+
+void
+test_private_key_store() {
+#ifndef _WIN32
+    const mode_t previous = umask(0);
+    const QString name = QStringLiteral("private-keys.json");
+    const QByteArray path = QFile::encodeName(json_store_path(name));
+    const QJsonArray rows{QJsonObject{{"encKeyValue", "123456789A"}}};
+    expect("new private key store saved", json_store_save_array(name, rows));
+    struct stat info = {};
+    expect("new key store is owner read/write only",
+           stat(path.constData(), &info) == 0 && (info.st_mode & 0777) == 0600);
+    expect("public replacement fixture prepared", chmod(path.constData(), 0666) == 0);
+    expect("replacement private key store saved", json_store_save_array(name, rows));
+    expect("replacement key store is owner read/write only",
+           stat(path.constData(), &info) == 0 && (info.st_mode & 0777) == 0600);
+    expect("permissions preserve key contents", json_store_load_array(name) == rows);
+    umask(previous);
+#endif
 }
 
 QVariantMap
@@ -347,6 +384,211 @@ test_app_prefs(void) {
     expect("no RadioReference password preference exists", reloaded.metaObject()->indexOfProperty("rrPassword") == -1);
 }
 
+void
+test_migration_write_failure() {
+    const QString store = QStringLiteral("saved_systems.json");
+    expect("legacy fixture saved", json_store_save_array(store, QJsonArray{QJsonObject{{"name", "legacy"}}}));
+    const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const auto permissions = QFile::permissions(directory);
+    expect("migration directory made read only", QFile::setPermissions(directory, QFile::ReadOwner | QFile::ExeOwner));
+    int warnings = 0;
+    dsd_neo_log_set_tap(
+        [](dsd_neo_log_level_t level, const char* text, void* context) {
+            if (level == LOG_LEVEL_WARN && QString::fromUtf8(text).contains("migration could not be persisted")) {
+                ++*static_cast<int*>(context);
+            }
+        },
+        &warnings);
+    SavedSystemsModel model;
+    dsd_neo_log_set_tap(nullptr, nullptr);
+    expect("migration warns once when write fails", warnings == 1);
+    expect("failed migration keeps readable row", model.count() == 1);
+    expect("migration permissions restored", QFile::setPermissions(directory, permissions));
+}
+
+void
+test_foundation_persistence() {
+    const QString store = QStringLiteral("saved_systems.json");
+    json_store_save_array(store, QJsonArray{QJsonObject{{QStringLiteral("name"), QStringLiteral("legacy")}}});
+    SavedSystemsModel legacy;
+    const QString uid = legacy.get(0).value(QStringLiteral("uid")).toString();
+    expect("legacy gets a UUID", !QUuid(uid).isNull());
+    SavedSystemsModel migrated;
+    expect("migration persists without an edit", migrated.get(0).value(QStringLiteral("uid")).toString() == uid);
+    expect("UID lookup finds row", migrated.rowForUid(uid) == 0);
+    expect("unknown UID never selects a row",
+           migrated.rowForUid(QString()) == -1 && migrated.getByUid("missing").isEmpty());
+    QVariantMap fields{{"encKeyType", "rc4"}, {"encKeyValue", "0011223344"},
+                       {"encForceKey", 2},    {"rrSid", 123},
+                       {"rrSiteId", 456},     {"siteName", "North"},
+                       {"siteLat", 42.5},     {"siteLon", -87.5},
+                       {"hasSitePos", true},  {"avoidSite", true}};
+    migrated.update(0, fields);
+    SavedSystemsModel reloaded;
+    expect("get map hides key", !reloaded.get(0).contains("encKeyValue"));
+    expect("UID map hides key", !reloaded.getByUid(uid).contains("encKeyValue"));
+    expect("model roles hide key", !reloaded.roleNames().values().contains("encKeyValue"));
+    for (auto it = fields.cbegin(); it != fields.cend(); ++it) {
+        expect("optional field survives reload", (it.key() == "encKeyValue" ? QVariant(reloaded.keyValueForUid(uid))
+                                                                            : reloaded.getByUid(uid).value(it.key()))
+                                                     == it.value());
+    }
+    reloaded.add(reloaded.get(0));
+    expect("copy gets a distinct identity", reloaded.get(1).value("uid") != uid);
+    reloaded.remove(0);
+    expect("deleted UID cannot address a shifted row", reloaded.rowForUid(uid) == -1);
+
+    AppPrefs prefs;
+    for (const char* property : {"lastLat", "lastLon", "lastFixAt"}) {
+        expect("location properties require atomic fix publication",
+               !prefs.metaObject()->property(prefs.metaObject()->indexOfProperty(property)).isWritable());
+    }
+    expect("attach defaults off", !prefs.autoStartOnAttach());
+    prefs.setAutoStartOnAttach(true);
+    prefs.setLastStartedKind("saved");
+    prefs.setLastStartedUid(uid);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    bool coherentFix = false;
+    const auto connection = QObject::connect(&prefs, &AppPrefs::locationChanged, &prefs, [&]() {
+        coherentFix = prefs.lastLat() == 42.5 && prefs.lastLon() == -87.5 && prefs.lastFixAt() == now;
+    });
+    prefs.setLocationFix(42.5, -87.5, now, 125);
+    expect("fix accuracy retained", prefs.lastAccuracyM() == 125);
+    {
+        dsd_qt::AppPrefs restored;
+        expect("fix accuracy survives reload", restored.lastAccuracyM() == 125);
+    }
+    expect("fix notification sees all coordinates and timestamp", coherentFix);
+    QObject::disconnect(connection);
+    AppPrefs fresh;
+    expect("attach and session prefs persist",
+           fresh.autoStartOnAttach() && fresh.lastStartedKind() == "saved" && fresh.lastStartedUid() == uid);
+    expect("fresh fix persists", fresh.lastLat() == 42.5 && fresh.lastLon() == -87.5 && fresh.lastFixAt() == now);
+    prefs.setLastFixAt(now - 24LL * 60 * 60 * 1000 - 1);
+    expect("expired fix reads absent", prefs.lastFixAt() == 0 && prefs.lastLat() == 0 && prefs.lastLon() == 0);
+    QSettings stored(QSettings::IniFormat, QSettings::UserScope, "dsd-neo", "dsd-neo-app");
+    expect("expired fix removed from disk", !stored.contains("location/lastLat") && !stored.contains("location/lastLon")
+                                                && !stored.contains("location/lastFixAt")
+                                                && !stored.contains("location/lastAccuracyM"));
+}
+
+void
+test_key_persistence() {
+    SavedSystemsModel model;
+    while (model.count()) {
+        model.remove(0);
+    }
+    const QStringList types{"", "basic", "hex", "rc4", "scrambler"};
+    for (const auto& type : types) {
+        QVariantMap row{{"name", "key persistence"},
+                        {"encKeyType", type},
+                        {"encKeyValue", type.isEmpty() ? QString() : QStringLiteral("0")},
+                        {"encForceKey", 2}};
+        model.add(row);
+    }
+    SavedSystemsModel fresh;
+    expect("all saved key types reload", fresh.count() == types.size());
+    for (int i = 0; i < types.size(); ++i) {
+        const auto row = fresh.get(i);
+        expect("key type round trip", row.value("encKeyType").toString() == types[i]);
+        expect("key value round trip", fresh.keyValueForUid(row.value("uid").toString())
+                                           == (types[i].isEmpty() ? QString() : QStringLiteral("0")));
+        expect("force round trip", row.value("encForceKey").toInt() == 2);
+    }
+    const QString uid = fresh.get(1).value("uid").toString();
+    auto edit = fresh.getByUid(uid);
+    edit.insert("name", "Renamed keyed system");
+    fresh.update(1, edit);
+    dsd_qt::SavedSystemsModel kept;
+    expect("redacted update preserves key in memory", fresh.keyValueForUid(uid) == "0");
+    expect("redacted update preserves key on disk", kept.keyValueForUid(uid) == "0");
+    expect("configured flag survives update", kept.getByUid(uid).value("encKeyConfigured").toBool());
+    fresh.update(1, {{"encKeyType", ""}, {"encKeyValue", ""}, {"encForceKey", 0}});
+    SavedSystemsModel cleared;
+    expect("key clearing persists", cleared.get(1).value("encKeyType").toString().isEmpty()
+                                        && cleared.keyValueForUid(cleared.get(1).value("uid").toString()).isEmpty()
+                                        && cleared.get(1).value("encForceKey").toInt() == 0);
+}
+
+void
+test_add_with_retained_key() {
+    SavedSystemsModel model;
+    while (model.count()) {
+        model.remove(0);
+    }
+    const QString key = QString::number(17 * 3);
+    model.add({{"name", "Private source"}, {"encKeyType", "basic"}, {"encKeyValue", key}});
+    const QString sourceUid = model.get(0).value("uid").toString();
+    auto site = model.get(0);
+    expect("source map hides retained key", !site.contains("encKeyValue"));
+    site.insert("rrSid", 12);
+    site.insert("rrSiteId", 16863);
+    expect("retained key copy accepts first site", model.addWithKeyFrom(sourceUid, site));
+    site.insert("rrSiteId", 48391);
+    expect("retained key copy accepts second site", model.addWithKeyFrom(sourceUid, site));
+    SavedSystemsModel reloaded;
+    expect("source and both sites persist", reloaded.count() == 3);
+    for (int row = 1; row < reloaded.count(); ++row) {
+        const auto stored = reloaded.get(row);
+        const QString uid = stored.value("uid").toString();
+        expect("copied site receives a new identity", uid != sourceUid && !uid.isEmpty());
+        expect("private key copied and persisted", reloaded.keyValueForUid(uid) == key);
+        expect("copied maps hide private key",
+               !stored.contains("encKeyValue") && !reloaded.getByUid(uid).contains("encKeyValue"));
+    }
+    expect("model roles hide copied key", !reloaded.roleNames().values().contains("encKeyValue"));
+    auto mismatched = site;
+    mismatched.insert("encKeyType", "rc4");
+    expect("retained copy rejects a different type", !model.addWithKeyFrom(sourceUid, mismatched));
+    auto replacement = site;
+    replacement.insert("encKeyValue", key);
+    expect("replacement uses ordinary add", !model.addWithKeyFrom(sourceUid, replacement));
+    expect("rejected copies do not append", model.count() == 3);
+    model.remove(0);
+    const int before = model.count();
+    expect("deleted source cannot copy from shifted row", !model.addWithKeyFrom(sourceUid, site));
+    expect("failed copy creates no incomplete row", model.count() == before);
+}
+
+void
+test_site_provenance_edits() {
+    SavedSystemsModel model;
+    while (model.count()) {
+        model.remove(0);
+    }
+    const QVariantMap site{{"rrSid", 12},        {"rrSiteId", 16863},   {"siteLat", 41.65503}, {"siteLon", -91.60244},
+                           {"hasSitePos", true}, {"siteName", "North"}, {"freqMhz", "851"}};
+    for (const char* key :
+         {"freqMhz", "decodeFlag", "chanCsvPath", "groupCsvPath", "keyCsvPath", "p25BandplanCsvPath", "srcCsvPath"}) {
+        model.add(site);
+        const int row = model.count() - 1;
+        model.update(row, {{key, "changed"}});
+        SavedSystemsModel reloaded;
+        expect("site editing clears both persisted ids",
+               reloaded.get(row).value("rrSid").toInt() == 0 && reloaded.get(row).value("rrSiteId").toInt() == 0);
+    }
+    auto incomplete = site;
+    incomplete.remove("siteLon");
+    model.add(incomplete);
+    expect("missing coordinate is not a position", !model.get(model.count() - 1).value("hasSitePos").toBool());
+    model.add(site);
+    model.update(model.count() - 1, {{"siteLat", "invalid"}});
+    expect("malformed coordinates cannot become equator", !model.get(model.count() - 1).value("hasSitePos").toBool());
+}
+
+void
+test_foundation_key_type_migration() {
+    QJsonArray rows;
+    rows.append(QJsonObject{{"encKeyType", 0}, {"encKeyValue", ""}});
+    rows.append(QJsonObject{{"encKeyType", 0}, {"encKeyValue", "0"}});
+    rows.append(QJsonObject{{"encKeyType", 2}, {"encKeyValue", "0"}});
+    json_store_save_array(QStringLiteral("saved_systems.json"), rows);
+    SavedSystemsModel model;
+    expect("foundation blank key remains absent", model.get(0).value("encKeyType").toString().isEmpty());
+    expect("foundation basic type converts", model.get(1).value("encKeyType").toString() == "basic");
+    expect("foundation rc4 type converts", model.get(2).value("encKeyType").toString() == "rc4");
+}
+
 } // namespace
 
 int
@@ -358,7 +600,7 @@ main(int argc, char** argv) {
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(
         QStringLiteral("dsd-neo-persistence-%1").arg(QCoreApplication::applicationPid()));
-    QStandardPaths::setTestModeEnabled(true);
+    dsd_test_qt_isolate_paths();
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dataDir).removeRecursively();
     QTemporaryDir settingsDir;
@@ -369,9 +611,29 @@ main(int argc, char** argv) {
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
 
     test_json_store();
+    test_private_key_store();
     test_saved_systems();
     test_saved_systems_csv_fields();
     test_app_prefs();
+    test_migration_write_failure();
+    test_foundation_persistence();
+    // WP-S2: opting out preserves the last successful target, including scan lists.
+    {
+        AppPrefs prefs;
+        prefs.setLastStartedKind("scan");
+        prefs.setLastStartedUid("stable-scan-uid");
+        prefs.setAutoStartOnAttach(false);
+    }
+    {
+        AppPrefs restored;
+        expect("attach opt-out persists", !restored.autoStartOnAttach());
+        expect("opt-out retains scan target",
+               restored.lastStartedKind() == "scan" && restored.lastStartedUid() == "stable-scan-uid");
+    }
+    test_key_persistence();
+    test_foundation_key_type_migration();
+    test_site_provenance_edits();
+    test_add_with_retained_key();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

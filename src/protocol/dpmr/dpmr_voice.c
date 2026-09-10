@@ -17,6 +17,7 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/key_presence.h>
 
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
@@ -25,7 +26,11 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
@@ -38,10 +43,6 @@
 #include <stdio.h>
 #include "dpmr_confirm.h"
 #include "dpmr_internal.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/secret_redaction.h"
-#include "dsd-neo/core/state_fwd.h"
 
 typedef struct {
     uint8_t CCH[NB_OF_DPMR_VOICE_FRAME_TO_DECODE][72];
@@ -334,7 +335,7 @@ dpmr_print_scrambler_state(const dsd_opts* opts, const dsd_state* state) {
     DSD_FPRINTF(stderr, "%s", KRED);
     DSD_FPRINTF(stderr, " Scrambler");
     DSD_FPRINTF(stderr, "%s", KNRM);
-    if (state->R != 0) {
+    if (dsd_key_scalar_present(state, 0)) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[16];
         DSD_FPRINTF(stderr, " Key %s ",
@@ -369,10 +370,21 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
         .audio_permitted = 1U,
     };
     if (state->dPMRVoiceFS2Frame.Version[0] == 3U) {
-        crypto.classification = state->R != 0U ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED;
-        crypto.audio_permitted = state->R != 0U;
+        crypto.classification =
+            dsd_key_scalar_present(state, 0) ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED;
+        crypto.audio_permitted = dsd_key_scalar_present(state, 0);
     }
     (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, 0, &call) > 0) {
+            const int available = crypto.classification == DSD_CALL_CRYPTO_DECRYPTABLE ? 1
+                                  : crypto.classification == DSD_CALL_CRYPTO_ENCRYPTED ? 0
+                                                                                       : -1;
+            (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DIRECT, call.kid, -1, available,
+                                                    0);
+        }
+    }
     dsd_event_sync_slot(opts, state, 0U);
 }
 
@@ -397,7 +409,7 @@ dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR
                 state->nxdn_cipher_type = 0x01;
                 state->dmr_encL = 1;
             }
-            if (state->R != 0) {
+            if (dsd_key_scalar_present(state, 0)) {
                 state->dmr_encL = 0;
             }
             if (opts->payload == 1) {

@@ -16,6 +16,8 @@ data class SlotCall(
     val algid: Int,
     val kid: Int,
     val elapsedMs: Long,
+    val emergency: Boolean,
+    val priority: Int,
 ) {
     val hasContent: Boolean
         get() = state == DecoderStatus.LINE_ACTIVE || state == DecoderStatus.LINE_ENDED
@@ -55,9 +57,9 @@ data class DecoderStatus(
         const val LINE_ACTIVE = 2
         const val LINE_ENDED = 3
 
-        private const val VERSION = "v1"
+        private const val VERSION = "v2"
         private const val HEADER_FIELDS = 9
-        private const val SLOT_FIELDS = 9
+        private const val SLOT_FIELDS = 11
         private const val SLOT_COUNT = 2
         private const val TOTAL_FIELDS = HEADER_FIELDS + SLOT_FIELDS * SLOT_COUNT
 
@@ -110,6 +112,8 @@ data class DecoderStatus(
                             algid = f[b + 6].toInt(),
                             kid = f[b + 7].toInt(),
                             elapsedMs = f[b + 8].toLong(),
+                            emergency = f[b + 9] == "1",
+                            priority = f[b + 10].toInt(),
                         )
                     },
                 )

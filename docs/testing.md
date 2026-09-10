@@ -61,6 +61,16 @@ suspected RAS is marked as a failed check rather than asserted to be corrupted o
 
 ### Known-key MBE playback
 
+`CORE_KEY_DIRECT` also checks recovered AMBE plaintext for all-zero RC4, AES-128 and AES-256 keys through CLI,
+typed live commands and legacy live commands, in both slots. `UI_KEY_CLEANUP` observes production volatile erasure
+while handler and TYT buffers are still alive.
+
+`UI_QT_ANDROID_HOST` runs Android host lifecycle publication with a desktop transport fixture. `ANDROID_LOCATION_JVM`
+runs the production Kotlin location broker and geocoder queue with deterministic platform stubs, without an Android
+build or emulator. It uses `kotlinc` or a cached Gradle Kotlin compiler plus Java; missing tools skip the CTest entry.
+Android CI runs `python3 tests/android/run_location_tests.py --require-tools` after its APK build, when the compiler
+is cached. Qt persistence tests use disposable directories and do not require a writable home on Linux.
+
 `CORE_MBE_FILE_IO` checks decrypted AMBE payloads, not merely output-file existence. Its NXDN vectors come
 from [NXDN TS 1-D v1.3](https://www.qsl.net/kb9mwr/projects/dv/nxdn/NXDN-TS-1-D_v0103.pdf),
 §§7.2.1.1–7.2.1.3: every EHR frame decrypts to the published 1031 Hz tone. Scrambler repetitions cover the

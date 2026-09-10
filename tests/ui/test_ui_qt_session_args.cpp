@@ -9,16 +9,26 @@
  * in QML-side JavaScript. The bias-tee tri-state matrix is the load-bearing
  * case: a per-system explicit Off must survive an app-wide On. */
 
+#include <QByteArray>
+#include <QByteArrayView>
+#include <QChar>
+#include <QCoreApplication>
+#include <QJsonDocument>
 #include <QList>
 #include <QMap>
 #include <QString>
 #include <QStringList>
+#include <QTemporaryDir>
 #include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <initializer_list>
+#include <qtenvironmentvariables.h>
 #include <stdio.h>
+#include "decoder_host.h"
 
 #include "dsd-neo/core/safe_api.h"
+#include "saved_systems_model.h"
 #include "session_args.h"
 
 using dsd_qt::session_args_build;
@@ -279,10 +289,147 @@ test_network_and_file_sources(void) {
            input_spec(session_args_build(file, SessionArgPrefs(), &error)) == QStringLiteral("/sdcard/capture.wav"));
 }
 
+void
+test_keys() {
+    using namespace dsd_qt;
+    const QStringList types{"basic", "hex", "rc4", "scrambler"};
+    const QStringList values{"0", "0011223344", "ABC", "32767"};
+    const QStringList flags{"-b", "-H", "-1", "-R"};
+    for (int i = 0; i < types.size(); ++i) {
+        auto sys = usb_system();
+        sys["encKeyType"] = types[i];
+        sys["encKeyValue"] = values[i];
+        sys["encForceKey"] = i % 3;
+        SessionArgsError error;
+        const auto args = session_args_build(sys, SessionArgPrefs(), &error);
+        const auto at = args.indexOf(flags[i]);
+        expect("direct key is a discrete argument",
+               error == SessionArgsError::None && at >= 0 && at + 1 < args.size() && args[at + 1] == values[i]);
+        expect("force flags are discrete", args.contains("-4") == (i % 3 == 1) && args.contains("-0") == (i % 3 == 2));
+        sys["keyCsvPath"] = "keys.csv";
+        expect("direct key and CSV refused",
+               session_args_build(sys, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::KeyConflict);
+    }
+    expect("hex normalization", session_args_key_hex_normalize(" 0x ab cd\t ") == "ABCD");
+    expect("basic bounds", session_args_key_valid("basic", "255") && !session_args_key_valid("basic", "256")
+                               && !session_args_key_valid("basic", "-1"));
+    expect("hex widths", session_args_key_valid("hex", QString(32, '0'))
+                             && session_args_key_valid("hex", QString(64, '0'))
+                             && !session_args_key_valid("hex", QString(11, '0')));
+    expect("rc4 bounds", session_args_key_valid("rc4", "0") && session_args_key_valid("rc4", QString(16, 'F'))
+                             && !session_args_key_valid("rc4", QString(17, 'F')));
+    expect("scrambler bounds",
+           session_args_key_valid("scrambler", "0") && !session_args_key_valid("scrambler", "32768"));
+    expect("invalid types and text", !session_args_key_valid("other", "0") && !session_args_key_valid("basic", "1junk")
+                                         && !session_args_key_valid("rc4", "xyz"));
+    auto sys = usb_system();
+    sys["encKeyValue"] = "orphan";
+    SessionArgsError error;
+    expect("orphan key refused", session_args_build(sys, SessionArgPrefs(), &error).isEmpty());
+}
+
+void
+test_retained_key_validation_boundary() {
+    dsd_qt::SavedSystemsModel systems;
+    auto sys = usb_system();
+    const QString secret = QStringLiteral("C1D2E3F405");
+    sys["encKeyType"] = "rc4";
+    sys["encKeyValue"] = secret;
+    systems.add(sys);
+    dsd_qt::SessionArgsBuilder builder(nullptr);
+    builder.setSavedSystems(&systems);
+    const auto result = builder.build(systems.get(systems.count() - 1));
+    expect("retained key validates without returning secret arguments",
+           result.value("ok").toBool() && !result.contains("args")
+               && !QJsonDocument::fromVariant(result).toJson().contains(secret.toUtf8()));
+
+    class Host : public dsd_qt::DecoderHost {
+      public:
+        QStringList received;
+
+        bool
+        isRunning() const override {
+            return false;
+        }
+
+        QString
+        statusText() const override {
+            return {};
+        }
+
+        bool
+        start(const QStringList& args) override {
+            received = args;
+            return true;
+        }
+
+        void
+        stop() override {}
+    } host;
+
+    auto started = builder.start(systems.get(systems.count() - 1), &host);
+    const int key = host.received.indexOf("-1");
+    expect("C++ start resolves the retained key into host arguments",
+           started.value("started").toBool() && key >= 0 && host.received.value(key + 1) == secret);
+    expect("start result never exposes private arguments",
+           !started.contains("args") && !QJsonDocument::fromVariant(started).toJson().contains(secret.toUtf8()));
+    host.received.clear();
+    sys["freqMhz"] = "invalid";
+    started = builder.start(sys, &host);
+    expect("invalid session never starts",
+           !started.value("ok").toBool() && !started.value("started").toBool() && host.received.isEmpty());
+}
+
+void
+test_extra_short_options(void) {
+    // Grouping is refused in both gates, including groups ending in an option
+    // with an attached argument. The single-option attached form stays usable.
+    for (const auto& token :
+         QStringList{"-FT", "-FY", "-Fiother-input", "-FTZ", "-FCT.csv", "-Ff1", "-Fmq", "-Fv2", "-FZ"}) {
+        expect("shared gate refuses grouped short options", !dsd_qt::session_args_extra_safe(token));
+        auto sys = usb_system();
+        sys["extraArgs"] = token;
+        SessionArgsError error = SessionArgsError::None;
+        expect("saved extra group refuses argv",
+               session_args_build(sys, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::UnsafeOption);
+        sys.remove("extraArgs");
+        SessionArgPrefs prefs;
+        prefs.extraArgs = token;
+        expect("preference extra group refuses argv",
+               session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::UnsafeOption);
+    }
+    expect("rejection explains separate short options",
+           dsd_qt::session_args_error_text(SessionArgsError::UnsafeOption).contains("each short option separately"));
+    for (const auto& token : QStringList{"-F -e -v2", "-GFT.csv", "-ft", "-mq", "--enc-lockout"}) {
+        expect("single options and attached arguments remain accepted", dsd_qt::session_args_extra_safe(token));
+        auto sys = usb_system();
+        sys["extraArgs"] = token;
+        SessionArgsError error = SessionArgsError::UnsafeOption;
+        expect("permitted extra options still build argv",
+               !session_args_build(sys, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::None);
+    }
+}
+
 } // namespace
 
 int
-main(void) {
+main(int argc, char** argv) {
+    QCoreApplication app(argc, argv);
+    QTemporaryDir data;
+    qputenv("XDG_DATA_HOME", data.path().toUtf8());
+    test_retained_key_validation_boundary();
+    test_keys();
+    test_extra_short_options();
+    for (const auto& token : {QStringLiteral("--show-keys"), QStringLiteral("--show-keys=1")}) {
+        expect("shared scan token gate refuses key display", !dsd_qt::session_args_extra_safe(token));
+        auto sys = usb_system();
+        sys.insert(QStringLiteral("extraArgs"), token);
+        expect("key display is refused", session_args_build(sys, SessionArgPrefs(), nullptr).isEmpty());
+        sys.remove(QStringLiteral("extraArgs"));
+        SessionArgPrefs prefs;
+        prefs.extraArgs = token;
+        expect("global key display is refused", session_args_build(sys, prefs, nullptr).isEmpty());
+    }
     test_freq_validation();
     test_defaults_and_overrides();
     test_csv_args();

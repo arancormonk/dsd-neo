@@ -11,7 +11,7 @@ Item {
 
     // Cycles: 0 everything, 1 clear calls, 2 encrypted calls, 3 messages
     // (SMS, GPS positions, data and control notices).
-    readonly property var kindLabels: [qsTr("All activity"), qsTr("Clear calls"), qsTr("Encrypted"), qsTr("Messages")]
+    readonly property var kindLabels: [qsTr("All activity"), qsTr("Unencrypted calls"), qsTr("Encrypted"), qsTr("Messages")]
 
     Rectangle {
         anchors.fill: parent
@@ -34,31 +34,25 @@ Item {
 
         Item {
             width: parent.width
-            height: 32
+            height: Math.max(48, Theme.fontSize(24) + 20)
 
             Text {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("History")
                 font.family: Theme.sans
-                font.pixelSize: 24
+                font.pixelSize: Theme.fontSize(24)
                 font.weight: Font.Bold
                 font.letterSpacing: -0.24
                 color: Theme.textPrimary
             }
 
-            Text {
+            OutlineButton {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 visible: callHistory.count > 0
                 text: qsTr("Clear")
-                font.family: Theme.sans
-                font.pixelSize: 14
-                color: Theme.textSecondary
-
-                TapHandler {
-                    onTapped: confirmClear.visible = true
-                }
+                onClicked: confirmClear.visible = true
             }
         }
 
@@ -79,7 +73,8 @@ Item {
             }
         }
 
-        Row {
+        Flow {
+            width: parent.width
             spacing: 10
 
             // Keyed on the filter string itself, never an index: the label array
@@ -89,20 +84,19 @@ Item {
                 text: historyView.filterSystem.length === 0 ? qsTr("All systems") : historyView.filterSystem
                 active: historyView.filterSystem.length > 0
                 onClicked: {
-                    var labels = callHistory.systemLabels
-                    if (labels.length === 0) {
-                        historyView.filterSystem = ""
-                        return
-                    }
-                    var idx = labels.indexOf(historyView.filterSystem)
-                    historyView.filterSystem = idx + 1 >= labels.length ? "" : labels[idx + 1]
+                    var labels = [qsTr("All systems")].concat(callHistory.systemLabels);
+                    filterChoices.open(qsTr("System"), labels, function (index) {
+                        historyView.filterSystem = index === 0 ? "" : labels[index];
+                    });
                 }
             }
 
             FilterPill {
                 text: screen.kindLabels[historyView.filterKind]
                 active: historyView.filterKind !== 0
-                onClicked: historyView.filterKind = (historyView.filterKind + 1) % screen.kindLabels.length
+                onClicked: filterChoices.open(qsTr("Activity type"), screen.kindLabels, function (index) {
+                    historyView.filterKind = index;
+                })
             }
         }
     }
@@ -137,22 +131,23 @@ Item {
         }
 
         delegate: CallRow {
+            interactive: true
             width: ListView.view.width
             name: model.name
             metaText: {
                 // A notice row's payload (the SMS body, the GPS string) is its
                 // meta line; identity only where it exists.
                 if (model.kind === 1) {
-                    var parts = []
+                    var parts = [];
                     if (model.tg > 0)
-                        parts.push("TG " + model.tg)
+                        parts.push("TG " + model.tg);
                     if (model.src > 0 || model.srcName)
-                        parts.push("SRC " + Util.sourceText(model.src, model.srcName))
+                        parts.push("SRC " + Util.sourceText(model.src, model.srcName));
                     if (model.detail.length > 0)
-                        parts.push(model.detail)
+                        parts.push(model.detail);
                     if (model.channel.length > 0 && model.channel !== model.name)
-                        parts.push(model.channel)
-                    return parts.length > 0 ? parts.join(" · ") : qsTr("data message")
+                        parts.push(model.channel);
+                    return parts.length > 0 ? parts.join(" · ") : qsTr("data message");
                 }
                 // "encrypted" states what the call was, nothing more: whether it was
                 // skipped depended on the lockout toggle and loaded keys at the time,
@@ -160,25 +155,49 @@ Item {
                 // A zero talkgroup is "none decoded", not an identity — the same
                 // rule the monitor's hero applies — so it is not printed under a
                 // row that the scan channel already names.
-                var meta = []
+                var meta = [];
+                if (model.emergency)
+                    meta.push(qsTr("EMERGENCY"));
                 if (model.tg > 0)
-                    meta.push("TG " + model.tg)
+                    meta.push("TG " + model.tg);
                 if (model.src > 0 || model.srcName)
-                    meta.push("SRC " + Util.sourceText(model.src, model.srcName))
+                    meta.push("SRC " + Util.sourceText(model.src, model.srcName));
                 if (model.enc)
-                    meta.push(qsTr("encrypted"))
+                    meta.push(qsTr("encrypted"));
                 if (model.durationSecs >= 0)
-                    meta.push(Util.fmtDuration(model.durationSecs))
+                    meta.push(Util.fmtDuration(model.durationSecs));
                 // Where the call was heard, when that is not already the name
                 // above it — again the hero's rule, so both screens answer the
                 // question the same way.
                 if (model.channel.length > 0 && model.channel !== model.name)
-                    meta.push(model.channel)
-                return meta.join(" · ")
+                    meta.push(model.channel);
+                return meta.join(" · ");
             }
             rightText: model.timeText
             enc: model.enc
+            emergency: model.emergency
+            accessibleName: model.name + ", " + model.timeText
+            onActivated: detailSheet.open({
+                name: model.name,
+                when: model.when,
+                systemName: model.systemName,
+                channel: model.channel,
+                tg: model.tg,
+                src: model.src,
+                sourceName: model.srcName,
+                emergency: model.emergency,
+                enc: model.enc,
+                durationSecs: model.durationSecs,
+                detail: model.detail
+            })
         }
+    }
+
+    ChoiceSheet {
+        id: filterChoices
+    }
+    HistoryDetailSheet {
+        id: detailSheet
     }
 
     // Keeps the newest call in view for a reader parked at the top of the log.
@@ -208,7 +227,7 @@ Item {
         // state's Clear filters button sets four) coalesces into one call, and
         // repositioning an already-topped list is a no-op either way.
         function onFilterChanged() {
-            Qt.callLater(logList.positionViewAtBeginning)
+            Qt.callLater(logList.positionViewAtBeginning);
         }
     }
 
@@ -229,17 +248,14 @@ Item {
         // app installs no QTranslator, and an untranslated %n form substitutes the
         // number but never picks a plural form — this read "1 logged call(s) are
         // hidden". Two strings also let the verb agree.
-        readonly property string hiddenText:
-            callHistory.count === 1 ? qsTr("1 logged call is hidden by the search or filters.")
-                                    : qsTr("%1 logged calls are hidden by the search or filters.")
-                                        .arg(callHistory.count)
+        readonly property string hiddenText: callHistory.count === 1 ? qsTr("1 logged call is hidden by the search or filters.") : qsTr("%1 logged calls are hidden by the search or filters.").arg(callHistory.count)
 
         Text {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
             text: parent.filtered ? qsTr("No matching activity") : qsTr("No calls yet")
             font.family: Theme.sans
-            font.pixelSize: 16
+            font.pixelSize: Theme.fontSize(16)
             font.weight: Font.DemiBold
             color: Theme.textSecondary
         }
@@ -249,15 +265,18 @@ Item {
 
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            text: parent.filtered ? parent.hiddenText
-                                  : qsTr("Start listening on a system and every call lands here.")
+            text: parent.filtered ? parent.hiddenText : qsTr("Start listening on a system and every call lands here.")
             font.family: Theme.sans
-            font.pixelSize: 13
+            font.pixelSize: Theme.fontSize(13)
             color: Theme.textSubdued
             wrapMode: Text.Wrap
         }
 
-        Item { width: 1; height: 6; visible: parent.filtered }
+        Item {
+            width: 1
+            height: 6
+            visible: parent.filtered
+        }
 
         OutlineButton {
             anchors.horizontalCenter: parent.horizontalCenter
@@ -265,10 +284,10 @@ Item {
             width: Math.min(parent.width, 220)
             text: qsTr("Clear filters")
             onClicked: {
-                search.text = ""
-                historyView.filterText = ""
-                historyView.filterSystem = ""
-                historyView.filterKind = 0
+                search.text = "";
+                historyView.filterText = "";
+                historyView.filterSystem = "";
+                historyView.filterKind = 0;
             }
         }
     }
@@ -304,7 +323,7 @@ Item {
                     width: parent.width
                     text: qsTr("Clear call history?")
                     font.family: Theme.sans
-                    font.pixelSize: 17
+                    font.pixelSize: Theme.fontSize(17)
                     font.weight: Font.Bold
                     color: Theme.textPrimary
                 }
@@ -313,7 +332,7 @@ Item {
                     width: parent.width
                     text: qsTr("Every logged call and message is removed. A call playing right now still gets logged.")
                     font.family: Theme.sans
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSubdued
                     wrapMode: Text.Wrap
                 }
@@ -322,8 +341,8 @@ Item {
                     width: parent.width
                     text: qsTr("Clear history")
                     onClicked: {
-                        callHistory.clearAll()
-                        confirmClear.visible = false
+                        callHistory.clearAll();
+                        confirmClear.visible = false;
                     }
                 }
 

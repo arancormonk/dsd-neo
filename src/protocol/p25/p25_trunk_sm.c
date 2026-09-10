@@ -5483,8 +5483,8 @@ p25_sm_effective_hangtime(const dsd_state* state, double hangtime) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     double thr_pct = (cfg && cfg->p25p1_err_hold_pct_is_set) ? cfg->p25p1_err_hold_pct : 0.0;
     double add_s = (cfg && cfg->p25p1_err_hold_s_is_set) ? cfg->p25p1_err_hold_s : 0.0;
-    if (thr_pct > 0.0 && add_s > 0.0 && state->p25_p1_voice_err_hist_len > 0) {
-        double avg = (double)state->p25_p1_voice_err_hist_sum / (double)state->p25_p1_voice_err_hist_len;
+    if (thr_pct > 0.0 && add_s > 0.0 && state->p25_p1_voice_err_hist_count > 0) {
+        double avg = (double)state->p25_p1_voice_err_hist_sum / (double)state->p25_p1_voice_err_hist_count;
         if (avg >= thr_pct) {
             return hangtime + add_s;
         }

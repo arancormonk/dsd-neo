@@ -6,20 +6,29 @@
 #include <ctype.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/lrrp_ports.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/crypto/ecdsa.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
+#include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
@@ -32,14 +41,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "dsd-neo/core/frontend_types.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/secret_redaction.h"
-#include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/io/iq_types.h"
-#include "dsd-neo/platform/platform.h"
-#include "dsd-neo/runtime/call_alert.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <unistd.h>
@@ -383,7 +384,13 @@ cli_parse_long_option(const char* option_name, const char* in, int base, long* o
     if (cli_parse_long_base(in, base, out)) {
         return 1;
     }
-    LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    if (strcmp(option_name, "-b") == 0) {
+        LOG_ERROR("Invalid -b value (expected 8-bit decimal key)\n");
+    } else if (strcmp(option_name, "-R") == 0) {
+        LOG_ERROR("Invalid -R value (expected 15-bit decimal key)\n");
+    } else {
+        LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    }
     cli_set_exit_rc(out_exit_rc, 1);
     return 0;
 }
@@ -393,7 +400,11 @@ cli_parse_ulong_option(const char* option_name, const char* in, int base, unsign
     if (cli_parse_ulong_base(in, base, out)) {
         return 1;
     }
-    LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    if (strcmp(option_name, "-_") == 0) {
+        LOG_ERROR("Invalid -_ value (expected 9-bit decimal seed)\n");
+    } else {
+        LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    }
     cli_set_exit_rc(out_exit_rc, 1);
     return 0;
 }
@@ -403,7 +414,11 @@ cli_parse_u64_option(const char* option_name, const char* in, int base, unsigned
     if (cli_parse_u64_base(in, base, out)) {
         return 1;
     }
-    LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    if (strcmp(option_name, "-2") == 0) {
+        LOG_ERROR("Invalid -2 value (expected 64-bit hex key)\n");
+    } else {
+        LOG_ERROR("Invalid %s value \"%s\"\n", option_name, in ? in : "");
+    }
     cli_set_exit_rc(out_exit_rc, 1);
     return 0;
 }
@@ -1112,6 +1127,50 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             dmr_force_algid_cli = argv[i] + 18;                                                                        \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--key-profile-ref") == 0 || strncmp(argv[i], "--key-profile-ref=", 18) == 0) {            \
+            key_profile_ref_cli =                                                                                      \
+                argv[i][17] == '=' ? argv[i] + 18 : (i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL);                 \
+            if (!key_profile_ref_cli || !*key_profile_ref_cli || strlen(key_profile_ref_cli) >= 64                     \
+                || strspn(key_profile_ref_cli, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")     \
+                       != strlen(key_profile_ref_cli)) {                                                               \
+                LOG_ERROR("Invalid key profile reference\n");                                                          \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--no-decryption-keys") == 0) {                                                            \
+            no_decryption_keys_cli = 1;                                                                                \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--dmr-tg-key-clear") == 0) {                                                              \
+            dmr_tg_key_clear_cli = 1;                                                                                  \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--m17-scrambler-key") == 0 || strncmp(argv[i], "--m17-scrambler-key=", 20) == 0) {        \
+            const char* value = argv[i][19] == '=' ? argv[i] + 20 : (i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL); \
+            if (!value                                                                                                 \
+                || dsd_key_apply_direct(state, DSD_KEY_TYPE_M17_SCRAMBLER, value, DSD_KEY_APPLY_OVERLAY)               \
+                       != DSD_KEY_DIRECT_OK) {                                                                         \
+                LOG_ERROR("--m17-scrambler-key expects a nonzero 2/4/6-digit hex seed\n");                             \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            dsd_key_apply_mute_policy(opts, state);                                                                    \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--m17-aes-key") == 0 || strncmp(argv[i], "--m17-aes-key=", 14) == 0) {                    \
+            const char* value = argv[i][13] == '=' ? argv[i] + 14 : (i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL); \
+            if (!value                                                                                                 \
+                || dsd_key_apply_direct(state, DSD_KEY_TYPE_M17_AES, value, DSD_KEY_APPLY_OVERLAY)                     \
+                       != DSD_KEY_DIRECT_OK) {                                                                         \
+                LOG_ERROR("--m17-aes-key expects a nonzero 32/48/64-digit hex key\n");                                 \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            dsd_key_apply_mute_policy(opts, state);                                                                    \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--m17-signature-public-key") == 0) {                                                      \
             if (i + 1 >= argc) {                                                                                       \
                 LOG_ERROR("--m17-signature-public-key requires a 64-byte hex P-256 public key\n");                     \
@@ -1703,10 +1762,8 @@ cli_reset_getopt(void) {
 
 int
 dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_exit_rc) {
-
     dsd_neo_config_init();
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-
     // CLI long options (pre-scan) ------------------------------------------------
     const char* calc_csv_cli = NULL;
     const char* calc_step_cli = NULL;
@@ -1735,6 +1792,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* dmr_force_algid_cli = NULL;
     int long_force_conflict_cli = 0;
     int no_force_key_cli = 0;
+    const char* key_profile_ref_cli = NULL;
+    int no_decryption_keys_cli = 0;
+    int dmr_tg_key_clear_cli = 0;
     int strict_crc_cli = 0;
     const char* m17_signature_public_key_cli = NULL;
     const char* iq_capture_cli = NULL;
@@ -1753,10 +1813,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int chan_csv_cli_seen = 0;
     int p25_bandplan_cli_seen = 0;
     int config_one_shot_cli_seen = cli_has_config_one_shot_arg(argc, argv);
-
     DSD_PARSE_ARGS_PRESCAN_BLOCK();
     DSD_PARSE_ARGS_IQ_PRE_BLOCK();
-
     if (opts->iq_replay_requested) {
 #ifndef USE_RADIO
         LOG_ERROR("--iq-replay requires a build with radio pipeline support\n");
@@ -1767,14 +1825,22 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
 #endif
     }
     DSD_PARSE_ARGS_TRAILING_BLOCK();
-
     int new_argc = dsd_cli_compact_args(argc, argv);
     cli_reset_getopt();
-
     unsigned int force_choices = 0U;
     const int long_force = state->M;
     int parse_rc = dsd_parse_short_opts(new_argc, argv, opts, state, out_exit_rc, &chan_csv_cli_seen, &force_choices);
     if (parse_rc == DSD_PARSE_CONTINUE) {
+        if (no_decryption_keys_cli) {
+            dsd_key_set empty = {0};
+            dsd_key_set_install(state, &empty);
+        }
+        if (dmr_tg_key_clear_cli) {
+            keyring_dmr_tg_map_reset(state);
+        }
+        if (key_profile_ref_cli) {
+            DSD_SNPRINTF(state->key_profile_ref, sizeof(state->key_profile_ref), "%s", key_profile_ref_cli);
+        }
         cli_finish_force_options(opts, state, force_choices, long_force, dmr_force_algid_cli != NULL, no_force_key_cli,
                                  strict_crc_cli, long_force_conflict_cli);
         parse_rc = cli_validate_trunk_scan_runtime_args(opts, trunk_scan_cli_seen, chan_csv_cli_seen,
@@ -1795,7 +1861,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
 }
 
 // Short-option getopt loop migrated to runtime
-
 // clang-format off
 #define DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK()                                                                            \
     switch (c) {                                                                                                       \
@@ -1837,38 +1902,17 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             LOG_INFO("NOTICE: P25: Prefer CC candidates during hunt: On.\n");                                          \
             break;                                                                                                     \
         case '0':                                                                                                      \
-            state->M = 0x21;                                                                                           \
+            (void)dsd_key_apply_force(state, 2);                                                                                           \
             *out_force_choices |= 2U;                                                                                 \
             LOG_INFO("NOTICE: Force RC4 Key over Missing PI header/LE Encryption Identifiers (DMR)\n");                \
             break;                                                                                                     \
         case '1':                                                                                                      \
-            if (state) {                                                                                               \
-                char hex[128];                                                                                         \
-                size_t nhex = 0;                                                                                       \
-                if (!cli_collect_hex_digits(optarg, hex, sizeof hex, &nhex)) {                                         \
-                    LOG_ERROR("-1 expects a hex key (spaces allowed)\n");                                              \
-                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
-                    return DSD_PARSE_ERROR;                                                                            \
-                }                                                                                                      \
-                if (nhex == 0 || nhex > 16) {                                                                          \
-                    LOG_ERROR("-1 expects 1..16 hex characters (spaces allowed)\n");                                   \
-                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
-                    return DSD_PARSE_ERROR;                                                                            \
-                }                                                                                                      \
-                uint64_t key = 0U;                                                                                     \
-                if (dsd_parse_hex_u64_n(hex, nhex, &key) != 0) {                                                       \
-                    LOG_ERROR("-1 failed to parse key\n");                                                             \
-                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
-                    return DSD_PARSE_ERROR;                                                                            \
-                }                                                                                                      \
-                state->R = key;                                                                                        \
-                state->RR = key;                                                                                       \
-                char key_text[32];                                                                                     \
-                LOG_INFO("NOTICE: RC4/DES encryption key loaded: %s\n",                                                \
-                         dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, 16U, 0));         \
-                opts->unmute_encrypted_p25 = 0;                                                                        \
-                state->keyloader = 0;                                                                                  \
+            if (dsd_key_apply_direct(state, DSD_KEY_TYPE_RC4, optarg, DSD_KEY_APPLY_OVERLAY) != DSD_KEY_DIRECT_OK) {   \
+                LOG_ERROR("-1 expects 1..16 hex digits\n");                                                            \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            dsd_key_apply_mute_policy(opts, state);                                                                    \
             break;                                                                                                     \
         case '_': {                                                                                                    \
             unsigned long seed = 0UL;                                                                                  \
@@ -1967,108 +2011,12 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         }                                                                                                              \
         case 'H':                                                                                                      \
-            if (state) {                                                                                               \
-                char hex[128];                                                                                         \
-                size_t nhex = 0;                                                                                       \
-                if (!cli_collect_hex_digits(optarg, hex, sizeof hex, &nhex)) {                                         \
-                    LOG_ERROR("-H expects a hex key (spaces allowed)\n");                                              \
-                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
-                    return DSD_PARSE_ERROR;                                                                            \
-                }                                                                                                      \
-                                                                                                                       \
-                uint64_t k1 = 0U, k2 = 0U, k3 = 0U, k4 = 0U;                                                           \
-                if (nhex == 10) {                                                                                      \
-                    if (dsd_parse_hex_u64_n(hex, 10, &k1) != 0) {                                                      \
-                        LOG_ERROR("-H failed to parse 10-hex Hytera BP key\n");                                        \
-                        cli_set_exit_rc(out_exit_rc, 1);                                                               \
-                        return DSD_PARSE_ERROR;                                                                        \
-                    }                                                                                                  \
-                    state->H = k1 & 0xFFFFFFFFFFULL;                                                                   \
-                    state->K1 = state->H;                                                                              \
-                    state->K2 = state->K3 = state->K4 = 0ULL;                                                          \
-                    state->hytera_key_segments = (state->K1 != 0ULL) ? 1U : 0U;                                        \
-                    state->aes_key_segments[0] = state->aes_key_segments[1] = 0U;                                      \
-                    char key_text[32];                                                                                 \
-                    LOG_INFO("NOTICE: Hytera BP key loaded (40-bit): %s\n",                                            \
-                             dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->K1, 10U, 0));    \
-                } else if (nhex == 32) {                                                                               \
-                    if (dsd_parse_hex_u64_n(hex + 0, 16, &k1) != 0 || dsd_parse_hex_u64_n(hex + 16, 16, &k2) != 0) {   \
-                        LOG_ERROR("-H failed to parse 32-hex key (2x16)\n");                                           \
-                        cli_set_exit_rc(out_exit_rc, 1);                                                               \
-                        return DSD_PARSE_ERROR;                                                                        \
-                    }                                                                                                  \
-                    state->H = k1;                                                                                     \
-                    state->K1 = k1;                                                                                    \
-                    state->K2 = k2;                                                                                    \
-                    state->K3 = state->K4 = 0ULL;                                                                      \
-                    state->hytera_key_segments = (k1 != 0ULL || k2 != 0ULL) ? 2U : 0U;                                 \
-                                                                                                                       \
-                    state->A1[0] = state->A1[1] = k1;                                                                  \
-                    state->A2[0] = state->A2[1] = k2;                                                                  \
-                    state->A3[0] = state->A3[1] = 0ULL;                                                                \
-                    state->A4[0] = state->A4[1] = 0ULL;                                                                \
-                    state->aes_key_loaded[0] = state->aes_key_loaded[1] = (k1 != 0ULL || k2 != 0ULL) ? 1 : 0;          \
-                    state->aes_key_segments[0] = state->aes_key_segments[1] = 2U;                                      \
-                                                                                                                       \
-                    DSD_MEMSET(state->aes_key, 0, sizeof(state->aes_key));                                             \
-                    for (int i = 0; i < 8; i++) {                                                                      \
-                        state->aes_key[i + 0] = (uint8_t)((state->A1[0] >> (56 - (i * 8))) & 0xFF);                    \
-                        state->aes_key[i + 8] = (uint8_t)((state->A2[0] >> (56 - (i * 8))) & 0xFF);                    \
-                    }                                                                                                  \
-                    const unsigned long long segments[2] = {k1, k2};                                                   \
-                    char key_text[96];                                                                                 \
-                    LOG_INFO(                                                                                          \
-                        "NOTICE: AES-128 / Hytera 128-bit key loaded (2x64): %s\n",                                    \
-                        dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments, 2U));     \
-                } else if (nhex == 64) {                                                                               \
-                    if (dsd_parse_hex_u64_n(hex + 0, 16, &k1) != 0 || dsd_parse_hex_u64_n(hex + 16, 16, &k2) != 0      \
-                        || dsd_parse_hex_u64_n(hex + 32, 16, &k3) != 0                                                 \
-                        || dsd_parse_hex_u64_n(hex + 48, 16, &k4) != 0) {                                              \
-                        LOG_ERROR("-H failed to parse 64-hex key (4x16)\n");                                           \
-                        cli_set_exit_rc(out_exit_rc, 1);                                                               \
-                        return DSD_PARSE_ERROR;                                                                        \
-                    }                                                                                                  \
-                    state->H = k1;                                                                                     \
-                    state->K1 = k1;                                                                                    \
-                    state->K2 = k2;                                                                                    \
-                    state->K3 = k3;                                                                                    \
-                    state->K4 = k4;                                                                                    \
-                    state->hytera_key_segments = (k1 != 0ULL || k2 != 0ULL || k3 != 0ULL || k4 != 0ULL) ? 4U : 0U;     \
-                                                                                                                       \
-                    state->A1[0] = state->A1[1] = k1;                                                                  \
-                    state->A2[0] = state->A2[1] = k2;                                                                  \
-                    state->A3[0] = state->A3[1] = k3;                                                                  \
-                    state->A4[0] = state->A4[1] = k4;                                                                  \
-                    state->aes_key_loaded[0] = state->aes_key_loaded[1] =                                              \
-                        (k1 != 0ULL || k2 != 0ULL || k3 != 0ULL || k4 != 0ULL) ? 1 : 0;                                \
-                    state->aes_key_segments[0] = state->aes_key_segments[1] = 4U;                                      \
-                                                                                                                       \
-                    DSD_MEMSET(state->aes_key, 0, sizeof(state->aes_key));                                             \
-                    for (int i = 0; i < 8; i++) {                                                                      \
-                        state->aes_key[i + 0] = (uint8_t)((state->A1[0] >> (56 - (i * 8))) & 0xFF);                    \
-                        state->aes_key[i + 8] = (uint8_t)((state->A2[0] >> (56 - (i * 8))) & 0xFF);                    \
-                        state->aes_key[i + 16] = (uint8_t)((state->A3[0] >> (56 - (i * 8))) & 0xFF);                   \
-                        state->aes_key[i + 24] = (uint8_t)((state->A4[0] >> (56 - (i * 8))) & 0xFF);                   \
-                    }                                                                                                  \
-                    const unsigned long long segments[4] = {k1, k2, k3, k4};                                           \
-                    char key_text[96];                                                                                 \
-                    LOG_INFO(                                                                                          \
-                        "NOTICE: AES-256 / Hytera 256-bit key loaded (4x64): %s\n",                                    \
-                        dsd_secret_format_u64_segments(key_text, sizeof key_text, opts->show_keys, segments, 4U));     \
-                } else {                                                                                               \
-                    LOG_ERROR("-H expects 10, 32, or 64 hex characters (spaces allowed)\n");                           \
-                    cli_set_exit_rc(out_exit_rc, 1);                                                                   \
-                    return DSD_PARSE_ERROR;                                                                            \
-                }                                                                                                      \
-                if (state->K1 != 0ULL || state->K2 != 0ULL || state->K3 != 0ULL || state->K4 != 0ULL) {                \
-                    opts->dmr_mute_encL = 0;                                                                           \
-                    opts->dmr_mute_encR = 0;                                                                           \
-                } else {                                                                                               \
-                    opts->dmr_mute_encL = 1;                                                                           \
-                    opts->dmr_mute_encR = 1;                                                                           \
-                }                                                                                                      \
-                state->keyloader = 0;                                                                                  \
+            if (dsd_key_apply_direct(state, DSD_KEY_TYPE_HEX, optarg, DSD_KEY_APPLY_OVERLAY) != DSD_KEY_DIRECT_OK) {   \
+                LOG_ERROR("-H expects 10, 32, or 64 hex digits\n");                                                    \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            dsd_key_apply_mute_policy(opts, state);                                                                    \
             break;                                                                                                     \
         case 'V': {                                                                                                    \
             /* Enable TDMA voice synthesis for selected slot(s) */                                                     \
@@ -2317,26 +2265,14 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             LOG_INFO("NOTICE: Imported group list from %s\n", opts->group_in_file);                                    \
             break;                                                                                                     \
         }                                                                                                              \
-        case 'R': {                                                                                                    \
-            long key = 0;                                                                                              \
-            if (!cli_parse_long_option("-R", optarg, 10, &key, out_exit_rc)) {                                         \
-                return DSD_PARSE_ERROR;                                                                                \
-            }                                                                                                          \
-            if (key < 0) {                                                                                             \
-                LOG_ERROR("Invalid -R value \"%s\"\n", optarg ? optarg : "");                                          \
+        case 'R':                                                                                                      \
+            if (dsd_key_apply_direct(state, DSD_KEY_TYPE_SCRAMBLER, optarg, DSD_KEY_APPLY_OVERLAY) != DSD_KEY_DIRECT_OK) { \
+                LOG_ERROR("-R expects decimal 0..32767\n");                                                            \
                 cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            if (key > 0x7FFFL) {                                                                                       \
-                key = 0x7FFFL;                                                                                         \
-            }                                                                                                          \
-            state->R = (unsigned long long)key;                                                                        \
-            state->keyloader = 0;                                                                                      \
-            char key_text[16];                                                                                         \
-            LOG_INFO("NOTICE: NXDN/dPMR scrambler key loaded: %s\n",                                                   \
-                     dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 5U));             \
+            dsd_key_apply_mute_policy(opts, state);                                                                    \
             break;                                                                                                     \
-        }                                                                                                              \
         case 'v': {                                                                                                    \
             /* Filtering bitmap (PBF/LPF/HPF/HPFD) -- accepts hex or dec */                                            \
             unsigned long bm = 0;                                                                                      \
@@ -2827,31 +2763,14 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             }                                                                                                          \
             break;                                                                                                     \
         }                                                                                                              \
-        case 'b': {                                                                                                    \
-            /* Manually enter Basic Privacy key number (decimal 0..255) */                                             \
-            long v = 0;                                                                                                \
-            if (!cli_parse_long_option("-b", optarg, 10, &v, out_exit_rc)) {                                           \
+        case 'b':                                                                                                      \
+            if (dsd_key_apply_direct(state, DSD_KEY_TYPE_BASIC, optarg, DSD_KEY_APPLY_OVERLAY) != DSD_KEY_DIRECT_OK) { \
+                LOG_ERROR("-b expects decimal 0..255\n");                                                              \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            if (v < 0) {                                                                                               \
-                v = 0;                                                                                                 \
-            }                                                                                                          \
-            if (v > 255) {                                                                                             \
-                v = 255;                                                                                               \
-            }                                                                                                          \
-            state->K = v;                                                                                              \
-            if (state->K != 0) {                                                                                       \
-                opts->dmr_mute_encL = 0;                                                                               \
-                opts->dmr_mute_encR = 0;                                                                               \
-            } else {                                                                                                   \
-                opts->dmr_mute_encL = 1;                                                                               \
-                opts->dmr_mute_encR = 1;                                                                               \
-            }                                                                                                          \
-            char key_text[16];                                                                                         \
-            LOG_INFO("NOTICE: Basic Privacy key loaded (forced priority): %s\n",                                       \
-                     dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->K, 0U));             \
+            dsd_key_apply_mute_policy(opts, state);                                                                    \
             break;                                                                                                     \
-        }                                                                                                              \
         case 'D': {                                                                                                    \
             /* Manually set DMR TIII Location Area n-bit length */                                                     \
             long n = 0;                                                                                                \
@@ -2871,7 +2790,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         }                                                                                                              \
         case '4':                                                                                                      \
             /* Force Privacy Key over Encryption Identifiers */                                                        \
-            state->M = 1;                                                                                              \
+            (void)dsd_key_apply_force(state, 1);                                                                                              \
             *out_force_choices |= 1U;                                                                                 \
             LOG_INFO("NOTICE: Force Privacy Key priority enabled\n");                                                  \
             break;                                                                                                     \

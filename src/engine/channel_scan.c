@@ -3,6 +3,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
@@ -106,8 +107,9 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)scan->row);
     (void)dsd_scan_mode_options(opts, state, profile ? &profile->values : NULL);
     dsd_scan_groups_enter(state, profile);
+    const int maps_changed = dsd_scan_maps_enter(state, profile);
     const int keys_changed = dsd_scan_key_change_commit(state, &scan->keys);
-    if (keys_changed || outgoing_force != state->M) {
+    if (keys_changed || maps_changed || outgoing_force != state->M) {
         dsd_enc_lockout_bump_key_epoch(state);
     }
     dsd_frame_sync_reset_acquisition(opts, state, 1);
@@ -296,6 +298,7 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
     }
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, NULL, NULL);
     dsd_scan_groups_leave(state);
+    dsd_scan_maps_leave(state);
     dsd_scan_mode_leave(opts, state);
     if (active) {
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);

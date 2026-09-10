@@ -5,10 +5,12 @@
 
 /* Unit tests: Android session-phase mapping consumed by the Qt Quick UI. */
 
+#include <initializer_list>
 #include <stdio.h>
 
+#include "../../android/run_status.h"
+#include "../../android/session_state_map.h"
 #include "dsd-neo/core/safe_api.h"
-#include "session_state_map.h"
 
 using dsd_android::kSessionFailed;
 using dsd_android::kSessionIdle;
@@ -42,6 +44,21 @@ expect(const char* what, SessionPhase got, SessionPhase want) {
     }
 }
 
+void
+test_failure_recovery() {
+    SessionPhaseTracker tracker;
+    tracker.note_start_requested(40);
+    expect("native failure", tracker.update("IDLE", false, 41, dsd_android::kRunFailed), kSessionFailed);
+    (void)tracker.acknowledge_failure(41, "STOPPING");
+    expect("teardown cannot be acknowledged", tracker.phase(), kSessionFailed);
+    (void)tracker.acknowledge_failure(41, "IDLE");
+    expect("acknowledged failure is idle", tracker.phase(), kSessionIdle);
+    expect("retained result stays acknowledged", tracker.update("IDLE", false, 41, dsd_android::kRunFailed),
+           kSessionIdle);
+    (void)tracker.note_start_requested(41, "IDLE");
+    expect("retry starts", tracker.update("RUNNING", true, 42, dsd_android::kRunPending), kSessionRunning);
+}
+
 /* Burn the whole start grace period on IDLE polls. */
 SessionPhase
 poll_idle(SessionPhaseTracker& tracker, int count) {
@@ -52,10 +69,121 @@ poll_idle(SessionPhaseTracker& tracker, int count) {
     return phase;
 }
 
+/* A native terminal result can precede wake-lock release and service IDLE.
+ * Retry controls follow the published phase, so neither a quick failure nor a
+ * completed/cancelled run may enable them while that teardown is in flight. */
+void
+test_terminal_waits_for_service_idle() {
+    for (const auto reason : {dsd_android::kRunFailed, dsd_android::kRunCompleted, dsd_android::kRunCancelled}) {
+        for (const bool saw_running : {false, true}) {
+            SessionPhaseTracker tracker;
+            tracker.note_start_requested(40);
+            if (saw_running) {
+                expect("session running before native return",
+                       tracker.update("RUNNING", true, 41, dsd_android::kRunPending), kSessionRunning);
+            }
+            int premature_retries = 0;
+            for (const char* service_state : {"RUNNING", "STOPPING"}) {
+                // More than the start grace period: teardown must not become a
+                // failed retry simply because several status polls passed.
+                for (int poll = 0; poll < dsd_android::kStartGraceTicks + 2; ++poll) {
+                    const SessionPhase phase = tracker.update(service_state, false, 41, reason);
+                    expect("native terminal result waits for service teardown", phase, kSessionStopping);
+                    if (phase == kSessionIdle || phase == kSessionFailed) {
+                        ++premature_retries;
+                        tracker.note_start_requested(41);
+                    }
+                    // The host rechecks the service record even for a retry
+                    // arriving before the next UI refresh has disabled its button.
+                    if (tracker.note_start_requested(41, service_state)) {
+                        DSD_FPRINTF(stderr, "host accepted retry before service IDLE\n");
+                        ++g_failures;
+                    }
+                    expect("rejected retry leaves teardown pending", tracker.phase(), kSessionStopping);
+                }
+            }
+            if (premature_retries != 0) {
+                DSD_FPRINTF(stderr, "terminal result enabled %d premature retry attempt(s)\n", premature_retries);
+                ++g_failures;
+            }
+            const SessionPhase final_phase = reason == dsd_android::kRunFailed ? kSessionFailed : kSessionIdle;
+            expect("teardown publishes the retained terminal outcome", tracker.update("IDLE", false, 41, reason),
+                   final_phase);
+            if (!tracker.note_start_requested(41, "IDLE")) {
+                DSD_FPRINTF(stderr, "host rejected retry after service IDLE\n");
+                ++g_failures;
+            }
+            expect("retry waits for the next service session", tracker.update("IDLE", false, 41, reason),
+                   kSessionStarting);
+            expect("retry starts after teardown", tracker.update("STARTING", false, 42, dsd_android::kRunPending),
+                   kSessionStarting);
+            expect("retry reaches running", tracker.update("RUNNING", true, 42, dsd_android::kRunPending),
+                   kSessionRunning);
+        }
+    }
+}
+
 } // namespace
 
 int
 main(void) {
+    test_terminal_waits_for_service_idle();
+    {
+        SessionPhaseTracker tracker;
+        expect("retained failure is not this UI attempt", tracker.update("IDLE", false, 77, dsd_android::kRunFailed),
+               kSessionIdle);
+        expect("retained failure remains ignored", tracker.update("IDLE", false, 77, dsd_android::kRunFailed),
+               kSessionIdle);
+    }
+    {
+        SessionPhaseTracker tracker;
+        if (!tracker.note_start_requested(77, nullptr)) {
+            ++g_failures;
+        }
+        expect("missing record admits start", tracker.phase(), kSessionStarting);
+    }
+    // Terminal results cannot be inferred from elapsed time or a sampled running
+    // flag: an entire failed run can fit between two UI ticks.
+    for (int polls : {0, 12, 20}) {
+        SessionPhaseTracker tracker;
+        tracker.note_start_requested(10);
+        for (int i = 0; i < polls; ++i) {
+            tracker.update("RUNNING", true, 11, dsd_android::kRunPending);
+        }
+        expect("failure before first poll / after 3s / after startup",
+               tracker.update("IDLE", false, 11, dsd_android::kRunFailed), kSessionFailed);
+        expect("terminal failure stays latched", tracker.update("IDLE", false, 11, dsd_android::kRunFailed),
+               kSessionFailed);
+        tracker.note_start_requested(11);
+        expect("retry ignores previous terminal result", tracker.update("IDLE", false, 11, dsd_android::kRunFailed),
+               kSessionStarting);
+        expect("cancel is not failure", tracker.update("IDLE", false, 12, dsd_android::kRunCancelled), kSessionIdle);
+        tracker.note_start_requested(12);
+        expect("short normal run is not failure", tracker.update("IDLE", false, 13, dsd_android::kRunCompleted),
+               kSessionIdle);
+    }
+    {
+        dsd_android::RunStatus result;
+        result.begin(42);
+        if (result.initialized || result.reason != dsd_android::kRunPending) {
+            ++g_failures;
+        }
+        result.mark_initialized();
+        result.finish(1, false, -6);
+        if (!result.initialized || result.session_id != 42 || result.reason != dsd_android::kRunFailed
+            || result.device_error != -6 || result.run_code != 1) {
+            ++g_failures;
+        }
+        result.begin(43);
+        if (result.initialized || result.device_error != 0) {
+            ++g_failures;
+        }
+        result.finish(1, true, 0);
+        if (result.reason != dsd_android::kRunCancelled) {
+            ++g_failures;
+        }
+    }
+
     /* A fresh tracker is idle, and stays idle however often it is polled. */
     {
         SessionPhaseTracker tracker;
@@ -163,6 +291,7 @@ main(void) {
         expect("unknown name", tracker.update("SOMETHING_NEW", false), kSessionIdle);
     }
 
+    test_failure_recovery();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "session state map: %d failure(s)\n", g_failures);
         return 1;

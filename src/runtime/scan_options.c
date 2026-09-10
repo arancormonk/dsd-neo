@@ -34,12 +34,17 @@ static const scan_option_spec specifications[] = {
     {"-K", DSD_SCAN_OPT_HEX_FILE, DMR | P25 | NXDN, 1, 0, 0},
     {"-k", DSD_SCAN_OPT_DEC_FILE, DMR | P25 | NXDN, 1, 0, 0},
     {"-G", DSD_SCAN_OPT_GROUP, ALL_MODES, 1, 0, 0},
+    {"--dmr-tg-key-csv", DSD_SCAN_OPT_DMR_MAP, DMR, 1, 0, 0},
+    {"--dmr-tg-key-clear", DSD_SCAN_OPT_DMR_MAP, DMR, 0, 0, 0},
+    {"--no-decryption-keys", DSD_SCAN_OPT_CLEAR_KEYS, ALL_MODES, 0, 0, 0},
+    {"--key-profile-ref", DSD_SCAN_OPT_KEY_PROFILE_REF, ALL_MODES, 1, 0, 0},
     {"-4", DSD_SCAN_OPT_FORCE, DMR | NXDN, 0, 0, 1},
     {"-0", DSD_SCAN_OPT_FORCE, DMR, 0, 0, 0x21},
     {"--dmr-force-algid", DSD_SCAN_OPT_FORCE, DMR, 1, 0, 0},
     {"--no-force-key", DSD_SCAN_OPT_FORCE, ALL_MODES, 0, 0, 0},
     {"-F", DSD_SCAN_OPT_CRC, DMR | P25 | MODE_BIT(DSD_SCAN_MODE_M17), 0, 0, 0},
     {"--strict-crc", DSD_SCAN_OPT_CRC, ALL_MODES, 0, 0, 1},
+    {"-^", DSD_SCAN_OPT_P25_CANDIDATES, P25, 0, 0, 1},
     {"-e", DSD_SCAN_OPT_DATA, ALL_MODES, 0, 0, 1},
     {"--no-data-calls", DSD_SCAN_OPT_DATA, ALL_MODES, 0, 0, 0},
     {"--enc-follow", DSD_SCAN_OPT_ENC, ALL_MODES, 0, 0, 1},
@@ -177,11 +182,6 @@ option_hytera_width(unsigned int digits, unsigned int mode) {
 }
 
 static int
-option_has_privacy_material(const dsd_scan_options* parsed) {
-    return parsed->bp || parsed->hytera[0] || parsed->hytera[1] || parsed->hytera[2] || parsed->hytera[3];
-}
-
-static int
 option_set_hex(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
     uint64_t words[4] = {0};
     unsigned int digits = 0;
@@ -245,6 +245,21 @@ static int
 option_set_path(const scan_option_spec* spec, const char* argument, dsd_scan_options* parsed) {
     char* path = parsed->values.group_file;
     size_t capacity = sizeof(parsed->values.group_file);
+    if (spec->field == DSD_SCAN_OPT_KEY_PROFILE_REF) {
+        path = parsed->values.key_profile_ref;
+        capacity = sizeof(parsed->values.key_profile_ref);
+        if (strspn(argument, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != strlen(argument)) {
+            return -1;
+        }
+    }
+    if (spec->field == DSD_SCAN_OPT_DMR_MAP) {
+        path = parsed->values.dmr_map_file;
+        capacity = sizeof(parsed->values.dmr_map_file);
+        if (!spec->argument) {
+            path[0] = '\0';
+            return 0;
+        }
+    }
     if (spec->field == DSD_SCAN_OPT_HEX_FILE) {
         path = parsed->hex_file;
         capacity = sizeof(parsed->hex_file);
@@ -261,6 +276,9 @@ option_set_path(const scan_option_spec* spec, const char* argument, dsd_scan_opt
 
 static int
 option_set(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
+    if (spec->field == DSD_SCAN_OPT_CLEAR_KEYS) {
+        return 0;
+    }
     switch (spec->field) {
         case DSD_SCAN_OPT_FORCE:
             if (spec->argument) {
@@ -278,6 +296,7 @@ option_set(const scan_option_spec* spec, const char* argument, unsigned int mode
         case DSD_SCAN_OPT_VOICE: parsed->values.voice_only = spec->value; return 0;
         case DSD_SCAN_OPT_DATA: parsed->values.tune_data_calls = spec->value; return 0;
         case DSD_SCAN_OPT_ENC: parsed->values.tune_enc_calls = spec->value; return 0;
+        case DSD_SCAN_OPT_P25_CANDIDATES: return 0;
         default: return option_set_path(spec, argument, parsed);
     }
 }
@@ -372,6 +391,9 @@ done:
 
 static int
 option_sources_valid(uint32_t present, char* error, size_t size) {
+    if ((present & DSD_SCAN_OPT_CLEAR_KEYS) && (present & (DSD_SCAN_OPT_DIRECT | DSD_SCAN_OPT_FILES))) {
+        return option_error(error, size, "options", "no-keys cannot be combined with key material");
+    }
     if ((present & DSD_SCAN_OPT_DIRECT) && (present & DSD_SCAN_OPT_FILES)) {
         return option_error(error, size, "options", "direct keys cannot be combined with key files");
     }
@@ -398,11 +420,11 @@ dsd_scan_options_parse(const char* text, unsigned int mode, int conventional, ds
         rc = option_sources_valid(parsed.values.present, error, error_size);
     }
     if (rc == 0) {
-        /* The CLI `-b`/`-H` switches decide DMR encrypted-audio muting from whether any privacy
-         * material was supplied; explicit zero mutes. Only the option text claims that decision. */
-        if (parsed.values.present & (DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA)) {
-            parsed.values.present |= DSD_SCAN_OPT_MUTE_DMR;
-            parsed.values.mute_dmr = !option_has_privacy_material(&parsed);
+        /* Every accepted direct switch arms decryption, including zero-valued keys.
+         * Legacy material-only columns never acquire this policy override. */
+        if (parsed.values.present & DSD_SCAN_OPT_DIRECT) {
+            parsed.values.present |= DSD_SCAN_OPT_MUTE_DMR | DSD_SCAN_OPT_MUTE_P25;
+            parsed.values.mute_dmr = 0;
         }
         *out = parsed;
     }

@@ -21,7 +21,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_KEY_SET_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_KEY_SET_H_H
 
-#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h> // IWYU pragma: keep -- inline ownership cleanup uses secure-zero macros.
 #include <dsd-neo/core/state_fwd.h>
 
 #include <stdint.h>
@@ -50,6 +51,8 @@ typedef struct {
     unsigned long long K4;
     unsigned long long R;
     unsigned long long RR;
+    uint8_t scalar_key_present[2];
+    uint8_t basic_key_present;
     unsigned long long H;
     uint8_t hytera_key_segments;
     unsigned long long A1[2];
@@ -68,6 +71,8 @@ typedef struct {
     int keyloader;   /* state->keyloader to install with the entries */
     /* Captured for the baseline or parsed directly; zeroed for file-backed sets. */
     dsd_key_scalars scalars;
+    /** Optional opaque identity of the installed collection, never key material. */
+    char profile_ref[64];
 } dsd_key_set;
 
 /**
@@ -93,6 +98,33 @@ typedef enum {
     DSD_KEY_DIRECT_INVALID_DEC = -2,
     DSD_KEY_DIRECT_INVALID_HEX = -3,
 } dsd_key_direct_result;
+
+/** Frontend-neutral direct key types; app_control translates its wire enum. */
+typedef enum {
+    DSD_KEY_TYPE_BASIC = 0,
+    DSD_KEY_TYPE_HEX = 1,
+    DSD_KEY_TYPE_RC4 = 2,
+    DSD_KEY_TYPE_SCRAMBLER = 3,
+    DSD_KEY_TYPE_M17_SCRAMBLER = 4,
+    DSD_KEY_TYPE_M17_AES = 5
+} dsd_key_type;
+
+typedef enum { DSD_KEY_APPLY_OVERLAY, DSD_KEY_APPLY_REPLACE } dsd_key_apply_mode;
+
+/** Prepare a typed direct source without mutating decoder state. Failure leaves
+ * out untouched. M17 accepts 2/4/6 hex-digit seeds and 32/48/64-digit AES keys. */
+dsd_key_direct_result dsd_key_set_load_typed(dsd_key_set* out, dsd_key_type type, const char* text);
+
+/** Parse before mutating. Overlay preserves the keyring and unrelated scalars;
+ * hex replaces the Hytera/AES block, RC4 writes R/RR, scrambler writes R only.
+ * Replace clears the keyring and scalar block first. Errors contain no text.
+ * Call dsd_key_apply_mute_policy after success at either entry point. */
+dsd_key_direct_result dsd_key_apply_direct(dsd_state* state, dsd_key_type key_type, const char* text,
+                                           dsd_key_apply_mode mode);
+/** Any supplied value arms decryption; encrypted-lockout decides audibility. */
+void dsd_key_apply_mute_policy(dsd_opts* opts, dsd_state* state);
+/** 0 = normal identifiers, 1 = force privacy, 2 = force RC4. */
+dsd_key_direct_result dsd_key_apply_force(dsd_state* state, int mode);
 
 /**
  * Capture the live keyring plus scalar block into @p out (frees prior).
@@ -193,6 +225,12 @@ void dsd_scan_keys_suspend(dsd_state* state);
 
 /** Re-capture the baseline from live state, reinstall the active set. */
 void dsd_scan_keys_resume(dsd_state* state);
+
+/** Validate into erased temporary storage, then overlay a direct key onto globals.
+ * With an active scan row, only the baseline scalars/keyloader change; effective
+ * keys and signalled call identifiers stay untouched. Without a row this uses
+ * dsd_key_apply_direct in overlay mode. No allocation or live key swap. */
+dsd_key_direct_result dsd_scan_keys_apply_direct(dsd_state* state, dsd_key_type type, const char* text);
 
 /**
  * `-Y` helper: look up the row's set; present sets enter, absent sets leave.

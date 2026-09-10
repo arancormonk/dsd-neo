@@ -21,10 +21,10 @@ Item {
 
     objectName: "spectrumScreen"
 
-    signal closed()
+    signal closed
     // Asks the session to stop following a system and let the tuner be driven by
     // hand. Main.qml owns what that costs; this screen only asks.
-    signal exploreFromHere()
+    signal exploreFromHere
     signal saveAsSystem(double freqHz)
 
     // Whether this session may be retuned at all. Set from the session's intent,
@@ -40,8 +40,7 @@ Item {
 
     // The frame's own center is what the bins were measured at; the options
     // reading is only a fallback for the moment before the first frame lands.
-    readonly property real tunedHz: spectrum.hasData ? spectrum.centerFreqHz
-                                                     : (metrics ? metrics.centerFreqHz : 0)
+    readonly property real tunedHz: spectrum.hasData ? spectrum.centerFreqHz : (metrics ? metrics.centerFreqHz : 0)
 
     // What the big readout shows. While the rail is being dragged, or waiting for
     // a drag's retune to land, that is where it is heading, not where the
@@ -81,12 +80,12 @@ Item {
 
     onVisibleChanged: {
         if (!visible)
-            screen.stopSweep()
+            screen.stopSweep();
     }
 
     onViewOnlyChanged: {
         if (viewOnly)
-            screen.stopSweep()
+            screen.stopSweep();
     }
 
     // Gesture state and the steps that act on it live here rather than inside
@@ -98,16 +97,16 @@ Item {
 
     /** Zoom to @a activeScale relative to where the pinch began, held at its anchor. */
     function applyPinch(activeScale) {
-        spectrum.zoomToAnchored(screen.pinchStartZoom * activeScale, screen.pinchAnchorX)
+        spectrum.zoomToAnchored(screen.pinchStartZoom * activeScale, screen.pinchAnchorX);
     }
 
     /** Pan by @a dx pixels from where the drag began, across @a width pixels of view. */
     function applyPan(dx, width) {
         if (width <= 0)
-            return
+            return;
         // Dragging right walks the window down the band, as if pulling the
         // spectrum along under the finger.
-        spectrum.viewOffsetHz = screen.panStartOffsetHz - ((dx / width) * spectrum.viewSpanHz)
+        spectrum.viewOffsetHz = screen.panStartOffsetHz - ((dx / width) * spectrum.viewSpanHz);
     }
 
     /**
@@ -125,14 +124,14 @@ Item {
      * land short and snap the view backwards away from what they dragged to.
      */
     function endPan(cancelled) {
-        var wantHz = spectrum.centerFreqHz + spectrum.viewOffsetHz + spectrum.edgeOvershootHz
+        var wantHz = spectrum.centerFreqHz + spectrum.viewOffsetHz + spectrum.edgeOvershootHz;
         // Through tuneTo() like every other retune on this screen, rather than
         // straight to the command: it owns the view-only gate, the uint32 bound
         // its own comment explains, and the stale-hint clear — and a pan is the
         // one path that had its own half of those written out again.
         if (!cancelled && spectrum.edgeOvershootHz !== 0 && spectrum.hasData)
-            screen.tuneTo(wantHz)
-        spectrum.clearOvershoot()
+            screen.tuneTo(wantHz);
+        spectrum.clearOvershoot();
     }
 
     /**
@@ -146,10 +145,10 @@ Item {
      */
     function tuneTo(hz) {
         if (screen.viewOnly || !(hz > 0) || !(hz < 4294967296))
-            return false
-        screen.hint = ""
-        commands.manualTuneHz(Math.round(hz))
-        return true
+            return false;
+        screen.hint = "";
+        commands.manualTuneHz(Math.round(hz));
+        return true;
     }
 
     /**
@@ -166,45 +165,45 @@ Item {
      */
     function nextStepHz(fromHz, direction) {
         if (!(screen.stepHz > 0))
-            return 0
-        var next = fromHz + (direction >= 0 ? screen.stepHz : -screen.stepHz)
-        var band = Util.bandFor(fromHz)
+            return 0;
+        var next = fromHz + (direction >= 0 ? screen.stepHz : -screen.stepHz);
+        var band = Util.bandFor(fromHz);
         if (!band)
-            return next
+            return next;
         // Half a step in from the far edge, so the first screenful after a wrap
         // is spectrum rather than half a screen of nothing.
         if (next >= band.high)
-            return band.low + (screen.stepHz / 2)
+            return band.low + (screen.stepHz / 2);
         if (next <= band.low)
-            return band.high - (screen.stepHz / 2)
-        return next
+            return band.high - (screen.stepHz / 2);
+        return next;
     }
 
     /** Walk one screen of spectrum in @a direction (+1 up the band, -1 down). */
     function stepBy(direction) {
         if (!spectrum.hasData)
-            return
-        var from = screen.tunedHz
-        var next = screen.nextStepHz(from, direction)
+            return;
+        var from = screen.tunedHz;
+        var next = screen.nextStepHz(from, direction);
         if (!(next > 0))
-            return
+            return;
         // Moving against the direction asked for can only mean the walk came back
         // round; say so, or the readout appears to jump for no reason.
-        var wrapped = (direction >= 0) ? (next < from) : (next > from)
+        var wrapped = (direction >= 0) ? (next < from) : (next > from);
         if (!screen.tuneTo(next))
-            return
+            return;
         if (wrapped)
-            screen.hint = qsTr("Wrapped to %1").arg(Util.fmtMhz(next))
+            screen.hint = qsTr("Wrapped to %1").arg(Util.fmtMhz(next));
     }
 
     /** Jump to the next signal above (+1) or below (-1) the current center. */
     function hopToSignal(direction) {
-        var hz = spectrum.nextPeakHz(direction)
+        var hz = spectrum.nextPeakHz(direction);
         if (!(hz > 0)) {
-            screen.hint = qsTr("Nothing else on this screen")
-            return
+            screen.hint = qsTr("Nothing else on this screen");
+            return;
         }
-        screen.tuneTo(hz)
+        screen.tuneTo(hz);
     }
 
     // ---- Sweep ----
@@ -215,38 +214,38 @@ Item {
 
     function startSweep() {
         if (screen.viewOnly || !spectrum.hasData)
-            return
-        screen.hint = ""
+            return;
+        screen.hint = "";
         // The band is decided once, at the start: wrapping against a boundary the
         // sweep itself crossed would make it stop somewhere it never chose.
-        screen.sweeping = true
-        sweepTimer.restart()
+        screen.sweeping = true;
+        sweepTimer.restart();
     }
 
     function stopSweep() {
         if (!screen.sweeping)
-            return
-        screen.sweeping = false
-        sweepTimer.stop()
+            return;
+        screen.sweeping = false;
+        sweepTimer.stop();
     }
 
     function toggleSweep() {
         if (screen.sweeping)
-            screen.stopSweep()
+            screen.stopSweep();
         else
-            screen.startSweep()
+            screen.startSweep();
     }
 
     /** One dwell has elapsed: keep what was found, or move on. */
     function sweepTick() {
         if (!screen.sweeping)
-            return
+            return;
         if (metrics.syncedHere) {
-            screen.stopSweep()
-            screen.hint = qsTr("Found something at %1").arg(Util.fmtMhz(screen.tunedHz))
-            return
+            screen.stopSweep();
+            screen.hint = qsTr("Found something at %1").arg(Util.fmtMhz(screen.tunedHz));
+            return;
         }
-        screen.stepBy(1)
+        screen.stepBy(1);
     }
 
     Timer {
@@ -290,25 +289,13 @@ Item {
         // re-opens the Go-to sheet and overwrites what was typed into it.
         enabled: !screen.sheetOpen
 
-        Item {
+        IconButton {
             id: backButton
-
+            icon: "back"
             objectName: "spectrumBack"
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            width: 32
-            height: 32
-
-            Caret {
-                anchors.centerIn: parent
-                // Points down at rotation 0; a quarter turn clockwise reads as back.
-                rotation: 90
-                color: Theme.textPrimary
-            }
-
-            TapHandler {
-                onTapped: screen.closed()
-            }
+            onClicked: screen.closed()
         }
 
         Column {
@@ -332,7 +319,7 @@ Item {
                     // readout that drops a digit is worse than one that is tight.
                     text: screen.readoutHz > 0 ? Util.fmtMhz(screen.readoutHz) : "—"
                     font.family: Theme.mono
-                    font.pixelSize: 21
+                    font.pixelSize: Theme.fontSize(21)
                     font.weight: Font.Medium
                     // Cyan while it is a request rather than a fact, the same way
                     // every other in-flight thing on this screen reads — through
@@ -367,20 +354,17 @@ Item {
             radius: Theme.radiusButton
             color: Theme.panel
             border.width: 1
-            border.color: screen.viewOnly ? Theme.encBorder
-                                          : screen.sweeping ? Theme.cyan : Theme.panelBorder
+            border.color: screen.viewOnly ? Theme.encBorder : screen.sweeping ? Theme.cyan : Theme.panelBorder
 
             Text {
                 id: statusLabel
 
                 anchors.centerIn: parent
-                text: screen.viewOnly ? qsTr("VIEW ONLY")
-                                      : screen.sweeping ? qsTr("SWEEPING") : qsTr("TAP TO TUNE")
+                text: screen.viewOnly ? qsTr("VIEW ONLY") : screen.sweeping ? qsTr("SWEEPING") : qsTr("TAP TO TUNE")
                 font.family: Theme.mono
-                font.pixelSize: 11
+                font.pixelSize: Theme.fontSize(11)
                 font.letterSpacing: 1.4
-                color: screen.viewOnly ? Theme.magenta
-                                       : screen.sweeping ? Theme.cyan : Theme.textSecondary
+                color: screen.viewOnly ? Theme.magenta : screen.sweeping ? Theme.cyan : Theme.textSecondary
             }
         }
     }
@@ -407,11 +391,11 @@ Item {
         // property, so the window edges are read here to make the dependency
         // explicit — without them the labels would freeze on the first frame.
         readonly property var ticks: {
-            var low = spectrum.viewLowHz
-            var high = spectrum.viewHighHz
+            var low = spectrum.viewLowHz;
+            var high = spectrum.viewHighHz;
             if (!spectrum.hasData || high <= low)
-                return []
-            return spectrum.axisTicks(body.maxTicks)
+                return [];
+            return spectrum.axisTicks(body.maxTicks);
         }
 
         // What the decoder is making of all this. The waterfall says where the
@@ -426,7 +410,7 @@ Item {
             anchors.top: parent.top
             anchors.left: parent.left
             anchors.right: parent.right
-            height: 22
+            height: radioButton.height
 
             Row {
                 anchors.left: parent.left
@@ -451,7 +435,7 @@ Item {
                         // expected is the whole explanation for silence.
                         text: metrics.syncedHere ? metrics.syncLabel.toUpperCase() : qsTr("NO SYNC")
                         font.family: Theme.mono
-                        font.pixelSize: 11
+                        font.pixelSize: Theme.fontSize(11)
                         font.letterSpacing: 1.0
                         color: metrics.syncedHere ? Theme.textPrimary : Theme.textSubdued
                     }
@@ -461,7 +445,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     text: metrics.snrValid ? metrics.snrDb.toFixed(1) + " dB" : "— dB"
                     font.family: Theme.mono
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.fontSize(11)
                     color: metrics.snrValid ? Theme.textSecondary : Theme.textSubdued
                 }
 
@@ -476,7 +460,7 @@ Item {
                     visible: metrics.syncedHere && Math.abs(metrics.cfoHz) >= 50
                     text: Math.round(metrics.cfoHz) + " Hz"
                     font.family: Theme.mono
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.fontSize(11)
                     // Loud once it is large enough to be why nothing decodes.
                     color: Math.abs(metrics.cfoHz) >= 500 ? Theme.magenta : Theme.textSecondary
                 }
@@ -489,12 +473,11 @@ Item {
                     // a control channel opens routinely. Naming it would put a
                     // talkgroup on screen that nobody is transmitting on.
                     text: {
-                        var tg = metrics.slot1CallState === 2 ? metrics.slot1TgText
-                                                              : metrics.slot2CallState === 2 ? metrics.slot2TgText : ""
-                        return tg === "0" ? "" : tg
+                        var tg = metrics.slot1CallState === 2 ? metrics.slot1TgText : metrics.slot2CallState === 2 ? metrics.slot2TgText : "";
+                        return tg === "0" ? "" : tg;
                     }
                     font.family: Theme.mono
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.fontSize(11)
                     color: Theme.cyan
                 }
             }
@@ -503,40 +486,15 @@ Item {
             // rather than in the header because the header has no room left, and
             // here rather than with the tuning controls because a saved system
             // that is view-only still needs its gain fixed.
-            Rectangle {
+            OutlineButton {
                 id: radioButton
-
                 objectName: "spectrumRadioButton"
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 visible: metrics.radioInput
-                width: radioLabel.implicitWidth + 20
-                height: 22
-                radius: Theme.radiusButton
-                color: radioTap.pressed ? Qt.alpha(Theme.cyan, 0.08) : "transparent"
-                border.width: 1
-                border.color: Theme.panelBorder
-
-                Behavior on color {
-                    ColorAnimation { duration: 120 }
-                }
-
-                Text {
-                    id: radioLabel
-
-                    anchors.centerIn: parent
-                    text: qsTr("RADIO")
-                    font.family: Theme.mono
-                    font.pixelSize: 10
-                    font.letterSpacing: 1.2
-                    color: Theme.textSecondary
-                }
-
-                TapHandler {
-                    id: radioTap
-
-                    onTapped: radioSheet.open()
-                }
+                width: Math.max(80, implicitWidth)
+                text: qsTr("Radio")
+                onClicked: radioSheet.open()
             }
         }
 
@@ -551,8 +509,7 @@ Item {
             anchors.topMargin: 4
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.bottom: tuning.visible ? tuning.top
-                                           : (exploreButton.visible ? exploreButton.top : parent.bottom)
+            anchors.bottom: tuning.visible ? tuning.top : (exploreButton.visible ? exploreButton.top : parent.bottom)
             anchors.bottomMargin: (tuning.visible || exploreButton.visible) ? Theme.gap : 0
 
             SpectrumTrace {
@@ -602,9 +559,7 @@ Item {
                         visible: tick !== null
                         // Anchored by its center on the tick, then nudged so the end
                         // labels stay inside the panel instead of hanging off it.
-                        x: tick ? Math.round(Math.max(0, Math.min(axis.width - implicitWidth,
-                                                                  (tick.xFraction * axis.width) - (implicitWidth / 2))))
-                                : 0
+                        x: tick ? Math.round(Math.max(0, Math.min(axis.width - implicitWidth, (tick.xFraction * axis.width) - (implicitWidth / 2)))) : 0
                         y: Math.round((axis.height - implicitHeight) / 2)
                         text: tick ? tick.label : ""
                         font.capitalization: Font.MixedCase
@@ -651,7 +606,7 @@ Item {
                 visible: !spectrum.hasData
                 text: qsTr("Waiting for signal data…")
                 font.family: Theme.mono
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontSize(12)
                 font.letterSpacing: 0.8
                 color: Theme.textSubdued
             }
@@ -664,8 +619,8 @@ Item {
                 onTapped: function (eventPoint) {
                     // Touching the spectrum is taking over; a sweep that carried on
                     // underneath would move the radio off what was just chosen.
-                    screen.stopSweep()
-                    screen.tuneTo(spectrum.tapFrequencyHz(eventPoint.position.x / gestureArea.width))
+                    screen.stopSweep();
+                    screen.tuneTo(spectrum.tapFrequencyHz(eventPoint.position.x / gestureArea.width));
                 }
             }
 
@@ -679,14 +634,14 @@ Item {
 
                 onActiveChanged: {
                     if (!active)
-                        return
-                    screen.stopSweep()
-                    screen.pinchStartZoom = spectrum.zoom
-                    screen.pinchAnchorX = gestureArea.width > 0 ? (pinch.centroid.position.x / gestureArea.width) : 0.5
+                        return;
+                    screen.stopSweep();
+                    screen.pinchStartZoom = spectrum.zoom;
+                    screen.pinchAnchorX = gestureArea.width > 0 ? (pinch.centroid.position.x / gestureArea.width) : 0.5;
                 }
                 onActiveScaleChanged: {
                     if (pinch.active)
-                        screen.applyPinch(pinch.activeScale)
+                        screen.applyPinch(pinch.activeScale);
                 }
             }
 
@@ -699,19 +654,19 @@ Item {
 
                 onActiveChanged: {
                     if (active) {
-                        screen.stopSweep()
-                        screen.panStartOffsetHz = spectrum.viewOffsetHz
-                        return
+                        screen.stopSweep();
+                        screen.panStartOffsetHz = spectrum.viewOffsetHz;
+                        return;
                     }
                     // Exactly one retune per gesture, on release. Retuning per drag
                     // frame would block the engine thread for up to 500 ms a time.
                     // A pinch stealing the grab deactivates this handler too, and
                     // that is not a release.
-                    screen.endPan(pinch.active)
+                    screen.endPan(pinch.active);
                 }
                 onActiveTranslationChanged: {
                     if (pan.active)
-                        screen.applyPan(pan.activeTranslation.x, gestureArea.width)
+                        screen.applyPan(pan.activeTranslation.x, gestureArea.width);
                 }
             }
         }
@@ -740,7 +695,7 @@ Item {
                 tunedHz: screen.tunedHz
                 onDraggingChanged: {
                     if (dragging)
-                        screen.stopSweep()
+                        screen.stopSweep();
                 }
                 // A refused tune has nothing to settle on: the rail holds its
                 // preview until the receiver lands on what it asked for, and
@@ -749,7 +704,7 @@ Item {
                 // on until the rail's own timeout gave up on it.
                 onTuneRequested: function (hz) {
                     if (!screen.tuneTo(hz))
-                        bandRail.cancelSettle()
+                        bandRail.cancelSettle();
                 }
             }
 
@@ -763,7 +718,7 @@ Item {
                     id: stepPill
 
                     width: Math.max(186, stepRow.implicitWidth + 24)
-                    height: 40
+                    height: Math.max(48, Theme.fontSize(14) + 24)
                     radius: Theme.radiusButton
                     color: Theme.panel
                     border.width: 1
@@ -771,7 +726,9 @@ Item {
                     opacity: spectrum.hasData ? 1.0 : 0.5
 
                     Behavior on border.color {
-                        ColorAnimation { duration: 120 }
+                        ColorAnimation {
+                            duration: 120
+                        }
                     }
 
                     Row {
@@ -781,9 +738,23 @@ Item {
                         spacing: 0
 
                         Item {
+                            id: spectrumStepDownAction
                             objectName: "spectrumStepDown"
-                            width: 46
-                            height: 38
+                            activeFocusOnTab: spectrum.hasData && Navigation.allows(spectrumStepDownAction)
+                            Accessible.role: Accessible.Button
+                            Accessible.name: qsTr("Tune down")
+                            Accessible.onPressAction: activate()
+                            Keys.onReturnPressed: activate()
+                            Keys.onSpacePressed: activate()
+                            FocusFrame {}
+                            function activate() {
+                                if (spectrum.hasData && Navigation.allows(spectrumStepDownAction)) {
+                                    screen.stopSweep();
+                                    screen.stepBy(-1);
+                                }
+                            }
+                            width: 48
+                            height: Math.max(48, Theme.fontSize(14) + 24)
 
                             Caret {
                                 anchors.centerIn: parent
@@ -794,16 +765,29 @@ Item {
                             TapHandler {
                                 enabled: spectrum.hasData
                                 onTapped: {
-                                    screen.stopSweep()
-                                    screen.stepBy(-1)
+                                    screen.stopSweep();
+                                    screen.stepBy(-1);
                                 }
                             }
                         }
 
                         Item {
+                            id: spectrumSweepToggleAction
                             objectName: "spectrumSweepToggle"
+                            activeFocusOnTab: spectrum.hasData && Navigation.allows(spectrumSweepToggleAction)
+                            Accessible.role: Accessible.Button
+                            Accessible.name: qsTr("Start or stop frequency sweep")
+                            Accessible.onPressAction: activate()
+                            Keys.onReturnPressed: activate()
+                            Keys.onSpacePressed: activate()
+                            FocusFrame {}
+                            function activate() {
+                                if (spectrum.hasData && Navigation.allows(spectrumSweepToggleAction)) {
+                                    screen.toggleSweep();
+                                }
+                            }
                             width: Math.max(94, sweepLabel.implicitWidth + 26)
-                            height: 38
+                            height: Math.max(48, Theme.fontSize(14) + 24)
 
                             Row {
                                 anchors.centerIn: parent
@@ -819,29 +803,33 @@ Item {
                                     anchors.verticalCenter: parent.verticalCenter
 
                                     onPaint: {
-                                        var ctx = getContext("2d")
-                                        ctx.reset()
-                                        ctx.fillStyle = screen.sweeping ? Theme.cyan : Theme.buttonSecondaryText
+                                        var ctx = getContext("2d");
+                                        ctx.reset();
+                                        ctx.fillStyle = screen.sweeping ? Theme.cyan : Theme.buttonSecondaryText;
                                         if (screen.sweeping) {
-                                            ctx.fillRect(1, 1, 8, 8)
+                                            ctx.fillRect(1, 1, 8, 8);
                                         } else {
-                                            ctx.beginPath()
-                                            ctx.moveTo(1, 0)
-                                            ctx.lineTo(10, 5)
-                                            ctx.lineTo(1, 10)
-                                            ctx.closePath()
-                                            ctx.fill()
+                                            ctx.beginPath();
+                                            ctx.moveTo(1, 0);
+                                            ctx.lineTo(10, 5);
+                                            ctx.lineTo(1, 10);
+                                            ctx.closePath();
+                                            ctx.fill();
                                         }
                                     }
 
                                     Connections {
                                         target: screen
-                                        function onSweepingChanged() { sweepGlyph.requestPaint() }
+                                        function onSweepingChanged() {
+                                            sweepGlyph.requestPaint();
+                                        }
                                     }
 
                                     Connections {
                                         target: Theme
-                                        function onDarkChanged() { sweepGlyph.requestPaint() }
+                                        function onDarkChanged() {
+                                            sweepGlyph.requestPaint();
+                                        }
                                     }
                                 }
 
@@ -851,7 +839,7 @@ Item {
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: spectrum.hasData ? (screen.stepHz / 1.0e6).toFixed(2) + " MHz" : "—"
                                     font.family: Theme.mono
-                                    font.pixelSize: 12
+                                    font.pixelSize: Theme.fontSize(12)
                                     color: screen.sweeping ? Theme.cyan : Theme.buttonSecondaryText
                                 }
                             }
@@ -863,9 +851,23 @@ Item {
                         }
 
                         Item {
+                            id: spectrumStepUpAction
                             objectName: "spectrumStepUp"
-                            width: 46
-                            height: 38
+                            activeFocusOnTab: spectrum.hasData && Navigation.allows(spectrumStepUpAction)
+                            Accessible.role: Accessible.Button
+                            Accessible.name: qsTr("Tune up")
+                            Accessible.onPressAction: activate()
+                            Keys.onReturnPressed: activate()
+                            Keys.onSpacePressed: activate()
+                            FocusFrame {}
+                            function activate() {
+                                if (spectrum.hasData && Navigation.allows(spectrumStepUpAction)) {
+                                    screen.stopSweep();
+                                    screen.stepBy(1);
+                                }
+                            }
+                            width: 48
+                            height: Math.max(48, Theme.fontSize(14) + 24)
 
                             Caret {
                                 anchors.centerIn: parent
@@ -876,8 +878,8 @@ Item {
                             TapHandler {
                                 enabled: spectrum.hasData
                                 onTapped: {
-                                    screen.stopSweep()
-                                    screen.stepBy(1)
+                                    screen.stopSweep();
+                                    screen.stepBy(1);
                                 }
                             }
                         }
@@ -886,8 +888,8 @@ Item {
 
                 // The finer move: to the next carrier actually on screen.
                 Rectangle {
-                    width: 92
-                    height: 40
+                    width: 96
+                    height: Math.max(48, Theme.fontSize(14) + 24)
                     radius: Theme.radiusButton
                     color: Theme.panel
                     border.width: 1
@@ -899,9 +901,23 @@ Item {
                         spacing: 0
 
                         Item {
+                            id: spectrumSignalDownAction
                             objectName: "spectrumSignalDown"
-                            width: 46
-                            height: 38
+                            activeFocusOnTab: spectrum.hasData && Navigation.allows(spectrumSignalDownAction)
+                            Accessible.role: Accessible.Button
+                            Accessible.name: qsTr("Previous signal")
+                            Accessible.onPressAction: activate()
+                            Keys.onReturnPressed: activate()
+                            Keys.onSpacePressed: activate()
+                            FocusFrame {}
+                            function activate() {
+                                if (spectrum.hasData && Navigation.allows(spectrumSignalDownAction)) {
+                                    screen.stopSweep();
+                                    screen.hopToSignal(-1);
+                                }
+                            }
+                            width: 48
+                            height: Math.max(48, Theme.fontSize(14) + 24)
 
                             Row {
                                 anchors.centerIn: parent
@@ -924,16 +940,30 @@ Item {
                             TapHandler {
                                 enabled: spectrum.hasData
                                 onTapped: {
-                                    screen.stopSweep()
-                                    screen.hopToSignal(-1)
+                                    screen.stopSweep();
+                                    screen.hopToSignal(-1);
                                 }
                             }
                         }
 
                         Item {
+                            id: spectrumSignalUpAction
                             objectName: "spectrumSignalUp"
-                            width: 46
-                            height: 38
+                            activeFocusOnTab: spectrum.hasData && Navigation.allows(spectrumSignalUpAction)
+                            Accessible.role: Accessible.Button
+                            Accessible.name: qsTr("Next signal")
+                            Accessible.onPressAction: activate()
+                            Keys.onReturnPressed: activate()
+                            Keys.onSpacePressed: activate()
+                            FocusFrame {}
+                            function activate() {
+                                if (spectrum.hasData && Navigation.allows(spectrumSignalUpAction)) {
+                                    screen.stopSweep();
+                                    screen.hopToSignal(1);
+                                }
+                            }
+                            width: 48
+                            height: Math.max(48, Theme.fontSize(14) + 24)
 
                             Row {
                                 anchors.centerIn: parent
@@ -956,8 +986,8 @@ Item {
                             TapHandler {
                                 enabled: spectrum.hasData
                                 onTapped: {
-                                    screen.stopSweep()
-                                    screen.hopToSignal(1)
+                                    screen.stopSweep();
+                                    screen.hopToSignal(1);
                                 }
                             }
                         }
@@ -967,12 +997,12 @@ Item {
                 OutlineButton {
                     objectName: "spectrumSaveSystem"
                     width: 96
-                    height: 40
+                    height: Math.max(48, Theme.fontSize(14) + 24)
                     text: qsTr("Save")
                     enabled: screen.tunedHz > 0
                     onClicked: {
-                        screen.stopSweep()
-                        screen.saveAsSystem(screen.tunedHz)
+                        screen.stopSweep();
+                        screen.saveAsSystem(screen.tunedHz);
                     }
                 }
 
@@ -986,12 +1016,12 @@ Item {
                 OutlineButton {
                     objectName: "spectrumFollowSystem"
                     width: 200
-                    height: 40
+                    height: Math.max(48, Theme.fontSize(14) + 24)
                     text: qsTr("Follow this system")
                     visible: decoderHost.sessionActive && metrics && metrics.trunkableSync
                     onClicked: {
-                        screen.stopSweep()
-                        commands.setTrunking(true)
+                        screen.stopSweep();
+                        commands.setTrunking(true);
                     }
                 }
             }
@@ -1013,9 +1043,9 @@ Item {
                 // Nothing is holding the tuner, so there is nothing to warn about
                 // and nothing to confirm.
                 if (!screen.tunerHeld)
-                    screen.exploreFromHere()
+                    screen.exploreFromHere();
                 else
-                    confirmExplore.visible = true
+                    confirmExplore.visible = true;
             }
         }
 
@@ -1048,7 +1078,7 @@ Item {
                 // the engine has nothing to say about an empty band.
                 text: screen.hint.length > 0 ? screen.hint : metrics.uiMessage
                 font.family: Theme.mono
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontSize(12)
                 color: Theme.cyan
                 elide: Text.ElideRight
             }
@@ -1071,7 +1101,7 @@ Item {
     // "Nothing else on this screen" flashes the second one for a moment.
     onHintChanged: {
         if (screen.hint.length > 0)
-            hintTimer.restart()
+            hintTimer.restart();
     }
 
     // ---- Go to ----
@@ -1081,18 +1111,18 @@ Item {
         objectName: "spectrumGoToSheet"
 
         function open(hz) {
-            goToField.text = Util.mhzText(hz)
-            visible = true
-            goToField.forceActiveFocus()
+            goToField.text = Util.mhzText(hz);
+            visible = true;
+            goToField.forceActiveFocus();
         }
 
         function submit() {
-            var mhz = parseFloat(goToField.text)
+            var mhz = parseFloat(goToField.text);
             if (isNaN(mhz) || !(mhz > 0))
-                return
-            goToSheet.visible = false
-            Qt.inputMethod.hide()
-            screen.stopSweep()
+                return;
+            goToSheet.visible = false;
+            Qt.inputMethod.hide();
+            screen.stopSweep();
             // The field's validator accepts up to 99999 MHz and tuneTo() refuses
             // anything past its own uint bound, so a number this sheet took can
             // still be turned down. Reported rather than dropped: the sheet
@@ -1100,7 +1130,7 @@ Item {
             // the entry. Said after the dismissal because the toast sits under
             // the sheet.
             if (!screen.tuneTo(mhz * 1.0e6))
-                screen.hint = qsTr("Cannot tune to %1 MHz").arg(Util.mhzText(mhz * 1.0e6))
+                screen.hint = qsTr("Cannot tune to %1 MHz").arg(Util.mhzText(mhz * 1.0e6));
         }
 
         MicroLabel {
@@ -1163,7 +1193,7 @@ Item {
             width: parent.width
             text: qsTr("Explore from here?")
             font.family: Theme.sans
-            font.pixelSize: 17
+            font.pixelSize: Theme.fontSize(17)
             font.weight: Font.Bold
             color: Theme.textPrimary
             wrapMode: Text.Wrap
@@ -1173,11 +1203,9 @@ Item {
         // what does not.
         Text {
             width: parent.width
-            text: metrics.scannerMode
-                  ? qsTr("This stops stepping through the channel list for now. The saved system itself is unchanged.")
-                  : qsTr("This stops following calls across channels for now. The saved system itself is unchanged.")
+            text: metrics.scannerMode ? qsTr("This stops stepping through the channel list for now. The saved system itself is unchanged.") : qsTr("This stops following calls across channels for now. The saved system itself is unchanged.")
             font.family: Theme.sans
-            font.pixelSize: 14
+            font.pixelSize: Theme.fontSize(14)
             color: Theme.textSecondary
             wrapMode: Text.Wrap
         }
@@ -1187,8 +1215,8 @@ Item {
             width: parent.width
             text: qsTr("Explore from here")
             onClicked: {
-                confirmExplore.visible = false
-                screen.exploreFromHere()
+                confirmExplore.visible = false;
+                screen.exploreFromHere();
             }
         }
 

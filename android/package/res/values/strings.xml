@@ -23,4 +23,6 @@
          carried through because the underlying reason only exists in logcat. -->
     <string name="error_init_failed">The decoder could not be initialised (code %1$d).</string>
     <string name="error_configure_failed">Those options were rejected (code %1$d). Check the input settings.</string>
+    <string name="error_busy">A previous session is still stopping</string>
+    <string name="decoder_emergency_prefix">EMERGENCY ·&#32;</string>
 </resources>

@@ -7,7 +7,61 @@ Item {
     id: screen
 
     property string systemName: ""
-    signal closed()
+    property string saveMessage: ""
+    property var bulkRows: []
+    property string bulkContext: "0"
+    property int bulkGeneration: 0
+    property bool bulkListen: true
+    property string bulkMessage: ""
+    function requestBulk(listen) {
+        bulkRows = talkgroupView.snapshotSelection();
+        bulkContext = talkgroups.policyContext;
+        bulkGeneration = talkgroups.policyGeneration;
+        bulkListen = listen;
+        if (bulkRows.length)
+            bulkConfirm.visible = true;
+    }
+    ModalSheet {
+        id: bulkConfirm
+        objectName: "talkgroupBulkConfirm"
+        accessibleName: qsTr("Change matching talkgroups")
+        Text {
+            width: parent.width
+            text: (screen.bulkListen ? qsTr("Listen to %1 matching rows?") : qsTr("Stop tuning %1 matching rows?")).arg(screen.bulkRows.length) + qsTr(" Both the search and category filters apply.")
+            wrapMode: Text.Wrap
+            color: Theme.textPrimary
+            font.pixelSize: Theme.fontSize(16)
+        }
+        OutlineButton {
+            objectName: "confirmTalkgroupBulk"
+            width: parent.width
+            text: qsTr("Apply to matching rows")
+            onClicked: {
+                var accepted = commands.setTalkgroupSelection(screen.bulkListen, screen.bulkContext, screen.bulkGeneration, screen.bulkRows);
+                screen.bulkMessage = accepted ? qsTr("Update requested") : qsTr("The update could not be queued. Try again.");
+                bulkConfirm.visible = false;
+            }
+        }
+        OutlineButton {
+            width: parent.width
+            text: qsTr("Cancel")
+            onClicked: bulkConfirm.visible = false
+        }
+    }
+
+    property bool canSaveList: false
+    property string saveListText: qsTr("Save talkgroup list")
+    signal saveListRequested
+    signal closed
+    onVisibleChanged: {
+        if (!visible)
+            editSheet.visible = false;
+    }
+    readonly property bool hostRunning: decoderHost.running
+    onHostRunningChanged: {
+        if (!hostRunning)
+            editSheet.visible = false;
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -23,17 +77,12 @@ Item {
         anchors.margins: Theme.screenPadding
         height: 46
 
-        Text {
+        IconButton {
             id: back
+            icon: "back"
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            text: "‹"
-            font.pixelSize: 28
-            color: Theme.textSecondary
-
-            TapHandler {
-                onTapped: screen.closed()
-            }
+            onClicked: screen.closed()
         }
 
         Text {
@@ -43,7 +92,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: screen.systemName.length > 0 ? screen.systemName : qsTr("Talk groups")
             font.family: Theme.sans
-            font.pixelSize: 22
+            font.pixelSize: Theme.fontSize(22)
             font.weight: Font.Bold
             font.letterSpacing: -0.22
             color: Theme.textPrimary
@@ -60,8 +109,7 @@ Item {
         anchors.topMargin: 6
         anchors.leftMargin: Theme.screenPadding
         anchors.rightMargin: Theme.screenPadding
-        text: qsTr("Talk groups · %1").arg(talkgroups.count)
-              + (talkgroups.notTunedCount > 0 ? qsTr(" · %1 not tuned").arg(talkgroups.notTunedCount) : "")
+        text: qsTr("Talk groups · %1").arg(talkgroups.count) + (talkgroups.notTunedCount > 0 ? qsTr(" · %1 not tuned").arg(talkgroups.notTunedCount) : "")
         elide: Text.ElideRight
     }
 
@@ -92,7 +140,7 @@ Item {
         orientation: ListView.Horizontal
         spacing: 8
         clip: true
-        implicitHeight: 34
+        implicitHeight: Math.max(48, Theme.fontSize(13) + 24)
         visible: talkgroups.categories.length > 0
         model: [qsTr("All")].concat(talkgroups.categories)
 
@@ -122,20 +170,18 @@ Item {
             id: noTuneAll
             objectName: "noTuneAllButton"
             width: (parent.width - 10) / 2
-            height: 50
-            text: noTuneLabel.elidedText
-            enabled: decoderHost.running && talkgroups.count > 0
-            onClicked: commands.setAllTalkgroupsListening(false, talkgroupView.filterTag)
+            text: qsTr("Do not tune matching")
+            enabled: decoderHost.running && talkgroupView.count > 0
+            onClicked: screen.requestBulk(false)
 
             // Category names can be much wider than half a phone screen. Keep
             // the shared button styling while bounding its single-line label.
             TextMetrics {
                 id: noTuneLabel
                 font.family: Theme.sans
-                font.pixelSize: 15
+                font.pixelSize: Theme.fontSize(15)
                 font.weight: Font.DemiBold
-                text: talkgroupView.filterTag.length > 0
-                      ? qsTr("Do not tune all · %1").arg(talkgroupView.filterTag) : qsTr("Do not tune all")
+                text: talkgroupView.filterTag.length > 0 ? qsTr("Do not tune all · %1").arg(talkgroupView.filterTag) : qsTr("Do not tune all")
                 elide: Text.ElideRight
                 elideWidth: noTuneAll.width - 16
             }
@@ -145,24 +191,44 @@ Item {
             id: listenAll
             objectName: "listenAllButton"
             width: (parent.width - 10) / 2
-            text: listenLabel.elidedText
-            enabled: decoderHost.running && talkgroups.count > 0
-            onClicked: commands.setAllTalkgroupsListening(true, talkgroupView.filterTag)
+            text: qsTr("Listen to matching")
+            enabled: decoderHost.running && talkgroupView.count > 0
+            onClicked: screen.requestBulk(true)
 
             TextMetrics {
                 id: listenLabel
                 font.family: Theme.sans
-                font.pixelSize: 15
+                font.pixelSize: Theme.fontSize(15)
                 font.weight: Font.Bold
-                text: talkgroupView.filterTag.length > 0
-                      ? qsTr("Listen all · %1").arg(talkgroupView.filterTag) : qsTr("Listen all")
+                text: talkgroupView.filterTag.length > 0 ? qsTr("Listen all · %1").arg(talkgroupView.filterTag) : qsTr("Listen all")
                 elide: Text.ElideRight
                 elideWidth: listenAll.width - 16
             }
         }
     }
 
-    GridView {
+    FontMetrics {
+        id: cardIdMetrics
+        font.family: Theme.mono
+        font.pixelSize: Theme.fontSize(15)
+    }
+    FontMetrics {
+        id: cardNameMetrics
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(12)
+    }
+    FontMetrics {
+        id: cardTagMetrics
+        font.family: Theme.mono
+        font.pixelSize: Theme.fontSize(11)
+    }
+    FontMetrics {
+        id: cardStatusMetrics
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(11)
+    }
+
+    ListView {
         id: grid
         objectName: "talkgroupGrid"
 
@@ -176,18 +242,18 @@ Item {
         anchors.rightMargin: Theme.screenPadding
         clip: true
         model: talkgroupView
-        cellWidth: Math.floor(width / 3)
-        cellHeight: 122
+        spacing: 10
         enabled: decoderHost.running
 
         delegate: TalkgroupCard {
             required property var idStart
             required property var idEnd
 
-            width: GridView.view.cellWidth - 8
-            height: GridView.view.cellHeight - 8
+            width: ListView.view.width
+            height: implicitHeight
             // Snapshot truth, not a local toggle: the decoder may refuse an edit.
             onClicked: commands.setTalkgroupListening(idStart, idEnd, !listening)
+            onEditRequested: editSheet.openRow(idStart, idEnd, name, listening, listed, priority, preempt, talkgroups.policyContext, talkgroups.policyGeneration)
         }
 
         Text {
@@ -196,7 +262,7 @@ Item {
             visible: talkgroups.count === 0
             text: qsTr("No talkgroups yet. Calls heard on this system will appear here.")
             font.family: Theme.sans
-            font.pixelSize: 14
+            font.pixelSize: Theme.fontSize(14)
             color: Theme.textSubdued
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignHCenter
@@ -212,38 +278,38 @@ Item {
         anchors.margins: Theme.screenPadding
         spacing: 8
 
-        Row {
-            spacing: 8
+        Text {
+            width: parent.width
+            text: talkgroups.persistenceScope === "scan" ? qsTr("This scan target · session changes; the source CSV is unchanged") : talkgroups.persistent ? qsTr("Edits are saved to the attached CSV and affect other systems sharing it") : qsTr("This session · save a talkgroup list to keep edits")
+            wrapMode: Text.Wrap
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(12)
+        }
+        Text {
+            width: parent.width
+            text: metrics.uiMessage || screen.bulkMessage
+            visible: text.length > 0
+            wrapMode: Text.Wrap
+            color: Theme.textPrimary
+            font.pixelSize: Theme.fontSize(13)
+        }
 
-            Rectangle {
-                width: 6
-                height: 6
-                radius: 3
-                anchors.verticalCenter: parent.verticalCenter
-                color: Theme.cyan
-            }
+        Text {
+            width: parent.width
+            text: screen.saveMessage
+            visible: text.length > 0
+            color: Theme.textSecondary
+            wrapMode: Text.Wrap
+        }
 
-            Text {
-                text: qsTr("Listening")
-                font.family: Theme.sans
-                font.pixelSize: 11
-                color: Theme.textSecondary
-            }
-
-            Rectangle {
-                width: 6
-                height: 6
-                radius: 3
-                anchors.verticalCenter: parent.verticalCenter
-                color: Theme.textSubdued
-            }
-
-            Text {
-                text: qsTr("Not tuned")
-                font.family: Theme.sans
-                font.pixelSize: 11
-                color: Theme.textSecondary
-            }
+        Text {
+            objectName: "talkgroupCommandToast"
+            width: parent.width
+            text: metrics.uiMessage
+            visible: text.length > 0
+            color: Theme.textSecondary
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
         }
 
         Text {
@@ -252,7 +318,7 @@ Item {
             visible: !talkgroups.persistent
             text: qsTr("Changes last for this session. Give the system a talkgroup list to keep them.")
             font.family: Theme.sans
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontSize(12)
             color: Theme.textSubdued
             wrapMode: Text.Wrap
         }
@@ -262,9 +328,18 @@ Item {
             visible: talkgroups.allowListMode
             text: qsTr("Allow list on: talkgroups not on this list are never tuned.")
             font.family: Theme.sans
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontSize(12)
             color: Theme.textSubdued
             wrapMode: Text.Wrap
         }
+    }
+
+    TalkgroupEditSheet {
+        id: editSheet
+        objectName: "talkgroupEditSheet"
+        saveListText: screen.saveListText
+        saveMessage: screen.saveMessage
+        canSaveList: screen.canSaveList && !talkgroups.persistent && decoderHost.running
+        onSaveListRequested: screen.saveListRequested()
     }
 }

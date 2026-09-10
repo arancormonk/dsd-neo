@@ -5,9 +5,12 @@
 
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -16,9 +19,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
 
 static int
 expect_true(const char* tag, int cond) {
@@ -625,6 +625,46 @@ init_decision(dsd_tg_policy_decision* d, uint32_t target, uint32_t source, int p
 }
 
 static int
+test_live_active_priority(void) {
+    int rc = 0;
+    dsd_state* st = calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    if (!st) {
+        return 1;
+    }
+    opts.trunk_tune_group_calls = 1;
+    dsd_tg_policy_entry row;
+    init_entry(&row, 100, "A", "Active", DSD_TG_POLICY_SOURCE_IMPORTED);
+    row.priority = 25;
+    rc |= expect_true("seed active priority", dsd_tg_policy_append_exact(st, &row) == 0);
+    dsd_tg_policy_call_route active, candidate;
+    init_route(&active, 100, 1, 851000000L, 1, 0, 0);
+    init_route(&candidate, 200, 2, 851000000L, 1, 0, 0);
+    dsd_tg_policy_decision decision, competing;
+    dsd_tg_policy_evaluate_group_call(&opts, st, 100, 1, 0, 0, &decision);
+    init_decision(&competing, 200, 2, 75, 1, 1);
+    rc |= expect_true("note real active decision", dsd_tg_policy_note_active_call(st, &active, &decision, 10.0) == 0);
+    rc |= expect_true("initial active priority allows competing grant",
+                      dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 12.0));
+    row.priority = 100;
+    rc |= expect_true("raise live priority",
+                      dsd_tg_policy_set_fields(st, 100, 100, &row, DSD_TG_POLICY_FIELD_PRIORITY) == 0);
+    rc |= expect_true("raised active priority blocks competing grant without refresh",
+                      !dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 12.0));
+    row.priority = 0;
+    rc |= expect_true("lower live priority",
+                      dsd_tg_policy_set_fields(st, 100, 100, &row, DSD_TG_POLICY_FIELD_PRIORITY) == 0);
+    competing.priority = 10;
+    rc |= expect_true("lowered active priority permits competing grant without refresh",
+                      dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 12.0));
+    rc |= expect_true("priority edit preserves minimum dwell",
+                      !dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 10.1));
+    free_test_state(st);
+    return rc;
+}
+
+static int
 test_preemption_helpers(void) {
     int rc = 0;
     dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
@@ -1032,7 +1072,7 @@ test_group_file_rewrite(void) {
         rc = 1;
         goto cleanup;
     }
-    DSD_FPRINTF(fp, "id,mode,name,priority,preempt,audio,record,stream,tags\n");
+    DSD_FPRINTF(fp, "id,mode,name\n");
     fclose(fp);
     rc |= expect_true("clear rewrite fixture", dsd_tg_policy_clear(st) == 0);
     init_entry(&e, 2001, "A", "EMS Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED);
@@ -1043,7 +1083,7 @@ test_group_file_rewrite(void) {
     rc |= expect_true("seed extended rewrite", dsd_tg_policy_append_exact(st, &e) == 0);
     rc |= expect_true("rewrite extended table", dsd_tg_policy_write_group_file(opts, st) == 0);
     rc |= expect_true("read extended table", read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
-    rc |= expect_true("extended header preserved",
+    rc |= expect_true("basic header promoted",
                       strcmp(l1, "id,mode,name,priority,preempt,audio,record,stream,tags\n") == 0);
     rc |= expect_true("extended row media", strcmp(l2, "2001,A,EMS Dispatch,17,true,on,off,on,EMS\n") == 0);
     dsd_state_ext_free_all(loaded);
@@ -1052,6 +1092,50 @@ test_group_file_rewrite(void) {
     rc |= expect_true("extended roundtrip row", dsd_tg_policy_entry_at(loaded, 0, &row) == 1);
     rc |= expect_true("extended roundtrip policy", row.priority == 17 && row.preempt && row.audio && !row.record
                                                        && row.stream && strcmp(row.tags, "EMS") == 0);
+    /* Export media-only overrides to a nonexistent file, then reload. */
+    for (int media = 0; media < 3; ++media) {
+        remove(path);
+        dsd_tg_policy_clear(st);
+        init_entry(&e, 2001, "A", "Media only", DSD_TG_POLICY_SOURCE_IMPORTED);
+        e.audio = media != 0;
+        e.record = media != 0 && media != 1;
+        e.stream = media != 0 && media != 2;
+        rc |= expect_true("seed media-only export", dsd_tg_policy_append_exact(st, &e) == 0);
+        rc |= expect_true("export media-only table", dsd_tg_policy_write_group_file(opts, st) == 0);
+        rc |= expect_true("reload media-only table", dsd_tg_policy_reload_group_file(opts, loaded) == 0);
+        rc |= expect_true("read media-only export", dsd_tg_policy_entry_at(loaded, 0, &row) == 1);
+        rc |= expect_true("media-only export retains all overrides",
+                          row.audio == e.audio && row.record == e.record && row.stream == e.stream);
+    }
+    /* Each trigger alone promotes, even when an earlier row already has tags. */
+    for (int trigger = 0; trigger < 2; ++trigger) {
+        fp = dsd_fopen_private(path, "w");
+        if (!fp) {
+            rc = 1;
+            goto cleanup;
+        }
+        DSD_FPRINTF(fp, "id,mode,name,tags\n");
+        fclose(fp);
+        dsd_tg_policy_clear(st);
+        init_entry(&e, 1, "A", "Tagged", DSD_TG_POLICY_SOURCE_IMPORTED);
+        DSD_SNPRINTF(e.tags, sizeof e.tags, "%s", "FIRE");
+        dsd_tg_policy_append_exact(st, &e);
+        init_entry(&e, 2, "A", "Priority", DSD_TG_POLICY_SOURCE_IMPORTED);
+        e.priority = trigger ? 0 : 25;
+        e.preempt = trigger ? 1 : 0;
+        dsd_tg_policy_append_exact(st, &e);
+        rc |= expect_true("single trigger rewrite", dsd_tg_policy_write_group_file(opts, st) == 0);
+        rc |= expect_true("single trigger reload", dsd_tg_policy_reload_group_file(opts, loaded) == 0);
+        dsd_tg_policy_entry_at(loaded, 1, &row);
+        rc |= expect_true("single trigger survives promotion", row.priority == e.priority && row.preempt == e.preempt);
+        e.priority = 0;
+        e.preempt = 0;
+        dsd_tg_policy_set_fields(st, 2, 2, &e, DSD_TG_POLICY_FIELD_PRIORITY | DSD_TG_POLICY_FIELD_PREEMPT);
+        dsd_tg_policy_write_group_file(opts, st);
+        read_file_lines(path, l1, sizeof(l1), NULL, 0, NULL, 0);
+        rc |= expect_true("extended header stays extended",
+                          strcmp(l1, "id,mode,name,priority,preempt,audio,record,stream,tags\n") == 0);
+    }
     (void)remove(path);
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s/groups.csv", path);
     rc |= expect_true("missing directory rewrite fails", dsd_tg_policy_write_group_file(opts, st) == -1);
@@ -1067,6 +1151,50 @@ cleanup:
     free(opts);
     free_test_state(st);
     free_test_state(loaded);
+    return rc;
+}
+
+static int
+test_set_fields_remove_bounds(void) {
+    int rc = 0;
+    dsd_state* st = calloc(1, sizeof(*st));
+    dsd_tg_policy_entry value = {0}, row;
+    if (!st) {
+        return 1;
+    }
+    DSD_SNPRINTF(value.mode, sizeof value.mode, "%s", "B");
+    DSD_SNPRINTF(value.name, sizeof value.name, "%s", "Dispatch");
+    value.priority = 25;
+    value.preempt = 1;
+    rc |= expect_true("add fields", dsd_tg_policy_set_fields(st, 42, 42, &value,
+                                                             DSD_TG_POLICY_FIELD_NAME | DSD_TG_POLICY_FIELD_PRIORITY
+                                                                 | DSD_TG_POLICY_FIELD_PREEMPT)
+                                        == 0);
+    rc |= expect_true("read added fields", dsd_tg_policy_entry_at(st, 0, &row));
+    rc |= expect_true("absent mode defaults allow", strcmp(row.mode, "A") == 0);
+    rc |= expect_true("selected fields applied", row.priority == 25 && row.preempt && !strcmp(row.name, "Dispatch"));
+    rc |= expect_true("listen only", dsd_tg_policy_set_fields(st, 42, 42, &value, DSD_TG_POLICY_FIELD_LISTEN) == 0);
+    dsd_tg_policy_entry_at(st, 0, &row);
+    rc |= expect_true("metadata preserved and media derived",
+                      row.priority == 25 && row.preempt && !row.audio && !strcmp(row.mode, "B"));
+    rc |= expect_true("add range", dsd_tg_policy_set_fields(st, 40, 49, &value, DSD_TG_POLICY_FIELD_LISTEN) == 0);
+    rc |= expect_true("remove exact", dsd_tg_policy_remove_bounds(st, 42, 42) == 0);
+    dsd_tg_policy_lookup found;
+    dsd_tg_policy_lookup_id(st, 42, &found);
+    rc |= expect_true("remove exposes range", found.match == DSD_TG_POLICY_MATCH_RANGE);
+    rc |= expect_true("missing remove refused", dsd_tg_policy_remove_bounds(st, 42, 42) == 1);
+    value.priority = 101;
+    rc |= expect_true("invalid priority refused",
+                      dsd_tg_policy_set_fields(st, 40, 49, &value, DSD_TG_POLICY_FIELD_PRIORITY) == 1);
+    rc |= expect_true("invalid mask refused", dsd_tg_policy_set_fields(st, 1, 1, &value, 32) == 1);
+    rc |= expect_true("reversed bounds refused",
+                      dsd_tg_policy_set_fields(st, 2, 1, &value, DSD_TG_POLICY_FIELD_NAME) == 1);
+    dsd_tg_policy_make_exact_entry(99, "D", "Alias", DSD_TG_POLICY_SOURCE_IMPORTED, &row);
+    dsd_tg_policy_append_exact(st, &row);
+    rc |=
+        expect_true("alias edit refused", dsd_tg_policy_set_fields(st, 99, 99, &value, DSD_TG_POLICY_FIELD_NAME) == 1);
+    rc |= expect_true("alias remove refused", dsd_tg_policy_remove_bounds(st, 99, 99) == 1);
+    free_test_state(st);
     return rc;
 }
 
@@ -1093,9 +1221,96 @@ test_scan_row_policy_activity(void) {
     return rc;
 }
 
+/* Exercise both publication stages, including cached copies and a replaced live table. */
+static int
+test_snapshot_chain_identity(void) {
+    int rc = 0;
+    dsd_state* live = (dsd_state*)calloc(1, sizeof(*live));
+    dsd_state* published = (dsd_state*)calloc(1, sizeof(*published));
+    dsd_state* consumer = (dsd_state*)calloc(1, sizeof(*consumer));
+    if (!live || !published || !consumer) {
+        rc = 1;
+        goto done;
+    }
+    uint64_t previous = 0;
+    for (int pass = 0; pass < 3; ++pass) {
+        dsd_tg_policy_entry entry;
+        init_entry(&entry, 1001, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED);
+        if (pass == 2) {
+            dsd_state_ext_free_all(live);
+        }
+        rc |= expect_true("seed live table", dsd_tg_policy_set_mode(live, 1001, 1001, pass == 1 ? "B" : "A") == 0);
+        uint64_t context = 0, copied_context = 0;
+        unsigned int generation = 0, copied_generation = 0;
+        dsd_tg_policy_table_version(live, &context, &generation);
+        if (pass == 2) {
+            rc |= expect_true("replacement has new origin", context != previous);
+        }
+        for (int repeat = 0; repeat < 2; ++repeat) {
+            rc |= expect_true("publish table", dsd_tg_policy_copy_snapshot(published, live) == 0);
+            rc |= expect_true("consume table", dsd_tg_policy_copy_snapshot(consumer, published) == 0);
+            dsd_tg_policy_table_version(consumer, &copied_context, &copied_generation);
+            rc |= expect_true("consumer retains live version",
+                              context == copied_context && generation == copied_generation);
+            rc |= expect_true("consumer has live row", dsd_tg_policy_entry_at(consumer, 0, &entry) == 1);
+            rc |= expect_true("consumer row refreshed", strcmp(entry.mode, pass == 1 ? "B" : "A") == 0);
+        }
+        previous = context;
+    }
+done:
+    free_test_state(live);
+    free_test_state(published);
+    free_test_state(consumer);
+    return rc;
+}
+
+static int
+test_captured_selection(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int rc = 0;
+    dsd_tg_policy_entry first, second, after;
+    init_entry(&first, 123, "A", "First alias", DSD_TG_POLICY_SOURCE_USER_LOCKOUT);
+    init_entry(&second, 123, "A", "Second alias", DSD_TG_POLICY_SOURCE_USER_LOCKOUT);
+    first.priority = 25;
+    second.priority = 75;
+    second.preempt = 1;
+    rc |= expect_true("append first duplicate", dsd_tg_policy_append_exact(state, &first) == 0);
+    rc |= expect_true("append second duplicate", dsd_tg_policy_append_exact(state, &second) == 0);
+    uint64_t context;
+    unsigned int generation;
+    dsd_tg_policy_table_version(state, &context, &generation);
+    dsd_tg_policy_selection selected[] = {{1, 123, 123}, {-1, 456, 456}};
+    rc |= expect_true("exact captured selection",
+                      dsd_tg_policy_set_listening_selection(state, context, generation, selected, 2, 0) == 0);
+    rc |= expect_true("first duplicate unchanged",
+                      dsd_tg_policy_entry_at(state, 0, &after) && strcmp(after.mode, "A") == 0 && after.priority == 25);
+    rc |= expect_true("selected duplicate preserves metadata",
+                      dsd_tg_policy_entry_at(state, 1, &after) && strcmp(after.mode, "B") == 0
+                          && strcmp(after.name, "Second alias") == 0 && after.priority == 75 && after.preempt == 1);
+    rc |=
+        expect_true("heard-only selection creates exact policy",
+                    dsd_tg_policy_entry_at(state, 2, &after) && after.id_start == 456 && strcmp(after.mode, "B") == 0);
+    rc |= expect_true("stale selection refused",
+                      dsd_tg_policy_set_listening_selection(state, context, generation, selected, 2, 1) == 1);
+    dsd_tg_policy_table_version(state, &context, &generation);
+    dsd_tg_policy_selection invalid[] = {{0, 123, 123}, {1, 999, 999}};
+    rc |= expect_true("bad selection rejected atomically",
+                      dsd_tg_policy_set_listening_selection(state, context, generation, invalid, 2, 0) == 1);
+    rc |= expect_true("bad later row leaves earlier unchanged",
+                      dsd_tg_policy_entry_at(state, 0, &after) && strcmp(after.mode, "A") == 0);
+    free_test_state(state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_snapshot_chain_identity();
+    rc |= test_captured_selection();
+    rc |= test_set_fields_remove_bounds();
     rc |= test_block_reason_labels();
     rc |= test_snapshot_reclones_recreated_context();
     rc |= test_snapshot_reclones_recreated_empty_reload_context();
@@ -1105,6 +1320,7 @@ main(void) {
     rc |= test_evaluator_behaviors();
     rc |= test_group_file_append_helper();
     rc |= test_preemption_helpers();
+    rc |= test_live_active_priority();
     rc |= test_reload_group_file();
     rc |= test_mode_edits_and_enumeration();
     rc |= test_group_file_rewrite();

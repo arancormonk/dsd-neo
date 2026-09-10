@@ -87,6 +87,7 @@ typedef struct {
     uint32_t source_id;
     int encrypted;
     int data_call;
+    int private_call;
     int tune_allowed;
     int audio_allowed;
     int record_allowed;
@@ -175,9 +176,40 @@ int dsd_tg_policy_set_mode(dsd_state* state, uint32_t id_start, uint32_t id_end,
 /** Same edit on the row at @p index (decoder thread only; indices remain stable while it holds state).
  * Returns 0 applied, 1 bad index or mode. */
 int dsd_tg_policy_set_mode_at(dsd_state* state, size_t index, const char* mode);
+
+typedef struct {
+    int32_t policy_index; /**< -1 for a heard-only exact ID; otherwise the captured table row. */
+    uint32_t id_start;
+    uint32_t id_end;
+} dsd_tg_policy_selection;
+
+/** Apply an exact captured selection atomically. Context/generation mismatches
+ * or invalid rows return 1; allocation failure returns -1, leaving policy intact.
+ * Existing aliases, ranges, priority and preemption are retained. */
+int dsd_tg_policy_set_listening_selection(dsd_state* state, uint64_t context, unsigned int generation,
+                                          const dsd_tg_policy_selection* selection, size_t count, int listening);
+
+enum {
+    DSD_TG_POLICY_FIELD_LISTEN = 1U << 0,
+    DSD_TG_POLICY_FIELD_PRIORITY = 1U << 1,
+    DSD_TG_POLICY_FIELD_PREEMPT = 1U << 2,
+    DSD_TG_POLICY_FIELD_NAME = 1U << 3,
+    DSD_TG_POLICY_FIELD_TAGS = 1U << 4
+};
+
+/** Edit the first row with these bounds, or append an exact/range row (default A).
+ * Selected values come from entry.mode (A/B), priority (0..100), preempt (0/1), name and tags.
+ * Unselected metadata is preserved; changing mode derives media flags.
+ * Alias/source RUNTIME_ALIAS and mode-D rows are immutable.
+ * Returns 0 applied, 1 invalid fields/bounds/alias, -1 allocation failure. */
+int dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_end, const dsd_tg_policy_entry* values,
+                             uint32_t mask);
+/** Remove the first row with these bounds. Returns 0 removed, 1 missing/invalid/alias.
+ * Remaining rows keep their order; a successful edit advances the table generation. */
+int dsd_tg_policy_remove_bounds(dsd_state* state, uint32_t id_start, uint32_t id_end);
 /** Atomically rewrite opts->group_in_file from the effective table using a sibling temporary file.
- * Keeps an existing extended policy header, otherwise uses id,mode,name,tags when any row has tags,
- * or id,mode,name. Ranges are written as start-end. Unmodelled free-text columns (e.g. alias metadata)
+ * Keeps an extended policy header, or promotes for priority, preempt or media overrides. Otherwise uses
+ * id,mode,name,tags when any row has tags, or id,mode,name. Ranges are written as start-end. Unmodelled free-text columns (e.g. alias metadata)
  * are not preserved. Returns 0 written or nothing to write (NULL opts, empty path), -1 on I/O
  * failure with the old file intact. */
 int dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state);

@@ -49,6 +49,7 @@ class CallHistoryModel : public QAbstractListModel {
         TgRole,
         SrcRole,
         EncRole,
+        EmergencyRole,
         WhenRole,         // call start, seconds since epoch
         DurationSecsRole, // -1 when unknown
         SystemNameRole,
@@ -124,6 +125,7 @@ class CallHistoryModel : public QAbstractListModel {
         qint64 sourceNameWhen = 0;
         qulonglong sourceNameSeq = 0;
         int sourceNameSlot = 0;
+        bool emergency = false;
         bool enc = false;
         int durationSecs = -1;
         QString systemName;
@@ -159,6 +161,7 @@ class CallHistoryModel : public QAbstractListModel {
         qint64 when = 0;
         qint64 end = 0;
         qulonglong src = 0;
+        bool emergency = false;
         bool enc = false;
         QString sourceName;
     };
@@ -179,7 +182,7 @@ class CallHistoryModel : public QAbstractListModel {
      * @return SeenNew for a first sighting, SeenAdvanced when a voice row already
      *         ingested has since learned something, SeenUnchanged otherwise.
      */
-    int noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool enc, bool voice,
+    int noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool emergency, bool enc, bool voice,
                  const QString& sourceName);
 
     /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced. */

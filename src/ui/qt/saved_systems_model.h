@@ -22,11 +22,13 @@
 #include <QString>
 #include <QStringList>
 #include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
 
 namespace dsd_qt {
+class DecoderHost;
 
 class SavedSystemsModel : public QAbstractListModel {
     Q_OBJECT
@@ -54,8 +56,23 @@ class SavedSystemsModel : public QAbstractListModel {
         KeyCsvPathRole,         // imported key file (-k/-K); empty = none
         KeyCsvHexRole,          // true = hex keys (-K), false = decimal (-k)
         P25BandplanCsvPathRole, // imported P25 band plan (--p25-bandplan); empty = none
-        SrcCsvPathRole          // imported radio ID aliases (--src-csv); empty = none
+        SrcCsvPathRole,         // imported radio ID aliases (--src-csv); empty = none
+        UidRole,
+        EncKeyTypeRole,
+        EncForceKeyRole,
+        RrSidRole,
+        RrSiteIdRole,
+        SiteNameRole,
+        SiteLatRole,
+        SiteLonRole,
+        HasSitePosRole,
+        AvoidSiteRole
     };
+
+    /** Private-store secret access for session argument assembly only. Not invokable from QML.
+     * QString copies cannot promise erasure. Never log or export the returned value. */
+    QString keyValueForUid(const QString& uid) const;
+    bool migrateCachedReplayFiles(DecoderHost* host);
 
     explicit SavedSystemsModel(QObject* parent = nullptr);
     ~SavedSystemsModel() override;
@@ -70,15 +87,28 @@ class SavedSystemsModel : public QAbstractListModel {
     }
 
     /** @brief Append a system from the wizard's field map. Persists immediately. */
-    Q_INVOKABLE void add(const QVariantMap& system);
+    Q_INVOKABLE bool add(const QVariantMap& system);
+
+    /** Append with a retained private key, resolved by stable source UID. No key
+     * value crosses the QML boundary. Returns false without adding a row when
+     * the source/key is absent, the type differs, or a replacement value is supplied.
+     * QString copies retain the private store's existing erasure limitations. */
+    Q_INVOKABLE bool addWithKeyFrom(const QString& sourceUid, const QVariantMap& system);
 
     /** @brief Replace one system's fields. Unknown keys are ignored. */
-    Q_INVOKABLE void update(int row, const QVariantMap& system);
+    Q_INVOKABLE bool update(int row, const QVariantMap& system);
 
     Q_INVOKABLE void remove(int row);
 
     /** @brief One system as a field map, for the wizard's edit path and argv building. */
     Q_INVOKABLE QVariantMap get(int row) const;
+    Q_INVOKABLE QVariantList siblingRows(int row) const;
+    Q_INVOKABLE int nearestRow(int row, double lat, double lon) const;
+    Q_INVOKABLE int siteCount(int row) const;
+    Q_INVOKABLE double distanceKm(int row, double lat, double lon) const;
+    Q_INVOKABLE void setAvoidSite(int row, bool avoid);
+    Q_INVOKABLE int rowForUid(const QString& uid) const;
+    Q_INVOKABLE QVariantMap getByUid(const QString& uid) const;
 
     /** @brief Stamp lastHeard = now; called when a session on this system starts. */
     Q_INVOKABLE void touch(int row);
@@ -104,11 +134,27 @@ class SavedSystemsModel : public QAbstractListModel {
     Q_INVOKABLE void clearCsvPath(const QString& path);
 
   Q_SIGNALS:
+    void sitesChanged();
     void countChanged();
     void mostRecentRowChanged();
 
   private:
     struct Row {
+        // UUIDs survive row deletion/reordering; a pending start must never touch
+        // whichever unrelated row moved into its old index.
+        QString uid;
+        QString encKeyType;
+        QString encKeyValue;
+        int encForceKey = 0;
+        int rrSid = 0;
+        int rrSiteId = 0;
+        QString siteName;
+        double siteLat = 0;
+        double siteLon = 0;
+        bool hasSitePos = false;
+        bool avoidSite = false;
+        // QString copies cannot promise secret erasure. Key values belong only to
+        // private persistence and argv assembly, never labels or diagnostics.
         QString name;
         QString sourceType;
         QString host;
@@ -132,6 +178,7 @@ class SavedSystemsModel : public QAbstractListModel {
         int biasTee = -1;
         QString extraArgs;
         QString filePath;
+        QString decryptionProfileUid;
         qint64 lastHeard = 0;
         QString chanCsvPath;
         QString groupCsvPath;
@@ -141,13 +188,17 @@ class SavedSystemsModel : public QAbstractListModel {
         QString srcCsvPath;
     };
 
+    static void fillRowKey(const QVariantMap& map, Row& row);
+    static void fillRowDetails(const QVariantMap& map, Row& row);
     static Row rowFromMap(const QVariantMap& map, const Row& base);
     static QVariant identityRoleValue(const Row& row, int role);
+    static QVariant detailRoleValue(const Row& row, int role);
     static QVariant tuningRoleValue(const Row& row, int role);
     QVariantMap mapFromRow(const Row& row) const;
 
     void load();
-    void save() const;
+    bool save() const;
+    bool saveRows(const QList<Row>& rows) const;
 
     QList<Row> m_rows;
 };

@@ -4990,12 +4990,24 @@ test_crc_invalid_voice_delayed_and_reacquired(void) {
     reset_fixture(&opts, &state, event_history);
     int rc = 0;
     // A clean first fragment is upgraded by a failed reacquired header, then remains
-    // marked through another clean reacquisition and enrichment.
+    // marked through another clean reacquisition and enrichment. Emergency and
+    // priority metadata learned on that fragment must survive the same merges.
     for (int pass = 0; pass < 3; pass++) {
         state.event_crc_invalid[0] = pass == 1;
-        assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
-                                 DSD_CALL_BOUNDARY_BEGIN)
-               == 1);
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 100U,
+            .policy_target_id = 100U,
+            .ota_source_id = 200U,
+            .has_service_metadata = 1U,
+            .emergency = pass == 1,
+            .priority = pass == 1 ? 3U : 0U,
+            .observed_m = g_observed_m,
+        };
+        g_observed_m += 0.1;
+        assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
         state.event_crc_invalid[0] = 0U;
         // Publication deliberately happens after dispatch restored its CRC scope.
         dsd_event_sync_slot(&opts, &state, 0U);
@@ -5009,6 +5021,10 @@ test_crc_invalid_voice_delayed_and_reacquired(void) {
                                     event_history[0].Event_History_Items[1].event_string, "[CRC ERR]");
             rc |= expect_int("delayed merged voice warns", event_history[0].Event_History_Items[1].severity,
                              DSD_EVENT_SEVERITY_WARNING);
+            rc |= expect_int("delayed merged voice retains emergency",
+                             event_history[0].Event_History_Items[1].emergency, 1);
+            rc |= expect_int("delayed merged voice retains highest priority",
+                             event_history[0].Event_History_Items[1].priority, 3);
         }
     }
     rc |= expect_int("failed reacquisition does not duplicate voice", committed_history_rows(&event_history[0]), 1);
@@ -5020,6 +5036,8 @@ test_crc_invalid_voice_delayed_and_reacquired(void) {
                      strstr(event_history[0].Event_History_Items[0].event_string, "[CRC ERR]") != NULL, 0);
     rc |= expect_int("fresh voice epoch informational", event_history[0].Event_History_Items[0].severity,
                      DSD_EVENT_SEVERITY_INFO);
+    rc |= expect_int("fresh voice epoch has no emergency", event_history[0].Event_History_Items[0].emergency, 0);
+    rc |= expect_int("fresh voice epoch has no priority", event_history[0].Event_History_Items[0].priority, 0);
     // PI headers can update a verified call's crypto without another identity observation.
     // Even an otherwise identical carrier repeat must not hide a newly failed CRC.
     const dsd_call_crypto_update crypto = {

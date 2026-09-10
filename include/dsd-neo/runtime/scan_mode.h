@@ -9,6 +9,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -49,6 +50,7 @@ typedef struct {
     int unmute_encrypted_p25;
     int trunk_tune_data_calls;
     int trunk_tune_enc_calls;
+    int p25_prefer_candidates;
     char group_in_file[1024];
     int frame_dstar;
     int frame_x2tdma;
@@ -137,6 +139,8 @@ void dsd_scan_mode_configured(const dsd_opts* opts, const dsd_state* state, dsd_
 /** Borrow saved settings, or NULL without a scope/during an update. Use only on
  * the decoder thread or a consumer-owned snapshot; invalidated by scope updates. */
 const dsd_scan_settings* dsd_scan_mode_configured_view(const dsd_state* state);
+/** Nonsecret row-option mask, also available on a held frontend snapshot. */
+uint32_t dsd_scan_mode_option_fields(const dsd_state* state);
 /** Deep-copy scalar scope metadata for frontend snapshots. No live extension pointer is shared. */
 void dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src);
 /** Current class profile; combined P25 and inherited settings follow the active hunt index. */

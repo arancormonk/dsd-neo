@@ -15,11 +15,15 @@
 #define DSD_NEO_SRC_UI_QT_TALKGROUP_LIST_MODEL_H_
 
 #include <QAbstractListModel>
+#include <QHash>
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QPointer>
 #include <QString>
 #include <QStringList>
+#include <QVariant>
+#include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
 #include <dsd-neo/core/opts_fwd.h>
@@ -35,11 +39,15 @@ namespace dsd_qt {
 
 class TalkgroupListModel : public QAbstractListModel {
     Q_OBJECT
+    // WP-D1: keep 64-bit context lossless across JavaScript's number boundary.
+    Q_PROPERTY(QString policyContext READ policyContext NOTIFY policyChanged)
+    Q_PROPERTY(unsigned int policyGeneration READ policyGeneration NOTIFY policyChanged)
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     Q_PROPERTY(int notTunedCount READ notTunedCount NOTIFY countChanged)
     Q_PROPERTY(QStringList categories READ categories NOTIFY categoriesChanged)
     Q_PROPERTY(bool allowListMode READ allowListMode NOTIFY policyChanged)
     Q_PROPERTY(bool persistent READ persistent NOTIFY policyChanged)
+    Q_PROPERTY(QString persistenceScope READ persistenceScope NOTIFY policyChanged)
     Q_PROPERTY(qint64 sinceWhen READ sinceWhen WRITE setSinceWhen NOTIFY sinceWhenChanged)
 
   public:
@@ -51,6 +59,9 @@ class TalkgroupListModel : public QAbstractListModel {
         TagsRole,
         ListeningRole,
         ListedRole,
+        PriorityRole,
+        PreemptRole,
+        PolicyIndexRole,
     };
 
     explicit TalkgroupListModel(QAbstractItemModel* history, QObject* parent = nullptr);
@@ -88,10 +99,32 @@ class TalkgroupListModel : public QAbstractListModel {
         return m_sinceWhen;
     }
 
+    QString
+    policyContext() const {
+        return QString::number(m_contextId);
+    }
+
+    unsigned int
+    policyGeneration() const {
+        return m_generation;
+    }
+
+    Q_INVOKABLE QVariantMap
+    observedDecryption(quint32 id) const {
+        return m_observedCrypto.value(id);
+    }
+
+    QString
+    persistenceScope() const {
+        return m_persistenceScope;
+    }
+
     void setSinceWhen(qint64 when);
     void refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief Drop snapshot state, retaining the session's history cutoff. */
     void clear();
+    /** Re-read the new target without resetting the list view. */
+    void invalidateForTarget();
 
   Q_SIGNALS:
     void countChanged();
@@ -100,6 +133,10 @@ class TalkgroupListModel : public QAbstractListModel {
     void sinceWhenChanged();
 
   private:
+    void updatePersistence(const dsd_opts* opts_snapshot, const dsd_state* snapshot, bool allowListChanged,
+                           bool allowListedOnly);
+    void observeDecryption(const dsd_state* snapshot);
+
     struct Row {
         uint32_t idStart = 0;
         uint32_t idEnd = 0;
@@ -107,6 +144,9 @@ class TalkgroupListModel : public QAbstractListModel {
         QString tags;
         bool listening = false;
         bool listed = false;
+        int priority = 0;
+        bool preempt = false;
+        int policyIndex = -1;
     };
 
     static QVector<Row> listedRows(const dsd_state* snapshot, QSet<QString>& categoryTags);
@@ -127,6 +167,8 @@ class TalkgroupListModel : public QAbstractListModel {
     uint64_t m_contextId = 0;
     unsigned int m_generation = 0;
     bool m_heardDirty = true;
+    QHash<quint32, QVariantMap> m_observedCrypto;
+    QString m_persistenceScope = QStringLiteral("session");
 };
 
 } // namespace dsd_qt

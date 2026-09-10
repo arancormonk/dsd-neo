@@ -83,9 +83,10 @@ void dsd_rr_talkgroups_apply_categories(dsd_rr_talkgroup_list* talkgroups, const
  *     dsd_rr_import_options options = {-1, -1, 1};
  */
 typedef struct {
-    int simulcast;         /**< -1 follow site record, 0 off, 1 on. */
-    int esk;               /**< -1 follow flavor record, 0 off, 1 on. */
-    int partial_enc_as_de; /**< 0 or 1; the frontend supplies its default. */
+    int simulcast;                                  /**< -1 follow site record, 0 off, 1 on. */
+    int esk;                                        /**< -1 follow flavor record, 0 off, 1 on. */
+    int partial_enc_as_de;                          /**< 0 or 1; the frontend supplies its default. */
+    dsd_rr_encrypted_tg_policy encrypted_tg_policy; /**< LEGACY preserves partial_enc_as_de behavior. */
 } dsd_rr_import_options;
 
 /** Everything a frontend needs to preview and perform one import. */
@@ -99,6 +100,7 @@ typedef struct {
     int simulcast; /**< Resolved (record + override) - what the decode flag was built with. */
     int esk;       /**< Resolved likewise. */
     int partial_enc_as_de;
+    dsd_rr_encrypted_tg_policy encrypted_tg_policy;
     int site_count; /**< Sites the generator will use (1 for trunked). */
     /**
      * Comma-joined dsd_rr_site::site_db_id, selection order. NEVER site_number:

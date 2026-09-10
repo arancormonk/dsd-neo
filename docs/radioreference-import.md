@@ -14,6 +14,20 @@ and one shared policy module (`include/dsd-neo/runtime/radioreference_import.h`)
 - **Terminal UI.** The generated files land in the imports directory next to your config file, and the
   import is applied to the running session immediately. See [Terminal UI](#terminal-ui).
 
+## Site position metadata
+
+The runtime SOAP client exposes site `lat` and `lon` in degrees and `range_mi` in miles.
+`has_position` is true only when all three fields are present and valid: latitude within
+[-90, 90], longitude within [-180, 180], and a finite nonnegative range. The `(0,0,0)`
+placeholder means no position; zero latitude or longitude alone is valid. Missing, nil,
+malformed or out-of-range fields become zero and clear `has_position`, while the site's
+frequencies remain available for import. Consumers must check `has_position` before using
+these values as a position.
+
+Decimals use an optional sign, digits, and an optional dot followed by fraction digits,
+independent of the process locale. Exponents, commas, whitespace and nonfinite values are
+not accepted. This metadata does not change site selection or saved-system grouping.
+
 ## Requirements
 
 - **Your own RadioReference premium subscription.** Every user authenticates with their own
@@ -93,6 +107,31 @@ The import screen is a drill-down with two stages, and shows one or the other, n
   replaces the find stage; a `‹ All systems` row (`‹ Search` when no list was fetched) is the way
   back to it. The results list survives that, so importing several systems from one search is a
   tap each.
+
+## Saved sites in Qt and Android
+
+For trunked systems, enable **Import each selected site as its own system**, select the sites, and import.
+The setup wizard saves one row per site with its own frequency and CSV files, using the source and tuner
+settings you choose. Frequency, protocol and channel/group CSV edits in that wizard apply to the first
+site; the other sites retain their individual import settings. A single-site import records the same
+site identity. Identity uses RadioReference's database site ID, not the RF site number.
+
+Home groups sibling sites under one card with an **n sites ›** chooser. **Use my location** requests a
+foreground fix; valid site distances appear in kilometers. **Nearest site** skips avoided sites and
+sites without valid coordinates. Missing `(0, 0)` coordinates and nonfinite or out-of-range values never
+participate in distance calculations. The avoid switch is saved locally.
+
+Site buttons and **Nearest site** start only while Idle. While listening, open **Sites ›**, then use
+**Stop and switch** for the desired site. It stops the session, waits for confirmed Idle, and starts the
+selected saved UID with that site's files. Any intervening pointer, keyboard, shortcut or wheel action
+cancels the pending restart. There is no live automatic hop: tuning alone would retain the old site's
+channel and group files, including site-specific DMR LCN maps.
+
+Editing a saved site's frequency, decode flag or CSV selections clears its RadioReference grouping IDs.
+Renaming or avoiding a site preserves them. Older imports with provenance only on the library file show
+**Refresh from RadioReference to enable site grouping** and stay ungrouped; re-import the site to create
+the saved-row identity. Refreshing only a library CSV cannot infer which saved row represents which site.
+Manual rows never group.
 
 ## Terminal UI
 
@@ -314,3 +353,37 @@ Sourced from RadioReference's
 
 RadioReference publishes no rate limit. dsd-neo is conservative by construction: one worker thread
 per client, so a client has at most one request in flight at a time.
+
+### Use my location (Android)
+
+In **Find a system**, **Use my location** requests approximate foreground location.
+Granting coarse location permission is optional; ZIP, Browse and system ID searches
+remain available after denial. The request times out after 20 seconds, including
+reverse geocoding. A successful US five-digit postal code enters the existing ZIP
+lookup. Other countries, missing postal codes and geocoding errors direct you to Browse.
+Desktop hosts hide this button by default.
+
+A newer search or Browse request cancels the pending location lookup; late results
+cannot replace the newer results. Android Activity teardown also cancels it. A valid
+fix is retained privately (latitude, longitude, accuracy in metres and timestamp in
+milliseconds), even if geocoding fails, for later nearby-site selection. It expires
+after 24 hours using the existing preference expiry timer and load/read checks.
+Coordinates are not added to diagnostics or exports.
+
+Nearby lookup and the site chooser share one location request owner. Leaving
+RadioReference cancels its pending lookup; asking for location in either screen
+retires the previous caller, and late replies cannot replace the current request.
+
+### Android encryption review
+
+New Qt/Android imports default to keeping encrypted and partly encrypted talkgroups
+enabled. The review can instead exclude fully encrypted groups, or fully and partly
+encrypted groups. Exclusion disables the entire group, including its clear calls;
+installing keys does not override that listening policy. Refresh retains the policy
+stored with each import, including legacy exclusion choices. The terminal wizard
+and legacy generation API retain their previous default behavior.
+
+Country/state/county and site/repeater pickers support search. Selection is retained
+while filtering, and the final review lists sites, modulation, source requirements,
+policy and generated files before import. Cancelling a request keeps earlier search
+results available. Location denial leaves ZIP, Browse and direct system ID usable.

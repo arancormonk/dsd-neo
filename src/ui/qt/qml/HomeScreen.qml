@@ -9,14 +9,51 @@ import "Util.js" as Util
 Item {
     id: screen
 
-    signal addSystem()
+    readonly property bool supportingPane: width >= 900
+    property var failure: ({})
+    property bool usbRelevant: true
+    property string completionMessage: ""
+    signal retryFailure
+    signal editFailure
+    signal dismissFailure
+    signal failureDetails
+    signal replayAgain
+    signal addScanList
+    signal playScanList(int row)
+    signal editScanList(int row)
+    signal addSystem
+    signal chooseSites(int row)
+    property int siteRevision: 0
+    Connections {
+        target: savedSystems
+        function onSitesChanged() {
+            screen.siteRevision++;
+        }
+    }
+    Connections {
+        target: importedFiles
+        function onCountChanged() {
+            screen.siteRevision++;
+        }
+    }
+    function needsSiteRefresh(row) {
+        var sys = savedSystems.get(row);
+        if (!sys.trunking || (sys.rrSid > 0 && sys.rrSiteId > 0))
+            return false;
+        for (var path of [sys.chanCsvPath, sys.groupCsvPath]) {
+            var libraryRow = importedFiles.rowForPath(path || "");
+            if (libraryRow >= 0 && importedFiles.get(libraryRow).origin === "radioreference")
+                return true;
+        }
+        return false;
+    }
     signal playSystem(int row)
     signal editSystem(int row)
-    signal networkSource()
+    signal networkSource
     // Tap starts exploring with what was used last; long-press changes it. Same
     // split as a system card, where the face plays and the press manages.
-    signal explore()
-    signal exploreSetup()
+    signal explore
+    signal exploreSetup
 
     // Re-derives "Heard n minutes ago" once a minute so rows do not go stale.
     property int heardTick: 0
@@ -28,15 +65,20 @@ Item {
         onTriggered: screen.heardTick++
     }
 
-    readonly property bool showDonglePill: decoderHost && decoderHost.localDeviceBrokered
-    readonly property bool dongleReady: decoderHost && decoderHost.localDeviceReady
+    // WP-S2: the saved-card menu is a Home-owned modal; scan cards open the root editor.
+    readonly property bool managementSheetOpen: manageMenu.visible
+
+    readonly property bool showDonglePill: screen.usbRelevant && decoderHost && decoderHost.localDeviceBrokered
+    readonly property bool dongleFailed: decoderHost && decoderHost.localDeviceFailureKind !== 0
+    readonly property bool dongleReady: decoderHost && decoderHost.localDeviceReady && !dongleFailed
 
     Rectangle {
         anchors.fill: parent
         color: Theme.bg
     }
 
-    Flickable {
+    PlexFlickable {
+        objectName: "dongleScrollBody"
         anchors.fill: parent
         contentHeight: content.height + 2 * Theme.screenPadding
         clip: true
@@ -48,9 +90,9 @@ Item {
         Column {
             id: content
 
-            x: Theme.screenPadding
+            x: screen.supportingPane ? Theme.screenPadding : (parent.width - width) / 2
             y: Theme.screenPadding
-            width: parent.width - 2 * Theme.screenPadding
+            width: screen.supportingPane ? parent.width - 280 - 3 * Theme.screenPadding : Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
             spacing: Theme.gap
 
             Item {
@@ -62,7 +104,7 @@ Item {
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
                     font.family: Theme.sans
-                    font.pixelSize: 24
+                    font.pixelSize: Theme.fontSize(24)
                     font.weight: Font.Bold
                     font.letterSpacing: -0.24
                     color: Theme.textPrimary
@@ -93,9 +135,9 @@ Item {
                         }
 
                         Text {
-                            text: screen.dongleReady ? qsTr("DONGLE READY") : qsTr("NO DONGLE")
+                            text: screen.dongleFailed ? qsTr("DONGLE ERROR") : screen.dongleReady ? qsTr("DONGLE READY") : qsTr("NO DONGLE")
                             font.family: Theme.mono
-                            font.pixelSize: 11
+                            font.pixelSize: Theme.fontSize(11)
                             font.letterSpacing: 1.4
                             color: screen.dongleReady ? Theme.textPrimary : Theme.textSubdued
                         }
@@ -103,39 +145,69 @@ Item {
                 }
             }
 
-            // A start that died reads as "nothing happened" without this.
+            // WP-D5: keep the complete USB diagnostic next to the dongle pill.
             UiPanel {
                 width: parent.width
-                visible: failureBanner.text.length > 0
-                height: visible ? failureBanner.implicitHeight + 26 : 0
-                border.color: Theme.encBorder
-
-                property alias text: failureBanner.text
-
-                Text {
-                    id: failureBanner
-                    anchors.left: parent.left
-                    anchors.right: dismiss.left
-                    anchors.margins: Theme.cardPadding
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: (typeof mainRoot !== "undefined" && mainRoot.showFailure) ? mainRoot.failureText : ""
-                    wrapMode: Text.Wrap
-                    font.family: Theme.sans
-                    font.pixelSize: 14
-                    color: Theme.textPrimary
+                visible: screen.showDonglePill && !screen.dongleReady && !(screen.failure.message || "").length
+                height: visible ? dongleDetails.implicitHeight + 2 * Theme.cardPadding : 0
+                Column {
+                    id: dongleDetails
+                    x: Theme.cardPadding
+                    y: Theme.cardPadding
+                    width: parent.width - 2 * Theme.cardPadding
+                    spacing: 12
+                    Text {
+                        objectName: "dongleStatusText"
+                        width: parent.width
+                        text: decoderHost.localDeviceStatus || qsTr("Plug in an RTL-SDR, then tap Connect.")
+                        wrapMode: Text.Wrap
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(14)
+                        color: Theme.textPrimary
+                    }
+                    OutlineButton {
+                        objectName: "dongleRetry"
+                        width: 110
+                        text: screen.dongleFailed ? qsTr("Retry") : qsTr("Connect")
+                        enabled: !decoderHost.sessionActive
+                        onClicked: decoderHost.requestLocalDeviceAccess()
+                    }
                 }
+            }
 
-                Text {
-                    id: dismiss
-                    anchors.right: parent.right
-                    anchors.rightMargin: Theme.cardPadding
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "✕"
-                    font.pixelSize: 15
-                    color: Theme.textSubdued
-
-                    TapHandler {
-                        onTapped: mainRoot.dismissedFailure = mainRoot.failureText
+            FailureCard {
+                width: parent.width
+                visible: (screen.failure.message || "").length > 0
+                message: screen.failure.message || ""
+                source: screen.failure.source || ""
+                canRetry: screen.failure.canRetry === true
+                onRetry: screen.retryFailure()
+                onEdit: screen.editFailure()
+                onDismiss: screen.dismissFailure()
+                onDetails: screen.failureDetails()
+            }
+            UiPanel {
+                width: parent.width
+                visible: screen.completionMessage.length > 0
+                height: completionBody.implicitHeight + 2 * Theme.cardPadding
+                Column {
+                    id: completionBody
+                    x: Theme.cardPadding
+                    y: Theme.cardPadding
+                    width: parent.width - 2 * Theme.cardPadding
+                    spacing: 10
+                    Text {
+                        width: parent.width
+                        text: screen.completionMessage
+                        wrapMode: Text.Wrap
+                        color: Theme.textPrimary
+                        font.pixelSize: Theme.fontSize(15)
+                    }
+                    OutlineButton {
+                        width: parent.width
+                        text: qsTr("Play again")
+                        enabled: !decoderHost.sessionActive
+                        onClicked: screen.replayAgain()
                     }
                 }
             }
@@ -159,24 +231,34 @@ Item {
                     required property string decodeFlag
                     required property bool trunking
                     required property string filePath
+                    required property string encKeyType
+                    required property string keyCsvPath
                     required property double lastHeard
 
                     width: content.width
-                    height: 92
+                    property var siblings: (screen.siteRevision, savedSystems.siblingRows(index))
+                    visible: siblings.length === 0 || siblings[0] === index
+                    height: visible ? (refreshHint ? 154 : 122) : 0
+                    readonly property var playableSites: siblings.filter(function (row) {
+                        return !savedSystems.get(row).avoidSite;
+                    })
+                    property bool refreshHint: (screen.siteRevision, screen.needsSiteRefresh(index))
 
                     Column {
                         anchors.left: parent.left
-                        anchors.right: play.left
+                        anchors.right: siteButton.visible ? siteButton.left : play.left
                         anchors.leftMargin: Theme.cardPadding
                         anchors.rightMargin: 12
                         anchors.verticalCenter: parent.verticalCenter
+                        anchors.verticalCenterOffset: card.refreshHint ? -20 : -10
                         spacing: 4
 
                         Text {
                             width: parent.width
+                            objectName: "savedSystemTitle"
                             text: card.name
                             font.family: Theme.sans
-                            font.pixelSize: 17
+                            font.pixelSize: Theme.fontSize(17)
                             font.weight: Font.Bold
                             color: Theme.textPrimary
                             elide: Text.ElideRight
@@ -186,7 +268,7 @@ Item {
                             width: parent.width
                             text: Util.systemMeta(card)
                             font.family: Theme.mono
-                            font.pixelSize: 12
+                            font.pixelSize: Theme.fontSize(12)
                             color: Theme.textSubdued
                             elide: Text.ElideRight
                         }
@@ -194,24 +276,58 @@ Item {
                         Text {
                             width: parent.width
                             // heardTick forces the minute-by-minute refresh.
-                            text: (screen.heardTick, Util.heardText(card.lastHeard))
+                            objectName: "savedSystemMeta"
+                            text: ((card.encKeyType.length > 0 || card.keyCsvPath.length > 0) ? qsTr("key configured") + " · " : "") + (screen.heardTick, Util.heardText(card.lastHeard))
                             font.family: Theme.sans
-                            font.pixelSize: 13
+                            font.pixelSize: Theme.fontSize(13)
                             color: Theme.textSecondary
                             elide: Text.ElideRight
                         }
                     }
 
+                    Text {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.margins: Theme.cardPadding
+                        visible: card.refreshHint
+                        text: qsTr("Refresh from RadioReference to enable site grouping")
+                        wrapMode: Text.Wrap
+                        color: Theme.textSecondary
+                        font.pixelSize: Theme.fontSize(12)
+                    }
+                    OutlineButton {
+                        id: siteButton
+                        objectName: "homeSiteChooserButton"
+                        accessibleName: qsTr("Choose sites for %1").arg(card.name)
+                        width: implicitWidth
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.rightMargin: play.visible ? Theme.cardPadding + play.width + 8 : Theme.cardPadding
+                        text: card.siblings.length === 1 ? qsTr("1 site") : qsTr("%1 sites").arg(card.siblings.length)
+                        visible: card.siblings.length > 0
+                        onClicked: screen.chooseSites(card.index)
+                    }
                     PlayCircle {
                         id: play
+                        accessibleName: card.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)
+                        objectName: "savedSystemPlay"
+                        visible: card.siblings.length === 0 || card.playableSites.length === 1
                         anchors.right: parent.right
                         anchors.rightMargin: Theme.cardPadding
                         anchors.verticalCenter: parent.verticalCenter
                         featured: index === savedSystems.mostRecentRow
-                        enabled: !mainRoot.transitioning
-                        onClicked: screen.playSystem(card.index)
+                        enabled: !decoderHost.transitioning
+                        onClicked: screen.playSystem(card.playableSites.length === 1 ? card.playableSites[0] : card.index)
                     }
 
+                    IconButton {
+                        icon: "more"
+                        accessibleName: qsTr("Edit %1").arg(card.name)
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        onClicked: manageMenu.openFor(card.index, card.name)
+                    }
                     // Long-press manages the card: the design keeps card faces clean,
                     // so destructive actions hide behind the press.
                     TapHandler {
@@ -225,6 +341,30 @@ Item {
                 width: parent.width
                 text: qsTr("+ Add a system")
                 onClicked: screen.addSystem()
+            }
+
+            // WP-S1: same play/edit gestures as saved systems.
+            MicroLabel {
+                text: qsTr("Scan lists")
+            }
+            Repeater {
+                model: scanLists
+                ScanListCard {
+                    required property int index
+                    required property string name
+                    required property var entries
+                    width: content.width
+                    isDraft: scanLists.get(index).isDraft === true
+                    listName: name
+                    entryCount: entries.length
+                    onPlay: screen.playScanList(index)
+                    onEdit: screen.editScanList(index)
+                }
+            }
+            DashedActionButton {
+                width: parent.width
+                text: qsTr("+ Add a scan list")
+                onClicked: screen.addScanList()
             }
 
             MicroLabel {
@@ -242,8 +382,15 @@ Item {
                 width: content.width
                 height: 78
 
-                readonly property string sourceLabel: prefs.exploreSourceType === "rtltcp" ? qsTr("RTL-TCP")
-                                                                                           : qsTr("USB dongle")
+                IconButton {
+                    icon: "more"
+                    accessibleName: qsTr("Edit Explore connection")
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    onClicked: screen.exploreSetup()
+                    z: 2
+                }
+                readonly property string sourceLabel: prefs.exploreSourceType === "rtltcp" ? qsTr("RTL-TCP") : qsTr("USB dongle")
                 readonly property bool configured: prefs.exploreSourceType.length > 0
 
                 Column {
@@ -258,7 +405,7 @@ Item {
                         width: parent.width
                         text: qsTr("Explore the band")
                         font.family: Theme.sans
-                        font.pixelSize: 17
+                        font.pixelSize: Theme.fontSize(17)
                         font.weight: Font.Bold
                         color: Theme.textPrimary
                         elide: Text.ElideRight
@@ -266,11 +413,10 @@ Item {
 
                     Text {
                         width: parent.width
-                        text: exploreCard.configured
-                              ? qsTr("%1 · from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz)
-                              : qsTr("Tune around and find what is on the air")
+                        objectName: "homeExploreSubtitle"
+                        text: exploreCard.configured ? qsTr("%1 · from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Tune around and find what is on the air")
                         font.family: exploreCard.configured ? Theme.mono : Theme.sans
-                        font.pixelSize: exploreCard.configured ? 12 : 13
+                        font.pixelSize: Theme.fontSize(exploreCard.configured ? 12 : 13)
                         color: Theme.textSubdued
                         elide: Text.ElideRight
                     }
@@ -294,7 +440,7 @@ Item {
                 }
 
                 TapHandler {
-                    enabled: !mainRoot.transitioning
+                    enabled: !decoderHost.transitioning
                     // Nothing remembered means nothing to start from, so the first
                     // tap asks rather than guessing at a radio and a frequency.
                     onTapped: exploreCard.configured ? screen.explore() : screen.exploreSetup()
@@ -307,17 +453,10 @@ Item {
                 height: 26
             }
 
-            Text {
+            OutlineButton {
                 width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                text: qsTr("Network or file source ›")
-                font.family: Theme.sans
-                font.pixelSize: 13
-                color: Theme.textSubdued
-
-                TapHandler {
-                    onTapped: screen.networkSource()
-                }
+                text: qsTr("Network or file source")
+                onClicked: screen.networkSource()
             }
         }
     }
@@ -330,9 +469,9 @@ Item {
         property string systemName: ""
 
         function openFor(row, name) {
-            manageMenu.row = row
-            manageMenu.systemName = name
-            visible = true
+            manageMenu.row = row;
+            manageMenu.systemName = name;
+            visible = true;
         }
 
         anchors.fill: parent
@@ -360,7 +499,7 @@ Item {
                     width: parent.width
                     text: manageMenu.systemName
                     font.family: Theme.sans
-                    font.pixelSize: 17
+                    font.pixelSize: Theme.fontSize(17)
                     font.weight: Font.Bold
                     color: Theme.textPrimary
                     elide: Text.ElideRight
@@ -370,8 +509,8 @@ Item {
                     width: parent.width
                     text: qsTr("Edit this system")
                     onClicked: {
-                        manageMenu.visible = false
-                        screen.editSystem(manageMenu.row)
+                        manageMenu.visible = false;
+                        screen.editSystem(manageMenu.row);
                     }
                 }
 
@@ -379,8 +518,8 @@ Item {
                     width: parent.width
                     text: qsTr("Remove this system")
                     onClicked: {
-                        savedSystems.remove(manageMenu.row)
-                        manageMenu.visible = false
+                        savedSystems.remove(manageMenu.row);
+                        manageMenu.visible = false;
                     }
                 }
 
@@ -391,5 +530,69 @@ Item {
                 }
             }
         }
+    }
+    UiPanel {
+        visible: screen.supportingPane
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.right: parent.right
+        anchors.margins: Theme.screenPadding
+        width: 280
+        PointerBarrier {}
+        Text {
+            id: recentTitle
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.margins: Theme.cardPadding
+            text: qsTr("Recent activity")
+            color: Theme.textPrimary
+            wrapMode: Text.Wrap
+            font.pixelSize: Theme.fontSize(20)
+        }
+        ListView {
+            id: recentList
+            anchors.top: recentTitle.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.topMargin: 12
+            clip: true
+            model: callHistory
+            delegate: CallRow {
+                width: recentList.width
+                name: model.name
+                metaText: model.systemName
+                rightText: model.timeText
+                enc: model.enc
+                emergency: model.emergency
+                interactive: true
+                onActivated: recentDetail.open({
+                    name: model.name,
+                    when: model.when,
+                    systemName: model.systemName,
+                    channel: model.channel,
+                    tg: model.tg,
+                    src: model.src,
+                    sourceName: model.srcName,
+                    enc: model.enc,
+                    emergency: model.emergency,
+                    detail: model.detail,
+                    durationSecs: model.durationSecs
+                })
+            }
+            Text {
+                anchors.centerIn: parent
+                width: parent.width - 32
+                visible: recentList.count === 0
+                text: qsTr("Received activity will appear here.")
+                wrapMode: Text.Wrap
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSize(14)
+            }
+        }
+    }
+    HistoryDetailSheet {
+        id: recentDetail
     }
 }

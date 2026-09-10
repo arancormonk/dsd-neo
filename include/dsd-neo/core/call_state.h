@@ -159,6 +159,34 @@ typedef struct {
     double observed_m;
 } dsd_call_crypto_update;
 
+typedef enum {
+    DSD_CALL_KEY_NONE = 0,
+    DSD_CALL_KEY_DIRECT = 1,
+    DSD_CALL_KEY_SIGNALED = 2,
+    DSD_CALL_KEY_TALKGROUP = 3,
+    DSD_CALL_KEY_DESTINATION = 4,
+    DSD_CALL_KEY_DEFAULT = 5
+} dsd_call_key_source;
+
+enum {
+    DSD_CALL_KEY_FALLBACK_NONE = 0,
+    DSD_CALL_KEY_FALLBACK_MAPPED_MISSING = 1,
+    DSD_CALL_KEY_FALLBACK_MAPPED_INCOMPATIBLE = 2,
+    DSD_CALL_KEY_FALLBACK_UNKNOWN_ALGORITHM = 3
+};
+
+typedef struct {
+    uint64_t key_epoch;
+    int32_t effective_id; /**< -1 for direct material without an identifier. */
+    uint16_t signaled_id;
+    uint8_t valid;
+    uint8_t source;
+    uint8_t algorithm;
+    int8_t available; /**< -1 unknown/not applicable, 0 unavailable, 1 material available. */
+    uint8_t fallback;
+    char profile_ref[64];
+} dsd_call_key_selection;
+
 typedef struct {
     uint64_t revision;
     uint64_t epoch;
@@ -193,6 +221,7 @@ typedef struct {
     char source_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char route_text[DSD_CALL_ROUTE_COUNT][DSD_CALL_IDENTITY_TEXT_SIZE];
+    dsd_call_key_selection key_selection;
 } dsd_call_snapshot;
 
 typedef struct {
@@ -338,6 +367,10 @@ int dsd_call_state_protocol_family(int protocol);
 int dsd_call_state_ensure(dsd_state* state);
 int dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation, dsd_call_boundary boundary);
 int dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
+/** Record resolver provenance on the matching call epoch, without changing call
+ * identity, activity age, crypto classification, media or listening policy. */
+int dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
+                                      int signaled_id, int effective_id, int available, int fallback);
 /** Update crypto metadata on an existing active or retained ended epoch. */
 int dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
 int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, double observed_m);

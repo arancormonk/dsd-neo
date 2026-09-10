@@ -12,7 +12,8 @@
  * u8 I/Q samples into normalized float and feeds the `input_ring_state`.
  */
 
-#include "dsd-neo/core/input_level.h"
+#include <dsd-neo/core/input_level.h>
+#include <dsd-neo/runtime/input_failure.h>
 
 #include <algorithm>
 #include <atomic>
@@ -51,8 +52,8 @@
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <sys/socket.h>
 #endif
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/platform/platform.h"
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/platform/platform.h>
 #include "rtl_capture_phase.h"
 #include "rtl_perf.h"
 #include "rtl_replay_device.h"
@@ -3271,11 +3272,17 @@ static DSD_THREAD_RETURN_TYPE
 
 /* ---- rtl_tcp backend helpers ---- */
 
+static int
+tcp_connect_cancelled(void*) {
+    return dsd_exitflag_load();
+}
+
 /* Connect to rtl_tcp server */
 static dsd_socket_t
 tcp_connect_host(const char* host, int port) {
     dsd_socket_t sockfd = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
     if (sockfd == DSD_INVALID_SOCKET) {
+        dsd_input_failure_report(DSD_INPUT_FAILURE_NETWORK, dsd_socket_get_error());
         DSD_FPRINTF(stderr, "rtl_tcp: ERROR opening socket\n");
         return DSD_INVALID_SOCKET;
     }
@@ -3303,15 +3310,21 @@ tcp_connect_host(const char* host, int port) {
     }
     struct sockaddr_in serveraddr;
     if (dsd_socket_resolve(host, port, &serveraddr) != 0) {
+        dsd_input_failure_report(DSD_INPUT_FAILURE_RESOLVE, dsd_socket_get_error());
         DSD_FPRINTF(stderr, "rtl_tcp: ERROR, no such host as %s\n", host);
         dsd_socket_close(sockfd);
         return DSD_INVALID_SOCKET;
     }
-    if (dsd_socket_connect(sockfd, reinterpret_cast<const struct sockaddr*>(&serveraddr), sizeof(serveraddr)) != 0) {
+    int code = 0;
+    if (dsd_socket_connect_bounded(sockfd, reinterpret_cast<const struct sockaddr*>(&serveraddr), sizeof(serveraddr),
+                                   10000U, tcp_connect_cancelled, nullptr, &code)
+        != 0) {
+        dsd_input_failure_report(dsd_input_failure_classify_socket(code), code);
         DSD_FPRINTF(stderr, "rtl_tcp: ERROR connecting to %s:%d\n", host, port);
         dsd_socket_close(sockfd);
         return DSD_INVALID_SOCKET;
     }
+    dsd_input_failure_clear();
     return sockfd;
 }
 
@@ -4905,6 +4918,18 @@ rtl_device_cleanup_common_state(struct rtl_device* dev) {
  * Descriptor handed down from an Android app (USB-OTG). Written before the engine
  * starts and read on the engine/open path, so the two threads need it atomic.
  */
+static std::atomic<int> g_last_usb_open_error{0};
+
+int
+rtl_device_last_open_error(void) {
+    return g_last_usb_open_error.load(std::memory_order_acquire);
+}
+
+void
+rtl_device_clear_open_error(void) {
+    g_last_usb_open_error.store(0, std::memory_order_release);
+}
+
 static std::atomic<int> g_preopened_usb_fd{-1};
 
 /*
@@ -4916,6 +4941,15 @@ static std::atomic<int> g_preopened_usb_fd{-1};
  * transfer could still be in flight.
  */
 static std::atomic<int> g_preopened_usb_fd_in_use{0};
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+static int (*g_open_fd_failure_hook)(int) = nullptr;
+
+extern "C" void
+rtl_device_test_set_open_fd_failure_hook(int (*hook)(int)) {
+    g_open_fd_failure_hook = hook;
+}
+#endif
 
 void
 rtl_device_set_preopened_fd(int sys_fd) {
@@ -4939,6 +4973,8 @@ rtl_device_preopened_fd_supported(void) {
      * never work. */
 #if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
     return 1;
+#elif defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    return g_open_fd_failure_hook != nullptr;
 #else
     return 0;
 #endif
@@ -4953,6 +4989,7 @@ rtl_device_preopened_fd_supported(void) {
  */
 struct rtl_device*
 rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
+    rtl_device_clear_open_error();
     if (!input_ring) {
         return NULL;
     }
@@ -4987,17 +5024,31 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     dev->if_gain_count = 0;
 
     int r = 0;
-#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+#if (defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD))                                       \
+    || defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
     /* An injected descriptor means the app already picked and opened the device and
      * libusb discovery is off, so opening by index cannot work. rtlsdr_open_fd() is a
      * project patch on the vendored tree; the configure step proves it is there. */
     const int preopened_fd = g_preopened_usb_fd.load(std::memory_order_acquire);
-    if (preopened_fd >= 0) {
+    // cppcheck-suppress knownConditionTrueFalse -- Native Android supports this; the desktop test seam can disable it.
+    if (preopened_fd >= 0 && rtl_device_preopened_fd_supported()) {
         /* Claimed before the wrap, not after: the owner must not be told the
          * descriptor is free while libusb is part way through taking it. */
         g_preopened_usb_fd_in_use.store(1, std::memory_order_release);
-        r = rtlsdr_open_fd(&dev->dev, preopened_fd);
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        if (g_open_fd_failure_hook) {
+            r = g_open_fd_failure_hook(preopened_fd);
+        } else
+#endif
+        {
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+            r = rtlsdr_open_fd(&dev->dev, preopened_fd);
+#else
+            r = -1;
+#endif
+        }
         if (r < 0) {
+            g_last_usb_open_error.store(r, std::memory_order_release);
             g_preopened_usb_fd_in_use.store(0, std::memory_order_release);
             DSD_FPRINTF(stderr, "Failed to open rtlsdr device from descriptor %d.\n", preopened_fd);
             rtl_device_cleanup_common_state(dev);
@@ -5023,6 +5074,7 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
 #endif
     // cppcheck-suppress knownConditionTrueFalse -- The no-RTL optional build uses an always-unavailable stub.
     if (r < 0) {
+        g_last_usb_open_error.store(r, std::memory_order_release);
         DSD_FPRINTF(stderr, "Failed to open rtlsdr device %d.\n", dev_index);
         rtl_device_cleanup_common_state(dev);
         free(dev);

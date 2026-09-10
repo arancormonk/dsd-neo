@@ -186,7 +186,7 @@ dsd_test_home_dir(void) {
     if (v && v[0] != '\0') {
         return v;
     }
-    struct passwd* pw = getpwuid(getuid());
+    const struct passwd* pw = getpwuid(getuid());
     if (pw && pw->pw_dir && pw->pw_dir[0] != '\0') {
         return pw->pw_dir;
     }

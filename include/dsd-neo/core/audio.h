@@ -223,7 +223,7 @@ dsd_key_material_need dsd_dmr_alg_key_need(int algid);
  * @brief Return 1 when a DMR/P25-style voice ALGID has sufficient key material to decrypt.
  *
  * This helper intentionally only covers known/implemented families that can be
- * checked from a scalar key-loaded flag. ALGIDs with slot-specific key
+ * checked from legacy scalar values and an AES loaded flag. Supplied zero scalars and slot-specific key
  * completeness rules, such as Kirisun 0x36/0x37, require
  * dsd_dmr_voice_slot_can_decrypt() -- or, when the verdict is wanted for a key
  * ID other than the slot's installed one (a --dmr-tg-key-csv override that has
@@ -258,6 +258,7 @@ typedef struct {
     unsigned long long r_key;
     int aes_loaded;
     int kirisun_complete;
+    int scalar_present; /* An explicitly supplied scalar may be zero. */
 } dsd_dmr_key_material;
 
 /**

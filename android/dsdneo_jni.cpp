@@ -35,6 +35,7 @@
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/runtime/bootstrap.h>
@@ -45,7 +46,9 @@
 #include <dsd-neo/io/rtl_device.h>
 #endif
 
+#include "diagnostics_log.h"
 #include "dsdneo_jni.h"
+#include "run_status.h"
 
 namespace {
 
@@ -58,6 +61,8 @@ constexpr jint kStatusBadState = -2;
 constexpr jint kStatusConfigExit = 1;
 
 std::mutex g_lock;
+std::mutex g_lifecycle_lock;
+dsd_android::RunStatus g_run_status;
 dsd_opts* g_opts = nullptr;
 dsd_state* g_state = nullptr;
 bool g_configured = false;
@@ -79,7 +84,7 @@ std::atomic<bool> g_initialized{false};
 std::atomic<bool> g_stop_requested{false};
 
 /**
- * @brief Drains the redirected stdout/stderr pipe into logcat, one line per record.
+ * @brief Drains redirected stdout/stderr into the single redacted capture stage.
  *
  * Most decode output is written straight to stderr (not through the LOG_* funnel),
  * and Android drops both streams for an app process. LOG_* messages keep their own
@@ -90,6 +95,7 @@ void*
 log_pump_thread(void* arg) {
     const int read_fd = static_cast<int>(reinterpret_cast<intptr_t>(arg));
     std::string line;
+    bool oversized = false;
     char buf[512];
 
     for (;;) {
@@ -103,22 +109,33 @@ log_pump_thread(void* arg) {
         for (ssize_t i = 0; i < n; i++) {
             const char c = buf[i];
             if (c == '\n' || c == '\r') {
+                if (oversized) {
+                    dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("stderr"), QStringLiteral("info"),
+                                                              QStringLiteral("[oversized diagnostic omitted]"));
+                    oversized = false;
+                }
                 if (!line.empty()) {
-                    __android_log_write(ANDROID_LOG_INFO, kLogTag, line.c_str());
+                    dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("stderr"), QStringLiteral("info"),
+                                                              QString::fromUtf8(line.c_str()));
                     line.clear();
                 }
                 continue;
             }
+            if (oversized) {
+                continue;
+            }
             line.push_back(c);
             if (line.size() >= 1024U) {
-                __android_log_write(ANDROID_LOG_INFO, kLogTag, line.c_str());
+                // Do not split a secret-bearing record into unlabelled fragments.
+                oversized = true;
                 line.clear();
             }
         }
     }
 
     if (!line.empty()) {
-        __android_log_write(ANDROID_LOG_INFO, kLogTag, line.c_str());
+        dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("stderr"), QStringLiteral("info"),
+                                                  QString::fromUtf8(line.c_str()));
     }
     (void)close(read_fd);
     return nullptr;
@@ -250,6 +267,7 @@ set_env_from_jstring(JNIEnv* env, const char* name, jstring value) {
 struct cli_argv {
     char** argv;
     char** owned;
+    size_t* owned_sizes;
     int argc;
 };
 
@@ -261,11 +279,18 @@ free_argv(cli_argv* cli) {
     }
     if (cli->owned != nullptr) {
         for (int i = 0; i < cli->argc; i++) {
+            if (cli->owned[i] != nullptr && cli->owned_sizes != nullptr) {
+                // Bootstrap may insert NULs while parsing. Erase the allocation's
+                // original span, not strlen() of its now-shortened contents.
+                DSD_SECURE_ZERO(cli->owned[i], cli->owned_sizes[i]);
+            }
             free(cli->owned[i]);
         }
         free(cli->owned);
         cli->owned = nullptr;
     }
+    free(cli->owned_sizes);
+    cli->owned_sizes = nullptr;
     free(cli->argv);
     cli->argv = nullptr;
     cli->argc = 0;
@@ -284,13 +309,15 @@ build_argv(JNIEnv* env, jobjectArray args, cli_argv* out) {
     /* One extra slot: compaction writes a NULL terminator at the new argc. */
     out->argv = static_cast<char**>(calloc(static_cast<size_t>(argc) + 1U, sizeof(char*)));
     out->owned = static_cast<char**>(calloc(static_cast<size_t>(argc), sizeof(char*)));
-    if (out->argv == nullptr || out->owned == nullptr) {
+    out->owned_sizes = static_cast<size_t*>(calloc(static_cast<size_t>(argc), sizeof(size_t)));
+    if (out->argv == nullptr || out->owned == nullptr || out->owned_sizes == nullptr) {
         free_argv(out);
         return false;
     }
 
     out->argv[0] = strdup("dsd-neo");
     out->owned[0] = out->argv[0];
+    out->owned_sizes[0] = sizeof("dsd-neo");
     if (out->argv[0] == nullptr) {
         free_argv(out);
         return false;
@@ -303,7 +330,7 @@ build_argv(JNIEnv* env, jobjectArray args, cli_argv* out) {
             return false;
         }
         bool converted = false;
-        const std::string text = jstring_to_utf8(env, item, &converted);
+        std::string text = jstring_to_utf8(env, item, &converted);
         if (item != nullptr) {
             env->DeleteLocalRef(item);
         }
@@ -314,8 +341,18 @@ build_argv(JNIEnv* env, jobjectArray args, cli_argv* out) {
             free_argv(out);
             return false;
         }
-        out->argv[i + 1] = strdup(text.c_str());
+        // Allocate the complete converted span, even if malformed input contains
+        // an embedded NUL; the erasure length must never exceed the allocation.
+        out->owned_sizes[i + 1] = text.size() + 1U;
+        out->argv[i + 1] = static_cast<char*>(malloc(out->owned_sizes[i + 1]));
         out->owned[i + 1] = out->argv[i + 1];
+        if (out->argv[i + 1] != nullptr) {
+            DSD_MEMCPY(out->argv[i + 1], text.c_str(), out->owned_sizes[i + 1]);
+        }
+        if (!text.empty()) {
+            DSD_SECURE_ZERO(&text[0], text.size());
+        }
+        // Java/QString copies cannot promise erasure; all native owned copies can.
         if (out->argv[i + 1] == nullptr) {
             free_argv(out);
             return false;
@@ -336,6 +373,12 @@ build_argv(JNIEnv* env, jobjectArray args, cli_argv* out) {
 int
 engine_lifecycle_start(dsd_opts* opts, dsd_state* state, void* context) {
     (void)context;
+    if (!g_stop_requested.load()) {
+        std::lock_guard<std::mutex> guard(g_lifecycle_lock);
+        // This callback follows tuner open and trunk-scan initialization. The
+        // earlier g_running flag only protects ownership during initialization.
+        g_run_status.mark_initialized();
+    }
     if (g_stop_requested.load()) {
         __android_log_print(ANDROID_LOG_INFO, kLogTag, "stop requested during startup; shutting down immediately");
         dsd_request_shutdown(opts, state);
@@ -361,6 +404,9 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeInit(JNIEnv* env, jclass clazz
                                                        jstring cache_dir) {
     (void)clazz;
 
+    // WP-F5: LOG_* enters through the tap only; choose the platform sink before the pump starts.
+    dsd_qt::DiagnosticsLog::installTap();
+    dsd_neo_log_set_sink(DSD_NEO_LOG_SINK_PLATFORM);
     start_log_pump();
 
     /* The app owns the paths and must not steal the process signal dispositions. */
@@ -368,10 +414,6 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeInit(JNIEnv* env, jclass clazz
     set_env_from_jstring(env, "XDG_CONFIG_HOME", config_dir);
     set_env_from_jstring(env, "DSD_NEO_CACHE_DIR", cache_dir);
     (void)setenv("DSD_NEO_NO_SIGNAL_HANDLERS", "1", 1);
-
-    /* Without this the LOG_* funnel writes stderr and the pump above re-logs every
-     * message at INFO, losing the severity and duplicating nothing useful. */
-    dsd_neo_log_set_sink(DSD_NEO_LOG_SINK_PLATFORM);
 
     std::lock_guard<std::mutex> guard(g_lock);
     if (g_opts != nullptr || g_state != nullptr) {
@@ -396,7 +438,8 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeInit(JNIEnv* env, jclass clazz
 }
 
 JNIEXPORT jint JNICALL
-Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass clazz, jobjectArray args) {
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass clazz, jobjectArray args,
+                                                            jlong session_id) {
     (void)clazz;
 
     std::lock_guard<std::mutex> guard(g_lock);
@@ -404,6 +447,13 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
         return kStatusBadState;
     }
 
+    {
+        std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
+        g_run_status.begin(static_cast<uint64_t>(session_id));
+    }
+#ifdef USE_RADIO
+    rtl_device_clear_open_error();
+#endif
     cli_argv cli = {};
     if (!build_argv(env, args, &cli)) {
         return kStatusError;
@@ -426,8 +476,13 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
     }
 
     g_configured = false;
+    if (rc != DSD_BOOTSTRAP_EXIT || exit_rc != 0) {
+        dsd_input_failure_report(DSD_INPUT_FAILURE_CONFIGURATION, exit_rc);
+        std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
+        dsd_android::collect_run_result(g_run_status, kStatusError, false);
+    }
     /* EXIT is not a failure: one-shot flows such as -h take it. */
-    return (rc == DSD_BOOTSTRAP_EXIT) ? kStatusConfigExit : kStatusError;
+    return (rc == DSD_BOOTSTRAP_EXIT && exit_rc == 0) ? kStatusConfigExit : kStatusError;
 }
 
 JNIEXPORT jint JNICALL
@@ -440,6 +495,11 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeRun(JNIEnv* env, jclass clazz)
     {
         std::lock_guard<std::mutex> guard(g_lock);
         if (g_opts == nullptr || g_state == nullptr || !g_configured || g_running.load()) {
+            // Do not overwrite an active run when rejecting a duplicate caller.
+            if (!g_running.load()) {
+                std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
+                g_run_status.finish(kStatusBadState, false, 0);
+            }
             return kStatusBadState;
         }
         opts = g_opts;
@@ -454,6 +514,12 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeRun(JNIEnv* env, jclass clazz)
     hooks.start = engine_lifecycle_start;
     const int rc = dsd_engine_run_with_lifecycle(opts, state, &hooks);
     dsd_app_frontend_runtime_stop();
+    {
+        std::lock_guard<std::mutex> status_guard(g_lifecycle_lock);
+        // Retained until the next configure: even a failure shorter than one
+        // status poll must survive cleanup and reach the UI with its own session id.
+        dsd_android::collect_run_result(g_run_status, rc, g_stop_requested.load());
+    }
 
     {
         std::lock_guard<std::mutex> guard(g_lock);
@@ -461,6 +527,34 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeRun(JNIEnv* env, jclass clazz)
         g_configured = false;
     }
     return (rc == 0) ? kStatusOk : kStatusError;
+}
+
+JNIEXPORT jlongArray JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeLifecycleStatus(JNIEnv* env, jclass clazz) {
+    (void)clazz;
+    dsd_android::RunStatus status;
+    {
+        std::lock_guard<std::mutex> guard(g_lifecycle_lock);
+        status = g_run_status;
+    }
+    const jlong fields[] = {static_cast<jlong>(status.session_id),
+                            status.initialized ? 1 : 0,
+                            static_cast<jlong>(status.reason),
+                            status.run_code,
+                            status.device_error,
+                            status.input_failure.kind,
+                            status.input_failure.native_code};
+    jlongArray out = env->NewLongArray(7);
+    if (!out) {
+        clear_pending_exception(env);
+        return nullptr;
+    }
+    env->SetLongArrayRegion(out, 0, 7, fields);
+    if (clear_pending_exception(env)) {
+        env->DeleteLocalRef(out);
+        return nullptr;
+    }
+    return out;
 }
 
 JNIEXPORT jint JNICALL

@@ -11,6 +11,52 @@ service renders into its notification).
 Supported inputs: a directly attached RTL-SDR over USB-OTG, `rtl_tcp`, UDP PCM,
 TCP PCM, and local files.
 
+## Saved encryption keys
+
+Saved systems store `encKeyType` (`""`, `basic`, `hex`, `rc4`, or `scrambler`),
+`encKeyValue`, and `encForceKey` (0 normal, 1 force privacy, 2 force RC4).
+Keys rest **unencrypted** in the app-private systems store, `saved_systems.json`; Android sets
+`allowBackup=false`. On desktop the same file is under Qt's `AppDataLocation`, with
+owner-only read/write permissions on POSIX at creation and replacement. Retained keys are
+resolved and passed to the host entirely in C++; QML validation/start results contain no key arguments.
+QString/QML copies cannot promise erasure. Native command payloads, parsed key
+sets, and owned JNI argv allocations are securely erased after use.
+
+Session assembly refuses a direct key together with a key CSV. Direct values
+become discrete `-b`/`-H`/`-1`/`-R` arguments; force modes use `-4`/`-0`.
+Startup and live commands share validation and overlay semantics: basic changes
+K, RC4 changes R/RR, scrambler changes R, and hex changes the Hytera/AES block.
+Other keys remain installed. Any valid value, including zero, arms decryption;
+encrypted-lockout policy still decides whether a call plays. Direct-key CLI
+messages and command toasts never echo key values, including with `--show-keys`.
+During a keyed scan row, a live direct-key command updates the saved global key
+baseline; the row's own key remains effective until rotation restores globals.
+Force mode similarly updates configuration while an explicit row override wins.
+The encryption wizard and live entry sheet are supplied by a later UI package.
+
+### Editing and saving talkgroups
+
+Long-press a talkgroup card to rename it, change Listening/Not tuned, or set
+priority (0/25/50/100 presets and ±5 steps). **Apply** changes only the fields you
+edited; renaming or changing priority preserves custom audio/record/stream policy.
+Priority changes also update current calls immediately, preserving their dwell and cooldown ages.
+Preempt is available above priority zero and affects P25 trunking only. The card shows `P<n>` and a lightning badge
+when preempt is set. Heard-only rows offer **Add to list**; listed rows require two
+taps on **Remove**. Decoder refusal messages remain visible in the sheet. If the
+policy changed while the sheet was open (including scan rotation), close and reopen
+it before trying again.
+
+When the running session has no group file, **Save talkgroup list** exports the
+canonical policy, including aliases and ranges, to app-owned Imports storage.
+The UI waits for the decoder's retained successful result before registering the
+file and setting the saved system's group-list path. Later edits write that same
+file. If the saved system was deleted or acquired another group file while saving,
+the export remains in Imports without changing that system. Explore sessions save
+to Imports for later selection in a saved system. Scan-row exports are refused by
+the decoder. If completion fails or the session ends, the pending save is cleared.
+After 15 seconds without a result, **Try again** allows a new request. A retry uses
+a new path; late results from abandoned requests never associate a file.
+
 ## The two-mode UI
 
 The shell has two modes, switched on `DecoderHost::sessionState` — a phone cannot
@@ -24,6 +70,16 @@ do both at once:
   screen: the hero call, mute/hold/skip, the signal strip, and the session's
   recent calls.
 
+The Monitor's decode-quality row sits below the tuner strip and also works with
+PCM, network, and file inputs. `CC FEC` and P2 `RS` show successful blocks as a
+percentage; no blocks (0/0) means no reading. `VOICE x.x err/fr` is the average
+corrected-error count per voice frame, using only populated samples in the current
+call's ring (P1, or the lead P2 slot). It is not BER. A fresh call waits for its
+first voice sample; an unsampled slot never borrows the other slot's average.
+Non-P25 calls show the lead slot's last-frame `ERR a/b` instead. The row wraps
+inside the scrolling Monitor body on short screens and clears with the session.
+Protocol-specific true BER and DMR/NXDN windowed error rings remain follow-up work.
+
 Both layers stay instantiated and cross-fade, so nothing typed or scrolled is
 lost when a session ends. The live readings exist *only* in the monitoring view:
 nothing upstream invalidates the published snapshot on stop, so
@@ -34,7 +90,50 @@ is persistent and never cleared on session boundaries, only fed.
 
 The service state machine, the native `g_running` atomic and the failure path are
 folded into that one phase by `session_state_map.h`, which is deliberately free of
-Qt and JNI so `UI_QT_SESSION_STATE` can test it on the host.
+Qt and JNI so `UI_QT_SESSION_STATE` can test it on the host. Each accepted start
+has a monotonically increasing session id. `nativeLifecycleStatus` retains the
+post-initialization edge and terminal reason (pending/completed/cancelled/failed),
+run return code, and native USB open/claim error after cleanup. The service folds
+these into one `lifecycleStatus` record, including `lastError`; the existing UI
+tick reads it without consuming a decoder snapshot. Failures remain visible even
+when the run ends between polls or fails well after startup. While a native terminal
+result is present but the service is still RUNNING/STOPPING, the UI stays Stopping.
+Restart remains disabled until the service releases its wake lock and publishes
+IDLE; the host also checks a fresh service record before accepting a retry.
+USB claim error -6
+is surfaced as `DeviceBusy` without discarding the original code.
+
+`sessionInitialized()` comes from the engine lifecycle callback after initialization,
+not from `g_running`. Saved-system recency and `prefs.lastStartedKind/Uid` are
+written only on that edge. Saved systems carry stable UUIDs, so deleting another
+row during startup cannot stamp the wrong system. Starting/Idle/Failed and
+trunk-scan target changes clear live model caches; history remains persistent.
+
+The shared host also reserves location requests/cancellation, content-based
+diagnostics sharing, device-attach signals and a diagnostic sink. Location and
+sharing default to unsupported until their platform packages supply implementations.
+USB/lifecycle diagnostics enter the process capture directly, including when no Activity
+exists. Before Qt initialization installs the tap, bounded redacted host records wait in memory. The optional last location fix uses milliseconds since epoch and is deleted
+The shared host provides location requests/cancellation, content-based diagnostics
+sharing, device-attach signals and a diagnostic sink. Android's `LocationSupport.kt`
+brokers **Use my location** for RadioReference with coarse foreground permission on
+the Android main thread. API 30+ uses `getCurrentLocation`; API 29 uses
+`requestSingleUpdate` and removes its listener on completion/cancellation. A 20-second
+timeout covers fix acquisition and worker-thread reverse geocoding. Request IDs and
+separate fix/geocode status preserve a usable fix when geocoding fails and prevent
+late responses from replacing a newer search. Activity teardown cancels the request.
+Desktop location defaults to unsupported.
+USB/lifecycle diagnostics use the runtime log surface, including when no Activity
+exists. The optional last location fix includes accuracy in metres, uses milliseconds since epoch and is deleted
+after 24 hours, on load/read and by a foreground timer. Location producers use
+`AppPrefs::setLocationFix` to publish the tuple with one coherent notification; the coordinate
+and timestamp properties are read-only to QML. Coordinates and direct
+key fields must never be included in diagnostic exports. QString/QML secret
+copies cannot guarantee erasure; command-owned key bytes are securely erased.
+
+The Monitor keeps its hero fixed and scrolls the rows below it; recent calls have
+a minimum pane height. Modal sheets constrain their height to the space above the
+keyboard, scroll their contents, and reveal the focused field.
 
 ## Imported files (trunking CSVs)
 
@@ -414,6 +513,22 @@ obtained in Java and injected:
    `dsd_engine_setup_enumerate_rtl_devices()` short-circuits to a single device at
    index 0 whenever a descriptor is set. The app is what selected the device.
 
+Onboarding and Home's dongle status show the USB diagnostic and a **Retry**
+button. If `UsbManager.openDevice()` returns null, the app rechecks the device
+list and permission: the result is `detached`, `permission`, or `open_failed`,
+in that order. A null return with permission still granted says
+“Android could not open <device> (open_failed).” Android supplies no numeric error
+or owner information for that return, so it cannot establish that another app
+holds the dongle. Only a native librtlsdr claim failure with libusb code `-6`
+is classified as `DeviceBusy` and says: “Android could not claim <device>. It may
+be held by another SDR app, or the OTG port may be under-powered — try a powered
+hub.” Other native failures say “Android could not open or claim <device>
+(code <code>).” Retry rechecks USB access (and can request permission again);
+after access is ready, tap Play to retry the native claim. The original run
+failure remains available in session diagnostics. Retry is disabled until the
+session has stopped. Detach and permission failures take precedence over an old
+native claim diagnostic; a successful new session clears that native error.
+
 Java keeps ownership of the descriptor throughout: `libusb_wrap_sys_device()` does
 not take it over. Closing the `UsbDeviceConnection` while the engine still has the
 descriptor wrapped is a use-after-close, so `UsbSourceManager.release()` clears the
@@ -436,6 +551,42 @@ Attaching a listed dongle launches the app through the manifest's
 `USB_DEVICE_ATTACHED` filter, which is the only way Android grants device
 permission without a prompt. `res/xml/device_filter.xml` holds the same ids as the
 Kotlin table; add rebadged dongles to both.
+
+## Auto-start on USB attachment
+
+Settings → Listening → **Start when a dongle is attached** is off by default and
+appears only on hosts that broker local USB access. When enabled, an attachment
+resumes the last successfully initialized saved system or scan list if it still
+exists and uses USB. Explore and network/file sources are never selected. The
+app must have completed onboarding, be Idle (Failed does not qualify), and have
+no overlay or USB permission request open. A suppressed attachment is consumed;
+closing a sheet or enabling the preference does not retry it. Existing start and
+permission failures use the normal banner. Last-started identity changes only
+on confirmed session initialization, never when the service queues a start.
+
+Activity cold-start/new intents and receiver broadcasts share one dedupe tracker.
+It validates deviceName and VID/PID against the current USB device list, retains
+one pending attachment (newest wins), and forgets suppression on detach. Polling
+consumes that pending identity, including on the first host refresh. App-specific
+intent input supplies no decoder configuration or bypass of the opt-in policy.
+
+Host regressions: `UI_QT_AUTO_START_POLICY`, `UI_QT_CONTROLLER`,
+`UI_QT_PERSISTENCE`, and `UI_QT_QML_CALL_LISTS`. The Android-free Kotlin tracker
+has no Gradle unit-test task wired in this package; verify on a device:
+
+- Cold launch from the USB intent followed by the receiver's duplicate report
+  starts exactly once; an Activity recreation or duplicate new intent does not
+  restart it. Detach and reattach permits one new start.
+- Mismatched deviceName or VID/PID, unknown devices, and a device removed before
+  polling produce no start. With two devices, only the newest pending attachment
+  is delivered; detaching it cancels the pending delivery.
+- Opt-out, incomplete onboarding, Starting/Running/Stopping/Failed, an open
+  overlay, a pending permission request, a deleted target, and an Explore or
+  non-USB target suppress the start. Removing the blocker alone does not retry.
+- Saved USB systems and USB scan lists both resume through the existing permission
+  flow. Denial, invalid configuration, or failed tuner initialization shows the
+  existing banner and leaves last-started identity unchanged; successful
+  initialization updates it. Test both cold and already-running Activity intents.
 
 ## Power
 
@@ -529,3 +680,152 @@ module behind it, so androiddeployqt has nothing extra to package.
   paced by the blocking `AAudioStream_write`, but it does mean the pump plus the
   AAudio mixer stay resident for as long as a run lasts rather than only while a
   call is on air. This is the first thing to measure in the battery soak below.
+
+## Diagnostics
+
+Settings → Diagnostics shows current-process decoder and host diagnostics plus a
+bounded redacted persistent tail from previous runs. It is not a native-crash or
+ANR capture. The process ring holds at most 2000 entries, each at most 512 UTF-8
+bytes. Pause freezes the displayed list while capture continues; Copy and Share
+include the current ring. Clear removes the ring, pending earlier records and the persistent
+tail; records captured after Clear remain available. Diagnostics deliberately survive decoder Starting/Idle/Failed transitions.
+
+Host records arriving before the first decode start do not depend on the runtime sink or
+stderr pump. Tap installation drains their bounded buffer to the ring and the tail at
+Qt's initialized application-data location.
+
+A process-lifetime runtime log tap, the stderr pump, and host messages all enter
+`DiagnosticsLog::submit()`. It filters sensitive records before ring insertion and
+queues only redacted bytes to one asynchronous writer. The writer retains the
+newest 256 KiB in `files/diagnostics/tail.log`; a tail untouched for seven days is
+deleted at startup. Its bounded queue drops oldest queued records under sustained
+storage backpressure. Disk failures do not stop decoding. Oversized stderr lines
+are omitted rather than split into potentially unlabelled secret fragments.
+
+Sharing creates a temporary text file in `cacheDir/diagnostics/`, exposed through
+our separate, non-exported diagnostics FileProvider with a temporary read grant.
+Files older than one hour are removed on the next share. The API accepts text,
+not paths; systems, preferences, and imported CSVs are outside that provider.
+Qt's own provider paths are unchanged.
+
+The app's argv token gate rejects `--show-keys` (including assignment syntax).
+`session_args_extra_safe()` is the shared gate for future scan-list generation.
+Malformed CLI key diagnostics report the expected shape, never the value.
+QString/QML copies cannot promise erasure; only filtered content enters diagnostics.
+
+### Monitor site identity
+
+Tap the site row between the Monitor's call panel and action buttons to open the
+site details. P25 NAC, WACN, SYS and LRA appear independently when known; a
+conventional Phase 1 NAC alone is useful identity even without the complete
+Phase 2 parameter set. RFSS and SITE appear when nonzero. The sheet also shows
+DMR color code/site text/rest LSN, NXDN RAN and location codes (Area for IDAS),
+EDACS site information, and known control/voice frequencies.
+
+The row dims and the sheet labels identity as retained when current sync is lost.
+Starting, stopping to Idle, failure, and scan-target transitions clear the live
+identity through the existing controller lifecycle. Unknown fields are omitted;
+the row is hidden when no identity fields are available.
+Emergency calls carry an EMERGENCY badge on the monitor (including the other TDMA
+slot), recent calls, and history. The notification title prefixes the lead call
+with EMERGENCY. Native notification records and `DecoderStatus.kt` use wire v2:
+each of the two slot records appends emergency and priority (11 slot fields).
+Call-history JSON stores `"em": true` only for emergency rows; older history
+without that optional key remains readable. Emergency indication persists when
+later fragments enrich a history row. The notification channel remains
+`IMPORTANCE_LOW`; an opt-in heads-up channel is a follow-up.
+### P25 network announcements
+
+During P25 reception, the Monitor's **P25 Site → Network** entry opens a read-only
+sheet with Neighbours, Patches, Affiliations and Radios. Empty sections show
+“(none announced)”. Neighbours show the current control channel `[CC]`, candidate
+`[C]`, frequency, site identity and CFVA status. Each list shows at most 100 recent
+records and refreshes only while the sheet is open. Starting, Idle, Failed and
+trunk-scan target changes clear these live records.
+
+The Monitor entry is the WP-F2 fallback until WP-F1's SiteSheet is integrated;
+move the entry there with the `siteProtocol === "P25"` guard. There is no Tune
+control in v1. The deferred neighbour Tune work must restrict `RTL_SET_FREQ` to a
+running single-system P25 trunk session with the same WACN/SYS. CC selection
+preserves user lists but clears site metadata; crossing systems requires restart.
+### Decryption profiles
+
+Saved systems and scan entries can select shared **Decryption keys** profiles.
+Automatic collections select by received key ID where the protocol supports it;
+DMR profiles can also map group calls to a stored key ID. Direct channel/stream
+keys and vendor modes are explicit alternatives. Formats, storage, migration and
+scope are documented in [decryption profiles](../docs/decryption-profiles.md).
+
+Monitor → More → Decryption shows per-slot received identifiers, selected key
+source and availability separately from listening policy. Key material availability
+is not proof of successful decryption. Live changes remain Pending until the
+decoder answers. Applying an unchanged direct draft does nothing. Profile changes
+can update session defaults or the active supported scan target; the dialog names
+that scope. Saved profile edits take effect on the next start or explicit Apply.
+
+New RadioReference imports keep encrypted and partly encrypted talkgroups enabled.
+The review also offers explicit exclusions; those exclude entire talkgroups,
+including clear calls. Refresh keeps the import's saved choice (including older
+imports' exclusion behavior). Supplying keys never silently unblocks a talkgroup.
+
+### Navigation, accessibility and replay
+
+Android Back dismisses input, then the top dialog, then the pushed screen or
+wizard step. Root Back follows the background-listening preference. Monitor's
+More menu reaches History, Settings and Diagnostics without stopping the session.
+Preferences identify changes that apply at the next start.
+
+Controls expose named accessibility actions, keyboard focus and 48 dp targets.
+Text uses Android's per-size SP conversion, including nonlinear large-text scaling.
+The app's effective theme controls system-bar icons. Expanded windows use a
+navigation rail; short Monitor windows keep frequent controls above Stop.
+
+Source failures identify the attempted input and offer Retry, Edit source and
+Details. RTL-TCP connection establishment is bounded to ten seconds after DNS
+resolution and checks cancellation during the connection attempt. Notifications
+are explained when background listening first becomes useful; denial leaves the
+foreground UI usable. Audio output reports the active device route and follows
+Android's routing controls.
+
+New replay picks are copied to durable app-private storage. Existing saved cache
+copies are migrated when available; missing files can be reselected through Edit.
+File details show the basename, size and modification time. Replay completion is
+retained with a Play again action. Progress is not invented when the input backend
+cannot report it. History rows open full details, including timestamps and messages.
+
+### Scan lists
+
+Home → **Scan lists** combines saved systems and bare P25/DMR/NXDN frequencies
+into a single trunk-scan session. Use the visible Edit action (or long-press) to edit entries, order, timing,
+modulation and gain. Choose one USB or RTL-TCP tuner for the list; it replaces
+individual systems' source, endpoint, PPM, bandwidth and bias-tee settings.
+The list editor can select imported group/source CSVs from the existing library.
+Per-system groups and keys remain isolated on rotation; source aliases are global
+and differing system alias files produce a warning. Unsupported settings are
+refused rather than dropped. See [scan-list rules](../docs/trunk-scan.md#qt-and-android-scan-lists).
+
+Validate checks a draft without saving. Save validates first; Save draft retains incomplete lists as **Not ready**, which cannot start. Cancel discards only unapplied edits, and removal asks for confirmation.
+
+USB lists use the same permission gate as saved systems. A failed or cancelled
+start does not change last-started preferences or list recency; those update only
+after engine initialization. Monitor shows the active target ID, ordinal/count
+and hold state. System source-alias paths that the list replaces are not validated or opened; the list's effective alias file must be readable.
+Generated CSVs may contain keys, are private app inputs, and must
+not be exported or logged. QString/QML key copies cannot guarantee memory erasure.
+
+### Saved RadioReference sites
+
+The Qt import screen can import each selected trunked site as a separate saved system. Each site uses its own
+recorded simulcast setting unless an explicit override is chosen. Home groups
+these rows behind **n sites ›**. The chooser offers foreground **Use my location**, distances in km,
+**Nearest site**, and a persisted avoid switch. Rows without validated coordinates are excluded from
+nearest selection. Starts require Idle; while listening, **Sites › → Stop and switch** waits for the
+service's Idle acknowledgement before starting the selected site's saved configuration. Any intervening
+user input cancels that pending restart. This is a full session restart, with no live automatic hop.
+See [RadioReference import](../docs/radioreference-import.md#saved-sites-in-qt-and-android) for migration
+and editing behavior.
+
+After a failed run, Retry acknowledges the USB diagnostic and Play can start the
+saved system again once the service is inactive. The site chooser also offers
+“Dismiss failure and choose a site”; it returns to Idle only after the host confirms
+that the service has finished stopping.

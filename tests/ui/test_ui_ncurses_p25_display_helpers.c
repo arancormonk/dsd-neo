@@ -38,6 +38,8 @@ static size_t g_printw_capture_len;
 static int g_test_rows = 24;
 static int g_test_cols = 80;
 static uint64_t g_monotonic_ns;
+static int g_percentile_fixture;
+static int g_percentile_len;
 
 static void
 reset_printw_capture(void) {
@@ -190,8 +192,12 @@ dsd_synctype_to_string(int synctype) { // NOLINT(misc-use-internal-linkage)
 
 int
 compute_percentiles_u8(const uint8_t* src, int len, double* p50, double* p95) { // NOLINT(misc-use-internal-linkage)
-    (void)src;
-    (void)len;
+    if (g_percentile_fixture && src && len > 0) {
+        g_percentile_len = len;
+        *p50 = 4.0;
+        *p95 = 8.0;
+        return 1;
+    }
     if (p50) {
         *p50 = 0.0;
     }
@@ -420,7 +426,9 @@ run_voice_average_cases(void) {
     double avg = -1.0;
     assert(compute_p25p1_voice_avg_err(&state, &avg) == 0);
     assert(avg == -1.0);
-    state.p25_p1_voice_err_hist_len = 4;
+    state.p25_p1_voice_err_hist_len = 50;
+    assert(compute_p25p1_voice_avg_err(&state, &avg) == 0);
+    state.p25_p1_voice_err_hist_count = 4;
     state.p25_p1_voice_err_hist_sum = 22;
     assert(compute_p25p1_voice_avg_err(&state, &avg) == 1);
     assert(avg == 5.5);
@@ -428,7 +436,10 @@ run_voice_average_cases(void) {
 
     assert(compute_p25p2_voice_avg_err(&state, -1, &avg) == 0);
     assert(compute_p25p2_voice_avg_err(&state, 2, &avg) == 0);
-    state.p25_p2_voice_err_hist_len = 3;
+    state.p25_p2_voice_err_hist_len = 50;
+    assert(compute_p25p2_voice_avg_err(&state, 0, &avg) == 0);
+    state.p25_p2_voice_err_hist_count[0] = 3;
+    state.p25_p2_voice_err_hist_count[1] = 3;
     state.p25_p2_voice_err_hist_sum[0] = 9;
     state.p25_p2_voice_err_hist_sum[1] = 12;
     assert(compute_p25p2_voice_avg_err(&state, 0, &avg) == 1);
@@ -437,6 +448,39 @@ run_voice_average_cases(void) {
     assert(avg == 4.0);
     assert(compute_p25p2_voice_avg_err(&state, 1, NULL) == 1);
 
+    return 0;
+}
+
+static int
+run_voice_quality_labels(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.p25_p1_voice_err_hist_len = 50;
+    state.p25_p1_voice_err_hist_count = 2;
+    state.p25_p1_voice_err_hist_sum = 12;
+    state.p25_p1_voice_err_hist[0] = 4;
+    state.p25_p1_voice_err_hist[1] = 8;
+    reset_printw_capture();
+    g_percentile_fixture = 1;
+    assert(ui_print_p1_voice_err_metric(&state) == 1);
+    assert(ui_print_p1_voice_percentile_metric(&state) == 1);
+    assert(g_percentile_len == 2);
+    assert(strstr(g_printw_capture, "Avg errs/frame: 6.0") != NULL);
+    assert(strstr(g_printw_capture, "P50/P95 errs/frame:  4.0/ 8.0") != NULL);
+    assert(strstr(g_printw_capture, "BER") == NULL && strchr(g_printw_capture, '%') == NULL);
+    state.p25_p2_voice_err_hist_len = 50;
+    state.p25_p2_voice_err_hist_count[0] = 2;
+    state.p25_p2_voice_err_hist_sum[0] = 12;
+    state.p25_p2_voice_err_hist[0][0] = 4;
+    state.p25_p2_voice_err_hist[0][1] = 8;
+    reset_printw_capture();
+    assert(ui_print_p2_voice_avg_metric(&state) == 1);
+    assert(ui_print_p2_voice_percentile_metric(&state) == 1);
+    assert(strstr(g_printw_capture, "Avg errs/frame - S1: 6.0") != NULL);
+    assert(g_percentile_len == 2);
+    assert(strstr(g_printw_capture, "S2:") == NULL);
+    g_percentile_fixture = 0;
+    assert(strstr(g_printw_capture, "BER") == NULL && strchr(g_printw_capture, '%') == NULL);
     return 0;
 }
 
@@ -844,6 +888,7 @@ main(void) {
     run_iden_match_cases();
     run_active_vc_cases();
     run_voice_average_cases();
+    run_voice_quality_labels();
     run_neighbor_helper_cases();
     run_trunk_sm_helper_cases();
     run_iden_summary_helper_cases();

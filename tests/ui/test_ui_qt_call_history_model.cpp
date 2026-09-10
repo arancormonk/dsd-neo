@@ -12,18 +12,33 @@
  * ring walk must be gated on commit_rev, not on staged-row renders; and a
  * relaunched model must not re-ingest rows its predecessor already logged. */
 
+#include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
+#include <QIODevice>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
+#include <QLatin1String>
+#include <QList>
+#include <QModelIndex>
 #include <QSettings>
+#include <QSignalSpy>
 #include <QStandardPaths>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
 #include <dsd-neo/core/state.h>
+#include <initializer_list>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include "../test_support/qt_test_paths.h"
 
 #include "call_history_model.h"
 #include "dsd-neo/core/safe_api.h"
@@ -281,6 +296,24 @@ test_reacquisition_merge_updates_in_place(void) {
     model.refresh(ring.state);
     expect("first fragment lands", model.count() == 1);
 
+    QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+    expect("dataChanged spy connects", changed.isValid());
+    item->emergency = 1;
+    item->priority = 3;
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("late emergency alone updates the row",
+           model.count() == 1 && model.data(model.index(0), CallHistoryModel::EmergencyRole).toBool());
+    expect("late emergency emits one dataChanged signal", changed.count() == 1);
+    if (changed.count() == 1) {
+        const QList<QVariant>& arguments = changed.at(0);
+        expect("late emergency signals the existing row",
+               qvariant_cast<QModelIndex>(arguments.at(0)) == model.index(0)
+                   && qvariant_cast<QModelIndex>(arguments.at(1)) == model.index(0));
+        expect("late emergency notifies the emergency role",
+               qvariant_cast<QVector<int>>(arguments.at(2)).contains(CallHistoryModel::EmergencyRole));
+    }
+
     // The core's reacquisition merge: end extends, src fills, enc flips — in
     // place, same slot/seq/start.
     item->event_time = when + 45;
@@ -331,15 +364,36 @@ test_relaunch_does_not_reingest(void) {
     RingFixture ring;
     const time_t when = 1754500500;
     ring.commit(0, 4005, 300, when, when + 8);
-    ring.commit(1, 4005, 400, when, when + 8);
+    ring.commit(1, 4005, 400, when, when + 8)->emergency = 1;
     {
         CallHistoryModel model;
         model.refresh(ring.state);
         expect("both rows land before the restart", model.count() == 2);
     } // destructor flushes the stores
+    for (const char* store : {"call_history.json", "call_history_seen.json"}) {
+        QFile file(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QLatin1Char('/')
+                   + QLatin1String(store));
+        expect("history store opens", file.open(QIODevice::ReadOnly));
+        const QJsonArray rows = QJsonDocument::fromJson(file.readAll()).array();
+        int marked = 0;
+        expect("both rows persisted", rows.size() == 2);
+        for (const auto& value : rows) {
+            const QJsonObject row = value.toObject();
+            if (row.contains(QLatin1String("em"))) {
+                expect("em is written only when true", row.value(QLatin1String("em")).toBool());
+                ++marked;
+            }
+        }
+        expect("one emergency key, ordinary row omits it", marked == 1);
+    }
     // The Activity restarts while the service's ring still holds both rows.
     CallHistoryModel relaunched;
     expect("relaunched model restores the log", relaunched.count() == 2);
+    int emergencies = 0;
+    for (int i = 0; i < relaunched.count(); ++i) {
+        emergencies += relaunched.data(relaunched.index(i), CallHistoryModel::EmergencyRole).toBool() ? 1 : 0;
+    }
+    expect("only the emergency row restores its flag", emergencies == 1);
     relaunched.refresh(ring.state);
     expect("relaunched model does not re-ingest ring rows", relaunched.count() == 2);
 }
@@ -468,7 +522,7 @@ main(int argc, char** argv) {
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(
         QStringLiteral("dsd-neo-call-history-%1").arg(QCoreApplication::applicationPid()));
-    QStandardPaths::setTestModeEnabled(true);
+    dsd_test_qt_isolate_paths();
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dataDir).removeRecursively();
     QTemporaryDir settingsDir;

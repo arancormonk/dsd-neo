@@ -7,7 +7,10 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/p25_metrics.h>
+#include <dsd-neo/app_control/p25_network.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/frontend_types.h>
 
 #if defined(DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H)
@@ -36,6 +39,10 @@
 
 int
 main(void) {
+    (void)sizeof(dsd_app_p25_neighbor);
+    (void)&dsd_app_p25_neighbors;
+    (void)sizeof(dsd_app_p25_quality);
+    (void)&dsd_app_p25_quality_from_state;
     (void)sizeof(dsd_frontend_kind);
     (void)sizeof(dsd_frontend_metrics);
     (void)sizeof(dsd_app_endpoint_payload);
@@ -51,5 +58,6 @@ main(void) {
     (void)&dsd_app_get_latest_snapshot;
     (void)&dsd_app_get_latest_opts_snapshot;
     (void)&dsd_app_frontend_get_metrics_for_snapshot;
+    (void)&dsd_app_trunk_scan_validate_targets_csv;
     return 0;
 }

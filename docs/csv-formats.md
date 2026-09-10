@@ -205,6 +205,7 @@ Options are parsed once when the list is loaded. They are a restricted argument 
 | `-4` | Force loaded privacy keys over signalling; DMR/NXDN. |
 | `-0`, `--dmr-force-algid <hex>` | DMR algorithm fallback when identifiers are missing. `-0` means ALGID `21`. |
 | `-F` | Relax CRC checks; DMR/P25/M17. |
+| `-^` | Prefer learned P25 control-channel candidates for this target; P25. Restores the configured default on target exit. |
 | `--strict-crc` | Restore strict CRC checks; all modes, including inherited mode. |
 | `--no-force-key` | Disable privacy forcing and algorithm fallback for this row. |
 | `-e`, `--no-data-calls` | Enable/disable data-call tuning and conventional data-header holds; all modes. |
@@ -225,11 +226,11 @@ clear/BP channel when forcing is configured globally. `-b 1` with normal signall
 There is no automatic choice between forced Motorola and Hytera privacy.
 
 The existing `single_key_dec` and `single_key_hex` columns load the `-b` and `-H` key values, respectively.
-They do not claim an encrypted-audio mute override by themselves. When `options` contains `-b` or `-H`, those
-switches decide DMR muting from all of the row's BP/Hytera material, including the legacy columns: all zero
-mutes, any nonzero material unmutes. For example, `-b 0` mutes by itself, but unmutes alongside a nonzero
-`single_key_hex`. `-1` mutes undecodable P25 audio as the CLI switch does. Use `options=-R 1` for a direct
-NXDN scrambler and `options=-1 0123456789` for direct RC4. Loading a key does not itself enable forcing. A
+They do not claim an encrypted-audio mute override by themselves. Direct switches in `options` (`-b`, `-H`,
+`-1`, `-R`) arm decryption for every accepted value, including zero: DMR encrypted-audio mute flags clear,
+and undecodable P25 audio stays muted, matching standalone and live direct-key entry. Material-only columns
+and key CSV files preserve the inherited mute policy. Use `options=-R 1` for a direct NXDN scrambler and
+`options=-1 0123456789` for direct RC4. Loading a key does not itself enable forcing. A
 direct source replaces the row's complete key set; unspecified families and keyring entries are cleared.
 Explicit zero is a supplied value. Direct and file-backed key sources cannot be mixed, including across
 columns and options. Compatible direct families may be combined, but duplicate definitions reject the import.
@@ -460,6 +461,16 @@ Important behavior:
   modeled fields. Existing extended policy headers remain extended; otherwise the output is `id,mode,name,tags`
   when categories exist, or `id,mode,name`. Unmodeled metadata/note columns are discarded. Android rewrites its
   app-private imported copy, not the original document.
+- A basic group-file header is promoted to the extended policy header when any canonical row has
+  `priority != 0`, `preempt` enabled, or audio/record/stream flags that differ from the mode defaults,
+  so those settings survive saving and reloading even to a new file.
+- The decoder's talkgroup-list export writes the canonical table, including aliases, all modes and ranges,
+  to the requested path. After a successful write, subsequent edits persist there. Export refuses scan-row
+  contexts and stale context/generation pairs, as do row edits after the policy changes.
+  App-control retains the export result separately from toasts: `dsd_app_tg_export_result_get` copies its
+  sequence, success/failure, request context/generation, and destination path. A frontend keeps one export
+  outstanding and waits for a newer matching successful result before registering the file; unrelated
+  commands, toast updates, or session stops cannot erase that result.
 - Without a group file, edits last only for the session. A scan row's own effective list is also edited only
   in memory, never written into the global group file. If saving fails, the decoder keeps the live edit and
   reports that it is session-only; the previous file remains intact.
@@ -680,3 +691,37 @@ The `--calc-lcn` one-shot tool is more flexible than the CSV imports above:
 - It scans each line for the first numeric field and treats it as a frequency.
 - Frequencies may be in **Hz** (e.g., `451237500`) or **MHz** (e.g., `451.2375`).
 - The output is printed to stdout as `lcn,freq` CSV.
+
+### Frontend-generated scan lists
+
+Qt/Android scan lists generate the trunk-scan target format described in
+[trunk-scan.md](trunk-scan.md#qt-and-android-scan-lists). Per-system group lists use
+scoped `-G`, and direct keys use scoped `-b`/`-H`/`-1`/`-R` so their activation and
+mute/force semantics match standalone sessions. Key CSVs use `keys_hex_csv` or
+`keys_dec_csv`; frontend generation never uses `single_key_*`.
+
+The generator refuses comma, double quote and line breaks in file paths. Spaces
+are supported: an options cell contains `-G "absolute path/group list.csv"`
+directly, without CSV-doubling those quotes. The engine target parser strips outer
+CSV quotes but does not perform RFC-style doubled-quote unescaping. Generated
+files containing keys are private internal inputs and are not shared exports.
+
+### Scoped decryption maps and companion files
+
+The `options` column of supported conventional channel maps and trunk-scan targets
+accepts `--dmr-tg-key-csv <file>` or `--dmr-tg-key-clear` for DMR rows. Map files are
+resolved relative to the containing CSV, validated before installation, and restored
+with the target's key/force scope on exit. An explicit clear differs from inheritance.
+`--no-decryption-keys` selects an empty key set and rejects simultaneous key material.
+`--key-profile-ref <opaque-id>` carries an optional nonsecret profile revision.
+
+Android channel-map imports copy referenced `keys_hex_csv`, `keys_dec_csv` and
+`-k`/`-K`/`-G`/`--dmr-tg-key-csv` option files into a private bundle and rewrite their
+paths. If the document provider cannot resolve a companion automatically, select
+each requested file explicitly. References with the same basename remain distinct.
+The complete bundle is validated before registration or replacing an existing map;
+a rejected update retains the prior files. Removing the map removes its owned bundle.
+
+The file library also accepts **DMR key mappings** and **Vertex keystreams** as
+separate kinds. Vertex files are used by standalone vendor profiles, not by the
+standard scoped key set. See [decryption profiles](decryption-profiles.md).

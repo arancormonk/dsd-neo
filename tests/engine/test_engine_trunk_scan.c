@@ -5,12 +5,17 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -20,6 +25,8 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -35,12 +42,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include "dsd-neo/core/csv_validate.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/platform.h"
-#include "dsd-neo/platform/sockets.h"
 #include "test_support.h"
 #include "trunk_scan_internal.h"
 #include "trunk_scan_test_support.h"
@@ -6642,6 +6643,61 @@ test_target_keys_install_and_restore_across_switches(void) {
 }
 
 static int
+test_live_target_decryption_roundtrip(void) {
+    char dir[DSD_TEST_PATH_MAX], path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    if (write_targets_file_with_header(dir, k_header,
+                                       "a,dmr-conventional,461000000,,250,,A\n"
+                                       "b,dmr-conventional,462000000,,250,,B\n",
+                                       path, sizeof(path))
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    state.K = 37;
+    state.keyloader = 0;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof(opts.trunk_scan_targets_csv), "%s", path);
+    char error[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int failed = dsd_engine_trunk_scan_init(&opts, &state, error, sizeof(error)) != 0;
+    dsd_key_set keys = {0};
+    dsd_dmr_key_map map = {{123}, {2}, 1};
+    keys.present = 1;
+    failed |= dsd_key_set_load_typed(&keys, DSD_KEY_TYPE_RC4, "1234567890") != DSD_KEY_DIRECT_OK;
+    const uint64_t generation = dsd_trunk_tuning_generation();
+    const uint32_t fields = DSD_TRUNK_KEY_MATERIAL | DSD_TRUNK_KEY_MAP | DSD_TRUNK_KEY_FORCE;
+    failed |= dsd_trunk_scan_hook_decryption_apply(&opts, &state, "b", generation, fields, &keys, &map, 0)
+              != DSD_TRUNK_KEY_STALE;
+    failed |= dsd_trunk_scan_hook_decryption_apply(&opts, &state, "a", generation, fields, &keys, &map, 0)
+              != DSD_TRUNK_KEY_APPLIED;
+    dsd_dmr_key_map effective = {0};
+    dsd_dmr_key_map_capture(&state, &effective);
+    failed |= state.R != 0x1234567890ULL || effective.count != 1 || effective.tg[0] != 123 || effective.kid[0] != 2;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    dsd_dmr_key_map_capture(&state, &effective);
+    failed |= dsd_engine_trunk_scan_active_index(&state) != 1 || state.K != 37 || effective.count != 0;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    dsd_dmr_key_map_capture(&state, &effective);
+    failed |= dsd_engine_trunk_scan_active_index(&state) != 0 || state.R != 0x1234567890ULL || effective.count != 1;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_dmr_key_map_capture(&state, &effective);
+    failed |= state.K != 37 || effective.count != 0;
+    dsd_key_set_free(&keys);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, path, NULL);
+    if (failed) {
+        DSD_FPRINTF(stderr, "Live target keys/maps did not survive the scoped round trip\n");
+    }
+    return failed;
+}
+
+static int
 test_direct_target_keys_install_and_restore_across_switches(void) {
     char dir[DSD_TEST_PATH_MAX];
     if (make_temp_dir(dir, sizeof dir) != 0) {
@@ -7778,6 +7834,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_quoted_chan_csv_with_comma);
     rc |= run_with_default_tune_hook(test_parser_accepts_optional_modulation_and_gain_columns);
     rc |= run_with_default_tune_hook(test_parser_accepts_p25_conventional_target);
+    rc |= run_with_default_tune_hook(test_live_target_decryption_roundtrip);
     rc |= run_with_default_tune_hook(test_parser_accepts_target_key_columns);
     rc |= run_with_default_tune_hook(test_parser_accepts_direct_target_key_columns);
     rc |= run_with_default_tune_hook(test_parser_rejects_duplicate_target_key_columns);

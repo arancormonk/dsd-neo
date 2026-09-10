@@ -21,6 +21,7 @@
 #include <mbelib-neo/mbelib.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/call_state.h"
 #include "dsd-neo/core/dibit.h"
@@ -784,6 +785,8 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->K = 0;
     state->R = 0;
     state->RR = 0;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = 0;
+    state->basic_key_present = 0;
     state->H = 0;
     state->K1 = 0;
     state->K2 = 0;
@@ -1282,6 +1285,9 @@ freeState(dsd_state* state) {
 
     if (state->cli_argv) {
         for (int i = 0; i < state->cli_argc_effective; i++) {
+            if (state->cli_argv[i]) {
+                DSD_SECURE_ZERO(state->cli_argv[i], strlen(state->cli_argv[i]));
+            }
             free(state->cli_argv[i]);
         }
         free((void*)state->cli_argv);

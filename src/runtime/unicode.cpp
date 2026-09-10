@@ -12,6 +12,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <locale.h>
+#include <mutex>
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
@@ -26,6 +27,8 @@
 #include <langinfo.h>
 #endif
 
+/* Protect locale initialization and the caches used by concurrent log writers. */
+static std::mutex g_unicode_mutex;
 static int g_unicode_cached = 0;
 static int g_unicode_supported = 0;
 static int g_locale_inited = 0;
@@ -208,8 +211,8 @@ locale_is_utf8(void) {
     return 0;
 }
 
-void
-dsd_unicode_init_locale(void) {
+static void
+unicode_init_locale_locked(void) {
     if (g_locale_inited) {
         return;
     }
@@ -248,8 +251,15 @@ dsd_unicode_init_locale(void) {
     g_unicode_cached = 0;
 }
 
+void
+dsd_unicode_init_locale(void) {
+    const std::lock_guard<std::mutex> lock(g_unicode_mutex);
+    unicode_init_locale_locked();
+}
+
 int
 dsd_unicode_supported(void) {
+    const std::lock_guard<std::mutex> lock(g_unicode_mutex);
     if (env_truthy("DSD_FORCE_ASCII")) {
         g_unicode_supported = 0;
         g_unicode_cached = 1;
@@ -261,7 +271,7 @@ dsd_unicode_supported(void) {
         return 1;
     }
 
-    dsd_unicode_init_locale();
+    unicode_init_locale_locked();
 
     const char* loc = setlocale(LC_CTYPE, NULL);
     if (!loc) {
@@ -310,6 +320,7 @@ dsd_unicode_block_glyphs_supported(void) {
     }
 
 #if DSD_PLATFORM_WIN_NATIVE
+    const std::lock_guard<std::mutex> lock(g_unicode_mutex);
     if (g_block_glyphs_cached) {
         return g_block_glyphs_supported;
     }

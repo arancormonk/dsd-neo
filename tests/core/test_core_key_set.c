@@ -188,8 +188,8 @@ test_load_direct(void) {
     }
 
     if (dsd_key_set_load_direct(&direct, "00000000000000000000000000000000", "0") != DSD_KEY_DIRECT_OK
-        || direct.present != 1U || direct.scalars.K != 0ULL || direct.scalars.hytera_key_segments != 0U
-        || direct.scalars.aes_key_loaded[0] != 0 || direct.scalars.aes_key_segments[0] != 2U) {
+        || direct.present != 1U || direct.scalars.K != 0ULL || direct.scalars.hytera_key_segments != 2U
+        || direct.scalars.aes_key_loaded[0] != 1 || direct.scalars.aes_key_segments[0] != 2U) {
         DSD_FPRINTF(stderr, "explicit zero direct key mismatch\n");
         failed = 1;
     }

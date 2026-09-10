@@ -308,13 +308,24 @@ jobs:
           set -euxo pipefail
           cmake --build --preset dev-debug -j \
             --target dsd-neo_test_ui_qt_qml \
+            dsd-neo_test_ui_qt_site_groups \
             dsd-neo_test_ui_qt_persistence \
+            dsd-neo_test_ui_qt_decryption_profiles \
             dsd-neo_test_ui_qt_call_history_model \
             dsd-neo_test_ui_qt_session_args \
+            dsd-neo_test_ui_qt_scan_list_targets \
+            dsd-neo_test_ui_qt_scan_list_roundtrip \
+            dsd-neo_test_engine_trunk_scan_scan_list \
             dsd-neo_test_ui_qt_imported_files_model \
             dsd-neo_test_ui_qt_call_history_merge \
             dsd-neo_test_ui_qt_call_line \
+            dsd-neo_test_ui_qt_auto_start_policy \
+            dsd-neo_test_ui_qt_android_host \
             dsd-neo_test_ui_qt_session_state \
+            dsd-neo_test_ui_qt_diagnostics_log \
+            dsd-neo_test_runtime_log_tap \
+            dsd-neo_test_ui_qt_p25_network_model \
+            dsd-neo_test_ui_qt_controller \
             dsd-neo_test_ui_qt_spectrum_math \
             dsd-neo_test_ui_qt_spectrum_model \
             dsd-neo_test_ui_qt_metrics_model \
@@ -326,7 +337,7 @@ jobs:
       # here — a developer running ctest locally gets the same run.
       - name: Test
         shell: bash
-        run: ctest --preset dev-debug -R '^UI_QT_' --output-on-failure
+        run: ctest --preset dev-debug -R '^(UI_QT_|ENGINE_TRUNK_SCAN_SCAN_LIST$)' --output-on-failure
 
       # The baked RadioReference key is a compile-time constant, so the shipped
       # configuration — a build that carries its own key and must ignore any
@@ -562,6 +573,9 @@ jobs:
       - name: Build the APK
         shell: bash
         run: cmake --build --preset android-app -j
+
+      - name: Test location broker on the JVM
+        run: python3 tests/android/run_location_tests.py --require-tools
 
       - name: Locate the APK
         id: apk

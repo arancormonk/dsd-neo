@@ -13,6 +13,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -92,12 +93,12 @@ dmr_pi_handle_kirisun(dsd_opts* opts, dsd_state* state, const uint8_t pi_byte[])
 
 static void
 dmr_pi_hytera_print_key(const dsd_state* state, int show_keys) {
-    if (state->currentslot == 0 && state->R != 0) {
+    if (state->currentslot == 0 && dsd_key_scalar_present(state, 0)) {
         char key_text[17];
         DSD_FPRINTF(stderr, "Key: %s; ", dsd_secret_format_hex(key_text, sizeof key_text, show_keys, state->R, 10U, 0));
     }
 
-    if (state->currentslot == 1 && state->RR != 0) {
+    if (state->currentslot == 1 && dsd_key_scalar_present(state, 1)) {
         char key_text[17];
         DSD_FPRINTF(stderr, "Key: %s; ",
                     dsd_secret_format_hex(key_text, sizeof key_text, show_keys, state->RR, 10U, 0));

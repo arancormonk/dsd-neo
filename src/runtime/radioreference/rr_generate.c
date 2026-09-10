@@ -1366,11 +1366,11 @@ rr_tg_key_cmp(const void* lhs, const void* rhs) {
  * @return "DE" or "A".
  */
 static const char*
-rr_group_mode(const dsd_rr_talkgroup* talkgroup, int partial_enc_as_de) {
-    if (talkgroup->enc >= 2) {
+rr_group_mode(const dsd_rr_talkgroup* talkgroup, dsd_rr_encrypted_tg_policy policy) {
+    if (talkgroup->enc >= 2 && policy != DSD_RR_TG_KEEP_ENABLED) {
         return "DE";
     }
-    if (talkgroup->enc == 1 && partial_enc_as_de) {
+    if (talkgroup->enc == 1 && policy == DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL) {
         return "DE";
     }
     return "A";
@@ -1427,7 +1427,8 @@ typedef struct {
  * @param counts            Running tallies.
  */
 static void
-rr_group_emit(rr_text* text, const dsd_rr_talkgroup* talkgroup, int partial_enc_as_de, rr_group_counts* counts) {
+rr_group_emit(rr_text* text, const dsd_rr_talkgroup* talkgroup, dsd_rr_encrypted_tg_policy policy,
+              rr_group_counts* counts) {
     const char* label = (talkgroup->alpha_tag[0] != '\0')     ? talkgroup->alpha_tag
                         : (talkgroup->description[0] != '\0') ? talkgroup->description
                                                               : NULL;
@@ -1443,7 +1444,7 @@ rr_group_emit(rr_text* text, const dsd_rr_talkgroup* talkgroup, int partial_enc_
     if (talkgroup->category[0]) {
         (void)rr_sanitize_name(talkgroup->category, category, sizeof(category));
     }
-    rr_text_group_row(text, talkgroup, rr_group_mode(talkgroup, partial_enc_as_de), name, category);
+    rr_text_group_row(text, talkgroup, rr_group_mode(talkgroup, policy), name, category);
     counts->emitted++;
 }
 
@@ -1473,12 +1474,22 @@ rr_group_warn(dsd_rr_warning_list* warnings, const rr_group_counts* counts) {
 int
 dsd_rr_generate_group_csv(const dsd_rr_talkgroup* talkgroups, size_t count, int partial_enc_as_de, char** out,
                           size_t* out_len, dsd_rr_warning_list* warnings) {
+    return dsd_rr_generate_group_csv_with_policy(
+        talkgroups, count, partial_enc_as_de ? DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL : DSD_RR_TG_EXCLUDE_FULL, out,
+        out_len, warnings);
+}
+
+int
+dsd_rr_generate_group_csv_with_policy(const dsd_rr_talkgroup* talkgroups, size_t count,
+                                      dsd_rr_encrypted_tg_policy policy, char** out, size_t* out_len,
+                                      dsd_rr_warning_list* warnings) {
     if (out == NULL || out_len == NULL) {
         return -1;
     }
     *out = NULL;
     *out_len = 0;
-    if (talkgroups == NULL || count == 0U) {
+    if (talkgroups == NULL || count == 0U || policy < DSD_RR_TG_KEEP_ENABLED
+        || policy > DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL) {
         return -1;
     }
 
@@ -1501,7 +1512,7 @@ dsd_rr_generate_group_csv(const dsd_rr_talkgroup* talkgroups, size_t count, int 
             counts.duplicates++;
             continue;
         }
-        rr_group_emit(&text, &talkgroups[keys[i].order], partial_enc_as_de, &counts);
+        rr_group_emit(&text, &talkgroups[keys[i].order], policy, &counts);
     }
     free(keys);
 

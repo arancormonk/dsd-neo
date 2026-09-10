@@ -17,6 +17,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -293,7 +294,7 @@ rr_soap_build_request(const char* method, const rr_soap_param* params, size_t n,
 #define RR_LEAF_MAX   4096
 #define RR_DETAIL_MAX 256
 
-typedef enum { RR_F_INT, RR_F_U32, RR_F_STR, RR_F_MHZ } rr_field_kind;
+typedef enum { RR_F_INT, RR_F_U32, RR_F_STR, RR_F_MHZ, RR_F_DEC } rr_field_kind;
 
 /** One leaf element mapped onto a record member. */
 typedef struct {
@@ -306,6 +307,7 @@ typedef struct {
 #define RR_STR(type, member, elem) {elem, RR_F_STR, offsetof(type, member), sizeof(((type*)0)->member)}
 #define RR_INT(type, member, elem) {elem, RR_F_INT, offsetof(type, member), 0}
 #define RR_U32(type, member, elem) {elem, RR_F_U32, offsetof(type, member), 0}
+#define RR_DEC(type, member, elem) {elem, RR_F_DEC, offsetof(type, member), 0}
 #define RR_MHZ(type, member, elem) {elem, RR_F_MHZ, offsetof(type, member), 0}
 
 static const rr_field_def k_country_fields[] = {
@@ -357,6 +359,9 @@ static const rr_field_def k_site_fields[] = {
     RR_INT(dsd_rr_site, splinter, "splinter"),
     RR_INT(dsd_rr_site, rebanded, "rebanded"),
     RR_INT(dsd_rr_site, tdma_cc, "tdma_cc"),
+    RR_DEC(dsd_rr_site, lat, "lat"),
+    RR_DEC(dsd_rr_site, lon, "lon"),
+    RR_DEC(dsd_rr_site, range_mi, "range"),
 };
 
 static const rr_field_def k_site_freq_fields[] = {
@@ -613,6 +618,68 @@ rr_fail(rr_parse_ctx* ctx, dsd_rr_status status, const char* detail) {
     rr_copy_field(ctx->fail_detail, sizeof(ctx->fail_detail), detail);
 }
 
+static int
+rr_decimal_digit(unsigned char c) {
+    return c >= '0' && c <= '9';
+}
+
+/** Parse [+-]?[0-9]+(\.[0-9]+)? without consulting or changing the locale.
+ * Leave missing/invalid values as an internal NaN until site finalization. */
+static int
+rr_parse_decimal_strict(const char* text, double* out) {
+    const unsigned char* p = (const unsigned char*)text;
+    int negative = 0;
+    if (*p == '+' || *p == '-') {
+        negative = *p == '-';
+        p++;
+    }
+    if (!rr_decimal_digit(*p)) {
+        return -1;
+    }
+    double value = 0;
+    while (rr_decimal_digit(*p)) {
+        value = value * 10.0 + (*p++ - '0');
+        if (!isfinite(value)) {
+            return -1;
+        }
+    }
+    if (*p == '.') {
+        p++;
+        if (!rr_decimal_digit(*p)) {
+            return -1;
+        }
+        double place = 0.1;
+        while (rr_decimal_digit(*p)) {
+            value += (*p++ - '0') * place;
+            place *= 0.1;
+        }
+    }
+    if (*p != '\0' || !isfinite(value)) {
+        return -1;
+    }
+    *out = negative ? -value : value;
+    return 0;
+}
+
+/** Validate optional site metadata without rejecting usable tuning information.
+ * Internal missing/invalid markers never escape into the public result. */
+static void
+rr_finish_site_position(dsd_rr_site* site) {
+    const int lat_ok = isfinite(site->lat) && site->lat >= -90 && site->lat <= 90;
+    const int lon_ok = isfinite(site->lon) && site->lon >= -180 && site->lon <= 180;
+    const int range_ok = isfinite(site->range_mi) && site->range_mi >= 0;
+    site->has_position = lat_ok && lon_ok && range_ok && (site->lat != 0 || site->lon != 0 || site->range_mi != 0);
+    if (!lat_ok) {
+        site->lat = 0;
+    }
+    if (!lon_ok) {
+        site->lon = 0;
+    }
+    if (!range_ok) {
+        site->range_mi = 0;
+    }
+}
+
 /**
  * @brief Store one leaf value into a record member.
  *
@@ -647,6 +714,12 @@ rr_apply_field(void* record, const rr_field_def* table, size_t n, const char* na
                     const uint32_t narrowed = (uint32_t)value;
                     DSD_MEMCPY(base, &narrowed, sizeof(narrowed));
                 }
+                break;
+            }
+            case RR_F_DEC: {
+                double value = NAN;
+                (void)rr_parse_decimal_strict(text, &value);
+                DSD_MEMCPY(base, &value, sizeof(value));
                 break;
             }
             case RR_F_MHZ: {
@@ -691,6 +764,11 @@ rr_reset_record(rr_parse_ctx* ctx) {
     rr_release_scratch_site(ctx);
     if (desc->record_size != 0U) {
         DSD_MEMSET((char*)ctx + desc->scratch_offset, 0, desc->record_size);
+    }
+    if (ctx->shape == RR_SHAPE_SITE_LIST) {
+        ctx->site.lat = NAN;
+        ctx->site.lon = NAN;
+        ctx->site.range_mi = NAN;
     }
 }
 
@@ -801,6 +879,9 @@ rr_commit_record(rr_parse_ctx* ctx) {
         return 0;
     }
 
+    if (ctx->shape == RR_SHAPE_SITE_LIST) {
+        rr_finish_site_position(&ctx->site);
+    }
     void** items = (void**)((char*)ctx->sink + desc->items_offset);
     size_t* count = (size_t*)((char*)ctx->sink + desc->count_offset);
     const int rc = rr_list_append(ctx, items, count, (const char*)ctx + desc->scratch_offset, desc->record_size);

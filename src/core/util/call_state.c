@@ -17,9 +17,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
 #include "call_state_internal.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
 
 _Static_assert(offsetof(dsd_call_state_ext, mutex) == 0U,
                "event-history transactions require the call-state mutex at offset zero");
@@ -574,6 +574,23 @@ call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observa
     }
 }
 
+/* Voice-error windows belong to a call, including late-entry epochs opened by
+ * the vocoder. Keep capacity, but clear the slot before its first voice frame;
+ * an identity specialization within the same epoch must keep its samples. */
+static void
+call_state_reset_voice_errors(dsd_state* state, uint8_t slot) {
+    if (slot == 0) {
+        DSD_MEMSET(state->p25_p1_voice_err_hist, 0, sizeof(state->p25_p1_voice_err_hist));
+        state->p25_p1_voice_err_hist_count = 0;
+        state->p25_p1_voice_err_hist_pos = 0;
+        state->p25_p1_voice_err_hist_sum = 0;
+    }
+    DSD_MEMSET(state->p25_p2_voice_err_hist[slot], 0, sizeof(state->p25_p2_voice_err_hist[slot]));
+    state->p25_p2_voice_err_hist_count[slot] = 0;
+    state->p25_p2_voice_err_hist_pos[slot] = 0;
+    state->p25_p2_voice_err_hist_sum[slot] = 0;
+}
+
 int
 dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation, dsd_call_boundary boundary) {
     if (!state || !observation || observation->slot >= DSD_CALL_STATE_SLOT_COUNT) {
@@ -594,6 +611,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     // assignment below (reacquires_ended_epoch implies begins_epoch), so no zeroing is needed.
     dsd_call_snapshot previous;
     if (begins_epoch) {
+        call_state_reset_voice_errors(state, observation->slot);
         previous = *snapshot;
         DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
         ext->epoch_sequence[observation->slot] = call_state_next_nonzero(ext->epoch_sequence[observation->slot]);
@@ -690,6 +708,51 @@ call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_u
     // that order by recency.
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+static int
+key_selection_equal(const dsd_call_key_selection* a, const dsd_call_key_selection* b) {
+    return a->valid == b->valid && a->key_epoch == b->key_epoch && a->source == b->source
+           && a->signaled_id == b->signaled_id && a->effective_id == b->effective_id && a->available == b->available
+           && a->fallback == b->fallback && a->algorithm == b->algorithm && strcmp(a->profile_ref, b->profile_ref) == 0;
+}
+
+int
+dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
+                                  int signaled_id, int effective_id, int available, int fallback) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || !epoch || (unsigned int)source > DSD_CALL_KEY_DEFAULT
+        || available < -1 || available > 1 || fallback < 0 || fallback > DSD_CALL_KEY_FALLBACK_UNKNOWN_ALGORITHM) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_key_selection selection;
+    DSD_MEMSET(&selection, 0, sizeof(selection));
+    selection.valid = 1;
+    selection.key_epoch = state->enc_lockout_key_epoch;
+    selection.source = (uint8_t)source;
+    selection.signaled_id = (uint16_t)signaled_id;
+    selection.effective_id = effective_id;
+    selection.available = (int8_t)available;
+    selection.fallback = (uint8_t)fallback;
+    DSD_MEMCPY(selection.profile_ref, state->key_profile_ref, sizeof(selection.profile_ref));
+    selection.profile_ref[sizeof(selection.profile_ref) - 1U] = '\0';
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* call = &ext->calls.slots[slot];
+    if (call->epoch != epoch || call->phase == DSD_CALL_PHASE_IDLE) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    selection.algorithm = call->algid;
+    if (!key_selection_equal(&call->key_selection, &selection)) {
+        call->key_selection = selection;
+        call->revision = call_state_next_nonzero(call->revision);
+        ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    }
     dsd_call_state_ext_unlock(ext);
     return 1;
 }

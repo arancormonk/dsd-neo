@@ -18,6 +18,7 @@ target_sources(
         freq_parse.c
         input_spec.c
         input_level.c
+        input_failure.c
         path_policy.c
         frame_sync_hooks.c
         trunk_scan_hooks.c
@@ -60,6 +61,24 @@ target_sources(
         ${CMAKE_CURRENT_BINARY_DIR}/version/git_ver.c
         ${CMAKE_CURRENT_BINARY_DIR}/radioreference/rr_app_key.c
 )
+
+# The SOAP parser uses NaN for missing coordinates and checks decimal overflow;
+# config parsing/comparisons and input-level metrics also check nonfinite values.
+# Preserve IEEE semantics even when the global fast-math option is enabled.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        input_level.c
+        radioreference/rr_soap.c
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+    )
+endif()
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(
+        config.cpp
+        config_user.cpp
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
+    )
+endif()
 
 # Generate git version source within this target's build dir
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/version)

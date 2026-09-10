@@ -65,5 +65,24 @@ Item {
             tryCompare(monitor, "y", 48)
             compare(monitor.height, tc.app.height - 48 - 32)
         }
+
+        function test_compact_monitor_with_reduced_safe_height() {
+            tc.app.height = 400;
+            tc.app.SafeArea.additionalMargins.top = 48;
+            tc.app.SafeArea.additionalMargins.bottom = 32;
+            testContext.setHostRunning(true);
+            var monitor = findChild(tc.app, "monitorScreen");
+            var body = findChild(monitor, "monitorBody");
+            var recent = findChild(monitor, "recentCallsPanel");
+            tryCompare(monitor, "height", 320);
+            verify(monitor.compactHeight);
+            tryVerify(function() { return body.height > 0 && body.contentHeight > body.height; });
+            body.contentY = body.contentHeight - body.height;
+            tryVerify(function() {
+                body.contentY = body.contentHeight - body.height;
+                return recent.mapToItem(body, 0, recent.height).y <= body.height + 1;
+            });
+            tc.app.height = 900;
+        }
     }
 }

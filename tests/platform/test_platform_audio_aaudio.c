@@ -20,13 +20,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/platform/audio.h>
+#include <dsd-neo/platform/audio_concealment.h>
+#include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include "../../src/platform/audio_aaudio.c"
 #include "aaudio/AAudio.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/platform/audio.h"
-#include "dsd-neo/platform/audio_concealment.h"
-#include "dsd-neo/platform/threading.h"
-#include "dsd-neo/platform/timing.h"
 
 #define FAKE_CAPTURE_SAMPLES 8192
 
@@ -533,6 +533,7 @@ test_open_output_native_format(void) {
     reset_fakes();
     dsd_audio_stream* stream = dsd_audio_open_output(&params);
     assert(stream != NULL);
+    assert(dsd_audio_output_device_id() == 42);
 
     assert(g.open_calls == 1);
     assert(g.last_direction == AAUDIO_DIRECTION_OUTPUT);
@@ -568,6 +569,7 @@ test_open_output_native_format(void) {
 
     assert(dsd_audio_drain(stream) == 0);
     dsd_audio_close(stream);
+    assert(dsd_audio_output_device_id() == 0);
     assert(g.stop_calls == 1 && g.close_calls == 1);
 }
 
@@ -1604,3 +1606,9 @@ main(void) {
 }
 
 // NOLINTEND(bugprone-suspicious-include)
+
+int32_t
+AAudioStream_getDeviceId(AAudioStream* stream) {
+    (void)stream;
+    return 42;
+}

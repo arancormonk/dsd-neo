@@ -4,22 +4,28 @@ target_sources(
     dsd-neo_app_control
     PRIVATE
         actions/actions_audio.c
+        actions/actions_logging.c
         actions/actions_radio.c
         actions/actions_trunk.c
-        actions/actions_logging.c
         app_command_queue.c
+        key_commands.c
         call_view.c
+        p25_network.c # WP-F2
+        p25_metrics.c
+        trunk_scan_validate.c
         frontend.c
         frontend_snr.c
-        notification_status.c
-        ui_snapshot.c
-        ui_opts_snapshot.c
-        ui_history.c
-        telemetry_hooks_install.c
         menu_services.c
+        notification_status.c
+        p25_metrics.c
         rr_import_apply.c
         symbol_profile.c
         tcp_audio_connect.c
+        telemetry_hooks_install.c
+        trunk_scan_validate.c
+        ui_history.c
+        ui_opts_snapshot.c
+        ui_snapshot.c
 )
 
 target_include_directories(

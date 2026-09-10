@@ -19,6 +19,11 @@ object DsdNative {
     const val STATUS_ERROR = -1
     const val STATUS_BAD_STATE = -2
     const val STATUS_CONFIG_EXIT = 1
+    // Must match android/run_status.h. Terminal results are retained per session.
+    const val RUN_PENDING = 0
+    const val RUN_COMPLETED = 1
+    const val RUN_CANCELLED = 2
+    const val RUN_FAILED = 3
 
     init {
         System.loadLibrary("dsd-neo-app_arm64-v8a")
@@ -26,7 +31,13 @@ object DsdNative {
 
     external fun nativeInit(configDir: String, cacheDir: String): Int
 
-    external fun nativeConfigure(args: Array<String>): Int
+    external fun nativeConfigure(args: Array<String>, sessionId: Long): Int
+
+    /** session id, initialized, terminal reason, run code, native USB open/claim error. */
+    external fun nativeLifecycleStatus(): LongArray?
+
+    /** Lifecycle/USB messages only, never argv, credentials or key material. */
+    external fun nativeHostDiagnostic(line: String)
 
     external fun nativeRun(): Int
 

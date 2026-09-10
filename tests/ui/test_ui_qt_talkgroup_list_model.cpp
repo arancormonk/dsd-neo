@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <utility>
+#include "../test_support/qt_test_paths.h"
 
 #include "call_history_model.h"
 #include "talkgroup_filter_model.h"
@@ -215,6 +216,36 @@ test_policy_and_heard_rows() {
     expect("clear retains session cutoff", model.count() == 3 && model.sinceWhen() == now + 6);
 }
 
+void
+test_edit_fields_and_version() {
+    Fixture fixture;
+    fixture.append(42, 42, "A", "Dispatch", "Fire");
+    TalkgroupListModel model(nullptr);
+    model.refresh(fixture.opts, fixture.state);
+    const QString context = model.property("policyContext").toString();
+    const unsigned int generation = model.property("policyGeneration").toUInt();
+    expect("context is a lossless decimal string", !context.isEmpty() && context != "0");
+    dsd_tg_policy_entry values = {};
+    values.priority = 50;
+    values.preempt = 1;
+    expect("edit priority and preempt",
+           dsd_tg_policy_set_fields(fixture.state, 42, 42, &values,
+                                    DSD_TG_POLICY_FIELD_PRIORITY | DSD_TG_POLICY_FIELD_PREEMPT)
+               == 0);
+    int changes = 0;
+    QObject::connect(&model, &QAbstractItemModel::dataChanged, &model, [&]() { ++changes; });
+    model.refresh(fixture.opts, fixture.state);
+    const auto roles = model.roleNames();
+    expect("priority copied", model.data(find(model, 42), roles.key("priority", -1)).toInt() == 50);
+    expect("preempt copied", model.data(find(model, 42), roles.key("preempt", -1)).toBool());
+    expect("field edit notifies", changes == 1);
+    expect("version advances", model.property("policyContext").toString() == context
+                                   && model.property("policyGeneration").toUInt() != generation);
+    model.clear();
+    expect("version cleared",
+           model.property("policyContext").toString() == "0" && model.property("policyGeneration").toUInt() == 0);
+}
+
 /* Deliberately unrelated numeric roles: the QML fixture is not CallHistoryModel. */
 class AlternateHistory : public QAbstractListModel {
   public:
@@ -300,7 +331,7 @@ main(int argc, char** argv) {
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(
         QStringLiteral("dsd-neo-talkgroups-%1").arg(QCoreApplication::applicationPid()));
-    QStandardPaths::setTestModeEnabled(true);
+    dsd_test_qt_isolate_paths();
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dataDir).removeRecursively();
     QTemporaryDir settingsDir;
@@ -309,6 +340,7 @@ main(int argc, char** argv) {
     }
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
     QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, settingsDir.path());
+    test_edit_fields_and_version();
     test_policy_and_heard_rows();
     test_history_role_names_and_mutations();
     QDir(dataDir).removeRecursively();

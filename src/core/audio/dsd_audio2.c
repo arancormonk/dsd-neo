@@ -16,6 +16,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -273,7 +274,7 @@ DSD_AUDIO2_INTERNAL int
 dsd_p25_algid_can_decrypt(const dsd_state* state) {
     int algid = state->payload_algid;
     if (algid == 0xAA || algid == 0x81 || algid == 0x9F) {
-        return state->R != 0;
+        return dsd_key_scalar_present(state, 0);
     }
     if (algid == 0x84 || algid == 0x89) {
         return state->aes_key_loaded[0] == 1;
@@ -284,7 +285,7 @@ dsd_p25_algid_can_decrypt(const dsd_state* state) {
 DSD_AUDIO2_INTERNAL int
 dsd_nxdn_can_decrypt(const dsd_state* state) {
     if (state->nxdn_cipher_type == 0x1 || state->nxdn_cipher_type == 0x2) {
-        return state->R != 0;
+        return dsd_key_scalar_present(state, 0);
     }
     if (state->nxdn_cipher_type == 0x3) {
         return state->aes_key_loaded[0] == 1;
@@ -316,7 +317,8 @@ dsd_fdma_crypto_muted(const dsd_opts* opts, const dsd_state* state, int include_
         return 0;
     }
 
-    const int can_p25 = dsd_p25_algid_can_decrypt(state) || (state->payload_algid == 0x83 && state->R != 0);
+    const int can_p25 =
+        dsd_p25_algid_can_decrypt(state) || (state->payload_algid == 0x83 && dsd_key_scalar_present(state, 0));
     return (can_p25 || (include_nxdn && dsd_nxdn_can_decrypt(state))) ? 0 : 1;
 }
 

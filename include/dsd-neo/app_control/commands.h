@@ -247,6 +247,10 @@ enum dsd_app_command_id {
     DSD_APP_CMD_TG_LISTEN_SET = 590, // payload: dsd_app_tg_listen_payload
     // Edit all rows except radio-ID aliases; a nonempty tag selects exact tag matches.
     DSD_APP_CMD_TG_LISTEN_SET_ALL = 591, // payload: dsd_app_tg_listen_all_payload
+    DSD_APP_CMD_TG_ROW_SET = 592,        // payload: dsd_app_tg_row_payload
+    DSD_APP_CMD_TG_ROW_REMOVE = 593,     // payload: dsd_app_tg_range_payload
+    DSD_APP_CMD_TG_LIST_EXPORT = 594,    // payload: dsd_app_tg_export_payload
+    DSD_APP_CMD_TG_SELECTION_SET = 595,  // payload: dsd_app_tg_selection_payload
 
     // UI display toggles
     DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE = 620,
@@ -275,6 +279,9 @@ enum dsd_app_command_id {
 
     // Encoders / protocol helpers
     DSD_APP_CMD_M17_USER_DATA_SET = 651, // payload: char s[] (<=49 chars)
+    DSD_APP_CMD_KEY_DIRECT_SET = 652,    // sensitive: dsd_app_key_direct_payload; erase every owned copy
+    DSD_APP_CMD_FORCE_KEY_SET = 653,     // payload: int32_t 0/1/2; configured scan-mode setting
+    DSD_APP_CMD_DECRYPTION_APPLY = 654,  // sensitive: dsd_app_decryption_payload; retained result
 
     // DSP runtime (rtl_stream_*)
     DSD_APP_CMD_DSP_OP = 700,             // payload: dsd_app_dsp_payload
@@ -330,6 +337,127 @@ typedef struct {
     char tags[50]; /* Empty = all rows; otherwise an exact category match. */
 } dsd_app_tg_listen_all_payload;
 
+enum {
+    DSD_APP_TG_FIELD_LISTEN = 1U << 0,
+    DSD_APP_TG_FIELD_PRIORITY = 1U << 1,
+    DSD_APP_TG_FIELD_PREEMPT = 1U << 2,
+    DSD_APP_TG_FIELD_NAME = 1U << 3,
+    DSD_APP_TG_FIELD_TAGS = 1U << 4
+};
+
+/* Context and generation are both required: a row from a previous scan target
+ * can have the same ids and generation while belonging to a different policy. */
+typedef struct {
+    uint32_t id_start;
+    uint32_t id_end;
+    uint32_t fields; /* Bitmask below; absent fields keep the existing row value. */
+    int32_t listen;
+    int32_t priority;
+    int32_t preempt;
+    char name[50];
+    char tags[50];
+    uint64_t policy_context;
+    unsigned int policy_generation;
+} dsd_app_tg_row_payload;
+
+typedef struct {
+    uint32_t id_start;
+    uint32_t id_end;
+    uint64_t policy_context;
+    unsigned int policy_generation;
+} dsd_app_tg_range_payload;
+
+typedef struct {
+    uint64_t policy_context;
+    unsigned int policy_generation;
+    char path[1]; /* NUL-terminated, bounded by the submitted payload size. */
+} dsd_app_tg_export_payload;
+
+typedef struct {
+    uint64_t policy_context;
+    uint32_t policy_generation;
+    uint32_t count;
+    int32_t listening;
+    char selection_path[1024]; /**< Private frontend-owned rows: table_index,start,end. */
+} dsd_app_tg_selection_payload;
+
+/** Retained outcome of the most recently drained TG_LIST_EXPORT command.
+ * The context/generation identify the submitted request, including on failure.
+ * path is the requested destination (written only when success == 1), or empty
+ * if the submitted path was invalid. sequence is nonzero and advances per result. */
+typedef struct {
+    uint64_t sequence;
+    uint64_t policy_context;
+    unsigned int policy_generation;
+    int success;
+    char path[1024];
+} dsd_app_tg_export_result;
+
+typedef enum {
+    DSD_APP_KEY_TYPE_BASIC = 0,
+    DSD_APP_KEY_TYPE_HEX = 1, /* Hytera/AES determined by width. */
+    DSD_APP_KEY_TYPE_RC4 = 2,
+    DSD_APP_KEY_TYPE_SCRAMBLER = 3,
+    DSD_APP_KEY_TYPE_M17_SCRAMBLER = 4,
+    DSD_APP_KEY_TYPE_M17_AES = 5
+} dsd_app_key_type;
+
+typedef struct {
+    int32_t key_type; /* dsd_app_key_type; digits alone cannot distinguish BP/RC4/Hytera. */
+    char value[72];   /* Bounded, NUL-terminated; never echo to logs, toasts or snapshots. */
+} dsd_app_key_direct_payload;
+
+enum { DSD_APP_DECRYPTION_MATERIAL = 1U << 0, DSD_APP_DECRYPTION_MAP = 1U << 1, DSD_APP_DECRYPTION_FORCE = 1U << 2 };
+
+enum { DSD_APP_KEY_SCOPE_DEFAULTS = 0, DSD_APP_KEY_SCOPE_TARGET = 1 };
+
+enum {
+    DSD_APP_KEY_SOURCE_NONE = 0,
+    DSD_APP_KEY_SOURCE_COLLECTION = 1,
+    DSD_APP_KEY_SOURCE_DIRECT = 2,
+    DSD_APP_KEY_SOURCE_DIRECT_OVERLAY = 3
+};
+
+enum {
+    DSD_APP_KEY_APPLIED = 1,
+    DSD_APP_KEY_INVALID = -1,
+    DSD_APP_KEY_STALE = -2,
+    DSD_APP_KEY_UNAVAILABLE = -3,
+    DSD_APP_KEY_FILE_ERROR = -4,
+    DSD_APP_KEY_BUSY = -5,
+    DSD_APP_KEY_CANCELLED = -6
+};
+
+/** Mutations are applied together on the decoder thread. Missing field bits
+ * preserve current settings. Target requests include the context captured when
+ * opening the editor; default edits never replace an explicit scan target. */
+typedef struct {
+    uint64_t request_id;
+    uint64_t session_generation;
+    uint64_t tune_generation;
+    uint64_t key_epoch;
+    uint32_t fields;
+    int32_t scope;
+    int32_t source;
+    int32_t key_type;
+    int32_t force;
+    char target_id[64];
+    char profile_ref[64];
+    char value[72];
+    char keys_hex[1024];
+    char keys_dec[1024];
+    char map_file[2048];
+} dsd_app_decryption_payload;
+
+/** Contains only request identity and outcome, never material or paths. */
+typedef struct {
+    uint64_t sequence;
+    uint64_t request_id;
+    uint64_t session_generation;
+    int status;
+    int scope;
+} dsd_app_decryption_result;
+
 typedef struct {
     uint64_t H;
     uint64_t K1;
@@ -360,6 +488,10 @@ typedef enum {
 extern "C" {
 #endif
 
+/* The queue erases its owned payload copies on every disposal path. The caller
+ * still owns payload (including on rejection) and must erase its secret storage. */
+/* Submission is rejected outside a frontend runtime session. Pending commands
+ * are securely discarded at stop, and exports receive a failed completion. */
 int dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz);
 int dsd_app_command_action(int cmd_id);
 int dsd_app_command_set_i32(int cmd_id, int32_t value);
@@ -373,6 +505,16 @@ int dsd_app_command_set_endpoint(int cmd_id, const char* host, int32_t port);
 int dsd_app_command_set_p25_p2_params(const dsd_app_p25_p2_params_payload* payload);
 int dsd_app_command_set_tg_listen(const dsd_app_tg_listen_payload* payload);
 int dsd_app_command_set_tg_listen_all(const dsd_app_tg_listen_all_payload* payload);
+/** Copy the last export result under a mutex without consuming a decoder snapshot.
+ * Returns 1 if a result exists, 0 otherwise (out is zeroed), or 0 for NULL out.
+ * Results are retained across unrelated commands, toasts, reads and session stops;
+ * only another drained export replaces them. Sequence numbers are process-wide.
+ * The UI should retain the pre-submit sequence, allow one outstanding export, and
+ * accept a newer result matching its context/generation/path before registering
+ * the file. Submission rejection must still be handled from the submit return. */
+int dsd_app_tg_export_result_get(dsd_app_tg_export_result* out);
+uint64_t dsd_app_command_session_generation(void);
+int dsd_app_decryption_result_get(dsd_app_decryption_result* out);
 int dsd_app_command_set_hytera_key(const dsd_app_hytera_key_payload* payload);
 int dsd_app_command_set_aes_key(const dsd_app_aes_key_payload* payload);
 int dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload);

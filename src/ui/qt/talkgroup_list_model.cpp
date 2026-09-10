@@ -11,10 +11,14 @@
 #include <QSet>
 #include <QVariant>
 #include <algorithm>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <limits>
 #include <string.h>
 #include <utility>
@@ -45,7 +49,8 @@ TalkgroupListModel::rowCount(const QModelIndex& parent) const {
 
 QVariant
 TalkgroupListModel::data(const QModelIndex& index, int role) const {
-    if (!index.isValid() || index.row() < 0 || index.row() >= count() || index.column() != 0) {
+    if (!index.isValid() || static_cast<unsigned int>(index.row()) >= static_cast<unsigned int>(count())
+        || index.column() != 0) {
         return {};
     }
     const Row& row = m_rows.at(index.row());
@@ -59,14 +64,20 @@ TalkgroupListModel::data(const QModelIndex& index, int role) const {
         case TagsRole: return row.tags;
         case ListeningRole: return row.listening;
         case ListedRole: return row.listed;
+        case PriorityRole: return row.priority;
+        case PreemptRole: return row.preempt;
+        case PolicyIndexRole: return row.policyIndex;
         default: return {};
     }
 }
 
 QHash<int, QByteArray>
 TalkgroupListModel::roleNames() const {
-    return {{IdStartRole, "idStart"}, {IdEndRole, "idEnd"},         {IdTextRole, "idText"}, {NameRole, "name"},
-            {TagsRole, "tags"},       {ListeningRole, "listening"}, {ListedRole, "listed"}};
+    return {{IdStartRole, "idStart"}, {IdEndRole, "idEnd"},
+            {IdTextRole, "idText"},   {NameRole, "name"},
+            {TagsRole, "tags"},       {ListeningRole, "listening"},
+            {ListedRole, "listed"},   {PriorityRole, "priority"},
+            {PreemptRole, "preempt"}, {PolicyIndexRole, "policyIndex"}};
 }
 
 void
@@ -80,6 +91,47 @@ TalkgroupListModel::setSinceWhen(qint64 when) {
 }
 
 void
+TalkgroupListModel::observeDecryption(const dsd_state* snapshot) {
+    for (uint8_t slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; ++slot) {
+        dsd_call_snapshot call = {};
+        if (dsd_call_state_get(snapshot, slot, &call) > 0 && call.kind == DSD_CALL_KIND_GROUP_VOICE
+            && call.ota_target_id && call.ota_target_id <= UINT32_MAX) {
+            const bool dmr = DSD_SYNC_IS_DMR(call.protocol);
+            m_observedCrypto.insert(
+                static_cast<quint32>(call.ota_target_id),
+                {{"algorithm", call.crypto >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING
+                                   ? QString::number(call.algid, 16).toUpper()
+                                   : QString()},
+                 {"crypto", static_cast<int>(call.crypto)},
+                 {"keyId", call.crypto >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING && (!dmr || call.kid <= 255)
+                               ? QString::number(call.kid, 16).toUpper()
+                               : QString()},
+                 {"dmr", dmr},
+                 {"profileRef", QString::fromUtf8(call.key_selection.profile_ref)},
+                 {"lastObserved", true}});
+        }
+    }
+}
+
+void
+TalkgroupListModel::updatePersistence(const dsd_opts* opts_snapshot, const dsd_state* snapshot, bool allowListChanged,
+                                      bool allowListedOnly) {
+    const bool hasGroupFile = opts_snapshot->group_in_file[0] != '\0';
+    const QString scope = (dsd_scan_mode_option_fields(snapshot) & DSD_SCAN_OPT_GROUP) ? QStringLiteral("scan")
+                          : hasGroupFile                                               ? QStringLiteral("file")
+                                                                                       : QStringLiteral("session");
+    if (scope != m_persistenceScope) {
+        m_persistenceScope = scope;
+        Q_EMIT policyChanged();
+    }
+    if (allowListChanged || hasGroupFile != m_persistent) {
+        m_allowListMode = allowListedOnly;
+        m_persistent = hasGroupFile;
+        Q_EMIT policyChanged();
+    }
+}
+
+void
 TalkgroupListModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
     if (opts_snapshot == nullptr || snapshot == nullptr) {
         clear();
@@ -87,19 +139,24 @@ TalkgroupListModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snap
     }
     const bool allowListedOnly = opts_snapshot->trunk_use_allow_list == 1;
     const bool allowListChanged = allowListedOnly != m_allowListMode;
-    const bool hasGroupFile = opts_snapshot->group_in_file[0] != '\0';
-    if (allowListChanged || hasGroupFile != m_persistent) {
-        m_allowListMode = allowListedOnly;
-        m_persistent = hasGroupFile;
-        Q_EMIT policyChanged();
-    }
+    updatePersistence(opts_snapshot, snapshot, allowListChanged, allowListedOnly);
     uint64_t contextId = 0;
     unsigned int generation = 0;
     dsd_tg_policy_table_version(snapshot, &contextId, &generation);
+    if (contextId != m_contextId) {
+        m_observedCrypto.clear();
+    }
+    observeDecryption(snapshot);
     if (contextId == m_contextId && generation == m_generation && !m_heardDirty && !allowListChanged) {
         return;
     }
 
+    const bool versionChanged = contextId != m_contextId || generation != m_generation;
+    m_contextId = contextId;
+    m_generation = generation;
+    if (versionChanged) {
+        Q_EMIT policyChanged();
+    }
     QSet<QString> categoryTags;
     QVector<Row> rows = listedRows(snapshot, categoryTags);
     appendHeardRows(rows, allowListedOnly);
@@ -108,8 +165,6 @@ TalkgroupListModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snap
     });
     replaceRows(std::move(rows));
     updateCategories(categoryTags);
-    m_contextId = contextId;
-    m_generation = generation;
     m_heardDirty = false;
 }
 
@@ -125,7 +180,8 @@ TalkgroupListModel::listedRows(const dsd_state* snapshot, QSet<QString>& categor
             continue;
         }
         rows.push_back({entry.id_start, entry.id_end, QString::fromUtf8(entry.name), QString::fromUtf8(entry.tags),
-                        strcmp(entry.mode, "B") != 0 && strcmp(entry.mode, "DE") != 0, true});
+                        strcmp(entry.mode, "B") != 0 && strcmp(entry.mode, "DE") != 0, true, entry.priority,
+                        entry.preempt != 0, static_cast<int>(i)});
         if (!rows.back().tags.isEmpty()) {
             categoryTags.insert(rows.back().tags);
         }
@@ -177,7 +233,8 @@ TalkgroupListModel::replaceRows(QVector<Row> rows) {
             const Row& row = rows.at(i);
             Row& old = m_rows[i];
             if (old.name != row.name || old.tags != row.tags || old.listening != row.listening
-                || old.listed != row.listed) {
+                || old.listed != row.listed || old.priority != row.priority || old.preempt != row.preempt
+                || old.policyIndex != row.policyIndex) {
                 old = std::move(rows[i]);
                 Q_EMIT dataChanged(index(i, 0), index(i, 0));
             }
@@ -207,7 +264,17 @@ TalkgroupListModel::updateCategories(const QSet<QString>& categoryTags) {
 }
 
 void
+TalkgroupListModel::invalidateForTarget() {
+    m_observedCrypto.clear();
+    m_contextId = 0;
+    m_generation = 0;
+    m_heardDirty = true;
+}
+
+void
 TalkgroupListModel::clear() {
+    m_observedCrypto.clear();
+    m_persistenceScope = QStringLiteral("session");
     const bool hadCounts = !m_rows.isEmpty() || m_notTunedCount != 0;
     if (!m_rows.isEmpty()) {
         beginResetModel();
@@ -222,13 +289,14 @@ TalkgroupListModel::clear() {
         m_categories.clear();
         Q_EMIT categoriesChanged();
     }
-    if (m_allowListMode || m_persistent) {
+    const bool versionChanged = m_contextId != 0 || m_generation != 0;
+    m_contextId = 0;
+    m_generation = 0;
+    if (m_allowListMode || m_persistent || versionChanged) {
         m_allowListMode = false;
         m_persistent = false;
         Q_EMIT policyChanged();
     }
-    m_contextId = 0;
-    m_generation = 0;
     m_heardDirty = true;
 }
 

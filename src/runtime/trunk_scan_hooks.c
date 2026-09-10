@@ -3,15 +3,25 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/dmr_key_map.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
 
 static dsd_trunk_scan_hooks g_trunk_scan_hooks = {0};
+
+int
+dsd_trunk_scan_hook_decryption_apply(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
+                                     uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map, int force) {
+    return g_trunk_scan_hooks.decryption_apply
+               ? g_trunk_scan_hooks.decryption_apply(opts, state, target_id, generation, fields, keys, map, force)
+               : DSD_TRUNK_KEY_UNAVAILABLE;
+}
 
 void
 dsd_trunk_recovery_note_protocol(dsd_state* state, dsd_trunk_recovery_protocol protocol) {

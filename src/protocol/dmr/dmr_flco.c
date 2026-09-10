@@ -11,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/key_presence.h>
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
@@ -108,7 +109,8 @@ dmr_flco_show_keys(const dmr_flco_ctx* ctx) {
 static unsigned int
 dmr_flco_hytera_key_segment_count(const dmr_flco_ctx* ctx) {
     const dsd_state* state = (ctx != NULL) ? ctx->state : NULL;
-    if (state == NULL || (state->K1 == 0ULL && state->K2 == 0ULL && state->K3 == 0ULL && state->K4 == 0ULL)) {
+    if (state == NULL
+        || (!dsd_key_hytera_present(state) && state->K2 == 0ULL && state->K3 == 0ULL && state->K4 == 0ULL)) {
         return 0U;
     }
     if (state->hytera_key_segments == 1U || state->hytera_key_segments == 2U || state->hytera_key_segments == 4U) {
@@ -454,12 +456,12 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
     }
     DSD_FPRINTF(stderr, " Hytera Enhanced; ");
 
-    if (ctx->slot == 0 && ctx->state->R != 0) {
+    if (ctx->slot == 0 && dsd_key_scalar_present(ctx->state, 0)) {
         char key_text[17];
         DSD_FPRINTF(stderr, "Key: %s; ",
                     dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->R, 10U, 0));
     }
-    if (ctx->slot == 1 && ctx->state->RR != 0) {
+    if (ctx->slot == 1 && dsd_key_scalar_present(ctx->state, 1)) {
         char key_text[17];
         DSD_FPRINTF(stderr, "Key: %s; ",
                     dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->RR, 10U, 0));
@@ -1142,7 +1144,7 @@ dmr_flco_print_tg_label(const dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_dmr_basic_keys(const dmr_flco_ctx* ctx) {
-    if (ctx->state->K != 0 && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 0
+    if (dsd_key_basic_present(ctx->state) && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 0
         && ctx->state->payload_algid == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[16];
@@ -1150,7 +1152,7 @@ dmr_flco_print_dmr_basic_keys(const dmr_flco_ctx* ctx) {
                     dsd_secret_format_decimal(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->K, 0U));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
-    if (ctx->state->K != 0 && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 1
+    if (dsd_key_basic_present(ctx->state) && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 1
         && ctx->state->payload_algidR == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[16];
@@ -1162,7 +1164,7 @@ dmr_flco_print_dmr_basic_keys(const dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_hytera_basic_key_slot0(const dmr_flco_ctx* ctx) {
-    if (ctx->state->K1 != 0 && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 0
+    if (dsd_key_hytera_present(ctx->state) && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 0
         && ctx->state->payload_algid == 0) {
         const unsigned int segment_count = dmr_flco_hytera_key_segment_count(ctx);
         if (segment_count >= 2U) {
@@ -1177,7 +1179,7 @@ dmr_flco_print_hytera_basic_key_slot0(const dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_hytera_basic_key_slot1(const dmr_flco_ctx* ctx) {
-    if (ctx->state->K1 != 0 && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 1
+    if (dsd_key_hytera_present(ctx->state) && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 1
         && ctx->state->payload_algidR == 0) {
         const unsigned int segment_count = dmr_flco_hytera_key_segment_count(ctx);
         if (segment_count >= 2U) {
@@ -1192,14 +1194,14 @@ dmr_flco_print_hytera_basic_key_slot1(const dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_alg21_keys(const dmr_flco_ctx* ctx) {
-    if (ctx->slot == 0 && ctx->state->payload_algid == 0x21 && ctx->state->R != 0) {
+    if (ctx->slot == 0 && ctx->state->payload_algid == 0x21 && dsd_key_scalar_present(ctx->state, 0)) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[17];
         DSD_FPRINTF(stderr, "Key %s ",
                     dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->R, 10U, 0));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
-    if (ctx->slot == 1 && ctx->state->payload_algidR == 0x21 && ctx->state->RR != 0) {
+    if (ctx->slot == 1 && ctx->state->payload_algidR == 0x21 && dsd_key_scalar_present(ctx->state, 1)) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[17];
         DSD_FPRINTF(stderr, "Key %s ",
@@ -1218,14 +1220,14 @@ dmr_flco_print_loaded_keys(const dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_alg02_keys(const dmr_flco_ctx* ctx) {
-    if (ctx->slot == 0 && ctx->state->payload_algid == 0x02 && ctx->state->R != 0) {
+    if (ctx->slot == 0 && ctx->state->payload_algid == 0x02 && dsd_key_scalar_present(ctx->state, 0)) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[17];
         DSD_FPRINTF(stderr, "Key: %s ",
                     dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->R, 10U, 0));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
-    if (ctx->slot == 1 && ctx->state->payload_algidR == 0x02 && ctx->state->RR != 0) {
+    if (ctx->slot == 1 && ctx->state->payload_algidR == 0x02 && dsd_key_scalar_present(ctx->state, 1)) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[17];
         DSD_FPRINTF(stderr, "Key: %s ",

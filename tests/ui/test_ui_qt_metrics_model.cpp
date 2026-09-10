@@ -12,22 +12,30 @@
  */
 
 #include <QCoreApplication>
+#include <QList>
+#include <QMap>
+#include <QObject>
 #include <QString>
+#include <QVariant>
 #include <cmath>
+#include <initializer_list>
+#include <stdint.h>
 #include <stdio.h>
 
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/scan_mode.h>
 
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 #include "metrics_model.h"
 
 namespace {
@@ -76,9 +84,306 @@ dsd_app_frontend_snr_for_mod(const dsd_frontend_metrics* metrics, int rf_mod) {
     return out;
 }
 
+static void
+test_quality_without_identity(int protocol, uint8_t slot) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    state.synctype = protocol;
+    state.errs = 3;
+    state.errs2 = 9;
+    state.errsR = 4;
+    state.errs2R = 11;
+    dsd_qt::MetricsModel model;
+
+    // The vocoder can establish media before a late-entry identity header arrives.
+    dsd_call_observation call = {};
+    call.protocol = protocol;
+    call.slot = slot;
+    call.kind = DSD_CALL_KIND_VOICE;
+    expect("provisional voice call opens", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    expect("provisional voice has media", dsd_call_state_update_media(&state, slot, 1, 0) == 1);
+    model.refresh(&opts, &state);
+    expect("provisional voice stays out of the identity headline", model.leadSlot() == 0);
+    expect("late-entry media exposes non-P25 quality without identity",
+           model.qualityValid() && model.lastFrameErrsValid() && model.lastFrameErrs() == (slot == 0 ? 3 : 4)
+               && model.lastFrameErrs2() == (slot == 0 ? 9 : 11));
+
+    if (slot == 1) {
+        call.slot = 0;
+        call.kind = DSD_CALL_KIND_GROUP_VOICE;
+        call.ota_target_id = 101;
+        expect("identified companion opens", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        model.refresh(&opts, &state);
+        expect("an identity lead retains priority before media arrives",
+               model.leadSlot() == 1 && !model.lastFrameErrsValid());
+        dsd_call_state_update_media(&state, 0, 1, 0);
+        model.refresh(&opts, &state);
+        expect("an identity lead keeps its own error readings", model.leadSlot() == 1 && model.lastFrameErrsValid()
+                                                                    && model.lastFrameErrs() == 3
+                                                                    && model.lastFrameErrs2() == 9);
+        dsd_call_state_end(&state, 0, 0);
+    }
+    dsd_call_state_end(&state, slot, 0);
+    model.refresh(&opts, &state);
+    expect("ended provisional media cannot supply fallback errors", !model.lastFrameErrsValid());
+    dsd_state_ext_free_all(&state);
+}
+
+static void
+test_quality() {
+    static dsd_opts opts;
+    static dsd_state state;
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p25_p1_voice_err_hist_len = 50;
+    dsd_qt::MetricsModel model;
+    int quality_signals = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::qualityChanged, [&]() { ++quality_signals; });
+    model.refresh(&opts, &state);
+    expect("P25 sync alone has no quality reading", !model.qualityValid() && !model.voiceErrsValid());
+    state.p25_p1_fec_ok = 9;
+    state.p25_p1_fec_err = 1;
+    model.refresh(&opts, &state);
+    expect("CC quality is available on PCM", model.qualityValid() && !model.radioInput() && model.ccFecValid());
+    expect("CC counters and ok percent", model.ccFecOk() == 9 && model.ccFecErr() == 1 && model.ccFecOkPct() == 90.0);
+    expect("one quality notification", quality_signals == 1);
+    model.refresh(&opts, &state);
+    expect("identical quality is silent", quality_signals == 1);
+    state.synctype = DSD_SYNC_NONE;
+    model.refresh(&opts, &state);
+    expect("sync gap retains CC FEC", model.ccFecValid() && quality_signals == 1);
+    state.p25_p1_fec_ok = state.p25_p1_fec_err = 0;
+    model.refresh(&opts, &state);
+    expect("no-carrier counter reset clears CC FEC", !model.ccFecValid() && !model.qualityValid());
+
+    dsd_call_observation call = {};
+    call.protocol = DSD_SYNC_P25P1_POS;
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    call.ota_target_id = 101;
+    dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    state.p25_p1_voice_err_hist_count = 2;
+    state.p25_p1_voice_err_hist_sum = 9;
+    state.p25_p1_voice_fec_ok = 3;
+    state.p25_p1_voice_fec_err = 1;
+    model.refresh(&opts, &state);
+    expect("P1 uses populated count",
+           model.voiceErrsValid() && model.voiceErrsSamples() == 2 && model.voiceErrsPerFrame() == 4.5);
+    expect("voice FEC ok percent", model.voiceFecValid() && model.voiceFecOkPct() == 75.0);
+    const int before_samples = quality_signals;
+    state.p25_p1_voice_err_hist_count = 4;
+    state.p25_p1_voice_err_hist_sum = 18;
+    model.refresh(&opts, &state);
+    expect("sample count alone notifies", quality_signals == before_samples + 1 && model.voiceErrsSamples() == 4);
+    dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    model.refresh(&opts, &state);
+    expect("new call waits for fresh samples", !model.voiceErrsValid() && model.voiceErrsSamples() == 0);
+
+    call.protocol = DSD_SYNC_P25P2_POS;
+    state.synctype = call.protocol;
+    dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    call.slot = 1;
+    call.ota_target_id = 102;
+    dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    state.p25_p2_voice_err_hist_len = 50;
+    state.p25_p2_voice_err_hist_count[1] = 3;
+    state.p25_p2_voice_err_hist_sum[1] = 6;
+    state.p25_p2_rs_facch_ok = 2;
+    state.p25_p2_rs_sacch_ok = 1;
+    state.p25_p2_rs_ess_err = 1;
+    model.refresh(&opts, &state);
+    expect("unsampled lead slot does not borrow other slot", model.leadSlot() == 1 && !model.voiceErrsValid());
+    expect("P2 slot readings are independent", !model.slot1VoiceErrsValid() && model.slot2VoiceErrsValid()
+                                                   && model.slot2VoiceErrsSamples() == 3
+                                                   && model.slot2VoiceErrsPerFrame() == 2.0);
+    expect("P2 RS sums FACCH SACCH ESS", model.rsValid() && model.rsOkPct() == 75.0);
+    dsd_call_state_end(&state, 0, 0);
+    model.refresh(&opts, &state);
+    expect("P2 summary follows lead slot", model.leadSlot() == 2 && model.voiceErrsValid()
+                                               && model.voiceErrsPerFrame() == 2.0 && model.voiceErrsSamples() == 3);
+    dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    model.refresh(&opts, &state);
+    expect("P2 new call invalidates its samples", !model.slot2VoiceErrsValid() && !model.voiceErrsValid());
+
+    call.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.synctype = call.protocol;
+    dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    state.errsR = 2;
+    state.errs2R = 7;
+    dsd_call_state_update_media(&state, 1, 1, 0);
+    model.refresh(&opts, &state);
+    expect("non-P25 lead slot last-frame fallback", model.lastFrameErrsValid() && model.lastFrameErrs() == 2
+                                                        && model.lastFrameErrs2() == 7 && !model.voiceErrsValid());
+    model.clear();
+    expect("clear removes all quality", !model.qualityValid() && !model.ccFecValid() && !model.voiceFecValid()
+                                            && !model.rsValid() && !model.voiceErrsValid()
+                                            && !model.slot2VoiceErrsValid() && !model.lastFrameErrsValid()
+                                            && model.voiceErrsSamples() == 0);
+    const int cleared = quality_signals;
+    model.clear();
+    expect("repeated clear is silent", quality_signals == cleared);
+    model.refresh(&opts, &state);
+    model.refresh(nullptr, &state);
+    expect("missing snapshot clears quality", !model.qualityValid());
+    dsd_state_ext_free_all(&state);
+}
+
+static void
+test_site() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int signals = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::siteChanged, [&]() { ++signals; });
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p2_cc = 0x293;
+    model.refresh(&opts, &state);
+    expect("NAC-only P1 identity", model.p25NacValid() && model.p25Nac() == 0x293 && !model.p25WacnValid()
+                                       && !model.p25SysIdValid() && !model.p25Phase2ParamsReady()
+                                       && model.siteLine() == QStringLiteral("P25 · NAC 293") && model.siteConfirmed());
+    const int first = signals;
+    model.refresh(&opts, &state);
+    expect("identical site does not notify", signals == first);
+    state.p2_wacn = 0xBEE00;
+    state.p2_sysid = 0x123;
+    state.p2_rfssid = 2;
+    state.p2_siteid = 3;
+    state.p25_site_lra_valid = 1;
+    state.p25_site_lra = 0;
+    state.trunk_cc_freq = 851000000;
+    state.trunk_vc_freq[0] = 852000000;
+    model.refresh(&opts, &state);
+    expect("full P25", model.p25WacnValid() && model.p25Wacn() == 0xBEE00 && model.p25SysIdValid()
+                           && model.p25SysId() == 0x123 && model.p25Rfss() == 2 && model.p25Site() == 3
+                           && model.p25LraValid() && model.p25Lra() == 0 && model.p25Phase2ParamsReady()
+                           && model.ccFreqHz() == 851000000 && model.vcFreqHz() == 852000000);
+    const int beforeFrequency = signals;
+    state.trunk_cc_freq += 12500;
+    model.refresh(&opts, &state);
+    expect("frequency-only site change notifies", signals == beforeFrequency + 1 && model.ccFreqHz() == 851012500);
+    state.synctype = DSD_SYNC_P25P2_POS;
+    model.refresh(&opts, &state);
+    expect("full P2 parameters ready", model.p25Phase2ParamsReady());
+    state.p2_wacn = 0xFFFFF;
+    state.p2_sysid = 0xFFF;
+    model.refresh(&opts, &state);
+    expect("invalid system fields do not hide NAC", !model.p25WacnValid() && !model.p25SysIdValid()
+                                                        && model.p25NacValid() && model.siteLine().contains("NAC 293")
+                                                        && !model.p25Phase2ParamsReady());
+    state.p2_wacn = 0xBEE00;
+    state.p2_sysid = 0x123;
+    state.p25_site_lra_valid = 0;
+    model.refresh(&opts, &state);
+    expect("LRA validity alone updates", !model.p25LraValid() && !model.siteLine().contains("LRA"));
+    for (auto nac : {0ULL, 0xFFFULL, 0x1000ULL}) {
+        state.p2_cc = nac;
+        model.refresh(&opts, &state);
+        expect("invalid NAC omitted independently", !model.p25NacValid() && !model.p25Phase2ParamsReady()
+                                                        && model.p25WacnValid() && !model.siteLine().contains("NAC"));
+    }
+    const QString retained = model.siteLine();
+    state.synctype = DSD_SYNC_NONE;
+    state.p2_wacn = 0;
+    model.refresh(&opts, &state);
+    expect("loss retains copied identity but withdraws confirmation",
+           model.siteLine() == retained && !model.siteConfirmed());
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state.dmr_color_code = 7;
+    DSD_SNPRINTF(state.dmr_site_parms, sizeof(state.dmr_site_parms), "%s", "Net 12 Site 3; ");
+    state.dmr_rest_channel = 4;
+    model.refresh(&opts, &state);
+    expect("DMR verbatim site", model.siteProtocol() == "DMR" && model.dmrColorCode() == 7
+                                    && model.dmrSiteText() == "Net 12 Site 3; " && model.dmrRestLsn() == 4
+                                    && !model.p25WacnValid());
+    state.synctype = DSD_SYNC_NXDN_POS;
+    state.nxdn_last_ran = 64;
+    model.refresh(&opts, &state);
+    expect("unknown NXDN RAN hidden", model.nxdnRan() == -1 && model.siteLine().isEmpty());
+    state.nxdn_last_ran = 0;
+    DSD_SNPRINTF(state.nxdn_location_category, sizeof(state.nxdn_location_category), "%s", "Type-D");
+    state.nxdn_location_sys_code = 12;
+    state.nxdn_location_site_code = 3;
+    model.refresh(&opts, &state);
+    expect("IDAS area and location", model.siteProtocol() == "IDAS" && model.nxdnRan() == 0
+                                         && model.nxdnLocationCategory() == "Type-D" && model.nxdnSysCode() == 12
+                                         && model.nxdnSiteCode() == 3 && model.siteLine().contains("Area 0"));
+    state.synctype = DSD_SYNC_EDACS_POS;
+    state.edacs_site_id = 7;
+    model.refresh(&opts, &state);
+    expect("EDACS site", model.siteProtocol() == "EDACS" && model.edacsSiteText().contains("007"));
+    model.clear();
+    expect("stop clears every site group", model.siteLine().isEmpty() && model.siteProtocol().isEmpty()
+                                               && !model.siteConfirmed() && model.ccFreqHz() == 0
+                                               && model.vcFreqHz() == 0 && model.dmrSiteText().isEmpty()
+                                               && model.edacsSiteText().isEmpty() && model.nxdnRan() == -1);
+    const int cleared = signals;
+    model.clear();
+    expect("repeated site clear silent", signals == cleared);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
+test_decryption_metadata() {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    state.enc_lockout_key_epoch = 10;
+    DSD_SNPRINTF(state.key_profile_ref, sizeof(state.key_profile_ref), "%s", "opaque-profile");
+    dsd_qt::MetricsModel model;
+    for (uint8_t slot = 0; slot < 2; ++slot) {
+        dsd_call_observation observation = {};
+        observation.protocol = DSD_SYNC_P25P2_POS;
+        observation.slot = slot;
+        observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+        observation.ota_target_id = 123;
+        observation.observed_m = 4.0;
+        dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        dsd_call_crypto_update crypto = {};
+        crypto.classification = DSD_CALL_CRYPTO_DECRYPTABLE;
+        crypto.algid = 0x84;
+        crypto.kid = 2 + slot;
+        crypto.observed_m = 4.0;
+        dsd_call_state_update_crypto(&state, slot, &crypto);
+        dsd_call_snapshot before = {}, after = {};
+        dsd_call_state_get(&state, slot, &before);
+        expect("resolver note accepted",
+               dsd_call_state_note_key_selection(&state, slot, before.epoch, DSD_CALL_KEY_SIGNALED, crypto.kid,
+                                                 crypto.kid, 1, 0)
+                   == 1);
+        dsd_call_state_get(&state, slot, &after);
+        expect("selection does not extend activity", before.updated_m == after.updated_m);
+        expect("wrong call epoch rejected",
+               dsd_call_state_note_key_selection(&state, slot, before.epoch + 100, DSD_CALL_KEY_SIGNALED, 99, 99, 1, 0)
+                   == 0);
+    }
+    model.refresh(&opts, &state);
+    const auto slots = model.decryptionSlots();
+    expect("two independent key selections",
+           slots.size() == 2 && slots[0].toMap().value("keyId") == "2" && slots[1].toMap().value("keyId") == "3");
+    expect("only opaque profile association published",
+           slots[0].toMap().value("profileRef") == "opaque-profile" && !slots[0].toMap().contains("material"));
+    state.enc_lockout_key_epoch++;
+    model.refresh(&opts, &state);
+    expect("old key result becomes pending",
+           model.decryptionSlots()[0].toMap().value("availability") == "Waiting for key reevaluation");
+    model.clear();
+    expect("stopped session has no live key metadata", model.decryptionSlots().isEmpty());
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    test_decryption_metadata();
+    test_site();
+    test_quality();
+    test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 0);
+    test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 1);
+    test_quality_without_identity(DSD_SYNC_NXDN_POS, 0);
 
     static dsd_opts opts;
     static dsd_state state;
@@ -92,6 +397,19 @@ main(int argc, char** argv) {
     opts.mod_qpsk = 0;
 
     dsd_qt::MetricsModel model;
+
+    dsd_call_observation emergency = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 123U, 456U);
+    emergency.kind = DSD_CALL_KIND_GROUP_VOICE;
+    emergency.has_service_metadata = 1;
+    emergency.emergency = 1;
+    emergency.priority = 3;
+    emergency.observed_m = dsd_time_now_monotonic_s();
+    dsd_call_state_observe(&state, &emergency, DSD_CALL_BOUNDARY_BEGIN);
+    model.refresh(&opts, &state);
+    expect("emergency and priority reach metrics", model.slot1CallEmergency() && model.slot1CallPriority() == 3);
+    model.clear();
+    expect("clear resets emergency and priority", !model.slot1CallEmergency() && model.slot1CallPriority() == 0);
+    dsd_state_ext_free_all(&state);
 
     /* Nothing has synced: the strip must say so rather than default to a lock. */
     state.synctype = DSD_SYNC_NONE;
@@ -257,9 +575,15 @@ main(int argc, char** argv) {
     expect("trunk scan hold reads the coordinator's flag", !model.scanHold());
     expect("trunk scan avoids read the coordinator's count", model.scanAvoidCount() == 7);
     expect("trunk scan reports the avoided fallback", model.scanTargetAvoided());
+    // WP-S1: the held snapshot supplies target identity and lifecycle clearing.
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof state.trunk_scan_active_id, "%s", "dispatch");
+    state.trunk_scan_active_ordinal = 2;
+    state.trunk_scan_target_count = 3;
     state.trunk_scan_hold = 1;
     model.refresh(&opts, &state);
     expect("trunk scan hold on", model.scanHold());
+    expect("scan target identity", model.scanTargetId() == QStringLiteral("dispatch") && model.scanTargetOrdinal() == 2
+                                       && model.scanTargetCount() == 3);
     /* Both flags set: --trunk-scan owns the tuner and the routing prefers it, so the
      * view reads the coordinator's fields, not the scan list's. */
     opts.scanner_mode = 1;
@@ -340,6 +664,8 @@ main(int argc, char** argv) {
     model.clear();
     expect("a cleared model reports no lock", !model.syncedHere());
     expect("a cleared model reports no tuner", !model.radioInput());
+    expect("clear removes scan identity",
+           model.scanTargetId().isEmpty() && model.scanTargetOrdinal() == 0 && model.scanTargetCount() == 0);
 
     /* The channel width rides the tuner group: it moves when the decoder changes
      * profile, not when the user changes a setting. It is also gated on a radio

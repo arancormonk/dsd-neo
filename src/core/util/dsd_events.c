@@ -74,6 +74,8 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].sys_id4 = 0;
         event_struct->Event_History_Items[i].sys_id5 = 0;
         event_struct->Event_History_Items[i].gi = 0;
+        event_struct->Event_History_Items[i].emergency = 0;
+        event_struct->Event_History_Items[i].priority = 0;
         event_struct->Event_History_Items[i].enc = 0;
         event_struct->Event_History_Items[i].enc_alg = 0;
         event_struct->Event_History_Items[i].enc_key = 0;
@@ -129,6 +131,8 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].sys_id4 = event_struct->Event_History_Items[i - 1].sys_id4;
         event_struct->Event_History_Items[i].sys_id5 = event_struct->Event_History_Items[i - 1].sys_id5;
         event_struct->Event_History_Items[i].gi = event_struct->Event_History_Items[i - 1].gi;
+        event_struct->Event_History_Items[i].emergency = event_struct->Event_History_Items[i - 1].emergency;
+        event_struct->Event_History_Items[i].priority = event_struct->Event_History_Items[i - 1].priority;
         event_struct->Event_History_Items[i].enc = event_struct->Event_History_Items[i - 1].enc;
         event_struct->Event_History_Items[i].enc_alg = event_struct->Event_History_Items[i - 1].enc_alg;
         event_struct->Event_History_Items[i].enc_key = event_struct->Event_History_Items[i - 1].enc_key;
@@ -757,6 +761,10 @@ static void
 watchdog_event_merge_staged_into(Event_History* retained, const Event_History* staged,
                                  watchdog_event_merge_added* added) {
     DSD_MEMSET(added, 0, sizeof(*added));
+    retained->emergency |= staged->emergency;
+    if (staged->priority > retained->priority) {
+        retained->priority = staged->priority;
+    }
     retained->crc_invalid |= staged->crc_invalid;
     if (retained->crc_invalid) {
         dsd_event_history_item_set_metadata(retained, DSD_EVENT_SEVERITY_WARNING,
@@ -1068,6 +1076,8 @@ typedef struct {
     uint32_t sys_id5;
     uint32_t channel;
     uint8_t enc;
+    uint8_t emergency;
+    uint8_t priority;
     uint8_t alg_id;
     uint16_t key_id;
     unsigned long long int mi;
@@ -1191,6 +1201,8 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
     ctx->source_id = call->ota_source_id <= UINT32_MAX ? (uint32_t)call->ota_source_id : 0U;
     ctx->target_id = watchdog_event_call_target_id(call);
     ctx->svc_opts = call->service_options;
+    ctx->emergency = call->emergency;
+    ctx->priority = call->priority;
     ctx->enc = call->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING || call->crypto == DSD_CALL_CRYPTO_ENCRYPTED
                || call->crypto == DSD_CALL_CRYPTO_DECRYPTABLE;
     ctx->alg_id = call->algid;
@@ -1393,6 +1405,8 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->sys_id4 = ctx->sys_id4;
     item->sys_id5 = ctx->sys_id5;
     item->enc = ctx->enc;
+    item->emergency = ctx->emergency;
+    item->priority = ctx->priority;
     item->enc_alg = ctx->alg_id;
     item->enc_key = ctx->key_id;
     item->mi = ctx->mi;
@@ -1753,6 +1767,8 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     ctx->target_id = item->target_id;
     ctx->svc_opts = item->svc;
     ctx->enc = item->enc;
+    ctx->emergency = item->emergency;
+    ctx->priority = item->priority;
     // A row persists only the derived flag, so the classification is rebuilt from it rather than
     // left at UNKNOWN. The P25 builder tests crypto and enc together; leaving crypto zero made
     // its first two disjuncts dead on every merged row, so any future classification that set

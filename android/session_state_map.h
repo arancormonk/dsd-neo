@@ -21,6 +21,7 @@
 #define DSD_NEO_ANDROID_SESSION_STATE_MAP_H_
 
 #include <string.h>
+#include "run_status.h"
 
 namespace dsd_android {
 
@@ -64,11 +65,70 @@ class SessionPhaseTracker {
      */
     void
     note_start_requested() {
+        m_observed = true;
+        m_ignore_retained = false;
+        m_waiting_for_session = false;
         m_failed = false;
         m_attempting = true;
         m_saw_running = false;
         m_grace = kStartGraceTicks;
         m_phase = kSessionStarting;
+    }
+
+    /** Ignore the previous session's retained result while an intent is in flight. */
+    void
+    note_start_requested(uint64_t last_session) {
+        note_start_requested();
+        m_last_session = last_session;
+        m_waiting_for_session = true;
+    }
+
+    /** A native return does not release the service's wake lock or worker slot.
+     * The host must check a fresh service record before submitting a retry, even
+     * if its last published UI phase still allowed starting. A rejected retry
+     * leaves the failure/session latch and start grace period untouched. */
+    bool
+    note_start_requested(uint64_t last_session, const char* service_state) {
+        if (service_state && service_state[0] && strcmp(service_state, "IDLE") != 0) {
+            return false;
+        }
+        note_start_requested(last_session);
+        return true;
+    }
+
+    SessionPhase
+    update(const char* service_state, bool engine_running, uint64_t session_id, RunReason reason) {
+        if (!m_observed) {
+            m_observed = true;
+            m_last_session = session_id;
+            if (!service_state || strcmp(service_state, "IDLE") == 0) {
+                m_ignored_session = session_id;
+                m_ignore_retained = true;
+            }
+        }
+        if (m_ignore_retained && session_id == m_ignored_session) {
+            return update(service_state, engine_running);
+        }
+        if (m_waiting_for_session && session_id <= m_last_session) {
+            m_phase = idle_phase();
+            return m_phase;
+        }
+        if (session_id < m_last_session) {
+            return m_phase;
+        }
+        if (session_id > m_last_session) {
+            m_last_session = session_id;
+            m_waiting_for_session = false;
+            m_failed = false;
+        }
+        // Retain the terminal outcome immediately, but only service IDLE means
+        // the wake lock and worker slot have been released. Publishing Failed or
+        // Idle earlier enables a retry the service would reject, followed by a
+        // misleading start timeout. Stopping keeps restart disabled in that gap.
+        if (reason == kRunFailed || reason == kRunCompleted || reason == kRunCancelled) {
+            return terminal_phase(service_state, reason);
+        }
+        return update(service_state, engine_running);
     }
 
     /**
@@ -119,24 +179,49 @@ class SessionPhaseTracker {
         return m_phase;
     }
 
+    /** Explicit dismissal adopts only a confirmed inactive service's retained result. */
+    bool
+    acknowledge_failure(uint64_t session, const char* service_state) {
+        if (m_phase != kSessionFailed || !service_state || strcmp(service_state, "IDLE") != 0) {
+            return false;
+        }
+        *this = SessionPhaseTracker();
+        (void)update(service_state, false, session, kRunPending);
+        return true;
+    }
+
     SessionPhase
     phase() const {
         return m_phase;
     }
 
-    /** @brief Whether the last attempt ended without the engine ever running. */
+    /** @brief Whether the current session has a latched failure, including during teardown. */
     bool
     failed() const {
         return m_failed;
     }
 
   private:
+    SessionPhase
+    terminal_phase(const char* service_state, RunReason reason) {
+        if (reason == kRunFailed) {
+            (void)latch_failure();
+        } else {
+            m_attempting = false;
+            m_saw_running = false;
+            m_grace = 0;
+        }
+        const bool service_idle = service_state && strcmp(service_state, "IDLE") == 0;
+        m_phase = service_idle ? (m_failed ? kSessionFailed : kSessionIdle) : kSessionStopping;
+        return m_phase;
+    }
+
     /**
      * @brief Resolve an IDLE poll, which is three different things.
      *
      * Before the service has seen the intent it means "not yet"; after a start that
      * reached STARTING but never ran it means the start failed; otherwise it is a
-     * genuine idle. A failure latches until the next start request so the reason
+     * genuine idle. A failure latches until a start request or explicit dismissal so the reason
      * stays on screen instead of flashing past in one 250 ms tick.
      */
     SessionPhase
@@ -163,6 +248,11 @@ class SessionPhaseTracker {
     }
 
     SessionPhase m_phase = kSessionIdle;
+    uint64_t m_last_session = 0;
+    bool m_observed = false;
+    bool m_ignore_retained = false;
+    uint64_t m_ignored_session = 0;
+    bool m_waiting_for_session = false;
     bool m_failed = false;
     bool m_attempting = false;
     bool m_saw_running = false;

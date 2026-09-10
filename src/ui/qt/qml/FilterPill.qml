@@ -10,10 +10,28 @@ Rectangle {
     property string text: ""
     property bool active: false
     property bool caret: true
-    signal clicked()
+    signal clicked
+
+    property string accessibleName: text
+    activeFocusOnTab: enabled && visible && Navigation.allows(control)
+    Accessible.role: Accessible.Button
+    Accessible.name: accessibleName
+    Accessible.focusable: true
+    readonly property bool navigationAllowed: Navigation.allows(control)
+    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.onPressAction: activate()
+    function activate() {
+        if (enabled && Navigation.allows(control))
+            clicked();
+    }
+    Keys.onSpacePressed: activate()
+    Keys.onReturnPressed: activate()
+    Keys.onEnterPressed: activate()
+    FocusFrame {}
+    Accessible.selected: active
 
     implicitWidth: pillContent.implicitWidth + 30
-    implicitHeight: 34
+    implicitHeight: Math.max(Theme.minimumTouchSize, label.implicitHeight + 24)
     radius: height / 2
     color: active ? Theme.chipSelectedFill : Theme.panel
     border.width: 1
@@ -26,10 +44,11 @@ Rectangle {
 
         Text {
             id: label
+            objectName: "filterPillLabel"
             anchors.verticalCenter: parent.verticalCenter
             text: control.text
             font.family: Theme.sans
-            font.pixelSize: 13
+            font.pixelSize: Theme.fontSize(13)
             font.weight: Font.DemiBold
             color: control.active ? Theme.cyan : Theme.buttonSecondaryText
         }
@@ -42,6 +61,6 @@ Rectangle {
     }
 
     TapHandler {
-        onTapped: control.clicked()
+        onTapped: control.activate()
     }
 }

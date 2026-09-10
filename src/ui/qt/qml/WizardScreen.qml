@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtQuick.Dialogs
+import QtQuick.Window
 import "Util.js" as Util
 
 // The add-system wizard: source → tune → name. Three screens instead of one form,
@@ -10,21 +11,59 @@ import "Util.js" as Util
 Item {
     id: wizard
 
-    signal closed()
+    signal closed
+    property var importedSite: null
+    property var importedSites: []
+    property string retainedKeySourceUid: ""
     signal saved(int row)
     // Asks Main.qml to push the RadioReference screen over this one; the result
     // comes back through applyRadioReference().
-    signal openRadioReference()
+    signal openRadioReference
 
+    property string initialDraft: ""
+    function revealFocus() {
+        var window = wizard.Window.window;
+        if (window)
+            Theme.revealFocus(wizardScroll, stepColumn, window.activeFocusItem);
+    }
+    Connections {
+        target: wizard.Window.window
+        function onActiveFocusItemChanged() {
+            if (wizard.visible)
+                Qt.callLater(wizard.revealFocus);
+        }
+    }
+    function draftFingerprint() {
+        return JSON.stringify([sourceType, hostText, portText, fileText, freqText, decodeFlag, trunking, gainText, ppmText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
+    }
+    function requestBack() {
+        Navigation.clearInput(wizard.Window.window);
+        if (step > 0) {
+            step--;
+            return;
+        }
+        if (initialDraft !== draftFingerprint() || encKeyValue.length > 0)
+            discardDialog.ask(function () {
+                wizard.closed();
+            });
+        else
+            closed();
+    }
+    DiscardDialog {
+        id: discardDialog
+    }
+    onStepChanged: Navigation.clearInput(wizard.Window.window)
     property int step: 0
     // -1 appends a new system; >= 0 edits in place.
     property int editRow: -1
+    property string decryptionProfileUid: ""
 
     // Step 1 state
     property string sourceType: "usb"
+    onSourceTypeChanged: Navigation.clearInput(wizard.Window.window)
     property alias hostText: hostField.text
     property alias portText: portField.text
-    property alias fileText: fileField.text
+    property string fileText: ""
 
     // Step 2 state
     property alias freqText: freqField.text
@@ -49,6 +88,11 @@ Item {
     property string groupCsvPath: ""
     property string keyCsvPath: ""
     property bool keyCsvHex: false
+    // WP-D2: the editor is the sole owner of the draft key text.
+    property alias encKeyType: encryptionEditor.keyType
+    property alias encKeyValue: encryptionEditor.keyValue
+    property alias encForceKey: encryptionEditor.forceMode
+    readonly property bool encryptionValid: encryptionEditor.valid
     property string p25BandplanCsvPath: ""
     property string srcCsvPath: ""
     // Which field the shared FileDialog is serving: "source" is the step-1
@@ -72,51 +116,80 @@ Item {
     // GQRX/SDR++ audio streams (docs/network-audio.md) use 7355 and a TCP audio
     // source is usually a player on this device. Accepting the wrong prefill
     // leaves the session silent with no error.
+    ModalSheet {
+        id: replayDetails
+        property string details: ""
+        accessibleName: qsTr("Replay file details")
+        Text {
+            width: parent.width
+            text: replayDetails.details
+            textFormat: Text.PlainText
+            wrapMode: Text.WrapAnywhere
+            color: Theme.textPrimary
+            font.pixelSize: Theme.fontSize(15)
+        }
+        OutlineButton {
+            width: parent.width
+            text: qsTr("Close")
+            onClicked: replayDetails.visible = false
+        }
+    }
+
     function defaultHostFor(type) {
-        return type === "tcp" ? "127.0.0.1" : "192.168.1.10"
+        return type === "tcp" ? "127.0.0.1" : "192.168.1.10";
     }
 
     function defaultPortFor(type) {
-        return (type === "udp" || type === "tcp") ? "7355" : "1234"
+        return (type === "udp" || type === "tcp") ? "7355" : "1234";
     }
 
     // Swap the prefill when the source type changes, but never text the user
     // already edited away from the previous type's default.
     function applySourceDefaults(prevType) {
         if (hostField.text === defaultHostFor(prevType))
-            hostField.text = defaultHostFor(sourceType)
+            hostField.text = defaultHostFor(sourceType);
         if (portField.text === defaultPortFor(prevType))
-            portField.text = defaultPortFor(sourceType)
+            portField.text = defaultPortFor(sourceType);
+    }
+
+    function resetImport() {
+        importedSite = null;
+        importedSites = [];
     }
 
     function openForAdd(preferNetwork) {
-        editRow = -1
-        step = 0
-        sourceType = preferNetwork ? "rtltcp" : "usb"
-        hostField.text = defaultHostFor(sourceType)
-        portField.text = defaultPortFor(sourceType)
-        fileField.text = ""
-        freqField.text = "851.375"
-        decodeFlag = ""
-        trunkingAnswered = false
+        retainedKeySourceUid = "";
+        resetImport();
+        decryptionProfileUid = "";
+        editRow = -1;
+        step = 0;
+        sourceType = preferNetwork ? "rtltcp" : "usb";
+        hostField.text = defaultHostFor(sourceType);
+        portField.text = defaultPortFor(sourceType);
+        wizard.fileText = "";
+        freqField.text = "851.375";
+        decodeFlag = "";
+        trunkingAnswered = false;
         // After the field and the chip, never before: the prefill is an 800 MHz
         // control channel, so this is what keeps the shipped defaults decoding.
-        refreshTrunkingSuggestion()
-        advancedOpen = false
-        gainField.text = ""
-        ppmField.text = ""
-        bwField.text = ""
-        biasTee = -1
-        extraField.text = ""
-        nameField.text = ""
-        chanCsvPath = ""
-        groupCsvPath = ""
-        keyCsvPath = ""
-        keyCsvHex = false
-        p25BandplanCsvPath = ""
-        srcCsvPath = ""
-        csvNotice = ""
-        csvNoticeIsProblem = false
+        refreshTrunkingSuggestion();
+        advancedOpen = false;
+        gainField.text = "";
+        ppmField.text = "";
+        bwField.text = "";
+        biasTee = -1;
+        extraField.text = "";
+        nameField.text = "";
+        chanCsvPath = "";
+        groupCsvPath = "";
+        keyCsvPath = "";
+        keyCsvHex = false;
+        encryptionEditor.reset();
+        p25BandplanCsvPath = "";
+        srcCsvPath = "";
+        csvNotice = "";
+        csvNoticeIsProblem = false;
+        initialDraft = draftFingerprint();
     }
 
     /**
@@ -129,72 +202,86 @@ Item {
      * work. @a sys supplies the source; it is the explore session's own map.
      */
     function openForFound(sys, freqMhz) {
-        editRow = -1
-        step = 1
-        sourceType = (sys && sys.sourceType === "rtltcp") ? "rtltcp" : "usb"
-        hostField.text = sys && sys.host ? sys.host : defaultHostFor(sourceType)
-        portField.text = sys && sys.port > 0 ? String(sys.port) : defaultPortFor(sourceType)
-        fileField.text = ""
-        freqField.text = freqMhz
-        decodeFlag = ""
-        trunkingAnswered = false
+        resetImport();
+        retainedKeySourceUid = "";
+        decryptionProfileUid = "";
+        editRow = -1;
+        step = 1;
+        sourceType = (sys && sys.sourceType === "rtltcp") ? "rtltcp" : "usb";
+        hostField.text = sys && sys.host ? sys.host : defaultHostFor(sourceType);
+        portField.text = sys && sys.port > 0 ? String(sys.port) : defaultPortFor(sourceType);
+        wizard.fileText = "";
+        freqField.text = freqMhz;
+        decodeFlag = "";
+        trunkingAnswered = false;
         // The frequency a user "found" while exploring 700/800 is most often a
         // constant-carrier control channel — that is what stands out on a
         // waterfall — so the same suggestion applies, and more strongly.
-        refreshTrunkingSuggestion()
-        advancedOpen = false
-        gainField.text = ""
-        ppmField.text = ""
-        bwField.text = ""
-        biasTee = -1
-        extraField.text = ""
-        nameField.text = ""
-        chanCsvPath = ""
-        groupCsvPath = ""
-        keyCsvPath = ""
-        keyCsvHex = false
-        p25BandplanCsvPath = ""
-        srcCsvPath = ""
-        csvNotice = ""
-        csvNoticeIsProblem = false
+        refreshTrunkingSuggestion();
+        advancedOpen = false;
+        gainField.text = "";
+        ppmField.text = "";
+        bwField.text = "";
+        biasTee = -1;
+        extraField.text = "";
+        nameField.text = "";
+        chanCsvPath = "";
+        groupCsvPath = "";
+        keyCsvPath = "";
+        keyCsvHex = false;
+        encryptionEditor.reset();
+        p25BandplanCsvPath = "";
+        srcCsvPath = "";
+        csvNotice = "";
+        csvNoticeIsProblem = false;
+        initialDraft = draftFingerprint();
     }
 
     function openForEdit(row) {
-        var sys = savedSystems.get(row)
-        editRow = row
-        step = 0
-        sourceType = sys.sourceType
-        hostField.text = sys.host
-        portField.text = sys.port > 0 ? String(sys.port) : ""
-        fileField.text = sys.filePath
-        freqField.text = sys.freqMhz
-        decodeFlag = sys.decodeFlag
+        resetImport();
+        var sys = savedSystems.get(row);
+        retainedKeySourceUid = sys.uid || "";
+        decryptionProfileUid = sys.decryptionProfileUid || "";
+        editRow = row;
+        step = 0;
+        sourceType = sys.sourceType;
+        hostField.text = sys.host;
+        portField.text = sys.port > 0 ? String(sys.port) : "";
+        wizard.fileText = sys.filePath;
+        freqField.text = sys.freqMhz;
+        decodeFlag = sys.decodeFlag;
         // The saved system already answered the question; a chip tap during
         // the edit must not silently flip what the card was doing yesterday.
-        answerTrunking(sys.trunking)
-        advancedOpen = false
-        gainField.text = sys.gainDb >= 0 ? String(sys.gainDb) : ""
-        ppmField.text = sys.ppm
-        bwField.text = sys.bandwidthKhz > 0 ? String(sys.bandwidthKhz) : ""
-        biasTee = sys.biasTee
-        extraField.text = sys.extraArgs
-        nameField.text = sys.name
-        chanCsvPath = sys.chanCsvPath
-        groupCsvPath = sys.groupCsvPath
-        keyCsvPath = sys.keyCsvPath
-        keyCsvHex = sys.keyCsvHex
-        p25BandplanCsvPath = sys.p25BandplanCsvPath
-        srcCsvPath = sys.srcCsvPath
-        csvNotice = ""
-        csvNoticeIsProblem = false
+        answerTrunking(sys.trunking);
+        advancedOpen = false;
+        gainField.text = sys.gainDb >= 0 ? String(sys.gainDb) : "";
+        ppmField.text = sys.ppm;
+        bwField.text = sys.bandwidthKhz > 0 ? String(sys.bandwidthKhz) : "";
+        biasTee = sys.biasTee;
+        extraField.text = sys.extraArgs;
+        nameField.text = sys.name;
+        chanCsvPath = sys.chanCsvPath;
+        groupCsvPath = sys.groupCsvPath;
+        keyCsvPath = sys.keyCsvPath;
+        keyCsvHex = sys.keyCsvHex;
+        encryptionEditor.reset();
+        encKeyType = sys.encKeyType || "";
+        encryptionEditor.configuredKeyType = encKeyType;
+        encryptionEditor.keyConfigured = sys.encKeyConfigured === true;
+        encForceKey = sys.encForceKey || 0;
+        p25BandplanCsvPath = sys.p25BandplanCsvPath;
+        srcCsvPath = sys.srcCsvPath;
+        csvNotice = "";
+        csvNoticeIsProblem = false;
+        initialDraft = draftFingerprint();
     }
 
     // Display line for a picker row: the file's name, or "None".
     function csvLabel(path) {
         if (path.length === 0)
-            return qsTr("None")
-        var row = importedFiles.rowForPath(path)
-        return row >= 0 ? importedFiles.get(row).name : path.substring(path.lastIndexOf('/') + 1)
+            return qsTr("None");
+        var row = importedFiles.rowForPath(path);
+        return row >= 0 ? importedFiles.get(row).name : path.substring(path.lastIndexOf('/') + 1);
     }
 
     /**
@@ -206,8 +293,8 @@ Item {
      * RadioReference import, or an edit's saved state) answers it for real.
      */
     function pickDecodeFlag(flag) {
-        decodeFlag = flag
-        refreshTrunkingSuggestion()
+        decodeFlag = flag;
+        refreshTrunkingSuggestion();
     }
 
     /**
@@ -221,47 +308,49 @@ Item {
      */
     function refreshTrunkingSuggestion() {
         if (trunkingAnswered)
-            return
+            return;
         // parseFloat("") and a half-typed "8." are NaN, which suggestsTrunking()
         // reads as "no band, no suggestion" rather than as 0 Hz.
-        trunking = Util.suggestsTrunking(decodeFlag, parseFloat(freqField.text) * 1.0e6)
+        trunking = Util.suggestsTrunking(decodeFlag, parseFloat(freqField.text) * 1.0e6);
     }
 
     /** The user's own toggle: an answer, which no later chip pick may undo. */
     function answerTrunking(state) {
-        trunking = state
-        trunkingAnswered = true
+        trunking = state;
+        trunkingAnswered = true;
     }
 
     // parseInt alone lets a hardware-keyboard "abc" become NaN, which QVariant
     // then reads as 0 — and a gain of 0 is a meaningful override, not "unset".
     // NaN must collapse to the field's explicit "no override" value instead.
     function intOr(text, fallback) {
-        var v = parseInt(text, 10)
-        return isNaN(v) ? fallback : v
+        var v = parseInt(text, 10);
+        return isNaN(v) ? fallback : v;
     }
 
     function portValid() {
-        var p = parseInt(portText, 10)
-        return !isNaN(p) && p >= 1 && p <= 65535
+        var p = Number(portText);
+        return /^[0-9]+$/.test(portText) && p >= 1 && p <= 65535;
     }
 
     function stepValid() {
         if (step === 0) {
             if (sourceType === "rtltcp" || sourceType === "tcp")
-                return hostText.length > 0 && portValid()
+                return hostText.length > 0 && portValid();
             if (sourceType === "udp")
-                return portValid()
+                return portValid();
             if (sourceType === "file")
-                return fileText.length > 0
-            return true
+                return fileText.length > 0;
+            return true;
         }
         if (step === 1)
-            return !radioSource || sessionArgs.freqValid(freqText)
-        return nameText.trim().length > 0
+            return encryptionValid && (!radioSource || sessionArgs.freqValid(freqText));
+        return encryptionValid && nameText.trim().length > 0;
     }
 
     function commit() {
+        if (!encryptionValid)
+            return;
         var sys = {
             name: nameText.trim(),
             sourceType: sourceType,
@@ -276,19 +365,61 @@ Item {
             biasTee: biasTee,
             extraArgs: extraText.trim(),
             filePath: fileText,
+            decryptionProfileUid: decryptionProfileUid,
             chanCsvPath: chanCsvPath,
             groupCsvPath: groupCsvPath,
             keyCsvPath: keyCsvPath,
             keyCsvHex: keyCsvHex,
+            encKeyType: encryptionEditor.clearingKey ? "" : encKeyType,
+            encForceKey: encForceKey,
             p25BandplanCsvPath: p25BandplanCsvPath,
             srcCsvPath: srcCsvPath
+        };
+        if (!encryptionEditor.keepingKey)
+            sys.encKeyValue = encryptionEditor.clearingKey ? "" : encKeyValue;
+        if (importedSites.length > 0) {
+            // Every site receives the source/tuner answers; its protocol and CSVs stay site-specific.
+            for (var i = 0; i < importedSites.length; ++i) {
+                var site = i === 0 ? Object.assign({}, importedSites[i], sys) : Object.assign({}, sys, importedSites[i]);
+                if (site.freqMhz !== importedSites[i].freqMhz || site.decodeFlag !== importedSites[i].decodeFlag || site.chanCsvPath !== (importedSites[i].chanCsvPath || "") || site.groupCsvPath !== (importedSites[i].groupCsvPath || "")) {
+                    site.rrSid = 0;
+                    site.rrSiteId = 0;
+                }
+                if (encryptionEditor.keepingKey) {
+                    if (!savedSystems.addWithKeyFrom(retainedKeySourceUid, site)) {
+                        csvNotice = qsTr("The retained key is unavailable. Choose Replace or Clear before saving.");
+                        csvNoticeIsProblem = true;
+                        return;
+                    }
+                } else {
+                    if (!savedSystems.add(site)) {
+                        csvNotice = qsTr("Could not save this imported system.");
+                        csvNoticeIsProblem = true;
+                        return;
+                    }
+                }
+            }
+            wizard.saved(savedSystems.count - importedSites.length);
+            return;
+        }
+        if (importedSite && importedSite.rrSiteId > 0 && sys.freqMhz === importedSite.freqMhz && sys.decodeFlag === importedSite.decodeFlag && sys.chanCsvPath === (importedSite.chanCsvPath || "") && sys.groupCsvPath === (importedSite.groupCsvPath || "")) {
+            for (var key of ["rrSid", "rrSiteId", "siteName", "siteLat", "siteLon", "hasSitePos"])
+                sys[key] = importedSite[key];
         }
         if (editRow >= 0) {
-            savedSystems.update(editRow, sys)
-            wizard.saved(editRow)
+            if (!savedSystems.update(editRow, sys)) {
+                csvNotice = qsTr("Could not save the system.");
+                csvNoticeIsProblem = true;
+                return;
+            }
+            wizard.saved(editRow);
         } else {
-            savedSystems.add(sys)
-            wizard.saved(savedSystems.count - 1)
+            if (!savedSystems.add(sys)) {
+                csvNotice = qsTr("Could not save the system.");
+                csvNoticeIsProblem = true;
+                return;
+            }
+            wizard.saved(savedSystems.count - 1);
         }
     }
 
@@ -304,27 +435,27 @@ Item {
         subtitle: wizard.csvLabel(pickerRow.path)
         subtitleColor: pickerRow.path.length > 0 ? Theme.textSecondary : Theme.textSubdued
         onTapped: {
-            wizard.pickerTarget = pickerRow.target
-            wizard.pickerKeyHex = wizard.pickerTarget === "keys" ? wizard.keyCsvHex : false
-            csvSheet.visible = true
+            wizard.pickerTarget = pickerRow.target;
+            wizard.pickerKeyHex = wizard.pickerTarget === "keys" ? wizard.keyCsvHex : false;
+            csvSheet.visible = true;
         }
     }
 
     // Assign an imported/picked library path to the field the picker serves.
     function assignCsvPath(target, path, hex) {
-        csvNotice = ""
-        csvNoticeIsProblem = false
+        csvNotice = "";
+        csvNoticeIsProblem = false;
         if (target === "chan") {
-            chanCsvPath = path
+            chanCsvPath = path;
         } else if (target === "group") {
-            groupCsvPath = path
+            groupCsvPath = path;
         } else if (target === "keys") {
-            keyCsvPath = path
-            keyCsvHex = hex
+            keyCsvPath = path;
+            keyCsvHex = hex;
         } else if (target === "p25Bandplan") {
-            p25BandplanCsvPath = path
+            p25BandplanCsvPath = path;
         } else if (target === "src") {
-            srcCsvPath = path
+            srcCsvPath = path;
         }
     }
 
@@ -340,26 +471,33 @@ Item {
      * silently strip a hand-picked -C from a system they were only editing.
      */
     function applyRadioReference(result) {
+        importedSites = result.rows || [];
+        if (importedSites.length > 0) {
+            editRow = -1;
+            result = importedSites[0];
+        }
+        importedSite = result;
+
         if (result.chanCsvPath !== undefined && result.chanCsvPath.length > 0)
-            wizard.assignCsvPath("chan", result.chanCsvPath, false)
+            wizard.assignCsvPath("chan", result.chanCsvPath, false);
         if (result.groupCsvPath !== undefined && result.groupCsvPath.length > 0)
-            wizard.assignCsvPath("group", result.groupCsvPath, false)
+            wizard.assignCsvPath("group", result.groupCsvPath, false);
         if (result.freqMhz && result.freqMhz.length > 0)
-            freqField.text = result.freqMhz
-        wizard.decodeFlag = result.decodeFlag
+            freqField.text = result.freqMhz;
+        wizard.decodeFlag = result.decodeFlag;
         // The database's answer, and an answer: a chip tap after the import
         // must not second-guess what the record says the system is.
-        wizard.answerTrunking(result.trunking)
+        wizard.answerTrunking(result.trunking);
         // Only when the wizard has no name yet: an edit already has one the user
         // chose, and RadioReference's is a database title, not their label.
         if (nameField.text.trim().length === 0 && result.name)
-            nameField.text = result.name
-        wizard.csvNotice = qsTr("Imported from RadioReference")
-        wizard.csvNoticeIsProblem = false
+            nameField.text = result.name;
+        wizard.csvNotice = qsTr("Imported from RadioReference");
+        wizard.csvNoticeIsProblem = false;
         // Land on the tune step: the frequency, decode flag and files are all
         // answered now, and step 2 is where they are shown.
         if (wizard.step < 1)
-            wizard.step = 1
+            wizard.step = 1;
     }
 
     // No CSV name filter for the trunking-data picks: on Android it becomes a
@@ -370,36 +508,44 @@ Item {
         id: fileDialog
 
         onAccepted: {
-            var reference = selectedFile.toString()
-            var hint = reference.substring(reference.lastIndexOf('/') + 1)
+            var reference = selectedFile.toString();
+            var hint = reference.substring(reference.lastIndexOf('/') + 1);
             if (wizard.pickerTarget === "source") {
-                var path = decoderHost.importContentUri(reference, hint)
+                var path = decoderHost.importContentUri(reference, hint);
                 if (path.length > 0)
-                    fileField.text = path
-                return
+                    wizard.fileText = path;
+                return;
             }
-            var type = wizard.pickerTarget === "keys"
-                       ? (wizard.pickerKeyHex ? "keysHex" : "keysDec") : wizard.pickerTarget
-            var result = importedFiles.importFile(reference, hint, type)
-            if (!result.ok) {
-                wizard.csvNotice = qsTr("Could not read that file")
-                wizard.csvNoticeIsProblem = true
-                return
-            }
-            wizard.assignCsvPath(wizard.pickerTarget, result.path, wizard.pickerKeyHex)
-            if (result.error === "empty") {
-                wizard.csvNotice = qsTr("%1 has no usable rows — check the file format.").arg(result.name)
-                wizard.csvNoticeIsProblem = true
-            } else {
-                wizard.csvNotice = ""
-                wizard.csvNoticeIsProblem = false
-            }
+            var type = wizard.pickerTarget === "keys" ? (wizard.pickerKeyHex ? "keysHex" : "keysDec") : wizard.pickerTarget;
+            csvImport.begin(reference, hint, type, -1);
         }
     }
 
     Rectangle {
         anchors.fill: parent
         color: Theme.bg
+    }
+
+    CsvImportFlow {
+        id: csvImport
+        overlayParent: wizard
+        onFinished: function (result) {
+            if (result.error === "cancelled")
+                return;
+            if (!result.ok) {
+                wizard.csvNotice = qsTr("Could not read that file");
+                wizard.csvNoticeIsProblem = true;
+                return;
+            }
+            wizard.assignCsvPath(wizard.pickerTarget, result.path, wizard.pickerKeyHex);
+            if (result.error === "empty") {
+                wizard.csvNotice = qsTr("%1 has no usable rows — check the file format.").arg(result.name);
+                wizard.csvNoticeIsProblem = true;
+            } else {
+                wizard.csvNotice = "";
+                wizard.csvNoticeIsProblem = false;
+            }
+        }
     }
 
     // Header: back chevron, title, segmented progress.
@@ -412,21 +558,13 @@ Item {
         anchors.margins: Theme.screenPadding
         height: 46
 
-        Text {
+        IconButton {
             id: back
+            icon: "back"
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            text: "‹"
-            font.pixelSize: 28
-            color: Theme.textSecondary
-
-            TapHandler {
-                onTapped: {
-                    if (wizard.step > 0)
-                        wizard.step--
-                    else
-                        wizard.closed()
-                }
+            onClicked: {
+                wizard.requestBack();
             }
         }
 
@@ -436,7 +574,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: wizard.editRow >= 0 ? qsTr("Edit system") : qsTr("Add system")
             font.family: Theme.sans
-            font.pixelSize: 22
+            font.pixelSize: Theme.fontSize(22)
             font.weight: Font.Bold
             font.letterSpacing: -0.22
             color: Theme.textPrimary
@@ -468,12 +606,12 @@ Item {
         anchors.left: parent.left
         anchors.topMargin: 6
         anchors.leftMargin: Theme.screenPadding
-        text: wizard.step === 0 ? qsTr("Step 1 of 3 · Source")
-              : wizard.step === 1 ? qsTr("Step 2 of 3 · Tune")
-              : qsTr("Step 3 of 3 · Name")
+        text: wizard.step === 0 ? qsTr("Step 1 of 3 · Source") : wizard.step === 1 ? qsTr("Step 2 of 3 · Tune") : qsTr("Step 3 of 3 · Name")
     }
 
-    Flickable {
+    PlexFlickable {
+        id: wizardScroll
+        onHeightChanged: Qt.callLater(wizard.revealFocus)
         anchors.top: stepLabel.bottom
         anchors.left: parent.left
         anchors.right: parent.right
@@ -486,8 +624,8 @@ Item {
         Column {
             id: stepColumn
 
-            x: Theme.screenPadding
-            width: parent.width - 2 * Theme.screenPadding
+            x: (parent.width - width) / 2
+            width: Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
             spacing: Theme.gap
 
             // ---- Step 1: source ----
@@ -499,7 +637,7 @@ Item {
                 Text {
                     text: qsTr("Where does the signal come from?")
                     font.family: Theme.sans
-                    font.pixelSize: 15
+                    font.pixelSize: Theme.fontSize(15)
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
                 }
@@ -510,11 +648,26 @@ Item {
 
                     Repeater {
                         model: [
-                            { label: qsTr("USB dongle"), key: "usb" },
-                            { label: qsTr("RTL-TCP"), key: "rtltcp" },
-                            { label: qsTr("UDP audio"), key: "udp" },
-                            { label: qsTr("TCP audio"), key: "tcp" },
-                            { label: qsTr("File"), key: "file" }
+                            {
+                                label: qsTr("USB dongle"),
+                                key: "usb"
+                            },
+                            {
+                                label: qsTr("RTL-TCP"),
+                                key: "rtltcp"
+                            },
+                            {
+                                label: qsTr("UDP audio"),
+                                key: "udp"
+                            },
+                            {
+                                label: qsTr("TCP audio"),
+                                key: "tcp"
+                            },
+                            {
+                                label: qsTr("File"),
+                                key: "file"
+                            }
                         ]
 
                         DecodeChip {
@@ -523,10 +676,10 @@ Item {
                             text: modelData.label
                             selected: wizard.sourceType === modelData.key
                             onClicked: {
-                                var prev = wizard.sourceType
-                                wizard.sourceType = modelData.key
+                                var prev = wizard.sourceType;
+                                wizard.sourceType = modelData.key;
                                 if (prev !== modelData.key)
-                                    wizard.applySourceDefaults(prev)
+                                    wizard.applySourceDefaults(prev);
                             }
                         }
                     }
@@ -537,7 +690,7 @@ Item {
                     visible: wizard.sourceType === "usb"
                     text: qsTr("An RTL-SDR dongle on a USB-OTG cable. Most public-safety listening starts here.")
                     font.family: Theme.sans
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSubdued
                     wrapMode: Text.Wrap
                 }
@@ -547,15 +700,11 @@ Item {
                     visible: wizard.sourceType === "rtltcp" || wizard.sourceType === "tcp"
                     spacing: 10
 
-                    Text {
-                        text: qsTr("Host")
-                        font.family: Theme.sans
-                        font.pixelSize: 13
-                        color: Theme.textSecondary
-                    }
-
                     PlexTextField {
                         id: hostField
+                        label: qsTr("Host")
+                        nextField: portField
+                        error: text.trim().length && /^[A-Za-z0-9_.-]+$/.test(text.trim()) ? "" : qsTr("Enter a host name or IPv4 address.")
                         width: parent.width
                         mono: true
                         text: "192.168.1.10"
@@ -571,12 +720,14 @@ Item {
                     Text {
                         text: wizard.sourceType === "udp" ? qsTr("Listen port") : qsTr("Port")
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSecondary
                     }
 
                     PlexTextField {
                         id: portField
+                        label: qsTr("Port")
+                        error: /^[0-9]+$/.test(text) && Number(text) >= 1 && Number(text) <= 65535 ? "" : qsTr("Enter a port from 1 to 65535.")
                         width: parent.width
                         mono: true
                         text: "1234"
@@ -599,7 +750,7 @@ Item {
                     Text {
                         text: qsTr("Audio or capture file")
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSecondary
                     }
 
@@ -609,6 +760,9 @@ Item {
 
                         PlexTextField {
                             id: fileField
+                            text: wizard.fileText.substring(wizard.fileText.lastIndexOf("/") + 1)
+                            input.readOnly: true
+                            label: qsTr("Replay file")
                             width: parent.width - browse.width - 10
                             mono: true
                             placeholderText: qsTr("pick a .wav or .bin")
@@ -619,9 +773,20 @@ Item {
                             width: 96
                             text: qsTr("Browse")
                             onClicked: {
-                                wizard.pickerTarget = "source"
-                                fileDialog.open()
+                                wizard.pickerTarget = "source";
+                                fileDialog.open();
                             }
+                        }
+                    }
+                    DisclosureRow {
+                        width: parent.width
+                        visible: wizard.fileText.length > 0
+                        title: qsTr("File details")
+                        subtitle: qsTr("Inspect the saved replay copy")
+                        onTapped: {
+                            var info = decoderHost.documentInfo(wizard.fileText);
+                            replayDetails.details = info.exists ? qsTr("%1\n%2 bytes\nModified: %3").arg(info.name).arg(info.sizeBytes).arg(info.modified) : qsTr("This file is missing. Use Browse to select it again.");
+                            replayDetails.visible = true;
                         }
                     }
                 }
@@ -678,7 +843,7 @@ Item {
                         Text {
                             text: qsTr("Frequency")
                             font.family: Theme.sans
-                            font.pixelSize: 14
+                            font.pixelSize: Theme.fontSize(14)
                             color: Theme.textSecondary
                         }
 
@@ -705,15 +870,9 @@ Item {
                             // switch as it changes. Only a build without the
                             // importer sends the user to the website; with it,
                             // the entry above IS the way to look this up.
-                            text: wizard.trunking
-                                  ? (radioReference.available
-                                     ? qsTr("Tune to the system's control channel.")
-                                     : qsTr("Tune to the system's control channel — find it on RadioReference."))
-                                  : (radioReference.available
-                                     ? qsTr("Tune to the frequency you want to hear.")
-                                     : qsTr("Tune to the frequency you want to hear — find it on RadioReference."))
+                            text: wizard.trunking ? (radioReference.available ? qsTr("Tune to the system's control channel.") : qsTr("Tune to the system's control channel — find it on RadioReference.")) : (radioReference.available ? qsTr("Tune to the frequency you want to hear.") : qsTr("Tune to the frequency you want to hear — find it on RadioReference."))
                             font.family: Theme.sans
-                            font.pixelSize: 13
+                            font.pixelSize: Theme.fontSize(13)
                             color: Theme.textSubdued
                             wrapMode: Text.Wrap
                         }
@@ -723,7 +882,7 @@ Item {
                 Text {
                     text: qsTr("What should we decode?")
                     font.family: Theme.sans
-                    font.pixelSize: 15
+                    font.pixelSize: Theme.fontSize(15)
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
                 }
@@ -751,7 +910,7 @@ Item {
                     width: parent.width
                     text: Util.decodeHint(wizard.decodeFlag)
                     font.family: Theme.sans
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSubdued
                     wrapMode: Text.Wrap
                 }
@@ -775,7 +934,7 @@ Item {
                             // decision rule for anyone who does not.
                             text: qsTr("Trunking")
                             font.family: Theme.sans
-                            font.pixelSize: 15
+                            font.pixelSize: Theme.fontSize(15)
                             font.weight: Font.DemiBold
                             color: Theme.textPrimary
                             elide: Text.ElideRight
@@ -791,7 +950,7 @@ Item {
                             // user actually tuned.
                             text: qsTr("On when the system uses a control channel")
                             font.family: Theme.sans
-                            font.pixelSize: 13
+                            font.pixelSize: Theme.fontSize(13)
                             color: Theme.textSubdued
                             elide: Text.ElideRight
                         }
@@ -803,7 +962,35 @@ Item {
                         anchors.rightMargin: Theme.cardPadding
                         anchors.verticalCenter: parent.verticalCenter
                         checked: wizard.trunking
-                        onToggled: function (state) { wizard.answerTrunking(state) }
+                        onToggled: function (state) {
+                            wizard.answerTrunking(state);
+                        }
+                    }
+                }
+
+                DecryptionProfileSelector {
+                    width: parent.width
+                    overlayParent: wizard
+                    profileUid: wizard.decryptionProfileUid
+                    protocol: Util.decryptionProtocol(wizard.decodeFlag)
+                    onSelected: function (uid) {
+                        wizard.decryptionProfileUid = uid;
+                        encryptionEditor.reset();
+                        wizard.keyCsvPath = "";
+                    }
+                }
+                UiPanel {
+                    width: parent.width
+                    visible: wizard.decryptionProfileUid.length === 0
+                    height: encryptionEditor.height + 2 * Theme.cardPadding
+                    EncryptionEditor {
+                        id: encryptionEditor
+                        protocol: Util.decryptionProtocol(wizard.decodeFlag)
+                        objectName: "wizardEncryptionEditor"
+                        x: Theme.cardPadding
+                        y: Theme.cardPadding
+                        width: parent.width - 2 * Theme.cardPadding
+                        csvPath: wizard.keyCsvPath
                     }
                 }
 
@@ -873,7 +1060,7 @@ Item {
                             visible: wizard.csvNotice.length > 0
                             text: wizard.csvNotice
                             font.family: Theme.sans
-                            font.pixelSize: 12
+                            font.pixelSize: Theme.fontSize(12)
                             color: wizard.csvNoticeIsProblem ? Theme.magenta : Theme.textSubdued
                             wrapMode: Text.Wrap
                         }
@@ -885,7 +1072,7 @@ Item {
                             bottomPadding: 6
                             text: qsTr("Imported files are shared between systems. Manage them in Settings.")
                             font.family: Theme.sans
-                            font.pixelSize: 12
+                            font.pixelSize: Theme.fontSize(12)
                             color: Theme.textSubdued
                             wrapMode: Text.Wrap
                         }
@@ -900,7 +1087,10 @@ Item {
                     clip: true
 
                     Behavior on height {
-                        NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+                        NumberAnimation {
+                            duration: 150
+                            easing.type: Easing.OutCubic
+                        }
                     }
 
                     Item {
@@ -921,7 +1111,7 @@ Item {
                                 width: parent.width
                                 text: qsTr("Advanced")
                                 font.family: Theme.sans
-                                font.pixelSize: 15
+                                font.pixelSize: Theme.fontSize(15)
                                 font.weight: Font.DemiBold
                                 color: Theme.textSecondary
                                 elide: Text.ElideRight
@@ -929,11 +1119,9 @@ Item {
 
                             Text {
                                 width: parent.width
-                                text: wizard.radioSource
-                                      ? qsTr("Gain, PPM, bandwidth, bias tee — defaults work")
-                                      : qsTr("Extra decoder flags — defaults work")
+                                text: wizard.radioSource ? qsTr("Gain, PPM, bandwidth, bias tee — defaults work") : qsTr("Extra decoder flags — defaults work")
                                 font.family: Theme.sans
-                                font.pixelSize: 13
+                                font.pixelSize: Theme.fontSize(13)
                                 color: Theme.textSubdued
                                 elide: Text.ElideRight
                             }
@@ -948,7 +1136,10 @@ Item {
                             color: Theme.textSubdued
 
                             Behavior on rotation {
-                                NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+                                NumberAnimation {
+                                    duration: 150
+                                    easing.type: Easing.OutCubic
+                                }
                             }
                         }
 
@@ -980,12 +1171,13 @@ Item {
                                 Text {
                                     text: qsTr("Gain dB")
                                     font.family: Theme.sans
-                                    font.pixelSize: 12
+                                    font.pixelSize: Theme.fontSize(12)
                                     color: Theme.textSecondary
                                 }
 
                                 PlexTextField {
                                     id: gainField
+                                    label: qsTr("Gain (dB)")
                                     width: parent.width
                                     mono: true
                                     placeholderText: String(prefs.gainDb)
@@ -1008,12 +1200,13 @@ Item {
                                 Text {
                                     text: qsTr("PPM")
                                     font.family: Theme.sans
-                                    font.pixelSize: 12
+                                    font.pixelSize: Theme.fontSize(12)
                                     color: Theme.textSecondary
                                 }
 
                                 PlexTextField {
                                     id: ppmField
+                                    label: qsTr("PPM correction")
                                     width: parent.width
                                     mono: true
                                     placeholderText: String(prefs.ppm)
@@ -1035,12 +1228,13 @@ Item {
                                 Text {
                                     text: qsTr("BW kHz")
                                     font.family: Theme.sans
-                                    font.pixelSize: 12
+                                    font.pixelSize: Theme.fontSize(12)
                                     color: Theme.textSecondary
                                 }
 
                                 PlexTextField {
                                     id: bwField
+                                    label: qsTr("Bandwidth (kHz)")
                                     width: parent.width
                                     mono: true
                                     placeholderText: String(prefs.bandwidthKhz)
@@ -1064,14 +1258,14 @@ Item {
                             Text {
                                 text: qsTr("Bias tee")
                                 font.family: Theme.sans
-                                font.pixelSize: 14
+                                font.pixelSize: Theme.fontSize(14)
                                 color: Theme.textPrimary
                             }
 
                             Text {
                                 text: qsTr("Powers an external LNA. Off wins over the app-wide setting.")
                                 font.family: Theme.sans
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontSize(12)
                                 color: Theme.textSubdued
                             }
 
@@ -1080,7 +1274,7 @@ Item {
                                 model: [qsTr("App default"), qsTr("On"), qsTr("Off")]
                                 currentIndex: wizard.biasTee === 1 ? 1 : wizard.biasTee === 0 ? 2 : 0
                                 onSelected: function (index) {
-                                    wizard.biasTee = index === 1 ? 1 : index === 2 ? 0 : -1
+                                    wizard.biasTee = index === 1 ? 1 : index === 2 ? 0 : -1;
                                 }
                             }
                         }
@@ -1092,12 +1286,13 @@ Item {
                             Text {
                                 text: qsTr("Extra CLI flags")
                                 font.family: Theme.sans
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontSize(12)
                                 color: Theme.textSecondary
                             }
 
                             PlexTextField {
                                 id: extraField
+                                label: qsTr("Extra decoder arguments")
                                 width: parent.width
                                 mono: true
                                 // Appended after the app-wide extras from Settings;
@@ -1124,13 +1319,14 @@ Item {
                 Text {
                     text: qsTr("What should we call it?")
                     font.family: Theme.sans
-                    font.pixelSize: 15
+                    font.pixelSize: Theme.fontSize(15)
                     font.weight: Font.DemiBold
                     color: Theme.textPrimary
                 }
 
                 PlexTextField {
                     id: nameField
+                    label: qsTr("System name")
                     width: parent.width
                     placeholderText: qsTr("e.g. Hamilton Co P25")
                 }
@@ -1139,7 +1335,7 @@ Item {
                     width: parent.width
                     text: qsTr("The name is yours — county, agency, whatever you'll recognize on the home screen.")
                     font.family: Theme.sans
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.fontSize(13)
                     color: Theme.textSubdued
                     wrapMode: Text.Wrap
                 }
@@ -1149,19 +1345,20 @@ Item {
 
     GradientButton {
         id: continueButton
+        objectName: "wizardContinue"
 
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.margins: Theme.screenPadding
-        anchors.bottomMargin: 22
+        anchors.bottomMargin: Math.max(22, wizard.height - Theme.keyboardTop(wizard) + 8)
         text: wizard.step < 2 ? qsTr("Continue") : qsTr("Save system")
         enabled: wizard.stepValid()
         onClicked: {
             if (wizard.step < 2) {
-                wizard.step++
+                wizard.step++;
             } else {
-                wizard.commit()
+                wizard.commit();
             }
         }
     }
@@ -1171,51 +1368,33 @@ Item {
     ModalSheet {
         id: csvSheet
 
-        readonly property string currentPath: wizard.pickerTarget === "chan" ? wizard.chanCsvPath
-                                              : wizard.pickerTarget === "group" ? wizard.groupCsvPath
-                                              : wizard.pickerTarget === "p25Bandplan" ? wizard.p25BandplanCsvPath
-                                              : wizard.pickerTarget === "src" ? wizard.srcCsvPath
-                                              : wizard.keyCsvPath
+        readonly property string currentPath: wizard.pickerTarget === "chan" ? wizard.chanCsvPath : wizard.pickerTarget === "group" ? wizard.groupCsvPath : wizard.pickerTarget === "p25Bandplan" ? wizard.p25BandplanCsvPath : wizard.pickerTarget === "src" ? wizard.srcCsvPath : wizard.keyCsvPath
         readonly property var entries: {
-            var n = importedFiles.count // dependency: recompute when the library changes
+            var n = importedFiles.count; // dependency: recompute when the library changes
             if (!visible || wizard.pickerTarget === "source")
-                return []
-            return wizard.pickerTarget === "keys"
-                   ? importedFiles.entriesForType("keysDec").concat(importedFiles.entriesForType("keysHex"))
-                   : importedFiles.entriesForType(wizard.pickerTarget)
+                return [];
+            return wizard.pickerTarget === "keys" ? importedFiles.entriesForType("keysDec").concat(importedFiles.entriesForType("keysHex")) : importedFiles.entriesForType(wizard.pickerTarget);
         }
 
         function entrySummary(entry) {
-            var noun = wizard.pickerTarget === "chan"
-                       ? (entry.accepted === 1 ? qsTr("channel") : qsTr("channels"))
-                       : wizard.pickerTarget === "group"
-                         ? (entry.accepted === 1 ? qsTr("talkgroup") : qsTr("talkgroups"))
-                         : wizard.pickerTarget === "p25Bandplan"
-                           ? (entry.accepted === 1 ? qsTr("identifier") : qsTr("identifiers"))
-                           : wizard.pickerTarget === "src"
-                             ? (entry.accepted === 1 ? qsTr("radio ID") : qsTr("radio IDs"))
-                             : (entry.accepted === 1 ? qsTr("key") : qsTr("keys"))
-            var line = entry.accepted + " " + noun
+            var noun = wizard.pickerTarget === "chan" ? (entry.accepted === 1 ? qsTr("channel") : qsTr("channels")) : wizard.pickerTarget === "group" ? (entry.accepted === 1 ? qsTr("talkgroup") : qsTr("talkgroups")) : wizard.pickerTarget === "p25Bandplan" ? (entry.accepted === 1 ? qsTr("identifier") : qsTr("identifiers")) : wizard.pickerTarget === "src" ? (entry.accepted === 1 ? qsTr("radio ID") : qsTr("radio IDs")) : (entry.accepted === 1 ? qsTr("key") : qsTr("keys"));
+            var line = entry.accepted + " " + noun;
             if (wizard.pickerTarget === "keys")
-                line += " · " + (entry.type === "keysHex" ? qsTr("hex") : qsTr("decimal"))
-            return line
+                line += " · " + (entry.type === "keysHex" ? qsTr("hex") : qsTr("decimal"));
+            return line;
         }
 
         MicroLabel {
-            text: wizard.pickerTarget === "chan" ? qsTr("Channel map")
-                  : wizard.pickerTarget === "group" ? qsTr("Talkgroups")
-                  : wizard.pickerTarget === "p25Bandplan" ? qsTr("P25 band plan")
-                  : wizard.pickerTarget === "src" ? qsTr("Radio IDs")
-                  : qsTr("Encryption keys")
+            text: wizard.pickerTarget === "chan" ? qsTr("Channel map") : wizard.pickerTarget === "group" ? qsTr("Talkgroups") : wizard.pickerTarget === "p25Bandplan" ? qsTr("P25 band plan") : wizard.pickerTarget === "src" ? qsTr("Radio IDs") : qsTr("Encryption keys")
         }
 
         // The library is unbounded, and the sheet is centred with no scrolling of
         // its own: past a handful of files an unclipped Repeater would push the
         // "None"/import controls off the bottom and the title off the top, with
         // no way to reach either. Cap the list and let it scroll instead.
-        Flickable {
+        PlexFlickable {
             width: parent.width
-            height: Math.min(entryColumn.height, 46 * 5)
+            height: Math.min(entryColumn.height, 48 * 5)
             visible: csvSheet.entries && csvSheet.entries.length > 0
             clip: true
             contentHeight: entryColumn.height
@@ -1230,12 +1409,31 @@ Item {
                     model: csvSheet.entries
 
                     Item {
+                        id: csvChoice
+                        activeFocusOnTab: Navigation.allows(csvChoice)
+                        Accessible.role: Accessible.RadioButton
+                        Accessible.name: modelData.name
+                        Accessible.checkable: true
+                        Accessible.checked: modelData.path === csvSheet.currentPath
+                        readonly property bool navigationAllowed: Navigation.allows(csvChoice)
+                        Accessible.ignored: !navigationAllowed
+                        Accessible.onPressAction: choose()
+                        Keys.onReturnPressed: choose()
+                        Keys.onSpacePressed: choose()
+                        FocusFrame {}
+                        function choose() {
+                            if (!Navigation.allows(csvChoice))
+                                return;
+                            wizard.assignCsvPath(wizard.pickerTarget, modelData.path, modelData.type === "keysHex");
+                            csvSheet.visible = false;
+                        }
                         required property var modelData
 
                         width: entryColumn.width
-                        height: 46
+                        height: Math.max(48, csvChoiceLabels.implicitHeight + 16)
 
                         Column {
+                            id: csvChoiceLabels
                             anchors.left: parent.left
                             anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
@@ -1243,9 +1441,9 @@ Item {
 
                             Text {
                                 width: parent.width
-                                text: modelData.name
+                                text: modelData.path === csvSheet.currentPath ? qsTr("Selected: %1").arg(modelData.name) : modelData.name
                                 font.family: Theme.sans
-                                font.pixelSize: 15
+                                font.pixelSize: Theme.fontSize(15)
                                 font.weight: Font.DemiBold
                                 color: modelData.path === csvSheet.currentPath ? Theme.cyan : Theme.textPrimary
                                 elide: Text.ElideRight
@@ -1255,18 +1453,14 @@ Item {
                                 width: parent.width
                                 text: csvSheet.entrySummary(modelData)
                                 font.family: Theme.sans
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontSize(12)
                                 color: Theme.textSubdued
                                 elide: Text.ElideRight
                             }
                         }
 
                         TapHandler {
-                            onTapped: {
-                                wizard.assignCsvPath(wizard.pickerTarget, modelData.path,
-                                                     modelData.type === "keysHex")
-                                csvSheet.visible = false
-                            }
+                            onTapped: csvChoice.choose()
                         }
                     }
                 }
@@ -1278,8 +1472,8 @@ Item {
             visible: csvSheet.currentPath.length > 0
             text: qsTr("None")
             onClicked: {
-                wizard.assignCsvPath(wizard.pickerTarget, "", false)
-                csvSheet.visible = false
+                wizard.assignCsvPath(wizard.pickerTarget, "", false);
+                csvSheet.visible = false;
             }
         }
 
@@ -1292,9 +1486,9 @@ Item {
             // that file's dec/hex state, so flipping it has to change it —
             // otherwise it looks like a setting and silently does nothing.
             onSelected: function (index) {
-                wizard.pickerKeyHex = index === 1
+                wizard.pickerKeyHex = index === 1;
                 if (wizard.pickerTarget === "keys" && wizard.keyCsvPath.length > 0)
-                    wizard.keyCsvHex = wizard.pickerKeyHex
+                    wizard.keyCsvHex = wizard.pickerKeyHex;
             }
         }
 
@@ -1302,8 +1496,8 @@ Item {
             width: parent.width
             text: qsTr("Import new file")
             onClicked: {
-                csvSheet.visible = false
-                fileDialog.open()
+                csvSheet.visible = false;
+                fileDialog.open();
             }
         }
     }

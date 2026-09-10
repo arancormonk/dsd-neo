@@ -42,6 +42,8 @@
 
 namespace dsd_qt {
 
+QString rr_zip_from_postal(const QString& postalCode, const QString& countryCode);
+
 class AppPrefs;
 class DecoderHost;
 class ImportedFilesModel;
@@ -129,7 +131,7 @@ class RadioReferenceModel : public QObject {
 
     bool
     busy() const {
-        return m_outstanding > 0;
+        return m_outstanding > 0 || m_locationRequestId != 0;
     }
 
     QString
@@ -212,6 +214,8 @@ class RadioReferenceModel : public QObject {
     Q_INVOKABLE void checkAccount();
 
     /** @brief Resolve a ZIP to its county, then list that county's systems. */
+    Q_INVOKABLE void lookupNearby();
+
     Q_INVOKABLE void lookupZip(const QString& zip);
 
     Q_INVOKABLE void loadCountries();
@@ -228,6 +232,7 @@ class RadioReferenceModel : public QObject {
 
     /** @brief Best-effort cancel of everything in flight. */
     Q_INVOKABLE void cancel();
+    Q_INVOKABLE qint64 nextLocationRequestId();
 
     /**
      * @brief Drop the loaded system, returning the screen to its results stage.
@@ -247,8 +252,9 @@ class RadioReferenceModel : public QObject {
      *
      * @param siteIndexes Indexes into sites(). A list, not an index, because a
      *                    Conventional Networked import selects several repeaters;
-     *                    a trunked protocol uses the first and warns about the rest.
-     * @param options     partialEncAsDe, simulcast, esk. simulcast and esk default
+     *                    a trunked protocol selects one site, or builds one plan per site
+     *                    when options.eachSite is true.
+     * @param options     eachSite, partialEncAsDe, simulcast, esk. simulcast and esk default
      *                    to what the RadioReference record says when absent.
      * @return {ok, protocol, protocolName, conventional, scanList, siteCount,
      *          decodeFlag, trunking, freqMhz, groupCsvText, chanCsvText, chanNeed,
@@ -265,7 +271,9 @@ class RadioReferenceModel : public QObject {
      * @param systemName Name for the saved system.
      * @param savedRow   Existing saved-system row to update, or -1 for a new one.
      * @return The saved-system field map for QML to merge into a wizard-shaped
-     *         map, plus {ok, error}. Never calls savedSystems.add() itself.
+     *         map, plus {ok, error}; a per-site batch returns {ok, error, rows}.
+     *         Every single-site row carries the RR database IDs and position.
+     *         Never calls savedSystems.add() itself.
      */
     Q_INVOKABLE QVariantMap performImport(const QVariantMap& plan, const QString& systemName, int savedRow);
 
@@ -299,6 +307,7 @@ class RadioReferenceModel : public QObject {
     void setTransportForTests(const dsd_rr_transport* transport);
 
   Q_SIGNALS:
+    void locationRequestAllocated(qint64 requestId);
     void credentialsChanged();
     void busyChanged();
     void statusChanged();
@@ -347,6 +356,9 @@ class RadioReferenceModel : public QObject {
      * @brief Open a new request batch: cancel what is in flight, retire older
      *        replies by bumping the generation, and clear the error.
      */
+    void cancelLocation();
+    void applyLocation(qint64 id, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs, bool geocodeOk,
+                       const QString& postal, const QString& country, const QString& error);
     void startBatch(const QString& status);
 
     /** @brief Build a request context, or report why one could not be made. */
@@ -369,7 +381,7 @@ class RadioReferenceModel : public QObject {
      * @return false only on a hard generator failure; an empty channel map is a
      *         valid outcome, not an error.
      */
-    bool generateFiles(const QList<dsd_rr_site>& chosen, bool partialEncAsDe, QVariantMap* plan,
+    bool generateFiles(const QList<dsd_rr_site>& chosen, int encryptionPolicy, QVariantMap* plan,
                        QVariantList* warnings) const;
 
     /**
@@ -379,6 +391,8 @@ class RadioReferenceModel : public QObject {
      * never saves a system, so a file adopted before the failure would be a row
      * nothing references and nothing prunes.
      */
+    QVariantMap buildSiteImportPlans(const QVariantList& siteIndexes, const QVariantMap& options);
+    QVariantMap performSiteImports(const QVariantMap& plan, const QString& systemName);
     void unwindImport(const QStringList& paths);
 
     /** @brief Regenerate and commit the pending refresh. GUI thread only. */
@@ -414,6 +428,8 @@ class RadioReferenceModel : public QObject {
      * after the user moved on is dropped instead of overwriting fresh state. */
     quint64 m_generation = 1;
     QList<quint64> m_pendingIds;
+    qint64 m_locationRequestId = 0;
+    quint64 m_locationGeneration = 0;
 
     QVariantList m_countries;
     QVariantList m_states;
@@ -452,7 +468,7 @@ class RadioReferenceModel : public QObject {
     QList<int> m_refreshSiteIds;
     /* The partial-encryption answer the original import was given, so a refresh
      * regenerates the same group CSV instead of the UI default. */
-    bool m_refreshPartialEnc = true;
+    int m_refreshEncryptionPolicy = DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL;
 };
 
 } // namespace dsd_qt

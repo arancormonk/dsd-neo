@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import QtQuick.Window
 import "Util.js" as Util
 
 // Two answers stand between someone and a live band: what the radio is, and
@@ -17,42 +18,70 @@ Item {
 
     objectName: "exploreSetupScreen"
 
-    signal closed()
+    signal closed
     signal start(string sourceType, string host, int port, string freqMhz)
 
     property string sourceType: "usb"
+    onSourceTypeChanged: Navigation.clearInput(screen.Window.window)
     property alias hostText: hostField.text
     property alias portText: portField.text
     property alias freqText: freqField.text
 
+    property string originalDraft: ""
+    function revealFocus() {
+        var window = screen.Window.window;
+        if (window)
+            Theme.revealFocus(sourceScroll, content, window.activeFocusItem);
+    }
+    Connections {
+        target: screen.Window.window
+        function onActiveFocusItemChanged() {
+            if (screen.visible)
+                Qt.callLater(screen.revealFocus);
+        }
+    }
+    function draftValue() {
+        return JSON.stringify([sourceType, hostText, portText, freqText]);
+    }
+    function requestClose() {
+        if (originalDraft.length && draftValue() !== originalDraft)
+            discard.ask(function () {
+                screen.closed();
+            });
+        else
+            closed();
+    }
+    DiscardDialog {
+        id: discard
+    }
     readonly property bool needsHost: sourceType === "rtltcp"
 
     /** Fill the fields from what the last explore used, or from sane firsts. */
     function reset(prefSource, prefHost, prefPort, prefFreqMhz) {
-        screen.sourceType = (prefSource === "rtltcp") ? "rtltcp" : "usb"
-        hostField.text = prefHost && prefHost.length > 0 ? prefHost : "192.168.1.10"
-        portField.text = String(prefPort > 0 ? prefPort : 1234)
+        screen.sourceType = (prefSource === "rtltcp") ? "rtltcp" : "usb";
+        hostField.text = prefHost && prefHost.length > 0 ? prefHost : "192.168.1.10";
+        portField.text = String(prefPort > 0 ? prefPort : 1234);
         // 800 MHz is where most of the traffic this app decodes lives, so an
         // unconfigured first run opens on something rather than on dead air.
-        freqField.text = prefFreqMhz && prefFreqMhz.length > 0 ? prefFreqMhz : "855.0000"
+        freqField.text = prefFreqMhz && prefFreqMhz.length > 0 ? prefFreqMhz : "855.0000";
+        originalDraft = draftValue();
     }
 
     function portValid() {
-        var p = parseInt(portText, 10)
-        return !isNaN(p) && p >= 1 && p <= 65535
+        var p = Number(portText);
+        return /^[0-9]+$/.test(portText) && p >= 1 && p <= 65535;
     }
 
     function ready() {
-        if (needsHost && (hostText.length === 0 || !portValid()))
-            return false
-        return sessionArgs.freqValid(freqText)
+        if (needsHost && (!/^[A-Za-z0-9_.-]+$/.test(hostText.trim()) || !portValid()))
+            return false;
+        return sessionArgs.freqValid(freqText);
     }
 
     function submit() {
         if (!ready())
-            return
-        screen.start(screen.sourceType, screen.needsHost ? screen.hostText : "",
-                     screen.needsHost ? parseInt(screen.portText, 10) : 0, screen.freqText.trim())
+            return;
+        screen.start(screen.sourceType, screen.needsHost ? screen.hostText : "", screen.needsHost ? parseInt(screen.portText, 10) : 0, screen.freqText.trim());
     }
 
     Rectangle {
@@ -69,19 +98,13 @@ Item {
         anchors.margins: Theme.screenPadding
         height: 46
 
-        Text {
+        IconButton {
             id: back
-
-            objectName: "exploreSetupBack"
+            icon: "back"
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            text: "‹"
-            font.pixelSize: 28
-            color: Theme.textSecondary
-
-            TapHandler {
-                onTapped: screen.closed()
-            }
+            objectName: "exploreSetupBack"
+            onClicked: screen.requestClose()
         }
 
         Text {
@@ -90,14 +113,16 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: qsTr("Explore")
             font.family: Theme.sans
-            font.pixelSize: 22
+            font.pixelSize: Theme.fontSize(22)
             font.weight: Font.Bold
             font.letterSpacing: -0.22
             color: Theme.textPrimary
         }
     }
 
-    Flickable {
+    PlexFlickable {
+        id: sourceScroll
+        onHeightChanged: Qt.callLater(screen.revealFocus)
         anchors.top: header.bottom
         anchors.left: parent.left
         anchors.right: parent.right
@@ -110,15 +135,15 @@ Item {
         Column {
             id: content
 
-            x: Theme.screenPadding
-            width: parent.width - 2 * Theme.screenPadding
+            x: (parent.width - width) / 2
+            width: Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
             spacing: Theme.gap
 
             Text {
                 width: parent.width
                 text: qsTr("Which radio?")
                 font.family: Theme.sans
-                font.pixelSize: 15
+                font.pixelSize: Theme.fontSize(15)
                 font.weight: Font.DemiBold
                 color: Theme.textPrimary
             }
@@ -133,8 +158,14 @@ Item {
 
                 Repeater {
                     model: [
-                        { label: qsTr("USB dongle"), key: "usb" },
-                        { label: qsTr("RTL-TCP"), key: "rtltcp" }
+                        {
+                            label: qsTr("USB dongle"),
+                            key: "usb"
+                        },
+                        {
+                            label: qsTr("RTL-TCP"),
+                            key: "rtltcp"
+                        }
                     ]
 
                     DecodeChip {
@@ -153,15 +184,11 @@ Item {
                 visible: screen.needsHost
                 spacing: 10
 
-                Text {
-                    text: qsTr("Host")
-                    font.family: Theme.sans
-                    font.pixelSize: 13
-                    color: Theme.textSecondary
-                }
-
                 PlexTextField {
                     id: hostField
+                    label: qsTr("Host")
+                    nextField: portField
+                    error: text.trim().length && /^[A-Za-z0-9_.-]+$/.test(text.trim()) ? "" : qsTr("Enter a host name or IPv4 address.")
 
                     width: parent.width
                     mono: true
@@ -169,15 +196,10 @@ Item {
                     inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
                 }
 
-                Text {
-                    text: qsTr("Port")
-                    font.family: Theme.sans
-                    font.pixelSize: 13
-                    color: Theme.textSecondary
-                }
-
                 PlexTextField {
                     id: portField
+                    label: qsTr("Port")
+                    error: /^[0-9]+$/.test(text) && Number(text) >= 1 && Number(text) <= 65535 ? "" : qsTr("Enter a port from 1 to 65535.")
 
                     width: parent.width
                     mono: true
@@ -194,7 +216,7 @@ Item {
                 width: parent.width
                 text: qsTr("Start where?")
                 font.family: Theme.sans
-                font.pixelSize: 15
+                font.pixelSize: Theme.fontSize(15)
                 font.weight: Font.DemiBold
                 color: Theme.textPrimary
             }
@@ -238,8 +260,8 @@ Item {
                                 // screen; these jump straight to a frequency.
                                 caret: false
                                 active: {
-                                    var hz = parseFloat(screen.freqText) * 1.0e6
-                                    return !isNaN(hz) && hz >= modelData.low && hz < modelData.high
+                                    var hz = parseFloat(screen.freqText) * 1.0e6;
+                                    return !isNaN(hz) && hz >= modelData.low && hz < modelData.high;
                                 }
                                 onClicked: freqField.text = Util.mhzText(modelData.start)
                             }
@@ -250,7 +272,7 @@ Item {
                         width: parent.width
                         text: qsTr("Anywhere is fine — you can move around once the band is on screen.")
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
@@ -267,7 +289,7 @@ Item {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.margins: Theme.screenPadding
-        anchors.bottomMargin: 22
+        anchors.bottomMargin: Math.max(22, screen.height - Theme.keyboardTop(screen) + 8)
         text: qsTr("Start exploring")
         enabled: screen.ready()
         onClicked: screen.submit()

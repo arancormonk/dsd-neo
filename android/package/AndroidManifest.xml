@@ -6,6 +6,8 @@
     android:versionCode="-- %%INSERT_VERSION_CODE%% --"
     android:versionName="-- %%INSERT_VERSION_NAME%% --">
 
+    <!-- WP-D3: approximate foreground location only. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
@@ -35,7 +37,7 @@
         android:icon="-- %%INSERT_APP_ICON%% --"
         android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.DsdNeo"
-        android:enableOnBackInvokedCallback="false"
+        android:enableOnBackInvokedCallback="true"
         android:allowBackup="false"
         android:fullBackupOnly="false">
 
@@ -43,8 +45,9 @@
              waits for but does not send. See DsdNeoActivity. -->
         <!-- The launcher activity has to be exported: it carries the MAIN/LAUNCHER filter
              and the USB_DEVICE_ATTACHED filter, and both are delivered by the system from
-             outside the app. It reads nothing from the intent beyond what Qt takes for its
-             own startup, so there is no control plane behind it to reach. Suppressed on
+             outside the app. The only app-specific input is a USB attachment, validated by deviceName
+             and VID/PID against UsbManager.deviceList and deduplicated until detach.
+             No intent extra supplies decoder options or bypasses the opt-in UI policy. Suppressed on
              this element and this rule only, rather than excluding the manifest from the
              scan. The finding predates DsdNeoActivity — it fires on the stock QtActivity
              declaration too — and only surfaces when a change touches this file. -->
@@ -101,6 +104,15 @@
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/qtprovider_paths"/>
+        </provider>
+        <!-- WP-F5: separate narrow provider, leaving Qt's paths unchanged. -->
+        <provider
+            android:name="io.github.arancormonk.dsdneo.DiagnosticsProvider"
+            android:authorities="${applicationId}.diagnostics"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/diagnostics_paths"/>
         </provider>
     </application>
 </manifest>

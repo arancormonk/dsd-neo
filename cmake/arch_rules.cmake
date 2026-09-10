@@ -386,12 +386,27 @@ foreach(_ARCH_RULES_REL IN LISTS _ARCH_RULES_FILES)
         endif()
 
         if(
-            _ARCH_RULES_UI_FORBIDDEN_AREA
+            (
+                _ARCH_RULES_UI_FORBIDDEN_AREA
+                OR _ARCH_RULES_REL MATCHES "^src/ui/qt/"
+            )
             AND _ARCH_RULES_HEADER MATCHES "^dsd-neo/engine/"
         )
             message(
                 SEND_ERROR
                 "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden engine include '${_ARCH_RULES_HEADER}'"
+            )
+            math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
+            continue()
+        endif()
+
+        if(
+            _ARCH_RULES_REL MATCHES "^src/ui/qt/"
+            AND _ARCH_RULES_HEADER MATCHES "^(jni[.]h$|android/)"
+        )
+            message(
+                SEND_ERROR
+                "ARCH_RULES: ${_ARCH_RULES_REL}: forbidden platform include '${_ARCH_RULES_HEADER}'"
             )
             math(EXPR _ARCH_RULES_VIOLATIONS "${_ARCH_RULES_VIOLATIONS} + 1")
             continue()

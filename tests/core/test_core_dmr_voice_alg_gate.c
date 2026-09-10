@@ -160,15 +160,15 @@ main(void) {
 
     // AES-128 (0x24) keys off aes_loaded, not the scalar.
     rc |= expect_eq("kid-aes-supplied",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 1, 0}), 1);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 1, 0, 0}), 1);
     rc |= expect_eq("kid-aes-absent",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 0, 1}), 0);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 0, 1, 0}), 0);
 
     // RC4 (0x21) keys off the scalar, not aes_loaded.
     rc |= expect_eq("kid-rc4-supplied",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &(dsd_dmr_key_material){0x1234ULL, 0, 0}), 1);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &(dsd_dmr_key_material){0x1234ULL, 0, 0, 0}), 1);
     rc |= expect_eq("kid-rc4-absent",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &(dsd_dmr_key_material){0ULL, 1, 1}), 0);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &(dsd_dmr_key_material){0ULL, 1, 1, 0}), 0);
 
     // The slot wrapper still reads the slot's own activated flag.
     state.aes_key_loaded[0] = 1;
@@ -179,11 +179,11 @@ main(void) {
     // change completeness -- the slot here has no quartet at all, and the supplied verdict wins
     // in both directions.
     rc |= expect_eq("kid-kirisun-supplied",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, &(dsd_dmr_key_material){0ULL, 1, 1}), 1);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, &(dsd_dmr_key_material){0ULL, 1, 1, 0}), 1);
     rc |= expect_eq("kid-kirisun-absent",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, &(dsd_dmr_key_material){0ULL, 1, 0}), 0);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, &(dsd_dmr_key_material){0ULL, 1, 0, 0}), 0);
     rc |= expect_eq("kid-kirisun37-supplied",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x37, &(dsd_dmr_key_material){0ULL, 0, 1}), 1);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x37, &(dsd_dmr_key_material){0ULL, 0, 1, 0}), 1);
     // ...and the slot wrapper keeps reading the slot's own quartet, which is still absent.
     rc |= expect_eq("slot-wrapper-kirisun", dsd_dmr_voice_slot_can_decrypt(&state, 0, 0x36, 0ULL), 0);
 

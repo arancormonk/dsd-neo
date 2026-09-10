@@ -295,7 +295,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 - Target: `dsd-neo_app_control`
 - Responsibilities:
   - Frontend metrics and raw telemetry snapshots used by the terminal renderer
-  - Command queue dispatch and menu service helpers
+  - Command queue dispatch and menu service helpers. Decoder-owner runtime start/stop opens/closes admission under
+    the queue mutex; stop securely cancels pending payloads. Evicted or cancelled talkgroup exports publish failed
+    completions. Successful inherited-policy scan exports update the configured persistence path.
+  - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
+    placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Source ID imports: `DSD_APP_CMD_IMPORT_SRC_LIST = 572` carries a path string;
     `DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR = 573` has no payload. Import validates one candidate, refuses zero usable
     rows, and adopts that same store and path on success; failure preserves both.
@@ -312,6 +316,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   Such sessions therefore report the defaults — no carrier lock, no CFO, no output/symbol rate, and the
   invalid-SNR sentinel — and a frontend should omit those rows rather than render them as zeros. Applies to
   every frontend, not just the Android app
+- Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
+  copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
+  errors from the caller's held snapshot. The core vocoder maintains ring counts;
+  canonical call starts reset the affected slot. Qt publishes one `qualityChanged`
+  group, and the terminal average helpers wrap the same arithmetic. Counts are
+  corrected errors per voice frame, not BER; 0/0 FEC ratios are invalid.
 - Build files: `src/app_control/CMakeLists.txt`
 
 ## DSP
@@ -522,7 +532,10 @@ Qt Quick frontend (`src/ui/qt`):
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. See
-  `docs/radioreference-import.md`.
+  `docs/radioreference-import.md`. Nearby import uses `DecoderHost` request IDs and
+  generation retirement; Android's `LocationSupport.kt` owns coarse permission, fix
+  acquisition and geocoding, with `decoder_host_android` polling terminal results.
+  `AppPrefs::setLocationFix` retains the private fix and accuracy for 24 hours.
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
   ingestion, merging listed rows with uncovered talkgroups heard this session. `talkgroup_filter_model.{h,cpp}`
   filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the monitor's **TG list** action.
@@ -530,6 +543,18 @@ Qt Quick frontend (`src/ui/qt`):
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. Skip shares this
   mutation path, preserving labels. Runtime's `dsd_rr_talkgroups_apply_categories()` supplies category names to
   both RadioReference frontends before CSV generation.
+- `p25_network_model.{h,cpp}` copies four bounded lists through the frontend-neutral
+  `app_control/p25_network.h` facade using `UiController::tick`'s held snapshot.
+  `qml/NetworkSheet.qml` activates refresh only while visible; session edges and
+  scan-target changes clear it through `clearLiveModels()`. The C facade sorts
+  recent-first, resolves candidate flags from the snapshot's deep-copied extension,
+  formats CFVA through P25, and filters expired patches without mutating the snapshot.
+- `diagnostics_log.{h,cpp}` owns the process ring, the sole redaction/capture stage,
+  and the asynchronous bounded tail writer. `DiagnosticsLogModel` refreshes before
+  the redraw consume in `UiController::tick`; it persists across decoder session
+  transitions. `qml/DiagnosticsScreen.qml` provides pause, copy, clear and host share.
+  Runtime's install-once log tap and Android's stderr/host paths feed `submit()`;
+  platform sharing remains behind `DecoderHost` in Android's diagnostics provider.
 - Platform-free by rule: it may include Qt and `include/dsd-neo/app_control/` headers, never engine/io/protocol
   internals, and never platform APIs (`QJniObject`, `<android/*.h>`). Platform specifics live behind the `DecoderHost`
   interface, implemented per host (`android/decoder_host_android.cpp` today).
@@ -675,3 +700,68 @@ External dependencies (resolved via CMake):
   resetting acquisition. Conventional trunk-scan targets take their voice-gate hold/qualify from the row profile.
 - App-control scopes force/CRC/voice configuration commands and group imports, while live row policy mutations stay
   with the active context. Configuration export reads saved group paths and voice settings from the configured scope.
+
+### Android foundation integration contracts
+
+Shared command IDs 592/593/594 reserve talkgroup row set/remove/export, using
+`policy_context` and `policy_generation` to reject edits from a stale list. The
+row `fields` mask selects listen/priority/preempt/name/tags. IDs 652/653 reserve a
+typed, bounded direct key and an int32 force-key mode. These five handlers currently
+report “not implemented”; force-key is registered as a configured scan-mode setting.
+Queue storage and drain temporaries are securely erased after use and on discard,
+including eviction, coalescing and rejection. Submitters own and must erase their
+original secret payloads.
+
+Saved-system UUIDs are persisted on migration and stable across updates. `rowForUid`
+and `getByUid` are the lookup boundary for work that can outlive a row index. The
+optional direct-key/site fields are private saved configuration, not diagnostics.
+`DecoderHost` owns the platform location/share/device interfaces; `UiController::tick`
+remains the single snapshot consumer. Its existing same-thread history flush before
+a new session label is the documented exception, not permission for another reader.
+
+WP0 owns integration edits to `qt_ui.cpp`, `ui_controller.*`, `decoder_host_android.*`,
+`UsbSourceManager.kt`, `app_command_queue.c`, `command_bridge.*`, `Main.qml`,
+`qml_test_context.h`, both Qt/test CMake lists and `android-ci.yaml`. Later packages
+supply focused wiring patches for serial application in orchestrator order. New
+live models join `clearLiveModels()` for lifecycle and trunk-scan target edges.
+Context registration placeholders in `qt_ui.cpp` keep those ownership decisions
+in one place. Every new UI_QT target also belongs in Android CI's explicit build list.
+
+### Direct key application
+
+`dsd_key_apply_direct` in `src/core/util/key_set.c` owns strict direct-key parsing
+and overlay/replace semantics. `dsd_key_apply_mute_policy` reconciles startup and
+live mute behavior; `dsd_key_apply_force` maps the three configured force modes.
+The CLI and `KEY_DIRECT_SET`/`FORCE_KEY_SET` handlers share these helpers.
+`dsd_scan_keys_apply_direct` validates a direct edit before changing the global
+baseline without allocating or swapping live keys. An active row retains its
+signalled key IDs and the scalar/AES state activated since row entry. `CORE_KEY_DIRECT` exercises the
+helper, real CLI parser, real command queue, and keyed/unkeyed rotation together.
+Qt's `session_args.cpp` validates saved string key types and emits discrete argv;
+`SessionArgsBuilder::build` returns only non-secret validation metadata. Its `start` operation resolves retained
+keys and sends the arguments directly to `DecoderHost` in C++, returning only validation and acceptance status.
+
+### Qt QML editing convention
+
+Preserve each file's existing QML formatting and use focused manual edits. Do not
+run whole-file `qmlformat` during a functional change; no automatic QML formatting
+settings are prescribed. MonitorScreen's existing expanded style is retained.
+Text sizes use `Theme.fontSize(pixels)`, with the platform scale bounded to 1–1.6.
+
+#### Qt scan-list start path
+
+`scan_lists_model.{h,cpp}` persists list/entry UIDs and saved-system references
+through `json_store` (`scan_lists.json`). `scan_list_targets.{h,cpp}` is a pure
+QtCore generator with no filesystem or engine dependency. `scan_list_starter`
+checks imported paths, atomically writes the private CSV, validates through
+`app_control/trunk_scan_validate.h`, and delegates argv assembly to
+`session_args.cpp`. `Main.qml` shares the existing USB permission gate and extends
+the single `sessionInitialized` recency handler. `metrics_model` copies target
+identity from the tick's held snapshot; no extra snapshot reader is introduced.
+
+`UI_QT_SCAN_LIST_TARGETS` covers preservation/rejection and option screening;
+`UI_QT_SCAN_LIST_ROUNDTRIP` exercises persistence and the real facade.
+`ENGINE_TRUNK_SCAN_SCAN_LIST` sends a generated three-target CSV through the real
+coordinator, group-policy and key ownership code, replacing only tuning side
+effects. It verifies policy/keys on rotation and baseline restoration on shutdown.
+The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LISTS`.

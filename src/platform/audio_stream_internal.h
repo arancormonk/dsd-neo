@@ -28,6 +28,7 @@ typedef void dsd_audio_backend_handle;
 struct dsd_audio_stream {
     dsd_audio_backend_handle* handle;
     int is_input;
+    int route_registered;
     int channels;
     int sample_rate;
 

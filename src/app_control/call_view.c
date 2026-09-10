@@ -205,6 +205,10 @@ dsd_app_slot_call_view(const dsd_state* state, uint8_t slot, double now_m, dsd_a
 
     slot_call_name(state, slot, &call, out);
 
+    out->emergency = call.emergency;
+    out->priority = call.priority;
+    out->has_service_metadata = call.has_service_metadata;
+
     out->enc = call_reads_encrypted(&call) ? 1U : 0U;
     if (out->enc) {
         out->algid = call.algid;

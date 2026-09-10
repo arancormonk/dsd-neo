@@ -169,6 +169,7 @@ dsd_rr_recipe_to_plan(const dsd_rr_recipe* recipe, int partial_enc_as_de, dsd_rr
     out->simulcast = recipe->simulcast ? 1 : 0;
     out->esk = recipe->esk ? 1 : 0;
     out->partial_enc_as_de = partial_enc_as_de ? 1 : 0;
+    out->encrypted_tg_policy = partial_enc_as_de ? DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL : DSD_RR_TG_EXCLUDE_FULL;
     out->tune_hz = recipe->tune_hz;
     (void)dsd_rr_hz_to_mhz_text(recipe->tune_hz, out->freq_mhz, sizeof out->freq_mhz);
     (void)DSD_SNPRINTF(out->decode_flag, sizeof out->decode_flag, "%s", flag);
@@ -499,8 +500,8 @@ rr_plan_generate_files(dsd_rr_import_plan* plan, const dsd_rr_site* chosen_sites
     if (talkgroups != NULL && talkgroup_count > 0U) {
         /* A group-generator failure is not fatal: the channel map and the tune
          * frequency are still worth having. */
-        if (dsd_rr_generate_group_csv(talkgroups, talkgroup_count, plan->partial_enc_as_de, &plan->group_csv_text,
-                                      &plan->group_csv_len, &plan->warnings)
+        if (dsd_rr_generate_group_csv_with_policy(talkgroups, talkgroup_count, plan->encrypted_tg_policy,
+                                                  &plan->group_csv_text, &plan->group_csv_len, &plan->warnings)
             != 0) {
             plan->group_csv_text = NULL;
             plan->group_csv_len = 0;
@@ -542,6 +543,21 @@ rr_plan_finish(dsd_rr_import_plan* plan, const dsd_rr_system_info* info, const d
     }
 }
 
+static int
+rr_plan_encryption_policy(dsd_rr_import_plan* plan, const dsd_rr_import_options* options) {
+    if (options->encrypted_tg_policy < DSD_RR_TG_POLICY_LEGACY
+        || options->encrypted_tg_policy > DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL) {
+        return -1;
+    }
+    plan->encrypted_tg_policy =
+        options->encrypted_tg_policy == DSD_RR_TG_POLICY_LEGACY
+            ? (options->partial_enc_as_de ? DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL : DSD_RR_TG_EXCLUDE_FULL)
+            : options->encrypted_tg_policy;
+    plan->partial_enc_as_de = plan->encrypted_tg_policy == DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL;
+
+    return 0;
+}
+
 int
 dsd_rr_import_plan_build(const dsd_rr_system_info* info, const dsd_rr_site* sites, size_t site_count,
                          const size_t* selected, size_t selected_count, const dsd_rr_talkgroup* talkgroups,
@@ -561,7 +577,9 @@ dsd_rr_import_plan_build(const dsd_rr_system_info* info, const dsd_rr_site* site
     plan->conventional = info->conventional;
     plan->trunking = info->trunked;
     plan->chan_need = dsd_rr_chan_map_need(info->protocol);
-    plan->partial_enc_as_de = (options->partial_enc_as_de != 0) ? 1 : 0;
+    if (rr_plan_encryption_policy(plan, options) != 0) {
+        return rr_plan_block(plan, "Invalid talkgroup listening policy.");
+    }
 
     if (info->protocol == DSD_RR_PROTO_UNSUPPORTED) {
         return rr_plan_block(plan, "dsd-neo cannot decode this system type yet, so there is nothing useful to "

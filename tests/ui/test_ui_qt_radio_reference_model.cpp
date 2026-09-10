@@ -17,30 +17,42 @@
 #include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QGuiApplication>
 #include <QIODevice>
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QObject>
+#include <QQmlComponent>
+#include <QQmlContext>
+#include <QQmlEngine>
 #include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QUrl>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
+#include <algorithm>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/radioreference.h>
+#include <initializer_list>
+#include <memory>
 #include <stdio.h>
 #include <stdlib.h>
+#include <utility>
+#include "../test_support/qt_test_paths.h"
 
 #include "app_prefs.h"
 #include "decoder_host.h"
@@ -98,6 +110,24 @@ expect_int(const char* what, int got, int want) {
 
 class TestHost : public dsd_qt::DecoderHost {
   public:
+    qint64 requested = 0;
+    qint64 cancelled = 0;
+
+    bool
+    locationSupported() const override {
+        return true;
+    }
+
+    void
+    requestCurrentLocation(qint64 id) override {
+        requested = id;
+    }
+
+    void
+    cancelLocationRequest(qint64 id) override {
+        cancelled = id;
+    }
+
     bool
     isRunning() const override {
         return false;
@@ -134,7 +164,7 @@ struct Fake {
 
 QByteArray
 read_fixture(const QString& leaf) {
-    QFile file(QStringLiteral(DSD_NEO_TEST_RR_FIXTURE_DIR "/") + leaf);
+    QFile file(QString::fromUtf8(DSD_NEO_TEST_RR_FIXTURE_DIR) + QLatin1Char('/') + leaf);
     if (!file.open(QIODevice::ReadOnly)) {
         DSD_FPRINTF(stderr, "FAIL: cannot open fixture %s\n", leaf.toUtf8().constData());
         g_failures++;
@@ -276,7 +306,7 @@ fake_perform(void* ctx, const dsd_rr_request* req, dsd_rr_response* resp) {
 
 /** @brief Run the event loop until the model goes idle or the deadline passes. */
 void
-pump(dsd_qt::RadioReferenceModel& model, int timeoutMs = 15000) {
+pump(const dsd_qt::RadioReferenceModel& model, int timeoutMs = 15000) {
     QElapsedTimer timer;
     timer.start();
     while (model.busy() && timer.elapsed() < timeoutMs) {
@@ -316,12 +346,8 @@ struct Harness {
 bool
 warned(const QVariantMap& plan, const QString& needle) {
     const QVariantList warnings = plan.value(QStringLiteral("warnings")).toList();
-    for (const QVariant& warning : warnings) {
-        if (warning.toString().contains(needle)) {
-            return true;
-        }
-    }
-    return false;
+    return std::any_of(warnings.cbegin(), warnings.cend(),
+                       [&needle](const QVariant& warning) { return warning.toString().contains(needle); });
 }
 
 /** @brief The bytes of a stored library file. */
@@ -576,6 +602,83 @@ test_conventional_system(void) {
 }
 
 void
+test_per_site_import() {
+    Harness h;
+    h.model.loadSystem(6673);
+    pump(h.model);
+    const auto plan = h.model.buildImportPlan({0, 1}, {{"eachSite", true}});
+    expect("multi site plan valid", plan.value("ok").toBool());
+    const auto result = h.model.performImport(plan, "SARA", -1);
+    const auto rows = result.value("rows").toList();
+    expect("multi site import succeeds", result.value("ok").toBool());
+    const int beforeRollback = h.library.rowCount();
+    auto broken = plan;
+    auto plans = broken.value("plans").toList();
+    if (plans.size() > 1) {
+        plans[1] = QVariantMap{{"ok", false}};
+        broken.insert("plans", plans);
+        expect("batch failure reported", !h.model.performImport(broken, "Failed batch", -1).value("ok").toBool());
+        expect_int("batch failure retires adopted files", h.library.rowCount(), beforeRollback);
+    }
+    expect("invalid batch selection rejected",
+           !h.model.buildImportPlan({-1, 0}, {{"eachSite", true}}).value("ok").toBool());
+    expect_int("multi site import returns N rows", rows.size(), 2);
+    if (rows.size() == 2) {
+        expect_int("database id not RF number", rows[0].toMap().value("rrSiteId").toInt(), 16863);
+        expect_int("second database id", rows[1].toMap().value("rrSiteId").toInt(), 23581);
+        expect("first site coordinates", rows[0].toMap().value("hasSitePos").toBool());
+        expect("exact RR coordinates retained",
+               qAbs(rows[0].toMap().value("siteLat").toDouble() - 41.65503) < 1e-8
+                   && qAbs(rows[0].toMap().value("siteLon").toDouble() + 91.60244) < 1e-8);
+        expect("second site has position", rows[1].toMap().value("hasSitePos").toBool());
+        const auto sentinel = h.model.buildImportPlan({h.model.sites().size() - 1}, {});
+        expect("sentinel site lacks position", !sentinel.value("hasSitePos").toBool());
+        expect("site-specific files", rows[0].toMap().value("chanCsvPath") != rows[1].toMap().value("chanCsvPath"));
+    }
+}
+
+void
+test_mixed_simulcast_qml_plan() {
+    Harness h;
+    h.model.loadSystem(6673);
+    pump(h.model);
+    const auto sites = h.model.sites();
+    int ordinary = -1, simulcast = -1;
+    for (int i = 0; i < sites.size(); ++i) {
+        if (sites[i].toMap().value("simulcast").toBool()) {
+            simulcast = i;
+        } else {
+            ordinary = i;
+        }
+    }
+    expect("fixture has ordinary and simulcast sites", ordinary >= 0 && simulcast >= 0);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty("radioReference", &h.model);
+    engine.rootContext()->setContextProperty("prefs", &h.prefs);
+    engine.rootContext()->setContextProperty("decoderHost", &h.host);
+    QQmlComponent component(&engine, QUrl::fromLocalFile(QStringLiteral(DSD_QML_UI_DIR "/RadioReferenceScreen.qml")));
+    std::unique_ptr<QObject> screen(component.create());
+    expect("production RadioReference screen loads", screen != nullptr);
+    if (!screen) {
+        return;
+    }
+    screen->setProperty("eachSite", true);
+    for (const QVariantList& selection : {QVariantList{ordinary, simulcast}, QVariantList{simulcast, ordinary}}) {
+        screen->setProperty("selectedSites", selection);
+        QMetaObject::invokeMethod(screen.get(), "refreshPlan");
+        const auto plan = screen->property("plan").toMap();
+        const auto plans = plan.value("plans").toList();
+        expect("mixed per-site QML plan valid", plan.value("ok").toBool() && plans.size() == 2);
+        for (int i = 0; i < plans.size(); ++i) {
+            const auto flag = plans[i].toMap().value("decodeFlag").toString();
+            const bool expected = sites[selection[i].toInt()].toMap().value("simulcast").toBool();
+            expect("QML batch preserves each site's recorded modulation",
+                   flag.contains("-mq") == expected && flag.contains("-ft") != expected);
+        }
+    }
+}
+
+void
 test_import_lands_in_the_library(void) {
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
 
@@ -588,6 +691,7 @@ test_import_lands_in_the_library(void) {
 
     const QVariantMap result = h.model.performImport(plan, QStringLiteral("SARA Network"), -1);
     expect("import ok", result.value(QStringLiteral("ok")).toBool());
+    expect_int("single import site identity", result.value("rrSiteId").toInt(), 16863);
     expect("import returns a channel map path", !result.value(QStringLiteral("chanCsvPath")).toString().isEmpty());
     expect("import returns a talkgroup path", !result.value(QStringLiteral("groupCsvPath")).toString().isEmpty());
     expect_str("import carries the decode flag", result.value(QStringLiteral("decodeFlag")).toString(),
@@ -1033,6 +1137,76 @@ test_results_and_loaded_system_stay_exclusive(void) {
 }
 
 void
+test_nearby() {
+    const struct {
+        const char* postal;
+        const char* country;
+        const char* zip;
+    } cases[] = {{"52401", "US", "52401"}, {"00501", "US", "00501"}, {"52401-1234", "US", ""}, {"1234", "US", ""},
+                 {"123456", "US", ""},     {"ABCDE", "US", ""},      {"12345", "CA", ""},      {"", "US", ""}};
+
+    for (const auto& c : cases) {
+        expect("postal accepts only US five digits", dsd_qt::rr_zip_from_postal(c.postal, c.country) == c.zip);
+    }
+    Harness h;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    h.model.lookupNearby();
+    expect("location is busy", h.model.busy());
+    Q_EMIT h.host.locationResult(h.host.requested, true, 41, -91, 150, now, true, "52401", "US", "");
+    pump(h.model);
+    expect("nearby resolves county systems", h.model.systems().size() == 24);
+    expect("fix persisted with accuracy", h.prefs.lastFixAt() == now && h.prefs.lastAccuracyM() == 150);
+    h.model.lookupNearby();
+    Q_EMIT h.host.locationResult(h.host.requested, true, 42, -92, 200, now, false, "", "", "Geocoding unavailable");
+    expect("geocode failure retains fix", h.prefs.lastLat() == 42 && !h.model.busy());
+    expect("geocode error visible", !h.model.errorText().isEmpty());
+    h.model.lookupNearby();
+    Q_EMIT h.host.locationResult(h.host.requested, false, 0, 0, 0, 0, false, "", "", "Location permission denied");
+    expect("denial settles without replacing fix", !h.model.busy() && h.prefs.lastLat() == 42);
+    h.model.lookupNearby();
+    const qint64 old = h.host.requested;
+    h.model.loadCountries();
+    pump(h.model);
+    const int calls = h.fake.calls;
+    Q_EMIT h.host.locationResult(old, true, 43, -93, 100, now, true, "52401", "US", "");
+    pump(h.model);
+    expect("new browse cancels location", h.host.cancelled == old);
+    expect("late fix cannot replace browse or prefs", h.fake.calls == calls && h.prefs.lastLat() == 42);
+    h.model.lookupNearby();
+    const qint64 beforeSearch = h.host.requested;
+    h.model.lookupZip("00501");
+    pump(h.model);
+    const int afterSearch = h.fake.calls;
+    Q_EMIT h.host.locationResult(beforeSearch, true, 43, -93, 100, now, true, "52401", "US", "");
+    pump(h.model);
+    expect("late location cannot replace newer ZIP search", h.fake.calls == afterSearch && h.prefs.lastLat() == 42);
+    h.model.lookupNearby();
+    Q_EMIT h.host.locationResult(h.host.requested, true, 44, -94, 100, now, true, "K1A0B1", "CA", "");
+    expect("non-US result retains fix and directs Browse",
+           h.prefs.lastLat() == 44
+               && h.model.errorText() == "RadioReference looks up US ZIP codes only; use Browse for CA.");
+    h.model.lookupNearby();
+    const qint64 first = h.host.requested;
+    h.model.lookupNearby();
+    expect("replacement has distinct id and cancels old", first != h.host.requested && h.host.cancelled == first);
+    h.model.cancel();
+    expect("explicit cancel settles", !h.model.busy() && h.host.cancelled == h.host.requested);
+    h.model.lookupNearby();
+    const qint64 dismissed = h.host.requested;
+    const qint64 chooser = h.model.nextLocationRequestId();
+    expect("chooser ownership retires nearby caller", !h.model.busy() && h.host.cancelled == dismissed);
+    expect("shared allocator advances for chooser", chooser > dismissed);
+    Q_EMIT h.host.locationResult(dismissed, true, 45, -95, 100, now, true, "52401", "US", "");
+    expect("retired nearby result ignored", h.prefs.lastLat() == 44 && !h.model.busy());
+    h.model.lookupNearby();
+    expect("reopened nearby obtains a newer id", h.host.requested > chooser && h.model.busy());
+    h.model.cancel();
+    Harness recreated;
+    recreated.model.lookupNearby();
+    expect("requester recreation preserves allocation", recreated.host.requested > h.host.requested);
+}
+
+void
 test_destroy_with_requests_in_flight(void) {
     /* The client is destroyed first in ~RadioReferenceModel, which joins the
      * worker before any member it might read goes away. Under ASan this case is
@@ -1048,11 +1222,11 @@ test_destroy_with_requests_in_flight(void) {
 
 int
 main(int argc, char** argv) {
-    QCoreApplication app(argc, argv);
+    QGuiApplication app(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(
         QStringLiteral("dsd-neo-radio-reference-%1").arg(QCoreApplication::applicationPid()));
-    QStandardPaths::setTestModeEnabled(true);
+    dsd_test_qt_isolate_paths();
 
     /* AppPrefs hardcodes its own QSettings scope, so redirecting the standard
      * paths alone would still write a real profile. */
@@ -1062,11 +1236,14 @@ main(int argc, char** argv) {
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dataDir).removeRecursively();
 
+    test_nearby();
     test_credentials_gate();
     test_browse_pipeline();
     test_trunked_system();
     test_conventional_system();
     test_import_lands_in_the_library();
+    test_per_site_import();
+    test_mixed_simulcast_qml_plan();
     test_refresh_replaces_a_row_in_place();
     test_refresh_survives_a_row_removed_mid_flight();
     test_site_numbers_are_ambiguous();

@@ -3,23 +3,39 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QList>
+#include <QMap>
+#include <QVariantMap>
+#include <dsd-neo/app_control/p25_metrics.h>
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/key_material.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <utility>
 #include "metrics_model.h"
+
+#include <QStringList>
+#include <algorithm>
+#include <iterator>
+#include <tuple>
 
 #include <QChar>
 #include <QDateTime>
 #include <QtGlobal>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 
 namespace dsd_qt {
 
@@ -54,6 +70,27 @@ slot_enc_text(quint8 algid, quint16 kid) {
         .toUpper();
 }
 
+template <size_t N>
+QString
+siteText(const char (&text)[N]) {
+    return QString::fromUtf8(text, static_cast<int>(std::find(text, text + N, '\0') - text));
+}
+
+bool
+fecEquals(const dsd_app_fec_ratio& a, const dsd_app_fec_ratio& b) {
+    return a.valid == b.valid && a.ok == b.ok && a.err == b.err && a.ok_pct == b.ok_pct;
+}
+
+bool
+voiceEquals(const dsd_app_voice_errs& a, const dsd_app_voice_errs& b) {
+    return a.valid == b.valid && a.samples == b.samples && a.errs_per_frame == b.errs_per_frame;
+}
+
+bool
+frameEquals(const dsd_app_frame_errs& a, const dsd_app_frame_errs& b) {
+    return a.valid == b.valid && a.errs == b.errs && a.errs2 == b.errs2;
+}
+
 } // namespace
 
 /**
@@ -80,11 +117,182 @@ MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m)
     out.name = QString::fromUtf8(view.name);
     out.channel = QString::fromUtf8(view.channel);
     out.enc = view.enc != 0U;
+    out.emergency = view.emergency != 0U;
+    out.priority = view.priority;
     if (out.enc) {
         out.enc_text = slot_enc_text(view.algid, view.kid);
     }
     out.seconds = static_cast<int>(view.elapsed_ms / 1000U);
     return out;
+}
+
+bool
+MetricsModel::View::qualityEquals(const View& other) const {
+    return quality.valid == other.quality.valid && fecEquals(quality.cc_fec, other.quality.cc_fec)
+           && fecEquals(quality.voice_fec, other.quality.voice_fec) && fecEquals(quality.rs, other.quality.rs)
+           && voiceEquals(quality.p1_voice, other.quality.p1_voice)
+           && voiceEquals(quality.p2_voice[0], other.quality.p2_voice[0])
+           && voiceEquals(quality.p2_voice[1], other.quality.p2_voice[1])
+           && frameEquals(quality.last_frame[0], other.quality.last_frame[0])
+           && frameEquals(quality.last_frame[1], other.quality.last_frame[1])
+           && voiceEquals(voice_errs, other.voice_errs) && frameEquals(last_frame, other.last_frame);
+}
+
+bool
+MetricsModel::SiteView::operator==(const SiteView& other) const {
+    return std::tie(siteProtocol, p25NacValid, p25Nac, p25WacnValid, p25Wacn, p25SysIdValid, p25SysId, p25Rfss, p25Site,
+                    p25LraValid, p25Lra, p25Phase2ParamsReady, dmrColorCode, dmrSiteText, dmrRestLsn, nxdnRan,
+                    nxdnLocationCategory, nxdnSysCode, nxdnSiteCode, edacsSiteText, ccFreqHz, vcFreqHz, siteLine,
+                    siteConfirmed)
+           == std::tie(other.siteProtocol, other.p25NacValid, other.p25Nac, other.p25WacnValid, other.p25Wacn,
+                       other.p25SysIdValid, other.p25SysId, other.p25Rfss, other.p25Site, other.p25LraValid,
+                       other.p25Lra, other.p25Phase2ParamsReady, other.dmrColorCode, other.dmrSiteText,
+                       other.dmrRestLsn, other.nxdnRan, other.nxdnLocationCategory, other.nxdnSysCode,
+                       other.nxdnSiteCode, other.edacsSiteText, other.ccFreqHz, other.vcFreqHz, other.siteLine,
+                       other.siteConfirmed);
+}
+
+static void
+appendSiteHex(QStringList& parts, const QString& label, int value, int width) {
+    parts << label + QLatin1Char(' ') + QStringLiteral("%1").arg(value, width, 16, QLatin1Char('0')).toUpper();
+}
+
+static void
+appendSiteDecimal(QStringList& parts, const QString& label, int value) {
+    parts << label + QLatin1Char(' ') + QString::number(value);
+}
+
+void
+MetricsModel::fillP25Identity(SiteView& site, const dsd_state* snapshot) {
+    site.siteProtocol = QStringLiteral("P25");
+    site.p25NacValid = snapshot->p2_cc > 0 && snapshot->p2_cc < 0xFFF;
+    site.p25WacnValid = snapshot->p2_wacn > 0 && snapshot->p2_wacn < 0xFFFFF;
+    site.p25SysIdValid = snapshot->p2_sysid > 0 && snapshot->p2_sysid < 0xFFF;
+    site.p25Nac = site.p25NacValid ? static_cast<int>(snapshot->p2_cc) : 0;
+    site.p25Wacn = site.p25WacnValid ? static_cast<int>(snapshot->p2_wacn) : 0;
+    site.p25SysId = site.p25SysIdValid ? static_cast<int>(snapshot->p2_sysid) : 0;
+    site.p25Rfss = snapshot->p2_rfssid <= 255 ? static_cast<int>(snapshot->p2_rfssid) : 0;
+    site.p25Site = snapshot->p2_siteid <= 255 ? static_cast<int>(snapshot->p2_siteid) : 0;
+    site.p25LraValid = snapshot->p25_site_lra_valid != 0;
+    site.p25Lra = site.p25LraValid ? snapshot->p25_site_lra : 0;
+    // The terminal's zero/all-ones parameter gate is independent of P1 identity.
+    site.p25Phase2ParamsReady = site.p25NacValid && site.p25WacnValid && site.p25SysIdValid;
+}
+
+QStringList
+MetricsModel::p25SiteParts(const SiteView& site) {
+    QStringList parts;
+    if (site.p25WacnValid) {
+        appendSiteHex(parts, QStringLiteral("WACN"), site.p25Wacn, 5);
+    }
+    if (site.p25SysIdValid) {
+        appendSiteHex(parts, QStringLiteral("SYS"), site.p25SysId, 3);
+    }
+    if (site.p25NacValid) {
+        appendSiteHex(parts, QStringLiteral("NAC"), site.p25Nac, 3);
+    }
+    if (site.p25Rfss) {
+        appendSiteDecimal(parts, QStringLiteral("RFSS"), site.p25Rfss);
+    }
+    if (site.p25Site) {
+        appendSiteDecimal(parts, QStringLiteral("SITE"), site.p25Site);
+    }
+    if (site.p25LraValid) {
+        appendSiteHex(parts, QStringLiteral("LRA"), site.p25Lra, 2);
+    }
+    return parts;
+}
+
+QStringList
+MetricsModel::fillDmrSite(SiteView& site, const dsd_state* snapshot) {
+    QStringList parts;
+    site.siteProtocol = QStringLiteral("DMR");
+    site.dmrColorCode = snapshot->dmr_color_code <= 15 ? static_cast<int>(snapshot->dmr_color_code) : -1;
+    site.dmrSiteText = siteText(snapshot->dmr_site_parms);
+    site.dmrRestLsn = qMax(0, snapshot->dmr_rest_channel);
+    if (site.dmrColorCode >= 0) {
+        appendSiteDecimal(parts, QStringLiteral("CC"), site.dmrColorCode);
+    }
+    if (!site.dmrSiteText.isEmpty()) {
+        parts << site.dmrSiteText;
+    }
+    if (site.dmrRestLsn > 0) {
+        appendSiteDecimal(parts, QStringLiteral("Rest LSN"), site.dmrRestLsn);
+    }
+    return parts;
+}
+
+QStringList
+MetricsModel::fillNxdnSite(SiteView& site, const dsd_state* snapshot) {
+    QStringList parts;
+    site.nxdnRan = snapshot->nxdn_last_ran <= 63 ? static_cast<int>(snapshot->nxdn_last_ran) : -1;
+    site.nxdnLocationCategory = siteText(snapshot->nxdn_location_category);
+    const bool idas = site.nxdnLocationCategory == QStringLiteral("Type-D");
+    site.siteProtocol = idas ? QStringLiteral("IDAS") : QStringLiteral("NXDN");
+    site.nxdnSiteCode = snapshot->nxdn_location_site_code;
+    // As in the terminal, a decoded site code establishes location validity.
+    site.nxdnSysCode = site.nxdnSiteCode ? static_cast<int>(snapshot->nxdn_location_sys_code) : 0;
+    if (site.nxdnRan >= 0) {
+        appendSiteDecimal(parts, idas ? QStringLiteral("Area") : QStringLiteral("RAN"), site.nxdnRan);
+    }
+    if (site.nxdnSiteCode) {
+        if (!site.nxdnLocationCategory.isEmpty()) {
+            parts << site.nxdnLocationCategory;
+        }
+        appendSiteDecimal(parts, QStringLiteral("SYS"), site.nxdnSysCode);
+        appendSiteDecimal(parts, QStringLiteral("SITE"), site.nxdnSiteCode);
+    }
+    return parts;
+}
+
+QStringList
+MetricsModel::fillEdacsSite(SiteView& site, const dsd_state* snapshot) {
+    QStringList parts;
+    site.siteProtocol = QStringLiteral("EDACS");
+    if (snapshot->edacs_site_id) {
+        site.edacsSiteText =
+            QStringLiteral("SITE %1 [%2] · %3 · %4")
+                .arg(snapshot->edacs_site_id, 3, 10, QLatin1Char('0'))
+                .arg(QStringLiteral("%1").arg(snapshot->edacs_site_id, 2, 16, QLatin1Char('0')).toUpper())
+                .arg(snapshot->ea_mode == 1 ? QStringLiteral("Extended Addressing")
+                                            : QStringLiteral("Standard/Networked"))
+                .arg(snapshot->esk_mask == 0xA0 ? QStringLiteral("ESK") : QStringLiteral("No ESK"));
+        parts << site.edacsSiteText;
+    }
+    return parts;
+}
+
+void
+MetricsModel::fillSiteView(View& next, const dsd_state* snapshot) const {
+    auto& site = next.site;
+    // No snapshot pointer survives the tick. Retain the last copied identity on
+    // loss, even if the no-carrier path has already reset the decoder's fields.
+    if (snapshot->synctype == DSD_SYNC_NONE) {
+        site = m_view.site;
+        site.siteConfirmed = false;
+        return;
+    }
+    QStringList parts;
+    if (DSD_SYNC_IS_P25(snapshot->synctype)) {
+        fillP25Identity(site, snapshot);
+        parts = p25SiteParts(site);
+    } else if (DSD_SYNC_IS_DMR(snapshot->synctype)) {
+        parts = fillDmrSite(site, snapshot);
+    } else if (DSD_SYNC_IS_NXDN(snapshot->synctype)) {
+        parts = fillNxdnSite(site, snapshot);
+    } else if (DSD_SYNC_IS_EDACS(snapshot->synctype)) {
+        parts = fillEdacsSite(site, snapshot);
+    }
+    if (!site.siteProtocol.isEmpty()) {
+        site.ccFreqHz = qMax(0L, snapshot->trunk_cc_freq != 0 ? snapshot->trunk_cc_freq : snapshot->p25_cc_freq);
+        site.vcFreqHz =
+            qMax(0L, snapshot->trunk_vc_freq[0] != 0 ? snapshot->trunk_vc_freq[0] : snapshot->p25_vc_freq[0]);
+    }
+    if (!parts.isEmpty()) {
+        parts.prepend(site.siteProtocol);
+        site.siteLine = parts.join(QStringLiteral(" · "));
+        site.siteConfirmed = true;
+    }
 }
 
 MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {
@@ -98,17 +306,31 @@ MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {
 
 MetricsModel::~MetricsModel() = default;
 
+bool
+MetricsModel::View::operator==(const View& other) const {
+    return site == other.site && qualityEquals(other) && tunerEquals(other) && slot_call[0] == other.slot_call[0]
+           && slot_call[1] == other.slot_call[1] && controlEquals(other) && ui_message == other.ui_message;
+}
+
 void
 MetricsModel::publish(const View& next) {
+    if (next == m_view) {
+        return;
+    }
+    const bool siteMoved = !(next.site == m_view.site);
+    const bool qualityMoved = !next.qualityEquals(m_view);
     const bool tunerMoved = !next.tunerEquals(m_view);
     const bool slot1Moved = !(next.slot_call[0] == m_view.slot_call[0]);
     const bool slot2Moved = !(next.slot_call[1] == m_view.slot_call[1]);
     const bool controlMoved = !next.controlEquals(m_view);
     const bool messageMoved = next.ui_message != m_view.ui_message;
-    if (!tunerMoved && !slot1Moved && !slot2Moved && !controlMoved && !messageMoved) {
-        return;
-    }
     m_view = next;
+    if (siteMoved) {
+        Q_EMIT siteChanged();
+    }
+    if (qualityMoved) {
+        Q_EMIT qualityChanged();
+    }
     if (tunerMoved) {
         Q_EMIT tunerChanged();
     }
@@ -155,14 +377,212 @@ MetricsModel::clear() {
 void
 MetricsModel::fillScanControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
     const bool trunk_scan = opts_snapshot->trunk_scan_enabled != 0;
+    if (trunk_scan) {
+        next.scan_target_id = QString::fromUtf8(snapshot->trunk_scan_active_id);
+        next.scan_target_ordinal = snapshot->trunk_scan_active_ordinal;
+        next.scan_target_count = snapshot->trunk_scan_target_count;
+    }
     next.scan_rotation_active = opts_snapshot->scanner_mode != 0 || trunk_scan;
     next.scan_hold = trunk_scan ? (snapshot->trunk_scan_hold != 0) : (snapshot->lcn_scan_hold != 0);
     next.scan_avoid_count = trunk_scan ? snapshot->trunk_scan_avoided_count : snapshot->lcn_avoid_count;
     next.scan_target_avoided = trunk_scan && snapshot->trunk_scan_active_avoided != 0;
 }
 
+namespace {
+struct DecryptionView {
+    const dsd_call_snapshot& call;
+    const dsd_call_key_selection& selected;
+    const dsd_opts* opts;
+    const dsd_state* state;
+    bool current, encrypted, dmr;
+
+    DecryptionView(const dsd_call_snapshot& c, const dsd_opts* o, const dsd_state* s)
+        : call(c), selected(c.key_selection), opts(o), state(s),
+          current(selected.valid && selected.key_epoch == s->enc_lockout_key_epoch && selected.signaled_id == c.kid
+                  && selected.algorithm == c.algid),
+          encrypted(c.crypto >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING), dmr(DSD_SYNC_IS_DMR(c.protocol)) {}
+
+    QString
+    source() const {
+        const QStringList sources{QStringLiteral("Source not reported"), QStringLiteral("Direct key override"),
+                                  QStringLiteral("Received key ID"),     QStringLiteral("Talkgroup override"),
+                                  QStringLiteral("Destination lookup"),  QStringLiteral("Default / existing material")};
+        const QString source = current && selected.source < sources.size() ? sources[selected.source]
+                               : state->keyloader ? QStringLiteral("Automatic key collection")
+                                                  : QStringLiteral("Direct / existing material");
+        return source;
+    }
+
+    QString
+    availability() const {
+        if (call.crypto == DSD_CALL_CRYPTO_CLEAR) {
+            return QStringLiteral("No decryption needed");
+        }
+        if (!current && selected.valid) {
+            return QStringLiteral("Waiting for key reevaluation");
+        }
+        if (current && selected.available >= 0) {
+            return selected.available == 1 ? QStringLiteral("Key material available")
+                                           : QStringLiteral("No usable key material");
+        }
+        return call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE ? QStringLiteral("Key material available")
+                                                          : QStringLiteral("Key availability not yet known");
+    }
+
+    QString
+    fallback() const {
+        QString fallback;
+        if (current && selected.fallback == DSD_CALL_KEY_FALLBACK_MAPPED_MISSING) {
+            fallback = QStringLiteral("Mapped key is absent; using received key ID.");
+        }
+        if (current && selected.fallback == DSD_CALL_KEY_FALLBACK_MAPPED_INCOMPATIBLE) {
+            fallback = QStringLiteral("Mapped material is incompatible; using received key ID.");
+        }
+        if (current && selected.fallback == DSD_CALL_KEY_FALLBACK_UNKNOWN_ALGORITHM) {
+            fallback = QStringLiteral("This algorithm does not use the standard keyring mapping.");
+        }
+        return fallback;
+    }
+
+    QString
+    block() const {
+        QString block;
+        if ((call.kind == DSD_CALL_KIND_GROUP_VOICE || call.kind == DSD_CALL_KIND_PRIVATE_VOICE)
+            && call.policy_target_id > 0 && call.policy_target_id <= UINT32_MAX && call.ota_source_id <= UINT32_MAX) {
+            dsd_tg_policy_decision policy = {};
+            const int needs_key = encrypted && call.crypto != DSD_CALL_CRYPTO_DECRYPTABLE;
+            if (call.kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+                dsd_tg_policy_evaluate_private_call(opts, state, static_cast<uint32_t>(call.ota_source_id),
+                                                    static_cast<uint32_t>(call.policy_target_id), needs_key, 0,
+                                                    &policy);
+            } else {
+                dsd_tg_policy_evaluate_group_call(opts, state, static_cast<uint32_t>(call.policy_target_id),
+                                                  static_cast<uint32_t>(call.ota_source_id), needs_key, 0, &policy);
+            }
+            if (policy.block_reasons) {
+                block = QString::fromUtf8(dsd_tg_policy_block_reason_label(policy.block_reasons));
+            }
+        }
+        return block;
+    }
+
+    QString
+    materialKind() const {
+        const auto need = dsd_dmr_alg_key_need(call.algid);
+        QString materialKind = need == DSD_KEY_NEED_AES_2                                   ? QStringLiteral("aes128")
+                               : need == DSD_KEY_NEED_AES_3                                 ? QStringLiteral("tdea")
+                               : need == DSD_KEY_NEED_AES_4 || need == DSD_KEY_NEED_QUARTET ? QStringLiteral("aes256")
+                                                                                            : QStringLiteral("scalar");
+        if (DSD_SYNC_IS_NXDN(call.protocol)) {
+            materialKind = call.algid == 1   ? QStringLiteral("scrambler")
+                           : call.algid == 3 ? QStringLiteral("aes256")
+                                             : QStringLiteral("scalar");
+        }
+        return materialKind;
+    }
+
+    QString
+    kid() const {
+        const bool keyedProtocol =
+            DSD_SYNC_IS_P25(call.protocol) || DSD_SYNC_IS_DMR(call.protocol) || DSD_SYNC_IS_NXDN(call.protocol);
+        const QString kid = keyedProtocol && encrypted && (!dmr || call.kid <= 255)
+                                    && (!current || selected.source != DSD_CALL_KEY_DESTINATION)
+                                ? QString::number(call.kid, 16).toUpper()
+                                : QString();
+        return kid;
+    }
+
+    QString
+    effective() const {
+        const QString effective =
+            current && selected.effective_id >= 0
+                    && (selected.source == DSD_CALL_KEY_DESTINATION || !dmr || selected.effective_id <= 255)
+                ? QString::number(selected.effective_id, selected.source == DSD_CALL_KEY_DESTINATION ? 10 : 16)
+                      .toUpper()
+                : QString();
+        return effective;
+    }
+
+    QString
+    protocol() const {
+        if (DSD_SYNC_IS_P25(call.protocol)) {
+            return "p25";
+        }
+        if (dmr) {
+            return "dmr";
+        }
+        if (DSD_SYNC_IS_NXDN(call.protocol)) {
+            return "nxdn";
+        }
+        if (DSD_SYNC_IS_M17(call.protocol)) {
+            return "m17";
+        }
+        if (DSD_SYNC_IS_DPMR(call.protocol)) {
+            return "dpmr";
+        }
+        if (DSD_SYNC_IS_DSTAR(call.protocol)) {
+            return "dstar";
+        }
+        if (DSD_SYNC_IS_YSF(call.protocol)) {
+            return "ysf";
+        }
+        return "unknown";
+    }
+
+    QString
+    status() const {
+        if (call.crypto == DSD_CALL_CRYPTO_CLEAR) {
+            return QStringLiteral("Unencrypted");
+        }
+        if (call.crypto == DSD_CALL_CRYPTO_UNKNOWN) {
+            return QStringLiteral("Unknown / waiting for signaling");
+        }
+        return QStringLiteral("Encrypted");
+    }
+};
+} // namespace
+
+static QVariantList
+decryption_slot_views(const dsd_opts* opts, const dsd_state* state) {
+    QVariantList result;
+    for (uint8_t slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; ++slot) {
+        dsd_call_snapshot call = {};
+        if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase == DSD_CALL_PHASE_IDLE) {
+            continue;
+        }
+        const DecryptionView view(call, opts, state);
+        result.append(QVariantMap{
+            {"slot", slot + 1},
+            {"status", view.status()},
+            {"protocol", view.protocol()},
+            {"lastObserved", call.phase == DSD_CALL_PHASE_ENDED},
+            {"algorithm", view.encrypted && call.algid ? QString::number(call.algid, 16).toUpper() : QString()},
+            {"keyId", view.kid()},
+            {"effectiveId", view.effective()},
+            {"source", view.source()},
+            {"availability", view.availability()},
+            {"fallback", view.fallback()},
+            {"blockReason", view.block()},
+            {"materialKind", view.materialKind()},
+            {"targetId", QString::number(call.ota_target_id)},
+            {"group", call.kind == DSD_CALL_KIND_GROUP_VOICE},
+            {"privateCall", call.kind == DSD_CALL_KIND_PRIVATE_VOICE},
+            {"dmr", view.dmr},
+            {"profileRef", view.current ? QString::fromUtf8(call.key_selection.profile_ref)
+                                        : QString::fromUtf8(state->key_profile_ref)}});
+    }
+    return result;
+}
+
 void
 MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) {
+    const auto* configured = dsd_scan_mode_configured_view(snapshot);
+    next.configured_force = configured ? configured->force_key : snapshot->M;
+    next.effective_force = snapshot->M;
+    next.key_profile_ref = QString::fromUtf8(snapshot->key_profile_ref);
+    next.key_epoch = snapshot->enc_lockout_key_epoch;
+    next.automatic_keys = snapshot->keyloader == 1;
+    next.decryption_slots = decryption_slot_views(opts_snapshot, snapshot);
     next.scan_mode = QString::fromLatin1(dsd_scan_mode_name(dsd_scan_mode_active(snapshot)));
     next.decode_mode = static_cast<int>(dsd_scan_mode_configured_preset(opts_snapshot, snapshot));
 
@@ -197,7 +617,6 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
      * select, and folding it into C4FM made a control bound to this reading show
      * C4FM as already-selected on a session that was never on it. Through the
      * shared helper so this and ui_handle_mod_set()'s skip test cannot drift. */
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(snapshot);
     next.modulation = configured
                           ? dsd_modulation_from_flags(configured->mod_c4fm, configured->mod_qpsk, configured->mod_gfsk)
                           : dsd_opts_modulation(opts_snapshot);
@@ -214,6 +633,30 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
     next.squelch_db = next.radio_input ? pwr_to_dB(opts_snapshot->rtl_squelch_level) : 0.0;
     next.squelch_off = next.radio_input && dsd_squelch_is_off(opts_snapshot->rtl_squelch_level);
     next.ppm = next.radio_input ? opts_snapshot->rtlsdr_ppm_error : 0;
+}
+
+void
+MetricsModel::fillQualityView(View& next, const dsd_state* snapshot) {
+    dsd_app_p25_quality_from_state(snapshot, &next.quality);
+    const int line_states[] = {next.slot_call[0].state, next.slot_call[1].state};
+    const int lead = dsd_app_lead_slot(line_states, DSD_CALL_STATE_SLOT_COUNT);
+    next.voice_errs = next.quality.p1_voice;
+    if (lead >= 0) {
+        if (!next.voice_errs.valid) {
+            next.voice_errs = next.quality.p2_voice[lead];
+        }
+        next.last_frame = next.quality.last_frame[lead];
+    } else {
+        // Late-entry media may precede any decoded identity. The facade already
+        // limits these readings to active non-P25 media; keep the first valid
+        // slot until the call view can supply its usual identity-based lead.
+        const auto& frames = next.quality.last_frame;
+        const auto* frame = std::find_if(std::begin(frames), std::end(frames),
+                                         [](const dsd_app_frame_errs& item) { return item.valid != 0; });
+        if (frame != std::end(frames)) {
+            next.last_frame = *frame;
+        }
+    }
 }
 
 void
@@ -283,6 +726,9 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     const double now_m = dsd_time_now_monotonic_s();
     next.slot_call[0] = slotCallView(snapshot, 0, now_m);
     next.slot_call[1] = slotCallView(snapshot, 1, now_m);
+
+    fillQualityView(next, snapshot);
+    fillSiteView(next, snapshot);
 
     /* Engine truth for the monitor's toggle buttons. The engine owns both states
      * — commands only enqueue a request — and on Android the service outlives the

@@ -6,6 +6,12 @@
 package io.github.arancormonk.dsdneo
 
 import android.content.Intent
+import android.view.KeyEvent
+import android.view.ViewTreeObserver
+import android.os.Bundle
+import android.os.Build
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import org.qtproject.qt.android.bindings.QtActivity
 
 /**
@@ -35,8 +41,59 @@ import org.qtproject.qt.android.bindings.QtActivity
  * "DSD-neo isn't responding".
  */
 class DsdNeoActivity : QtActivity() {
+    private var backCallback: OnBackInvokedCallback? = null
+    private var keyboardObserver: ViewTreeObserver.OnGlobalLayoutListener? = null
+
+    // WP-S2: intents carry only a validated USB attachment, never start options.
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 33) {
+            val callback = OnBackInvokedCallback { AppSupport.requestBack() }
+            backCallback = callback
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_OVERLAY, callback)
+        }
+        val observer = ViewTreeObserver.OnGlobalLayoutListener { AppSupport.updateKeyboardBounds(this) }
+        keyboardObserver = observer
+        window.decorView.viewTreeObserver.addOnGlobalLayoutListener(observer)
+        UsbSourceManager.initializeAttachments(this)
+        UsbSourceManager.reportAttachment(this, intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        UsbSourceManager.reportAttachment(this, intent)
+    }
+
+    // Qt also translates hardware Back into a key/close event. Consume that
+    // path here so each physical press reaches the shell exactly once. Gesture
+    // Back uses the dispatcher above; QML dismisses the IME before navigation.
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+            if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) AppSupport.requestBack()
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    @Deprecated("Legacy Back dispatch for API 29–32")
+    override fun onBackPressed() { AppSupport.requestBack() }
+
+
+    // WP-D3: location permission and Activity lifetime.
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        if (!LocationSupport.onRequestPermissionsResult(this, requestCode, grantResults)) {
+            super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        }
+    }
 
     override fun onDestroy() {
+        keyboardObserver?.let { window.decorView.viewTreeObserver.removeOnGlobalLayoutListener(it) }
+        keyboardObserver = null
+        if (Build.VERSION.SDK_INT >= 33) {
+            backCallback?.let { onBackInvokedDispatcher.unregisterOnBackInvokedCallback(it) }
+            backCallback = null
+        }
+        LocationSupport.onDestroy(this)
         // Not on a configuration change: those destroy and immediately recreate the
         // Activity, and Qt keeps the process across them (it skips its own teardown for
         // exactly this case). Quitting there would take the UI down on a rotation.

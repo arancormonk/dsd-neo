@@ -19,13 +19,24 @@
 #include <QObject>
 #include <QSettings>
 #include <QString>
+#include <QTimer>
+#include <QtGlobal>
 
 namespace dsd_qt {
 
 class AppPrefs : public QObject {
     Q_OBJECT
+    Q_PROPERTY(bool autoStartOnAttach READ autoStartOnAttach WRITE setAutoStartOnAttach NOTIFY autoStartOnAttachChanged)
+    Q_PROPERTY(QString lastStartedKind READ lastStartedKind WRITE setLastStartedKind NOTIFY lastStartedKindChanged)
+    Q_PROPERTY(QString lastStartedUid READ lastStartedUid WRITE setLastStartedUid NOTIFY lastStartedUidChanged)
+    Q_PROPERTY(double lastLat READ lastLat NOTIFY locationChanged)
+    Q_PROPERTY(double lastLon READ lastLon NOTIFY locationChanged)
+    Q_PROPERTY(qint64 lastFixAt READ lastFixAt NOTIFY locationChanged)
+
     Q_PROPERTY(int appearance READ appearance WRITE setAppearance NOTIFY appearanceChanged)
     Q_PROPERTY(bool onboardingDone READ onboardingDone WRITE setOnboardingDone NOTIFY onboardingDoneChanged)
+    Q_PROPERTY(bool notificationExplained READ notificationExplained WRITE setNotificationExplained NOTIFY
+                   notificationExplainedChanged)
     Q_PROPERTY(bool backgroundListening READ backgroundListening WRITE setBackgroundListening NOTIFY
                    backgroundListeningChanged)
     Q_PROPERTY(bool keepScreenAwake READ keepScreenAwake WRITE setKeepScreenAwake NOTIFY keepScreenAwakeChanged)
@@ -57,12 +68,31 @@ class AppPrefs : public QObject {
     explicit AppPrefs(QObject* parent = nullptr);
     ~AppPrefs() override;
 
+    bool autoStartOnAttach() const;
+    void setAutoStartOnAttach(bool value);
+    QString lastStartedKind() const;
+    void setLastStartedKind(const QString& value);
+    QString lastStartedUid() const;
+    void setLastStartedUid(const QString& value);
+    double lastLat() const;
+    void setLastLat(double value);
+    double lastLon() const;
+    void setLastLon(double value);
+    /** Publish coordinates and timestamp together. Separate property writes can
+     * notify a reader before the timestamp makes the new coordinates valid. */
+    Q_INVOKABLE void setLocationFix(double lat, double lon, qint64 fixAtMs, double accuracyM = 0);
+    double lastAccuracyM() const;
+    qint64 lastFixAt() const;
+    void setLastFixAt(qint64 value);
+
     int appearance() const;
     void setAppearance(int mode);
 
     bool onboardingDone() const;
     void setOnboardingDone(bool done);
 
+    bool notificationExplained() const;
+    void setNotificationExplained(bool value);
     bool backgroundListening() const;
     void setBackgroundListening(bool on);
 
@@ -115,8 +145,14 @@ class AppPrefs : public QObject {
     void setExploreFreqMhz(const QString& mhz);
 
   Q_SIGNALS:
+    void autoStartOnAttachChanged();
+    void lastStartedKindChanged();
+    void lastStartedUidChanged();
+    void locationChanged();
+
     void appearanceChanged();
     void onboardingDoneChanged();
+    void notificationExplainedChanged();
     void backgroundListeningChanged();
     void keepScreenAwakeChanged();
     void skipEncryptedChanged();
@@ -131,6 +167,9 @@ class AppPrefs : public QObject {
     void exploreChanged();
 
   private:
+    void expireLocation() const;
+    void armLocationExpiry();
+    QTimer m_locationExpiry;
     mutable QSettings m_settings;
 };
 

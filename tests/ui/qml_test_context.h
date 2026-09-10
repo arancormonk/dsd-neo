@@ -18,9 +18,10 @@
  * filtering and change signalling are under test. Behind them sits CallLogStore, a stand-in for CallHistoryModel that
  * prepends rows on demand — the real store only grows by ingesting a decoder
  * snapshot ring, which is covered by UI_QT_CALL_HISTORY_MODEL instead. The
- * engine-facing objects (metrics, decoderHost, commands, prefs) are plain maps
- * rather than the production QObject models, which is what keeps this test off
- * the app-control boundary and clear of the engine libraries.
+ * engine-facing readings (metrics and the default decoderHost) use QObject-backed maps
+ * rather than the production models, which is what keeps this test off
+ * live engine lifecycle. WP-S1 additionally links the real CSV-validation facade
+ * for pre-start scan-list checks; it never opens a tuner.
  *
  * That last choice gives up one guarantee, and missingContextKeys() buys it back:
  * reading a key a QVariantMap does not carry yields `undefined` with no warning
@@ -38,12 +39,15 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFont>
 #include <QFontDatabase>
+#include <QGuiApplication>
 #include <QHash>
 #include <QIODevice>
 #include <QList>
 #include <QQmlContext>
 #include <QQmlEngine>
+#include <QQmlPropertyMap>
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QString>
@@ -56,16 +60,24 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <memory>
+#include "../test_support/qt_test_paths.h"
+#include "decryption_profiles_model.h"
 
 #include "app_prefs.h"
+#include "auto_start_policy.h"
 #include "call_history_filter.h"
 #include "call_history_model.h"
 #include "decode_mode_flag.h"
 #include "decoder_host.h"
+#include "diagnostics_log.h"
 #include "imported_files_model.h"
+#include "p25_network_model.h" // WP-F2
 #include "qml_spectrum_stub.h"
 #include "saved_systems_model.h"
+#include "scan_list_starter.h"
+#include "scan_lists_model.h"
 #include "session_args.h"
+#include "site_groups.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
 #include "talkgroup_filter_model.h"
@@ -88,7 +100,7 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
   public:
     bool
     isRunning() const override {
-        return false;
+        return m_running;
     }
 
     QString
@@ -98,12 +110,150 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     bool
     start(const QStringList& argv) override {
-        Q_UNUSED(argv)
-        return false;
+        (void)argv;
+        if (acceptStart) {
+            phase = startRunning ? Running : Starting;
+            m_running = true;
+            Q_EMIT runningChanged();
+            Q_EMIT sessionStateChanged();
+        }
+        return acceptStart;
+    }
+
+    qint64 locationRequested = 0;
+    qint64 locationCancelled = 0;
+
+    void
+    requestCurrentLocation(qint64 id) override {
+        locationRequested = id;
     }
 
     void
-    stop() override {}
+    cancelLocationRequest(qint64 id) override {
+        locationCancelled = id;
+    }
+
+    qreal keyboardBoundary = -1;
+
+    qreal
+    keyboardTop() const override {
+        return keyboardBoundary;
+    }
+
+    bool delayedStop = false; // WP-D4: stop acknowledgement is a separate edge.
+
+    void
+    stop() override {
+        phase = delayedStop ? Stopping : Idle;
+        m_running = false;
+        Q_EMIT runningChanged();
+        Q_EMIT sessionStateChanged();
+    }
+
+    SessionState phase = Idle;
+
+    SessionState
+    sessionState() const override {
+        return phase;
+    }
+
+    void
+    setPhase(SessionState value) {
+        phase = value;
+        Q_EMIT sessionStateChanged();
+    }
+
+    // WP-S1: exercise the same brokered-USB gate as saved-system starts.
+    bool
+    localDeviceBrokered() const override {
+        return usbBrokered;
+    }
+
+    bool
+    localDeviceReady() const override {
+        return usbReady;
+    }
+
+    void
+    requestLocalDeviceAccess() override {
+        ++usbRequests;
+    }
+
+    // WP-D5: rendering fixture; native error propagation has its own test.
+    QString
+    localDeviceStatus() const override {
+        return usbStatus;
+    }
+
+    int
+    localDeviceFailureKind() const override {
+        return usbFailureKind;
+    }
+
+    QString usbStatus;
+    int usbFailureKind = 0;
+
+    bool usbBrokered = false;
+    bool usbReady = false;
+    int usbRequests = 0;
+
+    bool acceptStart = false;
+    bool startRunning = false;
+
+  private:
+    bool m_running = false;
+};
+
+// Matches Android's contract: Running can be observed before initialization.
+// The ordinary import host inherits DecoderHost's fallback capability unchanged.
+class InitializingHost : public ImportOnlyHost {
+  public:
+    bool
+    signalsSessionInitialized() const override {
+        return true;
+    }
+};
+
+// The history model itself is already real in these fixtures; the controller
+// stub only acknowledges the documented same-thread flush before a start.
+class TestUiController : public QObject {
+    Q_OBJECT
+    // WP-S2: exercise Main.qml signal routing and overlay binding.
+    Q_PROPERTY(bool autoStartBlocked MEMBER autoStartBlocked)
+    // WP-D1: retained export result starts empty, like the real controller.
+    Q_PROPERTY(QVariantMap talkgroupExportResult READ talkgroupExportResult CONSTANT)
+    Q_PROPERTY(QVariantMap decryptionResult MEMBER decryptionResult NOTIFY decryptionResultChanged)
+  public:
+    using QObject::QObject;
+
+    QVariantMap
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    talkgroupExportResult() const {
+        return {};
+    }
+
+    QVariantMap decryptionResult;
+
+    Q_INVOKABLE void
+    finishDecryption(const QString& id, int status) {
+        decryptionResult = {{"requestId", id}, {"session", "1"}, {"status", status}, {"scope", 0}};
+        Q_EMIT decryptionResultChanged();
+    }
+
+    bool autoStartBlocked = true;
+
+    Q_INVOKABLE void
+    requestAutoStart(const QString& kind, const QString& uid) {
+        Q_EMIT autoStartRequested(kind, uid);
+    }
+
+    Q_INVOKABLE void
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    flushHistory() {}
+
+  Q_SIGNALS:
+    void autoStartRequested(const QString& kind, const QString& uid);
+    void decryptionResultChanged();
 };
 
 /**
@@ -122,8 +272,79 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
  */
 class CommandRecorder : public QObject {
     Q_OBJECT
+    quint64 m_next_key_request = 1;
+    QString m_last_key_request;
+    QVariantList m_last_selection;
 
   public:
+    Q_INVOKABLE QVariantMap
+    decryptionContext(const QString& target, const QString& epoch) const {
+        return {{"session", "1"}, {"tuning", "1"}, {"target", target}, {"keyEpoch", epoch}};
+    }
+
+    Q_INVOKABLE QString
+    lastDecryptionRequest() const {
+        return m_last_key_request;
+    }
+
+    Q_INVOKABLE QString
+    applyDecryptionDraft(const QString& type, const QString& value, bool forceChanged, int force, const QVariantMap&) {
+        if (!type.isEmpty() && !applyEncryptionKey(type, value)) {
+            return {};
+        }
+        if (forceChanged && !setForceKeyMode(force == 33 ? 2 : force)) {
+            return {};
+        }
+        m_last_key_request = QString::number(m_next_key_request++);
+        return m_last_key_request;
+    }
+
+    Q_INVOKABLE QString
+    applyDecryptionProfile(const QString&, int, const QVariantMap&) {
+        m_last_key_request = QString::number(m_next_key_request++);
+        return m_last_key_request;
+    }
+
+    Q_INVOKABLE QString
+    applyDmrKeyMap(const QString&, int, const QVariantMap&) {
+        m_last_key_request = QString::number(m_next_key_request++);
+        return m_last_key_request;
+    }
+
+    // WP-D2: record only non-secret command outcomes, never key text.
+    Q_INVOKABLE bool
+    applyEncryptionKey(const QString& type, const QString& value) {
+        ++m_key_apply_calls;
+        m_key_payload_valid = dsd_qt::session_args_key_valid(type, value);
+        return m_key_accepted;
+    }
+
+    Q_INVOKABLE bool
+    setForceKeyMode(int mode) {
+        m_last_force_mode = mode;
+        return m_key_accepted;
+    }
+
+    Q_INVOKABLE int
+    keyApplyCalls() const {
+        return m_key_apply_calls;
+    }
+
+    Q_INVOKABLE bool
+    keyPayloadValid() const {
+        return m_key_payload_valid;
+    }
+
+    Q_INVOKABLE int
+    lastForceMode() const {
+        return m_last_force_mode;
+    }
+
+    Q_INVOKABLE void
+    setKeyAccepted(bool accepted) {
+        m_key_accepted = accepted;
+    }
+
     Q_INVOKABLE bool
     importSrcList(const QString& path) {
         m_src_import_calls++;
@@ -164,24 +385,67 @@ class CommandRecorder : public QObject {
      * tune, only on the spectrum's manualTuneHz(). Counting it would be state no
      * assertion can ever fail on. */
     Q_INVOKABLE bool
-    tuneHz(unsigned int hz) {
-        Q_UNUSED(hz)
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    tuneHz(unsigned int hz) const {
+        (void)hz;
         return true;
     }
 
     Q_INVOKABLE bool
-    toggleMute() {
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    toggleMute() const {
         return true;
     }
 
     Q_INVOKABLE bool
-    holdTalkgroup(double) {
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    holdTalkgroup(double) const {
         return true;
     }
 
     Q_INVOKABLE bool
-    lockoutSlot(int) {
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    lockoutSlot(int) const {
         return true;
+    }
+
+    // WP-D1: retain the captured version and requested fields for edit-sheet tests.
+    Q_INVOKABLE bool
+    setTalkgroupPolicy(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
+                       const QVariantMap& changes) {
+        m_talkgroupEdit = {start, end, context, generation, changes};
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    renameTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
+                    const QString& name) {
+        m_talkgroupEdit = {start, end, context, generation, name};
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    addTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
+                 const QString& name, bool listen, int priority, bool preempt) {
+        m_talkgroupEdit = {start, end, context, generation, name, listen, priority, preempt};
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    removeTalkgroup(unsigned int start, unsigned int end, const QString& context, unsigned int generation) {
+        m_talkgroupEdit = {start, end, context, generation};
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    saveTalkgroupList(const QString& context, unsigned int generation, const QString& path) {
+        m_talkgroupEdit = {context, generation, path};
+        return true;
+    }
+
+    Q_INVOKABLE QVariantList
+    lastTalkgroupEdit() const {
+        return m_talkgroupEdit;
     }
 
     Q_INVOKABLE bool
@@ -194,6 +458,17 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
+    setTalkgroupSelection(bool listen, const QString&, unsigned int, const QVariantList& rows) {
+        m_last_selection = rows;
+        return setAllTalkgroupsListening(listen, QString());
+    }
+
+    Q_INVOKABLE QVariantList
+    selectionRows() const {
+        return m_last_selection;
+    }
+
+    Q_INVOKABLE bool
     setAllTalkgroupsListening(bool listen, const QString& tag) {
         m_all_talkgroups_listen_calls++;
         m_last_all_talkgroups_listen = listen;
@@ -202,7 +477,8 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
-    clearEncLockouts() {
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    clearEncLockouts() const {
         return true;
     }
 
@@ -282,17 +558,23 @@ class CommandRecorder : public QObject {
      * is 4) and 13 for "the rest" (which is ANALOG) -- so the case asserting that
      * the DMR chip sends DMR was really asserting the double's own arithmetic. */
     Q_INVOKABLE int
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
     decodeModeForFlag(const QString& flag) {
         return dsd_qt::decode_mode_for_flag(flag);
     }
 
     Q_INVOKABLE int
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
     cycleHistoryMode() {
         return 0;
     }
 
     void
     reset() {
+        m_key_apply_calls = 0;
+        m_key_payload_valid = false;
+        m_key_accepted = true;
+        m_last_force_mode = -1;
         m_src_import_calls = 0;
         m_src_clear_calls = 0;
         m_last_src_path.clear();
@@ -312,6 +594,7 @@ class CommandRecorder : public QObject {
         m_scan_avoid_calls = 0;
         m_scan_avoid_clear_calls = 0;
         m_next_channel_calls = 0;
+        m_talkgroupEdit.clear();
         m_talkgroup_listen_calls = 0;
         m_last_talkgroup_id_start = 0.0;
         m_last_talkgroup_id_end = 0.0;
@@ -439,6 +722,10 @@ class CommandRecorder : public QObject {
     }
 
   private:
+    int m_key_apply_calls = 0;
+    bool m_key_payload_valid = false;
+    bool m_key_accepted = true;
+    int m_last_force_mode = -1;
     int m_src_import_calls = 0;
     int m_src_clear_calls = 0;
     QString m_last_src_path;
@@ -458,6 +745,7 @@ class CommandRecorder : public QObject {
     int m_last_modulation = -1;
     int m_last_decode_mode = -1;
     int m_last_ppm = 9999;
+    QVariantList m_talkgroupEdit;
     int m_talkgroup_listen_calls = 0;
     double m_last_talkgroup_id_start = 0.0;
     double m_last_talkgroup_id_end = 0.0;
@@ -487,6 +775,7 @@ class CallLogStore : public QAbstractListModel {
         qulonglong tg = 0;
         qulonglong src = 0;
         bool enc = false;
+        bool emergency = false;
         qint64 when = 0;
         int durationSecs = 4;
         QString systemName;
@@ -538,6 +827,7 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::TgRole: return row.tg;
             case CallHistoryModel::SrcRole: return row.src;
             case CallHistoryModel::SourceNameRole: return row.sourceName;
+            case CallHistoryModel::EmergencyRole: return row.emergency;
             case CallHistoryModel::EncRole: return row.enc;
             case CallHistoryModel::WhenRole: return row.when;
             case CallHistoryModel::DurationSecsRole: return row.durationSecs;
@@ -558,6 +848,7 @@ class CallLogStore : public QAbstractListModel {
                 {CallHistoryModel::SrcRole, "src"},
                 {CallHistoryModel::SourceNameRole, "srcName"},
                 {CallHistoryModel::EncRole, "enc"},
+                {CallHistoryModel::EmergencyRole, "emergency"},
                 {CallHistoryModel::WhenRole, "when"},
                 {CallHistoryModel::DurationSecsRole, "durationSecs"},
                 {CallHistoryModel::SystemNameRole, "systemName"},
@@ -596,6 +887,15 @@ class CallLogStore : public QAbstractListModel {
         m_rows[0].sourceName = name;
         const QModelIndex idx = index(0);
         Q_EMIT dataChanged(idx, idx, {CallHistoryModel::SourceNameRole});
+        return call;
+    }
+
+    Q_INVOKABLE QString
+    pushEmergency() {
+        const QString call = push(QStringLiteral("TODAY"));
+        m_rows[0].emergency = true;
+        const auto first = index(0);
+        Q_EMIT dataChanged(first, first, {CallHistoryModel::EmergencyRole});
         return call;
     }
 
@@ -673,12 +973,79 @@ class CallLogStore : public QAbstractListModel {
     qint64 m_clock = 1'700'000'000;
 };
 
+// WP-D3: keep the fixture readings and record the nearby button's actual invocation.
+/** QObject-backed readings: Connections cannot target QVariantMap values.
+ * Lifecycle tests still switch to the dedicated DecoderHost implementation. */
+class ReadingMap : public QQmlPropertyMap {
+    Q_OBJECT
+  public:
+    explicit ReadingMap(QObject* parent) : QQmlPropertyMap(this, parent) {}
+
+  Q_SIGNALS:
+    void tunerChanged();
+    void controlChanged();
+    void siteChanged();
+    void qualityChanged();
+    void runningChanged();
+    void sessionStateChanged();
+    void sessionInitialized();
+    void localDeviceChanged();
+    void typographyChanged();
+    void keyboardChanged();
+    void backRequested();
+    void runResultChanged();
+    void locationResult(qint64 requestId, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
+                        bool geocodeOk, const QString& postal, const QString& country, const QString& error);
+};
+
+class RadioReferenceRecorder : public QQmlPropertyMap {
+    Q_OBJECT
+
+  public:
+    explicit RadioReferenceRecorder(QObject* parent) : QQmlPropertyMap(this, parent) {}
+
+    Q_INVOKABLE void
+    lookupNearby() {
+        nearbyCalls++;
+        (void)nextLocationRequestId();
+        insert(QStringLiteral("busy"), true);
+    }
+
+    Q_INVOKABLE qint64
+    nextLocationRequestId() {
+        cancel();
+        static qint64 nextId = 0;
+        Q_EMIT locationRequestAllocated(++nextId);
+        return nextId;
+    }
+
+    Q_INVOKABLE void
+    cancel() {
+        insert(QStringLiteral("busy"), false);
+    }
+
+    int nearbyCalls = 0;
+  Q_SIGNALS:
+    void locationRequestAllocated(qint64 requestId);
+};
+
 /** @brief Installs the context the screens expect before any QML is loaded. */
 class Setup : public QObject {
     Q_OBJECT
 
   public:
     ~Setup() override { dsd_state_ext_free_all(m_talkgroup_state.get()); }
+
+    Q_INVOKABLE bool
+    retainedKeyMatches(const QString& uid, const QString& expected) const {
+        const dsd_qt::SavedSystemsModel systems;
+        return systems.keyValueForUid(uid) == expected;
+    }
+
+    Q_INVOKABLE void
+    pushDiagnostic(const QString& text) {
+        dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("fixture"), QStringLiteral("info"), text);
+    }
 
     Q_INVOKABLE bool
     pushTalkgroup(double id, const QString& mode, const QString& name, const QString& tags) {
@@ -759,24 +1126,30 @@ class Setup : public QObject {
     setMetric(const QString& key, const QVariant& value) {
         m_metrics[key] = value;
         if (m_engine != nullptr) {
-            m_engine->rootContext()->setContextProperty(QStringLiteral("metrics"), m_metrics);
+            m_metric_readings->insert(key, value);
+            if (key == QStringLiteral("centerFreqHz")) {
+                Q_EMIT m_metric_readings->tunerChanged();
+            }
         }
     }
 
     /**
      * @brief Set one radioReference key, so a case can flip a stubbed reading.
      *
-     * QML cannot mutate a QVariantMap in place, so without this a case could not
-     * drive "the entry point appears once `available` turns true". Reads only:
-     * any case that has to CALL radioReference.lookupZip(...) needs a small
-     * Q_OBJECT recorder instead, the way CommandRecorder works.
+     * The property map updates bindings and records lookupNearby calls. Keep
+     * the audit's QVariantMap in sync with the values QML actually reads.
      */
     Q_INVOKABLE void
     setRadioReference(const QString& key, const QVariant& value) {
         m_radio_reference[key] = value;
-        if (m_engine != nullptr) {
-            m_engine->rootContext()->setContextProperty(QStringLiteral("radioReference"), m_radio_reference);
+        if (m_radio_reference_recorder != nullptr) {
+            m_radio_reference_recorder->insert(key, value);
         }
+    }
+
+    Q_INVOKABLE int
+    radioReferenceNearbyCalls() const {
+        return m_radio_reference_recorder != nullptr ? m_radio_reference_recorder->nearbyCalls : 0;
     }
 
     /**
@@ -813,6 +1186,7 @@ class Setup : public QObject {
      */
     /** @brief Frequency of the canned spectrum's peak, so a case need not hard-code it. */
     Q_INVOKABLE double
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
     spectrumPeakHz() const {
         return dsd_neo_qml_stub::spectrum_peak_hz();
     }
@@ -843,12 +1217,94 @@ class Setup : public QObject {
         return path;
     }
 
+    /** Use real QObject signals and QSettings for initialization bookkeeping tests;
+     * plain context maps deliberately cannot validate writes or lifecycle edges. */
+    Q_INVOKABLE void
+    useLifecycleHost(bool on, bool signals_initialized = false, bool start_running = false) {
+        m_lifecycle_host->stop();
+        m_lifecycle_host->acceptStart = false;
+        if (on) {
+            m_lifecycle_host = signals_initialized ? m_initializing_host : m_import_host;
+            m_lifecycle_host->acceptStart = true;
+            m_lifecycle_host->startRunning = start_running;
+            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_lifecycle_host);
+            m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_app_prefs);
+        } else {
+            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
+            m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_prefs);
+        }
+    }
+
+    Q_INVOKABLE void
+    setKeyboardBoundary(qreal value) {
+        m_lifecycle_host->keyboardBoundary = value;
+        Q_EMIT m_lifecycle_host->keyboardChanged();
+    }
+
+    Q_INVOKABLE void
+    setDelayedStop(bool enabled) {
+        m_lifecycle_host->delayedStop = enabled;
+    }
+
+    Q_INVOKABLE void
+    setLifecyclePhase(int value) {
+        m_lifecycle_host->setPhase(static_cast<dsd_qt::DecoderHost::SessionState>(value));
+    }
+
+    Q_INVOKABLE void
+    setScanTestUsb(bool brokered, bool ready) {
+        m_import_host->usbBrokered = brokered;
+        m_import_host->usbReady = ready;
+        Q_EMIT m_import_host->localDeviceChanged();
+    }
+
+    Q_INVOKABLE void
+    setScanTestAcceptStart(bool accept) {
+        m_import_host->acceptStart = accept;
+    }
+
+    // WP-S2: deliver a consumed host event, rather than bypassing policy with a start signal.
+    Q_INVOKABLE void
+    emitLocalDeviceAttached() {
+        Q_EMIT m_lifecycle_host->localDeviceAttached(QStringLiteral("fixture-usb"));
+    }
+
+    Q_INVOKABLE void
+    emitSessionInitialized() {
+        Q_EMIT m_lifecycle_host->sessionInitialized();
+    }
+
+    // WP-D5: drive the brokered diagnostic and count Retry requests.
+    Q_INVOKABLE void
+    setDongleStatus(bool ready, int kind, const QString& text) {
+        m_lifecycle_host->usbBrokered = true;
+        m_lifecycle_host->usbReady = ready;
+        m_lifecycle_host->usbFailureKind = kind;
+        m_lifecycle_host->usbStatus = text;
+        Q_EMIT m_lifecycle_host->localDeviceChanged();
+    }
+
+    Q_INVOKABLE int
+    dongleRetryRequests() const {
+        return m_lifecycle_host->usbRequests;
+    }
+
+    // WP-D3: platform capability gate for the nearby search button.
+    Q_INVOKABLE void
+    setLocationSupported(bool supported) {
+        m_host[QStringLiteral("locationSupported")] = supported;
+        m_host_readings->insert(QStringLiteral("locationSupported"), supported);
+        m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
+    }
+
     /** @brief Publish a live/idle host so cases can exercise session-only actions. */
     Q_INVOKABLE void
     setHostRunning(bool running) {
         m_host[QStringLiteral("running")] = running;
+        m_host_readings->insert(QStringLiteral("running"), running);
+        Q_EMIT m_host_readings->runningChanged();
         if (m_engine != nullptr) {
-            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host);
+            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
         }
     }
 
@@ -947,6 +1403,16 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->lastPpm() : 9999;
     }
 
+    Q_INVOKABLE QFont
+    applicationFont() const {
+        return QGuiApplication::font();
+    }
+
+    Q_INVOKABLE void
+    setApplicationFont(const QFont& font) {
+        QGuiApplication::setFont(font);
+    }
+
     Q_INVOKABLE QStringList
     missingContextKeys(const QStringList& qmlFiles) const {
         const QHash<QString, QVariantMap> maps = {{QStringLiteral("metrics"), m_metrics},
@@ -999,7 +1465,7 @@ class Setup : public QObject {
          * UI_QT_PERSISTENCE and UI_QT_IMPORTED_FILES). */
         QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
         QCoreApplication::setApplicationName(QStringLiteral("dsd-neo-qml-%1").arg(QCoreApplication::applicationPid()));
-        QStandardPaths::setTestModeEnabled(true);
+        dsd_test_qt_isolate_paths();
         QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
 
         for (const QString& file :
@@ -1012,9 +1478,9 @@ class Setup : public QObject {
 
     void
     qmlEngineAvailable(QQmlEngine* engine) {
-        /* The spectrum's trace and waterfall are the only C++ types the QML
-         * instantiates itself, so they need the same registration ui_load()
-         * does before anything importing them is parsed. */
+        /* Match ui_load() registrations before parsing QML importers. */
+        // WP-D4: cancellation observes pointer, keyboard and shortcut input.
+        qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
         qmlRegisterType<dsd_qt::SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
         qmlRegisterType<dsd_qt::WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
 
@@ -1045,6 +1511,7 @@ class Setup : public QObject {
         prefs[QStringLiteral("appearance")] = 2;
         prefs[QStringLiteral("onboardingDone")] = true;
         prefs[QStringLiteral("backgroundListening")] = false;
+        prefs[QStringLiteral("notificationExplained")] = true;
         prefs[QStringLiteral("keepScreenAwake")] = false;
         prefs[QStringLiteral("skipEncrypted")] = false;
         /* The radio defaults the settings screen and the explore setup edit.
@@ -1069,12 +1536,50 @@ class Setup : public QObject {
          * production. Never assert persistence through it. */
         prefs[QStringLiteral("rrUsername")] = QString();
         prefs[QStringLiteral("rrAppKey")] = QString();
+        prefs[QStringLiteral("autoStartOnAttach")] = false;
+        prefs[QStringLiteral("lastStartedKind")] = QString();
+        prefs[QStringLiteral("lastStartedUid")] = QString();
+        prefs[QStringLiteral("lastLat")] = 0.0;
+        prefs[QStringLiteral("lastLon")] = 0.0;
+        prefs[QStringLiteral("lastFixAt")] = 0;
         m_prefs = prefs;
         ctx->setContextProperty(QStringLiteral("prefs"), prefs);
 
         /* Every key the monitor reads, at rest with no call up. Add to this when a
          * screen grows a reading — missingContextKeys() is what says so. */
         QVariantMap metrics;
+        metrics[QStringLiteral("configuredForce")] = 0;
+        metrics[QStringLiteral("effectiveForce")] = 0;
+        metrics[QStringLiteral("keyProfileRef")] = QString();
+        metrics[QStringLiteral("keyEpoch")] = QStringLiteral("1");
+        metrics[QStringLiteral("automaticKeys")] = false;
+        metrics[QStringLiteral("decryptionSlots")] = QVariantList();
+        // WP-F1: site identity fixture keys.
+        metrics[QStringLiteral("siteProtocol")] = QString();
+        metrics[QStringLiteral("p25NacValid")] = false;
+        metrics[QStringLiteral("p25Nac")] = 0;
+        metrics[QStringLiteral("p25WacnValid")] = false;
+        metrics[QStringLiteral("p25Wacn")] = 0;
+        metrics[QStringLiteral("p25SysIdValid")] = false;
+        metrics[QStringLiteral("p25SysId")] = 0;
+        metrics[QStringLiteral("p25Rfss")] = 0;
+        metrics[QStringLiteral("p25Site")] = 0;
+        metrics[QStringLiteral("p25LraValid")] = false;
+        metrics[QStringLiteral("p25Lra")] = 0;
+        metrics[QStringLiteral("p25Phase2ParamsReady")] = false;
+        metrics[QStringLiteral("dmrColorCode")] = -1;
+        metrics[QStringLiteral("dmrSiteText")] = QString();
+        metrics[QStringLiteral("dmrRestLsn")] = 0;
+        metrics[QStringLiteral("nxdnRan")] = -1;
+        metrics[QStringLiteral("nxdnLocationCategory")] = QString();
+        metrics[QStringLiteral("nxdnSysCode")] = 0;
+        metrics[QStringLiteral("nxdnSiteCode")] = 0;
+        metrics[QStringLiteral("edacsSiteText")] = QString();
+        metrics[QStringLiteral("ccFreqHz")] = 0;
+        metrics[QStringLiteral("vcFreqHz")] = 0;
+        metrics[QStringLiteral("siteLine")] = QString();
+        metrics[QStringLiteral("siteConfirmed")] = false;
+
         metrics[QStringLiteral("uiMessage")] = QString();
         metrics[QStringLiteral("audioMuted")] = false;
         metrics[QStringLiteral("heldTg")] = 0;
@@ -1085,6 +1590,29 @@ class Setup : public QObject {
         metrics[QStringLiteral("snrDb")] = 0.0;
         metrics[QStringLiteral("cfoHz")] = 0.0;
         metrics[QStringLiteral("tunerGainText")] = QStringLiteral("auto");
+        // WP-F3 decode quality: validity is independent of radioInput.
+        metrics[QStringLiteral("qualityValid")] = false;
+        metrics[QStringLiteral("voiceErrsValid")] = false;
+        metrics[QStringLiteral("voiceErrsPerFrame")] = 0.0;
+        metrics[QStringLiteral("voiceErrsSamples")] = 0;
+        metrics[QStringLiteral("slot1VoiceErrsValid")] = false;
+        metrics[QStringLiteral("slot1VoiceErrsPerFrame")] = 0.0;
+        metrics[QStringLiteral("slot1VoiceErrsSamples")] = 0;
+        metrics[QStringLiteral("slot2VoiceErrsValid")] = false;
+        metrics[QStringLiteral("slot2VoiceErrsPerFrame")] = 0.0;
+        metrics[QStringLiteral("slot2VoiceErrsSamples")] = 0;
+        metrics[QStringLiteral("ccFecValid")] = false;
+        metrics[QStringLiteral("ccFecOkPct")] = 0.0;
+        metrics[QStringLiteral("voiceFecValid")] = false;
+        metrics[QStringLiteral("voiceFecOkPct")] = 0.0;
+        metrics[QStringLiteral("rsValid")] = false;
+        metrics[QStringLiteral("rsOkPct")] = 0.0;
+        metrics[QStringLiteral("ccFecOk")] = 0;
+        metrics[QStringLiteral("ccFecErr")] = 0;
+        metrics[QStringLiteral("lastFrameErrsValid")] = false;
+        metrics[QStringLiteral("lastFrameErrs")] = 0;
+        metrics[QStringLiteral("lastFrameErrs2")] = 0;
+
         for (int slot = 1; slot <= 2; slot++) {
             const QString p = QStringLiteral("slot%1").arg(slot);
             metrics[p + QStringLiteral("CallState")] = 0;
@@ -1092,6 +1620,8 @@ class Setup : public QObject {
             // The scan channel the slot's call was heard on; empty when not scanning.
             metrics[p + QStringLiteral("Channel")] = QString();
             metrics[p + QStringLiteral("CallEnc")] = false;
+            metrics[p + QStringLiteral("CallEmergency")] = false;
+            metrics[p + QStringLiteral("CallPriority")] = 0;
             metrics[p + QStringLiteral("CallSeconds")] = 0;
             metrics[p + QStringLiteral("TgText")] = QString();
             metrics[p + QStringLiteral("SrcText")] = QString();
@@ -1107,6 +1637,9 @@ class Setup : public QObject {
         // On-the-fly scan controls (#380): no rotation running at rest.
         metrics[QStringLiteral("scanRotationActive")] = false;
         metrics[QStringLiteral("scanHold")] = false;
+        metrics[QStringLiteral("scanTargetId")] = QString();
+        metrics[QStringLiteral("scanTargetOrdinal")] = 0;
+        metrics[QStringLiteral("scanTargetCount")] = 0;
         metrics[QStringLiteral("scanAvoidCount")] = 0;
         metrics[QStringLiteral("scanTargetAvoided")] = false;
         // Whether an automatic controller owns the tuner, which one, and where it
@@ -1131,7 +1664,11 @@ class Setup : public QObject {
         metrics[QStringLiteral("ppm")] = 0;
         m_metrics = metrics;
         m_engine = engine;
-        ctx->setContextProperty(QStringLiteral("metrics"), metrics);
+        m_metric_readings = new ReadingMap(engine);
+        for (auto it = metrics.cbegin(); it != metrics.cend(); ++it) {
+            m_metric_readings->insert(it.key(), it.value());
+        }
+        ctx->setContextProperty(QStringLiteral("metrics"), m_metric_readings);
         ctx->setContextProperty(QStringLiteral("testContext"), this);
 
         QVariantMap host;
@@ -1141,6 +1678,13 @@ class Setup : public QObject {
         /* The spectrum view gates production on a live session, so the fixture
          * has to claim one or its frames would never start. */
         host[QStringLiteral("sessionActive")] = true;
+        host[QStringLiteral("signalsSessionInitialized")] = false;
+        host[QStringLiteral("fontRevision")] = 0;
+        host[QStringLiteral("inputFailureKind")] = 0;
+        host[QStringLiteral("inputFailureCode")] = 0;
+        host[QStringLiteral("terminalReason")] = 0;
+        host[QStringLiteral("audioRoute")] = QStringLiteral("System default");
+        host[QStringLiteral("usesPlatformFontScaling")] = false;
         /* Why the last session stopped, empty while nothing has failed. */
         host[QStringLiteral("failureText")] = QString();
         /* The Android-only capabilities the settings screen hides rows on: a
@@ -1150,8 +1694,17 @@ class Setup : public QObject {
         host[QStringLiteral("localDeviceBrokered")] = false;
         host[QStringLiteral("localDeviceReady")] = false;
         host[QStringLiteral("localDeviceStatus")] = QString();
+        host[QStringLiteral("locationSupported")] = false;
+        host[QStringLiteral("shareSupported")] = false;
+        host[QStringLiteral("localDeviceFailureKind")] = 0;
+        host[QStringLiteral("sessionState")] = 0;
+        host[QStringLiteral("keyboardTop")] = -1;
         m_host = host;
-        ctx->setContextProperty(QStringLiteral("decoderHost"), host);
+        m_host_readings = new ReadingMap(engine);
+        for (auto it = host.cbegin(); it != host.cend(); ++it) {
+            m_host_readings->insert(it.key(), it.value());
+        }
+        ctx->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
 
         /* Every property key the RadioReference screen reads, at rest. `available`
          * is false so an ungated entry point shows up as a visible row rather
@@ -1184,7 +1737,11 @@ class Setup : public QObject {
         rr[QStringLiteral("systemDetails")] = QVariantMap();
         rr[QStringLiteral("talkgroupSummary")] = QVariantMap();
         m_radio_reference = rr;
-        ctx->setContextProperty(QStringLiteral("radioReference"), rr);
+        m_radio_reference_recorder = new RadioReferenceRecorder(engine);
+        for (auto it = rr.cbegin(); it != rr.cend(); ++it) {
+            m_radio_reference_recorder->insert(it.key(), it.value());
+        }
+        ctx->setContextProperty(QStringLiteral("radioReference"), m_radio_reference_recorder);
 
         /* The real SpectrumModel over the canned getter in qml_spectrum_stub.cpp:
          * the polling, viewport and tap-snapping under test are the production
@@ -1206,25 +1763,67 @@ class Setup : public QObject {
          * setup all raised ReferenceError and rendered nothing. */
         m_import_host = new ImportOnlyHost();
         m_import_host->setParent(engine);
+        m_initializing_host = new InitializingHost();
+        m_initializing_host->setParent(engine);
+        m_lifecycle_host = m_import_host;
         auto* imported_files = new dsd_qt::ImportedFilesModel(m_import_host, engine);
         auto* saved_systems = new dsd_qt::SavedSystemsModel(engine);
         auto* app_prefs = new dsd_qt::AppPrefs(engine);
+        m_app_prefs = app_prefs;
         auto* session_args = new dsd_qt::SessionArgsBuilder(app_prefs, engine);
+        session_args->setSavedSystems(saved_systems);
         ctx->setContextProperty(QStringLiteral("importedFiles"), imported_files);
+        ctx->setContextProperty(QStringLiteral("p25Network"), new dsd_qt::P25NetworkModel(engine)); // WP-F2
+        ctx->setContextProperty(QStringLiteral("diagnosticsLog"), new dsd_qt::DiagnosticsLogModel(nullptr, engine));
+        auto* controller = new TestUiController(engine);
+        auto* scan_lists = new dsd_qt::ScanListsModel(engine);
+        // WP-S2: use the production pure policy for host attachment delivery in QML tests.
+        // The real controller's emission/validation contract is covered by UI_QT_CONTROLLER.
+        for (ImportOnlyHost* attachmentHost : {m_import_host, static_cast<ImportOnlyHost*>(m_initializing_host)}) {
+            QObject::connect(
+                attachmentHost, &dsd_qt::DecoderHost::localDeviceAttached, controller, [=](const QString&) {
+                    const QString kind = app_prefs->lastStartedKind();
+                    const QString uid = app_prefs->lastStartedUid();
+                    const QVariantMap target = kind == QStringLiteral("saved")  ? saved_systems->getByUid(uid)
+                                               : kind == QStringLiteral("scan") ? scan_lists->getByUid(uid)
+                                                                                : QVariantMap();
+                    if (dsd_qt::autoStartAllowed(
+                            app_prefs->autoStartOnAttach(), app_prefs->onboardingDone(), attachmentHost->sessionState(),
+                            controller->autoStartBlocked, !target.isEmpty(),
+                            target.value(QStringLiteral("sourceType")).toString() == QStringLiteral("usb"))) {
+                        controller->requestAutoStart(kind, uid);
+                    }
+                });
+        }
+        ctx->setContextProperty(QStringLiteral("uiController"), controller);
         ctx->setContextProperty(QStringLiteral("savedSystems"), saved_systems);
+        ctx->setContextProperty(QStringLiteral("scanLists"), scan_lists);
+        auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
+        profiles->setReferences(saved_systems, scan_lists);
+        auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);
+        starter->setDecryptionProfiles(profiles);
+        session_args->setDecryptionProfiles(profiles);
+        ctx->setContextProperty(QStringLiteral("decryptionProfiles"), profiles);
+        ctx->setContextProperty(QStringLiteral("scanListStarter"), starter);
         ctx->setContextProperty(QStringLiteral("sessionArgs"), session_args);
         ctx->setContextProperty(QStringLiteral("appVersionText"), QStringLiteral("0.0.0-test"));
     }
 
   private:
+    dsd_qt::AppPrefs* m_app_prefs = nullptr;
+    ReadingMap* m_metric_readings = nullptr;
+    ReadingMap* m_host_readings = nullptr;
     QVariantMap m_metrics;
     QVariantMap m_prefs;
     QVariantMap m_host;
     QVariantMap m_radio_reference;
+    RadioReferenceRecorder* m_radio_reference_recorder = nullptr;
     QQmlEngine* m_engine = nullptr;
     dsd_qt::SpectrumModel* m_spectrum = nullptr;
     CommandRecorder* m_commands = nullptr;
     ImportOnlyHost* m_import_host = nullptr;
+    ImportOnlyHost* m_initializing_host = nullptr;
+    ImportOnlyHost* m_lifecycle_host = nullptr;
     std::unique_ptr<dsd_opts> m_talkgroup_opts = std::make_unique<dsd_opts>();
     std::unique_ptr<dsd_state> m_talkgroup_state = std::make_unique<dsd_state>();
     dsd_qt::TalkgroupListModel* m_talkgroups = nullptr;

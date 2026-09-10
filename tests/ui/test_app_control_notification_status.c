@@ -31,7 +31,7 @@
    the Kotlin constants are so the two read as the same statement. */
 enum {
     NOTIFICATION_HEADER_FIELDS = 9, /**< version, protocol, 3 flags, 3 frequencies, lead slot. */
-    NOTIFICATION_SLOT_FIELDS = 9,   /**< state, name, tg, src, tg_id, enc, algid, kid, elapsed. */
+    NOTIFICATION_SLOT_FIELDS = 11,  /**< state, name, tg, src, tg_id, enc, algid, kid, elapsed, emergency, priority. */
     NOTIFICATION_TOTAL_FIELDS = NOTIFICATION_HEADER_FIELDS + NOTIFICATION_SLOT_FIELDS * DSD_CALL_STATE_SLOT_COUNT,
 };
 
@@ -87,6 +87,9 @@ test_publish_state_carries_protocol_and_call(void) {
     dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 1234567U, 51023U);
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.frequency_hz = 851012500;
+    observation.has_service_metadata = 1;
+    observation.emergency = 1;
+    observation.priority = 3;
     observation.observed_m = dsd_time_now_monotonic_s();
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
 
@@ -310,7 +313,7 @@ test_encode_has_version_and_field_count(void) {
     char record[1024];
     const size_t written = dsd_app_notification_encode(record, sizeof(record));
     assert(written > 0);
-    assert(strncmp(record, "v1\t", 3) == 0);
+    assert(strncmp(record, "v2\t", 3) == 0);
     assert(count_fields(record) == (size_t)NOTIFICATION_TOTAL_FIELDS);
     /* One line: a newline would break the reader's single-record assumption. */
     assert(strchr(record, '\n') == NULL);
@@ -507,6 +510,9 @@ test_encode_matches_expected_record_field_order(void) {
     dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 7654321U, 51023U);
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.frequency_hz = 851012500;
+    observation.has_service_metadata = 1;
+    observation.emergency = 1;
+    observation.priority = 3;
     observation.observed_m = dsd_time_now_monotonic_s();
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
 
@@ -536,14 +542,14 @@ test_encode_matches_expected_record_field_order(void) {
     assert(strcmp(status.slots[0].tg_text, "51023") == 0);
 
     char expected[DSD_APP_NOTIFICATION_RECORD_SIZE];
-    const int n =
-        DSD_SNPRINTF(expected, sizeof(expected),
-                     "v1\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld\t%d"
-                     "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u"
-                     "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u",
-                     "P25p2", 1U, 0U, 1U, 851006250LL, 851012500LL, 851500000LL, 0, DSD_APP_CALL_LINE_ACTIVE,
-                     "Riverside Fire", "51023", "7654321", 51023ULL, 1U, 0xAAU, 0x1234U,
-                     (unsigned)status.slots[0].elapsed_ms, DSD_APP_CALL_LINE_NONE, "", "", "", 0ULL, 0U, 0U, 0U, 0U);
+    const int n = DSD_SNPRINTF(expected, sizeof(expected),
+                               "v2\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld\t%d"
+                               "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u\t%u\t%u"
+                               "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u\t%u\t%u",
+                               "P25p2", 1U, 0U, 1U, 851006250LL, 851012500LL, 851500000LL, 0, DSD_APP_CALL_LINE_ACTIVE,
+                               "Riverside Fire", "51023", "7654321", 51023ULL, 1U, 0xAAU, 0x1234U,
+                               (unsigned)status.slots[0].elapsed_ms, 1U, 3U, DSD_APP_CALL_LINE_NONE, "", "", "", 0ULL,
+                               0U, 0U, 0U, 0U, 0U, 0U);
     assert(n > 0 && (size_t)n < sizeof(expected));
 
     char record[DSD_APP_NOTIFICATION_RECORD_SIZE];

@@ -3,13 +3,28 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QByteArray>
+#include <QChar>
+#include <QJsonValue>
+#include <QList>
+#include <QObject>
+#include <Qt>
+#include <functional>
+#include <qcoreapplication_platform.h>
 #include "decoder_host_android.h"
+#include "diagnostics_log.h"
+#include "run_status.h"
 
 #include <QCoreApplication>
+#include <QGuiApplication>
 #include <QJniEnvironment>
 #include <QJniObject>
-#include <QMetaObject>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QScreen>
 #include <QVariant>
+#include <cmath>
+#include <dsd-neo/platform/audio.h>
 
 #include <jni.h>
 
@@ -21,6 +36,7 @@ namespace {
 
 constexpr const char* kServiceClass = "io/github/arancormonk/dsdneo/DecoderService";
 constexpr const char* kSupportClass = "io/github/arancormonk/dsdneo/AppSupport";
+constexpr const char* kLocationClass = "io/github/arancormonk/dsdneo/LocationSupport";
 constexpr const char* kUsbClass = "io/github/arancormonk/dsdneo/UsbSourceManager";
 
 /* android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON. Namespace scope,
@@ -78,61 +94,136 @@ to_java_string_array(QJniEnvironment& env, const QStringList& values) {
 }
 
 /** @brief Prose for the toolbar and the platform notification. */
-QString
-phase_text(SessionPhase phase) {
-    switch (phase) {
-        case kSessionStarting: return QStringLiteral("Starting…");
-        case kSessionRunning: return QStringLiteral("Decoding");
-        case kSessionStopping: return QStringLiteral("Stopping…");
-        case kSessionFailed: return QStringLiteral("Start failed");
-        default: return QStringLiteral("Idle");
-    }
-}
 
 } // namespace
 
 DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : dsd_qt::DecoderHost(parent) {
-    QJniObject context = android_context();
-    if (context.isValid()) {
-        QJniObject::callStaticMethod<void>(kSupportClass, "ensureNotificationPermission", "(Landroid/app/Activity;)V",
-                                           context.object());
+    dsd_qt::DiagnosticsLog::installTap();
+    refreshPresentation();
+}
+
+void
+DecoderHostAndroid::refreshPresentation() {
+    const auto context = android_context();
+    if (!context.isValid()) {
+        return;
+    }
+    const QString configuration =
+        QJniObject::callStaticObjectMethod(kSupportClass, "fontConfiguration",
+                                           "(Landroid/content/Context;)Ljava/lang/String;", context.object())
+            .toString();
+    if (configuration != m_font_configuration) {
+        m_font_configuration = configuration;
+        m_font_sizes.clear();
+        const qreal ratio = QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->devicePixelRatio() : 1;
+        for (int sp = 0; sp <= 128; ++sp) {
+            m_font_sizes.append(QJniObject::callStaticMethod<jfloat>(kSupportClass, "fontPixels",
+                                                                     "(Landroid/content/Context;F)F", context.object(),
+                                                                     static_cast<jfloat>(sp))
+                                / ratio);
+        }
+        ++m_font_revision;
+        Q_EMIT typographyChanged();
+    }
+    const auto route = QJniObject::callStaticObjectMethod(
+                           kSupportClass, "audioRouteName", "(Landroid/content/Context;I)Ljava/lang/String;",
+                           context.object(), static_cast<jint>(dsd_audio_output_device_id()))
+                           .toString();
+    if (route != m_audio_route) {
+        m_audio_route = route;
+        Q_EMIT audioRouteChanged();
+    }
+    const int keyboardPixels = QJniObject::callStaticMethod<jint>(kSupportClass, "keyboardTopPixels", "()I");
+    const qreal ratio = QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->devicePixelRatio() : 1;
+    const qreal top = keyboardPixels < 0 ? -1 : keyboardPixels / ratio;
+    if (top != m_keyboard_top) {
+        m_keyboard_top = top;
+        Q_EMIT keyboardChanged();
+    }
+    const int requests = QJniObject::callStaticMethod<jint>(kSupportClass, "takeBackRequests", "()I");
+    for (int i = 0; i < requests; ++i) {
+        Q_EMIT backRequested();
     }
 }
 
-DecoderHostAndroid::~DecoderHostAndroid() = default;
-
-bool
-DecoderHostAndroid::isRunning() const {
-    return m_running;
+qreal
+DecoderHostAndroid::fontPixelSize(qreal sp) const {
+    if (!std::isfinite(sp) || sp <= 0) {
+        return 0;
+    }
+    const int low = static_cast<int>(std::floor(qMin(sp, qreal(127))));
+    if (sp <= 128 && m_font_sizes.size() == 129) {
+        return m_font_sizes[low] + (m_font_sizes[low + 1] - m_font_sizes[low]) * (sp - low);
+    }
+    const auto context = android_context();
+    if (!context.isValid()) {
+        return sp;
+    }
+    const qreal ratio = QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->devicePixelRatio() : 1;
+    return QJniObject::callStaticMethod<jfloat>(kSupportClass, "fontPixels", "(Landroid/content/Context;F)F",
+                                                context.object(), static_cast<jfloat>(sp))
+           / ratio;
 }
 
-QString
-DecoderHostAndroid::statusText() const {
-    return m_status;
+void
+DecoderHostAndroid::setDarkAppearance(bool dark) {
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([dark]() -> QVariant {
+        const auto context = android_context();
+        if (context.isValid()) {
+            QJniObject::callStaticMethod<void>(kSupportClass, "setDarkAppearance", "(Landroid/app/Activity;Z)V",
+                                               context.object(), static_cast<jboolean>(dark));
+        }
+        return {};
+    });
 }
 
-dsd_qt::DecoderHost::SessionState
-DecoderHostAndroid::sessionState() const {
-    return static_cast<SessionState>(m_published_phase);
+void
+DecoderHostAndroid::requestNotificationPermission() {
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([]() -> QVariant {
+        const auto context = android_context();
+        if (context.isValid()) {
+            QJniObject::callStaticMethod<void>(kSupportClass, "ensureNotificationPermission",
+                                               "(Landroid/app/Activity;)V", context.object());
+        }
+        return {};
+    });
 }
 
-QString
-DecoderHostAndroid::failureText() const {
-    return m_failure;
+void
+DecoderHostAndroid::hostDiagnostic(const QString& line) {
+    dsd_qt::DiagnosticsLog::instance().submit(QStringLiteral("host"), QStringLiteral("info"), line);
 }
 
-bool
-DecoderHostAndroid::localDeviceReady() const {
-    return m_usb_ready;
-}
-
-QString
-DecoderHostAndroid::localDeviceStatus() const {
-    return m_usb_status;
+// WP-F5: share content only, never a caller-selected file path.
+void
+DecoderHostAndroid::shareDiagnostics(const QString& text, const QString& title) {
+    QStringList lines;
+    for (const auto& line : text.split(QLatin1Char('\n'))) {
+        lines.append(dsd_qt::DiagnosticsLog::redact(line));
+    }
+    const auto safeText = lines.join(QLatin1Char('\n'));
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([safeText, title]() -> QVariant {
+        const auto context = android_context();
+        if (!context.isValid()) {
+            return {};
+        }
+        QJniObject::callStaticMethod<void>("io/github/arancormonk/dsdneo/DiagnosticsShare", "share",
+                                           "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V",
+                                           context.object(), QJniObject::fromString(safeText).object(),
+                                           QJniObject::fromString(title).object());
+        return {};
+    });
 }
 
 void
 DecoderHostAndroid::requestLocalDeviceAccess() {
+    // WP-D5: keep the service's run result intact, but acknowledge its old USB
+    // diagnostic so Retry can reacquire access and the next Play can claim again.
+    if (!sessionActive() && m_device_error) {
+        m_retried_device_session = m_device_error_session;
+        m_device_error = 0;
+        Q_EMIT localDeviceChanged();
+    }
     QJniObject context = android_context();
     if (!context.isValid()) {
         return;
@@ -166,8 +257,22 @@ DecoderHostAndroid::setKeepScreenAwake(bool on) {
 
 bool
 DecoderHostAndroid::start(const QStringList& argv) {
+    if (!m_primed) {
+        refresh();
+    }
     /* Clears the previous attempt's reason; setSessionPhase publishes that. */
-    m_phase.note_start_requested();
+    QJniObject record = QJniObject::callStaticObjectMethod(kServiceClass, "lifecycleStatus", "()Ljava/lang/String;");
+    const QJsonObject status =
+        record.isValid() ? QJsonDocument::fromJson(record.toString().toUtf8()).object() : QJsonObject();
+    const auto last_session = static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger());
+    const QByteArray service_state = status.value(QStringLiteral("state")).toString(QStringLiteral("IDLE")).toUtf8();
+    if (!m_phase.note_start_requested(last_session, service_state.constData())) {
+        const QString reason = QStringLiteral("A previous session is still stopping");
+        setSessionPhase(m_phase.phase(), reason);
+        setStatus(reason);
+        return false;
+    }
+    m_initialized_session = last_session;
 
     QJniObject context = android_context();
     if (!context.isValid()) {
@@ -199,16 +304,6 @@ DecoderHostAndroid::failStart(const QString& reason) {
     return false;
 }
 
-void
-DecoderHostAndroid::stop() {
-    QJniObject context = android_context();
-    if (!context.isValid()) {
-        return;
-    }
-    QJniObject::callStaticMethod<void>(kServiceClass, "stopDecoder", "(Landroid/content/Context;)V", context.object());
-    setStatus(QStringLiteral("Stopping…"));
-}
-
 bool
 DecoderHostAndroid::moveToBackground() {
     /* Finishing the Activity would terminate the Qt process, and with it the service
@@ -224,17 +319,7 @@ DecoderHostAndroid::moveToBackground() {
 
 QString
 DecoderHostAndroid::importContentUri(const QString& reference, const QString& fileName) {
-    QJniObject context = android_context();
-    if (!context.isValid()) {
-        return QString();
-    }
-    QJniObject uri = QJniObject::fromString(reference);
-    QJniObject name = QJniObject::fromString(fileName);
-    QJniObject result = QJniObject::callStaticObjectMethod(
-        kSupportClass, "copyContentUriToCache",
-        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", context.object(),
-        uri.object(), name.object());
-    return result.isValid() ? result.toString() : QString();
+    return importDocument(reference, fileName, QString());
 }
 
 QString
@@ -253,77 +338,64 @@ DecoderHostAndroid::importDocument(const QString& reference, const QString& file
     return result.isValid() ? result.toString() : QString();
 }
 
+// WP-D3: Kotlin owns permissions, timeout and cancellation; polling emits on the Qt thread.
 void
-DecoderHostAndroid::refresh() {
-    const bool running = engine_is_running();
-    if (running != m_running) {
-        m_running = running;
-        Q_EMIT runningChanged();
+DecoderHostAndroid::requestCurrentLocation(qint64 requestId) {
+    const auto context = android_context();
+    if (!context.isValid()) {
+        Q_EMIT locationResult(requestId, false, 0, 0, 0, 0, false, {}, {}, QStringLiteral("No Android context"));
+        return;
     }
-
-    /* The service owns the transitions; native running-state alone cannot tell
-     * "starting" from "idle", nor a failed start from one that never happened. */
-    QJniObject state = QJniObject::callStaticObjectMethod(kServiceClass, "stateName", "()Ljava/lang/String;");
-    const QByteArray name = state.isValid() ? state.toString().toUtf8() : QByteArrayLiteral("IDLE");
-
-    const SessionPhase phase = m_phase.update(name.constData(), running);
-    setSessionPhase(phase);
-    setStatus(phase_text(phase));
-
-    const bool usb_ready = QJniObject::callStaticMethod<jboolean>(kUsbClass, "isReady", "()Z") != JNI_FALSE;
-    QJniObject usb_status = QJniObject::callStaticObjectMethod(kUsbClass, "statusText", "()Ljava/lang/String;");
-    setLocalDeviceState(usb_ready, usb_status.isValid() ? usb_status.toString() : QString());
+    QJniObject::callStaticMethod<void>(kLocationClass, "requestCurrentLocation", "(Landroid/app/Activity;J)V",
+                                       context.object(), static_cast<jlong>(requestId));
 }
 
 void
-DecoderHostAndroid::setStatus(const QString& text) {
-    if (m_status == text) {
-        return;
-    }
-    m_status = text;
-    Q_EMIT statusTextChanged();
+DecoderHostAndroid::cancelLocationRequest(qint64 requestId) {
+    QJniObject::callStaticMethod<void>(kLocationClass, "cancelLocationRequest", "(J)V", static_cast<jlong>(requestId));
 }
 
 void
-DecoderHostAndroid::setSessionPhase(SessionPhase phase, const QString& reason) {
-    QString failure;
-    if (phase == kSessionFailed) {
-        /* A reason the host produced itself wins: the service never saw that attempt,
-         * so its own record would be stale. */
-        failure = reason.isEmpty() ? m_failure : reason;
-        if (failure.isEmpty()) {
-            QJniObject service_reason =
-                QJniObject::callStaticObjectMethod(kServiceClass, "lastError", "()Ljava/lang/String;");
-            if (service_reason.isValid()) {
-                failure = service_reason.toString();
-            }
-        }
-        if (failure.isEmpty()) {
-            failure = QStringLiteral("The decoder could not be started. Check the input settings.");
-        }
+DecoderHostAndroid::refreshLocation() {
+    // WP-D3: drain a single terminal location result, independently of decoder state.
+    const auto locationRecord =
+        QJniObject::callStaticObjectMethod(kLocationClass, "pollResult", "()Ljava/lang/String;");
+    const auto location = QJsonDocument::fromJson(locationRecord.toString().toUtf8()).object();
+    if (!location.isEmpty()) {
+        Q_EMIT locationResult(
+            location.value(QStringLiteral("id")).toInteger(), location.value(QStringLiteral("fixOk")).toBool(),
+            location.value(QStringLiteral("lat")).toDouble(), location.value(QStringLiteral("lon")).toDouble(),
+            location.value(QStringLiteral("accuracyM")).toDouble(),
+            location.value(QStringLiteral("fixAtMs")).toInteger(), location.value(QStringLiteral("geocodeOk")).toBool(),
+            location.value(QStringLiteral("postalCode")).toString(),
+            location.value(QStringLiteral("countryCode")).toString(),
+            location.value(QStringLiteral("error")).toString());
     }
-
-    if (phase == m_published_phase && failure == m_failure) {
-        return;
-    }
-    m_published_phase = phase;
-    m_failure = failure;
-    Q_EMIT sessionStateChanged();
 }
 
 void
-DecoderHostAndroid::setLocalDeviceState(bool ready, const QString& text) {
-    if (m_usb_ready == ready && m_usb_status == text) {
-        return;
+DecoderHostAndroid::refreshLocalDevice() {
+    // WP-D5: readiness, name and failure classification belong to one USB record.
+    const auto usb_record = QJniObject::callStaticObjectMethod(kUsbClass, "deviceStatus", "()Ljava/lang/String;");
+    const auto usb = QJsonDocument::fromJson(usb_record.toString().toUtf8()).object();
+    m_usb.apply(*this, usb);
+    // WP-S2: consuming also preserves the cold-start attachment on the first poll.
+    const QJniObject attach = QJniObject::callStaticObjectMethod(kUsbClass, "takeAttachment", "()Ljava/lang/String;");
+    if (attach.isValid() && !attach.toString().isEmpty()) {
+        Q_EMIT localDeviceAttached(attach.toString());
     }
-    m_usb_ready = ready;
-    m_usb_status = text;
-    Q_EMIT localDeviceChanged();
 }
 
 } // namespace dsd_android
 
 extern "C" {
+
+JNIEXPORT void JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeHostDiagnostic(JNIEnv* env, jclass clazz, jstring line) {
+    (void)env;
+    (void)clazz;
+    dsd_qt::DiagnosticsLog::submitHostDiagnostic(QJniObject(line).toString());
+}
 
 /**
  * @brief Asks the Qt event loop to quit, so main() can return.
@@ -373,3 +445,32 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeQuitUi(JNIEnv* env, jclass cla
 }
 
 } // extern "C"
+
+namespace dsd_android {
+QString
+DecoderHostAndroid::serviceFailureText() const {
+    const auto reason = QJniObject::callStaticObjectMethod(kServiceClass, "lastError", "()Ljava/lang/String;");
+    return reason.isValid() ? reason.toString() : QString();
+}
+
+void
+DecoderHostAndroid::requestServiceStop() {
+    QJniObject context = android_context();
+    if (!context.isValid()) {
+        return;
+    }
+    QJniObject::callStaticMethod<void>(kServiceClass, "stopDecoder", "(Landroid/content/Context;)V", context.object());
+    setStatus(QStringLiteral("Stopping…"));
+}
+
+QJsonObject
+DecoderHostAndroid::readLifecycleStatus() const {
+    const auto record = QJniObject::callStaticObjectMethod(kServiceClass, "lifecycleStatus", "()Ljava/lang/String;");
+    return record.isValid() ? QJsonDocument::fromJson(record.toString().toUtf8()).object() : QJsonObject();
+}
+
+bool
+DecoderHostAndroid::readEngineRunning() {
+    return engine_is_running();
+}
+} // namespace dsd_android

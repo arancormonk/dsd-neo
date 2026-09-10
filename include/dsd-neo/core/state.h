@@ -25,6 +25,7 @@
 #include <time.h>
 
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/key_set.h>
 
@@ -45,7 +46,6 @@ enum DSD_ATTR_PACKED {
      * tail behind dsd_state_trunk_lcn_slot(). */
     DSD_TRUNK_LCN_EMBEDDED = 26,
     DSD_VERTEX_KS_MAP_MAX = 64,
-    DSD_DMR_TG_KEY_MAP_MAX = 256,
     DSD_RTL_SYMBOL_CACHE_CAP = 512,
 };
 
@@ -152,6 +152,8 @@ typedef struct {
     uint32_t sys_id4;    //
     uint32_t sys_id5;    //
     int8_t gi;           //group or individual
+    uint8_t emergency;   // emergency indication observed during this call
+    uint8_t priority;    // observed service priority
     uint8_t enc;         //clear or encrypted
     uint8_t enc_alg;     //alg if encrypted
     uint16_t enc_key;    //enc key id value, if encrypted (not key value or key variable)
@@ -447,6 +449,8 @@ struct dsd_state {
     uint8_t hytera_key_segments;
     unsigned long long int R;
     unsigned long long int RR;
+    uint8_t scalar_key_present[2];
+    uint8_t basic_key_present;
     unsigned long long int H;
     unsigned long long int HYTL;
     unsigned long long int HYTR;
@@ -1253,7 +1257,8 @@ struct dsd_state {
 
     // P25 Phase 1 voice error moving average (last N IMBE frames)
     uint8_t p25_p1_voice_err_hist[64];
-    int p25_p1_voice_err_hist_len;          // window length (<=64), default 50
+    int p25_p1_voice_err_hist_len;          // ring capacity (<=64), default 50
+    int p25_p1_voice_err_hist_count;        // populated frames this call (<=capacity)
     int p25_p1_voice_err_hist_pos;          // ring head
     unsigned int p25_p1_voice_err_hist_sum; // sum of values in window
 
@@ -1336,7 +1341,8 @@ struct dsd_state {
 
     // P25 Phase 2 voice error moving average per slot (errs2 from AMBE decode)
     uint8_t p25_p2_voice_err_hist[2][64];
-    int p25_p2_voice_err_hist_len; // window length (<=64), default 50
+    int p25_p2_voice_err_hist_len;      // ring capacity (<=64), default 50
+    int p25_p2_voice_err_hist_count[2]; // populated frames per slot this call
     int p25_p2_voice_err_hist_pos[2];
     unsigned int p25_p2_voice_err_hist_sum[2];
 
@@ -1472,7 +1478,8 @@ struct dsd_state {
     long int nxdn_grant_freq;
 
     //multi-key array
-    int keyloader; //let us know the keyloader is active
+    int keyloader;            //let us know the keyloader is active
+    char key_profile_ref[64]; /**< Opaque material-source identity, safe for frontend metadata. */
 
     //dmr late entry mi
 

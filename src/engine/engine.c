@@ -9,13 +9,19 @@
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -40,6 +46,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -57,12 +64,14 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
 #include <limits.h>
 #include <mbelib-neo/mbelib.h>
@@ -72,14 +81,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "dsd-neo/core/dibit.h"
-#include "dsd-neo/core/key_set.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_ext.h"
-#include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/sockets.h"
-#include "dsd-neo/runtime/trunk_tuning_hooks.h"
 #include "engine_hooks_install.h"
 
 struct CODEC2;
@@ -712,6 +713,8 @@ dsd_engine_setup_parse_tcp_input(dsd_opts* opts, dsd_state* state) {
             dsd_sleep_ms(1000);
             continue;
         }
+        const int code = dsd_socket_get_error();
+        dsd_input_failure_report(dsd_input_failure_classify_socket(code), code);
         LOG_ERROR("TCP Connection Failure.\n");
         return -1;
     }
@@ -2186,6 +2189,8 @@ no_carrier_unload_keys_if_needed(dsd_state* state) {
     state->R = 0;
     state->RR = 0;
     state->K = 0;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = 0;
+    state->basic_key_present = 0;
     state->K1 = 0;
     state->K2 = 0;
     state->K3 = 0;

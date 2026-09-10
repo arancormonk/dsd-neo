@@ -65,6 +65,8 @@ tyt16_ambe2_codeword_keystream(const dsd_state* state, char ambe_fr[4][24], int 
         ambe_fr[map->high_row][map->high_col] = interleaved[k++];
         ambe_fr[map->low_row][map->low_col] = interleaved[k++];
     }
+    DSD_SECURE_ZERO(ks_bytes, sizeof ks_bytes);
+    DSD_SECURE_ZERO(ks, sizeof ks);
 }
 
 void
@@ -78,6 +80,7 @@ tyt_ap_pc4_keystream_creation(dsd_state* state, const char* input, int show_keys
     if (parse_rc != DSD_VENDOR_AP_KEY_OK) {
         DSD_FPRINTF(stderr, "DMR TYT AP (PC4) key parse failed: expected 32 or 64 hex characters\n");
         state->tyt_ap = 0;
+        DSD_SECURE_ZERO(&parsed, sizeof parsed);
         return;
     }
 
@@ -90,6 +93,8 @@ tyt_ap_pc4_keystream_creation(dsd_state* state, const char* input, int show_keys
         (void)dsd_parse_hex_bytes_exact((const char*)parsed.hex, parsed.nhex, key_bytes, sizeof(key_bytes));
         DSD_FPRINTF(stderr, "DMR TYT AP (PC4) 256-bit key loaded with forced application: %s\n",
                     dsd_secret_format_byte_hex(key_text, sizeof key_text, show_keys, key_bytes, sizeof(key_bytes)));
+        DSD_SECURE_ZERO(key_bytes, sizeof key_bytes);
+        DSD_SECURE_ZERO(key_text, sizeof key_text);
     } else {
         unsigned char key1[16];
         DSD_MEMSET(key1, 0, sizeof(key1));
@@ -99,6 +104,9 @@ tyt_ap_pc4_keystream_creation(dsd_state* state, const char* input, int show_keys
         if (dsd_parse_hex_bytes_exact((const char*)parsed.hex, parsed.nhex, key1, sizeof(key1)) != 0) {
             DSD_FPRINTF(stderr, "DMR TYT AP (PC4) key parse failed: invalid 128-bit key\n");
             state->tyt_ap = 0;
+            DSD_SECURE_ZERO(&parsed, sizeof parsed);
+            DSD_SECURE_ZERO(key1, sizeof key1);
+            DSD_SECURE_ZERO(key2, sizeof key2);
             return;
         }
         for (int i = 0; i < 16; i++) {
@@ -110,8 +118,12 @@ tyt_ap_pc4_keystream_creation(dsd_state* state, const char* input, int show_keys
         char key_text[33];
         DSD_FPRINTF(stderr, "DMR TYT AP (PC4) 128-bit key loaded with forced application: %s\n",
                     dsd_secret_format_byte_hex(key_text, sizeof key_text, show_keys, key1, sizeof(key1)));
+        DSD_SECURE_ZERO(key1, sizeof key1);
+        DSD_SECURE_ZERO(key2, sizeof key2);
+        DSD_SECURE_ZERO(key_text, sizeof key_text);
     }
     state->tyt_ap = 1;
+    DSD_SECURE_ZERO(&parsed, sizeof parsed);
 }
 
 void
@@ -174,11 +186,20 @@ tyt_ep_aes_keystream_creation(dsd_state* state, const char* input, int show_keys
 
     pc4_tyt_set_static_keystream(ks_bits);
 
-    const unsigned long long segments[2] = {K1, K2};
+    unsigned long long segments[2] = {K1, K2};
     char key_text[34];
     DSD_FPRINTF(stderr, "DMR TYT EP (AES-128) key loaded with forced application: %s\n",
                 dsd_secret_format_u64_segments(key_text, sizeof key_text, show_keys, segments, 2U));
     state->tyt_ep = 1;
+    DSD_SECURE_ZERO(buf, sizeof buf);
+    DSD_SECURE_ZERO(&K1, sizeof K1);
+    DSD_SECURE_ZERO(&K2, sizeof K2);
+    DSD_SECURE_ZERO(user_key, sizeof user_key);
+    DSD_SECURE_ZERO(input_register, sizeof input_register);
+    DSD_SECURE_ZERO(ks_bytes, sizeof ks_bytes);
+    DSD_SECURE_ZERO(ks_bits, sizeof ks_bits);
+    DSD_SECURE_ZERO(segments, sizeof segments);
+    DSD_SECURE_ZERO(key_text, sizeof key_text);
 }
 
 int

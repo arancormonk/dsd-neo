@@ -1,3 +1,4 @@
+#include <dsd-neo/core/call_state.h>
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
@@ -40,10 +41,10 @@
 #include <string.h>
 #include "services.h"
 
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/io/rtl_stream_fwd.h"
-#include "dsd-neo/platform/sockets.h"
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/io/rtl_stream_fwd.h>
+#include <dsd-neo/platform/sockets.h>
 
 void
 dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
@@ -1312,4 +1313,18 @@ main(void) {
     rc |= test_clear_services_unload_what_the_importers_loaded();
     rc |= test_p25_bandplan_import_and_export_services();
     return rc ? 1 : 0;
+}
+
+int
+dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
+                                  int signaled_id, int effective_id, int available, int fallback) {
+    (void)state;
+    (void)slot;
+    (void)epoch;
+    (void)source;
+    (void)signaled_id;
+    (void)effective_id;
+    (void)available;
+    (void)fallback;
+    return 0;
 }

@@ -86,6 +86,7 @@ aaudio_result_t AAudioStream_write(AAudioStream* stream, const void* buffer, int
 aaudio_result_t AAudioStream_read(AAudioStream* stream, void* buffer, int32_t frames, int64_t timeout_ns);
 aaudio_result_t AAudioStream_setBufferSizeInFrames(AAudioStream* stream, int32_t frames);
 int32_t AAudioStream_getSampleRate(AAudioStream* stream);
+int32_t AAudioStream_getDeviceId(AAudioStream* stream);
 int32_t AAudioStream_getChannelCount(AAudioStream* stream);
 int32_t AAudioStream_getFramesPerBurst(AAudioStream* stream);
 int32_t AAudioStream_getBufferCapacityInFrames(AAudioStream* stream);
