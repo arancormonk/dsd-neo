@@ -1206,6 +1206,8 @@ init_state_codec2_and_events(dsd_state* state) {
 
     // Allocate per-slot event history (2 slots)
     state->event_history_s = calloc(2, sizeof(Event_History_I));
+    DSD_MEMSET(state->event_crc_invalid, 0, sizeof(state->event_crc_invalid));
+    DSD_MEMSET(state->data_header_crc_invalid, 0, sizeof(state->data_header_crc_invalid));
 
     //debug
 

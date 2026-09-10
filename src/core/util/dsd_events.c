@@ -65,6 +65,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].color_pair = 4;
         event_struct->Event_History_Items[i].severity = DSD_EVENT_SEVERITY_UNKNOWN;
         event_struct->Event_History_Items[i].category = DSD_EVENT_CATEGORY_UNKNOWN;
+        event_struct->Event_History_Items[i].crc_invalid = 0U;
         event_struct->Event_History_Items[i].systype = -1;
         event_struct->Event_History_Items[i].subtype = -1;
         event_struct->Event_History_Items[i].sys_id1 = 0;
@@ -121,6 +122,7 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].color_pair = event_struct->Event_History_Items[i - 1].color_pair;
         event_struct->Event_History_Items[i].severity = event_struct->Event_History_Items[i - 1].severity;
         event_struct->Event_History_Items[i].category = event_struct->Event_History_Items[i - 1].category;
+        event_struct->Event_History_Items[i].crc_invalid = event_struct->Event_History_Items[i - 1].crc_invalid;
         event_struct->Event_History_Items[i].systype = event_struct->Event_History_Items[i - 1].systype;
         event_struct->Event_History_Items[i].subtype = event_struct->Event_History_Items[i - 1].subtype;
         event_struct->Event_History_Items[i].sys_id1 = event_struct->Event_History_Items[i - 1].sys_id1;
@@ -228,12 +230,12 @@ static int watchdog_event_row_datetime(const Event_History* item, char* datestr,
 
 static void
 watchdog_event_write_log_detail(FILE* event_log_file, const char* stamp, const char* label, const char* value,
-                                uint8_t wanted) {
+                                uint8_t wanted, uint8_t crc_invalid) {
     if (wanted == 0U) {
         return;
     }
     // Unstamped, the line keeps its leading space so it still reads as a continuation.
-    DSD_FPRINTF(event_log_file, "%s %s%s \n", stamp, label, value);
+    DSD_FPRINTF(event_log_file, "%s %s%s%s \n", stamp, crc_invalid ? "[CRC ERR] " : "", label, value);
 }
 
 // Which detail lines this entry writes: the caller's selection, else every non-empty field.
@@ -325,10 +327,13 @@ watchdog_event_write_log_entry(const dsd_opts* opts, uint8_t slot, uint8_t swrit
         watchdog_event_write_log_rendered_line(event_log_file, stamp, stamp_source == 2, prefix, event_string, slot,
                                                swrite);
     }
-    watchdog_event_write_log_detail(event_log_file, stamp, "Text: ", row->text_message, wanted.text_message);
-    watchdog_event_write_log_detail(event_log_file, stamp, "Talker Alias: ", row->alias, wanted.alias);
-    watchdog_event_write_log_detail(event_log_file, stamp, "GPS: ", row->gps_s, wanted.gps);
-    watchdog_event_write_log_detail(event_log_file, stamp, "DSD-neo: ", row->internal_str, wanted.internal);
+    watchdog_event_write_log_detail(event_log_file, stamp, "Text: ", row->text_message, wanted.text_message,
+                                    row->crc_invalid);
+    watchdog_event_write_log_detail(event_log_file, stamp, "Talker Alias: ", row->alias, wanted.alias,
+                                    row->crc_invalid);
+    watchdog_event_write_log_detail(event_log_file, stamp, "GPS: ", row->gps_s, wanted.gps, row->crc_invalid);
+    watchdog_event_write_log_detail(event_log_file, stamp, "DSD-neo: ", row->internal_str, wanted.internal,
+                                    row->crc_invalid);
     fflush(event_log_file);
     fclose(event_log_file);
 }
@@ -760,6 +765,11 @@ watchdog_event_merge_staged_into(Event_History* retained, const Event_History* s
     if (staged->priority > retained->priority) {
         retained->priority = staged->priority;
     }
+    retained->crc_invalid |= staged->crc_invalid;
+    if (retained->crc_invalid) {
+        dsd_event_history_item_set_metadata(retained, DSD_EVENT_SEVERITY_WARNING,
+                                            (dsd_event_category)retained->category);
+    }
     watchdog_event_merge_identity_fields(retained, staged);
     watchdog_event_merge_system_identity(retained, staged);
 
@@ -1055,6 +1065,7 @@ typedef struct {
     uint8_t channel_label_resolved;
     uint16_t svc_opts;
     uint8_t subtype;
+    uint8_t crc_invalid;
     /* Live decoder inputs the builders below still need. Captured alongside the committed row
      * so a re-render reproduces the context the row was built under. */
     dsd_call_event_render_env env;
@@ -1183,6 +1194,7 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
         return;
     }
     ctx->protocol = call->protocol;
+    ctx->crc_invalid = call->crc_invalid;
     ctx->kind = call->kind;
     ctx->category = call->kind == DSD_CALL_KIND_DATA ? DSD_EVENT_CATEGORY_DATA : DSD_EVENT_CATEGORY_VOICE;
     ctx->crypto = call->crypto;
@@ -1377,7 +1389,9 @@ static void
 watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8_t slot, Event_History* item,
                                    const watchdog_event_current_ctx* ctx, time_t now) {
     item->write = 0;
-    dsd_event_history_item_set_metadata(item, ctx->severity, ctx->category);
+    item->crc_invalid = ctx->crc_invalid;
+    dsd_event_history_item_set_metadata(item, ctx->crc_invalid ? DSD_EVENT_SEVERITY_WARNING : ctx->severity,
+                                        ctx->category);
     if (ctx->protocol != DSD_SYNC_NONE) {
         item->systype = ctx->protocol;
     } else {
@@ -1647,6 +1661,25 @@ watchdog_event_sys_label(const char* label, const char* sys_string, char* buf, s
     return buf;
 }
 
+// Keep the timestamp parseable and the failure visible even when the payload fills the row.
+static void
+watchdog_event_mark_crc(char* text, size_t cap) {
+    static const char marker[] = "[CRC ERR] ";
+    const size_t prefix = k_watchdog_event_stamp_len + 1U;
+    const size_t marker_len = sizeof(marker) - 1U;
+    const size_t len = strlen(text);
+    if (len < prefix || cap <= prefix + marker_len) {
+        return;
+    }
+    size_t rest = len - prefix;
+    if (rest > cap - prefix - marker_len - 1U) {
+        rest = cap - prefix - marker_len - 1U;
+    }
+    DSD_MEMMOVE(text + prefix + marker_len, text + prefix, rest);
+    DSD_MEMCPY(text + prefix, marker, marker_len);
+    text[prefix + marker_len + rest] = '\0';
+}
+
 // Every builder renders purely from ctx -- the identity and metadata copied off the call or the
 // row, plus the render env captured with it. Nothing here reads live decoder state, so the same
 // ctx always produces the same string no matter when it is rebuilt.
@@ -1672,6 +1705,9 @@ watchdog_event_current_build_event_string(const watchdog_event_current_ctx* ctx,
         watchdog_event_current_build_event_x2tdma(ctx, datestr, timestr, sys, event_string, event_size);
     } else if (DSD_SYNC_IS_NXDN(ctx->protocol)) {
         watchdog_event_current_build_event_nxdn(ctx, datestr, timestr, sys, event_string, event_size);
+    }
+    if (ctx->crc_invalid) {
+        watchdog_event_mark_crc(event_string, event_size);
     }
 }
 
@@ -1720,6 +1756,7 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->severity = (dsd_event_severity)item->severity;
     ctx->category = (dsd_event_category)item->category;
+    ctx->crc_invalid = item->crc_invalid;
     // Synctype ids are stored signed and negative sentinels are meaningful, so the widening
     // must sign-extend; the cast is explicit to say so.
     ctx->protocol = (int)item->systype;
@@ -2192,6 +2229,23 @@ dsd_event_enrich_apply(dsd_state* state, uint8_t slot, Event_History* item, cons
     }
 }
 
+// Caller holds the call-state lock. Enrichment may precede the first render of its epoch,
+// so an unrelated staged row must not be marked along with the canonical call.
+static void
+dsd_event_enrich_mark_crc(dsd_call_state_ext* ext, dsd_call_snapshot* call, Event_History* item,
+                          const dsd_call_event_lifecycle* lifecycle, uint8_t history_index) {
+    if (!call->crc_invalid) {
+        call->crc_invalid = 1;
+        call->revision = call->revision == UINT64_MAX ? 1U : call->revision + 1U;
+        ext->calls.revision = ext->calls.revision == UINT64_MAX ? 1U : ext->calls.revision + 1U;
+    }
+    if (!item->crc_invalid && (history_index != 0U || lifecycle->epoch == call->epoch)) {
+        item->crc_invalid = 1;
+        dsd_event_history_item_set_metadata(item, DSD_EVENT_SEVERITY_WARNING, (dsd_event_category)item->category);
+        watchdog_event_mark_crc(item->event_string, sizeof(item->event_string));
+    }
+}
+
 static int
 dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const char* value,
                        dsd_event_enrichment_kind kind) {
@@ -2203,7 +2257,7 @@ dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
         return 0;
     }
     dsd_call_state_ext_lock(ext);
-    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    dsd_call_snapshot* call = &ext->calls.slots[slot];
     const dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
     if (call->epoch != epoch) {
         dsd_call_state_ext_unlock(ext);
@@ -2228,6 +2282,9 @@ dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
     }
     Event_History* item = &state->event_history_s[slot].Event_History_Items[history_index];
     dsd_event_enrich_apply(state, slot, item, value, kind);
+    if (state->event_crc_invalid[slot]) {
+        dsd_event_enrich_mark_crc(ext, call, item, lifecycle, history_index);
+    }
     if (history_index != 0U) {
         // Late enrichment landed on a committed row, not the staged one.
         state->event_history_s[slot].commit_rev++;
@@ -2461,7 +2518,9 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 
     Event_History* item = &event_struct->Event_History_Items[0];
     item->write = 1;
-    dsd_event_history_item_set_metadata(item, DSD_EVENT_SEVERITY_INFO, category);
+    item->crc_invalid = state->event_crc_invalid[slot] != 0U;
+    dsd_event_history_item_set_metadata(item, item->crc_invalid ? DSD_EVENT_SEVERITY_WARNING : DSD_EVENT_SEVERITY_INFO,
+                                        category);
     item->systype = observation->protocol;
     item->subtype = DSD_EVENT_SUBTYPE_EXPLICIT_DATA;
     item->gi = -1;
@@ -2489,6 +2548,9 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
     watchdog_event_render_notice_line(datestr, timestr, item->channel_label, notice, item->event_string,
                                       sizeof(item->event_string));
+    if (item->crc_invalid) {
+        watchdog_event_mark_crc(item->event_string, sizeof(item->event_string));
+    }
 
     write_event_to_log_file(opts, state, slot, 0U, item->event_string);
     push_event_history(event_struct);
@@ -2496,9 +2558,9 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     dsd_event_history_mark_dirty(event_struct);
     dsd_event_history_transaction_end(&transaction);
 
-    dsd_frame_logf(opts, "FRAME DATA slot=%d src=%llu dst=%llu %s", slot + 1,
-                   (unsigned long long)observation->ota_source_id, (unsigned long long)observation->ota_target_id,
-                   notice);
+    dsd_frame_logf(
+        opts, "FRAME DATA %sslot=%d src=%llu dst=%llu %s", state->event_crc_invalid[slot] ? "[CRC ERR] " : "", slot + 1,
+        (unsigned long long)observation->ota_source_id, (unsigned long long)observation->ota_target_id, notice);
 
     if (dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_DATA)) {
         beeper(opts, state, slot, 80, 20, 3);

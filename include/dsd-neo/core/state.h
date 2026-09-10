@@ -139,33 +139,34 @@ typedef enum DSD_ATTR_PACKED {
 // readability/maintainability without measurable benefit. Suppress the padding
 // warning for this aggregate while keeping all other clang-tidy checks active.
 typedef struct {
-    uint8_t write;      // If this event needs to be written to a log file
-    uint8_t color_pair; //this value corresponds to which color pair the line should be in ncurses
-    uint8_t severity;   // neutral event severity for non-terminal frontends
-    uint8_t category;   // neutral event category for non-terminal frontends
-    int8_t systype;     //indentifier of which decoded system type this is from (P25, DMR, etc)
-    int8_t subtype;     //subtype of systpe (VLC, TLC, PDU data, System Event, etc)
-    uint32_t sys_id1;   //sys_id1 through 5 will be a hierarchy of system identifiers
-    uint32_t sys_id2;   // For example, trunked P25 has WACN:SYS:CC:SITE_ID:RFSS_ID
-    uint32_t sys_id3;   //conventional may only use NAC, RAN, or Color Codes
-    uint32_t sys_id4;   //
-    uint32_t sys_id5;   //
-    int8_t gi;          //group or individual
-    uint8_t emergency;  // emergency indication observed during this call
-    uint8_t priority;   // observed service priority
-    uint8_t enc;        //clear or encrypted
-    uint8_t enc_alg;    //alg if encrypted
-    uint16_t enc_key;   //enc key id value, if encrypted (not key value or key variable)
-    uint64_t mi;        //mi, or iv base value from OTA if provided
-    uint16_t svc;       //other relevant svc opts if applicable
-    uint32_t source_id; //source radio id or other source value
-    uint32_t target_id; //group or individual target, or destination value
-    char src_str[200];  //source, expressed as a string for M17, YSF, DSTAR, dPMR
-    char tgt_str[200];  //target, expressed as a string for M17, YSF, DSTAR, dPMR
-    char t_name[200];   //this is the string present from any csv groupName import
-    char s_name[200];   //same as above, but if loaded from a src value and not tg value
-    char t_mode[200];   //mode, or A,B,D,DE from csv group import file
-    char s_mode[200];   //mode, or A,B,D,DE from csv group import file
+    uint8_t write;       // If this event needs to be written to a log file
+    uint8_t color_pair;  //this value corresponds to which color pair the line should be in ncurses
+    uint8_t severity;    // neutral event severity for non-terminal frontends
+    uint8_t category;    // neutral event category for non-terminal frontends
+    uint8_t crc_invalid; // Known failed CRC; zero does not imply verification.
+    int8_t systype;      //indentifier of which decoded system type this is from (P25, DMR, etc)
+    int8_t subtype;      //subtype of systpe (VLC, TLC, PDU data, System Event, etc)
+    uint32_t sys_id1;    //sys_id1 through 5 will be a hierarchy of system identifiers
+    uint32_t sys_id2;    // For example, trunked P25 has WACN:SYS:CC:SITE_ID:RFSS_ID
+    uint32_t sys_id3;    //conventional may only use NAC, RAN, or Color Codes
+    uint32_t sys_id4;    //
+    uint32_t sys_id5;    //
+    int8_t gi;           //group or individual
+    uint8_t emergency;   // emergency indication observed during this call
+    uint8_t priority;    // observed service priority
+    uint8_t enc;         //clear or encrypted
+    uint8_t enc_alg;     //alg if encrypted
+    uint16_t enc_key;    //enc key id value, if encrypted (not key value or key variable)
+    uint64_t mi;         //mi, or iv base value from OTA if provided
+    uint16_t svc;        //other relevant svc opts if applicable
+    uint32_t source_id;  //source radio id or other source value
+    uint32_t target_id;  //group or individual target, or destination value
+    char src_str[200];   //source, expressed as a string for M17, YSF, DSTAR, dPMR
+    char tgt_str[200];   //target, expressed as a string for M17, YSF, DSTAR, dPMR
+    char t_name[200];    //this is the string present from any csv groupName import
+    char s_name[200];    //same as above, but if loaded from a src value and not tg value
+    char t_mode[200];    //mode, or A,B,D,DE from csv group import file
+    char s_mode[200];    //mode, or A,B,D,DE from csv group import file
     // Name of the scan channel this transmission was heard on, or "" when the receiver was not
     // scanning a named channel. Resolved once per call epoch, on the epoch's first render, and
     // rendered as a bracketed prefix between the row's timestamp and its protocol token.
@@ -484,6 +485,10 @@ struct dsd_state {
     time_t slco_sfrag_last[2];
     //event history itemized per slot
     Event_History_I* event_history_s;
+    // Decoder-thread-only scoped failure context; dispatch must save and restore each slot.
+    uint8_t event_crc_invalid[2];
+    // DMR header-chain failure retained until the protocol resets the assembly.
+    uint8_t data_header_crc_invalid[2];
     // Codec2 contexts (NULL when codec2 unavailable; unconditional for ABI stability)
     struct CODEC2* codec2_3200; // M17 fullrate
     struct CODEC2* codec2_1600; // M17 halfrate

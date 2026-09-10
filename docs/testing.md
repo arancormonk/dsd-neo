@@ -27,6 +27,38 @@ cmake --build --preset dev-debug -j
 ctest --preset dev-debug --output-on-failure
 ```
 
+### Data-event CRC integrity
+
+`DMR_EVENT_CRC` exercises real header, assembler, application decoder, history and event-file paths:
+strict rejection, marked relaxed recovery, header-chain failures, encrypted notices, UDT text detail
+lines, a BPTC-encoded RAS-shaped header, slot isolation and clean subsequent packets. Its unchanged
+MNIS LRRP vector comes from [DSD-FME issue 283](https://github.com/lwvmobile/dsd-fme/issues/283).
+The 46 received octets end in CRC `0FE81D14`; the two extra zero octets in that issue's dump are buffer
+fill. The former CRC span computes `FF38D9C7`, while the corrected span matches the transmitted value.
+A one-bit payload mutation must not publish in strict mode.
+
+The MNIS coverage follows the independent
+[node-dmr-lib assembler](https://github.com/rick51231/node-dmr-lib/blob/2a6579e3d3af8f0fde529028962d8fa0e89d2d1d/src/DMR/Util/DataBlock.js):
+omit the first three proprietary-header octets and the octet immediately before CRC32; the stored
+header already excludes CRC16. This is proprietary-format evidence, not an ETSI definition of MNIS.
+Ordinary DMR CRC32 and the separate UDT header/message CRC16 domains follow
+[ETSI TS 102 361-1 V2.6.1](https://www.etsi.org/deliver/etsi_ts/102300_102399/10236101/02.06.01_60/ts_10236101v020601p.pdf),
+§§8.2.2 and B.3.8–B.3.9, corroborated by
+[node-dmr-lib CRC32](https://github.com/rick51231/node-dmr-lib/blob/master/src/Encoders/CRC32.js)
+and [MMDVMHost CRC-CCITT](https://github.com/g4klx/MMDVMHost/blob/master/CRC.cpp).
+
+`P25_P1_MDPU_HELPERS` covers both packet rates, header versus packet failures, and CRC9-only failures
+with a passing packet CRC32. Those domains are distinct in
+[TIA-102.BAAA-A](https://qsl.net/kb9mwr/projects/dv/apco25/TIA-102-BAAA-A-Project_25-FDMA-Common_Air_Interface.pdf),
+§§6.2–6.4, and independently in
+[SDRTrunk's confirmed blocks](https://github.com/DSheirer/sdrtrunk/blob/master/src/main/java/io/github/dsheirer/module/decode/p25/phase1/message/pdu/block/ConfirmedDataBlock.java).
+`CORE_CALL_ALERT_HISTORY` covers marker placement, warning severity, long notices, detail lines and
+delayed/reacquired voice history. Strict suppression is decoder policy, not a specification requirement
+for passive-receiver user interfaces. A failed standard CRC can also be intentional:
+[Motorola's private-CRC patent](https://patents.google.com/patent/US8914699B2/en) and
+[independent RAS documentation](https://cwh050.mywikis.wiki/wiki/Restricted_Access_to_System) explain why
+suspected RAS is marked as a failed check rather than asserted to be corrupted or authenticated.
+
 ### Known-key MBE playback
 
 `CORE_KEY_DIRECT` also checks recovered AMBE plaintext for all-zero RC4, AES-128 and AES-256 keys through CLI,

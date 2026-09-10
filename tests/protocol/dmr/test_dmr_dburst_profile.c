@@ -452,7 +452,6 @@ test_handler_dispatch_paths(void) {
     dmr_data_burst_handler(&opts, &state, info, 0x04U, NULL);
     rc |= expect_u8("mbch-block-call", (uint8_t)g_block_assembler_calls, 1U);
     rc |= expect_u8("mbch-block-type", g_block_assembler_last_type, 2U);
-    rc |= expect_u8("mbch-header-valid", state.data_header_valid[1], 1U);
     rc |= expect_u8("mbch-counter-reset", state.data_block_counter[1], 0U);
 
     prepare_handler_state(&opts, &state, info, 0x06U, 0U, 1U, 0);
@@ -551,8 +550,6 @@ test_bptc_ras_and_usbd_services(void) {
     g_bptc_reserved[2] = 1U;
     dmr_data_burst_handler(&opts, &state, info, 0x06U, NULL);
     rc |= expect_u8("ras-data-header-call", (uint8_t)g_dheader_calls, 1U);
-    rc |= expect_u8("ras-crc-presented-correct", (uint8_t)g_dheader_last_crc_correct, 1U);
-    rc |= expect_u8("ras-header-valid", state.data_block_crc_valid[1][0], 1U);
 
     prepare_handler_state(&opts, &state, info, 0x06U, 0U, 1U, 0);
     g_bptc_reserved[2] = 1U;

@@ -622,6 +622,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         snapshot->started_m = now_m;
         if (reacquires_ended_epoch) {
             call_state_seed_reacquired_snapshot(snapshot, &previous);
+            snapshot->crc_invalid = previous.crc_invalid;
             ext->events[observation->slot].reacquired_epoch = snapshot->epoch;
             // Which epoch was reopened. Whether a history row may actually be merged is the event
             // layer's call -- it pairs this against the epoch its committed row belongs to -- but
@@ -640,6 +641,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     }
     snapshot->phase = DSD_CALL_PHASE_ACTIVE;
     call_state_apply_observation(snapshot, observation);
+    snapshot->crc_invalid |= state->event_crc_invalid[observation->slot] != 0U;
     snapshot->updated_m = now_m;
     snapshot->ended_m = 0.0;
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
@@ -684,7 +686,8 @@ call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_u
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
-    if (!call_state_crypto_differs(snapshot, update)) {
+    const uint8_t crc_invalid = (uint8_t)(state->event_crc_invalid[slot] != 0U);
+    if (!call_state_crypto_differs(snapshot, update) && (!crc_invalid || snapshot->crc_invalid)) {
         // A retained ended call is re-described by every carrier repeat.
         // Bumping the revision for an identical snapshot makes consumers that
         // poll on revision churn once per repeat for no observable change.
@@ -696,6 +699,7 @@ call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_u
     snapshot->kid = update->kid;
     snapshot->mi = update->mi;
     snapshot->audio_permitted = update->audio_permitted ? 1U : 0U;
+    snapshot->crc_invalid |= crc_invalid;
     if (snapshot->phase == DSD_CALL_PHASE_ACTIVE) {
         snapshot->updated_m = call_state_observed_m(update->observed_m);
     }
