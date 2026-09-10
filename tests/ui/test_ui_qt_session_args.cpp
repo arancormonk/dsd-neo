@@ -23,6 +23,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <initializer_list>
+#include <limits>
 #include <qtenvironmentvariables.h>
 #include <stdio.h>
 #include "decoder_host.h"
@@ -61,6 +62,43 @@ QString
 input_spec(const QStringList& args) {
     const qsizetype i = args.indexOf(QStringLiteral("-i"));
     return (i >= 0 && i + 1 < args.size()) ? args.at(i + 1) : QString();
+}
+
+void
+test_hangtime(void) {
+    auto sys = usb_system();
+    SessionArgPrefs prefs;
+    SessionArgsError error = SessionArgsError::None;
+    auto args = session_args_build(sys, prefs, &error);
+    expect("default hang time", args.count("-t") == 1 && args.value(args.indexOf("-t") + 1) == "2.0");
+    prefs.hangtimeSec = 3.5;
+    args = session_args_build(sys, prefs, &error);
+    expect("preference hang time", args.value(args.indexOf("-t") + 1) == "3.5");
+    sys["hangtime"] = "1.5";
+    sys["extraArgs"] = "-t 9 -F";
+    prefs.extraArgs = "-t 8";
+    args = session_args_build(sys, prefs, &error);
+    expect("system override precedes extras",
+           error == SessionArgsError::None && args.count("-t") == 3
+               && args.mid(args.indexOf("-t")) == QStringList({"-t", "1.5", "-t", "9", "-F", "-t", "8"}));
+    dsd_qt::SessionArgsBuilder builder(nullptr);
+    for (const auto& value : QStringList{"abc", "-1", "45", "nan", "inf"}) {
+        sys["hangtime"] = value;
+        expect("invalid hang time refuses argv",
+               session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::Hangtime);
+        const auto result = builder.build(sys);
+        expect("hang time has its own validation category",
+               !result.value("ok").toBool() && result.value("error") == "hangtime"
+                   && result.value("errorText") == "Enter hang time in seconds from 0 to 30.");
+    }
+    for (const auto& value : QStringList{"0", "30", " 2.5 "}) {
+        sys["hangtime"] = value;
+        expect("boundary hang times accepted", !session_args_build(sys, prefs, &error).isEmpty());
+    }
+    sys["hangtime"] = "";
+    prefs.hangtimeSec = std::numeric_limits<double>::quiet_NaN();
+    expect("nonfinite preference refuses argv",
+           session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::Hangtime);
 }
 
 void
@@ -431,6 +469,7 @@ main(int argc, char** argv) {
         expect("global key display is refused", session_args_build(sys, prefs, nullptr).isEmpty());
     }
     test_freq_validation();
+    test_hangtime();
     test_defaults_and_overrides();
     test_csv_args();
     test_ppm_shapes();

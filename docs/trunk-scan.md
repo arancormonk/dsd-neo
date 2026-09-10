@@ -492,7 +492,9 @@ System source, host, port, PPM, bandwidth and bias-tee settings are replaced by 
 list's settings. Entry gain overrides system gain; otherwise system gain overrides
 the list's default. Zero dwell/hold, negative-one gain/bandwidth/bias-tee and blank
 PPM/modulation inherit their corresponding defaults. Nonzero dwell/hold must be
-250–600000 ms.
+250–600000 ms. Lists use the app's voice hang time, not per-system hang-time overrides;
+Extra decoder arguments containing `-t` still take precedence. Voice/sync-loss hang time
+is separate from idle dwell on every target and the activity hold on conventional targets.
 
 Lists persist in `scan_lists.json`. Lists and entries have stable UIDs; system
 entries reference saved-system UIDs, so deleting or reordering a saved system

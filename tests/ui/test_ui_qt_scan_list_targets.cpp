@@ -151,6 +151,7 @@ main(int argc, char** argv) {
     QString error;
     check(session_args_scan_build(list, "851.5", "/targets.csv", prefs, &error).isEmpty() && !error.isEmpty());
     prefs.extraArgs = "-F";
+    prefs.hangtimeSec = 4.5;
     prefs.autoPpm = true;
     list["voiceOnly"] = true;
     list["defaultDwellMs"] = 250;
@@ -164,6 +165,13 @@ main(int argc, char** argv) {
     list["biasTee"] = 1;
     auto args = session_args_scan_build(list, "851.5", "/targets.csv", prefs, &error);
     check(args.last() == "-F");
+    check(args.count("-t") == 1 && args.value(args.indexOf("-t") + 1) == "4.5");
+    prefs.extraArgs = "-t 9 -F";
+    const auto extraArgs = session_args_scan_build(list, "851.5", "/targets.csv", prefs, &error);
+    check(error.isEmpty() && extraArgs.count("-t") == 2 && extraArgs.last() == "-F"
+          && extraArgs.value(extraArgs.indexOf("-t") + 1) == "4.5"
+          && extraArgs.value(extraArgs.lastIndexOf("-t") + 1) == "9");
+    prefs.extraArgs = "-F";
     check(error.isEmpty() && args.contains("rtltcp:localhost:1234:851.5M:38:4:24:0:2:bias")
           && args.contains("--trunk-scan") && args.contains("--scan-voice-only") && args.contains("--src-csv")
           && args.contains("--trunk-scan-dwell-ms") && args.contains("--trunk-scan-activity-hold-ms")

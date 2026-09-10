@@ -41,6 +41,7 @@ class AppPrefs : public QObject {
                    backgroundListeningChanged)
     Q_PROPERTY(bool keepScreenAwake READ keepScreenAwake WRITE setKeepScreenAwake NOTIFY keepScreenAwakeChanged)
     Q_PROPERTY(bool skipEncrypted READ skipEncrypted WRITE setSkipEncrypted NOTIFY skipEncryptedChanged)
+    Q_PROPERTY(double hangtimeSec READ hangtimeSec WRITE setHangtimeSec NOTIFY hangtimeSecChanged)
     Q_PROPERTY(bool autoPpm READ autoPpm WRITE setAutoPpm NOTIFY autoPpmChanged)
     Q_PROPERTY(int gainDb READ gainDb WRITE setGainDb NOTIFY gainDbChanged)
     Q_PROPERTY(int ppm READ ppm WRITE setPpm NOTIFY ppmChanged)
@@ -102,6 +103,9 @@ class AppPrefs : public QObject {
     bool skipEncrypted() const;
     void setSkipEncrypted(bool on);
 
+    double hangtimeSec() const;
+    void setHangtimeSec(double seconds);
+
     bool autoPpm() const;
     void setAutoPpm(bool on);
 
@@ -156,6 +160,7 @@ class AppPrefs : public QObject {
     void backgroundListeningChanged();
     void keepScreenAwakeChanged();
     void skipEncryptedChanged();
+    void hangtimeSecChanged();
     void autoPpmChanged();
     void gainDbChanged();
     void ppmChanged();

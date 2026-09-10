@@ -1518,6 +1518,7 @@ class Setup : public QObject {
          * AppPrefs' own defaults, so a case that reads one sees what a fresh
          * install would. */
         prefs[QStringLiteral("autoPpm")] = false;
+        prefs[QStringLiteral("hangtimeSec")] = 2.0;
         prefs[QStringLiteral("gainDb")] = 30;
         prefs[QStringLiteral("ppm")] = 0;
         prefs[QStringLiteral("bandwidthKhz")] = 48;

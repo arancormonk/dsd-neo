@@ -498,6 +498,8 @@ Window {
                 mainRoot.startError = qsTr("“%1” has no valid frequency. Edit the source to correct it.").arg(sys.name);
             } else if (built.error === "ppm") {
                 mainRoot.startError = qsTr("“%1” has an invalid PPM correction. Edit the source to correct it.").arg(sys.name);
+            } else if (built.error === "hangtime") {
+                mainRoot.startError = qsTr("Enter hang time in seconds from 0 to 30.");
             } else if (built.error === "encryption") {
                 mainRoot.startError = qsTr("“%1” has an invalid decryption configuration. Edit the source to correct it.").arg(sys.name);
             } else if (built.error === "unsafe-option") {

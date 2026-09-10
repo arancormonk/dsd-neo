@@ -773,7 +773,12 @@ imports' exclusion behavior). Supplying keys never silently unblocks a talkgroup
 Android Back dismisses input, then the top dialog, then the pushed screen or
 wizard step. Root Back follows the background-listening preference. Monitor's
 More menu reaches History, Settings and Diagnostics without stopping the session.
-Preferences identify changes that apply at the next start.
+Preferences identify changes that apply at the next start. **Decoding → Voice hang time**
+defaults to 2.0 seconds (0.0–30.0); a saved system can override it under Advanced,
+or leave its field empty to follow the app default. Extra decoder arguments containing
+`-t` take precedence. To check P25 timing on-device, enable `--p25-sm-log` in Extra
+decoder arguments and inspect the effective hang time and carrier-release events in
+Diagnostics; argument construction is covered by the host tests.
 
 Controls expose named accessibility actions, keyboard focus and 48 dp targets.
 Text uses Android's per-size SP conversion, including nonlinear large-text scaling.
@@ -799,7 +804,9 @@ Home → **Scan lists** combines saved systems and bare P25/DMR/NXDN frequencies
 into a single trunk-scan session. Use the visible Edit action (or long-press) to edit entries, order, timing,
 modulation and gain. Choose one USB or RTL-TCP tuner for the list; it replaces
 individual systems' source, endpoint, PPM, bandwidth and bias-tee settings.
-The list editor can select imported group/source CSVs from the existing library.
+Scan lists use the app's voice hang time; per-system hang-time overrides do not apply.
+`-t` is separate from idle dwell on every target and the activity hold on conventional
+targets. The list editor can select imported group/source CSVs from the existing library.
 Per-system groups and keys remain isolated on rotation; source aliases are global
 and differing system alias files produce a warning. Unsupported settings are
 refused rather than dropped. See [scan-list rules](../docs/trunk-scan.md#qt-and-android-scan-lists).

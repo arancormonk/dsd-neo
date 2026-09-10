@@ -46,6 +46,34 @@ Item {
         }
     }
 
+    component DecimalRow: Item {
+        id: decimalRow
+        property string title: ""
+        property string subtitle: ""
+        property string unit: ""
+        property alias text: decimalInput.text
+        signal edited(string text)
+        width: parent ? parent.width : 0
+        height: decimalInput.implicitHeight + 16
+        PlexTextField {
+            id: decimalInput
+            objectName: "hangtimePreferenceField"
+            x: Theme.cardPadding
+            y: 8
+            width: parent.width - 2 * Theme.cardPadding
+            label: decimalRow.title
+            hint: decimalRow.subtitle
+            unit: decimalRow.unit
+            mono: true
+            inputMethodHints: Qt.ImhFormattedNumbersOnly
+            error: /^\d{1,2}(\.\d)?$/.test(text) && Number(text) <= 30 ? "" : qsTr("Enter seconds from 0 to 30, e.g. 2.0.")
+            onEditingFinished: {
+                if (!error.length)
+                    decimalRow.edited(text);
+            }
+        }
+    }
+
     PlexFlickable {
         anchors.fill: parent
         contentHeight: content.height + 2 * Theme.screenPadding
@@ -230,6 +258,16 @@ Item {
                         checked: prefs.autoPpm
                         onToggled: function (state) {
                             prefs.autoPpm = state;
+                        }
+                    }
+
+                    DecimalRow {
+                        title: qsTr("Voice hang time")
+                        subtitle: qsTr("Keeps a call's channel this long after voice stops before returning to the control channel")
+                        unit: "s"
+                        text: prefs.hangtimeSec.toFixed(1)
+                        onEdited: function (value) {
+                            prefs.hangtimeSec = Number(value);
                         }
                     }
                 }

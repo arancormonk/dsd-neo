@@ -233,6 +233,7 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize) const {
         prefs.biasTee = m_prefs->biasTee();
         prefs.skipEncrypted = m_prefs->skipEncrypted();
         prefs.autoPpm = m_prefs->autoPpm();
+        prefs.hangtimeSec = m_prefs->hangtimeSec();
         prefs.extraArgs = m_prefs->extraArgs();
     }
     const QString path = json_store_path(QStringLiteral("scan_lists/") + uid + QStringLiteral(".csv"));

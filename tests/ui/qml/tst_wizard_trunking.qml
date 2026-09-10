@@ -53,6 +53,52 @@ Item {
             }
         }
 
+        function test_hangtime_save_data() {
+            return [
+                {tag: "default", value: "", valid: true},
+                {tag: "zero", value: "0", valid: true},
+                {tag: "decimal", value: "2.5", valid: true},
+                {tag: "maximum", value: "30", valid: true},
+                {tag: "text", value: "abc", valid: false},
+                {tag: "too-large", value: "45", valid: false},
+                {tag: "negative", value: "-1", valid: false},
+                {tag: "precision", value: "2.55", valid: false}
+            ]
+        }
+
+        function test_hangtime_save(data) {
+            var before = savedSystems.count
+            tc.wizard.hangtimeText = data.value
+            tc.wizard.nameText = "Hang time test"
+            tc.wizard.step = 1
+            compare(tc.wizard.stepValid(), data.valid)
+            var field = findChild(tc.wizard, "systemHangtimeField")
+            verify(field !== null)
+            compare(field.error, data.valid ? "" : "Enter hang time in seconds from 0 to 30.")
+            tc.wizard.step = 2
+            compare(tc.wizard.stepValid(), data.valid)
+            tc.wizard.commit()
+            if (savedSystems.count > before)
+                tc.savedRow = before
+            compare(savedSystems.count, before + (data.valid ? 1 : 0))
+            if (data.valid) {
+                compare(savedSystems.get(before).hangtime, data.value)
+                tc.wizard.openForEdit(before)
+                compare(tc.wizard.hangtimeText, data.value)
+            }
+        }
+
+        function test_hangtime_dirty_and_reset() {
+            var draft = tc.wizard.draftFingerprint()
+            tc.wizard.hangtimeText = "4.5"
+            verify(tc.wizard.draftFingerprint() !== draft)
+            tc.wizard.openForFound(null, "851.375")
+            compare(tc.wizard.hangtimeText, "")
+            tc.wizard.hangtimeText = "4.5"
+            tc.wizard.openForAdd(false)
+            compare(tc.wizard.hangtimeText, "")
+        }
+
         // The shipped defaults have to decode. openForAdd() prefills 851.375 —
         // an 800 MHz P25 control channel, which is why it is the prefill — and
         // leaves Auto selected, so nothing else in the flow ever answers the
