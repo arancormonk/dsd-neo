@@ -22,6 +22,7 @@
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "../../../src/protocol/p25/p25_trunk_sm_internal.h"
@@ -961,6 +962,7 @@ test_sacch_dispatch_and_lcch_crc_abort(void) {
     state.p25_p2_audio_allowed[1] = 1;
     state.p25_p2_audio_ring_count[1] = 4;
     g_crc16_result = 1;
+    dsd_trunk_recovery_note_protocol(&state, DSD_TRUNK_RECOVERY_DMR);
     mac[1] = 0x55;
     pack_payload_from_mac(payload, 180, mac, 0x0, 0, 0);
 
@@ -969,6 +971,12 @@ test_sacch_dispatch_and_lcch_crc_abort(void) {
     rc |= expect_int("lcch crc abort clears gate", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("lcch crc abort resets ring", g_ring_reset_count[1], 1);
     rc |= expect_int("lcch crc abort no vpdu", g_vpdu_count, 0);
+    rc |= expect_int("invalid lcch preserves recovery owner", state.trunk_recovery_protocol, DSD_TRUNK_RECOVERY_DMR);
+
+    reset_stubs();
+    state.p2_is_lcch = 1;
+    process_SACCH_MAC_PDU(&opts, &state, payload);
+    rc |= expect_int("validated lcch claims P25 recovery", state.trunk_recovery_protocol, DSD_TRUNK_RECOVERY_P25);
 
     return rc;
 }

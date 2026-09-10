@@ -985,6 +985,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_chan_iden = 0;
 
     //values displayed in ncurses terminal
+    state->trunk_recovery_protocol = 0;
     state->p25_cc_freq = 0;
     state->p25_last_cc_msg_time = 0;
     state->p25_last_cc_msg_time_m = 0.0;

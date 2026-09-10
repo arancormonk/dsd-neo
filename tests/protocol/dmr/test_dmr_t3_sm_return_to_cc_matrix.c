@@ -201,6 +201,7 @@ dmr_setup_fixture(const dmr_grant_case* grant) {
     DSD_MEMSET(&g_ctx, 0, sizeof(g_ctx));
 
     g_opts.trunk_enable = 1;
+    g_opts.frame_dmr = 1;
     g_opts.trunk_hangtime = 0.1f;
     g_opts.trunk_tune_data_calls = 1;
     g_state.trunk_cc_freq = 851012500L;
@@ -610,7 +611,12 @@ dmr_run_cc_loss_reacquire_case(void) {
 
     dmr_sm_event_t ev = dmr_sm_ev_cc_sync();
     dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
-    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC, grant.name, flow, script, "cc sync returns ON_CC");
+    rc |= dmr_expect(g_ctx.state == DMR_SM_HUNTING, grant.name, flow, script, "raw sync cannot acquire CC");
+    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){.dmr_ctx = dmr_hook_scan_ctx});
+    dmr_sm_note_cc_activity(&g_opts, &g_state, g_state.trunk_cc_freq);
+    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC && g_ctx.cc_confirmed, grant.name, flow, script,
+                     "decoded control evidence returns ON_CC");
     return rc;
 }
 
@@ -663,8 +669,9 @@ dmr_run_auto_init_and_idle_hunting_case(void) {
 
     ev = dmr_sm_ev_cc_sync();
     dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
-    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC && g_ctx.t_cc_sync_m > 0.0, grant, flow, script,
-                     "cc sync reacquires from hunting");
+    rc |= dmr_expect(g_ctx.state == DMR_SM_HUNTING && g_ctx.t_cc_sync_m == 0.0, grant, flow, script,
+                     "raw sync cannot invent a confirmed CC");
+    g_ctx.state = DMR_SM_ON_CC;
 
     g_ctx.t_cc_sync_m = 0.0;
     dmr_sm_tick_ctx(&g_ctx, &g_opts, &g_state);
@@ -691,6 +698,7 @@ dmr_run_rejected_grant_contracts(void) {
                      "disabled trunking stayed on control channel");
 
     g_opts.trunk_enable = 1;
+    g_opts.frame_dmr = 1;
     g_state.trunk_cc_freq = 0;
     ev = dmr_sm_ev_group_grant(grant.freq_hz, 0, 1202, 7202);
     dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
@@ -756,6 +764,7 @@ dmr_run_global_emit_and_scan_hook_case(void) {
     dmr_setup_blank_fixture();
     dmr_install_hooks();
     g_opts.trunk_enable = 1;
+    g_opts.frame_dmr = 1;
     g_opts.trunk_tune_data_calls = 1;
     g_state.trunk_cc_freq = 851012500L;
     dmr_sm_init_ctx(&g_ctx, &g_opts, &g_state);

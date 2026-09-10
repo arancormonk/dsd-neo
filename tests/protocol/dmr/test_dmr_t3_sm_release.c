@@ -73,6 +73,7 @@ main(int argc, char** argv) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
     opts.trunk_enable = 1;
+    opts.frame_dmr = 1;
     opts.trunk_hangtime = 0.5f;
     state.trunk_cc_freq = 851000000;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){

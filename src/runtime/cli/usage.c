@@ -405,10 +405,13 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf(
         "      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR/P25/NXDN activity hold (250..600000, default "
         "1200).\n");
-    printf("      --scan-voice-only  Only stop scan on channels carrying voice.\n");
+    printf("      --scan-voice-only  Conventional scan/targets: hold only for decoded voice.\n");
+    printf("                 Trunked targets use idle dwell and protocol call-following timers.\n");
     printf("      --scan-voice-qualify-ms <ms>  Window after sync in which voice must appear or the scan moves on "
            "(100..600000, default 1000).\n");
     printf("      --scan-voice-hold-ms <ms>  Time to stay after the last voice frame (100..600000, default 2000).\n");
+    printf("                 Global qualify/hold timings apply to -Y; trunk-scan conventional rows use\n");
+    printf("                 dwell_ms/activity_hold_ms, or their own row options.\n");
     printf("  -W            Use Imported Group List as a Trunking Allow/White List -- Only Tune with Mode A\n");
     printf("  -p            Disable Tune to Private Calls (DMR TIII, P25, NXDN Type-C and Type-D)\n");
     printf("  -E            Disable Tune to Group Calls (DMR TIII, Con+, Cap+, P25, NXDN Type-C, and Type-D)\n");
@@ -422,7 +425,8 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("  -B <Hertz>    Set RIGCTL Setmod Bandwidth in Hertz (0 - default - Off)\n");
     printf("                 P25 - 12000; NXDN48 - 7000; NXDN96: 12000; DMR - 7000-12000; EDACS/PV - 12000-24000;\n");
     printf("                 May vary based on system stregnth, etc.\n");
-    printf("  -t <secs>     Set Trunking or Scan Speed VC/sync loss hangtime in seconds. (default = 2 seconds)\n");
+    printf("  -t <secs>     Voice/sync-loss hangtime in seconds (default 2); also conventional -Y scan speed.\n");
+    printf("                 Does not set --trunk-scan target dwell or DMR control-channel acquisition time.\n");
     printf("\n");
     printf(" Trunking Example TCP: dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv --frontend terminal "
            "2> log.txt\n");
