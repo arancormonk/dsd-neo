@@ -62,6 +62,7 @@ dsd_neo_add_fuzzer(
   core_csv_import
   dsd-neo_runtime
   dsd-neo_crypto
+  dsd-neo_test_call_state_support
 )
 target_sources(
     dsd-neo_fuzz_core_csv_import

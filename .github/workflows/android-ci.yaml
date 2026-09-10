@@ -310,6 +310,7 @@ jobs:
             --target dsd-neo_test_ui_qt_qml \
             dsd-neo_test_ui_qt_site_groups \
             dsd-neo_test_ui_qt_persistence \
+            dsd-neo_test_ui_qt_decryption_profiles \
             dsd-neo_test_ui_qt_call_history_model \
             dsd-neo_test_ui_qt_session_args \
             dsd-neo_test_ui_qt_scan_list_targets \

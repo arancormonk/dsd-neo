@@ -3,6 +3,9 @@
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <initializer_list>
+#include <memory>
+
+struct rtl_device;
 
 extern "C" void rtl_device_test_set_open_fd_failure_hook(int (*hook)(int));
 static int result;
@@ -26,13 +29,15 @@ open_fd_failure(int fd) {
 
 int
 main() {
-    input_ring_state ring{};
+    auto ring = std::make_unique<input_ring_state>();
     rtl_device_test_set_open_fd_failure_hook(open_fd_failure);
     rtl_device_set_preopened_fd(31);
     for (const int code : {-6, -3, -1}) {
         result = code;
         rtl_device_clear_open_error();
-        check(rtl_device_create(0, &ring) == nullptr, "descriptor open failure returns no device");
+        std::unique_ptr<rtl_device, decltype(&rtl_device_destroy)> dev(rtl_device_create(0, ring.get()),
+                                                                       rtl_device_destroy);
+        check(dev == nullptr, "descriptor open failure returns no device");
         check(rtl_device_last_open_error() == code, "descriptor error classification retained");
         check(!rtl_device_preopened_fd_in_use(), "failed descriptor claim released for host cleanup");
         check(rtl_device_preopened_fd_is_set(), "host still owns descriptor setting");
