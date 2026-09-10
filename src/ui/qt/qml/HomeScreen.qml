@@ -571,6 +571,7 @@ Item {
                     name: model.name,
                     when: model.when,
                     systemName: model.systemName,
+                    systemUid: model.systemUid,
                     channel: model.channel,
                     tg: model.tg,
                     src: model.src,

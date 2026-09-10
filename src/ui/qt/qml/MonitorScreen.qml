@@ -14,6 +14,7 @@ Item {
             keySheet.visible = false;
             siteSheet.visible = false;
             networkSheet.visible = false;
+            historyDetail.visible = false;
         }
     }
 
@@ -876,6 +877,21 @@ Item {
                     model: monitorView
 
                     delegate: CallRow {
+                        interactive: true
+                        onActivated: historyDetail.open({
+                            name: model.name,
+                            when: model.when,
+                            systemName: model.systemName,
+                            systemUid: model.systemUid,
+                            channel: model.channel,
+                            tg: model.tg,
+                            src: model.src,
+                            sourceName: model.srcName,
+                            emergency: model.emergency,
+                            enc: model.enc,
+                            durationSecs: model.durationSecs,
+                            detail: model.detail
+                        })
                         width: ListView.view.width
                         name: model.name
                         metaText: {
@@ -925,6 +941,11 @@ Item {
                 }
             }
         }
+    }
+
+    HistoryDetailSheet {
+        id: historyDetail
+        objectName: "monitorHistoryDetail"
     }
 
     // WP-D2: the modal consumes input above every monitor control.

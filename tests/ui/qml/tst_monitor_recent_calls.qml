@@ -49,6 +49,7 @@ Item {
         }
 
         function cleanup() {
+            findChild(screenLoader.item, "monitorHistoryDetail").visible = false
             for (var slot = 1; slot <= 2; ++slot) {
                 for (var field of ["CallName", "TgText", "SrcText"])
                     testContext.setMetric("slot" + slot + field, "")
@@ -83,6 +84,21 @@ Item {
                 compare(ids.text, data.ids)
                 compare(other.text, data.other)
             }
+        }
+
+        function test_recent_row_opens_details() {
+            callHistory.sessionUid = "test-system"
+            var name = callHistory.push("TODAY")
+            tc.list.positionViewAtBeginning()
+            var row = null
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === name })
+            verify(row.interactive)
+            waitForRendering(row)
+            mouseClick(row, row.width / 2, row.height / 2)
+            var sheet = findChild(screenLoader.item, "monitorHistoryDetail")
+            tryCompare(sheet, "visible", true)
+            compare(sheet.record.name, name)
+            compare(sheet.record.systemUid, "test-system")
         }
 
         function test_source_alias_is_visible() {

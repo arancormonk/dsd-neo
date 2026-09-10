@@ -798,6 +798,14 @@ File details show the basename, size and modification time. Replay completion is
 retained with a Play again action. Progress is not invented when the input backend
 cannot report it. History rows open full details, including timestamps and messages.
 
+Tap a row in History or Monitor's Recent calls to **Hold TG** while listening to
+the same saved system. The held talkgroup follows the decoder's state; release it
+from the details or Monitor. Explore sessions and scans (including scans enabled
+through Extra decoder arguments) cannot start a history hold. Rows heard during
+those sessions or saved before system identities were recorded remain ineligible,
+even after starting a single saved system. A running session can still release an
+existing hold.
+
 ### Scan lists
 
 Home → **Scan lists** combines saved systems and bare P25/DMR/NXDN frequencies
