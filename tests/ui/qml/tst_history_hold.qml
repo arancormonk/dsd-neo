@@ -21,6 +21,7 @@ Item {
             testContext.resetCommands()
             testContext.setHostRunning(true)
             testContext.setMetric("heldTg", 0)
+            testContext.setMetric("optionsKnown", true)
             testContext.setMetric("scanRotationActive", false)
             callHistory.sessionUid = "test-system"
         }
@@ -29,6 +30,7 @@ Item {
             loader.item.visible = false
             testContext.setHostRunning(false)
             testContext.setMetric("heldTg", 0)
+            testContext.setMetric("optionsKnown", false)
             testContext.setMetric("scanRotationActive", false)
             callHistory.sessionUid = "test-system"
         }
@@ -38,6 +40,8 @@ Item {
                 {tag: "same-system", running: true, uid: "test-system", held: 0, enabled: true, send: 1001},
                 {tag: "replace-hold", running: true, uid: "test-system", held: 2002, enabled: true, send: 1001},
                 {tag: "release", running: true, uid: "test-system", held: 1001, enabled: true, send: 0},
+                {tag: "release-other-system", running: true, uid: "different", held: 1001, enabled: true, send: 0},
+                {tag: "release-in-explore", running: true, uid: "test-system", sessionUid: "", held: 1001, enabled: true, send: 0},
                 {tag: "stopped", running: false, uid: "test-system", held: 0, enabled: false, reason: "Start this system to hold"},
                 {tag: "stopped-held", running: false, uid: "test-system", held: 1001, enabled: false, reason: "Start this system to hold"},
                 {tag: "another-system", running: true, uid: "different", held: 0, enabled: false, reason: "Heard on another system"},
@@ -48,6 +52,36 @@ Item {
                 {tag: "text-target", running: true, uid: "test-system", held: 0, tg: 0, enabled: false},
                 {tag: "release-in-scan", running: true, uid: "", scanning: true, held: 1001, enabled: true, send: 0}
             ]
+        }
+
+        function test_startup_waits_for_effective_options() {
+            // Android can report Running during a slow input open, before a
+            // redraw has replaced the metrics cleared by Starting.
+            testContext.setMetric("optionsKnown", false)
+            loader.item.open({name: "Dispatch", tg: 1001, systemUid: "test-system"})
+            var button = findChild(loader.item, "historyHoldButton")
+            var reason = findChild(loader.item, "historyHoldReason")
+            verify(!button.enabled)
+            compare(reason.text, "Waiting for session settings")
+            waitForRendering(button)
+            mouseClick(button, button.width / 2, button.height / 2)
+            compare(testContext.holdCalls(), 0)
+
+            testContext.setMetric("scanRotationActive", true)
+            testContext.setMetric("optionsKnown", true)
+            verify(!button.enabled)
+            compare(reason.text, "Hold needs a single saved system")
+
+            // A later single-system start must wait again, then become usable
+            // once its effective options arrive, even without a live call.
+            testContext.setMetric("optionsKnown", false)
+            testContext.setMetric("scanRotationActive", false)
+            verify(!button.enabled)
+            testContext.setMetric("optionsKnown", true)
+            verify(button.enabled)
+            mouseClick(button, button.width / 2, button.height / 2)
+            compare(testContext.holdCalls(), 1)
+            compare(testContext.lastHoldTg(), 1001)
         }
 
         function test_hold(data) {

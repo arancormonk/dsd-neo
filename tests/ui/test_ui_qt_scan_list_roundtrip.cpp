@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QByteArray>
+#include <QByteArrayView>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -15,6 +16,8 @@
 #include <cstdio>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <initializer_list>
+#include <qsystemdetection.h>
+#include <qtenvironmentvariables.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "json_store.h"
@@ -55,6 +58,22 @@ main(int argc, char** argv) {
     check(loaded.count() == 1 && loaded.get(0).value("uid") == uid
           && loaded.get(0).value("lastHeard").toLongLong() > 0);
     ScanListStarter starter(nullptr, nullptr);
+#if defined(Q_OS_UNIX)
+    // Android has no usable global /tmp. Validation and build must still work
+    // with only the app's cache writable, including before that cache exists.
+    const bool hadTmpDir = qEnvironmentVariableIsSet("TMPDIR");
+    const QByteArray previousTmpDir = qgetenv("TMPDIR");
+    qputenv("TMPDIR", (dir.path() + "/missing-temp").toUtf8());
+    const auto validation = starter.validate(list);
+    check(validation.value("ok").toBool() && validation.value("targetCount").toInt() == 1);
+    const auto withoutTemp = starter.build(list);
+    check(withoutTemp.value("ok").toBool() && withoutTemp.value("targetCount").toInt() == 1);
+    if (hadTmpDir) {
+        qputenv("TMPDIR", previousTmpDir);
+    } else {
+        qunsetenv("TMPDIR");
+    }
+#endif
     auto result = starter.build(list);
     check(result.value("ok").toBool() && result.value("targetCount").toInt() == 1);
     const QString path = json_store_path("scan_lists/" + uid + ".csv");

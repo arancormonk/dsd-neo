@@ -1683,6 +1683,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("encLockoutCount")] = 0;
         // On-the-fly scan controls (#380): no rotation running at rest.
         metrics[QStringLiteral("scanRotationActive")] = false;
+        metrics[QStringLiteral("optionsKnown")] = false;
         metrics[QStringLiteral("scanHold")] = false;
         metrics[QStringLiteral("scanTargetId")] = QString();
         metrics[QStringLiteral("scanTargetOrdinal")] = 0;

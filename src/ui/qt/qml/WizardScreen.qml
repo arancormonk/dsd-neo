@@ -1264,7 +1264,7 @@ Item {
                             unit: "s"
                             mono: true
                             placeholderText: prefs.hangtimeSec.toFixed(1)
-                            hint: qsTr("Leave empty to follow the app default · next start")
+                            hint: qsTr("Leave empty to follow the app default · next start. Scan lists always use the app default.")
                             inputMethodHints: Qt.ImhFormattedNumbersOnly
                             error: wizard.hangtimeValid() ? "" : qsTr("Enter hang time in seconds from 0 to 30.")
                         }

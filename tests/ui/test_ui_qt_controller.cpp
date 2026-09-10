@@ -176,6 +176,51 @@ test_history_receives_effective_scan_options() {
     freeState(&state);
 }
 
+// Reproduce the options-publication/redraw gap during Android input startup.
+static void
+test_startup_options_wait_for_redraw() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    Host host;
+    dsd_qt::MetricsModel metrics;
+    dsd_qt::UiController controller(&host, &metrics, nullptr, nullptr);
+    controller.setPollIntervalMs(50);
+    const auto poll = [&]() {
+        QEventLoop loop;
+        QTimer::singleShot(65, &loop, &QEventLoop::quit);
+        controller.start();
+        loop.exec();
+        controller.stop();
+    };
+    for (int mode = 0; mode < 3; ++mode) {
+        // A completed single-system session left a valid, non-scanning view.
+        opts.scanner_mode = 0;
+        opts.trunk_scan_enabled = 0;
+        metrics.refresh(&opts, &state);
+        check(metrics.optionsKnown() && !metrics.scanRotationActive());
+        host.setPhase(Host::Starting);
+        check(!metrics.optionsKnown());
+        (void)dsd_app_frontend_redraw_consume();
+        opts.scanner_mode = mode == 0;
+        opts.trunk_scan_enabled = mode == 1;
+        // Runtime admission and snapshots precede the slow input open. Android
+        // already reports Running, but no decoder redraw has arrived yet.
+        dsd_app_frontend_runtime_start(&opts, &state);
+        host.setPhase(Host::Running);
+        poll();
+        check(!metrics.optionsKnown() && !metrics.scanRotationActive());
+        dsd_app_request_redraw();
+        poll();
+        check(metrics.optionsKnown() && metrics.scanRotationActive() == (mode != 2));
+        host.setPhase(Host::Idle);
+        check(!metrics.optionsKnown());
+        dsd_app_frontend_runtime_stop();
+    }
+    freeState(&state);
+}
+
 // Run the actual sheet against the real bridge and decoder queue, including CSV media overrides.
 static void
 test_sheet_policy_edits() {
@@ -352,6 +397,7 @@ main(int argc, char** argv) {
     QCoreApplication::setApplicationName("dsd-neo-controller");
     dsd_test_qt_isolate_paths();
     test_history_receives_effective_scan_options();
+    test_startup_options_wait_for_redraw();
     test_sheet_policy_edits();
     test_zero_bounds();
     test_auto_start_requests();

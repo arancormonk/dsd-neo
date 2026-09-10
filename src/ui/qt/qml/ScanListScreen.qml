@@ -225,7 +225,7 @@ Rectangle {
             Text {
                 width: parent.width
                 wrapMode: Text.Wrap
-                text: qsTr("The list's tuner replaces each system's source, host, port, PPM, bandwidth and bias tee. System groups and keys stay isolated. 0 timing, -1 gain/bandwidth and blank PPM inherit defaults.")
+                text: qsTr("The list's tuner replaces each system's source, host, port, PPM, bandwidth and bias tee. System groups and keys stay isolated. Voice hang time uses the app default, including when a system has an override. 0 timing, -1 gain/bandwidth and blank PPM inherit defaults.")
                 color: Theme.textSecondary
                 font.family: Theme.sans
             }

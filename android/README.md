@@ -776,9 +776,18 @@ More menu reaches History, Settings and Diagnostics without stopping the session
 Preferences identify changes that apply at the next start. **Decoding → Voice hang time**
 defaults to 2.0 seconds (0.0–30.0); a saved system can override it under Advanced,
 or leave its field empty to follow the app default. Extra decoder arguments containing
-`-t` take precedence. To check P25 timing on-device, enable `--p25-sm-log` in Extra
-decoder arguments and inspect the effective hang time and carrier-release events in
-Diagnostics; argument construction is covered by the host tests.
+`-t` take precedence. Channel scanning enabled with `-Y` also uses this value as
+its dwell timer; scan lists have separate dwell settings.
+
+To check P25 timing, Extra decoder arguments must include a writable filename,
+for example `--p25-sm-log /data/user/0/io.github.arancormonk.dsdneo/files/p25-sm.log`.
+Effective hang time and carrier-release events are appended to that file, not
+the Diagnostics screen. Stop listening before retrieving it. On a rooted test
+emulator, use `adb root` followed by `adb pull` with that path; a debuggable build
+can use `adb exec-out run-as io.github.arancormonk.dsdneo cat files/p25-sm.log > p25-sm.log`.
+Production builds on non-rooted devices do not expose app-private files through
+adb. Remove the argument after testing to stop the log growing. Argument
+construction is also covered by the host tests.
 
 Controls expose named accessibility actions, keyboard focus and 48 dp targets.
 Text uses Android's per-size SP conversion, including nonlinear large-text scaling.
@@ -801,10 +810,11 @@ cannot report it. History rows open full details, including timestamps and messa
 Tap a row in History or Monitor's Recent calls to **Hold TG** while listening to
 the same saved system. The held talkgroup follows the decoder's state; release it
 from the details or Monitor. Explore sessions and scans (including scans enabled
-through Extra decoder arguments) cannot start a history hold. Rows heard during
+through Extra decoder arguments) cannot start a history hold. Hold waits for
+the effective session settings to arrive after startup. Rows heard during
 those sessions or saved before system identities were recorded remain ineligible,
 even after starting a single saved system. A running session can still release an
-existing hold.
+existing hold, including from a different system's row with the same talkgroup ID.
 
 ### Scan lists
 

@@ -6,7 +6,7 @@ ModalSheet {
     property var record: ({})
     readonly property string rowUid: record.systemUid || ""
     readonly property double rowTg: record.tg || 0
-    readonly property bool canHold: decoderHost.running && !metrics.scanRotationActive && rowTg > 0 && rowUid.length > 0 && rowUid === callHistory.sessionUid
+    readonly property bool canHold: decoderHost.running && metrics.optionsKnown && !metrics.scanRotationActive && rowTg > 0 && rowUid.length > 0 && rowUid === callHistory.sessionUid
     readonly property bool heldHere: metrics.heldTg > 0 && metrics.heldTg === rowTg
     accessibleName: qsTr("Activity details")
     function open(value) {
@@ -48,7 +48,7 @@ ModalSheet {
         width: parent.width
         wrapMode: Text.Wrap
         visible: holdButton.visible && !holdButton.enabled
-        text: !decoderHost.running ? qsTr("Start this system to hold") : metrics.scanRotationActive || callHistory.sessionUid.length === 0 ? qsTr("Hold needs a single saved system") : qsTr("Heard on another system")
+        text: !decoderHost.running ? qsTr("Start this system to hold") : !metrics.optionsKnown ? qsTr("Waiting for session settings") : metrics.scanRotationActive || callHistory.sessionUid.length === 0 ? qsTr("Hold needs a single saved system") : qsTr("Heard on another system")
     }
     OutlineButton {
         width: parent.width

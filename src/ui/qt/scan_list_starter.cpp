@@ -10,6 +10,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QStandardPaths>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryFile>
@@ -167,8 +168,14 @@ ScanListStarter::resolveEntryProfiles(QVariantMap& prepared, QString* error) con
 
 static bool
 validateAndStoreCsv(const QByteArray& csv, const QString& path, bool materialize, int* count, QString* error) {
-    // Validate a private temporary file before touching a previous runnable CSV.
-    QTemporaryFile staged(QDir::tempPath() + QStringLiteral("/dsdneo-scan-XXXXXX.csv"));
+    // Android need not have a writable global temp directory. Stage in the
+    // app's cache, privately, before touching a previous runnable CSV.
+    const QString directory = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (directory.isEmpty() || !QDir().mkpath(directory)) {
+        *error = QStringLiteral("Cannot prepare the scan-list validation.");
+        return false;
+    }
+    QTemporaryFile staged(directory + QStringLiteral("/dsdneo-scan-XXXXXX.csv"));
     if (!staged.open() || !staged.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)
         || staged.write(csv) != csv.size() || !staged.flush()) {
         *error = QStringLiteral("Cannot prepare the scan-list validation.");

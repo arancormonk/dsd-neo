@@ -263,7 +263,7 @@ Item {
 
                     DecimalRow {
                         title: qsTr("Voice hang time")
-                        subtitle: qsTr("Keeps a call's channel this long after voice stops before returning to the control channel")
+                        subtitle: qsTr("Keeps a call's channel after voice stops. Also sets channel-scanning dwell (-Y); scan lists have separate dwell settings.")
                         unit: "s"
                         text: prefs.hangtimeSec.toFixed(1)
                         onEdited: function (value) {
