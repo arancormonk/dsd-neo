@@ -142,6 +142,19 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
 - `--trunk-scan-activity-hold-ms <ms>` sets the default hold time after allowed conventional DMR/P25/NXDN activity
   (NXDN96 and NXDN48 alike). Default: `1200`.
 - Per-target CSV values override these defaults.
+- `-t <seconds>` is voice/sync-loss hangtime, not the interval between trunk-scan targets. Zero does not
+  bypass target dwell or control-channel acquisition. After a followed trunked call releases, a fresh idle
+  dwell starts; repeated calls can keep a busy system parked.
+- DMR control/rest-channel acquisition and loss detection use a separate two-second window. An accepted
+  asynchronous tune starts that window when the backend completes. During a hunt, an explicit channel map
+  is tried in file order, skipping duplicate/zero frequencies; without one, the known control channel and
+  learned current-site candidates are retried. Idle target dwell includes acquisition time, so a short dwell
+  may rotate away before every candidate can be tried. Target hold allows recovery to continue on that system.
+- A DMR probe does not replace the saved control frequency until accepted control signalling confirms it.
+  Valid TIII ALOHA/control-system short LC, Connect Plus control short LC, and mapped Capacity Plus rest status
+  maintain their respective control/rest channels. Relaxed CRC heartbeats can retain an established channel,
+  but cannot confirm a new probe. A decoded move announcement can select the next control/rest channel.
+  Verbose DMR state-machine logs identify `cc-lost`, `cc-probe`, `decoded-cc`, and failed tunes.
 - `--scan-voice-only`: conventional targets hold only from decoded voice media (headers and data no longer hold),
   with the per-target `dwell_ms` as the qualify window in which voice must appear and `activity_hold_ms` as the
   hold after the last voice frame, including when a terminator closes the call before the next scan tick; trunked

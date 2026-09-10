@@ -3,7 +3,6 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
@@ -52,7 +51,7 @@ p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
         return;
     }
     if (p25_sm_tick_guard_try_enter()) {
-        if (opts->trunk_enable == 1) {
+        if (p25_sm_recovery_allowed(p25_sm_get_ctx(), opts, state)) {
             /* Only one tick runs at a time across all callers. */
             atomic_store(&g_p25_sm_in_tick, 1);
             // Drive the high-level trunk SM tick

@@ -2469,6 +2469,11 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
         return -1;
     }
 
+    if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
+        dmr_sm_begin_cc_acquisition(&rt->dmr_ctx, opts, state, trunk_scan_retune_freq(state, &rt->target),
+                                    tune_request_id);
+    }
+
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
         if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING && tune_request_id != 0U) {
             (void)p25_sm_await_pending_cc_tune(&rt->p25_ctx, opts, state, tune_request_id, "scan-retune");
@@ -2625,7 +2630,8 @@ trunk_scan_active_is_held(const dsd_opts* opts, const dsd_trunk_scan_coord* coor
                 || p25_sm_get_state(&rt->p25_ctx) == P25_SM_TUNED);
     }
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
-        return (opts->trunk_is_tuned == 1 || dmr_sm_get_state(&rt->dmr_ctx) == DMR_SM_TUNED);
+        return (rt->dmr_ctx.cc_tune_request_id != 0U || opts->trunk_is_tuned == 1
+                || dmr_sm_get_state(&rt->dmr_ctx) == DMR_SM_TUNED);
     }
     if (trunk_scan_type_is_nxdn_trunk(rt->target.type)) {
         return opts->trunk_is_tuned == 1;

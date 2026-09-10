@@ -96,8 +96,16 @@ trust 1 (`trunk_scan_share_peer_idens()`), and `dsd_engine_p25_bandplan_export()
 `dsd_key_set` (key-file or direct-key columns) that the switch installs through the scan key swap in
 `<dsd-neo/core/key_set.h>`, restoring the globals on unkeyed targets and at shutdown without touching the key epoch.
 
+Recovery ownership is checked at the P25 watchdog and engine frame-sync callback boundaries. Runtime trunk-scan
+hooks identify the parked protocol; P25's eligibility helper additionally preserves genuine standalone acquisition
+and voice contexts across sync loss. DMR owns its decoded CC heartbeat, two-second acquisition window, candidate
+probes and pending tune IDs inside each target's `dmr_sm_ctx_t`. Probe frequency is separate from the saved CC
+anchor. Target entry and accepted CC return restart acquisition, preventing a previous call or probe from holding
+or retuning a newly parked target. The coordinator's idle dwell remains independent of protocol recovery.
+
 Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
-`tests/engine/test_engine_synced_trunk_scan_tick.c` (`ENGINE_SYNCED_TRUNK_SCAN_TICK`).
+`tests/engine/test_engine_synced_trunk_scan_tick.c` (`ENGINE_SYNCED_TRUNK_SCAN_TICK`), and
+`tests/engine/test_engine_dmr_cc_recovery.c` (`ENGINE_DMR_CC_RECOVERY`, real protocol/coordinator with simulated tuning).
 
 ### Per-channel decoder modes
 

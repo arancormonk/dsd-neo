@@ -64,6 +64,11 @@ void dsd_trunk_scan_hooks_set(dsd_trunk_scan_hooks hooks);
 
 void* dsd_trunk_scan_hook_p25_ctx(void);
 void* dsd_trunk_scan_hook_dmr_ctx(void);
+/** Recovery ownership: a parked target overrides stale sync/frequency state.
+ * Call while holding the decoder/SM guard. Outside trunk scan, decoded protocol
+ * and the enabled decoder class determine eligibility. */
+int dsd_trunk_p25_recovery_allowed(const dsd_opts* opts, const dsd_state* state);
+int dsd_trunk_dmr_recovery_allowed(const dsd_opts* opts, const dsd_state* state);
 void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
 /**
  * @brief Report decoded conventional DMR/NXDN/P25 activity to the scan coordinator.

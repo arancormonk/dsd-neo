@@ -607,18 +607,7 @@ dmr_cspdu_pf0_handle_aloha(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits
     DSD_FPRINTF(stderr, "\n");
     dmr_decode_syscode(opts, state, cs_pdu_bits, csbk_fid, 0);
 
-    if (opts->use_rigctl == 1 && opts->trunk_is_tuned == 0) {
-        long int ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
-        if (ccfreq != 0) {
-            state->trunk_cc_freq = ccfreq;
-        }
-    }
-    if (opts->audio_in_type == AUDIO_IN_RTL && opts->trunk_is_tuned == 0) {
-        long int ccfreq = (long int)opts->rtlsdr_center_freq;
-        if (ccfreq != 0) {
-            state->trunk_cc_freq = ccfreq;
-        }
-    }
+    dmr_sm_note_cc_activity(opts, state, 0);
     if (opts->trunk_is_tuned == 0) {
         rotate_symbol_out_file(opts, state);
     }
@@ -1333,11 +1322,13 @@ dmr_cspdu_pf0_c_bcast_try_switch_tscc(dsd_opts* opts, dsd_state* state, long f1,
     if (next > 0 && next != cur) {
         const long previous_cc = state->trunk_cc_freq;
         state->trunk_cc_freq = next;
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state, NULL);
+        uint64_t request_id = 0U;
+        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state, &request_id);
         if (!dsd_trunk_tune_result_is_ok(tune_result)) {
             state->trunk_cc_freq = previous_cc;
             return;
         }
+        dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, next, request_id);
         DSD_FPRINTF(stderr, "\n Switched to announced TSCC: %.6lf MHz\n", (double)next / 1000000.0);
     }
 }
@@ -1740,12 +1731,12 @@ dmr_cspdu_cap_plus_3e_update_multiblock(dsd_state* state, const uint8_t cs_pdu_b
 }
 
 static void
-dmr_cspdu_cap_plus_3e_sync_rest(dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
+dmr_cspdu_cap_plus_3e_sync_rest(const dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
     if (ctx->rest_channel != state->dmr_rest_channel) {
         state->dmr_rest_channel = ctx->rest_channel;
     }
     if (state->trunk_chan_map[ctx->rest_channel] != 0) {
-        opts->trunk_is_tuned = 1;
+        dmr_sm_note_cc_activity(opts, state, state->trunk_chan_map[ctx->rest_channel]);
     }
 }
 
@@ -2047,19 +2038,19 @@ dmr_cspdu_cap_plus_3e_try_return_to_rest(dsd_opts* opts, dsd_state* state, const
 
     DSD_MEMSET(empty, 0, sizeof(empty));
     busy = memcmp(empty, ctx->t_tg, sizeof(empty));
-    if (busy || opts->trunk_enable != 1 || state->trunk_cc_freq == state->trunk_chan_map[ctx->rest_channel]) {
+    const long rest = state->trunk_chan_map[ctx->rest_channel];
+    if (busy || opts->trunk_enable != 1 || rest <= 0 || (opts->trunk_is_tuned == 0 && state->trunk_cc_freq == rest)) {
         return;
     }
-    if (state->trunk_chan_map[ctx->rest_channel] != 0) {
-        state->trunk_cc_freq = state->trunk_chan_map[ctx->rest_channel];
+    const long previous_cc = state->trunk_cc_freq;
+    state->trunk_cc_freq = rest;
+    uint64_t request_id = 0U;
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_return_to_cc(opts, state, &request_id);
+    if (!dsd_trunk_tune_result_is_ok(result)) {
+        state->trunk_cc_freq = previous_cc;
+        return;
     }
-
-    uint8_t dummy[12];
-    uint8_t* dbits = NULL;
-    DSD_MEMSET(dummy, 0, sizeof(dummy));
-    dummy[0] = 46;
-    dummy[1] = 253;
-    dmr_cspdu(opts, state, dbits, dummy, 1, 0);
+    dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, rest, request_id);
 }
 
 static void
@@ -2665,6 +2656,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
         //update time to prevent random 'Control Channel Signal Lost' hopping
         //in the middle of voice call on current Control Channel (con+ and t3)
         dsd_mark_cc_sync(state);
+        dmr_sm_note_cc_heartbeat(opts, state);
 
         dmr_cspdu_init_cc_anchor(opts, state);
 
@@ -2678,6 +2670,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
     // a last_cc_sync_time refresh to prevent premature CC hunts if configured.
     // This does not process the PDU further — it only keeps the CC timer warm.
     else if (opts->dmr_crc_relaxed_default) {
+        dmr_sm_note_cc_heartbeat(opts, state);
         state->last_cc_sync_time = time(NULL);
         state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
     }

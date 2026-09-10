@@ -1440,7 +1440,8 @@ no_carrier_is_cc_return_due(const dsd_opts* opts, const dsd_state* state, time_t
     if ((opts->trunk_enable != 1) || (opts->trunk_is_tuned != 1)) {
         return 0;
     }
-    if (p25_sm_vc_reacquire_hold_active(p25_sm_get_ctx(), opts, state, dsd_time_now_monotonic_s())) {
+    if (p25_sm_recovery_allowed(p25_sm_get_ctx(), opts, state)
+        && p25_sm_vc_reacquire_hold_active(p25_sm_get_ctx(), opts, state, dsd_time_now_monotonic_s())) {
         return 0;
     }
 
@@ -1857,8 +1858,48 @@ no_carrier_apply_p25_cc_symbolrate(dsd_opts* opts, dsd_state* state) {
     no_carrier_enable_p25_cc_slots(opts);
 }
 
+static int
+no_carrier_tick_dmr_owner(dsd_opts* opts, dsd_state* state) {
+    if (dsd_trunk_dmr_recovery_allowed(opts, state)) {
+        if (!p25_sm_tick_guard_try_enter()) {
+            return 1;
+        }
+        dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+        if (dmr_sm_get_state(ctx) == DMR_SM_TUNED || ctx->cc_tune_request_id != 0U) {
+            /* The DMR owner applies its grant/voice deadlines and tracks the
+             * accepted return; generic/P25 recovery must not race it. */
+            dmr_sm_tick_ctx(ctx, opts, state);
+            p25_sm_tick_guard_leave();
+            return 1;
+        }
+        p25_sm_tick_guard_leave();
+    }
+    return 0;
+}
+
+static void
+no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accepted_cc_return,
+                            int clear_failed_helper_state, int clear_unreturnable_voice_state) {
+    if (accepted_cc_return || clear_failed_helper_state || clear_unreturnable_voice_state) {
+        // An accepted return actually retuned to the control channel, so any call still open ended
+        // with that hop rather than with the fade that prompted it. The other two paths never
+        // changed frequency -- the helper failed, or there was no control channel to return to --
+        // so for them the carrier loss really is the end reason.
+        no_carrier_clear_voice_tune_state(opts, state,
+                                          accepted_cc_return ? DSD_CALL_END_EXPLICIT : DSD_CALL_END_SYNC_LOSS);
+        if (accepted_cc_return && dsd_trunk_dmr_recovery_allowed(opts, state)) {
+            dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, cc, dsd_trunk_tuning_pending_request());
+        }
+        (void)dsd_recent_activity_clear_all(state);
+        state->is_con_plus = 0;
+    }
+}
+
 static void
 no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state, time_t now) {
+    if (no_carrier_tick_dmr_owner(opts, state)) {
+        return;
+    }
     if (!no_carrier_is_cc_return_due(opts, state, now)) {
         return;
     }
@@ -1901,16 +1942,8 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
         clear_unreturnable_voice_state = 1;
     }
 
-    if (accepted_cc_return || clear_failed_helper_state || clear_unreturnable_voice_state) {
-        // An accepted return actually retuned to the control channel, so any call still open ended
-        // with that hop rather than with the fade that prompted it. The other two paths never
-        // changed frequency -- the helper failed, or there was no control channel to return to --
-        // so for them the carrier loss really is the end reason.
-        no_carrier_clear_voice_tune_state(opts, state,
-                                          accepted_cc_return ? DSD_CALL_END_EXPLICIT : DSD_CALL_END_SYNC_LOSS);
-        (void)dsd_recent_activity_clear_all(state);
-        state->is_con_plus = 0;
-    }
+    no_carrier_finish_cc_return(opts, state, cc, accepted_cc_return, clear_failed_helper_state,
+                                clear_unreturnable_voice_state);
 }
 
 static void
@@ -2584,6 +2617,12 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
     while (!dsd_exitflag_load()) {
         dsd_runtime_pump_controls(opts, state);
         p25_sm_try_tick(opts, state);
+        if (opts->trunk_scan_enabled != 1 && p25_sm_tick_guard_try_enter()) {
+            if (dsd_trunk_dmr_recovery_allowed(opts, state)) {
+                dmr_sm_tick_ctx(dmr_sm_get_ctx(), opts, state);
+            }
+            p25_sm_tick_guard_leave();
+        }
         dsd_trunk_scan_hook_tick(opts, state);
         dsd_scan_voice_gate_tick(opts, state, 0, dsd_time_now_monotonic_s());
         dsd_runtime_pump_controls(opts, state);

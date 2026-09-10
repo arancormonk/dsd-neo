@@ -4679,6 +4679,29 @@ target_link_libraries(
 add_test(NAME ENGINE_TRUNK_SCAN COMMAND dsd-neo_test_engine_trunk_scan)
 
 add_executable(
+    dsd-neo_test_engine_dmr_cc_recovery
+    engine/test_engine_dmr_cc_recovery.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
+    ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+)
+target_include_directories(
+    dsd-neo_test_engine_dmr_cc_recovery
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp ${PROJECT_SOURCE_DIR}/src/engine
+)
+target_compile_definitions(
+    dsd-neo_test_engine_dmr_cc_recovery
+    PRIVATE DSD_NEO_TEST_HOOKS DSD_TRUNK_SCAN_TEST_CLOCK=1
+)
+target_link_libraries(
+    dsd-neo_test_engine_dmr_cc_recovery
+    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME ENGINE_DMR_CC_RECOVERY
+    COMMAND dsd-neo_test_engine_dmr_cc_recovery
+)
+
+add_executable(
     dsd-neo_test_engine_scan_voice_gate
     engine/test_engine_scan_voice_gate.c
     ${PROJECT_SOURCE_DIR}/src/engine/scan_voice_gate.c

@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -93,6 +94,17 @@ typedef struct {
     double t_voice_m;   // Time of last voice activity
     double t_cc_sync_m; // Time of last CC sync
 
+    /* CC probes do not replace the confirmed/configured return destination.
+     * These fields live in each scan target's existing DMR context. */
+    long cc_freq_hz;
+    long cc_probe_freq_hz;
+    double cc_acquire_start_m;
+    double cc_retry_after_m;
+    uint64_t cc_tune_request_id;
+    int cc_acquiring;
+    int cc_confirmed;
+    int cc_hunt_index;
+
     // Configuration
     double hangtime_s;      // Hangtime after voice ends (default 2.0s)
     double grant_timeout_s; // Max wait for voice after grant (default 4.0s)
@@ -110,6 +122,16 @@ typedef struct {
  * @brief Initialize the DMR state machine context.
  */
 void dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state);
+
+/** Hand an accepted CC tune to the DMR owner. Clears outgoing voice/probe state;
+ * a nonzero request ID is resolved before starting the acquisition deadline. */
+void dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, long freq_hz,
+                                 uint64_t request_id);
+/** Accepted control/rest-channel evidence. Zero frequency queries the active
+ * tuner; a nonzero frequency must match the channel actually being received. */
+void dmr_sm_note_cc_activity(const dsd_opts* opts, dsd_state* state, long freq_hz);
+/** Retain an already confirmed CC only; never validate a probe from raw/relaxed evidence. */
+void dmr_sm_note_cc_heartbeat(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Process an event and update state machine.

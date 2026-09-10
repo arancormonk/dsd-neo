@@ -6108,6 +6108,30 @@ p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     }
 }
 
+static int
+p25_sm_retained_recovery_context(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+    /* A traffic grant can precede NET_STS (and its CC-format hint). Preserve
+     * that real P25 owner through noCarrier, without mistaking generic shared
+     * frequency/tuned flags for a P25 call. */
+    if (ctx->state == P25_SM_TUNED && opts->trunk_is_tuned == 1 && ctx->vc_freq_hz > 0) {
+        return state->p25_vc_freq[0] == ctx->vc_freq_hz || state->p25_vc_freq[1] == ctx->vc_freq_hz;
+    }
+    return ctx->state == P25_SM_ON_CC && (ctx->cc_sync_pending || ctx->cc_tune_pending);
+}
+
+int
+p25_sm_recovery_allowed(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+    if (dsd_trunk_p25_recovery_allowed(opts, state)) {
+        return 1;
+    }
+    if (!ctx || !opts || !state || opts->trunk_enable != 1 || opts->trunk_scan_enabled == 1
+        || (!opts->frame_p25p1 && !opts->frame_p25p2) || state->synctype != DSD_SYNC_NONE
+        || state->lastsynctype != DSD_SYNC_NONE || state->p25_cc_freq <= 0) {
+        return 0;
+    }
+    return p25_sm_retained_recovery_context(ctx, opts, state);
+}
+
 void
 p25_sm_tick_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
     if (!ctx) {

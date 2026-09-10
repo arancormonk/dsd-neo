@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 
@@ -16,16 +17,26 @@
 
 static void
 p25_sm_release_from_frame_sync(dsd_opts* opts, dsd_state* state) {
+    if (!p25_sm_recovery_allowed(p25_sm_get_ctx(), opts, state)) {
+        return;
+    }
+    state->p25_sm_force_release = 1;
     p25_sm_release(p25_sm_get_ctx(), opts, state, "frame-sync-no-sync");
 }
 
 static void
 p25_sm_vc_sync_from_frame_sync(dsd_opts* opts, const dsd_state* state) {
+    if (!p25_sm_recovery_allowed(p25_sm_get_ctx(), opts, state)) {
+        return;
+    }
     p25_sm_note_vc_frame_sync(p25_sm_get_ctx(), opts, state);
 }
 
 static void
 p25_sm_vc_no_sync_from_frame_sync(dsd_opts* opts, const dsd_state* state) {
+    if (!p25_sm_recovery_allowed(p25_sm_get_ctx(), opts, state)) {
+        return;
+    }
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     p25_sm_note_cc_no_sync_pass(ctx, opts, state);
     p25_sm_note_vc_no_sync_pass(ctx, opts, state);
