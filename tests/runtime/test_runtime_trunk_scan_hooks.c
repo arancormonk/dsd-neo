@@ -81,9 +81,6 @@ test_recovery_ownership(void) {
     assert(!dsd_trunk_dmr_recovery_allowed(&opts, &state));
     state.synctype = state.lastsynctype = DSD_SYNC_NONE;
     assert(dsd_trunk_p25_recovery_allowed(&opts, &state));
-    dsd_trunk_recovery_note_protocol(&state, DSD_TRUNK_RECOVERY_OTHER);
-    assert(!dsd_trunk_p25_recovery_allowed(&opts, &state));
-    assert(!dsd_trunk_dmr_recovery_allowed(&opts, &state));
     opts.trunk_scan_enabled = 1;
     assert(!dsd_trunk_p25_recovery_allowed(&opts, &state)); // No installed owner during startup/shutdown.
     opts.trunk_scan_enabled = 0;

@@ -1600,7 +1600,7 @@ typedef struct {
 } dmr_slco_data;
 
 static void
-dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
+dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state, int control_channel) {
     if (state->trunk_cc_freq == 0) {
         return;
     }
@@ -1614,7 +1614,13 @@ dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     dmr_reset_blocks(opts, state);
-    dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, state->trunk_cc_freq, request_id);
+    if (control_channel) {
+        dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, state->trunk_cc_freq, request_id);
+    } else {
+        /* XPT has no dedicated control channel. A free-channel hop must not
+         * start (or inherit) Tier III control-channel hunting. */
+        dmr_sm_init_ctx(dmr_sm_get_ctx(), opts, NULL);
+    }
 }
 
 static void
@@ -1770,7 +1776,7 @@ dmr_slco_handle_cap_plus(dsd_opts* opts, dsd_state* state, const dmr_slco_data* 
         if (state->trunk_chan_map[data->restchannel] != 0) {
             state->trunk_cc_freq = state->trunk_chan_map[data->restchannel];
         }
-        dmr_slco_tune_and_reset(opts, state);
+        dmr_slco_tune_and_reset(opts, state, 1);
     }
 }
 
@@ -1801,7 +1807,7 @@ dmr_slco_handle_xpt(dsd_opts* opts, dsd_state* state, const dmr_slco_data* data)
         if (state->trunk_chan_map[xpt_lsn] != 0) {
             state->trunk_cc_freq = state->trunk_chan_map[xpt_lsn];
         }
-        dmr_slco_tune_and_reset(opts, state);
+        dmr_slco_tune_and_reset(opts, state, 0);
     }
 }
 

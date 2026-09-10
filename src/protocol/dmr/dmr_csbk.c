@@ -2029,10 +2029,17 @@ dmr_cspdu_cap_plus_3e_dump_payload(const dsd_opts* opts, dsd_state* state, const
 
 static void
 dmr_cspdu_cap_plus_3e_try_return_to_rest(dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
-    const int busy = ctx->bank_one != 0 || ctx->bank_two != 0;
     const long rest = state->trunk_chan_map[ctx->rest_channel];
-    if (opts->trunk_enable != 1 || rest <= 0 || (busy && opts->trunk_is_tuned == 1)
-        || (opts->trunk_is_tuned == 0 && state->trunk_cc_freq == rest)) {
+    if (opts->trunk_enable != 1 || rest <= 0) {
+        return;
+    }
+    if (opts->trunk_is_tuned == 1) {
+        /* Save the announced return destination without cutting short voice
+         * hangtime when the other slot reports empty busy banks. */
+        state->trunk_cc_freq = rest;
+        return;
+    }
+    if (state->trunk_cc_freq == rest) {
         return;
     }
     /* Busy status can announce a new rest channel even when every advertised

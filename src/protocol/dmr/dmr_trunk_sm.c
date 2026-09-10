@@ -8,6 +8,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -25,6 +26,9 @@
 #include "dsd-neo/core/state_fwd.h"
 
 void dmr_reset_blocks(dsd_opts* opts, dsd_state* state);
+
+#define DMR_CC_PROBE_GRACE_S  2.0
+#define DMR_CC_TUNE_TIMEOUT_S 5.0
 
 /* ============================================================================
  * Internal Helpers
@@ -98,9 +102,16 @@ dmr_cc_resolve_pending(dmr_sm_ctx_t* ctx, const dsd_opts* opts, double now_m) {
         return 1;
     }
     double completed_m = 0.0;
-    const dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(ctx->cc_tune_request_id, &completed_m);
+    dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(ctx->cc_tune_request_id, &completed_m);
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        return 0;
+        if (now_m < ctx->cc_tune_deadline_m) {
+            return 0;
+        }
+        /* Keep frames gated until a replacement tune succeeds. Late completion
+         * cannot resurrect the expired request. */
+        dsd_trunk_tuning_request_publish(ctx->cc_tune_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+        result = dsd_trunk_tuning_request_status(ctx->cc_tune_request_id, &completed_m);
+        sm_recovery_log(opts, "cc-tune-timeout");
     }
     ctx->cc_tune_request_id = 0U;
     if (result == DSD_TRUNK_TUNE_RESULT_OK) {
@@ -127,6 +138,7 @@ dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_s
     ctx->cc_acquiring = 1;
     ctx->cc_acquire_start_m = dsd_time_now_monotonic_s();
     ctx->cc_tune_request_id = request_id;
+    ctx->cc_tune_deadline_m = ctx->cc_acquire_start_m + DMR_CC_TUNE_TIMEOUT_S;
     ctx->state = DMR_SM_ON_CC;
     if (request_id == 0U) {
         ctx->cc_rx_freq_hz = freq_hz;
@@ -202,18 +214,8 @@ dmr_cc_note_monitor_frequency(const dsd_opts* opts, dsd_state* state, long freq_
     }
 }
 
-void
-dmr_sm_note_cc_activity(const dsd_opts* opts, dsd_state* state, long freq_hz) {
-    if (opts && state && opts->trunk_enable != 1 && opts->trunk_is_tuned == 0) {
-        /* Preserve decoded CC attribution in monitor mode without starting a
-         * trunk state machine or giving it permission to retune. */
-        dmr_cc_note_monitor_frequency(opts, state, freq_hz);
-        return;
-    }
-    dmr_sm_ctx_t* ctx = dmr_cc_activity_context(opts, state);
-    if (!ctx) {
-        return;
-    }
+static void
+dmr_cc_note_activity_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, long freq_hz) {
     const long current = dmr_cc_current_frequency(opts, ctx);
     if (current <= 0 || (freq_hz > 0 && freq_hz != current)
         || (ctx->cc_acquiring && current != ctx->cc_probe_freq_hz)) {
@@ -238,6 +240,21 @@ dmr_sm_note_cc_activity(const dsd_opts* opts, dsd_state* state, long freq_hz) {
     set_state(ctx, opts, DMR_SM_ON_CC, "decoded-cc");
 }
 
+void
+dmr_sm_note_cc_activity(const dsd_opts* opts, dsd_state* state, long freq_hz) {
+    if (opts && state && opts->trunk_enable != 1 && opts->trunk_is_tuned == 0) {
+        /* Preserve decoded CC attribution in monitor mode without starting a
+         * trunk state machine or giving it permission to retune. */
+        dmr_cc_note_monitor_frequency(opts, state, freq_hz);
+        return;
+    }
+    dmr_sm_ctx_t* ctx = dmr_cc_activity_context(opts, state);
+    if (!ctx) {
+        return;
+    }
+    dmr_cc_note_activity_ctx(ctx, opts, state, freq_hz);
+}
+
 static void
 dmr_cc_note_heartbeat_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
     if (!ctx || !opts || !state || opts->trunk_is_tuned == 1 || !ctx->cc_confirmed || ctx->cc_acquiring
@@ -258,37 +275,64 @@ dmr_sm_note_cc_heartbeat(const dsd_opts* opts, const dsd_state* state) {
     dmr_cc_note_heartbeat_ctx(ctx, opts, state);
 }
 
+static int
+dmr_cc_map_has_frequency(const dsd_state* state, long freq) {
+    for (int i = 0; i < state->lcn_freq_count; ++i) {
+        if (*dsd_state_trunk_lcn_slot_const(state, i) == freq && !dsd_state_trunk_lcn_avoid_get(state, (size_t)i)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static long
+dmr_cc_next_mapped_candidate(dmr_sm_ctx_t* ctx, const dsd_state* state) {
+    for (int tries = 0; tries < state->lcn_freq_count; ++tries) {
+        if (ctx->cc_hunt_index >= state->lcn_freq_count || ctx->cc_hunt_index < 0) {
+            ctx->cc_hunt_index = 0;
+        }
+        const int index = ctx->cc_hunt_index++;
+        const long freq = *dsd_state_trunk_lcn_slot_const(state, index);
+        if (freq <= 0 || dsd_state_trunk_lcn_avoid_get(state, (size_t)index) || freq == ctx->cc_probe_freq_hz) {
+            continue;
+        }
+        /* Adjacent LSNs often name the same RF channel. */
+        while (ctx->cc_hunt_index < state->lcn_freq_count
+               && *dsd_state_trunk_lcn_slot_const(state, ctx->cc_hunt_index) == freq) {
+            ++ctx->cc_hunt_index;
+        }
+        return freq;
+    }
+    return 0; // No eligible alternative: keep listening without a retune.
+}
+
 static long
 dmr_cc_next_candidate(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
+    const long anchor = ctx->cc_freq_hz > 0 ? ctx->cc_freq_hz : state->trunk_cc_freq;
     const char* scan_map = dsd_trunk_scan_hook_active_chan_csv(state);
     const int user_list = opts->chan_in_file[0] != '\0' || (scan_map && scan_map[0] != '\0');
     if (user_list && state->lcn_freq_count > 0) {
-        for (int tries = 0; tries < state->lcn_freq_count; ++tries) {
-            if (ctx->cc_hunt_index >= state->lcn_freq_count || ctx->cc_hunt_index < 0) {
-                ctx->cc_hunt_index = 0;
-            }
-            const long freq = *dsd_state_trunk_lcn_slot_const(state, ctx->cc_hunt_index++);
-            if (freq > 0 && (freq != ctx->cc_probe_freq_hz || state->lcn_freq_count == 1)) {
-                return freq;
-            }
+        /* Revisit the anchor between alternate probes so a recovered marginal
+         * CC does not wait for the whole map. Respect session avoids here too. */
+        if (ctx->cc_probe_freq_hz != anchor && anchor > 0 && dmr_cc_map_has_frequency(state, anchor)) {
+            return anchor;
         }
-    } else {
-        if (ctx->cc_probe_freq_hz != ctx->cc_freq_hz && ctx->cc_freq_hz > 0) {
-            return ctx->cc_freq_hz;
-        }
-        long candidate = 0;
-        if (dsd_trunk_cc_candidates_next(state, dsd_time_now_monotonic_s(), DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE,
-                                         &candidate)) {
-            return candidate;
-        }
+        return dmr_cc_next_mapped_candidate(ctx, state);
     }
-    return ctx->cc_freq_hz > 0 ? ctx->cc_freq_hz : state->trunk_cc_freq;
+    if (ctx->cc_probe_freq_hz != anchor && anchor > 0) {
+        return anchor;
+    }
+    long candidate = 0;
+    if (dsd_trunk_cc_candidates_next(state, dsd_time_now_monotonic_s(), DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE,
+                                     &candidate)) {
+        return candidate;
+    }
+    return anchor;
 }
 
 static void
 dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
-    if (!opts || !state || opts->trunk_enable != 1 || opts->trunk_is_tuned == 1 || ctx->cc_retry_after_m > now_m
-        || (opts->trunk_scan_enabled && !dsd_trunk_scan_hook_dmr_ctx())) {
+    if (!dsd_trunk_dmr_recovery_allowed(opts, state) || opts->trunk_is_tuned == 1 || ctx->cc_retry_after_m > now_m) {
         return;
     }
     ctx->cc_retry_after_m = now_m + 2.0;
@@ -300,6 +344,7 @@ dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
         /* No alternate candidate: keep listening without resetting demodulation
          * every acquisition window. Only decoded control evidence confirms it. */
         ctx->cc_probe_freq_hz = freq;
+        ctx->cc_acquiring = 1;
         ctx->cc_acquire_start_m = now_m;
         set_state(ctx, opts, DMR_SM_ON_CC, "cc-listen");
         return;
@@ -318,17 +363,36 @@ dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     ctx->cc_acquiring = 1;
     ctx->cc_acquire_start_m = dsd_time_now_monotonic_s();
     ctx->cc_tune_request_id = request_id;
+    ctx->cc_tune_deadline_m = ctx->cc_acquire_start_m + DMR_CC_TUNE_TIMEOUT_S;
     set_state(ctx, opts, DMR_SM_ON_CC, "cc-probe");
     (void)dmr_cc_resolve_pending(ctx, opts, ctx->cc_acquire_start_m);
     if (sm_status_log_enabled(opts)) {
         DSD_FPRINTF(stderr, "\n[DMR SM] CC probe %.6lf MHz; acquisition %.2f s\n", (double)freq / 1000000.0,
-                    ctx->cc_grace_s);
+                    DMR_CC_PROBE_GRACE_S);
     }
 }
 
 /* ============================================================================
  * Release to CC
  * ============================================================================ */
+
+static void
+dmr_sm_release_without_cc(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+    if (state) {
+        const double ended_m = dsd_time_now_monotonic_s();
+        for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; ++slot) {
+            if (dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_EXPLICIT) > 0) {
+                dsd_event_sync_slot(opts, state, (uint8_t)slot);
+            }
+        }
+        state->is_con_plus = 0;
+        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+        dmr_reset_blocks(opts, state);
+    }
+    ctx->cc_acquiring = 0;
+    ctx->cc_confirmed = 0;
+    ctx->cc_tune_request_id = 0U;
+}
 
 static void
 do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
@@ -344,8 +408,8 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
 
     sm_log(opts, reason);
 
-    const long cc = state ? (state->trunk_cc_freq > 0 ? state->trunk_cc_freq : state->p25_cc_freq) : 0;
-    dsd_trunk_tune_result tune_result = dmr_sm_return_to_cc(ctx, opts, state, cc);
+    const long cc = state && state->trunk_cc_freq > 0 ? state->trunk_cc_freq : ctx->cc_freq_hz;
+    dsd_trunk_tune_result tune_result = cc > 0 ? dmr_sm_return_to_cc(ctx, opts, state, cc) : DSD_TRUNK_TUNE_RESULT_OK;
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         sm_log(opts, "release-tune-deferred");
         if (state && had_force_release) {
@@ -381,7 +445,10 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
         state->p25_sm_release_count++;
     }
 
-    set_state(ctx, opts, DMR_SM_ON_CC, reason);
+    if (cc <= 0) {
+        dmr_sm_release_without_cc(ctx, opts, state);
+    }
+    set_state(ctx, opts, cc > 0 ? DMR_SM_ON_CC : DMR_SM_HUNTING, reason);
 }
 
 static int
@@ -426,6 +493,11 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
         return;
     }
 
+    /* A validated grant on a completed probe proves where to return, even
+     * before the next ALOHA/system-parameters message arrives. */
+    if (ctx->cc_acquiring && opts->trunk_is_tuned == 0 && dsd_trunk_tuning_frame_is_current(ctx->cc_rx_generation)) {
+        dmr_cc_note_activity_ctx(ctx, opts, state, ctx->cc_probe_freq_hz);
+    }
     double now_m = dsd_time_now_monotonic_s();
 
     dsd_trunk_tune_result tune_result =
@@ -667,7 +739,7 @@ dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state)
 
     ctx->hangtime_s = 2.0;
     ctx->grant_timeout_s = 4.0;
-    ctx->cc_grace_s = 2.0;
+    ctx->cc_grace_s = 6.0;
 
     // Honor user hangtime setting, including zero for immediate release
     if (opts && opts->trunk_hangtime >= 0.0) {
@@ -715,7 +787,7 @@ dmr_sm_event(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
 
 void
 dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
-    if (!ctx) {
+    if (!ctx || !dsd_trunk_dmr_recovery_allowed(opts, state)) {
         return;
     }
 
@@ -726,7 +798,7 @@ dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
     double now_m = dsd_time_now_monotonic_s();
     double hangtime = ctx->hangtime_s;
     double grant_timeout = ctx->grant_timeout_s;
-    double cc_grace = ctx->cc_grace_s;
+    double cc_grace = ctx->cc_acquiring ? DMR_CC_PROBE_GRACE_S : ctx->cc_grace_s;
     if (!dmr_cc_resolve_pending(ctx, opts, now_m)) {
         return;
     }

@@ -145,27 +145,32 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
 - `-t <seconds>` is voice/sync-loss hangtime, not the interval between trunk-scan targets. Zero does not
   bypass target dwell or control-channel acquisition. After a followed trunked call releases, a fresh idle
   dwell starts; repeated calls can keep a busy system parked.
-- DMR control/rest-channel acquisition and loss detection use a separate two-second window. An accepted
-  asynchronous tune starts that window when the backend completes. During a hunt, an explicit channel map
-  is tried in file order, skipping zero frequencies and entries matching the current probe (nonadjacent
-  duplicates can be revisited). Without a map, the known control channel and learned current-site candidates
-  are retried. If the only candidate is the frequency already received, acquisition keeps listening without
-  resetting demodulation. A pending backend probe holds the target past dwell; completion starts a fresh idle
-  dwell. The decoded-acquisition wait counts toward that dwell, so a short dwell may rotate away before every
-  candidate can be tried. Target hold allows recovery to continue on that system.
+- DMR allows six seconds without decoded control on a confirmed channel before hunting. Each probe gets
+  two seconds to acquire control after the backend completes its tune. An explicit channel map is tried in
+  file order, skipping zero frequencies, avoided rows, the current probe and adjacent duplicate frequencies.
+  The known control channel is revisited between alternate probes, limiting time away during a CRC fade.
+  Without a map, the known control channel and learned current-site candidates are retried. With no eligible
+  alternative, the receiver keeps listening without resetting demodulation. A pending backend probe holds
+  the target past dwell for at most five seconds; completion or timeout starts a fresh idle dwell. Timed-out
+  requests cannot accept late completion, and frames remain gated until a replacement tune succeeds.
+  The decoded-acquisition wait counts toward dwell, so a short dwell may rotate away before every candidate
+  can be tried. Target hold allows recovery to continue on that system.
 - A DMR probe does not replace the saved control frequency until accepted control signalling confirms it.
+  A validated grant received on a completed probe also establishes the return channel before following it.
   Valid TIII ALOHA/control-system short LC, Connect Plus control short LC, and mapped Capacity Plus rest status
   maintain their respective control/rest channels. Relaxed CRC heartbeats can retain an established channel,
   but cannot confirm a new probe. Heartbeats use completed tuner attribution without querying rigctl for each
   CSBK. An unresolved CC tune blocks grants and heartbeats until its matching request completes. A decoded
   move announcement can select the next control/rest channel.
   A busy Capacity Plus rest announcement is followed when no call owns the tuner, including when advertised
-  calls are blocked by policy. A followed call retains the tuner while the system is busy.
+  calls are blocked by policy. A followed call retains the tuner through its hangtime even when a status
+  announces no busy channels; its eventual return uses the announced rest channel.
+  XPT free-channel hops do not start dedicated control-channel acquisition.
   DMR state-machine logs at verbosity 1 or higher identify `cc-lost`, `cc-probe`, `cc-listen`, `decoded-cc`,
   and failed tunes. `decoded-cc` is logged on acquisition even when the SM was already in its CC state.
 - Standalone `-T` auto decoding also retains the validated P25 or DMR recovery owner through loss of sync.
-  A stray sync from another protocol cannot take ownership; validated signalling can. Explicit decoder modes
-  and trunk-scan target selection still constrain which protocol may recover.
+  Unrelated decodes and stray syncs cannot take ownership; validated P25/DMR control or grants can. Explicit
+  decoder modes and trunk-scan target selection still constrain which protocol may recover.
 - `--scan-voice-only`: conventional targets hold only from decoded voice media (headers and data no longer hold),
   with the per-target `dwell_ms` as the qualify window in which voice must appear and `activity_hold_ms` as the
   hold after the last voice frame, including when a terminator closes the call before the next scan tick; trunked

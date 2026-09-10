@@ -205,9 +205,8 @@ run_dispatch_case_verdict(int synctype, int expected_handler, dsd_frame_verdict 
      * either way a verdict left over from the previous frame must not survive. */
     assert(state->sps_hunt_last_frame_verdict
            == (expected_handler == TEST_HANDLER_NONE ? DSD_FRAME_VERDICT_PRODUCTIVE : (int)verdict));
-    const int validated_other = (DSD_SYNC_IS_NXDN(synctype) || DSD_SYNC_IS_EDACS(synctype))
-                                && verdict == DSD_FRAME_VERDICT_PRODUCTIVE && !g_retune_during_handler;
-    assert(state->trunk_recovery_protocol == (validated_other ? DSD_TRUNK_RECOVERY_OTHER : DSD_TRUNK_RECOVERY_P25));
+    /* Productivity (including sticky NXDN call confirmation) is not recovery ownership. */
+    assert(state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25);
     g_handler_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
     free(state);
     free(opts);

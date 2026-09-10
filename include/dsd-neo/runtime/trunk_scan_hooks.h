@@ -69,11 +69,11 @@ typedef enum {
     DSD_TRUNK_RECOVERY_UNKNOWN = 0,
     DSD_TRUNK_RECOVERY_P25,
     DSD_TRUNK_RECOVERY_DMR,
-    DSD_TRUNK_RECOVERY_OTHER,
 } dsd_trunk_recovery_protocol;
 
-/** Publish validated protocol evidence under the decoder/SM guard (or while stopped). Raw sync
- * detection and no-carrier resets must not change this retained owner. */
+/** Publish validated protocol evidence under the decoder/SM guard (or while stopped).
+ * Only P25/DMR control or grant evidence transfers ownership. Other protocol decodes,
+ * raw sync detection and no-carrier resets must not change this retained owner. */
 void dsd_trunk_recovery_note_protocol(dsd_state* state, dsd_trunk_recovery_protocol protocol);
 
 /** Recovery ownership: a parked target overrides retained standalone ownership.

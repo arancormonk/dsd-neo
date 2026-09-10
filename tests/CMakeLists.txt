@@ -6514,7 +6514,9 @@ add_test(NAME M17_CONFIRM COMMAND dsd-neo_test_m17_confirm)
 add_executable(
     dsd-neo_test_dmr_t3_sm_clamp
     protocol/dmr/test_dmr_t3_sm_clamp.c
+    test_support/scan_group_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
 target_include_directories(
     dsd-neo_test_dmr_t3_sm_clamp
@@ -6532,7 +6534,9 @@ add_test(NAME DMR_T3_SM_CLAMP COMMAND dsd-neo_test_dmr_t3_sm_clamp)
 add_executable(
     dsd-neo_test_dmr_t3_sm_release
     protocol/dmr/test_dmr_t3_sm_release.c
+    test_support/scan_group_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
 target_include_directories(
     dsd-neo_test_dmr_t3_sm_release
@@ -6550,7 +6554,9 @@ add_test(NAME DMR_T3_SM_RELEASE COMMAND dsd-neo_test_dmr_t3_sm_release)
 add_executable(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
     protocol/dmr/test_dmr_t3_sm_return_to_cc_matrix.c
+    test_support/scan_group_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
 target_include_directories(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
@@ -6572,7 +6578,9 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_t3_shim
     protocol/dmr/test_dmr_t3_shim.c
+    test_support/scan_group_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
 target_include_directories(
     dsd-neo_test_dmr_t3_shim

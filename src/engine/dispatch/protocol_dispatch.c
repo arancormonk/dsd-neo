@@ -4,13 +4,9 @@
  */
 
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
-#include <dsd-neo/runtime/trunk_scan_hooks.h>
-#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
-#include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -48,16 +44,7 @@ processFrame(dsd_opts* opts, dsd_state* state) {
 
     const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
     if (handler != NULL && handler->handle_frame != NULL) {
-        const int sync = state->synctype;
-        const uint64_t generation = dsd_trunk_tuning_generation();
         state->sps_hunt_last_frame_verdict = (int)handler->handle_frame(opts, state);
-        /* These handlers report success only after payload validation. DMR and
-         * P25 publish ownership at their validated control/grant boundaries. */
-        if ((DSD_SYNC_IS_NXDN(sync) || DSD_SYNC_IS_EDACS(sync))
-            && state->sps_hunt_last_frame_verdict == DSD_FRAME_VERDICT_PRODUCTIVE
-            && dsd_trunk_tuning_frame_is_current(generation)) {
-            dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_OTHER);
-        }
     }
 }
 

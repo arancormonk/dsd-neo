@@ -2801,6 +2801,11 @@ static void
 trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
     double now_m = trunk_scan_now_m();
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (rt->tune_pending && rt->dmr_ctx.cc_tune_request_id != 0U) {
+        /* Resolve the DMR backend deadline even while the initial park keeps
+         * the coordinator waiting for its request. */
+        trunk_scan_tick_active_target_sm(opts, state, rt);
+    }
     int pending_status = trunk_scan_resolve_pending_retune(state, rt, now_m);
     if (pending_status == 0) {
         return;

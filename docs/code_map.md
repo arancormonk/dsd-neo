@@ -96,13 +96,14 @@ trust 1 (`trunk_scan_share_peer_idens()`), and `dsd_engine_p25_bandplan_export()
 `dsd_key_set` (key-file or direct-key columns) that the switch installs through the scan key swap in
 `<dsd-neo/core/key_set.h>`, restoring the globals on unkeyed targets and at shutdown without touching the key epoch.
 
-Recovery ownership is checked at the P25 watchdog and engine frame-sync callback boundaries. Runtime trunk-scan
+Recovery ownership is checked at the P25 watchdog, DMR tick and engine frame-sync callback boundaries. Runtime trunk-scan
 hooks identify the parked protocol. Outside trunk scan, validated control/grant evidence retains a protocol owner
-across sync loss; raw sync cannot evict it. Ownership writes and watchdog reads share the decoder/SM guard, so the
+across sync loss; unrelated protocol decodes and raw sync cannot evict it. Ownership writes and watchdog reads share the decoder/SM guard, so the
 watchdog predicate does not read the sync or CC-format hints modified by frame acquisition. DMR owns its decoded
-CC heartbeat, two-second acquisition window, candidate probes and pending tune IDs inside each target's `dmr_sm_ctx_t`. Probe frequency is separate from the saved CC
-anchor. Target entry and accepted CC return restart acquisition, preventing a previous call or probe from holding
-or retuning a newly parked target. Pending backend probes hold the target and disarm idle dwell; completion starts
+CC heartbeat, six-second loss grace, two-second probe window and five-second backend deadline inside each
+target's `dmr_sm_ctx_t`. Probes honor avoids and revisit the saved CC anchor between alternate frequencies.
+Probe frequency is separate from the saved anchor until control or grant evidence confirms it. Target entry and accepted CC return restart acquisition, preventing a previous call or probe from holding
+or retuning a newly parked target. Pending backend probes hold the target and disarm idle dwell; completion or timeout starts
 a fresh dwell. The subsequent decoded-acquisition wait counts toward dwell. DMR heartbeats use the completed
 tuning generation and frequency, avoiding blocking rigctl queries in the CSBK path.
 

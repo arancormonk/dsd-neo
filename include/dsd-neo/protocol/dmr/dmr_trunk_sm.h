@@ -103,6 +103,7 @@ typedef struct {
     uint64_t cc_rx_generation;
     double cc_acquire_start_m;
     double cc_retry_after_m;
+    double cc_tune_deadline_m;
     uint64_t cc_tune_request_id;
     int cc_acquiring;
     int cc_confirmed;
@@ -111,7 +112,7 @@ typedef struct {
     // Configuration
     double hangtime_s;      // Hangtime after voice ends (default 2.0s)
     double grant_timeout_s; // Max wait for voice after grant (default 4.0s)
-    double cc_grace_s;      // Wait before CC hunting (default 2.0s)
+    double cc_grace_s;      // Confirmed CC loss grace (default 6.0s; probes get 2.0s)
 
     // Initialized flag
     int initialized;

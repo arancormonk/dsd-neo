@@ -201,6 +201,7 @@ dmr_setup_fixture(const dmr_grant_case* grant) {
     DSD_MEMSET(&g_ctx, 0, sizeof(g_ctx));
 
     g_opts.trunk_enable = 1;
+    g_opts.frame_dmr = 1;
     g_opts.trunk_hangtime = 0.1f;
     g_opts.trunk_tune_data_calls = 1;
     g_state.trunk_cc_freq = 851012500L;
@@ -697,6 +698,7 @@ dmr_run_rejected_grant_contracts(void) {
                      "disabled trunking stayed on control channel");
 
     g_opts.trunk_enable = 1;
+    g_opts.frame_dmr = 1;
     g_state.trunk_cc_freq = 0;
     ev = dmr_sm_ev_group_grant(grant.freq_hz, 0, 1202, 7202);
     dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
@@ -762,6 +764,7 @@ dmr_run_global_emit_and_scan_hook_case(void) {
     dmr_setup_blank_fixture();
     dmr_install_hooks();
     g_opts.trunk_enable = 1;
+    g_opts.frame_dmr = 1;
     g_opts.trunk_tune_data_calls = 1;
     g_state.trunk_cc_freq = 851012500L;
     dmr_sm_init_ctx(&g_ctx, &g_opts, &g_state);
