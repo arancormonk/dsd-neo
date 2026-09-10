@@ -148,6 +148,14 @@ function fmtMhz(hz) {
     return mhzText(hz) + " MHz"
 }
 
+// Site calculations stay in kilometers; convert only the displayed distance.
+function fmtDistanceKm(km, metricUnits) {
+    if (typeof km !== "number" || !isFinite(km) || km < 0)
+        return ""
+    return metricUnits ? qsTr("%1 km").arg(km.toFixed(1))
+                       : qsTr("%1 mi").arg((km / 1.609344).toFixed(1))
+}
+
 // The catalog entry a chip flag names, or null. One lookup for every question
 // asked of the catalog, so a flag that has to be matched some other way — the
 // importer's composite forms are already the reason LEGACY_DECODE_LABELS exists

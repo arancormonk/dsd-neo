@@ -405,6 +405,29 @@ test_app_prefs(void) {
 }
 
 void
+test_units_preference() {
+    {
+        AppPrefs prefs;
+        expect("units default to imperial", !prefs.metricUnits());
+        int changes = 0;
+        QObject::connect(&prefs, &AppPrefs::metricUnitsChanged, &prefs, [&changes]() { ++changes; });
+        prefs.setMetricUnits(false);
+        expect("unchanged units do not notify", changes == 0);
+        prefs.setMetricUnits(true);
+        expect("metric selection updates and notifies", prefs.metricUnits() && changes == 1);
+        prefs.setMetricUnits(true);
+        expect("repeated metric selection does not notify", changes == 1);
+    }
+    {
+        AppPrefs reloaded;
+        expect("metric units persist across instances", reloaded.metricUnits());
+        reloaded.setMetricUnits(false);
+    }
+    AppPrefs restored;
+    expect("switching back to imperial persists", !restored.metricUnits());
+}
+
+void
 test_migration_write_failure() {
     const QString store = QStringLiteral("saved_systems.json");
     expect("legacy fixture saved", json_store_save_array(store, QJsonArray{QJsonObject{{"name", "legacy"}}}));
@@ -635,6 +658,7 @@ main(int argc, char** argv) {
     test_saved_systems();
     test_saved_systems_csv_fields();
     test_app_prefs();
+    test_units_preference();
     test_migration_write_failure();
     test_foundation_persistence();
     // WP-S2: opting out preserves the last successful target, including scan lists.

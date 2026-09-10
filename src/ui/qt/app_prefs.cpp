@@ -17,6 +17,7 @@ namespace {
 // Keys are flat and stable: renaming one silently resets that preference for
 // every existing install, so treat them as a persistence format.
 constexpr const char kAppearance[] = "ui/appearance";
+constexpr const char kMetricUnits[] = "ui/metricUnits";
 constexpr const char kOnboardingDone[] = "ui/onboardingDone";
 constexpr const char kBackgroundListening[] = "listen/background";
 constexpr const char kKeepScreenAwake[] = "listen/keepAwake";
@@ -139,6 +140,20 @@ AppPrefs::setAppearance(int mode) {
     }
     m_settings.setValue(QLatin1String(kAppearance), next);
     Q_EMIT appearanceChanged();
+}
+
+bool
+AppPrefs::metricUnits() const {
+    return m_settings.value(QLatin1String(kMetricUnits), false).toBool();
+}
+
+void
+AppPrefs::setMetricUnits(bool on) {
+    if (on == metricUnits()) {
+        return;
+    }
+    m_settings.setValue(QLatin1String(kMetricUnits), on);
+    Q_EMIT metricUnitsChanged();
 }
 
 bool

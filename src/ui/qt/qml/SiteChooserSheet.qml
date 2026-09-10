@@ -2,6 +2,7 @@
 import QtQuick
 import QtQuick.Controls
 import DsdNeo 1.0
+import "Util.js" as Util
 
 ModalSheet {
     id: sheet
@@ -142,9 +143,11 @@ ModalSheet {
             width: parent.width
             property var site: (sheet.revision, savedSystems.get(modelData))
             property real distance: (sheet.revision, prefs.lastFixAt > 0 ? savedSystems.distanceKm(modelData, prefs.lastLat, prefs.lastLon) : -1)
+            readonly property string distanceText: Util.fmtDistanceKm(distance, prefs.metricUnits)
             OutlineButton {
+                objectName: "siteChoice" + siteRow.modelData
                 width: parent.width
-                text: (siteRow.site.siteName || siteRow.site.name) + (siteRow.distance >= 0 ? " · " + siteRow.distance.toFixed(1) + " km" : "")
+                text: (siteRow.site.siteName || siteRow.site.name) + (siteRow.distanceText.length > 0 ? " · " + siteRow.distanceText : "")
                 enabled: sheet.sessionState === 0 && !siteRow.site.avoidSite
                 onClicked: sheet.choose(siteRow.modelData)
             }

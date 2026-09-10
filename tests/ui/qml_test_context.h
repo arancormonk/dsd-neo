@@ -1555,6 +1555,7 @@ class Setup : public QObject {
          * scheme; the token set is the only thing that reads it. */
         QVariantMap prefs;
         prefs[QStringLiteral("appearance")] = 2;
+        prefs[QStringLiteral("metricUnits")] = false;
         prefs[QStringLiteral("onboardingDone")] = true;
         prefs[QStringLiteral("backgroundListening")] = false;
         prefs[QStringLiteral("notificationExplained")] = true;

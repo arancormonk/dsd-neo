@@ -34,6 +34,7 @@ class AppPrefs : public QObject {
     Q_PROPERTY(qint64 lastFixAt READ lastFixAt NOTIFY locationChanged)
 
     Q_PROPERTY(int appearance READ appearance WRITE setAppearance NOTIFY appearanceChanged)
+    Q_PROPERTY(bool metricUnits READ metricUnits WRITE setMetricUnits NOTIFY metricUnitsChanged)
     Q_PROPERTY(bool onboardingDone READ onboardingDone WRITE setOnboardingDone NOTIFY onboardingDoneChanged)
     Q_PROPERTY(bool notificationExplained READ notificationExplained WRITE setNotificationExplained NOTIFY
                    notificationExplainedChanged)
@@ -88,6 +89,10 @@ class AppPrefs : public QObject {
 
     int appearance() const;
     void setAppearance(int mode);
+
+    /** @brief Display metric units when enabled; imperial is the default. */
+    bool metricUnits() const;
+    void setMetricUnits(bool on);
 
     bool onboardingDone() const;
     void setOnboardingDone(bool done);
@@ -155,6 +160,7 @@ class AppPrefs : public QObject {
     void locationChanged();
 
     void appearanceChanged();
+    void metricUnitsChanged();
     void onboardingDoneChanged();
     void notificationExplainedChanged();
     void backgroundListeningChanged();
