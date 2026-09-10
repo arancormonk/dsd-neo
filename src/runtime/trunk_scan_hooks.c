@@ -5,7 +5,6 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -14,9 +13,11 @@
 
 static dsd_trunk_scan_hooks g_trunk_scan_hooks = {0};
 
-static int
-trunk_sync_is_non_p25(int sync) {
-    return DSD_SYNC_IS_DMR(sync) || DSD_SYNC_IS_NXDN(sync) || DSD_SYNC_IS_EDACS(sync) || DSD_SYNC_IS_X2TDMA(sync);
+void
+dsd_trunk_recovery_note_protocol(dsd_state* state, dsd_trunk_recovery_protocol protocol) {
+    if (state) {
+        state->trunk_recovery_protocol = (int)protocol;
+    }
 }
 
 int
@@ -30,15 +31,9 @@ dsd_trunk_p25_recovery_allowed(const dsd_opts* opts, const dsd_state* state) {
     if (!opts->frame_p25p1 && !opts->frame_p25p2) {
         return 0;
     }
-    const int sync = state->synctype != DSD_SYNC_NONE ? state->synctype : state->lastsynctype;
-    if (trunk_sync_is_non_p25(sync)) {
-        return 0;
-    }
-    /* Generic trunk return hints can outlive their protocol. A known P25
-     * channel format, or an explicitly P25-only trunk decoder, can bridge sync
-     * loss; the shared frequency cache alone cannot do that in AUTO. */
-    const int known_p25_cc = state->p25_cc_is_tdma == 0 || state->p25_cc_is_tdma == 1;
-    return DSD_SYNC_IS_P25(sync) || (state->p25_cc_freq > 0 && (known_p25_cc || !opts->frame_dmr));
+    return state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25
+           || (state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_UNKNOWN && !opts->frame_dmr && !opts->frame_nxdn48
+               && !opts->frame_nxdn96 && !opts->frame_provoice);
 }
 
 int
@@ -52,11 +47,9 @@ dsd_trunk_dmr_recovery_allowed(const dsd_opts* opts, const dsd_state* state) {
     if (!opts->frame_dmr) {
         return 0;
     }
-    const int sync = state->synctype != DSD_SYNC_NONE ? state->synctype : state->lastsynctype;
-    if (sync != DSD_SYNC_NONE) {
-        return DSD_SYNC_IS_DMR(sync);
-    }
-    return !opts->frame_p25p1 && !opts->frame_p25p2 && state->rf_mod == 2 && state->trunk_cc_freq > 0;
+    return state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_DMR
+           || (state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_UNKNOWN && !opts->frame_p25p1 && !opts->frame_p25p2
+               && !opts->frame_nxdn48 && !opts->frame_nxdn96 && !opts->frame_provoice);
 }
 
 void

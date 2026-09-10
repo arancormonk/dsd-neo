@@ -42,6 +42,13 @@ sm_status_log_enabled(const dsd_opts* opts) {
     return opts && opts->trunk_enable == 1 && opts->verbose > 0;
 }
 
+static void
+sm_recovery_log(const dsd_opts* opts, const char* tag) {
+    if (sm_status_log_enabled(opts)) {
+        DSD_FPRINTF(stderr, "\n[DMR SM] %s\n", tag);
+    }
+}
+
 static long
 resolve_freq(const dsd_state* state, long freq_hz, int lpcn) {
     if (freq_hz > 0) {
@@ -98,6 +105,8 @@ dmr_cc_resolve_pending(dmr_sm_ctx_t* ctx, const dsd_opts* opts, double now_m) {
     ctx->cc_tune_request_id = 0U;
     if (result == DSD_TRUNK_TUNE_RESULT_OK) {
         ctx->cc_acquire_start_m = completed_m > 0.0 ? completed_m : now_m;
+        ctx->cc_rx_freq_hz = ctx->cc_probe_freq_hz;
+        ctx->cc_rx_generation = dsd_trunk_tuning_generation();
         return 1;
     }
     ctx->cc_acquiring = 0;
@@ -119,11 +128,43 @@ dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_s
     ctx->cc_acquire_start_m = dsd_time_now_monotonic_s();
     ctx->cc_tune_request_id = request_id;
     ctx->state = DMR_SM_ON_CC;
+    if (request_id == 0U) {
+        ctx->cc_rx_freq_hz = freq_hz;
+        ctx->cc_rx_generation = dsd_trunk_tuning_generation();
+    }
     (void)dmr_cc_resolve_pending(ctx, opts, ctx->cc_acquire_start_m);
+}
+
+dsd_trunk_tune_result
+dmr_sm_return_to_cc(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, long freq_hz) {
+    if (!ctx || !opts || !state || freq_hz <= 0) {
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    const long previous_cc = state->trunk_cc_freq;
+    const long previous_p25_cc = state->p25_cc_freq;
+    /* The shared return helper prefers the P25 alias. DMR supplies its own
+     * destination and must not inherit that alias or its symbol profile. */
+    state->p25_cc_freq = 0;
+    state->trunk_cc_freq = freq_hz;
+    uint64_t request_id = 0U;
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_return_to_cc(opts, state, &request_id);
+    if (!dsd_trunk_tune_result_is_ok(result)) {
+        state->p25_cc_freq = previous_p25_cc;
+        state->trunk_cc_freq = previous_cc;
+        sm_recovery_log(opts, "cc-return-deferred-or-failed");
+        return result;
+    }
+    state->is_con_plus = 0;
+    set_state(ctx, opts, DMR_SM_ON_CC, "cc-return");
+    dmr_sm_begin_cc_acquisition(ctx, opts, state, freq_hz, request_id);
+    return result;
 }
 
 static long
 dmr_cc_current_frequency(const dsd_opts* opts, const dmr_sm_ctx_t* ctx) {
+    if (ctx && ctx->cc_rx_freq_hz > 0 && ctx->cc_rx_generation == dsd_trunk_tuning_generation()) {
+        return ctx->cc_rx_freq_hz;
+    }
     if (opts->use_rigctl == 1) {
         return dsd_rigctl_query_hook_get_current_freq_hz(opts);
     }
@@ -180,6 +221,9 @@ dmr_sm_note_cc_activity(const dsd_opts* opts, dsd_state* state, long freq_hz) {
     }
     ctx->cc_freq_hz = current;
     ctx->cc_probe_freq_hz = current;
+    ctx->cc_rx_freq_hz = current;
+    ctx->cc_rx_generation = dsd_trunk_tuning_generation();
+    const int acquired = !ctx->cc_confirmed || ctx->cc_acquiring;
     ctx->cc_confirmed = 1;
     ctx->cc_acquiring = 0;
     ctx->cc_retry_after_m = 0.0;
@@ -187,16 +231,31 @@ dmr_sm_note_cc_activity(const dsd_opts* opts, dsd_state* state, long freq_hz) {
     state->trunk_cc_freq = current;
     state->last_cc_sync_time = time(NULL);
     state->last_cc_sync_time_m = ctx->t_cc_sync_m;
+    dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_DMR);
+    if (acquired && ctx->state == DMR_SM_ON_CC) {
+        sm_recovery_log(opts, "decoded-cc");
+    }
     set_state(ctx, opts, DMR_SM_ON_CC, "decoded-cc");
+}
+
+static void
+dmr_cc_note_heartbeat_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+    if (!ctx || !opts || !state || opts->trunk_is_tuned == 1 || !ctx->cc_confirmed || ctx->cc_acquiring
+        || !dmr_cc_resolve_pending(ctx, opts, dsd_time_now_monotonic_s())) {
+        return;
+    }
+    /* A heartbeat is in the decode hot path. Attribute it to the completed
+     * tuning boundary, without a blocking rigctl round trip per CSBK. */
+    if (ctx->cc_rx_freq_hz == ctx->cc_freq_hz && dsd_trunk_tuning_frame_is_current(ctx->cc_rx_generation)) {
+        ctx->t_cc_sync_m = dsd_time_now_monotonic_s();
+        set_state(ctx, opts, DMR_SM_ON_CC, "cc-heartbeat");
+    }
 }
 
 void
 dmr_sm_note_cc_heartbeat(const dsd_opts* opts, const dsd_state* state) {
     dmr_sm_ctx_t* ctx = dmr_cc_activity_context(opts, state);
-    if (ctx && ctx->cc_confirmed && !ctx->cc_acquiring && dmr_cc_current_frequency(opts, ctx) == ctx->cc_freq_hz) {
-        ctx->t_cc_sync_m = dsd_time_now_monotonic_s();
-        set_state(ctx, opts, DMR_SM_ON_CC, "cc-heartbeat");
-    }
+    dmr_cc_note_heartbeat_ctx(ctx, opts, state);
 }
 
 static long
@@ -237,6 +296,14 @@ dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
     if (freq <= 0) {
         return;
     }
+    if (freq == ctx->cc_rx_freq_hz && dsd_trunk_tuning_frame_is_current(ctx->cc_rx_generation)) {
+        /* No alternate candidate: keep listening without resetting demodulation
+         * every acquisition window. Only decoded control evidence confirms it. */
+        ctx->cc_probe_freq_hz = freq;
+        ctx->cc_acquire_start_m = now_m;
+        set_state(ctx, opts, DMR_SM_ON_CC, "cc-listen");
+        return;
+    }
     const long anchor = state->trunk_cc_freq;
     uint64_t request_id = 0U;
     const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, 0, &request_id);
@@ -244,7 +311,7 @@ dmr_cc_hunt(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m) {
      * probes retain their return destination until a control message proves it. */
     state->trunk_cc_freq = anchor;
     if (!dsd_trunk_tune_result_is_ok(result)) {
-        sm_log(opts, "cc-probe-deferred-or-failed");
+        sm_recovery_log(opts, "cc-probe-deferred-or-failed");
         return;
     }
     ctx->cc_probe_freq_hz = freq;
@@ -277,8 +344,8 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
 
     sm_log(opts, reason);
 
-    uint64_t request_id = 0U;
-    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state, &request_id);
+    const long cc = state ? (state->trunk_cc_freq > 0 ? state->trunk_cc_freq : state->p25_cc_freq) : 0;
+    dsd_trunk_tune_result tune_result = dmr_sm_return_to_cc(ctx, opts, state, cc);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         sm_log(opts, "release-tune-deferred");
         if (state && had_force_release) {
@@ -315,9 +382,6 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     }
 
     set_state(ctx, opts, DMR_SM_ON_CC, reason);
-    if (state) {
-        dmr_sm_begin_cc_acquisition(ctx, opts, state, state->trunk_cc_freq, request_id);
-    }
 }
 
 static int
@@ -355,6 +419,7 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     if (!ctx || !ev || !opts || !state) {
         return;
     }
+    dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_DMR);
 
     long freq = 0;
     if (!dmr_sm_resolve_tunable_grant(ctx, opts, state, ev, &freq)) {
@@ -506,31 +571,11 @@ handle_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
 }
 
 static void
-handle_cc_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
-    if (!ctx) {
-        return;
-    }
-    if (opts && opts->trunk_is_tuned == 1) {
-        return;
-    }
-    if (state) {
-        ctx->cc_freq_hz = state->trunk_cc_freq;
-    }
-    ctx->cc_acquiring = 0;
-    ctx->cc_confirmed = 1;
-    ctx->t_cc_sync_m = dsd_time_now_monotonic_s();
-
-    if (ctx->state == DMR_SM_IDLE || ctx->state == DMR_SM_HUNTING) {
-        set_state(ctx, opts, DMR_SM_ON_CC, "cc-sync");
-    }
-}
-
-static void
 tick_on_cc(dmr_sm_ctx_t* ctx, const dsd_opts* opts, double now_m, double cc_grace) {
-    if (ctx->t_cc_sync_m <= 0.0) {
+    const double since = ctx->cc_acquiring ? ctx->cc_acquire_start_m : ctx->t_cc_sync_m;
+    if (since <= 0.0) {
         return;
     }
-    const double since = ctx->cc_acquiring ? ctx->cc_acquire_start_m : ctx->t_cc_sync_m;
     if ((now_m - since) > cc_grace) {
         set_state(ctx, opts, DMR_SM_HUNTING, "cc-lost");
     }
@@ -663,7 +708,7 @@ dmr_sm_event(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
         case DMR_SM_EV_VOICE_SYNC: handle_voice_sync(ctx, opts, state, ev->slot); break;
         case DMR_SM_EV_DATA_SYNC: handle_data_sync(ctx, opts, state, ev->slot); break;
         case DMR_SM_EV_RELEASE: handle_release(ctx, opts, state, ev->slot); break;
-        case DMR_SM_EV_CC_SYNC: handle_cc_sync(ctx, opts, state); break;
+        case DMR_SM_EV_CC_SYNC: dmr_cc_note_heartbeat_ctx(ctx, opts, state); break;
         case DMR_SM_EV_SYNC_LOST: break;
     }
 }

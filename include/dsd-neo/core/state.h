@@ -457,8 +457,9 @@ struct dsd_state {
     unsigned long long int p2_cc; //p1 NAC
     unsigned long long int p2_siteid;
     unsigned long long int p2_rfssid;
-    long int p25_cc_freq;   // P25 control-channel frequency from network status
-    long int trunk_cc_freq; // generic trunk-owner control-channel frequency
+    long int p25_cc_freq;        // P25 control-channel frequency from network status
+    long int trunk_cc_freq;      // generic trunk-owner control-channel frequency
+    int trunk_recovery_protocol; // validated owner; runtime trunk-scan recovery enum, survives raw sync loss
     unsigned long long int edacs_site_id;
     time_t last_cc_sync_time;    //use this to start hunting for CC after signal lost
     time_t p25_last_cc_msg_time; //last decoded P25 control-channel message

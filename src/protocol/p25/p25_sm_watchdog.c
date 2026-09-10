@@ -11,6 +11,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -51,7 +52,7 @@ p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
         return;
     }
     if (p25_sm_tick_guard_try_enter()) {
-        if (p25_sm_recovery_allowed(p25_sm_get_ctx(), opts, state)) {
+        if (dsd_trunk_p25_recovery_allowed(opts, state)) {
             /* Only one tick runs at a time across all callers. */
             atomic_store(&g_p25_sm_in_tick, 1);
             // Drive the high-level trunk SM tick

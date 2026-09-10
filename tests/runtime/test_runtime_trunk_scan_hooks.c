@@ -67,19 +67,23 @@ test_recovery_ownership(void) {
     opts.frame_dmr = opts.frame_p25p1 = opts.frame_p25p2 = 1;
     state.p25_cc_freq = state.trunk_cc_freq = 451000000L;
     state.synctype = state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    assert(!dsd_trunk_dmr_recovery_allowed(&opts, &state)); // Raw sync cannot claim ownership.
+    dsd_trunk_recovery_note_protocol(&state, DSD_TRUNK_RECOVERY_DMR);
     assert(dsd_trunk_dmr_recovery_allowed(&opts, &state));
     assert(!dsd_trunk_p25_recovery_allowed(&opts, &state));
-    state.synctype = DSD_SYNC_NONE;
-    assert(!dsd_trunk_p25_recovery_allowed(&opts, &state));
-    state.lastsynctype = DSD_SYNC_NONE;
+    state.synctype = state.lastsynctype = DSD_SYNC_NONE;
     state.p25_cc_is_tdma = 2;
+    assert(dsd_trunk_dmr_recovery_allowed(&opts, &state));
     assert(!dsd_trunk_p25_recovery_allowed(&opts, &state));
-    state.synctype = DSD_SYNC_P25P1_POS;
-    assert(dsd_trunk_p25_recovery_allowed(&opts, &state));
+    dsd_trunk_recovery_note_protocol(&state, DSD_TRUNK_RECOVERY_P25);
+    state.synctype = state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    assert(dsd_trunk_p25_recovery_allowed(&opts, &state)); // Stray sync cannot evict P25.
     assert(!dsd_trunk_dmr_recovery_allowed(&opts, &state));
-    state.synctype = DSD_SYNC_NONE;
-    state.p25_cc_is_tdma = 0;
+    state.synctype = state.lastsynctype = DSD_SYNC_NONE;
     assert(dsd_trunk_p25_recovery_allowed(&opts, &state));
+    dsd_trunk_recovery_note_protocol(&state, DSD_TRUNK_RECOVERY_OTHER);
+    assert(!dsd_trunk_p25_recovery_allowed(&opts, &state));
+    assert(!dsd_trunk_dmr_recovery_allowed(&opts, &state));
     opts.trunk_scan_enabled = 1;
     assert(!dsd_trunk_p25_recovery_allowed(&opts, &state)); // No installed owner during startup/shutdown.
     opts.trunk_scan_enabled = 0;

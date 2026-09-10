@@ -610,7 +610,12 @@ dmr_run_cc_loss_reacquire_case(void) {
 
     dmr_sm_event_t ev = dmr_sm_ev_cc_sync();
     dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
-    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC, grant.name, flow, script, "cc sync returns ON_CC");
+    rc |= dmr_expect(g_ctx.state == DMR_SM_HUNTING, grant.name, flow, script, "raw sync cannot acquire CC");
+    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){.dmr_ctx = dmr_hook_scan_ctx});
+    dmr_sm_note_cc_activity(&g_opts, &g_state, g_state.trunk_cc_freq);
+    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC && g_ctx.cc_confirmed, grant.name, flow, script,
+                     "decoded control evidence returns ON_CC");
     return rc;
 }
 
@@ -663,8 +668,9 @@ dmr_run_auto_init_and_idle_hunting_case(void) {
 
     ev = dmr_sm_ev_cc_sync();
     dmr_sm_event(&g_ctx, &g_opts, &g_state, &ev);
-    rc |= dmr_expect(g_ctx.state == DMR_SM_ON_CC && g_ctx.t_cc_sync_m > 0.0, grant, flow, script,
-                     "cc sync reacquires from hunting");
+    rc |= dmr_expect(g_ctx.state == DMR_SM_HUNTING && g_ctx.t_cc_sync_m == 0.0, grant, flow, script,
+                     "raw sync cannot invent a confirmed CC");
+    g_ctx.state = DMR_SM_ON_CC;
 
     g_ctx.t_cc_sync_m = 0.0;
     dmr_sm_tick_ctx(&g_ctx, &g_opts, &g_state);

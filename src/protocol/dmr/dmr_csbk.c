@@ -35,6 +35,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -1320,15 +1321,10 @@ dmr_cspdu_pf0_c_bcast_try_switch_tscc(dsd_opts* opts, dsd_state* state, long f1,
     }
 
     if (next > 0 && next != cur) {
-        const long previous_cc = state->trunk_cc_freq;
-        state->trunk_cc_freq = next;
-        uint64_t request_id = 0U;
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state, &request_id);
-        if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-            state->trunk_cc_freq = previous_cc;
+        const dsd_trunk_tune_result result = dmr_sm_return_to_cc(dmr_sm_get_ctx(), opts, state, next);
+        if (!dsd_trunk_tune_result_is_ok(result)) {
             return;
         }
-        dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, next, request_id);
         DSD_FPRINTF(stderr, "\n Switched to announced TSCC: %.6lf MHz\n", (double)next / 1000000.0);
     }
 }
@@ -2033,24 +2029,15 @@ dmr_cspdu_cap_plus_3e_dump_payload(const dsd_opts* opts, dsd_state* state, const
 
 static void
 dmr_cspdu_cap_plus_3e_try_return_to_rest(dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
-    uint16_t empty[24];
-    int busy;
-
-    DSD_MEMSET(empty, 0, sizeof(empty));
-    busy = memcmp(empty, ctx->t_tg, sizeof(empty));
+    const int busy = ctx->bank_one != 0 || ctx->bank_two != 0;
     const long rest = state->trunk_chan_map[ctx->rest_channel];
-    if (busy || opts->trunk_enable != 1 || rest <= 0 || (opts->trunk_is_tuned == 0 && state->trunk_cc_freq == rest)) {
+    if (opts->trunk_enable != 1 || rest <= 0 || (busy && opts->trunk_is_tuned == 1)
+        || (opts->trunk_is_tuned == 0 && state->trunk_cc_freq == rest)) {
         return;
     }
-    const long previous_cc = state->trunk_cc_freq;
-    state->trunk_cc_freq = rest;
-    uint64_t request_id = 0U;
-    const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_return_to_cc(opts, state, &request_id);
-    if (!dsd_trunk_tune_result_is_ok(result)) {
-        state->trunk_cc_freq = previous_cc;
-        return;
-    }
-    dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, rest, request_id);
+    /* Busy status can announce a new rest channel even when every advertised
+     * call is blocked or unmapped. Follow it unless a call owns the tuner. */
+    (void)dmr_sm_return_to_cc(dmr_sm_get_ctx(), opts, state, rest);
 }
 
 static void
@@ -2650,6 +2637,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
     csbk_pf = dmr_cspdu_apply_protect_flag_checks(IrrecoverableErrors, csbk_o, csbk_fid, csbk_pf);
 
     if (IrrecoverableErrors == 0 && CRCCorrect == 1) {
+        dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_DMR);
         //clear stale Active Channel messages here
         (void)dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS);
 

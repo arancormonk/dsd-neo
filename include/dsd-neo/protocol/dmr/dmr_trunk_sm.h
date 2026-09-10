@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -44,7 +45,7 @@ typedef enum {
     DMR_SM_EV_VOICE_SYNC, // Voice frame sync detected on slot
     DMR_SM_EV_DATA_SYNC,  // Data frame sync detected on slot
     DMR_SM_EV_RELEASE,    // P_CLEAR or slot termination
-    DMR_SM_EV_CC_SYNC,    // Control channel sync acquired
+    DMR_SM_EV_CC_SYNC,    // Raw sync: retain an established CC, never confirm acquisition
     DMR_SM_EV_SYNC_LOST,  // Sync lost
 } dmr_sm_event_type_e;
 
@@ -98,6 +99,8 @@ typedef struct {
      * These fields live in each scan target's existing DMR context. */
     long cc_freq_hz;
     long cc_probe_freq_hz;
+    long cc_rx_freq_hz; // Completed tune or decoded attribution at cc_rx_generation
+    uint64_t cc_rx_generation;
     double cc_acquire_start_m;
     double cc_retry_after_m;
     uint64_t cc_tune_request_id;
@@ -127,8 +130,12 @@ void dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* s
  * a nonzero request ID is resolved before starting the acquisition deadline. */
 void dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, long freq_hz,
                                  uint64_t request_id);
+/** Return to the explicit DMR control/rest frequency, clearing an obsolete P25
+ * alias only on acceptance. Preserve the previous destination on failure. */
+dsd_trunk_tune_result dmr_sm_return_to_cc(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, long freq_hz);
 /** Accepted control/rest-channel evidence. Zero frequency queries the active
- * tuner; a nonzero frequency must match the channel actually being received. */
+ * tuner only if no completed tune/decoded attribution is available for the
+ * current generation; nonzero frequency must match the received channel. */
 void dmr_sm_note_cc_activity(const dsd_opts* opts, dsd_state* state, long freq_hz);
 /** Retain an already confirmed CC only; never validate a probe from raw/relaxed evidence. */
 void dmr_sm_note_cc_heartbeat(const dsd_opts* opts, const dsd_state* state);

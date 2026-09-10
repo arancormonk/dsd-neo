@@ -10,7 +10,9 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -20,6 +22,7 @@
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -53,6 +56,8 @@ static char g_channels[DSD_TEST_PATH_MAX];
 static long g_frequency;
 static int g_cc_tunes;
 static int g_returns;
+static int g_queries;
+static int g_query_failed;
 static uint64_t g_request;
 static dsd_trunk_tune_result g_result;
 
@@ -68,7 +73,8 @@ expect(int condition, const char* message) {
 static long
 current_frequency(const dsd_opts* opts) {
     (void)opts;
-    return g_frequency;
+    ++g_queries;
+    return g_query_failed ? 0 : g_frequency;
 }
 
 static dsd_trunk_tune_result
@@ -101,7 +107,7 @@ return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     ++g_returns;
     g_request = request_id;
     if (dsd_trunk_tune_result_is_ok(g_result)) {
-        g_frequency = state->trunk_cc_freq;
+        g_frequency = state->p25_cc_freq > 0 ? state->p25_cc_freq : state->trunk_cc_freq;
         opts->rtlsdr_center_freq = (uint32_t)g_frequency;
         opts->trunk_is_tuned = 0;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
@@ -151,7 +157,7 @@ setup(float hangtime) {
     g_opts.use_rigctl = 1;
     g_opts.trunk_scan_enabled = 1;
     g_opts.trunk_hangtime = hangtime;
-    g_cc_tunes = g_returns = 0;
+    g_cc_tunes = g_returns = g_queries = g_query_failed = 0;
     g_request = 0U;
     g_result = DSD_TRUNK_TUNE_RESULT_OK;
     dsd_trunk_tuning_requests_reset();
@@ -220,13 +226,21 @@ held_call_return(float hangtime) {
     aloha(1);
     rc |= expect(g_state.trunk_cc_freq == 451000000L, "control-like messages on a followed VC cannot replace CC");
     dmr_sm_emit_voice_sync(&g_opts, &g_state, 0);
-    ctx->slots[0].last_active_m -= 3.0;
-    ctx->t_voice_m -= 3.0;
+    ctx->slots[0].last_active_m -= 1.0;
+    ctx->t_voice_m -= 1.0;
+    g_state.is_con_plus = 1;
+    dmr_sm_tick_ctx(ctx, &g_opts, &g_state);
+    rc |= expect(g_returns == (hangtime == 0.0f ? 1 : 0), "one-second gap distinguishes zero and two-second hangtime");
+    if (hangtime > 0.0f) {
+        ctx->slots[0].last_active_m -= 2.0;
+        ctx->t_voice_m -= 2.0;
+    }
     g_state.last_vc_sync_time = time(NULL) - 3;
     g_state.last_vc_sync_time_m = dsd_time_now_monotonic_s() - 3.0;
     g_state.p25_last_vc_tune_time_m = dsd_time_now_monotonic_s() - 4.0;
     dsd_frame_sync_test_handle_no_sync_timeout(&g_opts, &g_state, 1800);
     rc |= expect(g_returns == 1 && g_frequency == 451000000L, "DMR returned to original control channel");
+    rc |= expect(!g_state.is_con_plus, "DMR-owned release clears Con+ follow latch");
     rc |= expect(p25->state == P25_SM_IDLE && !p25->cc_sync_pending && !g_state.p25_sm_force_release,
                  "DMR loss did not start P25 recovery or leave a forced-release latch");
     const int tunes = g_cc_tunes;
@@ -305,6 +319,8 @@ pending_and_failed_probes(void) {
     rc |= expect(pending != 0U && ctx->cc_tune_request_id == pending, "probe tracks pending request");
     expire_acquisition(ctx);
     aloha(1);
+    dmr_sm_emit_group_grant_slot(&g_opts, &g_state, 453000000L, 4, 0, 1001, 2001);
+    rc |= expect(!g_opts.trunk_is_tuned, "grant cannot interrupt an unresolved CC tune");
     rc |= expect(ctx->cc_tune_request_id == pending && g_cc_tunes == count && ctx->cc_acquiring,
                  "pending tune neither times out nor accepts old-frequency control messages");
     dsd_trunk_tuning_request_publish(pending, DSD_TRUNK_TUNE_RESULT_OK);
@@ -339,17 +355,24 @@ pending_and_failed_probes(void) {
 }
 
 static void
-cap_plus_idle(unsigned int rest) {
+cap_plus_status(unsigned int rest, int busy) {
     uint8_t bits[196] = {0};
     uint8_t bytes[24] = {0};
     bytes[0] = 0x3e;
     bytes[1] = 0x10;
-    bytes[2] = (uint8_t)(0xc0U | rest); // Single complete status, all channel banks idle.
-    for (int i = 0; i < 24; ++i) {
+    bytes[2] = (uint8_t)(0xc0U | rest); // Single complete status.
+    bytes[3] = busy ? 0x80 : 0;         // LSN 1 carries a group call when busy.
+    bytes[4] = busy ? 42 : 0;
+    for (int i = 0; i < 80; ++i) {
         bits[i] = (uint8_t)((bytes[i / 8] >> (7 - (i % 8))) & 1);
     }
     g_state.synctype = g_state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     dmr_cspdu(&g_opts, &g_state, bits, bytes, 1, 0);
+}
+
+static void
+cap_plus_idle(unsigned int rest) {
+    cap_plus_status(rest, 0);
 }
 
 static int
@@ -362,13 +385,15 @@ cap_plus_rest_recovery(void) {
     cap_plus_idle(1U);
     rc |= expect(!g_opts.trunk_is_tuned && dmr_sm_get_ctx()->cc_confirmed,
                  "idle CAP+ status confirms rest channel without claiming a followed call");
+    g_state.p25_cc_freq = 451000000L; // A stale generic alias must not override the announcement.
     g_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     cap_plus_idle(2U);
     rc |= expect(g_frequency == 451000000L && g_state.trunk_cc_freq == 451000000L,
                  "failed CAP+ rest move retains the previous anchor");
     g_result = DSD_TRUNK_TUNE_RESULT_OK;
     cap_plus_idle(2U);
-    rc |= expect(g_frequency == 452000000L && g_state.trunk_cc_freq == 452000000L && dmr_sm_get_ctx()->cc_acquiring,
+    rc |= expect(g_frequency == 452000000L && g_state.trunk_cc_freq == 452000000L
+                     && dmr_sm_get_ctx()->cc_probe_freq_hz == g_frequency && dmr_sm_get_ctx()->cc_acquiring,
                  "idle CAP+ rest announcement actually retunes and starts acquisition");
     cap_plus_idle(2U);
     rc |= expect(dmr_sm_get_ctx()->cc_confirmed && !dmr_sm_get_ctx()->cc_acquiring,
@@ -417,6 +442,208 @@ switch_while_probe_pending(void) {
     return rc;
 }
 
+static int
+standalone_recovery(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&g_opts, &g_state);
+    g_opts.trunk_scan_enabled = 0;
+    g_opts.trunk_enable = 1;
+    g_opts.frame_dmr = g_opts.frame_p25p1 = g_opts.frame_p25p2 = 1;
+    g_state.trunk_cc_freq = 451000000L;
+    g_state.trunk_lcn_freq[0] = 451000000L;
+    g_state.trunk_lcn_freq[1] = 452000000L;
+    g_state.lcn_freq_count = 2;
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof(g_opts.chan_in_file), "%s", g_channels);
+    dmr_sm_ctx_t* dmr = dmr_sm_get_ctx();
+    dmr_sm_init_ctx(dmr, &g_opts, &g_state);
+    aloha(1);
+    g_state.synctype = DSD_SYNC_NONE;
+    noCarrier(&g_opts, &g_state);
+    int rc = expect(dsd_trunk_dmr_recovery_allowed(&g_opts, &g_state), "standalone AUTO retains decoded DMR owner");
+    if (dsd_trunk_dmr_recovery_allowed(&g_opts, &g_state)) {
+        expire_acquisition(dmr);
+    }
+    rc |= expect(g_frequency == 452000000L, "standalone AUTO hunts after complete sync loss");
+
+    p25_sm_ctx_t* p25 = p25_sm_get_ctx();
+    g_state.p25_cc_freq = 851000000L;
+    p25_sm_init_ctx(p25, &g_opts, &g_state);
+    p25->state = P25_SM_HUNTING;
+    const double old_try = dsd_time_now_monotonic_s() - 20.0;
+    p25->t_hunt_try_m = old_try;
+    const int tunes = g_cc_tunes;
+    p25_sm_try_tick(&g_opts, &g_state);
+    rc |= expect(fabs(p25->t_hunt_try_m - old_try) < 1e-9 && g_cc_tunes == tunes,
+                 "watchdog cannot hunt on a DMR owner even with P25 enabled and stale P25 context");
+
+    g_state.trunk_cc_freq = g_state.p25_cc_freq = g_frequency = 851000000L;
+    g_state.trunk_lcn_freq[0] = 851000000L;
+    g_state.trunk_lcn_freq[1] = 852000000L;
+    g_state.p25_cc_is_tdma = 0;
+    g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P1_POS;
+    p25_sm_init_ctx(p25, &g_opts, &g_state);
+    p25_sm_event(p25, &g_opts, &g_state, &(p25_sm_event_t){.type = P25_SM_EV_CC_SYNC});
+    p25->t_cc_sync_m = g_state.last_cc_sync_time_m = old_try;
+    p25->t_hunt_try_m = old_try;
+    g_state.synctype = DSD_SYNC_NONE;
+    g_state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    noCarrier(&g_opts, &g_state);
+    rc |= expect(g_state.p25_cc_is_tdma == 0 && dsd_trunk_p25_recovery_allowed(&g_opts, &g_state),
+                 "stray non-P25 sync and noCarrier preserve the established P25 owner and format");
+    p25_sm_try_tick(&g_opts, &g_state);
+    rc |= expect(p25->t_hunt_try_m > old_try && g_cc_tunes > tunes,
+                 "watchdog advances P25 CC recovery after stray sync and noCarrier");
+    cleanup();
+    return rc;
+}
+
+static int
+heartbeat_and_single_candidate(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    aloha(1);
+    int rc = 0;
+    const int queries = g_queries;
+    g_query_failed = 1;
+    ctx->t_cc_sync_m -= 3.0;
+    for (int i = 0; i < 30; ++i) {
+        dmr_sm_note_cc_heartbeat(&g_opts, &g_state);
+    }
+    dmr_sm_tick_ctx(ctx, &g_opts, &g_state);
+    rc |= expect(g_queries == queries && ctx->state == DMR_SM_ON_CC,
+                 "established heartbeats use completed tune attribution without rigctl queries");
+    dsd_trunk_tuning_generation_advance();
+    ctx->t_cc_sync_m -= 3.0;
+    dmr_sm_note_cc_heartbeat(&g_opts, &g_state);
+    dmr_sm_tick_ctx(ctx, &g_opts, &g_state);
+    rc |= expect(ctx->state == DMR_SM_HUNTING, "heartbeat from a different tune generation cannot retain CC");
+
+    g_query_failed = 0;
+    g_state.lcn_freq_count = 1;
+    g_state.trunk_cc_freq = 0;
+    g_state.p25_cc_freq = 451000000L;
+    dmr_sm_begin_cc_acquisition(ctx, &g_opts, &g_state, 451000000L, 0U);
+    ctx->cc_acquire_start_m -= 3.0;
+    dmr_sm_event(ctx, &g_opts, &g_state, &(dmr_sm_event_t){.type = DMR_SM_EV_CC_SYNC});
+    rc |= expect(ctx->cc_acquiring && !ctx->cc_confirmed, "raw CC_SYNC event cannot confirm acquisition");
+    dmr_sm_tick_ctx(ctx, &g_opts, &g_state);
+    rc |= expect(ctx->state == DMR_SM_HUNTING, "acquisition deadline works without a prior CC sync timestamp");
+    const int tunes = g_cc_tunes;
+    for (int i = 0; i < 3; ++i) {
+        dmr_sm_note_cc_heartbeat(&g_opts, &g_state);
+        expire_acquisition(ctx);
+    }
+    rc |= expect(g_cc_tunes == tunes && ctx->cc_acquiring && !ctx->cc_confirmed,
+                 "single-candidate acquisition keeps listening without repeated retunes or false confirmation");
+    aloha(1);
+    rc |= expect(ctx->cc_confirmed && !ctx->cc_acquiring, "decoded CC evidence completes uninterrupted acquisition");
+    cleanup();
+    return rc;
+}
+
+static int
+watchdog_ownership_thread(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&g_opts, &g_state);
+    g_opts.trunk_scan_enabled = 0;
+    g_opts.trunk_enable = 1;
+    g_opts.frame_dmr = g_opts.frame_p25p1 = g_opts.frame_p25p2 = 1;
+    g_state.trunk_cc_freq = g_state.p25_cc_freq = 851000000L;
+    g_state.trunk_lcn_freq[0] = 851000000L;
+    g_state.trunk_lcn_freq[1] = 852000000L;
+    g_state.lcn_freq_count = 2;
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof(g_opts.chan_in_file), "%s", g_channels);
+    p25_sm_ctx_t* p25 = p25_sm_get_ctx();
+    p25_sm_init_ctx(p25, &g_opts, &g_state);
+    p25->state = P25_SM_HUNTING;
+    const double old_try = dsd_time_now_monotonic_s() - 20.0;
+    p25->t_hunt_try_m = old_try;
+    dsd_trunk_recovery_note_protocol(&g_state, DSD_TRUNK_RECOVERY_DMR);
+    p25_sm_watchdog_start(&g_opts, &g_state);
+    /* Acquisition owns these volatile fields outside the SM guard. TSan must
+     * see no watchdog read of them while a DMR owner excludes P25 recovery. */
+    for (int i = 0; i < 450; ++i) {
+        g_state.synctype = (i & 1) ? DSD_SYNC_P25P1_POS : DSD_SYNC_DMR_BS_DATA_POS;
+        g_state.lastsynctype = g_state.synctype;
+        g_state.p25_cc_is_tdma = i & 1;
+        dsd_sleep_ms(1U);
+    }
+    p25_sm_watchdog_stop();
+    int rc =
+        expect(fabs(p25->t_hunt_try_m - old_try) < 1e-9, "background watchdog excludes DMR despite changing raw hints");
+    g_state.synctype = g_state.lastsynctype = DSD_SYNC_NONE;
+    g_state.p25_cc_is_tdma = 0;
+    dsd_trunk_recovery_note_protocol(&g_state, DSD_TRUNK_RECOVERY_P25);
+    p25_sm_watchdog_start(&g_opts, &g_state);
+    dsd_sleep_ms(50U);
+    p25_sm_watchdog_stop();
+    rc |= expect(p25->t_hunt_try_m > old_try, "background watchdog positive control drives P25 recovery");
+    cleanup();
+    return rc;
+}
+
+static int
+pending_probe_dwell(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    aloha(1);
+    trunk_scan_test_set_now(1.0);
+    dsd_engine_trunk_scan_tick(&g_opts, &g_state);
+    (void)dsd_engine_trunk_scan_control(&g_opts, &g_state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE);
+    trunk_scan_test_set_now(1.0);
+    dsd_engine_trunk_scan_tick(&g_opts, &g_state);
+    g_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    expire_acquisition(dmr_sm_get_ctx());
+    const uint64_t request = g_request;
+    trunk_scan_test_set_now(10.0);
+    dsd_engine_trunk_scan_tick(&g_opts, &g_state);
+    int rc =
+        expect(dsd_engine_trunk_scan_active_dmr_ctx() != NULL, "unresolved DMR probe holds the target past idle dwell");
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    g_result = DSD_TRUNK_TUNE_RESULT_OK;
+    trunk_scan_test_set_now(10.1);
+    dsd_engine_trunk_scan_tick(&g_opts, &g_state);
+    rc |= expect(dsd_engine_trunk_scan_active_dmr_ctx() != NULL, "probe completion starts a fresh idle dwell");
+    trunk_scan_test_set_now(10.36);
+    dsd_engine_trunk_scan_tick(&g_opts, &g_state);
+    rc |= expect(dsd_engine_trunk_scan_active_p25_ctx() != NULL,
+                 "decoded acquisition wait does not extend idle dwell after tune completion");
+    cleanup();
+    return rc;
+}
+
+static int
+busy_cap_plus_rest(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    cap_plus_idle(1U);
+    g_opts.trunk_tune_group_calls = 0;
+    cap_plus_status(4U, 1);
+    int rc = expect(g_frequency == 453000000L && !g_opts.trunk_is_tuned && dmr_sm_get_ctx()->cc_acquiring,
+                    "busy CAP+ follows an announced rest channel when no allowed call owns the tuner");
+    cap_plus_status(4U, 1);
+    rc |= expect(dmr_sm_get_ctx()->cc_confirmed, "busy CAP+ rest signalling confirms acquisition");
+    g_opts.trunk_is_tuned = 1;
+    g_frequency = 452000000L;
+    cap_plus_status(1U, 1);
+    rc |= expect(g_frequency == 452000000L, "busy CAP+ rest following preserves an active followed call");
+    cleanup();
+    return rc;
+}
+
 int
 main(void) {
     (void)dsd_test_unsetenv("DSD_NEO_DMR_HANGTIME");
@@ -428,5 +655,10 @@ main(void) {
     rc |= pending_and_failed_probes();
     rc |= cap_plus_rest_recovery();
     rc |= switch_while_probe_pending();
+    rc |= standalone_recovery();
+    rc |= heartbeat_and_single_candidate();
+    rc |= busy_cap_plus_rest();
+    rc |= pending_probe_dwell();
+    rc |= watchdog_ownership_thread();
     return rc;
 }

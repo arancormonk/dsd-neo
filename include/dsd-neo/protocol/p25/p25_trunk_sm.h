@@ -308,10 +308,6 @@ typedef struct {
  * @param opts Decoder options (may be NULL for defaults).
  * @param state Decoder state (may be NULL).
  */
-/** Whether P25 owns recovery, including a retained acquisition/follow context
- * across sync loss. A declared non-P25 scan target always takes precedence. */
-int p25_sm_recovery_allowed(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state);
-
 void p25_sm_init_ctx(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state);
 
 /**

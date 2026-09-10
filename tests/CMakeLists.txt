@@ -4406,6 +4406,10 @@ add_test(
     NAME ENGINE_PROTOCOL_DISPATCH
     COMMAND dsd-neo_test_engine_protocol_dispatch
 )
+target_link_libraries(
+    dsd-neo_test_engine_protocol_dispatch
+    PRIVATE dsd-neo_runtime
+)
 
 add_executable(
     dsd-neo_test_engine_no_carrier_reset

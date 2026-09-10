@@ -6,6 +6,7 @@
 #include "call_history_model.h"
 
 #include <QByteArray>
+#include <QChar>
 #include <QDateTime>
 #include <QJsonArray>
 #include <QJsonObject>

@@ -147,14 +147,25 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   dwell starts; repeated calls can keep a busy system parked.
 - DMR control/rest-channel acquisition and loss detection use a separate two-second window. An accepted
   asynchronous tune starts that window when the backend completes. During a hunt, an explicit channel map
-  is tried in file order, skipping duplicate/zero frequencies; without one, the known control channel and
-  learned current-site candidates are retried. Idle target dwell includes acquisition time, so a short dwell
-  may rotate away before every candidate can be tried. Target hold allows recovery to continue on that system.
+  is tried in file order, skipping zero frequencies and entries matching the current probe (nonadjacent
+  duplicates can be revisited). Without a map, the known control channel and learned current-site candidates
+  are retried. If the only candidate is the frequency already received, acquisition keeps listening without
+  resetting demodulation. A pending backend probe holds the target past dwell; completion starts a fresh idle
+  dwell. The decoded-acquisition wait counts toward that dwell, so a short dwell may rotate away before every
+  candidate can be tried. Target hold allows recovery to continue on that system.
 - A DMR probe does not replace the saved control frequency until accepted control signalling confirms it.
   Valid TIII ALOHA/control-system short LC, Connect Plus control short LC, and mapped Capacity Plus rest status
   maintain their respective control/rest channels. Relaxed CRC heartbeats can retain an established channel,
-  but cannot confirm a new probe. A decoded move announcement can select the next control/rest channel.
-  Verbose DMR state-machine logs identify `cc-lost`, `cc-probe`, `decoded-cc`, and failed tunes.
+  but cannot confirm a new probe. Heartbeats use completed tuner attribution without querying rigctl for each
+  CSBK. An unresolved CC tune blocks grants and heartbeats until its matching request completes. A decoded
+  move announcement can select the next control/rest channel.
+  A busy Capacity Plus rest announcement is followed when no call owns the tuner, including when advertised
+  calls are blocked by policy. A followed call retains the tuner while the system is busy.
+  DMR state-machine logs at verbosity 1 or higher identify `cc-lost`, `cc-probe`, `cc-listen`, `decoded-cc`,
+  and failed tunes. `decoded-cc` is logged on acquisition even when the SM was already in its CC state.
+- Standalone `-T` auto decoding also retains the validated P25 or DMR recovery owner through loss of sync.
+  A stray sync from another protocol cannot take ownership; validated signalling can. Explicit decoder modes
+  and trunk-scan target selection still constrain which protocol may recover.
 - `--scan-voice-only`: conventional targets hold only from decoded voice media (headers and data no longer hold),
   with the per-target `dwell_ms` as the qualify window in which voice must appear and `activity_hold_ms` as the
   hold after the last voice frame, including when a terminator closes the call before the next scan tick; trunked

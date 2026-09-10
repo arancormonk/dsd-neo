@@ -1440,7 +1440,7 @@ no_carrier_is_cc_return_due(const dsd_opts* opts, const dsd_state* state, time_t
     if ((opts->trunk_enable != 1) || (opts->trunk_is_tuned != 1)) {
         return 0;
     }
-    if (p25_sm_recovery_allowed(p25_sm_get_ctx(), opts, state)
+    if (dsd_trunk_p25_recovery_allowed(opts, state)
         && p25_sm_vc_reacquire_hold_active(p25_sm_get_ctx(), opts, state, dsd_time_now_monotonic_s())) {
         return 0;
     }
@@ -1451,7 +1451,8 @@ no_carrier_is_cc_return_due(const dsd_opts* opts, const dsd_state* state, time_t
 
 static int
 no_carrier_has_mapped_dmr_rest_channel(const dsd_state* state) {
-    if (state->dmr_rest_channel < 0 || state->dmr_rest_channel >= DSD_TRUNK_CHAN_MAP_SIZE) {
+    if (state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25 || state->dmr_rest_channel < 0
+        || state->dmr_rest_channel >= DSD_TRUNK_CHAN_MAP_SIZE) {
         return 0;
     }
     return (state->trunk_chan_map[state->dmr_rest_channel] != 0) ? 1 : 0;
@@ -1508,6 +1509,9 @@ no_carrier_clear_stale_p25_return_hints_after_generic_activity(const dsd_opts* o
     if (opts->trunk_enable != 1) {
         return;
     }
+    if (state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25) {
+        return; // A raw false sync cannot erase validated P25 ownership or return hints.
+    }
     if (!no_carrier_generic_trunk_synctype(state->lastsynctype)
         && !no_carrier_generic_trunk_synctype(state->synctype)) {
         return;
@@ -1534,6 +1538,9 @@ static int
 no_carrier_is_p25_trunk_return(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state || opts->trunk_enable != 1 || !no_carrier_p25_frames_enabled(opts)) {
         return 0;
+    }
+    if (state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25) {
+        return 1;
     }
     if (no_carrier_has_mapped_dmr_rest_channel(state)) {
         return 0;
@@ -1643,7 +1650,7 @@ no_carrier_return_to_cc_correlated(dsd_opts* opts, dsd_state* state, uint64_t* o
 static int
 no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, int p25_return,
                                    int clear_generic_p25_alias, int* helper_attempted,
-                                   dsd_trunk_tune_result* helper_result) {
+                                   dsd_trunk_tune_result* helper_result, uint64_t* out_request_id) {
     if (helper_result) {
         *helper_result = DSD_TRUNK_TUNE_RESULT_OK;
     }
@@ -1666,6 +1673,7 @@ no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, in
 
     uint64_t tune_request_id = 0U;
     dsd_trunk_tune_result tune_result = no_carrier_return_to_cc_correlated(opts, state, &tune_request_id);
+    *out_request_id = tune_request_id;
     if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
         (void)p25_sm_await_pending_cc_tune(p25_sm_get_ctx(), opts, state, tune_request_id, "no-carrier");
     } else if (tune_result == DSD_TRUNK_TUNE_RESULT_OK) {
@@ -1703,7 +1711,8 @@ no_carrier_generic_recovery_is_current(const dsd_state* state, long cc, dsd_trun
 }
 
 static int
-no_carrier_accept_generic_gate_recovery(const dsd_opts* opts, dsd_state* state, long cc) {
+no_carrier_accept_generic_gate_recovery(const dsd_opts* opts, dsd_state* state, long cc, uint64_t* out_request_id) {
+    *out_request_id = s_no_carrier_generic_recovery_request_id;
     no_carrier_clear_generic_recovery_tracking();
     no_carrier_sync_helper_tune_cache(opts, state, cc);
     state->edacs_tuned_lcn = -1;
@@ -1713,7 +1722,7 @@ no_carrier_accept_generic_gate_recovery(const dsd_opts* opts, dsd_state* state, 
 
 static int
 no_carrier_try_generic_gate_recovery(dsd_opts* opts, dsd_state* state, long cc, int p25_return,
-                                     int clear_generic_p25_alias, int* helper_attempted) {
+                                     int clear_generic_p25_alias, int* helper_attempted, uint64_t* out_request_id) {
     if (p25_return) {
         return 0;
     }
@@ -1728,7 +1737,7 @@ no_carrier_try_generic_gate_recovery(dsd_opts* opts, dsd_state* state, long cc, 
         const uint64_t unresolved_request_id = dsd_trunk_tuning_pending_request();
         if (unresolved_request_id == 0U) {
             if (no_carrier_generic_recovery_is_current(state, cc, status)) {
-                return no_carrier_accept_generic_gate_recovery(opts, state, cc);
+                return no_carrier_accept_generic_gate_recovery(opts, state, cc, out_request_id);
             }
             /* The old target failed, changed, or was superseded by a newer
              * completed tune. Establish a fresh boundary for the current CC. */
@@ -1777,7 +1786,7 @@ no_carrier_try_generic_gate_recovery(dsd_opts* opts, dsd_state* state, long cc, 
         return 0;
     }
 
-    return no_carrier_accept_generic_gate_recovery(opts, state, cc);
+    return no_carrier_accept_generic_gate_recovery(opts, state, cc, out_request_id);
 }
 
 static int
@@ -1879,7 +1888,7 @@ no_carrier_tick_dmr_owner(dsd_opts* opts, dsd_state* state) {
 
 static void
 no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accepted_cc_return,
-                            int clear_failed_helper_state, int clear_unreturnable_voice_state) {
+                            int clear_failed_helper_state, int clear_unreturnable_voice_state, uint64_t request_id) {
     if (accepted_cc_return || clear_failed_helper_state || clear_unreturnable_voice_state) {
         // An accepted return actually retuned to the control channel, so any call still open ended
         // with that hop rather than with the fade that prompted it. The other two paths never
@@ -1888,7 +1897,7 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
         no_carrier_clear_voice_tune_state(opts, state,
                                           accepted_cc_return ? DSD_CALL_END_EXPLICIT : DSD_CALL_END_SYNC_LOSS);
         if (accepted_cc_return && dsd_trunk_dmr_recovery_allowed(opts, state)) {
-            dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, cc, dsd_trunk_tuning_pending_request());
+            dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, cc, request_id);
         }
         (void)dsd_recent_activity_clear_all(state);
         state->is_con_plus = 0;
@@ -1907,6 +1916,7 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
     long cc = no_carrier_select_control_channel(state);
     const int p25_return = no_carrier_is_p25_trunk_return(opts, state);
     const int clear_generic_p25_alias = no_carrier_should_clear_generic_p25_alias(state, cc, p25_return);
+    uint64_t cc_return_request_id = 0U;
     int accepted_cc_return = 0;
     int clear_failed_helper_state = 0;
     int clear_unreturnable_voice_state = 0;
@@ -1915,14 +1925,14 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
         dsd_trunk_tune_result p25_helper_result = DSD_TRUNK_TUNE_RESULT_OK;
         int generic_helper_attempted = 0;
         if (no_carrier_try_helper_return_to_cc(opts, state, cc, p25_return, clear_generic_p25_alias,
-                                               &p25_helper_attempted, &p25_helper_result)) {
+                                               &p25_helper_attempted, &p25_helper_result, &cc_return_request_id)) {
             no_carrier_enable_p25_cc_slots_if_known(opts, state);
             accepted_cc_return = 1;
         } else if (no_carrier_helper_result_is_deferred(p25_helper_attempted, p25_helper_result)) {
             /* Another P25 transition owns the guard; leave the staged
              * voice state intact so the main loop can retry safely. */
         } else if (no_carrier_try_generic_gate_recovery(opts, state, cc, p25_return, clear_generic_p25_alias,
-                                                        &generic_helper_attempted)) {
+                                                        &generic_helper_attempted, &cc_return_request_id)) {
             accepted_cc_return = 1;
         } else if (!generic_helper_attempted
                    && no_carrier_apply_direct_cc_return(opts, state, cc, p25_helper_attempted)) {
@@ -1943,7 +1953,7 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
     }
 
     no_carrier_finish_cc_return(opts, state, cc, accepted_cc_return, clear_failed_helper_state,
-                                clear_unreturnable_voice_state);
+                                clear_unreturnable_voice_state, cc_return_request_id);
 }
 
 static void
