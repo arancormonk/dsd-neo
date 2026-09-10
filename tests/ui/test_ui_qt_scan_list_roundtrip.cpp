@@ -1,15 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QIODevice>
+#include <QList>
+#include <QMap>
 #include <QStandardPaths>
+#include <QString>
 #include <QTemporaryDir>
+#include <QVariant>
+#include <QVariantList>
+#include <QVariantMap>
 #include <cstdio>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
+#include <initializer_list>
+#include <utility>
+#include "../test_support/qt_test_paths.h"
 #include "json_store.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
-#include "scan_list_targets.h"
 #include "scan_lists_model.h"
 using namespace dsd_qt;
 static int failures;
@@ -28,7 +38,7 @@ main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     app.setOrganizationName(QStringLiteral("dsd-neo-test"));
     app.setApplicationName(QStringLiteral("scan-list-roundtrip-%1").arg(QCoreApplication::applicationPid()));
-    QStandardPaths::setTestModeEnabled(true);
+    dsd_test_qt_isolate_paths();
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dataDir).removeRecursively();
     QVariantMap entry{
@@ -95,6 +105,23 @@ main(int argc, char** argv) {
     check(file.open(QIODevice::ReadOnly));
     check(file.readAll().contains(QByteArray("-1 ") + directKey.toUtf8()));
     file.close();
+    // A list replaces each system's source aliases; unused paths cannot block it.
+    QFile aliases(dir.filePath("sources.csv"));
+    check(aliases.open(QIODevice::WriteOnly));
+    aliases.write("id,name\n123,Dispatch\n");
+    aliases.close();
+    list["srcCsvPath"] = aliases.fileName();
+    for (const auto& unused : {dir.filePath("missing.csv"), QStringLiteral("invalid,\"\npath.csv")}) {
+        systems.update(0, {{"srcCsvPath", unused}});
+        const auto built = keyedStarter.build(list);
+        check(built.value("ok").toBool() && !built.value("warnings").toStringList().isEmpty());
+        check(built.value("args").toStringList().contains(aliases.fileName()));
+    }
+    list["srcCsvPath"] = dir.filePath("missing-effective.csv");
+    check(!keyedStarter.build(list).value("ok").toBool());
+    list["srcCsvPath"] = "invalid,effective.csv";
+    check(!keyedStarter.build(list).value("ok").toBool());
+    list.remove("srcCsvPath");
     systems.remove(0);
     // Removing a list also removes its private generated session input.
     check(starter.build(model.get(0)).value("ok").toBool());

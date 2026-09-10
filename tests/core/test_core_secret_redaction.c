@@ -109,7 +109,8 @@ test_cli_key_errors(void) {
             fclose(file);
         }
         remove(capture.path);
-        if (result != DSD_PARSE_ERROR || strstr(output, malformed) != NULL) {
+        if (result != DSD_PARSE_ERROR || strstr(output, malformed) != NULL || strstr(output, "77777777") != NULL
+            || strstr(output, "7777777777777777") != NULL) {
             failed = 1;
         }
         DSD_SECURE_ZERO(malformed, sizeof malformed);

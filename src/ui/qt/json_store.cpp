@@ -38,7 +38,7 @@ json_store_save_array(const QString& fileName, const QJsonArray& array) {
     const QString path = json_store_path(fileName);
     QDir().mkpath(QFileInfo(path).absolutePath());
     QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly)) {
+    if (!file.open(QIODevice::WriteOnly) || !file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
         return false;
     }
     const QByteArray data = QJsonDocument(array).toJson(QJsonDocument::Compact);

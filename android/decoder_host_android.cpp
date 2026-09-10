@@ -90,16 +90,6 @@ to_java_string_array(QJniEnvironment& env, const QStringList& values) {
 }
 
 /** @brief Prose for the toolbar and the platform notification. */
-QString
-phase_text(SessionPhase phase) {
-    switch (phase) {
-        case kSessionStarting: return QStringLiteral("Starting…");
-        case kSessionRunning: return QStringLiteral("Decoding");
-        case kSessionStopping: return QStringLiteral("Stopping…");
-        case kSessionFailed: return QStringLiteral("Start failed");
-        default: return QStringLiteral("Idle");
-    }
-}
 
 } // namespace
 
@@ -110,57 +100,6 @@ DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : dsd_qt::DecoderHost(pa
         QJniObject::callStaticMethod<void>(kSupportClass, "ensureNotificationPermission", "(Landroid/app/Activity;)V",
                                            context.object());
     }
-}
-
-DecoderHostAndroid::~DecoderHostAndroid() = default;
-
-bool
-DecoderHostAndroid::isRunning() const {
-    return m_running;
-}
-
-QString
-DecoderHostAndroid::statusText() const {
-    return m_status;
-}
-
-dsd_qt::DecoderHost::SessionState
-DecoderHostAndroid::sessionState() const {
-    return static_cast<SessionState>(m_published_phase);
-}
-
-QString
-DecoderHostAndroid::failureText() const {
-    return m_failure;
-}
-
-bool
-DecoderHostAndroid::localDeviceReady() const {
-    return m_usb.ready;
-}
-
-QString
-DecoderHostAndroid::localDeviceStatus() const {
-    // WP-D5: only a native claim error may suggest another app owns the device.
-    if (m_usb.ready && m_usb.failureKind == NoDeviceFailure && m_device_error) {
-        if (m_device_error == -6) {
-            return tr("Android could not claim %1. It may be held by another SDR app, or the OTG port may be "
-                      "under-powered — try a powered hub.")
-                .arg(m_usb.name);
-        }
-        return tr("Android could not open or claim %1 (code %2).").arg(m_usb.name).arg(m_device_error);
-    }
-    return m_usb.text;
-}
-
-int
-DecoderHostAndroid::localDeviceFailureKind() const {
-    // libusb's BUSY value survives librtlsdr's claim failure; other native codes
-    // remain in the terminal result for diagnostics without guessing a cause.
-    if (m_usb.failureKind != NoDeviceFailure || !m_usb.ready) {
-        return m_usb.failureKind;
-    }
-    return m_device_error == -6 ? DeviceBusy : (m_device_error ? DeviceOpenFailed : NoDeviceFailure);
 }
 
 void
@@ -278,28 +217,6 @@ DecoderHostAndroid::failStart(const QString& reason) {
     return false;
 }
 
-void
-DecoderHostAndroid::stop() {
-    if (m_phase.phase() == kSessionFailed) {
-        const auto record =
-            QJniObject::callStaticObjectMethod(kServiceClass, "lifecycleStatus", "()Ljava/lang/String;");
-        const auto status = QJsonDocument::fromJson(record.toString().toUtf8()).object();
-        const auto name = status.value(QStringLiteral("state")).toString().toUtf8();
-        const auto session = static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger());
-        if (!status.isEmpty() && m_phase.acknowledge_failure(session, name.constData())) {
-            setSessionPhase(kSessionIdle);
-            setStatus(phase_text(kSessionIdle));
-            return;
-        }
-    }
-    QJniObject context = android_context();
-    if (!context.isValid()) {
-        return;
-    }
-    QJniObject::callStaticMethod<void>(kServiceClass, "stopDecoder", "(Landroid/content/Context;)V", context.object());
-    setStatus(QStringLiteral("Stopping…"));
-}
-
 bool
 DecoderHostAndroid::moveToBackground() {
     /* Finishing the Activity would terminate the Qt process, and with it the service
@@ -380,54 +297,6 @@ DecoderHostAndroid::refreshLocation() {
 }
 
 void
-DecoderHostAndroid::refresh() {
-    refreshLocation();
-
-    const bool first_poll = !m_primed;
-    const bool running = engine_is_running();
-    if (running != m_running) {
-        m_running = running;
-        Q_EMIT runningChanged();
-    }
-
-    // One record prevents a return-to-IDLE poll from pairing with the previous
-    // session's error or initialization flag. No decoder snapshot is consumed here.
-    QJniObject record = QJniObject::callStaticObjectMethod(kServiceClass, "lifecycleStatus", "()Ljava/lang/String;");
-    const QJsonObject status =
-        record.isValid() ? QJsonDocument::fromJson(record.toString().toUtf8()).object() : QJsonObject();
-    const uint64_t session = static_cast<uint64_t>(status.value(QStringLiteral("sessionId")).toInteger());
-    const QByteArray name = status.value(QStringLiteral("state")).toString(QStringLiteral("IDLE")).toUtf8();
-    const auto reason = static_cast<RunReason>(status.value(QStringLiteral("reason")).toInt());
-    if (first_poll) {
-        m_initialized_session = session;
-        if (name == "IDLE") {
-            m_adopted_idle_session = session;
-        }
-    }
-    const SessionPhase phase = status.isEmpty() ? m_phase.update(name.constData(), running)
-                                                : m_phase.update(name.constData(), running, session, reason);
-    const bool adopted_idle = session != 0 && session == m_adopted_idle_session;
-    m_device_error_session = session;
-    const int device_error =
-        adopted_idle || session == m_retried_device_session ? 0 : status.value(QStringLiteral("deviceError")).toInt();
-    if (m_device_error != device_error) {
-        m_device_error = device_error;
-        Q_EMIT localDeviceChanged();
-    }
-    if (!first_poll && status.value(QStringLiteral("initialized")).toBool() && session > m_initialized_session) {
-        m_initialized_session = session;
-        Q_EMIT sessionInitialized();
-    }
-    setSessionPhase(phase,
-                    first_poll || adopted_idle ? QString() : status.value(QStringLiteral("lastError")).toString());
-    setStatus(phase_text(phase));
-
-    // Attachment delivery can synchronously call start() through QML.
-    m_primed = true;
-    refreshLocalDevice();
-}
-
-void
 DecoderHostAndroid::refreshLocalDevice() {
     // WP-D5: readiness, name and failure classification belong to one USB record.
     const auto usb_record = QJniObject::callStaticObjectMethod(kUsbClass, "deviceStatus", "()Ljava/lang/String;");
@@ -438,42 +307,6 @@ DecoderHostAndroid::refreshLocalDevice() {
     if (attach.isValid() && !attach.toString().isEmpty()) {
         Q_EMIT localDeviceAttached(attach.toString());
     }
-}
-
-void
-DecoderHostAndroid::setStatus(const QString& text) {
-    if (m_status == text) {
-        return;
-    }
-    m_status = text;
-    Q_EMIT statusTextChanged();
-}
-
-void
-DecoderHostAndroid::setSessionPhase(SessionPhase phase, const QString& reason) {
-    QString failure = reason;
-    if (phase == kSessionFailed) {
-        /* A reason the host produced itself wins: the service never saw that attempt,
-         * so its own record would be stale. */
-        failure = reason.isEmpty() ? m_failure : reason;
-        if (failure.isEmpty()) {
-            QJniObject service_reason =
-                QJniObject::callStaticObjectMethod(kServiceClass, "lastError", "()Ljava/lang/String;");
-            if (service_reason.isValid()) {
-                failure = service_reason.toString();
-            }
-        }
-        if (failure.isEmpty()) {
-            failure = QStringLiteral("The decoder could not be started. Check the input settings.");
-        }
-    }
-
-    if (phase == m_published_phase && failure == m_failure) {
-        return;
-    }
-    m_published_phase = phase;
-    m_failure = failure;
-    Q_EMIT sessionStateChanged();
 }
 
 } // namespace dsd_android
@@ -535,3 +368,32 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeQuitUi(JNIEnv* env, jclass cla
 }
 
 } // extern "C"
+
+namespace dsd_android {
+QString
+DecoderHostAndroid::serviceFailureText() const {
+    const auto reason = QJniObject::callStaticObjectMethod(kServiceClass, "lastError", "()Ljava/lang/String;");
+    return reason.isValid() ? reason.toString() : QString();
+}
+
+void
+DecoderHostAndroid::requestServiceStop() {
+    QJniObject context = android_context();
+    if (!context.isValid()) {
+        return;
+    }
+    QJniObject::callStaticMethod<void>(kServiceClass, "stopDecoder", "(Landroid/content/Context;)V", context.object());
+    setStatus(QStringLiteral("Stopping…"));
+}
+
+QJsonObject
+DecoderHostAndroid::readLifecycleStatus() const {
+    const auto record = QJniObject::callStaticObjectMethod(kServiceClass, "lifecycleStatus", "()Ljava/lang/String;");
+    return record.isValid() ? QJsonDocument::fromJson(record.toString().toUtf8()).object() : QJsonObject();
+}
+
+bool
+DecoderHostAndroid::readEngineRunning() const {
+    return engine_is_running();
+}
+} // namespace dsd_android

@@ -12,26 +12,33 @@
  * ring walk must be gated on commit_rev, not on staged-row renders; and a
  * relaunched model must not re-ingest rows its predecessor already logged. */
 
+#include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QIODevice>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
+#include <QLatin1String>
 #include <QList>
 #include <QModelIndex>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
-#include <QVector>
 #include <dsd-neo/core/state.h>
+#include <initializer_list>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include "../test_support/qt_test_paths.h"
 
 #include "call_history_model.h"
 #include "dsd-neo/core/safe_api.h"
@@ -299,7 +306,7 @@ test_reacquisition_merge_updates_in_place(void) {
            model.count() == 1 && model.data(model.index(0), CallHistoryModel::EmergencyRole).toBool());
     expect("late emergency emits one dataChanged signal", changed.count() == 1);
     if (changed.count() == 1) {
-        const QList<QVariant> arguments = changed.at(0);
+        const QList<QVariant>& arguments = changed.at(0);
         expect("late emergency signals the existing row",
                qvariant_cast<QModelIndex>(arguments.at(0)) == model.index(0)
                    && qvariant_cast<QModelIndex>(arguments.at(1)) == model.index(0));
@@ -515,7 +522,7 @@ main(int argc, char** argv) {
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(
         QStringLiteral("dsd-neo-call-history-%1").arg(QCoreApplication::applicationPid()));
-    QStandardPaths::setTestModeEnabled(true);
+    dsd_test_qt_isolate_paths();
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dataDir).removeRecursively();
     QTemporaryDir settingsDir;

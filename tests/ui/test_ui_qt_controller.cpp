@@ -443,25 +443,20 @@ main(int argc, char** argv) {
     check(controller.talkgroupExportResult().isEmpty());
     bool restarted = false;
     bool restartHasGroupFile = false;
-    QObject::connect(&host, &dsd_qt::DecoderHost::sessionStateChanged, &controller, [&]() {
-        if (host.phase != Host::Idle) {
-            return;
-        }
-        QTimer::singleShot(0, &controller, [&]() {
-            // The saved map is associated by the retained completion before argv is built.
-            const auto completion = controller.talkgroupExportResult();
-            QVariantMap system{{"sourceType", "rtltcp"},
-                               {"host", "127.0.0.1"},
-                               {"port", 1234},
-                               {"freqMhz", "851.5"},
-                               {"groupCsvPath", completion.value("path")}};
-            dsd_qt::SessionArgsBuilder builder(nullptr);
-            const auto built = builder.build(system);
-            const QStringList args = built.value("args").toStringList();
-            const int group = args.indexOf("-G");
-            restartHasGroupFile = built.value("ok").toBool() && group >= 0 && args.value(group + 1) == exportPath;
-            restarted = true;
-        });
+    QObject::connect(&host, &dsd_qt::DecoderHost::localDeviceAttached, &controller, [&]() {
+        // The saved map is associated by the retained completion before argv is built.
+        const auto completion = controller.talkgroupExportResult();
+        QVariantMap system{{"sourceType", "rtltcp"},
+                           {"host", "127.0.0.1"},
+                           {"port", 1234},
+                           {"freqMhz", "851.5"},
+                           {"groupCsvPath", completion.value("path")}};
+        dsd_qt::SessionArgsError error;
+        const QStringList args = dsd_qt::session_args_build(system, {}, &error);
+        const int group = args.indexOf("-G");
+        restartHasGroupFile =
+            error == dsd_qt::SessionArgsError::None && group >= 0 && args.value(group + 1) == exportPath;
+        restarted = true;
     });
     host.onRefresh = [&]() {
         if (host.phase == Host::Idle) {
@@ -471,6 +466,7 @@ main(int argc, char** argv) {
         check(QFile::exists(exportPath));
         dsd_app_frontend_runtime_stop();
         host.setPhase(Host::Idle);
+        Q_EMIT host.localDeviceAttached(QStringLiteral("RTL-SDR"));
     };
     (void)dsd_app_frontend_redraw_consume();
     QEventLoop exportLoop;

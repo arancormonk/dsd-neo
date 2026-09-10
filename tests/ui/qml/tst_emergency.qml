@@ -7,14 +7,32 @@ Item {
     height: 900
     Loader { id: monitor; anchors.fill: parent; source: uiDir + "/MonitorScreen.qml" }
     Loader { id: row; source: uiDir + "/CallRow.qml"; width: 420 }
+    Loader { id: history; anchors.fill: parent; source: uiDir + "/HistoryScreen.qml"; visible: false }
     TestCase {
         name: "EmergencyIndication"
         when: windowShown
         function cleanup() {
+            history.visible = false;
+            callHistory.clearAll();
             testContext.setMetric("leadSlot", 0)
             for (var slot = 1; slot <= 2; ++slot) {
                 testContext.setMetric("slot" + slot + "CallState", 0)
                 testContext.setMetric("slot" + slot + "CallEmergency", false)
+            }
+        }
+        function test_emergency_in_history_and_recent_delegates() {
+            callHistory.clearAll();
+            monitorView.minWhen = 0;
+            history.visible = true;
+            var name = callHistory.pushEmergency();
+            for (var list of [findChild(monitor.item, "recentCallsList"), findChild(history.item, "callLogList")]) {
+                verify(list !== null);
+                list.positionViewAtBeginning();
+                tryVerify(function() { return list.itemAtIndex(0) !== null; });
+                var delegate = list.itemAtIndex(0);
+                compare(delegate.name, name);
+                verify(delegate.emergency);
+                verify(findChild(delegate, "rowEmergencyTag").visible);
             }
         }
         function test_emergency_tags() {

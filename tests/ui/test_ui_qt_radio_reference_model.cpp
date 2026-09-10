@@ -22,17 +22,22 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QGuiApplication>
 #include <QIODevice>
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QObject>
+#include <QQmlComponent>
+#include <QQmlContext>
+#include <QQmlEngine>
 #include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QUrl>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -42,9 +47,12 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/radioreference.h>
+#include <initializer_list>
+#include <memory>
 #include <stdio.h>
 #include <stdlib.h>
 #include <utility>
+#include "../test_support/qt_test_paths.h"
 
 #include "app_prefs.h"
 #include "decoder_host.h"
@@ -630,6 +638,47 @@ test_per_site_import() {
 }
 
 void
+test_mixed_simulcast_qml_plan() {
+    Harness h;
+    h.model.loadSystem(6673);
+    pump(h.model);
+    const auto sites = h.model.sites();
+    int ordinary = -1, simulcast = -1;
+    for (int i = 0; i < sites.size(); ++i) {
+        if (sites[i].toMap().value("simulcast").toBool()) {
+            simulcast = i;
+        } else {
+            ordinary = i;
+        }
+    }
+    expect("fixture has ordinary and simulcast sites", ordinary >= 0 && simulcast >= 0);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty("radioReference", &h.model);
+    engine.rootContext()->setContextProperty("prefs", &h.prefs);
+    engine.rootContext()->setContextProperty("decoderHost", &h.host);
+    QQmlComponent component(&engine, QUrl::fromLocalFile(QStringLiteral(DSD_QML_UI_DIR "/RadioReferenceScreen.qml")));
+    std::unique_ptr<QObject> screen(component.create());
+    expect("production RadioReference screen loads", screen != nullptr);
+    if (!screen) {
+        return;
+    }
+    screen->setProperty("eachSite", true);
+    for (const QVariantList& selection : {QVariantList{ordinary, simulcast}, QVariantList{simulcast, ordinary}}) {
+        screen->setProperty("selectedSites", selection);
+        QMetaObject::invokeMethod(screen.get(), "refreshPlan");
+        const auto plan = screen->property("plan").toMap();
+        const auto plans = plan.value("plans").toList();
+        expect("mixed per-site QML plan valid", plan.value("ok").toBool() && plans.size() == 2);
+        for (int i = 0; i < plans.size(); ++i) {
+            const auto flag = plans[i].toMap().value("decodeFlag").toString();
+            const bool expected = sites[selection[i].toInt()].toMap().value("simulcast").toBool();
+            expect("QML batch preserves each site's recorded modulation",
+                   flag.contains("-mq") == expected && flag.contains("-ft") != expected);
+        }
+    }
+}
+
+void
 test_import_lands_in_the_library(void) {
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
 
@@ -1173,11 +1222,11 @@ test_destroy_with_requests_in_flight(void) {
 
 int
 main(int argc, char** argv) {
-    QCoreApplication app(argc, argv);
+    QGuiApplication app(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(
         QStringLiteral("dsd-neo-radio-reference-%1").arg(QCoreApplication::applicationPid()));
-    QStandardPaths::setTestModeEnabled(true);
+    dsd_test_qt_isolate_paths();
 
     /* AppPrefs hardcodes its own QSettings scope, so redirecting the standard
      * paths alone would still write a real profile. */
@@ -1194,6 +1243,7 @@ main(int argc, char** argv) {
     test_conventional_system();
     test_import_lands_in_the_library();
     test_per_site_import();
+    test_mixed_simulcast_qml_plan();
     test_refresh_replaces_a_row_in_place();
     test_refresh_survives_a_row_removed_mid_flight();
     test_site_numbers_are_ambiguous();

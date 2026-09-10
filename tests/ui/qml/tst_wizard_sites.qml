@@ -86,10 +86,8 @@ Item {
                 verify(sys.uid !== savedSystems.get(0).uid)
                 var built = sessionArgs.build(sys)
                 verify(built.ok, "Imported site's retained key must build a valid session")
-                var keyIndex = built.args.indexOf("-b")
-                verify(keyIndex >= 0)
-                // Boolean only: never print the key or argv on failure.
-                verify(built.args[keyIndex + 1] === String(17 * 3), "Imported site retains the source key")
+                verify(!("args" in built))
+                verify(testContext.retainedKeyMatches(sys.uid, String(17 * 3)), "Imported site retains the source key")
             }
         }
         function test_batch_missing_key_source_requires_replace_or_clear() {
@@ -116,8 +114,8 @@ Item {
                 verify(!("encKeyValue" in sys))
                 var built = sessionArgs.build(sys)
                 verify(built.ok)
-                var keyIndex = built.args.indexOf("-b")
-                verify(keyIndex >= 0 && built.args[keyIndex + 1] === String(19 * 3), "Batch honors Replace")
+                verify(!("args" in built))
+                verify(testContext.retainedKeyMatches(sys.uid, String(19 * 3)), "Batch honors Replace")
             }
         }
         function test_grouped_edit_clears_provenance() {

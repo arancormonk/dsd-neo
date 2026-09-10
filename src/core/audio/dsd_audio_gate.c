@@ -14,6 +14,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/key_material.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -213,8 +214,7 @@ dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot) {
         return 0;
     }
 
-    const unsigned long long r_key = (slot == 0) ? state->R : state->RR;
-    return (r_key != 0ULL || state->K != 0ULL || state->K1 != 0ULL) ? 1 : 0;
+    return dsd_key_scalar_present(state, slot) || dsd_key_basic_present(state) || dsd_key_hytera_present(state);
 }
 
 int
@@ -228,20 +228,25 @@ dsd_dmr_voice_kid_can_decrypt(const dsd_state* state, int slot, int algid, const
         // change Kirisun completeness and the caller has to say which key it means.
         return key->kirisun_complete ? 1 : 0;
     }
+    if (dsd_dmr_alg_key_need(algid) == DSD_KEY_NEED_SCALAR && key->scalar_present) {
+        return 1;
+    }
     return dsd_dmr_voice_alg_can_decrypt(algid, key->r_key, key->aes_loaded);
 }
 
 dsd_dmr_key_material
 dsd_dmr_slot_key_material(const dsd_state* state, int slot, int key_id, int mapped) {
-    dsd_dmr_key_material material = {0ULL, 0, 0};
+    dsd_dmr_key_material material = {0};
     if (!state || !dsd_dmr_slot_valid(slot)) {
         return material;
     }
 
     material.r_key = (slot == 0) ? state->R : state->RR;
+    material.scalar_present = dsd_key_scalar_present(state, slot);
     material.aes_loaded = state->aes_key_loaded[slot];
     material.kirisun_complete = dsd_dmr_kirisun_slot_key_complete(state, slot);
     if (mapped) {
+        material.scalar_present = 0;
         (void)keyring_kid_material(state, key_id, &material.r_key, &material.aes_loaded);
         material.kirisun_complete = keyring_kid_kirisun_complete(state, key_id);
     }
@@ -254,7 +259,7 @@ dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsi
         return 0;
     }
     const dsd_dmr_key_material key = {r_key, state->aes_key_loaded[slot],
-                                      dsd_dmr_kirisun_slot_key_complete(state, slot)};
+                                      dsd_dmr_kirisun_slot_key_complete(state, slot), state->scalar_key_present[slot]};
     return dsd_dmr_voice_kid_can_decrypt(state, slot, algid, &key);
 }
 

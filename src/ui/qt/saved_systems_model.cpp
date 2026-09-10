@@ -3,7 +3,9 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <initializer_list>
 #include <qanystringview.h>
+#include <utility>
 #include "saved_systems_model.h"
 #include "site_groups.h"
 

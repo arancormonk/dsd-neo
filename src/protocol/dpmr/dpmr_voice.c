@@ -17,6 +17,7 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/key_presence.h>
 
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
@@ -334,7 +335,7 @@ dpmr_print_scrambler_state(const dsd_opts* opts, const dsd_state* state) {
     DSD_FPRINTF(stderr, "%s", KRED);
     DSD_FPRINTF(stderr, " Scrambler");
     DSD_FPRINTF(stderr, "%s", KNRM);
-    if (state->R != 0) {
+    if (dsd_key_scalar_present(state, 0)) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[16];
         DSD_FPRINTF(stderr, " Key %s ",
@@ -369,8 +370,9 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
         .audio_permitted = 1U,
     };
     if (state->dPMRVoiceFS2Frame.Version[0] == 3U) {
-        crypto.classification = state->R != 0U ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED;
-        crypto.audio_permitted = state->R != 0U;
+        crypto.classification =
+            dsd_key_scalar_present(state, 0) ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED;
+        crypto.audio_permitted = dsd_key_scalar_present(state, 0);
     }
     (void)dsd_call_state_update_crypto(state, 0U, &crypto);
     dsd_event_sync_slot(opts, state, 0U);
@@ -397,7 +399,7 @@ dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR
                 state->nxdn_cipher_type = 0x01;
                 state->dmr_encL = 1;
             }
-            if (state->R != 0) {
+            if (dsd_key_scalar_present(state, 0)) {
                 state->dmr_encL = 0;
             }
             if (opts->payload == 1) {

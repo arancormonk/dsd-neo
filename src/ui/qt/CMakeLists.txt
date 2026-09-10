@@ -48,6 +48,7 @@ qt_add_resources(
         qml/Theme.qml
         qml/Util.js
         qml/Main.qml
+        qml/PointerBarrier.qml
         # WP-D4 site chooser. Keep resource paths on their own lines for the audit.
         qml/SiteChooserSheet.qml
         qml/BandRail.qml

@@ -2,13 +2,20 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/vocoder.h>
+#include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
+#include <mbelib-neo/mbelib.h>
 #include <stdio.h>
 #include <string.h>
 #include "../../src/app_control/commands_internal.h"
@@ -130,9 +137,133 @@ bootstrap_snapshot_secrets(void) {
     DSD_SECURE_ZERO(&opts, sizeof opts);
 }
 
+/* Known stream bytes: RC4 with a nine-byte zero key after drop 256;
+ * AES-128/256 OFB with zero key/IV after the first block (OpenSSL oracle).
+ * Record the plaintext emitted by the real voice pipeline, not just mute flags. */
+static void
+zero_key_voice(void) {
+    static const unsigned char stream[3][7] = {
+        {0x3b, 0x3f, 0xa8, 0x3f, 0xd3, 0x55, 0xe2},
+        {0xf7, 0x95, 0xbd, 0x4a, 0x52, 0xe2, 0x9e},
+        {0x08, 0xc3, 0x74, 0x84, 0x8c, 0x22, 0x82},
+    };
+    char frame[4][24] = {{0}}, cipher[49] = {0};
+    mbe_process_result decoded;
+    int ready = 0;
+    for (int seed_value = 1; seed_value < 96 && !ready; ++seed_value) {
+        DSD_MEMSET(frame, 0, sizeof frame);
+        frame[(seed_value + 0) % 4][(seed_value * 5 + 3) % 24] = 1;
+        frame[(seed_value + 1) % 4][(seed_value * 7 + 11) % 24] = 1;
+        frame[(seed_value + 2) % 4][(seed_value * 13 + 17) % 24] = 1;
+        frame[(seed_value + 3) % 4][(seed_value * 19 + 23) % 24] = 1;
+        ready = mbe_decodeAmbe3600x2450Frame((const char (*)[24])frame, cipher, &decoded) >= 0
+                && !dmr_ambe49_should_skip_crypto(cipher);
+    }
+    check(ready, "encrypted AMBE fixture is active voice");
+    for (int algorithm = 0; algorithm < 3; ++algorithm) {
+        for (int live = 0; live < 3; ++live) {
+            for (int slot = 0; slot < 2; ++slot) {
+                static dsd_opts opts;
+                static dsd_state state;
+                initOpts(&opts);
+                initState(&state);
+                dsd_app_frontend_runtime_start(&opts, &state);
+                const int algid = algorithm == 0 ? 0x21 : algorithm == 1 ? 0x24 : 0x25;
+                check(!dsd_dmr_voice_slot_can_decrypt(&state, slot, algid, 0), "absent key cannot decrypt");
+                dsd_app_key_direct_payload key = {0};
+                key.key_type = algorithm == 0 ? DSD_APP_KEY_TYPE_RC4 : DSD_APP_KEY_TYPE_HEX;
+                DSD_MEMSET(key.value, '0', algorithm == 0 ? 1 : algorithm == 1 ? 32 : 64);
+                if (live == 2) {
+                    if (algorithm == 0) {
+                        check(dsd_app_command_set_u64(DSD_APP_CMD_KEY_RC4DES_SET, 0) > 0, "zero legacy scalar queued");
+                    } else {
+                        dsd_app_aes_key_payload aes = {0};
+                        check(dsd_app_command_set_aes_key(&aes) > 0, "zero legacy AES queued");
+                    }
+                    check(dsd_app_drain_cmds(&opts, &state) == 1, "zero legacy key applied");
+                } else if (live) {
+                    check(dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key) > 0,
+                          "zero live key queued");
+                    check(dsd_app_drain_cmds(&opts, &state) == 1, "zero live key applied");
+                } else {
+                    char name[] = "zero-key-test", flag[] = "-H";
+                    if (algorithm == 0) {
+                        flag[1] = '1';
+                    }
+                    char* args[] = {name, flag, key.value, NULL};
+                    check(dsd_parse_args(3, args, &opts, &state, NULL, NULL) == DSD_PARSE_CONTINUE,
+                          "zero startup key parsed");
+                }
+                check(dsd_dmr_voice_slot_can_decrypt(&state, slot, algid, 0), "supplied zero key is decryptable");
+                state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+                state.currentslot = slot;
+                state.payload_algid = state.payload_algidR = algid;
+                state.payload_mi = state.payload_miR = 0;
+                state.dropL = state.dropR = 256;
+                state.DMRvcL = state.DMRvcR = 0;
+                DSD_MEMSET(state.aes_iv, 0, sizeof state.aes_iv);
+                DSD_MEMSET(state.aes_ivR, 0, sizeof state.aes_ivR);
+                opts.floating_point = 1;
+                opts.dmr_stereo = 1;
+                opts.errorbars = 0;
+                FILE* recording = tmpfile();
+                check(recording != NULL, "plaintext recording opens");
+                if (slot) {
+                    opts.mbe_out_fR = recording;
+                } else {
+                    opts.mbe_out_f = recording;
+                }
+                processMbeFrame(&opts, &state, NULL, frame, NULL);
+                char recovered[49] = {0}, expected_plain[49];
+                for (int bit = 0; bit < 49; ++bit) {
+                    expected_plain[bit] = cipher[bit] ^ ((stream[algorithm][bit / 8] >> (7 - bit % 8)) & 1);
+                }
+                if (recording) {
+                    check(fseek(recording, 0, SEEK_SET) == 0, "plaintext recording rewinds");
+                    opts.mbe_in_f = recording;
+                    check(readAmbe2450Data(&opts, &state, recovered) == 0, "decrypted frame was recorded");
+                    check(memcmp(recovered, expected_plain, sizeof recovered) == 0,
+                          "zero key recovers known plaintext");
+                    fclose(recording);
+                    opts.mbe_in_f = opts.mbe_out_f = opts.mbe_out_fR = NULL;
+                }
+                dsd_app_frontend_runtime_stop();
+                freeState(&state);
+                DSD_SECURE_ZERO(&state, sizeof state);
+            }
+        }
+    }
+}
+
+static void
+presence_follows_material(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_BASIC, "0", DSD_KEY_APPLY_OVERLAY) == DSD_KEY_DIRECT_OK,
+          "zero basic overlay accepted");
+    check(dsd_key_apply_direct(&state, DSD_KEY_TYPE_RC4, "0", DSD_KEY_APPLY_OVERLAY) == DSD_KEY_DIRECT_OK,
+          "zero scalar overlay accepted");
+    state.keyloader = 1;
+    check(dsd_dmr_voice_slot_can_decrypt(&state, 0, 0x21, 0), "loader mode alone does not delete left scalar");
+    check(dsd_dmr_voice_slot_can_decrypt(&state, 1, 0x21, 0), "loader mode alone does not delete right scalar");
+    keyring_activate_slot_with_kid(&state, 0, 77);
+    check(!dsd_dmr_voice_slot_can_decrypt(&state, 0, 0x21, 0), "missing keyring entry retires left scalar presence");
+    check(dsd_dmr_voice_slot_can_decrypt(&state, 1, 0x21, 0), "keyring replacement preserves companion scalar");
+    check(dsd_dmr_missing_alg_key_can_decrypt(&state, 0), "keyring replacement preserves unrelated supplied basic key");
+    dsd_key_set empty = {0};
+    dsd_key_set_install(&state, &empty);
+    check(!dsd_dmr_missing_alg_key_can_decrypt(&state, 0) && !dsd_dmr_missing_alg_key_can_decrypt(&state, 1),
+          "empty key set retires all presence");
+    freeState(&state);
+}
+
 int
 main(void) {
     bootstrap_snapshot_secrets();
+    zero_key_voice();
+    presence_follows_material();
     static dsd_state state;
     static dsd_opts opts;
     const int types[] = {0, 1, 1, 1, 2, 3};

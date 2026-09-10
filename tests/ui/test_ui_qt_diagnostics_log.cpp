@@ -313,6 +313,45 @@ clearWithConcurrentSubmit() {
 }
 
 static void
+clearAndReopen() {
+    for (const bool flushBeforeClear : {false, true}) {
+        for (const bool submitAfterClear : {false, true}) {
+            QTemporaryDir dir;
+            {
+                DiagnosticsLog log(dir.path());
+                for (int i = 0; i < 2000; ++i) {
+                    log.submit("host", "info", "discarded record");
+                }
+                if (flushBeforeClear) {
+                    log.flush();
+                }
+                log.clear();
+                check(log.snapshot().isEmpty(), "clear empties visible diagnostics");
+                if (submitAfterClear) {
+                    // Exceed queue capacity too: backpressure must not lose the clear.
+                    for (int i = 0; i < 2100; ++i) {
+                        log.submit("host", "info", "retained record");
+                    }
+                }
+                log.flush();
+                QFile tail(dir.filePath("tail.log"));
+                check(tail.open(QIODevice::ReadOnly), "cleared tail is readable");
+                const auto text = tail.readAll();
+                check(!text.contains("discarded record"), "clear removes persisted and queued diagnostics");
+                check(submitAfterClear ? text.contains("retained record") : text.isEmpty(),
+                      "clear preserves only subsequent diagnostics");
+            }
+            DiagnosticsLog reopened(dir.path());
+            DiagnosticsLogModel model(&reopened);
+            model.refresh();
+            check(!model.allText().contains("discarded record"), "cleared diagnostics stay absent after reopen");
+            check(submitAfterClear ? model.allText().contains("retained record") : model.rowCount() == 0,
+                  "reopened diagnostics preserve only subsequent records");
+        }
+    }
+}
+
+static void
 earlyHostCaptureAndBridge() {
     {
         auto& log = DiagnosticsLog::instance();
@@ -423,6 +462,7 @@ main(int argc, char** argv) {
     DiagnosticsLog::installTap();
     earlyHostCaptureAndBridge();
     clearWithConcurrentSubmit();
+    clearAndReopen();
     test_live_formatted_keys();
     realKeySources();
     {

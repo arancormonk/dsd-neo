@@ -13,6 +13,7 @@ qt_add_executable(
     dsd-neo-app
     main.cpp
     decoder_host_android.cpp
+    decoder_host_android_lifecycle.cpp
     dsdneo_jni.cpp
 )
 

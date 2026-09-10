@@ -54,6 +54,8 @@ dsd_key_state_secure_wipe(dsd_state* state) {
     if (state == NULL) {
         return;
     }
+    DSD_SECURE_ZERO(state->scalar_key_present, sizeof state->scalar_key_present);
+    state->basic_key_present = 0;
     DSD_SECURE_ZERO(state->rkey_array, sizeof(state->rkey_array));
     DSD_SECURE_ZERO(state->rkey_array_loaded, sizeof(state->rkey_array_loaded));
     DSD_SECURE_ZERO(state->aes_key, sizeof(state->aes_key));
@@ -80,6 +82,8 @@ key_scalars_capture(dsd_key_scalars* out, const dsd_state* state) {
     out->K4 = state->K4;
     out->R = state->R;
     out->RR = state->RR;
+    DSD_MEMCPY(out->scalar_key_present, state->scalar_key_present, sizeof out->scalar_key_present);
+    out->basic_key_present = state->basic_key_present;
     out->H = state->H;
     out->hytera_key_segments = state->hytera_key_segments;
     DSD_MEMCPY(out->A1, state->A1, sizeof(out->A1));
@@ -100,6 +104,8 @@ key_scalars_install(dsd_state* state, const dsd_key_scalars* in) {
     state->K4 = in->K4;
     state->R = in->R;
     state->RR = in->RR;
+    DSD_MEMCPY(state->scalar_key_present, in->scalar_key_present, sizeof state->scalar_key_present);
+    state->basic_key_present = in->basic_key_present;
     state->H = in->H;
     state->hytera_key_segments = in->hytera_key_segments;
     DSD_MEMCPY(state->A1, in->A1, sizeof(state->A1));
@@ -202,7 +208,9 @@ dsd_key_set_copy(dsd_key_set* dst, const dsd_key_set* src) {
 static int
 key_scalar_words_equal(const dsd_key_scalars* a, const dsd_key_scalars* b) {
     return a->K == b->K && a->K1 == b->K1 && a->K2 == b->K2 && a->K3 == b->K3 && a->K4 == b->K4 && a->R == b->R
-           && a->RR == b->RR && a->H == b->H && a->hytera_key_segments == b->hytera_key_segments;
+           && a->RR == b->RR && a->H == b->H && a->hytera_key_segments == b->hytera_key_segments
+           && a->basic_key_present == b->basic_key_present && a->scalar_key_present[0] == b->scalar_key_present[0]
+           && a->scalar_key_present[1] == b->scalar_key_present[1];
 }
 
 static int
@@ -348,16 +356,6 @@ key_set_direct_hex_width_valid(size_t nhex) {
 }
 
 static int
-key_set_direct_segments_nonzero(const uint64_t segments[4], size_t count) {
-    for (size_t i = 0U; i < count; i++) {
-        if (segments[i] != 0U) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int
 key_set_parse_direct_hex(const char* text, dsd_key_scalars* scalars, size_t* digits) {
     char hex[65];
     DSD_MEMSET(hex, 0, sizeof(hex));
@@ -399,13 +397,12 @@ dsd_key_scalars_store_direct_hex(dsd_key_scalars* scalars, const uint64_t segmen
     scalars->K2 = segments[1];
     scalars->K3 = segments[2];
     scalars->K4 = segments[3];
-    const int any_nonzero = key_set_direct_segments_nonzero(segments, segment_count);
-    scalars->hytera_key_segments = any_nonzero ? (uint8_t)segment_count : 0U;
+    scalars->hytera_key_segments = (uint8_t)segment_count;
     if (segment_count > 1U) {
         for (size_t i = 0U; i < segment_count; i++) {
             key_set_direct_store_segment(scalars, i, segments[i]);
         }
-        scalars->aes_key_loaded[0] = scalars->aes_key_loaded[1] = any_nonzero;
+        scalars->aes_key_loaded[0] = scalars->aes_key_loaded[1] = 1;
         scalars->aes_key_segments[0] = scalars->aes_key_segments[1] = (uint8_t)segment_count;
     }
 }
@@ -422,6 +419,7 @@ dsd_key_set_load_direct_width(dsd_key_set* out, const char* single_hex, const ch
     DSD_MEMSET(&loaded, 0, sizeof(loaded));
     loaded.present = 1U;
     loaded.keyloader = 0;
+    loaded.scalars.basic_key_present = have_dec;
     if (have_dec && key_set_parse_direct_dec(single_dec, &loaded.scalars.K) != 0) {
         dsd_key_set_free(&loaded);
         return DSD_KEY_DIRECT_INVALID_DEC;
@@ -488,6 +486,11 @@ key_set_parse_typed_direct(dsd_key_set* parsed, dsd_key_type type, const char* t
         if (key_parse_bounded_decimal(text, type == DSD_KEY_TYPE_BASIC ? 255U : 32767U, slot)) {
             result = DSD_KEY_DIRECT_INVALID_DEC;
         }
+        if (type == DSD_KEY_TYPE_BASIC) {
+            parsed->scalars.basic_key_present = 1;
+        } else {
+            parsed->scalars.scalar_key_present[0] = 1;
+        }
     } else if (type == DSD_KEY_TYPE_HEX) {
         if (key_set_parse_direct_hex(text, &parsed->scalars, &digits)) {
             result = DSD_KEY_DIRECT_INVALID_HEX;
@@ -500,6 +503,7 @@ key_set_parse_typed_direct(dsd_key_set* parsed, dsd_key_type type, const char* t
             result = DSD_KEY_DIRECT_INVALID_HEX;
         } else {
             parsed->scalars.R = parsed->scalars.RR = value;
+            parsed->scalars.scalar_key_present[0] = parsed->scalars.scalar_key_present[1] = 1;
         }
         DSD_SECURE_ZERO(&value, sizeof value);
         DSD_SECURE_ZERO(hex, sizeof hex);
@@ -513,16 +517,21 @@ static void
 key_scalars_overlay_direct(dsd_key_scalars* target, const dsd_key_scalars* parsed, dsd_key_type type) {
     if (type == DSD_KEY_TYPE_BASIC) {
         target->K = parsed->K;
+        target->basic_key_present = parsed->basic_key_present;
     } else if (type == DSD_KEY_TYPE_RC4) {
         target->R = parsed->R;
         target->RR = parsed->RR;
+        DSD_MEMCPY(target->scalar_key_present, parsed->scalar_key_present, sizeof target->scalar_key_present);
     } else if (type == DSD_KEY_TYPE_SCRAMBLER) {
         target->R = parsed->R;
+        target->scalar_key_present[0] = parsed->scalar_key_present[0];
     } else {
         dsd_key_scalars overlay = *parsed;
         overlay.K = target->K;
         overlay.R = target->R;
         overlay.RR = target->RR;
+        overlay.basic_key_present = target->basic_key_present;
+        DSD_MEMCPY(overlay.scalar_key_present, target->scalar_key_present, sizeof overlay.scalar_key_present);
         *target = overlay;
         DSD_SECURE_ZERO(&overlay, sizeof overlay);
     }

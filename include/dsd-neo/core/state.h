@@ -448,6 +448,8 @@ struct dsd_state {
     uint8_t hytera_key_segments;
     unsigned long long int R;
     unsigned long long int RR;
+    uint8_t scalar_key_present[2];
+    uint8_t basic_key_present;
     unsigned long long int H;
     unsigned long long int HYTL;
     unsigned long long int HYTR;

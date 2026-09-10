@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QChar>
 #include "call_history_model.h"
 
 #include <QByteArray>

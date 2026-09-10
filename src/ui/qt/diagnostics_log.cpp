@@ -118,7 +118,7 @@ DiagnosticsLog::DiagnosticsLog(const QString& directory) : m_directory(directory
     if (QFileInfo(old).lastModified().secsTo(QDateTime::currentDateTime()) > 7LL * 24 * 3600) {
         old.remove();
     }
-    if (old.open(QIODevice::ReadOnly)) {
+    if (old.open(QIODevice::ReadOnly) && old.size() > 0) {
         const auto data = boundedTail(old.read(tailLimit + 1));
         m_ring.append(QStringLiteral("--- previous run ---"));
         for (const auto& line : data.split('\n')) {
@@ -184,15 +184,21 @@ DiagnosticsLog::snapshot(quint64* generation) const {
 
 quint64
 DiagnosticsLog::clear() {
-    std::lock_guard<std::mutex> lock(m_ringMutex);
+    // Use submit's lock order. The clear precedes every subsequently queued
+    // record, including when an older batch is already being written.
+    std::lock_guard<std::mutex> queueLock(m_queueMutex);
+    std::lock_guard<std::mutex> ringLock(m_ringMutex);
+    m_queue.clear();
+    m_clearPending = true;
     m_ring.clear();
+    m_ready.notify_one();
     return ++m_generation;
 }
 
 void
 DiagnosticsLog::flush() {
     std::unique_lock<std::mutex> lock(m_queueMutex);
-    m_flushed.wait(lock, [this] { return m_queue.empty() && !m_writing; });
+    m_flushed.wait(lock, [this] { return m_queue.empty() && !m_clearPending && !m_writing; });
 }
 
 void
@@ -202,14 +208,20 @@ DiagnosticsLog::writeLoop() {
     QByteArray tail = m_initialTail;
     for (;;) {
         std::deque<QByteArray> batch;
+        bool clearTail = false;
         {
             std::unique_lock<std::mutex> lock(m_queueMutex);
-            m_ready.wait(lock, [this] { return m_stop || !m_queue.empty(); });
-            if (m_stop && m_queue.empty()) {
+            m_ready.wait(lock, [this] { return m_stop || m_clearPending || !m_queue.empty(); });
+            if (m_stop && m_queue.empty() && !m_clearPending) {
                 break;
             }
             batch.swap(m_queue);
+            clearTail = m_clearPending;
+            m_clearPending = false;
             m_writing = true;
+        }
+        if (clearTail) {
+            tail.clear();
         }
         std::for_each(batch.cbegin(), batch.cend(), [&tail](const QByteArray& line) { tail += line; });
         tail = boundedTail(tail);

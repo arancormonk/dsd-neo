@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <QByteArray>
 #include <QCoreApplication>
+#include <QList>
+#include <QMap>
+#include <QString>
+#include <QStringList>
+#include <QVariant>
+#include <QVariantList>
+#include <QVariantMap>
 #include <cstdio>
+#include <initializer_list>
+#include <utility>
 #include "scan_list_targets.h"
 #include "session_args.h"
 using namespace dsd_qt;

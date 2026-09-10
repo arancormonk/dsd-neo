@@ -470,6 +470,8 @@ apply_cmd_key_management_basic(dsd_opts* opts, dsd_state* state, const struct ds
                 uint32_t v = 0;
                 DSD_MEMCPY(&v, c->data, sizeof v);
                 state->K = v;
+                state->basic_key_present = 1;
+                DSD_SECURE_ZERO(&v, sizeof v);
                 ui_cmd_reset_key_mute_state(opts, state);
             }
             return 1;
@@ -479,6 +481,8 @@ apply_cmd_key_management_basic(dsd_opts* opts, dsd_state* state, const struct ds
                 uint32_t v = 0;
                 DSD_MEMCPY(&v, c->data, sizeof v);
                 state->R = v;
+                state->scalar_key_present[0] = 1;
+                DSD_SECURE_ZERO(&v, sizeof v);
                 ui_cmd_reset_key_mute_state(opts, state);
             }
             return 1;
@@ -489,6 +493,8 @@ apply_cmd_key_management_basic(dsd_opts* opts, dsd_state* state, const struct ds
                 DSD_MEMCPY(&v, c->data, sizeof v);
                 state->R = v;
                 state->RR = v;
+                state->scalar_key_present[0] = state->scalar_key_present[1] = 1;
+                DSD_SECURE_ZERO(&v, sizeof v);
                 ui_cmd_reset_key_mute_state(opts, state);
             }
             return 1;
@@ -513,9 +519,7 @@ apply_cmd_key_hytera_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     state->K2 = p.K2;
     state->K3 = p.K3;
     state->K4 = p.K4;
-    if (state->K1 == 0ULL && state->K2 == 0ULL && state->K3 == 0ULL && state->K4 == 0ULL) {
-        state->hytera_key_segments = 0U;
-    } else if (state->K3 != 0ULL || state->K4 != 0ULL) {
+    if (state->K3 != 0ULL || state->K4 != 0ULL) {
         state->hytera_key_segments = 4U;
     } else if (state->K2 != 0ULL) {
         state->hytera_key_segments = 2U;
@@ -526,6 +530,7 @@ apply_cmd_key_hytera_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Hytera key loaded (%s)",
                  (state->M == 1) ? "forced" : "not forced");
     state->ui_msg_expire = time(NULL) + 5;
+    DSD_SECURE_ZERO(&p, sizeof p);
     return 1;
 }
 
@@ -544,8 +549,7 @@ apply_cmd_key_aes_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     state->A2[0] = state->A2[1] = p.K2;
     state->A3[0] = state->A3[1] = p.K3;
     state->A4[0] = state->A4[1] = p.K4;
-    state->aes_key_loaded[0] = state->aes_key_loaded[1] =
-        (p.K1 != 0ULL || p.K2 != 0ULL || p.K3 != 0ULL || p.K4 != 0ULL) ? 1 : 0;
+    state->aes_key_loaded[0] = state->aes_key_loaded[1] = 1;
     state->aes_key_segments[0] = state->aes_key_segments[1] = 4U;
     for (int i = 0; i < 8; i++) {
         state->aes_key[i + 0] = (uint8_t)((p.K1 >> (56 - (i * 8))) & 0xFFU);
@@ -560,6 +564,7 @@ apply_cmd_key_aes_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     state->K4 = 0ULL;
     state->hytera_key_segments = 0U;
     ui_cmd_reset_key_mute_state(opts, state);
+    DSD_SECURE_ZERO(&p, sizeof p);
     return 1;
 }
 
@@ -585,6 +590,7 @@ ui_load_ken_scrambler_key(dsd_state* state, const char* input, int show_keys) {
     char local[128];
     DSD_SNPRINTF(local, sizeof local, "%s", input ? input : "");
     ken_dmr_scrambler_keystream_creation(state, local, show_keys);
+    DSD_SECURE_ZERO(local, sizeof local);
 }
 
 static void
@@ -592,6 +598,7 @@ ui_load_anytone_bp_key(dsd_state* state, const char* input, int show_keys) {
     char local[128];
     DSD_SNPRINTF(local, sizeof local, "%s", input ? input : "");
     anytone_bp_keystream_creation(state, local, show_keys);
+    DSD_SECURE_ZERO(local, sizeof local);
 }
 
 static int
@@ -615,6 +622,7 @@ apply_cmd_key_management_stream_keys(const dsd_opts* opts, dsd_state* state, con
                 entries[i].fn(state, s, opts->show_keys);
                 dsd_enc_lockout_bump_key_epoch(state);
             }
+            DSD_SECURE_ZERO(s, sizeof s);
             return 1;
         }
     }

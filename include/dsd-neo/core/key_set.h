@@ -22,7 +22,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_KEY_SET_H_H
 
 #include <dsd-neo/core/opts_fwd.h>
-#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/safe_api.h> // IWYU pragma: keep -- inline ownership cleanup uses secure-zero macros.
 #include <dsd-neo/core/state_fwd.h>
 
 #include <stdint.h>
@@ -51,6 +51,8 @@ typedef struct {
     unsigned long long K4;
     unsigned long long R;
     unsigned long long RR;
+    uint8_t scalar_key_present[2];
+    uint8_t basic_key_present;
     unsigned long long H;
     uint8_t hytera_key_segments;
     unsigned long long A1[2];

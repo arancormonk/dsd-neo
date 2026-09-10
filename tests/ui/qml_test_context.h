@@ -60,6 +60,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <memory>
+#include "../test_support/qt_test_paths.h"
 
 #include "app_prefs.h"
 #include "auto_start_policy.h"
@@ -708,6 +709,7 @@ class CallLogStore : public QAbstractListModel {
         qulonglong tg = 0;
         qulonglong src = 0;
         bool enc = false;
+        bool emergency = false;
         qint64 when = 0;
         int durationSecs = 4;
         QString systemName;
@@ -759,7 +761,7 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::TgRole: return row.tg;
             case CallHistoryModel::SrcRole: return row.src;
             case CallHistoryModel::SourceNameRole: return row.sourceName;
-            case CallHistoryModel::EmergencyRole: return false;
+            case CallHistoryModel::EmergencyRole: return row.emergency;
             case CallHistoryModel::EncRole: return row.enc;
             case CallHistoryModel::WhenRole: return row.when;
             case CallHistoryModel::DurationSecsRole: return row.durationSecs;
@@ -819,6 +821,15 @@ class CallLogStore : public QAbstractListModel {
         m_rows[0].sourceName = name;
         const QModelIndex idx = index(0);
         Q_EMIT dataChanged(idx, idx, {CallHistoryModel::SourceNameRole});
+        return call;
+    }
+
+    Q_INVOKABLE QString
+    pushEmergency() {
+        const QString call = push(QStringLiteral("TODAY"));
+        m_rows[0].emergency = true;
+        const auto first = index(0);
+        Q_EMIT dataChanged(first, first, {CallHistoryModel::EmergencyRole});
         return call;
     }
 
@@ -934,6 +945,12 @@ class Setup : public QObject {
 
   public:
     ~Setup() override { dsd_state_ext_free_all(m_talkgroup_state.get()); }
+
+    Q_INVOKABLE bool
+    retainedKeyMatches(const QString& uid, const QString& expected) const {
+        const dsd_qt::SavedSystemsModel systems;
+        return systems.keyValueForUid(uid) == expected;
+    }
 
     Q_INVOKABLE void
     pushDiagnostic(const QString& text) {
@@ -1346,7 +1363,7 @@ class Setup : public QObject {
          * UI_QT_PERSISTENCE and UI_QT_IMPORTED_FILES). */
         QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
         QCoreApplication::setApplicationName(QStringLiteral("dsd-neo-qml-%1").arg(QCoreApplication::applicationPid()));
-        QStandardPaths::setTestModeEnabled(true);
+        dsd_test_qt_isolate_paths();
         QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
 
         for (const QString& file :

@@ -30,11 +30,14 @@ dsd_scan_options_keys(const dsd_scan_options* options, dsd_key_set* out) {
     const uint32_t present = options->values.present;
     keys.present = (present & DSD_SCAN_OPT_DIRECT) != 0;
     keys.scalars.K = options->bp;
+    keys.scalars.basic_key_present = (present & DSD_SCAN_OPT_BP) != 0;
     if (present & (DSD_SCAN_OPT_SCALAR | DSD_SCAN_OPT_SCRAMBLER)) {
         keys.scalars.R = options->scalar;
+        keys.scalars.scalar_key_present[0] = 1;
     }
     if (present & DSD_SCAN_OPT_SCALAR) {
         keys.scalars.RR = options->scalar;
+        keys.scalars.scalar_key_present[1] = 1;
     }
     if (present & DSD_SCAN_OPT_HYTERA) {
         dsd_key_scalars_store_direct_hex(&keys.scalars, options->hytera, options->hytera_digits);

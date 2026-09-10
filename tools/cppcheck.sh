@@ -103,6 +103,7 @@ CPPCHECK_ARGS=(
   --suppress=missingIncludeSystem
   "-DQ_OBJECT="
   "-DQ_PROPERTY(x)="
+  "-DQ_MOC_INCLUDE(x)="
   "-DQ_ENUM(x)="
   "-DQ_SIGNALS=public"
   "-DQ_SLOTS="
@@ -143,6 +144,7 @@ if [[ $STRICT -eq 1 ]]; then
     --suppress=missingIncludeSystem
     "-DQ_OBJECT="
     "-DQ_PROPERTY(x)="
+    "-DQ_MOC_INCLUDE(x)="
     "-DQ_ENUM(x)="
     "-DQ_SIGNALS=public"
     "-DQ_SLOTS="

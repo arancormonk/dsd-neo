@@ -87,6 +87,7 @@ typedef struct {
     uint32_t source_id;
     int encrypted;
     int data_call;
+    int private_call;
     int tune_allowed;
     int audio_allowed;
     int record_allowed;
@@ -195,7 +196,7 @@ int dsd_tg_policy_set_fields(dsd_state* state, uint32_t id_start, uint32_t id_en
  * Remaining rows keep their order; a successful edit advances the table generation. */
 int dsd_tg_policy_remove_bounds(dsd_state* state, uint32_t id_start, uint32_t id_end);
 /** Atomically rewrite opts->group_in_file from the effective table using a sibling temporary file.
- * Keeps an extended policy header, or promotes when priority/preempt is set. Otherwise uses
+ * Keeps an extended policy header, or promotes for priority, preempt or media overrides. Otherwise uses
  * id,mode,name,tags when any row has tags, or id,mode,name. Ranges are written as start-end. Unmodelled free-text columns (e.g. alias metadata)
  * are not preserved. Returns 0 written or nothing to write (NULL opts, empty path), -1 on I/O
  * failure with the old file intact. */

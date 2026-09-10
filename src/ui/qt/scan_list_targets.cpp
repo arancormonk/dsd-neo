@@ -104,7 +104,7 @@ collectPaths(const QVariantMap& sys, const Target& target, ScanListTargets& out)
     if (!band.isEmpty() && target.type != "p25-trunk") {
         return QStringLiteral("A P25 band plan requires a P25 trunked type.");
     }
-    for (const auto& field : {"chanCsvPath", "groupCsvPath", "srcCsvPath", "keyCsvPath", "p25BandplanCsvPath"}) {
+    for (const auto& field : {"chanCsvPath", "groupCsvPath", "keyCsvPath", "p25BandplanCsvPath"}) {
         const QString path = sys.value(field).toString();
         if (!safePath(path)) {
             return QStringLiteral("CSV paths cannot contain comma, quote, CR or LF.");

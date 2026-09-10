@@ -926,6 +926,7 @@ Item {
 
     GradientButton {
         id: stopButton
+        objectName: "stopListeningButton"
 
         anchors.left: parent.left
         anchors.right: parent.right

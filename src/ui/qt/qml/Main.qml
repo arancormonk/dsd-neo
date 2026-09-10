@@ -285,7 +285,7 @@ Window {
         mainRoot.awaitingUsbAccess = false
         mainRoot.pendingStart = null
         mainRoot.pendingStartRow = -1
-        var built = scan ? scanListStarter.build(sys) : sessionArgs.build(sys)
+        var built = scan ? scanListStarter.build(sys) : sessionArgs.start(sys, decoderHost)
         if (!built.ok) {
             // Match the rejected field without exposing a prohibited argument or a key.
             if (scan) {
@@ -306,7 +306,7 @@ Window {
         // Side effects only after the host accepts: a refused start must not
         // stamp lastHeard, re-attribute history rows, or hide the previous
         // session's calls from the monitor pane.
-        if (!decoderHost.start(built.args)) {
+        if (!(scan ? decoderHost.start(built.args) : built.started)) {
             if (decoderHost.failureText.length === 0)
                 mainRoot.startError = qsTr("“%1” could not be started.").arg(sys.name)
             return
@@ -531,7 +531,7 @@ Window {
             color: Theme.textPrimary
             font.family: Theme.sans
         }
-        TapHandler { onTapped: mainRoot.scanWarnings = "" }
+        PointerBarrier { onClicked: mainRoot.scanWarnings = "" }
     }
 
     // WP-S1 editor, kept instantiated so closing a keyboard does not discard edits.
@@ -867,9 +867,11 @@ Window {
     }
     OutlineButton {
         objectName: "runningSiteChooserButton"
+        parent: monitor
+        z: 1
         width: implicitWidth
-        anchors.top: safeArea.top
-        anchors.right: safeArea.right
+        anchors.top: parent.top
+        anchors.right: parent.right
         visible: mainRoot.running && monitor.enabled && !mainRoot.diagnosticsOpen && !mainRoot.importsOpen
                  && mainRoot.sessionSystem
                  && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0

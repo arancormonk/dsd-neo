@@ -6,13 +6,8 @@ import QtQuick.Window
 
 // A centred panel over a dimmed screen, dismissed by tapping outside it.
 //
-// One copy because the dismissal rule is subtle and had been written out three
-// times: a TapHandler never takes an exclusive grab, so one placed on the panel
-// does not stop the scrim's from firing as well — an unconditional dismiss on
-// the scrim therefore closes the sheet on every press of every control inside
-// it. The scrim has to decide by where the tap landed instead, which is what
-// hitsPanel() is for, and a copy that got it wrong would be one sheet that
-// closes on its own buttons while the others do not.
+// The barrier stops delivery to controls behind every sheet. Panel controls
+// appear above it; clicks on otherwise empty panel space do not dismiss it.
 Rectangle {
     id: sheet
 
@@ -64,9 +59,9 @@ Rectangle {
     visible: false
     color: Qt.alpha("#000000", 0.5)
 
-    TapHandler {
-        onTapped: function (eventPoint) {
-            if (sheet.hitsPanel(eventPoint.position.x, eventPoint.position.y))
+    PointerBarrier {
+        onClicked: function (mouse) {
+            if (sheet.hitsPanel(mouse.x, mouse.y))
                 return;
             sheet.visible = false;
             // A sheet dismissed with a field still focused leaves the soft

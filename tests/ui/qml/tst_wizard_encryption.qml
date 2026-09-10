@@ -44,9 +44,8 @@ Item {
             verify(!("encKeyValue" in sys));
             var result = sessionArgs.build(sys);
             verify(result.ok);
-            var keyIndex = result.args.indexOf("-b");
-            verify(keyIndex >= 0);
-            verify(result.args[keyIndex + 1] === expected, "Private saved key round trip");
+            verify(!("args" in result));
+            verify(testContext.retainedKeyMatches(uid, expected), "Private saved key round trip");
         }
         function test_roundtrip_and_reset() {
             wizard.encKeyType = "basic";
@@ -105,7 +104,8 @@ Item {
             verify(!("encKeyValue" in cleared));
             var result = sessionArgs.build(cleared);
             verify(result.ok);
-            verify(result.args.indexOf("-b") < 0);
+            verify(!("args" in result));
+            verify(testContext.retainedKeyMatches(sys.uid, ""));
             wizard.openForFound(null, "851.375");
             verify(wizard.encKeyValue.length === 0);
             compare(wizard.encKeyType, "");

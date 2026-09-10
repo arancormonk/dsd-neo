@@ -21,10 +21,12 @@
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
+Q_MOC_INCLUDE("decoder_host.h")
 
 namespace dsd_qt {
 
 class AppPrefs;
+class DecoderHost;
 class SavedSystemsModel;
 
 /** @brief The app-wide defaults a saved system's overrides fall back to. */
@@ -96,10 +98,12 @@ class SessionArgsBuilder : public QObject {
     void setSavedSystems(const SavedSystemsModel* systems);
 
     /**
-     * @brief Build the argv for one saved-system field map.
-     * @return {"ok": bool, "args": QStringList, "error": ""|"frequency"|"ppm"|"encryption", "errorText": sentence}.
+     * @brief Validate one saved-system field map without returning key-bearing argv.
+     * @return {"ok": bool, "error": category, "errorText": sentence}.
      */
     Q_INVOKABLE QVariantMap build(const QVariantMap& system) const;
+    /** Resolve retained keys and start entirely in C++; adds a non-secret "started" boolean. */
+    Q_INVOKABLE QVariantMap start(const QVariantMap& system, DecoderHost* host) const;
 
     /** @brief Frequency validity for the wizard's step gating; see session_args_freq_valid(). */
     Q_INVOKABLE bool freqValid(const QString& freqMhz) const;
@@ -108,6 +112,7 @@ class SessionArgsBuilder : public QObject {
     Q_INVOKABLE QString keyError(const QString& type, const QString& value, const QString& csvPath, int force) const;
 
   private:
+    QStringList buildArgs(const QVariantMap& system, SessionArgsError* error) const;
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems = nullptr;
 };

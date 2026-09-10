@@ -18,6 +18,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QMap>
+#include <QObject>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
@@ -26,9 +27,11 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <stdio.h>
+#include "../test_support/qt_test_paths.h"
 
 #include "decoder_host.h"
 #include "dsd-neo/core/safe_api.h"
@@ -668,7 +671,7 @@ main(int argc, char** argv) {
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(
         QStringLiteral("dsd-neo-imported-files-%1").arg(QCoreApplication::applicationPid()));
-    QStandardPaths::setTestModeEnabled(true);
+    dsd_test_qt_isolate_paths();
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dataDir).removeRecursively();
 

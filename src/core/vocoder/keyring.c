@@ -88,6 +88,7 @@ keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id) {
     if (state == NULL || slot < 0 || slot > 1) {
         return;
     }
+    state->scalar_key_present[slot] = 0;
     const unsigned long long int scalar_key = keyring_rkey_value(state, key_id);
     if (slot == 0) {
         state->R = scalar_key;

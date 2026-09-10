@@ -41,6 +41,7 @@ class DiagnosticsLog {
     std::condition_variable m_ready, m_flushed;
     std::deque<QByteArray> m_queue;
     bool m_stop = false, m_writing = false;
+    bool m_clearPending = false;
     QByteArray m_initialTail;
     QString m_directory;
     std::thread m_writer;

@@ -785,6 +785,8 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->K = 0;
     state->R = 0;
     state->RR = 0;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = 0;
+    state->basic_key_present = 0;
     state->H = 0;
     state->K1 = 0;
     state->K2 = 0;

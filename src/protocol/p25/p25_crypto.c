@@ -7,6 +7,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -291,9 +292,8 @@ p25_crypto_has_complete_key(const dsd_state* state, dsd_p25_crypto_phase phase, 
         return 0;
     }
 
-    const uint64_t scalar_key = slot == 0 ? state->R : state->RR;
     if (algid == 0xAA || algid == 0x81 || algid == 0x9F) {
-        return scalar_key != 0ULL;
+        return dsd_key_scalar_present(state, slot);
     }
 
     if (state->aes_key_loaded[slot] != 1) {

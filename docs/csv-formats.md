@@ -461,7 +461,8 @@ Important behavior:
   when categories exist, or `id,mode,name`. Unmodeled metadata/note columns are discarded. Android rewrites its
   app-private imported copy, not the original document.
 - A basic group-file header is promoted to the extended policy header when any canonical row has
-  `priority != 0` or `preempt` enabled, so those settings survive saving and reloading.
+  `priority != 0`, `preempt` enabled, or audio/record/stream flags that differ from the mode defaults,
+  so those settings survive saving and reloading even to a new file.
 - The decoder's talkgroup-list export writes the canonical table, including aliases, all modes and ranges,
   to the requested path. After a successful write, subsequent edits persist there. Export refuses scan-row
   contexts and stale context/generation pairs, as do row edits after the policy changes.

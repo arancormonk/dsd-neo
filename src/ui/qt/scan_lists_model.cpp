@@ -1,12 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "scan_lists_model.h"
+#include <QByteArray>
 #include <QDateTime>
 #include <QFile>
+#include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QRegularExpression>
 #include <QSet>
+#include <QStringList>
 #include <QUuid>
+#include <QVariantList>
+#include <Qt>
+#include <initializer_list>
+#include <utility>
 #include "json_store.h"
+#include "scan_lists_model.h"
 
 namespace dsd_qt {
 namespace {

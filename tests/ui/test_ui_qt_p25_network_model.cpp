@@ -1,8 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QCoreApplication>
-#include <cassert>
+#include <QMap>
+#include <QObject>
+#include <QString>
+#include <cstdio>
+#include <cstdlib>
 #include <dsd-neo/core/state.h>
+#include "dsd-neo/core/state_fwd.h"
 #include "p25_network_model.h"
+
+static void
+check(bool condition) {
+    if (!condition) {
+        std::fputs("network model assertion failed\n", stderr);
+        std::abort();
+    }
+}
 
 int
 main(int argc, char** argv) {
@@ -31,29 +44,29 @@ main(int argc, char** argv) {
     QObject::connect(&model, &dsd_qt::P25NetworkModel::patchesChanged, [&]() { ++patchChanges; });
     QObject::connect(&model, &dsd_qt::P25NetworkModel::affiliationsChanged, [&]() { ++affChanges; });
     model.refresh(&s);
-    assert(model.radios().isEmpty() && model.neighbours().isEmpty() && model.patches().isEmpty()
-           && model.affiliations().isEmpty());
+    check(model.radios().isEmpty() && model.neighbours().isEmpty() && model.patches().isEmpty()
+          && model.affiliations().isEmpty());
     model.setActive(true);
     model.refresh(&s);
-    assert(model.radios().size() == 100 && changes == 1);
-    assert(model.radios()[0].toMap()["rid"].toUInt() == 256);
+    check(model.radios().size() == 100 && changes == 1);
+    check(model.radios()[0].toMap()["rid"].toUInt() == 256);
     model.refresh(&s);
-    assert(changes == 1 && nbChanges == 1 && patchChanges == 1 && affChanges == 1);
-    assert(model.neighbours()[0].toMap()["wacn"].toUInt() == 0xabcde);
-    assert(model.patches()[0].toMap()["sgid"].toUInt() == 42);
-    assert(model.affiliations().size() == 100);
+    check(changes == 1 && nbChanges == 1 && patchChanges == 1 && affChanges == 1);
+    check(model.neighbours()[0].toMap()["wacn"].toUInt() == 0xabcde);
+    check(model.patches()[0].toMap()["sgid"].toUInt() == 42);
+    check(model.affiliations().size() == 100);
     s.p25_aff_rid[255] = 999;
-    assert(model.radios()[0].toMap()["rid"].toUInt() == 256); // Owned copy.
+    check(model.radios()[0].toMap()["rid"].toUInt() == 256); // Owned copy.
     model.setActive(false);
     model.refresh(&s);
-    assert(changes == 1);
+    check(changes == 1);
     model.clear();
-    assert(model.radios().isEmpty() && changes == 2);
+    check(model.radios().isEmpty() && changes == 2);
     model.clear();
-    assert(changes == 2 && nbChanges == 2 && patchChanges == 2 && affChanges == 2);
+    check(changes == 2 && nbChanges == 2 && patchChanges == 2 && affChanges == 2);
     model.setActive(true);
     model.refresh(&s);
     model.refresh(nullptr);
-    assert(model.radios().isEmpty());
+    check(model.radios().isEmpty());
     return 0;
 }

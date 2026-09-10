@@ -726,7 +726,8 @@ baseline without allocating or swapping live keys. An active row retains its
 signalled key IDs and the scalar/AES state activated since row entry. `CORE_KEY_DIRECT` exercises the
 helper, real CLI parser, real command queue, and keyed/unkeyed rotation together.
 Qt's `session_args.cpp` validates saved string key types and emits discrete argv;
-`SessionArgsBuilder` returns a value-free `errorText` for the entry UI.
+`SessionArgsBuilder::build` returns only non-secret validation metadata. Its `start` operation resolves retained
+keys and sends the arguments directly to `DecoderHost` in C++, returning only validation and acceptance status.
 
 ### Qt QML editing convention
 

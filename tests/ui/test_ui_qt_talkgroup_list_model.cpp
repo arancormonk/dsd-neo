@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <utility>
+#include "../test_support/qt_test_paths.h"
 
 #include "call_history_model.h"
 #include "talkgroup_filter_model.h"
@@ -330,7 +331,7 @@ main(int argc, char** argv) {
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(
         QStringLiteral("dsd-neo-talkgroups-%1").arg(QCoreApplication::applicationPid()));
-    QStandardPaths::setTestModeEnabled(true);
+    dsd_test_qt_isolate_paths();
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dataDir).removeRecursively();
     QTemporaryDir settingsDir;

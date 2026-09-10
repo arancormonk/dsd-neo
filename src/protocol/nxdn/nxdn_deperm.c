@@ -27,6 +27,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -79,7 +80,7 @@ nxdn_ran_from_trellis(const uint8_t* trellis_buf) {
 
 void
 nxdn_reset_payload_seed_if_forced(dsd_state* state) {
-    if ((state->nxdn_cipher_type == 1 || state->M == 1) && state->R != 0) {
+    if ((state->nxdn_cipher_type == 1 || state->M == 1) && dsd_key_scalar_present(state, 0)) {
         state->payload_miN = state->R;
     }
 }
@@ -771,7 +772,7 @@ nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t messa
     if (!nxdn_dcr_is_sb0_message_type(message_type)) {
         return;
     }
-    const int has_key = cipher == 1U && state->R != 0;
+    const int has_key = cipher == 1U && dsd_key_scalar_present(state, 0);
     const dsd_call_crypto_update crypto = {
         .classification = cipher == 0U   ? DSD_CALL_CRYPTO_CLEAR
                           : cipher == 1U ? (has_key ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED_PENDING)
@@ -803,7 +804,7 @@ nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const
         // A single CRC-accepted SACCH-2 must not flip the classification the VCALLs
         // established: hold a contradicting observation until it repeats.
         state->nxdn_cipher_type = nxdn_cipher_observe(state, 1U, 0);
-        if (state->R != 0) {
+        if (dsd_key_scalar_present(state, 0)) {
             char key_text[24];
             DSD_FPRINTF(stderr, "Key: %s; ",
                         dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 0U));
@@ -812,7 +813,7 @@ nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const
         DSD_FPRINTF(stderr, "Reserved Comms: %d; ", cipher);
     }
 
-    state->dmr_encL = (state->nxdn_cipher_type != 0 && state->R == 0) ? 1 : 0;
+    state->dmr_encL = (state->nxdn_cipher_type != 0 && !dsd_key_scalar_present(state, 0)) ? 1 : 0;
     nxdn_publish_sacch2_crypto(opts, state, fields->sf_mes, cipher == 0x01 ? (uint8_t)state->nxdn_cipher_type : cipher);
     const uint8_t mfid = (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0] + 11, 7U);
     if (mfid != 0) {
@@ -1249,6 +1250,7 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
         nxdn_cipher_class_reset(state);
         if (state->keyloader == 1) {
             state->R = 0;
+            state->scalar_key_present[0] = 0;
         }
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));

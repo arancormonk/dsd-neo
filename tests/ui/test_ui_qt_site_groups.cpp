@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QCoreApplication>
 #include <QDir>
+#include <QList>
+#include <QMap>
 #include <QStandardPaths>
+#include <QString>
+#include <QVariant>
+#include <QVariantMap>
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <utility>
+#include "../test_support/qt_test_paths.h"
 #include "saved_systems_model.h"
 #include "site_groups.h"
 
@@ -13,7 +20,7 @@ main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     app.setOrganizationName("dsd-neo-test");
     app.setApplicationName(QString("site-groups-%1").arg(app.applicationPid()));
-    QStandardPaths::setTestModeEnabled(true);
+    dsd_test_qt_isolate_paths();
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dir).removeRecursively();
     int failures = 0;

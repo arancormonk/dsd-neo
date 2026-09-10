@@ -1,13 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "scan_list_starter.h"
+#include <QByteArray>
+#include <QChar>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QIODevice>
+#include <QList>
+#include <QMap>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QString>
+#include <QStringList>
+#include <QVariant>
+#include <QVariantList>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
+#include <initializer_list>
+#include <utility>
 #include "app_prefs.h"
 #include "json_store.h"
 #include "saved_systems_model.h"
+#include "scan_list_starter.h"
 #include "scan_list_targets.h"
 #include "session_args.h"
 

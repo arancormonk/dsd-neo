@@ -24,6 +24,7 @@
 #include "session_state_map.h"
 
 class QObject;
+class QJsonObject;
 
 namespace dsd_android {
 
@@ -96,6 +97,14 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     QString importDocument(const QString& reference, const QString& fileName, const QString& replacePath) override;
 
   private:
+    // JNI supplies one coherent record; desktop tests exercise the same publication path.
+    void applyLifecycleStatus(const QJsonObject& status, bool running);
+    bool acknowledgeFailure(const QJsonObject& status);
+
+    QJsonObject readLifecycleStatus() const;
+    bool readEngineRunning() const;
+    void requestServiceStop();
+    QString serviceFailureText() const;
     /** @brief Record a start that never reached the service. Always returns false. */
     bool failStart(const QString& reason);
 

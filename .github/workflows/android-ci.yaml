@@ -572,6 +572,9 @@ jobs:
         shell: bash
         run: cmake --build --preset android-app -j
 
+      - name: Test location broker on the JVM
+        run: python3 tests/android/run_location_tests.py --require-tools
+
       - name: Locate the APK
         id: apk
         shell: bash

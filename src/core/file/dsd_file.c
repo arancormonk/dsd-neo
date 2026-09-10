@@ -1596,6 +1596,7 @@ sdrtrunk_json_reset_crypto_state(dsd_state* state) {
     state->payload_keyid = 0;
     if (state->keyloader == 1) {
         state->R = 0;
+        state->scalar_key_present[0] = 0;
         state->aes_key_loaded[0] = 0;
     }
 }
@@ -1670,6 +1671,7 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
                 // Pre-existing implicit "key indexed by talkgroup" replay convention. Kept as the
                 // fallback so replay workflows that depend on it are unchanged when no row matches.
                 state->R = state->rkey_array[ctx->target_id];
+                state->scalar_key_present[0] = 0;
             }
         }
         if (ctx->alg_id == 0x21) {

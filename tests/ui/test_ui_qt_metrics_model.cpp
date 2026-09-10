@@ -12,8 +12,11 @@
  */
 
 #include <QCoreApplication>
+#include <QObject>
 #include <QString>
 #include <cmath>
+#include <initializer_list>
+#include <stdint.h>
 #include <stdio.h>
 
 #include <dsd-neo/app_control/frontend.h>

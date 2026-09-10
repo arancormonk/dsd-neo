@@ -268,6 +268,16 @@ Item {
         Text { width: parent.width; text: screen.saveMessage; visible: text.length > 0; color: Theme.textSecondary; wrapMode: Text.Wrap }
 
         Text {
+            objectName: "talkgroupCommandToast"
+            width: parent.width
+            text: metrics.uiMessage
+            visible: text.length > 0
+            color: Theme.textSecondary
+            wrapMode: Text.Wrap
+            textFormat: Text.PlainText
+        }
+
+        Text {
             objectName: "sessionOnlyNote"
             width: parent.width
             visible: !talkgroups.persistent

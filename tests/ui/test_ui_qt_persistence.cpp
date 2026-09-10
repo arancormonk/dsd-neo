@@ -35,6 +35,11 @@
 #include <initializer_list>
 #include <stdio.h>
 #include <utility>
+#include "../test_support/qt_test_paths.h"
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <sys/types.h>
+#endif
 
 #include <dsd-neo/runtime/log.h>
 #include "app_prefs.h"
@@ -95,6 +100,26 @@ test_json_store(void) {
     /* Overwrite, not append: a shrunk list must not leave the old tail behind. */
     json_store_save_array(QStringLiteral("roundtrip.json"), QJsonArray());
     expect("save replaces the previous content", json_store_load_array(QStringLiteral("roundtrip.json")).isEmpty());
+}
+
+void
+test_private_key_store() {
+#ifndef _WIN32
+    const mode_t previous = umask(0);
+    const QString name = QStringLiteral("private-keys.json");
+    const QByteArray path = QFile::encodeName(json_store_path(name));
+    const QJsonArray rows{QJsonObject{{"encKeyValue", "123456789A"}}};
+    expect("new private key store saved", json_store_save_array(name, rows));
+    struct stat info = {};
+    expect("new key store is owner read/write only",
+           stat(path.constData(), &info) == 0 && (info.st_mode & 0777) == 0600);
+    expect("public replacement fixture prepared", chmod(path.constData(), 0666) == 0);
+    expect("replacement private key store saved", json_store_save_array(name, rows));
+    expect("replacement key store is owner read/write only",
+           stat(path.constData(), &info) == 0 && (info.st_mode & 0777) == 0600);
+    expect("permissions preserve key contents", json_store_load_array(name) == rows);
+    umask(previous);
+#endif
 }
 
 QVariantMap
@@ -575,7 +600,7 @@ main(int argc, char** argv) {
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(
         QStringLiteral("dsd-neo-persistence-%1").arg(QCoreApplication::applicationPid()));
-    QStandardPaths::setTestModeEnabled(true);
+    dsd_test_qt_isolate_paths();
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dataDir).removeRecursively();
     QTemporaryDir settingsDir;
@@ -586,6 +611,7 @@ main(int argc, char** argv) {
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
 
     test_json_store();
+    test_private_key_store();
     test_saved_systems();
     test_saved_systems_csv_fields();
     test_app_prefs();

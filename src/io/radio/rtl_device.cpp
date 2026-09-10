@@ -4929,6 +4929,15 @@ static std::atomic<int> g_preopened_usb_fd{-1};
  */
 static std::atomic<int> g_preopened_usb_fd_in_use{0};
 
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+static int (*g_open_fd_failure_hook)(int) = nullptr;
+
+extern "C" void
+rtl_device_test_set_open_fd_failure_hook(int (*hook)(int)) {
+    g_open_fd_failure_hook = hook;
+}
+#endif
+
 void
 rtl_device_set_preopened_fd(int sys_fd) {
     g_preopened_usb_fd.store((sys_fd < 0) ? -1 : sys_fd, std::memory_order_release);
@@ -4951,6 +4960,8 @@ rtl_device_preopened_fd_supported(void) {
      * never work. */
 #if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
     return 1;
+#elif defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    return g_open_fd_failure_hook != nullptr;
 #else
     return 0;
 #endif
@@ -5000,16 +5011,29 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     dev->if_gain_count = 0;
 
     int r = 0;
-#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+#if (defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD))                                       \
+    || defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
     /* An injected descriptor means the app already picked and opened the device and
      * libusb discovery is off, so opening by index cannot work. rtlsdr_open_fd() is a
      * project patch on the vendored tree; the configure step proves it is there. */
     const int preopened_fd = g_preopened_usb_fd.load(std::memory_order_acquire);
-    if (preopened_fd >= 0) {
+    // cppcheck-suppress knownConditionTrueFalse -- Native Android supports this; the desktop test seam can disable it.
+    if (preopened_fd >= 0 && rtl_device_preopened_fd_supported()) {
         /* Claimed before the wrap, not after: the owner must not be told the
          * descriptor is free while libusb is part way through taking it. */
         g_preopened_usb_fd_in_use.store(1, std::memory_order_release);
-        r = rtlsdr_open_fd(&dev->dev, preopened_fd);
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+        if (g_open_fd_failure_hook) {
+            r = g_open_fd_failure_hook(preopened_fd);
+        } else
+#endif
+        {
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+            r = rtlsdr_open_fd(&dev->dev, preopened_fd);
+#else
+            r = -1;
+#endif
+        }
         if (r < 0) {
             g_last_usb_open_error.store(r, std::memory_order_release);
             g_preopened_usb_fd_in_use.store(0, std::memory_order_release);

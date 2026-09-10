@@ -2803,6 +2803,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
     )
     target_include_directories(
         dsd-neo_test_ui_qt_session_args
@@ -2825,6 +2826,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -2903,12 +2905,20 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_radio_reference_model
-        PRIVATE Qt6::Core dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
+        PRIVATE
+            Qt6::Core
+            Qt6::Gui
+            Qt6::Qml
+            Qt6::Quick
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            dsd-neo_runtime
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_radio_reference_model
         PRIVATE
             QT_NO_KEYWORDS
+            DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
             "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
     )
     set_target_properties(
@@ -2918,6 +2928,12 @@ if(DSD_ENABLE_QT_UI)
     add_test(
         NAME UI_QT_RADIO_REFERENCE
         COMMAND dsd-neo_test_ui_qt_radio_reference_model
+    )
+
+    set_tests_properties(
+        UI_QT_RADIO_REFERENCE
+        PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
     )
 
     # What the spectrum model does with the frames a producer hands it, and what
@@ -3083,6 +3099,18 @@ if(DSD_ENABLE_QT_UI)
         )
         set_target_properties(dsd-neo_test_ui_qt_qml PROPERTIES AUTOMOC ON)
         add_test(NAME UI_QT_QML_CALL_LISTS COMMAND dsd-neo_test_ui_qt_qml)
+        add_test(
+            NAME UI_QT_QML_MODAL_INPUT
+            COMMAND
+                dsd-neo_test_ui_qt_qml -input
+                ${CMAKE_CURRENT_SOURCE_DIR}/ui/qml/tst_modal_input.qml
+        )
+        set_tests_properties(
+            UI_QT_QML_MODAL_INPUT
+            PROPERTIES
+                ENVIRONMENT
+                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+        )
         get_property(
             _DSD_QT_FOUNDATION_QML_TESTS
             GLOBAL
@@ -4970,6 +4998,18 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
+
+add_executable(dsd-neo_test_ui_key_cleanup ui/test_ui_key_cleanup.c)
+target_link_libraries(
+    dsd-neo_test_ui_key_cleanup
+    PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+)
+add_test(NAME UI_KEY_CLEANUP COMMAND dsd-neo_test_ui_key_cleanup)
+dsd_neo_add_public_header_smoke_test(
+    dsd-neo_test_headers_public_core_key_presence
+    HEADERS_PUBLIC_CORE_KEY_PRESENCE
+    dsd-neo/core/key_presence.h C
+)
 
 # WP-D2: shared direct-key helper, real CLI and queue regression.
 add_executable(dsd-neo_test_core_key_direct core/test_core_key_direct.c)
@@ -9456,6 +9496,13 @@ if(DSD_HAS_RADIO)
     endif()
     add_test(NAME IO_RTL_PREOPENED_FD COMMAND dsd-neo_test_io_rtl_preopened_fd)
 
+    add_executable(dsd-neo_test_io_rtl_fd_failure io/test_io_rtl_fd_failure.cpp)
+    target_link_libraries(
+        dsd-neo_test_io_rtl_fd_failure
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_RTL_FD_FAILURE COMMAND dsd-neo_test_io_rtl_fd_failure)
+
     # Exercise Android's production run-result collector with a real RTL open
     # failure. The driver boundary is wrapped; no Qt, JNI or USB hardware needed.
     if(
@@ -10203,6 +10250,24 @@ dsd_neo_add_public_header_smoke_test(
 
 if(DSD_ENABLE_QT_UI)
     add_executable(
+        dsd-neo_test_ui_qt_android_host
+        ui/test_ui_qt_android_host.cpp
+        ${PROJECT_SOURCE_DIR}/android/decoder_host_android_lifecycle.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_android_host
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(dsd-neo_test_ui_qt_android_host PRIVATE Qt6::Core)
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_android_host
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_android_host PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_ANDROID_HOST COMMAND dsd-neo_test_ui_qt_android_host)
+    add_executable(
         dsd-neo_test_ui_qt_controller
         ui/test_ui_qt_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
@@ -10358,6 +10423,16 @@ endif()
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(
+        NAME ANDROID_LOCATION_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_location_tests.py
+    )
+    set_tests_properties(
+        ANDROID_LOCATION_JVM
+        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90
+    )
+    add_test(
         NAME ANDROID_DIAGNOSTICS_SHARE_PATHS
         COMMAND
             ${Python3_EXECUTABLE}
@@ -10428,6 +10503,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
     )
     target_include_directories(
@@ -10471,6 +10547,7 @@ if(DSD_ENABLE_QT_UI)
         engine/test_engine_trunk_scan_scan_list.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp

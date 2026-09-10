@@ -125,6 +125,7 @@ Item {
     readonly property bool esk: screen.eskOverride >= 0 ? screen.eskOverride === 1 : screen.recordEsk
 
     onSimulcastChanged: screen.refreshPlan()
+    onSimulcastOverrideChanged: screen.refreshPlan()
     onEskChanged: screen.refreshPlan()
     onPartialEncAsDeChanged: screen.refreshPlan()
     onSelectedSitesChanged: screen.refreshPlan()
@@ -209,12 +210,12 @@ Item {
             screen.plan = ({})
             return
         }
-        screen.plan = radioReference.buildImportPlan(screen.selectedSites, {
-                                                         "eachSite": screen.eachSite,
-                                                         "partialEncAsDe": screen.partialEncAsDe,
-                                                         "simulcast": screen.simulcast,
-                                                         "esk": screen.esk
-                                                     })
+        var options = {"eachSite": screen.eachSite,
+                       "partialEncAsDe": screen.partialEncAsDe,
+                       "esk": screen.esk}
+        if (screen.simulcastOverride >= 0)
+            options.simulcast = screen.simulcastOverride === 1
+        screen.plan = radioReference.buildImportPlan(screen.selectedSites, options)
     }
 
     function siteSelected(index) {

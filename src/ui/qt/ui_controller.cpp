@@ -109,6 +109,12 @@ UiController::onSessionStateChanged() {
         return;
     }
 
+    // The host can deliver a USB attachment synchronously just after publishing
+    // Idle. Associate its last export before that attachment builds a new session.
+    if (m_session == DecoderHost::Idle || m_session == DecoderHost::Failed) {
+        pollTalkgroupExport();
+    }
+
     if (m_session == DecoderHost::Starting && m_diagnostics != nullptr) {
         m_diagnostics->markSessionStarting();
     }

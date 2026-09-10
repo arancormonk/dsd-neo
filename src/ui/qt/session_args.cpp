@@ -5,6 +5,7 @@
 
 #include <initializer_list>
 #include <utility>
+#include "decoder_host.h"
 #include "saved_systems_model.h"
 #include "session_args.h"
 
@@ -473,8 +474,8 @@ SessionArgsBuilder::setSavedSystems(const SavedSystemsModel* systems) {
     m_systems = systems;
 }
 
-QVariantMap
-SessionArgsBuilder::build(const QVariantMap& system) const {
+QStringList
+SessionArgsBuilder::buildArgs(const QVariantMap& system, SessionArgsError* error) const {
     SessionArgPrefs prefs;
     if (m_prefs != nullptr) {
         prefs.gainDb = m_prefs->gainDb();
@@ -485,22 +486,40 @@ SessionArgsBuilder::build(const QVariantMap& system) const {
         prefs.autoPpm = m_prefs->autoPpm();
         prefs.extraArgs = m_prefs->extraArgs();
     }
-    SessionArgsError error = SessionArgsError::None;
     QVariantMap input = system;
     if (m_systems && !input.contains(QStringLiteral("encKeyValue"))) {
         input.insert(QStringLiteral("encKeyValue"),
                      m_systems->keyValueForUid(input.value(QStringLiteral("uid")).toString()));
     }
-    const QStringList args = session_args_build(input, prefs, &error);
+    return session_args_build(input, prefs, error);
+}
+
+static QVariantMap
+validationResult(SessionArgsError error) {
     QVariantMap result;
     result.insert(QStringLiteral("ok"), error == SessionArgsError::None);
-    result.insert(QStringLiteral("args"), args);
     result.insert(QStringLiteral("error"), error == SessionArgsError::Frequency      ? QStringLiteral("frequency")
                                            : error == SessionArgsError::Ppm          ? QStringLiteral("ppm")
                                            : error == SessionArgsError::UnsafeOption ? QStringLiteral("unsafe-option")
                                            : error == SessionArgsError::None         ? QString()
                                                                                      : QStringLiteral("encryption"));
     result.insert(QStringLiteral("errorText"), session_args_error_text(error));
+    return result;
+}
+
+QVariantMap
+SessionArgsBuilder::build(const QVariantMap& system) const {
+    SessionArgsError error = SessionArgsError::None;
+    (void)buildArgs(system, &error);
+    return validationResult(error);
+}
+
+QVariantMap
+SessionArgsBuilder::start(const QVariantMap& system, DecoderHost* host) const {
+    SessionArgsError error = SessionArgsError::None;
+    const QStringList args = buildArgs(system, &error);
+    auto result = validationResult(error);
+    result.insert(QStringLiteral("started"), error == SessionArgsError::None && host && host->start(args));
     return result;
 }
 

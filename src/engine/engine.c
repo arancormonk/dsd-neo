@@ -2143,6 +2143,8 @@ no_carrier_unload_keys_if_needed(dsd_state* state) {
     state->R = 0;
     state->RR = 0;
     state->K = 0;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = 0;
+    state->basic_key_present = 0;
     state->K1 = 0;
     state->K2 = 0;
     state->K3 = 0;

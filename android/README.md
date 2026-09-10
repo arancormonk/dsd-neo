@@ -16,7 +16,9 @@ TCP PCM, and local files.
 Saved systems store `encKeyType` (`""`, `basic`, `hex`, `rc4`, or `scrambler`),
 `encKeyValue`, and `encForceKey` (0 normal, 1 force privacy, 2 force RC4).
 Keys rest **unencrypted** in the app-private systems store, `saved_systems.json`; Android sets
-`allowBackup=false`. On desktop the same file is under Qt's `AppDataLocation`.
+`allowBackup=false`. On desktop the same file is under Qt's `AppDataLocation`, with
+owner-only read/write permissions on POSIX at creation and replacement. Retained keys are
+resolved and passed to the host entirely in C++; QML validation/start results contain no key arguments.
 QString/QML copies cannot promise erasure. Native command payloads, parsed key
 sets, and owned JNI argv allocations are securely erased after use.
 
@@ -37,6 +39,7 @@ The encryption wizard and live entry sheet are supplied by a later UI package.
 Long-press a talkgroup card to rename it, change Listening/Not tuned, or set
 priority (0/25/50/100 presets and ±5 steps). **Apply** changes only the fields you
 edited; renaming or changing priority preserves custom audio/record/stream policy.
+Priority changes also update current calls immediately, preserving their dwell and cooldown ages.
 Preempt is available above priority zero and affects P25 trunking only. The card shows `P<n>` and a lightning badge
 when preempt is set. Heard-only rows offer **Add to list**; listed rows require two
 taps on **Remove**. Decoder refusal messages remain visible in the sheet. If the
@@ -684,8 +687,8 @@ Settings → Diagnostics shows current-process decoder and host diagnostics plus
 bounded redacted persistent tail from previous runs. It is not a native-crash or
 ANR capture. The process ring holds at most 2000 entries, each at most 512 UTF-8
 bytes. Pause freezes the displayed list while capture continues; Copy and Share
-include the current ring. Clear clears the process ring/view, not the persistent
-tail. Diagnostics deliberately survive decoder Starting/Idle/Failed transitions.
+include the current ring. Clear removes the ring, pending earlier records and the persistent
+tail; records captured after Clear remain available. Diagnostics deliberately survive decoder Starting/Idle/Failed transitions.
 
 Host records arriving before the first decode start do not depend on the runtime sink or
 stderr pump. Tap installation drains their bounded buffer to the ring and the tail at
@@ -779,12 +782,14 @@ refused rather than dropped. See [scan-list rules](../docs/trunk-scan.md#qt-and-
 USB lists use the same permission gate as saved systems. A failed or cancelled
 start does not change last-started preferences or list recency; those update only
 after engine initialization. Monitor shows the active target ID, ordinal/count
-and hold state. Generated CSVs may contain keys, are private app inputs, and must
+and hold state. System source-alias paths that the list replaces are not validated or opened; the list's effective alias file must be readable.
+Generated CSVs may contain keys, are private app inputs, and must
 not be exported or logged. QString/QML key copies cannot guarantee memory erasure.
 
 ### Saved RadioReference sites
 
-The Qt import screen can import each selected trunked site as a separate saved system. Home groups
+The Qt import screen can import each selected trunked site as a separate saved system. Each site uses its own
+recorded simulcast setting unless an explicit override is chosen. Home groups
 these rows behind **n sites ›**. The chooser offers foreground **Use my location**, distances in km,
 **Nearest site**, and a persisted avoid switch. Rows without validated coordinates are excluded from
 nearest selection. Starts require Idle; while listening, **Sites › → Stop and switch** waits for the

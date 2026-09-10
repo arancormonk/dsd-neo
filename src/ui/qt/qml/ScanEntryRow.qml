@@ -53,6 +53,7 @@ UiPanel {
         }
 
         TextField {
+            objectName: "scanFrequencyName"
             width: parent.width
             visible: row.entry.kind === "freq"
             placeholderText: qsTr("Frequency name")

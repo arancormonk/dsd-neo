@@ -23,8 +23,10 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -3161,6 +3163,81 @@ test_direct_key_preserves_active_keyring(int reject) {
     return rc;
 }
 
+struct restart_producer {
+    dsd_mutex_t mutex;
+    dsd_cond_t condition;
+    int phase;
+    int result[3];
+};
+
+static DSD_THREAD_RETURN_TYPE
+restart_producer_run(void* opaque) {
+    struct restart_producer* producer = opaque;
+    dsd_app_key_direct_payload key = {DSD_APP_KEY_TYPE_BASIC, "73"};
+    for (int phase = 0; phase < 3; ++phase) {
+        dsd_mutex_lock(&producer->mutex);
+        while (producer->phase != phase * 2 + 1) {
+            dsd_cond_wait(&producer->condition, &producer->mutex);
+        }
+        producer->result[phase] = dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
+        producer->phase++;
+        dsd_cond_signal(&producer->condition);
+        dsd_mutex_unlock(&producer->mutex);
+    }
+    DSD_SECURE_ZERO(&key, sizeof key);
+    DSD_THREAD_RETURN;
+}
+
+static void
+restart_producer_step(struct restart_producer* producer, int phase) {
+    dsd_mutex_lock(&producer->mutex);
+    producer->phase = phase * 2 + 1;
+    dsd_cond_signal(&producer->condition);
+    if (phase == 0) {
+        dsd_mutex_unlock(&producer->mutex);
+        dsd_app_frontend_runtime_stop();
+        dsd_mutex_lock(&producer->mutex);
+    }
+    while (producer->phase != phase * 2 + 2) {
+        dsd_cond_wait(&producer->condition, &producer->mutex);
+    }
+    dsd_mutex_unlock(&producer->mutex);
+}
+
+static int
+test_producer_stop_restart(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    struct restart_producer producer = {0};
+    dsd_mutex_init(&producer.mutex);
+    dsd_cond_init(&producer.condition);
+    dsd_thread_t thread;
+    dsd_app_frontend_runtime_start(&opts, &state);
+    int rc = expect_int("producer thread started", dsd_thread_create(&thread, restart_producer_run, &producer), 0);
+    if (!rc) {
+        restart_producer_step(&producer, 0);
+        dsd_app_frontend_runtime_stop();
+        restart_producer_step(&producer, 1);
+        dsd_app_frontend_runtime_start(&opts, &state);
+        rc |= expect_int("restart has no prior producer commands", dsd_app_drain_cmds(&opts, &state), 0);
+        restart_producer_step(&producer, 2);
+        dsd_thread_join(thread);
+        rc |= expect_true("racing producer is admitted or rejected",
+                          producer.result[0] == DSD_APP_COMMAND_SUBMIT_QUEUED
+                              || producer.result[0] == DSD_APP_COMMAND_SUBMIT_REJECTED);
+        rc |= expect_int("closed session rejects producer", producer.result[1], DSD_APP_COMMAND_SUBMIT_REJECTED);
+        rc |= expect_true("persistent producer submits to current session", producer.result[2] > 0);
+        rc |= expect_int("only current producer request drains", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_true("current request applied", state.K == 73);
+    }
+    dsd_app_frontend_runtime_stop();
+    dsd_cond_destroy(&producer.condition);
+    dsd_mutex_destroy(&producer.mutex);
+    freeState(&state);
+    return rc;
+}
+
 static int
 test_session_queue_cancellation(void) {
     static dsd_opts opts;
@@ -3172,6 +3249,13 @@ test_session_queue_cancellation(void) {
         dsd_app_key_direct_payload key = {DSD_APP_KEY_TYPE_BASIC, "73"};
         rc |= expect_true("session key accepted",
                           dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key) > 0);
+        if (failed) {
+            opts.scanner_mode = 1;
+            opts.trunk_scan_enabled = 1;
+            rc |= expect_true("actual failed engine setup", dsd_engine_run_with_lifecycle(&opts, &state, NULL) != 0);
+            opts.scanner_mode = 0;
+            opts.trunk_scan_enabled = 0;
+        }
         dsd_app_frontend_runtime_stop();
         rc |= expect_true("stop or failure erases pending storage", dsd_app_command_test_storage_cleared());
         rc |= expect_int("closed session rejects late key",
@@ -3252,6 +3336,7 @@ test_export_disposal(void) {
 int
 main(void) {
     int rc = test_session_queue_cancellation();
+    rc |= test_producer_stop_restart();
     rc |= test_export_disposal();
     rc |= test_direct_key_preserves_active_keyring(0);
     rc |= test_direct_key_preserves_active_keyring(1);

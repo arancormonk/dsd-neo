@@ -119,6 +119,9 @@ Item {
             // would make this case's result depend on TestCase running order.
             testContext.setPrefs("rrAppKey", "")
             tc.screen.reset()
+            // Choosing a country opens the next browse sheet; each test starts with none open.
+            for (var sheetName of ["radioReferenceCountrySheet", "radioReferenceStateSheet", "radioReferenceCountySheet"])
+                findChild(tc.screen, sheetName).visible = false
         }
 
         function test_01_a_fresh_install_asks_for_credentials_and_nothing_else() {

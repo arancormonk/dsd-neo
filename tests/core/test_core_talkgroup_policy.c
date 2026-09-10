@@ -625,6 +625,46 @@ init_decision(dsd_tg_policy_decision* d, uint32_t target, uint32_t source, int p
 }
 
 static int
+test_live_active_priority(void) {
+    int rc = 0;
+    dsd_state* st = calloc(1, sizeof(*st));
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    if (!st) {
+        return 1;
+    }
+    opts.trunk_tune_group_calls = 1;
+    dsd_tg_policy_entry row;
+    init_entry(&row, 100, "A", "Active", DSD_TG_POLICY_SOURCE_IMPORTED);
+    row.priority = 25;
+    rc |= expect_true("seed active priority", dsd_tg_policy_append_exact(st, &row) == 0);
+    dsd_tg_policy_call_route active, candidate;
+    init_route(&active, 100, 1, 851000000L, 1, 0, 0);
+    init_route(&candidate, 200, 2, 851000000L, 1, 0, 0);
+    dsd_tg_policy_decision decision, competing;
+    dsd_tg_policy_evaluate_group_call(&opts, st, 100, 1, 0, 0, &decision);
+    init_decision(&competing, 200, 2, 75, 1, 1);
+    rc |= expect_true("note real active decision", dsd_tg_policy_note_active_call(st, &active, &decision, 10.0) == 0);
+    rc |= expect_true("initial active priority allows competing grant",
+                      dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 12.0));
+    row.priority = 100;
+    rc |= expect_true("raise live priority",
+                      dsd_tg_policy_set_fields(st, 100, 100, &row, DSD_TG_POLICY_FIELD_PRIORITY) == 0);
+    rc |= expect_true("raised active priority blocks competing grant without refresh",
+                      !dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 12.0));
+    row.priority = 0;
+    rc |= expect_true("lower live priority",
+                      dsd_tg_policy_set_fields(st, 100, 100, &row, DSD_TG_POLICY_FIELD_PRIORITY) == 0);
+    competing.priority = 10;
+    rc |= expect_true("lowered active priority permits competing grant without refresh",
+                      dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 12.0));
+    rc |= expect_true("priority edit preserves minimum dwell",
+                      !dsd_tg_policy_should_preempt(&opts, st, &candidate, &competing, 10.1));
+    free_test_state(st);
+    return rc;
+}
+
+static int
 test_preemption_helpers(void) {
     int rc = 0;
     dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
@@ -1052,6 +1092,21 @@ test_group_file_rewrite(void) {
     rc |= expect_true("extended roundtrip row", dsd_tg_policy_entry_at(loaded, 0, &row) == 1);
     rc |= expect_true("extended roundtrip policy", row.priority == 17 && row.preempt && row.audio && !row.record
                                                        && row.stream && strcmp(row.tags, "EMS") == 0);
+    /* Export media-only overrides to a nonexistent file, then reload. */
+    for (int media = 0; media < 3; ++media) {
+        remove(path);
+        dsd_tg_policy_clear(st);
+        init_entry(&e, 2001, "A", "Media only", DSD_TG_POLICY_SOURCE_IMPORTED);
+        e.audio = media != 0;
+        e.record = media != 0 && media != 1;
+        e.stream = media != 0 && media != 2;
+        rc |= expect_true("seed media-only export", dsd_tg_policy_append_exact(st, &e) == 0);
+        rc |= expect_true("export media-only table", dsd_tg_policy_write_group_file(opts, st) == 0);
+        rc |= expect_true("reload media-only table", dsd_tg_policy_reload_group_file(opts, loaded) == 0);
+        rc |= expect_true("read media-only export", dsd_tg_policy_entry_at(loaded, 0, &row) == 1);
+        rc |= expect_true("media-only export retains all overrides",
+                          row.audio == e.audio && row.record == e.record && row.stream == e.stream);
+    }
     /* Each trigger alone promotes, even when an earlier row already has tags. */
     for (int trigger = 0; trigger < 2; ++trigger) {
         fp = dsd_fopen_private(path, "w");
@@ -1179,6 +1234,7 @@ main(void) {
     rc |= test_evaluator_behaviors();
     rc |= test_group_file_append_helper();
     rc |= test_preemption_helpers();
+    rc |= test_live_active_priority();
     rc |= test_reload_group_file();
     rc |= test_mode_edits_and_enumeration();
     rc |= test_group_file_rewrite();

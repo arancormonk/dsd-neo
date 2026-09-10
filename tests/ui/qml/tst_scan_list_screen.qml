@@ -63,6 +63,26 @@ Item {
             verify(row.activeFocus);
         }
 
+        function test_typing_keeps_cursor_and_persists_each_edit() {
+            screen.draft.name = "Typing";
+            screen.addFrequency("First", "dmr", "461");
+            var field = null;
+            tryVerify(function() { field = visualChild(screen, "scanFrequencyName"); return field !== null; });
+            field.forceActiveFocus();
+            field.cursorPosition = 2;
+            keyClick(Qt.Key_X, Qt.ShiftModifier);
+            compare(screen.entries[0].name, "Fixrst");
+            compare(field.cursorPosition, 3);
+            verify(field.activeFocus);
+            keyClick(Qt.Key_Y, Qt.ShiftModifier);
+            compare(screen.entries[0].name, "Fixyrst");
+            compare(field.cursorPosition, 4);
+            verify(field.activeFocus);
+            compare(visualChild(screen, "scanFrequencyName"), field);
+            screen.save();
+            compare(scanLists.get(0).entries[0].name, "Fixyrst");
+        }
+
         function test_reorder_remove() {
             screen.addFrequency("First", "dmr", "461");
             screen.addFrequency("Second", "nxdn", "462");
