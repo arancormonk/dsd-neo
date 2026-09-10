@@ -72,12 +72,13 @@ typedef enum {
     DSD_TRUNK_RECOVERY_OTHER,
 } dsd_trunk_recovery_protocol;
 
-/** Publish validated protocol evidence under the decoder/SM guard. Raw sync
+/** Publish validated protocol evidence under the decoder/SM guard (or while stopped). Raw sync
  * detection and no-carrier resets must not change this retained owner. */
 void dsd_trunk_recovery_note_protocol(dsd_state* state, dsd_trunk_recovery_protocol protocol);
 
 /** Recovery ownership: a parked target overrides retained standalone ownership.
- * Call while holding the decoder/SM guard. These predicates do not read volatile
+ * Decoder-thread callers may inspect their retained owner directly; other threads
+ * must hold the decoder/SM guard. These predicates do not read volatile
  * sync, modulation or CC hints written outside that guard by frame acquisition. */
 int dsd_trunk_p25_recovery_allowed(const dsd_opts* opts, const dsd_state* state);
 int dsd_trunk_dmr_recovery_allowed(const dsd_opts* opts, const dsd_state* state);

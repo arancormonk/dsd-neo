@@ -98,7 +98,7 @@ trust 1 (`trunk_scan_share_peer_idens()`), and `dsd_engine_p25_bandplan_export()
 
 Recovery ownership is checked at the P25 watchdog and engine frame-sync callback boundaries. Runtime trunk-scan
 hooks identify the parked protocol. Outside trunk scan, validated control/grant evidence retains a protocol owner
-across sync loss; raw sync cannot evict it. Ownership is written and checked under the decoder/SM guard, so the
+across sync loss; raw sync cannot evict it. Ownership writes and watchdog reads share the decoder/SM guard, so the
 watchdog predicate does not read the sync or CC-format hints modified by frame acquisition. DMR owns its decoded
 CC heartbeat, two-second acquisition window, candidate probes and pending tune IDs inside each target's `dmr_sm_ctx_t`. Probe frequency is separate from the saved CC
 anchor. Target entry and accepted CC return restart acquisition, preventing a previous call or probe from holding

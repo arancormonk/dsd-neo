@@ -15,6 +15,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_cc_activity.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
@@ -484,8 +485,14 @@ standalone_recovery(void) {
     g_state.trunk_lcn_freq[1] = 852000000L;
     g_state.p25_cc_is_tdma = 0;
     g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P1_POS;
+    g_state.p25_cc_freq = 0;
     p25_sm_init_ctx(p25, &g_opts, &g_state);
-    p25_sm_event(p25, &g_opts, &g_state, &(p25_sm_event_t){.type = P25_SM_EV_CC_SYNC});
+    g_state.p25_cc_freq = 851000000L;
+    p25_sm_note_cc_activity(&g_state); // Actual TSBK/MBT/LCCH production activity boundary.
+    p25_sm_try_tick(&g_opts, &g_state);
+    rc |= expect(p25->state == P25_SM_ON_CC && dsd_trunk_p25_recovery_allowed(&g_opts, &g_state),
+                 "decoded P25 control activity starts standalone recovery before the first voice grant");
+    g_state.p25_last_cc_msg_time_m = old_try;
     p25->t_cc_sync_m = g_state.last_cc_sync_time_m = old_try;
     p25->t_hunt_try_m = old_try;
     g_state.synctype = DSD_SYNC_NONE;

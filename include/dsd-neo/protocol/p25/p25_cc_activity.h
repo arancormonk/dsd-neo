@@ -12,6 +12,7 @@
 
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <time.h>
 #include "dsd-neo/core/state_fwd.h"
 
@@ -32,6 +33,7 @@ p25_sm_note_cc_activity(dsd_state* state) {
     if (!state) {
         return;
     }
+    dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_P25);
     const time_t now = time(NULL);
     const double now_m = dsd_time_now_monotonic_s();
     state->last_cc_sync_time = now;

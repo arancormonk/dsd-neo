@@ -5226,7 +5226,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_p25_p1_tsbk_handlers
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_test_support
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_test_support dsd-neo_runtime
 )
 target_compile_options(
     dsd-neo_test_p25_p1_tsbk_handlers
@@ -5593,6 +5593,7 @@ target_include_directories(
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 add_test(NAME P25_P2_XCCH_HELPERS COMMAND dsd-neo_test_p25_p2_xcch_helpers)
+target_link_libraries(dsd-neo_test_p25_p2_xcch_helpers PRIVATE dsd-neo_runtime)
 
 # Core synthesized-audio playback dispatch matrix
 add_executable(
@@ -5682,6 +5683,7 @@ target_link_libraries(
     PRIVATE dsd-neo_test_call_state_support
 )
 add_test(NAME P25_P1_TSBK_SEQUENCE COMMAND dsd-neo_test_p25_p1_tsbk_sequence)
+target_link_libraries(dsd-neo_test_p25_p1_tsbk_sequence PRIVATE dsd-neo_runtime)
 
 # P25 P1 TDU state cleanup and status-symbol handoff
 add_executable(
@@ -8150,7 +8152,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_p25_p1_pdu_private_allowlist
-    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform dsd-neo_runtime
 )
 add_test(
     NAME P25_P1_PDU_PRIVATE_ALLOWLIST
