@@ -62,10 +62,13 @@ void dsd_scan_timing_publish(dsd_state* state, const dsd_scan_timing_publication
 /**
  * Publish the -Y scanner's stay reason and step deadline. A no-op unless
  * scanner_mode == 1 && trunk_scan_enabled != 1: under --trunk-scan the coordinator owns
- * the publication, exactly as it owns scan_voice_gate_phase. Every published anchor is
- * absolute, so the caller passes no clock; the renderer differences them against its own.
+ * the publication, exactly as it owns scan_voice_gate_phase.
+ *
+ * The legacy hangtime rule anchors on the wall-clock last_cc_sync_time (which NXDN can
+ * stamp two seconds into the future), so the publisher takes both clocks, sampled
+ * together, to express that anchor as a monotonic deadline the renderer can difference.
  */
-void dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state);
+void dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now_m, double now_wall_s);
 
 #ifdef __cplusplus
 }

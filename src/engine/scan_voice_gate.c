@@ -283,26 +283,34 @@ scan_y_timing_span_ms(double seconds) {
     if (span_ms >= (double)UINT32_MAX) {
         return UINT32_MAX;
     }
-    return (uint32_t)lround(span_ms);
+    return (uint32_t)llround(span_ms);
 }
 
 /* The legacy rule waits out -t since the last sync and knows nothing else, so it reports
- * no dwell and no hold. Without an anchor or with -t 0 there is nothing to count down. */
+ * no dwell and no hold. Without an anchor or with -t 0 there is nothing to count down.
+ *
+ * The anchor is the wall-clock last_cc_sync_time the step rule itself compares
+ * (engine.c no_carrier_scanner_step_is_due), not its monotonic twin: NXDN stamps the
+ * wall clock two seconds ahead after a confirmed frame without touching the monotonic
+ * field, and a countdown read from the twin would reach zero two seconds early. The
+ * window is re-expressed on the monotonic clock through the two clocks sampled together,
+ * so it can start in the future and stays put from tick to tick. */
 static void
-scan_y_timing_fill_hangtime(const dsd_opts* opts, const dsd_state* state, dsd_scan_timing_publication* out) {
+scan_y_timing_fill_hangtime(const dsd_opts* opts, const dsd_state* state, double now_m, double now_wall_s,
+                            dsd_scan_timing_publication* out) {
     out->reason = (uint8_t)DSD_SCAN_STAY_HANGTIME;
     out->dwell_ms = 0U;
     out->hold_ms = 0U;
-    if (state->last_cc_sync_time_m <= 0.0 || opts->trunk_hangtime <= 0.0f) {
+    if (state->last_cc_sync_time == 0 || opts->trunk_hangtime <= 0.0f) {
         return;
     }
-    out->started_m = state->last_cc_sync_time_m;
+    out->started_m = now_m + ((double)state->last_cc_sync_time - now_wall_s);
     out->deadline_m = out->started_m + (double)opts->trunk_hangtime;
     out->span_ms = scan_y_timing_span_ms((double)opts->trunk_hangtime);
 }
 
 void
-dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state) {
+dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now_m, double now_wall_s) {
     if (!opts || !state) {
         return;
     }
@@ -322,7 +330,7 @@ dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state) {
     } else if (dsd_scan_voice_gate_owns_step(opts, state)) {
         scan_y_timing_fill_gate(state, &report);
     } else {
-        scan_y_timing_fill_hangtime(opts, state, &report);
+        scan_y_timing_fill_hangtime(opts, state, now_m, now_wall_s, &report);
     }
     dsd_scan_timing_publish(state, &report);
 }

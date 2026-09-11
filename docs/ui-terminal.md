@@ -561,7 +561,7 @@ running out.
 | `Hangtime` | `-Y` without `--scan-voice-only`: waiting out `-t` since the last sync | `-t` |
 
 Which phrases you can see depends on the protocol: an NXDN trunked target has no state machine to report control
-acquisition, so it only ever reads `Following call` or `Idle dwell`.
+acquisition, so it never reads `Acquiring control`.
 
 The values that follow are the *effective* ones for the row on air, after CSV and option overrides:
 
@@ -570,9 +570,11 @@ The values that follow are the *effective* ones for the row on air, after CSV an
 - `hold` is the activity hold. It appears on conventional and `-Y` rows only; a trunked target has none.
 - `hang` is `-t`, and appears only while a trunked call is being followed.
 
-The row is not shown in compact view. The countdown is a published deadline differenced against the monotonic clock,
-and snapshots are published only while samples flow, so it freezes if the input stalls instead of running past zero on
-its own. A narrow terminal cuts the row at the edge rather than wrapping it.
+The row is not shown in compact view. The countdown is a published deadline differenced against the terminal's own
+clock, so it keeps running while the input is stalled and stops at `0.0s`; the phrase beside it is only as fresh as the
+last snapshot, which is published while samples flow. A narrow terminal cuts the row at the edge rather than wrapping
+it. On an NXDN row under `-Y`, the decoder keeps the scan two seconds past each confirmed frame, so the `Hangtime`
+countdown starts above `-t`.
 
 Call Info repeats the answer on its own first line, because compact view hides the Input Output section:
 
