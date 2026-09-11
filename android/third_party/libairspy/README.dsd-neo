@@ -1,3 +1,5 @@
 Upstream: https://github.com/airspy/airspyone_host
-Commit: fc61ab6be57ed61f0e2bdd9c6dfae74cacef57d0
+Commit: bd15be38e91ebaa3e0bebb1e320255bde4ccf059
+Licences: BSD-3-Clause (airspy.c, airspy.h, airspy_commands.h) and MIT
+(filters.h, iqconverter_*). Both upstream notices are retained in LICENSE.
 Library sources only; unmodified. Built against the shared Android libusb target.

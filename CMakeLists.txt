@@ -1313,7 +1313,7 @@ if(DSD_HAS_AIRSPY)
     install(
         FILES android/third_party/libairspy/LICENSE
         DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
-        RENAME libairspy-BSD-3-Clause.txt
+        RENAME libairspy-LICENSE.txt
     )
 endif()
 # The Qt frontend compiles the IBM Plex faces into its resource bundle, so the

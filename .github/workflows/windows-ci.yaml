@@ -251,7 +251,8 @@ jobs:
           Copy-Item -Force LICENSE,COPYRIGHT,THIRD_PARTY.md $docDir -ErrorAction SilentlyContinue
           Copy-Item -Force 'src/third_party/ezpwd/lesser.txt' (Join-Path $licenseDir 'ezpwd-LGPL-2.1-or-later.txt') -ErrorAction SilentlyContinue
           Copy-Item -Force 'src/third_party/pffft/COPYING' (Join-Path $licenseDir 'pffft-FFTPACK.txt') -ErrorAction SilentlyContinue
-          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-FFTPACK.txt')
+          Copy-Item -Force 'android/third_party/libairspy/LICENSE' (Join-Path $licenseDir 'libairspy-LICENSE.txt') -ErrorAction Stop
+          $required = @('LICENSE','COPYRIGHT','THIRD_PARTY.md','licenses/ezpwd-LGPL-2.1-or-later.txt','licenses/pffft-FFTPACK.txt','licenses/libairspy-LICENSE.txt')
           foreach ($f in $required) {
             $p = Join-Path $docDir $f
             if (!(Test-Path $p)) { throw "Missing required license file in staged docs: $p" }

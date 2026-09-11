@@ -961,6 +961,7 @@ jobs:
               'libpulse'
               'rtl-sdr'
               'soapysdr'
+              'airspy'
               'codec2'
               'curl'
           )
@@ -975,6 +976,7 @@ jobs:
           build() {
               cmake -B build -S "$pkgname-$pkgver" \
                   -DCMAKE_BUILD_TYPE=Release \
+                  -DDSD_REQUIRE_AIRSPY=ON \
                   -DCMAKE_INSTALL_PREFIX=/usr \
                   -DBUILD_TESTING=OFF \
                   -Wno-dev

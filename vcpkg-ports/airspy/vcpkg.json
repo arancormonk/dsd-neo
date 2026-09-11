@@ -1,9 +1,9 @@
 {
   "name": "airspy",
-  "version-string": "1.0.12-fc61ab6",
+  "version-string": "1.0.12-bd15be3",
   "description": "Native Airspy R2 and Mini receiver library",
   "homepage": "https://github.com/airspy/airspyone_host",
-  "license": "BSD-3-Clause",
+  "license": "BSD-3-Clause AND MIT",
   "dependencies": [
     "libusb",
     "pthreads",

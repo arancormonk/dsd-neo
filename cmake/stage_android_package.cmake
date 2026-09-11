@@ -68,6 +68,6 @@ configure_file(
 
 configure_file(
     "${REPO_DIR}/android/third_party/libairspy/LICENSE"
-    "${_doc_dir}/licenses/libairspy-BSD-3-Clause.txt"
+    "${_doc_dir}/licenses/libairspy-LICENSE.txt"
     COPYONLY
 )

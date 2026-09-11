@@ -333,7 +333,8 @@ touches a `USE_RADIO` guard:
 
 ```sh
 cmake --preset dev-debug -DDSD_ENABLE_RTLSDR=OFF -DDSD_REQUIRE_RTLSDR=OFF \
-  -DDSD_ENABLE_SOAPYSDR=OFF -DDSD_REQUIRE_SOAPYSDR=OFF
+  -DDSD_ENABLE_SOAPYSDR=OFF -DDSD_REQUIRE_SOAPYSDR=OFF \
+  -DDSD_ENABLE_AIRSPY=OFF -DDSD_REQUIRE_AIRSPY=OFF
 cmake --build --preset dev-debug -j
 ctest --preset dev-debug --output-on-failure
 ```

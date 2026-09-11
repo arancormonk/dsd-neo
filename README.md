@@ -352,7 +352,8 @@ cmake --build --preset dev-debug -j
 # neither
 cmake --preset dev-debug \
   -DDSD_ENABLE_RTLSDR=OFF \
-  -DDSD_ENABLE_SOAPYSDR=OFF
+  -DDSD_ENABLE_SOAPYSDR=OFF \
+  -DDSD_ENABLE_AIRSPY=OFF
 cmake --build --preset dev-debug -j
 ```
 
