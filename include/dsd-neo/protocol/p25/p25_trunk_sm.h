@@ -387,6 +387,35 @@ int p25_sm_await_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
                                  const char* source);
 
 /**
+ * @brief Park the SM after an external tune to the control channel (#506).
+ *
+ * Frontend commands (user talkgroup lockout, manual return-to-CC) retune the
+ * radio to the control channel through the tuning hooks themselves, bypassing
+ * p25_sm_release(). Without this handoff the SM stays TUNED with the old
+ * assignment's slot activity and judges every later grant as a preemption of
+ * that phantom call. For a TUNED SM this ends the followed calls and clears
+ * the assignment context; a parked or hunting SM keeps its context. Either
+ * way it starts the same decoded-CC acquisition gate every return goes
+ * through, so grants stay blocked until the CC decodes after the tune.
+ *
+ * The caller holds the watchdog guard across its tune, its decoder resets and
+ * this handoff (p25_sm_tick_guard_enter()), like p25_sm_select_control_channel()
+ * does internally: a watchdog tick in between would see a TUNED context with
+ * no tuned decoder and issue a second CC return of its own.
+ *
+ * @param ctx State machine context.
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param tune_result Result of the CC tune the caller already issued.
+ * @param request_id Runtime tune request for PENDING results, 0 when unknown.
+ * @param source Short diagnostic source label.
+ * @return 1 when the SM was handed off, 0 when the tune was refused or the SM
+ *         was idle and had nothing to hand off.
+ */
+int p25_sm_on_external_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result tune_result,
+                               uint64_t request_id, const char* source);
+
+/**
  * @brief Periodic tick for timeout-based transitions.
  *
  * Call at ~1-10 Hz. Handles:

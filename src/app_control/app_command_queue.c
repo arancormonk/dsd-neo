@@ -48,6 +48,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/call_alert.h>
@@ -2121,18 +2122,32 @@ set_cc_symbol_timing(const dsd_opts* opts, dsd_state* state, int sym_rate) {
 }
 
 static int
-request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_symbol_rate, const char* action) {
+request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_symbol_rate, const char* action,
+                    dsd_trunk_tune_result* out_result, uint64_t* out_request_id) {
     int result = 0;
     int accepted = 0;
+    dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    uint64_t request_id = 0U;
     if (p25_cc_symbol_rate != 0) {
         const int ted_sps = dsd_opts_compute_sps_rate(opts, p25_cc_symbol_rate, current_demod_rate(opts, state));
-        const dsd_trunk_tune_result cc_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, ted_sps, NULL);
-        result = (int)cc_result;
-        accepted = dsd_trunk_tune_result_is_ok(cc_result);
+        tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, ted_sps, &request_id);
+        result = (int)tune_result;
+        accepted = dsd_trunk_tune_result_is_ok(tune_result);
     } else {
         /* Generic LCN actions and unknown CC types must not stage a P25 RTL profile. */
         result = io_control_set_freq(opts, state, freq);
         accepted = result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT;
+        if (accepted) {
+            /* This leg has no correlated tune request to await, so an accepted
+             * timeout (issued, not yet confirmed) is reported as complete. */
+            tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        }
+    }
+    if (out_result) {
+        *out_result = tune_result;
+    }
+    if (out_request_id) {
+        *out_request_id = request_id;
     }
     if (accepted) {
         return 1;
@@ -2150,6 +2165,44 @@ mark_cc_sync(dsd_state* state, int include_monotonic) {
     }
 }
 
+/* #506: the manual CC tunes below go straight to the tuner, bypassing p25_sm_release().
+ * Hand the P25 SM its parked state, or it keeps judging every later grant as a
+ * preemption of the assignment it was following. */
+static void
+hand_p25_sm_to_cc(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result tune_result, uint64_t request_id,
+                  const char* source) {
+    (void)p25_sm_on_external_cc_tune(p25_sm_get_ctx(), opts, state, tune_result, request_id, source);
+}
+
+/* Whether the P25 SM owns this trunk. When it does, the tune, the decoder resets and
+ * the SM handoff run under the watchdog guard as one step, like every other CC
+ * retune (p25_sm_select_control_channel(), the no-carrier return): a watchdog tick
+ * in between would see a TUNED context with no tuned decoder and issue a second CC
+ * return of its own. DMR and NXDN trunks keep their unguarded path. */
+static int
+p25_sm_owns_trunk(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_trunk_p25_recovery_allowed(opts, state);
+}
+
+static int
+apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
+    const long freq = current_cc_freq(state);
+    const int sym_rate = cc_symbol_rate(opts, state, 0);
+    dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    uint64_t request_id = 0U;
+    if (!request_manual_tune(opts, state, freq, sym_rate, "Return-to-CC", &tune_result, &request_id)) {
+        return UI_CMD_APPLY_FAILED;
+    }
+    reset_call_tracking(opts, state, 1);
+    mark_cc_sync(state, 1);
+    set_cc_symbol_timing(opts, state, sym_rate);
+    if (p25_live) {
+        hand_p25_sm_to_cc(opts, state, tune_result, request_id, "return-to-cc");
+    }
+    LOG_INFO("User Activated Return to CC\n");
+    return UI_CMD_APPLY_COMPLETED;
+}
+
 static int
 apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (!state) {
@@ -2158,26 +2211,28 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (opts->trunk_enable != 1 || (state->trunk_cc_freq == 0 && state->p25_cc_freq == 0)) {
         return UI_CMD_APPLY_COMPLETED;
     }
-
-    const long freq = current_cc_freq(state);
-    const int sym_rate = cc_symbol_rate(opts, state, 0);
-    if (!request_manual_tune(opts, state, freq, sym_rate, "Return-to-CC")) {
-        return UI_CMD_APPLY_FAILED;
+    const int p25_live = p25_sm_owns_trunk(opts, state);
+    if (p25_live) {
+        p25_sm_tick_guard_enter();
     }
-    reset_call_tracking(opts, state, 1);
-    mark_cc_sync(state, 1);
-    set_cc_symbol_timing(opts, state, sym_rate);
-    LOG_INFO("User Activated Return to CC\n");
-    return UI_CMD_APPLY_COMPLETED;
+    const int status = apply_manual_return_to_cc_locked(opts, state, p25_live);
+    if (p25_live) {
+        p25_sm_tick_guard_leave();
+    }
+    return status;
 }
 
 static int
-apply_lockout_decoder_transition(dsd_opts* opts, dsd_state* state) {
+apply_lockout_decoder_transition_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
     long cc_freq = 0;
+    dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    uint64_t request_id = 0U;
     const int sym_rate = cc_symbol_rate(opts, state, 1);
     if (opts->trunk_enable == 1) {
         cc_freq = current_cc_freq(state);
-        if (cc_freq != 0 && !request_manual_tune(opts, state, cc_freq, sym_rate, "Lockout return-to-CC")) {
+        if (cc_freq != 0
+            && !request_manual_tune(opts, state, cc_freq, sym_rate, "Lockout return-to-CC", &tune_result,
+                                    &request_id)) {
             return UI_CMD_APPLY_FAILED;
         }
     }
@@ -2187,9 +2242,29 @@ apply_lockout_decoder_transition(dsd_opts* opts, dsd_state* state) {
         noCarrier(opts, state);
         state->trunk_cc_freq = cc_freq;
     }
+    /* Wall clock only: the P25 handoff below stamps the monotonic CC sync from the
+     * tune boundary itself, which is what its acquisition window is measured from. */
     mark_cc_sync(state, 0);
     set_cc_symbol_timing(opts, state, sym_rate);
+    if (p25_live) {
+        /* With no CC known nothing was tuned; tune_result is still FAILED and the
+         * handoff declines, leaving the SM to its own stale-context recovery. */
+        hand_p25_sm_to_cc(opts, state, tune_result, request_id, "user-lockout");
+    }
     return UI_CMD_APPLY_COMPLETED;
+}
+
+static int
+apply_lockout_decoder_transition(dsd_opts* opts, dsd_state* state) {
+    const int p25_live = p25_sm_owns_trunk(opts, state);
+    if (p25_live) {
+        p25_sm_tick_guard_enter();
+    }
+    const int status = apply_lockout_decoder_transition_locked(opts, state, p25_live);
+    if (p25_live) {
+        p25_sm_tick_guard_leave();
+    }
+    return status;
 }
 
 static int
@@ -2199,7 +2274,7 @@ try_manual_candidate_cycle(dsd_opts* opts, dsd_state* state) {
         return UI_CMD_APPLY_UNHANDLED;
     }
     const int sym_rate = cc_symbol_rate(opts, state, 0);
-    if (!request_manual_tune(opts, state, cand, sym_rate, "Candidate cycle")) {
+    if (!request_manual_tune(opts, state, cand, sym_rate, "Candidate cycle", NULL, NULL)) {
         return UI_CMD_APPLY_FAILED;
     }
 
@@ -2243,7 +2318,7 @@ apply_manual_lcn_cycle_untyped(dsd_opts* opts, dsd_state* state) {
         }
         return UI_CMD_APPLY_COMPLETED;
     }
-    if (!request_manual_tune(opts, state, freq, 0, "Channel cycle")) {
+    if (!request_manual_tune(opts, state, freq, 0, "Channel cycle", NULL, NULL)) {
         return UI_CMD_APPLY_FAILED;
     }
 
