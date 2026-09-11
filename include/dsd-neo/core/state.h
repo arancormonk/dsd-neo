@@ -399,6 +399,35 @@ typedef enum {
     DSD_SCAN_VOICE_GATE_TAIL = 3,
 } dsd_scan_voice_gate_phase;
 
+/** Why the receiver is staying on the scanner's current row (issue #508). Frontend-neutral:
+ * the decoder owns every deadline and the UI only renders what is published. NONE means
+ * nothing holds the row -- for --trunk-scan that is exactly the old "not held" verdict. */
+typedef enum {
+    DSD_SCAN_STAY_NONE = 0,
+    DSD_SCAN_STAY_RETUNE_PENDING = 1, /**< a backend retune request has not resolved */
+    DSD_SCAN_STAY_RETUNE_RETRY = 2,   /**< retune failed; cooling down before retrying in place */
+    DSD_SCAN_STAY_CC_ACQUIRE = 3,     /**< trunking SM is acquiring a control channel */
+    DSD_SCAN_STAY_CALL_FOLLOW = 4,    /**< trunking SM is following a call, hangtime included */
+    DSD_SCAN_STAY_VOICE = 5,          /**< conventional row: voice media is active */
+    DSD_SCAN_STAY_ACTIVITY_HOLD = 6,  /**< conventional row: activity hold / voice tail running */
+    DSD_SCAN_STAY_MANUAL_HOLD = 7,    /**< operator hold (Y): the dwell is paused, not expired */
+    DSD_SCAN_STAY_IDLE_DWELL = 8,     /**< nothing holds it; the idle dwell / qualify window runs */
+    DSD_SCAN_STAY_HANGTIME = 9,       /**< -Y legacy rule: waiting out -t since the last sync */
+} dsd_scan_stay_reason;
+
+/** Live scan timing for the frontends' Scan Timing row (issue #508). Plain inline
+ * scalars: it rides the vertex_ks_count..ui_msg snapshot copy range (ui_snapshot.c static
+ * assert) and must never grow a pointer, or the byte-range copy would alias decoder memory. */
+struct dsd_scan_timing_publication {
+    double started_m;     /**< monotonic start of the live window; < 0 when there is none */
+    double deadline_m;    /**< monotonic expiry; < 0 = no live timer (suspended/paused/unanchored) */
+    uint32_t span_ms;     /**< full width of the live window; 0 when there is no timer */
+    uint32_t dwell_ms;    /**< effective idle dwell (or -Y qualify) for the row on air; 0 = n/a */
+    uint32_t hold_ms;     /**< effective activity hold; 0 on trunked rows and when n/a */
+    uint8_t reason;       /**< dsd_scan_stay_reason */
+    uint8_t conventional; /**< 1 = conventional / -Y row, so hold_ms means something */
+};
+
 // dsd_state is a C aggregate, not a C++ class: it is allocated once and zeroed by
 // initState() before anything reads it, and C code — which is most of its users —
 // has no constructors to write. A C++ TU that includes this header would otherwise
@@ -1696,6 +1725,10 @@ struct dsd_state {
     int scan_voice_gate_roll_seen;
     uint8_t scan_voice_gate_hold_seen;
     uint8_t scan_voice_gate_phase;
+    /* Scan state + live timing for the Scan Timing row (issue #508). Written by the
+     * --trunk-scan coordinator for its parked target, or by the -Y timing tick when trunk
+     * scan is off; the two never both write it. Rides the vertex_ks_count..ui_msg range. */
+    dsd_scan_timing_publication scan_timing;
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];

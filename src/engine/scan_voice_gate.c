@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -211,4 +212,22 @@ dsd_scan_voice_gate_should_step(const dsd_opts* opts, const dsd_state* state, do
     }
     /* Never synced this visit: the caller falls back to the legacy hangtime rule. */
     return 0;
+}
+
+void
+dsd_scan_timing_clear(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    DSD_MEMSET(&state->scan_timing, 0, sizeof(state->scan_timing));
+    state->scan_timing.started_m = -1.0;
+    state->scan_timing.deadline_m = -1.0;
+}
+
+void
+dsd_scan_timing_publish(dsd_state* state, const dsd_scan_timing_publication* report) {
+    if (!state || !report) {
+        return;
+    }
+    state->scan_timing = *report;
 }

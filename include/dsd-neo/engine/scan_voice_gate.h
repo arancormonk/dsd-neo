@@ -53,6 +53,20 @@ int dsd_scan_voice_gate_owns_step(const dsd_opts* opts, const dsd_state* state);
 /** Non-zero when the gate says the -Y visit is over and the scan should step. */
 int dsd_scan_voice_gate_should_step(const dsd_opts* opts, const dsd_state* state, double now_m);
 
+/** Take the scan timing publication back down (scan off, shutdown, between targets). */
+void dsd_scan_timing_clear(dsd_state* state);
+
+/** Publish one scan timing report for the row on air (issue #508). */
+void dsd_scan_timing_publish(dsd_state* state, const dsd_scan_timing_publication* report);
+
+/**
+ * Publish the -Y scanner's stay reason and step deadline. A no-op unless
+ * scanner_mode == 1 && trunk_scan_enabled != 1: under --trunk-scan the coordinator owns
+ * the publication, exactly as it owns scan_voice_gate_phase. Every published anchor is
+ * absolute, so the caller passes no clock; the renderer differences them against its own.
+ */
+void dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

@@ -600,6 +600,13 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/call_view.h
   C
 )
+
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_timing_view
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_TIMING_VIEW
+  dsd-neo/app_control/scan_timing_view.h
+  C
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_commands
   HEADERS_PUBLIC_APP_CONTROL_COMMANDS

@@ -9,6 +9,7 @@
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/app_control/p25_network.h>
+#include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/frontend_types.h>
