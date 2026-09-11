@@ -261,6 +261,8 @@ struct dsd_opts {
     int scan_voice_only;
     int scan_voice_qualify_ms;
     int scan_voice_hold_ms;
+    /* 0 disables; else 1000..3600000 ms cap on one scan-target visit (issue #507) */
+    int scan_max_visit_ms;
     int setmod_bw;
     int slot_preference;
     int slot1_on;

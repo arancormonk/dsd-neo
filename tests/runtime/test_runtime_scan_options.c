@@ -95,6 +95,26 @@ main(void) {
            == 0);
     assert(parsed.values.present == (DSD_SCAN_OPT_DATA | DSD_SCAN_OPT_ENC));
     assert(parsed.values.tune_data_calls == 0 && parsed.values.tune_enc_calls == 1);
+    /* The per-visit cap (issue #507) is accepted on every trunk-scan target type: trunked
+     * rows (conventional = 0) as well as conventional and untyped ones. */
+    assert(dsd_scan_options_parse("--scan-max-visit-ms 20000", DSD_SCAN_MODE_P25, 0, &parsed, error, sizeof(error))
+           == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_MAX_VISIT && parsed.values.max_visit_ms == 20000);
+    assert(dsd_scan_options_parse("--scan-max-visit-ms 20000", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))
+           == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_MAX_VISIT && parsed.values.max_visit_ms == 20000);
+    assert(dsd_scan_options_parse("--scan-max-visit-ms 20000", DSD_SCAN_MODE_INHERIT, 1, &parsed, error, sizeof(error))
+           == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_MAX_VISIT && parsed.values.max_visit_ms == 20000);
+    /* 0 disables the cap for that row alone, and both bounds are stored verbatim. */
+    assert(dsd_scan_options_parse("--scan-max-visit-ms 0", DSD_SCAN_MODE_P25, 0, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_MAX_VISIT && parsed.values.max_visit_ms == 0);
+    assert(dsd_scan_options_parse("--scan-max-visit-ms=1000", DSD_SCAN_MODE_P25, 0, &parsed, error, sizeof(error))
+           == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_MAX_VISIT && parsed.values.max_visit_ms == 1000);
+    assert(dsd_scan_options_parse("--scan-max-visit-ms 3600000", DSD_SCAN_MODE_P25, 0, &parsed, error, sizeof(error))
+           == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_MAX_VISIT && parsed.values.max_visit_ms == 3600000);
 
     const struct {
         const char* text;
@@ -130,6 +150,13 @@ main(void) {
                    {"--scan-voice-hold-ms 4000", DSD_SCAN_MODE_P25, 0},
                    {"--scan-voice-hold-ms 99", DSD_SCAN_MODE_DMR, 1},
                    {"--scan-voice-qualify-ms 600001", DSD_SCAN_MODE_DMR, 1},
+                   {"--scan-max-visit-ms 999", DSD_SCAN_MODE_DMR, 1},
+                   {"--scan-max-visit-ms 1", DSD_SCAN_MODE_P25, 0},
+                   {"--scan-max-visit-ms 3600001", DSD_SCAN_MODE_DMR, 1},
+                   {"--scan-max-visit-ms -1", DSD_SCAN_MODE_DMR, 1},
+                   {"--scan-max-visit-ms", DSD_SCAN_MODE_DMR, 1},
+                   {"--scan-max-visit-ms 2000 --scan-max-visit-ms 3000", DSD_SCAN_MODE_DMR, 1},
+                   {"--scan-max-visit-ms 20x", DSD_SCAN_MODE_DMR, 1},
                    {"-G 'unterminated", DSD_SCAN_MODE_DMR, 1},
                    {"-G", DSD_SCAN_MODE_DMR, 1},
                    {"-G ''", DSD_SCAN_MODE_DMR, 1},

@@ -41,6 +41,17 @@ typedef struct {
  */
 int dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_voice_probe_result* out);
 
+/**
+ * Non-zero when the operator's talkgroup hold is on a call that is being followed right now:
+ * some slot carries an active, non-data call whose target -- after policy remapping -- is the
+ * held talkgroup, or, on a private call, whose source is.
+ *
+ * Both scanners suspend the per-visit limit while this holds (issue #507), so the limit cannot
+ * cut short the very call the hold exists to follow, and a fresh limit starts once that call
+ * ends. Read-only and null-safe.
+ */
+int dsd_scan_tg_hold_call_active(const dsd_state* state);
+
 /** Restart the per-visit gate memory on a scan hop. */
 void dsd_scan_voice_gate_note_retune(dsd_state* state, double now_m);
 

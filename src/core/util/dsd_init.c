@@ -344,6 +344,7 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->scan_voice_only = 0;
     opts->scan_voice_qualify_ms = 1000;
     opts->scan_voice_hold_ms = 2000;
+    opts->scan_max_visit_ms = 0;
     opts->trunk_cli_seen = 0;
 
     //reverse mute
@@ -943,6 +944,7 @@ init_state_trunk_scan_publication(dsd_state* state) {
     DSD_MEMSET(&state->scan_timing, 0, sizeof(state->scan_timing));
     state->scan_timing.started_m = -1.0;
     state->scan_timing.deadline_m = -1.0;
+    state->scan_timing.visit_deadline_m = -1.0;
 }
 
 static void

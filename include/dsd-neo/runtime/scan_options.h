@@ -35,6 +35,8 @@ enum {
     DSD_SCAN_OPT_DMR_MAP = 1U << 17,
     DSD_SCAN_OPT_CLEAR_KEYS = 1U << 18,
     DSD_SCAN_OPT_KEY_PROFILE_REF = 1U << 19,
+    /** The row caps how long one scan-target visit may last (issue #507). */
+    DSD_SCAN_OPT_MAX_VISIT = 1U << 20,
     DSD_SCAN_OPT_DIRECT = DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA | DSD_SCAN_OPT_SCALAR | DSD_SCAN_OPT_SCRAMBLER,
     DSD_SCAN_OPT_FILES = DSD_SCAN_OPT_HEX_FILE | DSD_SCAN_OPT_DEC_FILE
 };
@@ -54,6 +56,8 @@ typedef struct {
     int voice_only;
     int qualify_ms;
     int hold_ms;
+    /** 0 = explicit per-row disable */
+    int max_visit_ms;
     int mute_dmr;
     int tune_data_calls;
     int tune_enc_calls;

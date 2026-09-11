@@ -88,6 +88,7 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
     out->scan_voice_only = opts->scan_voice_only;
     out->scan_voice_qualify_ms = opts->scan_voice_qualify_ms;
     out->scan_voice_hold_ms = opts->scan_voice_hold_ms;
+    out->scan_max_visit_ms = opts->scan_max_visit_ms;
     out->dmr_mute_encL = opts->dmr_mute_encL;
     out->dmr_mute_encR = opts->dmr_mute_encR;
     out->unmute_encrypted_p25 = opts->unmute_encrypted_p25;
@@ -145,6 +146,7 @@ scan_settings_restore_row_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
     opts->scan_voice_only = saved->scan_voice_only;
     opts->scan_voice_qualify_ms = saved->scan_voice_qualify_ms;
     opts->scan_voice_hold_ms = saved->scan_voice_hold_ms;
+    opts->scan_max_visit_ms = saved->scan_max_visit_ms;
     opts->dmr_mute_encL = saved->dmr_mute_encL;
     opts->dmr_mute_encR = saved->dmr_mute_encR;
     opts->unmute_encrypted_p25 = saved->unmute_encrypted_p25;
@@ -164,6 +166,7 @@ scan_settings_copy_row_opts(dsd_scan_settings* dst, const dsd_scan_settings* src
     dst->scan_voice_only = src->scan_voice_only;
     dst->scan_voice_qualify_ms = src->scan_voice_qualify_ms;
     dst->scan_voice_hold_ms = src->scan_voice_hold_ms;
+    dst->scan_max_visit_ms = src->scan_max_visit_ms;
     dst->dmr_mute_encL = src->dmr_mute_encL;
     dst->dmr_mute_encR = src->dmr_mute_encR;
     dst->unmute_encrypted_p25 = src->unmute_encrypted_p25;
@@ -367,6 +370,9 @@ scan_options_apply(dsd_opts* opts, dsd_state* state, const dsd_scan_option_value
     }
     if (present & DSD_SCAN_OPT_HOLD) {
         opts->scan_voice_hold_ms = values->hold_ms;
+    }
+    if (present & DSD_SCAN_OPT_MAX_VISIT) {
+        opts->scan_max_visit_ms = values->max_visit_ms;
     }
     if (present & DSD_SCAN_OPT_MUTE_DMR) {
         opts->dmr_mute_encL = values->mute_dmr;

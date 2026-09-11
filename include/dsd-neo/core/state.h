@@ -419,11 +419,17 @@ typedef enum {
  * scalars: it rides the vertex_ks_count..ui_msg snapshot copy range (ui_snapshot.c static
  * assert) and must never grow a pointer, or the byte-range copy would alias decoder memory. */
 struct dsd_scan_timing_publication {
-    double started_m;     /**< monotonic start of the live window; < 0 when there is none */
-    double deadline_m;    /**< monotonic expiry; < 0 = no live timer (suspended/paused/unanchored) */
-    uint32_t span_ms;     /**< full width of the live window; 0 when there is no timer */
-    uint32_t dwell_ms;    /**< effective idle dwell (or -Y qualify) for the row on air; 0 = n/a */
-    uint32_t hold_ms;     /**< effective activity hold; 0 on trunked rows and when n/a */
+    double started_m;  /**< monotonic start of the live window; < 0 when there is none */
+    double deadline_m; /**< monotonic expiry; < 0 = no live timer (suspended/paused/unanchored) */
+    /** Monotonic expiry of the per-visit cap (issue #507); < 0 = no live cap, whether it is
+     * disabled, not yet anchored, or suspended by a hold. Never zeroed into place: 0.0 would
+     * read as a deadline at monotonic 0, which is long past. */
+    double visit_deadline_m;
+    uint32_t span_ms;  /**< full width of the live window; 0 when there is no timer */
+    uint32_t dwell_ms; /**< effective idle dwell (or -Y qualify) for the row on air; 0 = n/a */
+    uint32_t hold_ms;  /**< effective activity hold; 0 on trunked rows and when n/a */
+    /** Effective per-visit cap for the row on air in ms; 0 = off (issue #507). */
+    uint32_t visit_limit_ms;
     uint8_t reason;       /**< dsd_scan_stay_reason */
     uint8_t conventional; /**< 1 = conventional / -Y row, so hold_ms means something */
 };

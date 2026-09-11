@@ -7869,6 +7869,22 @@ expect_scan_timing_window(const dsd_state* state, const char* stage, double star
     return 0;
 }
 
+/*
+ * The #507 per-visit cap rides the same publication. No target here configures one, so it
+ * must read as off at every stage -- and off is an explicit negative deadline, since a
+ * zeroed double would render as a deadline at monotonic 0.
+ */
+static int
+expect_scan_timing_no_visit_cap(const dsd_state* state, const char* stage) {
+    const dsd_scan_timing_publication* timing = &state->scan_timing;
+    if (timing->visit_deadline_m >= 0.0 || timing->visit_limit_ms != 0U) {
+        DSD_FPRINTF(stderr, "scan timing visit cap after %s: deadline=%.6f limit=%u, want off\n", stage,
+                    timing->visit_deadline_m, (unsigned)timing->visit_limit_ms);
+        return 1;
+    }
+    return 0;
+}
+
 static int
 expect_scan_timing_conventional(const dsd_state* state, const char* stage, unsigned conventional) {
     if ((unsigned)state->scan_timing.conventional != conventional) {
@@ -7912,6 +7928,7 @@ test_scan_timing_trunked_acquire_follow_and_dwell(void) {
     test_rc |= expect_active_target(&state, "cc acquisition", 0U);
     test_rc |= expect_scan_timing(&state, "cc acquisition", DSD_SCAN_STAY_CC_ACQUIRE, -1.0, 250U, 0U);
     test_rc |= expect_scan_timing_conventional(&state, "cc acquisition", 0U);
+    test_rc |= expect_scan_timing_no_visit_cap(&state, "cc acquisition");
 
     ctx->cc_tune_pending = 0;
     opts.trunk_is_tuned = 1;
@@ -7928,9 +7945,11 @@ test_scan_timing_trunked_acquire_follow_and_dwell(void) {
     test_rc |= expect_scan_timing(&state, "idle dwell", DSD_SCAN_STAY_IDLE_DWELL, 0.85, 250U, 0U);
     test_rc |= expect_scan_timing_window(&state, "idle dwell", 0.60, 250U);
     test_rc |= expect_scan_timing_conventional(&state, "idle dwell", 0U);
+    test_rc |= expect_scan_timing_no_visit_cap(&state, "idle dwell");
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     test_rc |= expect_scan_timing(&state, "shutdown", DSD_SCAN_STAY_NONE, -1.0, 0U, 0U);
+    test_rc |= expect_scan_timing_no_visit_cap(&state, "shutdown");
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;

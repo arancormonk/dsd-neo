@@ -2934,6 +2934,8 @@ trunk_scan_publish_timing(const dsd_opts* opts, dsd_state* state, const dsd_trun
     DSD_MEMSET(&report, 0, sizeof report);
     report.started_m = -1.0;
     report.deadline_m = -1.0;
+    /* A zeroed double would read as a deadline at monotonic 0, so "no cap" is explicit. */
+    report.visit_deadline_m = -1.0;
     report.conventional = conventional ? 1U : 0U;
     report.dwell_ms = dwell_ms > 0 ? (uint32_t)dwell_ms : 0U;
     report.hold_ms = hold_ms > 0 ? (uint32_t)hold_ms : 0U;

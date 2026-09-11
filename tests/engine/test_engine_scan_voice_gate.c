@@ -544,6 +544,73 @@ test_tick_leaves_phase_alone_without_scanner_mode(void) {
     fixture_free(&fix);
 }
 
+/* ---- Shared talkgroup-hold probe (issue #507) ------------------------------ */
+
+/* Open one call epoch with explicit identities. The hold probe reads phase, kind and the
+ * identity fields only, so these epochs deliberately carry no media. */
+static void
+open_call_identity(gate_fixture* fix, uint8_t slot, dsd_call_kind kind, uint64_t src, uint64_t ota_target,
+                   uint64_t policy_target, double t) {
+    dsd_call_observation obs;
+    DSD_MEMSET(&obs, 0, sizeof(obs));
+    obs.protocol = 1;
+    obs.slot = slot;
+    obs.kind = kind;
+    obs.ota_source_id = src;
+    obs.ota_target_id = ota_target;
+    obs.policy_target_id = policy_target;
+    obs.observed_m = t;
+    (void)dsd_call_state_observe(fix->state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+/* Both scanners suspend the per-visit limit only while the held talkgroup's call is the one
+ * being followed, so the probe has to be exact about which call counts. */
+static void
+test_tg_hold_call_active(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    CHECK("null state is not a held call", dsd_scan_tg_hold_call_active(NULL) == 0);
+    fix.state->tg_hold = 22;
+    CHECK("hold without any call", dsd_scan_tg_hold_call_active(fix.state) == 0);
+
+    /* Slot 0: a group call to 22. */
+    open_call_identity(&fix, 0U, DSD_CALL_KIND_GROUP_VOICE, 11, 22, 22, 100.0);
+    fix.state->tg_hold = 0;
+    CHECK("no hold", dsd_scan_tg_hold_call_active(fix.state) == 0);
+    fix.state->tg_hold = 22;
+    CHECK("held group call", dsd_scan_tg_hold_call_active(fix.state) == 1);
+    fix.state->tg_hold = 99;
+    CHECK("hold on another talkgroup", dsd_scan_tg_hold_call_active(fix.state) == 0);
+    fix.state->tg_hold = 22;
+    (void)dsd_call_state_end_ex(fix.state, 0U, 100.5, DSD_CALL_END_EXPLICIT);
+    CHECK("ended call", dsd_scan_tg_hold_call_active(fix.state) == 0);
+
+    /* A data call to the held talkgroup is not a call being followed. */
+    open_call_identity(&fix, 0U, DSD_CALL_KIND_DATA, 11, 22, 22, 101.0);
+    CHECK("data call", dsd_scan_tg_hold_call_active(fix.state) == 0);
+    (void)dsd_call_state_end_ex(fix.state, 0U, 101.5, DSD_CALL_END_EXPLICIT);
+
+    /* A private call is held by either end, so the held id may be the source. */
+    open_call_identity(&fix, 1U, DSD_CALL_KIND_PRIVATE_VOICE, 22, 77, 77, 102.0);
+    CHECK("held private call source", dsd_scan_tg_hold_call_active(fix.state) == 1);
+    (void)dsd_call_state_end_ex(fix.state, 1U, 102.5, DSD_CALL_END_EXPLICIT);
+    /* A group call's source is not an identity the hold follows. */
+    open_call_identity(&fix, 1U, DSD_CALL_KIND_GROUP_VOICE, 22, 77, 77, 103.0);
+    CHECK("group call source", dsd_scan_tg_hold_call_active(fix.state) == 0);
+    (void)dsd_call_state_end_ex(fix.state, 1U, 103.5, DSD_CALL_END_EXPLICIT);
+
+    /* The remapped policy target is the identity the hold is compared against. */
+    open_call_identity(&fix, 1U, DSD_CALL_KIND_GROUP_VOICE, 11, 500, 22, 104.0);
+    CHECK("held remapped target", dsd_scan_tg_hold_call_active(fix.state) == 1);
+    fix.state->tg_hold = 500;
+    CHECK("hold on the pre-remap target", dsd_scan_tg_hold_call_active(fix.state) == 0);
+    fixture_free(&fix);
+}
+
 /* ---- Scan timing publication for the -Y row (issue #508) ------------------- */
 
 static void
@@ -773,6 +840,43 @@ test_y_timing_hop_restarts_the_window(void) {
     fixture_free(&fix);
 }
 
+/* The per-visit cap rides the same publication (issue #507 extends #508). Nothing arms it
+ * yet, and "off" is an explicit negative deadline: a zeroed double would render as a
+ * deadline at monotonic 0, which is long past. */
+static void
+test_y_timing_seeds_visit_cap_off(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    fix.state->scan_timing.visit_deadline_m = 42.0;
+    fix.state->scan_timing.visit_limit_ms = 7000U;
+    dsd_scan_timing_clear(fix.state);
+    CHECK("clear disarms the visit cap", fix.state->scan_timing.visit_deadline_m < 0.0);
+    CHECK("clear zeroes the visit limit", fix.state->scan_timing.visit_limit_ms == 0U);
+    /* The gate-owned path seeds it off ... */
+    fix.state->scan_timing.visit_deadline_m = 42.0;
+    fix.state->scan_timing.visit_limit_ms = 7000U;
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.0);
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.0, 100.0);
+    CHECK("qualify seeds no visit deadline", fix.state->scan_timing.visit_deadline_m < 0.0);
+    CHECK("qualify seeds no visit limit", fix.state->scan_timing.visit_limit_ms == 0U);
+    /* ... and so does the legacy hangtime path, which leaves the seed early. */
+    fix.state->scan_timing.visit_deadline_m = 42.0;
+    fix.state->scan_timing.visit_limit_ms = 7000U;
+    fix.opts->scan_voice_only = 0;
+    fix.opts->trunk_hangtime = 2.0f;
+    fix.state->last_cc_sync_time = (time_t)1000;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.25, 1000.25);
+    CHECK("hangtime reason still published", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
+    CHECK("hangtime seeds no visit deadline", fix.state->scan_timing.visit_deadline_m < 0.0);
+    CHECK("hangtime seeds no visit limit", fix.state->scan_timing.visit_limit_ms == 0U);
+    fixture_free(&fix);
+}
+
 int
 main(void) {
     test_tick_leaves_phase_alone_without_scanner_mode();
@@ -789,6 +893,7 @@ main(void) {
     test_operator_hold_and_visit_reset();
     test_stale_epoch_cannot_rearm();
     test_zero_ms_falls_back_to_defaults();
+    test_tg_hold_call_active();
     test_y_timing_silent_under_trunk_scan();
     test_y_timing_legacy_hangtime_window();
     test_y_timing_hangtime_without_anchor();
@@ -796,6 +901,7 @@ main(void) {
     test_y_timing_qualify_window();
     test_y_timing_voice_and_tail_share_the_hold_window();
     test_y_timing_hop_restarts_the_window();
+    test_y_timing_seeds_visit_cap_off();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d voice-gate check(s) failed\n", g_failures);
         return 1;

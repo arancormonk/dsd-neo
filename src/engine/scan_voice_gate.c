@@ -113,6 +113,35 @@ dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_voic
     return out->retained_media_m >= 0.0 ? 1 : 0;
 }
 
+int
+dsd_scan_tg_hold_call_active(const dsd_state* state) {
+    if (!state || state->tg_hold == 0U) {
+        return 0;
+    }
+    const uint64_t hold = (uint64_t)state->tg_hold;
+    for (int slot_i = 0; slot_i < DSD_CALL_STATE_SLOT_COUNT; slot_i++) {
+        dsd_call_snapshot call;
+        /* dsd_call_state_get() fills the whole snapshot on success; a failed get skips the slot. */
+        if (dsd_call_state_get(state, (uint8_t)slot_i, &call) <= 0) {
+            continue;
+        }
+        if (call.phase != DSD_CALL_PHASE_ACTIVE || call.kind == DSD_CALL_KIND_DATA) {
+            continue;
+        }
+        /* The remapped policy target is the identity the hold is compared against everywhere
+         * else (talkgroup_policy.c); the OTA target stands in when no remap applies. */
+        const uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
+        if (hold == target) {
+            return 1;
+        }
+        /* A private call is held by either end, exactly as the policy layer holds it. */
+        if (call.kind == DSD_CALL_KIND_PRIVATE_VOICE && hold == call.ota_source_id) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void
 dsd_scan_voice_gate_note_retune(dsd_state* state, double now_m) {
     if (!state) {
@@ -223,6 +252,7 @@ dsd_scan_timing_clear(dsd_state* state) {
     DSD_MEMSET(&state->scan_timing, 0, sizeof(state->scan_timing));
     state->scan_timing.started_m = -1.0;
     state->scan_timing.deadline_m = -1.0;
+    state->scan_timing.visit_deadline_m = -1.0;
 }
 
 void
@@ -241,6 +271,9 @@ scan_y_timing_seed(const dsd_opts* opts, dsd_scan_timing_publication* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
     out->started_m = -1.0;
     out->deadline_m = -1.0;
+    /* Above the early return: the per-visit cap is independent of the voice gate, and a
+     * zeroed double would read as a deadline at monotonic 0. */
+    out->visit_deadline_m = -1.0;
     out->conventional = 1U;
     if (!scan_voice_gate_enabled(opts)) {
         return;
