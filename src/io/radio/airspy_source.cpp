@@ -217,6 +217,7 @@ airspy_source_open(const dsd_airspy_config* config, airspy_source_callback callb
         airspy_source_close(s);
         return nullptr;
     }
+    dsd_input_failure_clear();
     LOG_INFO("Airspy %s: %u samples/s, float IQ\n", s->info.serial, s->info.sample_rate);
     return s;
 }
@@ -231,6 +232,10 @@ airspy_source_start(airspy_source* s) {
         return -1;
     }
     int rc = checked(airspy_start_rx(s->device, receive, s), "start");
+    if (rc != 0) {
+        // The SDK can leave submitted transfers active after thread creation fails.
+        (void)checked(airspy_stop_rx(s->device), "stop after failed start");
+    }
     s->started = rc == 0;
     return rc;
 }
@@ -305,6 +310,7 @@ reconfigure(airspy_source* s, uint32_t value, bool rate) {
     if (restart) {
         int start_rc = checked(airspy_start_rx(s->device, receive, s), "restart");
         if (start_rc != 0) {
+            (void)checked(airspy_stop_rx(s->device), "stop after failed restart");
             s->started = false;
             rc = start_rc;
         }

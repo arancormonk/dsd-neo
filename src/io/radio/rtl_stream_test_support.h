@@ -4,12 +4,17 @@
 #define DSD_NEO_SRC_IO_RADIO_RTL_STREAM_TEST_SUPPORT_H_
 
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/platform/threading.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Install only while the stream is stopped. NULL restores platform creation. */
+void rtl_stream_test_set_thread_create(int (*create)(dsd_thread_t*, dsd_thread_fn, void*));
+int rtl_stream_test_has_resources(void);
 
 int dsd_rtl_stream_test_request_retune(long int frequency, int timeout_ms);
 /* Republish the cross-thread demod profile/TED mirrors after a test mutates

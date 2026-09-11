@@ -5454,6 +5454,30 @@ sync_requested_ppm_to_controller(const dsd_opts* opts) {
     dsd_mutex_unlock(&controller.hop_m);
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+static int (*g_test_thread_create)(dsd_thread_t*, dsd_thread_fn, void*) = nullptr;
+
+extern "C" void
+rtl_stream_test_set_thread_create(int (*create)(dsd_thread_t*, dsd_thread_fn, void*)) {
+    g_test_thread_create = create;
+}
+
+extern "C" int
+rtl_stream_test_has_resources(void) {
+    return g_stream != nullptr || rtl_device_handle != nullptr;
+}
+#endif
+
+static int
+stream_create_worker(dsd_thread_t* thread, dsd_thread_fn entry, void* context) {
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    if (g_test_thread_create) {
+        return g_test_thread_create(thread, entry, context);
+    }
+#endif
+    return dsd_thread_create(thread, entry, context);
+}
+
 /**
  * @brief Launch controller/demod threads and start async device capture.
  *
@@ -5463,19 +5487,19 @@ sync_requested_ppm_to_controller(const dsd_opts* opts) {
  */
 static int
 start_threads_and_async(void) {
-    if (dsd_thread_create(&controller.thread, controller_thread_retune_loop, &controller) == 0) {
+    if (stream_create_worker(&controller.thread, controller_thread_retune_loop, &controller) == 0) {
         if (g_stream) {
             g_stream->controller_thread_started.store(1, std::memory_order_release);
         }
     } else {
-        return -1;
+        goto fail;
     }
-    if (dsd_thread_create(&demod.thread, demod_thread_fn, &demod) == 0) {
+    if (stream_create_worker(&demod.thread, demod_thread_fn, &demod) == 0) {
         if (g_stream) {
             g_stream->demod_thread_started.store(1, std::memory_order_release);
         }
     } else {
-        return -1;
+        goto fail;
     }
     LOG_INFO("Starting RTL async read...\n");
     if (rtl_device_start_async(rtl_device_handle, (uint32_t)ACTUAL_BUF_LENGTH) == 0) {
@@ -5483,7 +5507,7 @@ start_threads_and_async(void) {
             g_stream->async_started.store(1, std::memory_order_release);
         }
     } else {
-        return -1;
+        goto fail;
     }
     if (port != 0) {
         g_udp_ctrl = udp_control_start_bound(udp_control_bindaddr, port, [](uint32_t new_freq_hz) {
@@ -5495,6 +5519,31 @@ start_threads_and_async(void) {
         }
     }
     return 0;
+
+fail:
+    // A failed SDK start can follow either worker creation. Join before any
+    // caller can retry open and replace the stream state or its wait primitives.
+    if (g_stream) {
+        g_stream->should_exit.store(1, std::memory_order_release);
+    }
+    safe_cond_signal(&input_ring.ready, &input_ring.ready_m);
+    safe_cond_signal(&controller.hop, &controller.hop_m);
+    safe_cond_signal(&demod.ready, &demod.ready_m);
+    safe_cond_signal(&output.space, &output.ready_m);
+    safe_cond_signal(&output.ready, &output.ready_m);
+    (void)rtl_device_stop_async(rtl_device_handle);
+    if (g_stream) {
+        g_stream->async_started.store(0, std::memory_order_release);
+        if (g_stream->demod_thread_started.load(std::memory_order_acquire)) {
+            dsd_thread_join(demod.thread);
+            g_stream->demod_thread_started.store(0, std::memory_order_release);
+        }
+        if (g_stream->controller_thread_started.load(std::memory_order_acquire)) {
+            dsd_thread_join(controller.thread);
+            g_stream->controller_thread_started.store(0, std::memory_order_release);
+        }
+    }
+    return -1;
 }
 
 static void
@@ -6701,6 +6750,8 @@ stream_open_start_io_pipeline(const dsd_opts* opts, RadioSourceKind source_kind)
     return 0;
 }
 
+extern "C" int dsd_rtl_stream_soft_stop(void);
+
 /**
  * @brief Initialize and open the RTL-SDR streaming pipeline, threads, and buffers.
  *
@@ -6752,6 +6803,9 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     rtl_stream_clear_demod_profile_request();
     rtl_stream_publish_demod_profile_snapshot();
     if (stream_open_start_io_pipeline(opts, source_kind) != 0) {
+        // Pipeline initialization succeeded, so all teardown primitives exist.
+        // Release the backend too: the orchestrator does not own a failed open.
+        (void)dsd_rtl_stream_soft_stop();
         return -1;
     }
 

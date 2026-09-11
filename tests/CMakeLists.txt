@@ -10748,3 +10748,38 @@ if(DSD_HAS_RADIO)
     endif()
     add_test(NAME IO_AIRSPY_INGEST COMMAND dsd-neo_test_io_airspy_ingest)
 endif()
+
+# Exercise real stream workers and teardown with the same in-process Airspy SDK.
+if(DSD_HAS_AIRSPY)
+    add_executable(
+        dsd-neo_test_io_rtl_stream_start_failure
+        io/test_io_airspy_source.cpp
+        ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_stream_start_failure
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio ${_AIRSPY_TEST_SDK}
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_stream_start_failure
+        PRIVATE USE_AIRSPY DSD_TEST_AIRSPY_STREAM
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_stream_start_failure
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_warnings
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_stream_start_failure
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_STREAM_START_FAILURE
+        COMMAND dsd-neo_test_io_rtl_stream_start_failure
+    )
+    set_tests_properties(IO_RTL_STREAM_START_FAILURE PROPERTIES TIMEOUT 20)
+endif()
