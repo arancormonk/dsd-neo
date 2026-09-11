@@ -15,12 +15,12 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_SERVICES_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_SERVICES_H_
 
-#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/decode_mode.h>
 
 #ifdef USE_RADIO
+#include <dsd-neo/core/airspy_config.h>
 #include <stdint.h>
 #endif
 

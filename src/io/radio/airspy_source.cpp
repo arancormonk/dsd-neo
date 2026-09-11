@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/runtime/log.h>
+#include <stdint.h>
+#include "airspy_source.h"
+
+#ifdef USE_AIRSPY
+#include <airspy.h>
 #include <algorithm>
 #include <atomic>
 #include <cinttypes>
-#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/input_failure.h>
-#include <dsd-neo/runtime/log.h>
 #include <new>
-#include "airspy_source.h"
-
-#ifdef USE_AIRSPY
-#include <airspy.h>
 struct airspy_device;
 
 #if defined(__ANDROID__) && defined(USE_AIRSPY_OPEN_FD)
