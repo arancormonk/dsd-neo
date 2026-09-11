@@ -1377,14 +1377,19 @@ jobs:
         include:
           - name: clang-tidy
             run_cmd: tools/clang_tidy.sh
+            tus_file: analysis_tus.txt
             artifact_name: clang-tidy-report
             artifact_path: .clang-tidy.local.out
+          # IWYU takes every includer of a changed header (iwyu_tus.txt); the
+          # capped analysis_tus.txt sample is for the slower analyzers.
           - name: iwyu
             run_cmd: tools/iwyu.sh --strict
+            tus_file: iwyu_tus.txt
             artifact_name: iwyu-report
             artifact_path: .iwyu.local.out
           - name: gcc-fanalyzer
             run_cmd: tools/gcc_fanalyzer.sh --strict
+            tus_file: analysis_tus.txt
             artifact_name: gcc-fanalyzer-report
             artifact_path: .gcc-fanalyzer.local.out
     steps:
@@ -1512,7 +1517,7 @@ jobs:
             cmake --preset dev-debug
 
             if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-              mapfile -t files < .ci/changed-files/analysis_tus.txt
+              mapfile -t files < ".ci/changed-files/${{ matrix.tus_file }}"
               ${{ matrix.run_cmd }} -- "${files[@]}"
             else
               ${{ matrix.run_cmd }}

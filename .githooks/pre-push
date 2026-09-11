@@ -283,14 +283,27 @@ if [[ ${#missing_worktree_paths[@]} -gt 0 ]]; then
 fi
 
 analysis_tus=("${changed_sources[@]}")
+# IWYU analyses every includer of a changed header (see tools/ci_changed_files.sh);
+# the capped sample is for the slower analyzers only.
+iwyu_tus=("${changed_sources[@]}")
 
 escape_rg() {
   printf '%s' "$1" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g'
 }
 
 MAX_TUS_PER_HEADER_PER_LANGUAGE=5
+limit_includers() {
+  if [[ "$1" -gt 0 ]]; then
+    head -n "$1"
+  else
+    cat
+  fi
+}
+# collect_header_includers PATTERN [CAP] -> includers per language, at most CAP
+# of each (0: every includer).
 collect_header_includers() {
   local pattern="$1"
+  local cap="${2:-$MAX_TUS_PER_HEADER_PER_LANGUAGE}"
   local c_file=""
   local cxx_file=""
   local c_matches=()
@@ -301,14 +314,14 @@ collect_header_includers() {
       -g'*.c' \
       "$pattern" src apps tests examples 2> /dev/null |
       sort |
-      head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
+      limit_includers "$cap" || true
   )
   mapfile -t cxx_matches < <(
     rg -l --glob '!src/third_party/**' \
       -g'*.cc' -g'*.cpp' -g'*.cxx' \
       "$pattern" src apps tests examples 2> /dev/null |
       sort |
-      head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
+      limit_includers "$cap" || true
   )
 
   for c_file in "${c_matches[@]}"; do
@@ -335,6 +348,8 @@ if [[ ${#changed_headers[@]} -gt 0 ]]; then
 
       mapfile -t matches < <(collect_header_includers "$pattern")
       analysis_tus+=("${matches[@]}")
+      mapfile -t matches < <(collect_header_includers "$pattern" 0)
+      iwyu_tus+=("${matches[@]}")
     done
   else
     echo "pre-push: rg not found; header include expansion skipped." >&2
@@ -344,9 +359,12 @@ fi
 if [[ ${#analysis_tus[@]} -gt 0 ]]; then
   mapfile -t analysis_tus < <(printf '%s\n' "${analysis_tus[@]}" | sort -u)
 fi
+if [[ ${#iwyu_tus[@]} -gt 0 ]]; then
+  mapfile -t iwyu_tus < <(printf '%s\n' "${iwyu_tus[@]}" | sort -u)
+fi
 
 echo "pre-push: changed paths=${#changed_paths[@]} sources=${#changed_sources[@]}" \
-  "headers=${#changed_headers[@]} tus=${#analysis_tus[@]}"
+  "headers=${#changed_headers[@]} tus=${#analysis_tus[@]} iwyu=${#iwyu_tus[@]}"
 
 cppcheck_sources=()
 for p in "${analysis_tus[@]}"; do
@@ -405,6 +423,7 @@ mark_missing_tool() {
 # 64. Serial mode lets every tool use the whole machine, since nothing else
 # runs beside it.
 tu_count=${#analysis_tus[@]}
+iwyu_count=${#iwyu_tus[@]}
 cppcheck_count=${#cppcheck_sources[@]}
 
 # analyzer_share BUDGET PERMILLE CAP -> workers, at least 1, at most CAP (0: uncapped)
@@ -430,7 +449,7 @@ if [[ "$RUNNER_SERIAL" == "1" ]]; then
   jobs_format=$JOBS
   jobs_tidy=$(analyzer_share "$JOBS" 1000 "$tu_count")
   jobs_fanalyzer=$(analyzer_share "$JOBS" 1000 "$tu_count")
-  jobs_iwyu=$(analyzer_share "$JOBS" 1000 "$tu_count")
+  jobs_iwyu=$(analyzer_share "$JOBS" 1000 "$iwyu_count")
   if [[ $cppcheck_count -gt 0 ]]; then
     jobs_cppcheck=$(analyzer_share "$JOBS" 1000 "$cppcheck_count")
   fi
@@ -448,7 +467,7 @@ else
     jobs_cppcheck=$(analyzer_share "$analyzer_budget" 410 "$cppcheck_count")
   fi
   jobs_fanalyzer=$(analyzer_share "$analyzer_budget" 130 "$tu_count")
-  jobs_iwyu=$(analyzer_share "$analyzer_budget" 30 "$tu_count")
+  jobs_iwyu=$(analyzer_share "$analyzer_budget" 30 "$iwyu_count")
   jobs_tidy=$((analyzer_budget - jobs_cppcheck - jobs_fanalyzer - jobs_iwyu))
   if [[ $jobs_tidy -lt 1 ]]; then
     jobs_tidy=1
@@ -589,7 +608,7 @@ lane_cppcheck() {
 # shellcheck disable=SC2329 # Started through runner_spawn.
 lane_iwyu() {
   if command -v include-what-you-use > /dev/null 2>&1; then
-    run_check "IWYU strict (${tu_count} TU(s), ${jobs_iwyu} worker(s))" tools/iwyu.sh --strict --jobs "$jobs_iwyu" -- "${analysis_tus[@]}"
+    run_check "IWYU strict (${iwyu_count} TU(s), ${jobs_iwyu} worker(s))" tools/iwyu.sh --strict --jobs "$jobs_iwyu" -- "${iwyu_tus[@]}"
   else
     mark_missing_tool "include-what-you-use" "IWYU analysis"
   fi
