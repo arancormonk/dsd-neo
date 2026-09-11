@@ -25,6 +25,7 @@
 #include <QtGlobal>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
@@ -387,6 +388,42 @@ MetricsModel::fillScanControlView(View& next, const dsd_opts* opts_snapshot, con
     next.scan_hold = trunk_scan ? (snapshot->trunk_scan_hold != 0) : (snapshot->lcn_scan_hold != 0);
     next.scan_avoid_count = trunk_scan ? snapshot->trunk_scan_avoided_count : snapshot->lcn_avoid_count;
     next.scan_target_avoided = trunk_scan && snapshot->trunk_scan_active_avoided != 0;
+}
+
+/**
+ * @brief Why the rotation is staying on the row on air, and how long is left (#508).
+ *
+ * Every decision behind the row -- the phrase, whether a window is counting down,
+ * which of the dwell/hold/hang budgets is worth printing -- is made once in
+ * app-control, from a publication whose deadlines the decoder owns. A frontend only
+ * copies and formats, so this panel, the terminal row and Android cannot drift apart
+ * on what "suspended" means or on when a trunked row may show a conventional hold.
+ *
+ * The withheld budgets are zeroed rather than carried: QML gates each group on its
+ * own reading being positive, so a value the view declined to show must not arrive
+ * as a number the row could print.
+ */
+void
+MetricsModel::fillScanTimingView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot,
+                                 double now_m) const {
+    dsd_app_scan_timing view;
+    if (dsd_app_scan_timing_view(opts_snapshot, snapshot, now_m, &view) != 1) {
+        return;
+    }
+    next.scan_timing_visible = view.active != 0U;
+    next.scan_stay_reason = view.reason;
+    /* A static English label out of a fixed set, translated at run time. lupdate
+     * cannot extract through the pointer; the set is small enough that a catalogue
+     * lists it beside the terminal's own wording rather than duplicating it here. */
+    next.scan_stay_phrase = view.phrase != nullptr ? tr(view.phrase) : QString();
+    next.scan_timer_live = view.timer_live != 0U;
+    /* Tenths, truncated: see scanTimerRemainingDs(). */
+    next.scan_timer_remaining_ds = static_cast<int>(view.remaining_ms / 100U);
+    next.scan_timer_span_ms = static_cast<int>(view.span_ms);
+    next.scan_dwell_ms = view.show_dwell != 0U ? static_cast<int>(view.dwell_ms) : 0;
+    next.scan_dwell_state = view.dwell_state;
+    next.scan_hold_ms = view.show_hold != 0U ? static_cast<int>(view.hold_ms) : 0;
+    next.scan_hang_ms = view.show_hang != 0U ? static_cast<int>(view.hang_ms) : 0;
 }
 
 namespace {
@@ -773,6 +810,10 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     next.held_tg = static_cast<qulonglong>(snapshot->tg_hold);
     next.enc_lockout_count = dsd_enc_lockout_active_count(snapshot);
     fillScanControlView(next, opts_snapshot, snapshot);
+    /* The same monotonic reading the call lines were aged against, not a second
+     * clock read: one frame has to describe one instant, or the countdown and the
+     * call durations beside it would come from moments either side of the poll. */
+    fillScanTimingView(next, opts_snapshot, snapshot, now_m);
 
     /* The engine's command acknowledgement, shown until its own expiry stamp. The
      * timer takes an expired message down without waiting for another publish —

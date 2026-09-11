@@ -142,6 +142,49 @@ Item {
                 elide: Text.ElideRight
             }
 
+            // Why the rotation is staying on the row above and how long is left
+            // (#508). The same grammar as the terminal's `| Scan Timing:` row --
+            // one space before the countdown, two between groups, seconds to one
+            // decimal place -- so a reader moving between the two surfaces reads
+            // the same line. Which budgets appear at all was decided in
+            // app-control; a zero here means "the view withheld it".
+            Text {
+                width: parent.width
+                objectName: "scanTimingRow"
+                visible: metrics.scanTimingVisible
+                text: {
+                    var out = metrics.scanStayPhrase;
+                    if (metrics.scanTimerLive) {
+                        out += " " + qsTr("%1s/%2s").arg((metrics.scanTimerRemainingDs / 10).toFixed(1)).arg((metrics.scanTimerSpanMs / 1000).toFixed(1));
+                    }
+                    if (metrics.scanDwellMs > 0) {
+                        out += "  " + qsTr("dwell %1s").arg((metrics.scanDwellMs / 1000).toFixed(1));
+                        // DSD_APP_SCAN_DWELL_SUSPENDED / _PAUSED: disarmed while
+                        // something else holds the row, versus stopped by the
+                        // operator. Neither is a dwell that expired.
+                        if (metrics.scanDwellState === 2) {
+                            out += " " + qsTr("(suspended)");
+                        } else if (metrics.scanDwellState === 3) {
+                            out += " " + qsTr("(paused)");
+                        }
+                    }
+                    if (metrics.scanHoldMs > 0) {
+                        out += "  " + qsTr("hold %1s").arg((metrics.scanHoldMs / 1000).toFixed(1));
+                    }
+                    if (metrics.scanHangMs > 0) {
+                        out += "  " + qsTr("hang %1s").arg((metrics.scanHangMs / 1000).toFixed(1));
+                    }
+                    return out;
+                }
+                font.family: Theme.mono
+                font.pixelSize: Theme.fontSize(11)
+                font.letterSpacing: 0.8
+                color: Theme.textSubdued
+                // A phone is 411 dp wide and the budgets cap at 600 s: the row has to
+                // give way rather than push the header controls off screen.
+                elide: Text.ElideRight
+            }
+
             TapHandler {
                 onLongPressed: screen.editSystem()
             }
