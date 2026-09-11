@@ -5,6 +5,7 @@
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/input_failure.h>
+#include <initializer_list>
 #include <memory>
 #include <stdint.h>
 #include <stdio.h>

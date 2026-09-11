@@ -98,10 +98,13 @@ airspy_bandwidth(int requested) {
         return 48;
     }
     int nearest = 4;
+    int nearest_distance = requested > nearest ? requested - nearest : nearest - requested;
     for (const int candidate : {6, 8, 12, 16, 24, 48}) {
+        const int distance = requested > candidate ? requested - candidate : candidate - requested;
         // Prefer the lower width when the request is exactly between two choices.
-        if (std::abs(requested - candidate) < std::abs(requested - nearest)) {
+        if (distance < nearest_distance) {
             nearest = candidate;
+            nearest_distance = distance;
         }
     }
     return nearest;

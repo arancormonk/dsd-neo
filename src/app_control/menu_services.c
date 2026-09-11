@@ -817,6 +817,53 @@ svc_airspy_restore_tuning(dsd_opts* opts, const svc_airspy_tuning* tuning) {
     opts->rtl_volume_multiplier = tuning->volume;
 }
 
+static int
+svc_airspy_reopen(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config, const dsd_airspy_config* previous,
+                  const svc_airspy_tuning* previous_tuning) {
+    opts->airspy = *config;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s", config->serial[0] ? ":serial=" : "",
+                 config->serial);
+    int rc = svc_rtl_restart(opts, state);
+    if (rc != 0) {
+        opts->airspy = *previous;
+        svc_airspy_restore_tuning(opts, previous_tuning);
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s", previous->serial[0] ? ":serial=" : "",
+                     previous->serial);
+        (void)svc_rtl_restart(opts, state);
+    }
+    return rc;
+}
+
+/* In-place path: native controls first, then the shared tuning the stream did not reopen for. */
+static int
+svc_airspy_apply_live(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
+                      const svc_airspy_tuning* previous_tuning) {
+    int rc = rtl_stream_airspy_controls(config);
+    if (rc != 0) {
+        svc_airspy_restore_tuning(opts, previous_tuning);
+        return rc;
+    }
+    opts->airspy = *config;
+    if (previous_tuning->frequency != opts->rtlsdr_center_freq) {
+        uint32_t frequency = opts->rtlsdr_center_freq;
+        opts->rtlsdr_center_freq = previous_tuning->frequency;
+        rc = svc_rtl_set_freq(opts, state, frequency);
+        if (rc == RTL_STREAM_TUNE_TIMEOUT || rc == RTL_STREAM_TUNE_DEFERRED) {
+            /* Accepted requests remain owned by the controller. */
+            opts->rtlsdr_center_freq = frequency;
+            rc = 0;
+        }
+        if (rc != 0) {
+            svc_airspy_restore_tuning(opts, previous_tuning);
+            return rc;
+        }
+    }
+    if (previous_tuning->squelch != opts->rtl_squelch_level) {
+        rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
+    }
+    return 0;
+}
+
 int
 svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
                         const svc_airspy_tuning* previous_tuning) {
@@ -831,41 +878,8 @@ svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_confi
     int reopen = previous.sample_rate != config->sample_rate || strcmp(previous.serial, config->serial) != 0
                  || previous_tuning->bandwidth != opts->rtl_dsp_bw_khz
                  || previous_tuning->volume != opts->rtl_volume_multiplier;
-    int rc = 0;
-    if (reopen || !state->rtl_ctx) {
-        opts->airspy = *config;
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s", config->serial[0] ? ":serial=" : "",
-                     config->serial);
-        rc = svc_rtl_restart(opts, state);
-        if (rc != 0) {
-            opts->airspy = previous;
-            svc_airspy_restore_tuning(opts, previous_tuning);
-            DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s",
-                         previous.serial[0] ? ":serial=" : "", previous.serial);
-            (void)svc_rtl_restart(opts, state);
-        }
-    } else {
-        rc = rtl_stream_airspy_controls(config);
-        if (rc == 0) {
-            opts->airspy = *config;
-            if (previous_tuning->frequency != opts->rtlsdr_center_freq) {
-                uint32_t frequency = opts->rtlsdr_center_freq;
-                opts->rtlsdr_center_freq = previous_tuning->frequency;
-                rc = svc_rtl_set_freq(opts, state, frequency);
-                if (rc == RTL_STREAM_TUNE_TIMEOUT || rc == RTL_STREAM_TUNE_DEFERRED) {
-                    /* Accepted requests remain owned by the controller. */
-                    opts->rtlsdr_center_freq = frequency;
-                    rc = 0;
-                }
-            }
-            if (rc == 0 && previous_tuning->squelch != opts->rtl_squelch_level) {
-                rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
-            }
-        }
-        if (rc != 0) {
-            svc_airspy_restore_tuning(opts, previous_tuning);
-        }
-    }
+    int rc = (reopen || !state->rtl_ctx) ? svc_airspy_reopen(opts, state, config, &previous, previous_tuning)
+                                         : svc_airspy_apply_live(opts, state, config, previous_tuning);
     (void)rtl_stream_airspy_info(&opts->airspy_info);
     return rc;
 }

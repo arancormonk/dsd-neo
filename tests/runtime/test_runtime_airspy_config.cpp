@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <dsd-neo/core/airspy_config.h>
@@ -11,6 +12,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/log.h>
 #include <stdio.h>
 #include "test_support.h"
@@ -77,11 +79,11 @@ test_snapshot_threshold() {
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "airspy");
     opts.input_warn_db = -55.0;
     dsd_snapshot_opts_to_user_config(&opts, &state, &cfg);
-    CHECK(cfg.input_warn_db_is_set && cfg.input_warn_db == -55.0);
+    CHECK(cfg.input_warn_db_is_set && fabs(cfg.input_warn_db - (-55.0)) < 1e-9);
     FILE* out = tmpfile();
     CHECK(out != NULL);
     dsd_user_config_render_ini(&cfg, out);
-    rewind(out);
+    CHECK(fseek(out, 0, SEEK_SET) == 0);
     char line[1024];
     bool found = false;
     while (fgets(line, sizeof line, out)) {
@@ -164,7 +166,7 @@ test_forgiving_tail() {
               && opts.rtl_volume_multiplier == c.volume);
         CHECK(strstr(last_warning, c.warning_field) != NULL);
         if (strstr(c.spec, ":bad:") || strstr(c.spec, ":nan:")) {
-            CHECK(opts.rtl_squelch_level == old_sql);
+            CHECK(fabs(opts.rtl_squelch_level - old_sql) < 1e-12);
         }
     }
 }

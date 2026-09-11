@@ -10,7 +10,6 @@
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
-#include <float.h>
 #include <limits.h>
 #include <math.h>
 #include <stddef.h>
@@ -168,6 +167,38 @@ valid_dsp_bandwidth(int bw) {
     return 0;
 }
 
+static void
+parse_airspy_bandwidth(const char* text, airspy_tuning* tuning) {
+    if (dsd_parse_int_strict(text, 10, 4, 48, &tuning->bw) != 0 || !valid_dsp_bandwidth(tuning->bw)) {
+        LOG_WARN("Airspy bandwidth '%s' is unsupported; using 48 kHz.\n", text);
+        tuning->bw = 48;
+    }
+}
+
+static void
+parse_airspy_squelch(const char* text, airspy_tuning* tuning) {
+    double sql = 0.0;
+    /* Squelch is a dB figure; anything beyond this span is a typo rather than a level. */
+    if (dsd_parse_double_strict(text, -300.0, 300.0, &sql) != 0 || !isfinite(sql)) {
+        LOG_WARN("Invalid Airspy squelch '%s'; keeping previous/default value.\n", text);
+        return;
+    }
+    tuning->squelch = dsd_squelch_level_from_sql(sql);
+}
+
+static void
+parse_airspy_volume(const char* text, airspy_tuning* tuning) {
+    int volume = 0;
+    if (dsd_parse_int_strict(text, 10, INT_MIN, INT_MAX, &volume) != 0) {
+        LOG_WARN("Invalid Airspy volume '%s'; keeping previous/default value.\n", text);
+        return;
+    }
+    if (volume < 0 || volume > 3) {
+        LOG_WARN("Airspy volume '%s' is outside 0–3; clamping.\n", text);
+    }
+    tuning->volume = volume < 0 ? 0 : (volume > 3 ? 3 : volume);
+}
+
 static int
 parse_airspy_tuning(char* text, airspy_tuning* tuning) {
     char* fields[4];
@@ -190,29 +221,14 @@ parse_airspy_tuning(char* text, airspy_tuning* tuning) {
         LOG_ERROR("Invalid Airspy frequency '%s': expected 24–1700 MHz.\n", fields[0]);
         return -1;
     }
-    if (count > 1
-        && (dsd_parse_int_strict(fields[1], 10, 4, 48, &tuning->bw) != 0 || !valid_dsp_bandwidth(tuning->bw))) {
-        LOG_WARN("Airspy bandwidth '%s' is unsupported; using 48 kHz.\n", fields[1]);
-        tuning->bw = 48;
+    if (count > 1) {
+        parse_airspy_bandwidth(fields[1], tuning);
     }
     if (count > 2) {
-        double sql = 0.0;
-        if (dsd_parse_double_strict(fields[2], -DBL_MAX, DBL_MAX, &sql) != 0 || !isfinite(sql)) {
-            LOG_WARN("Invalid Airspy squelch '%s'; keeping previous/default value.\n", fields[2]);
-        } else {
-            tuning->squelch = dsd_squelch_level_from_sql(sql);
-        }
+        parse_airspy_squelch(fields[2], tuning);
     }
     if (count > 3) {
-        int volume = 0;
-        if (dsd_parse_int_strict(fields[3], 10, INT_MIN, INT_MAX, &volume) != 0) {
-            LOG_WARN("Invalid Airspy volume '%s'; keeping previous/default value.\n", fields[3]);
-        } else {
-            if (volume < 0 || volume > 3) {
-                LOG_WARN("Airspy volume '%s' is outside 0–3; clamping.\n", fields[3]);
-            }
-            tuning->volume = volume < 0 ? 0 : (volume > 3 ? 3 : volume);
-        }
+        parse_airspy_volume(fields[3], tuning);
     }
     return 0;
 }
