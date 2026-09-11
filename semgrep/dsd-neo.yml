@@ -145,6 +145,54 @@ rules:
               metavariable: $OTHER
               regex: '^[A-Za-z_]'
 
+      # Array subscripts are not scalar declarations: bind the array's element
+      # type explicitly, including const and uninitialized local arrays.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $FUNC(...) {
+                    ...
+                    $TYPE $FLOAT_ARRAY[...] = ...;
+                    ...
+                  }
+              - pattern-inside: |
+                  $RET $FUNC(...) {
+                    ...
+                    $TYPE $FLOAT_ARRAY[...];
+                    ...
+                  }
+              - pattern-inside: |
+                  $RET $FUNC(...) {
+                    ...
+                    const $TYPE $FLOAT_ARRAY[...] = ...;
+                    ...
+                  }
+              - pattern-inside: |
+                  $RET $FUNC(...) {
+                    ...
+                    $TYPE $FLOAT_ARRAY[] = ...;
+                    ...
+                  }
+              - pattern-inside: |
+                  $RET $FUNC(...) {
+                    ...
+                    const $TYPE $FLOAT_ARRAY[] = ...;
+                    ...
+                  }
+          - metavariable-regex:
+              metavariable: $TYPE
+              regex: '^(const\s+)?(float|double)$'
+          - pattern-either:
+              - pattern: $FLOAT_ARRAY[$INDEX] == $OTHER
+              - pattern: $FLOAT_ARRAY[$INDEX] != $OTHER
+              - pattern: $OTHER == $FLOAT_ARRAY[$INDEX]
+              - pattern: $OTHER != $FLOAT_ARRAY[$INDEX]
+          # Match the scalar rule's scope: explicit literal sentinel checks
+          # (zeroed output, untouched guard values) remain allowed.
+          - metavariable-regex:
+              metavariable: $OTHER
+              regex: '^[A-Za-z_]'
+
   - id: dsd-neo.no-weak-process-rng
     languages: [c, cpp]
     severity: ERROR

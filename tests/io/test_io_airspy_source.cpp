@@ -4,6 +4,7 @@
 #include <cstring>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/safe_api.h>
+#include <memory>
 #include <stdint.h>
 #include <stdio.h>
 #include <vector>
@@ -196,8 +197,9 @@ int
 main() {
     dsd_airspy_config cfg;
     dsd_airspy_config_defaults(&cfg);
-    std::vector<float> received;
-    airspy_source* s = airspy_source_open(&cfg, capture, &received);
+    // The adapter retains this context until close joins the receive callback.
+    auto received = std::make_unique<std::vector<float>>();
+    airspy_source* s = airspy_source_open(&cfg, capture, received.get());
     CHECK(s && selected == 0x123456789ABCDEF0ULL && sensitivity == 10 && !bias);
     dsd_airspy_info info{};
     CHECK(airspy_source_info(s, &info) == 0 && info.sample_rate == 10000000 && info.rate_count == 2);
@@ -206,7 +208,7 @@ main() {
     CHECK(airspy_source_start(s) == 0 && airspy_source_running(s));
     float iq[] = {0.125f, -0.75f, 0.5f, 0.25f};
     airspy_transfer transfer{&device, rx_context, iq, 2, 7, AIRSPY_SAMPLE_FLOAT32_IQ};
-    CHECK(rx(&transfer) == 0 && received == std::vector<float>(iq, iq + 4));
+    CHECK(rx(&transfer) == 0 && *received == std::vector<float>(iq, iq + 4));
     CHECK(airspy_source_info(s, &info) == 0 && info.dropped_samples == 7);
     int previous_starts = starts;
     CHECK(airspy_source_frequency(s, 852000000) == 0 && frequency == 852000000);
@@ -237,18 +239,18 @@ main() {
     cfg.sample_rate = 3000000;
     rates[0] = 6000000;
     rates[1] = 3000000;
-    s = airspy_source_open(&cfg, capture, &received);
+    s = airspy_source_open(&cfg, capture, received.get());
     CHECK(s && rate == 3000000);
     failure = 2;
     CHECK(airspy_source_start(s) != 0 && !airspy_source_running(s));
     airspy_source_close(s);
     failure = 0;
     cfg.sample_rate = 2500000;
-    CHECK(!airspy_source_open(&cfg, capture, &received));
+    CHECK(!airspy_source_open(&cfg, capture, received.get()));
     cfg.sample_rate = 0;
     DSD_SNPRINTF(cfg.serial, sizeof cfg.serial, "%s", "0000000000000001");
     int previous_opens = opens;
-    CHECK(!airspy_source_open(&cfg, capture, &received) && opens == previous_opens + 1);
+    CHECK(!airspy_source_open(&cfg, capture, received.get()) && opens == previous_opens + 1);
     CHECK(airspy_source_set_fd(42) != 0 && !airspy_source_fd_in_use());
     return 0;
 }

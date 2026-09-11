@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <cmath>
 #include <cstdlib>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -25,13 +26,13 @@ main() {
     CHECK(rtl_device_test_airspy_ingest(&request, output, &count, &drops) == 0);
     CHECK(count == 8 && drops == 0);
     for (size_t i = 0; i < count; ++i) {
-        CHECK(output[i] == samples[i]);
+        CHECK(std::fabs(output[i] - samples[i]) < 1e-6f);
     }
     request.mute = 3; // Legacy mute units: round partial I/Q pairs up, not float bytes.
     count = 8;
     CHECK(rtl_device_test_airspy_ingest(&request, output, &count, &drops) == 0 && count == 4);
     for (size_t i = 0; i < count; ++i) {
-        CHECK(output[i] == samples[i + 4]);
+        CHECK(std::fabs(output[i] - samples[i + 4]) < 1e-6f);
     }
     request.hold = 1;
     count = 8;
@@ -44,7 +45,7 @@ main() {
     CHECK(rtl_device_test_airspy_ingest(&request, output, &count, &drops) == 0);
     CHECK(count == 6 && drops == 6); // Two hardware pairs plus one full-ring pair.
     for (size_t i = 0; i < count; ++i) {
-        CHECK(output[i] == samples[i]);
+        CHECK(std::fabs(output[i] - samples[i]) < 1e-6f);
     }
     for (uint32_t rate : {2500000U, 3000000U, 6000000U, 10000000U}) {
         int passes = rtl_stream_test_passes_for_actual_rate(rate, 48000);

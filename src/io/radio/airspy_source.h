@@ -7,6 +7,8 @@
 
 struct airspy_source;
 typedef void (*airspy_source_callback)(void* context, const float* samples, size_t pairs, uint64_t dropped);
+/* Context is borrowed and must remain valid until airspy_source_close() returns.
+ * Sample storage is borrowed only for the duration of each callback. */
 airspy_source* airspy_source_open(const dsd_airspy_config* config, airspy_source_callback callback, void* context);
 void airspy_source_close(airspy_source* s);
 int airspy_source_start(airspy_source* s);
