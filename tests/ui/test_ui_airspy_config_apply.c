@@ -4,7 +4,23 @@
 #include <assert.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/runtime/cli.h>
-#include "../../src/app_control/app_command_queue.c"
+#include <math.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include "../../src/app_control/app_command_queue.c" // NOLINT(bugprone-suspicious-include)
+#include "command_dispatch.h"
+#include "dsd-neo/app_control/commands.h"
+#include "dsd-neo/core/airspy_config.h"
+#include "dsd-neo/core/opts.h"
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/power.h"
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/io/rtl_stream_c.h"
+#include "dsd-neo/io/rtl_stream_fwd.h"
+#include "dsd-neo/runtime/config.h"
 
 static int test_context;
 static int test_creates;
@@ -21,6 +37,7 @@ static int test_open_bw;
 static int test_open_volume;
 static uint32_t test_open_rate;
 
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 int __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** ctx);
 int __wrap_rtl_stream_start(RtlSdrContext* ctx);
 int __wrap_rtl_stream_stop(RtlSdrContext* ctx);
@@ -107,6 +124,8 @@ __wrap_dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) {
     assert(strcmp(opts->audio_out_dev, "null") == 0);
     return 0;
 }
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
 static void
 test_config_apply(int failure) {

@@ -32,6 +32,7 @@
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -834,6 +835,12 @@ svc_airspy_reopen(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* con
     return rc;
 }
 
+/* Squelch is a linear power level; differences below this are the same threshold. */
+static int
+svc_airspy_squelch_changed(double previous, double current) {
+    return fabs(previous - current) > 1e-12;
+}
+
 /* In-place path: native controls first, then the shared tuning the stream did not reopen for. */
 static int
 svc_airspy_apply_live(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
@@ -860,7 +867,7 @@ svc_airspy_apply_live(dsd_opts* opts, dsd_state* state, const dsd_airspy_config*
             return rc;
         }
     }
-    if (previous_tuning->squelch != opts->rtl_squelch_level) {
+    if (svc_airspy_squelch_changed(previous_tuning->squelch, opts->rtl_squelch_level)) {
         rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
     }
     return 0;

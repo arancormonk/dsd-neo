@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <airspy.h>
 #include <cstdlib>
-#include <cstring>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/runtime/input_failure.h>
 #include <initializer_list>
 #include <memory>
 #include <stdint.h>
 #include <stdio.h>
-#include <vector>
-#include "airspy_source.h"
 /* Link the real native adapter against an in-process SDK double. No USB access. */
 
 #define CHECK(condition)                                                                                               \
@@ -20,8 +16,6 @@
             std::abort();                                                                                              \
         }                                                                                                              \
     } while (0)
-
-struct airspy_source;
 
 struct airspy_device {
     int unused;
@@ -193,6 +187,13 @@ airspy_error_name(airspy_error) {
 }
 
 #ifndef DSD_TEST_AIRSPY_STREAM
+#include <cstring>
+#include <dsd-neo/runtime/input_failure.h>
+#include <vector>
+#include "airspy_source.h"
+
+struct airspy_source;
+
 static void
 capture(void* context, const float* samples, size_t count, uint64_t dropped) {
     auto* received = static_cast<std::vector<float>*>(context);
@@ -296,15 +297,20 @@ main() {
 #else
 #include <atomic>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/io/rtl_stream.h>
+#include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include "rtl_stream_test_support.h"
 
+namespace {
 struct Worker {
     dsd_thread_fn entry;
     void* context;
 };
+} // namespace
 
 static Worker workers[2];
 static int create_calls;

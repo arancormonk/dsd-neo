@@ -106,12 +106,21 @@ rules:
         - /src/third_party/**
     pattern: assert(...)
 
-  - id: dsd-neo.no-floating-point-equality-in-tests
+  - id: dsd-neo.no-floating-point-equality
     languages: [c, cpp]
     severity: ERROR
-    message: Compare floating-point test values with an explicit tolerance instead of == or !=.
+    message: Compare floating-point values with an explicit tolerance instead of == or !=.
+    # Syntactic only: Semgrep cannot see declared types across headers, so this
+    # recognises locals, arrays and parameters declared float/double in the same
+    # function, plus the float/double members of the shared option, state, config,
+    # demod and service structs by name (see the list below). CodeQL's
+    # cpp/equality-on-floats is the type-aware backstop.
     paths:
       include:
+        - /src/**
+        - /include/**
+        - /apps/**
+        - /android/**
         - /tests/**
     pattern-either:
       - patterns:
@@ -189,6 +198,48 @@ rules:
               - pattern: $OTHER != $FLOAT_ARRAY[$INDEX]
           # Match the scalar rule's scope: explicit literal sentinel checks
           # (zeroed output, untouched guard values) remain allowed.
+          - metavariable-regex:
+              metavariable: $OTHER
+              regex: '^[A-Za-z_]'
+
+      # Function parameters declared float/double, compared against identifiers.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RET $FUNC(..., double $FLOAT_PARAM, ...) { ... }
+              - pattern-inside: |
+                  $RET $FUNC(..., float $FLOAT_PARAM, ...) { ... }
+              - pattern-inside: |
+                  $RET $FUNC(..., const double $FLOAT_PARAM, ...) { ... }
+              - pattern-inside: |
+                  $RET $FUNC(..., const float $FLOAT_PARAM, ...) { ... }
+          - pattern-either:
+              - pattern: $FLOAT_PARAM == $OTHER
+              - pattern: $FLOAT_PARAM != $OTHER
+              - pattern: $OTHER == $FLOAT_PARAM
+              - pattern: $OTHER != $FLOAT_PARAM
+          - metavariable-regex:
+              metavariable: $OTHER
+              regex: '^[A-Za-z_]'
+
+      # Struct members declared float/double (scalars, not arrays) in
+      # include/dsd-neo/core/opts.h, core/state.h, runtime/config.h,
+      # dsp/demod_state.h and src/app_control/services.h, minus any name that
+      # is also declared with an integer type somewhere in the tree. Regenerate
+      # with tools/semgrep_float_fields.py when those structs change.
+      - patterns:
+          - pattern-either:
+              - pattern: $OBJ->$FLOAT_FIELD == $OTHER
+              - pattern: $OBJ->$FLOAT_FIELD != $OTHER
+              - pattern: $OBJ.$FLOAT_FIELD == $OTHER
+              - pattern: $OBJ.$FLOAT_FIELD != $OTHER
+              - pattern: $OTHER == $OBJ->$FLOAT_FIELD
+              - pattern: $OTHER != $OBJ->$FLOAT_FIELD
+              - pattern: $OTHER == $OBJ.$FLOAT_FIELD
+              - pattern: $OTHER != $OBJ.$FLOAT_FIELD
+          - metavariable-regex:
+              metavariable: $FLOAT_FIELD
+              regex: '^(alpha|aout_gain|aout_gainA|aout_gainR|audio_gain|audio_gainA|audio_gainR|audio_lpf_alpha|audio_lpf_state|auto_ppm_pwr_db|auto_ppm_snr_db|auto_ppm_zerolock_ppm|beta|channel_pwr|channel_squelch_level|coef|costas_damping|costas_loop_bw|cqpsk_agc_avg|cqpsk_diff_prev_j|cqpsk_diff_prev_r|dc_avg|deemph_a|deemph_avg|dmr_grant_timeout_s|dmr_hangtime_s|input_upsample_prev|input_warn_db|iq_dc_avg_i|iq_dc_avg_r|iqbal_alpha_ema_a|iqbal_alpha_ema_i|iqbal_alpha_ema_r|iqbal_thr|last_cc_sync_time_m|last_t3_tune_time_m|last_vc_sync_time_m|lastsample|lmid|maxbuf_sum|maxref|minbuf_sum|minref|now_lpr|out_in|output_scale|p25_cc_eval_start_m|p25_cc_grace_s|p25_force_release_extra_s|p25_force_release_margin_s|p25_grant_timeout_s|p25_grant_voice_to_s|p25_hangtime_s|p25_last_cc_msg_time_m|p25_last_vc_tune_time_m|p25_mac_hold_s|p25_min_follow_dwell_s|p25_p1_err_hold_pct|p25_p1_err_hold_s|p25_p1_last_tdu_m|p25_ring_hold_s|p25_sm_posthang_start_m|p25_vc_grace_s|p25_voice_hold_s|p25p1_err_hold_pct|p25p1_err_hold_s|recorded_m|rtl_auto_ppm_snr_db|rtl_fsk_reacquire_gap_start_m|rtl_fsk_reacquire_last_request_m|rtl_fsk_reacquire_last_sync_m|rtl_pwr|rtl_squelch_level|scan_voice_gate_arrive_m|scan_voice_gate_sync_m|scan_voice_gate_voice_m|squelch|squelch_env|squelch_env_attack|squelch_env_release|squelch_level|squelch_running_power|symbol_replay_soft_symbol|ted_effective_gain|ted_gain|ted_mu|trunk_hangtime|tuner_autogain_inband_ratio|tuner_autogain_seed_db|tuner_autogain_spec_snr_db|tuner_autogain_up_step_db|umid)$'
           - metavariable-regex:
               metavariable: $OTHER
               regex: '^[A-Za-z_]'

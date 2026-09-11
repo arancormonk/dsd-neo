@@ -10,6 +10,7 @@
 #include <QStringList>
 #include <QVariant>
 #include <QtGlobal>
+#include <cmath>
 #include <stddef.h>
 #include <utility>
 #include "command_bridge.h"
@@ -94,7 +95,7 @@ CommandBridge::setTalkgroupPolicy(unsigned int idStart, unsigned int idEnd, cons
         } else if (it.key() == QStringLiteral("priority")) {
             bool ok = false;
             const double priority = it.value().toDouble(&ok);
-            if (!ok || !(priority >= 0 && priority <= 100) || priority != static_cast<int>(priority)) {
+            if (!ok || !(priority >= 0 && priority <= 100) || std::fmod(priority, 1.0) != 0.0) {
                 return false;
             }
             fields |= DSD_APP_TG_FIELD_PRIORITY;
