@@ -10536,6 +10536,19 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${PROJECT_SOURCE_DIR}/tests/ui/test_diagnostics_share_paths.py
     )
+    # Airspy dependency/packaging contracts: repin hashes, notices, installer modes,
+    # overlay pin drift and the AUR template. Needs cmake, clang-format and bash.
+    find_program(DSD_NEO_CLANG_FORMAT_FOR_TESTS clang-format)
+    if(NOT WIN32 AND DSD_NEO_CLANG_FORMAT_FOR_TESTS)
+        add_test(
+            NAME TOOLS_AIRSPY_PACKAGING
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_airspy_packaging.py
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        set_tests_properties(TOOLS_AIRSPY_PACKAGING PROPERTIES TIMEOUT 120)
+    endif()
 endif()
 
 # WP-F4: real event synchronization and published snapshots for late emergency metadata.
