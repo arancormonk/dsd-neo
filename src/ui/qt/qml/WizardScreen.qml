@@ -1202,6 +1202,7 @@ Item {
 
                                 PlexTextField {
                                     id: gainField
+                                    objectName: "systemGainField"
                                     label: qsTr("Gain (dB)")
                                     width: parent.width
                                     mono: true
@@ -1231,6 +1232,7 @@ Item {
 
                                 PlexTextField {
                                     id: ppmField
+                                    objectName: "systemPpmField"
                                     label: qsTr("PPM correction")
                                     width: parent.width
                                     mono: true
@@ -1286,12 +1288,13 @@ Item {
                         }
 
                         Column {
+                            objectName: "systemBiasTee"
                             width: parent.width
                             spacing: 6
                             // rtl-tcp too: the engine applies the bias token on
                             // remote dongles, and an LNA on the far end needs it
                             // just as much as a local one.
-                            visible: wizard.radioSource
+                            visible: wizard.radioSource && wizard.sourceType !== "airspy"
 
                             Text {
                                 text: qsTr("Bias tee")

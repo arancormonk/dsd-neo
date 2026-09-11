@@ -30,7 +30,7 @@ Window {
         var source = attemptedSource ? attemptedSource.system : null;
         if (!source)
             return "";
-        var label = source.sourceType === "rtltcp" ? "RTL-TCP " + source.host + ":" + source.port : source.sourceType === "tcp" ? "TCP audio " + source.host + ":" + source.port : source.sourceType === "udp" ? qsTr("UDP audio port %1").arg(source.port) : source.sourceType === "file" ? qsTr("Replay: %1").arg(source.filePath.substring(source.filePath.lastIndexOf('/') + 1)) : qsTr("USB RTL-SDR");
+        var label = source.sourceType === "airspy" ? qsTr("Airspy R2 / Mini") : source.sourceType === "rtltcp" ? "RTL-TCP " + source.host + ":" + source.port : source.sourceType === "tcp" ? "TCP audio " + source.host + ":" + source.port : source.sourceType === "udp" ? qsTr("UDP audio port %1").arg(source.port) : source.sourceType === "file" ? qsTr("Replay: %1").arg(source.filePath.substring(source.filePath.lastIndexOf('/') + 1)) : qsTr("USB RTL-SDR");
         return source.extraArgs ? qsTr("Configured source: %1 (Advanced arguments are also in use)").arg(label) : label;
     }
     function failureMessage() {

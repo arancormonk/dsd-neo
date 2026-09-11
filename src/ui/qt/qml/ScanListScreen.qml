@@ -313,6 +313,8 @@ Rectangle {
                 Column {
                     required property var modelData
 
+                    objectName: "scanTuner_" + modelData.key
+                    visible: screen.draft.sourceType !== "airspy" || (modelData.key !== "gainDb" && modelData.key !== "ppm")
                     width: content.width
                     spacing: 3
 
@@ -334,6 +336,8 @@ Rectangle {
 
             PlexComboBox {
                 width: parent.width
+                objectName: "scanBiasTee"
+                visible: screen.draft.sourceType !== "airspy"
                 Accessible.name: qsTr("Bias tee")
                 model: [qsTr("Bias tee: inherit"), qsTr("Bias tee: off"), qsTr("Bias tee: on")]
                 currentIndex: (screen.draft.biasTee === undefined ? -1 : screen.draft.biasTee) + 1

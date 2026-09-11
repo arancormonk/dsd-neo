@@ -91,6 +91,22 @@ resolve_hangtime(const QVariantMap& system, const SessionArgPrefs& prefs, double
     return ok && std::isfinite(seconds) && seconds >= 0.0 && seconds <= 30.0;
 }
 
+/** @brief Snap the shared bandwidth preference to Airspy's supported DSP widths. */
+int
+airspy_bandwidth(int requested) {
+    if (requested <= 0) {
+        return 48;
+    }
+    int nearest = 4;
+    for (const int candidate : {6, 8, 12, 16, 24, 48}) {
+        // Prefer the lower width when the request is exactly between two choices.
+        if (std::abs(requested - candidate) < std::abs(requested - nearest)) {
+            nearest = candidate;
+        }
+    }
+    return nearest;
+}
+
 /** @brief Append "-i <spec>" for the system's source type. */
 void
 append_input_args(QStringList& args, const QVariantMap& system, const QString& sourceType, const QString& tail,
@@ -99,7 +115,8 @@ append_input_args(QStringList& args, const QVariantMap& system, const QString& s
         const QStringList fields = tail.split(QLatin1Char(':'));
         args << QStringLiteral("-i")
              << QStringLiteral("airspy:%1:%2:%3:%4")
-                    .arg(fields.value(1), fields.value(4), fields.value(5), fields.value(6));
+                    .arg(fields.value(1), QString::number(airspy_bandwidth(fields.value(4).toInt())), fields.value(5),
+                         fields.value(6));
         const QVariantMap native = system.value(QStringLiteral("airspy")).toMap();
         const QStringList keys{
             QStringLiteral("serial"),           QStringLiteral("sample_rate"),    QStringLiteral("gain_mode"),
