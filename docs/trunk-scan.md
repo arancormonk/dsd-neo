@@ -142,6 +142,10 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
 - `--trunk-scan-activity-hold-ms <ms>` sets the default hold time after allowed conventional DMR/P25/NXDN activity
   (NXDN96 and NXDN48 alike). Default: `1200`.
 - Per-target CSV values override these defaults.
+- The terminal's `Scan Timing` row reports the *effective* dwell and hold for the target on air — the values left
+  after the CSV column and the CLI/config default have been resolved — and labels `-t` as `hang`, never as a dwell.
+  `(suspended)` beside the dwell means it is disarmed while something holds the target, not that it expired. See
+  [the terminal UI guide](ui-terminal.md).
 - `-t <seconds>` is voice/sync-loss hangtime, not the interval between trunk-scan targets. Zero does not
   bypass target dwell or control-channel acquisition. After a followed trunked call releases, a fresh idle
   dwell starts; repeated calls can keep a busy system parked.
@@ -274,6 +278,11 @@ During scanning:
   and a `| Target: county-p25` line at the top of Call Info, which is the one that survives compact view.
   While idle, Call Info follows the parked target's protocol panel; an unknown NXDN RAN or IDAS area
   is shown as `--`.
+- A `| Scan Timing:` row directly under the Trunk Scan row says why the receiver is staying on that target —
+  `Acquiring control`, `Following call`, `Retune pending`, `Retune retry`, `Manual hold`, `Idle dwell`, and the
+  conventional `Voice` / `Voice tail` / `Activity hold` / `Qualify` — with a countdown on whichever window is
+  running and the target's effective dwell and hold beside it. The phrase table is in
+  [the terminal UI guide](ui-terminal.md); the Qt and Android panels show the same thing.
 - Idle targets rotate after their dwell time.
 - The rotation can be driven from the terminal (Trunking menu, or the hotkeys): `Y` holds the scan on the parked
   target, `b` avoids the parked target for the rest of the session and moves on, `L` moves to the next eligible target

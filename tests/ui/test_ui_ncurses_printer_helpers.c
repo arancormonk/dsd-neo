@@ -191,10 +191,15 @@ whline(WINDOW* win, chtype ch, int n) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
+/* Terminal width the printer sees. Settable so a test can narrow it and check that a row
+   which does not fit is cut rather than wrapped; 80 is the default every other test
+   renders against, and a test that changes it restores it. */
+static int g_stub_max_x = 80;
+
 int
 getmaxx(const WINDOW* win) { // NOLINT(misc-use-internal-linkage)
     (void)win;
-    return 80;
+    return g_stub_max_x;
 }
 
 int
@@ -2138,6 +2143,197 @@ test_voice_average_units(void) {
     g_voice_average_valid = 0;
 }
 
+/* One published stay, stamped the way the decoder stamps it: an absolute monotonic
+   deadline, or a negative one when nothing is counting down. */
+static void
+seed_scan_timing(dsd_state* state, uint8_t reason, uint8_t conventional, double deadline_m, uint32_t span_ms,
+                 uint32_t dwell_ms, uint32_t hold_ms) {
+    DSD_MEMSET(&state->scan_timing, 0, sizeof(state->scan_timing));
+    state->scan_timing.reason = reason;
+    state->scan_timing.conventional = conventional;
+    state->scan_timing.started_m = (deadline_m >= 0.0) ? deadline_m - ((double)span_ms / 1000.0) : -1.0;
+    state->scan_timing.deadline_m = deadline_m;
+    state->scan_timing.span_ms = span_ms;
+    state->scan_timing.dwell_ms = dwell_ms;
+    state->scan_timing.hold_ms = hold_ms;
+}
+
+/* The formatter is pure and takes the clock, so a golden can be the exact bytes rather
+   than a substring: the Qt panel renders the same grammar from the same view. */
+static void
+assert_scan_timing_row(const dsd_opts* opts, const dsd_state* state, const char* expected) {
+    char line[192];
+    int len = ui_format_scan_timing_row(opts, state, 100.0, line, sizeof(line));
+    assert(len == (int)strlen(expected));
+    assert(strcmp(line, expected) == 0);
+}
+
+static void
+test_scan_timing_row_phrases(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.trunk_scan_enabled = 1;
+    opts.trunk_hangtime = 2.0f;
+
+    /* Trunked rows carry no conventional activity hold, so none is printed beside them. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_RETUNE_RETRY, 0U, 102.0, 2000U, 3000U, 0U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Retune retry 2.0s/2.0s  dwell 3.0s (suspended)");
+
+    seed_scan_timing(&state, DSD_SCAN_STAY_CC_ACQUIRE, 0U, -1.0, 0U, 3000U, 0U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Acquiring control  dwell 3.0s (suspended)");
+
+    /* -t is what ends a followed call, so it is the budget named beside the dwell. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_CALL_FOLLOW, 0U, -1.0, 0U, 3000U, 0U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Following call  dwell 3.0s (suspended)  hang 2.0s");
+
+    seed_scan_timing(&state, DSD_SCAN_STAY_MANUAL_HOLD, 0U, -1.0, 0U, 3000U, 0U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Manual hold  dwell 3.0s (paused)");
+
+    /* Conventional rows add the effective activity hold, except where that hold is
+       already the window counting down. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_RETUNE_PENDING, 1U, -1.0, 0U, 3000U, 1200U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Retune pending  dwell 3.0s (suspended)  hold 1.2s");
+
+    seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s");
+
+    seed_scan_timing(&state, DSD_SCAN_STAY_VOICE, 1U, 101.2, 2000U, 3000U, 2000U);
+    state.scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_VOICE;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Voice 1.2s/2.0s  dwell 3.0s (suspended)");
+
+    /* Both voice-gate variants: the same reason reads differently once the gate says
+       where in a transmission the hold is. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_ACTIVITY_HOLD, 1U, 101.5, 2000U, 3000U, 2000U);
+    state.scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_OFF;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Activity hold 1.5s/2.0s  dwell 3.0s (suspended)");
+    state.scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_TAIL;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Voice tail 1.5s/2.0s  dwell 3.0s (suspended)");
+
+    seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 100.6, 1000U, 1000U, 2000U);
+    state.scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_OFF;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 0.6s/1.0s  hold 2.0s");
+    state.scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_QUALIFY;
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Qualify 0.6s/1.0s  hold 2.0s");
+
+    /* The -Y legacy rule: -t since the last sync is the whole stay, with no dwell or hold
+       of its own to state. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.scanner_mode = 1;
+    opts.trunk_hangtime = 2.0f;
+    state.scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_OFF;
+    seed_scan_timing(&state, DSD_SCAN_STAY_HANGTIME, 1U, 101.4, 2000U, 0U, 0U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Hangtime 1.4s/2.0s");
+
+    /* Nothing has synced on this row yet: the reason holds, the countdown has no anchor
+       to run from, and an unanchored timer is left off rather than shown as zero. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_HANGTIME, 1U, -1.0, 0U, 0U, 0U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Hangtime");
+}
+
+/* The decoder decides when the receiver moves. A poll that lands after the deadline is a
+   frame late, not a scanner that overstayed, so the row floors at zero instead of
+   reporting a negative age that wrapped through an unsigned. */
+static void
+test_scan_timing_row_clamps_expired_timers(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.trunk_scan_enabled = 1;
+    seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 95.0, 3000U, 3000U, 2000U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 0.0s/3.0s  hold 2.0s");
+}
+
+static void
+test_scan_timing_row_is_silent_without_a_scan(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char line[192];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    /* No scanner is running: a publication left over from an earlier session says nothing
+       about a receiver now parked by hand. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
+    assert(ui_format_scan_timing_row(&opts, &state, 100.0, line, sizeof(line)) == 0);
+    assert(line[0] == '\0');
+
+    /* Scanning, but nothing holds the row and nothing is published for it. */
+    opts.trunk_scan_enabled = 1;
+    seed_scan_timing(&state, DSD_SCAN_STAY_NONE, 1U, -1.0, 0U, 0U, 0U);
+    assert(ui_format_scan_timing_row(&opts, &state, 100.0, line, sizeof(line)) == 0);
+    assert(line[0] == '\0');
+}
+
+/* The row sits directly under whichever scanner row is on screen, and there is only ever
+   one of it: with both scanners running the stay belongs to the trunk-scan target. */
+static void
+test_scan_timing_row_placement(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_lcn_name_stub();
+
+    /* A stay with no live timer, so the rendered bytes do not depend on the wall clock
+       the renderer reads for itself. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_MANUAL_HOLD, 1U, -1.0, 0U, 3000U, 0U);
+
+    opts.scanner_mode = 1;
+    opts.trunk_hangtime = 2.0f;
+    state.lcn_freq_count = 1;
+    state.lcn_freq_roll = 1;
+    state.trunk_lcn_freq[0] = 462012500;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n"
+                          "| Scan Timing: Manual hold  dwell 3.0s (paused)\n");
+
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
+    state.trunk_scan_active_ordinal = 3;
+    state.trunk_scan_target_count = 6;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6)\n"
+                          "| Scan Timing: Manual hold  dwell 3.0s (paused)\n");
+
+    opts.scanner_mode = 1;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n"
+                          "| Trunk Scan:  Target: county-p25 (3/6)\n"
+                          "| Scan Timing: Manual hold  dwell 3.0s (paused)\n");
+}
+
+/* A narrow terminal cuts the row instead of wrapping it: this line redraws several times
+   a second as the countdown moves, and a wrapped one would push every row below it down
+   by one for as long as the phrase stayed long. */
+static void
+test_scan_timing_row_truncates_to_panel_width(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.trunk_scan_enabled = 1;
+    seed_scan_timing(&state, DSD_SCAN_STAY_RETUNE_PENDING, 1U, -1.0, 0U, 3000U, 1200U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Retune pending  dwell 3.0s (suspended)  hold 1.2s");
+
+    g_stub_max_x = 40;
+    reset_printw_capture();
+    ui_render_scan_timing_row(&opts, &state);
+    g_stub_max_x = 80;
+    assert_capture_equals("| Scan Timing: Retune pending  dwell 3.0\n");
+    assert(strlen(g_printw_capture) == 41U);
+    assert(strchr(g_printw_capture, '\n') == g_printw_capture + 40);
+}
+
 int
 main(void) {
     test_voice_average_units();
@@ -2153,6 +2349,11 @@ main(void) {
     test_scanner_status_row_rendering();
     test_scan_voice_gate_status_rendering();
     test_trunk_scan_status_row_rendering();
+    test_scan_timing_row_phrases();
+    test_scan_timing_row_clamps_expired_timers();
+    test_scan_timing_row_is_silent_without_a_scan();
+    test_scan_timing_row_placement();
+    test_scan_timing_row_truncates_to_panel_width();
     test_call_info_channel_line_rendering();
     test_history_and_sort_helpers();
     test_history_color_pair_policy();

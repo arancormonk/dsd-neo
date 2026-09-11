@@ -529,6 +529,51 @@ With `--trunk-scan` the same section names the target on air and its place in th
 shows no frequency: the protocol panels below it already carry the one being decoded. While a target is on air the
 Scan Mode row above it shows no name, so the screen never names two channels at once.
 
+### Scan Timing
+
+Directly under whichever scanner row is active — Scan Mode under `-Y`, Trunk Scan under `--trunk-scan`, and only the
+Trunk Scan one when both are running — a `Scan Timing` row says why the receiver is staying where it is and how much
+of that is left:
+
+```
+| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s
+| Scan Timing: Following call  dwell 3.0s (suspended)  hang 2.0s
+| Scan Timing: Voice tail 1.5s/2.0s  dwell 3.0s (suspended)
+| Scan Timing: Manual hold  dwell 3.0s (paused)
+| Scan Timing: Hangtime 1.4s/2.0s
+```
+
+The phrase names the reason; the `remaining/total` pair after it, when there is one, is whichever window is actually
+running out.
+
+| Phrase | Staying because | Running timer |
+| --- | --- | --- |
+| `Retune pending` | a backend retune request has not resolved | none |
+| `Retune retry` | the retune failed; cooling down before retrying in place | the retry cooldown |
+| `Acquiring control` | the trunking state machine is hunting a control channel | none |
+| `Following call` | the trunking state machine is following a call | none; `hang` is the budget |
+| `Voice` | conventional voice media is active | the activity hold |
+| `Voice tail` | holding past the last voice frame (`--scan-voice-only`) | the activity hold |
+| `Activity hold` | allowed conventional activity was decoded | the activity hold |
+| `Manual hold` | `Y` holds the scan here | none |
+| `Qualify` | synced under `--scan-voice-only`, no allowed voice yet | the qualify window |
+| `Idle dwell` | nothing holds the row | the idle dwell |
+| `Hangtime` | `-Y` without `--scan-voice-only`: waiting out `-t` since the last sync | `-t` |
+
+Which phrases you can see depends on the protocol: an NXDN trunked target has no state machine to report control
+acquisition, so it only ever reads `Following call` or `Idle dwell`.
+
+The values that follow are the *effective* ones for the row on air, after CSV and option overrides:
+
+- `dwell` is the idle dwell, printed only when it is not itself the running timer. `(suspended)` means something on
+  the air has disarmed it — a call, a retune, a control-channel hunt — and `(paused)` means the operator hold has.
+- `hold` is the activity hold. It appears on conventional and `-Y` rows only; a trunked target has none.
+- `hang` is `-t`, and appears only while a trunked call is being followed.
+
+The row is not shown in compact view. The countdown is a published deadline differenced against the monotonic clock,
+and snapshots are published only while samples flow, so it freezes if the input stalls instead of running past zero on
+its own. A narrow terminal cuts the row at the edge rather than wrapping it.
+
 Call Info repeats the answer on its own first line, because compact view hides the Input Output section:
 
 ```

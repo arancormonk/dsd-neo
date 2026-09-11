@@ -21,6 +21,7 @@
 #include <curses.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -992,6 +993,96 @@ ui_render_trunk_scan_status(const dsd_opts* opts, const dsd_state* state) {
     printw("\n");
 }
 
+/* Declared here because the Scan Timing row has to truncate to the panel width, and the
+   width helper lives with the panel renderers much further down the file. */
+static int ui_get_panel_cols(void);
+
+static void ui_scan_timing_appendf(char* buf, size_t buf_sz, size_t* used, const char* fmt, ...)
+    DSD_ATTR_FORMAT(printf, 4, 5);
+
+/* Append one group of the Scan Timing row. Overflow is clamped rather than reported: the
+   row is a status line that a narrow terminal truncates anyway, and a caller that had to
+   check every group would be the thing most likely to get the grammar wrong. */
+static void
+ui_scan_timing_appendf(char* buf, size_t buf_sz, size_t* used, const char* fmt, ...) {
+    if (*used + 1U >= buf_sz) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    int wrote = DSD_VSNPRINTF(buf + *used, buf_sz - *used, fmt, ap);
+    va_end(ap);
+    if (wrote < 0) {
+        return;
+    }
+    *used += (size_t)wrote;
+    if (*used >= buf_sz) {
+        *used = buf_sz - 1U;
+    }
+}
+
+/* Why the idle dwell is not the thing counting down: suspended means something on the air
+   holds the row, paused means the operator does. */
+static const char*
+ui_scan_timing_dwell_suffix(uint8_t dwell_state) {
+    switch (dwell_state) {
+        case DSD_APP_SCAN_DWELL_SUSPENDED: return " (suspended)";
+        case DSD_APP_SCAN_DWELL_PAUSED: return " (paused)";
+        default: return "";
+    }
+}
+
+/* The Scan Timing row without its newline (issue #508): why the scanner is staying on the
+   row above and how long is left of it, from the shared app-control view so the terminal
+   and the Qt panel cannot drift on what "suspended" or "hold" means. Pure, and taking the
+   clock as an argument, so the goldens can pin the exact bytes. Returns the length
+   written, or 0 when there is no scan timing to show. */
+static int
+ui_format_scan_timing_row(const dsd_opts* opts, const dsd_state* state, double now_m, char* buf, size_t buf_sz) {
+    if (!buf || buf_sz == 0U) {
+        return 0;
+    }
+    buf[0] = '\0';
+    dsd_app_scan_timing view;
+    if (dsd_app_scan_timing_view(opts, state, now_m, &view) != 1) {
+        return 0;
+    }
+    size_t used = 0U;
+    ui_scan_timing_appendf(buf, buf_sz, &used, "| Scan Timing: %s", view.phrase);
+    if (view.timer_live) {
+        ui_scan_timing_appendf(buf, buf_sz, &used, " %.1fs/%.1fs", (double)view.remaining_ms / 1000.0,
+                               (double)view.span_ms / 1000.0);
+    }
+    if (view.show_dwell) {
+        ui_scan_timing_appendf(buf, buf_sz, &used, "  dwell %.1fs%s", (double)view.dwell_ms / 1000.0,
+                               ui_scan_timing_dwell_suffix(view.dwell_state));
+    }
+    if (view.show_hold) {
+        ui_scan_timing_appendf(buf, buf_sz, &used, "  hold %.1fs", (double)view.hold_ms / 1000.0);
+    }
+    if (view.show_hang) {
+        ui_scan_timing_appendf(buf, buf_sz, &used, "  hang %.1fs", (double)view.hang_ms / 1000.0);
+    }
+    return (int)used;
+}
+
+/* Cut to the panel width rather than wrapped: this row redraws several times a second as
+   the countdown moves, and a wrapped one would push every row below it down by one line
+   for as long as the phrase stayed long. */
+static void
+ui_render_scan_timing_row(const dsd_opts* opts, const dsd_state* state) {
+    char line[192];
+    int len = ui_format_scan_timing_row(opts, state, dsd_time_now_monotonic_s(), line, sizeof(line));
+    if (len <= 0) {
+        return;
+    }
+    int cols = ui_get_panel_cols();
+    if (len > cols) {
+        len = cols;
+    }
+    printw("%.*s\n", len, line);
+}
+
 static void
 ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* state) {
     if (opts->scanner_mode == 1) {
@@ -1033,9 +1124,18 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
             printw(" Avoids: %u", (unsigned int)state->lcn_avoid_count);
         }
         printw(" \n");
+        // The timing row belongs directly under the scanner row that owns the stay. With
+        // --trunk-scan running that is the Trunk Scan row below, which publishes the target's
+        // own effective dwell and hold, so the -Y row only claims it when trunk scan is off.
+        if (opts->trunk_scan_enabled != 1) {
+            ui_render_scan_timing_row(opts, state);
+        }
     }
 
     ui_render_trunk_scan_status(opts, state);
+    if (opts->trunk_scan_enabled == 1) {
+        ui_render_scan_timing_row(opts, state);
+    }
 
     if (opts->reverse_mute == 1) {
         printw("| Reverse Mute - Muting Unencrypted Voice\n");

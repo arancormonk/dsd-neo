@@ -2003,6 +2003,24 @@ target_link_libraries(
 add_test(NAME APP_CONTROL_CALL_VIEW COMMAND dsd-neo_test_app_control_call_view)
 
 add_executable(
+    dsd-neo_test_app_control_scan_timing_view
+    ui/test_app_control_scan_timing_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_scan_timing_view
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_link_libraries(
+    dsd-neo_test_app_control_scan_timing_view
+    PRIVATE dsd-neo_test_call_state_support
+)
+add_test(
+    NAME APP_CONTROL_SCAN_TIMING_VIEW
+    COMMAND dsd-neo_test_app_control_scan_timing_view
+)
+
+add_executable(
     dsd-neo_test_app_control_notification_status
     ui/test_app_control_notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
@@ -2069,9 +2087,12 @@ if(DSD_ENABLE_TERMINAL_UI)
         COMMAND dsd-neo_test_ui_ncurses_p25_display_helpers
     )
 
+    # The shared scan-timing view comes in as a source rather than a stub: the Scan Timing
+    # goldens are only worth anything if they run through the real display table.
     add_executable(
         dsd-neo_test_ui_ncurses_printer_helpers
         ui/test_ui_ncurses_printer_helpers.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
     )
     target_compile_definitions(
         dsd-neo_test_ui_ncurses_printer_helpers
