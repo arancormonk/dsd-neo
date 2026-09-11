@@ -293,7 +293,7 @@ function suggestsTrunking(flag, hz) {
 // on the dongle, "851.375 MHz · RTL-TCP · P25 trunked" on a networked tuner.
 function systemMeta(sys) {
     var parts = []
-    if (sys.sourceType === "usb" || sys.sourceType === "rtltcp") {
+    if (sys.sourceType === "usb" || sys.sourceType === "airspy" || sys.sourceType === "rtltcp") {
         if (sys.freqMhz && sys.freqMhz.length > 0)
             parts.push(sys.freqMhz + " MHz")
         // Ahead of the decode label rather than after it. The card's meta elides
@@ -371,12 +371,14 @@ function monitorMeta(sys) {
     if (sys.sourceType === "file")
         return qsTr("Replay") + " · " + String(sys.filePath || "").split('/').pop()
     var parts = []
-    if ((sys.sourceType === "usb" || sys.sourceType === "rtltcp") && sys.freqMhz && sys.freqMhz.length > 0)
+    if ((sys.sourceType === "usb" || sys.sourceType === "airspy" || sys.sourceType === "rtltcp") && sys.freqMhz && sys.freqMhz.length > 0)
         parts.push(sys.freqMhz + " MHz")
     if (sys.trunking)
         parts.push(qsTr("trunked"))
     if (sys.sourceType === "usb")
         parts.push("USB")
+    else if (sys.sourceType === "airspy")
+        parts.push("Airspy")
     else if (sys.sourceType === "rtltcp")
         parts.push("RTL-TCP")
     else if (sys.sourceType === "udp")

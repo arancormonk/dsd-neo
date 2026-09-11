@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
@@ -194,6 +195,10 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->rtlsdr_ppm_error = 0; //initialize ppm with 0 value;
     opts->rtlsdr_center_freq =
         850000000; //set to an initial value (if user is using a channel map, then they won't need to specify anything other than -i rtl if desired)
+    dsd_airspy_config_defaults(&opts->airspy);
+    DSD_MEMSET(&opts->airspy_info, 0, sizeof opts->airspy_info);
+    opts->airspy_list = 0;
+    opts->airspy_config_error = 0;
     opts->soapy_bandwidth_hz = -1;
     opts->soapy_profile[0] = '\0';
     opts->soapy_stream_format[0] = '\0';

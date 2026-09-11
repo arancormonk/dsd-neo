@@ -10,6 +10,8 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -183,6 +185,39 @@ test_lifecycle_hooks_start_after_setup_and_stop_before_cleanup(void) {
 
     free_test_runtime(opts, state);
     return test_rc;
+}
+
+static int
+inject_receiver_failure(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)opts;
+    (void)state;
+    int* calls = (int*)context;
+    ++*calls;
+    dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -77);
+    dsd_exitflag_store(1);
+    return 0;
+}
+
+static int
+test_receiver_failure_is_not_successful_completion(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int calls = 0;
+    const dsd_engine_lifecycle_hooks hooks = {.start = inject_receiver_failure, .context = &calls};
+    int result = dsd_engine_run_with_lifecycle(opts, state, &hooks);
+    dsd_input_failure failure;
+    dsd_input_failure_get(&failure);
+    int rc = expect_true("receiver failure after initialization is a failed run", calls == 1 && result != 0);
+    rc |= expect_true("receiver error retained after cleanup",
+                      failure.kind == DSD_INPUT_FAILURE_DEVICE && failure.native_code == -77);
+    result = dsd_engine_run_with_lifecycle(opts, state, NULL);
+    dsd_input_failure_get(&failure);
+    rc |= expect_true("next run clears receiver error", result == 0 && failure.kind == DSD_INPUT_FAILURE_NONE);
+    free_test_runtime(opts, state);
+    return rc;
 }
 
 static int
@@ -648,6 +683,7 @@ main(void) {
     rc |= test_soapy_setup_normalizes_args_and_tuning();
     rc |= test_iq_replay_guard_and_requested_setup();
     rc |= test_lifecycle_hooks_start_after_setup_and_stop_before_cleanup();
+    rc |= test_receiver_failure_is_not_successful_completion();
 
     if (rc == 0) {
         printf("ENGINE_RUN_SETUP: OK\n");

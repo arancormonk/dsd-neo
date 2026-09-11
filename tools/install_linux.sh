@@ -251,27 +251,27 @@ case "$PM" in
   apt)
     BASE_PACKAGES="bash build-essential cmake ninja-build pkg-config git ca-certificates libssl-dev libsndfile1-dev libpulse-dev libncurses-dev libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran libcurl4-openssl-dev libexpat1-dev"
     CODEC2_PACKAGES="libcodec2-dev"
-    RADIO_PACKAGES="librtlsdr-dev libsoapysdr-dev"
+    RADIO_PACKAGES="librtlsdr-dev libsoapysdr-dev libairspy-dev"
     ;;
   dnf)
     BASE_PACKAGES="bash gcc gcc-c++ make cmake ninja-build pkgconf-pkg-config git ca-certificates openssl-devel libsndfile-devel pulseaudio-libs-devel ncurses-devel libusb1-devel fftw-devel blas-devel lapack-devel gcc-gfortran libcurl-devel expat-devel"
     CODEC2_PACKAGES="codec2-devel"
-    RADIO_PACKAGES="rtl-sdr-devel SoapySDR-devel"
+    RADIO_PACKAGES="rtl-sdr-devel SoapySDR-devel airspyone_host-devel"
     ;;
   zypper)
     BASE_PACKAGES="bash gcc gcc-c++ make cmake ninja pkgconf git ca-certificates libopenssl-devel libsndfile-devel libpulse-devel ncurses-devel libusb-1_0-devel fftw3-devel blas-devel lapack-devel gcc-fortran libcurl-devel libexpat-devel"
     CODEC2_PACKAGES="codec2-devel"
-    RADIO_PACKAGES="rtl-sdr-devel soapy-sdr-devel"
+    RADIO_PACKAGES="rtl-sdr-devel soapy-sdr-devel airspy-devel"
     ;;
   apk)
     BASE_PACKAGES="bash build-base cmake ninja pkgconf git ca-certificates openssl-dev libsndfile-dev pulseaudio-dev ncurses-dev libusb-dev fftw-dev blas-dev lapack-dev gfortran curl-dev expat-dev"
     CODEC2_PACKAGES="codec2-dev"
-    RADIO_PACKAGES="librtlsdr-dev soapy-sdr-dev"
+    RADIO_PACKAGES="librtlsdr-dev soapy-sdr-dev airspyone-host-dev"
     ;;
   pacman)
     BASE_PACKAGES="bash base-devel cmake ninja pkgconf git ca-certificates openssl libsndfile libpulse ncurses libusb fftw blas lapack gcc-fortran curl expat"
     CODEC2_PACKAGES="codec2"
-    RADIO_PACKAGES="rtl-sdr soapysdr"
+    RADIO_PACKAGES="rtl-sdr soapysdr airspy"
     ;;
 esac
 
@@ -522,10 +522,10 @@ configure_build_install_dsd_neo() {
 
   case "$RADIO_MODE" in
     off)
-      cmake_args="$cmake_args -DDSD_ENABLE_RTLSDR=OFF -DDSD_REQUIRE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=OFF -DDSD_REQUIRE_SOAPYSDR=OFF"
+      cmake_args="$cmake_args -DDSD_ENABLE_RTLSDR=OFF -DDSD_REQUIRE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=OFF -DDSD_REQUIRE_SOAPYSDR=OFF -DDSD_ENABLE_AIRSPY=OFF -DDSD_REQUIRE_AIRSPY=OFF"
       ;;
     required)
-      cmake_args="$cmake_args -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON"
+      cmake_args="$cmake_args -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_ENABLE_AIRSPY=ON -DDSD_REQUIRE_AIRSPY=ON"
       ;;
     auto)
       cmake_args="$cmake_args -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=OFF"

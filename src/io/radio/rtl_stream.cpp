@@ -87,6 +87,9 @@ RtlSdrOrchestrator::start() {
     if (r < 0) {
         return r;
     }
+    if (caller_opts_ && dsd_opts_audio_in_dev_is_airspy_spec(opts_->audio_in_dev)) {
+        caller_opts_->airspy_info = opts_->airspy_info;
+    }
     started_ = true;
     return 0;
 }

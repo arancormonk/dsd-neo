@@ -299,8 +299,9 @@ scan_list_targets(const QVariantMap& list, const QVariantList& systems) {
         out.ok = false;
         return std::move(out);
     };
-    if (list.value("sourceType") != "usb" && list.value("sourceType") != "rtltcp") {
-        return fail(QStringLiteral("Choose USB or RTL-TCP for the scan list."));
+    if (list.value("sourceType") != "usb" && list.value("sourceType") != "airspy"
+        && list.value("sourceType") != "rtltcp") {
+        return fail(QStringLiteral("Choose RTL USB, Airspy or RTL-TCP for the scan list."));
     }
     for (const auto& field : {"defaultDwellMs", "defaultHoldMs"}) {
         if (!timing(list.value(field, 0))) {

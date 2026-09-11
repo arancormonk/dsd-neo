@@ -139,7 +139,8 @@ DecoderHost::licenseNotices() const {
             notices.append(QLatin1String(name) + QStringLiteral("\n\n") + QString::fromUtf8(file.readAll()));
         }
     }
-    for (const auto* name : {"libusb-LGPL-2.1-or-later.txt", "librtlsdr-GPL-2.0-or-later.txt"}) {
+    for (const auto* name :
+         {"libusb-LGPL-2.1-or-later.txt", "librtlsdr-GPL-2.0-or-later.txt", "libairspy-LICENSE.txt"}) {
         QFile file(QStringLiteral("assets:/doc/dsd-neo/licenses/") + QLatin1String(name));
         if (file.open(QIODevice::ReadOnly)) {
             notices.append(QString::fromUtf8(file.readAll()));

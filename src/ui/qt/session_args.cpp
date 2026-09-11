@@ -91,11 +91,49 @@ resolve_hangtime(const QVariantMap& system, const SessionArgPrefs& prefs, double
     return ok && std::isfinite(seconds) && seconds >= 0.0 && seconds <= 30.0;
 }
 
+/** @brief Snap the shared bandwidth preference to Airspy's supported DSP widths. */
+int
+airspy_bandwidth(int requested) {
+    if (requested <= 0) {
+        return 48;
+    }
+    int nearest = 4;
+    int nearest_distance = requested > nearest ? requested - nearest : nearest - requested;
+    for (const int candidate : {6, 8, 12, 16, 24, 48}) {
+        const int distance = requested > candidate ? requested - candidate : candidate - requested;
+        // Prefer the lower width when the request is exactly between two choices.
+        if (distance < nearest_distance) {
+            nearest = candidate;
+            nearest_distance = distance;
+        }
+    }
+    return nearest;
+}
+
 /** @brief Append "-i <spec>" for the system's source type. */
 void
 append_input_args(QStringList& args, const QVariantMap& system, const QString& sourceType, const QString& tail,
                   bool bias) {
-    if (sourceType == QLatin1String("usb")) {
+    if (sourceType == QLatin1String("airspy")) {
+        const QStringList fields = tail.split(QLatin1Char(':'));
+        args << QStringLiteral("-i")
+             << QStringLiteral("airspy:%1:%2:%3:%4")
+                    .arg(fields.value(1), QString::number(airspy_bandwidth(fields.value(4).toInt())), fields.value(5),
+                         fields.value(6));
+        const QVariantMap native = system.value(QStringLiteral("airspy")).toMap();
+        const QStringList keys{
+            QStringLiteral("serial"),           QStringLiteral("sample_rate"),    QStringLiteral("gain_mode"),
+            QStringLiteral("sensitivity_gain"), QStringLiteral("linearity_gain"), QStringLiteral("lna_gain"),
+            QStringLiteral("mixer_gain"),       QStringLiteral("vga_gain"),       QStringLiteral("lna_agc"),
+            QStringLiteral("mixer_agc"),        QStringLiteral("bias_tee")};
+        for (const auto& key : keys) {
+            if (native.contains(key)) {
+                QString flag = key;
+                flag.replace(QLatin1Char('_'), QLatin1Char('-'));
+                args << QStringLiteral("--airspy-") + flag << native.value(key).toString();
+            }
+        }
+    } else if (sourceType == QLatin1String("usb")) {
         QString spec = QStringLiteral("rtl:0") + tail;
         if (bias) {
             spec += QLatin1String(":bias");
@@ -174,7 +212,7 @@ append_flag_args(QStringList& args, const QVariantMap& system, const SessionArgP
     if (prefs.skipEncrypted) {
         args << QStringLiteral("--enc-lockout");
     }
-    if (prefs.autoPpm) {
+    if (prefs.autoPpm && system.value(QStringLiteral("sourceType")).toString() != QLatin1String("airspy")) {
         args << QStringLiteral("--auto-ppm");
     }
     args << QStringLiteral("-t") << QString::number(hangtime, 'f', 1);
@@ -309,7 +347,7 @@ appendScanOptions(QStringList& args, const QVariantMap& list, const QString& csv
     if (prefs.skipEncrypted) {
         args << QStringLiteral("--enc-lockout");
     }
-    if (prefs.autoPpm) {
+    if (prefs.autoPpm && list.value(QStringLiteral("sourceType")).toString() != QLatin1String("airspy")) {
         args << QStringLiteral("--auto-ppm");
     }
     args << prefs.extraArgs.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
@@ -338,7 +376,7 @@ session_args_scan_build(const QVariantMap& list, const QString& firstFreqMhz, co
         return {};
     }
     QVariantMap tuner;
-    for (const auto& field : {"sourceType", "host", "port", "gainDb", "ppm", "bandwidthKhz", "biasTee"}) {
+    for (const auto& field : {"sourceType", "host", "port", "gainDb", "ppm", "bandwidthKhz", "biasTee", "airspy"}) {
         if (list.contains(field)) {
             tuner[field] = list.value(field);
         }
@@ -498,6 +536,11 @@ append_profile_args(QStringList& args, const QVariantMap& system) {
     }
 }
 
+static bool
+is_radio_source(const QString& source) {
+    return source == QLatin1String("usb") || source == QLatin1String("airspy") || source == QLatin1String("rtltcp");
+}
+
 QStringList
 session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, SessionArgsError* error) {
     if (error != nullptr) {
@@ -518,7 +561,7 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     }
 
     const QString sourceType = system.value(QStringLiteral("sourceType")).toString();
-    const bool radioSource = sourceType == QLatin1String("usb") || sourceType == QLatin1String("rtltcp");
+    const bool radioSource = is_radio_source(sourceType);
     const QString freqMhz = system.value(QStringLiteral("freqMhz")).toString().trimmed();
     if (radioSource && !session_args_freq_valid(freqMhz)) {
         return fail(SessionArgsError::Frequency);

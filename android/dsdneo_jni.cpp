@@ -624,6 +624,17 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetUsbFd(JNIEnv* env, jclass c
 #endif
 }
 
+JNIEXPORT jint JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetAirspyUsbFd(JNIEnv* env, jclass clazz, jint fd) {
+    (void)env;
+    (void)clazz;
+#ifdef USE_RADIO
+    return rtl_device_airspy_set_preopened_fd((int)fd) == 0 ? kStatusOk : kStatusError;
+#else
+    return fd < 0 ? kStatusOk : kStatusError;
+#endif
+}
+
 JNIEXPORT jboolean JNICALL
 Java_io_github_arancormonk_dsdneo_DsdNative_nativeIsRunning(JNIEnv* env, jclass clazz) {
     (void)env;
@@ -637,7 +648,7 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeIsUsbFdInUse(JNIEnv* env, jcla
     (void)clazz;
 
 #ifdef USE_RADIO
-    return rtl_device_preopened_fd_in_use() ? JNI_TRUE : JNI_FALSE;
+    return (rtl_device_preopened_fd_in_use() || rtl_device_airspy_preopened_fd_in_use()) ? JNI_TRUE : JNI_FALSE;
 #else
     /* No radio pipeline, so nothing can have taken the descriptor. */
     return JNI_FALSE;

@@ -195,8 +195,10 @@ SpectrumModel::tick() {
     /* Against the last geometry seen, not against "is there a frame right now":
      * production stops and starts with the view, and the front end can move while
      * it is stopped, so the comparison has to survive an invalidation. */
-    const bool moved = m_have_geometry && (center != m_center_hz || span != m_span_hz);
-    const bool geometry_changed = (center != m_center_hz) || (span != m_span_hz) || (n != m_bin_count);
+    const bool same_center = qFuzzyCompare(center, m_center_hz);
+    const bool same_span = qFuzzyCompare(span, m_span_hz);
+    const bool moved = m_have_geometry && (!same_center || !same_span);
+    const bool geometry_changed = !same_center || !same_span || (n != m_bin_count);
 
     m_center_hz = center;
     m_span_hz = span;
@@ -230,7 +232,7 @@ SpectrumModel::applyOffset(double hz) {
     double overshoot = 0.0;
     (void)spectrum_math::view_window(m_center_hz, m_span_hz, m_zoom, hz, &overshoot);
     const double granted = hz - overshoot;
-    if (granted == m_offset_hz && overshoot == m_overshoot_hz) {
+    if (qFuzzyCompare(granted, m_offset_hz) && qFuzzyCompare(overshoot, m_overshoot_hz)) {
         return false;
     }
     m_offset_hz = granted;
@@ -256,7 +258,7 @@ SpectrumModel::zoomToAnchored(double zoom_level, double x_fraction) {
         return;
     }
     const double next = spectrum_math::clamp_zoom(zoom_level);
-    if (next == m_zoom) {
+    if (qFuzzyCompare(next, m_zoom)) {
         return;
     }
     const double anchored =

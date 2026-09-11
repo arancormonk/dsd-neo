@@ -60,6 +60,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
+#include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
@@ -1188,6 +1189,9 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     dsd_engine_setup_enable_iq_replay_if_selected(opts);
     dsd_engine_setup_parse_rtltcp_input(opts);
     dsd_engine_setup_parse_soapy_input(opts);
+    if (dsd_normalize_airspy_input_spec(opts) != 0) {
+        return -1;
+    }
     if (dsd_engine_setup_parse_rtl_input(opts, state) != 0) {
         return -1;
     }
@@ -3046,6 +3050,7 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
         return -1;
     }
 
+    dsd_input_failure_clear();
     reset_device_io_caches();
     dsd_bootstrap_enable_ftz_daz_if_enabled();
     init_rrc_filter_memory();
@@ -3081,5 +3086,10 @@ ENGINE_OUT:
         hooks->stop(opts, state, hooks->context);
     }
     dsd_engine_cleanup(opts, state);
+    dsd_input_failure failure;
+    dsd_input_failure_get(&failure);
+    if (failure.kind == DSD_INPUT_FAILURE_DEVICE) {
+        rc = 1;
+    }
     return rc;
 }

@@ -17,12 +17,14 @@
 
 // Complete types are needed by inline Qt container and metatype instantiations.
 #include <QList> // IWYU pragma: keep
+#include <QMap>
 #include <QObject>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
 #include <QVariant> // IWYU pragma: keep
 #include <QVariantList>
+#include <QVariantMap>
 #include <QtGlobal>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/p25_metrics.h>
@@ -150,6 +152,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int decodeMode READ decodeMode NOTIFY controlChanged)
     Q_PROPERTY(QString scanMode READ scanMode NOTIFY controlChanged)
     Q_PROPERTY(int modulation READ modulation NOTIFY controlChanged)
+    Q_PROPERTY(QVariantMap airspy READ airspy NOTIFY controlChanged)
     Q_PROPERTY(int tunerGainDb READ tunerGainDb NOTIFY controlChanged)
     Q_PROPERTY(double squelchDb READ squelchDb NOTIFY controlChanged)
     Q_PROPERTY(bool squelchOff READ squelchOff NOTIFY controlChanged)
@@ -855,6 +858,11 @@ class MetricsModel : public QObject {
      * @param opts_snapshot Options snapshot, or nullptr before the first publish.
      * @param snapshot      State snapshot, or nullptr before the first publish.
      */
+    QVariantMap
+    airspy() const {
+        return m_view.airspy;
+    }
+
     void refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot);
 
     int
@@ -971,6 +979,7 @@ class MetricsModel : public QObject {
     };
 
     struct View {
+        QVariantMap airspy;
         SiteView site;
         dsd_app_p25_quality quality{};
         dsd_app_voice_errs voice_errs{};
@@ -1058,13 +1067,19 @@ class MetricsModel : public QObject {
         }
 
         bool
+        radioControlsEqual(const View& other) const {
+            return modulation == other.modulation && tuner_gain_db == other.tuner_gain_db
+                   && squelch_db == other.squelch_db && squelch_off == other.squelch_off && ppm == other.ppm
+                   && airspy == other.airspy;
+        }
+
+        bool
         controlEquals(const View& other) const {
             return audio_muted == other.audio_muted && held_tg == other.held_tg
                    && enc_lockout_count == other.enc_lockout_count && tuner_controlled == other.tuner_controlled
                    && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
                    && scanControlEquals(other) && scan_mode == other.scan_mode && decode_mode == other.decode_mode
-                   && decryptionEquals(other) && modulation == other.modulation && tuner_gain_db == other.tuner_gain_db
-                   && squelch_db == other.squelch_db && squelch_off == other.squelch_off && ppm == other.ppm;
+                   && decryptionEquals(other) && radioControlsEqual(other);
         }
     };
 
@@ -1101,6 +1116,7 @@ class MetricsModel : public QObject {
 #endif
 
   private:
+    static QVariantMap airspyView(const dsd_opts* opts_snapshot);
     View m_view;
     /* Held across frames rather than derived from one: frame sync comes and goes
      * between 250 ms polls, so a single sample answers "is it synced right now",

@@ -7,6 +7,7 @@
 #include <QMap>
 #include <QVariantMap>
 #include <dsd-neo/app_control/p25_metrics.h>
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/key_material.h>
 #include <stddef.h>
@@ -659,6 +660,35 @@ MetricsModel::fillQualityView(View& next, const dsd_state* snapshot) {
     }
 }
 
+QVariantMap
+MetricsModel::airspyView(const dsd_opts* opts_snapshot) {
+    QVariantMap native;
+    if (opts_snapshot && opts_snapshot->audio_in_type == AUDIO_IN_RTL
+        && dsd_opts_audio_in_dev_is_airspy_spec(opts_snapshot->audio_in_dev)) {
+        const auto& c = opts_snapshot->airspy;
+        const char* modes[] = {"sensitivity", "linearity", "manual"};
+        native.insert(QStringLiteral("gain_mode"), QString::fromLatin1(modes[std::max(0, std::min(2, c.gain_mode))]));
+        native.insert(QStringLiteral("serial"), QString::fromLatin1(c.serial));
+        native.insert(QStringLiteral("sample_rate"), c.sample_rate);
+        native.insert(QStringLiteral("sensitivity_gain"), c.sensitivity_gain);
+        native.insert(QStringLiteral("linearity_gain"), c.linearity_gain);
+        native.insert(QStringLiteral("lna_gain"), c.lna_gain);
+        native.insert(QStringLiteral("mixer_gain"), c.mixer_gain);
+        native.insert(QStringLiteral("vga_gain"), c.vga_gain);
+        native.insert(QStringLiteral("lna_agc"), c.lna_agc);
+        native.insert(QStringLiteral("mixer_agc"), c.mixer_agc);
+        native.insert(QStringLiteral("bias_tee"), c.bias_tee);
+        QVariantList rates;
+        for (uint32_t i = 0; i < opts_snapshot->airspy_info.rate_count && i < DSD_AIRSPY_MAX_RATES; ++i) {
+            rates.append(opts_snapshot->airspy_info.rates[i]);
+        }
+        native.insert(QStringLiteral("rates"), rates);
+        native.insert(QStringLiteral("actual_rate"), opts_snapshot->airspy_info.sample_rate);
+        native.insert(QStringLiteral("actual_serial"), QString::fromLatin1(opts_snapshot->airspy_info.serial));
+    }
+    return native;
+}
+
 void
 MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
     dsd_frontend_metrics metrics;
@@ -678,6 +708,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     /* Built whole, then published in one step, so a frame that reads identically to
      * the last one costs no binding re-evaluation. See MetricsModel::View. */
     View next;
+    next.airspy = airspyView(opts_snapshot);
 
     // Published atomically with the scan flags. Until this first valid snapshot,
     // a cleared model cannot prove that a new session is not scanning.

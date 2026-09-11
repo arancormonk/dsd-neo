@@ -58,7 +58,7 @@ Item {
 
     /** Fill the fields from what the last explore used, or from sane firsts. */
     function reset(prefSource, prefHost, prefPort, prefFreqMhz) {
-        screen.sourceType = (prefSource === "rtltcp") ? "rtltcp" : "usb";
+        screen.sourceType = prefSource === "airspy" ? "airspy" : (prefSource === "rtltcp") ? "rtltcp" : "usb";
         hostField.text = prefHost && prefHost.length > 0 ? prefHost : "192.168.1.10";
         portField.text = String(prefPort > 0 ? prefPort : 1234);
         // 800 MHz is where most of the traffic this app decodes lives, so an
@@ -162,6 +162,7 @@ Item {
                             label: qsTr("USB dongle"),
                             key: "usb"
                         },
+                        { label: qsTr("Airspy"), key: "airspy" },
                         {
                             label: qsTr("RTL-TCP"),
                             key: "rtltcp"

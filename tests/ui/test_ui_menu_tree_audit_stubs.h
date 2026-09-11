@@ -15,6 +15,18 @@
    Regenerate with: grep -oE '\.(on_select|label_fn|is_enabled) = [a-z_0-9]+' src/ui/terminal/menu_items.c */
 
 #define AUDIT_ACTIONS(X)                                                                                               \
+    X(switch_to_airspy)                                                                                                \
+    X(airspy_set_serial)                                                                                               \
+    X(airspy_set_sample_rate)                                                                                          \
+    X(airspy_set_gain_mode)                                                                                            \
+    X(airspy_set_sensitivity_gain)                                                                                     \
+    X(airspy_set_linearity_gain)                                                                                       \
+    X(airspy_set_lna_gain)                                                                                             \
+    X(airspy_set_mixer_gain)                                                                                           \
+    X(airspy_set_vga_gain)                                                                                             \
+    X(airspy_set_lna_agc)                                                                                              \
+    X(airspy_set_mixer_agc)                                                                                            \
+    X(airspy_set_bias_tee)                                                                                             \
     X(act_allow_toggle)                                                                                                \
     X(act_anytone_bp)                                                                                                  \
     X(act_auto_ppm_freeze)                                                                                             \
@@ -315,6 +327,8 @@
     X(lbl_window_freeze)
 
 #define AUDIT_PREDICATES(X)                                                                                            \
+    X(is_airspy_input)                                                                                                 \
+    X(is_non_airspy_input)                                                                                             \
     X(const_view_active)                                                                                               \
     X(eye_view_active)                                                                                                 \
     X(io_rtl_active)                                                                                                   \

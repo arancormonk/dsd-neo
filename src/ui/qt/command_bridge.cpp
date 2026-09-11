@@ -10,6 +10,7 @@
 #include <QStringList>
 #include <QVariant>
 #include <QtGlobal>
+#include <cmath>
 #include <stddef.h>
 #include <utility>
 #include "command_bridge.h"
@@ -94,7 +95,7 @@ CommandBridge::setTalkgroupPolicy(unsigned int idStart, unsigned int idEnd, cons
         } else if (it.key() == QStringLiteral("priority")) {
             bool ok = false;
             const double priority = it.value().toDouble(&ok);
-            if (!ok || !(priority >= 0 && priority <= 100) || priority != static_cast<int>(priority)) {
+            if (!ok || !(priority >= 0 && priority <= 100) || std::fmod(priority, 1.0) != 0.0) {
                 return false;
             }
             fields |= DSD_APP_TG_FIELD_PRIORITY;
@@ -259,6 +260,20 @@ bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::setSquelchDb(double db) const {
     return accepted(dsd_app_command_set_double(DSD_APP_CMD_RTL_SET_SQL_DB, db));
+}
+
+bool
+CommandBridge::setAirspy(const QString& key, const QString& value) const {
+    const QByteArray k = (QStringLiteral("airspy_") + key).toUtf8();
+    const QByteArray v = value.toUtf8();
+    dsd_app_airspy_setting_payload p{};
+    if (k.contains('\0') || v.contains('\0') || k.size() >= (qsizetype)sizeof p.key
+        || v.size() >= (qsizetype)sizeof p.value) {
+        return false;
+    }
+    DSD_SNPRINTF(p.key, sizeof p.key, "%s", k.constData());
+    DSD_SNPRINTF(p.value, sizeof p.value, "%s", v.constData());
+    return accepted(dsd_app_command_submit(DSD_APP_CMD_AIRSPY_SET, &p, sizeof p));
 }
 
 bool

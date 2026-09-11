@@ -371,9 +371,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 - Path: `src/io`, `include/dsd-neo/io`
 - Targets:
   - `dsd-neo_io_iq` — I/Q capture/replay metadata and file helpers; no SDR dependency
-  - `dsd-neo_io_radio` — radio front-end and orchestrator for RTL-SDR (USB), RTL-TCP, and SoapySDR backends; provides
+  - `dsd-neo_io_radio` — radio front-end and orchestrator for RTL-SDR (USB), RTL-TCP, SoapySDR, and native Airspy backends; provides
     constellation/eye/spectrum snapshots, optional bias-tee (RTL path), and auto-PPM hooks
-    - Built when `DSD_HAS_RADIO` is true (RTL and/or Soapy available); otherwise provided as an INTERFACE stub target
+    - Built when `DSD_HAS_RADIO` is true (RTL, Soapy, or Airspy available, or the pipeline explicitly forced on); otherwise provided as an INTERFACE stub target
   - `dsd-neo_io_audio` — network audio/input backends: UDP PCM16LE input, TCP PCM16LE input, UDP audio output helpers,
     and M17 UDP helpers
   - `dsd-neo_io_udp_control` — UDP retune control server (used by the RTL-SDR/FM helpers)
@@ -383,6 +383,9 @@ Key public headers:
 
 - RTL stream C API: `include/dsd-neo/io/rtl_stream_c.h`
 - RTL C++ orchestrator: `include/dsd-neo/io/rtl_stream.h` (class `RtlSdrOrchestrator`)
+- Native Airspy adapter: `src/io/radio/airspy_source.cpp` owns SDK calls and USB lifecycle;
+  `rtl_device.cpp` connects its CF32 callbacks to the shared generation-checked input ring.
+  Value-only settings and identity/rate snapshots use `core/airspy_config.h`.
 - RTL device/config/metrics: `include/dsd-neo/io/rtl_device.h`, `include/dsd-neo/io/rtl_demod_config.h`,
   `include/dsd-neo/io/rtl_metrics.h`
 - Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl_client.h`,

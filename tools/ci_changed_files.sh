@@ -195,7 +195,7 @@ for p in "${changed_paths[@]}"; do
     # -- that file is ours. Keep in step with .githooks/pre-push, which drops exactly
     # these paths.
     build/* | src/third_party/*) continue ;;
-    android/third_party/libusb/* | android/third_party/librtlsdr/*) continue ;;
+    android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*) continue ;;
   esac
 
   if [[ ! -e "$p" && ! -L "$p" ]]; then

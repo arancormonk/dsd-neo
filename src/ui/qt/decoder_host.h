@@ -27,6 +27,8 @@ namespace dsd_qt {
 
 class DecoderHost : public QObject {
     Q_OBJECT
+    Q_PROPERTY(QString localDeviceSerial READ localDeviceSerial NOTIFY localDeviceChanged)
+    Q_PROPERTY(QString localDeviceSource READ localDeviceSource NOTIFY localDeviceChanged)
     Q_PROPERTY(bool running READ isRunning NOTIFY runningChanged)
     Q_PROPERTY(bool signalsSessionInitialized READ signalsSessionInitialized CONSTANT)
     Q_PROPERTY(QString statusText READ statusText NOTIFY statusTextChanged)
@@ -356,6 +358,23 @@ class DecoderHost : public QObject {
      * @c localDeviceReady and @c localDeviceStatus rather than a return value.
      * Hosts that do not broker access do nothing.
      */
+    virtual QString
+    localDeviceSerial() const {
+        return {};
+    }
+
+    virtual QString
+    localDeviceSource() const {
+        return QStringLiteral("usb");
+    }
+
+    Q_INVOKABLE virtual void
+    requestLocalDeviceAccessForSource(const QString& source, const QString& serial = QString()) {
+        (void)source;
+        (void)serial;
+        requestLocalDeviceAccess();
+    }
+
     virtual void
     requestLocalDeviceAccess() {}
 

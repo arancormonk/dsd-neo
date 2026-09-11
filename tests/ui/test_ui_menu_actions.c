@@ -232,6 +232,11 @@ dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-int
 }
 
 int
+dsd_app_command_submit(int cmd_id, const void* payload, size_t size) {
+    return capture_command(cmd_id, payload, size);
+}
+
+int
 dsd_app_command_action(int cmd_id) {
     return capture_command(cmd_id, NULL, 0U);
 }

@@ -24,6 +24,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/exitflag.h>
+#ifdef USE_RADIO
+#include <dsd-neo/io/rtl_device.h>
+#endif
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -59,7 +63,26 @@ main(int argc, char** argv) {
         free(state);
         return exit_rc;
     }
-    int rc = dsd_cli_frontend_run(opts, state);
+    int rc;
+    if (opts->airspy_list) {
+#ifdef USE_RADIO
+        uint64_t serials[256];
+        int count = rtl_device_airspy_list(serials, 256);
+        for (int i = 0; i < count && i < 256; ++i) {
+            DSD_FPRINTF(stdout, "Airspy serial=%016" PRIX64 "\n", serials[i]);
+        }
+        if (count <= 0) {
+            DSD_FPRINTF(stderr, count < 0 ? "Airspy support unavailable or enumeration failed.\n"
+                                          : "No Airspy devices found.\n");
+        }
+        rc = count < 0 ? 1 : 0;
+#else
+        DSD_FPRINTF(stderr, "Airspy support unavailable in this build.\n");
+        rc = 1;
+#endif
+    } else {
+        rc = dsd_cli_frontend_run(opts, state);
+    }
     freeState(state);
     free(opts);
     free(state);

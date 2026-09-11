@@ -237,7 +237,7 @@ AppPrefs::hangtimeSec() const {
 void
 AppPrefs::setHangtimeSec(double seconds) {
     const double value = sane_hangtime(seconds);
-    if (value == m_settings.value(QLatin1String(kHangtimeSec), 2.0).toDouble()) {
+    if (qFuzzyCompare(value, m_settings.value(QLatin1String(kHangtimeSec), 2.0).toDouble())) {
         return;
     }
     m_settings.setValue(QLatin1String(kHangtimeSec), value);
@@ -467,7 +467,7 @@ AppPrefs::lastLat() const {
 
 void
 AppPrefs::setLastLat(double value) {
-    if (m_settings.value(QStringLiteral("location/lastLat"), 0.0).toDouble() == value) {
+    if (qFuzzyCompare(m_settings.value(QStringLiteral("location/lastLat"), 0.0).toDouble(), value)) {
         return;
     }
     m_settings.setValue(QStringLiteral("location/lastLat"), value);
@@ -482,7 +482,7 @@ AppPrefs::lastLon() const {
 
 void
 AppPrefs::setLastLon(double value) {
-    if (m_settings.value(QStringLiteral("location/lastLon"), 0.0).toDouble() == value) {
+    if (qFuzzyCompare(m_settings.value(QStringLiteral("location/lastLon"), 0.0).toDouble(), value)) {
         return;
     }
     m_settings.setValue(QStringLiteral("location/lastLon"), value);

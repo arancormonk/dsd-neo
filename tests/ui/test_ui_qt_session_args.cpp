@@ -198,6 +198,64 @@ test_defaults_and_overrides(void) {
 }
 
 void
+test_airspy_bandwidth(void) {
+    const struct {
+        int requested;
+        int expected;
+    } cases[] = {{25, 24},
+                 {4, 4},
+                 {6, 6},
+                 {8, 8},
+                 {12, 12},
+                 {16, 16},
+                 {24, 24},
+                 {48, 48},
+                 {1, 4},
+                 {10, 8},
+                 {20, 16},
+                 {100, 48},
+                 {0, 48},
+                 {-1, 48},
+                 {std::numeric_limits<int>::min(), 48},
+                 {std::numeric_limits<int>::max(), 48}};
+
+    for (const auto& row : cases) {
+        auto sys = usb_system();
+        sys["sourceType"] = "airspy";
+        SessionArgPrefs prefs;
+        prefs.bandwidthKhz = row.requested;
+        const QString expected = QStringLiteral("airspy:851.375M:%1:0:2").arg(row.expected);
+        SessionArgsError error;
+        expect("Airspy preference bandwidth snaps to a supported spec",
+               input_spec(session_args_build(sys, prefs, &error)) == expected && error == SessionArgsError::None);
+        QString scanError;
+        expect("Airspy scan preference bandwidth snaps to a supported spec",
+               input_spec(dsd_qt::session_args_scan_build(sys, "851.375", "scan.csv", prefs, &scanError)) == expected
+                   && scanError.isEmpty());
+        if (row.requested > 0) {
+            sys["bandwidthKhz"] = row.requested;
+            prefs.bandwidthKhz = 6;
+            expect("Airspy system bandwidth overrides preference and snaps",
+                   input_spec(session_args_build(sys, prefs, &error)) == expected && error == SessionArgsError::None);
+            expect("Airspy scan bandwidth overrides preference and snaps",
+                   input_spec(dsd_qt::session_args_scan_build(sys, "851.375", "scan.csv", prefs, &scanError))
+                           == expected
+                       && scanError.isEmpty());
+        }
+    }
+    auto sys = usb_system();
+    SessionArgPrefs prefs;
+    prefs.bandwidthKhz = 25;
+    expect("USB bandwidth retains its existing spec",
+           input_spec(session_args_build(sys, prefs, nullptr)) == "rtl:0:851.375M:30:0:25:0:2");
+    sys["sourceType"] = "rtltcp";
+    sys["host"] = "localhost";
+    sys["port"] = 1234;
+    expect("RTL-TCP bandwidth retains its existing spec",
+           input_spec(session_args_build(sys, prefs, nullptr)) == "rtltcp:localhost:1234:851.375M:30:0:25:0:2");
+}
+
+void
 test_csv_args(void) {
     SessionArgsError error = SessionArgsError::None;
 
@@ -471,6 +529,7 @@ main(int argc, char** argv) {
     test_freq_validation();
     test_hangtime();
     test_defaults_and_overrides();
+    test_airspy_bandwidth();
     test_csv_args();
     test_ppm_shapes();
     test_bias_tee_tristate();

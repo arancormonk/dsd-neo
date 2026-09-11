@@ -953,3 +953,5 @@ of thousands of characters per second, so prefer level `1` unless you need the w
 - [ ] `soapy` decode works with at least one SDRPlay path and one Airspy path (if hardware is available).
 
 Tip: Many options can be mixed; start simple, add only what you need.
+
+Native Airspy R2 and Mini input uses `-i airspy[:serial=<hex>][:frequency]`. See [the native Airspy guide](airspy.md) for driver installation, receiver controls, and CF32 capture.

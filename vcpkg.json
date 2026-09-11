@@ -33,6 +33,10 @@
     {
       "name": "pdcurses",
       "platform": "windows"
+    },
+    {
+      "name": "airspy",
+      "platform": "windows"
     }
   ]
 }

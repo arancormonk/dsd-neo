@@ -38,6 +38,7 @@ typedef enum DSD_ATTR_PACKED dsd_input_level_source {
     DSD_INPUT_LEVEL_SOURCE_RTL_TCP_CU8 = 3,
     DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16 = 4,
     DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32 = 5,
+    DSD_INPUT_LEVEL_SOURCE_AIRSPY_CF32 = 6,
 } dsd_input_level_source;
 
 typedef struct dsd_input_level_snapshot {

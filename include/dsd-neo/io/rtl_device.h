@@ -15,6 +15,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_DEVICE_H_
 
+#include <dsd-neo/core/airspy_config.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -135,6 +136,15 @@ int rtl_device_preopened_fd_supported(void);
  */
 struct rtl_device* rtl_device_create_tcp(const char* host, int port, struct input_ring_state* input_ring,
                                          int autotune_enabled);
+
+/** Native Airspy factory. Copies configuration; the ring must outlive the device.
+ * Returns NULL on unavailable support, invalid settings, or driver failure. */
+struct rtl_device* rtl_device_create_airspy(const dsd_airspy_config* config, struct input_ring_state* ring);
+int rtl_device_airspy_info(struct rtl_device* dev, dsd_airspy_info* info);
+int rtl_device_airspy_controls(struct rtl_device* dev, const dsd_airspy_config* config);
+int rtl_device_airspy_list(uint64_t* serials, int capacity);
+int rtl_device_airspy_set_preopened_fd(int fd);
+int rtl_device_airspy_preopened_fd_in_use(void);
 
 /**
  * @brief Create and initialize an RX source through SoapySDR.

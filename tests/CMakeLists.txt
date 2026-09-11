@@ -10536,6 +10536,19 @@ if(Python3_Interpreter_FOUND)
             ${Python3_EXECUTABLE}
             ${PROJECT_SOURCE_DIR}/tests/ui/test_diagnostics_share_paths.py
     )
+    # Airspy dependency/packaging contracts: repin hashes, notices, installer modes,
+    # overlay pin drift and the AUR template. Needs cmake, clang-format and bash.
+    find_program(DSD_NEO_CLANG_FORMAT_FOR_TESTS clang-format)
+    if(NOT WIN32 AND DSD_NEO_CLANG_FORMAT_FOR_TESTS)
+        add_test(
+            NAME TOOLS_AIRSPY_PACKAGING
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_airspy_packaging.py
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+        set_tests_properties(TOOLS_AIRSPY_PACKAGING PROPERTIES TIMEOUT 120)
+    endif()
 endif()
 
 # WP-F4: real event synchronization and published snapshots for late emergency metadata.
@@ -10674,5 +10687,164 @@ if(DSD_ENABLE_QT_UI)
     add_test(
         NAME ENGINE_TRUNK_SCAN_SCAN_LIST
         COMMAND dsd-neo_test_engine_trunk_scan_scan_list
+    )
+endif()
+
+# Compile the in-process SDK double with the upstream declarations, without DLL
+# import/export attributes: its symbols are defined in the test executable.
+set(_AIRSPY_TEST_SDK "${CMAKE_CURRENT_BINARY_DIR}/airspy-test-sdk")
+file(MAKE_DIRECTORY "${_AIRSPY_TEST_SDK}")
+file(
+    READ "${PROJECT_SOURCE_DIR}/android/third_party/libairspy/airspy.h"
+    _AIRSPY_TEST_HEADER
+)
+string(
+    REPLACE "__declspec(dllexport)"
+    ""
+    _AIRSPY_TEST_HEADER
+    "${_AIRSPY_TEST_HEADER}"
+)
+string(
+    REPLACE "__declspec(dllimport)"
+    ""
+    _AIRSPY_TEST_HEADER
+    "${_AIRSPY_TEST_HEADER}"
+)
+file(WRITE "${_AIRSPY_TEST_SDK}/airspy.h" "${_AIRSPY_TEST_HEADER}")
+configure_file(
+    "${PROJECT_SOURCE_DIR}/android/third_party/libairspy/airspy_commands.h"
+    "${_AIRSPY_TEST_SDK}/airspy_commands.h"
+    COPYONLY
+)
+
+# Native Airspy adapter tests supply the SDK symbols; no device or libairspy is needed.
+add_executable(
+    dsd-neo_test_io_airspy_source
+    io/test_io_airspy_source.cpp
+    ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
+)
+target_include_directories(
+    dsd-neo_test_io_airspy_source
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio ${_AIRSPY_TEST_SDK}
+)
+target_compile_definitions(dsd-neo_test_io_airspy_source PRIVATE USE_AIRSPY)
+target_link_libraries(
+    dsd-neo_test_io_airspy_source
+    PRIVATE dsd-neo_runtime dsd-neo_platform
+)
+add_test(NAME IO_AIRSPY_SOURCE COMMAND dsd-neo_test_io_airspy_source)
+add_executable(
+    dsd-neo_test_runtime_airspy_config
+    runtime/test_runtime_airspy_config.cpp
+)
+target_link_libraries(
+    dsd-neo_test_runtime_airspy_config
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(NAME RUNTIME_AIRSPY_CONFIG COMMAND dsd-neo_test_runtime_airspy_config)
+
+if(DSD_HAS_RADIO)
+    add_executable(dsd-neo_test_io_airspy_ingest io/test_io_airspy_ingest.cpp)
+    target_include_directories(
+        dsd-neo_test_io_airspy_ingest
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_airspy_ingest
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_airspy_ingest
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(NAME IO_AIRSPY_INGEST COMMAND dsd-neo_test_io_airspy_ingest)
+endif()
+
+# Exercise real stream workers and teardown with the same in-process Airspy SDK.
+if(DSD_HAS_AIRSPY)
+    add_executable(
+        dsd-neo_test_io_rtl_stream_start_failure
+        io/test_io_airspy_source.cpp
+        ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_stream_start_failure
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio ${_AIRSPY_TEST_SDK}
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_stream_start_failure
+        PRIVATE USE_AIRSPY DSD_TEST_AIRSPY_STREAM
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_stream_start_failure
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_warnings
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_stream_start_failure
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_STREAM_START_FAILURE
+        COMMAND dsd-neo_test_io_rtl_stream_start_failure
+    )
+    set_tests_properties(IO_RTL_STREAM_START_FAILURE PROPERTIES TIMEOUT 20)
+endif()
+
+# Config-apply regressions wrap the radio and output boundaries, requiring no hardware.
+if(
+    DSD_HAS_RADIO
+    AND NOT APPLE
+    AND NOT WIN32
+    AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+)
+    add_executable(
+        dsd-neo_test_ui_airspy_config_apply
+        ui/test_ui_airspy_config_apply.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_airspy_config_apply
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_airspy_config_apply
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_ui_airspy_config_apply
+        PRIVATE
+            "LINKER:--wrap=rtl_stream_create"
+            "LINKER:--wrap=rtl_stream_start"
+            "LINKER:--wrap=rtl_stream_stop"
+            "LINKER:--wrap=rtl_stream_destroy"
+            "LINKER:--wrap=rtl_stream_output_rate"
+            "LINKER:--wrap=rtl_stream_airspy_controls"
+            "LINKER:--wrap=rtl_stream_airspy_info"
+            "LINKER:--wrap=rtl_stream_set_channel_squelch"
+            "LINKER:--wrap=io_control_set_freq"
+            "LINKER:--wrap=dsd_audio_reconfigure_output_for_input_policy"
+    )
+    add_test(
+        NAME UI_MENU_AIRSPY_CONFIG_FAILURE
+        COMMAND dsd-neo_test_ui_airspy_config_apply M7
+    )
+    add_test(
+        NAME UI_MENU_AIRSPY_CONFIG_TUNING
+        COMMAND dsd-neo_test_ui_airspy_config_apply M10
+    )
+    add_test(
+        NAME RUNTIME_AIRSPY_CLI_OVERRIDE
+        COMMAND dsd-neo_test_ui_airspy_config_apply M2
     )
 endif()

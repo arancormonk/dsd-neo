@@ -12,6 +12,8 @@
 #ifndef DSD_NEO_SRC_UI_TERMINAL_MENU_ACTIONS_H_
 #define DSD_NEO_SRC_UI_TERMINAL_MENU_ACTIONS_H_
 
+#include <stdbool.h>
+
 // ---- Main menu actions ----
 void act_toggle_invert(void* v);
 void act_toggle_payload(void* v);
@@ -176,6 +178,19 @@ void act_toggle_ui_p25_callsign(void* v);
 
 // ---- RTL-SDR actions (USE_RADIO only) ----
 #ifdef USE_RADIO
+bool is_airspy_input(const void* v);
+bool is_non_airspy_input(const void* v);
+void airspy_set_serial(void* v);
+void airspy_set_sample_rate(void* v);
+void airspy_set_gain_mode(void* v);
+void airspy_set_sensitivity_gain(void* v);
+void airspy_set_linearity_gain(void* v);
+void airspy_set_lna_gain(void* v);
+void airspy_set_mixer_gain(void* v);
+void airspy_set_vga_gain(void* v);
+void airspy_set_lna_agc(void* v);
+void airspy_set_mixer_agc(void* v);
+void airspy_set_bias_tee(void* v);
 void rtl_restart(void* v);
 void rtl_set_dev(void* v);
 void rtl_set_freq(void* v);
@@ -189,6 +204,7 @@ void rtl_toggle_rtltcp_autotune(void* v);
 void rtl_toggle_auto_ppm(void* v);
 void rtl_toggle_tuner_autogain(void* v);
 void switch_to_rtl(void* vctx);
+void switch_to_airspy(void* v);
 #endif
 
 // ---- DSP actions (USE_RADIO only) ----

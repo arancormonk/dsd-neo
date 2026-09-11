@@ -18,6 +18,7 @@
 
 #include <QAbstractListModel>
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -67,7 +68,8 @@ class SavedSystemsModel : public QAbstractListModel {
         SiteLatRole,
         SiteLonRole,
         HasSitePosRole,
-        AvoidSiteRole
+        AvoidSiteRole,
+        AirspyRole
     };
 
     /** Private-store secret access for session argument assembly only. Not invokable from QML.
@@ -141,6 +143,8 @@ class SavedSystemsModel : public QAbstractListModel {
 
   private:
     struct Row {
+        QVariantMap airspy;
+
         // UUIDs survive row deletion/reordering; a pending start must never touch
         // whichever unrelated row moved into its old index.
         QString uid;

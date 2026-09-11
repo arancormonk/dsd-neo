@@ -1,3 +1,4 @@
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/call_state.h>
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
@@ -489,6 +490,18 @@ rtl_stream_start(RtlSdrContext* ctx) {
     note_rtl_lifecycle_call();
     g_rtl_start_calls++;
     return g_rtl_start_result;
+}
+
+int
+rtl_stream_airspy_controls(const dsd_airspy_config* config) {
+    (void)config;
+    return 0;
+}
+
+int
+rtl_stream_airspy_info(dsd_airspy_info* info) {
+    (void)info;
+    return 0;
 }
 
 int

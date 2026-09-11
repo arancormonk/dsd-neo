@@ -14,6 +14,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/platform/platform.h>
@@ -348,6 +349,10 @@ struct dsd_opts {
     char p25_bandplan_in_file[1024];     // --p25-bandplan / [trunking] p25_bandplan_csv
     char p25_bandplan_export_file[1024]; // --p25-bandplan-export: written once at clean shutdown
     char key_in_file[1024];
+    dsd_airspy_config airspy;
+    dsd_airspy_info airspy_info; /* Decoder-owned value snapshot. */
+    int airspy_list;
+    int airspy_config_error; /* Invalid INI airspy_serial; cleared only by a valid serial override. */
     char soapy_profile[32];
     char soapy_stream_format[16];
     char soapy_antenna[64];
@@ -554,6 +559,11 @@ dsd_opts_audio_in_dev_is_rtltcp_spec(const char* dev) {
 }
 
 static inline int
+dsd_opts_audio_in_dev_is_airspy_spec(const char* dev) {
+    return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "airspy", "airspy:");
+}
+
+static inline int
 dsd_opts_audio_in_dev_is_soapy_spec(const char* dev) {
     return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "soapy", "soapy:");
 }
@@ -692,6 +702,7 @@ dsd_opts_source_uses_effective_input_rate(const dsd_opts* opts) {
         }
         if (dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
             || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
+            || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
             || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)
             || dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)
             || dsd_opts_audio_in_dev_is_m17udp_spec(opts->audio_in_dev)) {

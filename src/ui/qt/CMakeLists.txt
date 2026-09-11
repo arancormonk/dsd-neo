@@ -107,6 +107,7 @@ qt_add_resources(
         qml/PlexFlickable.qml
             qml/PlexTextField.qml
         qml/RadioReferenceScreen.qml
+        qml/AirspyControls.qml
         qml/RadioSheet.qml
         qml/SiteSheet.qml
         qml/SegmentedControl.qml

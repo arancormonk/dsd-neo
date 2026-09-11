@@ -118,3 +118,5 @@ Dependency updates should:
 - run `tools/osv_scan.sh`
 - receive human review when they affect compiled code, workflows, packaging, or
   release behavior
+
+Native Airspy R2/Mini support is optional (`DSD_ENABLE_AIRSPY`, `DSD_REQUIRE_AIRSPY`) and uses libairspy directly. Install `libairspy-dev` on Debian/Ubuntu or `airspy` with Homebrew. Windows uses the pinned overlay; Android builds the vendored driver against its shared libusb. See [Airspy](airspy.md).

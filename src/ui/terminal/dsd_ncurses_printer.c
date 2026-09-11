@@ -411,7 +411,9 @@ static void
 ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         int soapy_input = ui_audio_in_is_soapy(opts);
-        if (soapy_input) {
+        if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+            printw("Airspy %s %u samples/s\n", opts->airspy_info.serial, opts->airspy_info.sample_rate);
+        } else if (soapy_input) {
             if (strncmp(opts->audio_in_dev, "soapy:", 6) == 0 && opts->audio_in_dev[6] != '\0') {
                 printw("| SoapySDR: %s;", opts->audio_in_dev + 6);
             } else {

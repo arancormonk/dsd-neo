@@ -53,6 +53,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
+#include <QXmlStreamReader>
 #include <QtQuickTest>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
@@ -1237,6 +1238,32 @@ class Setup : public QObject {
         return dsd_neo_qml_stub::spectrum_peak_hz();
     }
 
+    /** @brief Read the packaged USB IDs using Android's attribute names and wildcard defaults. */
+    Q_INVOKABLE QVariantList
+    androidUsbDeviceFilters() const {
+        QFile file(QStringLiteral(DSD_QML_UI_DIR "/../../../../android/package/res/xml/device_filter.xml"));
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            return {};
+        }
+        QXmlStreamReader xml(&file);
+        QVariantList filters;
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (!xml.isStartElement() || xml.name() != QLatin1String("usb-device")) {
+                continue;
+            }
+            QVariantMap filter;
+            // Android treats missing or unrecognized ID attributes as wildcards.
+            for (const auto* name : {"vendor-id", "product-id"}) {
+                bool ok = false;
+                const int value = xml.attributes().value(QLatin1String(name)).toInt(&ok);
+                filter[QLatin1String(name)] = ok ? value : -1;
+            }
+            filters.append(filter);
+        }
+        return xml.hasError() ? QVariantList() : filters;
+    }
+
     /**
      * @brief Write @p contents to a disposable CSV and answer its path.
      *
@@ -1637,6 +1664,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("snrValid")] = false;
         metrics[QStringLiteral("snrDb")] = 0.0;
         metrics[QStringLiteral("cfoHz")] = 0.0;
+        metrics[QStringLiteral("airspy")] = QVariantMap();
         metrics[QStringLiteral("tunerGainText")] = QStringLiteral("auto");
         // WP-F3 decode quality: validity is independent of radioInput.
         metrics[QStringLiteral("qualityValid")] = false;
@@ -1741,6 +1769,8 @@ class Setup : public QObject {
          * which is the arrangement this offscreen run matches. */
         host[QStringLiteral("keepScreenAwakeSupported")] = false;
         host[QStringLiteral("localDeviceBrokered")] = false;
+        host[QStringLiteral("localDeviceSource")] = QStringLiteral("usb");
+        host[QStringLiteral("localDeviceSerial")] = QString();
         host[QStringLiteral("localDeviceReady")] = false;
         host[QStringLiteral("localDeviceStatus")] = QString();
         host[QStringLiteral("locationSupported")] = false;

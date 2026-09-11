@@ -30,7 +30,7 @@ Window {
         var source = attemptedSource ? attemptedSource.system : null;
         if (!source)
             return "";
-        var label = source.sourceType === "rtltcp" ? "RTL-TCP " + source.host + ":" + source.port : source.sourceType === "tcp" ? "TCP audio " + source.host + ":" + source.port : source.sourceType === "udp" ? qsTr("UDP audio port %1").arg(source.port) : source.sourceType === "file" ? qsTr("Replay: %1").arg(source.filePath.substring(source.filePath.lastIndexOf('/') + 1)) : qsTr("USB RTL-SDR");
+        var label = source.sourceType === "airspy" ? qsTr("Airspy R2 / Mini") : source.sourceType === "rtltcp" ? "RTL-TCP " + source.host + ":" + source.port : source.sourceType === "tcp" ? "TCP audio " + source.host + ":" + source.port : source.sourceType === "udp" ? qsTr("UDP audio port %1").arg(source.port) : source.sourceType === "file" ? qsTr("Replay: %1").arg(source.filePath.substring(source.filePath.lastIndexOf('/') + 1)) : qsTr("USB RTL-SDR");
         return source.extraArgs ? qsTr("Configured source: %1 (Advanced arguments are also in use)").arg(label) : label;
     }
     function failureMessage() {
@@ -48,6 +48,8 @@ Window {
             return qsTr("The network connection could not be opened.");
         if (kind === 5)
             return qsTr("The replay file could not be opened. Reselect an available, supported file.");
+        if (kind === 7)
+            return qsTr("The receiver could not be opened or stopped receiving. Check its USB connection and settings.");
         if (kind === 6)
             return qsTr("The source configuration could not be applied. Review its settings and imported files.");
         return awaitingUsbAccess ? usbAccessText : qsTr("The source could not be started. Review its settings or open Details.");
@@ -470,7 +472,8 @@ Window {
             system: Object.assign({}, sys)
         };
         completionMessage = "";
-        if (sys.sourceType === "usb" && decoderHost.localDeviceBrokered && !decoderHost.localDeviceReady) {
+        var wantedSerial = sys.sourceType === "airspy" ? String((sys.airspy || {}).serial || "").toUpperCase() : "";
+        if ((sys.sourceType === "usb" || sys.sourceType === "airspy") && decoderHost.localDeviceBrokered && (!decoderHost.localDeviceReady || decoderHost.localDeviceSource !== sys.sourceType || (wantedSerial.length > 0 && String(decoderHost.localDeviceSerial).toUpperCase() !== wantedSerial))) {
             // Not a silent return: the platform's status line is the only thing
             // that can say why ("USB permission denied", "No RTL-SDR attached"),
             // and it keeps updating as the permission dialog resolves. When the
@@ -481,7 +484,7 @@ Window {
             mainRoot.pendingStart = sys;
             mainRoot.pendingStartRow = row;
             mainRoot.pendingScanList = !!scan;
-            decoderHost.requestLocalDeviceAccess();
+            decoderHost.requestLocalDeviceAccessForSource(sys.sourceType, String((sys.airspy || {}).serial || ""));
             return;
         }
         mainRoot.dismissedFailure = "";
@@ -562,7 +565,7 @@ Window {
     function startExploring() {
         cancelPendingRestart();
         var source = prefs.exploreSourceType;
-        if (source !== "usb" && source !== "rtltcp") {
+        if (source !== "usb" && source !== "airspy" && source !== "rtltcp") {
             // Nothing remembered to start from; ask instead of guessing.
             mainRoot.exploreSetupOpen = true;
             return;

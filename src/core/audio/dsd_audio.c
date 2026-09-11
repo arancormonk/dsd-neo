@@ -990,7 +990,8 @@ dsd_audio_try_open_named_input(dsd_opts* opts) {
     if (dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)
         || dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
         || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
-        || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)) {
+        || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)
+        || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         return dsd_audio_select_radio_input(opts);
     }
     if (dsd_opts_audio_in_dev_is_pulse_spec(opts->audio_in_dev)) {
