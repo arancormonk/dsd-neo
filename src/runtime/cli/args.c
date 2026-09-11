@@ -546,6 +546,9 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
         LOG_ERROR("Invalid Airspy option: %s\n", argv[i]);
         return -1;
     }
+    if (strcmp(key, "airspy_serial") == 0) {
+        opts->airspy_config_error = 0;
+    }
     return eq ? 1 : 2;
 }
 

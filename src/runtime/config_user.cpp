@@ -1702,10 +1702,6 @@ snapshot_other_input_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     if (cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP) {
         cfg->rtl_auto_ppm = opts->rtl_auto_ppm ? 1 : 0;
     }
-
-    /* LOW advisories exist for every input source, so the threshold snapshots unconditionally. */
-    cfg->input_warn_db = opts->input_warn_db;
-    cfg->input_warn_db_is_set = 1;
 }
 
 static void
@@ -1718,6 +1714,10 @@ snapshot_input_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     } else {
         snapshot_other_input_config(opts, cfg);
     }
+
+    /* LOW advisories exist for every input source, so the threshold snapshots unconditionally. */
+    cfg->input_warn_db = opts->input_warn_db;
+    cfg->input_warn_db_is_set = 1;
 }
 
 static void

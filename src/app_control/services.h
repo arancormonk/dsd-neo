@@ -202,6 +202,18 @@ int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);
 /** @brief Restart the RTL stream if active, tearing down any existing context. */
 int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
 int svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config);
+
+typedef struct {
+    uint32_t frequency;
+    int bandwidth;
+    double squelch;
+    int volume;
+} svc_airspy_tuning;
+
+/** Apply native settings and shared tuning together; restore prior tuning on failure.
+ * opts holds the requested tuning and the previous native settings on entry. */
+int svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
+                            const svc_airspy_tuning* previous_tuning);
 /** @brief Set RTL device index and mark stream for restart (applied immediately if active). */
 int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
 /** @brief Tune receiver frequency (Hz); caller owns trunking and call bookkeeping. */

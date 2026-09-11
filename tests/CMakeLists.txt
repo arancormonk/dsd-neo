@@ -10783,3 +10783,55 @@ if(DSD_HAS_AIRSPY)
     )
     set_tests_properties(IO_RTL_STREAM_START_FAILURE PROPERTIES TIMEOUT 20)
 endif()
+
+# Config-apply regressions wrap the radio and output boundaries, requiring no hardware.
+if(
+    DSD_HAS_RADIO
+    AND NOT APPLE
+    AND NOT WIN32
+    AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+)
+    add_executable(
+        dsd-neo_test_ui_airspy_config_apply
+        ui/test_ui_airspy_config_apply.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_airspy_config_apply
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_airspy_config_apply
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_ui_airspy_config_apply
+        PRIVATE
+            "LINKER:--wrap=rtl_stream_create"
+            "LINKER:--wrap=rtl_stream_start"
+            "LINKER:--wrap=rtl_stream_stop"
+            "LINKER:--wrap=rtl_stream_destroy"
+            "LINKER:--wrap=rtl_stream_output_rate"
+            "LINKER:--wrap=rtl_stream_airspy_controls"
+            "LINKER:--wrap=rtl_stream_airspy_info"
+            "LINKER:--wrap=rtl_stream_set_channel_squelch"
+            "LINKER:--wrap=io_control_set_freq"
+            "LINKER:--wrap=dsd_audio_reconfigure_output_for_input_policy"
+    )
+    add_test(
+        NAME UI_MENU_AIRSPY_CONFIG_FAILURE
+        COMMAND dsd-neo_test_ui_airspy_config_apply M7
+    )
+    add_test(
+        NAME UI_MENU_AIRSPY_CONFIG_TUNING
+        COMMAND dsd-neo_test_ui_airspy_config_apply M10
+    )
+    add_test(
+        NAME RUNTIME_AIRSPY_CLI_OVERRIDE
+        COMMAND dsd-neo_test_ui_airspy_config_apply M2
+    )
+endif()

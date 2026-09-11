@@ -4774,8 +4774,12 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int old_symbol_center = state->symbolCenter;
     int old_jitter = state->jitter;
     dsd_frontend_kind old_frontend_kind = opts->frontend_kind;
+    int airspy_rc = 0;
+#ifdef USE_RADIO
     dsd_airspy_config old_airspy = opts->airspy;
-    (void)old_airspy;
+    const svc_airspy_tuning old_airspy_tuning = {opts->rtlsdr_center_freq, opts->rtl_dsp_bw_khz,
+                                                 opts->rtl_squelch_level, opts->rtl_volume_multiplier};
+#endif
 
     DSD_SNPRINTF(old_audio_in_dev, sizeof old_audio_in_dev, "%s", opts->audio_in_dev);
     DSD_SNPRINTF(old_audio_out_dev, sizeof old_audio_out_dev, "%s", opts->audio_out_dev);
@@ -4796,9 +4800,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     if (cfg_is_live_airspy(&cfg, old_audio_in_dev, old_audio_in_type)) {
         opts->airspy = old_airspy;
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", old_audio_in_dev);
-        if (svc_airspy_apply(opts, state, &cfg.airspy) != 0) {
-            return UI_CMD_APPLY_FAILED;
-        }
+        airspy_rc = svc_airspy_apply_config(opts, state, &cfg.airspy, &old_airspy_tuning);
     }
     apply_cfg_live_rtl_ppm_request(opts, &cfg, old_audio_in_type);
 #endif
@@ -4808,6 +4810,9 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     apply_cfg_file_runtime_rate(opts, state, &cfg, old_runtime_input_rate, old_samples_per_symbol, old_symbol_center,
                                 old_jitter);
     int reconfigure_rc = ui_reconfigure_output_for_input_policy(opts, state);
+    if (airspy_rc != 0) {
+        return UI_CMD_APPLY_FAILED;
+    }
     if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_AIRSPY && old_audio_in_type != AUDIO_IN_RTL) {
         return UI_CMD_APPLY_RESTART_REQUIRED;
     }

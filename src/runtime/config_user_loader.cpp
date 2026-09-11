@@ -15,6 +15,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <stdio.h>
@@ -356,7 +357,14 @@ apply_input_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* v
     }
     if (strncmp(key_lc, "airspy_", 7) == 0) {
         if (dsd_airspy_config_set(&cfg->airspy, key_lc, val) != 0) {
-            cfg->airspy_invalid = 1;
+            LOG_WARN("Config: invalid %s = '%s'; %s\n", key_lc, val,
+                     strcmp(key_lc, "airspy_serial") == 0 ? "Airspy selection requires an explicit serial override"
+                                                          : "keeping previous/default value");
+            if (strcmp(key_lc, "airspy_serial") == 0) {
+                cfg->airspy_invalid = 1;
+            }
+        } else if (strcmp(key_lc, "airspy_serial") == 0) {
+            cfg->airspy_invalid = 0;
         }
         return;
     }

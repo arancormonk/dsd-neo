@@ -9,6 +9,10 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/freq_parse.h>
+#include <dsd-neo/runtime/log.h>
+#include <float.h>
+#include <limits.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -183,21 +187,32 @@ parse_airspy_tuning(char* text, airspy_tuning* tuning) {
     }
     tuning->hz = dsd_parse_freq_hz(fields[0]);
     if (tuning->hz < 24000000U || tuning->hz > 1700000000U) {
+        LOG_ERROR("Invalid Airspy frequency '%s': expected 24–1700 MHz.\n", fields[0]);
         return -1;
     }
     if (count > 1
         && (dsd_parse_int_strict(fields[1], 10, 4, 48, &tuning->bw) != 0 || !valid_dsp_bandwidth(tuning->bw))) {
-        return -1;
+        LOG_WARN("Airspy bandwidth '%s' is unsupported; using 48 kHz.\n", fields[1]);
+        tuning->bw = 48;
     }
     if (count > 2) {
-        int sql = 0;
-        if (dsd_parse_int_strict(fields[2], 10, -200, 0, &sql) != 0) {
-            return -1;
+        double sql = 0.0;
+        if (dsd_parse_double_strict(fields[2], -DBL_MAX, DBL_MAX, &sql) != 0 || !isfinite(sql)) {
+            LOG_WARN("Invalid Airspy squelch '%s'; keeping previous/default value.\n", fields[2]);
+        } else {
+            tuning->squelch = dsd_squelch_level_from_sql(sql);
         }
-        tuning->squelch = dsd_squelch_level_from_sql(sql);
     }
-    if (count > 3 && dsd_parse_int_strict(fields[3], 10, 1, 3, &tuning->volume) != 0) {
-        return -1;
+    if (count > 3) {
+        int volume = 0;
+        if (dsd_parse_int_strict(fields[3], 10, INT_MIN, INT_MAX, &volume) != 0) {
+            LOG_WARN("Invalid Airspy volume '%s'; keeping previous/default value.\n", fields[3]);
+        } else {
+            if (volume < 0 || volume > 3) {
+                LOG_WARN("Airspy volume '%s' is outside 0–3; clamping.\n", fields[3]);
+            }
+            tuning->volume = volume < 0 ? 0 : (volume > 3 ? 3 : volume);
+        }
     }
     return 0;
 }
@@ -207,9 +222,7 @@ dsd_normalize_airspy_input_spec(dsd_opts* opts) {
     if (!opts || !dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         return 0;
     }
-    if (opts->airspy_config_error) {
-        return -1;
-    }
+    int serial_error = opts->airspy_config_error;
     dsd_airspy_config cfg = opts->airspy;
     char spec[sizeof opts->audio_in_dev];
     DSD_SNPRINTF(spec, sizeof spec, "%s", opts->audio_in_dev);
@@ -224,8 +237,10 @@ dsd_normalize_airspy_input_spec(dsd_opts* opts) {
                 *freq++ = '\0';
             }
             if (dsd_airspy_config_set(&cfg, "airspy_serial", tail + 7) != 0 || !cfg.serial[0]) {
+                LOG_ERROR("Invalid airspy_serial '%s': expected 16 hexadecimal digits.\n", tail + 7);
                 return -1;
             }
+            serial_error = 0;
             tail = freq;
         }
         if (tail) {
@@ -234,9 +249,14 @@ dsd_normalize_airspy_input_spec(dsd_opts* opts) {
             }
         }
     }
+    if (serial_error) {
+        LOG_ERROR("Invalid airspy_serial in config; override with --airspy-serial or -i airspy:serial=... .\n");
+        return -1;
+    }
     if (!dsd_airspy_config_valid(&cfg)) {
         return -1;
     }
+    opts->airspy_config_error = 0;
     opts->airspy = cfg;
     opts->rtlsdr_center_freq = tuning.hz;
     opts->rtl_dsp_bw_khz = tuning.bw;

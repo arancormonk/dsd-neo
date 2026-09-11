@@ -35,7 +35,10 @@ dsd-neo -i airspy:serial=0123456789ABCDEF:851.375M -ft --frontend terminal
 
 Input syntax is `airspy[:serial=<16 hexadecimal digits>][:frequency[:bw[:sql[:vol]]]]`.
 The optional trailing fields are DSP bandwidth in kHz, squelch in dB (0 disables),
-and monitor volume (1–3); gain uses the separate native controls.
+and monitor volume (0–3); gain uses the separate native controls. Bandwidth must
+be one of 4, 6, 8, 12, 16, 24, or 48 kHz; other values warn and fall back to 48.
+Numeric volume values are clamped to 0–3. Invalid squelch or volume text warns
+and keeps the previous/default value; invalid frequencies still prevent startup.
 An explicit serial must match exactly. Without one, the first enumerated device
 is selected and its serial is logged. Frequencies use the usual Hz/K/M/G syntax;
 the native tuning range is 24–1700 MHz.
@@ -71,6 +74,11 @@ airspy_bias_tee = false
 Every `airspy_*` setting also has a CLI option with hyphens, for example
 `--airspy-gain-mode manual --airspy-lna-gain 12 --airspy-bias-tee 0`.
 Boolean CLI values accept `0`/`1` or `false`/`true`.
+Invalid non-serial `airspy_*` INI values warn with the key and value and keep the
+previous/default setting. An invalid `airspy_serial` prevents Airspy startup until
+corrected or overridden with `--airspy-serial` or `-i airspy:serial=...`;
+overriding a different setting does not clear a serial error. `--validate-config`
+continues to report invalid values.
 
 - **Sample rate:** `0` or `auto` selects the highest supported rate up to
   10 MS/s on desktop and the lowest usable rate on Android. An explicit rate in
@@ -86,6 +94,11 @@ Boolean CLI values accept `0`/`1` or `false`/`true`.
   retain the existing radio configuration fields. Hardware sample rate is
   separate from DSP bandwidth. The decoder adapts its rate chain to the actual
   hardware rate and normalizes fractional FSK samples-per-symbol when needed.
+  Applying a config during a live Airspy session retunes frequency and updates
+  squelch immediately. Bandwidth or monitor-volume changes restart the stream,
+  combined with any serial or sample-rate change in the same restart. A failed
+  reopen restores the previous receiver settings; other config changes, including
+  audio output, still finish applying and the command reports failure.
 - **Unsupported controls:** libairspy has no PPM-correction API. Auto-PPM and
   RTL-specific direct sampling, oscillator, and tuner controls do not apply.
 

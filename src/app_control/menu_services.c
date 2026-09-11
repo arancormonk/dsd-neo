@@ -809,16 +809,28 @@ done:
     return result;
 }
 
+static void
+svc_airspy_restore_tuning(dsd_opts* opts, const svc_airspy_tuning* tuning) {
+    opts->rtlsdr_center_freq = tuning->frequency;
+    opts->rtl_dsp_bw_khz = tuning->bandwidth;
+    opts->rtl_squelch_level = tuning->squelch;
+    opts->rtl_volume_multiplier = tuning->volume;
+}
+
 int
-svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config) {
-    if (!opts || !state || !dsd_airspy_config_valid(config)) {
+svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
+                        const svc_airspy_tuning* previous_tuning) {
+    if (!opts || !state || !previous_tuning || !dsd_airspy_config_valid(config)) {
         return -1;
     }
     if (!dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         return DSD_ERR_NOT_SUPPORTED;
     }
     dsd_airspy_config previous = opts->airspy;
-    int reopen = previous.sample_rate != config->sample_rate || strcmp(previous.serial, config->serial) != 0;
+    /* Both DSP bandwidth and monitor volume are copied when the stream opens. */
+    int reopen = previous.sample_rate != config->sample_rate || strcmp(previous.serial, config->serial) != 0
+                 || previous_tuning->bandwidth != opts->rtl_dsp_bw_khz
+                 || previous_tuning->volume != opts->rtl_volume_multiplier;
     int rc = 0;
     if (reopen || !state->rtl_ctx) {
         opts->airspy = *config;
@@ -827,6 +839,7 @@ svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* conf
         rc = svc_rtl_restart(opts, state);
         if (rc != 0) {
             opts->airspy = previous;
+            svc_airspy_restore_tuning(opts, previous_tuning);
             DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s",
                          previous.serial[0] ? ":serial=" : "", previous.serial);
             (void)svc_rtl_restart(opts, state);
@@ -835,10 +848,36 @@ svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* conf
         rc = rtl_stream_airspy_controls(config);
         if (rc == 0) {
             opts->airspy = *config;
+            if (previous_tuning->frequency != opts->rtlsdr_center_freq) {
+                uint32_t frequency = opts->rtlsdr_center_freq;
+                opts->rtlsdr_center_freq = previous_tuning->frequency;
+                rc = svc_rtl_set_freq(opts, state, frequency);
+                if (rc == RTL_STREAM_TUNE_TIMEOUT || rc == RTL_STREAM_TUNE_DEFERRED) {
+                    /* Accepted requests remain owned by the controller. */
+                    opts->rtlsdr_center_freq = frequency;
+                    rc = 0;
+                }
+            }
+            if (rc == 0 && previous_tuning->squelch != opts->rtl_squelch_level) {
+                rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
+            }
+        }
+        if (rc != 0) {
+            svc_airspy_restore_tuning(opts, previous_tuning);
         }
     }
     (void)rtl_stream_airspy_info(&opts->airspy_info);
     return rc;
+}
+
+int
+svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config) {
+    if (!opts) {
+        return -1;
+    }
+    const svc_airspy_tuning tuning = {opts->rtlsdr_center_freq, opts->rtl_dsp_bw_khz, opts->rtl_squelch_level,
+                                      opts->rtl_volume_multiplier};
+    return svc_airspy_apply_config(opts, state, config, &tuning);
 }
 
 int

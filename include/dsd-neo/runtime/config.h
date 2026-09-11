@@ -562,7 +562,7 @@ typedef struct dsdneoUserConfig {
     char rtltcp_host[128];
     int rtltcp_port;
     dsd_airspy_config airspy;
-    int airspy_invalid; /* Invalid native settings must not silently select another device. */
+    int airspy_invalid; /* Invalid airspy_serial; other invalid Airspy keys warn and keep prior values. */
     char soapy_args[256];
     char soapy_profile[32];
     char soapy_stream_format[16];
