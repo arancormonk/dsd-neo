@@ -10,9 +10,10 @@
 #include <assert.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
-#include <stddef.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,7 +60,7 @@ assert_phrase(const dsd_app_scan_timing* view, const char* phrase) {
    disarmed until it does, and a conventional row still states its activity hold. */
 static void
 test_retune_pending_row(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -86,7 +87,7 @@ test_retune_pending_row(void) {
 /* A failed retune cooling down in place: the cooldown is the live window. */
 static void
 test_retune_retry_row(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -108,7 +109,7 @@ test_retune_retry_row(void) {
    no deadline to count down and no conventional hold to state. */
 static void
 test_cc_acquire_row(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -129,7 +130,7 @@ test_cc_acquire_row(void) {
    naming beside the suspended dwell. */
 static void
 test_call_follow_row_shows_hangtime(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -167,7 +168,7 @@ test_hangtime_is_only_shown_while_following_a_call(void) {
         DSD_SCAN_STAY_RETUNE_PENDING, DSD_SCAN_STAY_RETUNE_RETRY, DSD_SCAN_STAY_CC_ACQUIRE, DSD_SCAN_STAY_VOICE,
         DSD_SCAN_STAY_ACTIVITY_HOLD,  DSD_SCAN_STAY_MANUAL_HOLD,  DSD_SCAN_STAY_IDLE_DWELL, DSD_SCAN_STAY_HANGTIME,
     };
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -187,7 +188,7 @@ test_hangtime_is_only_shown_while_following_a_call(void) {
    budget would print the same number twice. */
 static void
 test_voice_row(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -211,7 +212,7 @@ test_voice_row(void) {
    voice frame has already gone by. */
 static void
 test_activity_hold_row_names_the_tail(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -241,7 +242,7 @@ test_activity_hold_row_names_the_tail(void) {
    air is holding the row and nothing will release it but the operator. */
 static void
 test_manual_hold_row_pauses_the_dwell(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -262,7 +263,7 @@ test_manual_hold_row_pauses_the_dwell(void) {
    as a budget; the -Y qualify window is the same window under another name. */
 static void
 test_idle_dwell_row_and_qualify_variant(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -295,7 +296,7 @@ test_idle_dwell_row_and_qualify_variant(void) {
    or hold to state beside it. */
 static void
 test_hangtime_row(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -326,7 +327,7 @@ test_hangtime_row(void) {
    the decoder decides when to move, and the UI must not imply it already has not. */
 static void
 test_remaining_clamps_at_zero(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -350,7 +351,7 @@ test_remaining_clamps_at_zero(void) {
    publishes none; neither half of that rule may be the only one holding the line. */
 static void
 test_hold_is_conventional_only(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -370,7 +371,7 @@ test_hold_is_conventional_only(void) {
 /* A dwell nobody configured is not a budget worth a column. */
 static void
 test_dwell_needs_a_value(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -387,7 +388,7 @@ test_dwell_needs_a_value(void) {
 /* Every reason answers with a phrase; a row with none would render a bare label. */
 static void
 test_every_reason_has_a_phrase(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -412,7 +413,7 @@ test_every_reason_has_a_phrase(void) {
    session must not put a countdown on a receiver that is not scanning. */
 static void
 test_inactive_without_a_scanner(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -439,7 +440,7 @@ test_inactive_without_a_scanner(void) {
    rather than a phrase for reason zero. */
 static void
 test_inactive_when_reason_is_none(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
@@ -454,7 +455,7 @@ test_inactive_when_reason_is_none(void) {
 
 static void
 test_null_arguments_are_safe(void) {
-    dsd_opts opts;
+    static dsd_opts opts;
     dsd_state* state = make_state();
     dsd_app_scan_timing view;
 
