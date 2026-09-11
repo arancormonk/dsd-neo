@@ -7827,6 +7827,419 @@ test_parser_optional_headers_are_case_insensitive(void) {
     return test_rc;
 }
 
+/*
+ * Scan timing publication (#508). The coordinator owns every deadline, so these read the
+ * absolute monotonic anchors straight out of dsd_state; nothing here asks for a remaining
+ * time, which is the renderer's job. Doubles are compared with a tolerance.
+ */
+static int
+expect_scan_timing(const dsd_state* state, const char* stage, unsigned reason, double deadline_m, unsigned dwell_ms,
+                   unsigned hold_ms) {
+    const dsd_scan_timing_publication* timing = &state->scan_timing;
+    int rc = 0;
+    if ((unsigned)timing->reason != reason || (unsigned)timing->dwell_ms != dwell_ms
+        || (unsigned)timing->hold_ms != hold_ms) {
+        DSD_FPRINTF(stderr, "scan timing after %s: reason=%u dwell=%u hold=%u, want %u/%u/%u\n", stage,
+                    (unsigned)timing->reason, (unsigned)timing->dwell_ms, (unsigned)timing->hold_ms, reason, dwell_ms,
+                    hold_ms);
+        rc = 1;
+    }
+    if (deadline_m < 0.0) {
+        if (timing->deadline_m >= 0.0) {
+            DSD_FPRINTF(stderr, "scan timing after %s: deadline %.6f, want no live timer\n", stage, timing->deadline_m);
+            rc = 1;
+        }
+        return rc;
+    }
+    if (timing->deadline_m < 0.0 || fabs(timing->deadline_m - deadline_m) > 1e-6) {
+        DSD_FPRINTF(stderr, "scan timing after %s: deadline %.6f, want %.6f\n", stage, timing->deadline_m, deadline_m);
+        rc = 1;
+    }
+    return rc;
+}
+
+static int
+expect_scan_timing_window(const dsd_state* state, const char* stage, double started_m, unsigned span_ms) {
+    const dsd_scan_timing_publication* timing = &state->scan_timing;
+    if (fabs(timing->started_m - started_m) > 1e-6 || (unsigned)timing->span_ms != span_ms) {
+        DSD_FPRINTF(stderr, "scan timing window after %s: started=%.6f span=%u, want %.6f/%u\n", stage,
+                    timing->started_m, (unsigned)timing->span_ms, started_m, span_ms);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_scan_timing_conventional(const dsd_state* state, const char* stage, unsigned conventional) {
+    if ((unsigned)state->scan_timing.conventional != conventional) {
+        DSD_FPRINTF(stderr, "scan timing conventional flag after %s: %u, want %u\n", stage,
+                    (unsigned)state->scan_timing.conventional, conventional);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * A trunked row walks acquisition -> call following -> idle dwell. Neither trunking reason
+ * carries a coordinator-owned deadline (the protocol SM owns those), and a trunked row never
+ * publishes an activity hold. Shutdown takes the publication down with the label.
+ */
+static int
+test_scan_timing_trunked_acquire_follow_and_dwell(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    p25_sm_ctx_t* ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
+    if (!ctx) {
+        DSD_FPRINTF(stderr, "scan timing: no active P25 context\n");
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+
+    ctx->cc_tune_pending = 1;
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "cc acquisition", 0U);
+    test_rc |= expect_scan_timing(&state, "cc acquisition", DSD_SCAN_STAY_CC_ACQUIRE, -1.0, 250U, 0U);
+    test_rc |= expect_scan_timing_conventional(&state, "cc acquisition", 0U);
+
+    ctx->cc_tune_pending = 0;
+    opts.trunk_is_tuned = 1;
+    trunk_scan_test_set_now(0.50);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "call follow", 0U);
+    test_rc |= expect_scan_timing(&state, "call follow", DSD_SCAN_STAY_CALL_FOLLOW, -1.0, 250U, 0U);
+
+    /* The release re-arms the dwell on this very tick, so the deadline is a full dwell out. */
+    opts.trunk_is_tuned = 0;
+    trunk_scan_test_set_now(0.60);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "idle dwell", 0U);
+    test_rc |= expect_scan_timing(&state, "idle dwell", DSD_SCAN_STAY_IDLE_DWELL, 0.85, 250U, 0U);
+    test_rc |= expect_scan_timing_window(&state, "idle dwell", 0.60, 250U);
+    test_rc |= expect_scan_timing_conventional(&state, "idle dwell", 0U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "shutdown", DSD_SCAN_STAY_NONE, -1.0, 0U, 0U);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * A conventional row's activity hold is the one window the coordinator owns outright: later
+ * activity pushes the same deadline out rather than opening a second one, and the expiry tick
+ * re-arms the idle dwell.
+ */
+static int
+test_scan_timing_conventional_activity_hold_restarts(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,dmr-conventional,461000000,,250,250,\n"
+                          "b,dmr-conventional,462000000,,250,250,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    trunk_scan_test_set_now(0.20);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "activity hold", 0U);
+    test_rc |= expect_scan_timing(&state, "activity hold", DSD_SCAN_STAY_ACTIVITY_HOLD, 0.35, 250U, 250U);
+    test_rc |= expect_scan_timing_window(&state, "activity hold", 0.10, 250U);
+    test_rc |= expect_scan_timing_conventional(&state, "activity hold", 1U);
+
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    trunk_scan_test_set_now(0.31);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "refreshed hold", 0U);
+    test_rc |= expect_scan_timing(&state, "refreshed hold", DSD_SCAN_STAY_ACTIVITY_HOLD, 0.55, 250U, 250U);
+    test_rc |= expect_scan_timing_window(&state, "refreshed hold", 0.30, 250U);
+
+    /* The hold lapses at 0.55; the first tick past it re-arms the dwell in place. */
+    trunk_scan_test_set_now(0.56);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "hold expiry", 0U);
+    test_rc |= expect_scan_timing(&state, "hold expiry", DSD_SCAN_STAY_IDLE_DWELL, 0.81, 250U, 250U);
+    test_rc |= expect_scan_timing_conventional(&state, "hold expiry", 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "conventional shutdown", DSD_SCAN_STAY_NONE, -1.0, 0U, 0U);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* An operator hold pauses the dwell: no deadline at all, and the release re-arms a full one. */
+static int
+test_scan_timing_manual_hold_pauses_and_release_rearms(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |= expect_control_rc("hold on",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "manual hold", 0U);
+    test_rc |= expect_scan_timing(&state, "manual hold", DSD_SCAN_STAY_MANUAL_HOLD, -1.0, 250U, 0U);
+    trunk_scan_test_set_now(3.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "manual hold past the dwell", DSD_SCAN_STAY_MANUAL_HOLD, -1.0, 250U, 0U);
+
+    test_rc |= expect_control_rc("hold off",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    trunk_scan_test_set_now(3.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "hold release", 0U);
+    test_rc |= expect_scan_timing(&state, "hold release", DSD_SCAN_STAY_IDLE_DWELL, 3.35, 250U, 0U);
+    test_rc |= expect_scan_timing_window(&state, "hold release", 3.10, 250U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The publication follows the receiver: an advancing tick publishes the incoming row's own
+ * effective dwell and hold, not the outgoing row's. */
+static int
+test_scan_timing_rotation_publishes_incoming_row(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,dmr-conventional,461000000,,250,250,\n"
+                          "b,dmr-conventional,462000000,,400,600,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "row a dwell", DSD_SCAN_STAY_IDLE_DWELL, 0.25, 250U, 250U);
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation", 1U);
+    test_rc |= expect_scan_timing(&state, "rotation", DSD_SCAN_STAY_IDLE_DWELL, 0.66, 400U, 600U);
+    test_rc |= expect_scan_timing_window(&state, "rotation", 0.26, 400U);
+    test_rc |= expect_scan_timing_conventional(&state, "rotation", 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* When every alternate retune fails the advance falls back on the original row: the tick still
+ * publishes exactly once, for the row the receiver never left, and says it is cooling down. */
+static int
+test_scan_timing_fallback_to_original_publishes_retry(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    g_counting_tune_to_cc_failures_remaining = 2;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    g_counting_tune_to_cc_failures_remaining = 0;
+    test_rc |= expect_active_target(&state, "failed alternates", 0U);
+    test_rc |= expect_published_target(&state, "failed alternates", "a", 1U, 2U);
+    test_rc |= expect_scan_timing(&state, "failed alternates", DSD_SCAN_STAY_RETUNE_RETRY, 2.26, 250U, 0U);
+    test_rc |= expect_scan_timing_window(&state, "failed alternates", 0.26, 2000U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The voice gate decides which conventional phrase the row publishes: VOICE while media is
+ * live, the tail as an activity hold on the same window, and the qualify window as the dwell. */
+static int
+test_scan_timing_voice_gate_phases(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-conventional,461000000,,250,250,\n"
+                             "b,dmr-conventional,462000000,,250,250,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.scan_voice_only = 1;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "scan timing voice-gate init failed: %s\n", err);
+        test_rc = 1;
+    }
+    if (seed_voice_gate_media_epoch(&state, 0.10, 0.25, DSD_CALL_CRYPTO_CLEAR) != 0) {
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "voice", DSD_SCAN_STAY_VOICE, 0.50, 250U, 250U);
+    test_rc |= expect_scan_timing_window(&state, "voice", 0.25, 250U);
+
+    if (dsd_call_state_update_media(&state, 0U, 1, 0.49) != 1) {
+        DSD_FPRINTF(stderr, "scan timing voice-gate media refresh failed\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.49);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_call_state_end_ex(&state, 0U, 0.50, DSD_CALL_END_SYNC_LOSS) != 1) {
+        DSD_FPRINTF(stderr, "scan timing voice-gate epoch end failed\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.70);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "voice tail", DSD_SCAN_STAY_ACTIVITY_HOLD, 0.74, 250U, 250U);
+    test_rc |= expect_scan_timing_window(&state, "voice tail", 0.49, 250U);
+
+    trunk_scan_test_set_now(0.75);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "qualify", 0U);
+    test_rc |= expect_scan_timing(&state, "qualify", DSD_SCAN_STAY_IDLE_DWELL, 1.00, 250U, 250U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_state_ext_free_all(&state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A row's own --scan-voice-qualify-ms/--scan-voice-hold-ms replace the CSV columns while the
+ * gate is on, so the published dwell and hold have to be the effective ones. */
+static int
+test_scan_timing_row_voice_options_override_effective_values(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
+    static const char body[] =
+        "a,dmr-conventional,461000000,,250,250,,--scan-voice-qualify-ms 1000 --scan-voice-hold-ms 900\n"
+        "b,dmr-conventional,462000000,,250,250,,\n";
+    if (write_targets_file_with_header(dir, header, body, target_path, sizeof target_path) != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.scan_voice_only = 1;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "scan timing row-options init failed: %s\n", err);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "row voice options", 0U);
+    test_rc |= expect_scan_timing(&state, "row voice options", DSD_SCAN_STAY_IDLE_DWELL, 1.00, 1000U, 900U);
+    test_rc |= expect_scan_timing_window(&state, "row voice options", 0.0, 1000U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_state_ext_free_all(&state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* An unresolved backend retune has no deadline the coordinator can name; the failure that
+ * follows starts the retry cooldown, and that one it does own. */
+static int
+test_scan_timing_pending_retune_then_retry_cooldown(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,nxdn-trunk,461000000,,250,,\n", target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(1.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "scan timing pending-retune init failed: %s\n", err);
+        test_rc = 1;
+    }
+    const uint64_t request_id = dsd_trunk_tuning_pending_request();
+    if (request_id == 0U) {
+        DSD_FPRINTF(stderr, "scan timing pending-retune left no request\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(2.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "pending retune", DSD_SCAN_STAY_RETUNE_PENDING, -1.0, 250U, 0U);
+
+    dsd_trunk_tuning_request_publish(request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    trunk_scan_test_set_now(3.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "retry cooldown", 0U);
+    test_rc |= expect_scan_timing(&state, "retry cooldown", DSD_SCAN_STAY_RETUNE_RETRY, 5.0, 250U, 0U);
+    test_rc |= expect_scan_timing_window(&state, "retry cooldown", 3.0, 2000U);
+
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "pending shutdown", DSD_SCAN_STAY_NONE, -1.0, 0U, 0U);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -7937,6 +8350,14 @@ main(void) {
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_global_p25_bandplan);
     rc |= run_with_default_tune_hook(test_target_p25_bandplan_loads_and_survives_rotation);
     rc |= run_with_default_tune_hook(test_p25_bandplan_export_collects_every_target);
+    rc |= run_with_default_tune_hook(test_scan_timing_trunked_acquire_follow_and_dwell);
+    rc |= run_with_default_tune_hook(test_scan_timing_conventional_activity_hold_restarts);
+    rc |= run_with_default_tune_hook(test_scan_timing_manual_hold_pauses_and_release_rearms);
+    rc |= run_with_default_tune_hook(test_scan_timing_rotation_publishes_incoming_row);
+    rc |= run_with_default_tune_hook(test_scan_timing_fallback_to_original_publishes_retry);
+    rc |= run_with_default_tune_hook(test_scan_timing_voice_gate_phases);
+    rc |= run_with_default_tune_hook(test_scan_timing_row_voice_options_override_effective_values);
+    rc |= run_with_default_tune_hook(test_scan_timing_pending_retune_then_retry_cooldown);
     return rc;
 }
 
