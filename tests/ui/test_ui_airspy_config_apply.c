@@ -186,7 +186,8 @@ test_config_apply(int failure) {
             test_tune_result = tune_results[i];
             DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
             int status = ui_cmd_handle_config_apply(opts, state, cmd);
-            if (test_tune_result == RTL_STREAM_TUNE_FAILED) {
+            if (test_tune_result != RTL_STREAM_TUNE_TIMEOUT) {
+                /* DEFERRED was never queued, so it must not be reported as applied. */
                 assert(status == UI_CMD_APPLY_FAILED && opts->rtlsdr_center_freq == old_frequency);
             } else {
                 assert(status == UI_CMD_APPLY_COMPLETED && opts->rtlsdr_center_freq == old_frequency + 1000000);

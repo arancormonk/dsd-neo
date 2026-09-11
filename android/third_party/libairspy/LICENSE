@@ -1,3 +1,24 @@
+libairspy (https://github.com/airspy/airspyone_host) copyright notices, reproduced
+from the source file headers so that binary distributions carry them:
+
+  airspy.c
+    Copyright (c) 2013, Michael Ossmann <mike@ossmann.com>
+    Copyright (c) 2012, Jared Boone <jared@sharebrained.com>
+    Copyright (c) 2014, Youssef Touil <youssef@airspy.com>
+    Copyright (c) 2014, Benjamin Vernoux <bvernoux@airspy.com>
+    Copyright (c) 2015, Ian Gilmour <ian@sdrsharp.com>
+  airspy.h
+    Copyright (c) 2012, Jared Boone <jared@sharebrained.com>
+    Copyright (c) 2013, Michael Ossmann <mike@ossmann.com>
+    Copyright (c) 2013-2016, Benjamin Vernoux <bvernoux@airspy.com>
+    Copyright (C) 2013-2016, Youssef Touil <youssef@airspy.com>
+  airspy_commands.h
+    Copyright (c) 2013-2016, Benjamin Vernoux <bvernoux@airspy.com>
+  filters.h, iqconverter_float.c, iqconverter_float.h, iqconverter_int16.c, iqconverter_int16.h
+    Copyright (C) 2014, Youssef Touil <youssef@airspy.com>
+
+The license terms below are upstream libairspy/LICENSE.md, unmodified.
+
 The AirSpy library includes a number of subcomponents with separate copyright
 notices and license terms. Your use of the source code for these subcomponents
 is subject to the terms and conditions of the following licenses.

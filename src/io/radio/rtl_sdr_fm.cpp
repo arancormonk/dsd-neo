@@ -3223,7 +3223,7 @@ demod_maybe_signal_squelch_hop(struct demod_state* d) {
     if (!d) {
         return;
     }
-    if (d->channel_squelch_level > 0.0f && d->channel_squelched) {
+    if (d->channel_squelch_level.load(std::memory_order_relaxed) > 0.0f && d->channel_squelched) {
         d->squelch_hits++;
         if (d->squelch_hits > d->conseq_squelch) {
             d->squelch_hits = d->conseq_squelch + 1;
@@ -5977,7 +5977,7 @@ stream_open_validate_scan_inputs(void) {
         LOG_ERROR("Too many channels, maximum %i.\n", FREQUENCIES_LIMIT);
         return -1;
     }
-    if (controller.freq_len > 1 && demod.channel_squelch_level == 0.0f) {
+    if (controller.freq_len > 1 && demod.channel_squelch_level.load(std::memory_order_relaxed) == 0.0f) {
         LOG_ERROR("Please specify a squelch level.  Required for scanning multiple frequencies.\n");
         return -1;
     }
@@ -6793,6 +6793,13 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         return -1;
     }
     if (stream_open_configure_pipeline_state(opts, source_kind, &replay_cfg, replay_cfg_loaded) != 0) {
+        // g_stream exists once stream_open_init_pipeline() succeeded, so every later
+        // failure (device open, ring resize, initial tuner programming) leaves rings,
+        // primitives and possibly an open device behind. Tear them down here; the
+        // orchestrator never marks a failed open as started and will not do it.
+        if (g_stream) {
+            (void)dsd_rtl_stream_soft_stop();
+        }
         return -1;
     }
     /* Seed the profile mirrors from the freshly configured demod state before
@@ -10039,7 +10046,7 @@ dsd_rtl_stream_return_pwr(void) {
  */
 extern "C" void
 rtl_stream_set_channel_squelch(float level) {
-    demod.channel_squelch_level = level;
+    demod.channel_squelch_level.store(level, std::memory_order_relaxed);
 }
 
 /**

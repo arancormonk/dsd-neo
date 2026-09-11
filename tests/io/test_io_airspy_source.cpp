@@ -354,17 +354,20 @@ main() {
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "airspy");
     dsd_airspy_config_defaults(&opts->airspy);
     rtl_stream_test_set_thread_create(create_worker);
-    for (int stage : {3, 2, 1}) {
+    // 4: initial frequency programming fails after the device opened (configure stage);
+    // 3: SDK start fails after both workers exist; 2/1: the second/first worker fails.
+    for (int stage : {4, 3, 2, 1}) {
         fail_create = stage < 3 ? stage : 0;
-        failure = stage == 3 ? 2 : 0;
+        failure = stage == 3 ? 2 : (stage == 4 ? 3 : 0);
         create_calls = 0;
         workers_entered.store(0);
         workers_exited.store(0);
         int previous_closes = closes;
         RtlSdrOrchestrator stream(*opts);
         CHECK(stream.start() != 0);
-        CHECK(workers_entered.load() == stage - 1);
-        CHECK(workers_exited.load() == stage - 1);
+        const int expected_workers = stage == 4 ? 0 : stage - 1;
+        CHECK(workers_entered.load() == expected_workers);
+        CHECK(workers_exited.load() == expected_workers);
         CHECK(!rtl_stream_test_has_resources());
         CHECK(!device_open && closes == previous_closes + 1 && !streaming);
         CHECK(!dsd_exitflag_load());

@@ -261,7 +261,7 @@ case "$PM" in
   zypper)
     BASE_PACKAGES="bash gcc gcc-c++ make cmake ninja pkgconf git ca-certificates libopenssl-devel libsndfile-devel libpulse-devel ncurses-devel libusb-1_0-devel fftw3-devel blas-devel lapack-devel gcc-fortran libcurl-devel libexpat-devel"
     CODEC2_PACKAGES="codec2-devel"
-    RADIO_PACKAGES="rtl-sdr-devel soapy-sdr-devel"
+    RADIO_PACKAGES="rtl-sdr-devel soapy-sdr-devel airspy-devel"
     ;;
   apk)
     BASE_PACKAGES="bash build-base cmake ninja pkgconf git ca-certificates openssl-dev libsndfile-dev pulseaudio-dev ncurses-dev libusb-dev fftw-dev blas-dev lapack-dev gfortran curl-dev expat-dev"

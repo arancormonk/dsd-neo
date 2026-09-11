@@ -11,6 +11,7 @@
  * and audio filtering. Public APIs are declared in `dsp/demod_pipeline.h`.
  */
 
+#include <atomic>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -1007,7 +1008,8 @@ full_demod_update_channel_state(struct demod_state* d) {
         int n = (d->lp_len > 512) ? 512 : d->lp_len;
         d->channel_pwr = mean_power(d->lowpassed, n, 1);
     }
-    if (d->lowpassed && d->lp_len > 0 && d->channel_squelch_level > 0.0f && d->channel_pwr < d->channel_squelch_level) {
+    const float squelch_level = d->channel_squelch_level.load(std::memory_order_relaxed);
+    if (d->lowpassed && d->lp_len > 0 && squelch_level > 0.0f && d->channel_pwr < squelch_level) {
         d->channel_squelched = 1;
         d->squelch_gate_open = 0;
         for (int k = 0; k < d->lp_len; k++) {

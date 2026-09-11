@@ -26,8 +26,10 @@ UPSTREAM_HASHES = {
     "iqconverter_float.h": "b4d3db2a9f76c79d2888ea743bd6d1ebf13a99717f3be9edf2941338a76704ec",
     "iqconverter_int16.c": "2c8b60fee70c5817338971ad6ffdb2a4eb61a2f272816dfc55459d4da6f4195a",
     "iqconverter_int16.h": "7fabb42ce4a40c2cf6df589a146029fd591c5de97ba595d45c54e909546296a5",
-    "LICENSE": "dc49b4210fb03af14b881f8f6fdea053446c28181854ed3712e2e5e73fb0f10c",
 }
+# SHA256 of upstream libairspy/LICENSE.md, which the vendored LICENSE ends with verbatim.
+UPSTREAM_LICENSE_MD = "dc49b4210fb03af14b881f8f6fdea053446c28181854ed3712e2e5e73fb0f10c"
+COPYRIGHT_HOLDERS = ("Michael Ossmann", "Jared Boone", "Youssef Touil", "Benjamin Vernoux", "Ian Gilmour")
 
 
 def run(args, **kwargs):
@@ -49,8 +51,13 @@ class AirspyPackaging(unittest.TestCase):
         for name, digest in UPSTREAM_HASHES.items():
             with self.subTest(file=name):
                 self.assertEqual(hashlib.sha256((vendor / name).read_bytes()).hexdigest(), digest)
-        self.assertEqual((vendor / "LICENSE").read_bytes(),
-                         (ROOT / "vcpkg-ports/airspy/copyright").read_bytes())
+        notice = (vendor / "LICENSE").read_bytes()
+        start = notice.index(b"The AirSpy library includes")
+        self.assertEqual(hashlib.sha256(notice[start:]).hexdigest(), UPSTREAM_LICENSE_MD)
+        # BSD-3 and MIT both require the copyright notice itself to accompany binaries.
+        for holder in COPYRIGHT_HOLDERS:
+            self.assertIn(holder.encode(), notice[:start])
+        self.assertEqual(notice, (ROOT / "vcpkg-ports/airspy/copyright").read_bytes())
         port = json.loads((ROOT / "vcpkg-ports/airspy/vcpkg.json").read_text())
         self.assertEqual(port["license"], "BSD-3-Clause AND MIT")
 
@@ -64,7 +71,7 @@ class AirspyPackaging(unittest.TestCase):
         self.assert_success(result)
         notice = stage / "assets/doc/dsd-neo/licenses" / NOTICE
         self.assertTrue(notice.is_file(), str(notice))
-        self.assertEqual(hashlib.sha256(notice.read_bytes()).hexdigest(), UPSTREAM_HASHES["LICENSE"])
+        self.assertEqual(notice.read_bytes(), (ROOT / "android/third_party/libairspy/LICENSE").read_bytes())
 
     def test_b1_release_notice_requirements(self):
         appimage = (ROOT / ".github/workflows/linux-appimage.yaml").read_text()
@@ -124,7 +131,8 @@ class AirspyPackaging(unittest.TestCase):
 
     def test_m6_distro_package_commands(self):
         for manager, expected, command in (("apk", "airspyone-host-dev", "+ apk add "),
-                                           ("dnf", "airspyone_host-devel", "+ dnf -y install ")):
+                                           ("dnf", "airspyone_host-devel", "+ dnf -y install "),
+                                           ("zypper", "airspy-devel", "+ zypper ")):
             with self.subTest(manager=manager):
                 output = self.installer_output(manager, "required")
                 packages = [word for line in output.splitlines() if line.startswith(command)

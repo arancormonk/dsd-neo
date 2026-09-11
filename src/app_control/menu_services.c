@@ -848,8 +848,10 @@ svc_airspy_apply_live(dsd_opts* opts, dsd_state* state, const dsd_airspy_config*
         uint32_t frequency = opts->rtlsdr_center_freq;
         opts->rtlsdr_center_freq = previous_tuning->frequency;
         rc = svc_rtl_set_freq(opts, state, frequency);
-        if (rc == RTL_STREAM_TUNE_TIMEOUT || rc == RTL_STREAM_TUNE_DEFERRED) {
-            /* Accepted requests remain owned by the controller. */
+        if (rc == RTL_STREAM_TUNE_TIMEOUT) {
+            /* Accepted-but-pending requests remain owned by the controller. DEFERRED
+             * means the request was never queued (replay, PPM training, or a
+             * competing tagged retune), so it is reported as a failure. */
             opts->rtlsdr_center_freq = frequency;
             rc = 0;
         }
