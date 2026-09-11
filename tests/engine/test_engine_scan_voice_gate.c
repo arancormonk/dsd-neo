@@ -11,7 +11,9 @@
  * holds through the tail from the last media time even when a terminator ends
  * the call before the first gate tick, 0.10 s span debounce, policy gating
  * (blocked encrypted, private evaluator, unknown identity), DATA ignored,
- * operator hold, and visit resets.
+ * operator hold, and visit resets. Also pins the scan timing publication the
+ * Scan Timing row renders (issue #508): reason, effective windows, and a deadline
+ * that agrees with dsd_scan_voice_gate_should_step() to the millisecond.
  */
 
 #include <dsd-neo/core/call_state.h>
@@ -541,6 +543,219 @@ test_tick_leaves_phase_alone_without_scanner_mode(void) {
     fixture_free(&fix);
 }
 
+/* ---- Scan timing publication for the -Y row (issue #508) ------------------- */
+
+static void
+check_timing_window(const char* started_tag, const char* deadline_tag, const char* span_tag,
+                    const dsd_scan_timing_publication* timing, double started_m, double deadline_m, uint32_t span_ms) {
+    CHECK(started_tag, fabs(timing->started_m - started_m) < 1e-6);
+    CHECK(deadline_tag, fabs(timing->deadline_m - deadline_m) < 1e-6);
+    CHECK(span_tag, timing->span_ms == span_ms);
+}
+
+/* Anti-drift: the published deadline is only useful if it is the instant
+ * dsd_scan_voice_gate_should_step() first says yes. A countdown that reaches 0.0 a
+ * frame before or after the hop is a bug report waiting to happen. */
+static void
+check_deadline_matches_should_step(const gate_fixture* fix, const char* early_tag, const char* late_tag) {
+    const double deadline_m = fix->state->scan_timing.deadline_m;
+    CHECK(early_tag, dsd_scan_voice_gate_should_step(fix->opts, fix->state, deadline_m - 1e-3) == 0);
+    CHECK(late_tag, dsd_scan_voice_gate_should_step(fix->opts, fix->state, deadline_m + 1e-3) == 1);
+}
+
+static void
+test_y_timing_silent_under_trunk_scan(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.0);
+    /* Under --trunk-scan the coordinator owns the publication for its parked target,
+     * exactly as it owns scan_voice_gate_phase. */
+    fix.opts->trunk_scan_enabled = 1;
+    dsd_scan_timing_clear(fix.state);
+    fix.state->scan_timing.reason = (uint8_t)DSD_SCAN_STAY_CALL_FOLLOW;
+    fix.state->scan_timing.deadline_m = 142.0;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state);
+    CHECK("trunk scan keeps reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CALL_FOLLOW);
+    CHECK("trunk scan keeps deadline", fabs(fix.state->scan_timing.deadline_m - 142.0) < 1e-6);
+    /* No scanner running at all publishes nothing either. */
+    fix.opts->trunk_scan_enabled = 0;
+    fix.opts->scanner_mode = 0;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state);
+    CHECK("no scanner keeps reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_CALL_FOLLOW);
+    CHECK("no scanner keeps deadline", fabs(fix.state->scan_timing.deadline_m - 142.0) < 1e-6);
+    fixture_free(&fix);
+}
+
+static void
+test_y_timing_legacy_hangtime_window(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    fix.opts->scan_voice_only = 0;
+    fix.opts->trunk_hangtime = 2.0f;
+    fix.state->last_cc_sync_time_m = 100.0;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state);
+    CHECK("hangtime reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
+    CHECK("hangtime is conventional", fix.state->scan_timing.conventional == 1U);
+    check_timing_window("hangtime start", "hangtime deadline", "hangtime span", &fix.state->scan_timing, 100.0, 102.0,
+                        2000U);
+    CHECK("hangtime has no dwell", fix.state->scan_timing.dwell_ms == 0U);
+    CHECK("hangtime has no hold", fix.state->scan_timing.hold_ms == 0U);
+    /* A gate that is enabled but has never synced this visit abstains, so the legacy
+     * rule still owns the step -- and it has neither window to report. */
+    fix.opts->scan_voice_only = 1;
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 0, 100.5);
+    CHECK("unsynced gate abstains", dsd_scan_voice_gate_owns_step(fix.opts, fix.state) == 0);
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state);
+    CHECK("unsynced gate reports hangtime", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
+    CHECK("unsynced gate hides dwell", fix.state->scan_timing.dwell_ms == 0U);
+    CHECK("unsynced gate hides hold", fix.state->scan_timing.hold_ms == 0U);
+    /* -t takes any non-negative double, so the millisecond span saturates instead of
+     * wrapping into the publication's uint32_t. */
+    fix.opts->scan_voice_only = 0;
+    fix.opts->trunk_hangtime = 1.0e9f;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state);
+    CHECK("absurd hangtime saturates the span", fix.state->scan_timing.span_ms == UINT32_MAX);
+    fixture_free(&fix);
+}
+
+static void
+test_y_timing_hangtime_without_anchor(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    fix.opts->scan_voice_only = 0;
+    fix.opts->trunk_hangtime = 2.0f;
+    fix.state->last_cc_sync_time_m = 0.0;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state);
+    CHECK("unanchored reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
+    CHECK("unanchored has no start", fix.state->scan_timing.started_m < 0.0);
+    CHECK("unanchored has no deadline", fix.state->scan_timing.deadline_m < 0.0);
+    CHECK("unanchored has no span", fix.state->scan_timing.span_ms == 0U);
+    /* -t 0 has an anchor but no window to count down. */
+    fix.state->last_cc_sync_time_m = 100.0;
+    fix.opts->trunk_hangtime = 0.0f;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state);
+    CHECK("zero hangtime reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
+    CHECK("zero hangtime has no deadline", fix.state->scan_timing.deadline_m < 0.0);
+    CHECK("zero hangtime has no span", fix.state->scan_timing.span_ms == 0U);
+    fixture_free(&fix);
+}
+
+static void
+test_y_timing_manual_hold_pauses_the_timer(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.0);
+    fix.state->lcn_scan_hold = 1;
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state);
+    CHECK("manual hold reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_MANUAL_HOLD);
+    CHECK("manual hold has no start", fix.state->scan_timing.started_m < 0.0);
+    CHECK("manual hold has no deadline", fix.state->scan_timing.deadline_m < 0.0);
+    CHECK("manual hold has no span", fix.state->scan_timing.span_ms == 0U);
+    /* The row's effective windows stay visible: they are paused, not gone. */
+    CHECK("manual hold keeps dwell", fix.state->scan_timing.dwell_ms == 1000U);
+    CHECK("manual hold keeps hold", fix.state->scan_timing.hold_ms == 2000U);
+    CHECK("manual hold never steps", dsd_scan_voice_gate_should_step(fix.opts, fix.state, 400.0) == 0);
+    fixture_free(&fix);
+}
+
+static void
+test_y_timing_qualify_window(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    fix.opts->scan_voice_qualify_ms = 3000;
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.0);
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state);
+    CHECK("qualify reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_IDLE_DWELL);
+    CHECK("qualify is conventional", fix.state->scan_timing.conventional == 1U);
+    CHECK("qualify publishes the effective dwell", fix.state->scan_timing.dwell_ms == 3000U);
+    CHECK("qualify publishes the effective hold", fix.state->scan_timing.hold_ms == 2000U);
+    check_timing_window("qualify start", "qualify deadline", "qualify span", &fix.state->scan_timing, 100.0, 103.0,
+                        3000U);
+    check_deadline_matches_should_step(&fix, "qualify holds before the deadline", "qualify steps after the deadline");
+    fixture_free(&fix);
+}
+
+static void
+test_y_timing_voice_and_tail_share_the_hold_window(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    open_voice_epoch(&fix, 100.2, 0.15, DSD_CALL_KIND_GROUP_VOICE, 11, 22, DSD_CALL_CRYPTO_CLEAR);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.4);
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state);
+    CHECK("voice reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_VOICE);
+    check_timing_window("voice start", "voice deadline", "voice span", &fix.state->scan_timing, 100.35, 102.35, 2000U);
+    check_deadline_matches_should_step(&fix, "voice holds before the deadline", "voice steps after the deadline");
+    /* The tail is the same window from the same last-media anchor; only the reason moves. */
+    (void)dsd_call_state_end_ex(fix.state, 0, 100.5, DSD_CALL_END_SYNC_LOSS);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 0, 100.6);
+    CHECK("tail phase", fix.state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_TAIL);
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state);
+    CHECK("tail reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_ACTIVITY_HOLD);
+    check_timing_window("tail start", "tail deadline", "tail span", &fix.state->scan_timing, 100.35, 102.35, 2000U);
+    check_deadline_matches_should_step(&fix, "tail holds before the deadline", "tail steps after the deadline");
+    fixture_free(&fix);
+}
+
+static void
+test_y_timing_hop_restarts_the_window(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    fix.opts->trunk_hangtime = 2.0f;
+    fix.state->last_cc_sync_time_m = 100.0;
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.0);
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state);
+    check_timing_window("first visit start", "first visit deadline", "first visit span", &fix.state->scan_timing, 100.0,
+                        101.0, 1000U);
+    /* A hop stamps a fresh legacy anchor and re-opens the gate's visit, so the
+     * countdown restarts on the new row instead of carrying the old one over. */
+    fix.state->last_cc_sync_time_m = 200.0;
+    dsd_scan_voice_gate_note_retune(fix.state, 200.0);
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state);
+    CHECK("hop falls back to hangtime", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
+    check_timing_window("hop start", "hop deadline", "hop span", &fix.state->scan_timing, 200.0, 202.0, 2000U);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 200.0);
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state);
+    CHECK("new visit qualifies", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_IDLE_DWELL);
+    check_timing_window("new visit start", "new visit deadline", "new visit span", &fix.state->scan_timing, 200.0,
+                        201.0, 1000U);
+    check_deadline_matches_should_step(&fix, "new visit holds", "new visit steps");
+    fixture_free(&fix);
+}
+
 int
 main(void) {
     test_tick_leaves_phase_alone_without_scanner_mode();
@@ -557,6 +772,13 @@ main(void) {
     test_operator_hold_and_visit_reset();
     test_stale_epoch_cannot_rearm();
     test_zero_ms_falls_back_to_defaults();
+    test_y_timing_silent_under_trunk_scan();
+    test_y_timing_legacy_hangtime_window();
+    test_y_timing_hangtime_without_anchor();
+    test_y_timing_manual_hold_pauses_the_timer();
+    test_y_timing_qualify_window();
+    test_y_timing_voice_and_tail_share_the_hold_window();
+    test_y_timing_hop_restarts_the_window();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d voice-gate check(s) failed\n", g_failures);
         return 1;

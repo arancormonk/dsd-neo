@@ -2615,6 +2615,11 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
                 break;
             }
         }
+        /* Outside the voice-gate block on purpose: this loop can spin here for seconds
+         * while frames keep syncing, and the legacy hangtime anchor moves the whole
+         * time, so the Scan Timing row would freeze mid-countdown if it only refreshed
+         * under -Y --scan-voice-only. */
+        dsd_engine_scan_y_timing_tick(opts, state);
         dsd_runtime_pump_controls(opts, state);
         if (!dsd_engine_channel_scan_service_sync(opts, state)) {
             break;
@@ -2644,6 +2649,7 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
         }
         dsd_trunk_scan_hook_tick(opts, state);
         dsd_scan_voice_gate_tick(opts, state, 0, dsd_time_now_monotonic_s());
+        dsd_engine_scan_y_timing_tick(opts, state);
         dsd_runtime_pump_controls(opts, state);
 
         if (dsd_engine_channel_scan_pending(opts, state)) {
