@@ -8,8 +8,11 @@
 # never reached a tests/ TU on a pull request; an IWYU verdict that only renders
 # from a tests/ includer then failed the full-tree push run on main after #471
 # merged. The cap now applies per top-level tree, so every tree that includes the
-# header is represented. This builds a throwaway repository in which src/ alone
-# overflows the cap and checks the tests/ includer still lands in analysis_tus.
+# header is represented. IWYU additionally gets every includer (iwyu_tus.txt):
+# after #505 a tests/ TU past the cap within its own tree needed <atomic> for a
+# member that became std::atomic, and only the full-tree push run saw it. This
+# builds a throwaway repository in which src/ alone overflows the cap and checks
+# the tests/ includer still lands in analysis_tus and every includer in iwyu_tus.
 set -euo pipefail
 
 if ! command -v rg > /dev/null 2>&1; then
@@ -47,6 +50,7 @@ head=$(git rev-parse HEAD)
 
 bash "$SCRIPT" --base "$base" --head "$head" --out-dir out > /dev/null 2>&1
 mapfile -t tus < out/analysis_tus.txt
+mapfile -t iwyu_tus < out/iwyu_tus.txt
 
 has() {
   local want="$1"
@@ -86,8 +90,35 @@ has src/core/unrelated.c && {
   fail=1
 }
 
+# IWYU is uncapped: all seven src/ C includers, the C++ one, and the other trees.
+iwyu_src_c=0
+for t in "${iwyu_tus[@]}"; do
+  [[ "$t" == src/*.c && "$t" != src/core/unrelated.c ]] && iwyu_src_c=$((iwyu_src_c + 1))
+done
+if [[ $iwyu_src_c -ne 7 ]]; then
+  echo "FAIL: expected all 7 src/ C includers in iwyu_tus, got $iwyu_src_c" >&2
+  fail=1
+fi
+for want in src/core/z.cpp tests/core/test_widget.c apps/cli/main.c; do
+  found=0
+  for t in "${iwyu_tus[@]}"; do
+    [[ "$t" == "$want" ]] && found=1
+  done
+  if [[ $found -ne 1 ]]; then
+    echo "FAIL: $want missing from iwyu_tus" >&2
+    fail=1
+  fi
+done
+for t in "${iwyu_tus[@]}"; do
+  if [[ "$t" == src/core/unrelated.c ]]; then
+    echo "FAIL: non-includer listed in iwyu_tus" >&2
+    fail=1
+  fi
+done
+
 if [[ $fail -ne 0 ]]; then
   printf 'analysis_tus:\n%s\n' "${tus[@]}" >&2
+  printf 'iwyu_tus:\n%s\n' "${iwyu_tus[@]}" >&2
   exit 1
 fi
-echo "PASS: header expansion samples every tree under the per-language cap"
+echo "PASS: header expansion samples every tree under the per-language cap and IWYU sees every includer"

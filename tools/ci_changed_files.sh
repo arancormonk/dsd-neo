@@ -3,7 +3,9 @@ set -euo pipefail
 
 # Compute the changed-file target sets used by pull-request CI.
 # This mirrors the local pre-push targeting rules: changed source files are
-# analyzed directly, and changed headers expand to representative C and C++ TUs.
+# analyzed directly, and changed headers expand to representative C and C++ TUs
+# (capped per tree and language) for the slower analyzers, and to every includer
+# for IWYU, whose verdict depends on the header's types and is cheap to run.
 
 ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
 cd "$ROOT_DIR"
@@ -125,8 +127,11 @@ escape_rg() {
 # merge (#471, the IWYU failure on main after the merge).
 HEADER_INCLUDER_ROOTS=(src apps tests examples)
 
+# collect_header_includers PATTERN [CAP] -> includers per tree and language,
+# at most CAP of each (0: every includer).
 collect_header_includers() {
   local pattern="$1"
+  local cap="${2:-$MAX_TUS_PER_HEADER_PER_LANGUAGE}"
   local root=""
   local f=""
   local matches=()
@@ -140,7 +145,7 @@ collect_header_includers() {
         -g'*.c' \
         "$pattern" "$root" 2> /dev/null |
         sort |
-        head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
+        limit_includers "$cap" || true
     )
     for f in "${matches[@]}"; do
       printf '%s\n' "$f"
@@ -150,12 +155,20 @@ collect_header_includers() {
         -g'*.cc' -g'*.cpp' -g'*.cxx' \
         "$pattern" "$root" 2> /dev/null |
         sort |
-        head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
+        limit_includers "$cap" || true
     )
     for f in "${matches[@]}"; do
       printf '%s\n' "$f"
     done
   done
+}
+
+limit_includers() {
+  if [[ "$1" -gt 0 ]]; then
+    head -n "$1"
+  else
+    cat
+  fi
 }
 
 mkdir -p "$OUT_DIR"
@@ -246,6 +259,11 @@ for p in "${changed_paths[@]}"; do
 done
 
 analysis_tus=("${changed_sources[@]}")
+# IWYU gets every includer of a changed header: a type change in a header (an
+# atomic member, say) alters which includes its consumers need, and the capped
+# sample missed tests/ TUs past the cut twice (#471, #505), leaving the failure
+# for the full-tree push run on main. Full-tree IWYU costs about two minutes.
+iwyu_tus=("${changed_sources[@]}")
 if [[ $EXPAND_HEADERS -eq 1 && ${#changed_headers[@]} -gt 0 ]]; then
   if command -v rg > /dev/null 2>&1; then
     for hdr in "${changed_headers[@]}"; do
@@ -263,6 +281,8 @@ if [[ $EXPAND_HEADERS -eq 1 && ${#changed_headers[@]} -gt 0 ]]; then
 
       mapfile -t matches < <(collect_header_includers "$pattern")
       analysis_tus+=("${matches[@]}")
+      mapfile -t matches < <(collect_header_includers "$pattern" 0)
+      iwyu_tus+=("${matches[@]}")
     done
   else
     echo "ci-changed-files: rg not found; header include expansion skipped." >&2
@@ -289,6 +309,9 @@ fi
 if [[ ${#analysis_tus[@]} -gt 0 ]]; then
   mapfile -t analysis_tus < <(sort_unique_array "${analysis_tus[@]}")
 fi
+if [[ ${#iwyu_tus[@]} -gt 0 ]]; then
+  mapfile -t iwyu_tus < <(sort_unique_array "${iwyu_tus[@]}")
+fi
 if [[ ${#cppcheck_sources[@]} -gt 0 ]]; then
   mapfile -t cppcheck_sources < <(sort_unique_array "${cppcheck_sources[@]}")
 fi
@@ -305,6 +328,7 @@ fi
 write_list "$OUT_DIR/changed_paths.txt" "${changed_paths[@]}"
 write_list "$OUT_DIR/format_files.txt" "${format_files[@]}"
 write_list "$OUT_DIR/analysis_tus.txt" "${analysis_tus[@]}"
+write_list "$OUT_DIR/iwyu_tus.txt" "${iwyu_tus[@]}"
 write_list "$OUT_DIR/cppcheck_sources.txt" "${cppcheck_sources[@]}"
 write_list "$OUT_DIR/semgrep_targets.txt" "${semgrep_targets[@]}"
 write_list "$OUT_DIR/cmake_format_files.txt" "${cmake_format_files[@]}"
@@ -313,7 +337,7 @@ write_list "$OUT_DIR/dependency_scan_targets.txt" "${dependency_scan_targets[@]}
 
 echo "ci-changed-files: base=${BASE_REF} head=${HEAD_REF}"
 echo "ci-changed-files: changed=${#changed_paths[@]} format=${#format_files[@]}" \
-  "tus=${#analysis_tus[@]} cppcheck=${#cppcheck_sources[@]} semgrep=${#semgrep_targets[@]}" \
+  "tus=${#analysis_tus[@]} iwyu=${#iwyu_tus[@]} cppcheck=${#cppcheck_sources[@]} semgrep=${#semgrep_targets[@]}" \
   "cmake=${#cmake_format_files[@]} workflows=${#workflow_security_targets[@]}" \
   "deps=${#dependency_scan_targets[@]} semgrep_full=${semgrep_full_scan}"
 
@@ -323,6 +347,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     echo "changed_paths=${#changed_paths[@]}"
     echo "format_files=${#format_files[@]}"
     echo "analysis_tus=${#analysis_tus[@]}"
+    echo "iwyu_tus=${#iwyu_tus[@]}"
     echo "cppcheck_sources=${#cppcheck_sources[@]}"
     echo "semgrep_targets=${#semgrep_targets[@]}"
     echo "semgrep_full_scan=${semgrep_full_scan}"
