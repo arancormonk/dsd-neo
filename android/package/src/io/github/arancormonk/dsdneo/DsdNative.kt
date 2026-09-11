@@ -56,6 +56,9 @@ object DsdNative {
      */
     external fun nativeSetUsbFd(fd: Int): Int
 
+    @JvmStatic
+    external fun nativeSetAirspyUsbFd(fd: Int): Int
+
     /**
      * Whether the engine currently has the descriptor wrapped in libusb.
      *

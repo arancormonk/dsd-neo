@@ -1298,6 +1298,128 @@ act_toggle_ui_p25_callsign(void* v) {
 
 #ifdef USE_RADIO
 
+static void
+submit_airspy_setting(void* key, const char* value) {
+    if (!value) {
+        return;
+    }
+    dsd_app_airspy_setting_payload p = {0};
+    DSD_SNPRINTF(p.key, sizeof p.key, "%s", (const char*)key);
+    DSD_SNPRINTF(p.value, sizeof p.value, "%s", value);
+    (void)dsd_app_command_submit(DSD_APP_CMD_AIRSPY_SET, &p, sizeof p);
+}
+
+bool
+is_airspy_input(const void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    return c && c->opts && dsd_opts_audio_in_dev_is_airspy_spec(c->opts->audio_in_dev);
+}
+
+bool
+is_non_airspy_input(const void* v) {
+    return !is_airspy_input(v);
+}
+
+// NcMenuItem action callbacks require a mutable context signature.
+// cppcheck-suppress-begin constParameterPointer
+void
+airspy_set_serial(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%s", c->opts->airspy.serial);
+    ui_prompt_open_string_async("Serial (16 hex digits; empty selects first device)", current, 39,
+                                submit_airspy_setting, (void*)"airspy_serial");
+}
+
+void
+airspy_set_sample_rate(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%u", c->opts->airspy.sample_rate);
+    ui_prompt_open_string_async("Sample rate in samples/s (auto selects automatically)", current, 39,
+                                submit_airspy_setting, (void*)"airspy_sample_rate");
+}
+
+void
+airspy_set_gain_mode(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    const char* modes[] = {"sensitivity", "linearity", "manual"};
+    int mode = c->opts->airspy.gain_mode;
+    DSD_SNPRINTF(current, sizeof current, "%s", modes[mode >= 0 && mode <= 2 ? mode : 0]);
+    ui_prompt_open_string_async("Gain mode: sensitivity, linearity, manual", current, 39, submit_airspy_setting,
+                                (void*)"airspy_gain_mode");
+}
+
+void
+airspy_set_sensitivity_gain(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.sensitivity_gain);
+    ui_prompt_open_string_async("Sensitivity index (0..21)", current, 39, submit_airspy_setting,
+                                (void*)"airspy_sensitivity_gain");
+}
+
+void
+airspy_set_linearity_gain(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.linearity_gain);
+    ui_prompt_open_string_async("Linearity index (0..21)", current, 39, submit_airspy_setting,
+                                (void*)"airspy_linearity_gain");
+}
+
+void
+airspy_set_lna_gain(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.lna_gain);
+    ui_prompt_open_string_async("LNA index (0..15)", current, 39, submit_airspy_setting, (void*)"airspy_lna_gain");
+}
+
+void
+airspy_set_mixer_gain(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.mixer_gain);
+    ui_prompt_open_string_async("Mixer index (0..15)", current, 39, submit_airspy_setting, (void*)"airspy_mixer_gain");
+}
+
+void
+airspy_set_vga_gain(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.vga_gain);
+    ui_prompt_open_string_async("VGA index (0..15)", current, 39, submit_airspy_setting, (void*)"airspy_vga_gain");
+}
+
+void
+airspy_set_lna_agc(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.lna_agc);
+    ui_prompt_open_string_async("LNA AGC (0 off, 1 on)", current, 39, submit_airspy_setting, (void*)"airspy_lna_agc");
+}
+
+void
+airspy_set_mixer_agc(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.mixer_agc);
+    ui_prompt_open_string_async("Mixer AGC (0 off, 1 on)", current, 39, submit_airspy_setting,
+                                (void*)"airspy_mixer_agc");
+}
+
+void
+airspy_set_bias_tee(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.bias_tee);
+    ui_prompt_open_string_async("Bias tee (0 off, 1 on)", current, 39, submit_airspy_setting, (void*)"airspy_bias_tee");
+}
+
+// cppcheck-suppress-end constParameterPointer
+
 void
 rtl_restart(void* v) {
     UNUSED(v);
@@ -1385,6 +1507,12 @@ rtl_toggle_tuner_autogain(void* v) {
         dsd_setenv("DSD_NEO_TUNER_AUTOGAIN", on ? "0" : "1", 1);
         env_reparse_runtime_cfg(c ? c->opts : NULL);
     }
+}
+
+void
+switch_to_airspy(void* v) {
+    UNUSED(v);
+    (void)dsd_app_command_action(DSD_APP_CMD_AIRSPY_ENABLE_INPUT);
 }
 
 void

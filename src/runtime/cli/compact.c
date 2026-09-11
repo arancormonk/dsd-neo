@@ -56,6 +56,7 @@ compact_copy_terminator_tail_or_stop(int start, int argc, char** argv, int* out_
 }
 
 static const char* const k_skip_exact_no_arg[] = {
+    "--airspy-list",
     "--auto-ppm",
     "--rtltcp-autotune",
     "--iq-loop",
@@ -80,6 +81,17 @@ static const char* const k_skip_exact_no_arg[] = {
 };
 
 static const char* const k_skip_exact_next_any[] = {
+    "--airspy-serial",
+    "--airspy-sample-rate",
+    "--airspy-gain-mode",
+    "--airspy-sensitivity-gain",
+    "--airspy-linearity-gain",
+    "--airspy-lna-gain",
+    "--airspy-mixer-gain",
+    "--airspy-vga-gain",
+    "--airspy-lna-agc",
+    "--airspy-mixer-agc",
+    "--airspy-bias-tee",
     "--input-volume",
     "--input-level-warn-db",
     "--frame-log",
@@ -137,6 +149,18 @@ static const char* const k_skip_exact_next_nonopt[] = {
 };
 
 static const char* const k_skip_prefix[] = {
+    "--airspy-serial=",
+    "--airspy-sample-rate=",
+    "--airspy-gain-mode=",
+    "--airspy-sensitivity-gain=",
+    "--airspy-linearity-gain=",
+    "--airspy-lna-gain=",
+    "--airspy-mixer-gain=",
+    "--airspy-vga-gain=",
+    "--airspy-lna-agc=",
+    "--airspy-mixer-agc=",
+    "--airspy-bias-tee=",
+
     "--lrrp-extra-port=",
     "--rtl-udp-control=",
     "--rtl-udp-control-bind=",

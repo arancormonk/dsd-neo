@@ -101,6 +101,18 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     }
 
     bool localDeviceReady() const override;
+
+    QString
+    localDeviceSerial() const override {
+        return m_usb.serial;
+    }
+
+    QString
+    localDeviceSource() const override {
+        return m_usb.source;
+    }
+
+    void requestLocalDeviceAccessForSource(const QString& source, const QString& serial = QString()) override;
     QString localDeviceStatus() const override;
     int localDeviceFailureKind() const override;
     void hostDiagnostic(const QString& line) override;

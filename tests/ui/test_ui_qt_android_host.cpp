@@ -91,6 +91,13 @@ DecoderHostAndroid::moveToBackground() {
 }
 
 void
+DecoderHostAndroid::requestLocalDeviceAccessForSource(const QString& source, const QString& serial) {
+    (void)serial;
+    (void)source;
+    requestLocalDeviceAccess();
+}
+
+void
 DecoderHostAndroid::requestLocalDeviceAccess() {}
 
 void

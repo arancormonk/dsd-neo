@@ -95,6 +95,7 @@ class CommandBridge : public QObject {
 
     /** @brief Retune the radio front end. */
     Q_INVOKABLE bool tuneHz(unsigned int hz) const;
+    Q_INVOKABLE bool setAirspy(const QString& key, const QString& value) const;
 
     /**
      * @brief Retune from a spectrum tap.

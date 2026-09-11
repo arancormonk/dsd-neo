@@ -234,6 +234,19 @@ DecoderHostAndroid::requestLocalDeviceAccess() {
 }
 
 void
+DecoderHostAndroid::requestLocalDeviceAccessForSource(const QString& source, const QString& serial) {
+    QJniObject context = android_context();
+    if (!context.isValid()) {
+        return;
+    }
+    QJniObject kind = QJniObject::fromString(source);
+    QJniObject requested = QJniObject::fromString(serial);
+    QJniObject::callStaticMethod<void>(kUsbClass, "requestAccessForSource",
+                                       "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V",
+                                       context.object(), kind.object(), requested.object());
+}
+
+void
 DecoderHostAndroid::setKeepScreenAwake(bool on) {
     /* The flag belongs to the Activity's window and must be flipped on the Android
      * main thread, not the Qt one. */

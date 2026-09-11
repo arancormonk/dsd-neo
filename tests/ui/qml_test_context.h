@@ -1637,6 +1637,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("snrValid")] = false;
         metrics[QStringLiteral("snrDb")] = 0.0;
         metrics[QStringLiteral("cfoHz")] = 0.0;
+        metrics[QStringLiteral("airspy")] = QVariantMap();
         metrics[QStringLiteral("tunerGainText")] = QStringLiteral("auto");
         // WP-F3 decode quality: validity is independent of radioInput.
         metrics[QStringLiteral("qualityValid")] = false;
@@ -1741,6 +1742,8 @@ class Setup : public QObject {
          * which is the arrangement this offscreen run matches. */
         host[QStringLiteral("keepScreenAwakeSupported")] = false;
         host[QStringLiteral("localDeviceBrokered")] = false;
+        host[QStringLiteral("localDeviceSource")] = QStringLiteral("usb");
+        host[QStringLiteral("localDeviceSerial")] = QString();
         host[QStringLiteral("localDeviceReady")] = false;
         host[QStringLiteral("localDeviceStatus")] = QString();
         host[QStringLiteral("locationSupported")] = false;

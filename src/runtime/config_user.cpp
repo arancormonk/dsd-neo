@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <ctype.h>
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/lrrp_ports.h>
 #include <dsd-neo/core/opts.h>
@@ -21,6 +22,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -191,6 +193,7 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->trunk_scan_voice_qualify_ms = 1000;
     cfg->trunk_scan_voice_hold_ms = 2000;
     cfg->rtl_auto_ppm = 0;
+    dsd_airspy_config_defaults(&cfg->airspy);
     cfg->soapy_bandwidth_hz = -1;
     cfg->soapy_bandwidth_hz_is_set = 0;
     cfg->input_warn_db = -40.0;
@@ -821,6 +824,7 @@ render_input_source(FILE* out, dsdneoUserInputSource source) {
         case DSDCFG_INPUT_PULSE: DSD_FPRINTF(out, "source = \"pulse\"\n"); break;
         case DSDCFG_INPUT_RTL: DSD_FPRINTF(out, "source = \"rtl\"\n"); break;
         case DSDCFG_INPUT_RTLTCP: DSD_FPRINTF(out, "source = \"rtltcp\"\n"); break;
+        case DSDCFG_INPUT_AIRSPY: DSD_FPRINTF(out, "source = \"airspy\"\n"); break;
         case DSDCFG_INPUT_SOAPY: DSD_FPRINTF(out, "source = \"soapy\"\n"); break;
         case DSDCFG_INPUT_FILE: DSD_FPRINTF(out, "source = \"file\"\n"); break;
         case DSDCFG_INPUT_TCP: DSD_FPRINTF(out, "source = \"tcp\"\n"); break;
@@ -949,6 +953,10 @@ render_input_section(FILE* out, const dsdneoUserConfig* cfg) {
         case DSDCFG_INPUT_PULSE: render_input_pulse(out, cfg); break;
         case DSDCFG_INPUT_RTL: render_input_rtl(out, cfg); break;
         case DSDCFG_INPUT_RTLTCP: render_input_rtltcp(out, cfg); break;
+        case DSDCFG_INPUT_AIRSPY:
+            render_input_rtl(out, cfg);
+            dsd_airspy_config_render(out, &cfg->airspy);
+            break;
         case DSDCFG_INPUT_SOAPY: render_input_soapy(out, cfg); break;
         case DSDCFG_INPUT_FILE: render_input_file(out, cfg); break;
         case DSDCFG_INPUT_TCP: render_input_tcp(out, cfg); break;
@@ -1278,22 +1286,34 @@ apply_input_rtl_auto_ppm(const dsdneoUserConfig* cfg, dsd_opts* opts) {
 }
 
 static void
-apply_input_config(const dsdneoUserConfig* cfg, dsd_opts* opts, int apply_file_input_rate_now) {
-    if (!cfg || !opts || !cfg->has_input) {
-        return;
-    }
-
-    opts->staged_file_sample_rate = 0;
+apply_input_source_config(const dsdneoUserConfig* cfg, dsd_opts* opts, int apply_file_input_rate_now) {
     switch (cfg->input_source) {
         case DSDCFG_INPUT_PULSE: apply_input_source_pulse(cfg, opts); break;
         case DSDCFG_INPUT_RTL: apply_input_source_rtl(cfg, opts); break;
         case DSDCFG_INPUT_RTLTCP: apply_input_source_rtltcp(cfg, opts); break;
+        case DSDCFG_INPUT_AIRSPY:
+            opts->airspy = cfg->airspy;
+            opts->airspy_config_error = cfg->airspy_invalid;
+            DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "airspy");
+            opts->rtltcp_enabled = 0;
+            apply_shared_radio_tuning_from_config(cfg, opts);
+            break;
         case DSDCFG_INPUT_SOAPY: apply_input_source_soapy(cfg, opts); break;
         case DSDCFG_INPUT_FILE: apply_input_source_file(cfg, opts, apply_file_input_rate_now); break;
         case DSDCFG_INPUT_TCP: apply_input_source_tcp(cfg, opts); break;
         case DSDCFG_INPUT_UDP: apply_input_source_udp(cfg, opts); break;
         default: break;
     }
+}
+
+static void
+apply_input_config(const dsdneoUserConfig* cfg, dsd_opts* opts, int apply_file_input_rate_now) {
+    if (!cfg || !opts || !cfg->has_input) {
+        return;
+    }
+
+    opts->staged_file_sample_rate = 0;
+    apply_input_source_config(cfg, opts, apply_file_input_rate_now);
     apply_input_rtl_auto_ppm(cfg, opts);
     /* Source-independent advisory threshold; clamp to the same [-200, 0] window
        the CLI, env, and runtime menu command enforce. */
@@ -1639,7 +1659,7 @@ dsd_finalize_user_config_file_input_after_cli(const dsdneoUserConfig* cfg, dsd_o
 }
 
 static void
-snapshot_input_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+snapshot_other_input_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->has_input = 1;
     if (strncmp(opts->audio_in_dev, "rtl:", 4) == 0) {
         cfg->input_source = DSDCFG_INPUT_RTL;
@@ -1686,6 +1706,18 @@ snapshot_input_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     /* LOW advisories exist for every input source, so the threshold snapshots unconditionally. */
     cfg->input_warn_db = opts->input_warn_db;
     cfg->input_warn_db_is_set = 1;
+}
+
+static void
+snapshot_input_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+    if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        cfg->has_input = 1;
+        cfg->input_source = DSDCFG_INPUT_AIRSPY;
+        cfg->airspy = opts->airspy;
+        snapshot_apply_live_rtl_values(opts, cfg);
+    } else {
+        snapshot_other_input_config(opts, cfg);
+    }
 }
 
 static void

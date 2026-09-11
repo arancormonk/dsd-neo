@@ -73,6 +73,12 @@ option(
     OFF
 )
 option(DSD_ENABLE_RTLSDR "Enable RTL-SDR backend support" ON)
+option(DSD_ENABLE_AIRSPY "Enable native Airspy R2/Mini support" ON)
+option(
+    DSD_REQUIRE_AIRSPY
+    "Fail configure unless native Airspy support is available"
+    OFF
+)
 option(DSD_ENABLE_SOAPYSDR "Enable SoapySDR backend support" ON)
 option(DSD_ENABLE_TERMINAL_UI "Enable ncurses/PDCurses terminal frontend" ON)
 option(DSD_ENABLE_QT_UI "Enable the Qt Quick frontend (src/ui/qt)" OFF)
@@ -680,23 +686,39 @@ if(NOT DSD_HAVE_MBE_NEO_SOFT_API)
         "mbe-neo 2.x with the soft-decision/result API is required; update mbelib-neo"
     )
 endif()
-if(DSD_ENABLE_RTLSDR)
-    if(DSD_ANDROID_VENDORED_RTLSDR)
-        # Adds the libusb/librtlsdr static targets and publishes the same
-        # RTLSDR_* variables FindRTLSDR.cmake would have produced. It has to run
-        # here, ahead of the DSD_HAS_RTLSDR decision below.
-        add_subdirectory(
-            android/third_party
-            "${CMAKE_BINARY_DIR}/android-third-party"
-        )
-    else()
-        find_package(RTLSDR)
-    endif()
+if(ANDROID AND (DSD_ANDROID_VENDORED_RTLSDR OR DSD_ENABLE_AIRSPY))
+    add_subdirectory(
+        android/third_party
+        "${CMAKE_BINARY_DIR}/android-third-party"
+    )
+endif()
+if(DSD_ENABLE_RTLSDR AND NOT DSD_ANDROID_VENDORED_RTLSDR)
+    find_package(RTLSDR)
 endif()
 
 if(DSD_ENABLE_SOAPYSDR)
     find_package(SoapySDR ${DSD_SOAPYSDR_MIN_VERSION} CONFIG QUIET)
 endif()
+
+set(DSD_HAS_AIRSPY OFF)
+if(DSD_ENABLE_AIRSPY)
+    if(NOT TARGET Airspy::Airspy)
+        find_package(Airspy QUIET)
+    endif()
+    if(Airspy_FOUND)
+        set(DSD_HAS_AIRSPY ON)
+    endif()
+endif()
+if(DSD_REQUIRE_AIRSPY AND (NOT DSD_ENABLE_AIRSPY OR NOT DSD_HAS_AIRSPY))
+    message(
+        FATAL_ERROR
+        "Native Airspy was required. Enable DSD_ENABLE_AIRSPY and install libairspy."
+    )
+endif()
+message(
+    STATUS
+    "Airspy backend enabled: ${DSD_ENABLE_AIRSPY} (available: ${DSD_HAS_AIRSPY})"
+)
 
 set(DSD_HAS_RTLSDR OFF)
 if(DSD_ENABLE_RTLSDR AND RTLSDR_FOUND)
@@ -757,7 +779,12 @@ endif()
 # cleanly. Forcing it on is how targets with no SDR library (Android) keep
 # network SDR input.
 set(DSD_HAS_RADIO OFF)
-if(DSD_HAS_RTLSDR OR DSD_HAS_SOAPYSDR OR DSD_FORCE_RADIO_PIPELINE)
+if(
+    DSD_HAS_RTLSDR
+    OR DSD_HAS_SOAPYSDR
+    OR DSD_HAS_AIRSPY
+    OR DSD_FORCE_RADIO_PIPELINE
+)
     set(DSD_HAS_RADIO ON)
 endif()
 
@@ -1113,6 +1140,18 @@ target_compile_definitions(
     INTERFACE $<$<BOOL:${DSD_HAS_RADIO}>:USE_RADIO>
 )
 
+add_library(dsd-neo_feature_airspy INTERFACE)
+if(DSD_HAS_AIRSPY)
+    target_compile_definitions(dsd-neo_feature_airspy INTERFACE USE_AIRSPY)
+    if(ANDROID)
+        target_compile_definitions(
+            dsd-neo_feature_airspy
+            INTERFACE USE_AIRSPY_OPEN_FD
+        )
+    endif()
+    target_link_libraries(dsd-neo_feature_airspy INTERFACE Airspy::Airspy)
+endif()
+
 add_library(dsd-neo_feature_soapy INTERFACE)
 if(DSD_HAS_SOAPYSDR)
     target_compile_definitions(dsd-neo_feature_soapy INTERFACE USE_SOAPYSDR)
@@ -1270,6 +1309,13 @@ install(
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
     RENAME pffft-FFTPACK.txt
 )
+if(DSD_HAS_AIRSPY)
+    install(
+        FILES android/third_party/libairspy/LICENSE
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
+        RENAME libairspy-BSD-3-Clause.txt
+    )
+endif()
 # The Qt frontend compiles the IBM Plex faces into its resource bundle, so the
 # notice ships with whatever bundles the frontend rather than with a particular
 # platform.

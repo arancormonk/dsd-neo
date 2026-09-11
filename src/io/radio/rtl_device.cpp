@@ -12,6 +12,7 @@
  * u8 I/Q samples into normalized float and feeds the `input_ring_state`.
  */
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/runtime/input_failure.h>
 
@@ -20,6 +21,7 @@
 #include <cctype>
 #include <cinttypes>
 #include <cmath>
+#include <complex>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/dsp/simd_widen.h>
 #include <dsd-neo/io/iq_capture.h>
@@ -54,6 +56,8 @@
 #endif
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/platform.h>
+#include "airspy_source.h"
+struct airspy_source;
 #include "rtl_capture_phase.h"
 #include "rtl_perf.h"
 #include "rtl_replay_device.h"
@@ -81,7 +85,6 @@ enum : unsigned char {
 #include <SoapySDR/Errors.hpp>
 #include <SoapySDR/Formats.h>
 #include <SoapySDR/Types.hpp>
-#include <complex>
 #include <exception>
 
 namespace SoapySDR {
@@ -277,6 +280,7 @@ enum : unsigned char {
     RTL_BACKEND_TCP = 1,
     RTL_BACKEND_SOAPY = 2,
     RTL_BACKEND_IQ_REPLAY = 3,
+    RTL_BACKEND_AIRSPY = 4,
 };
 
 enum : unsigned char {
@@ -303,6 +307,7 @@ rtl_tuner_type_name(int tuner_type) {
 // Internal RTL device structure
 struct rtl_device {
     rtlsdr_dev_t* dev = nullptr;
+    airspy_source* airspy = nullptr;
     /* Set when this device wrapped the app-supplied USB descriptor, so closing it
      * knows to hand the descriptor back to its owner. See
      * rtl_device_preopened_fd_in_use(). */
@@ -975,7 +980,6 @@ rtl_publish_cu8_input_level_moments(const struct rtl_device* s, const dsd_input_
     }
 }
 
-#ifdef USE_SOAPYSDR
 static inline void
 rtl_publish_cf32_input_level_source(const float* samples, size_t count, dsd_input_level_source source) {
     dsd_input_level_snapshot snapshot;
@@ -987,6 +991,7 @@ rtl_publish_cf32_input_level_source(const float* samples, size_t count, dsd_inpu
     }
 }
 
+#ifdef USE_SOAPYSDR
 static inline void
 rtl_publish_cs16_input_level(const int16_t* samples, size_t count) {
     dsd_input_level_snapshot snapshot;
@@ -1003,6 +1008,12 @@ rtl_publish_cf32_input_level(const float* samples, size_t count) {
     rtl_publish_cf32_input_level_source(samples, count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32);
 }
 #endif
+
+static dsd_input_level_source
+replay_cf32_level_source(const rtl_device* s) {
+    return strcmp(s->replay_cfg.source_backend, "airspy") == 0 ? DSD_INPUT_LEVEL_SOURCE_AIRSPY_CF32
+                                                               : DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32;
+}
 
 static inline int
 rtl_prepare_replay_input_level_snapshot(const struct rtl_device* s, const uint8_t* raw_block, size_t raw_bytes,
@@ -1035,7 +1046,7 @@ rtl_prepare_replay_input_level_snapshot(const struct rtl_device* s, const uint8_
             return -1;
         }
         DSD_MEMCPY(scratch_f32, raw_block, float_count * sizeof(float));
-        return dsd_input_level_metrics_from_cf32(scratch_f32, float_count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32, out);
+        return dsd_input_level_metrics_from_cf32(scratch_f32, float_count, replay_cf32_level_source(s), out);
     }
     return -1;
 }
@@ -1076,6 +1087,9 @@ rtl_capture_event_alignment_bytes(const struct rtl_device* s) {
     }
     if (s->backend == RTL_BACKEND_USB || s->backend == RTL_BACKEND_TCP) {
         return 2U;
+    }
+    if (s->backend == RTL_BACKEND_AIRSPY) {
+        return 2U * sizeof(float);
     }
     if (s->backend == RTL_BACKEND_SOAPY) {
         if (s->soapy_format == SOAPY_FMT_CF32) {
@@ -1189,7 +1203,6 @@ rtl_apply_j4_rotation(float in_i, float in_q, int phase, float* out_i, float* ou
     }
 }
 
-#ifdef USE_SOAPYSDR
 static inline size_t
 soapy_reserve_even_ring_segments(struct input_ring_state* ring, size_t need, float** p1, size_t* w1, float** p2,
                                  size_t* w2) {
@@ -1228,13 +1241,13 @@ soapy_finalize_generation(struct input_ring_state* ring, uint64_t discard_genera
 }
 
 static inline void
-soapy_copy_cf32_samples(float* dst, const std::complex<float>* src, size_t elem_count, int apply_rot, int* phase) {
+soapy_copy_cf32_samples(float* dst, const float* src, size_t elem_count, int apply_rot, int* phase) {
     if (!dst || !src || elem_count == 0U) {
         return;
     }
     for (size_t i = 0U; i < elem_count; i++) {
-        float i_in = src[i].real();
-        float q_in = src[i].imag();
+        float i_in = src[2 * i];
+        float q_in = src[2 * i + 1];
         if (apply_rot && phase) {
             rtl_apply_j4_rotation(i_in, q_in, *phase, &dst[(i * 2U) + 0U], &dst[(i * 2U) + 1U]);
             *phase = (*phase + 1) & 3;
@@ -1245,6 +1258,7 @@ soapy_copy_cf32_samples(float* dst, const std::complex<float>* src, size_t elem_
     }
 }
 
+#ifdef USE_SOAPYSDR
 static inline void
 soapy_copy_cs16_samples(float* dst, const int16_t* src_iq, size_t elem_count, float scale, int apply_rot, int* phase) {
     if (!dst || !src_iq || elem_count == 0U) {
@@ -1263,9 +1277,10 @@ soapy_copy_cs16_samples(float* dst, const int16_t* src_iq, size_t elem_count, fl
         }
     }
 }
+#endif
 
 static size_t
-soapy_write_cf32_to_ring(struct rtl_device* s, const std::complex<float>* src, size_t num_elems, int apply_rot) {
+soapy_write_cf32_to_ring(struct rtl_device* s, const float* src, size_t num_elems, int apply_rot) {
     if (!s || !s->input_ring || !src || num_elems == 0) {
         return 0;
     }
@@ -1286,9 +1301,9 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const std::complex<float>* src, s
             break;
         }
         size_t src_idx = done / 2U;
-        soapy_copy_cf32_samples(p1, src + src_idx, w1 / 2U, apply_rot, &phase);
+        soapy_copy_cf32_samples(p1, src + src_idx * 2, w1 / 2U, apply_rot, &phase);
         src_idx += w1 / 2U;
-        soapy_copy_cf32_samples(p2, src + src_idx, w2 / 2U, apply_rot, &phase);
+        soapy_copy_cf32_samples(p2, src + src_idx * 2, w2 / 2U, apply_rot, &phase);
         if (soapy_finalize_generation(s->input_ring, discard_generation, produced)) {
             break;
         }
@@ -1306,6 +1321,7 @@ soapy_write_cf32_to_ring(struct rtl_device* s, const std::complex<float>* src, s
     return done / 2;
 }
 
+#ifdef USE_SOAPYSDR
 static size_t
 soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_elems, int apply_rot) {
     if (!s || !s->input_ring || !src || num_elems == 0) {
@@ -3183,7 +3199,7 @@ soapy_submit_samples(struct rtl_device* dev, size_t drop_elems, size_t kept_elem
         const std::complex<float>* src = cf32_buf.data() + drop_elems;
         rtl_submit_capture_bytes(dev, src, kept_elems * sizeof(std::complex<float>));
         rtl_publish_cf32_input_level(reinterpret_cast<const float*>(src), kept_elems * 2U);
-        (void)soapy_write_cf32_to_ring(dev, src, kept_elems, apply_rot);
+        (void)soapy_write_cf32_to_ring(dev, reinterpret_cast<const float*>(src), kept_elems, apply_rot);
         return;
     }
     const int16_t* src = cs16_buf.data() + (drop_elems * 2U);
@@ -3268,6 +3284,101 @@ static DSD_THREAD_RETURN_TYPE
     s->run.store(0);
     DSD_THREAD_RETURN;
 #endif
+}
+
+/* libairspy's single consumer owns sample ingestion; the monitor only observes
+ * streaming health. Never stop/join the driver from its receive callback. */
+static void
+airspy_receive(void* context, const float* samples, size_t pairs, uint64_t dropped) {
+    auto* dev = static_cast<rtl_device*>(context);
+    if (!dev->run.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (dropped) {
+        rtl_accumulate_ring_drops(dev->input_ring, (size_t)dropped * 2U);
+        rtl_record_capture_mute(dev, dropped * 2U * sizeof(float), "driver_overflow");
+        rtl_finish_capture_mute_span(dev);
+    }
+    int mute = dev->mute.load(std::memory_order_relaxed);
+    size_t skip = mute > 0 ? std::min(pairs, ((size_t)mute + 1U) / 2U) : 0;
+    if (skip) {
+        int consumed = (int)std::min((size_t)mute, skip * 2U);
+        dev->mute.fetch_sub(consumed, std::memory_order_relaxed);
+        rtl_record_capture_mute(dev, skip * 2U * sizeof(float), "retune_mute");
+        if (consumed == mute) {
+            rtl_finish_capture_mute_span(dev);
+        }
+    }
+    samples += skip * 2U;
+    pairs -= skip;
+    if (rtl_capture_reconfigure_hold_active(dev)) {
+        rtl_record_capture_mute(dev, pairs * 2U * sizeof(float), "retune_reconfigure");
+        return;
+    }
+    if (!pairs) {
+        return;
+    }
+    rtl_submit_capture_bytes(dev, samples, pairs * 2U * sizeof(float));
+    rtl_publish_cf32_input_level_source(samples, pairs * 2U, DSD_INPUT_LEVEL_SOURCE_AIRSPY_CF32);
+    (void)soapy_write_cf32_to_ring(dev, samples, pairs, 0);
+}
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+#include "rtl_stream_test_support.h"
+
+extern "C" int
+rtl_device_test_airspy_ingest(const rtl_device_test_airspy_request* request, float* output, size_t* output_count,
+                              uint64_t* dropped) {
+    if (!request || !output || !output_count || !dropped || request->start >= request->capacity) {
+        return -1;
+    }
+    input_ring_state ring{};
+    if (input_ring_init(&ring, request->capacity) != 0) {
+        return -1;
+    }
+    ring.head.store(request->start);
+    ring.tail.store(request->start);
+    rtl_device dev{};
+    dev.backend = RTL_BACKEND_AIRSPY;
+    dev.input_ring = &ring;
+    dev.run.store(1);
+    dev.mute.store(request->mute);
+    dev.capture_reconfigure_hold.store(request->hold);
+    airspy_receive(&dev, request->samples, request->pairs, request->hardware_drops);
+    size_t used = input_ring_used(&ring);
+    size_t count = std::min(used, *output_count);
+    for (size_t i = 0; i < count; ++i) {
+        output[i] = ring.buffer[(request->start + i) % ring.capacity];
+    }
+    *output_count = count;
+    *dropped = ring.producer_drops.load();
+    input_ring_destroy(&ring);
+    return 0;
+}
+#endif
+
+static DSD_THREAD_RETURN_TYPE
+#if DSD_PLATFORM_WIN_NATIVE
+    __stdcall
+#endif
+    airspy_monitor(void* context) {
+    auto* dev = static_cast<rtl_device*>(context);
+    while (dev->run.load(std::memory_order_acquire) && !dsd_exitflag_load()) {
+        if (!airspy_source_running(dev->airspy)) {
+            if (!dev->run.load(std::memory_order_acquire) || dsd_exitflag_load()) {
+                break;
+            }
+            dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, -1);
+            DSD_FPRINTF(stderr, "Airspy stream stopped unexpectedly.\n");
+            dsd_exitflag_store(1);
+            replay_signal_input_waiters(dev);
+            break;
+        }
+        dsd_sleep_ms(20);
+    }
+    (void)airspy_source_stop(dev->airspy);
+    dev->run.store(0, std::memory_order_release);
+    DSD_THREAD_RETURN;
 }
 
 /* ---- rtl_tcp backend helpers ---- */
@@ -5190,6 +5301,51 @@ rtl_device_alloc_soapy_base(struct input_ring_state* input_ring) {
 }
 
 struct rtl_device*
+rtl_device_create_airspy(const dsd_airspy_config* config, struct input_ring_state* ring) {
+    auto* dev = static_cast<rtl_device*>(calloc(1, sizeof(rtl_device)));
+    if (!dev) {
+        return nullptr;
+    }
+    rtl_device_init_common_state(dev);
+    dev->backend = RTL_BACKEND_AIRSPY;
+    dev->input_ring = ring;
+    dev->airspy = airspy_source_open(config, airspy_receive, dev);
+    if (!dev->airspy) {
+        rtl_device_destroy(dev);
+        return nullptr;
+    }
+    dsd_airspy_info info{};
+    (void)airspy_source_info(dev->airspy, &info);
+    dev->rate = info.sample_rate;
+    return dev;
+}
+
+int
+rtl_device_airspy_info(struct rtl_device* dev, dsd_airspy_info* info) {
+    return dev ? airspy_source_info(dev->airspy, info) : -1;
+}
+
+int
+rtl_device_airspy_controls(struct rtl_device* dev, const dsd_airspy_config* config) {
+    return dev ? airspy_source_controls(dev->airspy, config) : -1;
+}
+
+int
+rtl_device_airspy_list(uint64_t* serials, int capacity) {
+    return airspy_source_list(serials, capacity);
+}
+
+int
+rtl_device_airspy_set_preopened_fd(int fd) {
+    return airspy_source_set_fd(fd);
+}
+
+int
+rtl_device_airspy_preopened_fd_in_use(void) {
+    return airspy_source_fd_in_use();
+}
+
+struct rtl_device*
 rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_ring) {
     if (!input_ring) {
         return NULL;
@@ -5498,7 +5654,8 @@ rtl_device_request_thread_stop(struct rtl_device* dev) {
         rtl_device_stop_usb_backend_thread(dev);
         return;
     }
-    if (dev->backend == RTL_BACKEND_TCP || dev->backend == RTL_BACKEND_SOAPY || dev->backend == RTL_BACKEND_IQ_REPLAY) {
+    if (dev->backend == RTL_BACKEND_AIRSPY || dev->backend == RTL_BACKEND_TCP || dev->backend == RTL_BACKEND_SOAPY
+        || dev->backend == RTL_BACKEND_IQ_REPLAY) {
         rtl_device_stop_streaming_backend_thread(dev);
     }
 }
@@ -5516,6 +5673,10 @@ rtl_device_cleanup_usb_before_close(struct rtl_device* dev) {
 
 static void
 rtl_device_close_backend_resources(struct rtl_device* dev) {
+    if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
+        airspy_source_close(dev->airspy);
+        dev->airspy = nullptr;
+    }
     if (!dev) {
         return;
     }
@@ -5599,6 +5760,8 @@ rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency) {
             return -1;
         }
         rc = verbose_set_frequency(dev->dev, frequency);
+    } else if (dev->backend == RTL_BACKEND_AIRSPY) {
+        rc = airspy_source_frequency(dev->airspy, frequency);
     } else if (dev->backend == RTL_BACKEND_TCP) {
         rc = rtl_tcp_send_cmd(dev->sockfd, 0x01, frequency);
     } else if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
@@ -5636,6 +5799,13 @@ rtl_device_set_frequency(struct rtl_device* dev, uint32_t frequency) {
  */
 int
 rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
+    if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
+        int rc = airspy_source_rate(dev->airspy, samp_rate);
+        if (!rc) {
+            dev->rate = samp_rate;
+        }
+        return rc;
+    }
     if (!dev) {
         return -1;
     }
@@ -5702,6 +5872,10 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
 int
 // cppcheck-suppress constParameterPointer -- The SoapySDR build locks dev and fills the cache; the stub build does not.
 rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual) {
+    if (dev && out_actual && dev->backend == RTL_BACKEND_AIRSPY) {
+        *out_actual = dev->rate;
+        return 0;
+    }
     if (!dev || requested == 0U || !out_actual) {
         return -1;
     }
@@ -5749,6 +5923,9 @@ rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, ui
  */
 int
 rtl_device_get_sample_rate(struct rtl_device* dev) {
+    if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
+        return (int)dev->rate;
+    }
     if (!dev) {
         return -1;
     }
@@ -5881,6 +6058,10 @@ rtl_device_set_gain_soapy(struct rtl_device* dev, int gain) {
  */
 int
 rtl_device_set_gain(struct rtl_device* dev, int gain) {
+    if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
+        (void)gain;
+        return DSD_ERR_NOT_SUPPORTED; /* Airspy controls use native indices. */
+    }
     if (!dev) {
         return -1;
     }
@@ -5976,6 +6157,10 @@ rtl_device_set_gain_nearest_soapy(struct rtl_device* dev, int target_tenth_db) {
 
 int
 rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db) {
+    if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
+        (void)target_tenth_db;
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     if (!dev) {
         return -1;
     }
@@ -5999,6 +6184,9 @@ rtl_device_set_gain_nearest(struct rtl_device* dev, int target_tenth_db) {
 
 int
 rtl_device_get_tuner_gain(struct rtl_device* dev) {
+    if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     if (!dev) {
         return -1;
     }
@@ -6104,6 +6292,9 @@ rtl_device_set_ppm(struct rtl_device* dev, int ppm_error) {
 int
 // cppcheck-suppress constParameterPointer -- The SoapySDR build locks dev; the stub build does not.
 rtl_device_supports_ppm(struct rtl_device* dev) {
+    if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
+        return 0;
+    }
     if (!dev) {
         return 0;
     }
@@ -6279,6 +6470,9 @@ rtl_device_set_tuner_bandwidth(struct rtl_device* dev, uint32_t bw_hz) {
  */
 int
 rtl_device_reset_buffer(struct rtl_device* dev) {
+    if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
+        return 0;
+    }
     if (!dev) {
         return -1;
     }
@@ -6309,7 +6503,16 @@ rtl_device_start_async(struct rtl_device* dev, uint32_t buf_len) {
     rtl_reset_capture_state_on_stream_boundary(dev);
     dev->thread_started = 1;
     int r = 0;
-    if (dev->backend == RTL_BACKEND_USB) {
+    if (dev->backend == RTL_BACKEND_AIRSPY) {
+        dev->run.store(1, std::memory_order_release);
+        r = airspy_source_start(dev->airspy);
+        if (r == 0) {
+            r = dsd_thread_create(&dev->thread, airspy_monitor, dev);
+        }
+        if (r != 0) {
+            (void)airspy_source_stop(dev->airspy);
+        }
+    } else if (dev->backend == RTL_BACKEND_USB) {
         if (!dev->dev) {
             dev->thread_started = 0;
             return -1;
@@ -6375,7 +6578,7 @@ rtl_device_stop_async(struct rtl_device* dev) {
             dsd_cond_broadcast(dev->replay_eof.eof_cond);
             dsd_mutex_unlock(dev->replay_eof.eof_m);
         }
-    } else if (dev->backend == RTL_BACKEND_SOAPY) {
+    } else if (dev->backend == RTL_BACKEND_SOAPY || dev->backend == RTL_BACKEND_AIRSPY) {
         dev->run.store(0);
     } else {
         return -1;
@@ -6424,7 +6627,7 @@ rtl_device_set_bias_tee(struct rtl_device* dev, int on) {
     } else if (dev->backend == RTL_BACKEND_TCP) {
         /* rtl_tcp protocol command 0x0E toggles bias tee */
         rc = rtl_tcp_send_cmd(dev->sockfd, 0x0E, (uint32_t)requested);
-    } else if (dev->backend == RTL_BACKEND_SOAPY) {
+    } else if (dev->backend == RTL_BACKEND_SOAPY || dev->backend == RTL_BACKEND_AIRSPY) {
         rc = DSD_ERR_NOT_SUPPORTED;
     } else {
 #ifdef USE_RTLSDR_BIAS_TEE
@@ -6957,6 +7160,9 @@ rtl_device_get_capture_retune_count(struct rtl_device* dev) {
 
 int
 rtl_device_get_native_sample_format(const struct rtl_device* dev) {
+    if (dev && dev->backend == RTL_BACKEND_AIRSPY) {
+        return DSD_IQ_FORMAT_CF32;
+    }
     if (!dev) {
         return 0;
     }

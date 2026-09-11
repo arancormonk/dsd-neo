@@ -176,7 +176,7 @@ for p in "${changed_paths[@]}"; do
   # around them (android/third_party/CMakeLists.txt) is ours and stays in scope.
   case "$p" in
     build/* | src/third_party/*) continue ;;
-    android/third_party/libusb/* | android/third_party/librtlsdr/*) continue ;;
+    android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*) continue ;;
   esac
 
   track_semgrep=0

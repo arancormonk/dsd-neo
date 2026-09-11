@@ -10676,3 +10676,75 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_engine_trunk_scan_scan_list
     )
 endif()
+
+# Compile the in-process SDK double with the upstream declarations, without DLL
+# import/export attributes: its symbols are defined in the test executable.
+set(_AIRSPY_TEST_SDK "${CMAKE_CURRENT_BINARY_DIR}/airspy-test-sdk")
+file(MAKE_DIRECTORY "${_AIRSPY_TEST_SDK}")
+file(
+    READ "${PROJECT_SOURCE_DIR}/android/third_party/libairspy/airspy.h"
+    _AIRSPY_TEST_HEADER
+)
+string(
+    REPLACE "__declspec(dllexport)"
+    ""
+    _AIRSPY_TEST_HEADER
+    "${_AIRSPY_TEST_HEADER}"
+)
+string(
+    REPLACE "__declspec(dllimport)"
+    ""
+    _AIRSPY_TEST_HEADER
+    "${_AIRSPY_TEST_HEADER}"
+)
+file(WRITE "${_AIRSPY_TEST_SDK}/airspy.h" "${_AIRSPY_TEST_HEADER}")
+configure_file(
+    "${PROJECT_SOURCE_DIR}/android/third_party/libairspy/airspy_commands.h"
+    "${_AIRSPY_TEST_SDK}/airspy_commands.h"
+    COPYONLY
+)
+
+# Native Airspy adapter tests supply the SDK symbols; no device or libairspy is needed.
+add_executable(
+    dsd-neo_test_io_airspy_source
+    io/test_io_airspy_source.cpp
+    ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
+)
+target_include_directories(
+    dsd-neo_test_io_airspy_source
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio ${_AIRSPY_TEST_SDK}
+)
+target_compile_definitions(dsd-neo_test_io_airspy_source PRIVATE USE_AIRSPY)
+target_link_libraries(
+    dsd-neo_test_io_airspy_source
+    PRIVATE dsd-neo_runtime dsd-neo_platform
+)
+add_test(NAME IO_AIRSPY_SOURCE COMMAND dsd-neo_test_io_airspy_source)
+add_executable(
+    dsd-neo_test_runtime_airspy_config
+    runtime/test_runtime_airspy_config.cpp
+)
+target_link_libraries(
+    dsd-neo_test_runtime_airspy_config
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(NAME RUNTIME_AIRSPY_CONFIG COMMAND dsd-neo_test_runtime_airspy_config)
+
+if(DSD_HAS_RADIO)
+    add_executable(dsd-neo_test_io_airspy_ingest io/test_io_airspy_ingest.cpp)
+    target_include_directories(
+        dsd-neo_test_io_airspy_ingest
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_airspy_ingest
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_airspy_ingest
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(NAME IO_AIRSPY_INGEST COMMAND dsd-neo_test_io_airspy_ingest)
+endif()

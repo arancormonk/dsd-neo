@@ -8,8 +8,8 @@ The engine is linked into the app process as native code, so JNI carries only
 lifecycle, platform glue, and one read-only status record (the scanner readout the
 service renders into its notification).
 
-Supported inputs: a directly attached RTL-SDR over USB-OTG, `rtl_tcp`, UDP PCM,
-TCP PCM, and local files.
+Supported inputs: a directly attached RTL-SDR or native Airspy R2/Mini over USB-OTG,
+`rtl_tcp`, UDP PCM, TCP PCM, and local files. See [native Airspy setup](../docs/airspy.md).
 
 ## Saved encryption keys
 
@@ -493,7 +493,7 @@ Two consequences worth knowing before enrolling in Play App Signing:
   A respin is: once `v2.6.0`'s `20600000` is on a track, correcting that
   release means cutting `v2.6.1`, not rebuilding the tag.
 
-## USB-OTG: how the descriptor gets to librtlsdr
+## USB-OTG: native receiver descriptors
 
 An Android application cannot open `/dev/bus/usb` nodes, so librtlsdr cannot
 enumerate or open a dongle the way it does everywhere else. The descriptor is
@@ -512,6 +512,13 @@ obtained in Java and injected:
    would read that as "no supported devices" and abort the run, so
    `dsd_engine_setup_enumerate_rtl_devices()` short-circuits to a single device at
    index 0 whenever a descriptor is set. The app is what selected the device.
+
+For Airspy, the broker recognizes `1d50:60a1` and routes the descriptor through
+`nativeSetAirspyUsbFd()` to the native adapter's `airspy_open_fd()` path. Source
+kind and an explicit serial are checked before a session starts. Readiness and
+native descriptor-in-use reporting cover both drivers; switching between USB
+receivers requires the current session to stop. Both drivers share the vendored
+libusb target, and Java retains descriptor ownership until native transfers end.
 
 Onboarding and Home's dongle status show the USB diagnostic and a **Retry**
 button. If `UsbManager.openDevice()` returns null, the app rechecks the device

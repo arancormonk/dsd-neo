@@ -181,7 +181,9 @@ enum dsd_app_command_id {
     // Turning it on clears scanner mode, which is the same exclusion SCANNER_TOGGLE
     // already applies in the other direction — both cannot own the tuner. Turning it
     // off is deliberately narrow; TUNER_RELEASE remains the way to clear both at once.
-    DSD_APP_CMD_TRUNK_SET = 496, // payload: int32_t on(0/1)
+    DSD_APP_CMD_TRUNK_SET = 496,  // payload: int32_t on(0/1)
+    DSD_APP_CMD_AIRSPY_SET = 497, // payload: dsd_app_airspy_setting_payload
+    DSD_APP_CMD_AIRSPY_ENABLE_INPUT = 498,
 
     // Rigctl / tuning params
     DSD_APP_CMD_RIGCTL_SET_MOD_BW = 500, // payload: int32_t hz
@@ -288,6 +290,12 @@ enum dsd_app_command_id {
     DSD_APP_CMD_CONFIG_APPLY = 710,       // payload: dsdneoUserConfig (see runtime/config.h)
     DSD_APP_CMD_CONFIG_METADATA_SET = 711 // payload: dsd_app_config_metadata_payload
 };
+
+/* A single edit is merged into decoder-owned settings, avoiding stale snapshot writes. */
+typedef struct {
+    char key[40]; /* canonical airspy_ config key */
+    char value[40];
+} dsd_app_airspy_setting_payload;
 
 /** DSP control opcodes understood by the decoder/control-pump thread. */
 enum dsd_app_dsp_op {

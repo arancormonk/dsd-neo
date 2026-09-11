@@ -28,6 +28,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/colors.h>
@@ -523,6 +524,31 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         (target) = dsd_cli_parsed_value;                                                                               \
     } while (0)
 
+static int
+cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
+    if (strcmp(argv[i], "--airspy-list") == 0) {
+        opts->airspy_list = 1;
+        return 1;
+    }
+    char key[80];
+    const char* name = argv[i] + 2;
+    const char* eq = strchr(name, '=');
+    size_t len = eq ? (size_t)(eq - name) : strlen(name);
+    if (len >= sizeof key) {
+        return -1;
+    }
+    for (size_t j = 0; j < len; ++j) {
+        key[j] = name[j] == '-' ? '_' : name[j];
+    }
+    key[len] = '\0';
+    const char* value = eq ? eq + 1 : (i + 1 < argc ? argv[i + 1] : NULL);
+    if (!value || dsd_airspy_config_set(&opts->airspy, key, value) != 0) {
+        LOG_ERROR("Invalid Airspy option: %s\n", argv[i]);
+        return -1;
+    }
+    return eq ? 1 : 2;
+}
+
 #define DSD_PARSE_ARGS_PRESCAN_BLOCK()                                                                                 \
     for (int i = 1, arg_advance = 1; i < argc; i += arg_advance) {                                                     \
         arg_advance = 1;                                                                                               \
@@ -531,6 +557,14 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         }                                                                                                              \
         if (strcmp(argv[i], "--") == 0) {                                                                              \
             break;                                                                                                     \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--airspy-", 9) == 0) {                                                                   \
+            arg_advance = cli_parse_airspy_option(argc, argv, i, opts);                                                \
+            if (arg_advance < 0) {                                                                                     \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--lrrp-extra-port") == 0) {                                                               \
             if (i + 1 >= argc) {                                                                                       \
@@ -1760,6 +1794,16 @@ cli_reset_getopt(void) {
 #endif
 }
 
+static int
+cli_finish_airspy_input(dsd_opts* opts, int parse_rc, int* out_exit_rc) {
+    if (parse_rc == DSD_PARSE_CONTINUE && dsd_normalize_airspy_input_spec(opts) != 0) {
+        LOG_ERROR("Invalid Airspy input. Use airspy[:serial=<16 hex digits>][:frequency].\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return DSD_PARSE_ERROR;
+    }
+    return parse_rc;
+}
+
 int
 dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out_argc, int* out_exit_rc) {
     dsd_neo_config_init();
@@ -1854,6 +1898,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             return DSD_PARSE_ERROR;
         }
     }
+    parse_rc = cli_finish_airspy_input(opts, parse_rc, out_exit_rc);
     if (out_argc) {
         *out_argc = new_argc;
     }

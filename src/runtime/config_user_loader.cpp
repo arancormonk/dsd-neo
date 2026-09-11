@@ -7,6 +7,7 @@
  * INI loading and profile overlay support for user configuration.
  */
 
+#include <dsd-neo/runtime/airspy_config.h>
 #if defined(_WIN32)
 #include <algorithm>
 #endif
@@ -156,6 +157,10 @@ parse_input_source_value(const char* val, dsdneoUserInputSource* out_source) {
     }
     if (dsd_strcasecmp(val, "rtltcp") == 0) {
         *out_source = DSDCFG_INPUT_RTLTCP;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "airspy") == 0) {
+        *out_source = DSDCFG_INPUT_AIRSPY;
         return 0;
     }
     if (dsd_strcasecmp(val, "soapy") == 0) {
@@ -346,6 +351,12 @@ apply_input_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* v
         if (user_config_parse_double_value(val, &parsed) == 0) {
             cfg->input_warn_db = parsed;
             cfg->input_warn_db_is_set = 1;
+        }
+        return;
+    }
+    if (strncmp(key_lc, "airspy_", 7) == 0) {
+        if (dsd_airspy_config_set(&cfg->airspy, key_lc, val) != 0) {
+            cfg->airspy_invalid = 1;
         }
         return;
     }

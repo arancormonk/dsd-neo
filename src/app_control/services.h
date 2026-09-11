@@ -15,6 +15,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_SERVICES_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_SERVICES_H_
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -200,6 +201,7 @@ void svc_toggle_inv_m17(dsd_opts* opts);
 int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);
 /** @brief Restart the RTL stream if active, tearing down any existing context. */
 int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
+int svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config);
 /** @brief Set RTL device index and mark stream for restart (applied immediately if active). */
 int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
 /** @brief Tune receiver frequency (Hz); caller owns trunking and call bookkeeping. */

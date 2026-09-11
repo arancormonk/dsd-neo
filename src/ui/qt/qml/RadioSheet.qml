@@ -39,6 +39,7 @@ ModalSheet {
     property real pendingSquelch: NaN
 
     // What each control steps from and displays.
+    readonly property bool airspyActive: metrics.airspy !== undefined && metrics.airspy.gain_mode !== undefined
     readonly property int gainDb: isNaN(pendingGain) ? metrics.tunerGainDb : pendingGain
     readonly property int ppm: isNaN(pendingPpm) ? metrics.ppm : pendingPpm
     readonly property real squelchDb: isNaN(pendingSquelch) ? metrics.squelchDb : pendingSquelch
@@ -157,7 +158,14 @@ ModalSheet {
         text: qsTr("Radio")
     }
 
+    AirspyControls {
+        width: parent.width
+        visible: sheet.airspyActive
+        settings: metrics.airspy || ({})
+        onEdited: function(key, value) { commands.setAirspy(key, value); }
+    }
     Column {
+        visible: !sheet.airspyActive
         width: parent.width
         spacing: 8
         Text {
@@ -232,6 +240,7 @@ ModalSheet {
     }
 
     Column {
+        visible: !sheet.airspyActive
         width: parent.width
         spacing: 8
         Text {

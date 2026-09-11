@@ -4,6 +4,7 @@
      (android/third_party/librtlsdr/src/librtlsdr.c). Android resource attributes
      take decimal, so the hex ids are repeated in the comments. -->
 <resources>
+    <usb-device vendor-id="7504" product-id="24737" /> <!-- Airspy R2 / Mini -->
     <usb-device vendorId="3034" productId="10290" /> <!-- 0x0bda:0x2832 Generic RTL2832U -->
     <usb-device vendorId="3034" productId="10296" /> <!-- 0x0bda:0x2838 Generic RTL2832U OEM -->
     <usb-device vendorId="1043" productId="26240" /> <!-- 0x0413:0x6680 DigitalNow Quad DVB-T PCI-E card -->

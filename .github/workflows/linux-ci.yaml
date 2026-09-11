@@ -32,33 +32,50 @@ jobs:
       matrix:
         include:
           - variant: both
-            cmake_flags: -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON
+            cmake_flags: -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_ENABLE_AIRSPY=ON -DDSD_REQUIRE_AIRSPY=ON
+            airspy_enabled: ON
+            airspy_available: ON
             rtl_enabled: ON
             rtl_available: ON
             soapy_enabled: ON
             soapy_available: ON
             radio_available: ON
           - variant: soapy_only
-            cmake_flags: -DDSD_ENABLE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON
+            cmake_flags: -DDSD_ENABLE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_ENABLE_AIRSPY=OFF
+            airspy_enabled: OFF
+            airspy_available: OFF
             rtl_enabled: OFF
             rtl_available: OFF
             soapy_enabled: ON
             soapy_available: ON
             radio_available: ON
           - variant: rtl_only
-            cmake_flags: -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=OFF
+            cmake_flags: -DDSD_ENABLE_RTLSDR=ON -DDSD_REQUIRE_RTLSDR=ON -DDSD_ENABLE_SOAPYSDR=OFF -DDSD_ENABLE_AIRSPY=OFF
+            airspy_enabled: OFF
+            airspy_available: OFF
             rtl_enabled: ON
             rtl_available: ON
             soapy_enabled: OFF
             soapy_available: OFF
             radio_available: ON
           - variant: neither
-            cmake_flags: -DDSD_ENABLE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=OFF
+            cmake_flags: -DDSD_ENABLE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=OFF -DDSD_ENABLE_AIRSPY=OFF
+            airspy_enabled: OFF
+            airspy_available: OFF
             rtl_enabled: OFF
             rtl_available: OFF
             soapy_enabled: OFF
             soapy_available: OFF
             radio_available: OFF
+          - variant: airspy_only
+            cmake_flags: -DDSD_ENABLE_RTLSDR=OFF -DDSD_ENABLE_SOAPYSDR=OFF -DDSD_ENABLE_AIRSPY=ON -DDSD_REQUIRE_AIRSPY=ON
+            airspy_enabled: ON
+            airspy_available: ON
+            rtl_enabled: OFF
+            rtl_available: OFF
+            soapy_enabled: OFF
+            soapy_available: OFF
+            radio_available: ON
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,7 +87,7 @@ jobs:
             build-essential cmake ninja-build pkg-config git \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev libexpat1-dev
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libairspy-dev libcurl4-openssl-dev libexpat1-dev
 
       - name: Build and install mbelib-neo
         run: |
@@ -97,6 +114,7 @@ jobs:
           log="$RUNNER_TEMP/configure-${{ matrix.variant }}.log"
           cmake --preset dev-debug ${{ matrix.cmake_flags }} 2>&1 | tee "$log"
           grep -F "RTL-SDR backend enabled: ${{ matrix.rtl_enabled }} (available: ${{ matrix.rtl_available }})" "$log"
+          grep -F "Airspy backend enabled: ${{ matrix.airspy_enabled }} (available: ${{ matrix.airspy_available }})" "$log"
           grep -F "SoapySDR backend enabled: ${{ matrix.soapy_enabled }} (available: ${{ matrix.soapy_available }})" "$log"
           grep -F "Radio pipeline available: ${{ matrix.radio_available }}" "$log"
 
@@ -282,7 +300,7 @@ jobs:
       - name: Install dependencies via APT when available (codec2, rtl-sdr, soapy)
         run: |
           sudo apt-get install -y --no-install-recommends \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev || true
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libairspy-dev || true
 
       - name: Build and install mbelib-neo (required, cached)
         run: |
@@ -448,7 +466,7 @@ jobs:
           pacman -Syu --noconfirm --needed \
             cmake ninja git pkgconf \
             libsndfile libpulse ncurses libusb fftw blas lapack gcc-fortran \
-            codec2 rtl-sdr soapysdr curl
+            codec2 rtl-sdr soapysdr airspy curl
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1134,7 +1152,7 @@ jobs:
       - name: Install dependencies via APT when available (codec2, rtl-sdr)
         run: |
           sudo apt-get install -y --no-install-recommends \
-            libcodec2-dev librtlsdr-dev || true
+            libcodec2-dev librtlsdr-dev libairspy-dev || true
 
       - name: Build and install mbelib-neo (required, cached)
         run: |

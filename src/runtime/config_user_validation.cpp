@@ -7,9 +7,11 @@
  * Validation and diagnostics for INI-based user configuration.
  */
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/lrrp_ports.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/path_policy.h>
@@ -105,8 +107,8 @@ validate_double_entry_value(const dsdcfg_schema_entry_t* entry, const char* val,
 }
 
 static void
-validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
-                     const char* diag_section, const char* diag_key) {
+validate_standard_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
+                              int line_num, const char* diag_section, const char* diag_key) {
     if (!entry || !val || !diags) {
         return;
     }
@@ -148,6 +150,23 @@ validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg
 
         default: break;
     }
+}
+
+static void
+validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
+                     const char* diag_section, const char* diag_key) {
+    if (!entry || !val || !diags) {
+        return;
+    }
+    if (strcmp(entry->section, "input") == 0 && strncmp(entry->key, "airspy_", 7) == 0) {
+        dsd_airspy_config config;
+        dsd_airspy_config_defaults(&config);
+        if (dsd_airspy_config_set(&config, entry->key, val) != 0) {
+            dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, "Invalid Airspy setting");
+        }
+        return;
+    }
+    validate_standard_entry_value(entry, val, diags, line_num, diag_section, diag_key);
 }
 
 static int

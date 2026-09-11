@@ -12,6 +12,7 @@
  * and exposes a consumer API for audio samples and tuning.
  */
 
+#include <dsd-neo/core/airspy_config.h>
 #include "dsd-neo/core/input_level.h"
 
 #include <algorithm>
@@ -214,6 +215,7 @@ struct dongle_state {
     /* Last PPM value successfully applied to hardware. */
     std::atomic<int> ppm_error{0};
     int offset_tuning = 0;
+    int centered_iq = 0; /* Native low-IF driver already delivers centered complex IQ. */
     int direct_sampling = 0;
     std::atomic<int> mute{0};
     struct demod_state* demod_target = nullptr;
@@ -425,7 +427,7 @@ clamp_capture_frequency_hz(int64_t frequency_hz) {
 static uint32_t
 capture_frequency_for_rate(int64_t center_freq_hz, uint32_t capture_rate_hz) {
     int64_t capture_freq_hz = center_freq_hz;
-    if (!dongle.offset_tuning && !disable_fs4_shift) {
+    if (!dongle.offset_tuning && !dongle.centered_iq && !disable_fs4_shift) {
         capture_freq_hz += (int64_t)(capture_rate_hz / 4U);
     }
     capture_freq_hz += ((int64_t)controller.edge * (int64_t)demod.rate_in) / 2;
@@ -728,6 +730,7 @@ enum RadioSourceKind : uint8_t {
     RADIO_SOURCE_RTL_TCP = 1,
     RADIO_SOURCE_SOAPY = 2,
     RADIO_SOURCE_IQ_REPLAY = 3,
+    RADIO_SOURCE_AIRSPY = 4,
 };
 
 } // namespace
@@ -743,6 +746,9 @@ detect_radio_source(const dsd_opts* opts) {
     }
     if ((strcmp(dev, "soapy") == 0) || (strncmp(dev, "soapy:", 6) == 0)) {
         return RADIO_SOURCE_SOAPY;
+    }
+    if (dsd_opts_audio_in_dev_is_airspy_spec(dev)) {
+        return RADIO_SOURCE_AIRSPY;
     }
     if (dsd_opts_audio_in_dev_is_iqreplay_spec(dev)) {
         return RADIO_SOURCE_IQ_REPLAY;
@@ -769,7 +775,7 @@ static int
 radio_source_is_rtl_family(const dsd_opts* opts) {
     RadioSourceKind kind = detect_radio_source(opts);
     return (kind == RADIO_SOURCE_RTL_USB || kind == RADIO_SOURCE_RTL_TCP || kind == RADIO_SOURCE_SOAPY
-            || kind == RADIO_SOURCE_IQ_REPLAY)
+            || kind == RADIO_SOURCE_IQ_REPLAY || kind == RADIO_SOURCE_AIRSPY)
                ? 1
                : 0;
 }
@@ -793,6 +799,7 @@ rtl_perf_source_name(void) {
     const dsd_opts* opts = (g_stream && g_stream->opts) ? g_stream->opts : NULL;
     switch (detect_radio_source(opts)) {
         case RADIO_SOURCE_RTL_TCP: return "rtltcp";
+        case RADIO_SOURCE_AIRSPY: return "airspy";
         case RADIO_SOURCE_SOAPY: return "soapy";
         case RADIO_SOURCE_IQ_REPLAY: return "iq_replay";
         case RADIO_SOURCE_RTL_USB:
@@ -4221,6 +4228,10 @@ controller_apply_wb_frequency_offset(struct controller_state* s) {
 
 static void
 controller_apply_initial_offset_tuning(const dsd_opts* opts) {
+    if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        dongle.centered_iq = 1;
+        return;
+    }
     int want = 1;
     if (radio_source_is_rtltcp(opts)) {
         want = 0;
@@ -5208,6 +5219,7 @@ dongle_init(struct dongle_state* s) {
     s->mute = 0;
     s->direct_sampling = 0;
     s->offset_tuning = 0; //E4000 tuners only
+    s->centered_iq = 0;
     s->demod_target = &demod;
 }
 
@@ -5449,23 +5461,29 @@ sync_requested_ppm_to_controller(const dsd_opts* opts) {
  * streaming with the configured buffer size, and starts optional UDP
  * control for on-the-fly tuning.
  */
-static void
+static int
 start_threads_and_async(void) {
     if (dsd_thread_create(&controller.thread, controller_thread_retune_loop, &controller) == 0) {
         if (g_stream) {
             g_stream->controller_thread_started.store(1, std::memory_order_release);
         }
+    } else {
+        return -1;
     }
     if (dsd_thread_create(&demod.thread, demod_thread_fn, &demod) == 0) {
         if (g_stream) {
             g_stream->demod_thread_started.store(1, std::memory_order_release);
         }
+    } else {
+        return -1;
     }
     LOG_INFO("Starting RTL async read...\n");
     if (rtl_device_start_async(rtl_device_handle, (uint32_t)ACTUAL_BUF_LENGTH) == 0) {
         if (g_stream) {
             g_stream->async_started.store(1, std::memory_order_release);
         }
+    } else {
+        return -1;
     }
     if (port != 0) {
         g_udp_ctrl = udp_control_start_bound(udp_control_bindaddr, port, [](uint32_t new_freq_hz) {
@@ -5476,6 +5494,7 @@ start_threads_and_async(void) {
             LOG_ERROR("Failed to start RTL UDP retune control on %s:%u\n", udp_control_bindaddr, (unsigned)port);
         }
     }
+    return 0;
 }
 
 static void
@@ -5513,6 +5532,9 @@ capture_stage_for_format(int format, char* out_stage, size_t out_stage_size) {
 
 static const char*
 capture_backend_name(RadioSourceKind source_kind) {
+    if (source_kind == RADIO_SOURCE_AIRSPY) {
+        return "airspy";
+    }
     if (source_kind == RADIO_SOURCE_RTL_TCP) {
         return "rtl_tcp";
     }
@@ -5555,6 +5577,10 @@ capture_backend_args(const dsd_opts* opts, RadioSourceKind source_kind, char* ou
         }
         return;
     }
+    if (source_kind == RADIO_SOURCE_AIRSPY) {
+        DSD_SNPRINTF(out_args, out_args_size, "serial=%s", opts->airspy_info.serial);
+        return;
+    }
     if (source_kind == RADIO_SOURCE_SOAPY) {
         const char* soapy_args = radio_source_soapy_args(opts);
         DSD_SNPRINTF(out_args, out_args_size, "%s", soapy_args ? soapy_args : "");
@@ -5573,8 +5599,9 @@ stream_open_validate_capture_writer_request(const dsd_opts* opts, RadioSourceKin
         LOG_ERROR("IQ capture unsupported for active backend format.\n");
         return -1;
     }
-    if (source_kind != RADIO_SOURCE_SOAPY && opts->iq_capture_format == DSD_IQ_FORMAT_CF32) {
-        LOG_ERROR("--iq-capture-format cf32 is only supported for Soapy CF32 capture.\n");
+    if (source_kind != RADIO_SOURCE_SOAPY && source_kind != RADIO_SOURCE_AIRSPY
+        && opts->iq_capture_format == DSD_IQ_FORMAT_CF32) {
+        LOG_ERROR("--iq-capture-format cf32 requires a native CF32 source (Airspy or Soapy CF32).\n");
         return -1;
     }
     if ((int)opts->iq_capture_format != native_format) {
@@ -5616,7 +5643,7 @@ stream_open_fill_capture_writer_config(const dsd_opts* opts, RadioSourceKind sou
     cfg->post_downsample = (uint32_t)((demod.post_downsample > 0) ? demod.post_downsample : 1);
     cfg->demod_rate_hz = (uint32_t)demod.rate_out;
     cfg->offset_tuning_enabled = dongle.offset_tuning ? 1 : 0;
-    cfg->fs4_shift_enabled = (!dongle.offset_tuning && !disable_fs4_shift) ? 1 : 0;
+    cfg->fs4_shift_enabled = (!dongle.offset_tuning && !dongle.centered_iq && !disable_fs4_shift) ? 1 : 0;
     const dsdneoRuntimeConfig* runtime_config = dsd_neo_get_config();
     cfg->combine_rotate_enabled = runtime_config ? (runtime_config->combine_rot != 0) : 1;
     cfg->muted_bytes_excluded = 1;
@@ -5878,6 +5905,10 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
 
 static void
 stream_open_enable_default_autogain(const dsd_opts* opts) {
+    if (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        g_tuner_autogain_on.store(0);
+        return;
+    }
     if (!opts || opts->rtl_gain_value > 0) {
         return;
     }
@@ -6031,6 +6062,9 @@ stream_open_open_device(RadioSourceKind source_kind, const dsd_opts* opts, const
         rc = stream_open_open_device_rtltcp(opts);
     } else if (source_kind == RADIO_SOURCE_IQ_REPLAY) {
         rc = stream_open_open_device_replay(replay_cfg, replay_cfg_loaded);
+    } else if (source_kind == RADIO_SOURCE_AIRSPY) {
+        rtl_device_handle = rtl_device_create_airspy(&opts->airspy, &input_ring);
+        rc = rtl_device_handle ? 0 : -1;
     } else if (source_kind == RADIO_SOURCE_SOAPY) {
         rc = stream_open_open_device_soapy(opts);
     } else {
@@ -6165,6 +6199,9 @@ stream_open_apply_testmode(const dsdneoRuntimeConfig* cfg) {
 
 static void
 stream_open_apply_runtime_controls(const dsd_opts* opts) {
+    if (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        return;
+    }
     stream_open_apply_bias_tee(opts);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     if (!cfg) {
@@ -6267,12 +6304,13 @@ stream_open_validate_device_capture_rate(RadioSourceKind source_kind) {
         || deliverable_hz == 0U) {
         return 0;
     }
-    if ((long long)deliverable_hz <= kMaxCaptureRateHz) {
+    long long ceiling = source_kind == RADIO_SOURCE_AIRSPY ? (long long)DSD_AIRSPY_MAX_RATE : kMaxCaptureRateHz;
+    if ((long long)deliverable_hz <= ceiling) {
         return 0;
     }
     LOG_ERROR("Device sample rate %u Hz exceeds the supported capture ceiling of %lld Hz (requested %lld Hz). "
               "Lower the device rate, or use a device that streams within the ceiling.\n",
-              deliverable_hz, kMaxCaptureRateHz, ideal);
+              deliverable_hz, ceiling, ideal);
     return -1;
 }
 
@@ -6557,8 +6595,7 @@ stream_open_start_capture_threads(RadioSourceKind source_kind, const dsd_opts* o
     if (source_kind == RADIO_SOURCE_IQ_REPLAY) {
         return stream_open_start_replay_pipeline();
     }
-    start_threads_and_async();
-    return 0;
+    return start_threads_and_async();
 }
 
 static int
@@ -6602,6 +6639,23 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     if (stream_open_open_device(source_kind, opts, replay_cfg, replay_cfg_loaded) != 0) {
         return -1;
     }
+    if (source_kind == RADIO_SOURCE_AIRSPY) {
+        if (rtl_device_airspy_info(rtl_device_handle, &opts->airspy_info) != 0) {
+            return -1;
+        }
+        /* Preserve the default ring's time capacity at higher native rates. */
+        size_t capacity = (size_t)MAXIMUM_BUF_LENGTH * 8U;
+        uint64_t needed = ((uint64_t)capacity * opts->airspy_info.sample_rate + 3199999U) / 3200000U;
+        while (capacity < needed) {
+            capacity *= 2;
+        }
+        input_ring_destroy(&input_ring);
+        if (input_ring_init(&input_ring, capacity) != 0) {
+            return -1;
+        }
+        input_ring_enable_space_notify(&input_ring, 0);
+        dongle.centered_iq = 1;
+    }
     if (stream_open_validate_device_capture_rate(source_kind) != 0) {
         return -1;
     }
@@ -6609,9 +6663,9 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     stream_open_apply_deemphasis_from_config();
     stream_open_apply_audio_lpf_from_config();
 
-    int gain_rc = rtl_device_set_gain(rtl_device_handle, dongle.gain);
+    int gain_rc = source_kind == RADIO_SOURCE_AIRSPY ? 0 : rtl_device_set_gain(rtl_device_handle, dongle.gain);
     log_unsupported_control_if_needed("Gain control", gain_rc);
-    if (dongle.gain == AUTO_GAIN) {
+    if (source_kind != RADIO_SOURCE_AIRSPY && dongle.gain == AUTO_GAIN) {
         LOG_INFO("Setting RTL Autogain. \n");
     }
     stream_open_note_ppm_capability();
@@ -7998,6 +8052,10 @@ rtl_stream_apply_manual_retune_gain(int tuner_gain_tenth_db) {
 
 static void
 rtl_stream_apply_retune_gain_profile(const RtlRetuneProfile* profile) {
+    /* Legacy scan gain profiles describe RTL dB/AGC controls, not Airspy stages. */
+    if (g_stream && detect_radio_source(g_stream->opts) == RADIO_SOURCE_AIRSPY) {
+        return;
+    }
     if (!profile || !profile->active) {
         return;
     }
@@ -8102,6 +8160,16 @@ rtl_stream_backend_name(void) {
         }
     }
     return "rtl";
+}
+
+extern "C" int
+rtl_stream_airspy_controls(const dsd_airspy_config* config) {
+    return rtl_device_handle ? rtl_device_airspy_controls(rtl_device_handle, config) : -1;
+}
+
+extern "C" int
+rtl_stream_airspy_info(dsd_airspy_info* info) {
+    return rtl_device_handle ? rtl_device_airspy_info(rtl_device_handle, info) : -1;
 }
 
 static void

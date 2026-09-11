@@ -67,3 +67,5 @@ for file-specific license/provenance details.
 The project `LICENSE`, `COPYRIGHT`, and this notice file are installed with binary packages. Installed third-party
 license texts currently include the vendored ezpwd and pffft notices under `share/doc/dsd-neo/licenses/`, plus the
 IBM Plex font notice for builds that bundle the Qt frontend and the librtlsdr/libusb notices for the Android package.
+
+Native Airspy support links libairspy (BSD-3-Clause), from https://github.com/airspy/airspyone_host. Android library sources and Windows overlay builds are pinned to `fc61ab6be57ed61f0e2bdd9c6dfae74cacef57d0`; the upstream notice is retained in `android/third_party/libairspy/LICENSE` and distributed as `licenses/libairspy-BSD-3-Clause.txt`.

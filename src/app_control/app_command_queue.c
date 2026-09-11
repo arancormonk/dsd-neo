@@ -9,6 +9,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
@@ -48,6 +49,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -1061,6 +1063,14 @@ ui_cmd_parse_double_payload(const struct dsd_app_command* c, double* out) {
 #ifdef USE_RADIO
 static int
 ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (opts && c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s",
+                     opts->airspy.serial[0] ? ":serial=" : "", opts->airspy.serial);
+        opts->rtltcp_enabled = 0;
+    } else if (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl");
+    }
+
     (void)c;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state) {
@@ -1068,7 +1078,8 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
             if (ui_reconfigure_output_for_input_policy(opts, state) == 0) {
-                ui_set_toast(state, 3, "Applied: RTL input enabled");
+                ui_set_toast(state, 3, "Applied: %s input enabled",
+                             c->id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT ? "Airspy" : "RTL");
             } else {
                 result = UI_CMD_APPLY_FAILED;
             }
@@ -1120,6 +1131,7 @@ ui_cmd_handle_rtl_set_dev(dsd_opts* opts, dsd_state* state, const struct dsd_app
 static int
 apply_cmd_io_and_import_rtl_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct dsd_app_command_handler_entry k_handlers[] = {
+        {DSD_APP_CMD_AIRSPY_ENABLE_INPUT, ui_cmd_handle_rtl_enable_input},
         {DSD_APP_CMD_RTL_ENABLE_INPUT, ui_cmd_handle_rtl_enable_input},
         {DSD_APP_CMD_RTL_RESTART, ui_cmd_handle_rtl_restart},
         {DSD_APP_CMD_RTL_SET_DEV, ui_cmd_handle_rtl_set_dev},
@@ -1316,11 +1328,29 @@ ui_cmd_handle_rtl_set_ppm(dsd_opts* opts, dsd_state* state, const struct dsd_app
 }
 
 static int
+ui_cmd_handle_airspy_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!opts || !state || c->n != sizeof(dsd_app_airspy_setting_payload)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsd_app_airspy_setting_payload edit;
+    DSD_MEMCPY(&edit, c->data, sizeof edit);
+    if (!memchr(edit.key, '\0', sizeof edit.key) || !memchr(edit.value, '\0', sizeof edit.value)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsd_airspy_config config = opts->airspy;
+    if (dsd_airspy_config_set(&config, edit.key, edit.value) != 0) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    int rc = svc_airspy_apply(opts, state, &config);
+    ui_set_toast(state, 3, rc == 0 ? "Applied: Airspy setting" : "Failed: Airspy setting");
+    return ui_cmd_apply_status_from_service_rc(rc);
+}
+
+static int
 apply_cmd_io_and_import_rtl_b(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct dsd_app_command_handler_entry k_handlers[] = {
-        {DSD_APP_CMD_RTL_SET_FREQ, ui_cmd_handle_rtl_set_freq},
-        {DSD_APP_CMD_MANUAL_TUNE, ui_cmd_handle_manual_tune},
-        {DSD_APP_CMD_RTL_SET_GAIN, ui_cmd_handle_rtl_set_gain},
+        {DSD_APP_CMD_RTL_SET_FREQ, ui_cmd_handle_rtl_set_freq}, {DSD_APP_CMD_MANUAL_TUNE, ui_cmd_handle_manual_tune},
+        {DSD_APP_CMD_AIRSPY_SET, ui_cmd_handle_airspy_set},     {DSD_APP_CMD_RTL_SET_GAIN, ui_cmd_handle_rtl_set_gain},
         {DSD_APP_CMD_RTL_SET_PPM, ui_cmd_handle_rtl_set_ppm},
     };
     if (!opts || !c) {
@@ -1988,13 +2018,17 @@ apply_cmd_io_and_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
 
 #ifdef USE_RADIO
 static int
-apply_cmd_dsp(const struct dsd_app_command* c) {
+apply_cmd_dsp(const struct dsd_app_command* c, const dsd_opts* opts) {
     if (!c || c->id != DSD_APP_CMD_DSP_OP) {
         return 0;
     }
     dsd_app_dsp_payload p = {0};
     if (c->n >= (int)sizeof(dsd_app_dsp_payload)) {
         DSD_MEMCPY(&p, c->data, sizeof p);
+    }
+    if (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
+        && p.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE) {
+        return UI_CMD_APPLY_UNSUPPORTED;
     }
     apply_dsp_op(&p);
     return 1;
@@ -2248,7 +2282,7 @@ cfg_uses_rtl_runtime(const dsdneoUserConfig* cfg) {
         return 0;
     }
     return cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP
-           || cfg->input_source == DSDCFG_INPUT_SOAPY;
+           || cfg->input_source == DSDCFG_INPUT_SOAPY || cfg->input_source == DSDCFG_INPUT_AIRSPY;
 }
 
 static void
@@ -2296,7 +2330,7 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
                           int old_audio_in_type) {
     if (!cfg->has_input
         || (cfg->input_source != DSDCFG_INPUT_RTL && cfg->input_source != DSDCFG_INPUT_RTLTCP
-            && cfg->input_source != DSDCFG_INPUT_SOAPY)
+            && cfg->input_source != DSDCFG_INPUT_SOAPY && cfg->input_source != DSDCFG_INPUT_AIRSPY)
         || old_audio_in_type != AUDIO_IN_RTL || opts->audio_in_type != AUDIO_IN_RTL
         || strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
         return;
@@ -2590,6 +2624,14 @@ apply_cfg_pulse_out_hot_restart(dsd_opts* opts, const dsdneoUserConfig* cfg, con
     }
 }
 
+#ifdef USE_RADIO
+static int
+cfg_is_live_airspy(const dsdneoUserConfig* cfg, const char* old_device, int old_type) {
+    return cfg && cfg->has_input && cfg->input_source == DSDCFG_INPUT_AIRSPY && old_type == AUDIO_IN_RTL
+           && dsd_opts_audio_in_dev_is_airspy_spec(old_device);
+}
+#endif
+
 static void
 apply_cfg_runtime_hot_switches(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
                                const char* old_audio_in_dev, int old_audio_in_type, int old_wav_sample_rate,
@@ -2598,7 +2640,9 @@ apply_cfg_runtime_hot_switches(dsd_opts* opts, dsd_state* state, const dsdneoUse
      * active backends whose configuration changed, while avoiding cross-backend
      * hot-switches. */
 #ifdef USE_RADIO
-    apply_cfg_rtl_hot_restart(opts, state, cfg, old_audio_in_dev, old_audio_in_type);
+    if (!cfg_is_live_airspy(cfg, old_audio_in_dev, old_audio_in_type)) {
+        apply_cfg_rtl_hot_restart(opts, state, cfg, old_audio_in_dev, old_audio_in_type);
+    }
 #else
     (void)state;
 #endif
@@ -2727,6 +2771,7 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_INV_DPMR_TOGGLE,
     DSD_APP_CMD_INV_M17_TOGGLE,
     DSD_APP_CMD_INPUT_SET_PULSE,
+    DSD_APP_CMD_AIRSPY_ENABLE_INPUT,
     DSD_APP_CMD_RTL_ENABLE_INPUT,
     DSD_APP_CMD_RTL_RESTART,
     DSD_APP_CMD_LRRP_SET_HOME,
@@ -4704,6 +4749,14 @@ ui_cmd_handle_config_metadata_set(dsd_opts* opts, dsd_state* state, const struct
 }
 
 static int
+cfg_airspy_settings_valid(const dsdneoUserConfig* cfg) {
+    if (!cfg->has_input || cfg->input_source != DSDCFG_INPUT_AIRSPY) {
+        return 1;
+    }
+    return !cfg->airspy_invalid && dsd_airspy_config_valid(&cfg->airspy);
+}
+
+static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
@@ -4721,11 +4774,16 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int old_symbol_center = state->symbolCenter;
     int old_jitter = state->jitter;
     dsd_frontend_kind old_frontend_kind = opts->frontend_kind;
+    dsd_airspy_config old_airspy = opts->airspy;
+    (void)old_airspy;
 
     DSD_SNPRINTF(old_audio_in_dev, sizeof old_audio_in_dev, "%s", opts->audio_in_dev);
     DSD_SNPRINTF(old_audio_out_dev, sizeof old_audio_out_dev, "%s", opts->audio_out_dev);
 
     DSD_MEMCPY(&cfg, c->data, sizeof cfg);
+    if (!cfg_airspy_settings_valid(&cfg)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
     dsd_apply_user_config_to_opts(&cfg, opts, state);
     /*
      * Frontend lifecycle is owned by startup and ui_start/ui_stop.
@@ -4735,6 +4793,13 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
      */
     opts->frontend_kind = old_frontend_kind;
 #ifdef USE_RADIO
+    if (cfg_is_live_airspy(&cfg, old_audio_in_dev, old_audio_in_type)) {
+        opts->airspy = old_airspy;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", old_audio_in_dev);
+        if (svc_airspy_apply(opts, state, &cfg.airspy) != 0) {
+            return UI_CMD_APPLY_FAILED;
+        }
+    }
     apply_cfg_live_rtl_ppm_request(opts, &cfg, old_audio_in_type);
 #endif
     apply_cfg_runtime_hot_switches(opts, state, &cfg, old_audio_in_dev, old_audio_in_type, old_wav_sample_rate,
@@ -4743,6 +4808,9 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     apply_cfg_file_runtime_rate(opts, state, &cfg, old_runtime_input_rate, old_samples_per_symbol, old_symbol_center,
                                 old_jitter);
     int reconfigure_rc = ui_reconfigure_output_for_input_policy(opts, state);
+    if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_AIRSPY && old_audio_in_type != AUDIO_IN_RTL) {
+        return UI_CMD_APPLY_RESTART_REQUIRED;
+    }
     if (cfg.frontend_kind_is_set && cfg.frontend_kind != old_frontend_kind) {
         return UI_CMD_APPLY_RESTART_REQUIRED;
     }
@@ -4800,7 +4868,7 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
         return r;
     }
 #ifdef USE_RADIO
-    r = apply_cmd_dsp(c);
+    r = apply_cmd_dsp(c, opts);
     if (r) {
         return r;
     }

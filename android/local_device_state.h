@@ -8,6 +8,8 @@
 namespace dsd_android {
 // The complete retained USB record is installed before notifying property readers.
 struct LocalDeviceState {
+    QString source = QStringLiteral("usb");
+    QString serial;
     bool ready = false;
     QString text;
     int failureKind = dsd_qt::DecoderHost::NoDeviceFailure;
@@ -20,12 +22,17 @@ struct LocalDeviceState {
                             : kind == QStringLiteral("permission")  ? dsd_qt::DecoderHost::DevicePermission
                             : kind == QStringLiteral("open_failed") ? dsd_qt::DecoderHost::DeviceOpenFailed
                                                                     : dsd_qt::DecoderHost::NoDeviceFailure;
+        const QString nextSerial = record.value(QStringLiteral("serial")).toString();
+        const QString nextSource = record.value(QStringLiteral("source")).toString(QStringLiteral("usb"));
         const bool nextReady = record.value(QStringLiteral("ready")).toBool();
         const QString nextText = record.value(QStringLiteral("text")).toString();
         const QString nextName = record.value(QStringLiteral("name")).toString(QStringLiteral("RTL-SDR"));
-        if (ready == nextReady && text == nextText && failureKind == failure && name == nextName) {
+        if (serial == nextSerial && source == nextSource && ready == nextReady && text == nextText
+            && failureKind == failure && name == nextName) {
             return;
         }
+        serial = nextSerial;
+        source = nextSource;
         ready = nextReady;
         text = nextText;
         failureKind = failure;

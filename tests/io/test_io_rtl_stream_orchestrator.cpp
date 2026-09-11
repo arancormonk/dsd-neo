@@ -86,6 +86,12 @@ extern "C" int
 dsd_rtl_stream_open(dsd_opts* opts) {
     g_stub.open_calls++;
     g_stub.last_open_opts = opts;
+    if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        opts->airspy_info.sample_rate = 6000000;
+        opts->airspy_info.rate_count = 2;
+        opts->airspy_info.rates[0] = 3000000;
+        opts->airspy_info.rates[1] = 6000000;
+    }
     return g_stub.open_rc;
 }
 
@@ -256,9 +262,23 @@ test_tune_and_read_error_propagation(void) {
     return rc;
 }
 
+static int
+test_airspy_start_publishes_actual_rate() {
+    reset_stubs();
+    auto opts = make_opts();
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "airspy");
+    RtlSdrOrchestrator stream(*opts);
+    int rc = expect_int_eq("native start", stream.start(), 0);
+    rc |= expect_int_eq("actual rate visible to snapshot publisher", (int)opts->airspy_info.sample_rate, 6000000);
+    rc |= expect_int_eq("available rates visible to frontend", (int)opts->airspy_info.rate_count, 2);
+    rc |= expect_int_eq("automatic preference retained", (int)opts->airspy.sample_rate, 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_airspy_start_publishes_actual_rate();
     rc |= test_constructor_snapshots_and_registers_opts();
     rc |= test_start_stop_and_destructor_lifecycle();
     rc |= test_start_failure_and_prestart_errors();

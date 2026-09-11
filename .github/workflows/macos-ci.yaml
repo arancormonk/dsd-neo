@@ -93,7 +93,7 @@ jobs:
           set -euxo pipefail
           # Many deps we build from source (cached) to align with Linux/Windows flows
           brew install cmake ninja pkg-config ccache \
-            libsndfile pulseaudio fftw libusb ncurses soapysdr
+            libsndfile pulseaudio fftw libusb ncurses soapysdr airspy
           # Prefer Homebrew packages when available
           brew install codec2 rtl-sdr || true
           brew --version
@@ -239,7 +239,7 @@ jobs:
           # gets, and pinning it here is what kept issue #339 out of CI.
           cmake --preset dev-release -G Ninja \
             -DDSD_ENABLE_LTO=OFF -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON \
+            -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON \
             -DBUILD_TESTING=OFF
 
       - name: Verify curses selection
@@ -356,7 +356,7 @@ jobs:
           set -euxo pipefail
           # Many deps we build from source (cached) to align with Linux/Windows flows
           brew install cmake ninja pkg-config ccache \
-            libsndfile pulseaudio fftw libusb ncurses soapysdr
+            libsndfile pulseaudio fftw libusb ncurses soapysdr airspy
           # Prefer Homebrew packages when available
           brew install codec2 rtl-sdr || true
           brew --version
@@ -502,7 +502,7 @@ jobs:
           # gets, and pinning it here is what kept issue #339 out of CI.
           cmake --preset dev-release -G Ninja \
             -DDSD_ENABLE_LTO=OFF -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON \
+            -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON \
             -DBUILD_TESTING=OFF
 
       - name: Verify curses selection

@@ -262,6 +262,20 @@ CommandBridge::setSquelchDb(double db) const {
 }
 
 bool
+CommandBridge::setAirspy(const QString& key, const QString& value) const {
+    const QByteArray k = (QStringLiteral("airspy_") + key).toUtf8();
+    const QByteArray v = value.toUtf8();
+    dsd_app_airspy_setting_payload p{};
+    if (k.contains('\0') || v.contains('\0') || k.size() >= (qsizetype)sizeof p.key
+        || v.size() >= (qsizetype)sizeof p.value) {
+        return false;
+    }
+    DSD_SNPRINTF(p.key, sizeof p.key, "%s", k.constData());
+    DSD_SNPRINTF(p.value, sizeof p.value, "%s", v.constData());
+    return accepted(dsd_app_command_submit(DSD_APP_CMD_AIRSPY_SET, &p, sizeof p));
+}
+
+bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::setPpm(int ppm) const {
     return accepted(dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_PPM, static_cast<int32_t>(ppm)));

@@ -240,8 +240,8 @@ Rectangle {
             PlexComboBox {
                 width: parent.width
                 Accessible.name: qsTr("Input source")
-                model: ["usb", "rtltcp"]
-                currentIndex: screen.draft.sourceType === "rtltcp" ? 1 : 0
+                model: ["usb", "rtltcp", "airspy"]
+                currentIndex: screen.draft.sourceType === "airspy" ? 2 : screen.draft.sourceType === "rtltcp" ? 1 : 0
                 onActivated: {
                     var copy = screen.draft;
                     copy.sourceType = currentText;
@@ -249,6 +249,17 @@ Rectangle {
                 }
             }
 
+            AirspyControls {
+                width: parent.width
+                visible: screen.draft.sourceType === "airspy"
+                settings: screen.draft.airspy || ({})
+                onEdited: function(key, value) {
+                    var copy = Object.assign({}, screen.draft);
+                    copy.airspy = Object.assign({}, copy.airspy || ({}));
+                    copy.airspy[key] = value;
+                    screen.draft = copy;
+                }
+            }
             PlexInput {
                 width: parent.width
                 visible: screen.draft.sourceType === "rtltcp"

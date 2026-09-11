@@ -34,7 +34,7 @@ Item {
         }
     }
     function draftFingerprint() {
-        return JSON.stringify([sourceType, hostText, portText, fileText, freqText, decodeFlag, trunking, gainText, ppmText, hangtimeText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
+        return JSON.stringify([sourceType, airspySettings, hostText, portText, fileText, freqText, decodeFlag, trunking, gainText, ppmText, hangtimeText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
     }
     function requestBack() {
         Navigation.clearInput(wizard.Window.window);
@@ -59,6 +59,7 @@ Item {
     property string decryptionProfileUid: ""
 
     // Step 1 state
+    property var airspySettings: ({})
     property string sourceType: "usb"
     onSourceTypeChanged: Navigation.clearInput(wizard.Window.window)
     property alias hostText: hostField.text
@@ -111,7 +112,7 @@ Item {
     // Step 3 state
     property alias nameText: nameField.text
 
-    readonly property bool radioSource: sourceType === "usb" || sourceType === "rtltcp"
+    readonly property bool radioSource: sourceType === "usb" || sourceType === "airspy" || sourceType === "rtltcp"
 
     // Per-source conventions, not one shared guess: 1234 is rtl_tcp's port, but
     // GQRX/SDR++ audio streams (docs/network-audio.md) use 7355 and a TCP audio
@@ -179,6 +180,7 @@ Item {
         ppmField.text = "";
         hangtimeField.text = "";
         bwField.text = "";
+        airspySettings = ({});
         biasTee = -1;
         extraField.text = "";
         nameField.text = "";
@@ -209,7 +211,7 @@ Item {
         decryptionProfileUid = "";
         editRow = -1;
         step = 1;
-        sourceType = (sys && sys.sourceType === "rtltcp") ? "rtltcp" : "usb";
+        sourceType = sys && sys.sourceType === "airspy" ? "airspy" : (sys && sys.sourceType === "rtltcp") ? "rtltcp" : "usb";
         hostField.text = sys && sys.host ? sys.host : defaultHostFor(sourceType);
         portField.text = sys && sys.port > 0 ? String(sys.port) : defaultPortFor(sourceType);
         wizard.fileText = "";
@@ -225,6 +227,7 @@ Item {
         ppmField.text = "";
         hangtimeField.text = "";
         bwField.text = "";
+        airspySettings = ({});
         biasTee = -1;
         extraField.text = "";
         nameField.text = "";
@@ -257,6 +260,7 @@ Item {
         // the edit must not silently flip what the card was doing yesterday.
         answerTrunking(sys.trunking);
         advancedOpen = false;
+        airspySettings = sys.airspy || ({});
         gainField.text = sys.gainDb >= 0 ? String(sys.gainDb) : "";
         ppmField.text = sys.ppm;
         hangtimeField.text = sys.hangtime || "";
@@ -367,6 +371,7 @@ Item {
             freqMhz: freqText,
             decodeFlag: decodeFlag,
             trunking: trunking,
+            airspy: airspySettings,
             gainDb: gainText.length > 0 ? intOr(gainText, -1) : -1,
             ppm: ppmText,
             hangtime: hangtimeText,
@@ -661,6 +666,7 @@ Item {
                                 label: qsTr("USB dongle"),
                                 key: "usb"
                             },
+                            { label: qsTr("Airspy R2 / Mini"), key: "airspy" },
                             {
                                 label: qsTr("RTL-TCP"),
                                 key: "rtltcp"
@@ -1168,9 +1174,19 @@ Item {
                         spacing: 10
                         visible: wizard.advancedOpen
 
+                        AirspyControls {
+                            width: parent.width
+                            visible: wizard.sourceType === "airspy"
+                            settings: wizard.airspySettings
+                            onEdited: function(key, value) {
+                                var copy = Object.assign({}, wizard.airspySettings);
+                                copy[key] = value;
+                                wizard.airspySettings = copy;
+                            }
+                        }
                         Row {
                             width: parent.width
-                            visible: wizard.radioSource
+                            visible: wizard.radioSource && wizard.sourceType !== "airspy"
                             spacing: 10
 
                             Column {

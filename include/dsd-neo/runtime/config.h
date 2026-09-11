@@ -14,6 +14,7 @@
 #ifndef DSD_NEO_RUNTIME_CONFIG_H
 #define DSD_NEO_RUNTIME_CONFIG_H
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/platform/platform.h>
 
 /* Include schema types first (before extern "C" for C++ compat) */
@@ -507,7 +508,8 @@ typedef enum DSD_ATTR_PACKED {
     DSDCFG_INPUT_SOAPY,
     DSDCFG_INPUT_FILE,
     DSDCFG_INPUT_TCP,
-    DSDCFG_INPUT_UDP
+    DSDCFG_INPUT_UDP,
+    DSDCFG_INPUT_AIRSPY
 } dsdneoUserInputSource;
 
 typedef enum DSD_ATTR_PACKED {
@@ -559,6 +561,8 @@ typedef struct dsdneoUserConfig {
     int rtl_auto_ppm; /* bool */
     char rtltcp_host[128];
     int rtltcp_port;
+    dsd_airspy_config airspy;
+    int airspy_invalid; /* Invalid native settings must not silently select another device. */
     char soapy_args[256];
     char soapy_profile[32];
     char soapy_stream_format[16];

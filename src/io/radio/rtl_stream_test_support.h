@@ -63,6 +63,19 @@ int rtl_stream_test_fsk_cfo_snapshot(double dc_rad_per_sample, int rate_out_hz, 
 int rtl_stream_test_fsk_snr_sps(int rate_out_hz, int symbol_rate_hz, int stale_ted_sps);
 int rtl_stream_test_direct_output_rate_after_open_update(int output_kind, int rate_out_hz, int resamp_target_hz,
                                                          unsigned int* out_rate_hz, int* out_resamp_enabled);
+
+typedef struct {
+    const float* samples;
+    size_t pairs;
+    size_t capacity;
+    size_t start;
+    int mute;
+    int hold;
+    uint64_t hardware_drops;
+} rtl_device_test_airspy_request;
+
+int rtl_device_test_airspy_ingest(const rtl_device_test_airspy_request* request, float* output, size_t* output_count,
+                                  uint64_t* dropped);
 int rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz);
 int rtl_stream_test_digital_resample_chain(int output_kind, int rate_out_hz, int resamp_target_hz, int symbol_rate_hz,
                                            int digital_resample_mode, int capture_rate_device_forced,

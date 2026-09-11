@@ -65,3 +65,9 @@ configure_file(
     "${_doc_dir}/licenses/librtlsdr-GPL-2.0-or-later.txt"
     COPYONLY
 )
+
+configure_file(
+    "${REPO_DIR}/android/third_party/libairspy/LICENSE"
+    "${_doc_dir}/licenses/libairspy-BSD-3-Clause.txt"
+    COPYONLY
+)

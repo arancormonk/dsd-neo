@@ -17,6 +17,7 @@ target_sources(
         control_pump.c
         freq_parse.c
         input_spec.c
+        airspy_config.c
         input_level.c
         input_failure.c
         path_policy.c

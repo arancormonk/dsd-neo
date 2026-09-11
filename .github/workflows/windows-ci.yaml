@@ -95,6 +95,7 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=sccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
             -DDSD_REQUIRE_RTLSDR=ON `
+            -DDSD_REQUIRE_AIRSPY=ON `
             -DDSD_REQUIRE_SOAPYSDR=ON
 
       - name: Build (MSVC Release)
@@ -201,6 +202,7 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=sccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache `
             -DDSD_REQUIRE_RTLSDR=ON `
+            -DDSD_REQUIRE_AIRSPY=ON `
             -DDSD_REQUIRE_SOAPYSDR=ON
 
       - name: Build (MSVC Release)

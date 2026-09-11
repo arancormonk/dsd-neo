@@ -860,3 +860,5 @@ their effective values. Changing source monitoring alone preserves the active ca
 
 P25 scan mode enables both phases; it is a scan class rather than a new global `decode` value. No CLI preset or
 persisted decode enum changes. Channel numbers and frequencies remain decimal integer channel numbers and Hz.
+
+The native Airspy backend uses `[input] source = "airspy"`, shared radio tuning fields, and `airspy_*` receiver settings. `airspy_sample_rate = 0` preserves automatic selection separately from the actual rate. See [the complete Airspy configuration](airspy.md#receiver-settings).

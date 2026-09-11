@@ -69,6 +69,7 @@ SavedSystemsModel::rowCount(const QModelIndex& parent) const {
 QVariant
 SavedSystemsModel::identityRoleValue(const Row& row, int role) {
     switch (role) {
+        case AirspyRole: return row.airspy;
         case UidRole: return row.uid;
         case NameRole: return row.name;
         case SourceTypeRole: return row.sourceType;
@@ -137,6 +138,7 @@ SavedSystemsModel::data(const QModelIndex& index, int role) const {
 QHash<int, QByteArray>
 SavedSystemsModel::roleNames() const {
     QHash<int, QByteArray> roles;
+    roles.insert(AirspyRole, QByteArrayLiteral("airspy"));
     roles.insert(NameRole, QByteArrayLiteral("name"));
     roles.insert(SourceTypeRole, QByteArrayLiteral("sourceType"));
     roles.insert(HostRole, QByteArrayLiteral("host"));
@@ -283,6 +285,9 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     map_take_string(map, QStringLiteral("freqMhz"), &row.freqMhz);
     map_take_string(map, QStringLiteral("decodeFlag"), &row.decodeFlag);
     map_take_bool(map, QStringLiteral("trunking"), &row.trunking);
+    if (map.contains(QStringLiteral("airspy"))) {
+        row.airspy = map.value(QStringLiteral("airspy")).toMap();
+    }
     map_take_int(map, QStringLiteral("gainDb"), &row.gainDb);
     map_take_string(map, QStringLiteral("ppm"), &row.ppm);
     map_take_string(map, QStringLiteral("hangtime"), &row.hangtime);
@@ -328,6 +333,7 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     map.insert(QStringLiteral("freqMhz"), row.freqMhz);
     map.insert(QStringLiteral("decodeFlag"), row.decodeFlag);
     map.insert(QStringLiteral("trunking"), row.trunking);
+    map.insert(QStringLiteral("airspy"), row.airspy);
     map.insert(QStringLiteral("gainDb"), row.gainDb);
     map.insert(QStringLiteral("ppm"), row.ppm);
     map.insert(QStringLiteral("hangtime"), row.hangtime);

@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
@@ -28,6 +29,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <stdint.h>
@@ -808,11 +810,43 @@ done:
 }
 
 int
+svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config) {
+    if (!opts || !state || !dsd_airspy_config_valid(config)) {
+        return -1;
+    }
+    if (!dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
+    dsd_airspy_config previous = opts->airspy;
+    int reopen = previous.sample_rate != config->sample_rate || strcmp(previous.serial, config->serial) != 0;
+    int rc = 0;
+    if (reopen || !state->rtl_ctx) {
+        opts->airspy = *config;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s", config->serial[0] ? ":serial=" : "",
+                     config->serial);
+        rc = svc_rtl_restart(opts, state);
+        if (rc != 0) {
+            opts->airspy = previous;
+            DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s",
+                         previous.serial[0] ? ":serial=" : "", previous.serial);
+            (void)svc_rtl_restart(opts, state);
+        }
+    } else {
+        rc = rtl_stream_airspy_controls(config);
+        if (rc == 0) {
+            opts->airspy = *config;
+        }
+    }
+    (void)rtl_stream_airspy_info(&opts->airspy_info);
+    return rc;
+}
+
+int
 svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index) {
     if (!opts || !state) {
         return -1;
     }
-    if (svc_radio_source_is_soapy(opts)) {
+    if (svc_radio_source_is_soapy(opts) || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         return DSD_ERR_NOT_SUPPORTED;
     }
     if (index < 0) {
@@ -838,6 +872,9 @@ svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz) {
 
 int
 svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
+    if (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     if (!opts || !state) {
         return -1;
     }
