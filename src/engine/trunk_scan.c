@@ -3022,6 +3022,25 @@ trunk_scan_timing_select_reason(const dsd_opts* opts, const dsd_state* state, co
     }
 }
 
+/* Somewhere else to go: the same candidate filter trunk_scan_advance() walks, so the cap can
+ * never fire on a rotation the advance would refuse. An alternate avoided for the session or
+ * still cooling down from a failed retune is not an alternate. */
+static int
+trunk_scan_visit_alternate_is_eligible(const dsd_trunk_scan_coord* coord, double now_m) {
+    if (coord->count < 2) {
+        return 0;
+    }
+    for (size_t i = 0; i < coord->count; i++) {
+        if (i == coord->active) {
+            continue;
+        }
+        if (!coord->targets[i].avoided && coord->targets[i].retry_until_m <= now_m) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /*
  * One scan-timing report for the target on air (issue #508). Absolute monotonic anchors only:
  * the frontends difference them against their own clock, so a stalled UI cannot invent a
@@ -3052,34 +3071,20 @@ trunk_scan_publish_timing(const dsd_opts* opts, dsd_state* state, const dsd_trun
     report.dwell_ms = dwell_ms > 0 ? (uint32_t)dwell_ms : 0U;
     report.hold_ms = hold_ms > 0 ? (uint32_t)hold_ms : 0U;
     /* The cap the row on air is subject to, and the deadline only while one is really counting:
-     * the same suspension the tick honours, and nothing to count from before the park lands. */
+     * the same suspension the tick honours, nothing to count from before the park lands, and
+     * somewhere for the expiry to go. Without that last test a rotation with no eligible
+     * alternate -- a single target, or every other row avoided or cooling down -- would publish a
+     * countdown the tick re-arms at each boundary instead of firing, drawing a sawtooth the
+     * operator can never see end. The effective limit stays published either way. */
     const int visit_limit_ms = trunk_scan_target_max_visit_ms(opts, rt);
     report.visit_limit_ms = visit_limit_ms >= 1000 ? (uint32_t)visit_limit_ms : 0U;
     if (report.visit_limit_ms != 0U && rt->visit_since_m >= 0.0 && !rt->tune_pending
-        && !trunk_scan_visit_suspended(opts, state, coord, rt)) {
+        && !trunk_scan_visit_suspended(opts, state, coord, rt)
+        && trunk_scan_visit_alternate_is_eligible(coord, now_m)) {
         report.visit_deadline_m = rt->visit_since_m + (double)visit_limit_ms / 1000.0;
     }
     trunk_scan_timing_select_reason(opts, state, coord, now_m, &report);
     dsd_scan_timing_publish(state, &report);
-}
-
-/* Somewhere else to go: the same candidate filter trunk_scan_advance() walks, so the cap can
- * never fire on a rotation the advance would refuse. An alternate avoided for the session or
- * still cooling down from a failed retune is not an alternate. */
-static int
-trunk_scan_visit_alternate_is_eligible(const dsd_trunk_scan_coord* coord, double now_m) {
-    if (coord->count < 2) {
-        return 0;
-    }
-    for (size_t i = 0; i < coord->count; i++) {
-        if (i == coord->active) {
-            continue;
-        }
-        if (!coord->targets[i].avoided && coord->targets[i].retry_until_m <= now_m) {
-            return 1;
-        }
-    }
-    return 0;
 }
 
 /*

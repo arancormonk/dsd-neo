@@ -296,6 +296,12 @@ dsd_engine_scan_visit_tick(const dsd_opts* opts, dsd_state* state, double now_m)
         return;
     }
     if (!scan_visit_scanner_owns(opts)) {
+        /* Not this scanner's rotation: drop the anchor rather than leave one behind. A runtime
+         * switch into --trunk-scan hands the rotation to the coordinator, and an anchor from the
+         * visit before it would otherwise be minutes stale by the time -Y takes it back -- and
+         * fire the instant it did. The first owning tick anchors a fresh full limit. */
+        state->scan_visit_since_m = -1.0;
+        state->scan_visit_roll_seen = state->lcn_freq_roll;
         return;
     }
     if (!scan_visit_cap_enabled(opts)) {

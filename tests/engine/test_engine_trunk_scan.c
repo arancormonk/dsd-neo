@@ -8704,12 +8704,11 @@ test_visit_limit_single_target_does_not_spin(void) {
     static dsd_opts opts;
     static dsd_state state;
 
-    /* Every mark 1.01 s past the previous re-arm crosses the cap again; the deadline walks
-     * forward by one limit each time and the tuner is never asked to move. */
-    static const struct {
-        double now_m;
-        double deadline_m;
-    } marks[] = {{1.01, 2.01}, {1.5, 2.01}, {2.02, 3.02}, {3.03, 4.03}, {4.04, 5.04}};
+    /* Every mark 1.01 s past the previous re-arm crosses the cap again, and the tuner is never
+     * asked to move. The publication abstains throughout rather than counting down to a deadline
+     * that cannot fire: with nowhere to go a frontend would otherwise draw a sawtooth countdown
+     * that resets at every boundary. The effective limit stays on screen. */
+    static const double marks[] = {1.01, 1.5, 2.02, 3.03, 4.04};
 
     if (scan_visit_init(NULL, "a,p25-trunk,851000000,,250,,\n", 1000, &opts, &state, dir, sizeof dir, target_path,
                         sizeof target_path)
@@ -8732,10 +8731,10 @@ test_visit_limit_single_target_does_not_spin(void) {
         return 1;
     }
     for (size_t i = 0; i < sizeof marks / sizeof marks[0]; i++) {
-        trunk_scan_test_set_now(marks[i].now_m);
+        trunk_scan_test_set_now(marks[i]);
         dsd_engine_trunk_scan_tick(&opts, &state);
         test_rc |= expect_active_target(&state, "single target past the cap", 0U);
-        test_rc |= expect_scan_visit(&state, "single target past the cap", 1000U, marks[i].deadline_m);
+        test_rc |= expect_scan_visit(&state, "single target past the cap", 1000U, -1.0);
         if (g_counting_tune_to_cc_calls != parked_calls) {
             DSD_FPRINTF(stderr, "single target cap retuned: calls=%d, want %d\n", g_counting_tune_to_cc_calls,
                         parked_calls);
@@ -8783,10 +8782,10 @@ test_visit_limit_single_target_does_not_spin(void) {
     const int avoided_calls = g_counting_tune_to_cc_calls;
     opts.trunk_is_tuned = 1;
     for (size_t i = 0; i < sizeof marks / sizeof marks[0]; i++) {
-        trunk_scan_test_set_now(marks[i].now_m);
+        trunk_scan_test_set_now(marks[i]);
         dsd_engine_trunk_scan_tick(&opts, &state);
         test_rc |= expect_active_target(&state, "avoided alternate past the cap", 0U);
-        test_rc |= expect_scan_visit(&state, "avoided alternate past the cap", 1000U, marks[i].deadline_m);
+        test_rc |= expect_scan_visit(&state, "avoided alternate past the cap", 1000U, -1.0);
         if (g_counting_tune_to_cc_calls != avoided_calls) {
             DSD_FPRINTF(stderr, "avoided alternate cap retuned: calls=%d, want %d\n", g_counting_tune_to_cc_calls,
                         avoided_calls);
@@ -9231,8 +9230,11 @@ test_visit_limit_forced_advance_rollback_rearms(void) {
         test_rc = 1;
     }
     test_rc |= expect_scan_timing(&state, "forced advance rollback", DSD_SCAN_STAY_RETUNE_RETRY, 3.01, 250U, 0U);
-    /* Re-armed from the failed eviction, so the next boundary is one full limit out. */
-    test_rc |= expect_scan_visit(&state, "forced advance rollback", 1000U, 2.01);
+    /* The anchor is re-armed from the failed eviction, but every alternate is cooling down from it,
+     * so there is nothing the cap could advance to: the publication abstains until one of them is
+     * eligible again rather than showing a countdown that cannot fire. The quiet marks below are
+     * what pin the re-arm -- no second eviction attempt on any tick past the old boundary. */
+    test_rc |= expect_scan_visit(&state, "forced advance rollback", 1000U, -1.0);
 
     const int rollback_calls = g_counting_tune_to_cc_calls;
     static const double quiet_marks[] = {1.5, 1.99, 2.02};

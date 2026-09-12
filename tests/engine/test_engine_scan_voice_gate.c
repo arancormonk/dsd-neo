@@ -968,13 +968,14 @@ test_visit_cap_expires_from_the_tune_anchor(void) {
     fix.opts->trunk_scan_enabled = 0;
     fix.opts->scanner_mode = 0;
     CHECK("no scanner abstains", dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) < 0.0);
-    /* Neither of those may write the anchor either: the scanner that owns it is not running. */
+    /* Neither of those owns the anchor, and a visit measured before the switch must not survive
+     * it: the non-owner tick drops the anchor, so the owner's first tick starts a fresh limit. */
     dsd_engine_scan_visit_tick(fix.opts, fix.state, 500.0);
+    CHECK("an idle scanner drops the anchor", fix.state->scan_visit_since_m < 0.0);
     fix.opts->scanner_mode = 1;
-    fix.opts->trunk_scan_enabled = 1;
+    CHECK("the dropped anchor publishes no deadline", dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) < 0.0);
     dsd_engine_scan_visit_tick(fix.opts, fix.state, 600.0);
-    fix.opts->trunk_scan_enabled = 0;
-    CHECK("an idle scanner leaves the anchor", fabs(fix.state->scan_visit_since_m - 100.0) < 1e-9);
+    CHECK("the owning tick re-anchors", fabs(fix.state->scan_visit_since_m - 600.0) < 1e-9);
     fixture_free(&fix);
 }
 
@@ -1278,6 +1279,39 @@ test_visit_cap_publication_pauses_under_hold(void) {
     fixture_free(&fix);
 }
 
+/*
+ * A runtime switch out of --trunk-scan must not hand -Y an anchor the coordinator's rotation left
+ * behind: while the coordinator owns the rotation the -Y tick disarms the anchor, so the first
+ * tick after the switch starts a fresh full limit instead of expiring at once.
+ */
+static void
+test_visit_cap_trunk_scan_switch_starts_fresh(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    fix.opts->scan_max_visit_ms = 30000;
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    CHECK("the -Y visit is anchored", fabs(fix.state->scan_visit_since_m - 100.0) < 1e-9);
+    /* --trunk-scan takes over: the coordinator keeps its own per-target anchor. */
+    fix.opts->trunk_scan_enabled = 1;
+    dsd_engine_scan_visit_tick(fix.opts, fix.state, 200.0);
+    CHECK("the coordinator's tick disarms the -Y anchor", fix.state->scan_visit_since_m < 0.0);
+    CHECK("the disarmed anchor tracks the row", fix.state->scan_visit_roll_seen == fix.state->lcn_freq_roll);
+    /* Back to -Y, minutes later: the visit starts here, not at the park before the switch. */
+    fix.opts->trunk_scan_enabled = 0;
+    CHECK("the switch back publishes no stale deadline", dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) < 0.0);
+    CHECK("the switch back does not expire", dsd_engine_scan_visit_expired(fix.opts, fix.state, 500.0) == 0);
+    dsd_engine_scan_visit_tick(fix.opts, fix.state, 500.0);
+    CHECK("the first owning tick anchors at now", fabs(fix.state->scan_visit_since_m - 500.0) < 1e-9);
+    CHECK("the fresh limit is a full one", fabs(dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) - 530.0) < 1e-9);
+    CHECK("the fresh limit holds", dsd_engine_scan_visit_expired(fix.opts, fix.state, 529.999) == 0);
+    CHECK("the fresh limit expires", dsd_engine_scan_visit_expired(fix.opts, fix.state, 530.001) == 1);
+    fixture_free(&fix);
+}
+
 int
 main(void) {
     test_tick_leaves_phase_alone_without_scanner_mode();
@@ -1305,6 +1339,7 @@ main(void) {
     test_y_timing_seeds_visit_cap_off();
     test_visit_cap_disabled_never_expires();
     test_visit_cap_expires_from_the_tune_anchor();
+    test_visit_cap_trunk_scan_switch_starts_fresh();
     test_visit_cap_ignores_sync_refresh();
     test_visit_cap_ignores_continuous_voice();
     test_visit_cap_manual_hold_suspends_and_release_restarts();
