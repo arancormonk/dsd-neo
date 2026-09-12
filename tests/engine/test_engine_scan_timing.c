@@ -297,9 +297,11 @@ test_protocol_hangtime_publication(const char* protocol, float configured_hangti
     for (size_t i = 0; i < sizeof(large_hangtimes) / sizeof(large_hangtimes[0]); ++i) {
         if (strcmp(protocol, "p25-trunk") == 0) {
             p25_sm_ctx_t* ctx = dsd_engine_trunk_scan_active_p25_ctx();
+            assert(ctx);
             ctx->config.hangtime_s = large_hangtimes[i];
         } else {
             dmr_sm_ctx_t* ctx = dsd_engine_trunk_scan_active_dmr_ctx();
+            assert(ctx);
             ctx->hangtime_s = large_hangtimes[i];
         }
         dsd_engine_trunk_scan_tick(opts, state);
