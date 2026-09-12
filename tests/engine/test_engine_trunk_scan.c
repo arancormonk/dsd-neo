@@ -9183,9 +9183,12 @@ test_visit_limit_failed_retune_cools_down_not_capped(void) {
 
 /*
  * When the forced advance cannot land anywhere the receiver rolls back onto the row it was on.
- * The cap then re-arms rather than staying expired: a row whose alternates are all cooling down
- * must not re-decide the eviction on every tick, and the retry has to wait for the next cap
- * boundary that has somewhere to go.
+ * Two things have to hold afterwards. The cap re-arms rather than staying expired, so a row whose
+ * alternates are all cooling down does not re-decide the eviction on every tick. And the carrier
+ * stays released: the advance's rollback restores the snapshot it took before the release, call
+ * rows and VC mirrors included, so without a re-scrub the row would carry a phantom ACTIVE call
+ * that nothing ages out -- baked into its snapshot on the next ordinary departure and restored on
+ * every revisit from then on (requirement 8).
  */
 static int
 test_visit_limit_forced_advance_rollback_rearms(void) {
@@ -9202,7 +9205,11 @@ test_visit_limit_forced_advance_rollback_rearms(void) {
     }
     int test_rc = 0;
     const int parked_calls = g_counting_tune_to_cc_calls;
+    /* Following a call, exactly as a row that is about to be evicted mid-call is. */
     opts.trunk_is_tuned = 1;
+    state.p25_vc_freq[0] = 851112500;
+    state.trunk_vc_freq[0] = 851112500;
+    test_rc |= seed_active_call_row(&state, 1001U, 2002U, 0.10);
     /* The alternate's retune fails, and so does the re-park the advance falls back on. */
     g_counting_tune_to_cc_failures_remaining = 2;
 
@@ -9210,6 +9217,14 @@ test_visit_limit_forced_advance_rollback_rearms(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "forced advance rollback", 0U);
     test_rc |= expect_published_target(&state, "forced advance rollback", "a", 1U, 2U);
+    /* The receiver never left, but the carrier was handed back before the first attempt: the
+     * rollback must not resurrect it. */
+    test_rc |= expect_no_active_call_row(&state, "forced advance rollback");
+    test_rc |= expect_vc_mirrors_clear(&state, "forced advance rollback");
+    if (opts.trunk_is_tuned != 0) {
+        DSD_FPRINTF(stderr, "forced advance rollback left trunk_is_tuned=%d\n", opts.trunk_is_tuned);
+        test_rc = 1;
+    }
     if (g_counting_tune_to_cc_calls != parked_calls + 2) {
         DSD_FPRINTF(stderr, "forced advance made %d attempts, want %d\n", g_counting_tune_to_cc_calls - parked_calls,
                     2);
@@ -9234,15 +9249,33 @@ test_visit_limit_forced_advance_rollback_rearms(void) {
         }
     }
 
+    /* An ordinary departure now, once the alternates are out of their cooldown: the operator's
+     * advance carries no forced release, so it saves whatever the rolled-back row is holding into
+     * that row's snapshot. This is the path a phantom call would become permanent on. */
+    opts.trunk_is_tuned = 0;
+    trunk_scan_test_set_now(3.05);
+    test_rc |= expect_control_rc("ordinary advance after the rollback",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "ordinary advance after the rollback", 1U);
+
+    /* Row b's own idle dwell brings the rotation back to a, restoring that snapshot. */
+    trunk_scan_test_set_now(3.31);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "revisit after the rollback", 0U);
+    test_rc |= expect_no_active_call_row(&state, "revisit after the rollback");
+    test_rc |= expect_vc_mirrors_clear(&state, "revisit after the rollback");
+
     /* 2.02 crossed the re-armed cap but the alternate was still cooling down, so it only re-armed
-     * again; the first boundary with an eligible alternate is the one that moves the receiver. */
+     * again. The cap still owns the revisit: one boundary later, with somewhere to go, it evicts
+     * with exactly one retune attempt. */
+    const int revisit_calls = g_counting_tune_to_cc_calls;
     opts.trunk_is_tuned = 1;
-    trunk_scan_test_set_now(3.03);
+    trunk_scan_test_set_now(4.32);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "eviction once the alternate is eligible", 1U);
-    if (g_counting_tune_to_cc_calls != rollback_calls + 1) {
-        DSD_FPRINTF(stderr, "eviction after the cooldown made %d attempts, want 1\n",
-                    g_counting_tune_to_cc_calls - rollback_calls);
+    if (g_counting_tune_to_cc_calls != revisit_calls + 1) {
+        DSD_FPRINTF(stderr, "eviction after the revisit made %d attempts, want 1\n",
+                    g_counting_tune_to_cc_calls - revisit_calls);
         test_rc = 1;
     }
 

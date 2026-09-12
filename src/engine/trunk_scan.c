@@ -3120,10 +3120,24 @@ trunk_scan_service_visit_limit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     const size_t before = coord->active;
     coord->forced_visit_release = 1;
     trunk_scan_advance(opts, state, coord);
+    /* The switch clears the flag exactly when it hands the carrier back, so a flag still set means
+     * no attempt ever got that far and there is nothing to scrub below. */
+    const int released = coord->forced_visit_release == 0;
     /* Cleared unconditionally: a flag left armed would tear down a call on the next ordinary
      * dwell rotation, which is not a forced advance at all. */
     coord->forced_visit_release = 0;
     if (coord->active == before) {
+        if (released) {
+            /* The receiver is back on the row whose carrier was just handed back, and the
+             * advance restores the snapshot it took *before* that release -- canonical call rows
+             * and VC frequency mirrors included -- while the protocol SM has already abandoned
+             * the carrier. Scrub the engine side again so the two cannot disagree: left alone,
+             * that resurrected ACTIVE row never ages out, is saved into this target's snapshot
+             * on its next ordinary departure and restored on every revisit after that, and a row
+             * matching state->tg_hold would suspend the cap for as long as it lived. The SM does
+             * not need abandoning twice; only the decoder state was restored under it. */
+            dsd_engine_release_tuned_call_state(opts, state);
+        }
         /* Every alternate failed and the receiver is back on this row -- or nothing was eligible
          * by the time the advance walked its list. Re-arm, so the eviction is retried on the next
          * cap boundary rather than on every tick from here on. */
