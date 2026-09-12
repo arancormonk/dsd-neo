@@ -6695,6 +6695,44 @@ p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* 
     do_release(ctx, opts, state, reason ? reason : "explicit-release", 1);
 }
 
+void
+p25_sm_abandon_carrier(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
+    if (!ctx) {
+        ctx = p25_sm_get_ctx();
+    }
+    const char* safe_reason = reason ? reason : "abandon-carrier";
+
+    // The same guard do_release() takes. Two teardowns of one carrier would double-count the
+    // release and race each other's slot clears, so the loser leaves the work to the winner --
+    // which performs an equivalent teardown under its own reason.
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&g_p25_sm_release_lock, &expected, 1)) {
+        p25_sm_diagf(opts, state, ctx, "release_contended", "reason=%s", safe_reason);
+        return;
+    }
+
+    // The teardown the force-release latch asks for is happening right here. Leaving it armed
+    // would have the next SM tick attempt its own release, and that one does tune back to a
+    // control channel -- against a caller that is already moving the tuner.
+    const int had_force_release = p25_release_take_force_request(state);
+    p25_sm_diagf(opts, state, ctx, "abandon_carrier", "reason=%s force=%d", safe_reason, had_force_release);
+    sm_log(opts, state, safe_reason);
+    p25_release_log_channel(ctx, opts, state, safe_reason);
+
+    const double ended_m = dsd_time_now_monotonic_s();
+    p25_call_end_slot(opts, state, 0, ended_m);
+    p25_call_end_slot(opts, state, 1, ended_m);
+
+    // Counted as a release on both sides, exactly like the returning path: the carrier is gone.
+    // Deliberately not p25_sm_init_ctx(): the reprobe memo and the session counters outlive a
+    // release, and a target the scan coordinator will come back to must not forget them.
+    p25_release_clear_context(ctx, 1);
+    p25_release_clear_decoder_state(opts, state, 1);
+    set_state(ctx, opts, state, P25_SM_ON_CC, safe_reason);
+
+    atomic_store(&g_p25_sm_release_lock, 0);
+}
+
 /* ============================================================================
  * Encryption Lockout Helper
  * ============================================================================ */

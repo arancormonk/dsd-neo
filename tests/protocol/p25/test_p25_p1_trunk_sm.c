@@ -10,6 +10,7 @@
  * and next-CC iteration behavior.
  */
 
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -30,12 +31,16 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
+static int g_tune_requests = 0;
+static int g_return_requests = 0;
+
 static dsd_trunk_tune_result
 test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)opts;
     (void)state;
     (void)ted_sps;
     (void)request_id;
+    g_tune_requests++;
     return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
 
@@ -44,6 +49,7 @@ test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
     (void)opts;
     (void)state;
     (void)request_id;
+    g_return_requests++;
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
@@ -155,6 +161,34 @@ main(int argc, char** argv) {
     p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
     rc |= expect_eq("release_count", state.p25_sm_release_count, 1);
     rc |= expect_eq("cc_return_count", state.p25_sm_cc_return_count, 1);
+
+    // Abandoning the carrier (#507) is the same teardown minus the return-to-CC tune: the
+    // caller owns the tuner and is already moving it somewhere else, so the SM must come to
+    // rest on the control channel without asking for a single tune of its own.
+    // A decoded control-channel message after the return ends the CC acquisition the release
+    // started; without it the next grant is deferred rather than tuned.
+    state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s();
+    int channel2 = (iden << 12) | 0x0003;
+    p25_sm_event(p25_sm_get_ctx(), &opts, &state,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = channel2,
+                                   .tg = 4321,
+                                   .src = 8765,
+                                   .svc_bits = svc,
+                                   .is_group = 1});
+    rc |= expect_eq("tune_count after regrant", state.p25_sm_tune_count, 2);
+    const int tunes_before_abandon = g_tune_requests;
+    const int returns_before_abandon = g_return_requests;
+    p25_sm_abandon_carrier(p25_sm_get_ctx(), &opts, &state, "scan-visit-limit");
+    rc |= expect_eq("abandon issued no tune", g_tune_requests, tunes_before_abandon);
+    rc |= expect_eq("abandon issued no cc return", g_return_requests, returns_before_abandon);
+    rc |= expect_eq("abandon release_count", state.p25_sm_release_count, 2);
+    rc |= expect_eq("abandon cc_return_count", state.p25_sm_cc_return_count, 2);
+    rc |= expect_eq("abandon vc freq", state.p25_vc_freq[0], 0);
+    rc |= expect_eq("abandon trunk vc freq", state.trunk_vc_freq[0], 0);
+    rc |= expect_eq("abandon trunk_is_tuned", opts.trunk_is_tuned, 0);
+    rc |= expect_eq("abandon sm state", p25_sm_get_state(p25_sm_get_ctx()), P25_SM_ON_CC);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
