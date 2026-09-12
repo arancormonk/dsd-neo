@@ -64,6 +64,9 @@ Item {
             testContext.setMetric("scanTimingVisible", true);
             tryCompare(row, "visible", true);
             tryCompare(row, "text", "Idle dwell 1.8s/3.0s  hold 2.0s");
+            // Large accepted -t values retain the publisher's unsigned total.
+            testContext.setMetric("scanTimerSpanMs", 4294967295);
+            tryCompare(row, "text", "Idle dwell 1.8s/4294967.3s  hold 2.0s");
             // A followed call: no countdown, the dwell disarmed under it, and the -t
             // hangtime. A trunked row never carries a conventional hold.
             testContext.setMetric("scanStayPhrase", "Following call");

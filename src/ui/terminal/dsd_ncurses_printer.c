@@ -1098,7 +1098,7 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
             printw(" Frequency: %.06lf MHz",
                    (double)*dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) / 1000000);
         }
-        printw(" Speed: %.02lf sec",
+        printw(" Hangtime: %.02lf sec",
                opts->trunk_hangtime); // default aligned to OP25 (2.0s) unless overridden
         ui_render_scan_voice_gate(opts, state);
         // Why the scan stopped moving, ahead of the name so the fixed fields keep their columns.

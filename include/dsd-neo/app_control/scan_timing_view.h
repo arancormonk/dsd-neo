@@ -27,6 +27,7 @@ extern "C" {
 
 /** @brief What the idle dwell budget is doing while the row is on air. */
 enum {
+    /* Value 1 is reserved; keep these values stable for existing QML consumers. */
     DSD_APP_SCAN_DWELL_NONE = 0,      /**< No dwell budget applies (or it is the live window). */
     DSD_APP_SCAN_DWELL_SUSPENDED = 2, /**< Disarmed while something else holds the row. */
     DSD_APP_SCAN_DWELL_PAUSED = 3,    /**< Disarmed by the operator hold. */

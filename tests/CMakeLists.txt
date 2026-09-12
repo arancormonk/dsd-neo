@@ -600,12 +600,25 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/call_view.h
   C
 )
+# Keep the Qt-facing view headers usable in C++ even when Qt is disabled.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_call_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_CALL_VIEW_CXX
+  dsd-neo/app_control/call_view.h
+  CXX
+)
 
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_scan_timing_view
   HEADERS_PUBLIC_APP_CONTROL_SCAN_TIMING_VIEW
   dsd-neo/app_control/scan_timing_view.h
   C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_timing_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_TIMING_VIEW_CXX
+  dsd-neo/app_control/scan_timing_view.h
+  CXX
 )
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_commands

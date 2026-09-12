@@ -296,6 +296,12 @@ test_idle_dwell_row_and_qualify_variant(void) {
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert_phrase(&view, "Idle dwell");
 
+    // Hold release is visible immediately, before the next tick arms a dwell.
+    state->scan_timing.deadline_m = -1.0;
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert(view.timer_live == 0U);
+    assert(view.show_dwell == 1U && view.dwell_ms == 3000U);
+
     free(state);
 }
 
@@ -310,12 +316,12 @@ test_hangtime_row(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.scanner_mode = 1;
     opts.trunk_hangtime = 2.0f;
-    publish(state, DSD_SCAN_STAY_HANGTIME, 1U, 101.4, 2000U, 0U, 0U);
+    publish(state, DSD_SCAN_STAY_HANGTIME, 1U, 101.4, 3000U, 0U, 0U);
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert_phrase(&view, "Hangtime");
     assert(view.timer_live == 1U);
     assert(view.remaining_ms == 1400U);
-    assert(view.span_ms == 2000U);
+    assert(view.span_ms == 3000U);
     assert(view.show_dwell == 0U);
     assert(view.show_hold == 0U);
     assert(view.show_hang == 0U);
@@ -326,6 +332,15 @@ test_hangtime_row(void) {
     assert(view.timer_live == 0U);
     assert(view.remaining_ms == 0U);
     assert(view.span_ms == 0U);
+
+    // Valid multi-day hangtimes keep their full remaining and total values.
+    publish(state, DSD_SCAN_STAY_HANGTIME, 1U, 172901.0, 172801000U, 0U, 0U);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert(view.remaining_ms == 172801000U && view.span_ms == 172801000U);
+    // Beyond the millisecond contract's range, both sides saturate at the same bound.
+    publish(state, DSD_SCAN_STAY_HANGTIME, 1U, 1.0e9, UINT32_MAX, 0U, 0U);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert(view.remaining_ms == UINT32_MAX && view.span_ms == UINT32_MAX);
 
     free(state);
 }

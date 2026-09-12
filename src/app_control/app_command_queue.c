@@ -36,6 +36,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -4601,6 +4602,8 @@ apply_manual_scan_avoid_clear(dsd_state* state) {
 
 static void
 apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
+    char target_id[sizeof(state->trunk_scan_active_id)];
+    DSD_SNPRINTF(target_id, sizeof(target_id), "%s", state->trunk_scan_active_id);
     const int rc = dsd_trunk_scan_hook_control(opts, state, op);
     if (rc == DSD_TRUNK_SCAN_CONTROL_BUSY) {
         ui_set_toast(state, 3, "Trunk scan busy; try again");
@@ -4620,7 +4623,7 @@ apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
             if (rc == DSD_TRUNK_SCAN_CONTROL_REFUSED) {
                 ui_set_toast(state, 3, "Cannot avoid the last usable trunk scan target");
             } else {
-                ui_set_toast(state, 3, "Avoiding target %s (%u avoided)", state->trunk_scan_active_id,
+                ui_set_toast(state, 3, "Avoiding target %s (%u avoided)", target_id,
                              (unsigned)state->trunk_scan_avoided_count);
             }
             break;
@@ -5108,6 +5111,13 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         DSD_SECURE_ZERO(&cmd, sizeof cmd);
         // After applying a command, publish updated snapshots so the UI can
         // render consistent opts/state without racing live structures.
+        if (opts && state && opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1) {
+            const double now_m = dsd_time_now_monotonic_s();
+            // Controls can change visits or hold state inside a long input wait.
+            // Refresh the gate and its publication before exposing that command.
+            dsd_scan_voice_gate_tick(opts, state, 0, now_m);
+            dsd_engine_scan_y_timing_tick(opts, state, now_m, dsd_time_now_realtime_s());
+        }
         dsd_telemetry_publish_opts_snapshot(opts);
         if (state) {
             dsd_telemetry_publish_snapshot(state);

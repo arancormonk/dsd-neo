@@ -424,11 +424,11 @@ MetricsModel::fillScanTimingView(View& next, const dsd_opts* opts_snapshot, cons
     next.scan_timer_live = view.timer_live != 0U;
     /* Tenths, truncated: see scanTimerRemainingDs(). */
     next.scan_timer_remaining_ds = static_cast<int>(view.remaining_ms / 100U);
-    next.scan_timer_span_ms = static_cast<int>(view.span_ms);
+    next.scan_timer_span_ms = view.span_ms;
     next.scan_dwell_ms = view.show_dwell != 0U ? static_cast<int>(view.dwell_ms) : 0;
     next.scan_dwell_state = view.dwell_state;
     next.scan_hold_ms = view.show_hold != 0U ? static_cast<int>(view.hold_ms) : 0;
-    next.scan_hang_ms = view.show_hang != 0U ? static_cast<int>(view.hang_ms) : 0;
+    next.scan_hang_ms = view.show_hang != 0U ? view.hang_ms : 0U;
 }
 
 namespace {

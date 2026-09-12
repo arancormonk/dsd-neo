@@ -17,6 +17,7 @@
 #include <QObject>
 #include <QString>
 #include <QVariant>
+#include <QtGlobal>
 #include <cmath>
 #include <initializer_list>
 #include <stdint.h>
@@ -520,6 +521,17 @@ test_scan_timing() {
     model.refresh(&opts, &state);
     expect("the countdown moves on the tenth", model.scanTimerRemainingDs() == 17 && changes > quiet);
     expect("countdowns do not notify unrelated controls", control_changes == controls_settled);
+
+    // The -Y publisher saturates large accepted -t values at UINT32_MAX milliseconds.
+    // This must remain positive at the Qt property boundary, including through QVariant.
+    g_stub_scan_timing.span_ms = UINT32_MAX;
+    g_stub_scan_timing.show_hang = 1U;
+    g_stub_scan_timing.hang_ms = UINT32_MAX;
+    model.refresh(&opts, &state);
+    expect("a large timer total does not become negative",
+           model.property("scanTimerSpanMs").toULongLong() == static_cast<qulonglong>(UINT32_MAX));
+    expect("a large effective hangtime does not become negative",
+           model.property("scanHangMs").toULongLong() == static_cast<qulonglong>(UINT32_MAX));
 
     model.clear();
     expect("a stopped session leaves no scan timing behind",

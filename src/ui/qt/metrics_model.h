@@ -153,11 +153,11 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString scanStayPhrase READ scanStayPhrase NOTIFY scanTimingChanged)
     Q_PROPERTY(bool scanTimerLive READ scanTimerLive NOTIFY scanTimingChanged)
     Q_PROPERTY(int scanTimerRemainingDs READ scanTimerRemainingDs NOTIFY scanTimingChanged)
-    Q_PROPERTY(int scanTimerSpanMs READ scanTimerSpanMs NOTIFY scanTimingChanged)
+    Q_PROPERTY(quint32 scanTimerSpanMs READ scanTimerSpanMs NOTIFY scanTimingChanged)
     Q_PROPERTY(int scanDwellMs READ scanDwellMs NOTIFY scanTimingChanged)
     Q_PROPERTY(int scanDwellState READ scanDwellState NOTIFY scanTimingChanged)
     Q_PROPERTY(int scanHoldMs READ scanHoldMs NOTIFY scanTimingChanged)
-    Q_PROPERTY(int scanHangMs READ scanHangMs NOTIFY scanTimingChanged)
+    Q_PROPERTY(quint32 scanHangMs READ scanHangMs NOTIFY scanTimingChanged)
     Q_PROPERTY(bool syncedHere READ syncedHere NOTIFY tunerChanged)
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
     Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
@@ -783,7 +783,7 @@ class MetricsModel : public QObject {
     }
 
     /** @brief Full width of the running window, so the countdown reads as a fraction. */
-    int
+    quint32
     scanTimerSpanMs() const {
         return m_view.scan_timer_span_ms;
     }
@@ -807,7 +807,7 @@ class MetricsModel : public QObject {
     }
 
     /** @brief The active protocol's effective hangtime budget for the current stay. */
-    int
+    quint32
     scanHangMs() const {
         return m_view.scan_hang_ms;
     }
@@ -1123,11 +1123,11 @@ class MetricsModel : public QObject {
         QString scan_stay_phrase;
         int scan_stay_reason = 0;
         int scan_timer_remaining_ds = 0;
-        int scan_timer_span_ms = 0;
+        quint32 scan_timer_span_ms = 0;
         int scan_dwell_ms = 0;
         int scan_dwell_state = 0;
         int scan_hold_ms = 0;
-        int scan_hang_ms = 0;
+        quint32 scan_hang_ms = 0;
         bool scan_timing_visible = false;
         bool scan_timer_live = false;
 

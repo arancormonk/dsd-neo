@@ -8009,6 +8009,7 @@ test_scan_timing_manual_hold_pauses_and_release_rearms(void) {
     test_rc |= expect_control_rc("hold on",
                                  dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
 
+    test_rc |= expect_scan_timing(&state, "hold command before tick", DSD_SCAN_STAY_MANUAL_HOLD, -1.0, 250U, 0U);
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "manual hold", 0U);
@@ -8024,6 +8025,21 @@ test_scan_timing_manual_hold_pauses_and_release_rearms(void) {
     test_rc |= expect_active_target(&state, "hold release", 0U);
     test_rc |= expect_scan_timing(&state, "hold release", DSD_SCAN_STAY_IDLE_DWELL, 3.35, 250U, 0U);
     test_rc |= expect_scan_timing_window(&state, "hold release", 3.10, 250U);
+
+    // Controls may both be drained before another coordinator tick, for example
+    // while input is stalled. Release still owes this target a fresh dwell.
+    trunk_scan_test_set_now(3.20);
+    test_rc |= expect_control_rc("hold between ticks",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    trunk_scan_test_set_now(4.0);
+    test_rc |= expect_control_rc("release between ticks",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    test_rc |= expect_scan_timing(&state, "release command before tick", DSD_SCAN_STAY_IDLE_DWELL, -1.0, 250U, 0U);
+    trunk_scan_test_set_now(4.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "release between ticks", 0U);
+    test_rc |=
+        expect_scan_timing(&state, "fresh dwell after batched controls", DSD_SCAN_STAY_IDLE_DWELL, 4.35, 250U, 0U);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
@@ -8056,6 +8072,18 @@ test_scan_timing_rotation_publishes_incoming_row(void) {
     test_rc |= expect_scan_timing(&state, "rotation", DSD_SCAN_STAY_IDLE_DWELL, 0.66, 400U, 600U);
     test_rc |= expect_scan_timing_window(&state, "rotation", 0.26, 400U);
     test_rc |= expect_scan_timing_conventional(&state, "rotation", 1U);
+
+    // Manual advances and avoids publish before the command queue snapshots the
+    // new target, without waiting for more samples to drive the next tick.
+    trunk_scan_test_set_now(0.30);
+    test_rc |= expect_control_rc("manual advance",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "manual advance", 0U);
+    test_rc |= expect_scan_timing(&state, "manual advance before tick", DSD_SCAN_STAY_IDLE_DWELL, 0.55, 250U, 250U);
+    test_rc |= expect_control_rc("manual avoid",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |= expect_active_target(&state, "manual avoid", 1U);
+    test_rc |= expect_scan_timing(&state, "manual avoid before tick", DSD_SCAN_STAY_IDLE_DWELL, 0.70, 400U, 600U);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();

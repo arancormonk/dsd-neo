@@ -543,6 +543,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 Qt Quick frontend (`src/ui/qt`):
 
+- After the session's first decoder redraw, `UiController` refreshes live metrics on every timer tick so scan
+  countdowns and the sync-loss hold continue aging if input stalls. History, network and policy models still
+  refresh on decoder redraws; session lifecycle clears live metrics and prevents stale snapshots from restoring them.
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies

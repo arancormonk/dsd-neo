@@ -291,6 +291,20 @@ test_protocol_hangtime_publication(const char* protocol, float configured_hangti
         dsd_engine_trunk_scan_tick(opts, state);
         assert(state->scan_timing.hang_ms == 8500U);
     }
+    state->p25_p1_voice_err_hist_count = 0;
+    state->p25_p1_voice_err_hist_sum = 0;
+    const double large_hangtimes[] = {172800.0, 1.0e9};
+    for (size_t i = 0; i < sizeof(large_hangtimes) / sizeof(large_hangtimes[0]); ++i) {
+        if (strcmp(protocol, "p25-trunk") == 0) {
+            p25_sm_ctx_t* ctx = dsd_engine_trunk_scan_active_p25_ctx();
+            ctx->config.hangtime_s = large_hangtimes[i];
+        } else {
+            dmr_sm_ctx_t* ctx = dsd_engine_trunk_scan_active_dmr_ctx();
+            ctx->hangtime_s = large_hangtimes[i];
+        }
+        dsd_engine_trunk_scan_tick(opts, state);
+        assert(state->scan_timing.hang_ms == (i == 0 ? 172800000U : UINT32_MAX));
+    }
     dsd_engine_trunk_scan_shutdown(opts, state);
     assert(state->scan_timing.hang_ms == 0U);
     freeState(state);

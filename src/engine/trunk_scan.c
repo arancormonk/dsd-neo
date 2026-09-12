@@ -2946,10 +2946,9 @@ trunk_scan_publish_timing(const dsd_opts* opts, dsd_state* state, const dsd_trun
             hang_s = rt->dmr_ctx.hangtime_s;
         }
         /* Bound the conversion, including invalid/nonfinite configured values. */
-        if (hang_s > 86400.0) {
-            hang_s = 86400.0;
-        }
-        if (hang_s > 0.0) {
+        if (hang_s >= (double)UINT32_MAX / 1000.0) {
+            report.hang_ms = UINT32_MAX;
+        } else if (hang_s > 0.0) {
             report.hang_ms = (uint32_t)((hang_s * 1000.0) + 0.5);
         }
     }
@@ -3041,6 +3040,9 @@ trunk_scan_control_advance_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
 static int
 trunk_scan_control_hold_toggle(dsd_state* state, dsd_trunk_scan_coord* coord) {
     coord->hold_active = coord->hold_active ? 0 : 1;
+    // Disarm at the command boundary: both toggles can arrive before another
+    // tick observes the hold. Release must still grant a fresh idle dwell.
+    coord->targets[coord->active].idle_since_m = -1.0;
     trunk_scan_publish_active_target(state, coord);
     return coord->hold_active;
 }
@@ -3089,13 +3091,20 @@ dsd_engine_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
     if (!opts || !state || !coord || coord->count == 0 || coord->active >= coord->count) {
         return DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE;
     }
+    int rc;
     switch (op) {
-        case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE: return trunk_scan_control_hold_toggle(state, coord);
-        case DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR: return trunk_scan_control_avoid_clear(state, coord);
-        case DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE: return trunk_scan_control_avoid_active(opts, state, coord);
-        case DSD_TRUNK_SCAN_CONTROL_ADVANCE: return trunk_scan_control_advance(opts, state, coord);
+        case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE: rc = trunk_scan_control_hold_toggle(state, coord); break;
+        case DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR: rc = trunk_scan_control_avoid_clear(state, coord); break;
+        case DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE: rc = trunk_scan_control_avoid_active(opts, state, coord); break;
+        case DSD_TRUNK_SCAN_CONTROL_ADVANCE: rc = trunk_scan_control_advance(opts, state, coord); break;
         default: return DSD_TRUNK_SCAN_CONTROL_REFUSED;
     }
+    // The command queue publishes immediately, possibly while input is stalled.
+    // Its target label and timing must already describe the same visit.
+    if (rc >= 0) {
+        trunk_scan_publish_timing(opts, state, coord, trunk_scan_now_m());
+    }
+    return rc;
 }
 
 static int

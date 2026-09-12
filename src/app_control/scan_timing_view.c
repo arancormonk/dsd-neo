@@ -48,7 +48,7 @@ _Static_assert((int)(sizeof(k_scan_timing_rows) / sizeof(k_scan_timing_rows[0]))
                "every dsd_scan_stay_reason needs a display row");
 
 /** @brief Longest countdown the view will report, guarding the cast below. */
-#define DSD_APP_SCAN_REMAINING_MAX_S 86400.0
+#define DSD_APP_SCAN_REMAINING_MAX_S ((double)UINT32_MAX / 1000.0)
 
 /**
  * @brief Whether there is a stay worth rendering at all.
@@ -101,8 +101,8 @@ scan_timing_remaining_ms(double deadline_m, double now_m) {
     if (!(remaining_s > 0.0)) {
         return 0U;
     }
-    if (remaining_s > DSD_APP_SCAN_REMAINING_MAX_S) {
-        remaining_s = DSD_APP_SCAN_REMAINING_MAX_S;
+    if (remaining_s >= DSD_APP_SCAN_REMAINING_MAX_S) {
+        return UINT32_MAX;
     }
     return (uint32_t)((remaining_s * 1000.0) + 0.5);
 }
@@ -118,7 +118,10 @@ static void
 scan_timing_fill_budgets(dsd_app_scan_timing* out, const dsd_scan_timing_row* row,
                          const dsd_scan_timing_publication* pub) {
     out->dwell_ms = pub->dwell_ms;
-    if (row->show_dwell != 0U && pub->dwell_ms != 0U) {
+    // After hold release the next decoder tick arms the dwell. Until then its
+    // effective budget is still useful even though no remaining/total pair runs.
+    const int dwell_unarmed = pub->reason == (uint8_t)DSD_SCAN_STAY_IDLE_DWELL && !out->timer_live;
+    if ((row->show_dwell != 0U || dwell_unarmed) && pub->dwell_ms != 0U) {
         out->show_dwell = 1U;
         out->dwell_state = row->dwell_state;
     }

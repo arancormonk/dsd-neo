@@ -963,14 +963,14 @@ test_scanner_status_row_rendering(void) {
     /* An unnamed row keeps the row byte-identical to what it has always been. */
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec \n");
 
-    /* A named row spells the name out after the fixed fields, so the frequency and speed keep
+    /* A named row spells the name out after the fixed fields, so the frequency and hangtime keep
        their columns and only the operator-length name reaches a narrow terminal's edge. */
     DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Channel: Marion \n");
 
     /* HOLD is a state of the channel on air, so it sits with the channel's fixed fields. The
        avoid count is a property of the list, not of this channel, so it trails the name: a
@@ -979,21 +979,22 @@ test_scanner_status_row_rendering(void) {
     state.lcn_scan_hold = 1;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec HOLD Channel: Marion \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec HOLD Channel: Marion \n");
     state.lcn_avoid_count = 2;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec HOLD Channel: Marion Avoids: 2 \n");
+    assert_capture_equals(
+        "| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec HOLD Channel: Marion Avoids: 2 \n");
     state.lcn_scan_hold = 0;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion Avoids: 2 \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Channel: Marion Avoids: 2 \n");
 
     /* An unnamed row on air: the count still closes the row, after the fixed fields. */
     reset_lcn_name_stub();
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Avoids: 2 \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Avoids: 2 \n");
     DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
     state.lcn_avoid_count = 0;
 
@@ -1003,7 +1004,7 @@ test_scanner_status_row_rendering(void) {
     state.lcn_freq_roll = 2;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.037500 MHz Speed: 2.00 sec Channel: Delaware \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.037500 MHz Hangtime: 2.00 sec Channel: Delaware \n");
 
     /* A row the importer kept for its numbering but could not use: the scanner parks on the
        frequency it is already on rather than tuning this one, so its name would credit the wrong
@@ -1011,21 +1012,21 @@ test_scanner_status_row_rendering(void) {
     state.trunk_lcn_freq[1] = 0;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 0.000000 MHz Speed: 2.00 sec \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 0.000000 MHz Hangtime: 2.00 sec \n");
     state.trunk_lcn_freq[1] = 462037500;
 
     /* Before the first tune there is no row on air, so neither field prints. */
     state.lcn_freq_roll = 0;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Speed: 2.00 sec \n");
+    assert_capture_equals("| Scan Mode:  Hangtime: 2.00 sec \n");
 
     /* A roll left past a shrunken count must not reach into the stale tail. */
     DSD_SNPRINTF(g_lcn_name_stub[2], sizeof(g_lcn_name_stub[2]), "Ghost");
     state.lcn_freq_roll = 3;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Speed: 2.00 sec \n");
+    assert_capture_equals("| Scan Mode:  Hangtime: 2.00 sec \n");
 
     /* No -Y list, no row at all. */
     opts.scanner_mode = 0;
@@ -1116,14 +1117,14 @@ test_trunk_scan_status_row_rendering(void) {
     DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n"
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec \n"
                           "| Trunk Scan:  Target: county-p25 (3/6)\n");
 
     /* Between targets the -Y row's name is the answer again. */
     DSD_MEMSET(state.trunk_scan_active_id, 0, sizeof(state.trunk_scan_active_id));
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Channel: Marion \n");
 
     reset_lcn_name_stub();
 }
@@ -2048,27 +2049,27 @@ test_scan_voice_gate_status_rendering(void) {
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec \n");
 
     /* Gate on: each phase names itself after the fixed fields. */
     opts.scan_voice_only = 1;
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_QUALIFY;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Voice: QUALIFY \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Voice: QUALIFY \n");
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_VOICE;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Voice: VOICE \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Voice: VOICE \n");
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_TAIL;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Voice: TAIL \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Voice: TAIL \n");
     /* Gate on but the phase not yet published (OFF): nothing is printed. */
     state.scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec \n");
 
     /* The trunk-scan row carries the same suffix, ahead of HOLD. */
     opts.scanner_mode = 0;
@@ -2260,8 +2261,12 @@ test_scan_timing_row_phrases(void) {
     opts.scanner_mode = 1;
     opts.trunk_hangtime = 2.0f;
     state.scan_voice_gate_phase = DSD_SCAN_VOICE_GATE_OFF;
-    seed_scan_timing(&state, DSD_SCAN_STAY_HANGTIME, 1U, 101.4, 2000U, 0U, 0U);
-    assert_scan_timing_row(&opts, &state, "| Scan Timing: Hangtime 1.4s/2.0s");
+    seed_scan_timing(&state, DSD_SCAN_STAY_HANGTIME, 1U, 101.4, 3000U, 0U, 0U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Hangtime 1.4s/3.0s");
+    seed_scan_timing(&state, DSD_SCAN_STAY_HANGTIME, 1U, 172901.0, 172801000U, 0U, 0U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Hangtime 172801.0s/172801.0s");
+    seed_scan_timing(&state, DSD_SCAN_STAY_HANGTIME, 1U, 1.0e9, UINT32_MAX, 0U, 0U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Hangtime 4294967.2s/4294967.3s");
 
     /* Nothing has synced on this row yet: the reason holds, the countdown has no anchor
        to run from, and an unanchored timer is left off rather than shown as zero. */
@@ -2326,7 +2331,7 @@ test_scan_timing_row_placement(void) {
     state.trunk_lcn_freq[0] = 462012500;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n"
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec \n"
                           "| Scan Timing: Manual hold  dwell 3.0s (paused)\n");
 
     opts.scanner_mode = 0;
@@ -2342,7 +2347,7 @@ test_scan_timing_row_placement(void) {
     opts.scanner_mode = 1;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n"
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec \n"
                           "| Trunk Scan:  Target: county-p25 (3/6)\n"
                           "| Scan Timing: Manual hold  dwell 3.0s (paused)\n");
 }
