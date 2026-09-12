@@ -518,13 +518,43 @@ test_scan_timing() {
     model.refresh(&opts, &state);
     expect("the countdown moves on the tenth", model.scanTimerRemainingDs() == 17 && changes > quiet);
 
+    /* The per-visit cap (#507) rides the same row. It is not driven by the stay reason,
+     * so it reads out beside whatever else holds the receiver, and its countdown is in
+     * tenths for the same reason the window's is. */
+    g_stub_scan_timing.show_visit = 1U;
+    g_stub_scan_timing.visit_ms = 20000U;
+    g_stub_scan_timing.visit_live = 1U;
+    g_stub_scan_timing.visit_remaining_ms = 12349U;
+    model.refresh(&opts, &state);
+    expect("the visit cap reads out with its countdown",
+           model.scanVisitMs() == 20000 && model.scanVisitLive() && model.scanVisitRemainingDs() == 123);
+    const int capped = changes;
+    g_stub_scan_timing.visit_remaining_ms = 12301U;
+    model.refresh(&opts, &state);
+    expect("a cap moving inside one tenth notifies nothing", changes == capped && model.scanVisitRemainingDs() == 123);
+
+    /* Suspended by a hold: the cap still applies to the row, so its width is stated, but
+     * there is no countdown -- zero tenths would read as a visit that just ran out. */
+    g_stub_scan_timing.visit_live = 0U;
+    g_stub_scan_timing.visit_remaining_ms = 0U;
+    model.refresh(&opts, &state);
+    expect("a suspended cap keeps its width and drops the countdown",
+           model.scanVisitMs() == 20000 && !model.scanVisitLive() && model.scanVisitRemainingDs() == 0);
+    expect("suspending the cap notifies the control group", changes > capped);
+
+    /* Withheld by the view: no cap is in force, so no number the row could print arrives. */
+    g_stub_scan_timing.show_visit = 0U;
+    model.refresh(&opts, &state);
+    expect("no cap on air leaves nothing to print", model.scanVisitMs() == 0);
+
     model.clear();
     expect("a stopped session leaves no scan timing behind",
            !model.scanTimingVisible() && model.scanStayReason() == DSD_SCAN_STAY_NONE
                && model.scanStayPhrase().isEmpty() && !model.scanTimerLive() && model.scanTimerRemainingDs() == 0
                && model.scanTimerSpanMs() == 0 && model.scanDwellMs() == 0
                && model.scanDwellState() == DSD_APP_SCAN_DWELL_NONE && model.scanHoldMs() == 0
-               && model.scanHangMs() == 0);
+               && model.scanHangMs() == 0 && model.scanVisitMs() == 0 && !model.scanVisitLive()
+               && model.scanVisitRemainingDs() == 0);
 
     /* Plain trunking and a plain single system are not rotations: there is no row to
      * stay on, so the view says nothing and the panel shows nothing. */

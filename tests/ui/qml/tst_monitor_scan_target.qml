@@ -35,6 +35,9 @@ Item {
             testContext.setMetric("scanDwellState", 0);
             testContext.setMetric("scanHoldMs", 0);
             testContext.setMetric("scanHangMs", 0);
+            testContext.setMetric("scanVisitMs", 0);
+            testContext.setMetric("scanVisitLive", false);
+            testContext.setMetric("scanVisitRemainingDs", 0);
         }
 
         function test_target_rotation_and_hold() {
@@ -80,6 +83,18 @@ Item {
             testContext.setMetric("scanDwellState", 3);
             testContext.setMetric("scanHangMs", 0);
             tryCompare(row, "text", "Manual hold  dwell 3.0s (paused)");
+            // The per-visit cap (issue #507) closes the row, in the same grammar: two
+            // spaces before it, one decimal place, and the word `paused` where a hold has
+            // suspended the cap rather than a countdown that would read as expiry.
+            testContext.setMetric("scanVisitMs", 20000);
+            testContext.setMetric("scanVisitLive", false);
+            tryCompare(row, "text", "Manual hold  dwell 3.0s (paused)  Visit: paused");
+            testContext.setMetric("scanVisitLive", true);
+            testContext.setMetric("scanVisitRemainingDs", 123);
+            tryCompare(row, "text", "Manual hold  dwell 3.0s (paused)  Visit: 12.3s/20.0s");
+            // No cap in force: the view withholds the width, so the row closes as before.
+            testContext.setMetric("scanVisitMs", 0);
+            tryCompare(row, "text", "Manual hold  dwell 3.0s (paused)");
             cleanup();
             tryCompare(row, "visible", false);
         }
@@ -104,6 +119,9 @@ Item {
             testContext.setMetric("scanDwellState", 2);
             testContext.setMetric("scanHoldMs", 600000);
             testContext.setMetric("scanHangMs", 600000);
+            testContext.setMetric("scanVisitMs", 3600000);
+            testContext.setMetric("scanVisitLive", true);
+            testContext.setMetric("scanVisitRemainingDs", 35999);
             testContext.setMetric("scanTimingVisible", true);
             waitForRendering(screen);
             var names = ["runningSiteChooserButton", "openSpectrumButton", "monitorLiveStatus", "monitorHeaderTitle", "scanTimingRow"];

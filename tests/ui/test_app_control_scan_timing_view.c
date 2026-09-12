@@ -41,6 +41,10 @@ static void
 publish(dsd_state* state, uint8_t reason, uint8_t conventional, double deadline_m, uint32_t span_ms, uint32_t dwell_ms,
         uint32_t hold_ms) {
     DSD_MEMSET(&state->scan_timing, 0, sizeof(state->scan_timing));
+    /* A zeroed block leaves visit_deadline_m at 0.0, which reads as a per-visit deadline
+       at monotonic 0 -- long past. The decoder never publishes that: an unanchored cap is
+       negative (#507), so the seed says so too. */
+    state->scan_timing.visit_deadline_m = -1.0;
     state->scan_timing.reason = reason;
     state->scan_timing.conventional = conventional;
     state->scan_timing.started_m = (deadline_m >= 0.0) ? deadline_m - ((double)span_ms / 1000.0) : -1.0;
@@ -54,6 +58,15 @@ static void
 assert_phrase(const dsd_app_scan_timing* view, const char* phrase) {
     assert(view->phrase != NULL);
     assert(strcmp(view->phrase, phrase) == 0);
+}
+
+/* The per-visit cap on top of a published stay (issue #507). Separate from publish()
+   because the cap is not a property of the stay reason: the engine anchors it at parking
+   and it rides whatever else happens to be holding the row. */
+static void
+seed_visit(dsd_state* state, uint32_t limit_ms, double visit_deadline_m) {
+    state->scan_timing.visit_limit_ms = limit_ms;
+    state->scan_timing.visit_deadline_m = visit_deadline_m;
 }
 
 /* A backend retune that has not resolved: nothing counts down, the idle dwell is
@@ -453,6 +466,111 @@ test_inactive_when_reason_is_none(void) {
     free(state);
 }
 
+/* No cap configured: nothing to show, whatever else the row says. A stale visit
+   deadline without a limit is not a cap either -- the engine only anchors one while a
+   limit is in force, and a leftover stamp must not put a countdown on the row. */
+static void
+test_visit_cap_off_is_not_shown(void) {
+    static dsd_opts opts;
+    dsd_state* state = make_state();
+    dsd_app_scan_timing view;
+
+    make_opts(&opts);
+    publish(state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert(view.show_visit == 0U);
+    assert(view.visit_ms == 0U);
+    assert(view.visit_live == 0U);
+    assert(view.visit_remaining_ms == 0U);
+
+    seed_visit(state, 0U, 118.0);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert(view.show_visit == 0U);
+    assert(view.visit_live == 0U);
+    assert(view.visit_remaining_ms == 0U);
+
+    free(state);
+}
+
+/* A cap anchored at parking counts down against the same clock the windows use, and
+   floors at zero once the poll lands after it: the decoder decides when the receiver
+   moves on, so the row must not imply it already should have. */
+static void
+test_visit_cap_counts_down(void) {
+    static dsd_opts opts;
+    dsd_state* state = make_state();
+    dsd_app_scan_timing view;
+
+    make_opts(&opts);
+    publish(state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
+    seed_visit(state, 20000U, 112.3);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert(view.show_visit == 1U);
+    assert(view.visit_ms == 20000U);
+    assert(view.visit_live == 1U);
+    assert(view.visit_remaining_ms == 12300U);
+
+    seed_visit(state, 20000U, 97.5);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert(view.show_visit == 1U);
+    assert(view.visit_live == 1U);
+    assert(view.visit_remaining_ms == 0U);
+
+    free(state);
+}
+
+/* Suspended or not yet anchored: the cap still applies to the row, so its width is worth
+   stating, but there is no countdown to report and zero would read as expiry. */
+static void
+test_visit_cap_suspended_is_not_live(void) {
+    static dsd_opts opts;
+    dsd_state* state = make_state();
+    dsd_app_scan_timing view;
+
+    make_opts(&opts);
+    publish(state, DSD_SCAN_STAY_MANUAL_HOLD, 1U, -1.0, 0U, 3000U, 1200U);
+    seed_visit(state, 20000U, -1.0);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert(view.show_visit == 1U);
+    assert(view.visit_ms == 20000U);
+    assert(view.visit_live == 0U);
+    assert(view.visit_remaining_ms == 0U);
+
+    free(state);
+}
+
+/* The cap is not driven by the stay reason the way the dwell, hold and hang budgets are:
+   it governs the whole visit, so every reason reports it. */
+static void
+test_visit_cap_applies_to_every_reason(void) {
+    static dsd_opts opts;
+    dsd_state* state = make_state();
+    dsd_app_scan_timing view;
+
+    make_opts(&opts);
+    opts.trunk_hangtime = 2.0f;
+    for (uint8_t reason = (uint8_t)DSD_SCAN_STAY_RETUNE_PENDING; reason <= (uint8_t)DSD_SCAN_STAY_HANGTIME; reason++) {
+        publish(state, reason, 1U, -1.0, 0U, 3000U, 1200U);
+        seed_visit(state, 45000U, 130.0);
+        assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+        assert(view.show_visit == 1U);
+        assert(view.visit_ms == 45000U);
+        assert(view.visit_live == 1U);
+        assert(view.visit_remaining_ms == 30000U);
+    }
+
+    /* Nothing is rotating: a leftover cap says nothing about a receiver parked by hand. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    publish(state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
+    seed_visit(state, 45000U, 130.0);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 0);
+    assert(view.show_visit == 0U);
+    assert(view.visit_ms == 0U);
+    assert(view.visit_remaining_ms == 0U);
+
+    free(state);
+}
+
 static void
 test_null_arguments_are_safe(void) {
     static dsd_opts opts;
@@ -494,6 +612,10 @@ main(void) {
     test_hold_is_conventional_only();
     test_dwell_needs_a_value();
     test_every_reason_has_a_phrase();
+    test_visit_cap_off_is_not_shown();
+    test_visit_cap_counts_down();
+    test_visit_cap_suspended_is_not_live();
+    test_visit_cap_applies_to_every_reason();
     test_inactive_without_a_scanner();
     test_inactive_when_reason_is_none();
     test_null_arguments_are_safe();

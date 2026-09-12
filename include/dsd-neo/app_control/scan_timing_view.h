@@ -53,6 +53,13 @@ typedef struct {
     uint32_t hold_ms;      /**< Effective activity hold. */
     uint8_t show_hang;     /**< 1 = @c hang_ms governs the current stay (-t). */
     uint32_t hang_ms;      /**< Voice/sync-loss hangtime, from -t. */
+    /* The per-visit cap (issue #507). Not a stay reason and not one of the reason-driven
+       budgets above: it caps the whole visit, so it applies to the row on air whatever is
+       holding it, and a surface reports it beside the reason rather than instead of it. */
+    uint8_t show_visit;          /**< 1 = a cap applies to the row on air. */
+    uint32_t visit_ms;           /**< Effective cap for the row (--scan-max-visit-ms); 0 = off. */
+    uint8_t visit_live;          /**< 1 = @c visit_remaining_ms is counting; 0 = suspended/unanchored. */
+    uint32_t visit_remaining_ms; /**< max(0, visit deadline - now); 0 unless @c visit_live. */
 } dsd_app_scan_timing;
 
 /**
