@@ -148,16 +148,16 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool scanTargetAvoided READ scanTargetAvoided NOTIFY controlChanged)
     /* #508: why the rotation is staying on the row on air, and how long is left.
        One group, one signal: they are read together by one row. */
-    Q_PROPERTY(bool scanTimingVisible READ scanTimingVisible NOTIFY controlChanged)
-    Q_PROPERTY(int scanStayReason READ scanStayReason NOTIFY controlChanged)
-    Q_PROPERTY(QString scanStayPhrase READ scanStayPhrase NOTIFY controlChanged)
-    Q_PROPERTY(bool scanTimerLive READ scanTimerLive NOTIFY controlChanged)
-    Q_PROPERTY(int scanTimerRemainingDs READ scanTimerRemainingDs NOTIFY controlChanged)
-    Q_PROPERTY(int scanTimerSpanMs READ scanTimerSpanMs NOTIFY controlChanged)
-    Q_PROPERTY(int scanDwellMs READ scanDwellMs NOTIFY controlChanged)
-    Q_PROPERTY(int scanDwellState READ scanDwellState NOTIFY controlChanged)
-    Q_PROPERTY(int scanHoldMs READ scanHoldMs NOTIFY controlChanged)
-    Q_PROPERTY(int scanHangMs READ scanHangMs NOTIFY controlChanged)
+    Q_PROPERTY(bool scanTimingVisible READ scanTimingVisible NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanStayReason READ scanStayReason NOTIFY scanTimingChanged)
+    Q_PROPERTY(QString scanStayPhrase READ scanStayPhrase NOTIFY scanTimingChanged)
+    Q_PROPERTY(bool scanTimerLive READ scanTimerLive NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanTimerRemainingDs READ scanTimerRemainingDs NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanTimerSpanMs READ scanTimerSpanMs NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanDwellMs READ scanDwellMs NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanDwellState READ scanDwellState NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanHoldMs READ scanHoldMs NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanHangMs READ scanHangMs NOTIFY scanTimingChanged)
     Q_PROPERTY(bool syncedHere READ syncedHere NOTIFY tunerChanged)
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
     Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
@@ -773,10 +773,9 @@ class MetricsModel : public QObject {
     /**
      * @brief Time left in the running window, in tenths of a second.
      *
-     * Tenths rather than milliseconds because this reading decides whether
-     * controlChanged fires: at millisecond resolution every 250 ms poll would move
-     * it and re-evaluate every binding on the control group, for a row that renders
-     * one decimal place. Truncated, so it never claims more time than is left.
+     * scanTimingChanged fires only when the rendered tenth changes. Countdown
+     * updates have their own signal so they do not refresh unrelated controls.
+     * Truncated, so it never claims more time than is left.
      */
     int
     scanTimerRemainingDs() const {
@@ -795,7 +794,7 @@ class MetricsModel : public QObject {
         return m_view.scan_dwell_ms;
     }
 
-    /** @brief DSD_APP_SCAN_DWELL_*: running, suspended under a hold, or paused by the operator. */
+    /** @brief DSD_APP_SCAN_DWELL_*: hidden, suspended under a hold, or paused by the operator. */
     int
     scanDwellState() const {
         return m_view.scan_dwell_state;
@@ -807,7 +806,7 @@ class MetricsModel : public QObject {
         return m_view.scan_hold_ms;
     }
 
-    /** @brief The -t hangtime, when it is what governs the current stay. */
+    /** @brief The active protocol's effective hangtime budget for the current stay. */
     int
     scanHangMs() const {
         return m_view.scan_hang_ms;
@@ -998,6 +997,7 @@ class MetricsModel : public QObject {
     void slot2Changed();
     void leadSlotChanged();
     void controlChanged();
+    void scanTimingChanged();
     void uiMessageChanged();
 
   private:
@@ -1155,9 +1155,7 @@ class MetricsModel : public QObject {
                    && scan_avoid_count == other.scan_avoid_count && scan_target_avoided == other.scan_target_avoided;
         }
 
-        /* Split out for the same reason as scanControlEquals: it rides controlChanged
-           with the rest, and folding ten more readings into one comparison would put
-           it over the complexity ceiling. */
+        /* Countdown updates notify only the scan timing row. */
         bool
         scanTimingEquals(const View& other) const {
             return scan_timing_visible == other.scan_timing_visible && scan_stay_reason == other.scan_stay_reason
@@ -1187,8 +1185,8 @@ class MetricsModel : public QObject {
             return audio_muted == other.audio_muted && held_tg == other.held_tg
                    && enc_lockout_count == other.enc_lockout_count && tuner_controlled == other.tuner_controlled
                    && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
-                   && scanControlEquals(other) && scanTimingEquals(other) && scan_mode == other.scan_mode
-                   && decode_mode == other.decode_mode && decryptionEquals(other) && radioControlsEqual(other);
+                   && scanControlEquals(other) && scan_mode == other.scan_mode && decode_mode == other.decode_mode
+                   && decryptionEquals(other) && radioControlsEqual(other);
         }
     };
 

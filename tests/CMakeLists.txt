@@ -4824,6 +4824,35 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_SYNCED_TRUNK_SCAN_TICK
         COMMAND dsd-neo_test_engine_synced_trunk_scan_tick
     )
+    # The time() wrapper below requires a Unix time symbol.
+    if(NOT WIN32)
+        add_executable(
+            dsd-neo_test_engine_scan_timing
+            engine/test_engine_scan_timing.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
+        )
+        target_include_directories(
+            dsd-neo_test_engine_scan_timing
+            PRIVATE ${PROJECT_SOURCE_DIR}/include
+        )
+        target_link_libraries(
+            dsd-neo_test_engine_scan_timing
+            PRIVATE
+                "-Wl,--wrap=getFrameSync"
+                "-Wl,--wrap=dsd_engine_scan_tune_to_freq"
+                "-Wl,--wrap=SetFreq"
+                "-Wl,--wrap=time"
+                "-Wl,--start-group"
+                dsd-neo_engine
+                "-Wl,--end-group"
+                ${LIBS}
+                dsd-neo_test_support
+        )
+        add_test(
+            NAME ENGINE_SCAN_TIMING
+            COMMAND dsd-neo_test_engine_scan_timing
+        )
+    endif()
 endif()
 
 add_executable(

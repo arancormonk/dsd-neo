@@ -2615,15 +2615,13 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
                 break;
             }
         }
-        /* Outside the voice-gate block on purpose: this loop can spin here for seconds
-         * while frames keep syncing, and the legacy hangtime anchor moves the whole
-         * time, so the Scan Timing row would freeze mid-countdown if it only refreshed
-         * under -Y --scan-voice-only. */
-        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
         dsd_runtime_pump_controls(opts, state);
         if (!dsd_engine_channel_scan_service_sync(opts, state)) {
             break;
         }
+        /* Refresh after controls, even with the voice gate off: continuous sync
+         * keeps moving the legacy hangtime anchor throughout this inner loop. */
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
         if (frame_tune_generation) {
             *frame_tune_generation = dsd_trunk_tuning_generation();
         }
@@ -2649,18 +2647,22 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
         }
         dsd_trunk_scan_hook_tick(opts, state);
         dsd_scan_voice_gate_tick(opts, state, 0, dsd_time_now_monotonic_s());
-        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
         dsd_runtime_pump_controls(opts, state);
 
         if (dsd_engine_channel_scan_pending(opts, state)) {
+            dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
             dsd_sleep_ms(1);
             continue;
         }
         noCarrier(opts, state);
         if (dsd_engine_channel_scan_pending(opts, state)) {
+            dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
             dsd_sleep_ms(1);
             continue;
         }
+        /* noCarrier and pending-row commits can replace the visit anchors. Publish
+         * the incoming visit before getFrameSync starts emitting its snapshots. */
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
         frame_tune_generation = dsd_trunk_tuning_generation();
         state->synctype = getFrameSync(opts, state);
         live_scanner_update_thresholds(state, &last_max, &last_min);

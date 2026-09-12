@@ -311,7 +311,8 @@ MetricsModel::~MetricsModel() = default;
 bool
 MetricsModel::View::operator==(const View& other) const {
     return site == other.site && qualityEquals(other) && tunerEquals(other) && slot_call[0] == other.slot_call[0]
-           && slot_call[1] == other.slot_call[1] && controlEquals(other) && ui_message == other.ui_message;
+           && slot_call[1] == other.slot_call[1] && controlEquals(other) && scanTimingEquals(other)
+           && ui_message == other.ui_message;
 }
 
 void
@@ -325,6 +326,7 @@ MetricsModel::publish(const View& next) {
     const bool slot1Moved = !(next.slot_call[0] == m_view.slot_call[0]);
     const bool slot2Moved = !(next.slot_call[1] == m_view.slot_call[1]);
     const bool controlMoved = !next.controlEquals(m_view);
+    const bool scanTimingMoved = !next.scanTimingEquals(m_view);
     const bool messageMoved = next.ui_message != m_view.ui_message;
     m_view = next;
     if (siteMoved) {
@@ -347,6 +349,9 @@ MetricsModel::publish(const View& next) {
     }
     if (controlMoved) {
         Q_EMIT controlChanged();
+    }
+    if (scanTimingMoved) {
+        Q_EMIT scanTimingChanged();
     }
     if (messageMoved) {
         Q_EMIT uiMessageChanged();

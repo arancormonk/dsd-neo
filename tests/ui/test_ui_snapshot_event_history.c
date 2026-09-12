@@ -137,6 +137,7 @@ assert_render_fields(const dsd_state* snap) {
     assert(snap->scan_timing.span_ms == 3000U);
     assert(snap->scan_timing.dwell_ms == 3000U);
     assert(snap->scan_timing.hold_ms == 2000U);
+    assert(snap->scan_timing.hang_ms == 7000U);
 }
 
 static void
@@ -233,6 +234,7 @@ main(void) {
     state->scan_timing.span_ms = 3000U;
     state->scan_timing.dwell_ms = 3000U;
     state->scan_timing.hold_ms = 2000U;
+    state->scan_timing.hang_ms = 7000U;
 
     assert(dsd_trunk_cc_candidates_add(state, 851006250L, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);
     assert(dsd_trunk_cc_candidates_add(state, 852006250L, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);

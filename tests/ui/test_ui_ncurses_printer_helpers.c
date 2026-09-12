@@ -33,6 +33,7 @@
 #include <dsd-neo/ui/ui_prims.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -40,12 +41,35 @@
 #include "dsd-neo/core/dsd_time.h"
 #include "dsd-neo/platform/platform.h"
 
+#if defined(NCURSES_VERSION)
+/* Read the real cursor before replacing ncurses accessors with helper-test stubs. */
+static void
+assert_window_cursor(WINDOW* win, int expected_y, int expected_x) {
+    int y, x;
+    getyx(win, y, x);
+    assert(y == expected_y);
+    assert(x == expected_x);
+}
+
+static WINDOW* g_cursor_window;
+#endif
+
 /* ncurses builds with NCURSES_OPAQUE=0 (Debian/Ubuntu) expose these accessors as
    function-like macros, which would expand over the stub definitions below. */
 #undef getcurx
 #undef getcury
 #undef getmaxx
 #undef getmaxy
+
+/* Keep the real library accessors available to the cursor regression above. */
+#define getcurx  test_getcurx
+#define getcury  test_getcury
+#define getmaxx  test_getmaxx
+#define getmaxy  test_getmaxy
+#define waddch   test_waddch
+#define waddnstr test_waddnstr
+#define wmove    test_wmove
+#define werase   test_werase
 
 int ncurses_last_synctype;
 WINDOW* stdscr;
@@ -101,6 +125,14 @@ int
 printw(const char* fmt, ...) { // NOLINT(misc-use-internal-linkage)
     va_list ap;
     va_start(ap, fmt);
+#if defined(NCURSES_VERSION)
+    if (g_cursor_window) {
+        va_list cursor_ap;
+        va_copy(cursor_ap, ap);
+        assert(vw_printw(g_cursor_window, fmt, cursor_ap) != ERR);
+        va_end(cursor_ap);
+    }
+#endif
     append_printw_capture(fmt, ap);
     va_end(ap);
     return 0;
@@ -113,14 +145,14 @@ wprintw(WINDOW* win, const char* fmt, ...) { // NOLINT(misc-use-internal-linkage
     return 0;
 }
 
-int
+static int
 waddch(WINDOW* win, const chtype ch) { // NOLINT(misc-use-internal-linkage)
     (void)win;
     (void)ch;
     return 0;
 }
 
-int
+static int
 waddnstr(WINDOW* win, const char* str, int n) { // NOLINT(misc-use-internal-linkage)
     (void)win;
     (void)str;
@@ -169,13 +201,13 @@ wattr_off(WINDOW* win, attr_t attrs, void* opts) { // NOLINT(misc-use-internal-l
     return 0;
 }
 
-int
+static int
 werase(WINDOW* win) { // NOLINT(misc-use-internal-linkage)
     (void)win;
     return 0;
 }
 
-int
+static int
 wmove(WINDOW* win, int y, int x) { // NOLINT(misc-use-internal-linkage)
     (void)win;
     (void)y;
@@ -196,25 +228,25 @@ whline(WINDOW* win, chtype ch, int n) { // NOLINT(misc-use-internal-linkage)
    renders against, and a test that changes it restores it. */
 static int g_stub_max_x = 80;
 
-int
+static int
 getmaxx(const WINDOW* win) { // NOLINT(misc-use-internal-linkage)
     (void)win;
     return g_stub_max_x;
 }
 
-int
+static int
 getmaxy(const WINDOW* win) { // NOLINT(misc-use-internal-linkage)
     (void)win;
     return 24;
 }
 
-int
+static int
 getcurx(const WINDOW* win) { // NOLINT(misc-use-internal-linkage)
     (void)win;
     return 0;
 }
 
-int
+static int
 getcury(const WINDOW* win) { // NOLINT(misc-use-internal-linkage)
     (void)win;
     return 0;
@@ -2187,6 +2219,7 @@ test_scan_timing_row_phrases(void) {
 
     /* -t is what ends a followed call, so it is the budget named beside the dwell. */
     seed_scan_timing(&state, DSD_SCAN_STAY_CALL_FOLLOW, 0U, -1.0, 0U, 3000U, 0U);
+    state.scan_timing.hang_ms = 2000U;
     assert_scan_timing_row(&opts, &state, "| Scan Timing: Following call  dwell 3.0s (suspended)  hang 2.0s");
 
     seed_scan_timing(&state, DSD_SCAN_STAY_MANUAL_HOLD, 0U, -1.0, 0U, 3000U, 0U);
@@ -2198,6 +2231,9 @@ test_scan_timing_row_phrases(void) {
     assert_scan_timing_row(&opts, &state, "| Scan Timing: Retune pending  dwell 3.0s (suspended)  hold 1.2s");
 
     seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s");
+    /* The same 1855 ms fixture as Qt: both surfaces truncate to tenths. */
+    state.scan_timing.deadline_m = 101.855;
     assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s");
 
     seed_scan_timing(&state, DSD_SCAN_STAY_VOICE, 1U, 101.2, 2000U, 3000U, 2000U);
@@ -2329,10 +2365,46 @@ test_scan_timing_row_truncates_to_panel_width(void) {
     reset_printw_capture();
     ui_render_scan_timing_row(&opts, &state);
     g_stub_max_x = 80;
-    assert_capture_equals("| Scan Timing: Retune pending  dwell 3.0\n");
-    assert(strlen(g_printw_capture) == 41U);
-    assert(strchr(g_printw_capture, '\n') == g_printw_capture + 40);
+    assert_capture_equals("| Scan Timing: Retune pending  dwell 3.\n");
+    assert(strlen(g_printw_capture) == 40U);
+    assert(strchr(g_printw_capture, '\n') == g_printw_capture + 39);
 }
+
+#if defined(NCURSES_VERSION)
+static void
+test_scan_timing_row_real_cursor(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.trunk_scan_enabled = 1;
+    seed_scan_timing(&state, DSD_SCAN_STAY_RETUNE_PENDING, 1U, -1.0, 0U, 3000U, 1200U);
+    char line[192];
+    const int len = ui_format_scan_timing_row(&opts, &state, 100.0, line, sizeof(line));
+    const int widths[] = {1, 40, len, 80};
+    FILE* input = tmpfile();
+    FILE* output = tmpfile();
+    assert(input && output);
+    SCREEN* screen = newterm("xterm", output, input);
+    assert(screen);
+    for (size_t i = 0; i < sizeof(widths) / sizeof(widths[0]); ++i) {
+        g_stub_max_x = widths[i];
+        g_cursor_window = newwin(4, widths[i], 0, 0);
+        assert(g_cursor_window);
+        reset_printw_capture();
+        ui_render_scan_timing_row(&opts, &state);
+        assert_window_cursor(g_cursor_window, 1, 0);
+        assert(delwin(g_cursor_window) != ERR);
+        g_cursor_window = NULL;
+    }
+    g_stub_max_x = 80;
+    endwin();
+    delscreen(screen);
+    stdscr = NULL;
+    assert(fclose(output) == 0);
+    assert(fclose(input) == 0);
+}
+#endif
 
 int
 main(void) {
@@ -2354,6 +2426,9 @@ main(void) {
     test_scan_timing_row_is_silent_without_a_scan();
     test_scan_timing_row_placement();
     test_scan_timing_row_truncates_to_panel_width();
+#if defined(NCURSES_VERSION)
+    test_scan_timing_row_real_cursor();
+#endif
     test_call_info_channel_line_rendering();
     test_history_and_sort_helpers();
     test_history_color_pair_policy();

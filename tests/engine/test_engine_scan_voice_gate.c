@@ -21,6 +21,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 
 #include <math.h>
@@ -33,6 +34,12 @@
 #include "dsd-neo/core/state_fwd.h"
 
 static int g_failures = 0;
+
+int
+dsd_engine_channel_scan_waiting(const dsd_state* state) {
+    (void)state;
+    return 0;
+}
 
 #define CHECK(tag, cond)                                                                                               \
     do {                                                                                                               \
@@ -609,21 +616,21 @@ test_y_timing_legacy_hangtime_window(void) {
     dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.25, 1000.25);
     CHECK("hangtime reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
     CHECK("hangtime is conventional", fix.state->scan_timing.conventional == 1U);
-    check_timing_window("hangtime start", "hangtime deadline", "hangtime span", &fix.state->scan_timing, 100.0, 102.0,
-                        2000U);
+    check_timing_window("hangtime start", "hangtime deadline", "hangtime span", &fix.state->scan_timing, 100.0, 103.0,
+                        3000U);
     CHECK("hangtime has no dwell", fix.state->scan_timing.dwell_ms == 0U);
     CHECK("hangtime has no hold", fix.state->scan_timing.hold_ms == 0U);
     /* A later tick re-expresses the same wall anchor and lands on the same deadline. */
     dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 101.5, 1001.5);
     check_timing_window("hangtime start again", "hangtime deadline again", "hangtime span again",
-                        &fix.state->scan_timing, 100.0, 102.0, 2000U);
+                        &fix.state->scan_timing, 100.0, 103.0, 3000U);
     /* NXDN stamps the wall anchor two seconds ahead after a confirmed frame (and leaves
      * the monotonic twin alone), so the window starts in the future and the countdown
      * begins above -t rather than reaching zero two seconds before the hop. */
     fix.state->last_cc_sync_time = (time_t)1002;
     dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.25, 1000.25);
     check_timing_window("nxdn future start", "nxdn future deadline", "nxdn future span", &fix.state->scan_timing, 102.0,
-                        104.0, 2000U);
+                        105.0, 3000U);
     fix.state->last_cc_sync_time = (time_t)1000;
     /* A gate that is enabled but has never synced this visit abstains, so the legacy
      * rule still owns the step -- and it has neither window to report. */
@@ -661,13 +668,13 @@ test_y_timing_hangtime_without_anchor(void) {
     CHECK("unanchored has no start", fix.state->scan_timing.started_m < 0.0);
     CHECK("unanchored has no deadline", fix.state->scan_timing.deadline_m < 0.0);
     CHECK("unanchored has no span", fix.state->scan_timing.span_ms == 0U);
-    /* -t 0 has an anchor but no window to count down. */
+    /* Strict whole-second > still waits for the next wall tick with -t 0. */
     fix.state->last_cc_sync_time = (time_t)100;
     fix.opts->trunk_hangtime = 0.0f;
     dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.0, 100.0);
     CHECK("zero hangtime reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
-    CHECK("zero hangtime has no deadline", fix.state->scan_timing.deadline_m < 0.0);
-    CHECK("zero hangtime has no span", fix.state->scan_timing.span_ms == 0U);
+    CHECK("zero hangtime waits for the next second", fix.state->scan_timing.deadline_m == 101.0);
+    CHECK("zero hangtime span", fix.state->scan_timing.span_ms == 1000U);
     fixture_free(&fix);
 }
 
@@ -763,7 +770,7 @@ test_y_timing_hop_restarts_the_window(void) {
     dsd_scan_voice_gate_note_retune(fix.state, 200.0);
     dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 200.0, 200.0);
     CHECK("hop falls back to hangtime", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
-    check_timing_window("hop start", "hop deadline", "hop span", &fix.state->scan_timing, 200.0, 202.0, 2000U);
+    check_timing_window("hop start", "hop deadline", "hop span", &fix.state->scan_timing, 200.0, 203.0, 3000U);
     dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 200.0);
     dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 200.0, 200.0);
     CHECK("new visit qualifies", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_IDLE_DWELL);

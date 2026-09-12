@@ -81,6 +81,12 @@ test_tg_policy_tune_allowed(const dsd_opts* opts, int call_type_enabled, int enc
     return 1;
 }
 
+double
+p25_sm_effective_hangtime(const dsd_state* state, double hangtime) {
+    (void)state;
+    return hangtime;
+}
+
 void
 p25_sm_init_ctx(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     if (!ctx) {

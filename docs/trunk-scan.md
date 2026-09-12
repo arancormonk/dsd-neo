@@ -143,7 +143,8 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   (NXDN96 and NXDN48 alike). Default: `1200`.
 - Per-target CSV values override these defaults.
 - The terminal's `Scan Timing` row reports the *effective* dwell and hold for the target on air — the values left
-  after the CSV column and the CLI/config default have been resolved — and labels `-t` as `hang`, never as a dwell.
+  after the CSV column and the CLI/config default have been resolved — and labels the active protocol's effective
+  hangtime as `hang`, including protocol overrides, never as a dwell.
   `(suspended)` beside the dwell means it is disarmed while something holds the target, not that it expired. See
   [the terminal UI guide](ui-terminal.md).
 - `-t <seconds>` is voice/sync-loss hangtime, not the interval between trunk-scan targets. Zero does not

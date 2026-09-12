@@ -126,7 +126,7 @@ test_cc_acquire_row(void) {
     free(state);
 }
 
-/* Following a trunked call: -t is what ends the stay, so it is the one budget worth
+/* Following a trunked call: protocol hangtime ends the stay, so it is the budget worth
    naming beside the suspended dwell. */
 static void
 test_call_follow_row_shows_hangtime(void) {
@@ -137,6 +137,7 @@ test_call_follow_row_shows_hangtime(void) {
     make_opts(&opts);
     opts.trunk_hangtime = 2.0f;
     publish(state, DSD_SCAN_STAY_CALL_FOLLOW, 0U, -1.0, 0U, 3000U, 0U);
+    state->scan_timing.hang_ms = 7000U;
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert_phrase(&view, "Following call");
     assert(view.timer_live == 0U);
@@ -144,15 +145,21 @@ test_call_follow_row_shows_hangtime(void) {
     assert(view.dwell_state == DSD_APP_SCAN_DWELL_SUSPENDED);
     assert(view.show_hold == 0U);
     assert(view.show_hang == 1U);
-    assert(view.hang_ms == 2000U);
+    assert(view.hang_ms == 7000U);
 
-    /* A fractional -t rounds to the nearest millisecond rather than truncating. */
-    opts.trunk_hangtime = 1.25f;
+    /* A protocol override remains visible even when the configured -t is zero. */
+    opts.trunk_hangtime = 0.0f;
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert(view.show_hang == 1U);
+    assert(view.hang_ms == 7000U);
+
+    state->scan_timing.hang_ms = 1250U;
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert(view.hang_ms == 1250U);
 
-    /* -t 0 leaves nothing to state. */
-    opts.trunk_hangtime = 0.0f;
+    /* An effective zero leaves nothing to state even with a positive -t. */
+    opts.trunk_hangtime = 2.0f;
+    state->scan_timing.hang_ms = 0U;
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert(view.show_hang == 0U);
     assert(view.hang_ms == 0U);

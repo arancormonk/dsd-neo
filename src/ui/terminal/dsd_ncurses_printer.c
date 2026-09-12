@@ -1050,7 +1050,8 @@ ui_format_scan_timing_row(const dsd_opts* opts, const dsd_state* state, double n
     size_t used = 0U;
     ui_scan_timing_appendf(buf, buf_sz, &used, "| Scan Timing: %s", view.phrase);
     if (view.timer_live) {
-        ui_scan_timing_appendf(buf, buf_sz, &used, " %.1fs/%.1fs", (double)view.remaining_ms / 1000.0,
+        const uint32_t remaining_ds = view.remaining_ms / 100U;
+        ui_scan_timing_appendf(buf, buf_sz, &used, " %.1fs/%.1fs", (double)remaining_ds / 10.0,
                                (double)view.span_ms / 1000.0);
     }
     if (view.show_dwell) {
@@ -1077,8 +1078,9 @@ ui_render_scan_timing_row(const dsd_opts* opts, const dsd_state* state) {
         return;
     }
     int cols = ui_get_panel_cols();
-    if (len > cols) {
-        len = cols;
+    if (len >= cols) {
+        /* Writing the final column wraps before the explicit newline. */
+        len = cols - 1;
     }
     printw("%.*s\n", len, line);
 }

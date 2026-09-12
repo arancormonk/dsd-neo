@@ -558,10 +558,10 @@ Notes
 - Hang time after voice/sync loss (seconds): `-t <secs>`
   - This is not the idle dwell between `--trunk-scan` targets. DMR control/rest-channel acquisition has its own
     two-second window; use target `dwell_ms` to budget each visit. See [trunk-scan timing](trunk-scan.md).
-  - Under `-Y` without `--scan-voice-only`, the terminal's `Scan Timing` row counts this value down from the last
-    sync as `Hangtime`. The rotation rule itself compares whole seconds, so the hop can land up to a second after the
-    countdown reaches `0.0s`; the countdown is a readout of the same anchor, and the policy is unchanged. NXDN holds
-    the scan two extra seconds after each confirmed frame, so on an NXDN row the countdown starts above `-t`.
+  - Under `-Y` without `--scan-voice-only`, the terminal's `Scan Timing` row counts down to the first whole-second
+    tick when the time since the last sync exceeds `-t`. Its total is therefore `floor(-t) + 1` seconds, including
+    one second for `-t 0`; the rotation policy is unchanged. NXDN holds the scan two extra seconds after each confirmed
+    frame, so on an NXDN row the countdown can initially exceed the displayed total.
   - P25 Talk Complete, TDU, TDULC, MAC_END_PTT, MAC_IDLE, and MAC_HANGTIME mark a transmission boundary. They close
     that slot's media and start or refresh the traffic-carrier inactivity timer without returning to the control
     channel. A follow-up PTT/ACTIVE on the retained carrier opens a clean call epoch without retuning.

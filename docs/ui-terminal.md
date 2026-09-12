@@ -558,7 +558,7 @@ running out.
 | `Manual hold` | `Y` holds the scan here | none |
 | `Qualify` | synced under `--scan-voice-only`, no allowed voice yet | the qualify window |
 | `Idle dwell` | nothing holds the row | the idle dwell |
-| `Hangtime` | `-Y` without `--scan-voice-only`: waiting out `-t` since the last sync | `-t` |
+| `Hangtime` | `-Y` without `--scan-voice-only`: waiting out `-t` since the last sync | next whole second after `-t` |
 
 Which phrases you can see depends on the protocol: an NXDN trunked target has no state machine to report control
 acquisition, so it never reads `Acquiring control`.
@@ -568,13 +568,16 @@ The values that follow are the *effective* ones for the row on air, after CSV an
 - `dwell` is the idle dwell, printed only when it is not itself the running timer. `(suspended)` means something on
   the air has disarmed it — a call, a retune, a control-channel hunt — and `(paused)` means the operator hold has.
 - `hold` is the activity hold. It appears on conventional and `-Y` rows only; a trunked target has none.
-- `hang` is `-t`, and appears only while a trunked call is being followed.
+- `hang` is the active protocol's effective hangtime, and appears only while a trunked call is being followed.
+  It includes `DSD_NEO_DMR_HANGTIME` / `DSD_NEO_P25_HANGTIME` overrides and the optional P25 Phase 1 error-hold
+  extension. NXDN uses `-t`.
 
 The row is not shown in compact view. The countdown is a published deadline differenced against the terminal's own
 clock, so it keeps running while the input is stalled and stops at `0.0s`; the phrase beside it is only as fresh as the
 last snapshot, which is published while samples flow. A narrow terminal cuts the row at the edge rather than wrapping
 it. On an NXDN row under `-Y`, the decoder keeps the scan two seconds past each confirmed frame, so the `Hangtime`
-countdown starts above `-t`.
+countdown can initially exceed its displayed total. That total is `floor(-t) + 1` seconds, matching the scanner's
+strict whole-second comparison; even `-t 0` waits for the next whole second.
 
 Call Info repeats the answer on its own first line, because compact view hides the Input Output section:
 

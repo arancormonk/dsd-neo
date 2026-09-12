@@ -2938,6 +2938,21 @@ trunk_scan_publish_timing(const dsd_opts* opts, dsd_state* state, const dsd_trun
     report.dwell_ms = dwell_ms > 0 ? (uint32_t)dwell_ms : 0U;
     report.hold_ms = hold_ms > 0 ? (uint32_t)hold_ms : 0U;
     trunk_scan_timing_select_reason(opts, state, coord, now_m, &report);
+    if (report.reason == (uint8_t)DSD_SCAN_STAY_CALL_FOLLOW) {
+        double hang_s = opts->trunk_hangtime;
+        if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
+            hang_s = p25_sm_effective_hangtime(state, rt->p25_ctx.config.hangtime_s);
+        } else if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
+            hang_s = rt->dmr_ctx.hangtime_s;
+        }
+        /* Bound the conversion, including invalid/nonfinite configured values. */
+        if (hang_s > 86400.0) {
+            hang_s = 86400.0;
+        }
+        if (hang_s > 0.0) {
+            report.hang_ms = (uint32_t)((hang_s * 1000.0) + 0.5);
+        }
+    }
     dsd_scan_timing_publish(state, &report);
 }
 

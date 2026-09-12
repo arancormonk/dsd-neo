@@ -27,10 +27,9 @@ extern "C" {
 
 /** @brief What the idle dwell budget is doing while the row is on air. */
 enum {
-    DSD_APP_SCAN_DWELL_NONE = 0,  /**< No dwell budget applies (or it is the live window). */
-    DSD_APP_SCAN_DWELL_RUNNING,   /**< The dwell is the live window counting down. */
-    DSD_APP_SCAN_DWELL_SUSPENDED, /**< Disarmed while something else holds the row. */
-    DSD_APP_SCAN_DWELL_PAUSED,    /**< Disarmed by the operator hold. */
+    DSD_APP_SCAN_DWELL_NONE = 0,      /**< No dwell budget applies (or it is the live window). */
+    DSD_APP_SCAN_DWELL_SUSPENDED = 2, /**< Disarmed while something else holds the row. */
+    DSD_APP_SCAN_DWELL_PAUSED = 3,    /**< Disarmed by the operator hold. */
 };
 
 /**
@@ -52,7 +51,7 @@ typedef struct {
     uint8_t show_hold;     /**< 1 = @c hold_ms applies (conventional rows only). */
     uint32_t hold_ms;      /**< Effective activity hold. */
     uint8_t show_hang;     /**< 1 = @c hang_ms governs the current stay (-t). */
-    uint32_t hang_ms;      /**< Voice/sync-loss hangtime, from -t. */
+    uint32_t hang_ms;      /**< Active protocol's effective voice/sync-loss hangtime. */
 } dsd_app_scan_timing;
 
 /**
