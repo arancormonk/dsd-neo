@@ -7,6 +7,7 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/dmr_key_map.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
@@ -190,6 +191,57 @@ dmr_sm_tick_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
         state->trunk_vc_freq[0] = 0;
         state->trunk_vc_freq[1] = 0;
     }
+}
+
+/* The abandon-carrier release the coordinator uses on a forced advance (#507). Mirrors what
+ * the real SM leaves behind: at rest on the control channel with no voice channel to its name,
+ * and no tune of its own. */
+void
+p25_sm_abandon_carrier(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
+    (void)opts;
+    (void)state;
+    (void)reason;
+    if (!ctx) {
+        return;
+    }
+    ctx->state = P25_SM_ON_CC;
+    ctx->vc_freq_hz = 0;
+    ctx->vc_channel = 0;
+    ctx->vc_tg = 0;
+    ctx->vc_src = 0;
+}
+
+void
+dmr_sm_abandon_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
+    (void)opts;
+    (void)state;
+    (void)reason;
+    if (!ctx) {
+        return;
+    }
+    ctx->state = DMR_SM_ON_CC;
+    ctx->vc_freq_hz = 0;
+    ctx->slots[0].voice_active = 0;
+    ctx->slots[1].voice_active = 0;
+}
+
+/* From engine/trunk_tuning.c, which this fixture does not link: the observable subtraction the
+ * coordinator depends on -- the canonical call rows end, the VC mirrors clear, trunk_is_tuned
+ * drops, and nothing tunes. Stamped with the real clock exactly like the original. */
+void
+dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    const double ended_m = dsd_time_now_monotonic_s();
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        (void)dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_EXPLICIT);
+    }
+    state->p25_vc_freq[0] = 0;
+    state->p25_vc_freq[1] = 0;
+    state->trunk_vc_freq[0] = 0;
+    state->trunk_vc_freq[1] = 0;
+    opts->trunk_is_tuned = 0;
 }
 
 dsd_trunk_tune_result
@@ -7885,6 +7937,36 @@ expect_scan_timing_no_visit_cap(const dsd_state* state, const char* stage) {
     return 0;
 }
 
+/*
+ * The #507 per-visit cap as a frontend reads it: the effective limit for the row on air, and
+ * the live deadline -- or an explicit negative when no cap is counting, whether it is disabled,
+ * not yet anchored, or suspended by a hold.
+ */
+static int
+expect_scan_visit(const dsd_state* state, const char* stage, unsigned limit_ms, double deadline_m) {
+    const dsd_scan_timing_publication* timing = &state->scan_timing;
+    int rc = 0;
+    if ((unsigned)timing->visit_limit_ms != limit_ms) {
+        DSD_FPRINTF(stderr, "scan visit cap after %s: limit=%u, want %u\n", stage, (unsigned)timing->visit_limit_ms,
+                    limit_ms);
+        rc = 1;
+    }
+    if (deadline_m < 0.0) {
+        if (timing->visit_deadline_m >= 0.0) {
+            DSD_FPRINTF(stderr, "scan visit cap after %s: deadline %.6f, want no live cap\n", stage,
+                        timing->visit_deadline_m);
+            rc = 1;
+        }
+        return rc;
+    }
+    if (timing->visit_deadline_m < 0.0 || fabs(timing->visit_deadline_m - deadline_m) > 1e-6) {
+        DSD_FPRINTF(stderr, "scan visit cap after %s: deadline %.6f, want %.6f\n", stage, timing->visit_deadline_m,
+                    deadline_m);
+        rc = 1;
+    }
+    return rc;
+}
+
 static int
 expect_scan_timing_conventional(const dsd_state* state, const char* stage, unsigned conventional) {
     if ((unsigned)state->scan_timing.conventional != conventional) {
@@ -8259,6 +8341,917 @@ test_scan_timing_pending_retune_then_retry_cooldown(void) {
     return test_rc;
 }
 
+/*
+ * Per-visit cap tests (issue #507). The cap is opt-in, so every case below sets the global
+ * (or a row override) before dsd_engine_trunk_scan_init(): the scan-mode scope captures the
+ * configured value when the coordinator starts and restores it on every row change, so a cap
+ * installed after init would be thrown away by the next switch.
+ */
+static int
+scan_visit_init(const char* header, const char* body, int max_visit_ms, dsd_opts* opts, dsd_state* state, char* dir,
+                size_t dir_sz, char* target_path, size_t path_sz) {
+    if (make_temp_dir(dir, dir_sz) != 0) {
+        return -1;
+    }
+    if (write_targets_file_with_header(dir, header ? header : k_header, body, target_path, path_sz) != 0) {
+        return -1;
+    }
+    reset_scan_opts_state(opts, state);
+    opts->scan_max_visit_ms = max_visit_ms;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "visit cap init failed err=%s\n", err);
+        return -1;
+    }
+    return 0;
+}
+
+/* One active group-voice call row: what a followed call looks like to the coordinator. */
+static int
+seed_active_call_row(dsd_state* state, uint32_t target, uint32_t source, double observed_m) {
+    if (dsd_call_state_ensure(state) <= 0) {
+        DSD_FPRINTF(stderr, "visit cap seed: call-state ensure failed\n");
+        return 1;
+    }
+    dsd_call_observation obs;
+    DSD_MEMSET(&obs, 0, sizeof(obs));
+    obs.protocol = DSD_SYNC_P25P2_POS;
+    obs.slot = 0U;
+    obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+    obs.ota_target_id = target;
+    obs.policy_target_id = target;
+    obs.ota_source_id = source;
+    obs.observed_m = observed_m;
+    if (dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) != 1) {
+        DSD_FPRINTF(stderr, "visit cap seed: observe failed\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_no_active_call_row(const dsd_state* state, const char* stage) {
+    dsd_call_snapshot call;
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+            DSD_FPRINTF(stderr, "call row %d after %s: still active\n", slot, stage);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+expect_vc_mirrors_clear(const dsd_state* state, const char* stage) {
+    if (state->p25_vc_freq[0] != 0 || state->p25_vc_freq[1] != 0 || state->trunk_vc_freq[0] != 0
+        || state->trunk_vc_freq[1] != 0) {
+        DSD_FPRINTF(stderr, "VC mirrors after %s: p25 %ld/%ld trunk %ld/%ld, want zeroed\n", stage,
+                    state->p25_vc_freq[0], state->p25_vc_freq[1], state->trunk_vc_freq[0], state->trunk_vc_freq[1]);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * The cap measures the visit, not the gaps between the calls in it. A trunked row that follows
+ * one call after another re-arms the idle dwell at every release, which is precisely why the
+ * dwell alone can never rotate off a busy system: only the visit anchor, untouched since the
+ * park, still knows how long the receiver has been here.
+ */
+static int
+test_visit_limit_repeated_p25_calls_do_not_restart(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    static const double marks[] = {0.10, 0.30, 0.40, 0.70, 0.80};
+    for (size_t i = 0; i < sizeof marks / sizeof marks[0]; i++) {
+        /* Follow a call, release it, follow the next: the release re-arms the dwell every time. */
+        opts.trunk_is_tuned = (i % 2U == 0U) ? 1 : 0;
+        trunk_scan_test_set_now(marks[i]);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "call follow cycle", 0U);
+    }
+
+    opts.trunk_is_tuned = 1;
+    trunk_scan_test_set_now(0.99);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "just inside the cap", 0U);
+    /* The deadline is still one second after the original park, not after the last call. */
+    test_rc |= expect_scan_visit(&state, "just inside the cap", 1000U, 1.0);
+
+    trunk_scan_test_set_now(1.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "cap expiry", 1U);
+    test_rc |= expect_published_target(&state, "cap expiry", "b", 2U, 2U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * The conventional counterpart: an open microphone refreshes the activity hold on every report,
+ * so the hold window never lapses and the row never rotates. The cap is what ends the visit.
+ */
+static int
+test_visit_limit_continuous_conventional_activity_does_not_restart(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL,
+                        "a,dmr-conventional,461000000,,250,250,\n"
+                        "b,dmr-conventional,462000000,,250,250,\n",
+                        1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    static const double marks[] = {0.10, 0.30, 0.50, 0.70, 0.90};
+    for (size_t i = 0; i < sizeof marks / sizeof marks[0]; i++) {
+        trunk_scan_test_set_now(marks[i]);
+        dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "continuous activity", 0U);
+    }
+
+    trunk_scan_test_set_now(0.99);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "activity just inside the cap", 0U);
+    test_rc |=
+        expect_scan_timing(&state, "activity just inside the cap", DSD_SCAN_STAY_ACTIVITY_HOLD, 1.15, 250U, 250U);
+    test_rc |= expect_scan_visit(&state, "activity just inside the cap", 1000U, 1.0);
+
+    trunk_scan_test_set_now(1.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "activity cap expiry", 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * The operator's target hold outranks the cap: while it is on, nothing counts down and nothing
+ * expires. The release does not resume a partly spent limit either -- the held row gets a full
+ * fresh one, which is what an operator who just let go expects (requirement 6).
+ */
+static int
+test_visit_limit_manual_hold_suspends_and_release_restarts(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |= expect_control_rc("visit hold on",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+
+    static const double held_marks[] = {0.5, 3.0, 5.0};
+    for (size_t i = 0; i < sizeof held_marks / sizeof held_marks[0]; i++) {
+        trunk_scan_test_set_now(held_marks[i]);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "manual hold past the cap", 0U);
+        /* The cap is configured but not counting: the publication must not invite a frontend
+         * to draw a countdown the coordinator is not running. */
+        test_rc |= expect_scan_visit(&state, "manual hold past the cap", 1000U, -1.0);
+    }
+
+    test_rc |= expect_control_rc("visit hold off",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    trunk_scan_test_set_now(5.99);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "release before a full cap", 0U);
+    test_rc |= expect_scan_visit(&state, "release before a full cap", 1000U, 6.0);
+    trunk_scan_test_set_now(6.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "release after a full cap", 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * The talkgroup hold suspends the cap only for the call it exists to follow (requirement 7):
+ * cutting that call short is exactly what the operator asked the hold to prevent. A call on
+ * any other talkgroup is ordinary traffic and the cap applies to it.
+ */
+static int
+test_visit_limit_tg_hold_followed_call_suspends(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    state.tg_hold = 4242U;
+    opts.trunk_is_tuned = 1;
+    test_rc |= seed_active_call_row(&state, 4242U, 2002U, 0.10);
+
+    static const double held_marks[] = {0.5, 2.0, 3.0};
+    for (size_t i = 0; i < sizeof held_marks / sizeof held_marks[0]; i++) {
+        trunk_scan_test_set_now(held_marks[i]);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "tg hold followed call", 0U);
+        test_rc |= expect_scan_visit(&state, "tg hold followed call", 1000U, -1.0);
+    }
+
+    /* The call ends; the suspension ends with it and a full fresh limit starts from the last
+     * suspended tick. */
+    if (dsd_call_state_end_ex(&state, 0U, 3.0, DSD_CALL_END_TERMINATOR) != 1) {
+        DSD_FPRINTF(stderr, "visit cap tg hold: ending the held call failed\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(3.99);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "held call ended, inside the cap", 0U);
+    test_rc |= expect_scan_visit(&state, "held call ended, inside the cap", 1000U, 4.0);
+    trunk_scan_test_set_now(4.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "held call ended, cap expiry", 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+
+    /* Second half: the hold is on 4242 but the call on air is 9999. Nothing is suspended. */
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    state.tg_hold = 4242U;
+    opts.trunk_is_tuned = 1;
+    test_rc |= seed_active_call_row(&state, 9999U, 2002U, 0.10);
+    trunk_scan_test_set_now(0.99);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "unheld call inside the cap", 0U);
+    test_rc |= expect_scan_visit(&state, "unheld call inside the cap", 1000U, 1.0);
+    trunk_scan_test_set_now(1.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "unheld call cap expiry", 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * Off by default, and off must mean untouched: the same clock walk and the same state-restore
+ * assertions as test_coordinator_idle_rotation_and_state_restore(), with the publication
+ * saying no cap applies at every stage (requirement 10).
+ */
+static int
+test_visit_limit_disabled_leaves_rotation_unchanged(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = expect_active_target(&state, "disabled cap init", 0U);
+
+    state.p25_iden_fdma[1].base_freq = 12345;
+    dsd_state_set_trunk_chan_freq(&state, 99U, 851012500);
+    state.dmr_rest_channel = 4;
+    state.dmr_lcn_trust[4] = 2;
+    seed_target0_p25_state(&state);
+
+    trunk_scan_test_set_now(0.24);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "disabled cap before the dwell", 0U);
+    test_rc |= expect_scan_visit(&state, "disabled cap before the dwell", 0U, -1.0);
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "disabled cap after the dwell", 1U);
+    test_rc |= expect_scan_visit(&state, "disabled cap after the dwell", 0U, -1.0);
+    test_rc |= expect_empty_target_p25_state(&state);
+
+    state.p25_iden_fdma[1].base_freq = 99999;
+    dsd_state_set_trunk_chan_freq(&state, 99U, 852012500);
+    state.dmr_rest_channel = 8;
+    state.dmr_lcn_trust[4] = 0;
+    state.dmr_lcn_trust[8] = 2;
+    seed_target1_p25_state(&state);
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "disabled cap rotation back", 0U);
+    test_rc |= expect_scan_visit(&state, "disabled cap rotation back", 0U, -1.0);
+    if (state.p25_iden_fdma[1].base_freq != 12345 || state.trunk_chan_map[99] != 851012500
+        || state.dmr_rest_channel != 4 || state.dmr_lcn_trust[4] != 2 || state.dmr_lcn_trust[8] != 0) {
+        DSD_FPRINTF(stderr, "disabled cap: target state leaked across scan targets\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_target0_p25_state(&state);
+
+    /* Long past any cap a mistaken reading of a zero limit could invent. */
+    trunk_scan_test_set_now(5.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_visit(&state, "disabled cap long visit", 0U, -1.0);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * With nowhere else to go the cap re-arms instead of firing: no retune loop, no audio teardown
+ * (requirement 5). Two cases with the same shape -- a one-row list, and a two-row list whose
+ * alternate the operator avoided for the session.
+ */
+static int
+test_visit_limit_single_target_does_not_spin(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* Every mark 1.01 s past the previous re-arm crosses the cap again; the deadline walks
+     * forward by one limit each time and the tuner is never asked to move. */
+    static const struct {
+        double now_m;
+        double deadline_m;
+    } marks[] = {{1.01, 2.01}, {1.5, 2.01}, {2.02, 3.02}, {3.03, 4.03}, {4.04, 5.04}};
+
+    if (scan_visit_init(NULL, "a,p25-trunk,851000000,,250,,\n", 1000, &opts, &state, dir, sizeof dir, target_path,
+                        sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    const int parked_calls = g_counting_tune_to_cc_calls;
+    opts.trunk_is_tuned = 1;
+    /* The decision is re-armed, not re-taken: with nowhere to go the coordinator must not
+     * announce an eviction -- nor run the advance walk behind it -- on every tick past the
+     * deadline. Capture stderr over the walk so a regression to that is visible. */
+    dsd_test_capture_stderr cap;
+    char log[4096];
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscanvisit") != 0) {
+        DSD_FPRINTF(stderr, "single target cap: stderr capture failed\n");
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    for (size_t i = 0; i < sizeof marks / sizeof marks[0]; i++) {
+        trunk_scan_test_set_now(marks[i].now_m);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "single target past the cap", 0U);
+        test_rc |= expect_scan_visit(&state, "single target past the cap", 1000U, marks[i].deadline_m);
+        if (g_counting_tune_to_cc_calls != parked_calls) {
+            DSD_FPRINTF(stderr, "single target cap retuned: calls=%d, want %d\n", g_counting_tune_to_cc_calls,
+                        parked_calls);
+            test_rc = 1;
+        }
+    }
+    (void)dsd_test_capture_stderr_end(&cap);
+    if (dsd_test_capture_stderr_read(&cap, log, sizeof log) != 0) {
+        DSD_FPRINTF(stderr, "single target cap: stderr read failed\n");
+        log[0] = '\0';
+        test_rc = 1;
+    }
+    int notices = 0;
+    for (const char* found = strstr(log, "visit limit"); found; found = strstr(found + 1, "visit limit")) {
+        notices++;
+    }
+    if (notices != 0) {
+        DSD_FPRINTF(stderr, "single target cap announced %d evictions with nowhere to go\n", notices);
+        test_rc = 1;
+    }
+    if (test_rc != 0) {
+        /* The capture swallowed whatever the assertions above printed; hand it back. */
+        DSD_FPRINTF(stderr, "single target cap captured log:\n%s", log);
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+
+    /* Same shape, two rows, the alternate avoided: avoiding the row the receiver is on steps
+     * onto the other one, so avoid b from b and the receiver lands back on a. */
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    test_rc |= expect_control_rc("avoid step to b",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "avoid step to b", 1U);
+    test_rc |= expect_control_rc("avoid b",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |= expect_active_target(&state, "avoid b", 0U);
+    const int avoided_calls = g_counting_tune_to_cc_calls;
+    opts.trunk_is_tuned = 1;
+    for (size_t i = 0; i < sizeof marks / sizeof marks[0]; i++) {
+        trunk_scan_test_set_now(marks[i].now_m);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "avoided alternate past the cap", 0U);
+        test_rc |= expect_scan_visit(&state, "avoided alternate past the cap", 1000U, marks[i].deadline_m);
+        if (g_counting_tune_to_cc_calls != avoided_calls) {
+            DSD_FPRINTF(stderr, "avoided alternate cap retuned: calls=%d, want %d\n", g_counting_tune_to_cc_calls,
+                        avoided_calls);
+            test_rc = 1;
+        }
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * The load-bearing case for requirement 8: the cap fires while a P25 call is being followed.
+ * The carrier is released before the outgoing snapshot is saved, so the receiver leaves with
+ * no tuned state and the revisit restores an idle system rather than a call that ended on
+ * another frequency a rotation ago.
+ */
+static int
+test_visit_limit_expiry_during_p25_call_leaves_clean_revisit(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    p25_sm_ctx_t* ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
+    if (!ctx) {
+        DSD_FPRINTF(stderr, "visit cap call teardown: no active P25 context\n");
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    /* Parked, granted, following a call on a voice channel. */
+    ctx->state = P25_SM_TUNED;
+    opts.trunk_is_tuned = 1;
+    state.p25_vc_freq[0] = 851112500;
+    state.trunk_vc_freq[0] = 851112500;
+    test_rc |= seed_active_call_row(&state, 1001U, 2002U, 0.10);
+
+    trunk_scan_test_set_now(0.99);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "call follow inside the cap", 0U);
+    test_rc |= expect_scan_timing(&state, "call follow inside the cap", DSD_SCAN_STAY_CALL_FOLLOW, -1.0, 250U, 0U);
+
+    trunk_scan_test_set_now(1.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "cap expiry mid-call", 1U);
+    if (opts.trunk_is_tuned != 0) {
+        DSD_FPRINTF(stderr, "cap expiry mid-call left trunk_is_tuned=%d\n", opts.trunk_is_tuned);
+        test_rc = 1;
+    }
+    test_rc |= expect_vc_mirrors_clear(&state, "cap expiry mid-call");
+    test_rc |= expect_no_active_call_row(&state, "cap expiry mid-call");
+
+    /* Row b runs out its own idle dwell and the rotation comes back to a. */
+    trunk_scan_test_set_now(1.27);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "revisit after a forced advance", 0U);
+    test_rc |= expect_no_active_call_row(&state, "revisit after a forced advance");
+    test_rc |= expect_vc_mirrors_clear(&state, "revisit after a forced advance");
+    if (opts.trunk_is_tuned != 0) {
+        DSD_FPRINTF(stderr, "revisit after a forced advance left trunk_is_tuned=%d\n", opts.trunk_is_tuned);
+        test_rc = 1;
+    }
+    const p25_sm_ctx_t* revisit_ctx = dsd_engine_trunk_scan_active_p25_ctx();
+    if (p25_sm_get_state(revisit_ctx) != P25_SM_ON_CC) {
+        DSD_FPRINTF(stderr, "revisit after a forced advance left the P25 SM in %d\n",
+                    (int)p25_sm_get_state(revisit_ctx));
+        test_rc = 1;
+    }
+    test_rc |= expect_scan_timing(&state, "revisit after a forced advance", DSD_SCAN_STAY_IDLE_DWELL, 1.52, 250U, 0U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * The plain expiry: a trunked row that is following a call all the way to the deadline is
+ * evicted at it, and the publication follows the receiver onto the incoming row with that row's
+ * own cap armed from its own park.
+ */
+static int
+test_visit_limit_expiry_advances_and_publishes(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    opts.trunk_is_tuned = 1;
+
+    trunk_scan_test_set_now(0.50);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "cap half spent", 0U);
+    test_rc |= expect_scan_timing(&state, "cap half spent", DSD_SCAN_STAY_CALL_FOLLOW, -1.0, 250U, 0U);
+    test_rc |= expect_scan_visit(&state, "cap half spent", 1000U, 1.0);
+
+    trunk_scan_test_set_now(1.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "cap spent", 1U);
+    test_rc |= expect_published_target(&state, "cap spent", "b", 2U, 2U);
+    test_rc |= expect_scan_visit(&state, "cap spent", 1000U, 2.01);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * Every visit gets the whole limit. A row the rotation comes back to is measured from the park
+ * that brought the receiver back, not from the first time it was ever visited -- otherwise a
+ * target would be evicted the moment it was revisited for the rest of the session.
+ */
+static int
+test_visit_limit_revisit_starts_fresh(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n"
+                        "c,p25-trunk,853000000,,250,,\n",
+                        1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    /* Idle dwells only: a -> b -> c -> a, the last park landing at 0.78. */
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation to b", 1U);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation to c", 2U);
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation back to a", 0U);
+
+    /* A call arrives on the revisit and holds the row; only the cap can end the visit now. */
+    opts.trunk_is_tuned = 1;
+    trunk_scan_test_set_now(1.05);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "past the first park's cap", 0U);
+    test_rc |= expect_scan_visit(&state, "past the first park's cap", 1000U, 1.78);
+    trunk_scan_test_set_now(1.77);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "just inside the revisit cap", 0U);
+    trunk_scan_test_set_now(1.79);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "revisit cap spent", 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * A row's own `--scan-max-visit-ms` wins over the global, a row without one inherits it, and a
+ * row that says `0` has no cap at all even while the global is set -- the same configured versus
+ * effective split the other row options keep.
+ */
+static int
+test_visit_limit_row_override_and_global_inheritance(void) {
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(header,
+                        "a,p25-trunk,851000000,,250,,,--scan-max-visit-ms 2000\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    opts.trunk_is_tuned = 1;
+
+    trunk_scan_test_set_now(1.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "row override past the global cap", 0U);
+    test_rc |= expect_scan_visit(&state, "row override past the global cap", 2000U, 2.0);
+    trunk_scan_test_set_now(2.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "row override spent", 1U);
+    /* Row b carries no option of its own and inherits the global. */
+    test_rc |= expect_scan_visit(&state, "row override spent", 1000U, 3.01);
+    /* The forced advance handed the carrier back, so trunk_is_tuned dropped with it: say that
+     * row b has traffic of its own, or its idle dwell -- not its cap -- ends the visit. */
+    opts.trunk_is_tuned = 1;
+    trunk_scan_test_set_now(2.5);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "inherited cap half spent", 1U);
+    test_rc |= expect_scan_visit(&state, "inherited cap half spent", 1000U, 3.01);
+    opts.trunk_is_tuned = 1;
+    trunk_scan_test_set_now(3.02);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "inherited cap spent", 0U);
+    test_rc |= expect_scan_visit(&state, "inherited cap spent", 2000U, 5.02);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_state_ext_free_all(&state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+
+    /* A row that switches the cap off keeps its visit for as long as the traffic lasts. */
+    if (scan_visit_init(header,
+                        "a,p25-trunk,851000000,,250,,,--scan-max-visit-ms 0\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    opts.trunk_is_tuned = 1;
+    static const double uncapped_marks[] = {1.01, 2.5, 5.0};
+    for (size_t i = 0; i < sizeof uncapped_marks / sizeof uncapped_marks[0]; i++) {
+        trunk_scan_test_set_now(uncapped_marks[i]);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "row cap off", 0U);
+        test_rc |= expect_scan_visit(&state, "row cap off", 0U, -1.0);
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_state_ext_free_all(&state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * A retune the backend has not resolved yet is not a visit: there is no park to measure from, so
+ * the cap cannot fire and publishes no deadline. When the request completes, the visit starts at
+ * the completion the backend recorded (requirement 9).
+ */
+static int
+test_visit_limit_pending_retune_does_not_fire(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.scan_max_visit_ms = 1000;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(1.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "visit cap pending-retune init failed: %s\n", err);
+        test_rc = 1;
+    }
+    p25_sm_ctx_t* ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
+    if (!ctx || !ctx->cc_tune_pending || ctx->cc_tune_request_id == 0U) {
+        DSD_FPRINTF(stderr, "visit cap pending-retune left no pending request\n");
+        g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+
+    trunk_scan_test_set_now(3.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "retune still pending", 0U);
+    test_rc |= expect_scan_timing(&state, "retune still pending", DSD_SCAN_STAY_RETUNE_PENDING, -1.0, 250U, 0U);
+    test_rc |= expect_scan_visit(&state, "retune still pending", 1000U, -1.0);
+
+    /* This fixture stubs the P25 SM, so model the live-loop ordering where its tick observes
+     * completion before the scan coordinator runs. */
+    dsd_trunk_tuning_request_complete(ctx->cc_tune_request_id, DSD_TRUNK_TUNE_RESULT_OK);
+    (void)p25_sm_restart_pending_cc_acquisition(ctx, &opts, &state, 3.0, "test-complete");
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    /* Following a call from here on, so the idle dwell is disarmed and only the cap can move the
+     * receiver: the assertions below are about the cap alone. */
+    opts.trunk_is_tuned = 1;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "retune completed", 0U);
+    test_rc |= expect_scan_visit(&state, "retune completed", 1000U, 4.0);
+
+    trunk_scan_test_set_now(3.99);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "completed retune inside the cap", 0U);
+    trunk_scan_test_set_now(4.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "completed retune cap spent", 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * A park that failed is not a visit either: across the retry cooldown the cap must stay out of
+ * the way entirely, exactly as it does when it is switched off, and the park that finally lands
+ * anchors a fresh limit.
+ */
+static int
+run_visit_failed_retune_case(int max_visit_ms) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.scan_max_visit_ms = max_visit_ms;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    const unsigned want_limit = max_visit_ms >= 1000 ? (unsigned)max_visit_ms : 0U;
+
+    /* Every park fails: the initial one and the alternate the init advance reaches for. */
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_request = failing_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "visit cap failed-retune init failed: %s\n", err);
+        test_rc = 1;
+    }
+    g_counting_tune_to_cc_calls = 0;
+
+    static const double cooldown_marks[] = {0.5, 1.5};
+    for (size_t i = 0; i < sizeof cooldown_marks / sizeof cooldown_marks[0]; i++) {
+        trunk_scan_test_set_now(cooldown_marks[i]);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "failed park cooling down", 0U);
+        test_rc |= expect_scan_timing(&state, "failed park cooling down", DSD_SCAN_STAY_RETUNE_RETRY, 2.0, 250U, 0U);
+        /* Unanchored: there is no live cap to publish and nothing for it to expire. */
+        test_rc |= expect_scan_visit(&state, "failed park cooling down", want_limit, -1.0);
+    }
+
+    hooks.tune_to_cc_request = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_failures_remaining = 0;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    trunk_scan_test_set_now(2.3);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "park after the cooldown", 1U);
+    if (g_counting_tune_to_cc_calls != 1) {
+        DSD_FPRINTF(stderr, "failed-retune cooldown made %d attempts after expiry, want 1\n",
+                    g_counting_tune_to_cc_calls);
+        test_rc = 1;
+    }
+    /* Fresh from the park that landed, not from the coordinator's first attempt at 0.0. */
+    test_rc |= expect_scan_visit(&state, "park after the cooldown", want_limit, want_limit != 0U ? 3.3 : -1.0);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_visit_limit_failed_retune_cools_down_not_capped(void) {
+    int test_rc = run_visit_failed_retune_case(1000);
+    test_rc |= run_visit_failed_retune_case(0);
+    return test_rc;
+}
+
+/*
+ * When the forced advance cannot land anywhere the receiver rolls back onto the row it was on.
+ * The cap then re-arms rather than staying expired: a row whose alternates are all cooling down
+ * must not re-decide the eviction on every tick, and the retry has to wait for the next cap
+ * boundary that has somewhere to go.
+ */
+static int
+test_visit_limit_forced_advance_rollback_rearms(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    const int parked_calls = g_counting_tune_to_cc_calls;
+    opts.trunk_is_tuned = 1;
+    /* The alternate's retune fails, and so does the re-park the advance falls back on. */
+    g_counting_tune_to_cc_failures_remaining = 2;
+
+    trunk_scan_test_set_now(1.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "forced advance rollback", 0U);
+    test_rc |= expect_published_target(&state, "forced advance rollback", "a", 1U, 2U);
+    if (g_counting_tune_to_cc_calls != parked_calls + 2) {
+        DSD_FPRINTF(stderr, "forced advance made %d attempts, want %d\n", g_counting_tune_to_cc_calls - parked_calls,
+                    2);
+        test_rc = 1;
+    }
+    test_rc |= expect_scan_timing(&state, "forced advance rollback", DSD_SCAN_STAY_RETUNE_RETRY, 3.01, 250U, 0U);
+    /* Re-armed from the failed eviction, so the next boundary is one full limit out. */
+    test_rc |= expect_scan_visit(&state, "forced advance rollback", 1000U, 2.01);
+
+    const int rollback_calls = g_counting_tune_to_cc_calls;
+    static const double quiet_marks[] = {1.5, 1.99, 2.02};
+    for (size_t i = 0; i < sizeof quiet_marks / sizeof quiet_marks[0]; i++) {
+        /* The failed eviction handed the carrier back; the row is still busy. */
+        opts.trunk_is_tuned = 1;
+        trunk_scan_test_set_now(quiet_marks[i]);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "after the rollback", 0U);
+        if (g_counting_tune_to_cc_calls != rollback_calls) {
+            DSD_FPRINTF(stderr, "rollback retried at %.2f: calls=%d, want %d\n", quiet_marks[i],
+                        g_counting_tune_to_cc_calls, rollback_calls);
+            test_rc = 1;
+        }
+    }
+
+    /* 2.02 crossed the re-armed cap but the alternate was still cooling down, so it only re-armed
+     * again; the first boundary with an eligible alternate is the one that moves the receiver. */
+    opts.trunk_is_tuned = 1;
+    trunk_scan_test_set_now(3.03);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "eviction once the alternate is eligible", 1U);
+    if (g_counting_tune_to_cc_calls != rollback_calls + 1) {
+        DSD_FPRINTF(stderr, "eviction after the cooldown made %d attempts, want 1\n",
+                    g_counting_tune_to_cc_calls - rollback_calls);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -8377,6 +9370,19 @@ main(void) {
     rc |= run_with_default_tune_hook(test_scan_timing_voice_gate_phases);
     rc |= run_with_default_tune_hook(test_scan_timing_row_voice_options_override_effective_values);
     rc |= run_with_default_tune_hook(test_scan_timing_pending_retune_then_retry_cooldown);
+    rc |= run_with_default_tune_hook(test_visit_limit_repeated_p25_calls_do_not_restart);
+    rc |= run_with_default_tune_hook(test_visit_limit_continuous_conventional_activity_does_not_restart);
+    rc |= run_with_default_tune_hook(test_visit_limit_manual_hold_suspends_and_release_restarts);
+    rc |= run_with_default_tune_hook(test_visit_limit_tg_hold_followed_call_suspends);
+    rc |= run_with_default_tune_hook(test_visit_limit_disabled_leaves_rotation_unchanged);
+    rc |= run_with_default_tune_hook(test_visit_limit_single_target_does_not_spin);
+    rc |= run_with_default_tune_hook(test_visit_limit_expiry_during_p25_call_leaves_clean_revisit);
+    rc |= run_with_default_tune_hook(test_visit_limit_expiry_advances_and_publishes);
+    rc |= run_with_default_tune_hook(test_visit_limit_revisit_starts_fresh);
+    rc |= run_with_default_tune_hook(test_visit_limit_row_override_and_global_inheritance);
+    rc |= run_with_default_tune_hook(test_visit_limit_pending_retune_does_not_fire);
+    rc |= run_with_default_tune_hook(test_visit_limit_failed_retune_cools_down_not_capped);
+    rc |= run_with_default_tune_hook(test_visit_limit_forced_advance_rollback_rearms);
     return rc;
 }
 

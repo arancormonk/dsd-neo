@@ -218,7 +218,12 @@ typedef struct {
     dsd_scan_row_profile* profile;
     p25_sm_ctx_t p25_ctx;
     dmr_sm_ctx_t dmr_ctx;
-    double parked_since_m;
+    /* The monotonic instant the receiver actually parked on this target: the one anchor the
+     * per-visit cap measures from (#507). `< 0` is disarmed -- never parked, the park failed, or
+     * a retune is in flight. Only a park success or a suspension slide writes it; activity,
+     * grants, SM-driven retunes and idle-timer resets must not, or a busy system would push the
+     * cap out forever and the limit would never end a visit. */
+    double visit_since_m;
     double idle_since_m;
     double retry_until_m;
     double last_allowed_activity_m;
@@ -250,6 +255,9 @@ typedef struct {
     size_t count;
     size_t active;
     int hold_active; /* operator hold: the idle dwell never expires while set (#380) */
+    /* One-shot: the switch this coordinator is about to perform is a forced eviction, so the
+     * outgoing carrier is released before its snapshot is saved (#507). Consumed in the switch. */
+    int forced_visit_release;
     int saved_trunk_enable;
     int saved_trunk_is_tuned;
     int saved_mod_c4fm;
@@ -2283,7 +2291,8 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
         dmr_sm_init_ctx(&rt->dmr_ctx, opts, state);
         trunk_scan_save_snapshot(state, &rt->snapshot);
         trunk_scan_note_chan_map_seq(coord, rt->snapshot.trunk_chan_map_seq);
-        rt->parked_since_m = now_m;
+        /* Nothing is parked yet: the first switch anchors the visit when its retune lands. */
+        rt->visit_since_m = -1.0;
         rt->idle_since_m = now_m;
     }
     return 0;
@@ -2446,6 +2455,51 @@ trunk_scan_prepare_switch(const dsd_opts* opts, dsd_state* state, const dsd_key_
 /* The receiver never left the active target; nothing was saved, published or retuned. */
 enum { TRUNK_SCAN_PREPARE_FAILED = -2 };
 
+/*
+ * Anchor the per-visit cap at the instant the receiver actually parked. `parked_m` is the
+ * tuner's own completion stamp when one exists, and is believed only while it lies in the
+ * coordinator's past: a stamp from any other clock -- or one recorded after this read -- could
+ * only lengthen the visit, and the tick measures against trunk_scan_now_m() alone.
+ */
+static void
+trunk_scan_arm_visit(dsd_trunk_scan_target_runtime* rt, double parked_m) {
+    const double now_m = trunk_scan_now_m();
+    rt->visit_since_m = (parked_m > 0.0 && parked_m <= now_m) ? parked_m : now_m;
+}
+
+/*
+ * Hand the tuned carrier back before the receiver is moved off it. Only a forced advance owes
+ * this: an ordinary rotation leaves a row that is not following anything. Both trunked state
+ * machines come to rest on their control channel without tuning -- the coordinator owns the
+ * tuner and is already moving it -- and the shared call-state release then clears what the
+ * protocol layer does not: the canonical call rows, the VC mirrors and trunk_is_tuned.
+ */
+static void
+trunk_scan_release_active_carrier(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt) {
+    if (!opts || !state || !rt) {
+        return;
+    }
+    /* Exhaustive, no default: a new target type must say here whether it owns a carrier the
+     * coordinator has to hand back. */
+    switch (rt->target.type) {
+        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
+            p25_sm_abandon_carrier(&rt->p25_ctx, opts, state, "scan-visit-limit");
+            break;
+        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
+            dmr_sm_abandon_carrier(&rt->dmr_ctx, opts, state, "scan-visit-limit");
+            break;
+        /* NXDN trunking keeps no coordinator-visible state machine, and a conventional row is
+         * never tuned away from its own frequency: the shared release below is all they owe. */
+        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK:
+        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: break;
+    }
+    dsd_engine_release_tuned_call_state(opts, state);
+}
+
 static int
 trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t next, int save_current) {
     if (!coord || next >= coord->count) {
@@ -2456,7 +2510,16 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
         return TRUNK_SCAN_PREPARE_FAILED;
     }
     if (save_current && coord->active < coord->count) {
-        trunk_scan_save_target_snapshot(coord, state, &coord->targets[coord->active]);
+        dsd_trunk_scan_target_runtime* outgoing = &coord->targets[coord->active];
+        /* A forced advance is the one rotation allowed to interrupt a call (#507). The release
+         * sits here on purpose: after the prepare succeeded, so a prepare failure never kills a
+         * call the receiver then stays on, and before the snapshot, so the saved state is idle by
+         * construction and revisiting the target cannot restore a call that ended a rotation ago. */
+        if (coord->forced_visit_release) {
+            trunk_scan_release_active_carrier(opts, state, outgoing);
+            coord->forced_visit_release = 0;
+        }
+        trunk_scan_save_target_snapshot(coord, state, outgoing);
     }
 
     coord->active = next;
@@ -2479,7 +2542,9 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     dsd_frame_sync_reset_acquisition(opts, state, 0);
 
     double now_m = trunk_scan_now_m();
-    rt->parked_since_m = now_m;
+    /* Every attempt starts disarmed: only a retune that actually lands anchors the visit, so a
+     * failed park or a request still in flight can never spend a target's limit. */
+    rt->visit_since_m = -1.0;
     rt->idle_since_m = now_m;
     /* The incoming target publishes its own voice-gate phase on the next tick. */
     state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
@@ -2512,6 +2577,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
                 completed_m = trunk_scan_now_m();
             }
             (void)p25_sm_restart_pending_cc_acquisition(&rt->p25_ctx, opts, state, completed_m, "scan-retune");
+            trunk_scan_arm_visit(rt, completed_m);
         }
     } else if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING && tune_request_id != 0U) {
         rt->tune_request_id = tune_request_id;
@@ -2519,6 +2585,9 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     } else {
         rt->tune_request_id = 0U;
         rt->tune_pending = 0;
+        double completed_m = 0.0;
+        (void)dsd_trunk_tuning_request_status(tune_request_id, &completed_m);
+        trunk_scan_arm_visit(rt, completed_m);
     }
     rt->retry_until_m = 0.0;
     LOG_INFO("NOTICE: Trunk scan target '%s' at %ld Hz\n", rt->target.id, trunk_scan_retune_freq(state, &rt->target));
@@ -2640,6 +2709,40 @@ trunk_scan_target_dwell_ms(const dsd_opts* opts, const dsd_trunk_scan_target_run
         return rt->profile->values.qualify_ms;
     }
     return rt->target.dwell_ms;
+}
+
+/*
+ * The effective per-visit cap in ms (#507). Unlike the voice-gate windows above this is not
+ * gated on scan_voice_only: the cap applies to every target type. A row that carries the option
+ * wins outright, including the row `0` that switches the cap off while the global is set.
+ * Callers treat anything below 1000 as disabled -- config loading is range-free by design, so a
+ * hand-written 1..999 reaches the engine and must mean off, not a millisecond visit.
+ */
+static int
+trunk_scan_target_max_visit_ms(const dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt) {
+    if (rt->profile && (rt->profile->values.present & DSD_SCAN_OPT_MAX_VISIT)) {
+        return rt->profile->values.max_visit_ms;
+    }
+    return opts->scan_max_visit_ms;
+}
+
+/*
+ * While this holds, the cap neither counts down nor expires: the operator's target hold, and a
+ * talkgroup hold on the very call being followed (requirements 6 and 7) -- cutting that call
+ * short is exactly what the operator asked the hold to prevent. A trunked row additionally has
+ * to be on the voice channel, because its call rows can still describe a call the tuner left.
+ * Read-only: the tick and the publication must agree, so they ask the same question.
+ */
+static int
+trunk_scan_visit_suspended(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                           const dsd_trunk_scan_target_runtime* rt) {
+    if (coord->hold_active) {
+        return 1;
+    }
+    if (!dsd_scan_tg_hold_call_active(state)) {
+        return 0;
+    }
+    return !trunk_scan_target_is_trunked(rt->target.type) || opts->trunk_is_tuned == 1;
 }
 
 /* A trunked row stays for whatever its protocol state machine is doing. The SM owns those
@@ -2810,7 +2913,8 @@ trunk_scan_resolve_pending_retune(dsd_state* state, dsd_trunk_scan_target_runtim
         return 1;
     }
     const uint64_t request_id = rt->tune_request_id;
-    dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(request_id, NULL);
+    double completed_m = 0.0;
+    dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(request_id, &completed_m);
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
         return 0;
     }
@@ -2819,11 +2923,19 @@ trunk_scan_resolve_pending_retune(dsd_state* state, dsd_trunk_scan_target_runtim
         rt->tune_request_id = 0U;
         rt->tune_pending = 0;
         rt->idle_since_m = -1.0;
+        /* The visit began when the backend finished the tune, not when this tick noticed. */
+        trunk_scan_arm_visit(rt, completed_m);
         return 1;
     }
 
     const int p25_recovery = trunk_scan_reconcile_p25_retune_recovery(rt, request_id);
     if (p25_recovery >= 0) {
+        if (p25_recovery == 1) {
+            /* A replacement tune the P25 SM owned completed while the coordinator was not
+             * looking; its completion stamp belongs to a request this target no longer tracks,
+             * so the visit starts from the tick that found the receiver parked again. */
+            trunk_scan_arm_visit(rt, now_m);
+        }
         return p25_recovery;
     }
 
@@ -2939,8 +3051,85 @@ trunk_scan_publish_timing(const dsd_opts* opts, dsd_state* state, const dsd_trun
     report.conventional = conventional ? 1U : 0U;
     report.dwell_ms = dwell_ms > 0 ? (uint32_t)dwell_ms : 0U;
     report.hold_ms = hold_ms > 0 ? (uint32_t)hold_ms : 0U;
+    /* The cap the row on air is subject to, and the deadline only while one is really counting:
+     * the same suspension the tick honours, and nothing to count from before the park lands. */
+    const int visit_limit_ms = trunk_scan_target_max_visit_ms(opts, rt);
+    report.visit_limit_ms = visit_limit_ms >= 1000 ? (uint32_t)visit_limit_ms : 0U;
+    if (report.visit_limit_ms != 0U && rt->visit_since_m >= 0.0 && !rt->tune_pending
+        && !trunk_scan_visit_suspended(opts, state, coord, rt)) {
+        report.visit_deadline_m = rt->visit_since_m + (double)visit_limit_ms / 1000.0;
+    }
     trunk_scan_timing_select_reason(opts, state, coord, now_m, &report);
     dsd_scan_timing_publish(state, &report);
+}
+
+/* Somewhere else to go: the same candidate filter trunk_scan_advance() walks, so the cap can
+ * never fire on a rotation the advance would refuse. An alternate avoided for the session or
+ * still cooling down from a failed retune is not an alternate. */
+static int
+trunk_scan_visit_alternate_is_eligible(const dsd_trunk_scan_coord* coord, double now_m) {
+    if (coord->count < 2) {
+        return 0;
+    }
+    for (size_t i = 0; i < coord->count; i++) {
+        if (i == coord->active) {
+            continue;
+        }
+        if (!coord->targets[i].avoided && coord->targets[i].retry_until_m <= now_m) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+ * The per-visit cap (issue #507): the ceiling on how long one visit may last, opt-in and off by
+ * default. Without it a busy trunked system or an open microphone on a conventional row keeps
+ * the receiver on one target indefinitely, because every reason to stay disarms the idle dwell.
+ * Runs before the tick's hold short-circuit -- evicting a row that is holding is the whole
+ * point -- and returns 1 when the tick must stop because the rotation moved or tried to.
+ */
+static int
+trunk_scan_service_visit_limit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
+                               dsd_trunk_scan_target_runtime* rt, double now_m) {
+    const int limit_ms = trunk_scan_target_max_visit_ms(opts, rt);
+    if (limit_ms < 1000) {
+        /* Disabled. Writes nothing at all, so the default rotation is byte-for-byte the old one. */
+        return 0;
+    }
+    if (rt->tune_pending || rt->visit_since_m < 0.0) {
+        /* No park to measure from: a retune is in flight, or the last one never landed. */
+        return 0;
+    }
+    if (trunk_scan_visit_suspended(opts, state, coord, rt)) {
+        /* Slide the anchor rather than remember a pause: the first unsuspended tick then starts
+         * a full fresh limit, which is what an operator who just let go expects. */
+        rt->visit_since_m = now_m;
+        return 0;
+    }
+    if ((now_m - rt->visit_since_m) < (double)limit_ms / 1000.0) {
+        return 0;
+    }
+    if (!trunk_scan_visit_alternate_is_eligible(coord, now_m)) {
+        /* Nowhere to go: re-arm instead of firing, so a single-target list neither spins on this
+         * decision every tick nor tears down audio it would immediately have to rebuild. */
+        rt->visit_since_m = now_m;
+        return 0;
+    }
+    LOG_INFO("NOTICE: Trunk scan target '%s' reached its %d ms visit limit; advancing\n", rt->target.id, limit_ms);
+    const size_t before = coord->active;
+    coord->forced_visit_release = 1;
+    trunk_scan_advance(opts, state, coord);
+    /* Cleared unconditionally: a flag left armed would tear down a call on the next ordinary
+     * dwell rotation, which is not a forced advance at all. */
+    coord->forced_visit_release = 0;
+    if (coord->active == before) {
+        /* Every alternate failed and the receiver is back on this row -- or nothing was eligible
+         * by the time the advance walked its list. Re-arm, so the eviction is retried on the next
+         * cap boundary rather than on every tick from here on. */
+        coord->targets[before].visit_since_m = now_m;
+    }
+    return 1;
 }
 
 static void
@@ -2968,6 +3157,9 @@ trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
         trunk_scan_share_peer_idens(coord, state, rt);
     }
     trunk_scan_refresh_voice_media_hold(opts, state, rt, now_m);
+    if (trunk_scan_service_visit_limit(opts, state, coord, rt, now_m)) {
+        return;
+    }
     if (trunk_scan_active_is_held(opts, state, coord, now_m)) {
         rt->idle_since_m = -1.0;
         return;
