@@ -393,6 +393,9 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
     dsd_state_trunk_lcn_avoid_free(dst);
     dst->lcn_avoid_count = 0;
     dst->lcn_scan_hold = 0;
+    // The visit the per-visit cap was measuring belonged to a row that no longer exists.
+    dst->scan_visit_since_m = -1.0;
+    dst->scan_visit_roll_seen = 0;
     DSD_MEMSET(dst->dmr_lcn_trust, 0, sizeof dst->dmr_lcn_trust);
     dst->trunk_chan_map_seq++;
     return 0;
@@ -507,6 +510,9 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     state->lcn_freq_roll = 0;
     state->lcn_avoid_count = 0;
     state->lcn_scan_hold = 0;
+    // Nothing left to visit, so the per-visit cap has nothing to measure from.
+    state->scan_visit_since_m = -1.0;
+    state->scan_visit_roll_seen = 0;
     // Provenance goes with the map, exactly as in chan_map_adopt(): a surviving
     // "learned on the control channel" byte would authorize an off-CC tune to a
     // frequency no longer in the map.

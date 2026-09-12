@@ -428,6 +428,159 @@ test_typed_scan_tune_boundaries(void) {
     dsd_trunk_tuning_requests_reset();
     return rc;
 }
+
+/*
+ * The -Y per-visit cap (issue #507) through the real noCarrier() step. Every case here needs the
+ * cap to be the only thing that could hop: the legacy -t 10 deadline is fresh, or the voice gate
+ * is holding on media that keeps arriving. Frequencies are unique to this case because engine.c
+ * caches its last tune in file statics that outlive free_test_runtime().
+ */
+static int
+test_visit_cap_scanner_hops(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_hangtime = 10;
+    opts->scan_max_visit_ms = 2000;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_lcn_freq[0] = 952012500;
+    state->trunk_lcn_freq[1] = 953012500;
+    state->trunk_lcn_freq[2] = 954012500;
+    state->lcn_freq_count = 3;
+    state->lcn_freq_roll = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+
+    // Legacy hangtime mode: the -t 10 deadline is 10 s away, so nothing but the cap can move the
+    // rotation. The visit is 5 s old against a 2 s cap, and the call open on the outgoing row has
+    // to close as an explicit release rather than a sync loss -- the frequency moved under it.
+    double now_m = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time = time(NULL);
+    dsd_scan_voice_gate_note_retune(state, now_m - 5.0);
+    dsd_call_observation capped_call = {0};
+    capped_call.protocol = DSD_SYNC_NXDN_POS;
+    capped_call.slot = 0U;
+    capped_call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    capped_call.ota_target_id = 7301U;
+    capped_call.policy_target_id = 7301U;
+    capped_call.ota_source_id = 8301U;
+    capped_call.observed_m = now_m - 4.0;
+    rc |= expect_true("visit-cap-legacy-seeds-call",
+                      dsd_call_state_observe(state, &capped_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("visit-cap-legacy-retuned", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 952012500U);
+    rc |= expect_true("visit-cap-legacy-advanced", state->lcn_freq_roll == 1);
+    dsd_call_snapshot capped_snapshot;
+    rc |= expect_true("visit-cap-legacy-retains-snapshot", dsd_call_state_get(state, 0U, &capped_snapshot) == 1);
+    rc |= expect_true("visit-cap-legacy-ends-call", capped_snapshot.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect_true("visit-cap-legacy-ends-call-explicitly",
+                      capped_snapshot.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    // The hop anchors a fresh visit, so an immediate second pass has nothing to expire.
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("visit-cap-fresh-anchor-no-second-hop", g_rtl_tune_calls == 0 && state->lcn_freq_roll == 1);
+
+    // Voice-gate mode with media still arriving: the gate holds the row for as long as voice keeps
+    // coming, which is exactly the open-microphone case the cap exists for.
+    opts->scan_voice_only = 1;
+    opts->scan_voice_qualify_ms = 1000;
+    opts->scan_voice_hold_ms = 2000;
+    state->lcn_freq_roll = 1;
+    state->last_cc_sync_time = time(NULL);
+    now_m = dsd_time_now_monotonic_s();
+    dsd_scan_voice_gate_note_retune(state, now_m - 5.0);
+    dsd_call_observation live_call = {0};
+    live_call.protocol = DSD_SYNC_NXDN_POS;
+    live_call.slot = 0U;
+    live_call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    live_call.ota_target_id = 7302U;
+    live_call.policy_target_id = 7302U;
+    live_call.ota_source_id = 8302U;
+    live_call.observed_m = now_m - 0.4;
+    rc |= expect_true("visit-cap-gate-seeds-call",
+                      dsd_call_state_observe(state, &live_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    rc |= expect_true("visit-cap-gate-seeds-media", dsd_call_state_update_media(state, 0U, 1, now_m - 0.4) == 1
+                                                        && dsd_call_state_update_media(state, 0U, 1, now_m) == 1);
+    dsd_scan_voice_gate_tick(opts, state, 1, now_m);
+    rc |= expect_true("visit-cap-gate-holds",
+                      dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s()) == 0);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("visit-cap-gate-retuned", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 953012500U);
+    rc |= expect_true("visit-cap-gate-advanced", state->lcn_freq_roll == 2);
+    opts->scan_voice_only = 0;
+
+    // The operator hold suspends the cap: the receiver stays, the roll stands still, and the
+    // legacy dwell anchor is left alone so the release grants a full window.
+    state->lcn_scan_hold = 1;
+    state->lcn_freq_roll = 2;
+    state->last_cc_sync_time = time(NULL);
+    const time_t held_dwell_anchor = state->last_cc_sync_time;
+    now_m = dsd_time_now_monotonic_s();
+    dsd_scan_voice_gate_note_retune(state, now_m - 5.0);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("visit-cap-hold-no-retune", g_rtl_tune_calls == 0);
+    rc |= expect_true("visit-cap-hold-keeps-roll", state->lcn_freq_roll == 2);
+    rc |= expect_true("visit-cap-hold-leaves-dwell-alone", state->last_cc_sync_time == held_dwell_anchor);
+    state->lcn_scan_hold = 0;
+
+    // Disabled (the default): an ancient anchor changes nothing, and the hangtime rule still
+    // decides the rotation entirely on its own.
+    opts->scan_max_visit_ms = 0;
+    state->lcn_freq_roll = 2;
+    state->last_cc_sync_time = time(NULL);
+    now_m = dsd_time_now_monotonic_s();
+    dsd_scan_voice_gate_note_retune(state, now_m - 600.0);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("visit-cap-disabled-no-retune", g_rtl_tune_calls == 0 && state->lcn_freq_roll == 2);
+    state->last_cc_sync_time = time(NULL) - 11;
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("visit-cap-disabled-keeps-hangtime",
+                      g_rtl_tune_calls > 0 && g_rtl_tune_freq == 954012500U && state->lcn_freq_roll == 3);
+
+    // One usable row: a hop would land back on the same frequency, so the cap re-arms instead of
+    // tearing down audio it would immediately have to rebuild.
+    opts->scan_max_visit_ms = 2000;
+    state->trunk_lcn_freq[0] = 955012500;
+    state->lcn_freq_count = 1;
+    state->lcn_freq_roll = 0;
+    state->last_cc_sync_time = time(NULL);
+    now_m = dsd_time_now_monotonic_s();
+    dsd_scan_voice_gate_note_retune(state, now_m - 5.0);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("visit-cap-single-row-no-retune", g_rtl_tune_calls == 0 && state->lcn_freq_roll == 0);
+
+    // The cap's hop walks the avoid list exactly as the dwell's does: the avoided row is stepped
+    // over in the same pass rather than costing a visit of its own.
+    state->trunk_lcn_freq[1] = 956012500;
+    state->trunk_lcn_freq[2] = 957012500;
+    state->lcn_freq_count = 3;
+    rc |= expect_true("visit-cap-avoid-set", dsd_state_trunk_lcn_avoid_set(state, 1U, 1) == 0);
+    state->lcn_freq_roll = 1;
+    state->last_cc_sync_time = time(NULL);
+    now_m = dsd_time_now_monotonic_s();
+    dsd_scan_voice_gate_note_retune(state, now_m - 5.0);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("visit-cap-avoid-skips-row", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 957012500U);
+    rc |= expect_true("visit-cap-avoid-advanced-past", state->lcn_freq_roll == 3);
+
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
 #endif
 
 int
@@ -2106,6 +2259,7 @@ main(void) {
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_typed_scan_tune_boundaries();
+    rc |= test_visit_cap_scanner_hops();
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_dmr_explicit_return_destination();
 #endif

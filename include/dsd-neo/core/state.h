@@ -1731,6 +1731,15 @@ struct dsd_state {
     int scan_voice_gate_roll_seen;
     uint8_t scan_voice_gate_hold_seen;
     uint8_t scan_voice_gate_phase;
+    /* Per-visit cap bookkeeping for -Y (issue #507). scan_visit_since_m is the monotonic instant
+     * the row on air was tuned (-1.0 = no visit anchored, so the cap cannot fire) and
+     * scan_visit_roll_seen is the lcn_freq_roll this bookkeeping last saw, so an untyped `L` or
+     * avoid that moves the row without a retune note re-anchors. Deliberately separate from the
+     * scan_voice_gate_* anchors above: the cap applies under the voice gate and under the legacy
+     * hangtime rule alike, so it must not depend on gate-only code running -- the gate tick
+     * returns early with the gate off. Rides the vertex_ks_count..ui_msg range. */
+    double scan_visit_since_m;
+    int scan_visit_roll_seen;
     /* Scan state + live timing for the Scan Timing row (issue #508). Written by the
      * --trunk-scan coordinator for its parked target, or by the -Y timing tick when trunk
      * scan is off; the two never both write it. Rides the vertex_ks_count..ui_msg range. */

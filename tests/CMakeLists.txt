@@ -4923,8 +4923,10 @@ add_test(
 
 add_executable(
     dsd-neo_test_engine_scan_voice_gate
+    test_support/scan_group_stubs.c
     engine/test_engine_scan_voice_gate.c
     ${PROJECT_SOURCE_DIR}/src/engine/scan_voice_gate.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
 target_include_directories(
     dsd-neo_test_engine_scan_voice_gate
