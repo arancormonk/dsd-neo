@@ -2171,7 +2171,13 @@ mark_cc_sync(dsd_state* state, int include_monotonic) {
 static void
 hand_p25_sm_to_cc(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result tune_result, uint64_t request_id,
                   const char* source) {
-    (void)p25_sm_on_external_cc_tune(p25_sm_get_ctx(), opts, state, tune_result, request_id, source);
+    if (p25_sm_on_external_cc_tune(p25_sm_get_ctx(), opts, state, tune_result, request_id, source)) {
+        return;
+    }
+    /* A decline hands the SM back to its own recovery: the tune was refused, or the
+     * context is idle or uninitialized. It mutates nothing, so without a line here
+     * "handed off" and "left alone" are indistinguishable in a field log. */
+    LOG_DEBUG("P25 SM CC handoff declined (source=%s result=%d)\n", source ? source : "unknown", (int)tune_result);
 }
 
 /* Whether the P25 SM owns this trunk. When it does, the tune, the decoder resets and
@@ -2182,6 +2188,23 @@ hand_p25_sm_to_cc(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result tune_r
 static int
 p25_sm_owns_trunk(const dsd_opts* opts, const dsd_state* state) {
     return dsd_trunk_p25_recovery_allowed(opts, state);
+}
+
+/* Each manual retune runs its tune, its decoder resets and its SM handoff as one
+ * guarded step, so a watchdog tick never observes the half-moved state in between. */
+typedef int (*manual_retune_step_fn)(dsd_opts* opts, dsd_state* state, int p25_live);
+
+static int
+run_manual_retune_guarded(dsd_opts* opts, dsd_state* state, manual_retune_step_fn step) {
+    const int p25_live = p25_sm_owns_trunk(opts, state);
+    if (p25_live) {
+        p25_sm_tick_guard_enter();
+    }
+    const int status = step(opts, state, p25_live);
+    if (p25_live) {
+        p25_sm_tick_guard_leave();
+    }
+    return status;
 }
 
 static int
@@ -2211,15 +2234,7 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (opts->trunk_enable != 1 || (state->trunk_cc_freq == 0 && state->p25_cc_freq == 0)) {
         return UI_CMD_APPLY_COMPLETED;
     }
-    const int p25_live = p25_sm_owns_trunk(opts, state);
-    if (p25_live) {
-        p25_sm_tick_guard_enter();
-    }
-    const int status = apply_manual_return_to_cc_locked(opts, state, p25_live);
-    if (p25_live) {
-        p25_sm_tick_guard_leave();
-    }
-    return status;
+    return run_manual_retune_guarded(opts, state, apply_manual_return_to_cc_locked);
 }
 
 static int
@@ -2256,25 +2271,19 @@ apply_lockout_decoder_transition_locked(dsd_opts* opts, dsd_state* state, int p2
 
 static int
 apply_lockout_decoder_transition(dsd_opts* opts, dsd_state* state) {
-    const int p25_live = p25_sm_owns_trunk(opts, state);
-    if (p25_live) {
-        p25_sm_tick_guard_enter();
-    }
-    const int status = apply_lockout_decoder_transition_locked(opts, state, p25_live);
-    if (p25_live) {
-        p25_sm_tick_guard_leave();
-    }
-    return status;
+    return run_manual_retune_guarded(opts, state, apply_lockout_decoder_transition_locked);
 }
 
 static int
-try_manual_candidate_cycle(dsd_opts* opts, dsd_state* state) {
+try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
     long cand = 0;
     if (opts->p25_prefer_candidates != 1 || !p25_cc_next_candidate(state, &cand)) {
         return UI_CMD_APPLY_UNHANDLED;
     }
     const int sym_rate = cc_symbol_rate(opts, state, 0);
-    if (!request_manual_tune(opts, state, cand, sym_rate, "Candidate cycle", NULL, NULL)) {
+    dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    uint64_t request_id = 0U;
+    if (!request_manual_tune(opts, state, cand, sym_rate, "Candidate cycle", &tune_result, &request_id)) {
         return UI_CMD_APPLY_FAILED;
     }
 
@@ -2282,11 +2291,14 @@ try_manual_candidate_cycle(dsd_opts* opts, dsd_state* state) {
     LOG_INFO("Candidate Cycle: tuning to %.06lf MHz\n", (double)cand / 1000000);
     mark_cc_sync(state, 1);
     set_cc_symbol_timing(opts, state, sym_rate);
+    if (p25_live) {
+        hand_p25_sm_to_cc(opts, state, tune_result, request_id, "candidate-cycle");
+    }
     return UI_CMD_APPLY_COMPLETED;
 }
 
 static int
-apply_manual_lcn_cycle_untyped(dsd_opts* opts, dsd_state* state) {
+apply_manual_lcn_cycle_untyped_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
     int count = state->lcn_freq_count;
     if (count <= 0) {
         return UI_CMD_APPLY_COMPLETED;
@@ -2318,7 +2330,9 @@ apply_manual_lcn_cycle_untyped(dsd_opts* opts, dsd_state* state) {
         }
         return UI_CMD_APPLY_COMPLETED;
     }
-    if (!request_manual_tune(opts, state, freq, 0, "Channel cycle", NULL, NULL)) {
+    dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    uint64_t request_id = 0U;
+    if (!request_manual_tune(opts, state, freq, 0, "Channel cycle", &tune_result, &request_id)) {
         return UI_CMD_APPLY_FAILED;
     }
 
@@ -2327,27 +2341,43 @@ apply_manual_lcn_cycle_untyped(dsd_opts* opts, dsd_state* state) {
     state->lcn_freq_roll = next + 1;
     dsd_scan_row_keys_apply(state, next);
     mark_cc_sync(state, 1);
+    if (p25_live) {
+        hand_p25_sm_to_cc(opts, state, tune_result, request_id, "channel-cycle");
+    }
     return UI_CMD_APPLY_COMPLETED;
 }
 
 static int
-apply_manual_lcn_cycle(dsd_opts* opts, dsd_state* state) {
+apply_manual_lcn_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
     if (opts->scanner_mode == 1 && dsd_channel_modes_present(state)) {
         return dsd_engine_channel_scan_step_manual(opts, state) < 0 ? UI_CMD_APPLY_FAILED : UI_CMD_APPLY_COMPLETED;
     }
-    return apply_manual_lcn_cycle_untyped(opts, state);
+    return apply_manual_lcn_cycle_untyped_locked(opts, state, p25_live);
+}
+
+static int
+apply_manual_lcn_cycle(dsd_opts* opts, dsd_state* state) {
+    return run_manual_retune_guarded(opts, state, apply_manual_lcn_cycle_locked);
+}
+
+/* #506: both legs retune through the tuning hooks, past p25_sm_release(), exactly
+ * like the lockout and the return-to-CC do. Without the handoff the SM stays TUNED on
+ * the assignment it was following and refuses every later grant as a preemption of it. */
+static int
+apply_manual_channel_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
+    if (opts->scanner_mode == 1 && dsd_channel_modes_present(state)) {
+        return apply_manual_lcn_cycle_locked(opts, state, p25_live);
+    }
+    const int candidate_status = try_manual_candidate_cycle_locked(opts, state, p25_live);
+    if (candidate_status != UI_CMD_APPLY_UNHANDLED) {
+        return candidate_status;
+    }
+    return apply_manual_lcn_cycle_locked(opts, state, p25_live);
 }
 
 static int
 apply_manual_channel_cycle(dsd_opts* opts, dsd_state* state) {
-    if (opts->scanner_mode == 1 && dsd_channel_modes_present(state)) {
-        return apply_manual_lcn_cycle(opts, state);
-    }
-    const int candidate_status = try_manual_candidate_cycle(opts, state);
-    if (candidate_status != UI_CMD_APPLY_UNHANDLED) {
-        return candidate_status;
-    }
-    return apply_manual_lcn_cycle(opts, state);
+    return run_manual_retune_guarded(opts, state, apply_manual_channel_cycle_locked);
 }
 
 #ifdef USE_RADIO

@@ -28,6 +28,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -1261,6 +1262,81 @@ test_lockout_hands_p25_sm_back_to_cc(void) {
     rc |= expect_int("return-to-CC tuned the CC", g_cc_tune_calls, 1);
     rc |= expect_int("return-to-CC parks the P25 SM on the CC", p25_sm_get_state(sm), P25_SM_ON_CC);
     rc |= expect_true("return-to-CC clears the SM voice channel", sm->vc_freq_hz == 0);
+
+    p25_sm_init_ctx(sm, NULL, NULL);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    freeState(&state);
+    return rc;
+}
+
+/* #506 follow-up: the manual channel cycle moves the radio exactly the way the
+ * lockout and the return-to-CC do -- through the tuning hooks, past
+ * p25_sm_release() -- on both of its legs. Either one left the SM judging later
+ * grants as preemptions of the assignment it was still following. */
+static int
+test_channel_cycle_hands_p25_sm_back_to_cc(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.trunk_tune_group_calls = 1;
+    state.trunk_chan_map[0x1234] = 852000000L;
+    state.trunk_chan_map[0x1235] = 853000000L;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = stub_tune_to_freq_ok});
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, &opts, &state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 852000000L, 1201, 1202, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    ev = p25_sm_ev_active_call(0, 1201, 0, 1202, 1, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_int("SM follows the seeded assignment", p25_sm_get_state(sm), P25_SM_TUNED);
+    rc |= expect_int("SM slot carries voice before the cycle", sm->slots[0].voice_active, 1);
+
+    // Candidate leg: p25_prefer_candidates routes the cycle through the P25 CC hook.
+    opts.p25_prefer_candidates = 1;
+    rc |= expect_int("candidate seeded", p25_cc_add_candidate(&state, 857000000L, 1), 1);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_int("candidate cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("candidate cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("candidate cycle tuned the candidate", g_cc_tune_calls, 1);
+    rc |= expect_true("candidate cycle used the candidate frequency", g_cc_tune_freq == 857000000L);
+    rc |= expect_int("candidate cycle parks the P25 SM on the CC", p25_sm_get_state(sm), P25_SM_ON_CC);
+    rc |= expect_int("candidate cycle clears the SM slot voice", sm->slots[0].voice_active, 0);
+    rc |= expect_true("candidate cycle clears the SM voice channel", sm->vc_freq_hz == 0);
+    rc |= expect_int("candidate cycle gates grants until the CC decodes", sm->cc_sync_pending, 1);
+
+    // The site keeps trunking: the next grant is followed instead of refused as a
+    // preemption of the call the SM was still holding.
+    state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_group_grant(0x1235, 853000000L, 1300, 1301, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_int("next grant is followed after a candidate cycle", p25_sm_get_state(sm), P25_SM_TUNED);
+    rc |= expect_true("next grant tunes the new voice channel", sm->vc_freq_hz == 853000000L);
+    ev = p25_sm_ev_active_call(0, 1300, 0, 1301, 1, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_int("SM slot carries voice again", sm->slots[0].voice_active, 1);
+
+    // LCN leg: with no candidate preference the same key falls through to the raw
+    // channel cycle, which moves the radio just as far past the SM.
+    opts.p25_prefer_candidates = 0;
+    state.lcn_freq_count = 1;
+    state.lcn_freq_roll = 0;
+    state.trunk_lcn_freq[0] = 851000000L;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_int("channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("channel cycle used the raw tune", g_io_control_tune_calls, 1);
+    rc |= expect_int("channel cycle parks the P25 SM on the CC", p25_sm_get_state(sm), P25_SM_ON_CC);
+    rc |= expect_int("channel cycle clears the SM slot voice", sm->slots[0].voice_active, 0);
+    rc |= expect_true("channel cycle clears the SM voice channel", sm->vc_freq_hz == 0);
+    rc |= expect_int("channel cycle gates grants until the CC decodes", sm->cc_sync_pending, 1);
 
     p25_sm_init_ctx(sm, NULL, NULL);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
@@ -3452,6 +3528,7 @@ main(void) {
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
     rc |= test_lockout_hands_p25_sm_back_to_cc();
+    rc |= test_channel_cycle_hands_p25_sm_back_to_cc();
 #ifdef USE_RADIO
     rc |= test_manual_tune_trunking_gate_and_reacquisition();
 #endif
