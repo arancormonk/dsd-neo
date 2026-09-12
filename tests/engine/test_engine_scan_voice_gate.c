@@ -1132,11 +1132,19 @@ test_visit_cap_row_change_restarts(void) {
     CHECK("the row change is remembered", fix.state->scan_visit_roll_seen == 1);
     CHECK("the new row holds", dsd_engine_scan_visit_expired(fix.opts, fix.state, 179.999) == 0);
     CHECK("the new row expires", dsd_engine_scan_visit_expired(fix.opts, fix.state, 180.001) == 1);
+    /* Between the row change and the tick that reconciles it the anchor still describes the row
+     * before it, and the control pump can land an `L` in exactly that window. */
+    fix.state->lcn_freq_roll = 2;
+    CHECK("an unreconciled row change publishes no deadline",
+          dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) < 0.0);
+    CHECK("an unreconciled row change never expires", dsd_engine_scan_visit_expired(fix.opts, fix.state, 1.0e6) == 0);
     fixture_free(&fix);
 }
 
 /* With nowhere else to go the limit re-arms instead of firing: a hop back onto the same row would
- * only interrupt its audio, and a retry loop is worse than staying. */
+ * only interrupt its audio, and a retry loop is worse than staying. Re-arming, not freezing: an
+ * anchor left to age while the rotation has nowhere to go would fire the instant a second row turns
+ * up, tearing down whatever is on air (requirement 5). */
 static void
 test_visit_cap_needs_a_second_usable_row(void) {
     gate_fixture fix;
@@ -1150,21 +1158,31 @@ test_visit_cap_needs_a_second_usable_row(void) {
     fix.state->lcn_freq_count = 1;
     CHECK("one row publishes no deadline", dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) < 0.0);
     CHECK("one row never expires", dsd_engine_scan_visit_expired(fix.opts, fix.state, 1.0e6) == 0);
+    dsd_engine_scan_visit_tick(fix.opts, fix.state, 200.0);
+    CHECK("one row re-arms the visit", fabs(fix.state->scan_visit_since_m - 200.0) < 1e-9);
     /* Two rows with one avoided is still one place to be. */
     fix.state->lcn_freq_count = 2;
     CHECK("the avoid is recorded", dsd_state_trunk_lcn_avoid_set(fix.state, 1U, 1) == 0);
     CHECK("one usable row publishes no deadline", dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) < 0.0);
     CHECK("one usable row never expires", dsd_engine_scan_visit_expired(fix.opts, fix.state, 1.0e6) == 0);
+    dsd_engine_scan_visit_tick(fix.opts, fix.state, 300.0);
+    CHECK("an avoided alternate re-arms the visit", fabs(fix.state->scan_visit_since_m - 300.0) < 1e-9);
     /* A zero-frequency placeholder is not somewhere to go either. */
     CHECK("the avoid is cleared", dsd_state_trunk_lcn_avoid_set(fix.state, 1U, 0) == 0);
     const long saved_freq = *dsd_state_trunk_lcn_slot(fix.state, 1);
     *dsd_state_trunk_lcn_slot(fix.state, 1) = 0;
     CHECK("a placeholder row publishes no deadline", dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) < 0.0);
-    /* Restored, the cap fires from the anchor it kept the whole time. */
+    dsd_engine_scan_visit_tick(fix.opts, fix.state, 400.0);
+    CHECK("a placeholder alternate re-arms the visit", fabs(fix.state->scan_visit_since_m - 400.0) < 1e-9);
+    /* Restored, the row gets a full fresh limit measured from the last tick -- not the original
+     * park, which would have expired three hundred seconds ago. */
     *dsd_state_trunk_lcn_slot(fix.state, 1) = saved_freq;
-    CHECK("a second usable row arms the cap",
-          fabs(dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) - 130.0) < 1e-9);
-    CHECK("a second usable row expires", dsd_engine_scan_visit_expired(fix.opts, fix.state, 130.001) == 1);
+    CHECK("a second usable row arms a fresh limit",
+          fabs(dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) - 430.0) < 1e-9);
+    CHECK("a second usable row does not expire at once",
+          dsd_engine_scan_visit_expired(fix.opts, fix.state, 400.001) == 0);
+    CHECK("the fresh limit holds", dsd_engine_scan_visit_expired(fix.opts, fix.state, 429.999) == 0);
+    CHECK("the fresh limit expires", dsd_engine_scan_visit_expired(fix.opts, fix.state, 430.001) == 1);
     fixture_free(&fix);
 }
 

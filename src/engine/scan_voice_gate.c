@@ -269,10 +269,25 @@ scan_visit_scanner_owns(const dsd_opts* opts) {
 
 /* While this holds the cap neither counts down nor expires: the operator's row hold, and a
  * talkgroup hold on the very call being followed -- cutting that call short is exactly what the
- * operator asked the hold to prevent. Read-only, because the tick and the deadline have to agree. */
+ * operator asked the hold to prevent. */
 static int
 scan_visit_suspended(const dsd_state* state) {
     return state->lcn_scan_hold || dsd_scan_tg_hold_call_active(state);
+}
+
+/*
+ * The visit cannot end right now, and it must not be allowed to age in the meantime either: the
+ * tick re-arms it and the deadline hides it, which is the one question both have to ask the same
+ * way (requirement 5, and the shape trunk_scan.c already uses).
+ *
+ * Either the visit is suspended, or there is nowhere to go: a rotation with fewer than two usable
+ * rows would only hop back onto the row it is already on and interrupt its audio. Freezing the
+ * anchor instead of re-arming would let it age for as long as that lasts, and then fire the
+ * instant the operator clears an avoid or a placeholder gets a frequency.
+ */
+static int
+scan_visit_rearms(const dsd_state* state) {
+    return scan_visit_suspended(state) || dsd_state_trunk_lcn_usable_count(state) < 2;
 }
 
 void
@@ -301,9 +316,10 @@ dsd_engine_scan_visit_tick(const dsd_opts* opts, dsd_state* state, double now_m)
         state->scan_visit_since_m = now_m;
         return;
     }
-    if (scan_visit_suspended(state)) {
-        /* Slide the anchor rather than remember a pause: the first unsuspended tick then starts a
-         * full fresh limit, which is what an operator who has just let go expects. */
+    if (scan_visit_rearms(state)) {
+        /* Slide the anchor rather than remember a pause: the first tick that can count again then
+         * starts a full fresh limit, which is what an operator who has just let go -- or who has
+         * just given the rotation a second row -- expects. */
         state->scan_visit_since_m = now_m;
     }
 }
@@ -320,17 +336,19 @@ dsd_engine_scan_visit_deadline_m(const dsd_opts* opts, const dsd_state* state) {
         /* No park to measure from. */
         return -1.0;
     }
-    if (scan_visit_suspended(state)) {
+    if (state->lcn_freq_roll != state->scan_visit_roll_seen) {
+        /* An untyped `L` or avoid moved the row and no tick has reconciled it yet, so the anchor
+         * still describes the row before it. The pump can do that between the tick and the step
+         * predicate; firing on it would cut the new visit to zero. The next tick re-anchors. */
         return -1.0;
     }
     if (dsd_engine_channel_scan_waiting(state)) {
         /* A row transaction owns the receiver: the cap must not fire into a tune already on its
-         * way, and the commit re-opens the visit itself. */
+         * way, and the commit re-opens the visit itself. Unlike the cases below this one is not a
+         * re-arm -- the commit stamps its own anchor, so there is nothing to slide. */
         return -1.0;
     }
-    if (dsd_state_trunk_lcn_usable_count(state) < 2) {
-        /* Nowhere to go: a hop back onto the same row would only interrupt its audio, so the limit
-         * re-arms instead of firing. */
+    if (scan_visit_rearms(state)) {
         return -1.0;
     }
     return state->scan_visit_since_m + ((double)opts->scan_max_visit_ms / 1000.0);

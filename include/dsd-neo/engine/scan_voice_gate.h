@@ -91,15 +91,17 @@ void dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, doubl
  *
  * Separate from dsd_scan_voice_gate_tick() because the cap applies with the voice gate off as
  * well as on, and that tick returns early there. The anchor itself is written only here and by
- * dsd_scan_voice_gate_note_retune(); sync and voice activity never touch it.
+ * dsd_scan_voice_gate_note_retune(); sync and voice activity never touch it. While the limit
+ * cannot count -- suspended by a hold, or with no second row to advance to -- the anchor slides
+ * to now_m, so the limit re-arms rather than ageing toward an instant hop.
  */
 void dsd_engine_scan_visit_tick(const dsd_opts* opts, dsd_state* state, double now_m);
 
 /**
  * The monotonic instant the visit on air runs out, or < 0 when no cap is counting: the cap is
- * disabled, no visit is anchored, a hold suspends it, a row transaction is outstanding, or there
- * is no second eligible row to advance to. Pure; the predicate and the publication both read it
- * so the countdown on screen is the one that fires.
+ * disabled, no visit is anchored, a hold suspends it, a row transaction is outstanding, the row on
+ * air has changed since the last tick, or there is no second eligible row to advance to. Pure; the
+ * predicate and the publication both read it so the countdown on screen is the one that fires.
  */
 double dsd_engine_scan_visit_deadline_m(const dsd_opts* opts, const dsd_state* state);
 

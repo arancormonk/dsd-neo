@@ -429,6 +429,15 @@ test_typed_scan_tune_boundaries(void) {
     return rc;
 }
 
+// The live-scanner loop runs dsd_engine_scan_visit_tick() immediately before every noCarrier()
+// pass, so by the time the step predicate runs the row on air has always been reconciled with the
+// anchor. These cases drive noCarrier() in isolation, so they stand in for that tick.
+static void
+seed_visit_anchor(dsd_state* state, double anchor_m) {
+    dsd_scan_voice_gate_note_retune(state, anchor_m);
+    state->scan_visit_roll_seen = state->lcn_freq_roll;
+}
+
 /*
  * The -Y per-visit cap (issue #507) through the real noCarrier() step. Every case here needs the
  * cap to be the only thing that could hop: the legacy -t 10 deadline is fresh, or the voice gate
@@ -462,7 +471,7 @@ test_visit_cap_scanner_hops(void) {
     // to close as an explicit release rather than a sync loss -- the frequency moved under it.
     double now_m = dsd_time_now_monotonic_s();
     state->last_cc_sync_time = time(NULL);
-    dsd_scan_voice_gate_note_retune(state, now_m - 5.0);
+    seed_visit_anchor(state, now_m - 5.0);
     dsd_call_observation capped_call = {0};
     capped_call.protocol = DSD_SYNC_NXDN_POS;
     capped_call.slot = 0U;
@@ -482,7 +491,9 @@ test_visit_cap_scanner_hops(void) {
     rc |= expect_true("visit-cap-legacy-ends-call", capped_snapshot.phase == DSD_CALL_PHASE_ENDED);
     rc |= expect_true("visit-cap-legacy-ends-call-explicitly",
                       capped_snapshot.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
-    // The hop anchors a fresh visit, so an immediate second pass has nothing to expire.
+    // The hop anchors a fresh visit, so an immediate second pass has nothing to expire. The row it
+    // moved to is reconciled first, so this tests the anchor and not the row change.
+    state->scan_visit_roll_seen = state->lcn_freq_roll;
     g_rtl_tune_calls = 0;
     noCarrier(opts, state);
     rc |= expect_true("visit-cap-fresh-anchor-no-second-hop", g_rtl_tune_calls == 0 && state->lcn_freq_roll == 1);
@@ -495,7 +506,7 @@ test_visit_cap_scanner_hops(void) {
     state->lcn_freq_roll = 1;
     state->last_cc_sync_time = time(NULL);
     now_m = dsd_time_now_monotonic_s();
-    dsd_scan_voice_gate_note_retune(state, now_m - 5.0);
+    seed_visit_anchor(state, now_m - 5.0);
     dsd_call_observation live_call = {0};
     live_call.protocol = DSD_SYNC_NXDN_POS;
     live_call.slot = 0U;
@@ -524,7 +535,7 @@ test_visit_cap_scanner_hops(void) {
     state->last_cc_sync_time = time(NULL);
     const time_t held_dwell_anchor = state->last_cc_sync_time;
     now_m = dsd_time_now_monotonic_s();
-    dsd_scan_voice_gate_note_retune(state, now_m - 5.0);
+    seed_visit_anchor(state, now_m - 5.0);
     g_rtl_tune_calls = 0;
     noCarrier(opts, state);
     rc |= expect_true("visit-cap-hold-no-retune", g_rtl_tune_calls == 0);
@@ -538,7 +549,7 @@ test_visit_cap_scanner_hops(void) {
     state->lcn_freq_roll = 2;
     state->last_cc_sync_time = time(NULL);
     now_m = dsd_time_now_monotonic_s();
-    dsd_scan_voice_gate_note_retune(state, now_m - 600.0);
+    seed_visit_anchor(state, now_m - 600.0);
     g_rtl_tune_calls = 0;
     noCarrier(opts, state);
     rc |= expect_true("visit-cap-disabled-no-retune", g_rtl_tune_calls == 0 && state->lcn_freq_roll == 2);
@@ -556,21 +567,29 @@ test_visit_cap_scanner_hops(void) {
     state->lcn_freq_roll = 0;
     state->last_cc_sync_time = time(NULL);
     now_m = dsd_time_now_monotonic_s();
-    dsd_scan_voice_gate_note_retune(state, now_m - 5.0);
+    seed_visit_anchor(state, now_m - 5.0);
     g_rtl_tune_calls = 0;
     noCarrier(opts, state);
     rc |= expect_true("visit-cap-single-row-no-retune", g_rtl_tune_calls == 0 && state->lcn_freq_roll == 0);
 
+    // Requirement 5 is a re-arm, not a freeze: the loop's tick slides the anchor while the rotation
+    // has nowhere to go, so handing it a second row does not hop the instant that row appears.
+    dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
+    state->trunk_lcn_freq[1] = 956012500;
+    state->lcn_freq_count = 2;
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("visit-cap-rearmed-row-no-instant-hop", g_rtl_tune_calls == 0 && state->lcn_freq_roll == 0);
+
     // The cap's hop walks the avoid list exactly as the dwell's does: the avoided row is stepped
     // over in the same pass rather than costing a visit of its own.
-    state->trunk_lcn_freq[1] = 956012500;
     state->trunk_lcn_freq[2] = 957012500;
     state->lcn_freq_count = 3;
     rc |= expect_true("visit-cap-avoid-set", dsd_state_trunk_lcn_avoid_set(state, 1U, 1) == 0);
     state->lcn_freq_roll = 1;
     state->last_cc_sync_time = time(NULL);
     now_m = dsd_time_now_monotonic_s();
-    dsd_scan_voice_gate_note_retune(state, now_m - 5.0);
+    seed_visit_anchor(state, now_m - 5.0);
     g_rtl_tune_calls = 0;
     noCarrier(opts, state);
     rc |= expect_true("visit-cap-avoid-skips-row", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 957012500U);
