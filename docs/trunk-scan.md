@@ -187,9 +187,10 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   `--scan-voice-qualify-ms` and `--scan-voice-hold-ms` timings apply to the `-Y` conventional scan only, not to
   trunk-scan targets; a conventional target can carry its own intervals in its `options` column (see
   [Per-target options](#per-target-options)).
-- `--scan-max-visit-ms` is not conventional-only: it is the one scan-timing switch that applies to trunked targets
-  as well, because a trunked system following call after call is exactly what it exists to interrupt. It is a ceiling
-  on the visit, not another reason to stay, so it can end an ongoing call; that is why it is off by default.
+- `--scan-max-visit-ms` is not conventional-only: it is the one scan-timing switch a trunked target can also carry
+  in its `options` column, because a trunked system following call after call is exactly what it exists to interrupt.
+  It is a ceiling on the visit, not another reason to stay, so it can end an ongoing call; that is why it is off by
+  default.
 
 Each target's `type` selects its decoder class regardless of the configured global preset. Both `p25-trunk` and
 `p25-conventional` enable both phases and exclude DMR and X2-TDMA; DMR and NXDN targets enable only their declared class and rate. Mixed

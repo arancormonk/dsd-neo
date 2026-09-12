@@ -528,7 +528,7 @@ Notes
   - Conventional DMR/P25/NXDN activity hold (both NXDN rates): `--trunk-scan-activity-hold-ms <250..600000>`
     (default `1200`).
   - Maximum time per visit: `--scan-max-visit-ms <ms>` (`0` disables, otherwise `1000..3600000`; default `0`).
-    Unlike the two windows above it applies to every target type, trunked and conventional, and it is a ceiling
+    Unlike the activity hold above it applies to every target type, trunked and conventional, and it is a ceiling
     rather than a reason to stay: it can cut an ongoing call short, which is the point on a busy system that would
     otherwise starve the rest of the list. A target's `options` column can override it, and `0` there exempts that
     target. Full rules in `docs/trunk-scan.md`.
