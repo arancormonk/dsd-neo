@@ -12,7 +12,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
-- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`
+- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
@@ -488,6 +488,20 @@ Notes
   voice without a key holds unless the talkgroup policy blocks it; unknown identity counts as voice. The last-media
   time survives an over-the-air terminator, so the full hold still runs when a protocol closes the call before the
   scanner's next tick.
+  Per-visit ceiling: `--scan-max-visit-ms <ms>` (also `--scan-max-visit-ms=<ms>`; `0` disables, otherwise
+  `1000..3600000`; default `0`) is the longest one visit to a row may last, with or without `--scan-voice-only`. It is a
+  ceiling, not a reason to stay, so it can cut an ongoing call short: that is the point on an open microphone, and why
+  it is off by default. The clock starts when the row parks and starts again from zero on every re-park; sync, decoded
+  voice, the voice-gate hold and the `-t` hangtime never restart it. Expiry hops only while at least two rows are usable
+  (a non-zero frequency, not avoided); with fewer the limit re-arms instead of firing, so a one-row list is unaffected
+  and a row that becomes usable later gets a full limit rather than an immediate hop. A `Y` hold suspends the limit and
+  releasing it starts a fresh full limit, not the remainder; an `-I` talkgroup hold suspends it only while the call
+  being followed matches the held talkgroup, and the limit runs again from zero once that call ends. Other calls on the
+  row are still capped. A typed row can carry its own `--scan-max-visit-ms <ms>` in the `options` column, where `0`
+  exempts that row; legacy untyped rows apply row keys but not row options, so they always use the global value. Two
+  caveats on legacy lists: a row whose frequency also appears on the next row "hops" to the same frequency, ending the
+  call as an explicit hop rather than moving the receiver, and a low `-t` already steps a quiet row about a second after
+  its last sync, so the cap only changes what happens on a row that keeps syncing.
   Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, or `m17` for
   each row. See [the mixed-mode example](../examples/conventional_scan_modes.csv). Declared rows work even when
   excluded by the global preset; blank rows inherit it. Modes take effect at the first scheduled row entry, including
@@ -513,6 +527,11 @@ Notes
   - Idle dwell: `--trunk-scan-dwell-ms <250..600000>` (default `3000`).
   - Conventional DMR/P25/NXDN activity hold (both NXDN rates): `--trunk-scan-activity-hold-ms <250..600000>`
     (default `1200`).
+  - Maximum time per visit: `--scan-max-visit-ms <ms>` (`0` disables, otherwise `1000..3600000`; default `0`).
+    Unlike the two windows above it applies to every target type, trunked and conventional, and it is a ceiling
+    rather than a reason to stay: it can cut an ongoing call short, which is the point on a busy system that would
+    otherwise starve the rest of the list. A target's `options` column can override it, and `0` there exempts that
+    target. Full rules in `docs/trunk-scan.md`.
   - `p25-conventional` parks without a trunking state machine and holds after voice starts allowed by the
     group/private and encrypted-call policy. PDU data never refreshes its hold, so `-e` has no effect on that row.
     Phase 1 decode captures are available for replay checks, not proof of on-air target holds; Phase 2 conventional
@@ -558,6 +577,8 @@ Notes
 - Hang time after voice/sync loss (seconds): `-t <secs>`
   - This is not the idle dwell between `--trunk-scan` targets. DMR control/rest-channel acquisition has its own
     two-second window; use target `dwell_ms` to budget each visit. See [trunk-scan timing](trunk-scan.md).
+  - Hangtime and dwell decide when a quiet channel is done; `--scan-max-visit-ms` ends a visit that is not done, so
+    neither substitutes for the other.
   - Under `-Y` without `--scan-voice-only`, the terminal's `Scan Timing` row counts this value down from the last
     sync as `Hangtime`. The rotation rule itself compares whole seconds, so the hop can land up to a second after the
     countdown reaches `0.0s`; the countdown is a readout of the same anchor, and the policy is unchanged. NXDN holds

@@ -346,6 +346,7 @@ small subset is exposed as config keys for convenience (for example
 | `scan_voice_only` | BOOL | Step `-Y`/conventional scan on unless decoded voice holds the row | `false` |
 | `scan_voice_qualify_ms` | INT (100-600000) | Window after sync in which voice must appear or the scan moves on | `1000` |
 | `scan_voice_hold_ms` | INT (100-600000) | Time to stay after the last voice frame | `2000` |
+| `scan_max_visit_ms` | INT (0-3600000) | Maximum time on one `-Y`/trunk-scan target per visit; `0` disables, else `1000..3600000` | `0` |
 | `p25_prefer_candidates` | BOOL | Prefer learned P25 control-channel candidates when hunting (`-^`) | `false` |
 **[trunk_scan] section:**
 | Key | Type | Description | Default |
@@ -683,6 +684,9 @@ Config/CLI interaction:
 
 - `--validate-config` reports an error when `trunk_scan.enabled = true` lacks `targets_csv`.
 - `--validate-config` reports an error when trunk scan and `[trunking] chan_csv` are both enabled.
+- `--validate-config` reports a warning when `[trunking] scan_max_visit_ms` is `1..999`. Config loading is range-free
+  by design, so such a value loads, but the decoder treats anything below `1000` as disabled; use `0` to disable the
+  per-visit cap or `1000..3600000` to set one. The CLI switch rejects `1..999` outright.
 - If trunk scan is inherited from a config file, one-off CLI arguments that select another input, mode, channel map,
   file/replay input, trunking mode, or conventional `-Y` scan mode disable the inherited scan for that run. UI-only
   flags such as

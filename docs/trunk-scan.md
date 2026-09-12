@@ -134,6 +134,7 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   --trunk-scan ~/radio/trunk_scan_targets.csv \
   --trunk-scan-dwell-ms 5000 \
   --trunk-scan-activity-hold-ms 2000 \
+  --scan-max-visit-ms 20000 \
   --frontend terminal
 ```
 
@@ -141,6 +142,10 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   `3000`.
 - `--trunk-scan-activity-hold-ms <ms>` sets the default hold time after allowed conventional DMR/P25/NXDN activity
   (NXDN96 and NXDN48 alike). Default: `1200`.
+- `--scan-max-visit-ms <ms>` caps how long one visit to a target may last: `0` disables it, any other value is
+  `1000..3600000` milliseconds. Default: `0`, so nothing changes unless you ask for it. Config: `[trunking]
+  scan_max_visit_ms`. There is no dedicated CSV column; a target overrides the cap from its `options` column. In a
+  list of two busy systems the rotation alternates between them, spending the full limit on each.
 - Per-target CSV values override these defaults.
 - The terminal's `Scan Timing` row reports the *effective* dwell and hold for the target on air — the values left
   after the CSV column and the CLI/config default have been resolved — and labels `-t` as `hang`, never as a dwell.
@@ -182,6 +187,9 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   `--scan-voice-qualify-ms` and `--scan-voice-hold-ms` timings apply to the `-Y` conventional scan only, not to
   trunk-scan targets; a conventional target can carry its own intervals in its `options` column (see
   [Per-target options](#per-target-options)).
+- `--scan-max-visit-ms` is not conventional-only: it is the one scan-timing switch that applies to trunked targets
+  as well, because a trunked system following call after call is exactly what it exists to interrupt. It is a ceiling
+  on the visit, not another reason to stay, so it can end an ongoing call; that is why it is off by default.
 
 Each target's `type` selects its decoder class regardless of the configured global preset. Both `p25-trunk` and
 `p25-conventional` enable both phases and exclude DMR and X2-TDMA; DMR and NXDN targets enable only their declared class and rate. Mixed
@@ -239,6 +247,10 @@ Voice-only scan from a config file lives in `[trunking]` (`scan_voice_only`, `sc
 `scan_voice_hold_ms`): conventional targets reuse `dwell_ms` as the qualify window and `activity_hold_ms` as the
 hold, refreshed only from decoded voice; trunked targets are unchanged.
 
+The per-visit cap lives in the same section, as `[trunking] scan_max_visit_ms`, and applies to every target type:
+`0` (the default) disables it, otherwise use `1000..3600000`. Config loading does not clamp the value, so a
+hand-written `1..999` reaches the decoder, which treats it as disabled.
+
 Set `tune_enc_calls = false` to enable key-aware encryption lockout. Otherwise eligible encrypted or
 encryption-unknown P25 trunk voice grants are visited briefly and classified silently; only clear calls or calls with a
 complete matching key for a supported algorithm continue. Missing-key calls remain silent and are released at
@@ -258,6 +270,8 @@ Config notes:
 - `targets_csv` supports the same path expansion as other config paths (`~`, `$VAR`, and `${VAR}`).
 - `targets_csv` is required when `enabled = true`.
 - `[trunking] chan_csv` is rejected when trunk scan is enabled.
+- `--validate-config` reports a warning when `[trunking] scan_max_visit_ms` is `1..999`: the decoder ignores such a
+  value, so use `0` to disable the cap or `1000..3600000` to set one.
 - Profiles can enable trunk scan. A profile may inherit `trunk_scan.targets_csv` from the base config.
 - If trunk scan is inherited from a config file, one-off CLI arguments that select another input, mode, channel map,
   file/replay input, trunking mode, or conventional `-Y` scan mode disable the inherited scan for that run. UI-only
@@ -284,6 +298,20 @@ During scanning:
   running and the target's effective dwell and hold beside it. The phrase table is in
   [the terminal UI guide](ui-terminal.md); the Qt and Android panels show the same thing.
 - Idle targets rotate after their dwell time.
+- With `--scan-max-visit-ms` (or `[trunking] scan_max_visit_ms`) set, a visit also ends when it reaches the cap,
+  whatever the target is doing: a trunked call being followed, a conventional hold, a control-channel hunt. The clock
+  starts at the instant the target parks and starts again from zero on every re-park, so activity, grants and the
+  state machine's own control/voice-channel retunes never extend it; a retune the coordinator is still waiting on
+  never expires, and a completed one anchors at its own completion. Expiry advances only when another eligible target
+  exists — one that is neither avoided for the session nor still cooling down from a failed retune — and otherwise
+  re-arms, so a one-target list and an all-avoided list are unaffected and a target that becomes eligible later gets a
+  full limit rather than an immediate hop. A `Y` hold suspends the cap, and releasing it starts a fresh full limit
+  rather than the remainder; an `-I` talkgroup hold suspends it only while the followed call matches the held
+  talkgroup, and the limit runs from zero again once that call ends, so other calls on the target are still capped.
+  When the cap evicts a target mid-call, the carrier is released first, so revisiting it later restores an idle target
+  rather than a stale call. If every alternate then fails to retune and the receiver falls back onto the same target,
+  the call has still been released and the visit simply starts over, idle. A target's `options` column can carry its
+  own `--scan-max-visit-ms <ms>`, and `0` there exempts that target while the global cap is set.
 - The rotation can be driven from the terminal (Trunking menu, or the hotkeys): `Y` holds the scan on the parked
   target, `b` avoids the parked target for the rest of the session and moves on, `L` moves to the next eligible target
   now, and "Clear avoids" puts every avoided target back. A hold only pauses the idle dwell: the parked target's
@@ -470,6 +498,12 @@ target's `--scan-voice-hold-ms` replaces its `activity_hold_ms` as the hold afte
 keep the column values. Row metadata in a target's `chan_csv` is validated and discarded; put system options on the
 target itself.
 
+`--scan-max-visit-ms <ms>` is the exception to that conventional-only rule: every target type accepts it, trunked
+included. A target that carries it wins over the global `--scan-max-visit-ms` / `[trunking] scan_max_visit_ms`
+outright, including a row `0`, which exempts that target while the global cap stays in force elsewhere; a target
+without it inherits the global. Accepted values are `0` or `1000..3600000`, the same bounds as the CLI switch. Saving
+configuration while a target is parked records the configured global, not the parked target's override.
+
 A row that names key material in `options` (`-b`, `-H`, `-1`, `-R`, `-K`, `-k`) may still fill the legacy key
 columns for the other families; the merge rejects a column that duplicates an option. Optional header names,
 including `options` and its `relevant_CLI_switches` alias, match ASCII case-insensitively.
@@ -504,6 +538,9 @@ PPM/modulation inherit their corresponding defaults. Nonzero dwell/hold must be
 250–600000 ms. Lists use the app's voice hang time, not per-system hang-time overrides;
 Extra decoder arguments containing `-t` still take precedence. Voice/sync-loss hang time
 is separate from idle dwell on every target and the activity hold on conventional targets.
+The editor does not model the per-visit cap: put `--scan-max-visit-ms <ms>` in Extra decoder
+arguments to cap every target in the session, or run `--trunk-scan` with a target CSV of your
+own, whose `options` cells can cap individual targets.
 The older channel-scanning mode enabled with `-Y` instead uses `-t` as its dwell
 timer, so changing the app default or a saved-system hang-time override also
 changes that mode's rotation timing.
