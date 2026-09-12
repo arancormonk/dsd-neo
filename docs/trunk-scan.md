@@ -310,11 +310,15 @@ During scanning:
   full limit rather than an immediate hop. A `Y` hold suspends the cap, and releasing it starts a fresh full limit
   rather than the remainder; an `-I` talkgroup hold suspends it only while the followed call matches the held
   talkgroup, and the limit runs from zero again once that call ends, so other calls on the target are still capped.
+  Operator hold release and clearing the last alternate's avoid restart the cap at the command; other suspension
+  changes restart it at the first eligible decoder tick. Time spent waiting for input between those ticks cannot
+  consume the fresh interval.
   When the cap evicts a target mid-call, the carrier is released first, so revisiting it later restores an idle target
-  rather than a stale call. If every alternate then fails to retune and the receiver falls back onto the same target,
-  the call stays released. If the fallback park also fails, the coordinator retries that target's control channel
-  after the retune cooldown instead of waiting through its idle dwell. A pending fallback does not start the visit
-  clock until parking completes. A target's `options` column can carry its
+  rather than a stale call or activity hold. Buffered partial P25 Phase 2 audio is flushed before the release.
+  If every alternate then fails to retune and the receiver falls back onto the same target, the call stays released
+  and its end is recorded only once. If the fallback park also fails, the coordinator retries
+  that target's control channel after the retune cooldown instead of waiting through its idle dwell. A pending fallback
+  does not start the visit clock until parking completes. A target's `options` column can carry its
   own `--scan-max-visit-ms <ms>`, and `0` there exempts that target while the global cap is set.
 - The rotation can be driven from the terminal (Trunking menu, or the hotkeys): `Y` holds the scan on the parked
   target, `b` avoids the parked target for the rest of the session and moves on, `L` moves to the next eligible target

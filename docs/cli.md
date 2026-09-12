@@ -497,10 +497,13 @@ Notes
   and a row that becomes usable later gets a full limit rather than an immediate hop. A `Y` hold suspends the limit and
   releasing it starts a fresh full limit, not the remainder; an `-I` talkgroup hold suspends it only while the call
   being followed matches the held talkgroup, and the limit runs again from zero once that call ends. Other calls on the
-  row are still capped. A typed row can carry its own `--scan-max-visit-ms <ms>` in the `options` column, where `0`
-  exempts that row; legacy untyped rows apply row keys but not row options, so they always use the global value. Two
-  caveats on legacy lists: a row whose frequency also appears on the next row "hops" to the same frequency, ending the
-  call as an explicit hop rather than moving the receiver, and a low `-t` already steps a quiet row about a second after
+  row are still capped. Suspensions observed across stalled input restart at the first eligible decoder tick;
+  operator hold release restarts at the command. A typed row can carry its own `--scan-max-visit-ms <ms>` in the
+  `options` column, where `0` exempts that row; legacy untyped rows apply row keys but not row options, so they always
+  use the global value. A failed legacy hop keeps the row and restarts the visit and qualification windows so decoding
+  can resume before another attempt. Two caveats on legacy lists: a row whose frequency also appears on the next row
+  "hops" to the same frequency, ending the call as an explicit hop rather than moving the receiver, and a low `-t`
+  already steps a quiet row about a second after
   its last sync, so the cap only changes what happens on a row that keeps syncing.
   Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, or `m17` for
   each row. See [the mixed-mode example](../examples/conventional_scan_modes.csv). Declared rows work even when

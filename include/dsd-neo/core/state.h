@@ -1741,6 +1741,7 @@ struct dsd_state {
      * returns early with the gate off. Rides the vertex_ks_count..ui_msg range. */
     double scan_visit_since_m;
     int scan_visit_roll_seen;
+    uint8_t scan_visit_rearm_pending; /**< resume a suspended visit at the next eligible tick */
     /* Scan state + live timing for the Scan Timing row (issue #508). Written by the
      * --trunk-scan coordinator for its parked target, or by the -Y timing tick when trunk
      * scan is off; the two never both write it. Rides the vertex_ks_count..ui_msg range. */

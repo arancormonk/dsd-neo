@@ -944,6 +944,7 @@ init_state_trunk_scan_publication(dsd_state* state) {
     /* No visit anchored: -1.0, never 0.0, which would read as a park at monotonic 0. */
     state->scan_visit_since_m = -1.0;
     state->scan_visit_roll_seen = 0;
+    state->scan_visit_rearm_pending = 0U;
     DSD_MEMSET(&state->scan_timing, 0, sizeof(state->scan_timing));
     state->scan_timing.started_m = -1.0;
     state->scan_timing.deadline_m = -1.0;

@@ -224,6 +224,7 @@ typedef struct {
      * grants, SM-driven retunes and idle-timer resets must not, or a busy system would push the
      * cap out forever and the limit would never end a visit. */
     double visit_since_m;
+    int visit_rearm_pending;
     double idle_since_m;
     double retry_until_m;
     double last_allowed_activity_m;
@@ -2466,6 +2467,7 @@ static void
 trunk_scan_arm_visit(dsd_trunk_scan_target_runtime* rt, double parked_m) {
     const double now_m = trunk_scan_now_m();
     rt->visit_since_m = (parked_m > 0.0 && parked_m <= now_m) ? parked_m : now_m;
+    rt->visit_rearm_pending = 0;
     rt->retry_released_park = 0;
 }
 
@@ -2500,6 +2502,7 @@ trunk_scan_release_active_carrier(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
         case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: break;
     }
     dsd_engine_release_tuned_call_state(opts, state);
+    rt->last_allowed_activity_m = 0.0;
 }
 
 /*
@@ -2552,6 +2555,9 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
          * construction and revisiting the target cannot restore a call that ended a rotation ago. */
         if (coord->forced_visit_release) {
             trunk_scan_release_active_carrier(opts, state, outgoing);
+            /* Rollback must preserve this release too. Restoring the pre-release call and
+             * ending it again duplicates its history event if every park fails. */
+            trunk_scan_save_snapshot(state, &coord->scratch_snapshot);
             coord->forced_visit_release = 0;
         }
         trunk_scan_save_target_snapshot(coord, state, outgoing);
@@ -3063,7 +3069,7 @@ trunk_scan_timing_fill_visit(const dsd_opts* opts, const dsd_state* state, const
      * operator can never see end. The effective limit stays published either way. */
     const int visit_limit_ms = trunk_scan_target_max_visit_ms(opts, rt);
     report->visit_limit_ms = visit_limit_ms >= 1000 ? (uint32_t)visit_limit_ms : 0U;
-    if (report->visit_limit_ms != 0U && rt->visit_since_m >= 0.0 && !rt->tune_pending
+    if (report->visit_limit_ms != 0U && rt->visit_since_m >= 0.0 && !rt->tune_pending && !rt->visit_rearm_pending
         && !trunk_scan_visit_suspended(opts, state, coord, rt)
         && trunk_scan_visit_alternate_is_eligible(coord, now_m)) {
         report->visit_deadline_m = rt->visit_since_m + (double)visit_limit_ms / 1000.0;
@@ -3138,11 +3144,15 @@ trunk_scan_visit_expired(const dsd_opts* opts, const dsd_state* state, const dsd
         return 0;
     }
     if (trunk_scan_visit_suspended(opts, state, coord, rt) || !trunk_scan_visit_alternate_is_eligible(coord, now_m)) {
-        /* Slide the anchor rather than remember a pause: the first unsuspended tick then starts
-         * a full fresh limit. Do the same while no alternate is eligible, so clearing an avoid
-         * or ending a cooldown cannot immediately interrupt the current call. */
+        /* Remember the suspension so an input stall between ticks cannot spend the fresh
+         * interval owed when a hold ends or an alternate becomes eligible. */
         rt->visit_since_m = now_m;
+        rt->visit_rearm_pending = 1;
         return 0;
+    }
+    if (rt->visit_rearm_pending) {
+        rt->visit_since_m = now_m;
+        rt->visit_rearm_pending = 0;
     }
     return (now_m - rt->visit_since_m) >= (double)limit_ms / 1000.0;
 }
@@ -3178,14 +3188,8 @@ trunk_scan_service_visit_limit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     coord->forced_visit_release = 0;
     if (coord->active == before) {
         if (released) {
-            /* The receiver is back on the row whose carrier was just handed back, and the
-             * advance restores the snapshot it took *before* that release -- canonical call rows
-             * and VC frequency mirrors included -- while the protocol SM has already abandoned
-             * the carrier. Scrub the engine side again so the two cannot disagree: left alone,
-             * that resurrected ACTIVE row never ages out, is saved into this target's snapshot
-             * on its next ordinary departure and restored on every revisit after that, and a row
-             * matching state->tg_hold would suspend the cap for as long as it lived. The SM does
-             * not need abandoning twice; only the decoder state was restored under it. */
+            /* Clear transient decoder state from failed candidates. The rollback snapshot
+             * already contains the ended call, so this cannot emit its end a second time. */
             dsd_engine_release_tuned_call_state(opts, state);
         }
         dsd_trunk_scan_target_runtime* restored = &coord->targets[before];
@@ -3302,15 +3306,27 @@ trunk_scan_control_hold_toggle(dsd_state* state, dsd_trunk_scan_coord* coord) {
     // Disarm at the command boundary: both toggles can arrive before another
     // tick observes the hold. Release must still grant a fresh idle dwell.
     coord->targets[coord->active].idle_since_m = -1.0;
+    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (rt->visit_since_m >= 0.0) {
+        rt->visit_since_m = trunk_scan_now_m();
+        rt->visit_rearm_pending = 0;
+    }
     trunk_scan_publish_active_target(state, coord);
     return coord->hold_active;
 }
 
 static int
 trunk_scan_control_avoid_clear(dsd_state* state, dsd_trunk_scan_coord* coord) {
+    const double now_m = trunk_scan_now_m();
+    const int had_alternate = trunk_scan_visit_alternate_is_eligible(coord, now_m);
     const size_t cleared = trunk_scan_avoided_count(coord);
     for (size_t i = 0; i < coord->count; i++) {
         coord->targets[i].avoided = 0;
+    }
+    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (!had_alternate && trunk_scan_visit_alternate_is_eligible(coord, now_m) && rt->visit_since_m >= 0.0) {
+        rt->visit_since_m = now_m;
+        rt->visit_rearm_pending = 0;
     }
     trunk_scan_publish_active_target(state, coord);
     return cleared > INT_MAX ? INT_MAX : (int)cleared;

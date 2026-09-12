@@ -90,10 +90,10 @@ void dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, doubl
  * own per-target anchor.
  *
  * Separate from dsd_scan_voice_gate_tick() because the cap applies with the voice gate off as
- * well as on, and that tick returns early there. The anchor itself is written only here and by
- * dsd_scan_voice_gate_note_retune(); sync and voice activity never touch it. While the limit
- * cannot count -- suspended by a hold, or with no second row to advance to -- the anchor slides
- * to now_m, so the limit re-arms rather than ageing toward an instant hop.
+ * well as on, and that tick returns early there. Parking and operator hold release also reset
+ * the anchor; sync and voice activity never touch it. While the limit cannot count -- suspended
+ * by a hold, or with no second row to advance to -- it remembers the suspension. The first
+ * eligible tick starts a fresh interval even if input stalled since the last suspended tick.
  */
 void dsd_engine_scan_visit_tick(const dsd_opts* opts, dsd_state* state, double now_m);
 

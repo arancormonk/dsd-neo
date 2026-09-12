@@ -6741,6 +6741,10 @@ p25_sm_abandon_carrier(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, cons
         return;
     }
     const int had_carrier = p25_release_should_return_to_cc(ctx, opts);
+    if (had_carrier && ctx->vc_is_tdma && opts && state) {
+        /* Deliver the partial superframe while the outgoing call and audio gates still exist. */
+        dsd_p25_optional_hook_p25p2_flush_partial_audio(opts, state);
+    }
 
     // The teardown the force-release latch asks for is happening right here. Leaving it armed
     // would have the next SM tick attempt its own release, and that one does tune back to a

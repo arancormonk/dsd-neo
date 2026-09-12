@@ -148,10 +148,11 @@ dsd_scan_voice_gate_note_retune(dsd_state* state, double now_m) {
     if (!state) {
         return;
     }
-    /* The successful park opens the visit for the per-visit cap too (issue #507). Nothing else
-     * writes this anchor except dsd_engine_scan_visit_tick(): activity must never restart it. */
+    /* Successful parking opens the per-visit cap too. Suspension handling can restart it,
+     * but sync and voice activity must never extend a visit. */
     state->scan_visit_since_m = now_m;
     state->scan_visit_roll_seen = state->lcn_freq_roll;
+    state->scan_visit_rearm_pending = 0U;
     state->scan_voice_gate_arrive_m = now_m;
     state->scan_voice_gate_sync_m = -1.0;
     state->scan_voice_gate_voice_m = -1.0;
@@ -303,6 +304,7 @@ dsd_engine_scan_visit_tick(const dsd_opts* opts, dsd_state* state, double now_m)
          * fire the instant it did. The first owning tick anchors a fresh full limit. */
         state->scan_visit_since_m = -1.0;
         state->scan_visit_roll_seen = state->lcn_freq_roll;
+        state->scan_visit_rearm_pending = 0U;
         return;
     }
     if (!scan_visit_cap_enabled(opts)) {
@@ -310,6 +312,7 @@ dsd_engine_scan_visit_tick(const dsd_opts* opts, dsd_state* state, double now_m)
          * instead of expiring against a park from minutes ago. */
         state->scan_visit_since_m = -1.0;
         state->scan_visit_roll_seen = state->lcn_freq_roll;
+        state->scan_visit_rearm_pending = 0U;
         return;
     }
     if (state->lcn_freq_roll != state->scan_visit_roll_seen) {
@@ -317,18 +320,18 @@ dsd_engine_scan_visit_tick(const dsd_opts* opts, dsd_state* state, double now_m)
          * the anchor changed and the new one is owed its own full limit. */
         state->scan_visit_roll_seen = state->lcn_freq_roll;
         state->scan_visit_since_m = now_m;
-        return;
+        state->scan_visit_rearm_pending = 0U;
     }
     if (state->scan_visit_since_m < 0.0) {
         state->scan_visit_since_m = now_m;
-        return;
     }
-    if (scan_visit_rearms(state)) {
-        /* Slide the anchor rather than remember a pause: the first tick that can count again then
-         * starts a full fresh limit, which is what an operator who has just let go -- or who has
-         * just given the rotation a second row -- expects. */
+    const int rearm = scan_visit_rearms(state);
+    if (rearm || state->scan_visit_rearm_pending) {
+        /* Remember the suspension across input stalls: time since the last suspended tick
+         * cannot consume the fresh interval owed when a hold or an avoid stops applying. */
         state->scan_visit_since_m = now_m;
     }
+    state->scan_visit_rearm_pending = rearm ? 1U : 0U;
 }
 
 double
@@ -339,7 +342,7 @@ dsd_engine_scan_visit_deadline_m(const dsd_opts* opts, const dsd_state* state) {
     if (!scan_visit_scanner_owns(opts) || !scan_visit_cap_enabled(opts)) {
         return -1.0;
     }
-    if (state->scan_visit_since_m < 0.0) {
+    if (state->scan_visit_since_m < 0.0 || state->scan_visit_rearm_pending) {
         /* No park to measure from. */
         return -1.0;
     }

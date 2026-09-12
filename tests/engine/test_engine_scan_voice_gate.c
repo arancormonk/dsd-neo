@@ -1080,12 +1080,12 @@ test_visit_cap_manual_hold_suspends_and_release_restarts(void) {
     dsd_engine_scan_visit_tick(fix.opts, fix.state, 400.0);
     CHECK("the hold keeps sliding", fabs(fix.state->scan_visit_since_m - 400.0) < 1e-9);
     fix.state->lcn_scan_hold = 0;
-    dsd_engine_scan_visit_tick(fix.opts, fix.state, 401.0);
-    CHECK("the release keeps the slid anchor", fabs(fix.state->scan_visit_since_m - 400.0) < 1e-9);
+    dsd_engine_scan_visit_tick(fix.opts, fix.state, 500.0);
+    CHECK("the delayed release starts here", fabs(fix.state->scan_visit_since_m - 500.0) < 1e-9);
     CHECK("the release restarts the full limit",
-          fabs(dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) - 430.0) < 1e-9);
-    CHECK("the released limit holds", dsd_engine_scan_visit_expired(fix.opts, fix.state, 429.999) == 0);
-    CHECK("the released limit expires", dsd_engine_scan_visit_expired(fix.opts, fix.state, 430.001) == 1);
+          fabs(dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) - 530.0) < 1e-9);
+    CHECK("the released limit holds", dsd_engine_scan_visit_expired(fix.opts, fix.state, 529.999) == 0);
+    CHECK("the released limit expires", dsd_engine_scan_visit_expired(fix.opts, fix.state, 530.001) == 1);
     fixture_free(&fix);
 }
 
@@ -1114,9 +1114,9 @@ test_visit_cap_tg_hold_match_suspends(void) {
     /* Another talkgroup's call is not the one the hold follows. */
     fix.state->tg_hold = 99;
     dsd_engine_scan_visit_tick(fix.opts, fix.state, 112.0);
-    CHECK("another talkgroup does not suspend", fabs(fix.state->scan_visit_since_m - 111.0) < 1e-9);
+    CHECK("another talkgroup resumes the cap", fabs(fix.state->scan_visit_since_m - 112.0) < 1e-9);
     CHECK("another talkgroup keeps the deadline",
-          fabs(dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) - 141.0) < 1e-9);
+          fabs(dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) - 142.0) < 1e-9);
     /* A private call is held by either end. */
     fix.state->tg_hold = 22;
     (void)dsd_call_state_end_ex(fix.state, 0U, 112.5, DSD_CALL_END_EXPLICIT);
@@ -1127,13 +1127,13 @@ test_visit_cap_tg_hold_match_suspends(void) {
     (void)dsd_call_state_end_ex(fix.state, 1U, 114.5, DSD_CALL_END_EXPLICIT);
     open_call_identity(&fix, 1U, DSD_CALL_KIND_DATA, 11, 22, 22, 115.0);
     dsd_engine_scan_visit_tick(fix.opts, fix.state, 116.0);
-    CHECK("a data call does not suspend", fabs(fix.state->scan_visit_since_m - 114.0) < 1e-9);
-    /* Once the followed call ends, a fresh full limit runs from the last suspended tick. */
+    CHECK("a data call resumes the cap", fabs(fix.state->scan_visit_since_m - 116.0) < 1e-9);
+    /* Ending an unheld data call does not restart the running cap. */
     (void)dsd_call_state_end_ex(fix.state, 1U, 116.5, DSD_CALL_END_EXPLICIT);
     dsd_engine_scan_visit_tick(fix.opts, fix.state, 117.0);
-    CHECK("the ended call leaves the anchor", fabs(fix.state->scan_visit_since_m - 114.0) < 1e-9);
+    CHECK("the ended call leaves the anchor", fabs(fix.state->scan_visit_since_m - 116.0) < 1e-9);
     CHECK("the ended call resumes the limit",
-          fabs(dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) - 144.0) < 1e-9);
+          fabs(dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) - 146.0) < 1e-9);
     fixture_free(&fix);
 }
 
@@ -1199,15 +1199,17 @@ test_visit_cap_needs_a_second_usable_row(void) {
     CHECK("a placeholder row publishes no deadline", dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) < 0.0);
     dsd_engine_scan_visit_tick(fix.opts, fix.state, 400.0);
     CHECK("a placeholder alternate re-arms the visit", fabs(fix.state->scan_visit_since_m - 400.0) < 1e-9);
-    /* Restored, the row gets a full fresh limit measured from the last tick -- not the original
-     * park, which would have expired three hundred seconds ago. */
+    /* Eligibility can return after input stalls longer than the cap. The first eligible tick
+     * must start a fresh interval, and publication must hide the stale suspended anchor. */
     *dsd_state_trunk_lcn_slot(fix.state, 1) = saved_freq;
+    CHECK("resume awaits a tick", dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) < 0.0);
+    dsd_engine_scan_visit_tick(fix.opts, fix.state, 500.0);
     CHECK("a second usable row arms a fresh limit",
-          fabs(dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) - 430.0) < 1e-9);
+          fabs(dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) - 530.0) < 1e-9);
     CHECK("a second usable row does not expire at once",
-          dsd_engine_scan_visit_expired(fix.opts, fix.state, 400.001) == 0);
-    CHECK("the fresh limit holds", dsd_engine_scan_visit_expired(fix.opts, fix.state, 429.999) == 0);
-    CHECK("the fresh limit expires", dsd_engine_scan_visit_expired(fix.opts, fix.state, 430.001) == 1);
+          dsd_engine_scan_visit_expired(fix.opts, fix.state, 500.001) == 0);
+    CHECK("the fresh limit holds", dsd_engine_scan_visit_expired(fix.opts, fix.state, 529.999) == 0);
+    CHECK("the fresh limit expires", dsd_engine_scan_visit_expired(fix.opts, fix.state, 530.001) == 1);
     fixture_free(&fix);
 }
 

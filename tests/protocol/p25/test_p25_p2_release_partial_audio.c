@@ -14,6 +14,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -118,6 +119,7 @@ void
 dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     g_p25p2_flush_called++;
+    record_end_order('F');
     if (!state) {
         return;
     }
@@ -239,6 +241,36 @@ main(void) {
     rc |= expect_eq_int("s_r4 cleared", st.s_r4[0][0], 0);
     rc |= expect_eq_int("voice_counter[0] reset", st.voice_counter[0], 0);
     rc |= expect_eq_int("voice_counter[1] reset", st.voice_counter[1], 0);
+
+    // A capped departure flushes before ending the call, without tuning back to the CC.
+    st.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s();
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st,
+                 &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                   .slot = -1,
+                                   .channel = ch_tdma + 2,
+                                   .tg = 4321,
+                                   .src = 8765,
+                                   .svc_bits = 0,
+                                   .is_group = 1});
+    rc |= expect_eq_int("capped PTT accepted", p25_sm_emit_ptt_call(&opts, &st, 0, 4321, 0, 8765, 1, 0), 1);
+    st.s_l4[0][0] = 123;
+    st.s_r4[0][0] = -456;
+    st.voice_counter[0] = 1;
+    st.voice_counter[1] = 1;
+    g_p25p2_flush_called = 0;
+    g_return_to_cc_called = 0;
+    g_end_order_len = 0U;
+    g_end_order[0] = '\0';
+    g_track_end_order = 1;
+    p25_sm_abandon_carrier(p25_sm_get_ctx(), &opts, &st, "scan-visit-limit");
+    g_track_end_order = 0;
+    rc |= expect_eq_int("cap flushes partial audio", g_p25p2_flush_called, 1);
+    rc |= expect_eq_int("cap flush precedes call end", strcmp(g_end_order, "FE"), 0);
+    rc |= expect_eq_int("cap does not return to CC", g_return_to_cc_called, 0);
+    rc |= expect_eq_int("cap clears left audio", st.s_l4[0][0], 0);
+    rc |= expect_eq_int("cap clears right audio", st.s_r4[0][0], 0);
+    p25_sm_abandon_carrier(p25_sm_get_ctx(), &opts, &st, "idle-visit-limit");
+    rc |= expect_eq_int("idle cap does not flush again", g_p25p2_flush_called, 1);
 
     dsd_p25_optional_hooks_set((dsd_p25_optional_hooks){0});
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

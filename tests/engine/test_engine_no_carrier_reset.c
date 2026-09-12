@@ -595,6 +595,40 @@ test_visit_cap_scanner_hops(void) {
     rc |= expect_true("visit-cap-avoid-skips-row", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 957012500U);
     rc |= expect_true("visit-cap-avoid-advanced-past", state->lcn_freq_roll == 3);
 
+    // A failed hop must reopen the current row's windows so sync can be decoded again.
+    // Also cover the preexisting voice-gate escape with the visit cap disabled.
+    (void)dsd_state_trunk_lcn_avoid_clear(state);
+    static const int failed_tunes[] = {RTL_STREAM_TUNE_TIMEOUT, RTL_STREAM_TUNE_DEFERRED, RTL_STREAM_TUNE_FAILED};
+    for (int gate = 0; gate < 2; gate++) {
+        opts->scan_max_visit_ms = gate ? 0 : 1000;
+        opts->scan_voice_only = gate;
+        for (size_t i = 0; i < sizeof failed_tunes / sizeof failed_tunes[0]; i++) {
+            state->lcn_freq_roll = 0;
+            state->trunk_lcn_freq[0] = 958012500;
+            now_m = dsd_time_now_monotonic_s();
+            seed_visit_anchor(state, now_m - 5.0);
+            state->scan_voice_gate_sync_m = gate ? now_m - 4.0 : -1.0;
+            state->last_cc_sync_time = time(NULL) - (gate ? 11 : 0);
+            g_rtl_tune_result = failed_tunes[i];
+            g_rtl_tune_calls = 0;
+            noCarrier(opts, state);
+            rc |= expect_true("abandoned-scan-attempted", g_rtl_tune_calls == 1 && state->lcn_freq_roll == 0);
+            rc |= expect_true("abandoned-scan-cap-rearmed",
+                              !dsd_engine_scan_visit_expired(opts, state, dsd_time_now_monotonic_s()));
+            rc |= expect_true("abandoned-scan-gate-rearmed",
+                              !dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s()));
+            noCarrier(opts, state);
+            rc |= expect_true("abandoned-scan-no-immediate-retry", g_rtl_tune_calls == 1);
+        }
+    }
+    // Recovery remains possible once the fresh interval expires.
+    opts->scan_max_visit_ms = 1000;
+    opts->scan_voice_only = 0;
+    seed_visit_anchor(state, dsd_time_now_monotonic_s() - 2.0);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    noCarrier(opts, state);
+    rc |= expect_true("abandoned-scan-recovers", g_rtl_tune_calls == 2 && state->lcn_freq_roll == 1);
+
     state->rtl_ctx = NULL;
     free_test_runtime(opts, state);
     dsd_trunk_tuning_requests_reset();

@@ -53,7 +53,6 @@ typedef struct {
     uint32_t hold_ms;      /**< Effective activity hold. */
     uint8_t show_hang;     /**< 1 = @c hang_ms governs the current stay (-t). */
     uint32_t hang_ms;      /**< Active protocol's effective voice/sync-loss hangtime. */
-    /**< Voice/sync-loss hangtime, from -t. */
     /* The per-visit cap (issue #507). Not a stay reason and not one of the reason-driven
        budgets above: it caps the whole visit, so it applies to the row on air whatever is
        holding it, and a surface reports it beside the reason rather than instead of it. */

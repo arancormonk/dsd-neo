@@ -57,6 +57,7 @@ static int g_p25_tick_guard_depth = 0;
 static int g_p25_tick_guard_enter_calls = 0;
 static int g_p25_tick_guard_leave_calls = 0;
 static unsigned int g_fake_rtl_output_rate_hz = 0;
+static int g_explicit_call_ends = 0;
 
 static unsigned int
 fake_rtl_output_rate_hz(void) {
@@ -241,7 +242,9 @@ dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
     }
     const double ended_m = dsd_time_now_monotonic_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        (void)dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_EXPLICIT);
+        if (dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_EXPLICIT) > 0) {
+            g_explicit_call_ends++;
+        }
     }
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
@@ -8510,7 +8513,7 @@ test_visit_limit_continuous_conventional_activity_does_not_restart(void) {
     static dsd_opts opts;
     static dsd_state state;
     if (scan_visit_init(NULL,
-                        "a,dmr-conventional,461000000,,250,250,\n"
+                        "a,dmr-conventional,461000000,,250,1200,\n"
                         "b,dmr-conventional,462000000,,250,250,\n",
                         1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
         != 0) {
@@ -8529,12 +8532,21 @@ test_visit_limit_continuous_conventional_activity_does_not_restart(void) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "activity just inside the cap", 0U);
     test_rc |=
-        expect_scan_timing(&state, "activity just inside the cap", DSD_SCAN_STAY_ACTIVITY_HOLD, 1.15, 250U, 250U);
+        expect_scan_timing(&state, "activity just inside the cap", DSD_SCAN_STAY_ACTIVITY_HOLD, 2.10, 250U, 1200U);
     test_rc |= expect_scan_visit(&state, "activity just inside the cap", 1000U, 1.0);
 
     trunk_scan_test_set_now(1.01);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "activity cap expiry", 1U);
+
+    /* Return before the outgoing hold would expire: its ended call cannot hold the revisit. */
+    trunk_scan_test_set_now(1.27);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "conventional revisit", 0U);
+    test_rc |= expect_scan_timing(&state, "conventional revisit is idle", DSD_SCAN_STAY_IDLE_DWELL, 1.52, 250U, 1200U);
+    trunk_scan_test_set_now(1.53);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "revisit leaves after idle dwell", 1U);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
@@ -8574,13 +8586,25 @@ test_visit_limit_manual_hold_suspends_and_release_restarts(void) {
         test_rc |= expect_scan_visit(&state, "manual hold past the cap", 1000U, -1.0);
     }
 
+    /* Input can stall between the last held tick and the command that releases it. */
+    trunk_scan_test_set_now(10.0);
     test_rc |= expect_control_rc("visit hold off",
                                  dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
-    trunk_scan_test_set_now(5.99);
+    test_rc |= expect_scan_visit(&state, "release command starts a full cap", 1000U, 11.0);
+    trunk_scan_test_set_now(10.99);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "release before a full cap", 0U);
-    test_rc |= expect_scan_visit(&state, "release before a full cap", 1000U, 6.0);
-    trunk_scan_test_set_now(6.01);
+    test_rc |= expect_scan_visit(&state, "release before a full cap", 1000U, 11.0);
+    /* Two queued toggles can also arrive without any intervening decoder tick. */
+    test_rc |= expect_control_rc("queued hold on",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    test_rc |= expect_control_rc("queued hold off",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    trunk_scan_test_set_now(11.5);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "queued release before a full cap", 0U);
+    test_rc |= expect_scan_visit(&state, "queued release before a full cap", 1000U, 11.99);
+    trunk_scan_test_set_now(12.0);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "release after a full cap", 1U);
 
@@ -8621,17 +8645,16 @@ test_visit_limit_tg_hold_followed_call_suspends(void) {
         test_rc |= expect_scan_visit(&state, "tg hold followed call", 1000U, -1.0);
     }
 
-    /* The call ends; the suspension ends with it and a full fresh limit starts from the last
-     * suspended tick. */
-    if (dsd_call_state_end_ex(&state, 0U, 3.0, DSD_CALL_END_TERMINATOR) != 1) {
+    /* The call ends after input stalls. Its next tick starts the fresh cap. */
+    if (dsd_call_state_end_ex(&state, 0U, 9.0, DSD_CALL_END_TERMINATOR) != 1) {
         DSD_FPRINTF(stderr, "visit cap tg hold: ending the held call failed\n");
         test_rc = 1;
     }
-    trunk_scan_test_set_now(3.99);
+    trunk_scan_test_set_now(9.0);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "held call ended, inside the cap", 0U);
-    test_rc |= expect_scan_visit(&state, "held call ended, inside the cap", 1000U, 4.0);
-    trunk_scan_test_set_now(4.01);
+    test_rc |= expect_scan_visit(&state, "held call ended, inside the cap", 1000U, 10.0);
+    trunk_scan_test_set_now(10.01);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "held call ended, cap expiry", 1U);
 
@@ -8871,16 +8894,16 @@ run_visit_limit_ineligible_alternate_rearms(int cooldown) {
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_scan_visit(&state, "alternate unavailable before deadline", 1000U, -1.0);
     if (!cooldown) {
-        trunk_scan_test_set_now(0.99);
+        trunk_scan_test_set_now(10.0);
         test_rc |=
-            expect_control_rc("clear avoids just before original deadline",
+            expect_control_rc("clear avoids after stalled input",
                               dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 1);
     }
-    trunk_scan_test_set_now(offset + 1.01);
+    trunk_scan_test_set_now(10.0);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "fresh cap after alternate becomes eligible", 0U);
-    test_rc |= expect_scan_visit(&state, "fresh cap after alternate becomes eligible", 1000U, offset + 1.98);
-    trunk_scan_test_set_now(offset + 1.981);
+    test_rc |= expect_scan_visit(&state, "fresh cap after alternate becomes eligible", 1000U, 11.0);
+    trunk_scan_test_set_now(11.01);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "fresh cap eventually expires", 1U);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
@@ -9279,10 +9302,8 @@ test_visit_limit_failed_retune_cools_down_not_capped(void) {
  * When the forced advance cannot land anywhere the receiver rolls back onto the row it was on.
  * Two things have to hold afterwards. The cap re-arms rather than staying expired, so a row whose
  * alternates are all cooling down does not re-decide the eviction on every tick. And the carrier
- * stays released: the advance's rollback restores the snapshot it took before the release, call
- * rows and VC mirrors included, so without a re-scrub the row would carry a phantom ACTIVE call
- * that nothing ages out -- baked into its snapshot on the next ordinary departure and restored on
- * every revisit from then on (requirement 8).
+ * stays released: rollback preserves the ended call and its event bookkeeping, without
+ * resurrecting a phantom ACTIVE call or ending the same epoch twice (requirement 8).
  */
 static int
 test_visit_limit_forced_advance_rollback_rearms(void) {
@@ -9306,6 +9327,7 @@ test_visit_limit_forced_advance_rollback_rearms(void) {
     test_rc |= seed_active_call_row(&state, 1001U, 2002U, 0.10);
     /* The alternate's retune fails, and so does the re-park the advance falls back on. */
     g_counting_tune_to_cc_failures_remaining = 2;
+    const int ends_before = g_explicit_call_ends;
 
     trunk_scan_test_set_now(1.01);
     dsd_engine_trunk_scan_tick(&opts, &state);
@@ -9314,6 +9336,10 @@ test_visit_limit_forced_advance_rollback_rearms(void) {
     /* The receiver never left, but the carrier was handed back before the first attempt: the
      * rollback must not resurrect it. */
     test_rc |= expect_no_active_call_row(&state, "forced advance rollback");
+    if (g_explicit_call_ends != ends_before + 1) {
+        DSD_FPRINTF(stderr, "failed eviction ended the same call %d times\n", g_explicit_call_ends - ends_before);
+        test_rc = 1;
+    }
     test_rc |= expect_vc_mirrors_clear(&state, "forced advance rollback");
     if (opts.trunk_is_tuned != 0) {
         DSD_FPRINTF(stderr, "forced advance rollback left trunk_is_tuned=%d\n", opts.trunk_is_tuned);

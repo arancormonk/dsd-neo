@@ -1399,6 +1399,19 @@ no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, tim
     return (now - state->last_cc_sync_time) > opts->trunk_hangtime;
 }
 
+static void
+no_carrier_rearm_abandoned_scan(const dsd_opts* opts, dsd_state* state, time_t now) {
+    if (opts->scan_max_visit_ms < 1000 && opts->scan_voice_only != 1) {
+        return;
+    }
+    /* The receiver stayed on this row. An expired cap or voice gate would keep unwinding
+     * every decoded frame until a tune succeeds. Reopen its windows so decoding can resume
+     * and another attempt waits an interval, including when no tuner is available. */
+    state->last_cc_sync_time = now;
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
+}
+
 static int
 no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t now) {
     if (opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || !no_carrier_scanner_step_is_due(opts, state, now)) {
@@ -1411,7 +1424,11 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
     }
 
     if (dsd_channel_modes_present(state)) {
-        return dsd_engine_channel_scan_step(opts, state) > 0;
+        const int result = dsd_engine_channel_scan_step(opts, state);
+        if (result < 0) {
+            no_carrier_rearm_abandoned_scan(opts, state, now);
+        }
+        return result > 0;
     }
     no_carrier_reset_nxdn_scan_markers(state);
     if (state->lcn_freq_roll >= state->lcn_freq_count) {
@@ -1436,6 +1453,7 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
     // reacquirable by whatever decodes next -- on a different frequency.
     int moved = 0;
     if (freq != 0 && no_carrier_step_retune(opts, state, freq, &moved) != 0) {
+        no_carrier_rearm_abandoned_scan(opts, state, now);
         return moved;
     }
     state->lcn_freq_roll++;
