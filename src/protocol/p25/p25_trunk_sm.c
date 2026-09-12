@@ -786,6 +786,37 @@ p25_sm_await_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state
     return 1;
 }
 
+int
+p25_sm_on_external_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result tune_result,
+                           uint64_t request_id, const char* source) {
+    if (!ctx || !opts || !state || !ctx->initialized || !dsd_trunk_tune_result_is_ok(tune_result)) {
+        return 0;
+    }
+    if (ctx->state == P25_SM_IDLE) {
+        return 0;
+    }
+    const char* reason = source ? source : "external-cc-tune";
+    p25_sm_diagf(opts, state, ctx, "external_cc_tune",
+                 "source=%s state=%s freq=%ld ch=0x%04X tg=%d result=%s request=%llu", reason,
+                 p25_sm_state_name(ctx->state), ctx->vc_freq_hz, ctx->vc_channel & 0xFFFF, ctx->vc_tg,
+                 p25_tune_result_name(tune_result), (unsigned long long)request_id);
+    // Only a followed assignment has slot activity and a voice channel to drop.
+    // A parked or hunting SM keeps its stale-regrant guard and followed history;
+    // the radio still moved, so the acquisition gate is re-armed either way.
+    if (ctx->state == P25_SM_TUNED) {
+        p25_sm_clear_manual_selection_calls(ctx, opts, state);
+    }
+    // The same handoff the no-carrier and scan retunes use: grants stay gated
+    // until the pending tune completes and a CC block decodes after that
+    // boundary. In trunk-scan mode `ctx` is the coordinator's context on
+    // purpose -- its TUNED hold is what kept the scan parked on this target.
+    p25_sm_start_cc_acquisition_for_result(ctx, opts, state, tune_result, request_id, dsd_time_now_monotonic_s(),
+                                           reason, P25_SM_CC_ACQUISITION_RETURN);
+    ctx->t_hunt_try_m = 0.0;
+    set_state(ctx, opts, state, P25_SM_ON_CC, reason);
+    return 1;
+}
+
 /* ============================================================================
  * Grant Filtering
  * ============================================================================ */

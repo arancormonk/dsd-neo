@@ -2135,6 +2135,147 @@ test_unassigned_companion_start_is_rejected(void) {
 }
 
 // Test: State name function for 4-state model
+/* #506: a frontend command that retunes to the control channel itself (user
+ * lockout, manual return-to-CC) bypasses p25_sm_release(). The SM must be handed
+ * its parked state, or every later grant is judged as a preemption of the
+ * assignment it was following. */
+static int
+test_external_cc_tune_hands_off_assignment(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 852500000;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || !ctx.slots[0].voice_active) {
+        DSD_FPRINTF(stderr, "FAIL: External CC tune fixture did not follow the first assignment\n");
+        return 1;
+    }
+
+    // The command path resets the decoder without informing the SM: a grant for
+    // another talkgroup is then refused as a preemption of the phantom call.
+    g_opts.trunk_is_tuned = 0;
+    g_state.p25_vc_freq[0] = g_state.p25_vc_freq[1] = 0;
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = 0;
+    ev = p25_sm_ev_group_grant(0x1235, 852500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || ctx.vc_freq_hz != 851500000 || ctx.slots[0].ota_tg != 1000) {
+        DSD_FPRINTF(stderr, "FAIL: Uninformed SM no longer reproduces the #506 phantom-call refusal\n");
+        return 1;
+    }
+
+    if (!p25_sm_on_external_cc_tune(&ctx, &g_opts, &g_state, DSD_TRUNK_TUNE_RESULT_OK, 0U, "user-lockout")) {
+        DSD_FPRINTF(stderr, "FAIL: External CC tune was not handed off\n");
+        return 1;
+    }
+    if (ctx.state != P25_SM_ON_CC || ctx.slots[0].voice_active || ctx.slots[0].last_active_m > 0.0
+        || ctx.vc_freq_hz != 0 || !ctx.cc_sync_pending || g_return_requests != 0 || canonical_slot_is_active(0U)) {
+        DSD_FPRINTF(stderr, "FAIL: External CC tune left assignment state behind (state=%s)\n",
+                    p25_sm_state_name(ctx.state));
+        return 1;
+    }
+
+    // Grants stay gated until the CC decodes after the tune, as for every return.
+    ev = p25_sm_ev_group_grant(0x1235, 852500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || ctx.vc_freq_hz != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Grant accepted before the CC decoded after the external tune\n");
+        return 1;
+    }
+
+    // A parked SM is only re-gated: a manual return keeps its stale-regrant guard.
+    ctx.recent_call_ends[0].valid = 1;
+    if (!p25_sm_on_external_cc_tune(&ctx, &g_opts, &g_state, DSD_TRUNK_TUNE_RESULT_OK, 0U, "return-to-cc")
+        || ctx.state != P25_SM_ON_CC || !ctx.cc_sync_pending || !ctx.recent_call_ends[0].valid) {
+        DSD_FPRINTF(stderr, "FAIL: External CC tune on a parked SM did not preserve its context\n");
+        return 1;
+    }
+    ctx.recent_call_ends[0].valid = 0;
+    g_state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_group_grant(0x1235, 852500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || ctx.vc_freq_hz != 852500000 || ctx.slots[0].ota_tg != 2000) {
+        DSD_FPRINTF(stderr, "FAIL: Next grant was not followed after the external CC tune (state=%s freq=%ld)\n",
+                    p25_sm_state_name(ctx.state), ctx.vc_freq_hz);
+        return 1;
+    }
+
+    // A refused tune and an idle SM have nothing to hand off.
+    if (p25_sm_on_external_cc_tune(&ctx, &g_opts, &g_state, DSD_TRUNK_TUNE_RESULT_FAILED, 0U, "user-lockout")
+        || ctx.state != P25_SM_TUNED) {
+        DSD_FPRINTF(stderr, "FAIL: Refused external CC tune changed SM state\n");
+        return 1;
+    }
+    p25_sm_ctx_t idle;
+    g_state.p25_cc_freq = 0;
+    p25_sm_init_ctx(&idle, &g_opts, &g_state);
+    if (p25_sm_on_external_cc_tune(&idle, &g_opts, &g_state, DSD_TRUNK_TUNE_RESULT_OK, 0U, "user-lockout")
+        || idle.state != P25_SM_IDLE) {
+        DSD_FPRINTF(stderr, "FAIL: Idle SM was handed an external CC tune\n");
+        return 1;
+    }
+    return 0;
+}
+
+/* The asynchronous leg: a PENDING CC tune keeps grants gated until the tuner
+ * reports completion, and then until the CC decodes after that boundary. */
+static int
+test_external_cc_tune_pending_waits_for_completion(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 852500000;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    const uint64_t request_id = dsd_trunk_tuning_request_begin();
+    if (ctx.state != P25_SM_TUNED || request_id == 0U) {
+        DSD_FPRINTF(stderr, "FAIL: Pending external CC tune fixture did not start\n");
+        return 1;
+    }
+
+    if (!p25_sm_on_external_cc_tune(&ctx, &g_opts, &g_state, DSD_TRUNK_TUNE_RESULT_PENDING, request_id, "user-lockout")
+        || ctx.state != P25_SM_ON_CC || !ctx.cc_tune_pending || ctx.cc_tune_request_id != request_id
+        || ctx.vc_freq_hz != 0 || ctx.slots[0].voice_active) {
+        DSD_FPRINTF(stderr, "FAIL: Pending external CC tune was not awaited (state=%s)\n",
+                    p25_sm_state_name(ctx.state));
+        return 1;
+    }
+
+    // Still moving: the grant waits for the tuner.
+    ev = p25_sm_ev_group_grant(0x1235, 852500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || !ctx.cc_tune_pending) {
+        DSD_FPRINTF(stderr, "FAIL: Grant accepted while the external CC tune was still pending\n");
+        return 1;
+    }
+
+    // Tuner done, CC not yet decoded after it: the grant still waits.
+    dsd_trunk_tuning_request_complete(request_id, DSD_TRUNK_TUNE_RESULT_OK);
+    ev = p25_sm_ev_group_grant(0x1235, 852500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || ctx.cc_tune_pending || !ctx.cc_sync_pending) {
+        DSD_FPRINTF(stderr, "FAIL: Completed external CC tune did not move to the decoded-CC gate\n");
+        return 1;
+    }
+
+    g_state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_group_grant(0x1235, 852500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    dsd_trunk_tuning_requests_reset();
+    if (ctx.state != P25_SM_TUNED || ctx.vc_freq_hz != 852500000) {
+        DSD_FPRINTF(stderr, "FAIL: Next grant was not followed after the pending external CC tune (state=%s)\n",
+                    p25_sm_state_name(ctx.state));
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_state_names(void) {
     if (strcmp(p25_sm_state_name(P25_SM_IDLE), "IDLE") != 0) {
@@ -3037,6 +3178,8 @@ main(void) {
     fail += test_anonymous_followup_restarts_crypto_pending();
     fail += test_source_less_duplicate_grant_republishes_crypto();
     fail += test_unassigned_companion_start_is_rejected();
+    fail += test_external_cc_tune_hands_off_assignment();
+    fail += test_external_cc_tune_pending_waits_for_completion();
     fail += test_state_names();
     fail += test_config_defaults();
     fail += test_singleton();
