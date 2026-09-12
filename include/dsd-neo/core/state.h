@@ -430,6 +430,7 @@ struct dsd_scan_timing_publication {
     uint32_t hold_ms;  /**< effective activity hold; 0 on trunked rows and when n/a */
     /** Effective per-visit cap for the row on air in ms; 0 = off (issue #507). */
     uint32_t visit_limit_ms;
+    uint32_t hang_ms;     /**< active protocol's effective hangtime budget; 0 when n/a */
     uint8_t reason;       /**< dsd_scan_stay_reason */
     uint8_t conventional; /**< 1 = conventional / -Y row, so hold_ms means something */
 };

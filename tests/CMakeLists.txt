@@ -600,12 +600,25 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/call_view.h
   C
 )
+# Keep the Qt-facing view headers usable in C++ even when Qt is disabled.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_call_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_CALL_VIEW_CXX
+  dsd-neo/app_control/call_view.h
+  CXX
+)
 
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_scan_timing_view
   HEADERS_PUBLIC_APP_CONTROL_SCAN_TIMING_VIEW
   dsd-neo/app_control/scan_timing_view.h
   C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_timing_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_TIMING_VIEW_CXX
+  dsd-neo/app_control/scan_timing_view.h
+  CXX
 )
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_commands
@@ -4824,6 +4837,35 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_SYNCED_TRUNK_SCAN_TICK
         COMMAND dsd-neo_test_engine_synced_trunk_scan_tick
     )
+    # The time() wrapper below requires a Unix time symbol.
+    if(NOT WIN32)
+        add_executable(
+            dsd-neo_test_engine_scan_timing
+            engine/test_engine_scan_timing.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
+        )
+        target_include_directories(
+            dsd-neo_test_engine_scan_timing
+            PRIVATE ${PROJECT_SOURCE_DIR}/include
+        )
+        target_link_libraries(
+            dsd-neo_test_engine_scan_timing
+            PRIVATE
+                "-Wl,--wrap=getFrameSync"
+                "-Wl,--wrap=dsd_engine_scan_tune_to_freq"
+                "-Wl,--wrap=SetFreq"
+                "-Wl,--wrap=time"
+                "-Wl,--start-group"
+                dsd-neo_engine
+                "-Wl,--end-group"
+                ${LIBS}
+                dsd-neo_test_support
+        )
+        add_test(
+            NAME ENGINE_SCAN_TIMING
+            COMMAND dsd-neo_test_engine_scan_timing
+        )
+    endif()
 endif()
 
 add_executable(
@@ -7622,6 +7664,7 @@ add_executable(
     protocol/dmr/test_dmr_bs_sync_times.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_cach.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_bs.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/frame_sync_hooks.c
 )
 target_include_directories(
     dsd-neo_test_dmr_bs_sync_times

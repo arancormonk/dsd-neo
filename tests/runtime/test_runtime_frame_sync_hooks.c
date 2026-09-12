@@ -20,7 +20,8 @@ static int g_vc_sync_calls;
 static int g_vc_no_sync_calls;
 static int g_eot_calls;
 static int g_no_carrier_calls;
-static dsd_opts* g_last_opts;
+static int g_yield_requested;
+static const dsd_opts* g_last_opts;
 static const dsd_state* g_last_state;
 
 static void
@@ -36,7 +37,7 @@ reset_counters(void) {
 }
 
 static void
-record_args(dsd_opts* opts, const dsd_state* state) {
+record_args(const dsd_opts* opts, const dsd_state* state) {
     g_last_opts = opts;
     g_last_state = state;
 }
@@ -77,6 +78,12 @@ hook_no_carrier(dsd_opts* opts, dsd_state* state) {
     record_args(opts, state);
 }
 
+static int
+hook_scan_visit_should_yield(const dsd_opts* opts, dsd_state* state) {
+    record_args(opts, state);
+    return g_yield_requested;
+}
+
 static void
 test_empty_hooks_are_noops(dsd_opts* opts, dsd_state* state) {
     dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
@@ -89,6 +96,7 @@ test_empty_hooks_are_noops(dsd_opts* opts, dsd_state* state) {
     dsd_frame_sync_hook_eot_cc(opts, state);
     dsd_frame_sync_hook_no_carrier(opts, state);
 
+    assert(dsd_frame_sync_hook_scan_visit_should_yield(opts, state) == 0);
     assert(g_try_tick_calls == 0);
     assert(g_release_calls == 0);
     assert(g_vc_sync_calls == 0);
@@ -108,9 +116,16 @@ test_installed_hooks_forward_args(dsd_opts* opts, dsd_state* state) {
         .p25_sm_vc_no_sync = hook_vc_no_sync,
         .eot_cc = hook_eot,
         .no_carrier = hook_no_carrier,
+        .scan_visit_should_yield = hook_scan_visit_should_yield,
     };
     dsd_frame_sync_hooks_set(hooks);
     reset_counters();
+    g_yield_requested = 0;
+    assert(dsd_frame_sync_hook_scan_visit_should_yield(opts, state) == 0);
+    g_yield_requested = 1;
+    assert(dsd_frame_sync_hook_scan_visit_should_yield(opts, state) == 1);
+    assert(g_last_opts == opts);
+    assert(g_last_state == state);
 
     dsd_frame_sync_hook_p25_sm_try_tick(opts, state);
     assert(g_try_tick_calls == 1);
@@ -159,6 +174,7 @@ test_partial_reinstall_replaces_table(dsd_opts* opts, dsd_state* state) {
     dsd_frame_sync_hook_no_carrier(opts, state);
 
     assert(g_try_tick_calls == 1);
+    assert(dsd_frame_sync_hook_scan_visit_should_yield(opts, state) == 0);
     assert(g_release_calls == 0);
     assert(g_vc_sync_calls == 0);
     assert(g_vc_no_sync_calls == 0);

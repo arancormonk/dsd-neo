@@ -543,6 +543,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 Qt Quick frontend (`src/ui/qt`):
 
+- After the session's first decoder redraw, `UiController` refreshes live metrics on every timer tick so scan
+  countdowns and the sync-loss hold continue aging if input stalls. History, network and policy models still
+  refresh on decoder redraws; session lifecycle clears live metrics and prevents stale snapshots from restoring them.
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies
@@ -722,6 +725,9 @@ External dependencies (resolved via CMake):
   `DSD_SCAN_OPT_MAX_VISIT` is the one **scan-timing** row option accepted on trunked types as well, and its
   `scan_max_visit_ms` travels in the same row-option block, outside `dsd_scan_settings_equal()`, so a row cap never
   restages a tune.
+- Long DMR base-station decode loops consult the runtime frame hook `scan_visit_should_yield` at burst boundaries.
+  It maintains the owning scanner's visit clock and reports expiry without tuning. The decoder finishes its cleanup
+  and releases the SM guard before the engine advances, so cleanup cannot overwrite the next target's state.
 - App-control scopes force/CRC/voice configuration commands and group imports, while live row policy mutations stay
   with the active context. Configuration export reads saved group paths and voice settings from the configured scope.
 

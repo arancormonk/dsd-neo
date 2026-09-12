@@ -208,6 +208,11 @@ UiController::invalidateForTarget(const dsd_state* snapshot) {
     }
 }
 
+bool
+UiController::sessionIsLive() const {
+    return !m_host || m_session == DecoderHost::Running || m_session == DecoderHost::Stopping;
+}
+
 void
 UiController::tick() {
     pollTalkgroupExport();
@@ -226,7 +231,12 @@ UiController::tick() {
         pollDecryptionResult();
     }
 
-    if (dsd_app_frontend_redraw_consume() == 0) {
+    const bool redraw = dsd_app_frontend_redraw_consume() != 0;
+    const bool live = sessionIsLive();
+    // Once this session has supplied its first redraw, age its held deadlines on
+    // every UI tick. Input can stall without another redraw; scan countdowns and
+    // the short sync hold must still expire. Keep the startup admission gate.
+    if (!redraw && !(live && m_metrics && m_metrics->optionsKnown())) {
         return;
     }
 
@@ -237,13 +247,15 @@ UiController::tick() {
     const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
     const dsd_state* snapshot = dsd_app_get_latest_snapshot();
 
-    const bool live = !m_host || m_session == DecoderHost::Running || m_session == DecoderHost::Stopping;
     invalidateForTarget(snapshot);
-    if (live && m_network != nullptr) {
-        m_network->refresh(snapshot);
-    }
     if (live && m_metrics != nullptr) {
         m_metrics->refresh(opts_snapshot, snapshot);
+    }
+    if (!redraw) {
+        return;
+    }
+    if (live && m_network != nullptr) {
+        m_network->refresh(snapshot);
     }
     /* The call history is persistent by design, so unlike the metrics it is never
      * cleared on session boundaries — only fed. */

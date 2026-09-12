@@ -170,7 +170,9 @@ main(int argc, char** argv) {
 
     g_return_to_cc_calls = 0;
     state.trunk_sm_force_release = 1;
+    const unsigned int releases_before_abandon = state.p25_sm_release_count;
     dmr_sm_abandon_carrier(ctx, &opts, &state, "scan-visit-limit");
+    assert(state.p25_sm_release_count == releases_before_abandon + 1U);
     assert(g_return_to_cc_calls == 0);
     assert(state.trunk_sm_force_release == 0);
     assert(opts.trunk_is_tuned == 0);
@@ -179,6 +181,10 @@ main(int argc, char** argv) {
     assert(ctx->vc_freq_hz == 0);
     assert(ctx->slots[0].voice_active == 0);
     assert(ctx->state == DMR_SM_ON_CC);
+
+    dmr_sm_abandon_carrier(ctx, &opts, &state, "idle-visit-limit");
+    assert(state.p25_sm_release_count == releases_before_abandon + 1U);
+    assert(g_return_to_cc_calls == 0);
 
     printf("DMR_T3_SM_RELEASE: OK\n");
     return 0;

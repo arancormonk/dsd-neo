@@ -704,21 +704,21 @@ test_y_timing_legacy_hangtime_window(void) {
     dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.25, 1000.25);
     CHECK("hangtime reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
     CHECK("hangtime is conventional", fix.state->scan_timing.conventional == 1U);
-    check_timing_window("hangtime start", "hangtime deadline", "hangtime span", &fix.state->scan_timing, 100.0, 102.0,
-                        2000U);
+    check_timing_window("hangtime start", "hangtime deadline", "hangtime span", &fix.state->scan_timing, 100.0, 103.0,
+                        3000U);
     CHECK("hangtime has no dwell", fix.state->scan_timing.dwell_ms == 0U);
     CHECK("hangtime has no hold", fix.state->scan_timing.hold_ms == 0U);
     /* A later tick re-expresses the same wall anchor and lands on the same deadline. */
     dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 101.5, 1001.5);
     check_timing_window("hangtime start again", "hangtime deadline again", "hangtime span again",
-                        &fix.state->scan_timing, 100.0, 102.0, 2000U);
+                        &fix.state->scan_timing, 100.0, 103.0, 3000U);
     /* NXDN stamps the wall anchor two seconds ahead after a confirmed frame (and leaves
      * the monotonic twin alone), so the window starts in the future and the countdown
      * begins above -t rather than reaching zero two seconds before the hop. */
     fix.state->last_cc_sync_time = (time_t)1002;
     dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.25, 1000.25);
     check_timing_window("nxdn future start", "nxdn future deadline", "nxdn future span", &fix.state->scan_timing, 102.0,
-                        104.0, 2000U);
+                        105.0, 3000U);
     fix.state->last_cc_sync_time = (time_t)1000;
     /* A gate that is enabled but has never synced this visit abstains, so the legacy
      * rule still owns the step -- and it has neither window to report. */
@@ -756,13 +756,13 @@ test_y_timing_hangtime_without_anchor(void) {
     CHECK("unanchored has no start", fix.state->scan_timing.started_m < 0.0);
     CHECK("unanchored has no deadline", fix.state->scan_timing.deadline_m < 0.0);
     CHECK("unanchored has no span", fix.state->scan_timing.span_ms == 0U);
-    /* -t 0 has an anchor but no window to count down. */
+    /* Strict whole-second > still waits for the next wall tick with -t 0. */
     fix.state->last_cc_sync_time = (time_t)100;
     fix.opts->trunk_hangtime = 0.0f;
     dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.0, 100.0);
     CHECK("zero hangtime reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
-    CHECK("zero hangtime has no deadline", fix.state->scan_timing.deadline_m < 0.0);
-    CHECK("zero hangtime has no span", fix.state->scan_timing.span_ms == 0U);
+    CHECK("zero hangtime waits for the next second", fix.state->scan_timing.deadline_m == 101.0);
+    CHECK("zero hangtime span", fix.state->scan_timing.span_ms == 1000U);
     fixture_free(&fix);
 }
 
@@ -858,7 +858,7 @@ test_y_timing_hop_restarts_the_window(void) {
     dsd_scan_voice_gate_note_retune(fix.state, 200.0);
     dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 200.0, 200.0);
     CHECK("hop falls back to hangtime", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
-    check_timing_window("hop start", "hop deadline", "hop span", &fix.state->scan_timing, 200.0, 202.0, 2000U);
+    check_timing_window("hop start", "hop deadline", "hop span", &fix.state->scan_timing, 200.0, 203.0, 3000U);
     dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 200.0);
     dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 200.0, 200.0);
     CHECK("new visit qualifies", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_IDLE_DWELL);
@@ -976,6 +976,26 @@ test_visit_cap_expires_from_the_tune_anchor(void) {
     CHECK("the dropped anchor publishes no deadline", dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) < 0.0);
     dsd_engine_scan_visit_tick(fix.opts, fix.state, 600.0);
     CHECK("the owning tick re-anchors", fabs(fix.state->scan_visit_since_m - 600.0) < 1e-9);
+    fixture_free(&fix);
+}
+
+static void
+test_visit_cap_completed_hop_keeps_park_anchor(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        g_failures++;
+        return;
+    }
+    fix.opts->scan_max_visit_ms = 1000;
+    /* Both normal hopping paths move the roll before reporting a successful park. */
+    fix.state->lcn_freq_roll++;
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    CHECK("the completed hop immediately publishes its deadline",
+          fabs(dsd_engine_scan_visit_deadline_m(fix.opts, fix.state) - 101.0) < 1e-9);
+    dsd_engine_scan_visit_tick(fix.opts, fix.state, 100.9);
+    CHECK("acquisition does not move the park timestamp", fabs(fix.state->scan_visit_since_m - 100.0) < 1e-9);
+    CHECK("the visit survives until its deadline", dsd_engine_scan_visit_expired(fix.opts, fix.state, 100.999) == 0);
+    CHECK("the visit expires from the actual park", dsd_engine_scan_visit_expired(fix.opts, fix.state, 101.001) == 1);
     fixture_free(&fix);
 }
 
@@ -1343,6 +1363,7 @@ main(void) {
     test_y_timing_seeds_visit_cap_off();
     test_visit_cap_disabled_never_expires();
     test_visit_cap_expires_from_the_tune_anchor();
+    test_visit_cap_completed_hop_keeps_park_anchor();
     test_visit_cap_trunk_scan_switch_starts_fresh();
     test_visit_cap_ignores_sync_refresh();
     test_visit_cap_ignores_continuous_voice();

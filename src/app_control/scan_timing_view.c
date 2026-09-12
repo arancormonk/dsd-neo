@@ -24,7 +24,7 @@ typedef struct {
     uint8_t dwell_state; /**< DSD_APP_SCAN_DWELL_* to report while the dwell is shown. */
     uint8_t show_dwell;  /**< 0 where the dwell is the live window, so the span already says it. */
     uint8_t show_hold;   /**< 0 where the hold is the live window, or the row is trunked. */
-    uint8_t show_hang;   /**< 1 only where -t is what ends the stay. */
+    uint8_t show_hang;   /**< 1 only where protocol hangtime is what ends the stay. */
 } dsd_scan_timing_row;
 
 /* Indexed by dsd_scan_stay_reason. NONE is present so the array covers the enum and an
@@ -48,7 +48,7 @@ _Static_assert((int)(sizeof(k_scan_timing_rows) / sizeof(k_scan_timing_rows[0]))
                "every dsd_scan_stay_reason needs a display row");
 
 /** @brief Longest countdown the view will report, guarding the cast below. */
-#define DSD_APP_SCAN_REMAINING_MAX_S 86400.0
+#define DSD_APP_SCAN_REMAINING_MAX_S ((double)UINT32_MAX / 1000.0)
 
 /**
  * @brief Whether there is a stay worth rendering at all.
@@ -101,23 +101,10 @@ scan_timing_remaining_ms(double deadline_m, double now_m) {
     if (!(remaining_s > 0.0)) {
         return 0U;
     }
-    if (remaining_s > DSD_APP_SCAN_REMAINING_MAX_S) {
-        remaining_s = DSD_APP_SCAN_REMAINING_MAX_S;
+    if (remaining_s >= DSD_APP_SCAN_REMAINING_MAX_S) {
+        return UINT32_MAX;
     }
     return (uint32_t)((remaining_s * 1000.0) + 0.5);
-}
-
-/** @brief -t in milliseconds, rounded, or 0 when it is not configured. */
-static uint32_t
-scan_timing_hang_ms(const dsd_opts* opts) {
-    double hang_s = (double)opts->trunk_hangtime;
-    if (!(hang_s > 0.0)) {
-        return 0U;
-    }
-    if (hang_s > DSD_APP_SCAN_REMAINING_MAX_S) {
-        hang_s = DSD_APP_SCAN_REMAINING_MAX_S;
-    }
-    return (uint32_t)((hang_s * 1000.0) + 0.5);
 }
 
 /**
@@ -129,9 +116,12 @@ scan_timing_hang_ms(const dsd_opts* opts) {
  */
 static void
 scan_timing_fill_budgets(dsd_app_scan_timing* out, const dsd_scan_timing_row* row,
-                         const dsd_scan_timing_publication* pub, const dsd_opts* opts) {
+                         const dsd_scan_timing_publication* pub) {
     out->dwell_ms = pub->dwell_ms;
-    if (row->show_dwell != 0U && pub->dwell_ms != 0U) {
+    // After hold release the next decoder tick arms the dwell. Until then its
+    // effective budget is still useful even though no remaining/total pair runs.
+    const int dwell_unarmed = pub->reason == (uint8_t)DSD_SCAN_STAY_IDLE_DWELL && !out->timer_live;
+    if ((row->show_dwell != 0U || dwell_unarmed) && pub->dwell_ms != 0U) {
         out->show_dwell = 1U;
         out->dwell_state = row->dwell_state;
     }
@@ -140,7 +130,7 @@ scan_timing_fill_budgets(dsd_app_scan_timing* out, const dsd_scan_timing_row* ro
         out->show_hold = 1U;
     }
     if (row->show_hang != 0U) {
-        out->hang_ms = scan_timing_hang_ms(opts);
+        out->hang_ms = pub->hang_ms;
         out->show_hang = (out->hang_ms != 0U) ? 1U : 0U;
     }
 }
@@ -188,7 +178,7 @@ dsd_app_scan_timing_view(const dsd_opts* opts, const dsd_state* state, double no
         out->remaining_ms = scan_timing_remaining_ms(pub->deadline_m, now_m);
         out->span_ms = pub->span_ms;
     }
-    scan_timing_fill_budgets(out, row, pub, opts);
+    scan_timing_fill_budgets(out, row, pub);
     scan_timing_fill_visit(out, pub, now_m);
     return 1;
 }

@@ -23,6 +23,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdbool.h>
@@ -40,6 +41,7 @@ volatile uint8_t exitflag = 0;
 static uint8_t g_dibits[512];
 static int g_bootstrap_payload[90];
 static size_t g_dibit_index = 0;
+static int g_continuous_voice;
 static unsigned int g_open_left_calls;
 static unsigned int g_open_right_calls;
 static unsigned int g_close_left_calls;
@@ -83,6 +85,7 @@ static int g_any_voice_open = 0;
 static void
 reset_spies(void) {
     g_dibit_index = 0;
+    g_continuous_voice = 0;
     g_open_left_calls = 0;
     g_open_right_calls = 0;
     g_close_left_calls = 0;
@@ -185,6 +188,11 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     (void)opts;
     (void)state;
     (void)out_analog_signal;
+    if (g_continuous_voice) {
+        /* Bound a broken escape so this regression fails instead of hanging. */
+        assert(g_dibit_index < (size_t)144U * 80U);
+        return g_dibits[g_dibit_index++ % 288U] & 0x3U;
+    }
     if (g_dibit_index >= sizeof(g_dibits)) {
         return 0;
     }
@@ -195,6 +203,15 @@ int
 getDibitSoft(dsd_opts* opts, dsd_state* state, dsd_dibit_soft_t* out_soft) {
     (void)opts;
     (void)state;
+    if (g_continuous_voice) {
+        if (out_soft != NULL) {
+            DSD_MEMSET(out_soft, 0, sizeof(*out_soft));
+            out_soft->reliability = 255U;
+        }
+        /* Bound a broken escape so this regression fails instead of hanging. */
+        assert(g_dibit_index < (size_t)144U * 80U);
+        return g_dibits[g_dibit_index++ % 288U] & 0x3U;
+    }
     if (g_dibit_index >= sizeof(g_dibits)) {
         if (out_soft != NULL) {
             DSD_MEMSET(out_soft, 0, sizeof(*out_soft));
@@ -692,8 +709,43 @@ test_bs_bootstrap_prefetched_voice_runs_first_frame_path(void) {
     assert(state.last_vc_sync_time_m > 0.0);
 }
 
+static int
+yield_after_one_second(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    /* 4800 dibits per second; the engine's deadline hook is tested separately. */
+    return g_dibit_index >= 4800U;
+}
+
+static void
+test_continuous_voice_yields_at_burst_boundary(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.dmr_color_code = 16;
+    load_voice_burst_stream();
+    DSD_MEMCPY(g_dibits + 144U, g_dibits, 144U);
+    set_cach_tact_bit(144U, 1, 1);
+    /* Adjacent slots carry different payloads so the stuck-dibit guard stays open. */
+    g_dibits[144U + 12U + 16U] = 2U;
+    g_continuous_voice = 1;
+    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){.scan_visit_should_yield = yield_after_one_second});
+    dmrBS(&opts, &state);
+    assert(g_dibit_index >= 4800U && g_dibit_index < 4800U + 144U);
+    assert(g_dibit_index % 144U == 0U);
+    assert(g_process_mbe_calls > 0U);
+    assert(g_sm_tick_calls > 1U);
+    assert(g_confidence_reset_calls == 1U);
+    assert(g_refresh_error_calls == 0U);
+    assert(state.dmr_stereo == 0);
+    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+    g_continuous_voice = 0;
+}
+
 int
 main(void) {
+    test_continuous_voice_yields_at_burst_boundary();
     test_bs_voice_sync_refreshes_when_trunk_tuned();
     test_bs_slot2_voice_routes_right_channel_and_post_skip_hooks();
     test_bs_slot2_voice_integer_output_uses_ss3_playback();

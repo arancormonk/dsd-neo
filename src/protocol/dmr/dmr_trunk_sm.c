@@ -399,7 +399,7 @@ dmr_sm_release_without_cc(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
  * to, or a caller that owns the tuner and is moving it itself -- the call rows and DMR block
  * state have to be cleared here, because nothing downstream will do it. */
 static void
-dmr_sm_clear_released_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int cc_returned,
+dmr_sm_clear_released_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int cc_returned, int count_release,
                               dmr_sm_state_e next_state, const char* reason) {
     for (int s = 0; s < 2; s++) {
         ctx->slots[s].voice_active = 0;
@@ -425,7 +425,9 @@ dmr_sm_clear_released_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
         state->trunk_vc_freq[0] = 0;
         state->trunk_vc_freq[1] = 0;
         state->dmr_mono_slot = 0;
-        state->p25_sm_release_count++;
+        if (count_release) {
+            state->p25_sm_release_count++;
+        }
     }
 
     if (!cc_returned) {
@@ -458,7 +460,7 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
         return;
     }
 
-    dmr_sm_clear_released_carrier(ctx, opts, state, cc > 0, cc > 0 ? DMR_SM_ON_CC : DMR_SM_HUNTING, reason);
+    dmr_sm_clear_released_carrier(ctx, opts, state, cc > 0, 1, cc > 0 ? DMR_SM_ON_CC : DMR_SM_HUNTING, reason);
 }
 
 void
@@ -466,6 +468,7 @@ dmr_sm_abandon_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, cons
     if (!ctx) {
         return;
     }
+    const int had_carrier = ctx->state == DMR_SM_TUNED || (opts && opts->trunk_is_tuned == 1);
     if (state) {
         /* The teardown the latch asks for is happening right here; left armed, the next tick
          * would try its own release, and that one tunes back to a control channel -- against a
@@ -475,7 +478,7 @@ dmr_sm_abandon_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, cons
     sm_log(opts, reason);
     /* ON_CC, not HUNTING: nothing about this release says the control channel was lost, and a
      * revisit expects to find the target resting exactly where an ordinary release leaves it. */
-    dmr_sm_clear_released_carrier(ctx, opts, state, 0, DMR_SM_ON_CC, reason ? reason : "abandon-carrier");
+    dmr_sm_clear_released_carrier(ctx, opts, state, 0, had_carrier, DMR_SM_ON_CC, reason ? reason : "abandon-carrier");
 }
 
 static int

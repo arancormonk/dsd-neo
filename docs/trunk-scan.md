@@ -148,7 +148,8 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   list of two busy systems the rotation alternates between them, spending the full limit on each.
 - Per-target CSV values override these defaults.
 - The terminal's `Scan Timing` row reports the *effective* dwell and hold for the target on air — the values left
-  after the CSV column and the CLI/config default have been resolved — and labels `-t` as `hang`, never as a dwell.
+  after the CSV column and the CLI/config default have been resolved — and labels the active protocol's effective
+  hangtime as `hang`, including protocol overrides, never as a dwell.
   `(suspended)` beside the dwell means it is disarmed while something holds the target, not that it expired. See
   [the terminal UI guide](ui-terminal.md).
 - `-t <seconds>` is voice/sync-loss hangtime, not the interval between trunk-scan targets. Zero does not
@@ -311,7 +312,9 @@ During scanning:
   talkgroup, and the limit runs from zero again once that call ends, so other calls on the target are still capped.
   When the cap evicts a target mid-call, the carrier is released first, so revisiting it later restores an idle target
   rather than a stale call. If every alternate then fails to retune and the receiver falls back onto the same target,
-  the call has still been released and the visit simply starts over, idle. A target's `options` column can carry its
+  the call stays released. If the fallback park also fails, the coordinator retries that target's control channel
+  after the retune cooldown instead of waiting through its idle dwell. A pending fallback does not start the visit
+  clock until parking completes. A target's `options` column can carry its
   own `--scan-max-visit-ms <ms>`, and `0` there exempts that target while the global cap is set.
 - The rotation can be driven from the terminal (Trunking menu, or the hotkeys): `Y` holds the scan on the parked
   target, `b` avoids the parked target for the rest of the session and moves on, `L` moves to the next eligible target

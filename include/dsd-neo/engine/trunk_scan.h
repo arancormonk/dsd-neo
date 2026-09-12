@@ -114,6 +114,10 @@ int dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_
 int dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t err_sz);
 void dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state);
 void dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state);
+/** Maintain the visit clock and report expiry without tuning or releasing the call.
+ * Decoder thread only, with the SM guard already held. Used by long protocol loops
+ * to unwind before the next coordinator tick performs the advance. */
+int dsd_engine_trunk_scan_visit_expired(const dsd_opts* opts, dsd_state* state);
 /**
  * @brief Apply an operator scan control (a dsd_trunk_scan_control_op from
  * runtime/trunk_scan_hooks.h) to the parked target list.

@@ -22,8 +22,10 @@
 #include <Qt>
 #include <cstdio>
 #include <cstdlib>
+#include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -221,6 +223,56 @@ test_startup_options_wait_for_redraw() {
     freeState(&state);
 }
 
+// A held snapshot still has deadlines to age when input stops producing redraws.
+static void
+test_metrics_age_without_decoder_redraw() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    opts.scanner_mode = 1;
+    Host host;
+    dsd_qt::MetricsModel metrics;
+    dsd_qt::UiController controller(&host, &metrics, nullptr, nullptr);
+    controller.setPollIntervalMs(50);
+    const auto poll = [&](int duration_ms) {
+        QEventLoop loop;
+        QTimer::singleShot(duration_ms, &loop, &QEventLoop::quit);
+        controller.start();
+        loop.exec();
+        controller.stop();
+    };
+
+    // Seed the existing short sync hold, then publish loss and a scan deadline.
+    state.synctype = DSD_SYNC_P25P1_POS;
+    metrics.refresh(&opts, &state);
+    state.synctype = DSD_SYNC_NONE;
+    state.scan_timing.reason = DSD_SCAN_STAY_HANGTIME;
+    state.scan_timing.conventional = 1U;
+    state.scan_timing.started_m = dsd_time_now_monotonic_s();
+    state.scan_timing.deadline_m = state.scan_timing.started_m + 1.0;
+    state.scan_timing.span_ms = 1000U;
+    dsd_app_telemetry_publish_opts_snapshot(&opts);
+    dsd_app_telemetry_publish_snapshot(&state);
+    dsd_app_request_redraw();
+    poll(65);
+    check(metrics.scanTimerLive() && metrics.scanTimerRemainingDs() > 0);
+    check(metrics.syncedHere());
+    const int remaining = metrics.scanTimerRemainingDs();
+    check(dsd_app_frontend_redraw_consume() == 0);
+    poll(250);
+    check(metrics.scanTimerRemainingDs() < remaining);
+    poll(static_cast<int>(DSD_APP_SYNC_HOLD_S * 1000.0) + 100);
+    check(metrics.scanTimerRemainingDs() == 0);
+    check(!metrics.syncedHere());
+
+    // Lifecycle still gates stale snapshots after the engine stops.
+    host.setPhase(Host::Idle);
+    poll(65);
+    check(!metrics.scanTimingVisible() && !metrics.optionsKnown());
+    freeState(&state);
+}
+
 // Run the actual sheet against the real bridge and decoder queue, including CSV media overrides.
 static void
 test_sheet_policy_edits() {
@@ -398,6 +450,7 @@ main(int argc, char** argv) {
     dsd_test_qt_isolate_paths();
     test_history_receives_effective_scan_options();
     test_startup_options_wait_for_redraw();
+    test_metrics_age_without_decoder_redraw();
     test_sheet_policy_edits();
     test_zero_bounds();
     test_auto_start_requests();

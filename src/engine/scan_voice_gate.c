@@ -151,6 +151,7 @@ dsd_scan_voice_gate_note_retune(dsd_state* state, double now_m) {
     /* The successful park opens the visit for the per-visit cap too (issue #507). Nothing else
      * writes this anchor except dsd_engine_scan_visit_tick(): activity must never restart it. */
     state->scan_visit_since_m = now_m;
+    state->scan_visit_roll_seen = state->lcn_freq_roll;
     state->scan_voice_gate_arrive_m = now_m;
     state->scan_voice_gate_sync_m = -1.0;
     state->scan_voice_gate_voice_m = -1.0;
@@ -445,7 +446,7 @@ scan_y_timing_span_ms(double seconds) {
 }
 
 /* The legacy rule waits out -t since the last sync and knows nothing else, so it reports
- * no dwell and no hold. Without an anchor or with -t 0 there is nothing to count down.
+ * no dwell and no hold. Without an anchor there is nothing to count down.
  *
  * The anchor is the wall-clock last_cc_sync_time the step rule itself compares
  * (engine.c no_carrier_scanner_step_is_due), not its monotonic twin: NXDN stamps the
@@ -459,12 +460,15 @@ scan_y_timing_fill_hangtime(const dsd_opts* opts, const dsd_state* state, double
     out->reason = (uint8_t)DSD_SCAN_STAY_HANGTIME;
     out->dwell_ms = 0U;
     out->hold_ms = 0U;
-    if (state->last_cc_sync_time == 0 || opts->trunk_hangtime <= 0.0f) {
+    if (state->last_cc_sync_time == 0 || !(opts->trunk_hangtime >= 0.0f)) {
         return;
     }
     out->started_m = now_m + ((double)state->last_cc_sync_time - now_wall_s);
-    out->deadline_m = out->started_m + (double)opts->trunk_hangtime;
-    out->span_ms = scan_y_timing_span_ms((double)opts->trunk_hangtime);
+    /* noCarrier compares whole seconds with strict >. The next integer after
+     * -t is the first wall-clock tick that permits a hop, including for -t 0. */
+    const double span_s = floor((double)opts->trunk_hangtime) + 1.0;
+    out->deadline_m = out->started_m + span_s;
+    out->span_ms = scan_y_timing_span_ms(span_s);
 }
 
 void
@@ -479,7 +483,9 @@ dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now
     }
     dsd_scan_timing_publication report;
     scan_y_timing_seed(opts, &report);
-    if (state->lcn_scan_hold) {
+    if (dsd_engine_channel_scan_waiting(state)) {
+        report.reason = (uint8_t)DSD_SCAN_STAY_RETUNE_PENDING;
+    } else if (state->lcn_scan_hold) {
         /* The rotation is parked by the operator: the window is paused, not expired.
          * dsd_scan_voice_gate_should_step() returns 0 here and the no-carrier step
          * returns early, so publishing a deadline would count down to a hop that the

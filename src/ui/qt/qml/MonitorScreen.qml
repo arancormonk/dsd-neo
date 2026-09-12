@@ -188,8 +188,7 @@ Item {
                 font.pixelSize: Theme.fontSize(11)
                 font.letterSpacing: 0.8
                 color: Theme.textSubdued
-                // A phone is 411 dp wide and the budgets cap at 600 s: the row has to
-                // give way rather than push the header controls off screen.
+                // On a narrow phone screen, elide long budgets to leave room for controls.
                 elide: Text.ElideRight
             }
 

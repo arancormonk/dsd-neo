@@ -311,7 +311,8 @@ MetricsModel::~MetricsModel() = default;
 bool
 MetricsModel::View::operator==(const View& other) const {
     return site == other.site && qualityEquals(other) && tunerEquals(other) && slot_call[0] == other.slot_call[0]
-           && slot_call[1] == other.slot_call[1] && controlEquals(other) && ui_message == other.ui_message;
+           && slot_call[1] == other.slot_call[1] && controlEquals(other) && scanTimingEquals(other)
+           && ui_message == other.ui_message;
 }
 
 void
@@ -325,6 +326,7 @@ MetricsModel::publish(const View& next) {
     const bool slot1Moved = !(next.slot_call[0] == m_view.slot_call[0]);
     const bool slot2Moved = !(next.slot_call[1] == m_view.slot_call[1]);
     const bool controlMoved = !next.controlEquals(m_view);
+    const bool scanTimingMoved = !next.scanTimingEquals(m_view);
     const bool messageMoved = next.ui_message != m_view.ui_message;
     m_view = next;
     if (siteMoved) {
@@ -347,6 +349,9 @@ MetricsModel::publish(const View& next) {
     }
     if (controlMoved) {
         Q_EMIT controlChanged();
+    }
+    if (scanTimingMoved) {
+        Q_EMIT scanTimingChanged();
     }
     if (messageMoved) {
         Q_EMIT uiMessageChanged();
@@ -419,11 +424,11 @@ MetricsModel::fillScanTimingView(View& next, const dsd_opts* opts_snapshot, cons
     next.scan_timer_live = view.timer_live != 0U;
     /* Tenths, truncated: see scanTimerRemainingDs(). */
     next.scan_timer_remaining_ds = static_cast<int>(view.remaining_ms / 100U);
-    next.scan_timer_span_ms = static_cast<int>(view.span_ms);
+    next.scan_timer_span_ms = view.span_ms;
     next.scan_dwell_ms = view.show_dwell != 0U ? static_cast<int>(view.dwell_ms) : 0;
     next.scan_dwell_state = view.dwell_state;
     next.scan_hold_ms = view.show_hold != 0U ? static_cast<int>(view.hold_ms) : 0;
-    next.scan_hang_ms = view.show_hang != 0U ? static_cast<int>(view.hang_ms) : 0;
+    next.scan_hang_ms = view.show_hang != 0U ? view.hang_ms : 0U;
     /* The cap on the whole visit (#507), withheld the same way when none applies. */
     next.scan_visit_ms = view.show_visit != 0U ? static_cast<int>(view.visit_ms) : 0;
     next.scan_visit_live = view.visit_live != 0U;

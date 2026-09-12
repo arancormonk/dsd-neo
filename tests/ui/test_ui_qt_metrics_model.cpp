@@ -17,6 +17,7 @@
 #include <QObject>
 #include <QString>
 #include <QVariant>
+#include <QtGlobal>
 #include <cmath>
 #include <initializer_list>
 #include <stdint.h>
@@ -448,9 +449,8 @@ test_options_readiness() {
  * Why the rotation is staying on the row on air, and how long is left (#508).
  *
  * The countdown is published in tenths of a second rather than milliseconds on
- * purpose: the reading decides whether controlChanged fires, so at millisecond
- * resolution every 250 ms poll would move it and re-evaluate every binding on the
- * control group for a row that renders one decimal place.
+ * purpose: only changes to the rendered tenth notify the timing row, and they
+ * never notify the unrelated control group.
  */
 static void
 test_scan_timing() {
@@ -460,7 +460,9 @@ test_scan_timing() {
     initState(&state);
     dsd_qt::MetricsModel model;
     int changes = 0;
-    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() { ++changes; });
+    int control_changes = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::scanTimingChanged, [&]() { ++changes; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() { ++control_changes; });
 
     /* A trunked target following a call: no countdown, the dwell disarmed while the
      * call holds the row, and the -t hangtime that will release it. */
@@ -486,7 +488,7 @@ test_scan_timing() {
            model.scanDwellMs() == 3000 && model.scanDwellState() == DSD_APP_SCAN_DWELL_SUSPENDED);
     expect("a trunked row never shows a conventional hold", model.scanHoldMs() == 0);
     expect("a followed call shows the hangtime that will release it", model.scanHangMs() == 2000);
-    expect("scan timing rides the control group", changes > 0);
+    expect("scan timing has its own notification", changes > 0);
     const int settled = changes;
     model.refresh(&opts, &state);
     expect("an unchanged scan timing does not notify twice", changes == settled);
@@ -499,7 +501,7 @@ test_scan_timing() {
     g_stub_scan_timing.reason = DSD_SCAN_STAY_IDLE_DWELL;
     g_stub_scan_timing.phrase = "Idle dwell";
     g_stub_scan_timing.timer_live = 1U;
-    g_stub_scan_timing.remaining_ms = 1849U;
+    g_stub_scan_timing.remaining_ms = 1855U;
     g_stub_scan_timing.span_ms = 3000U;
     g_stub_scan_timing.show_hold = 1U;
     g_stub_scan_timing.hold_ms = 2000U;
@@ -510,6 +512,7 @@ test_scan_timing() {
     expect("the dwell the countdown already shows is not printed twice", model.scanDwellMs() == 0);
 
     const int quiet = changes;
+    const int controls_settled = control_changes;
     g_stub_scan_timing.remaining_ms = 1801U;
     model.refresh(&opts, &state);
     expect("a countdown moving inside one tenth notifies nothing",
@@ -517,6 +520,18 @@ test_scan_timing() {
     g_stub_scan_timing.remaining_ms = 1799U;
     model.refresh(&opts, &state);
     expect("the countdown moves on the tenth", model.scanTimerRemainingDs() == 17 && changes > quiet);
+    expect("countdowns do not notify unrelated controls", control_changes == controls_settled);
+
+    // The -Y publisher saturates large accepted -t values at UINT32_MAX milliseconds.
+    // This must remain positive at the Qt property boundary, including through QVariant.
+    g_stub_scan_timing.span_ms = UINT32_MAX;
+    g_stub_scan_timing.show_hang = 1U;
+    g_stub_scan_timing.hang_ms = UINT32_MAX;
+    model.refresh(&opts, &state);
+    expect("a large timer total does not become negative",
+           model.property("scanTimerSpanMs").toULongLong() == static_cast<qulonglong>(UINT32_MAX));
+    expect("a large effective hangtime does not become negative",
+           model.property("scanHangMs").toULongLong() == static_cast<qulonglong>(UINT32_MAX));
 
     /* The per-visit cap (#507) rides the same row. It is not driven by the stay reason,
      * so it reads out beside whatever else holds the receiver, and its countdown is in
@@ -540,7 +555,7 @@ test_scan_timing() {
     model.refresh(&opts, &state);
     expect("a suspended cap keeps its width and drops the countdown",
            model.scanVisitMs() == 20000 && !model.scanVisitLive() && model.scanVisitRemainingDs() == 0);
-    expect("suspending the cap notifies the control group", changes > capped);
+    expect("suspending the cap notifies the scan timing group", changes > capped);
 
     /* Withheld by the view: no cap is in force, so no number the row could print arrives. */
     g_stub_scan_timing.show_visit = 0U;

@@ -184,11 +184,18 @@ main(int argc, char** argv) {
     rc |= expect_eq("abandon issued no tune", g_tune_requests, tunes_before_abandon);
     rc |= expect_eq("abandon issued no cc return", g_return_requests, returns_before_abandon);
     rc |= expect_eq("abandon release_count", state.p25_sm_release_count, 2);
-    rc |= expect_eq("abandon cc_return_count", state.p25_sm_cc_return_count, 2);
+    rc |= expect_eq("abandon cc_return_count", state.p25_sm_cc_return_count, 1);
+    rc |= expect_eq("abandon context release count", p25_sm_get_ctx()->release_count, 2);
+    rc |= expect_eq("abandon context CC return count", p25_sm_get_ctx()->cc_return_count, 1);
     rc |= expect_eq("abandon vc freq", state.p25_vc_freq[0], 0);
     rc |= expect_eq("abandon trunk vc freq", state.trunk_vc_freq[0], 0);
     rc |= expect_eq("abandon trunk_is_tuned", opts.trunk_is_tuned, 0);
     rc |= expect_eq("abandon sm state", p25_sm_get_state(p25_sm_get_ctx()), P25_SM_ON_CC);
+    p25_sm_abandon_carrier(p25_sm_get_ctx(), &opts, &state, "idle-visit-limit");
+    rc |= expect_eq("idle eviction keeps release count", state.p25_sm_release_count, 2);
+    rc |= expect_eq("idle eviction keeps CC return count", state.p25_sm_cc_return_count, 1);
+    rc |= expect_eq("idle eviction keeps context release count", p25_sm_get_ctx()->release_count, 2);
+    rc |= expect_eq("idle eviction keeps context CC return count", p25_sm_get_ctx()->cc_return_count, 1);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;

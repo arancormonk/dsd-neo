@@ -1050,7 +1050,8 @@ ui_format_scan_timing_row(const dsd_opts* opts, const dsd_state* state, double n
     size_t used = 0U;
     ui_scan_timing_appendf(buf, buf_sz, &used, "| Scan Timing: %s", view.phrase);
     if (view.timer_live) {
-        ui_scan_timing_appendf(buf, buf_sz, &used, " %.1fs/%.1fs", (double)view.remaining_ms / 1000.0,
+        const uint32_t remaining_ds = view.remaining_ms / 100U;
+        ui_scan_timing_appendf(buf, buf_sz, &used, " %.1fs/%.1fs", (double)remaining_ds / 10.0,
                                (double)view.span_ms / 1000.0);
     }
     if (view.show_dwell) {
@@ -1088,8 +1089,9 @@ ui_render_scan_timing_row(const dsd_opts* opts, const dsd_state* state) {
         return;
     }
     int cols = ui_get_panel_cols();
-    if (len > cols) {
-        len = cols;
+    if (len >= cols) {
+        /* Writing the final column wraps before the explicit newline. */
+        len = cols - 1;
     }
     printw("%.*s\n", len, line);
 }
@@ -1107,7 +1109,7 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
             printw(" Frequency: %.06lf MHz",
                    (double)*dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) / 1000000);
         }
-        printw(" Speed: %.02lf sec",
+        printw(" Hangtime: %.02lf sec",
                opts->trunk_hangtime); // default aligned to OP25 (2.0s) unless overridden
         ui_render_scan_voice_gate(opts, state);
         // Why the scan stopped moving, ahead of the name so the fixed fields keep their columns.

@@ -82,6 +82,12 @@ test_tg_policy_tune_allowed(const dsd_opts* opts, int call_type_enabled, int enc
     return 1;
 }
 
+double
+p25_sm_effective_hangtime(const dsd_state* state, double hangtime) {
+    (void)state;
+    return hangtime;
+}
+
 void
 p25_sm_init_ctx(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     if (!ctx) {
@@ -4246,6 +4252,7 @@ static int g_counting_tune_to_cc_calls = 0;
 static int g_counting_tune_to_cc_failures_remaining = 0;
 static int g_counting_tune_to_cc_ted_sps = 0;
 static long int g_counting_tune_to_cc_freq = 0;
+static long int g_counting_tune_to_cc_parked_freq = 0;
 static dsd_trunk_tune_result g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
 static uint64_t g_counting_tune_to_cc_last_request_id = 0U;
@@ -4263,6 +4270,9 @@ counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
     }
     if (state) {
         state->trunk_cc_freq = freq;
+    }
+    if (g_counting_tune_to_cc_result == DSD_TRUNK_TUNE_RESULT_OK) {
+        g_counting_tune_to_cc_parked_freq = freq;
     }
     return g_counting_tune_to_cc_result;
 }
@@ -8104,6 +8114,7 @@ test_scan_timing_manual_hold_pauses_and_release_rearms(void) {
     test_rc |= expect_control_rc("hold on",
                                  dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
 
+    test_rc |= expect_scan_timing(&state, "hold command before tick", DSD_SCAN_STAY_MANUAL_HOLD, -1.0, 250U, 0U);
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     test_rc |= expect_active_target(&state, "manual hold", 0U);
@@ -8119,6 +8130,21 @@ test_scan_timing_manual_hold_pauses_and_release_rearms(void) {
     test_rc |= expect_active_target(&state, "hold release", 0U);
     test_rc |= expect_scan_timing(&state, "hold release", DSD_SCAN_STAY_IDLE_DWELL, 3.35, 250U, 0U);
     test_rc |= expect_scan_timing_window(&state, "hold release", 3.10, 250U);
+
+    // Controls may both be drained before another coordinator tick, for example
+    // while input is stalled. Release still owes this target a fresh dwell.
+    trunk_scan_test_set_now(3.20);
+    test_rc |= expect_control_rc("hold between ticks",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    trunk_scan_test_set_now(4.0);
+    test_rc |= expect_control_rc("release between ticks",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    test_rc |= expect_scan_timing(&state, "release command before tick", DSD_SCAN_STAY_IDLE_DWELL, -1.0, 250U, 0U);
+    trunk_scan_test_set_now(4.10);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "release between ticks", 0U);
+    test_rc |=
+        expect_scan_timing(&state, "fresh dwell after batched controls", DSD_SCAN_STAY_IDLE_DWELL, 4.35, 250U, 0U);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
@@ -8151,6 +8177,18 @@ test_scan_timing_rotation_publishes_incoming_row(void) {
     test_rc |= expect_scan_timing(&state, "rotation", DSD_SCAN_STAY_IDLE_DWELL, 0.66, 400U, 600U);
     test_rc |= expect_scan_timing_window(&state, "rotation", 0.26, 400U);
     test_rc |= expect_scan_timing_conventional(&state, "rotation", 1U);
+
+    // Manual advances and avoids publish before the command queue snapshots the
+    // new target, without waiting for more samples to drive the next tick.
+    trunk_scan_test_set_now(0.30);
+    test_rc |= expect_control_rc("manual advance",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "manual advance", 0U);
+    test_rc |= expect_scan_timing(&state, "manual advance before tick", DSD_SCAN_STAY_IDLE_DWELL, 0.55, 250U, 250U);
+    test_rc |= expect_control_rc("manual avoid",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |= expect_active_target(&state, "manual avoid", 1U);
+    test_rc |= expect_scan_timing(&state, "manual avoid before tick", DSD_SCAN_STAY_IDLE_DWELL, 0.70, 400U, 600U);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
@@ -8799,6 +8837,63 @@ test_visit_limit_single_target_does_not_spin(void) {
     return test_rc;
 }
 
+/* A paused cap must re-arm on ticks before its old deadline too. */
+static int
+run_visit_limit_ineligible_alternate_rearms(int cooldown) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL,
+                        "a,p25-trunk,851000000,,250,,\n"
+                        "b,p25-trunk,852000000,,250,,\n",
+                        1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    if (cooldown) {
+        g_counting_tune_to_cc_failures_remaining = 1;
+        test_rc |= expect_control_rc("failed alternate and successful rollback",
+                                     dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 1);
+    } else {
+        test_rc |= expect_control_rc("advance to avoid b",
+                                     dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+        test_rc |=
+            expect_control_rc("avoid b and return to a",
+                              dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    }
+    opts.trunk_is_tuned = 1;
+    const double offset = cooldown ? 1.0 : 0.0;
+    trunk_scan_test_set_now(offset + 0.50);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(offset + 0.98);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_visit(&state, "alternate unavailable before deadline", 1000U, -1.0);
+    if (!cooldown) {
+        trunk_scan_test_set_now(0.99);
+        test_rc |=
+            expect_control_rc("clear avoids just before original deadline",
+                              dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 1);
+    }
+    trunk_scan_test_set_now(offset + 1.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "fresh cap after alternate becomes eligible", 0U);
+    test_rc |= expect_scan_visit(&state, "fresh cap after alternate becomes eligible", 1000U, offset + 1.98);
+    trunk_scan_test_set_now(offset + 1.981);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "fresh cap eventually expires", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_visit_limit_ineligible_alternate_rearms(void) {
+    return run_visit_limit_ineligible_alternate_rearms(0) | run_visit_limit_ineligible_alternate_rearms(1);
+}
+
 /*
  * The load-bearing case for requirement 8: the cap fires while a P25 call is being followed.
  * The carrier is released before the outgoing snapshot is saved, so the receiver leaves with
@@ -9239,8 +9334,7 @@ test_visit_limit_forced_advance_rollback_rearms(void) {
     const int rollback_calls = g_counting_tune_to_cc_calls;
     static const double quiet_marks[] = {1.5, 1.99, 2.02};
     for (size_t i = 0; i < sizeof quiet_marks / sizeof quiet_marks[0]; i++) {
-        /* The failed eviction handed the carrier back; the row is still busy. */
-        opts.trunk_is_tuned = 1;
+        /* No synthetic tuned latch: recovery must remain paced with the call released. */
         trunk_scan_test_set_now(quiet_marks[i]);
         dsd_engine_trunk_scan_tick(&opts, &state);
         test_rc |= expect_active_target(&state, "after the rollback", 0U);
@@ -9267,9 +9361,8 @@ test_visit_limit_forced_advance_rollback_rearms(void) {
     test_rc |= expect_no_active_call_row(&state, "revisit after the rollback");
     test_rc |= expect_vc_mirrors_clear(&state, "revisit after the rollback");
 
-    /* 2.02 crossed the re-armed cap but the alternate was still cooling down, so it only re-armed
-     * again. The cap still owns the revisit: one boundary later, with somewhere to go, it evicts
-     * with exactly one retune attempt. */
+    /* The successful revisit owns a fresh cap: one boundary later, with somewhere to go,
+     * it evicts with exactly one retune attempt. */
     const int revisit_calls = g_counting_tune_to_cc_calls;
     opts.trunk_is_tuned = 1;
     trunk_scan_test_set_now(4.32);
@@ -9285,6 +9378,128 @@ test_visit_limit_forced_advance_rollback_rearms(void) {
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
+}
+
+static int
+run_visit_failed_fallback_recovers(const char* rows) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, rows, 1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    int test_rc = seed_active_call_row(&state, 1001U, 2002U, 0.1);
+    opts.trunk_is_tuned = 1;
+    state.trunk_vc_freq[0] = state.p25_vc_freq[0] = 851112500;
+    g_counting_tune_to_cc_parked_freq = 851112500;
+    g_counting_tune_to_cc_failures_remaining = 2;
+    trunk_scan_test_set_now(1.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    const int failed_calls = g_counting_tune_to_cc_calls;
+    test_rc |= expect_no_active_call_row(&state, "failed fallback released call");
+    test_rc |= expect_scan_visit(&state, "failed fallback has no parked visit", 1000U, -1.0);
+    trunk_scan_test_set_now(3.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (g_counting_tune_to_cc_calls != failed_calls || g_counting_tune_to_cc_parked_freq != 851112500) {
+        DSD_FPRINTF(stderr, "failed fallback retried before cooldown\n");
+        test_rc = 1;
+    }
+    /* A second tuner failure must also wait a full cooldown, without borrowing dwell. */
+    g_counting_tune_to_cc_failures_remaining = 1;
+    trunk_scan_test_set_now(3.02);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_timing(&state, "fallback recovery failed", DSD_SCAN_STAY_RETUNE_RETRY, 5.02, 600000U, 0U);
+    trunk_scan_test_set_now(5.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (g_counting_tune_to_cc_calls != failed_calls + 1) {
+        DSD_FPRINTF(stderr, "failed fallback recovery retried without cooldown\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(5.03);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "fallback recovers current target", 0U);
+    test_rc |= expect_scan_visit(&state, "recovered park starts a fresh visit", 1000U, 6.03);
+    test_rc |= expect_no_active_call_row(&state, "recovered park stays idle");
+    if (g_counting_tune_to_cc_calls != failed_calls + 2 || g_counting_tune_to_cc_parked_freq != 851000000) {
+        DSD_FPRINTF(stderr, "failed fallback did not recover its control channel on cooldown\n");
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_visit_failed_fallback_recovers(void) {
+    int rc = run_visit_failed_fallback_recovers("a,p25-trunk,851000000,,600000,,\n"
+                                                "b,p25-trunk,852000000,,600000,,\n");
+    rc |= run_visit_failed_fallback_recovers("a,dmr-trunk,851000000,,600000,,\n"
+                                             "b,p25-trunk,852000000,,600000,,\n");
+    return rc;
+}
+
+static int
+run_visit_pending_fallback_anchors_on_completion(int completion_fails) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    const char* rows = completion_fails ? "a,dmr-trunk,851000000,,600000,,\n"
+                                          "b,p25-trunk,852000000,,600000,,\n"
+                                        : "a,p25-trunk,851000000,,600000,,\n"
+                                          "b,p25-trunk,852000000,,600000,,\n";
+    if (scan_visit_init(NULL, rows, 1000, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    opts.trunk_is_tuned = 1;
+    g_counting_tune_to_cc_failures_remaining = 1;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    trunk_scan_test_set_now(1.01);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    const uint64_t pending_request = g_counting_tune_to_cc_last_request_id;
+    const int pending_calls = g_counting_tune_to_cc_calls;
+    test_rc |= expect_active_target(&state, "pending fallback", 0U);
+    trunk_scan_test_set_now(10.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_scan_visit(&state, "pending fallback past cap", 1000U, -1.0);
+    if (g_counting_tune_to_cc_calls != pending_calls) {
+        DSD_FPRINTF(stderr, "pending fallback unexpectedly retuned\n");
+        test_rc = 1;
+    }
+    const dsd_trunk_tune_result completion = completion_fails ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_trunk_tuning_request_complete(pending_request, completion);
+    g_counting_tune_to_cc_result = completion;
+    trunk_scan_test_set_now(10.5);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    const double parked_m = completion_fails ? 12.51 : 10.5;
+    if (completion_fails) {
+        test_rc |= expect_scan_visit(&state, "failed pending fallback", 1000U, -1.0);
+        g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+        trunk_scan_test_set_now(parked_m);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        test_rc |= expect_active_target(&state, "failed pending fallback recovers in place", 0U);
+    }
+    test_rc |= expect_scan_visit(&state, "fallback completed", 1000U, parked_m + 1.0);
+    trunk_scan_test_set_now(parked_m + 0.999);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "fresh fallback cap holds", 0U);
+    trunk_scan_test_set_now(parked_m + 1.001);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "fresh fallback cap expires", 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_visit_pending_fallback_anchors_on_completion(void) {
+    int rc = run_visit_pending_fallback_anchors_on_completion(0);
+    rc |= run_visit_pending_fallback_anchors_on_completion(1);
+    return rc;
 }
 
 int
@@ -9411,6 +9626,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_visit_limit_tg_hold_followed_call_suspends);
     rc |= run_with_default_tune_hook(test_visit_limit_disabled_leaves_rotation_unchanged);
     rc |= run_with_default_tune_hook(test_visit_limit_single_target_does_not_spin);
+    rc |= run_with_default_tune_hook(test_visit_limit_ineligible_alternate_rearms);
     rc |= run_with_default_tune_hook(test_visit_limit_expiry_during_p25_call_leaves_clean_revisit);
     rc |= run_with_default_tune_hook(test_visit_limit_expiry_advances_and_publishes);
     rc |= run_with_default_tune_hook(test_visit_limit_revisit_starts_fresh);
@@ -9418,6 +9634,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_visit_limit_pending_retune_does_not_fire);
     rc |= run_with_default_tune_hook(test_visit_limit_failed_retune_cools_down_not_capped);
     rc |= run_with_default_tune_hook(test_visit_limit_forced_advance_rollback_rearms);
+    rc |= run_with_default_tune_hook(test_visit_failed_fallback_recovers);
+    rc |= run_with_default_tune_hook(test_visit_pending_fallback_anchors_on_completion);
     return rc;
 }
 

@@ -139,7 +139,7 @@ test_cc_acquire_row(void) {
     free(state);
 }
 
-/* Following a trunked call: -t is what ends the stay, so it is the one budget worth
+/* Following a trunked call: protocol hangtime ends the stay, so it is the budget worth
    naming beside the suspended dwell. */
 static void
 test_call_follow_row_shows_hangtime(void) {
@@ -150,6 +150,7 @@ test_call_follow_row_shows_hangtime(void) {
     make_opts(&opts);
     opts.trunk_hangtime = 2.0f;
     publish(state, DSD_SCAN_STAY_CALL_FOLLOW, 0U, -1.0, 0U, 3000U, 0U);
+    state->scan_timing.hang_ms = 7000U;
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert_phrase(&view, "Following call");
     assert(view.timer_live == 0U);
@@ -157,15 +158,21 @@ test_call_follow_row_shows_hangtime(void) {
     assert(view.dwell_state == DSD_APP_SCAN_DWELL_SUSPENDED);
     assert(view.show_hold == 0U);
     assert(view.show_hang == 1U);
-    assert(view.hang_ms == 2000U);
+    assert(view.hang_ms == 7000U);
 
-    /* A fractional -t rounds to the nearest millisecond rather than truncating. */
-    opts.trunk_hangtime = 1.25f;
+    /* A protocol override remains visible even when the configured -t is zero. */
+    opts.trunk_hangtime = 0.0f;
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert(view.show_hang == 1U);
+    assert(view.hang_ms == 7000U);
+
+    state->scan_timing.hang_ms = 1250U;
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert(view.hang_ms == 1250U);
 
-    /* -t 0 leaves nothing to state. */
-    opts.trunk_hangtime = 0.0f;
+    /* An effective zero leaves nothing to state even with a positive -t. */
+    opts.trunk_hangtime = 2.0f;
+    state->scan_timing.hang_ms = 0U;
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert(view.show_hang == 0U);
     assert(view.hang_ms == 0U);
@@ -302,6 +309,12 @@ test_idle_dwell_row_and_qualify_variant(void) {
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert_phrase(&view, "Idle dwell");
 
+    // Hold release is visible immediately, before the next tick arms a dwell.
+    state->scan_timing.deadline_m = -1.0;
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert(view.timer_live == 0U);
+    assert(view.show_dwell == 1U && view.dwell_ms == 3000U);
+
     free(state);
 }
 
@@ -316,12 +329,12 @@ test_hangtime_row(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.scanner_mode = 1;
     opts.trunk_hangtime = 2.0f;
-    publish(state, DSD_SCAN_STAY_HANGTIME, 1U, 101.4, 2000U, 0U, 0U);
+    publish(state, DSD_SCAN_STAY_HANGTIME, 1U, 101.4, 3000U, 0U, 0U);
     assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
     assert_phrase(&view, "Hangtime");
     assert(view.timer_live == 1U);
     assert(view.remaining_ms == 1400U);
-    assert(view.span_ms == 2000U);
+    assert(view.span_ms == 3000U);
     assert(view.show_dwell == 0U);
     assert(view.show_hold == 0U);
     assert(view.show_hang == 0U);
@@ -332,6 +345,15 @@ test_hangtime_row(void) {
     assert(view.timer_live == 0U);
     assert(view.remaining_ms == 0U);
     assert(view.span_ms == 0U);
+
+    // Valid multi-day hangtimes keep their full remaining and total values.
+    publish(state, DSD_SCAN_STAY_HANGTIME, 1U, 172901.0, 172801000U, 0U, 0U);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert(view.remaining_ms == 172801000U && view.span_ms == 172801000U);
+    // Beyond the millisecond contract's range, both sides saturate at the same bound.
+    publish(state, DSD_SCAN_STAY_HANGTIME, 1U, 1.0e9, UINT32_MAX, 0U, 0U);
+    assert(dsd_app_scan_timing_view(&opts, state, 100.0, &view) == 1);
+    assert(view.remaining_ms == UINT32_MAX && view.span_ms == UINT32_MAX);
 
     free(state);
 }
