@@ -2500,6 +2500,39 @@ trunk_scan_release_active_carrier(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
     dsd_engine_release_tuned_call_state(opts, state);
 }
 
+/*
+ * Close out a retune the tuner accepted. A request still in flight is remembered so the tick can
+ * resolve it later; one the backend already completed anchors the visit at the stamp it completed
+ * on. A P25 target additionally hands its state machine the same request, so the control-channel
+ * acquisition the SM waits on is the one the coordinator asked for.
+ */
+static void
+trunk_scan_arm_tune_completion(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target_runtime* rt,
+                               dsd_trunk_tune_result tune_result, uint64_t tune_request_id) {
+    const int p25 = rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK;
+    if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING && tune_request_id != 0U) {
+        if (p25) {
+            (void)p25_sm_await_pending_cc_tune(&rt->p25_ctx, opts, state, tune_request_id, "scan-retune");
+        }
+        /* The P25 SM can observe completion before the scan coordinator's
+         * next tick. Track the same request here so dwell still restarts. */
+        rt->tune_request_id = tune_request_id;
+        rt->tune_pending = 1;
+        return;
+    }
+    rt->tune_request_id = 0U;
+    rt->tune_pending = 0;
+    double completed_m = 0.0;
+    (void)dsd_trunk_tuning_request_status(tune_request_id, &completed_m);
+    if (p25) {
+        if (completed_m <= 0.0) {
+            completed_m = trunk_scan_now_m();
+        }
+        (void)p25_sm_restart_pending_cc_acquisition(&rt->p25_ctx, opts, state, completed_m, "scan-retune");
+    }
+    trunk_scan_arm_visit(rt, completed_m);
+}
+
 static int
 trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t next, int save_current) {
     if (!coord || next >= coord->count) {
@@ -2561,34 +2594,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
                                     tune_request_id);
     }
 
-    if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
-        if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING && tune_request_id != 0U) {
-            (void)p25_sm_await_pending_cc_tune(&rt->p25_ctx, opts, state, tune_request_id, "scan-retune");
-            /* The P25 SM can observe completion before the scan coordinator's
-             * next tick. Track the same request here so dwell still restarts. */
-            rt->tune_request_id = tune_request_id;
-            rt->tune_pending = 1;
-        } else {
-            rt->tune_request_id = 0U;
-            rt->tune_pending = 0;
-            double completed_m = 0.0;
-            (void)dsd_trunk_tuning_request_status(tune_request_id, &completed_m);
-            if (completed_m <= 0.0) {
-                completed_m = trunk_scan_now_m();
-            }
-            (void)p25_sm_restart_pending_cc_acquisition(&rt->p25_ctx, opts, state, completed_m, "scan-retune");
-            trunk_scan_arm_visit(rt, completed_m);
-        }
-    } else if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING && tune_request_id != 0U) {
-        rt->tune_request_id = tune_request_id;
-        rt->tune_pending = 1;
-    } else {
-        rt->tune_request_id = 0U;
-        rt->tune_pending = 0;
-        double completed_m = 0.0;
-        (void)dsd_trunk_tuning_request_status(tune_request_id, &completed_m);
-        trunk_scan_arm_visit(rt, completed_m);
-    }
+    trunk_scan_arm_tune_completion(opts, state, rt, tune_result, tune_request_id);
     rt->retry_until_m = 0.0;
     LOG_INFO("NOTICE: Trunk scan target '%s' at %ld Hz\n", rt->target.id, trunk_scan_retune_freq(state, &rt->target));
     return 0;

@@ -996,7 +996,8 @@ test_visit_cap_ignores_sync_refresh(void) {
     for (int step = 0; step <= 29; step++) {
         const double now_m = 100.0 + (double)step;
         /* Sync keeps refreshing on both clocks, exactly as a live row does. */
-        fix.state->last_cc_sync_time = (time_t)(1000 + step);
+        const time_t sync_time = (time_t)1000 + (time_t)step;
+        fix.state->last_cc_sync_time = sync_time;
         fix.state->last_cc_sync_time_m = now_m;
         dsd_engine_scan_visit_tick(fix.opts, fix.state, now_m);
         CHECK("sync refresh leaves the anchor", fabs(fix.state->scan_visit_since_m - 100.0) < 1e-9);
@@ -1022,7 +1023,10 @@ test_visit_cap_ignores_continuous_voice(void) {
     }
     fix.opts->scan_max_visit_ms = 30000;
     dsd_scan_voice_gate_note_retune(fix.state, 100.0);
-    for (double media_m = 100.2; media_m <= 135.0; media_m += 1.0) {
+    /* An integer induction variable: the media stamps are derived from it, one second apart,
+     * from 100.2 through 134.2. */
+    for (int step = 0; step <= 34; step++) {
+        const double media_m = 100.2 + (double)step;
         const double now_m = media_m + 0.2;
         open_voice_epoch(&fix, media_m, 0.15, DSD_CALL_KIND_GROUP_VOICE, 11, 22, DSD_CALL_CRYPTO_CLEAR);
         dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, now_m);
