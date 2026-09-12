@@ -17,12 +17,14 @@
 #include <QObject>
 #include <QString>
 #include <QVariant>
+#include <QtGlobal>
 #include <cmath>
 #include <initializer_list>
 #include <stdint.h>
 #include <stdio.h>
 
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
@@ -45,6 +47,10 @@ int g_failures = 0;
 /* What the stubbed frontend reports for the channel width. Per-case, because
  * every other case wants the at-rest 0. */
 static int g_stub_channel_bandwidth_hz = 0;
+
+/* The scan-timing view a case feeds the model. Zeroed between cases: reason NONE
+ * is the contract's "nothing to show", which is what every other case wants. */
+static dsd_app_scan_timing g_stub_scan_timing;
 
 void
 expect(const char* what, bool ok) {
@@ -72,6 +78,36 @@ dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state*
     *out = dsd_frontend_metrics{};
     out->channel_bandwidth_hz = g_stub_channel_bandwidth_hz;
     return 0;
+}
+
+/*
+ * The scan-timing view, stubbed through the same link seam as the frontend metrics
+ * above, so a case can hand the model a view it built by hand.
+ *
+ * Deliberately not the real one: the reason -> phrase / show-this-budget table is
+ * app-control's and is pinned by APP_CONTROL_SCAN_TIMING_VIEW. What this suite owns
+ * is the copy out of the view into the published frame, and running the real table
+ * here would only pin it twice. The one rule reproduced is the contract's `active`
+ * gate, because the model deliberately has no gate of its own -- "is anything
+ * scanning" is decided once, in the view.
+ */
+extern "C" int
+dsd_app_scan_timing_view(const dsd_opts* opts, const dsd_state* state, double now_m, dsd_app_scan_timing* out) {
+    if (out == nullptr) {
+        return -1;
+    }
+    *out = dsd_app_scan_timing{};
+    if (opts == nullptr || state == nullptr) {
+        return -1;
+    }
+    (void)now_m;
+    const bool scanning = opts->trunk_scan_enabled == 1 || opts->scanner_mode == 1;
+    if (!scanning || g_stub_scan_timing.reason == DSD_SCAN_STAY_NONE) {
+        return 0;
+    }
+    *out = g_stub_scan_timing;
+    out->active = 1U;
+    return 1;
 }
 
 extern "C" dsd_frontend_snr_readout
@@ -409,10 +445,121 @@ test_options_readiness() {
     freeState(&state);
 }
 
+/*
+ * Why the rotation is staying on the row on air, and how long is left (#508).
+ *
+ * The countdown is published in tenths of a second rather than milliseconds on
+ * purpose: only changes to the rendered tenth notify the timing row, and they
+ * never notify the unrelated control group.
+ */
+static void
+test_scan_timing() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    int changes = 0;
+    int control_changes = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::scanTimingChanged, [&]() { ++changes; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() { ++control_changes; });
+
+    /* A trunked target following a call: no countdown, the dwell disarmed while the
+     * call holds the row, and the -t hangtime that will release it. */
+    opts.trunk_scan_enabled = 1;
+    g_stub_scan_timing = dsd_app_scan_timing{};
+    g_stub_scan_timing.reason = DSD_SCAN_STAY_CALL_FOLLOW;
+    g_stub_scan_timing.phrase = "Following call";
+    g_stub_scan_timing.show_dwell = 1U;
+    g_stub_scan_timing.dwell_ms = 3000U;
+    g_stub_scan_timing.dwell_state = DSD_APP_SCAN_DWELL_SUSPENDED;
+    /* Carried by the publication but withheld by the view: a trunked row has no
+     * conventional activity hold, and printing one would invent a budget. */
+    g_stub_scan_timing.hold_ms = 2000U;
+    g_stub_scan_timing.show_hang = 1U;
+    g_stub_scan_timing.hang_ms = 2000U;
+    model.refresh(&opts, &state);
+    expect("a followed call names why the scanner stays",
+           model.scanTimingVisible() && model.scanStayReason() == DSD_SCAN_STAY_CALL_FOLLOW
+               && model.scanStayPhrase() == QStringLiteral("Following call"));
+    expect("a followed call runs no countdown",
+           !model.scanTimerLive() && model.scanTimerRemainingDs() == 0 && model.scanTimerSpanMs() == 0);
+    expect("the suspended dwell still reads out",
+           model.scanDwellMs() == 3000 && model.scanDwellState() == DSD_APP_SCAN_DWELL_SUSPENDED);
+    expect("a trunked row never shows a conventional hold", model.scanHoldMs() == 0);
+    expect("a followed call shows the hangtime that will release it", model.scanHangMs() == 2000);
+    expect("scan timing has its own notification", changes > 0);
+    const int settled = changes;
+    model.refresh(&opts, &state);
+    expect("an unchanged scan timing does not notify twice", changes == settled);
+
+    /* A conventional row counting its idle dwell down, with the activity hold that
+     * would extend the stay if something showed up. */
+    opts.trunk_scan_enabled = 0;
+    opts.scanner_mode = 1;
+    g_stub_scan_timing = dsd_app_scan_timing{};
+    g_stub_scan_timing.reason = DSD_SCAN_STAY_IDLE_DWELL;
+    g_stub_scan_timing.phrase = "Idle dwell";
+    g_stub_scan_timing.timer_live = 1U;
+    g_stub_scan_timing.remaining_ms = 1855U;
+    g_stub_scan_timing.span_ms = 3000U;
+    g_stub_scan_timing.show_hold = 1U;
+    g_stub_scan_timing.hold_ms = 2000U;
+    model.refresh(&opts, &state);
+    expect("an idle dwell counts down", model.scanTimerLive() && model.scanTimerSpanMs() == 3000);
+    expect("the countdown reaches the row in tenths", model.scanTimerRemainingDs() == 18);
+    expect("a conventional row shows its activity hold", model.scanHoldMs() == 2000);
+    expect("the dwell the countdown already shows is not printed twice", model.scanDwellMs() == 0);
+
+    const int quiet = changes;
+    const int controls_settled = control_changes;
+    g_stub_scan_timing.remaining_ms = 1801U;
+    model.refresh(&opts, &state);
+    expect("a countdown moving inside one tenth notifies nothing",
+           changes == quiet && model.scanTimerRemainingDs() == 18);
+    g_stub_scan_timing.remaining_ms = 1799U;
+    model.refresh(&opts, &state);
+    expect("the countdown moves on the tenth", model.scanTimerRemainingDs() == 17 && changes > quiet);
+    expect("countdowns do not notify unrelated controls", control_changes == controls_settled);
+
+    // The -Y publisher saturates large accepted -t values at UINT32_MAX milliseconds.
+    // This must remain positive at the Qt property boundary, including through QVariant.
+    g_stub_scan_timing.span_ms = UINT32_MAX;
+    g_stub_scan_timing.show_hang = 1U;
+    g_stub_scan_timing.hang_ms = UINT32_MAX;
+    model.refresh(&opts, &state);
+    expect("a large timer total does not become negative",
+           model.property("scanTimerSpanMs").toULongLong() == static_cast<qulonglong>(UINT32_MAX));
+    expect("a large effective hangtime does not become negative",
+           model.property("scanHangMs").toULongLong() == static_cast<qulonglong>(UINT32_MAX));
+
+    model.clear();
+    expect("a stopped session leaves no scan timing behind",
+           !model.scanTimingVisible() && model.scanStayReason() == DSD_SCAN_STAY_NONE
+               && model.scanStayPhrase().isEmpty() && !model.scanTimerLive() && model.scanTimerRemainingDs() == 0
+               && model.scanTimerSpanMs() == 0 && model.scanDwellMs() == 0
+               && model.scanDwellState() == DSD_APP_SCAN_DWELL_NONE && model.scanHoldMs() == 0
+               && model.scanHangMs() == 0);
+
+    /* Plain trunking and a plain single system are not rotations: there is no row to
+     * stay on, so the view says nothing and the panel shows nothing. */
+    opts.scanner_mode = 0;
+    g_stub_scan_timing.reason = DSD_SCAN_STAY_IDLE_DWELL;
+    opts.trunk_enable = 1;
+    model.refresh(&opts, &state);
+    expect("nothing is rotating: the row stays down",
+           !model.scanTimingVisible() && model.scanStayPhrase().isEmpty() && model.scanDwellMs() == 0);
+    opts.trunk_enable = 0;
+
+    g_stub_scan_timing = dsd_app_scan_timing{};
+    freeState(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     test_options_readiness();
+    test_scan_timing();
     test_decryption_metadata();
     test_site();
     test_quality();

@@ -472,6 +472,9 @@ p25_sm_ctx_t* p25_sm_get_ctx(void);
  */
 double p25_sm_hangtime_started_m(const p25_sm_ctx_t* ctx);
 
+/** Resolve the configured hangtime with the current Phase 1 error-hold extension. */
+double p25_sm_effective_hangtime(const dsd_state* state, double hangtime);
+
 /**
  * @brief Trigger explicit release and return to CC.
  *

@@ -29,6 +29,15 @@ dsd_time_now_monotonic_s(void) {
     return (double)dsd_time_monotonic_ns() / 1e9;
 }
 
+/**
+ * @brief Return wall-clock time in seconds, on the same epoch as time(NULL) but with
+ * sub-second precision, for converting a time_t anchor into a monotonic deadline.
+ */
+static inline double
+dsd_time_now_realtime_s(void) {
+    return (double)dsd_time_realtime_ns() / 1e9;
+}
+
 /** @brief Stamp current time as control-channel sync (monotonic + wall clock). */
 void dsd_mark_cc_sync(dsd_state* state);
 

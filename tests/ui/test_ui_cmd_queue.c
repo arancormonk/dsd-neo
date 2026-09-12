@@ -1913,9 +1913,11 @@ static int g_scan_control_result = 0;
 static int
 fake_scan_control(dsd_opts* opts, dsd_state* state, int op) {
     (void)opts;
-    (void)state;
     g_scan_control_calls++;
     g_scan_control_last_op = op;
+    if (op == DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE && g_scan_control_result >= 0) {
+        DSD_SNPRINTF(state->trunk_scan_active_id, sizeof(state->trunk_scan_active_id), "incoming");
+    }
     return g_scan_control_result;
 }
 
@@ -1948,6 +1950,7 @@ test_scan_hold_avoid_commands(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("scan hold drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("scan hold sets flag", state.lcn_scan_hold, 1);
+    rc |= expect_int("scan hold publishes timing before snapshot", state.scan_timing.reason, DSD_SCAN_STAY_MANUAL_HOLD);
     rc |= expect_true("scan hold keeps dwell", state.last_cc_sync_time_m == 42.0);
     rc |= expect_contains("scan hold toast", state.ui_msg, "hold on");
     rc |= expect_int("scan hold release queued", dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE),
@@ -1956,6 +1959,24 @@ test_scan_hold_avoid_commands(void) {
     rc |= expect_int("scan hold release clears flag", state.lcn_scan_hold, 0);
     rc |= expect_true("scan hold release restarts dwell", state.last_cc_sync_time_m > 42.0);
     rc |= expect_contains("scan hold release toast", state.ui_msg, "hold off");
+    rc |= expect_int("scan release publishes hangtime", state.scan_timing.reason, DSD_SCAN_STAY_HANGTIME);
+    rc |= expect_true("scan release publishes a fresh deadline",
+                      state.scan_timing.deadline_m > state.last_cc_sync_time_m);
+
+    // A hold and release drained without a gate tick must also reset the voice
+    // qualify window, rather than retaining an expired sync from the old visit.
+    opts.scan_voice_only = 1;
+    state.scan_voice_gate_sync_m = 42.0;
+    state.scan_voice_gate_hold_seen = 0U;
+    rc |= expect_int("voice-gate hold queued", dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("voice-gate release queued", dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("voice-gate toggles drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_true("voice-gate release resets old sync", state.scan_voice_gate_sync_m < 0.0);
+    rc |= expect_true("voice-gate release restarts the visit", state.scan_voice_gate_arrive_m > 42.0);
+    rc |= expect_int("unsynced release uses the fresh hangtime", state.scan_timing.reason, DSD_SCAN_STAY_HANGTIME);
+    opts.scan_voice_only = 0;
 
     /* Manual next while held still moves, and the hold stays on. */
     state.lcn_scan_hold = 1;
@@ -2036,11 +2057,13 @@ test_scan_hold_avoid_commands(void) {
     rc |= expect_int("trunk-scan hold leaves -Y flag", state.lcn_scan_hold, 0);
     rc |= expect_contains("trunk-scan hold toast", state.ui_msg, "hold on");
     g_scan_control_result = 0;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "avoided");
     rc |= expect_int("trunk-scan avoid queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("trunk-scan avoid drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("trunk-scan avoid op", g_scan_control_last_op, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE);
     rc |= expect_int("trunk-scan avoid leaves -Y count", (int)state.lcn_avoid_count, 0);
+    rc |= expect_contains("trunk-scan avoid names the outgoing target", state.ui_msg, "Avoiding target avoided");
     g_scan_control_result = 2;
     rc |= expect_int("trunk-scan clear queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID_CLEAR),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);

@@ -62,6 +62,11 @@
 #define DSD_TRUNK_SCAN_MAX_FREQUENCY_HZ UINT32_MAX
 #endif
 
+/* How long a failed retune cools down before the coordinator tries the same target again.
+ * Published as the RETUNE_RETRY window, so the policy and the countdown a frontend draws
+ * can never disagree about the length of the wait. */
+#define TRUNK_SCAN_RETUNE_RETRY_COOLDOWN_S 2.0
+
 typedef struct {
     unsigned long long p2_wacn;
     unsigned long long p2_sysid;
@@ -394,6 +399,11 @@ trunk_scan_type_is_conventional(dsd_trunk_scan_target_type type) {
         case DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL: return 1;
     }
     return 0;
+}
+
+static int
+trunk_scan_target_is_trunked(dsd_trunk_scan_target_type type) {
+    return !trunk_scan_type_is_conventional(type);
 }
 
 static int
@@ -1859,6 +1869,7 @@ trunk_scan_clear_published_target(dsd_state* state) {
     state->trunk_scan_hold = 0U;
     state->trunk_scan_active_avoided = 0U;
     state->trunk_scan_avoided_count = 0U;
+    dsd_scan_timing_clear(state);
 }
 
 static size_t
@@ -2475,7 +2486,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     uint64_t tune_request_id = 0U;
     dsd_trunk_tune_result tune_result = trunk_scan_retune_active(opts, state, rt, &tune_request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-        rt->retry_until_m = now_m + 2.0;
+        rt->retry_until_m = now_m + TRUNK_SCAN_RETUNE_RETRY_COOLDOWN_S;
         LOG_WARN("WARNING: Trunk scan target '%s' retune failed; cooling down briefly\n", rt->target.id);
         return -1;
     }
@@ -2605,7 +2616,7 @@ trunk_scan_retry_active_if_due(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
         return;
     }
     if (trunk_scan_switch_to(opts, state, coord, coord->active, 0) == TRUNK_SCAN_PREPARE_FAILED) {
-        rt->retry_until_m = now_m + 2.0;
+        rt->retry_until_m = now_m + TRUNK_SCAN_RETUNE_RETRY_COOLDOWN_S;
     }
 }
 
@@ -2631,25 +2642,79 @@ trunk_scan_target_dwell_ms(const dsd_opts* opts, const dsd_trunk_scan_target_run
     return rt->target.dwell_ms;
 }
 
-static int
-trunk_scan_active_is_held(const dsd_opts* opts, const dsd_trunk_scan_coord* coord, double now_m) {
-    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
-    if (rt->tune_pending) {
-        return 1;
-    }
+/* A trunked row stays for whatever its protocol state machine is doing. The SM owns those
+ * deadlines, not the coordinator, so none of these reasons carries a window. */
+static dsd_scan_stay_reason
+trunk_scan_trunked_stay_reason(const dsd_opts* opts, const dsd_trunk_scan_target_runtime* rt) {
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
-        return (rt->p25_ctx.cc_tune_pending || opts->trunk_is_tuned == 1
-                || p25_sm_get_state(&rt->p25_ctx) == P25_SM_TUNED);
+        if (rt->p25_ctx.cc_tune_pending) {
+            return DSD_SCAN_STAY_CC_ACQUIRE;
+        }
+        return (opts->trunk_is_tuned == 1 || p25_sm_get_state(&rt->p25_ctx) == P25_SM_TUNED) ? DSD_SCAN_STAY_CALL_FOLLOW
+                                                                                             : DSD_SCAN_STAY_NONE;
     }
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
-        return (rt->dmr_ctx.cc_tune_request_id != 0U || opts->trunk_is_tuned == 1
-                || dmr_sm_get_state(&rt->dmr_ctx) == DMR_SM_TUNED);
+        if (rt->dmr_ctx.cc_tune_request_id != 0U) {
+            return DSD_SCAN_STAY_CC_ACQUIRE;
+        }
+        return (opts->trunk_is_tuned == 1 || dmr_sm_get_state(&rt->dmr_ctx) == DMR_SM_TUNED) ? DSD_SCAN_STAY_CALL_FOLLOW
+                                                                                             : DSD_SCAN_STAY_NONE;
     }
-    if (trunk_scan_type_is_nxdn_trunk(rt->target.type)) {
-        return opts->trunk_is_tuned == 1;
+    /* NXDN trunking keeps no coordinator-visible state machine: tuned is all it can say. */
+    return opts->trunk_is_tuned == 1 ? DSD_SCAN_STAY_CALL_FOLLOW : DSD_SCAN_STAY_NONE;
+}
+
+/* The one window the coordinator owns outright: a conventional row holds for its effective
+ * activity hold, measured from the last activity the policy allowed. */
+static dsd_scan_stay_reason
+trunk_scan_conventional_stay_reason(const dsd_opts* opts, const dsd_state* state,
+                                    const dsd_trunk_scan_target_runtime* rt, double now_m, double* started_m,
+                                    double* deadline_m, uint32_t* span_ms) {
+    const int hold_ms = trunk_scan_target_hold_ms(opts, rt);
+    const double hold_s = (double)hold_ms / 1000.0;
+    if (!(rt->last_allowed_activity_m > 0.0 && (now_m - rt->last_allowed_activity_m) < hold_s)) {
+        return DSD_SCAN_STAY_NONE;
     }
-    double hold_s = (double)trunk_scan_target_hold_ms(opts, rt) / 1000.0;
-    return rt->last_allowed_activity_m > 0.0 && (now_m - rt->last_allowed_activity_m) < hold_s;
+    if (started_m) {
+        *started_m = rt->last_allowed_activity_m;
+    }
+    if (deadline_m) {
+        *deadline_m = rt->last_allowed_activity_m + hold_s;
+    }
+    if (span_ms) {
+        *span_ms = hold_ms > 0 ? (uint32_t)hold_ms : 0U;
+    }
+    return (state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_VOICE) ? DSD_SCAN_STAY_VOICE
+                                                                                : DSD_SCAN_STAY_ACTIVITY_HOLD;
+}
+
+/*
+ * Why the receiver is staying on the active target, in the branch order the old boolean
+ * verdict used: every reason but DSD_SCAN_STAY_NONE is exactly what the tick used to treat
+ * as "held", so no rotation decision moves.
+ *
+ * Evaluated twice per tick -- once for the rotation policy, once for the publication -- and
+ * must therefore stay side-effect free: it only reads opts, state and the target runtime.
+ * started_m/deadline_m/span_ms describe the live window, may each be NULL, and are left
+ * untouched by the reasons that have no coordinator-owned deadline.
+ */
+static dsd_scan_stay_reason
+trunk_scan_active_stay_reason(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                              double now_m, double* started_m, double* deadline_m, uint32_t* span_ms) {
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (rt->tune_pending) {
+        return DSD_SCAN_STAY_RETUNE_PENDING;
+    }
+    if (trunk_scan_target_is_trunked(rt->target.type)) {
+        return trunk_scan_trunked_stay_reason(opts, rt);
+    }
+    return trunk_scan_conventional_stay_reason(opts, state, rt, now_m, started_m, deadline_m, span_ms);
+}
+
+static int
+trunk_scan_active_is_held(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                          double now_m) {
+    return trunk_scan_active_stay_reason(opts, state, coord, now_m, NULL, NULL, NULL) != DSD_SCAN_STAY_NONE;
 }
 
 static void
@@ -2764,15 +2829,10 @@ trunk_scan_resolve_pending_retune(dsd_state* state, dsd_trunk_scan_target_runtim
 
     rt->tune_request_id = 0U;
     rt->tune_pending = 0;
-    rt->retry_until_m = now_m + 2.0;
+    rt->retry_until_m = now_m + TRUNK_SCAN_RETUNE_RETRY_COOLDOWN_S;
     LOG_WARN("WARNING: Trunk scan target '%s' asynchronous retune failed; cooling down briefly\n", rt->target.id);
     (void)state;
     return -1;
-}
-
-static int
-trunk_scan_target_is_trunked(dsd_trunk_scan_target_type type) {
-    return !trunk_scan_type_is_conventional(type);
 }
 
 /* Voice-only scan (issue #381): conventional targets hold only from decoded voice
@@ -2806,9 +2866,97 @@ trunk_scan_refresh_voice_media_hold(const dsd_opts* opts, dsd_state* state, dsd_
     }
 }
 
+/* Pick the reason the row on air is staying, and the window it runs for when the coordinator
+ * owns one. Split out of trunk_scan_publish_timing() so both stay small; the report arrives
+ * with no timer armed and its effective dwell/hold already resolved. */
 static void
-trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
-    double now_m = trunk_scan_now_m();
+trunk_scan_timing_select_reason(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                                double now_m, dsd_scan_timing_publication* report) {
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (rt->tune_pending) {
+        /* The backend owns an unresolved request; there is no deadline to name. */
+        report->reason = (uint8_t)DSD_SCAN_STAY_RETUNE_PENDING;
+        return;
+    }
+    if (rt->retry_until_m > now_m) {
+        report->reason = (uint8_t)DSD_SCAN_STAY_RETUNE_RETRY;
+        report->started_m = rt->retry_until_m - TRUNK_SCAN_RETUNE_RETRY_COOLDOWN_S;
+        report->deadline_m = rt->retry_until_m;
+        report->span_ms = (uint32_t)(TRUNK_SCAN_RETUNE_RETRY_COOLDOWN_S * 1000.0);
+        return;
+    }
+    double started_m = -1.0;
+    double deadline_m = -1.0;
+    uint32_t span_ms = 0U;
+    const dsd_scan_stay_reason stay =
+        trunk_scan_active_stay_reason(opts, state, coord, now_m, &started_m, &deadline_m, &span_ms);
+    if (stay != DSD_SCAN_STAY_NONE) {
+        report->reason = (uint8_t)stay;
+        report->started_m = started_m;
+        report->deadline_m = deadline_m;
+        report->span_ms = span_ms;
+        return;
+    }
+    if (coord->hold_active) {
+        /* The operator hold disarms the dwell rather than expiring it: nothing counts down. */
+        report->reason = (uint8_t)DSD_SCAN_STAY_MANUAL_HOLD;
+        return;
+    }
+    report->reason = (uint8_t)DSD_SCAN_STAY_IDLE_DWELL;
+    if (rt->idle_since_m >= 0.0) {
+        report->started_m = rt->idle_since_m;
+        report->deadline_m = rt->idle_since_m + (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
+        report->span_ms = report->dwell_ms;
+    }
+}
+
+/*
+ * One scan-timing report for the target on air (issue #508). Absolute monotonic anchors only:
+ * the frontends difference them against their own clock, so a stalled UI cannot invent a
+ * countdown the decoder is not running. Additive -- it decides nothing.
+ */
+static void
+trunk_scan_publish_timing(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_coord* coord, double now_m) {
+    if (!opts || !state) {
+        return;
+    }
+    if (!coord || coord->active >= coord->count) {
+        dsd_scan_timing_clear(state);
+        return;
+    }
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    const int conventional = !trunk_scan_target_is_trunked(rt->target.type);
+    const int dwell_ms = trunk_scan_target_dwell_ms(opts, rt);
+    /* A trunked row has no activity hold to speak of, and publishing one would only invite
+     * the frontends to draw a timer the coordinator never runs. */
+    const int hold_ms = conventional ? trunk_scan_target_hold_ms(opts, rt) : 0;
+    dsd_scan_timing_publication report;
+    DSD_MEMSET(&report, 0, sizeof report);
+    report.started_m = -1.0;
+    report.deadline_m = -1.0;
+    report.conventional = conventional ? 1U : 0U;
+    report.dwell_ms = dwell_ms > 0 ? (uint32_t)dwell_ms : 0U;
+    report.hold_ms = hold_ms > 0 ? (uint32_t)hold_ms : 0U;
+    trunk_scan_timing_select_reason(opts, state, coord, now_m, &report);
+    if (report.reason == (uint8_t)DSD_SCAN_STAY_CALL_FOLLOW) {
+        double hang_s = opts->trunk_hangtime;
+        if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
+            hang_s = p25_sm_effective_hangtime(state, rt->p25_ctx.config.hangtime_s);
+        } else if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
+            hang_s = rt->dmr_ctx.hangtime_s;
+        }
+        /* Bound the conversion, including invalid/nonfinite configured values. */
+        if (hang_s >= (double)UINT32_MAX / 1000.0) {
+            report.hang_ms = UINT32_MAX;
+        } else if (hang_s > 0.0) {
+            report.hang_ms = (uint32_t)((hang_s * 1000.0) + 0.5);
+        }
+    }
+    dsd_scan_timing_publish(state, &report);
+}
+
+static void
+trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     if (rt->tune_pending && rt->dmr_ctx.cc_tune_request_id != 0U) {
         /* Resolve the DMR backend deadline even while the initial park keeps
@@ -2832,7 +2980,7 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
         trunk_scan_share_peer_idens(coord, state, rt);
     }
     trunk_scan_refresh_voice_media_hold(opts, state, rt, now_m);
-    if (trunk_scan_active_is_held(opts, coord, now_m)) {
+    if (trunk_scan_active_is_held(opts, state, coord, now_m)) {
         rt->idle_since_m = -1.0;
         return;
     }
@@ -2851,6 +2999,15 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
     if ((now_m - rt->idle_since_m) >= dwell_s) {
         trunk_scan_advance(opts, state, coord);
     }
+}
+
+/* The body above has a dozen early returns and can rotate; publishing here, once, means the
+ * report always describes whichever target the tick actually left on air. */
+static void
+trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+    const double now_m = trunk_scan_now_m();
+    trunk_scan_tick_targets_locked(opts, state, coord, now_m);
+    trunk_scan_publish_timing(opts, state, coord, now_m);
 }
 
 void
@@ -2883,6 +3040,9 @@ trunk_scan_control_advance_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
 static int
 trunk_scan_control_hold_toggle(dsd_state* state, dsd_trunk_scan_coord* coord) {
     coord->hold_active = coord->hold_active ? 0 : 1;
+    // Disarm at the command boundary: both toggles can arrive before another
+    // tick observes the hold. Release must still grant a fresh idle dwell.
+    coord->targets[coord->active].idle_since_m = -1.0;
     trunk_scan_publish_active_target(state, coord);
     return coord->hold_active;
 }
@@ -2931,13 +3091,20 @@ dsd_engine_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
     if (!opts || !state || !coord || coord->count == 0 || coord->active >= coord->count) {
         return DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE;
     }
+    int rc;
     switch (op) {
-        case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE: return trunk_scan_control_hold_toggle(state, coord);
-        case DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR: return trunk_scan_control_avoid_clear(state, coord);
-        case DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE: return trunk_scan_control_avoid_active(opts, state, coord);
-        case DSD_TRUNK_SCAN_CONTROL_ADVANCE: return trunk_scan_control_advance(opts, state, coord);
+        case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE: rc = trunk_scan_control_hold_toggle(state, coord); break;
+        case DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR: rc = trunk_scan_control_avoid_clear(state, coord); break;
+        case DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE: rc = trunk_scan_control_avoid_active(opts, state, coord); break;
+        case DSD_TRUNK_SCAN_CONTROL_ADVANCE: rc = trunk_scan_control_advance(opts, state, coord); break;
         default: return DSD_TRUNK_SCAN_CONTROL_REFUSED;
     }
+    // The command queue publishes immediately, possibly while input is stalled.
+    // Its target label and timing must already describe the same visit.
+    if (rc >= 0) {
+        trunk_scan_publish_timing(opts, state, coord, trunk_scan_now_m());
+    }
+    return rc;
 }
 
 static int

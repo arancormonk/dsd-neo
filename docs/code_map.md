@@ -48,7 +48,11 @@ Generated (do not edit/commit):
   - Voice-gated scan for -Y and trunk scan (issue #381): `src/engine/scan_voice_gate.c` behind
     `include/dsd-neo/engine/scan_voice_gate.h`; its probe returns separate active and retained last-media clocks so
     a protocol terminator cannot erase the scanner's tail anchor (tests: `ENGINE_SCAN_VOICE_GATE`,
-    `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`)
+    `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`). The same file owns the scan-timing publication
+    (`dsd_scan_timing_clear()` / `dsd_scan_timing_publish()`) and the -Y timing tick
+    `dsd_engine_scan_y_timing_tick()`, which stamps `dsd_state::scan_timing` with the stay reason and the absolute
+    monotonic deadline of the window that is running (issue #508); the deadline it publishes is the same instant
+    `dsd_scan_voice_gate_should_step()` flips, so the readout cannot drift from the rotation it describes
   - Installs runtime hook tables used by DSP/frame-sync code
     (`src/engine/frame_sync_hooks_install.c`, `include/dsd-neo/runtime/frame_sync_hooks.h`)
 - Build files: `src/engine/CMakeLists.txt`
@@ -82,6 +86,12 @@ behavior, the CSV columns, and the CLI/config options live in `docs/trunk-scan.m
 - Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()`,
   `dsd_engine_trunk_scan_nxdn_conventional_activity()`, and `dsd_engine_trunk_scan_p25_conventional_activity()`,
   reached from protocol code through the runtime hooks.
+
+Beside the active-target publication the coordinator also publishes the stay reason and live timing for the parked
+target into `dsd_state::scan_timing` once per tick (issue #508), from the same effective dwell/hold resolvers the
+rotation itself uses. It is a readout, not a decision: the reason function is pure and the old held/not-held verdict
+is a one-line wrapper over it, so no rotation, hold or step moves because of it. `app_control/scan_timing_view`
+turns it into a row (see below).
 
 Every parked target keeps its own snapshot of decoder state — channel map, trunking/LCN state, call and P25 identity
 metadata (the IDEN tables and the user band plan behind them), the encrypted-target lockout ledger, and the NXDN
@@ -316,6 +326,14 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   Such sessions therefore report the defaults — no carrier lock, no CFO, no output/symbol rate, and the
   invalid-SNR sentinel — and a frontend should omit those rows rather than render them as zeros. Applies to
   every frontend, not just the Android app
+- Shared display decisions, so no frontend has to restate one: `include/dsd-neo/app_control/call_view.h` and
+  `src/app_control/call_view.c` fold the canonical call state into a per-slot line, and
+  `include/dsd-neo/app_control/scan_timing_view.h` and `src/app_control/scan_timing_view.c` fold
+  `dsd_state::scan_timing` into the Scan Timing row — the stay phrase, the remaining/total of the window that is
+  running, and which of dwell/hold/hang is worth printing (issue #508). The decoder owns every deadline; these
+  views only difference it against the caller's monotonic clock, which is what keeps the terminal row, the Qt panel
+  and the Android app from drifting on what "suspended" or "hold" means. Tests: `APP_CONTROL_CALL_VIEW`,
+  `APP_CONTROL_SCAN_TIMING_VIEW`, and the terminal goldens in `UI_NCURSES_PRINTER_HELPERS`.
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;
@@ -525,6 +543,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 Qt Quick frontend (`src/ui/qt`):
 
+- After the session's first decoder redraw, `UiController` refreshes live metrics on every timer tick so scan
+  countdowns and the sync-loss hold continue aging if input stalls. History, network and policy models still
+  refresh on decoder redraws; session lifecycle clears live metrics and prevents stale snapshots from restoring them.
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies

@@ -5,10 +5,13 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 
+#include <math.h>
 #include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -211,4 +214,129 @@ dsd_scan_voice_gate_should_step(const dsd_opts* opts, const dsd_state* state, do
     }
     /* Never synced this visit: the caller falls back to the legacy hangtime rule. */
     return 0;
+}
+
+void
+dsd_scan_timing_clear(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    DSD_MEMSET(&state->scan_timing, 0, sizeof(state->scan_timing));
+    state->scan_timing.started_m = -1.0;
+    state->scan_timing.deadline_m = -1.0;
+}
+
+void
+dsd_scan_timing_publish(dsd_state* state, const dsd_scan_timing_publication* report) {
+    if (!state || !report) {
+        return;
+    }
+    state->scan_timing = *report;
+}
+
+/* Seed the -Y report. The effective windows are the row's, not the live timer's: they
+ * stay visible while a hold pauses the countdown, and are 0 when the voice gate is off
+ * because the legacy hangtime rule has neither a qualify nor a hold window. */
+static void
+scan_y_timing_seed(const dsd_opts* opts, dsd_scan_timing_publication* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->started_m = -1.0;
+    out->deadline_m = -1.0;
+    out->conventional = 1U;
+    if (!scan_voice_gate_enabled(opts)) {
+        return;
+    }
+    out->dwell_ms = (uint32_t)scan_voice_resolve_ms(opts->scan_voice_qualify_ms, DSD_SCAN_VOICE_DEFAULT_QUALIFY_MS);
+    out->hold_ms = (uint32_t)scan_voice_resolve_ms(opts->scan_voice_hold_ms, DSD_SCAN_VOICE_DEFAULT_HOLD_MS);
+}
+
+/* Anti-drift: dsd_scan_voice_gate_should_step() flips at anchor + span_ms / 1000.0, so
+ * the published deadline is that same expression rather than a second approximation. */
+static void
+scan_y_timing_arm(dsd_scan_timing_publication* out, double started_m, uint32_t span_ms) {
+    out->started_m = started_m;
+    out->deadline_m = started_m + ((double)span_ms / 1000.0);
+    out->span_ms = span_ms;
+}
+
+/* The gate owns the step: voice (or its tail) counts down the hold window from the last
+ * media frame, and a synced-but-silent visit counts down the qualify window. */
+static void
+scan_y_timing_fill_gate(const dsd_state* state, dsd_scan_timing_publication* out) {
+    if (state->scan_voice_gate_voice_m >= 0.0) {
+        out->reason = state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_VOICE
+                          ? (uint8_t)DSD_SCAN_STAY_VOICE
+                          : (uint8_t)DSD_SCAN_STAY_ACTIVITY_HOLD;
+        scan_y_timing_arm(out, state->scan_voice_gate_voice_m, out->hold_ms);
+        return;
+    }
+    /* dsd_scan_voice_gate_owns_step() is true and no voice anchor exists, so the sync
+     * anchor is the one that is set. */
+    out->reason = (uint8_t)DSD_SCAN_STAY_IDLE_DWELL;
+    scan_y_timing_arm(out, state->scan_voice_gate_sync_m, out->dwell_ms);
+}
+
+/* -t parses any non-negative double, so the second-to-millisecond conversion has to
+ * saturate rather than wrap on its way into the publication's uint32_t. */
+static uint32_t
+scan_y_timing_span_ms(double seconds) {
+    const double span_ms = seconds * 1000.0;
+    if (span_ms >= (double)UINT32_MAX) {
+        return UINT32_MAX;
+    }
+    return (uint32_t)llround(span_ms);
+}
+
+/* The legacy rule waits out -t since the last sync and knows nothing else, so it reports
+ * no dwell and no hold. Without an anchor there is nothing to count down.
+ *
+ * The anchor is the wall-clock last_cc_sync_time the step rule itself compares
+ * (engine.c no_carrier_scanner_step_is_due), not its monotonic twin: NXDN stamps the
+ * wall clock two seconds ahead after a confirmed frame without touching the monotonic
+ * field, and a countdown read from the twin would reach zero two seconds early. The
+ * window is re-expressed on the monotonic clock through the two clocks sampled together,
+ * so it can start in the future and stays put from tick to tick. */
+static void
+scan_y_timing_fill_hangtime(const dsd_opts* opts, const dsd_state* state, double now_m, double now_wall_s,
+                            dsd_scan_timing_publication* out) {
+    out->reason = (uint8_t)DSD_SCAN_STAY_HANGTIME;
+    out->dwell_ms = 0U;
+    out->hold_ms = 0U;
+    if (state->last_cc_sync_time == 0 || !(opts->trunk_hangtime >= 0.0f)) {
+        return;
+    }
+    out->started_m = now_m + ((double)state->last_cc_sync_time - now_wall_s);
+    /* noCarrier compares whole seconds with strict >. The next integer after
+     * -t is the first wall-clock tick that permits a hop, including for -t 0. */
+    const double span_s = floor((double)opts->trunk_hangtime) + 1.0;
+    out->deadline_m = out->started_m + span_s;
+    out->span_ms = scan_y_timing_span_ms(span_s);
+}
+
+void
+dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now_m, double now_wall_s) {
+    if (!opts || !state) {
+        return;
+    }
+    /* Under --trunk-scan the coordinator publishes for its parked target; the two must
+     * never both write the field. With no scanner running there is nothing to report. */
+    if (opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1) {
+        return;
+    }
+    dsd_scan_timing_publication report;
+    scan_y_timing_seed(opts, &report);
+    if (dsd_engine_channel_scan_waiting(state)) {
+        report.reason = (uint8_t)DSD_SCAN_STAY_RETUNE_PENDING;
+    } else if (state->lcn_scan_hold) {
+        /* The rotation is parked by the operator: the window is paused, not expired.
+         * dsd_scan_voice_gate_should_step() returns 0 here and the no-carrier step
+         * returns early, so publishing a deadline would count down to a hop that the
+         * release, not the clock, actually causes. */
+        report.reason = (uint8_t)DSD_SCAN_STAY_MANUAL_HOLD;
+    } else if (dsd_scan_voice_gate_owns_step(opts, state)) {
+        scan_y_timing_fill_gate(state, &report);
+    } else {
+        scan_y_timing_fill_hangtime(opts, state, now_m, now_wall_s, &report);
+    }
+    dsd_scan_timing_publish(state, &report);
 }

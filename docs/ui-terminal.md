@@ -501,12 +501,12 @@ While scanning, the screen says which channel you are listening to.
 The Input Output section names the `-Y` scan list row the receiver is parked on, at the end of its row:
 
 ```
-| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion
+| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Channel: Marion
 ```
 
 The name comes from the optional `name` column of the channel map (see `docs/csv-formats.md`); a row without one
 renders exactly as it always did. The name goes last because it is the one field whose length you choose: the
-frequency and speed keep their columns, and on a narrow terminal it is the name that reaches the edge.
+frequency and hangtime keep their columns, and on a narrow terminal it is the name that reaches the edge.
 
 While `Y` holds the scan, `HOLD` appears ahead of the name with the other facts about the channel on air. While
 `b` has taken rows out of the rotation for the session, `Avoids: N` closes the row: it counts the rows that are
@@ -516,7 +516,7 @@ while synced without voice, VOICE while voice media is active, TAIL while holdin
 trunked `--trunk-scan` target shows no marker, since the gate leaves trunked targets alone.
 
 ```
-| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec HOLD Channel: Marion Avoids: 2
+| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec HOLD Channel: Marion Avoids: 2
 ```
 
 With `--trunk-scan` the same section names the target on air and its place in the rotation:
@@ -528,6 +528,58 @@ With `--trunk-scan` the same section names the target on air and its place in th
 `county-p25` is the target's `id` column (see `docs/trunk-scan.md`), and `(3/6)` is its place in the rotation. The row
 shows no frequency: the protocol panels below it already carry the one being decoded. While a target is on air the
 Scan Mode row above it shows no name, so the screen never names two channels at once.
+
+### Scan Timing
+
+Directly under whichever scanner row is active — Scan Mode under `-Y`, Trunk Scan under `--trunk-scan`, and only the
+Trunk Scan one when both are running — a `Scan Timing` row says why the receiver is staying where it is and how much
+of that is left:
+
+```
+| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s
+| Scan Timing: Following call  dwell 3.0s (suspended)  hang 2.0s
+| Scan Timing: Voice tail 1.5s/2.0s  dwell 3.0s (suspended)
+| Scan Timing: Manual hold  dwell 3.0s (paused)
+| Scan Timing: Hangtime 1.4s/3.0s
+```
+
+The phrase names the reason; the `remaining/total` pair after it, when there is one, is whichever window is actually
+running out.
+
+| Phrase | Staying because | Running timer |
+| --- | --- | --- |
+| `Retune pending` | a backend retune request has not resolved | none |
+| `Retune retry` | the retune failed; cooling down before retrying in place | the retry cooldown |
+| `Acquiring control` | the trunking state machine is hunting a control channel | none |
+| `Following call` | the trunking state machine is following a call | none; `hang` is the budget |
+| `Voice` | conventional voice media is active (`--scan-voice-only`) | the activity hold |
+| `Voice tail` | holding past the last voice frame (`--scan-voice-only`) | the activity hold |
+| `Activity hold` | allowed conventional activity was decoded | the activity hold |
+| `Manual hold` | `Y` holds the scan here | none |
+| `Qualify` | synced under `--scan-voice-only`, no allowed voice yet | the qualify window |
+| `Idle dwell` | nothing holds the row | the idle dwell |
+| `Hangtime` | `-Y` without `--scan-voice-only`: waiting out `-t` since the last sync | next whole second after `-t` |
+
+Which phrases you can see depends on the protocol: an NXDN trunked target has no state machine to report control
+acquisition, so it never reads `Acquiring control`.
+
+The values that follow are the *effective* ones for the row on air, after CSV and option overrides:
+
+- `dwell` is the idle dwell, shown as a separate budget when it is not the running timer, including the interval
+  after hold release before the next decoder tick arms it. `(suspended)` means something on the air has disarmed
+  it — a call, a retune, a control-channel hunt — and `(paused)` means the operator hold has.
+- `hold` is the activity hold, printed only when it is not itself the running timer. It appears on conventional
+  and `-Y` rows only; a trunked target has none.
+- `hang` is the active protocol's effective hangtime, and appears only while a trunked call is being followed.
+  It includes `DSD_NEO_DMR_HANGTIME` / `DSD_NEO_P25_HANGTIME` overrides and the optional P25 Phase 1 error-hold
+  extension. NXDN uses `-t`.
+
+The row is not shown in compact view. The countdown is a published deadline differenced against the terminal's own
+clock, so it keeps running while the input is stalled and stops at `0.0s`; the phrase beside it is only as fresh as the
+last snapshot, which is published while samples flow. A narrow terminal cuts the row at the edge rather than wrapping
+it. On an NXDN row under `-Y`, the decoder keeps the scan two seconds past each confirmed frame, so the `Hangtime`
+countdown can initially exceed its displayed total. That total is `floor(-t) + 1` seconds, matching the scanner's
+strict whole-second comparison; even `-t 0` waits for the next whole second.
 
 Call Info repeats the answer on its own first line, because compact view hides the Input Output section:
 

@@ -146,6 +146,18 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool scanHold READ scanHold NOTIFY controlChanged)
     Q_PROPERTY(int scanAvoidCount READ scanAvoidCount NOTIFY controlChanged)
     Q_PROPERTY(bool scanTargetAvoided READ scanTargetAvoided NOTIFY controlChanged)
+    /* #508: why the rotation is staying on the row on air, and how long is left.
+       One group, one signal: they are read together by one row. */
+    Q_PROPERTY(bool scanTimingVisible READ scanTimingVisible NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanStayReason READ scanStayReason NOTIFY scanTimingChanged)
+    Q_PROPERTY(QString scanStayPhrase READ scanStayPhrase NOTIFY scanTimingChanged)
+    Q_PROPERTY(bool scanTimerLive READ scanTimerLive NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanTimerRemainingDs READ scanTimerRemainingDs NOTIFY scanTimingChanged)
+    Q_PROPERTY(quint32 scanTimerSpanMs READ scanTimerSpanMs NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanDwellMs READ scanDwellMs NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanDwellState READ scanDwellState NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanHoldMs READ scanHoldMs NOTIFY scanTimingChanged)
+    Q_PROPERTY(quint32 scanHangMs READ scanHangMs NOTIFY scanTimingChanged)
     Q_PROPERTY(bool syncedHere READ syncedHere NOTIFY tunerChanged)
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
     Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
@@ -729,6 +741,78 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief Whether there is a scan stay reason to show at all (#508).
+     *
+     * False whenever no rotation is running, and false for a rotation that has
+     * published nothing yet. Decided in app-control, not here, so this panel, the
+     * terminal row and Android cannot disagree about when the row appears.
+     */
+    bool
+    scanTimingVisible() const {
+        return m_view.scan_timing_visible;
+    }
+
+    /** @brief dsd_scan_stay_reason for the row on air; the phrase is its label. */
+    int
+    scanStayReason() const {
+        return m_view.scan_stay_reason;
+    }
+
+    /** @brief "Following call", "Idle dwell", "Manual hold" -- why it is staying. */
+    const QString&
+    scanStayPhrase() const {
+        return m_view.scan_stay_phrase;
+    }
+
+    /** @brief A window is counting down; without it the stay has no deadline to show. */
+    bool
+    scanTimerLive() const {
+        return m_view.scan_timer_live;
+    }
+
+    /**
+     * @brief Time left in the running window, in tenths of a second.
+     *
+     * scanTimingChanged fires only when the rendered tenth changes. Countdown
+     * updates have their own signal so they do not refresh unrelated controls.
+     * Truncated, so it never claims more time than is left.
+     */
+    int
+    scanTimerRemainingDs() const {
+        return m_view.scan_timer_remaining_ds;
+    }
+
+    /** @brief Full width of the running window, so the countdown reads as a fraction. */
+    quint32
+    scanTimerSpanMs() const {
+        return m_view.scan_timer_span_ms;
+    }
+
+    /** @brief Effective idle dwell for this row, 0 when it is not worth showing. */
+    int
+    scanDwellMs() const {
+        return m_view.scan_dwell_ms;
+    }
+
+    /** @brief DSD_APP_SCAN_DWELL_*: hidden, suspended under a hold, or paused by the operator. */
+    int
+    scanDwellState() const {
+        return m_view.scan_dwell_state;
+    }
+
+    /** @brief Effective activity hold; 0 on trunked rows, which have none. */
+    int
+    scanHoldMs() const {
+        return m_view.scan_hold_ms;
+    }
+
+    /** @brief The active protocol's effective hangtime budget for the current stay. */
+    quint32
+    scanHangMs() const {
+        return m_view.scan_hang_ms;
+    }
+
+    /**
      * @brief The engine's transient command acknowledgement, empty when none.
      *
      * Commands only enqueue a request; this is the engine saying what actually
@@ -913,6 +997,7 @@ class MetricsModel : public QObject {
     void slot2Changed();
     void leadSlotChanged();
     void controlChanged();
+    void scanTimingChanged();
     void uiMessageChanged();
 
   private:
@@ -1034,6 +1119,17 @@ class MetricsModel : public QObject {
         int scan_target_count = 0;
         bool scan_hold = false;
         bool scan_target_avoided = false;
+        /* #508: the stay reason and the live window, copied from the app-control view. */
+        QString scan_stay_phrase;
+        int scan_stay_reason = 0;
+        int scan_timer_remaining_ds = 0;
+        quint32 scan_timer_span_ms = 0;
+        int scan_dwell_ms = 0;
+        int scan_dwell_state = 0;
+        int scan_hold_ms = 0;
+        quint32 scan_hang_ms = 0;
+        bool scan_timing_visible = false;
+        bool scan_timer_live = false;
 
         /* Exact comparison is right for the two doubles: they are carried through
          * unmodified from the metrics boundary, so "unchanged" means the identical
@@ -1057,6 +1153,17 @@ class MetricsModel : public QObject {
                    && scan_target_ordinal == other.scan_target_ordinal && scan_target_count == other.scan_target_count
                    && scan_rotation_active == other.scan_rotation_active && scan_hold == other.scan_hold
                    && scan_avoid_count == other.scan_avoid_count && scan_target_avoided == other.scan_target_avoided;
+        }
+
+        /* Countdown updates notify only the scan timing row. */
+        bool
+        scanTimingEquals(const View& other) const {
+            return scan_timing_visible == other.scan_timing_visible && scan_stay_reason == other.scan_stay_reason
+                   && scan_stay_phrase == other.scan_stay_phrase && scan_timer_live == other.scan_timer_live
+                   && scan_timer_remaining_ds == other.scan_timer_remaining_ds
+                   && scan_timer_span_ms == other.scan_timer_span_ms && scan_dwell_ms == other.scan_dwell_ms
+                   && scan_dwell_state == other.scan_dwell_state && scan_hold_ms == other.scan_hold_ms
+                   && scan_hang_ms == other.scan_hang_ms;
         }
 
         bool
@@ -1100,6 +1207,8 @@ class MetricsModel : public QObject {
     void fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m);
     /** @brief Scan hold and avoids (#380), read from whichever rotation is running. */
     static void fillScanControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    /** @brief Why the rotation is staying on this row and how long is left (#508). */
+    void fillScanTimingView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;
 
   public:
 #ifdef DSD_NEO_TEST_HOOKS

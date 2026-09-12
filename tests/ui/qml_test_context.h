@@ -1719,6 +1719,18 @@ class Setup : public QObject {
         metrics[QStringLiteral("scanTargetCount")] = 0;
         metrics[QStringLiteral("scanAvoidCount")] = 0;
         metrics[QStringLiteral("scanTargetAvoided")] = false;
+        // Why the rotation is staying and how long is left (#508). Nothing is
+        // published at rest, so the row is down and every budget reads 0.
+        metrics[QStringLiteral("scanTimingVisible")] = false;
+        metrics[QStringLiteral("scanStayReason")] = 0;
+        metrics[QStringLiteral("scanStayPhrase")] = QString();
+        metrics[QStringLiteral("scanTimerLive")] = false;
+        metrics[QStringLiteral("scanTimerRemainingDs")] = 0;
+        metrics[QStringLiteral("scanTimerSpanMs")] = 0;
+        metrics[QStringLiteral("scanDwellMs")] = 0;
+        metrics[QStringLiteral("scanDwellState")] = 0;
+        metrics[QStringLiteral("scanHoldMs")] = 0;
+        metrics[QStringLiteral("scanHangMs")] = 0;
         // Whether an automatic controller owns the tuner, which one, and where it
         // points. The two named owners word a message; tunerControlled is the gate.
         metrics[QStringLiteral("tunerControlled")] = false;

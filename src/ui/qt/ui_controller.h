@@ -104,6 +104,7 @@ class UiController : public QObject {
     void decryptionResultChanged();
 
   private:
+    bool sessionIsLive() const;
     void tick();
     void pollTalkgroupExport();
     void pollDecryptionResult();

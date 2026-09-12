@@ -61,7 +61,6 @@ static void p25_voice_release_or_preserve_companion(p25_sm_ctx_t* ctx, dsd_opts*
                                                     const char* slot_log);
 static void handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
 static void handle_crypto_pending(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
-static double p25_sm_effective_hangtime(const dsd_state* state, double hangtime);
 static int p25_sm_crypto_classification_in_flight(const p25_sm_ctx_t* ctx, const dsd_state* state, double now_m,
                                                   double grant_timeout);
 
@@ -5506,7 +5505,7 @@ p25_sm_tick_on_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double no
     try_next_cc(ctx, opts, state, now_m);
 }
 
-static double
+double
 p25_sm_effective_hangtime(const dsd_state* state, double hangtime) {
     if (!state || hangtime <= 0.0) {
         return hangtime;

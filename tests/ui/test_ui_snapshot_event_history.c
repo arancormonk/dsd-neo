@@ -20,6 +20,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -127,6 +128,16 @@ assert_render_fields(const dsd_state* snap) {
     assert(snap->trunk_scan_hold == 1U);
     assert(snap->trunk_scan_active_avoided == 1U);
     assert(snap->trunk_scan_avoided_count == 3U);
+    /* The scan timing publication rides the same inline range. The renderer differences
+       its absolute anchors against its own clock, so every field has to survive the copy. */
+    assert(snap->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_IDLE_DWELL);
+    assert(snap->scan_timing.conventional == 1U);
+    assert(fabs(snap->scan_timing.started_m - 120.5) < 1e-6);
+    assert(fabs(snap->scan_timing.deadline_m - 123.5) < 1e-6);
+    assert(snap->scan_timing.span_ms == 3000U);
+    assert(snap->scan_timing.dwell_ms == 3000U);
+    assert(snap->scan_timing.hold_ms == 2000U);
+    assert(snap->scan_timing.hang_ms == 7000U);
 }
 
 static void
@@ -216,6 +227,14 @@ main(void) {
     state->trunk_scan_hold = 1U;
     state->trunk_scan_active_avoided = 1U;
     state->trunk_scan_avoided_count = 3U;
+    state->scan_timing.reason = (uint8_t)DSD_SCAN_STAY_IDLE_DWELL;
+    state->scan_timing.conventional = 1U;
+    state->scan_timing.started_m = 120.5;
+    state->scan_timing.deadline_m = 123.5;
+    state->scan_timing.span_ms = 3000U;
+    state->scan_timing.dwell_ms = 3000U;
+    state->scan_timing.hold_ms = 2000U;
+    state->scan_timing.hang_ms = 7000U;
 
     assert(dsd_trunk_cc_candidates_add(state, 851006250L, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);
     assert(dsd_trunk_cc_candidates_add(state, 852006250L, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);
