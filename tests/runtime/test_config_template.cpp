@@ -195,6 +195,12 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing scan_voice_hold_ms range hint or default\n");
         rc = 1;
     }
+    /* The cap's schema minimum is 0, not its 1000 ms floor: the writer always emits the key,
+     * so a minimum of 1000 would make the generated template contradict its own default. */
+    if (!strstr(content, "# Range: 0 to 3600000\n# scan_max_visit_ms = 0\n")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing scan_max_visit_ms range hint or default\n");
+        rc = 1;
+    }
     if (strstr(content, "version =") != NULL) {
         DSD_FPRINTF(stderr, "FAIL: template must not emit the persisted version marker\n");
         rc = 1;

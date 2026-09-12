@@ -449,6 +449,25 @@ cli_parse_ms_range_option(const char* option_name, const char* in, int min_ms, i
     return 1;
 }
 
+/* Same window check as cli_parse_ms_range_option(), except an explicit 0 is always accepted.
+ * Opt-in limits whose active window starts well above 1 use 0 to mean "off", so 0 must not be
+ * read as an out-of-range request. */
+static int
+cli_parse_ms_range_or_off_option(const char* option_name, const char* in, int min_ms, int max_ms, int* out,
+                                 int* out_exit_rc) {
+    long parsed = 0;
+    if (!cli_parse_long_option(option_name, in, 10, &parsed, out_exit_rc)) {
+        return 0;
+    }
+    if (parsed != 0 && (parsed < min_ms || parsed > max_ms)) {
+        LOG_ERROR("Invalid %s value \"%s\" (expected 0 or %d..%d)\n", option_name, in ? in : "", min_ms, max_ms);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    *out = (int)parsed;
+    return 1;
+}
+
 static int
 cli_set_iqreplay_audio_dev(dsd_opts* opts, const char* path) {
     if (!opts || !path) {
@@ -979,6 +998,25 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
         if (strncmp(argv[i], "--scan-voice-hold-ms=", 21) == 0) {                                                      \
             if (!cli_parse_ms_range_option("--scan-voice-hold-ms", argv[i] + 21, 100, 600000,                          \
                                            &opts->scan_voice_hold_ms, out_exit_rc)) {                                  \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--scan-max-visit-ms") == 0) {                                                             \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--scan-max-visit-ms requires a millisecond value\n");                                       \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            if (!cli_parse_ms_range_or_off_option("--scan-max-visit-ms", DSD_PARSE_ARGS_NEXT_ARG(), 1000, 3600000,     \
+                                                  &opts->scan_max_visit_ms, out_exit_rc)) {                            \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--scan-max-visit-ms=", 20) == 0) {                                                       \
+            if (!cli_parse_ms_range_or_off_option("--scan-max-visit-ms", argv[i] + 20, 1000, 3600000,                  \
+                                                  &opts->scan_max_visit_ms, out_exit_rc)) {                            \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             continue;                                                                                                  \
@@ -2866,6 +2904,9 @@ dsd_warn_ineffective_short_opts(const dsd_opts* opts, const dsd_state* state) {
     }
     if (opts->scan_voice_only && !opts->scanner_mode && !opts->trunk_scan_enabled) {
         LOG_WARN("WARNING: --scan-voice-only has no effect without -Y or --trunk-scan.\n");
+    }
+    if (opts->scan_max_visit_ms > 0 && !opts->scanner_mode && !opts->trunk_scan_enabled) {
+        LOG_WARN("WARNING: --scan-max-visit-ms has no effect without -Y or --trunk-scan.\n");
     }
 }
 

@@ -427,6 +427,9 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("      --scan-voice-qualify-ms <ms>  Window after sync in which voice must appear or the scan moves on "
            "(100..600000, default 1000).\n");
     printf("      --scan-voice-hold-ms <ms>  Time to stay after the last voice frame (100..600000, default 2000).\n");
+    printf("      --scan-max-visit-ms <ms>  Maximum time on one scan target per visit (0 disables, else "
+           "1000..3600000; default 0).\n");
+    printf("                 Applies to -Y and --trunk-scan; can cut an ongoing call short.\n");
     printf("                 Global qualify/hold timings apply to -Y; trunk-scan conventional rows use\n");
     printf("                 dwell_ms/activity_hold_ms, or their own row options.\n");
     printf("  -W            Use Imported Group List as a Trunking Allow/White List -- Only Tune with Mode A\n");

@@ -370,12 +370,26 @@ validate_composed_lrrp_ports(const dsdneoUserConfig* cfg, const char* section, c
     }
 }
 
+/* INT keys only get a schema window check, and this key's window has to start at 0 so the
+   always-emitted default validates. A 1..999 cap therefore passes the schema walk while the
+   engine treats it as disabled, so say so here. A warning, not an error: the value loads. */
+static void
+validate_composed_scan_max_visit_ms(const dsdneoUserConfig* cfg, const char* section, const char* key,
+                                    dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || cfg->trunk_scan_max_visit_ms <= 0 || cfg->trunk_scan_max_visit_ms >= 1000) {
+        return;
+    }
+    dsdcfg_diags_add(diags, DSDCFG_DIAG_WARNING, 0, section ? section : "trunking", key ? key : "scan_max_visit_ms",
+                     "scan_max_visit_ms below 1000 ms is ignored; use 0 to disable or 1000..3600000");
+}
+
 static void
 validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t* diags) {
     validate_composed_trunk_scan_requirements(cfg, "trunk_scan", "targets_csv", diags);
     validate_composed_trunk_scan_channel_map_conflict(cfg, "trunking", "chan_csv", diags);
     validate_composed_trunk_scan_p25_bandplan_conflict(cfg, "trunking", "p25_bandplan_csv", diags);
     validate_composed_lrrp_ports(cfg, "mode", "dmr_lrrp_ports", diags);
+    validate_composed_scan_max_visit_ms(cfg, "trunking", "scan_max_visit_ms", diags);
 }
 
 static void
@@ -387,6 +401,7 @@ validate_composed_profile_config(const char* profile_name, const dsdneoUserConfi
     validate_composed_trunk_scan_channel_map_conflict(cfg, section, "trunking.chan_csv", diags);
     validate_composed_trunk_scan_p25_bandplan_conflict(cfg, section, "trunking.p25_bandplan_csv", diags);
     validate_composed_lrrp_ports(cfg, section, "mode.dmr_lrrp_ports", diags);
+    validate_composed_scan_max_visit_ms(cfg, section, "trunking.scan_max_visit_ms", diags);
 }
 
 static void

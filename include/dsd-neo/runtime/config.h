@@ -623,6 +623,7 @@ typedef struct dsdneoUserConfig {
     int trunk_scan_voice_only;
     int trunk_scan_voice_qualify_ms;
     int trunk_scan_voice_hold_ms;
+    int trunk_scan_max_visit_ms;
 
     /* [radioreference] */
     int has_radioreference;

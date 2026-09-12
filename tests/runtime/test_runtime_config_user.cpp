@@ -16,6 +16,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <errno.h>
 #include <math.h>
 #include <memory>
@@ -2334,6 +2335,7 @@ test_persistence_gap_schema_rows(void) {
         {"trunking", "scan_voice_only"},
         {"trunking", "scan_voice_qualify_ms"},
         {"trunking", "scan_voice_hold_ms"},
+        {"trunking", "scan_max_visit_ms"},
     };
 
     for (size_t i = 0; i < sizeof expected / sizeof expected[0]; i++) {
@@ -2468,6 +2470,128 @@ test_scan_voice_gate_roundtrip(void) {
         return 1;
     }
     rc |= expect_contains_quiet("trunking scan voice off", rendered, "scan_voice_only = false\n");
+    return rc;
+}
+
+/*
+ * The global per-visit cap (issue #507) rides the same rails as the voice gate: INI -> cfg ->
+ * opts -> snapshot -> render. Disabled renders as an explicit 0 so a saved config pins "off"
+ * instead of inheriting whatever the previous session left in opts.
+ */
+static int
+test_scan_max_visit_roundtrip(void) {
+    static const char* ini = "[trunking]\n"
+                             "scan_max_visit_ms = 20000\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "scan max visit config failed to load\n");
+        return 1;
+    }
+
+    int rc = 0;
+    if (cfg.trunk_scan_max_visit_ms != 20000) {
+        DSD_FPRINTF(stderr, "FAIL: [trunking] scan_max_visit_ms did not load, got %d\n", cfg.trunk_scan_max_visit_ms);
+        rc |= 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.scan_max_visit_ms != 20000) {
+        DSD_FPRINTF(stderr, "FAIL: [trunking] scan_max_visit_ms did not reach dsd_opts, got %d\n",
+                    opts.scan_max_visit_ms);
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.trunk_scan_max_visit_ms != 20000) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot dropped scan_max_visit_ms, got %d\n", snap.trunk_scan_max_visit_ms);
+        rc |= 1;
+    }
+
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("trunking scan max visit", rendered, "scan_max_visit_ms = 20000\n");
+
+    /* Disabled must round-trip as an explicit 0, not as an omitted key. */
+    reset_opts_and_state(opts, state);
+    dsdneoUserConfig off_snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &off_snap);
+    if (render_config_to_buffer(&off_snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("trunking scan max visit off", rendered, "scan_max_visit_ms = 0\n");
+    return rc;
+}
+
+/*
+ * A parked row's own --scan-max-visit-ms is effective state, not a user default. The save path
+ * has to read the configured baseline through dsd_scan_mode_configured_view(), or a
+ * Config->Save taken while a row override is active would pin the row's value for every
+ * future session.
+ */
+static int
+test_scan_max_visit_snapshot_uses_configured_not_row_override(void) {
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    opts.scan_max_visit_ms = 20000; /* the configured global */
+
+    if (dsd_scan_mode_begin(&opts, &state) != 0 || dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_INHERIT) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not open a scan scope\n");
+        return 1;
+    }
+
+    int rc = 0;
+    dsd_scan_option_values row;
+    DSD_MEMSET(&row, 0, sizeof row);
+    row.present = DSD_SCAN_OPT_MAX_VISIT;
+    row.max_visit_ms = 5000;
+    if (dsd_scan_mode_options(&opts, &state, &row) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not install the row cap override\n");
+        dsd_scan_mode_leave(&opts, &state);
+        return 1;
+    }
+    if (opts.scan_max_visit_ms != 5000) {
+        DSD_FPRINTF(stderr, "FAIL: row cap override did not reach dsd_opts, got %d\n", opts.scan_max_visit_ms);
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.trunk_scan_max_visit_ms != 20000) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot saved the row cap instead of the configured one, got %d\n",
+                    snap.trunk_scan_max_visit_ms);
+        rc |= 1;
+    }
+
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        dsd_scan_mode_leave(&opts, &state);
+        return 1;
+    }
+    rc |= expect_contains_quiet("trunking configured scan max visit", rendered, "scan_max_visit_ms = 20000\n");
+    rc |= expect_absent_quiet("trunking row scan max visit", rendered, "scan_max_visit_ms = 5000\n");
+
+    dsd_scan_mode_leave(&opts, &state);
+    if (opts.scan_max_visit_ms != 20000) {
+        DSD_FPRINTF(stderr, "FAIL: leaving the scope did not restore the configured cap, got %d\n",
+                    opts.scan_max_visit_ms);
+        rc |= 1;
+    }
     return rc;
 }
 
@@ -3054,6 +3178,8 @@ main(void) {
     rc |= test_dmr_lrrp_ports_bad_entries_are_skipped();
     rc |= test_scanner_and_candidates_roundtrip();
     rc |= test_scan_voice_gate_roundtrip();
+    rc |= test_scan_max_visit_roundtrip();
+    rc |= test_scan_max_visit_snapshot_uses_configured_not_row_override();
     rc |= test_src_csv_roundtrip();
     rc |= test_p25_bandplan_csv_roundtrip();
     rc |= test_edacs_variant_roundtrip();
