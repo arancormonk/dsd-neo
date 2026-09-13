@@ -595,9 +595,12 @@ avoids. Changing the persistence setting does not change the lifetime of existin
   - Hangtime and dwell decide when a quiet channel is done; `--scan-max-visit-ms` ends a visit that is not done, so
     neither substitutes for the other.
   - Under `-Y` without `--scan-voice-only`, the terminal's `Scan Timing` row counts down to the first whole-second
-    tick when the time since the last sync exceeds `-t`. Its total is therefore `floor(-t) + 1` seconds, including
-    one second for `-t 0`; the rotation policy is unchanged. NXDN holds the scan two extra seconds after each confirmed
-    frame, so on an NXDN row the countdown can initially exceed the displayed total.
+    tick when the time since the last sync exceeds `-t`. The `Scan Mode` row shows the configured `-t` value;
+    the countdown total is `floor(-t) + 1` seconds. For example, `-t 6` shows `Hangtime: 6.00 sec` above a
+    countdown with a `7.0s` total, while `-t 0` shows `0.00 sec` above a `1.0s` total. These describe the setting
+    and the scanner's timing window, respectively. The one-second window for `-t 0` means waiting for the next
+    clock-second boundary, not a guaranteed full second of silence after the last sync. NXDN holds the scan two
+    extra seconds after each confirmed frame, so its countdown can initially exceed the displayed total.
   - P25 Talk Complete, TDU, TDULC, MAC_END_PTT, MAC_IDLE, and MAC_HANGTIME mark a transmission boundary. They close
     that slot's media and start or refresh the traffic-carrier inactivity timer without returning to the control
     channel. A follow-up PTT/ACTIVE on the retained carrier opens a clean call epoch without retuning.

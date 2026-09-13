@@ -519,7 +519,7 @@ frequency and hangtime keep their columns, and on a narrow terminal it is the na
 While `Y` holds the scan, `HOLD` appears ahead of the name with the other facts about the channel on air. While
 `b` has taken rows out of the rotation for the session, `Avoids: N` closes the row: it counts the rows that are
 out of the list, and says nothing about the channel you are hearing, which under `-Y` is never an avoided one.
-With `--scan-voice-only`, `Voice: QUALIFY|VOICE|TAIL` follows the speed (and the trunk-scan `(n/m)`): QUALIFY
+With `--scan-voice-only`, `Voice: QUALIFY|VOICE|TAIL` follows the hangtime (and the trunk-scan `(n/m)`): QUALIFY
 while synced without voice, VOICE while voice media is active, TAIL while holding past the last voice frame. A
 trunked `--trunk-scan` target shows no marker, since the gate leaves trunked targets alone.
 
@@ -554,6 +554,13 @@ of that is left:
 The phrase names the reason; the `remaining/total` pair after it, when there is one, is whichever window is actually
 running out.
 
+Under `-Y` without `--scan-voice-only`, `Hangtime` on the upper Scan Mode row is the configured `-t` value.
+The Scan Timing row shows the running window, which uses the scanner's whole-second comparison: this timer permits
+a step only when the time since the recorded sync second exceeds `-t`. For `-t 6`, the upper row shows `6.00 sec` while the
+countdown total is `7.0s`; for `-t 0`, those values are `0.00 sec` and `1.0s`. The setting has not changed.
+Waiting for the next clock-second boundary with `-t 0` does not guarantee a full second of silence after the
+last sync. NXDN's additional grace period is described below.
+
 | Phrase | Staying because | Running timer |
 | --- | --- | --- |
 | `Retune pending` | a backend retune request has not resolved | none |
@@ -580,11 +587,16 @@ The values that follow are the *effective* ones for the row on air, after CSV an
   and `-Y` rows only; a trunked target has none.
 - `hang` is the active protocol's effective hangtime, and appears only while a trunked call is being followed.
   It includes `DSD_NEO_DMR_HANGTIME` / `DSD_NEO_P25_HANGTIME` overrides and the optional P25 Phase 1 error-hold
-  extension. NXDN uses `-t`.
+  extension. NXDN uses `-t`. A zero hangtime is omitted, and idle trunked targets show their dwell instead.
 - `Visit: <remaining>/<cap>` is the per-visit cap (`--scan-max-visit-ms`, or the row's own value), and appears only
   when a cap applies to the row on air. `Visit: paused` means the cap is not counting down right now — a hold
   suspends it, a visit with nothing yet to count from has nothing to count, and a rotation with nowhere else to go
   (a single target, or every alternate avoided or cooling down) re-arms the cap instead of ever firing it.
+
+With `--trunk-scan`, a suspended dwell starts again from zero once call following or the conventional hold ends
+and no retune is pending. In particular, a conventional `Voice tail` is followed by a fresh `Qualify` window;
+the tail and dwell waits add together. See the [scan timing example](trunk-scan.md#runtime-behavior) for how
+`dwell_ms` and `activity_hold_ms` affect the time before rotation.
 
 The row is not shown in compact view. The countdown is a published deadline differenced against the terminal's own
 clock, so it keeps running while the input is stalled and stops at `0.0s`; the phrase beside it is only as fresh as the

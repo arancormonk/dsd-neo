@@ -308,7 +308,9 @@ During scanning:
   conventional `Voice` / `Voice tail` / `Activity hold` / `Qualify` — with a countdown on whichever window is
   running and the target's effective dwell and hold beside it. The phrase table is in
   [the terminal UI guide](ui-terminal.md); the Qt and Android panels show the same thing.
-- Idle targets rotate after their dwell time.
+- Idle targets rotate after their dwell time. Call following or a conventional activity hold suspends that dwell;
+  once the target becomes idle again, a fresh full dwell starts. Time spent following the call or holding activity
+  does not use up the next idle dwell.
 - With `--scan-max-visit-ms` (or `[trunking] scan_max_visit_ms`) set, a visit also ends when it reaches the cap,
   whatever the target is doing: a trunked call being followed, a conventional hold, a control-channel hunt. The clock
   starts at the instant the target parks and starts again from zero on every re-park, so activity, grants and the
@@ -345,6 +347,9 @@ During scanning:
   tuner autogain; `auto` and global-auto targets restore the saved autogain setting.
 - P25, DMR, and NXDN trunk targets stay parked while their trunking state machine is following an active call
   (NXDN stays parked while following an active grant and returns to its control channel at hangtime/release).
+  The protocol's hangtime and release rules decide when call following ends; audio silence alone does not start
+  the idle dwell. Once call following ends and no control-channel retune is pending, a fresh `dwell_ms` interval
+  starts. The Scan Timing row can show a nonzero `hang` budget during `Following call`; idle targets show dwell.
 - `nxdn-trunk` and `nxdn48-trunk` targets follow the site-broadcast outbound control channel: when a DFA site announces a control
   channel that differs from the target's `frequency_hz`, DSD-neo adopts it (logging
   `NOTICE: NXDN trunking: site control channel is X MHz; following it`) and re-parks that target there from then on.
@@ -366,6 +371,11 @@ During scanning:
   `activity_hold_ms` the hold. The terminal status line marks the parked conventional target `Voice: QUALIFY`,
   `VOICE` while a media-bearing call is active, or `TAIL` after it ends while the hold runs. Trunked
   targets are unchanged: control-only traffic rotates after dwell, and they carry no `Voice:` marker.
+  After the conventional hold expires, a fresh dwell/qualification window starts, so the two waits add together.
+  For example, with an effective `activity_hold_ms=1000` and `dwell_ms=500`, rotation occurs roughly 1.5 seconds
+  after the last decoded voice frame if no new voice arrives, no manual hold applies, and the visit cap does not
+  end the visit first. Without voice-only mode, the same hold-then-dwell sequence follows the last allowed
+  decoded activity, which can include the headers described above.
 - An `nxdn-trunk` or `nxdn48-trunk` target with a `chan_csv` reports channels it was granted but could not map, once per channel while
   it is parked (`NOTICE: NXDN trunking: grant: CH 12 has no frequency mapping in chan_csv (site.csv)`), and a summary
   for each such target at exit. Every target keeps its own list, so one target's gaps are never attributed to another.
