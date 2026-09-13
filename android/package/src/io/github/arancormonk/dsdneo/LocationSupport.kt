@@ -14,6 +14,7 @@ import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import org.json.JSONObject
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.FutureTask
@@ -57,6 +58,11 @@ internal class LocationGeocodeQueue(
 /** One cancellable foreground request. All mutable request state belongs to the main looper. */
 object LocationSupport {
     private const val PERMISSION = 4303
+    private const val TIMEOUT_MS = 20_000L
+    // Coarse providers can retain their last fix for ten minutes. getCurrentLocation
+    // accepts a much shorter cache age and may throttle the replacement past our deadline.
+    private const val MAX_FIX_AGE_NS = 10 * 60 * 1_000_000_000L
+    private const val MAX_ACCURACY_M = 10_000f
     private val main = Handler(Looper.getMainLooper())
     private val worker = LocationGeocodeQueue()
     private var active: Request? = null
@@ -65,8 +71,9 @@ object LocationSupport {
 
     private class Request(val activity: Activity, val id: Long) {
         val manager = activity.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        var signal: CancellationSignal? = null
-        var listener: LocationListener? = null
+        val signals = mutableListOf<CancellationSignal>()
+        val listeners = mutableListOf<LocationListener>()
+        val pendingProviders = mutableSetOf<String>()
         var fix: Location? = null
         var timeout: Runnable? = null
         var geocodeTask: FutureTask<Unit>? = null
@@ -78,9 +85,6 @@ object LocationSupport {
             synchronized(this) { result = null }
             val request = Request(activity, id)
             active = request
-            request.timeout = Runnable {
-                finish(request, false, "", "", if (request.fix == null) "Location request timed out; use Browse." else "Geocoding timed out; use Browse.")
-            }.also { main.postDelayed(it, 20_000) }
             if (activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
                 locate(request)
             } else if (permissionActivity == null) {
@@ -104,41 +108,82 @@ object LocationSupport {
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     private fun locate(request: Request) {
         if (active !== request) return
-        try {
-            // Coarse permission works with the network provider; no fine permission is requested.
-            if (!request.manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                finish(request, false, "", "", "Location provider unavailable; use Browse.")
-                return
-            }
-            if (Build.VERSION.SDK_INT >= 30) {
-                request.signal = CancellationSignal()
-                request.manager.getCurrentLocation(LocationManager.NETWORK_PROVIDER, request.signal,
-                    request.activity.mainExecutor) { location -> gotFix(request, location) }
-            } else {
-                request.listener = object : LocationListener {
-                    override fun onLocationChanged(location: Location) { gotFix(request, location) }
-                    override fun onProviderDisabled(provider: String) {
-                        finish(request, false, "", "", "Location provider unavailable; use Browse.")
+        armTimeout(request, "Location request timed out; use Browse.")
+        // Both providers honor coarse permission. The platform fused provider is public
+        // from API 31; it does not require a Google Play Services dependency.
+        val candidates = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= 31) candidates.add(LocationManager.FUSED_PROVIDER)
+        candidates.add(LocationManager.NETWORK_PROVIDER)
+        val providers = candidates.filter { provider ->
+            try { request.manager.isProviderEnabled(provider) } catch (_: Exception) { false }
+        }
+        if (providers.isEmpty()) {
+            finish(request, false, "", "", "Location provider unavailable; use Browse.")
+            return
+        }
+        val cached = providers.mapNotNull { provider ->
+            try { request.manager.getLastKnownLocation(provider) } catch (_: Exception) { null }
+        }.filter { usableFix(it) }.maxByOrNull { it.elapsedRealtimeNanos }
+        if (cached != null) {
+            gotFix(request, cached)
+            return
+        }
+        // Register all candidates before any callback can arrive. A silent or failed
+        // provider must not prevent another provider from satisfying the request.
+        request.pendingProviders.addAll(providers)
+        for (provider in providers) {
+            if (active !== request || request.fix != null) break
+            try {
+                if (Build.VERSION.SDK_INT >= 30) {
+                    val signal = CancellationSignal()
+                    request.signals.add(signal)
+                    request.manager.getCurrentLocation(provider, signal, request.activity.mainExecutor) { location ->
+                        providerResult(request, provider, location)
                     }
-                    override fun onProviderEnabled(provider: String) {}
-                    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+                } else {
+                    val listener = object : LocationListener {
+                        override fun onLocationChanged(location: Location) { providerResult(request, provider, location) }
+                        override fun onProviderDisabled(provider: String) { providerResult(request, provider, null) }
+                        override fun onProviderEnabled(provider: String) {}
+                        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+                    }
+                    request.listeners.add(listener)
+                    request.manager.requestSingleUpdate(provider, listener, Looper.getMainLooper())
                 }
-                request.manager.requestSingleUpdate(LocationManager.NETWORK_PROVIDER, request.listener!!, Looper.getMainLooper())
+            } catch (_: Exception) {
+                providerResult(request, provider, null)
             }
-        } catch (_: Exception) {
-            finish(request, false, "", "", "Location unavailable; use Browse.")
         }
     }
 
+    private fun usableFix(location: Location?): Boolean {
+        if (location == null || !location.latitude.isFinite() || location.latitude !in -90.0..90.0
+            || !location.longitude.isFinite() || location.longitude !in -180.0..180.0
+            || !location.hasAccuracy() || !location.accuracy.isFinite()
+            || location.accuracy <= 0f || location.accuracy > MAX_ACCURACY_M
+            || location.time <= 0L || location.elapsedRealtimeNanos <= 0L) return false
+        val age = SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos
+        return age in 0L..MAX_FIX_AGE_NS
+    }
+
+    private fun providerResult(request: Request, provider: String, location: Location?) {
+        if (active !== request || request.fix != null || !request.pendingProviders.remove(provider)) return
+        if (usableFix(location)) gotFix(request, location!!)
+        else if (request.pendingProviders.isEmpty()) finish(request, false, "", "", "No location fix available; use Browse.")
+    }
+
+    private fun armTimeout(request: Request, error: String) {
+        request.timeout?.let { main.removeCallbacks(it) }
+        request.timeout = Runnable { finish(request, false, "", "", error) }
+            .also { main.postDelayed(it, TIMEOUT_MS) }
+    }
+
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
-    private fun gotFix(request: Request, location: Location?) {
+    private fun gotFix(request: Request, location: Location) {
         if (active !== request || request.fix != null) return
-        removeUpdates(request)
-        if (location == null) {
-            finish(request, false, "", "", "No location fix available; use Browse.")
-            return
-        }
         request.fix = location
+        removeUpdates(request)
+        armTimeout(request, "Geocoding timed out; use Browse.")
         // Capture only application context and coordinates; an abandoned geocoder must not retain an Activity.
         val context = request.activity.applicationContext
         val latitude = location.latitude
@@ -171,12 +216,13 @@ object LocationSupport {
     }
 
     private fun removeUpdates(request: Request) {
-        request.signal?.cancel()
-        request.signal = null
-        request.listener?.let { listener ->
+        request.pendingProviders.clear()
+        request.signals.forEach { it.cancel() }
+        request.signals.clear()
+        request.listeners.forEach { listener ->
             try { request.manager.removeUpdates(listener) } catch (_: Exception) { }
         }
-        request.listener = null
+        request.listeners.clear()
     }
 
     private fun release(request: Request) {

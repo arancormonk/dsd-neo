@@ -359,8 +359,14 @@ per client, so a client has at most one request in flight at a time.
 
 In **Find a system**, **Use my location** requests approximate foreground location.
 Granting coarse location permission is optional; ZIP, Browse and system ID searches
-remain available after denial. The request times out after 20 seconds, including
-reverse geocoding. A successful US five-digit postal code enters the existing ZIP
+remain available after denial. After permission is granted, location acquisition and
+reverse geocoding each have a separate 20-second timeout. Lookup can reuse the newest
+usable cached fix from an enabled provider if it is at most ten minutes old and its reported
+accuracy is within 10 km. Cache age uses Android's monotonic clock; the original fix
+timestamp is retained. This avoids waiting for a fresh update when Android throttles
+approximate location. Android 12+ tries both the platform fused and network providers
+when no usable cached fix exists; older versions use the network provider.
+A successful US five-digit postal code enters the existing ZIP
 lookup. Other countries, missing postal codes and geocoding errors direct you to Browse.
 Desktop hosts hide this button by default.
 
