@@ -298,6 +298,7 @@ struct dsd_opts {
     uint8_t trunk_tune_private_calls;
     uint8_t trunk_tune_data_calls;
     uint8_t trunk_tune_enc_calls;
+    uint8_t persist_tg_lockouts; // Save quick user lockouts to the configured global group list.
     /* Flag set when any CLI explicitly enables or disables trunking (e.g., -T, -Y). */
     uint8_t trunk_cli_seen;
     uint8_t p25_lcw_retune;

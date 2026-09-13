@@ -459,7 +459,7 @@ Important behavior:
   **All**. Search text does not narrow bulk edits. Learned radio-ID alias rows and mode `D` rows are excluded.
   In allow-list mode, heard-but-unlisted talkgroups remain blocked until individually allowed.
 - A listening edit preserves a row's name, category, priority and preemption setting, but resets its media flags
-  from the selected mode. The monitor's **Skip** uses the same name-preserving block path.
+  from the selected mode. By default, the monitor's **Skip** uses the same name-preserving block path.
 - When a group file is configured, edits atomically rewrite that file in table order, preserving ranges and
   modeled fields. Existing extended policy headers remain extended; otherwise the output is `id,mode,name,tags`
   when categories exist, or `id,mode,name`. Unmodeled metadata/note columns are discarded. Android rewrites its
@@ -477,6 +477,18 @@ Important behavior:
 - Without a group file, edits last only for the session. A scan row's own effective list is also edited only
   in memory, never written into the global group file. If saving fails, the decoder keeps the live edit and
   reports that it is session-only; the previous file remains intact.
+- `--tg-lockout-session` (or `[trunking] persist_tg_lockouts = false`) makes terminal `!`/`@` and Qt/Android
+  **Skip** temporary avoids. They block tuning and all media without editing policy rows or the file. Later
+  list edits, exports and configuration saves cannot serialize these avoids. `--tg-lockout-persist` restores
+  the default behavior for subsequent lockouts; switching modes never converts existing entries.
+- Qt/Android **Settings → Listening → Save skipped talkgroups** and the terminal **Save user TG lockouts**
+  menu setting take effect immediately. Explicit **Listening**, **Not tuned**, and bulk list edits still
+  modify the canonical list, and temporary avoids continue to override it. The TG list shows temporary counts
+  separately from its saved listening controls.
+- **Clear temporary TG avoids — current list** clears only the active list's temporary avoids. It leaves saved
+  blocks, encryption lockouts, and channel/target avoids intact. Retunes and scan visits preserve avoids;
+  reloading, replacing, or clearing a list resets that scope's avoids. Stopping the decoder clears the session;
+  reopening the Android Activity while its service runs does not.
 
 Example:
 

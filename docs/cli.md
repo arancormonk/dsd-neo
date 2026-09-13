@@ -12,7 +12,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
-- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
+- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
@@ -470,6 +470,18 @@ Notes
   - If you are debugging symbol-center drift, consider freezing windows (`DSD_NEO_WINDOW_FREEZE=1`) while testing.
 
 ## Trunking & Scanning
+
+Quick talkgroup lockouts (`!`/`@` in the terminal and **Skip** in Qt/Android) save to the configured global
+groups file by default. Use `--tg-lockout-session` to keep them temporary, or `--tg-lockout-persist` to select
+the default saving behavior explicitly. The equivalent configuration key is `[trunking] persist_tg_lockouts`.
+The terminal **Save user TG lockouts** menu and Qt/Android **Settings → Listening → Save skipped talkgroups**
+change this preference immediately for subsequent lockouts and preserve it through their normal settings save.
+
+Temporary avoids block tuning, audio, recording and streaming without modifying the saved list. Explicit list
+edits still save, and exports omit temporary avoids. Use **Clear temporary TG avoids — current list** to undo
+them in the current scope. They also clear on list reload/replacement or decoder stop; ordinary retunes and
+scan visits preserve them. Scan rows with their own lists stay isolated; rows using the global list share its
+avoids. Changing the persistence setting does not change the lifetime of existing blocks.
 
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`
 - Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). For NXDN the hold is refreshed

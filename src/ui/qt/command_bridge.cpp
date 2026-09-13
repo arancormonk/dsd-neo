@@ -191,6 +191,20 @@ CommandBridge::setTalkgroupListening(unsigned int idStart, unsigned int idEnd, b
 }
 
 bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE entry point.
+CommandBridge::setPersistTgLockouts(bool persist) const {
+    return accepted(dsd_app_command_set_i32(DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET, persist ? 1 : 0));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE entry point.
+CommandBridge::clearTemporaryTgAvoids(const QString& context) const {
+    bool valid = false;
+    const uint64_t value = context.toULongLong(&valid);
+    return valid && accepted(dsd_app_command_submit(DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, &value, sizeof value));
+}
+
+bool
 CommandBridge::setAllTalkgroupsListening(bool listen, const QString& tag) const {
     dsd_app_tg_listen_all_payload payload;
     DSD_MEMSET(&payload, 0, sizeof(payload));

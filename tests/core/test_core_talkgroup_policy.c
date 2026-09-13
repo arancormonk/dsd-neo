@@ -844,8 +844,10 @@ test_reload_group_file(void) {
         fclose(fp);
     }
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
+    rc |= expect_true("seed temporary avoid before reload", dsd_tg_policy_session_avoid_add(st, 100) == 0);
     generation_before = policy_generation(st);
     rc |= expect_true("reload success", dsd_tg_policy_reload_group_file(opts, st) == 0);
+    rc |= expect_true("reload clears temporary avoids", !dsd_tg_policy_session_avoid_contains(st, 100));
     rc |= expect_true("reload replaced policy rows", policy_count(st) == 2u);
     generation_after = policy_generation(st);
     rc |= expect_true("reload success increments generation", generation_after == generation_before + 1u);
@@ -856,8 +858,10 @@ test_reload_group_file(void) {
     rc |= expect_true("lookup row 200 blocked mode", strcmp(lookup.entry.mode, "B") == 0);
 
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", "/tmp/dsd-neo-missing-group-file-nope.csv");
+    rc |= expect_true("seed temporary avoid before failed reload", dsd_tg_policy_session_avoid_add(st, 100) == 0);
     generation_before = policy_generation(st);
     rc |= expect_true("reload missing file fails", dsd_tg_policy_reload_group_file(opts, st) != 0);
+    rc |= expect_true("failed reload keeps temporary avoids", dsd_tg_policy_session_avoid_contains(st, 100));
     rc |= expect_true("failed reload keeps current rows", policy_count(st) == 2u);
     rc |= expect_true("failed reload keeps policy", dsd_tg_policy_lookup_id(st, 100, &lookup) == 0);
     rc |= expect_true("failed reload preserved entry", strcmp(lookup.entry.name, "ONE") == 0);
@@ -1305,6 +1309,86 @@ test_captured_selection(void) {
     return rc;
 }
 
+static int
+test_session_avoids(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_state* snapshot = calloc(1, sizeof(*snapshot));
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    if (!state || !snapshot || !opts) {
+        free_test_state(state);
+        free_test_state(snapshot);
+        free(opts);
+        return 1;
+    }
+    opts->trunk_tune_group_calls = opts->trunk_tune_private_calls = opts->trunk_tune_data_calls = 1;
+    opts->trunk_tune_enc_calls = 1;
+    dsd_tg_policy_entry entry;
+    init_entry(&entry, 100, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED);
+    entry.id_end = 199;
+    entry.is_range = 1;
+    entry.priority = 70;
+    entry.preempt = 1;
+    int rc = expect_true("seed allowed range", dsd_tg_policy_add_range_entry(state, &entry) == 0);
+    rc |= expect_true("seed saved block", dsd_tg_policy_set_mode(state, 200, 200, "B") == 0);
+    dsd_tg_policy_decision decision;
+    rc |= expect_true("positive range marker",
+                      dsd_tg_policy_evaluate_group_call(opts, state, 123, 1, 0, 0, &decision) == 0
+                          && decision.tune_allowed && decision.audio_allowed);
+    rc |= expect_true("avoid zero refused", dsd_tg_policy_session_avoid_add(state, 0) == 1);
+    rc |= expect_true("avoid NULL refused", dsd_tg_policy_session_avoid_add(NULL, 123) == 1);
+    rc |= expect_true("avoid range member", dsd_tg_policy_session_avoid_add(state, 123) == 0);
+    rc |= expect_true("avoid max ID", dsd_tg_policy_session_avoid_add(state, UINT32_MAX) == 0);
+    rc |= expect_true("avoid out of order", dsd_tg_policy_session_avoid_add(state, 2) == 0);
+    const unsigned int generation = policy_generation(state);
+    rc |= expect_true("duplicate idempotent",
+                      dsd_tg_policy_session_avoid_add(state, 123) == 0 && policy_generation(state) == generation);
+    rc |= expect_true("distinct avoids", dsd_tg_policy_session_avoid_count(state, 0, UINT32_MAX) == 3);
+    rc |= expect_true("inclusive range count", dsd_tg_policy_session_avoid_count(state, 100, 123) == 1);
+    rc |= expect_true("empty range count", dsd_tg_policy_session_avoid_count(state, 124, 199) == 0);
+    rc |= expect_true("reversed range count", dsd_tg_policy_session_avoid_count(state, 123, 100) == 0);
+    rc |= expect_true("no temporary CSV rows", policy_count(state) == 2);
+    state->tg_hold = 123;
+    rc |= expect_true("avoid overrides matching hold",
+                      dsd_tg_policy_evaluate_group_call(opts, state, 123, 1, 0, 0, &decision) == 0
+                          && !decision.tune_allowed && !decision.audio_allowed && !decision.record_allowed
+                          && !decision.stream_allowed && (decision.block_reasons & DSD_TG_POLICY_BLOCK_SESSION_AVOID));
+    rc |= expect_true("saved metadata intact", strcmp(decision.mode, "A") == 0 && strcmp(decision.name, "Dispatch") == 0
+                                                   && decision.priority == 70 && decision.preempt_requested);
+    state->tg_hold = 0;
+    rc |= expect_true("data and encrypted avoid",
+                      dsd_tg_policy_evaluate_group_call(opts, state, 123, 1, 1, 1, &decision) == 0
+                          && !decision.tune_allowed && !decision.audio_allowed);
+    rc |= expect_true("other range member allowed",
+                      dsd_tg_policy_evaluate_group_call(opts, state, 124, 1, 0, 0, &decision) == 0
+                          && decision.tune_allowed && decision.audio_allowed);
+    rc |= expect_true("private destination blocked",
+                      dsd_tg_policy_evaluate_private_grant(opts, state, 5, 123, 0, 0, &decision) == 0
+                          && !decision.tune_allowed && !decision.stream_allowed);
+    rc |= expect_true("private source blocked",
+                      dsd_tg_policy_evaluate_private_call(opts, state, 123, 5, 0, 0, &decision) == 0
+                          && !decision.tune_allowed && !decision.record_allowed);
+    rc |= expect_true("snapshot avoids", dsd_tg_policy_copy_snapshot(snapshot, state) == 0
+                                             && dsd_tg_policy_session_avoid_contains(snapshot, UINT32_MAX));
+    dsd_tg_policy_session_avoid_clear(state);
+    rc |= expect_true("snapshot independent", dsd_tg_policy_session_avoid_contains(snapshot, 123)
+                                                  && !dsd_tg_policy_session_avoid_contains(state, 123));
+    rc |= expect_true("clear restores range policy",
+                      dsd_tg_policy_evaluate_group_call(opts, state, 123, 1, 0, 0, &decision) == 0
+                          && decision.tune_allowed && decision.audio_allowed);
+    rc |= expect_true("clear keeps saved block",
+                      dsd_tg_policy_evaluate_group_call(opts, state, 200, 1, 0, 0, &decision) == 0
+                          && !decision.tune_allowed);
+    rc |= expect_true("clear publishes without row edits", dsd_tg_policy_copy_snapshot(snapshot, state) == 0
+                                                               && !dsd_tg_policy_session_avoid_contains(snapshot, 123));
+    rc |= expect_true("add after clear", dsd_tg_policy_session_avoid_add(state, 123) == 0);
+    rc |= expect_true("list clear resets avoids",
+                      dsd_tg_policy_clear(state) == 0 && dsd_tg_policy_session_avoid_count(state, 0, UINT32_MAX) == 0);
+    free_test_state(state);
+    free_test_state(snapshot);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1312,6 +1396,7 @@ main(void) {
     rc |= test_captured_selection();
     rc |= test_set_fields_remove_bounds();
     rc |= test_block_reason_labels();
+    rc |= test_session_avoids();
     rc |= test_snapshot_reclones_recreated_context();
     rc |= test_snapshot_reclones_recreated_empty_reload_context();
     rc |= test_lookup_and_precedence();

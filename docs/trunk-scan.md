@@ -253,6 +253,15 @@ The per-visit cap lives in the same section, as `[trunking] scan_max_visit_ms`, 
 `0` (the default) disables it, otherwise use `1000..3600000`. Config loading does not clamp the value, so a
 hand-written `1..999` reaches the decoder, which treats it as disabled.
 
+For temporary user talkgroup avoids, set `[trunking] persist_tg_lockouts = false` or use
+`--tg-lockout-session`. Terminal `!`/`@` and Qt/Android **Skip** then avoid targets without changing the groups
+file. This global preference also applies when scan rows inherit the global groups list. Rows with their own
+lists retain independent avoids across visits, even when they load the same file; rows inheriting the global
+list share its avoids. **Clear temporary TG avoids — current list** clears the active scope only. List reload
+or replacement resets that scope; decoder stop ends the session. `--tg-lockout-persist` restores the default
+quick-lockout behavior, which still never writes a scan row's list to the global groups file. These flags are
+global CLI options, not per-row `options` tokens.
+
 Set `tune_enc_calls = false` to enable key-aware encryption lockout. Otherwise eligible encrypted or
 encryption-unknown P25 trunk voice grants are visited briefly and classified silently; only clear calls or calls with a
 complete matching key for a supported algorithm continue. Missing-key calls remain silent and are released at

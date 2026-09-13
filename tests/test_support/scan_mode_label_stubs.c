@@ -6,6 +6,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -74,4 +75,31 @@ dsd_scan_mode_active(const dsd_state* state) {
 const char*
 dsd_scan_mode_name(dsd_scan_mode mode) {
     return mode == DSD_SCAN_MODE_P25 ? "p25" : "";
+}
+
+static size_t tg_avoid_count;
+static uint64_t tg_context;
+
+void
+dsd_test_tg_avoids(size_t count, uint64_t context) {
+    tg_avoid_count = count;
+    tg_context = context;
+}
+
+size_t
+dsd_tg_policy_session_avoid_count(const dsd_state* state, uint32_t start, uint32_t end) {
+    assert(state == &snapshot_state || state == NULL);
+    assert(start == 0 && end == UINT32_MAX);
+    return state ? tg_avoid_count : 0;
+}
+
+void
+dsd_tg_policy_table_version(const dsd_state* state, uint64_t* context, unsigned int* generation) {
+    assert(state == &snapshot_state || state == NULL);
+    if (context) {
+        *context = state ? tg_context : 0;
+    }
+    if (generation) {
+        *generation = 0;
+    }
 }

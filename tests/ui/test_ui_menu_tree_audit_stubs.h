@@ -68,6 +68,8 @@
     X(act_keys_dec)                                                                                                    \
     X(act_keys_hex)                                                                                                    \
     X(act_lcw_toggle)                                                                                                  \
+    X(act_tg_lockout_persist)                                                                                          \
+    X(act_tg_session_avoid_clear)                                                                                      \
     X(act_lockout_slot1)                                                                                               \
     X(act_lockout_slot2)                                                                                               \
     X(act_lpf_toggle)                                                                                                  \
@@ -302,6 +304,8 @@
     X(lbl_tcp_rcvtimeo)                                                                                                \
     X(lbl_tcp_waitall)                                                                                                 \
     X(lbl_ted_gain)                                                                                                    \
+    X(lbl_tg_lockout_persist)                                                                                          \
+    X(lbl_tg_session_avoid_clear)                                                                                      \
     X(lbl_tg_hold)                                                                                                     \
     X(lbl_toggle_payload)                                                                                              \
     X(lbl_trunk)                                                                                                       \

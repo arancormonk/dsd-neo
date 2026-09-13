@@ -382,6 +382,23 @@ MetricsModel::clear() {
  * a rotation, so the controls have nothing to act on and the gate stays false.
  */
 void
+MetricsModel::fillListeningControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+    next.audio_muted = opts_snapshot->audio_out == 0;
+    next.held_tg = static_cast<qulonglong>(snapshot->tg_hold);
+    next.enc_lockout_count = dsd_enc_lockout_active_count(snapshot);
+    next.persist_tg_lockouts = opts_snapshot->persist_tg_lockouts != 0;
+    next.temporary_tg_avoid_count = dsd_tg_policy_session_avoid_count(snapshot, 0, UINT32_MAX);
+    uint64_t tg_context = 0;
+    dsd_tg_policy_table_version(snapshot, &tg_context, nullptr);
+    next.tg_policy_context = QString::number(tg_context);
+}
+
+/*
+ * Scan hold and avoids (#380) read whichever rotation owns the tuner: the coordinator's
+ * publication under --trunk-scan, the scan-list flags under -Y. Plain trunking is not
+ * a rotation, so the controls have nothing to act on and the gate stays false.
+ */
+void
 MetricsModel::fillScanControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
     const bool trunk_scan = opts_snapshot->trunk_scan_enabled != 0;
     if (trunk_scan) {
@@ -815,9 +832,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * — commands only enqueue a request — and on Android the service outlives the
      * Activity, so a relaunched UI must read where they actually stand rather than
      * assume a fresh session's defaults. */
-    next.audio_muted = opts_snapshot->audio_out == 0;
-    next.held_tg = static_cast<qulonglong>(snapshot->tg_hold);
-    next.enc_lockout_count = dsd_enc_lockout_active_count(snapshot);
+    fillListeningControlView(next, opts_snapshot, snapshot);
     fillScanControlView(next, opts_snapshot, snapshot);
     /* The same monotonic reading the call lines were aged against, not a second
      * clock read: one frame has to describe one instant, or the countdown and the

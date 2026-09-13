@@ -3137,6 +3137,43 @@ test_dmr_lrrp_ports_bad_entries_are_skipped(void) {
     return 0;
 }
 
+static int
+test_tg_lockout_persistence_roundtrip(void) {
+    int rc = 0;
+    const char* configurations[] = {"[trunking]\nenabled = true\n", "[trunking]\npersist_tg_lockouts = false\n",
+                                    "[trunking]\npersist_tg_lockouts = true\n"};
+    for (int i = 0; i < 3; ++i) {
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(configurations[i], path, sizeof path) != 0) {
+            return 1;
+        }
+        dsdneoUserConfig cfg;
+        const int loaded = dsd_user_config_load(path, &cfg);
+        remove(path);
+        if (loaded != 0 || cfg.trunk_persist_tg_lockouts != (i != 1)) {
+            DSD_FPRINTF(stderr, "lockout config/default did not load\n");
+            return 1;
+        }
+        static dsd_opts opts;
+        static dsd_state state;
+        reset_opts_and_state(opts, state);
+        dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+        if (opts.persist_tg_lockouts != (i != 1)) {
+            return 1;
+        }
+        dsdneoUserConfig snapshot;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &snapshot);
+        char rendered[8192];
+        if (snapshot.trunk_persist_tg_lockouts != (i != 1)
+            || render_config_to_buffer(&snapshot, rendered, sizeof rendered) != 0) {
+            return 1;
+        }
+        rc |= expect_contains_quiet("persist lockouts roundtrip", rendered,
+                                    i == 1 ? "persist_tg_lockouts = false\n" : "persist_tg_lockouts = true\n");
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3180,6 +3217,7 @@ main(void) {
     rc |= test_scanner_and_candidates_roundtrip();
     rc |= test_scan_voice_gate_roundtrip();
     rc |= test_scan_max_visit_roundtrip();
+    rc |= test_tg_lockout_persistence_roundtrip();
     rc |= test_scan_max_visit_snapshot_uses_configured_not_row_override();
     rc |= test_src_csv_roundtrip();
     rc |= test_p25_bandplan_csv_roundtrip();
