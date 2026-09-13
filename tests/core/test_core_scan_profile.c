@@ -144,23 +144,30 @@ test_group_ownership(void) {
         const int removed = remove(path);
         assert(removed == 0);
     } /* Entry must never reopen its file. */
+    assert(dsd_tg_policy_session_avoid_add(state, 321) == 0);
     assert(dsd_scan_groups_begin(state) == 0);
     dsd_scan_groups_enter(state, row);
     expect_label(state, "Row group");
     assert(dsd_state_ext_get_const(state, DSD_STATE_EXT_CORE_SOURCE_ALIAS) == aliases);
     assert(dsd_source_label_lookup(state, 123, NULL, 0, alias_name, sizeof(alias_name)));
     assert(strcmp(alias_name, "Global radio") == 0);
+    assert(!dsd_tg_policy_session_avoid_contains(state, 321));
+    assert(dsd_tg_policy_session_avoid_add(state, 123) == 0);
     assert(dsd_tg_policy_copy_snapshot(snapshot, state) == 0);
+    assert(dsd_tg_policy_session_avoid_contains(snapshot, 123));
     assert(dsd_tg_policy_make_exact_entry(123, "A", "Row edit", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &entry) == 0);
     assert(dsd_tg_policy_upsert_exact(state, &entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
     expect_label(snapshot, "Row group");
     dsd_scan_groups_enter(state, NULL);
+    assert(dsd_tg_policy_session_avoid_contains(state, 321));
+    assert(!dsd_tg_policy_session_avoid_contains(state, 123));
     expect_label(state, "Global");
     assert(dsd_state_ext_get_const(state, DSD_STATE_EXT_CORE_SOURCE_ALIAS) == aliases);
     assert(dsd_source_label_lookup(state, 123, NULL, 0, alias_name, sizeof(alias_name)));
     assert(strcmp(alias_name, "Global radio") == 0);
     dsd_scan_groups_enter(state, row);
     expect_label(state, "Row edit");
+    assert(dsd_tg_policy_session_avoid_contains(state, 123));
     assert(dsd_state_ext_get_const(state, DSD_STATE_EXT_CORE_SOURCE_ALIAS) == aliases);
     assert(dsd_source_label_lookup(state, 123, NULL, 0, alias_name, sizeof(alias_name)));
     assert(strcmp(alias_name, "Global radio") == 0);
@@ -181,6 +188,7 @@ test_group_ownership(void) {
     assert(dsd_tg_policy_upsert_exact(state, &entry, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
     dsd_scan_groups_resume(state);
     expect_label(state, "Row edit");
+    assert(dsd_tg_policy_session_avoid_contains(state, 123));
     assert(dsd_state_ext_get_const(state, DSD_STATE_EXT_CORE_SOURCE_ALIAS) == aliases);
     assert(dsd_source_label_lookup(state, 123, NULL, 0, alias_name, sizeof(alias_name)));
     assert(strcmp(alias_name, "Global radio") == 0);
@@ -193,7 +201,11 @@ test_group_ownership(void) {
         dsd_scan_groups_enter(state, row);
     }
     assert(!dsd_tg_policy_should_preempt(NULL, state, &candidate, &decision, 100.0));
+    dsd_tg_policy_session_avoid_clear(state);
+    assert(!dsd_tg_policy_session_avoid_contains(state, 123));
+    assert(dsd_tg_policy_session_avoid_contains(snapshot, 123));
     dsd_scan_groups_leave(state);
+    assert(dsd_tg_policy_session_avoid_contains(state, 321));
     expect_label(state, "New global");
     assert(dsd_state_ext_get_const(state, DSD_STATE_EXT_CORE_SOURCE_ALIAS) == aliases);
     assert(dsd_source_label_lookup(state, 123, NULL, 0, alias_name, sizeof(alias_name)));
@@ -619,6 +631,48 @@ test_dmr_map_profile_import(void) {
     assert(remove(path) == 0);
 }
 
+static void
+test_empty_group_avoid_scopes(void) {
+    char path[1024];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsd_empty_groups");
+    assert(fd >= 0);
+    dsd_close(fd);
+    write_file(path, "id,mode,name\n");
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state);
+    dsd_scan_options parsed = {0};
+    parsed.values.present = DSD_SCAN_OPT_GROUP;
+    DSD_SNPRINTF(parsed.values.group_file, sizeof parsed.values.group_file, "%s", path);
+    dsd_key_set keys = {0};
+    dsd_scan_row_profile* first = NULL;
+    dsd_scan_row_profile* second = NULL;
+    assert(dsd_scan_profile_load(&parsed, 0, &first, &keys) == 0);
+    assert(dsd_scan_profile_load(&parsed, 0, &second, &keys) == 0);
+    assert(remove(path) == 0);
+    assert(dsd_tg_policy_session_avoid_add(state, 33) == 0);
+    assert(dsd_scan_groups_begin(state) == 0);
+    dsd_scan_groups_enter(state, first);
+    assert(dsd_tg_policy_session_avoid_add(state, 11) == 0);
+    dsd_scan_groups_enter(state, second);
+    assert(!dsd_tg_policy_session_avoid_contains(state, 11));
+    assert(!dsd_tg_policy_session_avoid_contains(state, 33));
+    assert(dsd_tg_policy_session_avoid_add(state, 22) == 0);
+    dsd_scan_groups_enter(state, first);
+    assert(dsd_tg_policy_session_avoid_contains(state, 11));
+    assert(!dsd_tg_policy_session_avoid_contains(state, 22));
+    dsd_tg_policy_session_avoid_clear(state);
+    dsd_scan_groups_enter(state, second);
+    assert(dsd_tg_policy_session_avoid_contains(state, 22));
+    dsd_scan_groups_enter(state, NULL);
+    assert(dsd_tg_policy_session_avoid_contains(state, 33));
+    assert(!dsd_tg_policy_session_avoid_contains(state, 22));
+    dsd_scan_profile_free(first);
+    dsd_scan_profile_free(second);
+    dsd_key_set_free(&keys);
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 int
 main(void) {
     test_move_unwinds_both_group_scopes();
@@ -632,6 +686,7 @@ main(void) {
     test_source_conflicts();
     test_relative_paths();
     test_group_ownership();
+    test_empty_group_avoid_scopes();
     test_csv_import();
     test_legacy_columns_do_not_mute();
     return 0;

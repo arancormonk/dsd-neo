@@ -128,6 +128,9 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool audioMuted READ audioMuted NOTIFY controlChanged)
     Q_PROPERTY(qulonglong heldTg READ heldTg NOTIFY controlChanged)
     Q_PROPERTY(int encLockoutCount READ encLockoutCount NOTIFY controlChanged)
+    Q_PROPERTY(bool persistTgLockouts READ persistTgLockouts NOTIFY controlChanged)
+    Q_PROPERTY(qulonglong temporaryTgAvoidCount READ temporaryTgAvoidCount NOTIFY controlChanged)
+    Q_PROPERTY(QString tgPolicyContext READ tgPolicyContext NOTIFY controlChanged)
     Q_PROPERTY(bool tunerControlled READ tunerControlled NOTIFY controlChanged)
     Q_PROPERTY(bool trunkingEnabled READ trunkingEnabled NOTIFY controlChanged)
     Q_PROPERTY(bool scannerMode READ scannerMode NOTIFY controlChanged)
@@ -684,6 +687,21 @@ class MetricsModel : public QObject {
      * entirely encrypted otherwise presents as a decoder that stopped: the
      * control channel decodes, every grant is declined, and no call is logged.
      */
+    bool
+    persistTgLockouts() const {
+        return m_view.persist_tg_lockouts;
+    }
+
+    qulonglong
+    temporaryTgAvoidCount() const {
+        return m_view.temporary_tg_avoid_count;
+    }
+
+    QString
+    tgPolicyContext() const {
+        return m_view.tg_policy_context;
+    }
+
     int
     encLockoutCount() const {
         return m_view.enc_lockout_count;
@@ -1113,6 +1131,8 @@ class MetricsModel : public QObject {
         double center_freq_hz = 0.0;
         double squelch_db = 0.0;
         qulonglong held_tg = 0;
+        qulonglong temporary_tg_avoid_count = 0;
+        QString tg_policy_context;
         QString tuner_gain_text;
         QString sync_label;
         QString scan_mode;
@@ -1134,6 +1154,7 @@ class MetricsModel : public QObject {
         int ppm = 0;
         int enc_lockout_count = 0;
         int scan_avoid_count = 0;
+        bool persist_tg_lockouts = true;
         bool snr_valid = false;
         bool carrier_lock = false;
         bool radio_input = false;
@@ -1220,12 +1241,19 @@ class MetricsModel : public QObject {
         }
 
         bool
+        tgLockoutsEqual(const View& other) const {
+            return persist_tg_lockouts == other.persist_tg_lockouts
+                   && temporary_tg_avoid_count == other.temporary_tg_avoid_count
+                   && tg_policy_context == other.tg_policy_context;
+        }
+
+        bool
         controlEquals(const View& other) const {
             return audio_muted == other.audio_muted && held_tg == other.held_tg
                    && enc_lockout_count == other.enc_lockout_count && tuner_controlled == other.tuner_controlled
                    && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
                    && scanControlEquals(other) && scan_mode == other.scan_mode && decode_mode == other.decode_mode
-                   && decryptionEquals(other) && radioControlsEqual(other);
+                   && decryptionEquals(other) && radioControlsEqual(other) && tgLockoutsEqual(other);
         }
     };
 
@@ -1245,6 +1273,7 @@ class MetricsModel : public QObject {
     /** @brief Fill in sync state and the live decoder/front-end settings. */
     void fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m);
     /** @brief Scan hold and avoids (#380), read from whichever rotation is running. */
+    static void fillListeningControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     static void fillScanControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief Why the rotation is staying on this row and how long is left (#508). */
     void fillScanTimingView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;

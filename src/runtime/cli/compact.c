@@ -63,6 +63,8 @@ static const char* const k_skip_exact_no_arg[] = {
     "--rdio-api-delete-after-upload",
     "--enc-lockout",
     "--enc-follow",
+    "--tg-lockout-session",
+    "--tg-lockout-persist",
     "--no-config",
     "--print-config",
     "--interactive-setup",

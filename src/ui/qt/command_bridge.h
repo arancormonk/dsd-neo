@@ -69,6 +69,8 @@ class CommandBridge : public QObject {
 
     /** @brief Lock out the target currently active on @p slot (0 or 1). */
     Q_INVOKABLE bool lockoutSlot(int slot) const;
+    Q_INVOKABLE bool setPersistTgLockouts(bool persist) const;
+    Q_INVOKABLE bool clearTemporaryTgAvoids(const QString& context) const;
 
     /** @brief Listen to or stop tuning one talkgroup or range; a missing exact id is added. */
     Q_INVOKABLE bool setTalkgroupListening(unsigned int idStart, unsigned int idEnd, bool listen) const;

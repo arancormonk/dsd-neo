@@ -37,6 +37,7 @@ struct SessionArgPrefs {
     int bandwidthKhz = 48;
     bool biasTee = false;
     bool skipEncrypted = true;
+    bool persistTgLockouts = true;
     bool autoPpm = false;
     double hangtimeSec = 2.0;
     QString extraArgs;

@@ -32,6 +32,9 @@ typedef struct {
 
 const char*
 dsd_tg_policy_block_reason_label(uint32_t block_reasons) {
+    if (block_reasons & DSD_TG_POLICY_BLOCK_SESSION_AVOID) {
+        return "session-avoid";
+    }
     if (block_reasons & DSD_TG_POLICY_BLOCK_HOLD) {
         return "hold";
     }
@@ -90,6 +93,9 @@ typedef struct {
 
 struct dsd_tg_policy_store {
     dsd_tg_policy_table table;
+    uint32_t* session_avoids; /* Sorted exact IDs, separate from serializable rows. */
+    size_t session_avoid_count;
+    size_t session_avoid_capacity;
     size_t references;
     dsd_tg_policy_active_table active;
     uint64_t context_id;
@@ -327,6 +333,7 @@ tg_policy_context_free(void* ptr) {
     ctx->table.entries = NULL;
     ctx->table.count = 0;
     ctx->table.capacity = 0;
+    free(ctx->session_avoids);
     free(ctx);
 }
 
@@ -437,6 +444,101 @@ tg_policy_table_note_mutation(dsd_tg_policy_context* ctx) {
         ctx->table.generation = 1u;
     }
     tg_policy_refresh_active_priorities(ctx);
+}
+
+static size_t
+tg_policy_avoid_lower_bound(const dsd_tg_policy_context* ctx, uint32_t id) {
+    size_t lo = 0;
+    size_t hi = ctx ? ctx->session_avoid_count : 0;
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (ctx->session_avoids[mid] < id) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+int
+dsd_tg_policy_session_avoid_contains(const dsd_state* state, uint32_t id) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    const size_t index = tg_policy_avoid_lower_bound(ctx, id);
+    return ctx && index < ctx->session_avoid_count && ctx->session_avoids[index] == id;
+}
+
+size_t
+dsd_tg_policy_session_avoid_count(const dsd_state* state, uint32_t start, uint32_t end) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    if (!ctx || start > end) {
+        return 0;
+    }
+    const size_t after = end == UINT32_MAX ? ctx->session_avoid_count : tg_policy_avoid_lower_bound(ctx, end + 1U);
+    return after - tg_policy_avoid_lower_bound(ctx, start);
+}
+
+static int
+tg_policy_avoid_reserve(dsd_tg_policy_context* ctx) {
+    if (ctx->session_avoid_count < ctx->session_avoid_capacity) {
+        return 0;
+    }
+    const size_t max_capacity = SIZE_MAX / sizeof(*ctx->session_avoids);
+    const size_t capacity = ctx->session_avoid_capacity ? ctx->session_avoid_capacity : 8U;
+    if (capacity > max_capacity / 2U) {
+        return -1;
+    }
+    uint32_t* ids = tg_policy_realloc(ctx->session_avoids, capacity * 2U * sizeof(*ids));
+    if (!ids) {
+        return -1;
+    }
+    ctx->session_avoids = ids;
+    ctx->session_avoid_capacity = capacity * 2U;
+    return 0;
+}
+
+int
+dsd_tg_policy_session_avoid_add(dsd_state* state, uint32_t id) {
+    if (!state || !id) {
+        return 1;
+    }
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
+    const int created = ctx == NULL;
+    if (created) {
+        ctx = tg_policy_context_alloc();
+    }
+    if (!ctx) {
+        return -1;
+    }
+    const size_t index = tg_policy_avoid_lower_bound(ctx, id);
+    if (index < ctx->session_avoid_count && ctx->session_avoids[index] == id) {
+        return 0;
+    }
+    if (tg_policy_avoid_reserve(ctx) != 0) {
+        if (created) {
+            tg_policy_context_free(ctx);
+        }
+        return -1;
+    }
+    if (created && dsd_state_ext_set(state, DSD_STATE_EXT_CORE_TG_POLICY, ctx, tg_policy_context_free) != 0) {
+        tg_policy_context_free(ctx);
+        return -1;
+    }
+    DSD_MEMMOVE(&ctx->session_avoids[index + 1U], &ctx->session_avoids[index],
+                (ctx->session_avoid_count - index) * sizeof(*ctx->session_avoids));
+    ctx->session_avoids[index] = id;
+    ++ctx->session_avoid_count;
+    tg_policy_table_note_mutation(ctx);
+    return 0;
+}
+
+void
+dsd_tg_policy_session_avoid_clear(dsd_state* state) {
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 0);
+    if (ctx && ctx->session_avoid_count) {
+        ctx->session_avoid_count = 0;
+        tg_policy_table_note_mutation(ctx);
+    }
 }
 
 int
@@ -978,6 +1080,16 @@ tg_policy_context_clone(const dsd_tg_policy_context* src, dsd_tg_policy_context*
     clone->table.capacity = src->table.count;
     clone->table.generation = src->table.generation;
     clone->active = src->active;
+    if (src->session_avoid_count) {
+        clone->session_avoids = tg_policy_calloc(src->session_avoid_count, sizeof(*clone->session_avoids));
+        if (!clone->session_avoids) {
+            tg_policy_context_free(clone);
+            return -1;
+        }
+        DSD_MEMCPY(clone->session_avoids, src->session_avoids,
+                   src->session_avoid_count * sizeof(*clone->session_avoids));
+        clone->session_avoid_count = clone->session_avoid_capacity = src->session_avoid_count;
+    }
     /* Frontend commands must retain the live identity through publish/consume copies. */
     clone->snapshot_source_context_id = src->snapshot_source_context_id;
     clone->snapshot_parent_context_id = src->context_id;
@@ -1276,6 +1388,9 @@ dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, 
     tg_policy_group_set_hold_state(state, tg, out, &hold_mismatch);
     tg_policy_apply_group_tune_blocks(opts, encrypted, data_call, out);
     tg_policy_apply_enc_lockout_block(opts, state, tg, 1, data_call, out);
+    if (dsd_tg_policy_session_avoid_contains(state, tg)) {
+        tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_SESSION_AVOID);
+    }
 
     if (mode_blocking) {
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_MODE);
@@ -1319,6 +1434,9 @@ tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, ui
     tg_policy_private_set_hold_state(state, src, dst, out, &hold_mismatch);
     tg_policy_apply_private_tune_blocks(opts, encrypted, data_call, src_match, dst_match, allow_unlisted, out);
     tg_policy_apply_enc_lockout_block(opts, state, dst, 0, data_call, out);
+    if (dsd_tg_policy_session_avoid_contains(state, src) || dsd_tg_policy_session_avoid_contains(state, dst)) {
+        tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_SESSION_AVOID);
+    }
     if (mode_blocking) {
         tg_policy_block_decision_tune_and_media(out, DSD_TG_POLICY_BLOCK_MODE);
     }

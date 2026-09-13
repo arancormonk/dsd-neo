@@ -8083,6 +8083,44 @@ test_force_conflicts_and_explicit_off_options(void) {
     return failed;
 }
 
+static int
+test_tg_lockout_persistence_flags(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    int rc = opts->persist_tg_lockouts != 1;
+    char name[] = "dsd-neo";
+    char temporary[] = "--tg-lockout-session";
+    char persist[] = "--tg-lockout-persist";
+    char* cases[][4] = {{name, temporary, NULL, NULL},
+                        {name, persist, NULL, NULL},
+                        {name, temporary, persist, NULL},
+                        {name, persist, temporary, NULL}};
+    const int expected[] = {0, 1, 1, 0};
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        // Model a previously applied config: the CLI explicitly overrides either value.
+        opts->persist_tg_lockouts = (uint8_t)!expected[i];
+        int effective = 0;
+        int exit_rc = -1;
+        const int parsed = dsd_parse_args(i < 2 ? 2 : 3, cases[i], opts, state, &effective, &exit_rc);
+        if (parsed != DSD_PARSE_CONTINUE || opts->persist_tg_lockouts != expected[i] || effective != 1) {
+            DSD_FPRINTF(stderr, "talkgroup lockout flag case %zu failed\n", i);
+            rc = 1;
+        }
+    }
+    close_parse_outputs(opts);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -8234,6 +8272,7 @@ main(void) {
     rc |= test_bootstrap_cli_file_override_uses_cli_rate_for_headerless_open();
     rc |= test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open();
     rc |= test_F_relaxes_crc_and_notice_omits_nxdn();
+    rc |= test_tg_lockout_persistence_flags();
     return rc;
 }
 

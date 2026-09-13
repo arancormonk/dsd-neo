@@ -42,6 +42,7 @@ class AppPrefs : public QObject {
                    backgroundListeningChanged)
     Q_PROPERTY(bool keepScreenAwake READ keepScreenAwake WRITE setKeepScreenAwake NOTIFY keepScreenAwakeChanged)
     Q_PROPERTY(bool skipEncrypted READ skipEncrypted WRITE setSkipEncrypted NOTIFY skipEncryptedChanged)
+    Q_PROPERTY(bool persistTgLockouts READ persistTgLockouts WRITE setPersistTgLockouts NOTIFY persistTgLockoutsChanged)
     Q_PROPERTY(double hangtimeSec READ hangtimeSec WRITE setHangtimeSec NOTIFY hangtimeSecChanged)
     Q_PROPERTY(bool autoPpm READ autoPpm WRITE setAutoPpm NOTIFY autoPpmChanged)
     Q_PROPERTY(int gainDb READ gainDb WRITE setGainDb NOTIFY gainDbChanged)
@@ -105,6 +106,9 @@ class AppPrefs : public QObject {
     bool keepScreenAwake() const;
     void setKeepScreenAwake(bool on);
 
+    bool persistTgLockouts() const;
+    void setPersistTgLockouts(bool on);
+
     bool skipEncrypted() const;
     void setSkipEncrypted(bool on);
 
@@ -166,6 +170,7 @@ class AppPrefs : public QObject {
     void backgroundListeningChanged();
     void keepScreenAwakeChanged();
     void skipEncryptedChanged();
+    void persistTgLockoutsChanged();
     void hangtimeSecChanged();
     void autoPpmChanged();
     void gainDbChanged();

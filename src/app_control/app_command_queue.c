@@ -2894,6 +2894,7 @@ static const int k_ui_cmd_action_ids[] = {
 };
 
 static const int k_ui_cmd_i32_ids[] = {
+    DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET,
     DSD_APP_CMD_FORCE_KEY_SET,
     DSD_APP_CMD_GAIN_DELTA,
     DSD_APP_CMD_AGAIN_DELTA,
@@ -3101,6 +3102,8 @@ struct ui_cmd_payload_min_size_rule {
 };
 
 static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules[] = {
+    {DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET, sizeof(int32_t)},
+    {DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, sizeof(uint64_t)},
     {DSD_APP_CMD_TG_ROW_SET, sizeof(dsd_app_tg_row_payload)},
     {DSD_APP_CMD_TG_ROW_REMOVE, sizeof(dsd_app_tg_range_payload)},
     {DSD_APP_CMD_TG_LIST_EXPORT, offsetof(dsd_app_tg_export_payload, path) + 1U},
@@ -4369,6 +4372,29 @@ static int
 apply_cmd_foundation(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)opts;
     switch (c->id) {
+        case DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET: {
+            int32_t persist = 0;
+            DSD_MEMCPY(&persist, c->data, sizeof persist);
+            if (persist != 0 && persist != 1) {
+                return UI_CMD_APPLY_INVALID_PAYLOAD;
+            }
+            opts->persist_tg_lockouts = (uint8_t)persist;
+            ui_set_toast(state, 3, "User TG lockouts: %s", persist ? "save to group list" : "session only");
+            return UI_CMD_APPLY_COMPLETED;
+        }
+        case DSD_APP_CMD_TG_SESSION_AVOID_CLEAR: {
+            uint64_t expected = 0;
+            uint64_t current = 0;
+            DSD_MEMCPY(&expected, c->data, sizeof expected);
+            dsd_tg_policy_table_version(state, &current, NULL);
+            if (current != expected) {
+                ui_set_toast(state, 3, "Talkgroup list changed: temporary avoids were not cleared");
+                return UI_CMD_APPLY_FAILED;
+            }
+            dsd_tg_policy_session_avoid_clear(state);
+            ui_set_toast(state, 3, "Cleared temporary TG avoids in current list");
+            return UI_CMD_APPLY_COMPLETED;
+        }
         case DSD_APP_CMD_TG_ROW_SET: return apply_cmd_tg_row_set(opts, state, c);
         case DSD_APP_CMD_TG_SELECTION_SET: return apply_cmd_tg_selection(opts, state, c);
         case DSD_APP_CMD_TG_ROW_REMOVE: return apply_cmd_tg_row_remove(opts, state, c);
@@ -4443,6 +4469,15 @@ apply_cmd_tg_listen(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
     return apply_cmd_tg_listen_all(opts, state, c);
 }
 
+static void
+tg_lockout_report(dsd_opts* opts, dsd_state* state, unsigned int tg) {
+    const int session_only = !opts->persist_tg_lockouts || !opts->group_in_file[0] || dsd_scan_groups_row_active(state);
+    ui_set_toast(state, 3, "TG %u locked out%s", tg, session_only ? " for this session" : "");
+    if (opts->persist_tg_lockouts) {
+        tg_listen_persist(opts, state);
+    }
+}
+
 static int
 apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state) {
@@ -4460,11 +4495,13 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     if (!apply_cmd_lockout_resolve_target(state, c, &slot, &target)) {
         return 1;
     }
-    int tg = (int)target;
-    upsert_rc = tg_listen_apply(state, target, target, 0);
+    const unsigned int tg = target;
+    const int temporary = !opts->persist_tg_lockouts;
+    upsert_rc = temporary ? dsd_tg_policy_session_avoid_add(state, target) : tg_listen_apply(state, target, target, 0);
     if (upsert_rc != 0) {
-        LOG_WARN("WARNING: User lockout for TG %d could not be applied (rc=%d).\n", tg, upsert_rc);
-        return 1;
+        LOG_WARN("WARNING: User lockout for TG %u could not be applied (rc=%d).\n", tg, upsert_rc);
+        ui_set_toast(state, 4, "Could not lock out TG %u", tg);
+        return UI_CMD_APPLY_FAILED;
     }
 
     int eh_slot = (slot == 0) ? 0 : 1;
@@ -4472,18 +4509,19 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     dsd_event_history_transaction_begin(state, &transaction);
     DSD_SNPRINTF(state->event_history_s[eh_slot].Event_History_Items[0].internal_str,
                  sizeof state->event_history_s[eh_slot].Event_History_Items[0].internal_str,
-                 "Target: %d; has been locked out; User Lock Out.", tg);
+                 "Target: %u; has been locked out; %s.", tg, temporary ? "Session Only" : "User Lock Out");
     dsd_event_history_mark_dirty(&state->event_history_s[eh_slot]);
     dsd_event_history_transaction_end(&transaction);
     watchdog_event_current(opts, state, eh_slot);
 
-    tg_listen_persist(opts, state);
+    tg_lockout_report(opts, state, tg);
 
     const int transition_status = apply_lockout_decoder_transition(opts, state);
     if (transition_status == UI_CMD_APPLY_FAILED) {
-        LOG_WARN("WARNING: User lockout for TG %d was applied, but the return-to-CC cleanup tune was not accepted.\n",
+        LOG_WARN("WARNING: User lockout for TG %u was applied, but the return-to-CC cleanup tune was not accepted.\n",
                  tg);
-        ui_set_toast(state, 4, "TG %d locked out; return-to-CC tune failed", tg);
+        ui_set_toast(state, 4, "TG %u locked out%s; return-to-CC tune failed", tg,
+                     temporary ? " for this session" : "");
     }
     return UI_CMD_APPLY_COMPLETED;
 }

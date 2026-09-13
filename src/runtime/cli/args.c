@@ -1269,6 +1269,10 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
             }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--tg-lockout-session") == 0 || strcmp(argv[i], "--tg-lockout-persist") == 0) {            \
+            opts->persist_tg_lockouts = strcmp(argv[i], "--tg-lockout-persist") == 0;                                  \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--enc-lockout") == 0) {                                                                   \
             opts->trunk_tune_enc_calls = 0;                                                                            \
             LOG_INFO("NOTICE: P25: Encrypted call lockout: On (silently classify and follow usable keys).\n");         \

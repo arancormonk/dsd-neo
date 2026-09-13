@@ -65,6 +65,27 @@ input_spec(const QStringList& args) {
 }
 
 void
+test_tg_lockout_preference(void) {
+    auto system = usb_system();
+    SessionArgPrefs prefs;
+    SessionArgsError error = SessionArgsError::None;
+    auto args = session_args_build(system, prefs, &error);
+    expect("saved lockouts default", args.count("--tg-lockout-persist") == 1);
+    prefs.persistTgLockouts = false;
+    args = session_args_build(system, prefs, &error);
+    expect("temporary lockout args", args.count("--tg-lockout-session") == 1 && !args.contains("--tg-lockout-persist"));
+    QString scanError;
+    args = dsd_qt::session_args_scan_build(system, "851.375", "scan.csv", prefs, &scanError);
+    expect("scan temporary lockout args", scanError.isEmpty() && args.count("--tg-lockout-session") == 1);
+    prefs.persistTgLockouts = true;
+    args = dsd_qt::session_args_scan_build(system, "851.375", "scan.csv", prefs, &scanError);
+    expect("scan saved lockout args", scanError.isEmpty() && args.count("--tg-lockout-persist") == 1);
+    system["extraArgs"] = "--tg-lockout-session";
+    args = session_args_build(system, prefs, &error);
+    expect("extra args override default", args.indexOf("--tg-lockout-session") > args.indexOf("--tg-lockout-persist"));
+}
+
+void
 test_hangtime(void) {
     auto sys = usb_system();
     SessionArgPrefs prefs;
@@ -528,6 +549,7 @@ main(int argc, char** argv) {
     }
     test_freq_validation();
     test_hangtime();
+    test_tg_lockout_preference();
     test_defaults_and_overrides();
     test_airspy_bandwidth();
     test_csv_args();

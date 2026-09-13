@@ -9,6 +9,47 @@ Item {
     id: screen
 
     property bool advancedOpen: false
+    property bool lockoutPending: false
+    property bool requestedLockoutPersistence: true
+    property string lockoutError: ""
+    readonly property bool liveLockoutPersistence: metrics.persistTgLockouts
+    readonly property bool lockoutSessionRunning: decoderHost.sessionState === 2
+    readonly property bool lockoutEditable: !lockoutPending && (decoderHost.sessionState === 0 || decoderHost.sessionState === 4 || (lockoutSessionRunning && metrics.optionsKnown))
+
+    onLiveLockoutPersistenceChanged: {
+        if (lockoutPending && liveLockoutPersistence === requestedLockoutPersistence) {
+            lockoutPending = false;
+            lockoutAckTimer.stop();
+        }
+    }
+    onLockoutSessionRunningChanged: {
+        lockoutPending = false;
+        lockoutAckTimer.stop();
+    }
+
+    Timer {
+        id: lockoutAckTimer
+        interval: 5000
+        onTriggered: {
+            screen.lockoutPending = false;
+            screen.lockoutError = qsTr("The decoder has not confirmed the change. The switch shows its current setting.");
+        }
+    }
+
+    function setLockoutPersistence(value) {
+        if (!lockoutEditable)
+            return;
+        lockoutError = "";
+        if (lockoutSessionRunning && !commands.setPersistTgLockouts(value)) {
+            lockoutError = qsTr("Could not change the running decoder's setting. Try again.");
+            return;
+        }
+        prefs.persistTgLockouts = value;
+        requestedLockoutPersistence = value;
+        lockoutPending = lockoutSessionRunning && liveLockoutPersistence !== value;
+        if (lockoutPending)
+            lockoutAckTimer.restart();
+    }
 
     signal openDiagnostics
     signal openImports
@@ -211,6 +252,40 @@ Item {
                             wrapMode: Text.Wrap
                             color: Theme.textSecondary
                             font.pixelSize: Theme.fontSize(14)
+                        }
+                    }
+
+                    ToggleRow {
+                        objectName: "persistTgLockoutsToggle"
+                        title: qsTr("Save skipped talkgroups")
+                        subtitle: qsTr("Applies to Skip immediately. Off keeps avoids until stop or list reload. Talkgroup-list edits still save.")
+                        checked: screen.lockoutSessionRunning ? screen.liveLockoutPersistence : prefs.persistTgLockouts
+                        enabled: screen.lockoutEditable
+                        showDivider: true
+                        onToggled: function (value) { screen.setLockoutPersistence(value); }
+                    }
+
+                    Text {
+                        objectName: "tgLockoutError"
+                        width: parent.width - 2 * Theme.cardPadding
+                        x: Theme.cardPadding
+                        visible: text.length > 0
+                        text: screen.lockoutError
+                        wrapMode: Text.Wrap
+                        color: Theme.textSecondary
+                        font.pixelSize: Theme.fontSize(12)
+                    }
+
+                    OutlineButton {
+                        objectName: "clearTemporaryTgAvoidsButton"
+                        width: parent.width - 2 * Theme.cardPadding
+                        x: Theme.cardPadding
+                        visible: screen.lockoutSessionRunning && metrics.temporaryTgAvoidCount > 0
+                        enabled: screen.lockoutEditable
+                        text: qsTr("Clear temporary TG avoids — current list (%1)").arg(metrics.temporaryTgAvoidCount)
+                        onClicked: {
+                            screen.lockoutError = commands.clearTemporaryTgAvoids(metrics.tgPolicyContext)
+                                ? "" : qsTr("Could not clear temporary avoids. Try again.");
                         }
                     }
 

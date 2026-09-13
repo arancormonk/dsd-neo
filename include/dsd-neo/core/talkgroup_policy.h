@@ -56,6 +56,7 @@ typedef enum {
     DSD_TG_POLICY_BLOCK_RECORD = 1u << 8,
     DSD_TG_POLICY_BLOCK_STREAM = 1u << 9,
     DSD_TG_POLICY_BLOCK_ENC_LOCKOUT = 1u << 10,
+    DSD_TG_POLICY_BLOCK_SESSION_AVOID = 1u << 11,
 } dsd_tg_policy_block_reason;
 
 /** @brief Return the highest-priority diagnostic label for a block-reason mask. */
@@ -157,6 +158,18 @@ int dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state);
  *         loaded), -1 on a null state or allocation failure.
  */
 int dsd_tg_policy_clear(dsd_state* state);
+
+/** Temporary exact-ID blocks owned by the effective policy context, never CSV rows.
+ * Survive retunes/scan visits; a list reload/replacement or context destruction resets them.
+ * Match group targets and private endpoints just like exact mode-B user lockouts.
+ * add: 0 applied/already present, 1 invalid (NULL state or zero ID), -1 allocation failure
+ * with the previous policy intact. Mutations advance the published policy generation. */
+int dsd_tg_policy_session_avoid_add(dsd_state* state, uint32_t id);
+int dsd_tg_policy_session_avoid_contains(const dsd_state* state, uint32_t id);
+/** Count distinct avoided IDs in inclusive bounds; 0..UINT32_MAX counts the whole scope. */
+size_t dsd_tg_policy_session_avoid_count(const dsd_state* state, uint32_t start, uint32_t end);
+/** Clear only temporary blocks in the current scope; NULL/empty is a no-op. */
+void dsd_tg_policy_session_avoid_clear(dsd_state* state);
 
 /** Rows in table order (file order, then runtime appends). 0 without a policy context.
  * Works on live decoder state and frontend snapshot copies. */

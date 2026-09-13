@@ -209,6 +209,7 @@ append_flag_args(QStringList& args, const QVariantMap& system, const SessionArgP
     if (system.value(QStringLiteral("trunking")).toBool()) {
         args << QStringLiteral("-T");
     }
+    args << (prefs.persistTgLockouts ? QStringLiteral("--tg-lockout-persist") : QStringLiteral("--tg-lockout-session"));
     if (prefs.skipEncrypted) {
         args << QStringLiteral("--enc-lockout");
     }
@@ -635,6 +636,7 @@ SessionArgsBuilder::buildArgs(const QVariantMap& system, SessionArgsError* error
         prefs.bandwidthKhz = m_prefs->bandwidthKhz();
         prefs.biasTee = m_prefs->biasTee();
         prefs.skipEncrypted = m_prefs->skipEncrypted();
+        prefs.persistTgLockouts = m_prefs->persistTgLockouts();
         prefs.autoPpm = m_prefs->autoPpm();
         prefs.hangtimeSec = m_prefs->hangtimeSec();
         prefs.extraArgs = m_prefs->extraArgs();

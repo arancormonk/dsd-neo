@@ -831,6 +831,7 @@ grant_block_log_tag(int is_indiv, uint32_t block_reasons) {
         const char* indiv_tag;
         const char* group_tag;
     } k_tags[] = {
+        {DSD_TG_POLICY_BLOCK_SESSION_AVOID, "indiv-blocked-session-avoid", "grant-blocked-session-avoid"},
         {DSD_TG_POLICY_BLOCK_HOLD, "indiv-blocked-hold", "grant-blocked-hold"},
         {DSD_TG_POLICY_BLOCK_PRIVATE_DISABLED, "indiv-blocked-private", "indiv-blocked-private"},
         {DSD_TG_POLICY_BLOCK_GROUP_DISABLED, "grant-blocked-group", "grant-blocked-group"},

@@ -390,6 +390,15 @@ test_trunking_labels(void) {
     rc |= expect_str("prefer cc on", lbl_pref_cc(&ctx, b, sizeof(b)), "Prefer CC candidates [On]");
 
     state.tg_hold = 0;
+    dsd_test_tg_avoids(3, 42);
+    rc |= expect_str("temporary avoids count", lbl_tg_session_avoid_clear(&ctx, b, sizeof b),
+                     "Clear temporary TG avoids - current list [3]");
+    opts.persist_tg_lockouts = 1;
+    rc |= expect_str("save lockouts enabled", lbl_tg_lockout_persist(&ctx, b, sizeof b), "Save user TG lockouts [On]");
+    opts.persist_tg_lockouts = 0;
+    rc |=
+        expect_str("save lockouts disabled", lbl_tg_lockout_persist(&ctx, b, sizeof b), "Save user TG lockouts [Off]");
+    dsd_test_tg_avoids(0, 0);
     rc |= expect_str("tg hold none", lbl_tg_hold(&ctx, b, sizeof(b)), "Talkgroup hold... [none]");
     state.tg_hold = 4242;
     rc |= expect_str("tg hold set", lbl_tg_hold(&ctx, b, sizeof(b)), "Talkgroup hold... [4242]");
