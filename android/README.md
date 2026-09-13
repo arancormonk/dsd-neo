@@ -118,8 +118,13 @@ The shared host provides location requests/cancellation, content-based diagnosti
 sharing, device-attach signals and a diagnostic sink. Android's `LocationSupport.kt`
 brokers **Use my location** for RadioReference with coarse foreground permission on
 the Android main thread. API 30+ uses `getCurrentLocation`; API 29 uses
-`requestSingleUpdate` and removes its listener on completion/cancellation. A 20-second
-timeout covers fix acquisition and worker-thread reverse geocoding. Request IDs and
+`requestSingleUpdate` and removes its listener on completion/cancellation. After
+permission is granted, it checks enabled providers for a cached fix up to ten minutes
+old with reported accuracy within 10 km, using monotonic time for freshness and retaining
+the original fix timestamp. API 31+ requests both platform fused and network providers
+when no usable cached fix exists, accepting the first usable result and cancelling the
+remaining requests; API 29–30 uses the network provider. Fix acquisition and worker-thread
+reverse geocoding each have a separate 20-second timeout. Request IDs and
 separate fix/geocode status preserve a usable fix when geocoding fails and prevent
 late responses from replacing a newer search. Activity teardown cancels the request.
 Desktop location defaults to unsupported.
