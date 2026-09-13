@@ -832,6 +832,8 @@ individual systems' source, endpoint, PPM, bandwidth and bias-tee settings.
 Scan lists use the app's voice hang time; per-system hang-time overrides do not apply.
 `-t` is separate from idle dwell on every target and the activity hold on conventional
 targets. The list editor can select imported group/source CSVs from the existing library.
+It has no field for the per-visit cap; add `--scan-max-visit-ms <ms>` to Extra decoder
+arguments to cap every target in the session.
 Per-system groups and keys remain isolated on rotation; source aliases are global
 and differing system alias files produce a warning. Unsupported settings are
 refused rather than dropped. See [scan-list rules](../docs/trunk-scan.md#qt-and-android-scan-lists).

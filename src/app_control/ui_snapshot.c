@@ -148,10 +148,11 @@ _Static_assert(UI_SNAPSHOT_FIELD_END(scan_keys_active_set) <= offsetof(dsd_state
 _Static_assert(offsetof(dsd_state, trunk_scan_active_id) >= offsetof(dsd_state, vertex_ks_count)
                    && UI_SNAPSHOT_FIELD_END(trunk_scan_avoided_count) <= UI_SNAPSHOT_FIELD_END(ui_msg),
                "trunk_scan_active_id..trunk_scan_avoided_count must ride the vertex_ks_count..ui_msg range");
-/* Voice-gated scan memory rides the same range so the status line sees the phase. */
+/* Voice-gated scan memory and the per-visit cap bookkeeping beside it ride the same range so the
+ * status line sees the phase and the Scan Timing row sees the cap. */
 _Static_assert(offsetof(dsd_state, scan_voice_gate_arrive_m) >= offsetof(dsd_state, vertex_ks_count)
-                   && UI_SNAPSHOT_FIELD_END(scan_voice_gate_phase) <= UI_SNAPSHOT_FIELD_END(ui_msg),
-               "scan_voice_gate_* must ride the vertex_ks_count..ui_msg range");
+                   && UI_SNAPSHOT_FIELD_END(scan_visit_rearm_pending) <= UI_SNAPSHOT_FIELD_END(ui_msg),
+               "scan_voice_gate_*/scan_visit_* must ride the vertex_ks_count..ui_msg range");
 /* The scan timing publication is plain inline bytes beside the voice-gate memory, so like
  * them it has to be inside a copy range -- left out of one it would silently never reach
  * the UI. */

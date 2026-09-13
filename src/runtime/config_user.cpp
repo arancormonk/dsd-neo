@@ -192,6 +192,7 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->trunk_scan_voice_only = 0;
     cfg->trunk_scan_voice_qualify_ms = 1000;
     cfg->trunk_scan_voice_hold_ms = 2000;
+    cfg->trunk_scan_max_visit_ms = 0;
     cfg->rtl_auto_ppm = 0;
     dsd_airspy_config_defaults(&cfg->airspy);
     cfg->soapy_bandwidth_hz = -1;
@@ -1039,6 +1040,7 @@ render_trunking_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "scan_voice_only = %s\n", ini_bool(cfg->trunk_scan_voice_only));
     DSD_FPRINTF(out, "scan_voice_qualify_ms = %d\n", cfg->trunk_scan_voice_qualify_ms);
     DSD_FPRINTF(out, "scan_voice_hold_ms = %d\n", cfg->trunk_scan_voice_hold_ms);
+    DSD_FPRINTF(out, "scan_max_visit_ms = %d\n", cfg->trunk_scan_max_visit_ms);
     DSD_FPRINTF(out, "\n");
 }
 
@@ -1451,6 +1453,7 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     opts->scan_voice_only = cfg->trunk_scan_voice_only ? 1 : 0;
     opts->scan_voice_qualify_ms = cfg->trunk_scan_voice_qualify_ms;
     opts->scan_voice_hold_ms = cfg->trunk_scan_voice_hold_ms;
+    opts->scan_max_visit_ms = cfg->trunk_scan_max_visit_ms;
 }
 
 static void
@@ -1816,6 +1819,7 @@ snapshot_trunking_config(const dsd_opts* opts, const dsd_state* state, dsdneoUse
     cfg->trunk_scan_voice_only = (configured ? configured->scan_voice_only : opts->scan_voice_only) ? 1 : 0;
     cfg->trunk_scan_voice_qualify_ms = configured ? configured->scan_voice_qualify_ms : opts->scan_voice_qualify_ms;
     cfg->trunk_scan_voice_hold_ms = configured ? configured->scan_voice_hold_ms : opts->scan_voice_hold_ms;
+    cfg->trunk_scan_max_visit_ms = configured ? configured->scan_max_visit_ms : opts->scan_max_visit_ms;
 }
 
 static void

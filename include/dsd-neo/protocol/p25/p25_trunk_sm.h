@@ -486,6 +486,23 @@ double p25_sm_effective_hangtime(const dsd_state* state, double hangtime);
 void p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
 
 /**
+ * @brief End the tuned call and come to rest on the control channel WITHOUT tuning.
+ *
+ * p25_sm_release() minus the return-to-CC tune, for a caller that owns the tuner and is
+ * already moving it somewhere else: the trunk-scan coordinator evicting a target that reached
+ * its per-visit limit (issue #507). Tuning here would fight that move, so this never asks the
+ * tuner for anything -- it ends both call slots, clears the voice-channel context and decoder
+ * mirrors, drops trunk_is_tuned and settles in P25_SM_ON_CC. Session state an ordinary release
+ * keeps is kept: the counters and the encryption-reprobe memo survive.
+ *
+ * @param ctx State machine context (NULL uses the global singleton).
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param reason Log tag for the release reason.
+ */
+void p25_sm_abandon_carrier(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
+
+/**
  * @brief Record exact P25P2 frame sync while acquiring a tuned voice channel.
  *
  * This confirms demodulator acquisition and cancels no-sync recovery without

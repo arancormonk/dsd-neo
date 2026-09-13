@@ -1942,6 +1942,9 @@ test_scan_hold_avoid_commands(void) {
     state.trunk_lcn_freq[3] = 858000000L;
     state.lcn_freq_roll = 2; /* row 1 (857 MHz) is on air */
     state.last_cc_sync_time_m = 42.0;
+    opts.scan_max_visit_ms = 1000;
+    state.scan_visit_since_m = 42.0;
+    state.scan_visit_roll_seen = state.lcn_freq_roll;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
 
@@ -1958,6 +1961,9 @@ test_scan_hold_avoid_commands(void) {
     rc |= expect_int("scan hold release drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("scan hold release clears flag", state.lcn_scan_hold, 0);
     rc |= expect_true("scan hold release restarts dwell", state.last_cc_sync_time_m > 42.0);
+    rc |= expect_true("scan hold release restarts the cap", state.scan_visit_since_m >= state.last_cc_sync_time_m);
+    rc |= expect_true("scan hold release publishes a full cap",
+                      state.scan_timing.visit_deadline_m >= state.last_cc_sync_time_m + 1.0);
     rc |= expect_contains("scan hold release toast", state.ui_msg, "hold off");
     rc |= expect_int("scan release publishes hangtime", state.scan_timing.reason, DSD_SCAN_STAY_HANGTIME);
     rc |= expect_true("scan release publishes a fresh deadline",

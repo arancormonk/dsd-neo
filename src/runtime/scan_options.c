@@ -53,6 +53,9 @@ static const scan_option_spec specifications[] = {
     {"--no-scan-voice-only", DSD_SCAN_OPT_VOICE, ALL_MODES, 0, 1, 0},
     {"--scan-voice-qualify-ms", DSD_SCAN_OPT_QUALIFY, ALL_MODES, 1, 1, 0},
     {"--scan-voice-hold-ms", DSD_SCAN_OPT_HOLD, ALL_MODES, 1, 1, 0},
+    /* The per-visit cap applies to every trunk-scan target type, so unlike the voice-gate
+     * switches above it is not conventional-only. */
+    {"--scan-max-visit-ms", DSD_SCAN_OPT_MAX_VISIT, ALL_MODES, 1, 0, 0},
 };
 
 static int
@@ -237,6 +240,14 @@ option_set_number(const scan_option_spec* spec, const char* argument, dsd_scan_o
                 parsed->values.hold_ms = (int)number;
             }
             return 0;
+        case DSD_SCAN_OPT_MAX_VISIT:
+            /* A row disables the cap outright with 0; any other value is a real cap and
+             * shares the CLI bounds, so the voice-gate bounds above do not apply. */
+            if (option_decimal(argument, 3600000UL, &number) || (number != 0UL && number < 1000UL)) {
+                return -1;
+            }
+            parsed->values.max_visit_ms = (int)number;
+            return 0;
         default: return -1;
     }
 }
@@ -274,9 +285,26 @@ option_set_path(const scan_option_spec* spec, const char* argument, dsd_scan_opt
     return 0;
 }
 
+/* The plain on/off switches: the spec already carries the value the row asked for, so there is
+ * nothing to parse. Returns 0 when the field was one of them and -1 when it belongs elsewhere. */
+static int
+option_set_flag(const scan_option_spec* spec, dsd_scan_options* parsed) {
+    switch (spec->field) {
+        case DSD_SCAN_OPT_CRC: parsed->values.strict_crc = spec->value; return 0;
+        case DSD_SCAN_OPT_VOICE: parsed->values.voice_only = spec->value; return 0;
+        case DSD_SCAN_OPT_DATA: parsed->values.tune_data_calls = spec->value; return 0;
+        case DSD_SCAN_OPT_ENC: parsed->values.tune_enc_calls = spec->value; return 0;
+        default: return -1;
+    }
+}
+
 static int
 option_set(const scan_option_spec* spec, const char* argument, unsigned int mode, dsd_scan_options* parsed) {
-    if (spec->field == DSD_SCAN_OPT_CLEAR_KEYS) {
+    /* Recognised here and acted on elsewhere: neither carries a value of its own to store. */
+    if (spec->field == DSD_SCAN_OPT_CLEAR_KEYS || spec->field == DSD_SCAN_OPT_P25_CANDIDATES) {
+        return 0;
+    }
+    if (option_set_flag(spec, parsed) == 0) {
         return 0;
     }
     switch (spec->field) {
@@ -291,12 +319,8 @@ option_set(const scan_option_spec* spec, const char* argument, unsigned int mode
         case DSD_SCAN_OPT_BP:
         case DSD_SCAN_OPT_SCRAMBLER:
         case DSD_SCAN_OPT_QUALIFY:
-        case DSD_SCAN_OPT_HOLD: return option_set_number(spec, argument, parsed);
-        case DSD_SCAN_OPT_CRC: parsed->values.strict_crc = spec->value; return 0;
-        case DSD_SCAN_OPT_VOICE: parsed->values.voice_only = spec->value; return 0;
-        case DSD_SCAN_OPT_DATA: parsed->values.tune_data_calls = spec->value; return 0;
-        case DSD_SCAN_OPT_ENC: parsed->values.tune_enc_calls = spec->value; return 0;
-        case DSD_SCAN_OPT_P25_CANDIDATES: return 0;
+        case DSD_SCAN_OPT_HOLD:
+        case DSD_SCAN_OPT_MAX_VISIT: return option_set_number(spec, argument, parsed);
         default: return option_set_path(spec, argument, parsed);
     }
 }

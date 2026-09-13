@@ -573,6 +573,10 @@ The values that follow are the *effective* ones for the row on air, after CSV an
 - `hang` is the active protocol's effective hangtime, and appears only while a trunked call is being followed.
   It includes `DSD_NEO_DMR_HANGTIME` / `DSD_NEO_P25_HANGTIME` overrides and the optional P25 Phase 1 error-hold
   extension. NXDN uses `-t`.
+- `Visit: <remaining>/<cap>` is the per-visit cap (`--scan-max-visit-ms`, or the row's own value), and appears only
+  when a cap applies to the row on air. `Visit: paused` means the cap is not counting down right now — a hold
+  suspends it, a visit with nothing yet to count from has nothing to count, and a rotation with nowhere else to go
+  (a single target, or every alternate avoided or cooling down) re-arms the cap instead of ever firing it.
 
 The row is not shown in compact view. The countdown is a published deadline differenced against the terminal's own
 clock, so it keeps running while the input is stalled and stops at `0.0s`; the phrase beside it is only as fresh as the

@@ -1064,6 +1064,17 @@ ui_format_scan_timing_row(const dsd_opts* opts, const dsd_state* state, double n
     if (view.show_hang) {
         ui_scan_timing_appendf(buf, buf_sz, &used, "  hang %.1fs", (double)view.hang_ms / 1000.0);
     }
+    /* Last, the ceiling on the whole visit (#507). A word rather than 0.0s when it is not
+       counting: a hold suspends the cap, and a zero countdown would read as a visit that
+       just ran out and a receiver that should already have moved on. */
+    if (view.show_visit) {
+        if (view.visit_live) {
+            ui_scan_timing_appendf(buf, buf_sz, &used, "  Visit: %.1fs/%.1fs", (double)view.visit_remaining_ms / 1000.0,
+                                   (double)view.visit_ms / 1000.0);
+        } else {
+            ui_scan_timing_appendf(buf, buf_sz, &used, "  Visit: paused");
+        }
+    }
     return (int)used;
 }
 

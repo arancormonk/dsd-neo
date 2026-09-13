@@ -344,6 +344,7 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->scan_voice_only = 0;
     opts->scan_voice_qualify_ms = 1000;
     opts->scan_voice_hold_ms = 2000;
+    opts->scan_max_visit_ms = 0;
     opts->trunk_cli_seen = 0;
 
     //reverse mute
@@ -940,9 +941,14 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->scan_voice_gate_roll_seen = 0;
     state->scan_voice_gate_hold_seen = 0;
     state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
+    /* No visit anchored: -1.0, never 0.0, which would read as a park at monotonic 0. */
+    state->scan_visit_since_m = -1.0;
+    state->scan_visit_roll_seen = 0;
+    state->scan_visit_rearm_pending = 0U;
     DSD_MEMSET(&state->scan_timing, 0, sizeof(state->scan_timing));
     state->scan_timing.started_m = -1.0;
     state->scan_timing.deadline_m = -1.0;
+    state->scan_timing.visit_deadline_m = -1.0;
 }
 
 static void

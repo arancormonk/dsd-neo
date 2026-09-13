@@ -419,11 +419,17 @@ typedef enum {
  * scalars: it rides the vertex_ks_count..ui_msg snapshot copy range (ui_snapshot.c static
  * assert) and must never grow a pointer, or the byte-range copy would alias decoder memory. */
 struct dsd_scan_timing_publication {
-    double started_m;     /**< monotonic start of the live window; < 0 when there is none */
-    double deadline_m;    /**< monotonic expiry; < 0 = no live timer (suspended/paused/unanchored) */
-    uint32_t span_ms;     /**< full width of the live window; 0 when there is no timer */
-    uint32_t dwell_ms;    /**< effective idle dwell (or -Y qualify) for the row on air; 0 = n/a */
-    uint32_t hold_ms;     /**< effective activity hold; 0 on trunked rows and when n/a */
+    double started_m;  /**< monotonic start of the live window; < 0 when there is none */
+    double deadline_m; /**< monotonic expiry; < 0 = no live timer (suspended/paused/unanchored) */
+    /** Monotonic expiry of the per-visit cap (issue #507); < 0 = no live cap, whether it is
+     * disabled, not yet anchored, or suspended by a hold. Never zeroed into place: 0.0 would
+     * read as a deadline at monotonic 0, which is long past. */
+    double visit_deadline_m;
+    uint32_t span_ms;  /**< full width of the live window; 0 when there is no timer */
+    uint32_t dwell_ms; /**< effective idle dwell (or -Y qualify) for the row on air; 0 = n/a */
+    uint32_t hold_ms;  /**< effective activity hold; 0 on trunked rows and when n/a */
+    /** Effective per-visit cap for the row on air in ms; 0 = off (issue #507). */
+    uint32_t visit_limit_ms;
     uint32_t hang_ms;     /**< active protocol's effective hangtime budget; 0 when n/a */
     uint8_t reason;       /**< dsd_scan_stay_reason */
     uint8_t conventional; /**< 1 = conventional / -Y row, so hold_ms means something */
@@ -1726,6 +1732,16 @@ struct dsd_state {
     int scan_voice_gate_roll_seen;
     uint8_t scan_voice_gate_hold_seen;
     uint8_t scan_voice_gate_phase;
+    /* Per-visit cap bookkeeping for -Y (issue #507). scan_visit_since_m is the monotonic instant
+     * the row on air was tuned (-1.0 = no visit anchored, so the cap cannot fire) and
+     * scan_visit_roll_seen is the lcn_freq_roll this bookkeeping last saw, so an untyped `L` or
+     * avoid that moves the row without a retune note re-anchors. Deliberately separate from the
+     * scan_voice_gate_* anchors above: the cap applies under the voice gate and under the legacy
+     * hangtime rule alike, so it must not depend on gate-only code running -- the gate tick
+     * returns early with the gate off. Rides the vertex_ks_count..ui_msg range. */
+    double scan_visit_since_m;
+    int scan_visit_roll_seen;
+    uint8_t scan_visit_rearm_pending; /**< resume a suspended visit at the next eligible tick */
     /* Scan state + live timing for the Scan Timing row (issue #508). Written by the
      * --trunk-scan coordinator for its parked target, or by the -Y timing tick when trunk
      * scan is off; the two never both write it. Rides the vertex_ks_count..ui_msg range. */

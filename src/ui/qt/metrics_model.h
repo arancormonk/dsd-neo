@@ -158,6 +158,10 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int scanDwellState READ scanDwellState NOTIFY scanTimingChanged)
     Q_PROPERTY(int scanHoldMs READ scanHoldMs NOTIFY scanTimingChanged)
     Q_PROPERTY(quint32 scanHangMs READ scanHangMs NOTIFY scanTimingChanged)
+    /* #507: the ceiling on the whole visit, which rides the same row. */
+    Q_PROPERTY(int scanVisitMs READ scanVisitMs NOTIFY scanTimingChanged)
+    Q_PROPERTY(bool scanVisitLive READ scanVisitLive NOTIFY scanTimingChanged)
+    Q_PROPERTY(int scanVisitRemainingDs READ scanVisitRemainingDs NOTIFY scanTimingChanged)
     Q_PROPERTY(bool syncedHere READ syncedHere NOTIFY tunerChanged)
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
     Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
@@ -813,6 +817,35 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief Effective per-visit cap for this row (#507), 0 when no cap applies.
+     *
+     * Unlike the dwell, hold and hang budgets this one is not chosen by the stay
+     * reason: it caps the visit whatever is on the air, so it reads out beside the
+     * reason rather than in place of it.
+     */
+    int
+    scanVisitMs() const {
+        return m_view.scan_visit_ms;
+    }
+
+    /**
+     * @brief Whether the cap is counting down right now.
+     *
+     * False while a hold suspends it and before the visit has anchored. The row has
+     * to say so in words: a zero countdown reads as a visit that just ran out.
+     */
+    bool
+    scanVisitLive() const {
+        return m_view.scan_visit_live;
+    }
+
+    /** @brief Time left on the cap, in tenths; see scanTimerRemainingDs() for why. */
+    int
+    scanVisitRemainingDs() const {
+        return m_view.scan_visit_remaining_ds;
+    }
+
+    /**
      * @brief The engine's transient command acknowledgement, empty when none.
      *
      * Commands only enqueue a request; this is the engine saying what actually
@@ -1128,8 +1161,12 @@ class MetricsModel : public QObject {
         int scan_dwell_state = 0;
         int scan_hold_ms = 0;
         quint32 scan_hang_ms = 0;
+        /* #507: the per-visit cap for the row on air, and whether it is counting. */
+        int scan_visit_ms = 0;
+        int scan_visit_remaining_ds = 0;
         bool scan_timing_visible = false;
         bool scan_timer_live = false;
+        bool scan_visit_live = false;
 
         /* Exact comparison is right for the two doubles: they are carried through
          * unmodified from the metrics boundary, so "unchanged" means the identical
@@ -1163,7 +1200,9 @@ class MetricsModel : public QObject {
                    && scan_timer_remaining_ds == other.scan_timer_remaining_ds
                    && scan_timer_span_ms == other.scan_timer_span_ms && scan_dwell_ms == other.scan_dwell_ms
                    && scan_dwell_state == other.scan_dwell_state && scan_hold_ms == other.scan_hold_ms
-                   && scan_hang_ms == other.scan_hang_ms;
+                   && scan_hang_ms == other.scan_hang_ms && scan_visit_ms == other.scan_visit_ms
+                   && scan_visit_live == other.scan_visit_live
+                   && scan_visit_remaining_ds == other.scan_visit_remaining_ds;
         }
 
         bool

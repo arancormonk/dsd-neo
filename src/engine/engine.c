@@ -1386,10 +1386,30 @@ no_carrier_step_retune(const dsd_opts* opts, dsd_state* state, long int freq, in
 // call still open as an explicit release rather than a sync loss.
 static int
 no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, time_t now) {
+    /* The per-visit cap (issue #507) outranks every reason to stay, because every reason to stay
+     * can outlast it: sync refreshes the hangtime anchor for as long as a repeater transmits, and
+     * the voice gate holds for as long as media keeps arriving. Opt-in, so with the cap off this
+     * is a no-op and the rules below decide alone. */
+    if (dsd_engine_scan_visit_expired(opts, state, dsd_time_now_monotonic_s())) {
+        return 1;
+    }
     if (dsd_scan_voice_gate_owns_step(opts, state)) {
         return dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s());
     }
     return (now - state->last_cc_sync_time) > opts->trunk_hangtime;
+}
+
+static void
+no_carrier_rearm_abandoned_scan(const dsd_opts* opts, dsd_state* state, time_t now) {
+    if (opts->scan_max_visit_ms < 1000 && opts->scan_voice_only != 1) {
+        return;
+    }
+    /* The receiver stayed on this row. An expired cap or voice gate would keep unwinding
+     * every decoded frame until a tune succeeds. Reopen its windows so decoding can resume
+     * and another attempt waits an interval, including when no tuner is available. */
+    state->last_cc_sync_time = now;
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
 }
 
 static int
@@ -1404,7 +1424,11 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
     }
 
     if (dsd_channel_modes_present(state)) {
-        return dsd_engine_channel_scan_step(opts, state) > 0;
+        const int result = dsd_engine_channel_scan_step(opts, state);
+        if (result < 0) {
+            no_carrier_rearm_abandoned_scan(opts, state, now);
+        }
+        return result > 0;
     }
     no_carrier_reset_nxdn_scan_markers(state);
     if (state->lcn_freq_roll >= state->lcn_freq_count) {
@@ -1429,6 +1453,7 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
     // reacquirable by whatever decodes next -- on a different frequency.
     int moved = 0;
     if (freq != 0 && no_carrier_step_retune(opts, state, freq, &moved) != 0) {
+        no_carrier_rearm_abandoned_scan(opts, state, now);
         return moved;
     }
     state->lcn_freq_roll++;
@@ -2615,6 +2640,16 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
                 break;
             }
         }
+        /* A busy legacy -Y row can keep syncing indefinitely. Maintain the visit clock
+         * independently of the voice gate and return to noCarrier() when it expires. */
+        dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
+        if (dsd_engine_scan_visit_expired(opts, state, dsd_time_now_monotonic_s())) {
+            /* noCarrier() owns the hop, and it only runs once this loop exits. Dropping sync is how
+             * the voice-gate escape above hands control back, and the cap needs the same door: a
+             * row that keeps syncing would otherwise never let the outer loop reach the step. */
+            state->synctype = DSD_SYNC_NONE;
+            break;
+        }
         dsd_runtime_pump_controls(opts, state);
         if (!dsd_engine_channel_scan_service_sync(opts, state)) {
             break;
@@ -2647,6 +2682,7 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
         }
         dsd_trunk_scan_hook_tick(opts, state);
         dsd_scan_voice_gate_tick(opts, state, 0, dsd_time_now_monotonic_s());
+        dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
         dsd_runtime_pump_controls(opts, state);
 
         if (dsd_engine_channel_scan_pending(opts, state)) {

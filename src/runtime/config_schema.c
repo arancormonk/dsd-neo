@@ -107,6 +107,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
      NULL, DSDCFG_TYPE_INT, 100, 600000},
     {"trunking", "scan_voice_hold_ms", "Time to stay after the last voice frame", "2000", NULL, DSDCFG_TYPE_INT, 100,
      600000},
+    {"trunking", "scan_max_visit_ms", "Maximum time on one scan target per visit (0 disables; else 1000..3600000)", "0",
+     NULL, DSDCFG_TYPE_INT, 0, 3600000},
 
     /* [radioreference] section */
     {"radioreference", "username", "RadioReference account username", "", NULL, DSDCFG_TYPE_STRING, 0, 0},

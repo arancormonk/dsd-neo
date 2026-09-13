@@ -206,6 +206,31 @@ test_scan_voice_long_opts_are_removed(void) {
     return 0;
 }
 
+/* The per-visit cap (issue #507) must leave this pre-getopt pass in BOTH spellings. A
+ * surviving bare value token looks like a positional argument to
+ * bootstrap_compacted_arg_disables_inherited_trunk_scan(), which would switch off a
+ * config-inherited trunk scan. */
+static int
+test_scan_max_visit_long_opts_are_removed(void) {
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--scan-max-visit-ms";
+    char arg2[] = "20000";
+    char arg3[] = "--scan-max-visit-ms=25000";
+    char arg4[] = "-fi";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int new_argc = dsd_cli_compact_args(5, argv);
+    if (new_argc != 2) {
+        DSD_FPRINTF(stderr, "expected new_argc=2, got %d\n", new_argc);
+        return 1;
+    }
+    if (argv[1] == NULL || strcmp(argv[1], "-fi") != 0) {
+        DSD_FPRINTF(stderr, "expected argv[1] to be \"-fi\", got \"%s\"\n", argv[1] ? argv[1] : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_dmr_debug_burst_long_option_is_removed(void) {
     char arg0[] = "dsd-neo";
@@ -578,5 +603,6 @@ main(void) {
     rc |= test_src_csv_long_opts_are_removed();
     rc |= test_p25_bandplan_long_opts_are_removed();
     rc |= test_scan_voice_long_opts_are_removed();
+    rc |= test_scan_max_visit_long_opts_are_removed();
     return rc;
 }

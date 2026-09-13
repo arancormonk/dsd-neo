@@ -132,6 +132,7 @@ static const char* const k_skip_exact_next_any[] = {
     "--trunk-scan-activity-hold-ms",
     "--scan-voice-qualify-ms",
     "--scan-voice-hold-ms",
+    "--scan-max-visit-ms",
     "--calc-lcn",
     "--calc-step",
     "--calc-cc-freq",
@@ -189,6 +190,7 @@ static const char* const k_skip_prefix[] = {
     "--trunk-scan-activity-hold-ms=",
     "--scan-voice-qualify-ms=",
     "--scan-voice-hold-ms=",
+    "--scan-max-visit-ms=",
     "--frontend=",
 };
 

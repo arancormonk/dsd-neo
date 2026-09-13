@@ -30,6 +30,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
@@ -894,6 +895,14 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
     while (1) {
         if (dsd_exitflag_load() == 1) {
             dsd_request_shutdown(opts, state);
+            break;
+        }
+        /* The engine owns scan advances. Unwind at a burst boundary before it retunes,
+         * so finalization cannot clear the next target's decoder/audio state. */
+        if (dsd_frame_sync_hook_scan_visit_should_yield(opts, state)) {
+            /* An intentional scan departure is not a CACH/EMB decode failure. */
+            ctx.tact_okay = 1;
+            ctx.emb_ok = 1;
             break;
         }
         if (process_dmr_bs_iteration(opts, state, &ctx) == DMR_BS_ACTION_END) {

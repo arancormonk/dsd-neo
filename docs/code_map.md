@@ -722,6 +722,12 @@ External dependencies (resolved via CMake):
   channel maps run the typed scanner. `dsd_scan_settings_equal()` compares acquisition settings only; the row-scoped
   options (forcing, CRC, mutes, voice gate, group file) are folded through `dsd_scan_mode_resume()` without
   resetting acquisition. Conventional trunk-scan targets take their voice-gate hold/qualify from the row profile.
+  `DSD_SCAN_OPT_MAX_VISIT` is the one **scan-timing** row option accepted on trunked types as well, and its
+  `scan_max_visit_ms` travels in the same row-option block, outside `dsd_scan_settings_equal()`, so a row cap never
+  restages a tune.
+- Long DMR base-station decode loops consult the runtime frame hook `scan_visit_should_yield` at burst boundaries.
+  It maintains the owning scanner's visit clock and reports expiry without tuning. The decoder finishes its cleanup
+  and releases the SM guard before the engine advances, so cleanup cannot overwrite the next target's state.
 - App-control scopes force/CRC/voice configuration commands and group imports, while live row policy mutations stay
   with the active context. Configuration export reads saved group paths and voice settings from the configured scope.
 

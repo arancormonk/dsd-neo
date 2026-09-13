@@ -134,6 +134,11 @@ void dmr_sm_begin_cc_acquisition(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const 
 /** Return to the explicit DMR control/rest frequency, clearing an obsolete P25
  * alias only on acceptance. Preserve the previous destination on failure. */
 dsd_trunk_tune_result dmr_sm_return_to_cc(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, long freq_hz);
+/** End the tuned call and come to rest on the control channel WITHOUT tuning: the release
+ * teardown minus the CC return, for a caller that owns the tuner and is already moving it
+ * (trunk scan evicting a target that reached its per-visit limit, issue #507). Tuning here
+ * would fight that move, so nothing is asked of the tuner. */
+void dmr_sm_abandon_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
 /** Accepted control/rest-channel evidence. Zero frequency queries the active
  * tuner only if no completed tune/decoded attribution is available for the
  * current generation; nonzero frequency must match the received channel. */

@@ -100,6 +100,9 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
 void
 dsd_scan_voice_gate_note_retune(dsd_state* state, double now) {
     state->last_cc_sync_time_m = now;
+    /* The production note_retune opens the per-visit window for the cap (issue #507) as well
+     * as for the voice gate, so the rows below can see that the commit anchored a visit. */
+    state->scan_visit_since_m = now;
 }
 
 static void
@@ -169,38 +172,49 @@ test_option_only_rows_and_policy_edits(void) {
     opts->dmr_mute_encL = opts->dmr_mute_encR = 1;
     opts->scan_voice_hold_ms = 2000;
     opts->scan_voice_qualify_ms = 1000;
+    opts->scan_max_visit_ms = 15000;
     state->samplesPerSymbol = 10;
     state->lcn_freq_count = 1;
     *dsd_state_trunk_lcn_slot(state, 0) = 150000000;
     assert(!dsd_channel_modes_present(state));
     dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
     assert(profile);
-    profile->values.present = DSD_SCAN_OPT_HOLD | DSD_SCAN_OPT_MUTE_DMR;
+    profile->values.present = DSD_SCAN_OPT_HOLD | DSD_SCAN_OPT_MUTE_DMR | DSD_SCAN_OPT_MAX_VISIT;
     profile->values.hold_ms = 4000;
     profile->values.mute_dmr = 0;
+    profile->values.max_visit_ms = 45000;
     assert(dsd_channel_profile_set(state, 0, profile) == 0);
     assert(dsd_channel_modes_present(state) && dsd_channel_mode_get(state, 0) == DSD_SCAN_MODE_INHERIT);
 
     expected_nxdn = 0;
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    state->scan_visit_since_m = -1.0;
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
     assert(opts->scan_voice_hold_ms == 4000 && opts->dmr_mute_encL == 0 && opts->dmr_mute_encR == 0);
     assert(opts->frame_dstar == 1);
+    /* The commit is what parks the receiver, so the commit is what opens the per-visit window the
+     * cap measures (issue #507) -- with the row's own cap in force, not the global. */
+    assert(opts->scan_max_visit_ms == 45000 && state->scan_visit_since_m >= 0.0);
 
     /* A policy edit during an outstanding request: the commit proceeds without a retry. */
     state->lcn_freq_roll = 0;
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     assert(dsd_engine_channel_scan_step(opts, state) == 0);
     assert(dsd_scan_mode_suspend(opts, state));
-    assert(opts->scan_voice_hold_ms == 2000 && opts->dmr_mute_encL == 1);
+    assert(opts->scan_voice_hold_ms == 2000 && opts->dmr_mute_encL == 1 && opts->scan_max_visit_ms == 15000);
     opts->scan_voice_qualify_ms = 1500;
+    opts->scan_max_visit_ms = 20000;
     opts->unmute_encrypted_p25 = 1;
     assert(dsd_scan_mode_resume(opts, state) == 0);
     assert(opts->scan_voice_hold_ms == 4000 && opts->dmr_mute_encL == 0 && opts->scan_voice_qualify_ms == 1500);
+    /* An edited global beneath a staged tune does not dislodge the row's cap. */
+    assert(opts->scan_max_visit_ms == 45000);
     const int before_policy_edit = tunes;
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
     assert(tunes == before_policy_edit && opts->scan_voice_qualify_ms == 1500 && opts->unmute_encrypted_p25 == 1);
+    /* And a row cap is policy, not acquisition: the cycle above restaged nothing. */
+    assert(opts->scan_max_visit_ms == 45000);
 
     /* A keyring change during an outstanding request restages, and the eventual leave hands
      * back the globals as edited rather than the copy prepared before the edit. */
@@ -253,6 +267,58 @@ test_option_only_rows_and_policy_edits(void) {
     dsd_scan_keys_leave(state);
     assert(state->R == 0 && state->rkey_array[3] == 777 && state->rkey_array_loaded[3]);
     assert(opts->scan_voice_hold_ms == 2000 && opts->dmr_mute_encL == 1 && opts->scan_voice_qualify_ms == 1500);
+    assert(opts->scan_max_visit_ms == 20000);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* The per-visit cap is a row-scoped option like the voice-gate windows (issue #507): a row that
+ * carries one wins while it is on air, a row that carries none inherits the global, a row `0`
+ * switches the cap off for that row alone, and leaving the scan hands the configured global back
+ * rather than saving whichever row happened to be parked. */
+static void
+test_row_max_visit_override_and_inherit(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->frame_dstar = 1;
+    opts->scan_max_visit_ms = 15000;
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+    }
+    dsd_scan_row_profile* row_override = (dsd_scan_row_profile*)calloc(1, sizeof(*row_override));
+    assert(row_override);
+    row_override->values.present = DSD_SCAN_OPT_MAX_VISIT;
+    row_override->values.max_visit_ms = 45000;
+    assert(dsd_channel_profile_set(state, 0, row_override) == 0);
+    dsd_scan_row_profile* row_off = (dsd_scan_row_profile*)calloc(1, sizeof(*row_off));
+    assert(row_off);
+    row_off->values.present = DSD_SCAN_OPT_MAX_VISIT;
+    row_off->values.max_visit_ms = 0;
+    assert(dsd_channel_profile_set(state, 2, row_off) == 0);
+
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    state->scan_visit_since_m = -1.0;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(opts->scan_max_visit_ms == 45000 && state->lcn_freq_roll == 1);
+    assert(state->scan_visit_since_m >= 0.0);
+    /* Row 1 carries no override, so the global applies again. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(opts->scan_max_visit_ms == 15000 && state->lcn_freq_roll == 2);
+    /* Row 2 asks for 0: off for that row even though the global is set. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(opts->scan_max_visit_ms == 0 && state->lcn_freq_roll == 3);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(opts->scan_max_visit_ms == 15000);
     dsd_state_trunk_lcn_free(state);
     dsd_state_ext_free_all(state);
     free(state);
@@ -264,6 +330,7 @@ int
 main(void) {
     test_option_commit_boundary();
     test_option_only_rows_and_policy_edits();
+    test_row_max_visit_override_and_inherit();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);
@@ -308,8 +375,12 @@ main(void) {
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
     assert(state->lcn_freq_roll == 2 && opts->frame_p25p1 && opts->frame_p25p2 && !opts->frame_dmr);
     const int before_zero = tunes;
+    state->scan_visit_since_m = -1.0;
     assert(dsd_engine_channel_scan_step(opts, state) == 0);
     assert(tunes == before_zero && state->lcn_freq_roll == 3 && opts->frame_p25p1);
+    /* A zero-frequency placeholder parks in place instead of retuning, and it is still a new
+     * visit: the cap has to measure it from here (issue #507). */
+    assert(state->scan_visit_since_m >= 0.0);
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
     assert(state->lcn_freq_roll == 4 && opts->frame_dstar == 1 && !opts->frame_p25p1);
     state->lcn_freq_roll = 2;

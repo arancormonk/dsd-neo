@@ -212,12 +212,15 @@ Options are parsed once when the list is loaded. They are a restricted argument 
 | `--enc-lockout`, `--enc-follow` | Disable/enable encrypted-call following; all modes. |
 | `--scan-voice-only`, `--no-scan-voice-only` | Enable/disable the conventional voice gate. |
 | `--scan-voice-qualify-ms`, `--scan-voice-hold-ms` | Conventional voice-gate intervals, `100..600000` milliseconds. |
+| `--scan-max-visit-ms <ms>` | Maximum time on this row or target per visit; `0` disables the cap for it, otherwise `1000..3600000` milliseconds. All modes, and every trunk-target type. |
 
 Protocol-specific options require a declared `mode`; trunk targets use their `type`. A channel map whose rows carry
 `options` but no `mode` still runs through the typed scanner (blank rows inherit the configured decoder), since the
-legacy `-Y` scanner applies row keys but not row options. Trunk-system targets reject voice-gate options: their
-existing `dwell_ms` and `activity_hold_ms` columns retain their roles, while a conventional target's voice-gate
-intervals replace those two columns while the gate is on (see `docs/trunk-scan.md`). Input/output, frontend
+legacy `-Y` scanner applies row keys but not row options, so a legacy list always uses the global
+`--scan-max-visit-ms`. Trunk-system targets reject voice-gate options: their existing `dwell_ms` and
+`activity_hold_ms` columns retain their roles, while a conventional target's voice-gate intervals replace those two
+columns while the gate is on (see `docs/trunk-scan.md`). `--scan-max-visit-ms` is the one scan-timing switch
+trunk-system targets do accept, since the per-visit cap applies to every target type. Input/output, frontend
 selection, decoder flags and scanner-wide `-t` are not accepted in `options`.
 
 Omitted settings inherit the outer CLI/configuration, including forcing. Use `--no-force-key` on a normal mixed

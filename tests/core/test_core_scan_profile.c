@@ -64,8 +64,8 @@ test_keys_and_scope(void) {
         uint64_t k;
         unsigned int mode;
         int force;
-    } rows[] = {{"-1 0123456789 -0 -F --scan-voice-only --scan-voice-hold-ms 4000", 0x123456789ULL, 0x123456789ULL, 0,
-                 DSD_SCAN_MODE_DMR, 0x21},
+    } rows[] = {{"-1 0123456789 -0 -F --scan-voice-only --scan-voice-hold-ms 4000 --scan-max-visit-ms 20000",
+                 0x123456789ULL, 0x123456789ULL, 0, DSD_SCAN_MODE_DMR, 0x21},
                 {"-H 0000001f00 -4", 0, 0, 0, DSD_SCAN_MODE_DMR, 1},
                 {"-b 1 --no-force-key --strict-crc --no-scan-voice-only", 0, 0, 1, DSD_SCAN_MODE_DMR, 0},
                 {"-R 1 --no-force-key", 1, 0, 0, DSD_SCAN_MODE_NXDN48, 0}};
@@ -88,9 +88,14 @@ test_keys_and_scope(void) {
         assert(state->keyloader == 0);
         if (i == 0) {
             assert(opts->scan_voice_hold_ms == 4000 && opts->scan_voice_only == 1 && opts->dmr_crc_relaxed_default);
+            /* The per-visit cap (issue #507) survives parse -> profile -> row scope. */
+            assert((profile->values.present & DSD_SCAN_OPT_MAX_VISIT) && profile->values.max_visit_ms == 20000);
+            assert(opts->scan_max_visit_ms == 20000);
         }
         if (i == 1) {
             assert(state->K1 == 0x1f00 && opts->scan_voice_hold_ms == 2000 && !opts->scan_voice_only);
+            /* A row without the switch inherits the global again. */
+            assert(opts->scan_max_visit_ms == 0);
         }
         if (i == 2) {
             assert(opts->aggressive_framesync == 1 && !opts->dmr_crc_relaxed_default && opts->dmr_mute_encL == 0);

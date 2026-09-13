@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -832,6 +833,57 @@ pending_park_timeout(void) {
     return rc;
 }
 
+static int
+visit_hook_defers_tuning_until_decoder_unwinds(void) {
+    if (setup(2.0f)) {
+        cleanup();
+        return 1;
+    }
+    g_opts.scan_max_visit_ms = 1000;
+    aloha(1);
+    const int parked_tunes = g_cc_tunes;
+    p25_sm_tick_guard_enter();
+    trunk_scan_test_set_now(0.98);
+    int rc = expect(!dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state),
+                    "held DMR visit does not interrupt the decoder");
+    p25_sm_tick_guard_leave();
+    rc |= expect(dsd_engine_trunk_scan_control(&g_opts, &g_state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE) == 0,
+                 "release visit hold");
+    p25_sm_tick_guard_enter();
+    trunk_scan_test_set_now(1.01);
+    rc |= expect(!dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state), "DMR loop re-arms visit while held");
+    trunk_scan_test_set_now(1.981);
+    rc |= expect(dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state),
+                 "continuous DMR yields after fresh visit limit");
+    rc |= expect(g_cc_tunes == parked_tunes && dsd_engine_trunk_scan_active_dmr_ctx() != NULL,
+                 "deadline hook does not retune under the decoder");
+    p25_sm_tick_guard_leave();
+    dsd_engine_trunk_scan_tick(&g_opts, &g_state);
+    rc |= expect(dsd_engine_trunk_scan_active_p25_ctx() != NULL && g_cc_tunes > parked_tunes,
+                 "coordinator advances after the decoder releases its guard");
+
+    /* The same installed hook also services conventional -Y visits. */
+    dsd_engine_trunk_scan_shutdown(&g_opts, &g_state);
+    g_opts.trunk_scan_enabled = 0;
+    g_opts.trunk_enable = 0;
+    g_opts.scanner_mode = 1;
+    g_opts.scan_max_visit_ms = 1000;
+    g_state.lcn_scan_hold = 0;
+    g_state.lcn_freq_count = 2;
+    g_state.trunk_lcn_freq[0] = 451000000L;
+    g_state.trunk_lcn_freq[1] = 452000000L;
+    dsd_scan_voice_gate_note_retune(&g_state, dsd_time_now_monotonic_s() - 2.0);
+    p25_sm_tick_guard_enter();
+    rc |= expect(dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state),
+                 "continuous conventional DMR yields on an expired -Y visit");
+    g_opts.scan_max_visit_ms = 0;
+    rc |= expect(!dsd_frame_sync_hook_scan_visit_should_yield(&g_opts, &g_state),
+                 "disabled -Y cap leaves continuous decoding alone");
+    p25_sm_tick_guard_leave();
+    cleanup();
+    return rc;
+}
+
 int
 main(void) {
     (void)dsd_test_unsetenv("DSD_NEO_DMR_HANGTIME");
@@ -853,5 +905,6 @@ main(void) {
     rc |= hunt_fade_and_avoids();
     rc |= pending_probe_timeout();
     rc |= pending_park_timeout();
+    rc |= visit_hook_defers_tuning_until_decoder_unwinds();
     return rc;
 }

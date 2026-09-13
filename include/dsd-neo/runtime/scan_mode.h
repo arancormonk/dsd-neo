@@ -45,6 +45,7 @@ typedef struct {
     int scan_voice_only;
     int scan_voice_qualify_ms;
     int scan_voice_hold_ms;
+    int scan_max_visit_ms;
     int dmr_mute_encL;
     int dmr_mute_encR;
     int unmute_encrypted_p25;

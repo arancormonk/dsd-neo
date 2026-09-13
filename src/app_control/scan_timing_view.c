@@ -135,6 +135,28 @@ scan_timing_fill_budgets(dsd_app_scan_timing* out, const dsd_scan_timing_row* ro
     }
 }
 
+/**
+ * @brief Fill in the per-visit cap, which every row carries (issue #507).
+ *
+ * Deliberately outside k_scan_timing_rows[]: the cap is a ceiling on the whole visit
+ * rather than a budget one stay reason owns, so no reason may withhold it -- the receiver
+ * moves on when it expires whatever is on the air. The deadline decides only whether it
+ * is counting: negative means disabled, not yet anchored, or suspended by a hold, and a
+ * surface has to say so in words, because a zero countdown reads as a visit that expired.
+ */
+static void
+scan_timing_fill_visit(dsd_app_scan_timing* out, const dsd_scan_timing_publication* pub, double now_m) {
+    out->visit_ms = pub->visit_limit_ms;
+    if (pub->visit_limit_ms == 0U) {
+        return;
+    }
+    out->show_visit = 1U;
+    if (pub->visit_deadline_m >= 0.0) {
+        out->visit_live = 1U;
+        out->visit_remaining_ms = scan_timing_remaining_ms(pub->visit_deadline_m, now_m);
+    }
+}
+
 int
 dsd_app_scan_timing_view(const dsd_opts* opts, const dsd_state* state, double now_m, dsd_app_scan_timing* out) {
     if (out) {
@@ -157,5 +179,6 @@ dsd_app_scan_timing_view(const dsd_opts* opts, const dsd_state* state, double no
         out->span_ms = pub->span_ms;
     }
     scan_timing_fill_budgets(out, row, pub);
+    scan_timing_fill_visit(out, pub, now_m);
     return 1;
 }

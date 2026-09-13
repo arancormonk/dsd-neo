@@ -4565,6 +4565,9 @@ apply_manual_scan_hold_toggle(dsd_state* state) {
         // The rotation left the dwell timer alone while held; give the row a full hangtime
         // now rather than hopping on the very next no-carrier pass.
         mark_cc_sync(state, 1);
+        state->scan_visit_since_m = state->last_cc_sync_time_m;
+        state->scan_visit_roll_seen = state->lcn_freq_roll;
+        state->scan_visit_rearm_pending = 0U;
     }
     ui_set_toast(state, 3, "Scan hold %s", state->lcn_scan_hold ? "on" : "off");
 }
@@ -5116,6 +5119,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
             // Controls can change visits or hold state inside a long input wait.
             // Refresh the gate and its publication before exposing that command.
             dsd_scan_voice_gate_tick(opts, state, 0, now_m);
+            dsd_engine_scan_visit_tick(opts, state, now_m);
             dsd_engine_scan_y_timing_tick(opts, state, now_m, dsd_time_now_realtime_s());
         }
         dsd_telemetry_publish_opts_snapshot(opts);

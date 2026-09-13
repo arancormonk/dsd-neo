@@ -429,6 +429,10 @@ MetricsModel::fillScanTimingView(View& next, const dsd_opts* opts_snapshot, cons
     next.scan_dwell_state = view.dwell_state;
     next.scan_hold_ms = view.show_hold != 0U ? static_cast<int>(view.hold_ms) : 0;
     next.scan_hang_ms = view.show_hang != 0U ? view.hang_ms : 0U;
+    /* The cap on the whole visit (#507), withheld the same way when none applies. */
+    next.scan_visit_ms = view.show_visit != 0U ? static_cast<int>(view.visit_ms) : 0;
+    next.scan_visit_live = view.visit_live != 0U;
+    next.scan_visit_remaining_ds = static_cast<int>(view.visit_remaining_ms / 100U);
 }
 
 namespace {

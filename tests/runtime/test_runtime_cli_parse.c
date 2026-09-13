@@ -7276,6 +7276,276 @@ test_bootstrap_inherited_scan_voice_preserves_timing_overrides(void) {
     return test_rc;
 }
 
+/* --scan-max-visit-ms (issue #507) parses in both long-option spellings and reaches dsd_opts. */
+static int
+test_scan_max_visit_long_option_parses(void) {
+    int test_rc = 0;
+    for (int shape = 0; shape < 2; shape++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg_flag[] = "--scan-max-visit-ms";
+        char arg_value[] = "20000";
+        char arg_equals[] = "--scan-max-visit-ms=20000";
+        /* Shape 0 exercises the space form, shape 1 the equals form. */
+        char* argv_space[] = {arg0, arg_flag, arg_value, NULL};
+        char* argv_equals[] = {arg0, arg_equals, NULL};
+        char** argv = (shape == 0) ? argv_space : argv_equals;
+        const int argc = (shape == 0) ? 3 : 2;
+        int argc_effective = 0;
+        /* A clean parse leaves exit_rc untouched, so seed it with the success code: a nonzero
+         * value afterwards means the parser asked for a failing exit. */
+        int exit_rc = 0;
+        int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+
+        if (rc != DSD_PARSE_CONTINUE || exit_rc != 0 || opts->scan_max_visit_ms != 20000) {
+            DSD_FPRINTF(stderr, "shape %d: scan max visit parse mismatch rc=%d exit_rc=%d max_visit=%d\n", shape, rc,
+                        exit_rc, opts->scan_max_visit_ms);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+/* 1..999 is rejected outright rather than silently ignored, so 0 stays the only way to say
+ * "no cap"; the ceiling and a missing value are refused too, and nothing lands in dsd_opts. */
+static int
+test_scan_max_visit_rejects_ms_values_outside_range(void) {
+    const char* argv_sets[][3] = {
+        {"dsd-neo", "--scan-max-visit-ms", "999"}, {"dsd-neo", "--scan-max-visit-ms=3600001", NULL},
+        {"dsd-neo", "--scan-max-visit-ms", "1"},   {"dsd-neo", "--scan-max-visit-ms=-1", NULL},
+        {"dsd-neo", "--scan-max-visit-ms", NULL},
+    };
+    const int argc_values[] = {3, 2, 3, 2, 2};
+    int test_rc = 0;
+
+    for (size_t i = 0; i < sizeof(argc_values) / sizeof(argc_values[0]); i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[32];
+        char arg1[64];
+        char arg2[32];
+        DSD_SNPRINTF(arg0, sizeof arg0, "%s", argv_sets[i][0]);
+        DSD_SNPRINTF(arg1, sizeof arg1, "%s", argv_sets[i][1]);
+        if (argv_sets[i][2]) {
+            DSD_SNPRINTF(arg2, sizeof arg2, "%s", argv_sets[i][2]);
+        }
+        char* argv[] = {arg0, arg1, argv_sets[i][2] ? arg2 : NULL, NULL};
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(argc_values[i], argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_ERROR || exit_rc != 1 || opts->scan_max_visit_ms != 0) {
+            DSD_FPRINTF(stderr, "expected scan-max-visit option %s to fail, got rc=%d exit_rc=%d max_visit=%d\n", arg1,
+                        rc, exit_rc, opts->scan_max_visit_ms);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+
+    return test_rc;
+}
+
+/* 0 disables the cap and both bounds of the 1000..3600000 window parse. The space and equals
+ * handlers carry separate range constants, so every (value, form) pair is pinned. */
+static int
+test_scan_max_visit_boundary_and_off_values_parse(void) {
+    static const int wanted[] = {0, 1000, 3600000};
+    int test_rc = 0;
+
+    for (size_t i = 0; i < sizeof wanted / sizeof wanted[0]; i++) {
+        for (int equals = 0; equals < 2; equals++) {
+            dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+            dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+            if (!opts || !state) {
+                free(opts);
+                free(state);
+                return 1;
+            }
+            initOpts(opts);
+            initState(state);
+            /* Poison the field so an accepted 0 is proven to be parsed, not just the default. */
+            opts->scan_max_visit_ms = -1;
+
+            char arg0[] = "dsd-neo";
+            char arg_flag[] = "--scan-max-visit-ms";
+            char value[16];
+            char equals_form[48];
+            DSD_SNPRINTF(value, sizeof value, "%d", wanted[i]);
+            DSD_SNPRINTF(equals_form, sizeof equals_form, "--scan-max-visit-ms=%d", wanted[i]);
+            char* argv_space[] = {arg0, arg_flag, value, NULL};
+            char* argv_equals[] = {arg0, equals_form, NULL};
+            char** argv = equals ? argv_equals : argv_space;
+            const int argc = equals ? 2 : 3;
+
+            int argc_effective = 0;
+            int exit_rc = 0;
+            int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+            if (rc != DSD_PARSE_CONTINUE || exit_rc != 0 || opts->scan_max_visit_ms != wanted[i]) {
+                DSD_FPRINTF(stderr, "%s form: expected scan-max-visit %d to parse, got rc=%d exit_rc=%d max_visit=%d\n",
+                            equals ? "equals" : "space", wanted[i], rc, exit_rc, opts->scan_max_visit_ms);
+                test_rc = 1;
+            }
+
+            freeState(state);
+            free(opts);
+            free(state);
+        }
+    }
+    return test_rc;
+}
+
+/* The cap only acts under -Y or --trunk-scan. Asking for it with neither is not an error and
+ * the value is kept, but it has to say so - the same treatment --scan-voice-only gets. */
+static int
+test_scan_max_visit_warns_without_scan_mode(void) {
+    static const char* const expected_warning = "--scan-max-visit-ms has no effect without -Y or --trunk-scan.";
+    int test_rc = 0;
+
+    for (int with_scanner = 0; with_scanner < 2; with_scanner++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg_flag[] = "--scan-max-visit-ms";
+        char arg_value[] = "5000";
+        char arg_scanner[] = "-Y";
+        char* argv_plain[] = {arg0, arg_flag, arg_value, NULL};
+        char* argv_scanner[] = {arg0, arg_flag, arg_value, arg_scanner, NULL};
+        char** argv = with_scanner ? argv_scanner : argv_plain;
+        const int argc = with_scanner ? 4 : 3;
+
+        char output[4096];
+        int argc_effective = 0;
+        int exit_rc = 0;
+        int rc = parse_args_capture_stderr(argc, argv, opts, state, &argc_effective, &exit_rc, output, sizeof(output));
+
+        if (rc != DSD_PARSE_CONTINUE || exit_rc != 0 || opts->scan_max_visit_ms != 5000) {
+            DSD_FPRINTF(stderr, "scanner=%d: expected a non-fatal cap, got rc=%d exit_rc=%d max_visit=%d\n",
+                        with_scanner, rc, exit_rc, opts->scan_max_visit_ms);
+            test_rc = 1;
+        }
+        const int warned = (strstr(output, expected_warning) != NULL) ? 1 : 0;
+        if (warned == with_scanner) {
+            DSD_FPRINTF(stderr, "scanner=%d: unexpected warning state warned=%d, stderr was \"%s\"\n", with_scanner,
+                        warned, output);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+/* A config-inherited trunk scan survives a CLI cap override in both spellings: the pre-getopt
+ * compaction has to consume the flag and its value, or the bare value token reads as a
+ * positional input and the inherited trunk scan is switched off. */
+static int
+test_bootstrap_inherited_trunk_scan_preserves_max_visit_override(void) {
+    static const char* ini = "[trunk_scan]\n"
+                             "enabled = true\n"
+                             "targets_csv = \"targets.csv\"\n"
+                             "\n"
+                             "[trunking]\n"
+                             "scan_max_visit_ms = 30000\n";
+    int test_rc = 0;
+
+    for (int equals = 0; equals < 2; equals++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "out of memory\n");
+            return 1;
+        }
+
+        initOpts(opts);
+        initState(state);
+
+        (void)dsd_unsetenv("DSD_NEO_CONFIG");
+        (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+        char cfg_path[1024];
+        if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+            DSD_FPRINTF(stderr, "failed to create temp max visit ini\n");
+            freeState(state);
+            free(opts);
+            free(state);
+            return 1;
+        }
+
+        char arg0[] = "dsd-neo";
+        char arg1[] = "--config";
+        char arg2[1024];
+        char arg_flag[] = "--scan-max-visit-ms";
+        char arg_value[] = "20000";
+        char arg_equals[] = "--scan-max-visit-ms=20000";
+        DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+        char* argv_space[] = {arg0, arg1, arg2, arg_flag, arg_value, NULL};
+        char* argv_equals[] = {arg0, arg1, arg2, arg_equals, NULL};
+        char** argv = equals ? argv_equals : argv_space;
+        const int argc = equals ? 4 : 5;
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_runtime_bootstrap(argc, argv, opts, state, &argc_effective, &exit_rc);
+
+        if (rc != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0) {
+            DSD_FPRINTF(stderr, "%s form: expected cap override to continue, got rc=%d exit_rc=%d\n",
+                        equals ? "equals" : "space", rc, exit_rc);
+            test_rc = 1;
+        }
+        if (opts->trunk_scan_enabled != 1 || strcmp(opts->trunk_scan_targets_csv, "targets.csv") != 0
+            || opts->scan_max_visit_ms != 20000) {
+            DSD_FPRINTF(stderr,
+                        "%s form: expected inherited trunk scan with cap 20000, got enabled=%d targets=%s "
+                        "max_visit=%d\n",
+                        equals ? "equals" : "space", opts->trunk_scan_enabled, opts->trunk_scan_targets_csv,
+                        opts->scan_max_visit_ms);
+            test_rc = 1;
+        }
+
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
 static int
 test_bootstrap_config_file_rate_rescales_manual_m3_override(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -7877,6 +8147,11 @@ main(void) {
     rc |= test_scan_voice_long_options_parse();
     rc |= test_scan_voice_rejects_ms_values_outside_range();
     rc |= test_bootstrap_inherited_scan_voice_preserves_timing_overrides();
+    rc |= test_scan_max_visit_long_option_parses();
+    rc |= test_scan_max_visit_rejects_ms_values_outside_range();
+    rc |= test_scan_max_visit_boundary_and_off_values_parse();
+    rc |= test_scan_max_visit_warns_without_scan_mode();
+    rc |= test_bootstrap_inherited_trunk_scan_preserves_max_visit_override();
     rc |= test_input_source_tcp_ipv4_roundtrip();
     rc |= test_trunk_scan_long_options_parse();
     rc |= test_trunk_scan_conflicts_with_scanner_mode();

@@ -131,9 +131,85 @@ test_row_option_edits_are_not_acquisition_changes(void) {
     free(o);
 }
 
+/* The per-visit cap (issue #507) is a row-scoped override: it reaches dsd_opts so the
+ * scanner sees it, never the configured baseline a save would persist, and it can never
+ * restage the parked tune. */
+static void
+test_max_visit_row_override_scope(void) {
+    dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
+    dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
+    assert(o && s);
+    o->wav_sample_rate = 48000;
+    o->audio_in_type = AUDIO_IN_WAV;
+    o->frame_dmr = 1;
+    o->scan_max_visit_ms = 45000; /* the configured global */
+    assert(dsd_scan_mode_begin(o, s) == 0);
+    assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
+    assert(o->scan_max_visit_ms == 45000);
+
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_MAX_VISIT;
+    row.max_visit_ms = 5000;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->scan_max_visit_ms == 5000);
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(s);
+    assert(configured && configured->scan_max_visit_ms == 45000);
+
+    /* A row value is policy, not acquisition: changing it must not restage the tune. */
+    dsd_scan_settings before;
+    dsd_scan_settings_capture(o, s, &before);
+    row.max_visit_ms = 7000;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->scan_max_visit_ms == 7000);
+    dsd_scan_settings after;
+    dsd_scan_settings_capture(o, s, &after);
+    assert(dsd_scan_settings_equal(&before, &after, 1));
+
+    /* An explicit row 0 disables the cap for that row even though the global is set. */
+    row.max_visit_ms = 0;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->scan_max_visit_ms == 0);
+    /* A row without the bit inherits the global again, as does clearing the row options. */
+    row.present = 0;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->scan_max_visit_ms == 45000);
+    row.present = DSD_SCAN_OPT_MAX_VISIT;
+    row.max_visit_ms = 5000;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->scan_max_visit_ms == 5000);
+    assert(dsd_scan_mode_options(o, s, NULL) == 0);
+    assert(o->scan_max_visit_ms == 45000);
+
+    /* An operator edit beneath the row survives the row override, and leaving the scope
+     * restores the configured global. */
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(dsd_scan_mode_suspend(o, s));
+    assert(o->scan_max_visit_ms == 45000);
+    o->scan_max_visit_ms = 60000;
+    assert(dsd_scan_mode_resume(o, s) == 0);
+    assert(o->scan_max_visit_ms == 5000);
+    assert(dsd_scan_mode_configured_view(s)->scan_max_visit_ms == 60000);
+
+    /* A row update installed while the scope is suspended is recorded and takes effect at
+     * resume, which restores the new row value rather than the pre-suspend one. */
+    assert(dsd_scan_mode_suspend(o, s));
+    assert(o->scan_max_visit_ms == 60000);
+    row.max_visit_ms = 9000;
+    assert(dsd_scan_mode_options(o, s, &row) == 0);
+    assert(o->scan_max_visit_ms == 60000);
+    assert(dsd_scan_mode_resume(o, s) == 0);
+    assert(o->scan_max_visit_ms == 9000);
+    dsd_scan_mode_leave(o, s);
+    assert(o->scan_max_visit_ms == 60000);
+    dsd_state_ext_free_all(s);
+    free(s);
+    free(o);
+}
+
 int
 main(void) {
     test_row_option_edits_are_not_acquisition_changes();
+    test_max_visit_row_override_scope();
     dsd_opts* o = (dsd_opts*)calloc(1, sizeof(*o));
     dsd_state* s = (dsd_state*)calloc(1, sizeof(*s));
     dsd_state* copy = (dsd_state*)calloc(1, sizeof(*copy));

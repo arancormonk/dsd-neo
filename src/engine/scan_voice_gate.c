@@ -114,11 +114,45 @@ dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_voic
     return out->retained_media_m >= 0.0 ? 1 : 0;
 }
 
+int
+dsd_scan_tg_hold_call_active(const dsd_state* state) {
+    if (!state || state->tg_hold == 0U) {
+        return 0;
+    }
+    const uint64_t hold = (uint64_t)state->tg_hold;
+    for (int slot_i = 0; slot_i < DSD_CALL_STATE_SLOT_COUNT; slot_i++) {
+        dsd_call_snapshot call;
+        /* dsd_call_state_get() fills the whole snapshot on success; a failed get skips the slot. */
+        if (dsd_call_state_get(state, (uint8_t)slot_i, &call) <= 0) {
+            continue;
+        }
+        if (call.phase != DSD_CALL_PHASE_ACTIVE || call.kind == DSD_CALL_KIND_DATA) {
+            continue;
+        }
+        /* The remapped policy target is the identity the hold is compared against everywhere
+         * else (talkgroup_policy.c); the OTA target stands in when no remap applies. */
+        const uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
+        if (hold == target) {
+            return 1;
+        }
+        /* A private call is held by either end, exactly as the policy layer holds it. */
+        if (call.kind == DSD_CALL_KIND_PRIVATE_VOICE && hold == call.ota_source_id) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void
 dsd_scan_voice_gate_note_retune(dsd_state* state, double now_m) {
     if (!state) {
         return;
     }
+    /* Successful parking opens the per-visit cap too. Suspension handling can restart it,
+     * but sync and voice activity must never extend a visit. */
+    state->scan_visit_since_m = now_m;
+    state->scan_visit_roll_seen = state->lcn_freq_roll;
+    state->scan_visit_rearm_pending = 0U;
     state->scan_voice_gate_arrive_m = now_m;
     state->scan_voice_gate_sync_m = -1.0;
     state->scan_voice_gate_voice_m = -1.0;
@@ -216,6 +250,126 @@ dsd_scan_voice_gate_should_step(const dsd_opts* opts, const dsd_state* state, do
     return 0;
 }
 
+/* ---- Per-visit cap for the -Y row (issue #507) ------------------------------ */
+
+/* The cap the row on air is subject to, in ms, with anything below 1000 meaning off. Deliberately
+ * not scan_voice_resolve_ms(): that maps 0 to a default window, and here 0 is the default and it
+ * means disabled. Config loading is range-free by design, so a hand-written 1..999 reaches the
+ * engine and must read as off rather than as a millisecond-long visit. */
+static int
+scan_visit_cap_enabled(const dsd_opts* opts) {
+    return opts->scan_max_visit_ms >= 1000;
+}
+
+/* The -Y scanner owns this anchor only while it is the scanner that is running: under
+ * --trunk-scan the coordinator keeps its own per-target anchor (trunk_scan.c), and with no
+ * scanner there is no visit to measure. */
+static int
+scan_visit_scanner_owns(const dsd_opts* opts) {
+    return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1;
+}
+
+/* While this holds the cap neither counts down nor expires: the operator's row hold, and a
+ * talkgroup hold on the very call being followed -- cutting that call short is exactly what the
+ * operator asked the hold to prevent. */
+static int
+scan_visit_suspended(const dsd_state* state) {
+    return state->lcn_scan_hold || dsd_scan_tg_hold_call_active(state);
+}
+
+/*
+ * The visit cannot end right now, and it must not be allowed to age in the meantime either: the
+ * tick re-arms it and the deadline hides it, which is the one question both have to ask the same
+ * way (requirement 5, and the shape trunk_scan.c already uses).
+ *
+ * Either the visit is suspended, or there is nowhere to go: a rotation with fewer than two usable
+ * rows would only hop back onto the row it is already on and interrupt its audio. Freezing the
+ * anchor instead of re-arming would let it age for as long as that lasts, and then fire the
+ * instant the operator clears an avoid or a placeholder gets a frequency.
+ */
+static int
+scan_visit_rearms(const dsd_state* state) {
+    return scan_visit_suspended(state) || dsd_state_trunk_lcn_usable_count(state) < 2;
+}
+
+void
+dsd_engine_scan_visit_tick(const dsd_opts* opts, dsd_state* state, double now_m) {
+    if (!opts || !state) {
+        return;
+    }
+    if (!scan_visit_scanner_owns(opts)) {
+        /* Not this scanner's rotation: drop the anchor rather than leave one behind. A runtime
+         * switch into --trunk-scan hands the rotation to the coordinator, and an anchor from the
+         * visit before it would otherwise be minutes stale by the time -Y takes it back -- and
+         * fire the instant it did. The first owning tick anchors a fresh full limit. */
+        state->scan_visit_since_m = -1.0;
+        state->scan_visit_roll_seen = state->lcn_freq_roll;
+        state->scan_visit_rearm_pending = 0U;
+        return;
+    }
+    if (!scan_visit_cap_enabled(opts)) {
+        /* Disabled leaves no anchor behind, so enabling the cap later grants a full fresh limit
+         * instead of expiring against a park from minutes ago. */
+        state->scan_visit_since_m = -1.0;
+        state->scan_visit_roll_seen = state->lcn_freq_roll;
+        state->scan_visit_rearm_pending = 0U;
+        return;
+    }
+    if (state->lcn_freq_roll != state->scan_visit_roll_seen) {
+        /* The untyped `L` cycle and an avoid move the roll without a retune note, so the row under
+         * the anchor changed and the new one is owed its own full limit. */
+        state->scan_visit_roll_seen = state->lcn_freq_roll;
+        state->scan_visit_since_m = now_m;
+        state->scan_visit_rearm_pending = 0U;
+    }
+    if (state->scan_visit_since_m < 0.0) {
+        state->scan_visit_since_m = now_m;
+    }
+    const int rearm = scan_visit_rearms(state);
+    if (rearm || state->scan_visit_rearm_pending) {
+        /* Remember the suspension across input stalls: time since the last suspended tick
+         * cannot consume the fresh interval owed when a hold or an avoid stops applying. */
+        state->scan_visit_since_m = now_m;
+    }
+    state->scan_visit_rearm_pending = rearm ? 1U : 0U;
+}
+
+double
+dsd_engine_scan_visit_deadline_m(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return -1.0;
+    }
+    if (!scan_visit_scanner_owns(opts) || !scan_visit_cap_enabled(opts)) {
+        return -1.0;
+    }
+    if (state->scan_visit_since_m < 0.0 || state->scan_visit_rearm_pending) {
+        /* No park to measure from. */
+        return -1.0;
+    }
+    if (state->lcn_freq_roll != state->scan_visit_roll_seen) {
+        /* An untyped `L` or avoid moved the row and no tick has reconciled it yet, so the anchor
+         * still describes the row before it. The pump can do that between the tick and the step
+         * predicate; firing on it would cut the new visit to zero. The next tick re-anchors. */
+        return -1.0;
+    }
+    if (dsd_engine_channel_scan_waiting(state)) {
+        /* A row transaction owns the receiver: the cap must not fire into a tune already on its
+         * way, and the commit re-opens the visit itself. Unlike the cases below this one is not a
+         * re-arm -- the commit stamps its own anchor, so there is nothing to slide. */
+        return -1.0;
+    }
+    if (scan_visit_rearms(state)) {
+        return -1.0;
+    }
+    return state->scan_visit_since_m + ((double)opts->scan_max_visit_ms / 1000.0);
+}
+
+int
+dsd_engine_scan_visit_expired(const dsd_opts* opts, const dsd_state* state, double now_m) {
+    const double deadline_m = dsd_engine_scan_visit_deadline_m(opts, state);
+    return deadline_m >= 0.0 && now_m >= deadline_m;
+}
+
 void
 dsd_scan_timing_clear(dsd_state* state) {
     if (!state) {
@@ -224,6 +378,7 @@ dsd_scan_timing_clear(dsd_state* state) {
     DSD_MEMSET(&state->scan_timing, 0, sizeof(state->scan_timing));
     state->scan_timing.started_m = -1.0;
     state->scan_timing.deadline_m = -1.0;
+    state->scan_timing.visit_deadline_m = -1.0;
 }
 
 void
@@ -242,7 +397,13 @@ scan_y_timing_seed(const dsd_opts* opts, dsd_scan_timing_publication* out) {
     DSD_MEMSET(out, 0, sizeof(*out));
     out->started_m = -1.0;
     out->deadline_m = -1.0;
+    /* Above the early return: the per-visit cap is independent of the voice gate, and a
+     * zeroed double would read as a deadline at monotonic 0. */
+    out->visit_deadline_m = -1.0;
     out->conventional = 1U;
+    /* Also above the early return: the cap is independent of the voice gate, so it stays visible
+     * in legacy hangtime mode, where there is neither a qualify nor a hold window to report. */
+    out->visit_limit_ms = scan_visit_cap_enabled(opts) ? (uint32_t)opts->scan_max_visit_ms : 0U;
     if (!scan_voice_gate_enabled(opts)) {
         return;
     }
@@ -338,5 +499,9 @@ dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now
     } else {
         scan_y_timing_fill_hangtime(opts, state, now_m, now_wall_s, &report);
     }
+    /* The cap rides beside the step timer instead of folding into deadline_m/reason: both can be
+     * counting down at once, and the reason names the rule the hop would be blamed on. Under a
+     * hold the deadline function returns < 0, so MANUAL_HOLD reports the cap as paused. */
+    report.visit_deadline_m = dsd_engine_scan_visit_deadline_m(opts, state);
     dsd_scan_timing_publish(state, &report);
 }

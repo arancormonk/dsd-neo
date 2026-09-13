@@ -147,8 +147,11 @@ dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     dsd_engine_select_p25_sps_profile(state, state->p25_cc_is_tdma == 1);
 }
 
-static void DSD_ATTR_USED
-dsd_engine_reset_return_to_cc_state(dsd_opts* opts, dsd_state* state) {
+void
+dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
     const double ended_m = dsd_time_now_monotonic_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         // The state machine is leaving this voice channel by decision, not because the carrier
@@ -610,7 +613,7 @@ dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t reque
         }
     }
 
-    dsd_engine_reset_return_to_cc_state(opts, state);
+    dsd_engine_release_tuned_call_state(opts, state);
 
     /* Keep symbol timing aligned with the current control-channel mode. */
     dsd_engine_apply_cc_symbol_timing(opts, state);

@@ -1,5 +1,5 @@
 id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain,keys_hex_csv,single_key_dec,single_key_hex,options,p25_bandplan_csv
-county-p25,p25-trunk,851012500,,3000,,P25 control channel; channels may be learned from control-channel data,auto,,example_aes_keys.csv,,,--enc-lockout,p25_bandplan.csv
+county-p25,p25-trunk,851012500,,3000,,P25 control channel; channels may be learned from control-channel data,auto,,example_aes_keys.csv,,,--enc-lockout --scan-max-visit-ms 20000,p25_bandplan.csv
 field-p25,p25-conventional,851500000,,1500,1200,one-frequency P25,c4fm,,,,,,
 city-dmr,dmr-trunk,456318750,dmr_t3_chan.csv,3000,,DMR Tier III control channel using examples/dmr_t3_chan.csv,auto,,,,,,
 plant-dmr,dmr-conventional,461112500,,1500,1200,one-frequency DMR conventional channel,gfsk,,,1,0000001F00,--no-force-key,

@@ -1731,6 +1731,10 @@ class Setup : public QObject {
         metrics[QStringLiteral("scanDwellState")] = 0;
         metrics[QStringLiteral("scanHoldMs")] = 0;
         metrics[QStringLiteral("scanHangMs")] = 0;
+        // The per-visit cap (#507): no cap in force at rest, so nothing to print.
+        metrics[QStringLiteral("scanVisitMs")] = 0;
+        metrics[QStringLiteral("scanVisitLive")] = false;
+        metrics[QStringLiteral("scanVisitRemainingDs")] = 0;
         // Whether an automatic controller owns the tuner, which one, and where it
         // points. The two named owners word a message; tunerControlled is the gate.
         metrics[QStringLiteral("tunerControlled")] = false;

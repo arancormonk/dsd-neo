@@ -2182,6 +2182,10 @@ static void
 seed_scan_timing(dsd_state* state, uint8_t reason, uint8_t conventional, double deadline_m, uint32_t span_ms,
                  uint32_t dwell_ms, uint32_t hold_ms) {
     DSD_MEMSET(&state->scan_timing, 0, sizeof(state->scan_timing));
+    /* A zeroed block leaves visit_deadline_m at 0.0, which reads as a per-visit deadline
+       at monotonic 0 -- long past. The decoder never publishes that: an unanchored cap is
+       negative (#507), so the seed says so too. */
+    state->scan_timing.visit_deadline_m = -1.0;
     state->scan_timing.reason = reason;
     state->scan_timing.conventional = conventional;
     state->scan_timing.started_m = (deadline_m >= 0.0) ? deadline_m - ((double)span_ms / 1000.0) : -1.0;
@@ -2189,6 +2193,14 @@ seed_scan_timing(dsd_state* state, uint8_t reason, uint8_t conventional, double 
     state->scan_timing.span_ms = span_ms;
     state->scan_timing.dwell_ms = dwell_ms;
     state->scan_timing.hold_ms = hold_ms;
+}
+
+/* The per-visit cap on top of a published stay (issue #507): its own seed because the cap
+   is anchored at parking and rides whatever reason happens to be holding the row. */
+static void
+seed_visit(dsd_state* state, uint32_t limit_ms, double visit_deadline_m) {
+    state->scan_timing.visit_limit_ms = limit_ms;
+    state->scan_timing.visit_deadline_m = visit_deadline_m;
 }
 
 /* The formatter is pure and takes the clock, so a golden can be the exact bytes rather
@@ -2287,6 +2299,45 @@ test_scan_timing_row_clamps_expired_timers(void) {
     opts.trunk_scan_enabled = 1;
     seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 95.0, 3000U, 3000U, 2000U);
     assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 0.0s/3.0s  hold 2.0s");
+}
+
+/* The per-visit cap closes the row (issue #507): the widest budget, and the only one that
+   can read as a word instead of a countdown. Two spaces before it, like every other group,
+   and one decimal place, like every other number. */
+static void
+test_scan_timing_row_visit_cap(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.trunk_scan_enabled = 1;
+
+    /* No cap configured: the row is byte-for-byte the one #510 pinned. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_IDLE_DWELL, 1U, 101.8, 3000U, 3000U, 2000U);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s");
+
+    /* A cap counting down against the same clock as the window above it. */
+    seed_visit(&state, 20000U, 112.3);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s  Visit: 12.3s/20.0s");
+
+    /* A poll that lands after the cap floors at zero rather than wrapping, the same rule
+       the window countdown follows. */
+    seed_visit(&state, 20000U, 97.5);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s  Visit: 0.0s/20.0s");
+
+    /* A hold suspends the cap: there is no deadline to count from, and printing 0.0s would
+       read as a visit that just ran out. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_MANUAL_HOLD, 1U, -1.0, 0U, 3000U, 0U);
+    seed_visit(&state, 20000U, -1.0);
+    assert_scan_timing_row(&opts, &state, "| Scan Timing: Manual hold  dwell 3.0s (paused)  Visit: paused");
+
+    /* The cap appears beside the published effective protocol hangtime too. */
+    seed_scan_timing(&state, DSD_SCAN_STAY_CALL_FOLLOW, 0U, -1.0, 0U, 3000U, 0U);
+    state.scan_timing.hang_ms = 2000U;
+    seed_visit(&state, 45000U, 130.0);
+    assert_scan_timing_row(&opts, &state,
+                           "| Scan Timing: Following call  dwell 3.0s (suspended)  hang 2.0s  Visit: 30.0s/45.0s");
 }
 
 static void
@@ -2428,6 +2479,7 @@ main(void) {
     test_trunk_scan_status_row_rendering();
     test_scan_timing_row_phrases();
     test_scan_timing_row_clamps_expired_timers();
+    test_scan_timing_row_visit_cap();
     test_scan_timing_row_is_silent_without_a_scan();
     test_scan_timing_row_placement();
     test_scan_timing_row_truncates_to_panel_width();

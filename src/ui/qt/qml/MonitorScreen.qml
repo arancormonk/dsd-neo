@@ -174,6 +174,14 @@ Item {
                     if (metrics.scanHangMs > 0) {
                         out += "  " + qsTr("hang %1s").arg((metrics.scanHangMs / 1000).toFixed(1));
                     }
+                    // Last, the ceiling on the whole visit (#507). A word rather than
+                    // 0.0s while a hold suspends it: a zero countdown would read as a
+                    // visit that just ran out.
+                    if (metrics.scanVisitMs > 0) {
+                        out += "  " + (metrics.scanVisitLive
+                            ? qsTr("Visit: %1s/%2s").arg((metrics.scanVisitRemainingDs / 10).toFixed(1)).arg((metrics.scanVisitMs / 1000).toFixed(1))
+                            : qsTr("Visit: paused"));
+                    }
                     return out;
                 }
                 font.family: Theme.mono
