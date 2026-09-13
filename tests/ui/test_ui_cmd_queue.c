@@ -634,7 +634,7 @@ test_file_network_and_import_commands(void) {
     post_string(DSD_APP_CMD_IMPORT_KEYS_HEX, missing_csv);
     rc |= expect_int("import failure group applied", dsd_app_drain_cmds(&opts, &state), 4);
     rc |= expect_str("failed channel import keeps path", opts.chan_in_file, "");
-    rc |= expect_str("group import path copied", opts.group_in_file, missing_csv);
+    rc |= expect_str("failed group import keeps path", opts.group_in_file, "");
     rc |= expect_str("key import path copied", opts.key_in_file, missing_csv);
     rc |= expect_contains("key import failure toast", state.ui_msg, "Failed: Keys (HEX)");
 
@@ -1204,11 +1204,12 @@ stub_tune_to_freq_ok(dsd_opts* opts, dsd_state* state, long int freq, int ted_sp
  * p25_sm_release(). The P25 SM must still be handed its parked state, or it keeps
  * judging every later grant as a preemption of the assignment it was following. */
 static int
-test_lockout_hands_p25_sm_back_to_cc(void) {
+test_lockout_hands_p25_sm_back_to_cc(int persist) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
     init_test_context(&opts, &state);
+    opts.persist_tg_lockouts = (uint8_t)persist;
     seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
     opts.trunk_tune_group_calls = 1;
     state.trunk_chan_map[0x1234] = 852000000L;
@@ -1248,6 +1249,11 @@ test_lockout_hands_p25_sm_back_to_cc(void) {
     // The site keeps trunking: once the CC decodes again, a grant for another
     // talkgroup is followed instead of being refused as a preemption.
     state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_group_grant(0x1234, 852000000L, 1201, 1202, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_true("avoided grant remains blocked", p25_sm_get_state(sm) != P25_SM_TUNED);
+    rc |= expect_str("grant refusal identifies lockout kind", state.p25_sm_last_reason,
+                     persist ? "grant-blocked-mode" : "grant-blocked-session-avoid");
     ev = p25_sm_ev_group_grant(0x1235, 853000000L, 1300, 1301, 0);
     p25_sm_event(sm, &opts, &state, &ev);
     rc |= expect_int("next grant is followed after lockout", p25_sm_get_state(sm), P25_SM_TUNED);
@@ -3523,6 +3529,208 @@ test_export_disposal(void) {
     return rc;
 }
 
+static int
+expect_file_bytes(const char* path, const char* expected) {
+    char contents[1024] = {0};
+    FILE* file = dsd_fopen_existing_regular_file(path, "rb");
+    if (!file) {
+        return 1;
+    }
+    const size_t bytes = fread(contents, 1, sizeof contents - 1U, file);
+    const int failed = ferror(file) || bytes != strlen(expected) || strcmp(contents, expected) != 0;
+    fclose(file);
+    return expect_true("group file bytes unchanged", !failed);
+}
+
+static int
+test_temporary_lockout_commands(uint8_t slot) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsd_temporary_tg");
+    if (fd < 0) {
+        freeState(&state);
+        return 1;
+    }
+    dsd_close(fd);
+    char export_path[DSD_TEST_PATH_MAX];
+    const int export_fd = dsd_test_mkstemp(export_path, sizeof export_path, "dsd_temporary_tg_export");
+    if (export_fd < 0) {
+        freeState(&state);
+        remove(path);
+        return 1;
+    }
+    dsd_close(export_fd);
+    const char* csv = "id,mode,name,notes\n123,A,Dispatch,keep this unmodeled note\n456,A,EMS,note\n";
+    int rc = write_file_bytes(path, csv, strlen(csv));
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", path);
+    rc |= expect_int("import temporary fixture", dsd_tg_policy_reload_group_file(&opts, &state), 0);
+    dsd_call_observation observation = {.protocol = DSD_SYNC_P25P1_POS,
+                                        .slot = slot,
+                                        .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                        .ota_target_id = 123,
+                                        .policy_target_id = 123,
+                                        .ota_source_id = 1,
+                                        .observed_m = 1.0};
+    rc |= expect_int("seed lockout call", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(&opts, &state, slot);
+    rc |= expect_true("queue temporary preference", dsd_app_command_set_i32(DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET, 0) > 0);
+    rc |= expect_true("queue temporary slot lockout", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, slot) > 0);
+    rc |= expect_true("queue persistent preference after lockout",
+                      dsd_app_command_set_i32(DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET, 1) > 0);
+    rc |= expect_int("FIFO preference and lockout drain", dsd_app_drain_cmds(&opts, &state), 3);
+    rc |= expect_true("preference only affects subsequent commands",
+                      opts.persist_tg_lockouts && dsd_tg_policy_session_avoid_contains(&state, 123));
+    rc |= expect_file_bytes(path, csv);
+    rc |= expect_true("invalid persistence queued", dsd_app_command_set_i32(DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET, 2) > 0);
+    rc |= expect_int("invalid persistence drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("invalid persistence unchanged", opts.persist_tg_lockouts == 1);
+    dsd_tg_policy_lookup lookup;
+    rc |= expect_int("lookup original row", dsd_tg_policy_lookup_id(&state, 123, &lookup), 0);
+    rc |= expect_str("temporary avoid preserves saved mode", lookup.entry.mode, "A");
+    rc |= expect_str("temporary avoid preserves label", lookup.entry.name, "Dispatch");
+
+    // An ordinary edit persists, but must not serialize the temporary overlay.
+    dsd_app_tg_listen_payload block = {456, 456, 0};
+    rc |= expect_true("queue permanent list edit", dsd_app_command_set_tg_listen(&block) > 0);
+    rc |= expect_int("permanent list edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(path, "id,mode,name\n123,A,Dispatch\n456,B,EMS\n");
+    rc |= expect_true("edit keeps temporary avoid", dsd_tg_policy_session_avoid_contains(&state, 123));
+
+    // Export uses the same canonical writer even when its source snapshot has avoids.
+    union {
+        max_align_t alignment;
+        unsigned char bytes[1200];
+    } storage = {0};
+
+    dsd_app_tg_export_payload* export = (dsd_app_tg_export_payload*)storage.bytes;
+    dsd_tg_policy_table_version(&state, &export->policy_context, &export->policy_generation);
+    DSD_SNPRINTF(export->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", export_path);
+    rc |= expect_true("export temporary policy queued",
+                      dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, export,
+                                             offsetof(dsd_app_tg_export_payload, path) + strlen(export_path) + 1U)
+                          > 0);
+    rc |= expect_int("export temporary policy drained", dsd_app_drain_cmds(&opts, &state), 1);
+    dsd_app_tg_export_result result;
+    rc |= expect_true("export reports successful write", dsd_app_tg_export_result_get(&result) && result.success);
+    rc |= expect_str("export reports new destination", result.path, export_path);
+    rc |= expect_file_bytes(export_path, "id,mode,name\n123,A,Dispatch\n456,B,EMS\n");
+    rc |= expect_file_bytes(path, "id,mode,name\n123,A,Dispatch\n456,B,EMS\n");
+
+    uint64_t context = 0;
+    dsd_tg_policy_table_version(&state, &context, NULL);
+    const uint64_t wrong_context = context + 1U;
+    rc |= expect_true("stale clear queued",
+                      dsd_app_command_submit(DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, &wrong_context, sizeof wrong_context)
+                          > 0);
+    rc |= expect_int("stale clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("stale clear preserves avoids", dsd_tg_policy_session_avoid_contains(&state, 123));
+    (void)dsd_enc_lockout_note(&state, 789, 1, 0x84, 1);
+    rc |= expect_true("current clear queued",
+                      dsd_app_command_submit(DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, &context, sizeof context) > 0);
+    rc |= expect_int("current clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("current clear removes temporary avoid", !dsd_tg_policy_session_avoid_contains(&state, 123));
+    rc |= expect_true("clear retains encryption lockout", dsd_enc_lockout_lookup(&state, 789, 1, NULL));
+    rc |= expect_file_bytes(path, "id,mode,name\n123,A,Dispatch\n456,B,EMS\n");
+    rc |= expect_int("reloaded file", dsd_tg_policy_reload_group_file(&opts, &state), 0);
+    dsd_tg_policy_decision decision;
+    rc |= expect_true("temporary TG receives again",
+                      dsd_tg_policy_evaluate_group_call(&opts, &state, 123, 1, 0, 0, &decision) == 0
+                          && decision.tune_allowed);
+    rc |= expect_true("saved block remains",
+                      dsd_tg_policy_evaluate_group_call(&opts, &state, 456, 1, 0, 0, &decision) == 0
+                          && !decision.tune_allowed);
+    freeState(&state);
+    remove(path);
+    remove(export_path);
+    return rc;
+}
+
+static int
+test_config_group_path_reloads_before_persist(int scoped) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char first[DSD_TEST_PATH_MAX], second[DSD_TEST_PATH_MAX], missing[DSD_TEST_PATH_MAX];
+    const int first_fd = dsd_test_mkstemp(first, sizeof first, "dsd_config_groups_a");
+    const int second_fd = dsd_test_mkstemp(second, sizeof second, "dsd_config_groups_b");
+    const int missing_fd = dsd_test_mkstemp(missing, sizeof missing, "dsd_config_groups_missing");
+    if (first_fd < 0 || second_fd < 0 || missing_fd < 0) {
+        return 1;
+    }
+    dsd_close(first_fd);
+    dsd_close(second_fd);
+    dsd_close(missing_fd);
+    remove(missing);
+    const char* a = "id,mode,name\n111,A,First\n";
+    const char* b = "id,mode,name\n222,A,Second\n";
+    int rc = write_file_bytes(first, a, strlen(a));
+    rc |= write_file_bytes(second, b, strlen(b));
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", first);
+    rc |= expect_int("config seed first groups", dsd_tg_policy_reload_group_file(&opts, &state), 0);
+    rc |= expect_int("config seed old avoid", dsd_tg_policy_session_avoid_add(&state, 111), 0);
+    dsd_scan_row_profile* row = NULL;
+    dsd_key_set keys = {0};
+    if (scoped) {
+        dsd_scan_options parsed = {0};
+        parsed.values.present = DSD_SCAN_OPT_GROUP;
+        DSD_SNPRINTF(parsed.values.group_file, sizeof parsed.values.group_file, "%s", second);
+        rc |= expect_int("config load row groups", dsd_scan_profile_load(&parsed, 0, &row, &keys), 0);
+        rc |= expect_int("config begin row scope", dsd_scan_groups_begin(&state), 0);
+        dsd_scan_groups_enter(&state, row);
+        rc |= expect_int("config seed row avoid", dsd_tg_policy_session_avoid_add(&state, 777), 0);
+    }
+    dsdneoUserConfig cfg = {0};
+    cfg.has_trunking = 1;
+    cfg.trunk_persist_tg_lockouts = 1;
+    DSD_SNPRINTF(cfg.trunk_group_csv, sizeof cfg.trunk_group_csv, "%s", second);
+    rc |= expect_true("config new groups queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("config new groups drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("config new groups path", opts.group_in_file, second);
+    if (scoped) {
+        rc |= expect_true("config preserves active row avoid", dsd_tg_policy_session_avoid_contains(&state, 777));
+        dsd_scan_groups_leave(&state);
+    }
+    rc |= expect_int("config resets old avoids", (int)dsd_tg_policy_session_avoid_count(&state, 0, UINT32_MAX), 0);
+    dsd_app_tg_listen_payload edit = {222, 222, 0};
+    rc |= expect_true("config persisted edit queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("config persisted edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(first, a);
+    rc |= expect_file_bytes(second, "id,mode,name\n222,B,Second\n");
+
+    rc |= expect_int("config seed retained avoid", dsd_tg_policy_session_avoid_add(&state, 222), 0);
+    rc |= expect_true("config unchanged groups queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("config unchanged groups drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("config unchanged path retains avoid", dsd_tg_policy_session_avoid_contains(&state, 222));
+    DSD_SNPRINTF(cfg.trunk_group_csv, sizeof cfg.trunk_group_csv, "%s", missing);
+    cfg.trunk_persist_tg_lockouts = 0;
+    rc |= expect_true("config missing groups queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("config missing groups drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("config failure retains groups path", opts.group_in_file, second);
+    rc |= expect_true("config failure retains avoid", dsd_tg_policy_session_avoid_contains(&state, 222));
+    rc |= expect_int("config failure does not apply remaining options", opts.persist_tg_lockouts, 1);
+    rc |= write_file_bytes(missing, a, strlen(a));
+    edit.listen = 1;
+    rc |= expect_true("config edit after failure queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("config edit after failure drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(missing, a);
+    rc |= expect_file_bytes(second, b);
+    // A failed explicit import must preserve the same table/path pairing as a failed config load.
+    remove(missing);
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, missing);
+    rc |= expect_int("explicit missing import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("explicit missing import keeps destination", opts.group_in_file, second);
+    rc |= expect_true("explicit missing import keeps avoid", dsd_tg_policy_session_avoid_contains(&state, 222));
+    dsd_scan_profile_free(row);
+    dsd_key_set_free(&keys);
+    freeState(&state);
+    remove(first);
+    remove(second);
+    remove(missing);
+    return rc;
+}
+
 int
 main(void) {
     int rc = test_session_queue_cancellation();
@@ -3535,6 +3743,10 @@ main(void) {
     rc |= test_coalesced_setter_erases_old_tail();
     rc |= test_foundation_commands();
     rc |= test_talkgroup_list_commands();
+    rc |= test_config_group_path_reloads_before_persist(0);
+    rc |= test_config_group_path_reloads_before_persist(1);
+    rc |= test_temporary_lockout_commands(0);
+    rc |= test_temporary_lockout_commands(1);
     rc |= test_talkgroup_row_commands();
     rc |= test_talkgroup_export_result();
     rc |= test_source_alias_commands();
@@ -3556,7 +3768,8 @@ main(void) {
     rc |= test_scan_voice_gate_commands();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
-    rc |= test_lockout_hands_p25_sm_back_to_cc();
+    rc |= test_lockout_hands_p25_sm_back_to_cc(1);
+    rc |= test_lockout_hands_p25_sm_back_to_cc(0);
     rc |= test_channel_cycle_hands_p25_sm_back_to_cc();
 #ifdef USE_RADIO
     rc |= test_manual_tune_trunking_gate_and_reacquisition();

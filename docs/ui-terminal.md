@@ -152,6 +152,8 @@ Main Menu
 │   │   ├── Voice qualify... [1000 ms]
 │   │   ├── Voice hold... [2000 ms]
 │   │   ├── Reverse mute [Off]
+│   │   ├── Save user TG lockouts [On]
+│   │   ├── Clear temporary TG avoids - current list [0]
 │   │   ├── Lock out talkgroup on slot 1         !
 │   │   └── Lock out talkgroup on slot 2         @
 │   ├── Channels & groups
@@ -428,7 +430,13 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `d` | Toggle follow data calls |
 | `e` | Toggle encrypted call lockout (P25/DMR/NXDN trunking) |
 | `k` / `l` | Set/clear talkgroup hold from the most recent TG (slot-aware) |
-| `!` / `@` | Lock out slot 1 / slot 2 (where applicable) |
+| `!` / `@` | Lock out slot 1 / slot 2 (where applicable); lifetime follows **Save user TG lockouts** |
+
+**Save user TG lockouts** defaults to On: quick lockouts save to a configured global groups file. Turn it Off
+in **Trunking → Follow**, or start with `--tg-lockout-session`, to keep subsequent lockouts temporary. Clear them
+using **Clear temporary TG avoids - current list**, reload the list, or stop the decoder. List edits still save;
+changing this setting does not convert existing blocks. Scan rows with their own groups lists keep separate
+avoids, while rows inheriting the global list share its avoids.
 
 ### Slots, gain & privacy
 

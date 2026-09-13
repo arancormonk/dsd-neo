@@ -1397,6 +1397,41 @@ test_silent_s16_helper(void) {
     return rc;
 }
 
+static int
+test_ss3_hold_respects_policy_mute(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (uint8_t slot = 0; slot < 2; ++slot) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_gate_capture();
+        opts.audio_out = 1;
+        opts.audio_out_type = 8;
+        opts.slot1_on = opts.slot2_on = 1;
+        opts.pulse_digi_out_channels = 2;
+        state.tg_hold = 123;
+        const dsd_call_observation call = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+                                           .slot = slot,
+                                           .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                           .ota_target_id = 123,
+                                           .policy_target_id = 123,
+                                           .observed_m = 1.0};
+        rc |= expect_int("ss3 held call", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN), 1);
+        for (int muted = 1; muted >= 0; --muted) {
+            reset_sink_capture();
+            g_gate_dual_forced_enc_l = slot == 0 ? muted : 1;
+            g_gate_dual_forced_enc_r = slot == 1 ? muted : 1;
+            state.s_l4[0][0] = state.s_r4[0][0] = 1234;
+            playSynthesizedVoiceSS3(&opts, &state);
+            rc |= expect_int("ss3 held policy controls UDP audio", g_udp_blast_calls, muted ? 0 : 3);
+        }
+        dsd_state_ext_free_all(&state);
+    }
+    reset_gate_capture();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1416,6 +1451,7 @@ main(void) {
     rc |= test_float_playback_orchestrators_emit_expected_blocks();
     rc |= test_audio_gate_target_preserves_p25_ota_identity();
     rc |= test_mono_voice_preserves_samples_in_configured_output();
+    rc |= test_ss3_hold_respects_policy_mute();
     rc |= test_silent_s16_helper();
     return rc;
 }

@@ -62,6 +62,7 @@ class TalkgroupListModel : public QAbstractListModel {
         PriorityRole,
         PreemptRole,
         PolicyIndexRole,
+        TemporaryAvoidCountRole,
     };
 
     explicit TalkgroupListModel(QAbstractItemModel* history, QObject* parent = nullptr);
@@ -147,6 +148,12 @@ class TalkgroupListModel : public QAbstractListModel {
         int priority = 0;
         bool preempt = false;
         int policyIndex = -1;
+        qulonglong temporaryAvoidCount = 0;
+
+        QString
+        idText() const {
+            return idStart == idEnd ? QString::number(idStart) : QStringLiteral("%1–%2").arg(idStart).arg(idEnd);
+        }
     };
 
     static QVector<Row> listedRows(const dsd_state* snapshot, QSet<QString>& categoryTags);

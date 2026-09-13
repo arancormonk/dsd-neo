@@ -107,7 +107,8 @@ Item {
                 listening: true,
                 listed: true,
                 priority: 50,
-                preempt: true
+                preempt: true,
+                temporaryAvoidCount: 0
             });
             verify(card !== null);
             compare(findChild(card, "talkgroupBadge").text, "42 · Priority 50 · Preempt");

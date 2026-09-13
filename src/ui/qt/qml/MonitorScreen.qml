@@ -688,6 +688,7 @@ Item {
                     implicitHeight: 32
                     height: 32
                     text: qsTr("Skip")
+                    accessibleName: metrics.persistTgLockouts ? qsTr("Skip talkgroup; saving enabled") : qsTr("Skip talkgroup for this session")
                     enabled: decoderHost.running
                     onClicked: commands.lockoutSlot(screen.otherSlot === 2 ? 1 : 0)
                 }
@@ -1043,6 +1044,7 @@ Item {
             OutlineButton {
                 width: screen.compactHeight ? (parent.width - 20) / 3 : (parent.width - 30) / 4
                 text: qsTr("Skip")
+                accessibleName: metrics.persistTgLockouts ? qsTr("Skip talkgroup; saving enabled") : qsTr("Skip talkgroup for this session")
                 enabled: decoderHost.running && screen.heroSlot !== 0
                 onClicked: commands.lockoutSlot(screen.heroSlot === 2 ? 1 : 0)
             }

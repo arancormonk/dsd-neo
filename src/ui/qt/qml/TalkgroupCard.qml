@@ -11,6 +11,7 @@ Rectangle {
     required property bool listed
     required property int priority
     required property bool preempt
+    required property var temporaryAvoidCount
     signal editRequested
     signal clicked
     implicitHeight: content.implicitHeight + 28
@@ -49,6 +50,17 @@ Rectangle {
             width: parent.width
             visible: text.length > 0
             text: card.listed ? card.tags : qsTr("Heard in this session")
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(12)
+            color: Theme.textSecondary
+        }
+        Text {
+            objectName: "temporaryTgAvoidBadge"
+            width: parent.width
+            visible: card.temporaryAvoidCount > 0
+            text: qsTr("Temporarily avoided: %1. Clear in Settings → Listening.").arg(card.temporaryAvoidCount)
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             font.family: Theme.sans

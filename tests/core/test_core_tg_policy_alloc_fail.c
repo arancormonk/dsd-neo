@@ -116,6 +116,55 @@ test_snapshot_reuses_unchanged_policy_table(void) {
     return rc;
 }
 
+static int
+test_session_avoid_allocation_failure(void) {
+    int rc = 0;
+    for (long failure = 0; failure < 2; ++failure) {
+        dsd_state* state = calloc(1, sizeof(*state));
+        if (!state) {
+            return 1;
+        }
+        dsd_tg_policy_test_alloc_fail_after(failure);
+        rc |= expect_true("avoid allocation failure", dsd_tg_policy_session_avoid_add(state, 42) == -1);
+        uint64_t context = 1;
+        dsd_tg_policy_table_version(state, &context, NULL);
+        rc |= expect_true("failed avoid leaves empty context intact", context == 0);
+        dsd_tg_policy_test_alloc_reset();
+        free_test_state(state);
+    }
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_state* snapshot = calloc(1, sizeof(*snapshot));
+    if (!state || !snapshot) {
+        free_test_state(state);
+        free_test_state(snapshot);
+        return 1;
+    }
+    for (uint32_t id = 1; id <= 16; ++id) {
+        rc |= expect_true("seed avoids", dsd_tg_policy_session_avoid_add(state, id) == 0);
+    }
+    rc |= expect_true("seed snapshot", dsd_tg_policy_copy_snapshot(snapshot, state) == 0);
+    dsd_tg_policy_test_alloc_fail_after(0);
+    rc |= expect_true("growth failure", dsd_tg_policy_session_avoid_add(state, 17) == -1);
+    rc |= expect_true("growth failure keeps avoids", dsd_tg_policy_session_avoid_count(state, 0, UINT32_MAX) == 16
+                                                         && !dsd_tg_policy_session_avoid_contains(state, 17));
+    rc |= expect_true("duplicate does not allocate", dsd_tg_policy_session_avoid_add(state, 1) == 0);
+    rc |= expect_true("unchanged snapshot does not allocate", dsd_tg_policy_copy_snapshot(snapshot, state) == 0);
+    dsd_tg_policy_test_alloc_reset();
+    rc |= expect_true("successful growth", dsd_tg_policy_session_avoid_add(state, 17) == 0);
+    for (long failure = 0; failure < 2; ++failure) {
+        dsd_tg_policy_test_alloc_fail_after(failure);
+        rc |= expect_true("snapshot allocation failure", dsd_tg_policy_copy_snapshot(snapshot, state) == -1);
+        rc |= expect_true("failed copy keeps old snapshot", !dsd_tg_policy_session_avoid_contains(snapshot, 17)
+                                                                && dsd_tg_policy_session_avoid_contains(snapshot, 16));
+    }
+    dsd_tg_policy_test_alloc_reset();
+    rc |= expect_true("snapshot retry", dsd_tg_policy_copy_snapshot(snapshot, state) == 0
+                                            && dsd_tg_policy_session_avoid_contains(snapshot, 17));
+    free_test_state(state);
+    free_test_state(snapshot);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -142,6 +191,7 @@ main(void) {
                       dsd_tg_policy_lookup_id(st, 123, &lookup) == 0 && lookup.match == DSD_TG_POLICY_MATCH_NONE);
 
     rc |= test_snapshot_reuses_unchanged_policy_table();
+    rc |= test_session_avoid_allocation_failure();
 
     dsd_tg_policy_test_alloc_reset();
     free_test_state(st);

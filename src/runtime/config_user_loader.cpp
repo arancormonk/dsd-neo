@@ -504,6 +504,8 @@ apply_trunking_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char
         assign_bool_key(&cfg->trunk_tune_private_calls, val);
     } else if (strcmp(key_lc, "tune_data_calls") == 0) {
         assign_bool_key(&cfg->trunk_tune_data_calls, val);
+    } else if (strcmp(key_lc, "persist_tg_lockouts") == 0) {
+        assign_bool_key(&cfg->trunk_persist_tg_lockouts, val);
     } else if (strcmp(key_lc, "tune_enc_calls") == 0) {
         assign_bool_key(&cfg->trunk_tune_enc_calls, val);
     } else if (strcmp(key_lc, "scanner") == 0) {

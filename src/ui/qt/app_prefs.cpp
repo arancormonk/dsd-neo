@@ -22,6 +22,7 @@ constexpr const char kOnboardingDone[] = "ui/onboardingDone";
 constexpr const char kBackgroundListening[] = "listen/background";
 constexpr const char kKeepScreenAwake[] = "listen/keepAwake";
 constexpr const char kSkipEncrypted[] = "decode/skipEncrypted";
+constexpr const char kPersistTgLockouts[] = "decode/persistTgLockouts";
 constexpr const char kHangtimeSec[] = "decode/hangtimeSec";
 constexpr const char kAutoPpm[] = "decode/autoPpm";
 constexpr const char kGainDb[] = "tuner/gainDb";
@@ -213,6 +214,20 @@ AppPrefs::setKeepScreenAwake(bool on) {
     // free of platform APIs.
     m_settings.setValue(QLatin1String(kKeepScreenAwake), on);
     Q_EMIT keepScreenAwakeChanged();
+}
+
+bool
+AppPrefs::persistTgLockouts() const {
+    return m_settings.value(QLatin1String(kPersistTgLockouts), true).toBool();
+}
+
+void
+AppPrefs::setPersistTgLockouts(bool on) {
+    if (on == persistTgLockouts()) {
+        return;
+    }
+    m_settings.setValue(QLatin1String(kPersistTgLockouts), on);
+    Q_EMIT persistTgLockoutsChanged();
 }
 
 bool

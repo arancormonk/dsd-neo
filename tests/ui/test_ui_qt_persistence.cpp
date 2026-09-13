@@ -338,6 +338,8 @@ test_app_prefs(void) {
         expect("onboarding starts not-done", !prefs.onboardingDone());
         expect("background listening defaults on", prefs.backgroundListening());
         expect("skip-encrypted defaults on", prefs.skipEncrypted());
+        expect("quick lockouts default to saving", prefs.persistTgLockouts());
+        prefs.setPersistTgLockouts(false);
         expect("auto-ppm defaults off", !prefs.autoPpm());
         expect("hang time defaults to two seconds", prefs.hangtimeSec() == 2.0);
         prefs.setHangtimeSec(99);
@@ -388,6 +390,7 @@ test_app_prefs(void) {
 
     AppPrefs reloaded;
     expect("gain persists across instances", reloaded.gainDb() == 42);
+    expect("temporary lockout preference persists", !reloaded.persistTgLockouts());
     expect("hang time persists across instances", reloaded.hangtimeSec() == 3.5);
     expect("extra args persist across instances", reloaded.extraArgs() == QStringLiteral("--enc-lockout"));
     expect("onboarding flag persists", reloaded.onboardingDone());

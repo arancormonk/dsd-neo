@@ -411,6 +411,33 @@ class CommandRecorder : public QObject {
         return true;
     }
 
+    Q_INVOKABLE bool
+    setPersistTgLockouts(bool value) {
+        m_lockout_requests.append(value);
+        return m_lockout_accepted;
+    }
+
+    Q_INVOKABLE bool
+    clearTemporaryTgAvoids(const QString& context) {
+        m_avoid_clear_requests.append(context);
+        return m_lockout_accepted;
+    }
+
+    Q_INVOKABLE void
+    setLockoutAccepted(bool accepted) {
+        m_lockout_accepted = accepted;
+    }
+
+    Q_INVOKABLE QVariantList
+    lockoutRequests() const {
+        return m_lockout_requests;
+    }
+
+    Q_INVOKABLE QStringList
+    avoidClearRequests() const {
+        return m_avoid_clear_requests;
+    }
+
     // WP-D1: retain the captured version and requested fields for edit-sheet tests.
     Q_INVOKABLE bool
     setTalkgroupPolicy(unsigned int start, unsigned int end, const QString& context, unsigned int generation,
@@ -594,6 +621,9 @@ class CommandRecorder : public QObject {
         m_last_modulation = -1;
         m_last_decode_mode = -1;
         m_last_ppm = 9999;
+        m_lockout_accepted = true;
+        m_lockout_requests.clear();
+        m_avoid_clear_requests.clear();
         m_scan_hold_calls = 0;
         m_scan_avoid_calls = 0;
         m_scan_avoid_clear_calls = 0;
@@ -751,6 +781,9 @@ class CommandRecorder : public QObject {
     int m_set_trunking_calls = 0;
     bool m_last_set_trunking = false;
     int m_gain_calls = 0;
+    bool m_lockout_accepted = true;
+    QVariantList m_lockout_requests;
+    QStringList m_avoid_clear_requests;
     int m_scan_hold_calls = 0;
     int m_scan_avoid_calls = 0;
     int m_scan_avoid_clear_calls = 0;
@@ -1588,6 +1621,7 @@ class Setup : public QObject {
         prefs[QStringLiteral("notificationExplained")] = true;
         prefs[QStringLiteral("keepScreenAwake")] = false;
         prefs[QStringLiteral("skipEncrypted")] = false;
+        prefs[QStringLiteral("persistTgLockouts")] = true;
         /* The radio defaults the settings screen and the explore setup edit.
          * AppPrefs' own defaults, so a case that reads one sees what a fresh
          * install would. */
@@ -1710,6 +1744,9 @@ class Setup : public QObject {
         metrics[QStringLiteral("leadSlot")] = 0;
         // Targets the encrypted lockout is skipping; 0 is the at-rest value.
         metrics[QStringLiteral("encLockoutCount")] = 0;
+        metrics[QStringLiteral("persistTgLockouts")] = true;
+        metrics[QStringLiteral("temporaryTgAvoidCount")] = 0;
+        metrics[QStringLiteral("tgPolicyContext")] = QStringLiteral("0");
         // On-the-fly scan controls (#380): no rotation running at rest.
         metrics[QStringLiteral("scanRotationActive")] = false;
         metrics[QStringLiteral("optionsKnown")] = false;

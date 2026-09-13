@@ -239,6 +239,7 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize) const {
         prefs.bandwidthKhz = m_prefs->bandwidthKhz();
         prefs.biasTee = m_prefs->biasTee();
         prefs.skipEncrypted = m_prefs->skipEncrypted();
+        prefs.persistTgLockouts = m_prefs->persistTgLockouts();
         prefs.autoPpm = m_prefs->autoPpm();
         prefs.hangtimeSec = m_prefs->hangtimeSec();
         prefs.extraArgs = m_prefs->extraArgs();

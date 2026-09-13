@@ -17,6 +17,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
@@ -1591,6 +1592,26 @@ DSD_SIMPLE_ACTION(act_vis_fsk, DSD_APP_CMD_FSK_HIST_TOGGLE)
 DSD_SIMPLE_ACTION(act_vis_spectrum, DSD_APP_CMD_SPECTRUM_TOGGLE)
 
 #undef DSD_SIMPLE_ACTION
+
+void
+// cppcheck-suppress constParameterPointer -- NcMenuItem.on_select requires a void* callback.
+act_tg_lockout_persist(void* v) {
+    const UiCtx* ctx = (const UiCtx*)v;
+    if (ctx && ctx->opts) {
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET, !ctx->opts->persist_tg_lockouts);
+    }
+}
+
+void
+act_tg_session_avoid_clear(void* v) {
+    (void)v;
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    if (snapshot) {
+        uint64_t context = 0;
+        dsd_tg_policy_table_version(snapshot, &context, NULL);
+        (void)dsd_app_command_submit(DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, &context, sizeof context);
+    }
+}
 
 void
 act_lockout_slot1(void* v) {

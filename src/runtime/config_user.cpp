@@ -187,6 +187,7 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->trunk_tune_private_calls = 1;
     cfg->trunk_tune_data_calls = 0;
     cfg->trunk_tune_enc_calls = 1;
+    cfg->trunk_persist_tg_lockouts = 1;
     cfg->trunk_scan_idle_dwell_ms = 3000;
     cfg->trunk_scan_activity_hold_ms = 1200;
     cfg->trunk_scan_voice_only = 0;
@@ -1035,6 +1036,7 @@ render_trunking_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "tune_private_calls = %s\n", ini_bool(cfg->trunk_tune_private_calls));
     DSD_FPRINTF(out, "tune_data_calls = %s\n", ini_bool(cfg->trunk_tune_data_calls));
     DSD_FPRINTF(out, "tune_enc_calls = %s\n", ini_bool(cfg->trunk_tune_enc_calls));
+    DSD_FPRINTF(out, "persist_tg_lockouts = %s\n", ini_bool(cfg->trunk_persist_tg_lockouts));
     DSD_FPRINTF(out, "scanner = %s\n", ini_bool(cfg->trunk_scanner));
     DSD_FPRINTF(out, "p25_prefer_candidates = %s\n", ini_bool(cfg->trunk_p25_prefer_candidates));
     DSD_FPRINTF(out, "scan_voice_only = %s\n", ini_bool(cfg->trunk_scan_voice_only));
@@ -1434,6 +1436,7 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     opts->trunk_tune_private_calls = cfg->trunk_tune_private_calls ? 1 : 0;
     opts->trunk_tune_data_calls = cfg->trunk_tune_data_calls ? 1 : 0;
     opts->trunk_tune_enc_calls = cfg->trunk_tune_enc_calls ? 1 : 0;
+    opts->persist_tg_lockouts = cfg->trunk_persist_tg_lockouts ? 1 : 0;
     /* Exactly one automatic tuner owner, the invariant ui_handle_trunk_set/
        ui_handle_scanner_toggle (src/app_control/actions/actions_trunk.c) and
        rr_apply_tuner_owner (src/app_control/app_command_queue.c) both enforce.
@@ -1808,6 +1811,7 @@ snapshot_trunking_config(const dsd_opts* opts, const dsd_state* state, dsdneoUse
     cfg->trunk_p25_bandplan_csv[sizeof cfg->trunk_p25_bandplan_csv - 1] = '\0';
     DSD_SNPRINTF(cfg->trunk_src_csv, sizeof cfg->trunk_src_csv, "%s", opts->src_in_file);
     cfg->trunk_src_csv[sizeof cfg->trunk_src_csv - 1] = '\0';
+    cfg->trunk_persist_tg_lockouts = opts->persist_tg_lockouts != 0;
     cfg->trunk_use_allow_list = opts->trunk_use_allow_list ? 1 : 0;
     cfg->trunk_tune_group_calls = opts->trunk_tune_group_calls ? 1 : 0;
     cfg->trunk_tune_private_calls = opts->trunk_tune_private_calls ? 1 : 0;

@@ -15,6 +15,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
@@ -480,6 +481,21 @@ lbl_tune_data(const void* v, char* b, size_t n) {
     } else {
         DSD_SNPRINTF(b, n, "Data calls [%s]", onoff(enabled));
     }
+    return b;
+}
+
+const char*
+lbl_tg_lockout_persist(const void* v, char* b, size_t n) {
+    const UiCtx* ctx = (const UiCtx*)v;
+    DSD_SNPRINTF(b, n, "Save user TG lockouts [%s]", onoff(ctx && ctx->opts && ctx->opts->persist_tg_lockouts));
+    return b;
+}
+
+const char*
+lbl_tg_session_avoid_clear(const void* v, char* b, size_t n) {
+    (void)v;
+    const size_t count = dsd_tg_policy_session_avoid_count(dsd_app_get_latest_snapshot(), 0, UINT32_MAX);
+    DSD_SNPRINTF(b, n, "Clear temporary TG avoids - current list [%zu]", count);
     return b;
 }
 

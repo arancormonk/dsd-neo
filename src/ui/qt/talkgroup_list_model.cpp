@@ -57,9 +57,7 @@ TalkgroupListModel::data(const QModelIndex& index, int role) const {
     switch (role) {
         case IdStartRole: return QVariant::fromValue(static_cast<qulonglong>(row.idStart));
         case IdEndRole: return QVariant::fromValue(static_cast<qulonglong>(row.idEnd));
-        case IdTextRole:
-            return row.idStart == row.idEnd ? QString::number(row.idStart)
-                                            : QStringLiteral("%1–%2").arg(row.idStart).arg(row.idEnd);
+        case IdTextRole: return row.idText();
         case NameRole: return row.name;
         case TagsRole: return row.tags;
         case ListeningRole: return row.listening;
@@ -67,17 +65,24 @@ TalkgroupListModel::data(const QModelIndex& index, int role) const {
         case PriorityRole: return row.priority;
         case PreemptRole: return row.preempt;
         case PolicyIndexRole: return row.policyIndex;
+        case TemporaryAvoidCountRole: return QVariant::fromValue(row.temporaryAvoidCount);
         default: return {};
     }
 }
 
 QHash<int, QByteArray>
 TalkgroupListModel::roleNames() const {
-    return {{IdStartRole, "idStart"}, {IdEndRole, "idEnd"},
-            {IdTextRole, "idText"},   {NameRole, "name"},
-            {TagsRole, "tags"},       {ListeningRole, "listening"},
-            {ListedRole, "listed"},   {PriorityRole, "priority"},
-            {PreemptRole, "preempt"}, {PolicyIndexRole, "policyIndex"}};
+    return {{IdStartRole, "idStart"},
+            {IdEndRole, "idEnd"},
+            {IdTextRole, "idText"},
+            {NameRole, "name"},
+            {TagsRole, "tags"},
+            {ListeningRole, "listening"},
+            {ListedRole, "listed"},
+            {PriorityRole, "priority"},
+            {PreemptRole, "preempt"},
+            {PolicyIndexRole, "policyIndex"},
+            {TemporaryAvoidCountRole, "temporaryAvoidCount"}};
 }
 
 void
@@ -160,6 +165,9 @@ TalkgroupListModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snap
     QSet<QString> categoryTags;
     QVector<Row> rows = listedRows(snapshot, categoryTags);
     appendHeardRows(rows, allowListedOnly);
+    for (Row& row : rows) {
+        row.temporaryAvoidCount = dsd_tg_policy_session_avoid_count(snapshot, row.idStart, row.idEnd);
+    }
     std::stable_sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
         return a.idStart < b.idStart || (a.idStart == b.idStart && a.idEnd < b.idEnd);
     });
@@ -234,7 +242,7 @@ TalkgroupListModel::replaceRows(QVector<Row> rows) {
             Row& old = m_rows[i];
             if (old.name != row.name || old.tags != row.tags || old.listening != row.listening
                 || old.listed != row.listed || old.priority != row.priority || old.preempt != row.preempt
-                || old.policyIndex != row.policyIndex) {
+                || old.policyIndex != row.policyIndex || old.temporaryAvoidCount != row.temporaryAvoidCount) {
                 old = std::move(rows[i]);
                 Q_EMIT dataChanged(index(i, 0), index(i, 0));
             }

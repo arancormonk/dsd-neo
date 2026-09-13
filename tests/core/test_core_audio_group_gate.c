@@ -91,6 +91,94 @@ seed_call(dsd_state* st, uint8_t slot, int protocol, dsd_call_kind kind, uint64_
     return dsd_call_state_observe(st, &observation, DSD_CALL_BOUNDARY_BEGIN);
 }
 
+static int
+test_private_audio_policy(dsd_opts* opts, dsd_state* st) {
+    const int protocols[] = {DSD_SYNC_DMR_BS_VOICE_POS, DSD_SYNC_NXDN_POS, DSD_SYNC_P25P1_POS, DSD_SYNC_P25P2_POS};
+    int rc = 0;
+    for (size_t protocol = 0; protocol < sizeof(protocols) / sizeof(protocols[0]); ++protocol) {
+        for (uint8_t slot = 0; slot < 2; ++slot) {
+            DSD_MEMSET(opts, 0, sizeof(*opts));
+            reset_state(st);
+            st->synctype = protocols[protocol];
+            st->currentslot = slot;
+            rc |= expect_eq("private-policy-call",
+                            seed_call(st, slot, st->synctype, DSD_CALL_KIND_PRIVATE_VOICE, 123, 123, 456), 1);
+            // The companion group call has the same target, but the source RID block must not apply to it.
+            rc |= expect_eq("private-policy-companion",
+                            seed_call(st, slot ^ 1U, st->synctype, DSD_CALL_KIND_GROUP_VOICE, 123, 123, 456), 1);
+            for (int temporary = 0; temporary < 2; ++temporary) {
+                rc |= expect_eq("private-policy-clear", dsd_tg_policy_clear(st), 0);
+                rc |= expect_eq("private-source-block",
+                                temporary ? dsd_tg_policy_session_avoid_add(st, 456)
+                                          : seed_policy_group(st, 456, "B", "Blocked source"),
+                                0);
+                int muted = -1;
+                int left = -1;
+                int right = -1;
+                rc |= expect_eq("private-source-mono", dsd_audio_group_gate_mono(opts, st, 123, 0, &muted), 0);
+                rc |= expect_eq("private-source-mono-muted", muted, 1);
+                rc |= expect_eq("private-source-dual",
+                                dsd_audio_group_gate_dual(opts, st, 123, 123, 0, 0, &left, &right), 0);
+                rc |= expect_eq("private-source-left", left, slot == 0);
+                rc |= expect_eq("private-source-right", right, slot == 1);
+            }
+            rc |= expect_eq("private-policy-reset", dsd_tg_policy_clear(st), 0);
+            opts->trunk_use_allow_list = 1;
+            rc |= expect_eq("private-source-allow", seed_policy_group(st, 456, "A", "Allowed source"), 0);
+            int muted = -1;
+            rc |= expect_eq("private-source-allow-mono", dsd_audio_group_gate_mono(opts, st, 123, 0, &muted), 0);
+            rc |= expect_eq("private-source-allow-audible", muted, 0);
+        }
+    }
+    return rc;
+}
+
+static int
+test_session_avoid_overrides_hold(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (uint8_t slot = 0; slot < 2; ++slot) {
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        reset_state(st);
+        st->synctype = DSD_SYNC_P25P2_POS;
+        st->currentslot = slot;
+        st->tg_hold = 123;
+        st->p25_crypto_state[slot] = DSD_P25_CRYPTO_CLEAR;
+        st->p25_p2_audio_allowed[slot] = 1;
+        rc |= expect_eq("avoid-held-call",
+                        seed_call(st, slot, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 123, 123, 456), 1);
+        rc |= expect_eq("avoid-held-add", dsd_tg_policy_session_avoid_add(st, 123), 0);
+        for (int avoided = 1; avoided >= 0; --avoided) {
+            int muted = -1;
+            int left = -1;
+            int right = -1;
+            int record = -1;
+            rc |= expect_eq("avoid-held-mono", dsd_audio_group_gate_mono(opts, st, 123, 0, &muted), 0);
+            rc |= expect_eq("avoid-held-mono-muted", muted, avoided);
+            rc |= expect_eq("avoid-held-dual", dsd_audio_group_gate_dual(opts, st, 123, 123, 0, 0, &left, &right), 0);
+            rc |= expect_eq("avoid-held-left-muted", left, avoided);
+            rc |= expect_eq("avoid-held-right-muted", right, avoided);
+            rc |= expect_eq("avoid-held-p25-decode", dsd_p25p2_decode_audio_allowed(opts, st, slot, 0), !avoided);
+            rc |= expect_eq("avoid-held-record", dsd_audio_record_gate_mono(opts, st, &record), 0);
+            rc |= expect_eq("avoid-held-record-allowed", record, !avoided);
+            dsd_tg_policy_session_avoid_clear(st);
+        }
+        // A held private source must not unmute an avoided destination, or vice versa.
+        rc |= expect_eq("avoid-private-call",
+                        seed_call(st, slot, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_PRIVATE_VOICE, 123, 123, 456), 1);
+        for (uint32_t endpoint = 123; endpoint <= 456; endpoint += 333) {
+            st->tg_hold = endpoint == 123 ? 456 : 123;
+            rc |= expect_eq("avoid-private-add", dsd_tg_policy_session_avoid_add(st, endpoint), 0);
+            rc |= expect_eq("avoid-private-decode", dsd_p25p2_decode_audio_allowed(opts, st, slot, 0), 0);
+            int record = -1;
+            rc |= expect_eq("avoid-private-record", dsd_audio_record_gate_mono(opts, st, &record), 0);
+            rc |= expect_eq("avoid-private-record-blocked", record, 0);
+            dsd_tg_policy_session_avoid_clear(st);
+            rc |= expect_eq("avoid-private-cleared", dsd_p25p2_decode_audio_allowed(opts, st, slot, 0), 1);
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -437,6 +525,8 @@ main(void) {
         rc |= expect_eq("case10c-outR", outR, 0);
     }
 
+    rc |= test_session_avoid_overrides_hold(opts, st);
+    rc |= test_private_audio_policy(opts, st);
     if (rc == 0) {
         printf("CORE_AUDIO_GROUP_GATE: OK\n");
     }

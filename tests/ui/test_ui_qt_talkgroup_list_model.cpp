@@ -323,6 +323,30 @@ test_history_role_names_and_mutations() {
     expect("history reset invalidates heard set", model.count() == 1 && find(model, 8002).isValid());
 }
 
+void
+test_temporary_avoid_status() {
+    Fixture fixture;
+    fixture.append(100, 100, "A", "Exact", "Fire");
+    fixture.append(200, 299, "A", "Range", "Fire");
+    TalkgroupListModel model(nullptr);
+    model.refresh(fixture.opts, fixture.state);
+    const auto before = model.policyGeneration();
+    expect("temporary exact added", dsd_tg_policy_session_avoid_add(fixture.state, 100) == 0);
+    expect("temporary range member one", dsd_tg_policy_session_avoid_add(fixture.state, 220) == 0);
+    expect("temporary range member two", dsd_tg_policy_session_avoid_add(fixture.state, 230) == 0);
+    model.refresh(fixture.opts, fixture.state);
+    const auto exact = find(model, 100);
+    const auto range = find(model, 200);
+    expect("temporary mutation publishes", model.policyGeneration() != before);
+    expect("saved listening stays enabled", model.data(exact, TalkgroupListModel::ListeningRole).toBool());
+    expect("exact avoid badge", model.data(exact, TalkgroupListModel::TemporaryAvoidCountRole).toULongLong() == 1);
+    expect("range avoid count", model.data(range, TalkgroupListModel::TemporaryAvoidCountRole).toULongLong() == 2);
+    dsd_tg_policy_session_avoid_clear(fixture.state);
+    model.refresh(fixture.opts, fixture.state);
+    expect("clear refreshes unchanged rows",
+           model.data(exact, TalkgroupListModel::TemporaryAvoidCountRole).toULongLong() == 0);
+}
+
 } // namespace
 
 int
@@ -341,6 +365,7 @@ main(int argc, char** argv) {
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
     QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, settingsDir.path());
     test_edit_fields_and_version();
+    test_temporary_avoid_status();
     test_policy_and_heard_rows();
     test_history_role_names_and_mutations();
     QDir(dataDir).removeRecursively();

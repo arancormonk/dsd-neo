@@ -618,6 +618,7 @@ typedef struct dsdneoUserConfig {
     int trunk_tune_private_calls;
     int trunk_tune_data_calls;
     int trunk_tune_enc_calls;
+    int trunk_persist_tg_lockouts;
     int trunk_scanner;
     int trunk_p25_prefer_candidates;
     int trunk_scan_voice_only;

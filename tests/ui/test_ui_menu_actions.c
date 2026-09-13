@@ -1733,6 +1733,28 @@ test_signal_chain_rows(void) {
         rc |= expect_int(simple[i].tag, g_cmd.calls, 1);
     }
 
+    static dsd_opts lockout_opts;
+    UiCtx lockout_ctx = {.opts = &lockout_opts};
+    reset_capture();
+    lockout_opts.persist_tg_lockouts = 1;
+    act_tg_lockout_persist(&lockout_ctx);
+    rc |= expect_int("disable lockout saving command", g_cmd.id, DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET);
+    rc |= expect_int("disable lockout saving payload size", (int)g_cmd.n, (int)sizeof(int32_t));
+    rc |= expect_int("disable lockout saving value", cmd_i32(), 0);
+    reset_capture();
+    lockout_opts.persist_tg_lockouts = 0;
+    act_tg_lockout_persist(&lockout_ctx);
+    rc |= expect_int("enable lockout saving command", g_cmd.id, DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET);
+    rc |= expect_int("enable lockout saving value", cmd_i32(), 1);
+
+    reset_capture();
+    dsd_test_tg_avoids(3, 42);
+    act_tg_session_avoid_clear(NULL);
+    rc |= expect_int("clear temporary command", g_cmd.id, DSD_APP_CMD_TG_SESSION_AVOID_CLEAR);
+    uint64_t avoid_context = 0;
+    DSD_MEMCPY(&avoid_context, g_cmd.data, sizeof avoid_context);
+    rc |= expect_int("clear captures snapshot context", (int)avoid_context, 42);
+    dsd_test_tg_avoids(0, 0);
     reset_capture();
     act_lockout_slot1(NULL);
     rc |= expect_int("lockout slot 1 command", g_cmd.id, DSD_APP_CMD_LOCKOUT_SLOT);

@@ -248,11 +248,13 @@ enum dsd_app_command_id {
     // blocked active group calls. Persist to group_in_file unless a scan row owns the list.
     DSD_APP_CMD_TG_LISTEN_SET = 590, // payload: dsd_app_tg_listen_payload
     // Edit all rows except radio-ID aliases; a nonempty tag selects exact tag matches.
-    DSD_APP_CMD_TG_LISTEN_SET_ALL = 591, // payload: dsd_app_tg_listen_all_payload
-    DSD_APP_CMD_TG_ROW_SET = 592,        // payload: dsd_app_tg_row_payload
-    DSD_APP_CMD_TG_ROW_REMOVE = 593,     // payload: dsd_app_tg_range_payload
-    DSD_APP_CMD_TG_LIST_EXPORT = 594,    // payload: dsd_app_tg_export_payload
-    DSD_APP_CMD_TG_SELECTION_SET = 595,  // payload: dsd_app_tg_selection_payload
+    DSD_APP_CMD_TG_LISTEN_SET_ALL = 591,      // payload: dsd_app_tg_listen_all_payload
+    DSD_APP_CMD_TG_ROW_SET = 592,             // payload: dsd_app_tg_row_payload
+    DSD_APP_CMD_TG_ROW_REMOVE = 593,          // payload: dsd_app_tg_range_payload
+    DSD_APP_CMD_TG_LIST_EXPORT = 594,         // payload: dsd_app_tg_export_payload
+    DSD_APP_CMD_TG_SELECTION_SET = 595,       // payload: dsd_app_tg_selection_payload
+    DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET = 596, // payload: int32_t 0=session-only, 1=save (default)
+    DSD_APP_CMD_TG_SESSION_AVOID_CLEAR = 597, // payload: uint64_t captured policy context; current list only
 
     // UI display toggles
     DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE = 620,

@@ -566,6 +566,18 @@ main(int argc, char** argv) {
         generation = talkgroups.policyGeneration();
     };
     refreshVersion();
+    check(bridge.setPersistTgLockouts(false));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(opts.persist_tg_lockouts == 0);
+    check(dsd_tg_policy_session_avoid_add(&state, 42) == 0);
+    check(!bridge.clearTemporaryTgAvoids("invalid context"));
+    check(bridge.clearTemporaryTgAvoids(QString::number(context + 1)));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_session_avoid_contains(&state, 42));
+    check(bridge.clearTemporaryTgAvoids(QString::number(context)));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(!dsd_tg_policy_session_avoid_contains(&state, 42));
+    refreshVersion();
     const QString version = QString::number(context);
     check(!bridge.renameTalkgroup(42, 42, version, generation, QString(50, QLatin1Char('x'))));
     check(!bridge.setTalkgroupPolicy(42, 42, version, generation, {{"priority", 101}}));

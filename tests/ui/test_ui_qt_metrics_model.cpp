@@ -34,6 +34,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 
 #include <dsd-neo/core/opts_fwd.h>
@@ -412,6 +413,34 @@ test_decryption_metadata() {
 }
 
 static void
+test_temporary_lockout_metrics() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    model.refresh(&opts, &state);
+    expect("saved lockout default published", model.persistTgLockouts());
+    opts.persist_tg_lockouts = 0;
+    expect("seed metric avoid", dsd_tg_policy_session_avoid_add(&state, 100) == 0);
+    int changes = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() { ++changes; });
+    model.refresh(&opts, &state);
+    expect("lockout state notifies", changes == 1 && !model.persistTgLockouts() && model.temporaryTgAvoidCount() == 1);
+    uint64_t context = 0;
+    dsd_tg_policy_table_version(&state, &context, nullptr);
+    expect("current list context published losslessly", model.tgPolicyContext() == QString::number(context));
+    model.refresh(&opts, &state);
+    expect("stable lockouts do not notify twice", changes == 1);
+    dsd_tg_policy_session_avoid_clear(&state);
+    model.refresh(&opts, &state);
+    expect("clear count notifies", changes == 2 && model.temporaryTgAvoidCount() == 0);
+    model.clear();
+    expect("stopped avoids unavailable", model.tgPolicyContext().isEmpty() && model.temporaryTgAvoidCount() == 0);
+    freeState(&state);
+}
+
+static void
 test_options_readiness() {
     static dsd_opts opts;
     static dsd_state state;
@@ -589,6 +618,7 @@ int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     test_options_readiness();
+    test_temporary_lockout_metrics();
     test_scan_timing();
     test_decryption_metadata();
     test_site();

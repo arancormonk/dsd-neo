@@ -374,6 +374,7 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
 
     //Trunking - Tune Encrypted Calls (P25 only on applicable grants with svc opts)
     opts->trunk_tune_enc_calls = 1; //enabled by default
+    opts->persist_tg_lockouts = 1;
 
     //P25 LCW explicit retune (format 0x44)
     //Enabled by default so explicit-only P25 systems follow voice grants out-of-the-box.

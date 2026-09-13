@@ -342,12 +342,19 @@ small subset is exposed as config keys for convenience (for example
 | `tune_private_calls` | BOOL | Follow private calls | `true` |
 | `tune_data_calls` | BOOL | Follow data calls | `false` |
 | `tune_enc_calls` | BOOL | Follow P25 encrypted grants without key-aware lockout; `false` silently classifies and follows only usable matching keys | `true` |
+| `persist_tg_lockouts` | BOOL | Save quick `!`/`@` and Qt/Android **Skip** lockouts to the global groups file; `false` keeps temporary avoids in memory | `true` |
 | `scanner` | BOOL | Use the channel map as a conventional scanner (`-Y`) instead of following a control channel | `false` |
 | `scan_voice_only` | BOOL | Step `-Y`/conventional scan on unless decoded voice holds the row | `false` |
 | `scan_voice_qualify_ms` | INT (100-600000) | Window after sync in which voice must appear or the scan moves on | `1000` |
 | `scan_voice_hold_ms` | INT (100-600000) | Time to stay after the last voice frame | `2000` |
 | `scan_max_visit_ms` | INT (0-3600000) | Maximum time on one `-Y`/trunk-scan target per visit; can cut an ongoing call short; `0` disables, else `1000..3600000` | `0` |
 | `p25_prefer_candidates` | BOOL | Prefer learned P25 control-channel candidates when hunting (`-^`) | `false` |
+
+Loading a configuration during a session with a different `group_csv` imports that file before making it the
+save destination. If the import fails, the configuration is rejected and the previous list and destination stay
+in place. An unchanged path preserves temporary avoids. During scan-row visits, this updates the global list
+while retaining the row's own list and avoids.
+
 **[trunk_scan] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
