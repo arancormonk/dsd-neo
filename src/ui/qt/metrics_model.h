@@ -676,17 +676,6 @@ class MetricsModel : public QObject {
         return m_view.held_tg;
     }
 
-    /**
-     * @brief Targets the encrypted lockout is currently skipping.
-     *
-     * The ledger's size at the current key epoch, which is a count of targets
-     * confirmed undecryptable from voice — not a count of refusals. A control
-     * channel repeats a grant update every few hundred ms for a call in
-     * progress, so counting refused grants reported hundreds where a handful of
-     * transmissions had happened. This exists because a site that is almost
-     * entirely encrypted otherwise presents as a decoder that stopped: the
-     * control channel decodes, every grant is declined, and no call is logged.
-     */
     bool
     persistTgLockouts() const {
         return m_view.persist_tg_lockouts;
@@ -702,6 +691,17 @@ class MetricsModel : public QObject {
         return m_view.tg_policy_context;
     }
 
+    /**
+     * @brief Targets the encrypted lockout is currently skipping.
+     *
+     * The ledger's size at the current key epoch, which is a count of targets
+     * confirmed undecryptable from voice — not a count of refusals. A control
+     * channel repeats a grant update every few hundred ms for a call in
+     * progress, so counting refused grants reported hundreds where a handful of
+     * transmissions had happened. This exists because a site that is almost
+     * entirely encrypted otherwise presents as a decoder that stopped: the
+     * control channel decodes, every grant is declined, and no call is logged.
+     */
     int
     encLockoutCount() const {
         return m_view.enc_lockout_count;
@@ -1272,8 +1272,9 @@ class MetricsModel : public QObject {
 
     /** @brief Fill in sync state and the live decoder/front-end settings. */
     void fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m);
-    /** @brief Scan hold and avoids (#380), read from whichever rotation is running. */
+    /** @brief Listening settings, talkgroup Hold, and lockout state from the held snapshot. */
     static void fillListeningControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    /** @brief Scan hold and avoids (#380), read from whichever rotation is running. */
     static void fillScanControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief Why the rotation is staying on this row and how long is left (#508). */
     void fillScanTimingView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) const;

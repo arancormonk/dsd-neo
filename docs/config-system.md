@@ -349,6 +349,12 @@ small subset is exposed as config keys for convenience (for example
 | `scan_voice_hold_ms` | INT (100-600000) | Time to stay after the last voice frame | `2000` |
 | `scan_max_visit_ms` | INT (0-3600000) | Maximum time on one `-Y`/trunk-scan target per visit; can cut an ongoing call short; `0` disables, else `1000..3600000` | `0` |
 | `p25_prefer_candidates` | BOOL | Prefer learned P25 control-channel candidates when hunting (`-^`) | `false` |
+
+Loading a configuration during a session with a different `group_csv` imports that file before making it the
+save destination. If the import fails, the configuration is rejected and the previous list and destination stay
+in place. An unchanged path preserves temporary avoids. During scan-row visits, this updates the global list
+while retaining the row's own list and avoids.
+
 **[trunk_scan] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|

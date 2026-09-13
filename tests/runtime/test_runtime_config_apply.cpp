@@ -2175,7 +2175,7 @@ test_ui_import_and_dsp_output_commands_report_service_results(void) {
     dsd_app_command_submit(DSD_APP_CMD_IMPORT_GROUP_LIST, missing_group, strlen(missing_group) + 1U);
     applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("group import command drains", applied, 1);
-    rc |= expect_true("group import records requested path", strcmp(opts->group_in_file, missing_group) == 0);
+    rc |= expect_true("failed group import preserves configured path", opts->group_in_file[0] == '\0');
     rc |= expect_true("group import failure toast", strstr(state->ui_msg, "Failed: Group list reload") != NULL);
 
     const char* missing_dec = "./missing-keys-dec.csv";

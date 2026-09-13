@@ -105,7 +105,7 @@ compute_percentiles_u8(const uint8_t* src, int len, double* p50, double* p95) {
 /* Determine if an Active Channel label refers to a locked-out target.
  * Supports "TG:" (group), "TGT:" (target/private/data), and "SG:" (regroup
  * supergroup) fields.
- * Returns 1 when the referenced ID is marked with groupMode "DE" or "B". */
+ * Returns 1 when the referenced ID is session-avoided or marked with groupMode "DE" or "B". */
 int
 ui_is_locked_from_label(const dsd_state* state, const char* label) {
     if (!state) {
@@ -114,6 +114,9 @@ ui_is_locked_from_label(const dsd_state* state, const char* label) {
     size_t cursor = 0U;
     ui_target_token token;
     while (ui_target_token_next(label, &cursor, &token)) {
+        if (dsd_tg_policy_session_avoid_contains(state, token.id)) {
+            return 1;
+        }
         char mode[8];
         if (!dsd_tg_policy_lookup_label(state, token.id, mode, sizeof(mode), NULL, 0)) {
             continue;

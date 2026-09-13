@@ -691,7 +691,14 @@ dsd_tg_policy_set_mode(dsd_state* state, uint32_t id_start, uint32_t id_end, con
     }
     int index = tg_policy_find_bounds_idx_first(ctx, id_start, id_end);
     if (index >= 0) {
-        tg_policy_entry_apply_mode(&ctx->table.entries[index], mode);
+        dsd_tg_policy_entry* entry = &ctx->table.entries[index];
+        if (id_start == id_end
+            && (entry->source == DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS || strcmp(entry->mode, "D") == 0)) {
+            // An explicit TG edit takes ownership of an alias collision; radio metadata is not TG metadata.
+            dsd_tg_policy_make_exact_entry(id_start, mode, "", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, entry);
+        } else {
+            tg_policy_entry_apply_mode(entry, mode);
+        }
         tg_policy_table_note_mutation(ctx);
         return 0;
     }

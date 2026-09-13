@@ -634,7 +634,7 @@ test_file_network_and_import_commands(void) {
     post_string(DSD_APP_CMD_IMPORT_KEYS_HEX, missing_csv);
     rc |= expect_int("import failure group applied", dsd_app_drain_cmds(&opts, &state), 4);
     rc |= expect_str("failed channel import keeps path", opts.chan_in_file, "");
-    rc |= expect_str("group import path copied", opts.group_in_file, missing_csv);
+    rc |= expect_str("failed group import keeps path", opts.group_in_file, "");
     rc |= expect_str("key import path copied", opts.key_in_file, missing_csv);
     rc |= expect_contains("key import failure toast", state.ui_msg, "Failed: Keys (HEX)");
 
@@ -3647,6 +3647,90 @@ test_temporary_lockout_commands(uint8_t slot) {
     return rc;
 }
 
+static int
+test_config_group_path_reloads_before_persist(int scoped) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char first[DSD_TEST_PATH_MAX], second[DSD_TEST_PATH_MAX], missing[DSD_TEST_PATH_MAX];
+    const int first_fd = dsd_test_mkstemp(first, sizeof first, "dsd_config_groups_a");
+    const int second_fd = dsd_test_mkstemp(second, sizeof second, "dsd_config_groups_b");
+    const int missing_fd = dsd_test_mkstemp(missing, sizeof missing, "dsd_config_groups_missing");
+    if (first_fd < 0 || second_fd < 0 || missing_fd < 0) {
+        return 1;
+    }
+    dsd_close(first_fd);
+    dsd_close(second_fd);
+    dsd_close(missing_fd);
+    remove(missing);
+    const char* a = "id,mode,name\n111,A,First\n";
+    const char* b = "id,mode,name\n222,A,Second\n";
+    int rc = write_file_bytes(first, a, strlen(a));
+    rc |= write_file_bytes(second, b, strlen(b));
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", first);
+    rc |= expect_int("config seed first groups", dsd_tg_policy_reload_group_file(&opts, &state), 0);
+    rc |= expect_int("config seed old avoid", dsd_tg_policy_session_avoid_add(&state, 111), 0);
+    dsd_scan_row_profile* row = NULL;
+    dsd_key_set keys = {0};
+    if (scoped) {
+        dsd_scan_options parsed = {0};
+        parsed.values.present = DSD_SCAN_OPT_GROUP;
+        DSD_SNPRINTF(parsed.values.group_file, sizeof parsed.values.group_file, "%s", second);
+        rc |= expect_int("config load row groups", dsd_scan_profile_load(&parsed, 0, &row, &keys), 0);
+        rc |= expect_int("config begin row scope", dsd_scan_groups_begin(&state), 0);
+        dsd_scan_groups_enter(&state, row);
+        rc |= expect_int("config seed row avoid", dsd_tg_policy_session_avoid_add(&state, 777), 0);
+    }
+    dsdneoUserConfig cfg = {0};
+    cfg.has_trunking = 1;
+    cfg.trunk_persist_tg_lockouts = 1;
+    DSD_SNPRINTF(cfg.trunk_group_csv, sizeof cfg.trunk_group_csv, "%s", second);
+    rc |= expect_true("config new groups queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("config new groups drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("config new groups path", opts.group_in_file, second);
+    if (scoped) {
+        rc |= expect_true("config preserves active row avoid", dsd_tg_policy_session_avoid_contains(&state, 777));
+        dsd_scan_groups_leave(&state);
+    }
+    rc |= expect_int("config resets old avoids", (int)dsd_tg_policy_session_avoid_count(&state, 0, UINT32_MAX), 0);
+    dsd_app_tg_listen_payload edit = {222, 222, 0};
+    rc |= expect_true("config persisted edit queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("config persisted edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(first, a);
+    rc |= expect_file_bytes(second, "id,mode,name\n222,B,Second\n");
+
+    rc |= expect_int("config seed retained avoid", dsd_tg_policy_session_avoid_add(&state, 222), 0);
+    rc |= expect_true("config unchanged groups queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("config unchanged groups drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("config unchanged path retains avoid", dsd_tg_policy_session_avoid_contains(&state, 222));
+    DSD_SNPRINTF(cfg.trunk_group_csv, sizeof cfg.trunk_group_csv, "%s", missing);
+    cfg.trunk_persist_tg_lockouts = 0;
+    rc |= expect_true("config missing groups queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("config missing groups drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("config failure retains groups path", opts.group_in_file, second);
+    rc |= expect_true("config failure retains avoid", dsd_tg_policy_session_avoid_contains(&state, 222));
+    rc |= expect_int("config failure does not apply remaining options", opts.persist_tg_lockouts, 1);
+    rc |= write_file_bytes(missing, a, strlen(a));
+    edit.listen = 1;
+    rc |= expect_true("config edit after failure queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("config edit after failure drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(missing, a);
+    rc |= expect_file_bytes(second, b);
+    // A failed explicit import must preserve the same table/path pairing as a failed config load.
+    remove(missing);
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, missing);
+    rc |= expect_int("explicit missing import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("explicit missing import keeps destination", opts.group_in_file, second);
+    rc |= expect_true("explicit missing import keeps avoid", dsd_tg_policy_session_avoid_contains(&state, 222));
+    dsd_scan_profile_free(row);
+    dsd_key_set_free(&keys);
+    freeState(&state);
+    remove(first);
+    remove(second);
+    remove(missing);
+    return rc;
+}
+
 int
 main(void) {
     int rc = test_session_queue_cancellation();
@@ -3659,6 +3743,8 @@ main(void) {
     rc |= test_coalesced_setter_erases_old_tail();
     rc |= test_foundation_commands();
     rc |= test_talkgroup_list_commands();
+    rc |= test_config_group_path_reloads_before_persist(0);
+    rc |= test_config_group_path_reloads_before_persist(1);
     rc |= test_temporary_lockout_commands(0);
     rc |= test_temporary_lockout_commands(1);
     rc |= test_talkgroup_row_commands();

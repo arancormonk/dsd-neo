@@ -1310,6 +1310,36 @@ test_captured_selection(void) {
 }
 
 static int
+test_lockout_replaces_alias_metadata(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+    int rc = 0;
+    const dsd_tg_policy_entry_source sources[] = {DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, DSD_TG_POLICY_SOURCE_IMPORTED};
+    for (size_t i = 0; i < sizeof sources / sizeof sources[0]; ++i) {
+        dsd_tg_policy_entry alias;
+        init_entry(&alias, 123, "D", "Radio alias", sources[i]);
+        rc |= expect_true("alias seed", dsd_tg_policy_append_exact(state, &alias) == 0);
+        rc |= expect_true("alias lockout", dsd_tg_policy_set_mode(state, 123, 123, "B") == 0);
+        dsd_tg_policy_lookup lookup;
+        rc |= expect_true("alias lockout lookup", dsd_tg_policy_lookup_id(state, 123, &lookup) == 0);
+        rc |= expect_true("alias becomes visible user policy", lookup.entry.source == DSD_TG_POLICY_SOURCE_USER_LOCKOUT
+                                                                   && !lookup.entry.name[0]
+                                                                   && strcmp(lookup.entry.mode, "B") == 0);
+        dsd_tg_policy_entry edit = {0};
+        DSD_SNPRINTF(edit.mode, sizeof edit.mode, "%s", "A");
+        rc |= expect_true("alias lockout can be edited",
+                          dsd_tg_policy_set_fields(state, 123, 123, &edit, DSD_TG_POLICY_FIELD_LISTEN) == 0);
+        rc |= expect_true("alias lockout can be removed", dsd_tg_policy_remove_bounds(state, 123, 123) == 0);
+        rc |= expect_true("alias lockout removed", dsd_tg_policy_entry_count(state) == 0);
+        dsd_state_ext_free_all(state);
+    }
+    free(state);
+    return rc;
+}
+
+static int
 test_session_avoids(void) {
     dsd_state* state = calloc(1, sizeof(*state));
     dsd_state* snapshot = calloc(1, sizeof(*snapshot));
@@ -1369,6 +1399,10 @@ test_session_avoids(void) {
                           && !decision.tune_allowed && !decision.record_allowed);
     rc |= expect_true("snapshot avoids", dsd_tg_policy_copy_snapshot(snapshot, state) == 0
                                              && dsd_tg_policy_session_avoid_contains(snapshot, UINT32_MAX));
+    rc |= expect_true("saved listening edit", dsd_tg_policy_set_mode(state, 100, 199, "A") == 0);
+    rc |= expect_true("listening edit retains temporary avoid",
+                      dsd_tg_policy_evaluate_group_call(opts, state, 123, 1, 0, 0, &decision) == 0
+                          && !decision.tune_allowed && (decision.block_reasons & DSD_TG_POLICY_BLOCK_SESSION_AVOID));
     dsd_tg_policy_session_avoid_clear(state);
     rc |= expect_true("snapshot independent", dsd_tg_policy_session_avoid_contains(snapshot, 123)
                                                   && !dsd_tg_policy_session_avoid_contains(state, 123));
@@ -1397,6 +1431,7 @@ main(void) {
     rc |= test_set_fields_remove_bounds();
     rc |= test_block_reason_labels();
     rc |= test_session_avoids();
+    rc |= test_lockout_replaces_alias_metadata();
     rc |= test_snapshot_reclones_recreated_context();
     rc |= test_snapshot_reclones_recreated_empty_reload_context();
     rc |= test_lookup_and_precedence();

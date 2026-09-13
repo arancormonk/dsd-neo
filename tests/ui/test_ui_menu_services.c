@@ -911,7 +911,7 @@ test_file_network_and_import_failure_contracts(void) {
     rc |= expect_int("channel import failure", svc_import_channel_map(&opts, &state, "channels.csv"), -1);
     rc |= expect_str("failed channel import keeps path", opts.chan_in_file, "");
     rc |= expect_int("group import failure", svc_import_group_list(&opts, &state, "groups.csv"), -1);
-    rc |= expect_str("group import path stored", opts.group_in_file, "groups.csv");
+    rc |= expect_str("failed group import keeps path", opts.group_in_file, "");
     rc |= expect_int("keys dec import failure", svc_import_keys_dec(&opts, &state, "keys.csv"), -1);
     rc |= expect_str("keys dec import path stored", opts.key_in_file, "keys.csv");
     rc |= expect_int("keys hex import failure", svc_import_keys_hex(&opts, &state, "keys.hex"), -1);

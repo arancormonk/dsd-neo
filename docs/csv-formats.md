@@ -483,8 +483,10 @@ Important behavior:
   the default behavior for subsequent lockouts; switching modes never converts existing entries.
 - Qt/Android **Settings → Listening → Save skipped talkgroups** and the terminal **Save user TG lockouts**
   menu setting take effect immediately. Explicit **Listening**, **Not tuned**, and bulk list edits still
-  modify the canonical list, and temporary avoids continue to override it. The TG list shows temporary counts
-  separately from its saved listening controls.
+  modify the canonical list, and temporary avoids continue to override it, including when a talkgroup Hold
+  matches. The TG list shows temporary counts separately from its saved listening controls.
+- Temporary avoids also mark the terminal's active-channel lockout indicator. The preference controls quick
+  user lockouts only; existing over-the-air radio-alias learning can still append alias rows to the groups file.
 - **Clear temporary TG avoids — current list** clears only the active list's temporary avoids. It leaves saved
   blocks, encryption lockouts, and channel/target avoids intact. Retunes and scan visits preserve avoids;
   reloading, replacing, or clearing a list resets that scope's avoids. Stopping the decoder clears the session;

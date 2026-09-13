@@ -376,11 +376,6 @@ MetricsModel::clear() {
  * last command, because a command can be refused and, on Android, the service
  * that owns them outlives this process.
  */
-/*
- * Scan hold and avoids read whichever rotation owns the tuner: the coordinator's
- * publication under --trunk-scan, the scan-list flags under -Y. Plain trunking is not
- * a rotation, so the controls have nothing to act on and the gate stays false.
- */
 void
 MetricsModel::fillListeningControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
     next.audio_muted = opts_snapshot->audio_out == 0;

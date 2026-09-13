@@ -576,12 +576,19 @@ svc_clear_src_list(dsd_opts* opts, dsd_state* state) {
 
 int
 svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path) {
-    if (!opts || !state || !path || !*path) {
+    if (!opts || !state || !path || !*path || strlen(path) >= sizeof opts->group_in_file) {
         return -1;
     }
+    char previous[sizeof opts->group_in_file];
+    DSD_MEMCPY(previous, opts->group_in_file, sizeof previous);
     DSD_STRNCPY(opts->group_in_file, path, sizeof opts->group_in_file - 1);
     opts->group_in_file[sizeof opts->group_in_file - 1] = '\0';
-    return dsd_tg_policy_reload_group_file(opts, state);
+    const int rc = dsd_tg_policy_reload_group_file(opts, state);
+    if (rc != 0) {
+        // Keep the retained table paired with its original save destination after a failed import.
+        DSD_MEMCPY(opts->group_in_file, previous, sizeof opts->group_in_file);
+    }
+    return rc;
 }
 
 int

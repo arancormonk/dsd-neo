@@ -4471,8 +4471,10 @@ apply_cmd_tg_listen(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
 
 static void
 tg_lockout_report(dsd_opts* opts, dsd_state* state, unsigned int tg) {
-    const int session_only = !opts->persist_tg_lockouts || !opts->group_in_file[0] || dsd_scan_groups_row_active(state);
-    ui_set_toast(state, 3, "TG %u locked out%s", tg, session_only ? " for this session" : "");
+    const char* suffix = !opts->persist_tg_lockouts                                     ? " for this session"
+                         : !opts->group_in_file[0] || dsd_scan_groups_row_active(state) ? " in current list (not saved)"
+                                                                                        : "";
+    ui_set_toast(state, 3, "TG %u locked out%s", tg, suffix);
     if (opts->persist_tg_lockouts) {
         tg_listen_persist(opts, state);
     }
@@ -4906,6 +4908,28 @@ cfg_airspy_settings_valid(const dsdneoUserConfig* cfg) {
 }
 
 static int
+cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    if (!cfg_airspy_settings_valid(cfg)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    if (!cfg->has_trunking || !cfg->trunk_group_csv[0]) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (!memchr(cfg->trunk_group_csv, 0, sizeof cfg->trunk_group_csv)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    if (strcmp(opts->group_in_file, cfg->trunk_group_csv) == 0) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    // Config loads already suspend scan-row groups, so this replaces only the global list.
+    if (svc_import_group_list(opts, state, cfg->trunk_group_csv) != 0) {
+        ui_set_toast(state, 4, "Config not applied: group list could not be loaded");
+        return UI_CMD_APPLY_FAILED;
+    }
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
@@ -4934,8 +4958,9 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     DSD_SNPRINTF(old_audio_out_dev, sizeof old_audio_out_dev, "%s", opts->audio_out_dev);
 
     DSD_MEMCPY(&cfg, c->data, sizeof cfg);
-    if (!cfg_airspy_settings_valid(&cfg)) {
-        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    const int prepare_rc = cfg_prepare_runtime_apply(opts, state, &cfg);
+    if (prepare_rc != UI_CMD_APPLY_COMPLETED) {
+        return prepare_rc;
     }
     dsd_apply_user_config_to_opts(&cfg, opts, state);
     /*
