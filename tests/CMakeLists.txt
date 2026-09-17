@@ -2957,7 +2957,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_imported_files_model
-        PRIVATE Qt6::Core dsd-neo_app_control ${LIBS}
+        PRIVATE Qt6::Core
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_imported_files_model
@@ -3004,8 +3004,6 @@ if(DSD_ENABLE_QT_UI)
             dsd-neo_core
             dsd-neo_proto_dmr
             dsd-neo_runtime
-            dsd-neo_app_control
-            ${LIBS}
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_radio_reference_model
@@ -5077,6 +5075,30 @@ set(_DSD_RUNTIME_CONFIG_APPLY_LIBS
     dsd-neo_engine
     ${_DSD_RUNTIME_CLI_PARSE_LIBS}
 )
+# These import models now exercise the real engine facade. Keep its static
+# providers before the optional shared libraries: --as-needed drops libraries
+# seen before the engine introduces its RTL-SDR/Codec2 references.
+foreach(
+    _qt_import_target
+    dsd-neo_test_ui_qt_imported_files_model
+    dsd-neo_test_ui_qt_radio_reference_model
+)
+    if(TARGET ${_qt_import_target})
+        target_link_libraries(
+            ${_qt_import_target}
+            PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS}
+        )
+        if(
+            CMAKE_SYSTEM_NAME STREQUAL "Linux"
+            AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"
+        )
+            target_link_options(
+                ${_qt_import_target}
+                PRIVATE "LINKER:--as-needed"
+            )
+        endif()
+    endif()
+endforeach()
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     # The RTL hot restart replaces the stream, so a config re-apply is only
     # reachable with the stream entry points wrapped.
