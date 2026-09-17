@@ -20,6 +20,7 @@ Item {
             prefs.metricUnits = false
             screenLoader.source = uiDir + "/SettingsScreen.qml"
             verify(screenLoader.item !== null)
+            compare(findChild(screenLoader.item, "settingsUnitsHeader").text, "Units")
         }
 
         function cleanup() {

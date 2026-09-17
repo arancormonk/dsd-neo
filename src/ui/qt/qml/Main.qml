@@ -146,7 +146,7 @@ Window {
     Binding {
         target: uiController
         property: "autoStartBlocked"
-        value: mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.diagnosticsOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0
+        value: mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0
     }
     Connections {
         target: uiController
@@ -249,12 +249,24 @@ Window {
         onLeave: mainRoot.diagnosticsOpen = false
     }
     NavigationLayer {
+        surface: licensesScreen
+        active: mainRoot.licensesOpen
+        onLeave: mainRoot.licensesOpen = false
+    }
+    NavigationLayer {
+        surface: radioReferenceAccountScreen
+        active: mainRoot.radioReferenceAccountOpen
+        onLeave: mainRoot.radioReferenceAccountOpen = false
+    }
+    NavigationLayer {
         surface: radioReferenceScreen
         active: mainRoot.radioReferenceOpen
         onLeave: mainRoot.radioReferenceOpen = false
     }
     property bool wizardOpen: false
     property bool exploreSetupOpen: false
+    property bool licensesOpen: false
+    property bool radioReferenceAccountOpen: false
     property bool diagnosticsOpen: false // WP-F5
     property bool importsOpen: false
     onRadioReferenceOpenChanged: {
@@ -630,7 +642,7 @@ Window {
         id: shell
 
         anchors.fill: safeArea
-        opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen || mainRoot.diagnosticsOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.scanListOpen || mainRoot.sessionDestination.length > 0 || !prefs.onboardingDone) ? 0.0 : 1.0
+        opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.scanListOpen || mainRoot.sessionDestination.length > 0 || !prefs.onboardingDone) ? 0.0 : 1.0
         visible: opacity > 0.0
         enabled: opacity > 0.9 && !siteChooser.visible
 
@@ -709,6 +721,7 @@ Window {
 
         SettingsScreen {
             id: settingsRoot
+            objectName: "idleSettingsScreen"
             x: mainRoot.expanded ? nav.width : 0
             y: 0
             width: parent.width - x
@@ -717,7 +730,8 @@ Window {
 
             onOpenDiagnostics: mainRoot.diagnosticsOpen = true
             onOpenImports: mainRoot.importsOpen = true
-            onOpenRadioReference: mainRoot.openRadioReference(false)
+            onOpenRadioReferenceAccount: mainRoot.radioReferenceAccountOpen = true
+            onOpenLicenses: mainRoot.licensesOpen = true
         }
 
         BottomNav {
@@ -804,7 +818,7 @@ Window {
         anchors.fill: safeArea
         system: mainRoot.sessionSystem
         scanTargetName: mainRoot.scanTargetLabel()
-        sitesAvailable: mainRoot.running && !mainRoot.diagnosticsOpen && !mainRoot.importsOpen && mainRoot.sessionSystem && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
+        sitesAvailable: mainRoot.running && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && mainRoot.sessionSystem && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
         onOpenSites: {
             mainRoot.cancelPendingRestart();
             siteChooser.openFor(savedSystems.rowForUid(mainRoot.sessionSystem.uid));
@@ -820,7 +834,7 @@ Window {
         // instead of offering to hand the tuner over. The RadioReference term is
         // what lets that screen stay lit over the monitor rather than standing
         // down into a three-layer deadlock.
-        enabled: opacity > 0.9 && !mainRoot.wizardOpen && !mainRoot.spectrumOpen && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible && !siteChooser.visible && !mainRoot.diagnosticsOpen && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings") && mainRoot.sessionDestination.length === 0
+        enabled: opacity > 0.9 && !mainRoot.wizardOpen && !mainRoot.spectrumOpen && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible && !siteChooser.visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings") && mainRoot.sessionDestination.length === 0
 
         onOpenSpectrum: {
             spectrumLoader.active = true;
@@ -1019,7 +1033,7 @@ Window {
         id: sessionTools
         anchors.fill: safeArea
         visible: mainRoot.sessionDestination.length > 0
-        enabled: visible && !mainRoot.diagnosticsOpen && !mainRoot.importsOpen && !mainRoot.radioReferenceOpen
+        enabled: visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && !mainRoot.radioReferenceOpen
         Rectangle {
             anchors.fill: parent
             color: Theme.bg
@@ -1049,7 +1063,8 @@ Window {
             visible: mainRoot.sessionDestination === "settings"
             onOpenDiagnostics: mainRoot.diagnosticsOpen = true
             onOpenImports: mainRoot.importsOpen = true
-            onOpenRadioReference: mainRoot.openRadioReference(false)
+            onOpenRadioReferenceAccount: mainRoot.radioReferenceAccountOpen = true
+            onOpenLicenses: mainRoot.licensesOpen = true
         }
     }
     ModalSheet {
@@ -1132,6 +1147,24 @@ Window {
         onClosed: mainRoot.diagnosticsOpen = false
     }
 
+    LicensesScreen {
+        id: licensesScreen
+        objectName: "licensesScreen"
+        anchors.fill: safeArea
+        visible: mainRoot.licensesOpen
+        enabled: visible
+        onClosed: mainRoot.licensesOpen = false
+    }
+
+    RadioReferenceAccountScreen {
+        id: radioReferenceAccountScreen
+        objectName: "radioReferenceAccountScreen"
+        anchors.fill: safeArea
+        visible: mainRoot.radioReferenceAccountOpen
+        enabled: visible
+        onClosed: mainRoot.radioReferenceAccountOpen = false
+    }
+
     // ---- Imported-files library (pushed from Settings) ----
     // The monitor owns the screen once a session goes active, so this layer
     // stands down for it the way the explore setup and onboarding do — two lit,
@@ -1153,8 +1186,7 @@ Window {
         onOpenRadioReference: mainRoot.openRadioReference(false)
     }
 
-    // ---- RadioReference import (pushed from Settings, the library, or the
-    // wizard) ----
+    // ---- RadioReference import (pushed from the library or the wizard) ----
     // Declared after the imports library because declaration order is z-order
     // among siblings and this opens over it.
     //
@@ -1186,7 +1218,7 @@ Window {
             mainRoot.radioReferenceOpen = false;
             Qt.inputMethod.hide();
             if (!mainRoot.radioReferenceFromWizard) {
-                // Opened from Settings or the library: the source, gain and name
+                // Opened from the library: the source, gain and name
                 // are still unanswered, so the wizard asks for them.
                 mainRoot.importsOpen = false;
                 wizard.openForAdd(false);

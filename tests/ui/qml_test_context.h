@@ -1085,6 +1085,16 @@ class ReadingMap : public QQmlPropertyMap {
   public:
     explicit ReadingMap(QObject* parent) : QQmlPropertyMap(this, parent) {}
 
+    Q_INVOKABLE QString
+    licenseNotices() const {
+        return QStringLiteral("License notices fixture");
+    }
+
+    Q_INVOKABLE bool
+    copyText(const QString&) const {
+        return false;
+    }
+
   Q_SIGNALS:
     void tunerChanged();
     void controlChanged();

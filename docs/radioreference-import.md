@@ -88,7 +88,7 @@ with their own premium credentials, is squarely the sanctioned case.
 ## Credentials
 
 - The **username** and, in a build without a baked key, the **application key** persist. The Qt app keeps
-  them in its own settings store (`Settings -> RadioReference account`); the terminal UI keeps them in the
+  them in its own settings store (`Settings → Account → RadioReference`); the terminal UI keeps them in the
   config file under `[radioreference]` (`docs/config-system.md`). The key row is offered only where the
   user is the one who has to supply a key — see [The application key](#the-application-key).
 - The **password is held in memory only** and is asked for once per app session. It is never

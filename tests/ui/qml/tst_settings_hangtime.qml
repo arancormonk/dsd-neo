@@ -20,6 +20,7 @@ Item {
             prefs.hangtimeSec = 2.0
             screenLoader.source = uiDir + "/SettingsScreen.qml"
             verify(screenLoader.item !== null)
+            compare(findChild(screenLoader.item, "settingsDecodingHeader").text, "Decoding · next start")
         }
 
         function cleanup() {
