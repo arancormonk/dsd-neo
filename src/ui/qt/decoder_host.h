@@ -110,6 +110,7 @@ class DecoderHost : public QObject {
     }
 
     Q_INVOKABLE QString licenseNotices() const;
+    Q_INVOKABLE bool copyText(const QString& text) const;
 
     virtual int
     inputFailureKind() const {

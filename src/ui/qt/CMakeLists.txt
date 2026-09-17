@@ -78,6 +78,9 @@ qt_add_resources(
         qml/DashedActionButton.qml
         qml/DecodeChip.qml
         qml/DiagnosticsScreen.qml
+        qml/LicensesScreen.qml
+        qml/RadioReferenceAccountEditor.qml
+        qml/RadioReferenceAccountScreen.qml
         qml/DisclosureRow.qml
         qml/EncTag.qml
         qml/EmergencyTag.qml

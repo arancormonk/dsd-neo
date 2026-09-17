@@ -649,97 +649,36 @@ Item {
                         text: qsTr("RadioReference account")
                     }
 
-                    PlexTextField {
-                        id: usernameField
-                        label: qsTr("RadioReference username")
-                        nextField: passwordField
-
-                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                        objectName: "radioReferenceUsernameField"
-
+                    RadioReferenceAccountEditor {
                         width: parent.width
-                        text: prefs.rrUsername
-                        placeholderText: qsTr("radioreference.com username")
-                        inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                        onEditingFinished: prefs.rrUsername = text
-                    }
+                        nextUsernameField: passwordField
+                        usernameLabel: qsTr("RadioReference username")
+                        appKeyLabel: qsTr("RadioReference application key")
+                        appKeyHeading: qsTr("Application key")
+                        passwordHint: qsTr("The password is kept only for this session and is never saved. A RadioReference premium subscription is required.")
+                        onAppKeyEdited: screen.verifyAccount()
 
-                    PlexTextField {
-                        id: passwordField
-                        label: qsTr("Password")
+                        PlexTextField {
+                            id: passwordField
+                            label: qsTr("Password")
 
-                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                        objectName: "radioReferencePasswordField"
+                            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                            objectName: "radioReferencePasswordField"
 
-                        width: parent.width
-                        // PlexTextField carries no echoMode of its own; reaching
-                        // through the `input` alias is how the wizard sets its
-                        // field validators too.
-                        input.echoMode: TextInput.Password
-                        placeholderText: qsTr("password")
-                        inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText | Qt.ImhSensitiveData
-                        // Commits on Enter or focus loss, never per keystroke,
-                        // and the password goes nowhere but memory.
-                        onEditingFinished: {
-                            if (screen.rrLive())
-                                radioReference.setPassword(text);
-                            screen.verifyAccount();
-                        }
-                    }
-
-                    Text {
-                        width: parent.width
-                        text: qsTr("The password is kept only for this session and is never saved. A RadioReference premium subscription is required.")
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(12)
-                        color: Theme.textSubdued
-                        wrapMode: Text.Wrap
-                    }
-
-                    Text {
-                        width: parent.width
-                        visible: screen.offersAppKey
-                        text: qsTr("Application key")
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(13)
-                        color: Theme.textSecondary
-                    }
-
-                    PlexTextField {
-                        id: appKeyField
-                        label: qsTr("RadioReference application key")
-
-                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                        objectName: "radioReferenceAppKeyField"
-
-                        width: parent.width
-                        visible: screen.offersAppKey
-                        mono: true
-                        text: prefs.rrAppKey
-                        placeholderText: qsTr("application key")
-                        inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                        // Commit on Enter or focus loss, not per keystroke: every
-                        // write lands in QSettings (disk on Android). The account
-                        // check fires the same way the password field's does, so
-                        // whichever field is answered last completes the form.
-                        onEditingFinished: {
-                            prefs.rrAppKey = text;
-                            screen.verifyAccount();
-                        }
-                    }
-
-                    Text {
-                        width: parent.width
-                        visible: !radioReference.buildHasAppKey
-                        text: qsTr("This build carries no application key. Request one at <a href=\"https://www.radioreference.com/account/api/apply\">radioreference.com/account/api/apply</a>.")
-                        textFormat: Text.StyledText
-                        linkColor: Theme.cyan
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(12)
-                        color: Theme.textSubdued
-                        wrapMode: Text.Wrap
-                        onLinkActivated: function (link) {
-                            Qt.openUrlExternally(link);
+                            width: parent.width
+                            // PlexTextField carries no echoMode of its own; reaching
+                            // through the `input` alias is how the wizard sets its
+                            // field validators too.
+                            input.echoMode: TextInput.Password
+                            placeholderText: qsTr("password")
+                            inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText | Qt.ImhSensitiveData
+                            // Commits on Enter or focus loss, never per keystroke,
+                            // and the password goes nowhere but memory.
+                            onEditingFinished: {
+                                if (screen.rrLive())
+                                    radioReference.setPassword(text);
+                                screen.verifyAccount();
+                            }
                         }
                     }
 

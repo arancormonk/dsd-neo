@@ -14,6 +14,7 @@ Item {
         function openScreen() {
             screenLoader.source = uiDir + "/SettingsScreen.qml";
             verify(screenLoader.item !== null);
+            compare(findChild(screenLoader.item, "settingsListeningHeader").text, "Listening");
             return findChild(screenLoader.item, "persistTgLockoutsToggle");
         }
 

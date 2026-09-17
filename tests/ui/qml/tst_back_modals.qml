@@ -92,6 +92,8 @@ Item {
             if (management)
                 management.visible = false;
             app.wizardOpen = false;
+            app.licensesOpen = false;
+            app.radioReferenceAccountOpen = false;
             app.sessionDestination = "";
             app.currentTab = 0;
             prefs.onboardingDone = oldOnboarding;
@@ -327,7 +329,8 @@ Item {
         }
         function test_auto_start_consumed_data() {
             return [{tag: "Home", kind: "home"}, {tag: "Remove", kind: "remove"},
-                {tag: "History", kind: "history"}, {tag: "Licences", kind: "licenses"}];
+                {tag: "History", kind: "history"}, {tag: "Licenses", kind: "licenses"},
+                {tag: "Account", kind: "account"}];
         }
         function test_auto_start_consumed(data) {
             prefs.autoStartOnAttach = true;
@@ -344,11 +347,11 @@ Item {
                 sheet = openHistory(false).sheet;
             else {
                 app.currentTab = 2;
-                sheet = visualChild(app, function (entry) {
-                    return entry.accessibleName === "Open source licenses" && typeof entry.requestDismiss === "function";
-                });
-                verify(sheet !== null);
-                sheet.visible = true;
+                sheet = item(data.kind === "licenses" ? "licensesScreen" : "radioReferenceAccountScreen");
+                if (data.kind === "licenses")
+                    app.licensesOpen = true;
+                else
+                    app.radioReferenceAccountOpen = true;
             }
             tryCompare(uiController, "autoStartBlocked", true, 1000);
             testContext.emitLocalDeviceAttached();

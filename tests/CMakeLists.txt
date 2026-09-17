@@ -2738,7 +2738,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_decryption_profiles
-        PRIVATE Qt6::Core dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
+        PRIVATE Qt6::Gui dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_decryption_profiles
@@ -2898,7 +2898,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_session_args
-        PRIVATE Qt6::Core dsd-neo_runtime
+        PRIVATE Qt6::Gui dsd-neo_runtime
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_session_args
@@ -2925,7 +2925,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_scan_list_targets
-        PRIVATE Qt6::Core dsd-neo_runtime
+        PRIVATE Qt6::Gui dsd-neo_runtime
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_scan_list_targets
@@ -2957,7 +2957,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_imported_files_model
-        PRIVATE Qt6::Core
+        PRIVATE Qt6::Gui
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_imported_files_model
@@ -3227,6 +3227,27 @@ if(DSD_ENABLE_QT_UI)
             PROPERTIES
                 ENVIRONMENT
                     "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+        )
+        foreach(_case IN ITEMS settings_layout licenses_screen)
+            string(TOUPPER "${_case}" _case_upper)
+            add_test(
+                NAME UI_QT_QML_${_case_upper}
+                COMMAND
+                    dsd-neo_test_ui_qt_qml -input
+                    ${CMAKE_CURRENT_SOURCE_DIR}/ui/qml/tst_${_case}.qml
+            )
+            set_tests_properties(
+                UI_QT_QML_${_case_upper}
+                PROPERTIES
+                    ENVIRONMENT
+                        "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            )
+        endforeach()
+        qt_add_resources(
+            dsd-neo_test_ui_qt_qml "test_license_notices"
+            PREFIX "/dsdneo/notices"
+            BASE "${PROJECT_SOURCE_DIR}"
+            FILES "${PROJECT_SOURCE_DIR}/LICENSE"
         )
         get_property(
             _DSD_QT_FOUNDATION_QML_TESTS
@@ -10481,7 +10502,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_android_host
         PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
     )
-    target_link_libraries(dsd-neo_test_ui_qt_android_host PRIVATE Qt6::Core)
+    target_link_libraries(dsd-neo_test_ui_qt_android_host PRIVATE Qt6::Gui)
     target_compile_definitions(
         dsd-neo_test_ui_qt_android_host
         PRIVATE QT_NO_KEYWORDS
@@ -10747,7 +10768,7 @@ if(DSD_ENABLE_QT_UI)
     target_link_libraries(
         dsd-neo_test_ui_qt_scan_list_roundtrip
         PRIVATE
-            Qt6::Core
+            Qt6::Gui
             ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
             ${LIBS}
             dsd-neo_test_support
@@ -10794,7 +10815,7 @@ if(DSD_ENABLE_QT_UI)
     target_link_libraries(
         dsd-neo_test_engine_trunk_scan_scan_list
         PRIVATE
-            Qt6::Core
+            Qt6::Gui
             ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
             ${LIBS}
             dsd-neo_test_support

@@ -12,6 +12,7 @@ Item {
     property bool lockoutPending: false
     property bool requestedLockoutPersistence: true
     property string lockoutError: ""
+    readonly property string versionText: "DSD-neo " + appVersionText.replace(/^v/, "")
     readonly property bool liveLockoutPersistence: metrics.persistTgLockouts
     readonly property bool lockoutSessionRunning: decoderHost.sessionState === 2
     readonly property bool lockoutEditable: !lockoutPending && (decoderHost.sessionState === 0 || decoderHost.sessionState === 4 || (lockoutSessionRunning && metrics.optionsKnown))
@@ -36,6 +37,11 @@ Item {
         }
     }
 
+    Timer {
+        id: versionCopied
+        interval: 2000
+    }
+
     function setLockoutPersistence(value) {
         if (!lockoutEditable)
             return;
@@ -53,7 +59,8 @@ Item {
 
     signal openDiagnostics
     signal openImports
-    signal openRadioReference
+    signal openRadioReferenceAccount
+    signal openLicenses
 
     Rectangle {
         anchors.fill: parent
@@ -116,6 +123,7 @@ Item {
     }
 
     PlexFlickable {
+        objectName: "settingsScroll"
         anchors.fill: parent
         contentHeight: content.height + 2 * Theme.screenPadding
         clip: true
@@ -152,6 +160,7 @@ Item {
                     spacing: 12
 
                     MicroLabel {
+                        objectName: "settingsAppearanceHeader"
                         width: parent.width
                         wrapMode: Text.Wrap
                         text: qsTr("Appearance")
@@ -193,6 +202,7 @@ Item {
                     spacing: 0
 
                     MicroLabel {
+                        objectName: "settingsUnitsHeader"
                         width: parent.width
                         wrapMode: Text.Wrap
                         text: qsTr("Units")
@@ -227,6 +237,7 @@ Item {
                     spacing: 0
 
                     MicroLabel {
+                        objectName: "settingsListeningHeader"
                         width: parent.width
                         wrapMode: Text.Wrap
                         text: qsTr("Listening")
@@ -344,9 +355,10 @@ Item {
                     spacing: 0
 
                     MicroLabel {
+                        objectName: "settingsDecodingHeader"
                         width: parent.width
                         wrapMode: Text.Wrap
-                        text: qsTr("Decoder defaults · next start")
+                        text: qsTr("Decoding · next start")
                         leftPadding: Theme.cardPadding
                         bottomPadding: 6
                     }
@@ -382,146 +394,7 @@ Item {
                 }
             }
 
-            // TRUNKING DATA
-            UiPanel {
-                width: parent.width
-                height: importsColumn.height + Theme.cardPadding + 4
-
-                Column {
-                    id: importsColumn
-
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.topMargin: Theme.cardPadding
-                    spacing: 0
-
-                    MicroLabel {
-                        width: parent.width
-                        wrapMode: Text.Wrap
-                        text: qsTr("Trunking data")
-                        leftPadding: Theme.cardPadding
-                        bottomPadding: 6
-                    }
-
-                    DisclosureRow {
-                        title: qsTr("Imported files")
-                        subtitle: qsTr("Channel maps, talkgroups, and keys")
-                        onTapped: screen.openImports()
-                    }
-                }
-            }
-
-            UiPanel {
-                width: parent.width
-                height: diagnosticsColumn.implicitHeight + 24
-                Column {
-                    id: diagnosticsColumn
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.margins: 12
-                    DisclosureRow {
-                        title: qsTr("Diagnostics")
-                        subtitle: qsTr("Current process and previous-run tail; not crash/ANR capture")
-                        onTapped: screen.openDiagnostics()
-                    }
-                }
-            }
-
-            // RADIOREFERENCE ACCOUNT
-            // The username and application key persist; the password never does
-            // — it is asked for once per app session on the import screen.
-            UiPanel {
-                width: parent.width
-                visible: radioReference.available
-                height: rrColumn.height + Theme.cardPadding + 4
-
-                Column {
-                    id: rrColumn
-
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.topMargin: Theme.cardPadding
-                    spacing: 0
-
-                    MicroLabel {
-                        width: parent.width
-                        wrapMode: Text.Wrap
-                        text: qsTr("RadioReference account")
-                        leftPadding: Theme.cardPadding
-                        bottomPadding: 6
-                    }
-
-                    DisclosureRow {
-                        title: qsTr("Import a system")
-                        // Not "talkgroups and channel maps": that framing reads
-                        // as trunked-only, and the import serves conventional
-                        // systems just as well. Same line as the wizard's entry
-                        // row on purpose — one action, one description — and
-                        // anything longer elides on a phone-width row.
-                        subtitle: qsTr("Fills in the frequency, decode mode and talkgroups")
-                        showDivider: true
-                        onTapped: screen.openRadioReference()
-                    }
-
-                    Item {
-
-                        width: parent.width
-                        height: settingsRrUsername.implicitHeight + 20
-
-                        PlexTextField {
-                            id: settingsRrUsername
-                            x: Theme.cardPadding
-                            y: 10
-                            width: parent.width - 2 * Theme.cardPadding
-                            text: prefs.rrUsername
-                            label: qsTr("Username")
-                            placeholderText: qsTr("radioreference.com username")
-                            inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                            onEditingFinished: prefs.rrUsername = text
-                        }
-                    }
-
-                    // A build that bakes the application key in does not ask for
-                    // one: this row sat right under Username looking like a
-                    // password box. Nor does it show a stored override left over
-                    // from a keyless build — fillAuth() ignores it there, so it
-                    // is not a credential in play and a field for it would only
-                    // invite editing a key this build does not use.
-                    Item {
-                        objectName: "settingsRrAppKeyRow"
-                        width: parent.width
-                        height: settingsRrApplicationKey.implicitHeight + 20
-                        visible: !radioReference.buildHasAppKey
-                        PlexTextField {
-                            id: settingsRrApplicationKey
-                            x: Theme.cardPadding
-                            y: 10
-                            width: parent.width - 2 * Theme.cardPadding
-                            text: prefs.rrAppKey
-                            label: qsTr("Application key")
-                            placeholderText: qsTr("application key")
-                            inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                            onEditingFinished: prefs.rrAppKey = text
-                        }
-                    }
-
-                    Text {
-                        width: parent.width
-                        leftPadding: Theme.cardPadding
-                        rightPadding: Theme.cardPadding
-                        bottomPadding: 6
-                        text: qsTr("The password is asked for once per app session and is never saved. A RadioReference premium subscription is required.")
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(12)
-                        color: Theme.textSubdued
-                        wrapMode: Text.Wrap
-                    }
-                }
-            }
-
-            // ADVANCED (collapsible)
+            // RADIO DEFAULTS (collapsible)
             UiPanel {
                 width: parent.width
                 height: advHeader.height + (screen.advancedOpen ? advColumn.height + 8 : 0) + Theme.cardPadding
@@ -542,12 +415,13 @@ Item {
 
                     MicroLabel {
                         id: advancedLabel
+                        objectName: "settingsRadioDefaultsHeader"
                         width: parent.width - 2 * Theme.cardPadding - 28
                         wrapMode: Text.Wrap
                         anchors.left: parent.left
                         anchors.leftMargin: Theme.cardPadding
                         anchors.verticalCenter: parent.verticalCenter
-                        text: qsTr("Advanced defaults · next start")
+                        text: qsTr("Radio defaults · next start")
                     }
 
                     Caret {
@@ -641,43 +515,119 @@ Item {
                 }
             }
 
-            OutlineButton {
+            // LIBRARIES
+            UiPanel {
                 width: parent.width
-                text: qsTr("Open source licenses")
-                onClicked: {
-                    var host = decoderHost;
-                    licenseText.text = typeof host.licenseNotices === "function" ? host.licenseNotices() : "";
-                    licenses.visible = true;
+                height: importsColumn.height + Theme.cardPadding + 4
+
+                Column {
+                    id: importsColumn
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: Theme.cardPadding
+                    spacing: 0
+
+                    MicroLabel {
+                        objectName: "settingsLibrariesHeader"
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: qsTr("Libraries")
+                        leftPadding: Theme.cardPadding
+                        bottomPadding: 6
+                    }
+
+                    DisclosureRow {
+                        objectName: "settingsImportsRow"
+                        title: qsTr("Imported files")
+                        subtitle: qsTr("Channel maps, talkgroups, keys, band plans, radio IDs")
+                        onTapped: screen.openImports()
+                    }
                 }
             }
-            Text {
+
+            // ACCOUNT
+            UiPanel {
                 width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                text: "DSD-neo " + appVersionText.replace(/^v/, "") + " · GPL-3.0"
-                color: Theme.textSubdued
-                font.pixelSize: Theme.fontSize(12)
-                wrapMode: Text.Wrap
+                visible: radioReference.available
+                height: accountColumn.height + Theme.cardPadding + 4
+
+                Column {
+                    id: accountColumn
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: Theme.cardPadding
+                    spacing: 0
+
+                    MicroLabel {
+                        objectName: "settingsAccountHeader"
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: qsTr("Account")
+                        leftPadding: Theme.cardPadding
+                        bottomPadding: 6
+                    }
+
+                    DisclosureRow {
+                        objectName: "settingsAccountRow"
+                        title: qsTr("RadioReference")
+                        subtitle: qsTr("Username and application key")
+                        onTapped: screen.openRadioReferenceAccount()
+                    }
+                }
             }
-        }
-    }
-    ModalSheet {
-        id: licenses
-        accessibleName: qsTr("Open source licenses")
-        TextEdit {
-            id: licenseText
-            width: parent.width
-            readOnly: true
-            selectByMouse: true
-            textFormat: TextEdit.PlainText
-            wrapMode: TextEdit.Wrap
-            color: Theme.textPrimary
-            font.family: Theme.sans
-            font.pixelSize: Theme.fontSize(14)
-        }
-        OutlineButton {
-            width: parent.width
-            text: qsTr("Close")
-            onClicked: licenses.visible = false
+
+            // ABOUT & SUPPORT
+            UiPanel {
+                width: parent.width
+                height: supportColumn.height + Theme.cardPadding + 4
+
+                Column {
+                    id: supportColumn
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: Theme.cardPadding
+                    spacing: 0
+
+                    MicroLabel {
+                        objectName: "settingsSupportHeader"
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: qsTr("About & support")
+                        leftPadding: Theme.cardPadding
+                        bottomPadding: 6
+                    }
+
+                    DisclosureRow {
+                        objectName: "settingsDiagnosticsRow"
+                        title: qsTr("Diagnostics")
+                        subtitle: qsTr("Current process and previous-run tail; not crash/ANR capture")
+                        showDivider: true
+                        onTapped: screen.openDiagnostics()
+                    }
+
+                    DisclosureRow {
+                        objectName: "settingsLicensesRow"
+                        title: qsTr("Open source licenses")
+                        showDivider: true
+                        onTapped: screen.openLicenses()
+                    }
+
+                    DisclosureRow {
+                        objectName: "settingsVersionRow"
+                        title: qsTr("Version")
+                        subtitle: versionCopied.running ? qsTr("Version copied") : screen.versionText + " · GPL-3.0"
+                        showCaret: false
+                        onTapped: {
+                            if (decoderHost.copyText(screen.versionText))
+                                versionCopied.restart();
+                        }
+                    }
+                }
+            }
         }
     }
 }

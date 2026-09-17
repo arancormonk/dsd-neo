@@ -12,10 +12,12 @@
 #include "decoder_host.h"
 
 #include <QByteArray>
+#include <QClipboard>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QIODevice>
 #include <QSaveFile>
 #include <QUrl>
@@ -127,6 +129,15 @@ DecoderHost::documentInfo(const QString& path) const {
             {"exists", info.isFile()},
             {"sizeBytes", info.size()},
             {"modified", info.lastModified().toString(Qt::ISODate)}};
+}
+
+bool
+DecoderHost::copyText(const QString& text) const {
+    if (auto* clipboard = QGuiApplication::clipboard()) {
+        clipboard->setText(text);
+        return true;
+    }
+    return false;
 }
 
 QString

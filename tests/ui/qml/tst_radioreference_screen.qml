@@ -38,14 +38,14 @@ Item {
         source: uiDir + "/ImportsScreen.qml"
     }
 
-    // The stored-credentials rows live in Settings; the key row's gate is what
+    // Settings pushes the stored-credentials editor; the key row's gate is what
     // the last case below pins.
     Loader {
         id: settingsLoader
 
         anchors.fill: parent
         active: false
-        source: uiDir + "/SettingsScreen.qml"
+        source: uiDir + "/RadioReferenceAccountScreen.qml"
     }
 
     TestCase {
@@ -122,6 +122,18 @@ Item {
             // Choosing a country opens the next browse sheet; each test starts with none open.
             for (var sheetName of ["radioReferenceCountrySheet", "radioReferenceStateSheet", "radioReferenceCountySheet"])
                 findChild(tc.screen, sheetName).visible = false
+        }
+
+        function test_credential_labels_and_hint() {
+            compare(findChild(tc.screen, "radioReferenceUsernameField").label, "RadioReference username");
+            compare(findChild(tc.screen, "radioReferenceAppKeyField").label, "RadioReference application key");
+            compare(findChild(tc.screen, "radioReferencePasswordHint").text,
+                    "The password is kept only for this session and is never saved. A RadioReference premium subscription is required.");
+            var heading = findChild(tc.screen, "radioReferenceAppKeyHeading");
+            verify(heading.visible);
+            compare(heading.text, "Application key");
+            testContext.setRadioReference("buildHasAppKey", true);
+            tryCompare(heading, "visible", false);
         }
 
         function test_01_a_fresh_install_asks_for_credentials_and_nothing_else() {
@@ -661,7 +673,7 @@ Item {
             testContext.setRadioReference("available", true)
             settingsLoader.active = true
             settingsCase.screen = settingsLoader.item
-            verify(settingsCase.screen !== null, "SettingsScreen.qml failed to load")
+            verify(settingsCase.screen !== null, "RadioReferenceAccountScreen.qml failed to load")
         }
 
         function cleanupTestCase() {
@@ -671,7 +683,7 @@ Item {
         }
 
         function test_01_the_key_row_follows_what_this_build_needs() {
-            var row = findChild(settingsCase.screen, "settingsRrAppKeyRow")
+            var row = findChild(settingsCase.screen, "radioReferenceAppKeyField")
             verify(row !== null, "the application-key row is missing")
 
             // A keyless build needs the user's key, so the row is offered.
