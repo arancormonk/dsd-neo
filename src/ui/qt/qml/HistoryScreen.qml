@@ -48,11 +48,12 @@ Item {
             }
 
             OutlineButton {
+                objectName: "clearHistoryButton"
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 visible: callHistory.count > 0
                 text: qsTr("Clear")
-                onClicked: confirmClear.visible = true
+                onClicked: confirmClear.open()
             }
         }
 
@@ -294,65 +295,14 @@ Item {
     }
 
     // Clearing is destructive and irreversible (the persisted log goes too),
-    // so it hides behind a confirm — same shape as the home screen's manage
-    // sheet.
-    Rectangle {
+    // so it uses the shared destructive confirmation dialog.
+    ConfirmDialog {
         id: confirmClear
-
-        anchors.fill: parent
-        visible: false
-        color: Qt.alpha("#000000", 0.5)
-
-        TapHandler {
-            onTapped: confirmClear.visible = false
-        }
-
-        UiPanel {
-            anchors.centerIn: parent
-            width: parent.width - 2 * Theme.screenPadding
-            height: confirmColumn.height + 2 * Theme.cardPadding
-
-            Column {
-                id: confirmColumn
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.margins: Theme.cardPadding
-                spacing: 12
-
-                Text {
-                    width: parent.width
-                    text: qsTr("Clear call history?")
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(17)
-                    font.weight: Font.Bold
-                    color: Theme.textPrimary
-                }
-
-                Text {
-                    width: parent.width
-                    text: qsTr("Every logged call and message is removed. A call playing right now still gets logged.")
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(13)
-                    color: Theme.textSubdued
-                    wrapMode: Text.Wrap
-                }
-
-                OutlineButton {
-                    width: parent.width
-                    text: qsTr("Clear history")
-                    onClicked: {
-                        callHistory.clearAll();
-                        confirmClear.visible = false;
-                    }
-                }
-
-                OutlineButton {
-                    width: parent.width
-                    text: qsTr("Cancel")
-                    onClicked: confirmClear.visible = false
-                }
-            }
-        }
+        objectName: "clearHistoryConfirm"
+        title: qsTr("Clear call history?")
+        message: qsTr("Every logged call and message is removed. A call playing right now still gets logged.")
+        confirmText: qsTr("Clear history")
+        destructive: true
+        onConfirmed: callHistory.clearAll()
     }
 }

@@ -146,7 +146,7 @@ Window {
     Binding {
         target: uiController
         property: "autoStartBlocked"
-        value: mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.diagnosticsOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || homeScreen.managementSheetOpen || siteChooser.visible
+        value: mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.diagnosticsOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0
     }
     Connections {
         target: uiController
@@ -700,6 +700,7 @@ Window {
 
         HistoryScreen {
             id: historyRoot
+            objectName: "idleHistoryScreen"
             x: mainRoot.expanded ? nav.width : 0
             y: 0
             width: parent.width - x
@@ -1033,6 +1034,7 @@ Window {
             onClicked: mainRoot.sessionDestination = ""
         }
         HistoryScreen {
+            objectName: "sessionHistoryScreen"
             anchors.top: returnToSession.bottom
             anchors.left: parent.left
             anchors.right: parent.right

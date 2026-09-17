@@ -53,6 +53,7 @@ qt_add_resources(
         qml/FocusFrame.qml
         qml/IconButton.qml
         qml/DiscardDialog.qml
+        qml/ConfirmDialog.qml
         qml/ChoiceSheet.qml
         qml/DecryptionProfileEditor.qml
         qml/DecryptionProfileSelector.qml
