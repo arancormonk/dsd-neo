@@ -3204,6 +3204,18 @@ if(DSD_ENABLE_QT_UI)
                 ENVIRONMENT
                     "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
         )
+        add_test(
+            NAME UI_QT_QML_BACK_MODALS
+            COMMAND
+                dsd-neo_test_ui_qt_qml -input
+                ${CMAKE_CURRENT_SOURCE_DIR}/ui/qml/tst_back_modals.qml
+        )
+        set_tests_properties(
+            UI_QT_QML_BACK_MODALS
+            PROPERTIES
+                ENVIRONMENT
+                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+        )
         get_property(
             _DSD_QT_FOUNDATION_QML_TESTS
             GLOBAL

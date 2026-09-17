@@ -143,8 +143,26 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     bool delayedStop = false; // WP-D4: stop acknowledgement is a separate edge.
 
+    Q_INVOKABLE int
+    stopCalls() const {
+        return m_stop_calls;
+    }
+
+    Q_INVOKABLE int
+    backgroundCalls() const {
+        return m_background_calls;
+    }
+
+    bool
+    moveToBackground() override {
+        ++m_background_calls;
+        // Simulate Android consuming Back so the fixture window stays open for assertions.
+        return true;
+    }
+
     void
     stop() override {
+        ++m_stop_calls;
         phase = delayedStop ? Stopping : Idle;
         m_running = false;
         Q_EMIT runningChanged();
@@ -203,6 +221,8 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
   private:
     bool m_running = false;
+    int m_stop_calls = 0;
+    int m_background_calls = 0;
 };
 
 // Matches Android's contract: Running can be observed before initialization.

@@ -86,7 +86,7 @@ Item {
         // TapHandlers never take exclusive grabs, so a tap on a manage-menu button
         // would otherwise also reach whatever sits under the overlay — observed as
         // "Edit this system" opening the add wizard through the card list.
-        enabled: !manageMenu.visible
+        enabled: !manageMenu.visible && !removeSystem.visible
 
         Column {
             id: content
@@ -323,6 +323,7 @@ Item {
                     }
 
                     IconButton {
+                        objectName: "savedSystemManageButton"
                         icon: "more"
                         accessibleName: qsTr("Edit %1").arg(card.name)
                         anchors.right: parent.right
@@ -473,76 +474,94 @@ Item {
         }
     }
 
-    // Remove-a-system sheet, reached by long-pressing a card.
-    Rectangle {
+    // Saved-system actions, reached by the more button or a long press.
+    ModalSheet {
         id: manageMenu
+        objectName: "savedSystemManageSheet"
+        accessibleName: systemName
 
-        property int row: -1
+        property string systemUid: ""
         property string systemName: ""
 
         function openFor(row, name) {
-            manageMenu.row = row;
+            manageMenu.systemUid = savedSystems.get(row).uid;
             manageMenu.systemName = name;
-            visible = true;
+            open();
         }
 
-        anchors.fill: parent
-        visible: false
-        color: Qt.alpha("#000000", 0.5)
-
-        TapHandler {
-            onTapped: manageMenu.visible = false
+        Text {
+            width: parent.width
+            text: manageMenu.systemName
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(17)
+            font.weight: Font.Bold
+            color: Theme.textPrimary
+            elide: Text.ElideRight
         }
 
-        UiPanel {
-            anchors.centerIn: parent
-            width: parent.width - 2 * Theme.screenPadding
-            height: menuColumn.height + 2 * Theme.cardPadding
-
-            Column {
-                id: menuColumn
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.margins: Theme.cardPadding
-                spacing: 12
-
-                Text {
-                    width: parent.width
-                    text: manageMenu.systemName
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(17)
-                    font.weight: Font.Bold
-                    color: Theme.textPrimary
-                    elide: Text.ElideRight
-                }
-
-                OutlineButton {
-                    width: parent.width
-                    text: qsTr("Edit this system")
-                    onClicked: {
-                        manageMenu.visible = false;
-                        screen.editSystem(manageMenu.row);
-                    }
-                }
-
-                OutlineButton {
-                    width: parent.width
-                    text: qsTr("Remove this system")
-                    onClicked: {
-                        savedSystems.remove(manageMenu.row);
-                        manageMenu.visible = false;
-                    }
-                }
-
-                OutlineButton {
-                    width: parent.width
-                    text: qsTr("Cancel")
-                    onClicked: manageMenu.visible = false
-                }
+        OutlineButton {
+            objectName: "editSavedSystemButton"
+            width: parent.width
+            text: qsTr("Edit this system")
+            onClicked: {
+                var row = savedSystems.rowForUid(manageMenu.systemUid);
+                manageMenu.visible = false;
+                if (row < 0)
+                    return;
+                screen.editSystem(row);
             }
         }
+
+        OutlineButton {
+            objectName: "removeSavedSystemButton"
+            width: parent.width
+            text: qsTr("Remove this system")
+            onClicked: {
+                var row = savedSystems.rowForUid(manageMenu.systemUid);
+                manageMenu.visible = false;
+                removeSystem.openFor(row);
+            }
+        }
+
+        OutlineButton {
+            objectName: "cancelSystemManageButton"
+            width: parent.width
+            text: qsTr("Cancel")
+            onClicked: manageMenu.requestDismiss()
+        }
     }
+
+    ConfirmDialog {
+        id: removeSystem
+        objectName: "removeSystemConfirm"
+
+        property string systemUid: ""
+        destructive: true
+
+        function openFor(row) {
+            if (row < 0)
+                return;
+            var system = savedSystems.get(row);
+            systemUid = system.uid;
+            var grouped = savedSystems.siblingRows(row).length > 1;
+            title = grouped
+                ? qsTr("Remove site %1 of %2?").arg(system.siteName || system.name).arg(system.name)
+                : qsTr("Remove %1?").arg(system.name);
+            message = grouped
+                ? qsTr("This deletes the saved site and its settings. Other sites remain. Imported files stay in the library.")
+                : qsTr("This deletes the saved system and its settings. Imported files stay in the library.");
+            confirmText = grouped ? qsTr("Remove site") : qsTr("Remove system");
+            open();
+        }
+        onConfirmed: {
+            var row = savedSystems.rowForUid(systemUid);
+            systemUid = "";
+            if (row >= 0)
+                savedSystems.remove(row);
+        }
+        onCancelled: systemUid = ""
+    }
+
     UiPanel {
         visible: screen.supportingPane
         anchors.top: parent.top
