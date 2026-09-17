@@ -104,6 +104,7 @@ DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : dsd_qt::DecoderHost(pa
 
 void
 DecoderHostAndroid::refreshPresentation() {
+    refreshNotificationPermission();
     const auto context = android_context();
     if (!context.isValid()) {
         return;
@@ -175,6 +176,26 @@ DecoderHostAndroid::setDarkAppearance(bool dark) {
         }
         return {};
     });
+}
+
+void
+DecoderHostAndroid::refreshNotificationPermission() {
+    const auto context = android_context();
+    if (!context.isValid()) {
+        return;
+    }
+    // Must match AppSupport.kt: @JvmStatic fun takeNotificationPermissionRefresh(): Boolean.
+    if (QJniObject::callStaticMethod<jboolean>(kSupportClass, "takeNotificationPermissionRefresh", "()Z") != JNI_TRUE) {
+        return;
+    }
+    // Must match AppSupport.kt: @JvmStatic fun notificationPermissionNeeded(context: Context): Boolean.
+    const bool needed = QJniObject::callStaticMethod<jboolean>(kSupportClass, "notificationPermissionNeeded",
+                                                               "(Landroid/content/Context;)Z", context.object())
+                        == JNI_TRUE;
+    if (needed != m_notification_permission_needed) {
+        m_notification_permission_needed = needed;
+        Q_EMIT notificationPermissionChanged();
+    }
 }
 
 void

@@ -20,6 +20,7 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.view.WindowInsetsController
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /** Platform odds and ends the Qt host reaches through QJniObject. */
@@ -29,6 +30,7 @@ object AppSupport {
     fun ownsPermissionRequest(requestCode: Int): Boolean = requestCode == REQUEST_NOTIFICATIONS
     private val pendingBack = AtomicInteger(0)
     private val visibleKeyboardTop = AtomicInteger(-1)
+    private val pendingNotificationPermissionRefresh = AtomicBoolean(true)
 
     // Called on the Activity thread by its layout observer. Frame coordinates
     // are physical pixels; the Qt host converts them to window logical units.
@@ -98,20 +100,24 @@ object AppSupport {
         }
     }
 
+    // Activity callbacks invalidate the reading; the host publishes on the Qt poll thread.
+    fun refreshNotificationPermission() { pendingNotificationPermissionRefresh.set(true) }
+
+    @JvmStatic
+    fun takeNotificationPermissionRefresh(): Boolean = pendingNotificationPermissionRefresh.getAndSet(false)
+
+    @JvmStatic
+    fun notificationPermissionNeeded(context: Context): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+
     /**
      * Ask for POST_NOTIFICATIONS on API 33+. The service runs without it, but its
      * notification stays invisible, which reads as "nothing happened".
      */
     @JvmStatic
     fun ensureNotificationPermission(activity: Activity) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            return
-        }
-        if (activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-            == PackageManager.PERMISSION_GRANTED
-        ) {
-            return
-        }
+        if (!notificationPermissionNeeded(activity)) return
         activity.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
     }
 

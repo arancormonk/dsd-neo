@@ -50,6 +50,7 @@ class DecoderHost : public QObject {
     Q_PROPERTY(int inputFailureCode READ inputFailureCode NOTIFY runResultChanged)
     Q_PROPERTY(int terminalReason READ terminalReason NOTIFY runResultChanged)
     Q_PROPERTY(QString audioRoute READ audioRoute NOTIFY audioRouteChanged)
+    Q_PROPERTY(bool notificationPermissionNeeded READ notificationPermissionNeeded NOTIFY notificationPermissionChanged)
 
   public:
     /**
@@ -102,6 +103,11 @@ class DecoderHost : public QObject {
 
     Q_INVOKABLE virtual void
     requestNotificationPermission() {}
+
+    virtual bool
+    notificationPermissionNeeded() const {
+        return false;
+    }
 
     Q_INVOKABLE QString licenseNotices() const;
 
@@ -397,6 +403,7 @@ class DecoderHost : public QObject {
     void keyboardChanged();
     void runResultChanged();
     void audioRouteChanged();
+    void notificationPermissionChanged();
     void sessionInitialized();
     void locationResult(qint64 requestId, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
                         bool geocodeOk, const QString& postalCode, const QString& countryCode, const QString& error);

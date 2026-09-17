@@ -219,10 +219,24 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     bool acceptStart = false;
     bool startRunning = false;
 
+    bool
+    notificationPermissionNeeded() const override {
+        return m_notification_permission_needed;
+    }
+
+    void
+    setNotificationPermissionNeeded(bool needed) {
+        if (m_notification_permission_needed != needed) {
+            m_notification_permission_needed = needed;
+            Q_EMIT notificationPermissionChanged();
+        }
+    }
+
   private:
     bool m_running = false;
     int m_stop_calls = 0;
     int m_background_calls = 0;
+    bool m_notification_permission_needed = false;
 };
 
 // Matches Android's contract: Running can be observed before initialization.
@@ -1361,6 +1375,29 @@ class Setup : public QObject {
         }
     }
 
+    // Qt.platform.os is read-only. Load the production shell with only that
+    // platform reading substituted so desktop tests exercise the Android gate.
+    // Reject source drift instead of silently changing unrelated platform checks.
+    Q_INVOKABLE QString
+    androidMainQml() const {
+        QFile file(QStringLiteral(DSD_QML_UI_DIR "/Main.qml"));
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            return QString();
+        }
+        QString text = QString::fromUtf8(file.readAll());
+        file.close();
+        const QString pattern = QStringLiteral("Qt.platform.os");
+        if (text.count(pattern) != 1) {
+            return QString();
+        }
+        return text.replace(pattern, QStringLiteral("\"android\""));
+    }
+
+    Q_INVOKABLE void
+    setNotificationPermissionNeeded(bool needed) {
+        m_lifecycle_host->setNotificationPermissionNeeded(needed);
+    }
+
     Q_INVOKABLE void
     setKeyboardBoundary(qreal value) {
         m_lifecycle_host->keyboardBoundary = value;
@@ -1834,6 +1871,7 @@ class Setup : public QObject {
         host[QStringLiteral("inputFailureCode")] = 0;
         host[QStringLiteral("terminalReason")] = 0;
         host[QStringLiteral("audioRoute")] = QStringLiteral("System default");
+        host[QStringLiteral("notificationPermissionNeeded")] = false;
         host[QStringLiteral("usesPlatformFontScaling")] = false;
         /* Why the last session stopped, empty while nothing has failed. */
         host[QStringLiteral("failureText")] = QString();
