@@ -10,6 +10,7 @@
  * enabled (DSD_ENABLE_QT_UI), since these link Qt. */
 
 #include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -904,6 +905,132 @@ test_target_bundle() {
 }
 
 static void
+test_target_primary_collision(const char* label, const QByteArray& csv, const QString& companion,
+                              const QByteArray& companionBytes) {
+    QTemporaryDir source;
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    const QString targets = source.filePath("targets.csv");
+    expect("write collision primary", write_file(targets, csv));
+    expect("write collision companion", write_file(source.filePath(companion), companionBytes));
+    const auto imported = model.importFile(targets, "Targets.csv", "trunkTargets");
+    expect("collision baseline imports", imported.value("ok").toBool());
+    expect("collision baseline target count", imported.value("accepted").toInt() == 1);
+    const QString path = imported.value("path").toString();
+    const int row = model.rowForPath(path);
+    expect("collision baseline registered", row >= 0);
+    if (row < 0) {
+        return;
+    }
+    const QByteArray original = read_file(path);
+    const QString root = model.get(row).value("bundleRoot").toString();
+    const QStringList revisions = QDir(root).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    expect("collision baseline has one revision", revisions.size() == 1);
+    const QString revision = QDir(root).filePath(revisions.value(0));
+    const QString storedCompanion = revision + "/0.csv";
+    expect("collision baseline companion stored", read_file(storedCompanion) == companionBytes);
+
+    QByteArray replacement = csv;
+    replacement.replace(companion.toUtf8(), "targets.csv");
+    const QString update = source.filePath("replacement.csv");
+    expect("write colliding replacement", write_file(update, replacement));
+    // SAF supplies only the selected document, with no local sibling access.
+    host.documents.insert("content://replacement", update);
+    const auto result = model.importBundle("content://replacement", "Replacement.csv", "trunkTargets", {}, row);
+    expect(label, !result.value("ok").toBool());
+    expect("collision requests companions", result.value("error").toString() == "companions");
+    expect("collision reports missing reference", !result.value("required").toStringList().isEmpty());
+    expect("collision preserves stored primary", read_file(path) == original);
+    expect("collision preserves previous revision", QDir(revision).exists());
+    expect("collision preserves previous companion", QFileInfo(storedCompanion).isFile());
+    expect("collision preserves companion bytes", read_file(storedCompanion) == companionBytes);
+    model.remove(row);
+}
+
+static void
+test_target_channel_primary_collision() {
+    test_target_primary_collision("chan_csv must not bind to stored primary",
+                                  "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                                  "one,p25-trunk,851012500,map.csv,,,\n",
+                                  "map.csv", "channel,frequency,mode\n1,851012500,p25\n");
+}
+
+static void
+test_target_key_primary_collision() {
+    test_target_primary_collision("-K must not bind to stored primary",
+                                  "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                                  "one,p25-conventional,851012500,,,,,-K keys.csv\n",
+                                  "keys.csv", "id,value\n01,ABCDEF0123\n");
+}
+
+static QString
+stored_target_channel(const QString& path) {
+    dsd_trunk_scan_target_list parsed{};
+    char error[512] = {};
+    expect("detached target parses",
+           dsd_trunk_scan_load_targets_csv(path.toUtf8().constData(), nullptr, &parsed, error, sizeof error) == 0);
+    expect("detached target count", parsed.count == 1);
+    const QString channel = parsed.count == 1 ? QString::fromUtf8(parsed.targets[0].chan_csv) : QString();
+    dsd_trunk_scan_target_list_reset(&parsed);
+    return channel;
+}
+
+static void
+test_target_detached_copy() {
+    QTemporaryDir source;
+    QTemporaryDir detached;
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    const QByteArray keys = "id,value\n01,ABCDEF0123\n";
+    const QString targets = source.filePath("targets.csv");
+    expect("write detached keys", write_file(source.filePath("keys.csv"), keys));
+    expect("write detached channel map",
+           write_file(source.filePath("map.csv"), "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,keys.csv\n"));
+    expect("write detached targets",
+           write_file(targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                               "one,p25-trunk,851012500,map.csv,250,,\n"));
+    const auto imported = model.importFile(targets, "Targets.csv", "trunkTargets");
+    expect("detached baseline imports", imported.value("ok").toBool());
+    const QString path = imported.value("path").toString();
+    const int row = model.rowForPath(path);
+    expect("detached baseline registered", row >= 0);
+    if (row < 0) {
+        return;
+    }
+    const QString root = model.get(row).value("bundleRoot").toString();
+    const QString originalMap = stored_target_channel(path);
+    const QByteArray original = read_file(path);
+    expect("stored primary names revision map",
+           original.contains(QDir(root).relativeFilePath(originalMap).toUtf8()) && original.contains("/0.csv"));
+    expect("stored map names nested key", read_file(originalMap).contains(",1.csv\n"));
+    const QString copy = detached.filePath("edited.csv");
+    expect("copy primary outside bundle", QFile::copy(path, copy));
+    expect("detached directory is outside bundle", !copy.startsWith(root + '/'));
+    QByteArray edited = read_file(copy);
+    edited.replace(",250,", ",450,");
+    expect("detached edit changes dwell", edited != original && edited.contains(",450,"));
+    expect("write detached edit", write_file(copy, edited));
+    expect("remove original sources", QDir(source.path()).removeRecursively());
+
+    const auto result = model.importBundle(copy, "Edited.csv", "trunkTargets", {}, row);
+    expect("detached replacement reuses companions", result.value("ok").toBool());
+    expect("detached replacement keeps primary path", result.value("path").toString() == path);
+    expect("detached replacement retains dwell edit", read_file(path).contains(",450,"));
+    int count = 0;
+    char error[512] = {};
+    expect("detached replacement bundle validates",
+           dsd_app_trunk_scan_validate_bundle(path.toUtf8().constData(), &count, nullptr, error, sizeof error) == 0);
+    expect("detached replacement validated count", count == 1);
+    const QString storedMap = stored_target_channel(path);
+    expect("detached replacement channel remains reachable", QFileInfo(storedMap).isFile());
+    const QByteArray keyName = read_file(storedMap).split('\n').value(1).split(',').last();
+    const QString storedKey = QFileInfo(storedMap).dir().filePath(QString::fromUtf8(keyName));
+    expect("detached replacement nested key remains reachable", QFileInfo(storedKey).isFile());
+    expect("detached replacement preserves nested key bytes", read_file(storedKey) == keys);
+    model.remove(row);
+}
+
+static void
 test_target_errors_and_opaque_columns() {
     TestHost host;
     QTemporaryDir source;
@@ -1019,6 +1146,9 @@ main(int argc, char** argv) {
     test_metadata_failure_keeps_file();
     test_channel_bundle();
     test_target_bundle();
+    test_target_channel_primary_collision();
+    test_target_key_primary_collision();
+    test_target_detached_copy();
     test_target_errors_and_opaque_columns();
     test_example_targets();
     test_export_registration_in_place();

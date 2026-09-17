@@ -13,6 +13,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileDevice> // IWYU pragma: keep
 #include <QFileInfo>
 #include <QHash>
 #include <QJsonArray>
@@ -260,6 +261,9 @@ replacementBundleBytes(const CsvBundleImport& bundle, const QString& destination
         return false;
     }
     bytes = staged.readAll();
+    if (staged.error() != QFileDevice::NoError) {
+        return false;
+    }
     staged.close();
     if (!bundle.root.isEmpty()) {
         const QString prefix = QDir(QFileInfo(destination).absolutePath()).relativeFilePath(bundle.root);

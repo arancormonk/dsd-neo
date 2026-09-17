@@ -345,7 +345,10 @@ class TrunkBundleStager {
         if (selected.isEmpty() && local && QFileInfo(ref.resolved).isFile()) {
             selected = QUrl::fromLocalFile(ref.resolved).toString();
         }
-        if (selected.isEmpty() && !existingRoot.isEmpty()) {
+        // Detached copies of the stored primary may reuse revision companions,
+        // but arbitrary names must not bind to the bundle's own targets.csv.
+        static const QRegularExpression revisionFile(QStringLiteral("^[0-9a-f-]{36}/[0-9]+\\.csv$"));
+        if (selected.isEmpty() && !existingRoot.isEmpty() && revisionFile.match(ref.path).hasMatch()) {
             const QString candidate = QDir::cleanPath(QDir(existingRoot).filePath(ref.path));
             if (candidate.startsWith(existingRoot + '/') && QFileInfo(candidate).isFile()) {
                 selected = QUrl::fromLocalFile(candidate).toString();
