@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QVariantList>
 #include <QVariantMap>
+#include <functional>
+#include <utility>
 class QString;
 Q_MOC_INCLUDE("decoder_host.h")
 
@@ -22,6 +24,11 @@ class ScanListStarter : public QObject {
     Q_INVOKABLE QVariantMap validate(const QVariantMap& list) const;
 
     void
+    setTargetFileLookup(std::function<bool(const QString&)> lookup) {
+        m_targetFileLookup = std::move(lookup);
+    }
+
+    void
     setDecryptionProfiles(DecryptionProfileProvider* profiles) {
         m_profiles = profiles;
     }
@@ -30,6 +37,8 @@ class ScanListStarter : public QObject {
     QVariantList resolveSystems(const QVariantMap& list, QString* error) const;
     bool resolveEntryProfiles(QVariantMap& prepared, QString* error) const;
     QVariantMap prepare(const QVariantMap& list, bool materialize) const;
+    QVariantMap prepareCsv(const QVariantMap& list, bool materialize) const;
+    std::function<bool(const QString&)> m_targetFileLookup;
     const AppPrefs* m_prefs;
     const SavedSystemsModel* m_systems;
     DecryptionProfileProvider* m_profiles = nullptr;

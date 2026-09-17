@@ -6,6 +6,7 @@
 #include <QMap>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVariant>
 #include <QVariantMap>
 
@@ -37,6 +38,8 @@ class ScanListsModel : public QAbstractListModel {
     Q_INVOKABLE bool add(const QVariantMap& list);
     Q_INVOKABLE bool update(int row, const QVariantMap& list);
     Q_INVOKABLE bool remove(int row);
+    Q_INVOKABLE QStringList listsReferencingPath(const QString& path) const;
+    Q_INVOKABLE bool clearCsvPath(const QString& path);
     Q_INVOKABLE void touch(int row);
   Q_SIGNALS:
     void countChanged();

@@ -11,6 +11,7 @@ Item {
     property int replaceRow: -1
     property var companions: ({})
     property var requiredFiles: []
+    property var requiredLabels: ({})
     property string choosing: ""
     signal finished(var result)
     function begin(uri, name, kind, row) {
@@ -20,6 +21,7 @@ Item {
         replaceRow = row === undefined ? -1 : row;
         companions = ({});
         requiredFiles = [];
+        requiredLabels = ({});
         attempt();
     }
     function attempt() {
@@ -30,6 +32,7 @@ Item {
                 if (names.indexOf(name) < 0)
                     names.push(name);
             requiredFiles = names;
+            requiredLabels = Object.assign({}, requiredLabels, result.requiredLabels || ({}));
             sheet.visible = true;
             return;
         }
@@ -49,14 +52,14 @@ Item {
     ModalSheet {
         id: sheet
         parent: flow.overlayParent
-        accessibleName: qsTr("Channel-map companion files")
+        accessibleName: flow.type === "trunkTargets" ? qsTr("Target CSV companion files") : qsTr("Channel-map companion files")
         onDismissed: {
             flow.reference = "";
             flow.companions = ({});
         }
         Text {
             width: parent.width
-            text: qsTr("This channel map references additional files. Choose each file to store a complete, private copy with the map.")
+            text: qsTr("This CSV references additional files. Choose each file to store a complete, private copy.")
             wrapMode: Text.Wrap
             color: Theme.textPrimary
             font.pixelSize: Theme.fontSize(15)
@@ -66,7 +69,7 @@ Item {
             OutlineButton {
                 required property string modelData
                 width: parent.width
-                text: (flow.companions[modelData] ? qsTr("Selected: ") : qsTr("Choose: ")) + modelData
+                text: (flow.companions[modelData] ? qsTr("Selected: ") : qsTr("Choose: ")) + (flow.requiredLabels[modelData] || modelData)
                 onClicked: {
                     flow.choosing = modelData;
                     picker.open();

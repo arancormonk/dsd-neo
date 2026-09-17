@@ -17,7 +17,9 @@
 #include <QVariant>
 #include <QVariantList>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
+#include <dsd-neo/core/csv_validate.h>
 #include <initializer_list>
+#include <stdint.h>
 #include <utility>
 #include "app_prefs.h"
 #include "decoder_host.h"
@@ -30,6 +32,37 @@
 
 namespace dsd_qt {
 namespace {
+QString
+generatedInputError(const QString& uid, const QStringList& paths) {
+    if (!QRegularExpression(QStringLiteral("^[A-Za-z0-9_-]{1,63}$")).match(uid).hasMatch()) {
+        return QStringLiteral("Invalid scan-list ID.");
+    }
+    for (const auto& path : paths) {
+        const QFileInfo info(path);
+        if (!info.isFile() || !info.isReadable()) {
+            return QStringLiteral("A CSV file is missing or unreadable. Select an existing imported CSV.");
+        }
+    }
+    return {};
+}
+
+SessionArgPrefs
+sessionPreferences(const AppPrefs* source) {
+    SessionArgPrefs prefs;
+    if (source) {
+        prefs.gainDb = source->gainDb();
+        prefs.ppm = source->ppm();
+        prefs.bandwidthKhz = source->bandwidthKhz();
+        prefs.biasTee = source->biasTee();
+        prefs.skipEncrypted = source->skipEncrypted();
+        prefs.persistTgLockouts = source->persistTgLockouts();
+        prefs.autoPpm = source->autoPpm();
+        prefs.hangtimeSec = source->hangtimeSec();
+        prefs.extraArgs = source->extraArgs();
+    }
+    return prefs;
+}
+
 QVariantMap
 absolutePaths(QVariantMap map) {
     for (const auto& field : {"chanCsvPath", "groupCsvPath", "srcCsvPath", "keyCsvPath", "p25BandplanCsvPath"}) {
@@ -208,6 +241,13 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize) const {
     if (materialize && list.value("isDraft").toBool()) {
         return fail(QStringLiteral("This scan list is a draft. Edit and save it before listening."));
     }
+    const QString source = list.value("targetSource", "entries").toString();
+    if (source == "csv") {
+        return prepareCsv(list, materialize);
+    }
+    if (source != "entries" || !list.value("targetsCsvPath").toString().isEmpty()) {
+        return fail(QStringLiteral("Choose either manual entries or an imported target CSV."));
+    }
     QString preparationError;
     const auto systems = resolveSystems(list, &preparationError);
     if (!preparationError.isEmpty()) {
@@ -222,28 +262,11 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize) const {
         return fail(generated.error, generated.warnings);
     }
     const QString uid = list.value("uid").toString();
-    if (!QRegularExpression(QStringLiteral("^[A-Za-z0-9_-]{1,63}$")).match(uid).hasMatch()) {
-        return fail(QStringLiteral("Invalid scan-list ID."));
+    const QString inputError = generatedInputError(uid, generated.paths);
+    if (!inputError.isEmpty()) {
+        return fail(inputError, generated.warnings);
     }
-    for (const auto& path : generated.paths) {
-        const QFileInfo info(path);
-        if (!info.isFile() || !info.isReadable()) {
-            return fail(QStringLiteral("A CSV file is missing or unreadable. Select an existing imported CSV."),
-                        generated.warnings);
-        }
-    }
-    SessionArgPrefs prefs;
-    if (m_prefs) {
-        prefs.gainDb = m_prefs->gainDb();
-        prefs.ppm = m_prefs->ppm();
-        prefs.bandwidthKhz = m_prefs->bandwidthKhz();
-        prefs.biasTee = m_prefs->biasTee();
-        prefs.skipEncrypted = m_prefs->skipEncrypted();
-        prefs.persistTgLockouts = m_prefs->persistTgLockouts();
-        prefs.autoPpm = m_prefs->autoPpm();
-        prefs.hangtimeSec = m_prefs->hangtimeSec();
-        prefs.extraArgs = m_prefs->extraArgs();
-    }
+    const auto prefs = sessionPreferences(m_prefs);
     const QString path = json_store_path(QStringLiteral("scan_lists/") + uid + QStringLiteral(".csv"));
     QString error;
     const auto args = session_args_scan_build(prepared, generated.firstFreqMhz, path, prefs, &error);
@@ -259,6 +282,60 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize) const {
             {"args", materialize ? args : QStringList()},
             {"error", QString()},
             {"warnings", generated.warnings},
+            {"targetCount", count}};
+}
+
+QVariantMap
+ScanListStarter::prepareCsv(const QVariantMap& list, bool materialize) const {
+    const auto fail = [](const QString& error) {
+        return QVariantMap{
+            {"ok", false}, {"args", QStringList()}, {"error", error}, {"warnings", QStringList()}, {"targetCount", 0}};
+    };
+    if (!list.value("entries").toList().isEmpty()) {
+        return fail(QStringLiteral("An imported target CSV cannot be combined with manual entries."));
+    }
+    if (!QRegularExpression(QStringLiteral("^[A-Za-z0-9_-]{1,63}$")).match(list.value("uid").toString()).hasMatch()) {
+        return fail(QStringLiteral("Invalid scan-list ID."));
+    }
+    const auto prepared = absolutePaths(list);
+    const QString settingsError = scan_list_settings_error(prepared);
+    if (!settingsError.isEmpty()) {
+        return fail(settingsError);
+    }
+    const QString path = prepared.value("targetsCsvPath").toString();
+    if (path.isEmpty() || !m_targetFileLookup || !m_targetFileLookup(path) || !QFileInfo(path).isFile()) {
+        return fail(QStringLiteral(
+            "The target CSV is missing or was removed. Edit this list and select an imported target CSV."));
+    }
+    for (const auto& field : {"groupCsvPath", "srcCsvPath"}) {
+        const QString fallback = prepared.value(field).toString();
+        if (fallback.isEmpty()) {
+            continue;
+        }
+        dsd_csv_validation stats{};
+        const int rc = QString(field) == "groupCsvPath"
+                           ? dsd_csv_validate_group_file(fallback.toUtf8().constData(), &stats)
+                           : dsd_csv_validate_src_file(fallback.toUtf8().constData(), &stats);
+        if (rc) {
+            return fail(QStringLiteral("The list's fallback talkgroup or source-alias CSV is missing or invalid."));
+        }
+    }
+    char detail[512] = {};
+    int count = 0;
+    uint32_t first = 0;
+    if (dsd_app_trunk_scan_validate_bundle(path.toUtf8().constData(), &count, &first, detail, sizeof detail)) {
+        return fail(QString::fromUtf8(detail));
+    }
+    QString error;
+    const auto args = session_args_scan_build(prepared, QString::number(first / 1e6, 'f', 6), path,
+                                              sessionPreferences(m_prefs), &error);
+    if (args.isEmpty()) {
+        return fail(error);
+    }
+    return {{"ok", true},
+            {"args", materialize ? args : QStringList()},
+            {"error", QString()},
+            {"warnings", QStringList()},
             {"targetCount", count}};
 }
 } // namespace dsd_qt

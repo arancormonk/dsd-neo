@@ -153,6 +153,32 @@ Item {
             verify(scanLists.get(0).lastHeard > 0);
         }
 
+        function test_csv_list_play_and_label() {
+            var source = testContext.writeFixtureCsv("home-targets.csv",
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\nCSV target,p25-conventional,851500000,,,,\n");
+            var result = importedFiles.importFile(source, "Home targets.csv", "trunkTargets");
+            verify(result.ok, result.detail || "Import failed");
+            var app = appLoader.item;
+            try {
+                scanLists.update(0, {targetSource: "csv", targetsCsvPath: result.path});
+                app.startScanList(0);
+                compare(prefs.lastStartedUid, "");
+                testContext.emitSessionInitialized();
+                compare(prefs.lastStartedUid, scanLists.get(0).uid);
+                testContext.setMetric("scanTargetId", "CSV target");
+                compare(app.scanTargetLabel(), "CSV target");
+                app.sessionSystem = null;
+                compare(app.scanTargetLabel(), "CSV target");
+                var card = visualChild(app, "scanListCard");
+                verify(card !== null);
+                compare(card.entryCount, 1);
+            } finally {
+                testContext.setMetric("scanTargetId", "");
+                decoderHost.stop();
+                importedFiles.remove(importedFiles.rowForPath(result.path));
+            }
+        }
+
         // WP-S2: signal routing reuses permission handling and initialization recency.
         function test_auto_start_scan_request() {
             scanLists.update(0, {

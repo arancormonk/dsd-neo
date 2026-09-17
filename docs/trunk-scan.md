@@ -555,6 +555,37 @@ calls across these boundaries.
 
 ### Qt and Android scan lists
 
+Home → **Scan lists → Import target CSV** imports a prepared target list, including
+`examples/trunk_scan_targets.csv`. It is also available as **Trunk scan targets**
+in the imported-files library. Choose the CSV and any requested companion files,
+review the target preview, name the list, select its receiver settings, and Save.
+The list's Play button starts the imported CSV directly.
+
+The CSV stays authoritative. Its target IDs, order, columns and supported `options`
+are preserved; the preview shows inherited timing separately from explicit values.
+An explicit target option overrides the corresponding session default, and leaving
+the target restores the baseline. For example, a target can use `--enc-follow`,
+`--no-force-key`, or its own `--scan-max-visit-ms`. The manual editor's restriction
+on saved-system Extra arguments does not apply to a CSV's validated scoped options.
+Imported targets are read-only in the editor; use **Update from file** in the
+imports library to replace their contents.
+
+Imports make a private, durable bundle of channel maps, band plans, key files,
+scoped group/DMR mapping files, and any file dependencies within channel maps.
+Desktop companions resolve relative to the source document using the usual path
+rules. Android asks for missing documents explicitly, including the containing
+map's name for nested references. Rewritten paths are relative to the stored
+document, so moving or deleting the original documents does not break the list.
+Target and channel-map documents are limited to 64 MiB; the engine's target and row limits
+still apply. Keys and raw option cells are excluded from previews and metadata.
+
+Import, Validate and Play check required companions using the backend loaders.
+An invalid replacement leaves the previous bundle usable. Target CSV replacement
+and removal require the decoder to be idle. Removing a scan list keeps its shared
+imported asset; removing that asset makes referencing lists drafts until another
+target CSV is selected. Imported counts come from the library and Monitor uses the
+CSV's target ID. Existing manual lists keep their original behavior below.
+
 Home's **Scan lists** section starts saved systems and bare frequencies as one
 `--trunk-scan` session. Long-press a list to edit, reorder, enable or remove entries.
 The editor selects USB or RTL-TCP and one tuner configuration for the entire list.
@@ -566,8 +597,8 @@ PPM/modulation inherit their corresponding defaults. Nonzero dwell/hold must be
 Extra decoder arguments containing `-t` still take precedence. Voice/sync-loss hang time
 is separate from idle dwell on every target and the activity hold on conventional targets.
 The editor does not model the per-visit cap: put `--scan-max-visit-ms <ms>` in Extra decoder
-arguments to cap every target in the session, or run `--trunk-scan` with a target CSV of your
-own, whose `options` cells can cap individual targets.
+arguments to cap every target in the session, or import a target CSV whose `options`
+cells cap individual targets.
 The older channel-scanning mode enabled with `-Y` instead uses `-t` as its dwell
 timer, so changing the app default or a saved-system hang-time override also
 changes that mode's rotation timing.

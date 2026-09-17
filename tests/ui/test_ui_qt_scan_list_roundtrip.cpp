@@ -9,12 +9,14 @@
 #include <QMap>
 #include <QStandardPaths>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <cstdio>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
+#include <functional>
 #include <initializer_list>
 #include <qsystemdetection.h>
 #include <qtenvironmentvariables.h>
@@ -159,6 +161,45 @@ main(int argc, char** argv) {
     model.remove(0);
     check(!QFile::exists(path));
     check(model.count() == 0);
+    // CSV-backed lists preserve their durable input and bypass manual systems.
+    const QString targetPath = dir.filePath("targets.csv");
+    QFile targets(targetPath);
+    check(targets.open(QIODevice::WriteOnly));
+    targets.write("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                  "CSV ID,p25-conventional,851500000,,,,,--scan-max-visit-ms 20000\n");
+    targets.close();
+    check(model.add({{"name", "Imported"},
+                     {"sourceType", "rtltcp"},
+                     {"host", "localhost"},
+                     {"port", 1234},
+                     {"targetSource", "csv"},
+                     {"targetsCsvPath", targetPath},
+                     {"entries", QVariantList{entry}}}));
+    auto imported = model.get(0);
+    check(imported.value("entries").toList().isEmpty());
+    check(!starter.build(imported).value("ok").toBool());
+    starter.setTargetFileLookup([&targetPath](const QString& candidate) { return candidate == targetPath; });
+    const auto builtCsv = starter.build(imported);
+    check(builtCsv.value("ok").toBool() && builtCsv.value("targetCount").toInt() == 1);
+    const auto importedArgs = builtCsv.value("args").toStringList();
+    check(importedArgs.value(importedArgs.indexOf("--trunk-scan") + 1) == targetPath);
+    check(!QFile::exists(json_store_path("scan_lists/" + imported.value("uid").toString() + ".csv")));
+    imported["entries"] = QVariantList{entry};
+    check(!starter.build(imported).value("ok").toBool());
+    imported["entries"] = QVariantList();
+    imported["sourceType"] = "udp";
+    check(!starter.build(imported).value("ok").toBool());
+    imported["sourceType"] = "rtltcp";
+    imported["defaultDwellMs"] = 1;
+    check(!starter.build(imported).value("ok").toBool());
+    ScanListsModel csvReloaded;
+    check(csvReloaded.get(0).value("targetSource") == "csv"
+          && csvReloaded.get(0).value("targetsCsvPath") == targetPath);
+    check(model.listsReferencingPath(targetPath) == QStringList{"Imported"});
+    check(model.clearCsvPath(targetPath));
+    check(model.get(0).value("isDraft").toBool() && model.get(0).value("targetsCsvPath").toString().isEmpty());
+    check(!starter.build(model.get(0)).value("ok").toBool());
+    check(model.remove(0) && QFile::exists(targetPath));
     QDir(dataDir).removeRecursively();
     return failures ? 1 : 0;
 }

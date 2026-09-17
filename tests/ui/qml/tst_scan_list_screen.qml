@@ -40,6 +40,33 @@ Item {
             verify(scanLists.getByUid(uid).isDraft);
         }
 
+        function test_imported_target_preview_and_save() {
+            var source = testContext.writeFixtureCsv("scan-targets.csv",
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\nCSV ID,p25-conventional,851500000,,,,,--scan-max-visit-ms 20000\n");
+            var result = importedFiles.importFile(source, "Targets.csv", "trunkTargets");
+            verify(result.ok, result.detail || "Import failed");
+            try {
+                screen.draft.name = "Imported";
+                screen.selectTargets(result.path);
+                verify(screen.csvMode);
+                compare(screen.entries.length, 0);
+                compare(screen.targetRows.length, 1);
+                compare(screen.targetRows[0].id, "CSV ID");
+                compare(screen.targetRows[0].dwellMs, -1);
+                verify(screen.validate(), screen.validationText);
+                screen.save();
+                compare(scanLists.get(0).targetSource, "csv");
+                compare(scanLists.get(0).targetsCsvPath, result.path);
+                screen.openFor(0);
+                compare(screen.targetRows.length, 1);
+                var preview = visualChild(screen, "scanTargetPreview");
+                verify(preview !== null);
+                tryVerify(function() { return preview.height > 0; });
+            } finally {
+                importedFiles.remove(importedFiles.rowForPath(result.path));
+            }
+        }
+
         function visualChild(item, name) {
             if (item.objectName === name)
                 return item;

@@ -19,10 +19,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-struct p25_bandplan_row;
-
 #ifdef __cplusplus
 extern "C" {
+#else
+/* C needs a file-scope tag before the parameter declaration below. */
+struct p25_bandplan_row;
 #endif
 
 enum {
@@ -86,6 +87,9 @@ typedef struct {
     char p25_bandplan_csv[1024];
     int dwell_ms;
     int activity_hold_ms;
+    int dwell_is_set;
+    int activity_hold_is_set;
+    unsigned int csv_row;
     dsd_trunk_scan_modulation modulation;
     int rtl_gain_is_set;
     int rtl_gain_db;
@@ -110,6 +114,9 @@ void dsd_trunk_scan_target_list_reset(dsd_trunk_scan_target_list* list);
 
 int dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trunk_scan_target_list* out, char* err,
                                     size_t err_sz);
+
+/** Shared lexical splitter for target import/relocation. Modifies line in place. */
+int dsd_trunk_scan_split_csv_fields(char* line, char** fields, size_t max_fields, size_t* out_count);
 
 int dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t err_sz);
 void dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state);

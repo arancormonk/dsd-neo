@@ -35,5 +35,6 @@ struct ScanListTargets {
 };
 
 ScanListTargets scan_list_targets(const QVariantMap& list, const QVariantList& systems);
+QString scan_list_settings_error(const QVariantMap& list);
 } // namespace dsd_qt
 #endif

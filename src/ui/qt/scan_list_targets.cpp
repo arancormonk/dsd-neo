@@ -72,7 +72,8 @@ validateIdentity(const QVariantMap& sys, const QVariantMap& entry, QSet<QString>
         return QStringLiteral("This decode mode cannot be used in a scan list.");
     }
     if (!sys.value("extraArgs").toString().trimmed().isEmpty()) {
-        return QStringLiteral("Remove extra options; they cannot be scoped safely.");
+        return QStringLiteral("This saved system has standalone Extra arguments. Remove them to use it in a manual "
+                              "list, or import a target CSV with supported switches in its options column.");
     }
     target.trunk = sys.value("trunking").toBool();
     target.type =
@@ -291,6 +292,26 @@ appendTarget(const QVariantMap& entry, const QVariantList& systems, const QVaria
 }
 } // namespace
 
+QString
+scan_list_settings_error(const QVariantMap& list) {
+    if (list.value("sourceType") != "usb" && list.value("sourceType") != "airspy"
+        && list.value("sourceType") != "rtltcp") {
+        return QStringLiteral("Choose RTL USB, Airspy or RTL-TCP for the scan list.");
+    }
+    for (const auto& field : {"defaultDwellMs", "defaultHoldMs"}) {
+        if (!timing(list.value(field, 0))) {
+            return QStringLiteral("Dwell and hold must be 250..600000 ms, or 0 to inherit.");
+        }
+    }
+    for (const auto& field : {"groupCsvPath", "srcCsvPath"}) {
+        const QString path = list.value(field).toString();
+        if (!safePath(path)) {
+            return QStringLiteral("CSV paths cannot contain comma, quote, CR or LF.");
+        }
+    }
+    return {};
+}
+
 ScanListTargets
 scan_list_targets(const QVariantMap& list, const QVariantList& systems) {
     ScanListTargets out;
@@ -299,20 +320,12 @@ scan_list_targets(const QVariantMap& list, const QVariantList& systems) {
         out.ok = false;
         return std::move(out);
     };
-    if (list.value("sourceType") != "usb" && list.value("sourceType") != "airspy"
-        && list.value("sourceType") != "rtltcp") {
-        return fail(QStringLiteral("Choose RTL USB, Airspy or RTL-TCP for the scan list."));
-    }
-    for (const auto& field : {"defaultDwellMs", "defaultHoldMs"}) {
-        if (!timing(list.value(field, 0))) {
-            return fail(QStringLiteral("Dwell and hold must be 250..600000 ms, or 0 to inherit."));
-        }
+    const auto settingsError = scan_list_settings_error(list);
+    if (!settingsError.isEmpty()) {
+        return fail(settingsError);
     }
     for (const auto& field : {"groupCsvPath", "srcCsvPath"}) {
         const QString path = list.value(field).toString();
-        if (!safePath(path)) {
-            return fail(QStringLiteral("CSV paths cannot contain comma, quote, CR or LF."));
-        }
         if (!path.isEmpty()) {
             out.paths << path;
         }

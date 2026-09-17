@@ -2957,11 +2957,13 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_imported_files_model
-        PRIVATE Qt6::Core dsd-neo_core dsd-neo_proto_dmr
+        PRIVATE Qt6::Core dsd-neo_app_control ${LIBS}
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_imported_files_model
-        PRIVATE QT_NO_KEYWORDS
+        PRIVATE
+            QT_NO_KEYWORDS
+            DSD_NEO_TEST_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples"
     )
     set_target_properties(
         dsd-neo_test_ui_qt_imported_files_model
@@ -3002,6 +3004,8 @@ if(DSD_ENABLE_QT_UI)
             dsd-neo_core
             dsd-neo_proto_dmr
             dsd-neo_runtime
+            dsd-neo_app_control
+            ${LIBS}
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_radio_reference_model

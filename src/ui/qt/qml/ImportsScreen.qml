@@ -32,6 +32,8 @@ Item {
     property var sessionSystem: null
 
     function nounFor(type, count) {
+        if (type === "trunkTargets")
+            return count === 1 ? qsTr("target") : qsTr("targets");
         if (type === "chan")
             return count === 1 ? qsTr("channel") : qsTr("channels");
         if (type === "group")
@@ -57,7 +59,7 @@ Item {
 
     function resultNotice(verb, result) {
         if (!result.ok) {
-            screen.notice = qsTr("Could not read that file");
+            screen.notice = result.detail || qsTr("Could not read that file");
             screen.noticeIsProblem = true;
             return;
         }
@@ -391,11 +393,11 @@ Item {
             spacing: 8
 
             Repeater {
-                model: [qsTr("Channel map"), qsTr("Talkgroups"), qsTr("Keys"), qsTr("P25 band plan"), qsTr("Radio IDs"), qsTr("DMR key mappings"), qsTr("Vertex keystreams")]
+                model: [qsTr("Channel map"), qsTr("Talkgroups"), qsTr("Keys"), qsTr("P25 band plan"), qsTr("Radio IDs"), qsTr("DMR key mappings"), qsTr("Vertex keystreams"), qsTr("Trunk scan targets")]
                 delegate: FilterPill {
                     required property int index
                     required property string modelData
-                    readonly property string kind: ["chan", "group", "keys", "p25Bandplan", "src", "dmrTgKeys", "vertexKeys"][index]
+                    readonly property string kind: ["chan", "group", "keys", "p25Bandplan", "src", "dmrTgKeys", "vertexKeys", "trunkTargets"][index]
                     objectName: "importKind_" + kind
                     text: modelData
                     caret: false
@@ -490,7 +492,7 @@ Item {
 
         OutlineButton {
             width: parent.width
-            visible: decoderHost.running && importedFiles.get(screen.actionRow).type !== "vertexKeys"
+            visible: decoderHost.running && importedFiles.get(screen.actionRow).type !== "vertexKeys" && importedFiles.get(screen.actionRow).type !== "trunkTargets"
             text: qsTr("Apply to running session")
             onClicked: {
                 actionSheet.visible = false;
@@ -561,6 +563,7 @@ Item {
         id: removeSheet
 
         readonly property var profilesUsingFile: visible && screen.actionRow >= 0 && typeof decryptionProfiles !== "undefined" ? decryptionProfiles.profilesReferencingPath(importedFiles.get(screen.actionRow).path) : []
+        readonly property var listsUsingFile: visible && screen.actionRow >= 0 ? scanLists.listsReferencingPath(importedFiles.get(screen.actionRow).path) : []
         readonly property var usedBy: visible && screen.actionRow >= 0 ? savedSystems.systemsReferencingPath(importedFiles.get(screen.actionRow).path) : []
 
         Text {
@@ -591,6 +594,14 @@ Item {
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(14)
         }
+        Text {
+            width: parent.width
+            visible: removeSheet.listsUsingFile.length > 0
+            text: qsTr("Used by scan lists: %1. Removing makes these lists drafts until another target CSV is selected.").arg(removeSheet.listsUsingFile.join(", "))
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: Theme.textSecondary
+        }
         OutlineButton {
             width: parent.width
             enabled: removeSheet.profilesUsingFile.length === 0
@@ -598,8 +609,22 @@ Item {
             onClicked: {
                 removeSheet.visible = false;
                 var path = importedFiles.get(screen.actionRow).path;
+                if (!importedFiles.canRemove(screen.actionRow)) {
+                    screen.notice = qsTr("Stop the decoder before removing target CSVs.");
+                    screen.noticeIsProblem = true;
+                    return;
+                }
+                if (!scanLists.clearCsvPath(path)) {
+                    screen.notice = qsTr("Could not save the affected scan lists. The imported file was kept.");
+                    screen.noticeIsProblem = true;
+                    return;
+                }
+                if (!importedFiles.remove(screen.actionRow)) {
+                    screen.notice = qsTr("Could not remove the file. Stop the decoder before removing target CSVs.");
+                    screen.noticeIsProblem = true;
+                    return;
+                }
                 savedSystems.clearCsvPath(path);
-                importedFiles.remove(screen.actionRow);
                 screen.actionRow = -1;
                 screen.notice = qsTr("Removed");
                 screen.noticeIsProblem = false;

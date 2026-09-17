@@ -13,6 +13,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QIODevice>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -29,23 +30,30 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
-#include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <stdio.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 
+#include <cstdlib>
+#include <dsd-neo/app_control/trunk_scan_validate.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/scan_options.h>
+#include <initializer_list>
+#include <qflags.h>
+#include <stdint.h>
+extern "C" {
+#include <dsd-neo/core/state.h>
+}
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include "decoder_host.h"
 #include "imported_files_model.h"
 #include "json_store.h"
-
-void
-LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
-    (void)BufferIn;
-    (void)BufferOut;
-    (void)state;
-}
 
 namespace {
 
@@ -61,9 +69,17 @@ expect(const char* what, bool ok) {
 
 class TestHost : public dsd_qt::DecoderHost {
   public:
+    bool running = false;
+    QMap<QString, QString> documents;
+
+    QString
+    importDocument(const QString& reference, const QString& name, const QString& replace = QString()) override {
+        return DecoderHost::importDocument(documents.value(reference, reference), name, replace);
+    }
+
     bool
     isRunning() const override {
-        return false;
+        return running;
     }
 
     QString
@@ -751,6 +767,226 @@ test_channel_bundle() {
     expect("removing bundle frees companions", !QDir(root).exists());
 }
 
+static void
+test_target_bundle() {
+    QTemporaryDir source;
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    expect("nested fixture directory", QDir(source.path()).mkpath("sub"));
+    const auto write = [&](const QString& name, const QByteArray& text) {
+        const auto path = source.filePath(name);
+        expect("write target fixture", write_file(path, text));
+        return path;
+    };
+    const auto channels = write(
+        "map, one.csv",
+        "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,sub/key.csv\n-1,851012500,p25,unused-missing.csv\n");
+    const auto keys = write("sub/key.csv", "id,value\n01,ABCDEF0123\n");
+    const auto groups = write("groups file.csv", "id,mode,name\n123,A,Dispatch\n");
+    const auto dmr = write("dmr.csv", "tg_dec,keyid_hex\n123,01\n");
+    const auto band = write("band.csv", "iden,base_hz,spacing_hz\n0,851000000,12500\n");
+    const QByteArray header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,OPTIONS,modulation,rtl_"
+                              "gain,p25_bandplan_csv\r\n";
+    const QByteArray csv = header
+                           + "site 1,p25-trunk,851012500,\"map, one.csv\",,,\"note, keep\",--enc-follow "
+                             "--scan-max-visit-ms 20000,auto,0,band.csv\r\n"
+                             "plant,dmr-conventional,461112500,,250,1200,private,-H 0123456789 --no-force-key -G "
+                             "\"groups file.csv\" --dmr-tg-key-csv='dmr.csv',gfsk,18,\r\n";
+    const auto targets = write("targets.csv", csv);
+    auto result = model.importFile(targets, "Targets.csv", "trunkTargets");
+    expect("target bundle imports", result.value("ok").toBool());
+    if (!result.value("ok").toBool()) {
+        DSD_FPRINTF(stderr, "%s\n", qPrintable(result.value("detail").toString()));
+        return;
+    }
+    const QString path = result.value("path").toString();
+    const int row = model.rowForPath(path);
+    expect("target count", result.value("accepted").toInt() == 2);
+    const auto preview = model.targetPreview(path);
+    const auto rows = preview.value("rows").toList();
+    expect("target preview", preview.value("ok").toBool() && rows.size() == 2);
+    if (rows.size() == 2) {
+        expect("preserves id and omitted timing",
+               rows[0].toMap().value("id") == "site 1" && rows[0].toMap().value("dwellMs").toInt() == -1);
+        expect("preserves explicit auto and timing",
+               rows[0].toMap().value("modulation") == "auto" && rows[1].toMap().value("dwellMs").toInt() == 250);
+    }
+    expect("preview contains no keys", !QJsonDocument::fromVariant(preview).toJson().contains("0123456789"));
+    expect("metadata contains no keys",
+           !read_file(dsd_qt::json_store_path("imported_files.json")).contains("0123456789"));
+    const auto original = read_file(path);
+    expect("notes and CRLF preserved", original.contains("\"note, keep\"") && original.contains("\r\n"));
+    expect("private target file", !(QFile::permissions(path) & (QFileDevice::ReadGroup | QFileDevice::ReadOther)));
+    dsd_trunk_scan_target_list parsed{};
+    char error[512] = {};
+    expect("rewritten file parses",
+           dsd_trunk_scan_load_targets_csv(path.toUtf8().constData(), nullptr, &parsed, error, sizeof error) == 0);
+    if (parsed.count == 2) {
+        expect("scoped visit limit retained", parsed.targets[0].row_options.max_visit_ms == 20000);
+        expect("explicit no force retained", (parsed.targets[1].row_options.present & DSD_SCAN_OPT_FORCE)
+                                                 && parsed.targets[1].row_options.force == 0);
+    }
+    dsd_trunk_scan_target_list_reset(&parsed);
+    host.running = true;
+    expect("active replacement refused",
+           !model.importBundle(targets, "Targets.csv", "trunkTargets", {}, row).value("ok").toBool());
+    expect("active removal refused", !model.remove(row));
+    host.running = false;
+    write_file(band, "iden,base_hz,spacing_hz\n");
+    result = model.importBundle(targets, "Targets.csv", "trunkTargets", {}, row);
+    expect("empty bandplan rejects replacement",
+           !result.value("ok").toBool() && result.value("detail").toString().contains("p25_bandplan_csv"));
+    expect("rejected replacement preserves bytes", read_file(path) == original);
+    write_file(band, "iden,base_hz,spacing_hz\n0,851000000,12500\n");
+    result = model.importBundle(targets, "Targets.csv", "trunkTargets", {}, row);
+    expect("replacement keeps stable path", result.value("ok").toBool() && result.value("path") == path);
+    const QString root = model.get(row).value("bundleRoot").toString();
+    expect("old revisions reclaimed", QDir(root).entryList(QDir::Dirs | QDir::NoDotAndDotDot).size() == 1);
+
+    // SAF references convey no sibling access, even when our host can copy them.
+    host.documents.insert("content://targets", targets);
+    result = model.importBundle("content://targets", "Android.csv", "trunkTargets", {});
+    expect("SAF asks for companions", result.value("error") == "companions");
+    host.documents.insert("content://channels", channels);
+    const QVariantMap sources{
+        {"map, one.csv", "content://channels"}, {"groups file.csv", groups}, {"dmr.csv", dmr}, {"band.csv", band}};
+    QVariantMap selected;
+    const auto labels = result.value("requiredLabels").toMap();
+    for (auto i = labels.cbegin(); i != labels.cend(); ++i) {
+        selected[i.key()] = sources.value(i.value().toString());
+    }
+    result = model.importBundle("content://targets", "Android.csv", "trunkTargets", selected);
+    const auto nestedLabels = result.value("requiredLabels").toMap();
+    expect("nested SAF reference has context",
+           nestedLabels.values().contains(QStringLiteral("map, one.csv → sub/key.csv")));
+    for (auto i = nestedLabels.cbegin(); i != nestedLabels.cend(); ++i) {
+        if (i.value() == QStringLiteral("map, one.csv → sub/key.csv")) {
+            selected[i.key()] = keys;
+        }
+    }
+    result = model.importBundle("content://targets", "Android.csv", "trunkTargets", selected);
+    expect("complete SAF bundle imports", result.value("ok").toBool());
+    const QString androidPath = result.value("path").toString();
+
+    // A retained channel map may refer to a leaf in another revision. GC must
+    // follow the map, not assume every reachable file shares its directory.
+    dsd_trunk_scan_target_list relocated{};
+    expect("inspect revision fixture",
+           dsd_trunk_scan_load_targets_csv(path.toUtf8().constData(), nullptr, &relocated, error, sizeof error) == 0);
+    QString movedLeaf;
+    const QString leafRevision = root + "/11111111-1111-1111-1111-111111111111";
+    const QString orphanRevision = root + "/22222222-2222-2222-2222-222222222222";
+    if (relocated.count > 0) {
+        const QString storedMap = QString::fromUtf8(relocated.targets[0].chan_csv);
+        QByteArray mapBytes = read_file(storedMap);
+        const QByteArray leafName = mapBytes.split('\n').value(1).split(',').last();
+        const QString oldLeaf = QFileInfo(storedMap).dir().filePath(QString::fromUtf8(leafName));
+        expect("create revision fixture", QDir().mkpath(leafRevision) && QDir().mkpath(orphanRevision));
+        movedLeaf = leafRevision + "/key.csv";
+        expect("move nested leaf", QFile::rename(oldLeaf, movedLeaf));
+        mapBytes.replace(',' + leafName + '\n', ",../11111111-1111-1111-1111-111111111111/key.csv\n");
+        expect("rewrite cross-revision map", write_file(storedMap, mapBytes));
+    }
+    dsd_trunk_scan_target_list_reset(&relocated);
+    QDir(source.path()).removeRecursively();
+    int count = 0;
+    uint32_t first = 0;
+    expect("bundle outlives original documents",
+           dsd_app_trunk_scan_validate_bundle(path.toUtf8().constData(), &count, &first, error, sizeof error) == 0
+               && count == 2 && first == 851012500);
+    dsd_qt::ImportedFilesModel reloaded(&host);
+    expect("GC retains transitive dependencies", !movedLeaf.isEmpty() && QFile::exists(movedLeaf));
+    expect("GC removes unreachable revisions", !QDir(orphanRevision).exists());
+    expect("target import survives restart",
+           reloaded.rowForPath(path) >= 0 && reloaded.targetPreview(path).value("ok").toBool());
+    model.remove(model.rowForPath(androidPath));
+    model.remove(model.rowForPath(path));
+}
+
+static void
+test_target_errors_and_opaque_columns() {
+    TestHost host;
+    QTemporaryDir source;
+    dsd_qt::ImportedFilesModel model(&host);
+    const int before = model.count();
+    const QByteArray header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes";
+    const QByteArray row = "target,dmr-conventional,461000000,,,,";
+    const QString path = source.filePath("targets.csv");
+    const QByteArray secret = "REDACTION-SENTINEL-NOT-HEX";
+    for (const auto& column : {QByteArray("options"), QByteArray("single_key_hex")}) {
+        const auto value = column == "options" ? "-H " + secret : secret;
+        expect("write bad-key fixture", write_file(path, header + ',' + column + '\n' + row + ',' + value + '\n'));
+        const auto result = model.importFile(path, "Targets.csv", "trunkTargets");
+        expect("bad-key import fails atomically", !result.value("ok").toBool() && model.count() == before);
+        const auto detail = result.value("detail").toString();
+        expect("bad-key error provides row without key",
+               detail.contains("row 2") && !detail.contains(QString::fromUtf8(secret)));
+    }
+    expect("write opaque optional column", write_file(path, header + ",chan_csv\n" + row + ",unused-missing.csv\n"));
+    const auto result = model.importFile(path, "Opaque.csv", "trunkTargets");
+    expect("optional chan_csv remains opaque", result.value("ok").toBool());
+    const QString stored = result.value("path").toString();
+    expect("opaque bytes preserved", read_file(stored).endsWith(",unused-missing.csv\n"));
+    model.remove(model.rowForPath(stored));
+}
+
+static dsd_trunk_tune_result
+acceptTune(dsd_opts*, dsd_state*, long int, int, uint64_t) {
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+test_example_targets() {
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    const auto result = model.importFile(QStringLiteral(DSD_NEO_TEST_EXAMPLES_DIR "/trunk_scan_targets.csv"),
+                                         "Examples.csv", "trunkTargets");
+    expect("shipped example imports all targets", result.value("ok").toBool() && result.value("accepted").toInt() == 8);
+    if (!result.value("ok").toBool()) {
+        return;
+    }
+    const QString path = result.value("path").toString();
+    const auto rows = model.targetPreview(path).value("rows").toList();
+    expect("shipped row order retained", rows.size() == 8 && rows[0].toMap().value("id") == "county-p25"
+                                             && rows[7].toMap().value("id") == "field-nxdn48");
+    auto* opts = static_cast<dsd_opts*>(std::calloc(1, sizeof(dsd_opts)));
+    auto* state = static_cast<dsd_state*>(std::calloc(1, sizeof(dsd_state)));
+    expect("allocate example engine state", opts && state);
+    if (!opts || !state) {
+        std::free(opts);
+        std::free(state);
+        return;
+    }
+    opts->trunk_scan_enabled = 1;
+    opts->use_rigctl = 1;
+    opts->rtl_dsp_bw_khz = 48;
+    opts->scan_max_visit_ms = 40000;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path.toUtf8().constData());
+    dsd_trunk_tuning_hooks hooks{};
+    hooks.tune_to_freq_request = acceptTune;
+    hooks.tune_to_cc_request = acceptTune;
+    dsd_trunk_tuning_hooks_set(hooks);
+    char error[512] = {};
+    const bool initialized = dsd_engine_trunk_scan_init(opts, state, error, sizeof error) == 0;
+    expect("imported example initializes", initialized);
+    if (initialized) {
+        expect("engine owns all eight imported targets", dsd_engine_trunk_scan_target_count(state) == 8);
+        expect("first target visit limit applies", opts->scan_max_visit_ms == 20000);
+        expect("advance imported target",
+               dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+        expect("next target inherits baseline limit", opts->scan_max_visit_ms == 40000);
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_trunk_tuning_hooks_set({});
+    dsd_trunk_scan_hooks_set({});
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    DSD_SECURE_ZERO(state, sizeof *state);
+    std::free(state);
+    std::free(opts);
+    model.remove(model.rowForPath(path));
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -782,6 +1018,9 @@ main(int argc, char** argv) {
     }
     test_metadata_failure_keeps_file();
     test_channel_bundle();
+    test_target_bundle();
+    test_target_errors_and_opaque_columns();
+    test_example_targets();
     test_export_registration_in_place();
     test_import_document();
     test_imported_files_model();

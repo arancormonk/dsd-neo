@@ -5,6 +5,7 @@
 
 #include <QMap>
 #include <QVariantMap>
+#include <functional>
 #include "qt_ui.h"
 
 #include <QFontDatabase>
@@ -126,6 +127,14 @@ wire_decryption_profiles(QQmlApplicationEngine& engine, DecoderHost* host, Saved
     return decryptionProfiles;
 }
 
+static void
+wire_target_files(ScanListStarter* starter, const ImportedFilesModel* files) {
+    starter->setTargetFileLookup([files](const QString& path) {
+        const int row = files->rowForPath(path);
+        return row >= 0 && files->get(row).value("type") == "trunkTargets";
+    });
+}
+
 bool
 ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     load_fonts(engine.rootContext());
@@ -145,6 +154,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* scanLists = new ScanListsModel(&engine);
     auto* scanListStarter = new ScanListStarter(prefs, systems, &engine);
     auto* importedFiles = new ImportedFilesModel(host, &engine);
+    wire_target_files(scanListStarter, importedFiles);
     auto* decryptionProfiles =
         wire_decryption_profiles(engine, host, systems, scanLists, sessionArgs, scanListStarter, commands, metrics);
     auto* history = new CallHistoryModel(&engine);
@@ -171,6 +181,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     // and it has no business knowing what references it.
     for (const QString& gone : importedFiles->takePrunedPaths()) {
         systems->clearCsvPath(gone);
+        scanLists->clearCsvPath(gone);
     }
 
     // The keep-awake preference is storage; the effect is the host's (an Android

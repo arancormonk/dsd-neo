@@ -533,6 +533,12 @@ csv_chan_parse_key(const char* token, long int* out) {
     return parse_dec_long_strict(p, out);
 }
 
+int
+dsd_csv_channel_has_slot(const char* channel) {
+    long int parsed = -1;
+    return channel && csv_chan_parse_key(channel, &parsed) && parsed >= 0 && parsed < 0xFFFF;
+}
+
 static int
 csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field, long int* chan_number,
                             int* freq_parsed) {
@@ -756,6 +762,21 @@ chan_parse_header(char* header_line, chan_header_cols* out) {
  * @return 0 when the row named no key source or its keys loaded, -1 on invalid
  *         input, an unusable path, a load failure or allocation failure.
  */
+int
+dsd_csv_channel_path_columns(char* header, int columns[3]) {
+    if (!header || !columns) {
+        return -1;
+    }
+    chan_header_cols parsed;
+    if (chan_parse_header(header, &parsed) != 0) {
+        return -1;
+    }
+    columns[0] = parsed.index[CHAN_KEYS_HEX];
+    columns[1] = parsed.index[CHAN_KEYS_DEC];
+    columns[2] = parsed.index[CHAN_OPTIONS];
+    return 0;
+}
+
 static int
 chan_import_direct_keys(dsd_key_set* ks, const char* single_hex_cell, const char* single_dec_cell,
                         const char* base_path, int row_number) {

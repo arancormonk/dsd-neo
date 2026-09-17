@@ -236,6 +236,12 @@ object AppSupport {
 
             val staging = File.createTempFile(".import", ".tmp", importsDir)
             try {
+                // App-internal storage already isolates this copy. Tightening file
+                // permissions must not reject an otherwise usable SAF document.
+                staging.setReadable(false, false)
+                staging.setWritable(false, false)
+                staging.setReadable(true, true)
+                staging.setWritable(true, true)
                 context.contentResolver.openInputStream(uri).use { input ->
                     if (input == null) {
                         return ""
