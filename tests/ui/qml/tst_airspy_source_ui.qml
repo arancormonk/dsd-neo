@@ -42,6 +42,10 @@ Item {
             var screen = screenLoader.item;
             verify(screen !== null);
             screen.openFor(-1);
+            screen.advancedOpen = true;
+            screen.gainMode = 2;
+            screen.ppmSet = true;
+            screen.bandwidthSet = true;
             for (var source of ["airspy", "usb", "rtltcp", "airspy"]) {
                 screen.draft = Object.assign({}, screen.draft, {sourceType: source});
                 for (var name of ["scanTuner_gainDb", "scanTuner_ppm", "scanBiasTee"]) {

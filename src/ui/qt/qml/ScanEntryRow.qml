@@ -7,10 +7,24 @@ UiPanel {
     id: row
 
     property var entry: ({})
+    property var inputText: ({})
+    required property var parseInteger
+    required property var frequencyValid
     property string label: ""
     property var overlayParent: parent
+    property bool canMoveUp: true
+    property bool canMoveDown: true
+    readonly property var protocolIds: ["p25", "dmr", "nxdn48", "nxdn"]
+    readonly property var modulationIds: ["", "c4fm", "cqpsk", "gfsk"]
+    readonly property bool inputError: dwellField.error.length > 0 || holdField.error.length > 0
+        || gainField.error.length > 0 || (entry.kind === "freq" && frequencyField.error.length > 0)
+
+    function fieldText(field, fallback) {
+        return inputText[field] === undefined ? fallback : inputText[field];
+    }
 
     signal changed(string field, var value)
+    signal inputEdited(string field, string text, var value)
     signal move(int delta)
     signal remove
 
@@ -24,9 +38,10 @@ UiPanel {
         anchors.right: parent.right
         anchors.margins: 12
         y: 12
-        spacing: 6
+        spacing: 10
 
         PlexCheckBox {
+            objectName: "scanEntryEnabled"
             width: parent.width
             text: row.label
             checked: row.entry.enabled !== false
@@ -34,59 +49,73 @@ UiPanel {
         }
 
         Row {
+            width: parent.width
             spacing: 6
 
             OutlineButton {
+                objectName: "scanEntryUp"
                 text: qsTr("↑")
+                accessibleName: qsTr("Move entry up")
+                enabled: row.canMoveUp
                 onClicked: row.move(-1)
             }
-
             OutlineButton {
+                objectName: "scanEntryDown"
                 text: qsTr("↓")
+                accessibleName: qsTr("Move entry down")
+                enabled: row.canMoveDown
                 onClicked: row.move(1)
             }
-
             OutlineButton {
+                objectName: "scanEntryRemove"
                 text: qsTr("Remove")
                 onClicked: row.remove()
             }
         }
 
-        PlexInput {
+        PlexTextField {
             objectName: "scanFrequencyName"
             width: parent.width
             visible: row.entry.kind === "freq"
-            placeholderText: qsTr("Frequency name")
+            label: qsTr("Frequency name")
             text: row.entry.name || ""
-            onTextEdited: row.changed("name", text)
+            input.onTextEdited: row.changed("name", text)
         }
-
-        Row {
+        MicroLabel {
+            visible: row.entry.kind === "freq"
+            text: qsTr("Protocol")
+        }
+        PlexComboBox {
+            objectName: "scanEntryProtocol"
             width: parent.width
             visible: row.entry.kind === "freq"
-            spacing: 6
-
-            PlexComboBox {
-                width: (fields.width - 6) / 2
-                Accessible.name: qsTr("Entry protocol")
-                model: ["p25", "dmr", "nxdn48", "nxdn"]
-                currentIndex: model.indexOf(row.entry.protocol || "p25")
-                onActivated: row.changed("protocol", currentText)
+            Accessible.name: qsTr("Entry protocol")
+            model: [qsTr("P25"), qsTr("DMR"), qsTr("NXDN48"), qsTr("NXDN96")]
+            currentIndex: Math.max(0, row.protocolIds.indexOf(row.entry.protocol || "p25"))
+            onActivated: row.changed("protocol", row.protocolIds[currentIndex])
+        }
+        PlexTextField {
+            id: frequencyField
+            objectName: "scanEntryFrequency"
+            width: parent.width
+            visible: row.entry.kind === "freq"
+            label: qsTr("Frequency")
+            unit: qsTr("MHz")
+            mono: true
+            text: row.fieldText("freqMhz", row.entry.freqMhz || "")
+            error: row.frequencyValid(text) ? "" : qsTr("Enter a valid frequency.")
+            inputMethodHints: Qt.ImhFormattedNumbersOnly
+            input.validator: RegularExpressionValidator {
+                regularExpression: /^[0-9]{1,5}(\.[0-9]{0,6})?$/
             }
-
-            PlexInput {
-                width: (fields.width - 6) / 2
-                placeholderText: qsTr("MHz")
-                text: row.entry.freqMhz || ""
-                inputMethodHints: Qt.ImhFormattedNumbersOnly
-                onTextEdited: row.changed("freqMhz", text)
-            }
+            input.onTextEdited: row.inputEdited("freqMhz", text, row.frequencyValid(text) ? text : "")
         }
 
         MicroLabel {
             text: qsTr("Decryption profile")
         }
         PlexComboBox {
+            objectName: "scanEntryDecryptionScope"
             width: parent.width
             Accessible.name: qsTr("Scan entry decryption scope")
             model: [row.entry.kind === "system" ? qsTr("Inherit saved-system profile") : qsTr("Inherit session defaults"), qsTr("Use a profile"), qsTr("No keys")]
@@ -94,6 +123,7 @@ UiPanel {
             onActivated: row.changed("decryptionMode", ["inherit", "profile", "none"][currentIndex])
         }
         DecryptionProfileSelector {
+            objectName: "scanEntryDecryptionProfile"
             width: parent.width
             visible: row.entry.decryptionMode === "profile" && available
             overlayParent: row.overlayParent
@@ -104,61 +134,77 @@ UiPanel {
             }
         }
 
-        Text {
-            text: qsTr("Dwell / hold ms (0 inherits)")
-            color: Theme.textSecondary
-            font.family: Theme.sans
-        }
-
         Row {
+            width: parent.width
             spacing: 6
 
-            PlexInput {
+            PlexTextField {
+                id: dwellField
+                function parsedValue() {
+                    return row.parseInteger(text, 0, 600000);
+                }
+                objectName: "scanEntryDwell"
                 width: (fields.width - 6) / 2
-                placeholderText: qsTr("Dwell")
-                text: row.entry.dwellMs || "0"
-                onTextEdited: row.changed("dwellMs", text.length ? Number(text) : 0)
-
-                validator: IntValidator {
-                    bottom: 0
-                    top: 600000
+                label: qsTr("Dwell")
+                unit: qsTr("ms")
+                hint: qsTr("List default when empty")
+                mono: true
+                text: row.fieldText("dwellMs", Number(row.entry.dwellMs) > 0 ? String(Number(row.entry.dwellMs)) : "")
+                error: text.length && isNaN(parsedValue()) ? qsTr("Enter a time from 0 to 600000 ms.") : ""
+                inputMethodHints: Qt.ImhDigitsOnly
+                input.onTextEdited: row.inputEdited("dwellMs", text, isNaN(parsedValue()) ? 0 : parsedValue())
+                input.validator: RegularExpressionValidator {
+                    regularExpression: /^-?[0-9]*$/
                 }
             }
-
-            PlexInput {
+            PlexTextField {
+                id: holdField
+                function parsedValue() {
+                    return row.parseInteger(text, 0, 600000);
+                }
+                objectName: "scanEntryHold"
                 width: (fields.width - 6) / 2
-                placeholderText: qsTr("Hold")
-                text: row.entry.holdMs || "0"
-                onTextEdited: row.changed("holdMs", text.length ? Number(text) : 0)
-
-                validator: IntValidator {
-                    bottom: 0
-                    top: 600000
+                label: qsTr("Hold")
+                unit: qsTr("ms")
+                hint: qsTr("List default when empty")
+                mono: true
+                text: row.fieldText("holdMs", Number(row.entry.holdMs) > 0 ? String(Number(row.entry.holdMs)) : "")
+                error: text.length && isNaN(parsedValue()) ? qsTr("Enter a time from 0 to 600000 ms.") : ""
+                inputMethodHints: Qt.ImhDigitsOnly
+                input.onTextEdited: row.inputEdited("holdMs", text, isNaN(parsedValue()) ? 0 : parsedValue())
+                input.validator: RegularExpressionValidator {
+                    regularExpression: /^-?[0-9]*$/
                 }
             }
         }
-
-        Row {
-            spacing: 6
-
-            PlexComboBox {
-                width: (fields.width - 6) / 2
-                Accessible.name: qsTr("Entry modulation")
-                model: [qsTr("Inherit modulation"), "c4fm", "cqpsk", "gfsk"]
-                currentIndex: Math.max(0, ["", "c4fm", "cqpsk", "gfsk"].indexOf(row.entry.modulation || ""))
-                onActivated: row.changed("modulation", ["", "c4fm", "cqpsk", "gfsk"][currentIndex])
+        MicroLabel {
+            text: qsTr("Modulation")
+        }
+        PlexComboBox {
+            objectName: "scanEntryModulation"
+            width: parent.width
+            Accessible.name: qsTr("Entry modulation")
+            model: [qsTr("Inherit"), qsTr("C4FM"), qsTr("QPSK (simulcast)"), qsTr("GFSK")]
+            currentIndex: Math.max(0, row.modulationIds.indexOf(row.entry.modulation || ""))
+            onActivated: row.changed("modulation", row.modulationIds[currentIndex])
+        }
+        PlexTextField {
+            id: gainField
+            function parsedValue() {
+                return row.parseInteger(text, 0, 49);
             }
-
-            PlexInput {
-                width: (fields.width - 6) / 2
-                placeholderText: qsTr("Gain (-1 inherits)")
-                text: row.entry.gainDb === undefined ? "-1" : row.entry.gainDb
-                onTextEdited: row.changed("gainDb", text.length ? Number(text) : -1)
-
-                validator: IntValidator {
-                    bottom: -1
-                    top: 49
-                }
+            objectName: "scanEntryGain"
+            width: parent.width
+            label: qsTr("Gain")
+            unit: qsTr("dB")
+            hint: qsTr("From saved system when empty")
+            mono: true
+            text: row.fieldText("gainDb", Number(row.entry.gainDb) >= 0 ? String(Number(row.entry.gainDb)) : "")
+            error: text.length && isNaN(parsedValue()) ? qsTr("Enter a gain from 0 to 49 dB.") : ""
+            inputMethodHints: Qt.ImhDigitsOnly
+            input.onTextEdited: row.inputEdited("gainDb", text, isNaN(parsedValue()) ? -1 : parsedValue())
+            input.validator: RegularExpressionValidator {
+                regularExpression: /^-?[0-9]*$/
             }
         }
     }
