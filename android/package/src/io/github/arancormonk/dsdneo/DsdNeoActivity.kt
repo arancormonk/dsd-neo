@@ -64,6 +64,12 @@ class DsdNeoActivity : QtActivity() {
         UsbSourceManager.reportAttachment(this, intent)
     }
 
+    // The notification permission can change while we are away.
+    override fun onResume() {
+        super.onResume()
+        AppSupport.refreshNotificationPermission()
+    }
+
     // Qt also translates hardware Back into a key/close event. Consume that
     // path here so each physical press reaches the shell exactly once. Gesture
     // Back uses the dispatcher above; QML dismisses the IME before navigation.
@@ -81,6 +87,10 @@ class DsdNeoActivity : QtActivity() {
 
     // WP-D3: location permission and Activity lifetime.
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        if (AppSupport.ownsPermissionRequest(requestCode)) {
+            AppSupport.refreshNotificationPermission()
+            return
+        }
         if (!LocationSupport.onRequestPermissionsResult(this, requestCode, grantResults)) {
             super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         }

@@ -54,6 +54,11 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void setDarkAppearance(bool dark) override;
     void requestNotificationPermission() override;
 
+    bool
+    notificationPermissionNeeded() const override {
+        return m_notification_permission_needed;
+    }
+
     int
     inputFailureKind() const override {
         return m_input_failure;
@@ -164,6 +169,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void setStatus(const QString& text);
     void refreshLocation();
     void refreshPresentation();
+    void refreshNotificationPermission();
     void refreshLocalDevice();
     /** @brief Publish a phase; @p reason overrides the failure text when non-empty. */
     void setSessionPhase(SessionPhase phase, const QString& reason = QString());
@@ -189,6 +195,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     int m_input_error = 0;
     int m_terminal_reason = 0;
     QString m_audio_route = QStringLiteral("System default");
+    bool m_notification_permission_needed = false;
 };
 
 } // namespace dsd_android

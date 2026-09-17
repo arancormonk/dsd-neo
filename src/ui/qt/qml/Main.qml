@@ -286,7 +286,7 @@ Window {
         mainRoot.awaitingSessionInitialized = false;
         // Accepted argv is only a request. These writes belong to the engine's
         // post-initialization edge, after file validation and tuner open.
-        if (Qt.platform.os === "android" && prefs.backgroundListening && !prefs.notificationExplained)
+        if (Qt.platform.os === "android" && prefs.backgroundListening && !prefs.notificationExplained && decoderHost.notificationPermissionNeeded)
             notificationExplanation.visible = true;
         prefs.lastStartedKind = mainRoot.sessionScanList ? "scan" : mainRoot.exploring ? "explore" : "saved";
         prefs.lastStartedUid = mainRoot.exploring ? "" : mainRoot.sessionSystem.uid || "";
