@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 
 Rectangle {
     id: screen
@@ -10,6 +11,45 @@ Rectangle {
     property var draft: ({})
     property var entries: []
     property string validationText: ""
+    readonly property bool csvMode: draft.targetSource === "csv"
+    property var targetRows: []
+
+    function selectTargets(path) {
+        draft = Object.assign({}, draft, {
+            "targetSource": "csv",
+            "targetsCsvPath": path
+        });
+        entries = [];
+        var preview = importedFiles.targetPreview(path);
+        targetRows = preview.rows || [];
+        validationText = preview.ok ? "" : preview.error;
+    }
+
+    function importTargets() {
+        targetPicker.open();
+    }
+
+    FileDialog {
+        id: targetPicker
+
+        onAccepted: {
+            var uri = selectedFile.toString();
+            targetImport.begin(uri, uri.substring(uri.lastIndexOf('/') + 1), "trunkTargets");
+        }
+    }
+
+    CsvImportFlow {
+        id: targetImport
+
+        overlayParent: screen
+        onFinished: function(result) {
+            if (result.ok)
+                screen.selectTargets(result.path);
+            else if (result.error !== "cancelled")
+                screen.validationText = result.detail || qsTr("Could not import the target CSV.");
+        }
+    }
+
 
     signal closed
     property string initialDraft: ""
@@ -64,6 +104,12 @@ Rectangle {
         editUid = row >= 0 ? draft.uid || "" : "";
         entries = draft.entries || [];
         validationText = "";
+        targetRows = [];
+        if (csvMode && draft.targetsCsvPath) {
+            var preview = importedFiles.targetPreview(draft.targetsCsvPath);
+            targetRows = preview.rows || [];
+            validationText = preview.ok ? "" : preview.error;
+        }
         initialDraft = fingerprint();
     }
 
@@ -239,6 +285,84 @@ Rectangle {
 
             PlexComboBox {
                 width: parent.width
+                Accessible.name: qsTr("Scan targets")
+                model: [qsTr("Manual entries"), qsTr("Imported target CSV")]
+                currentIndex: screen.csvMode ? 1 : 0
+                onActivated: function(index) {
+                    if (index === (screen.csvMode ? 1 : 0))
+                        return;
+
+                    screen.draft = Object.assign({}, screen.draft, {
+                        "targetSource": index ? "csv" : "entries",
+                        "targetsCsvPath": ""
+                    });
+                    screen.entries = [];
+                    screen.targetRows = [];
+                }
+            }
+
+            Column {
+                visible: screen.csvMode
+                width: parent.width
+                spacing: 10
+
+                Text {
+                    width: parent.width
+                    wrapMode: Text.Wrap
+                    text: qsTr("Saving uses the CSV targets in place of manual entries. Explicit target settings override session defaults; blank fields inherit. Replace the imported file to change its targets.")
+                    color: Theme.textSecondary
+                }
+
+                PlexComboBox {
+                    property var files: (importedFiles.count, importedFiles.entriesForType("trunkTargets"))
+
+                    objectName: "scanTargetCsvPicker"
+                    width: parent.width
+                    Accessible.name: qsTr("Target CSV")
+                    model: [{
+                        "name": qsTr("Select target CSV"),
+                        "path": ""
+                    }].concat(files)
+                    textRole: "name"
+                    currentIndex: {
+                        for (var i = 0; i < model.length; ++i) if (model[i].path === (screen.draft.targetsCsvPath || "")) {
+                            return i;
+                        }
+                        return 0;
+                    }
+                    onActivated: screen.selectTargets(model[currentIndex].path)
+                }
+
+                OutlineButton {
+                    width: parent.width
+                    text: qsTr("Import target CSV")
+                    onClicked: screen.importTargets()
+                }
+
+                ListView {
+                    objectName: "scanTargetPreview"
+                    width: parent.width
+                    height: Math.min(320, contentHeight)
+                    clip: true
+                    model: screen.targetRows
+
+                    delegate: Text {
+                        required property var modelData
+
+                        width: ListView.view.width
+                        padding: 6
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        color: Theme.textPrimary
+                        text: modelData.id + " · " + modelData.type + " · " + modelData.frequency + " MHz\n" + qsTr("Dwell: %1 · Hold: %2 · Modulation: %3 · Gain: %4").arg(modelData.dwellMs < 0 ? qsTr("inherit") : modelData.dwellMs + " ms").arg(modelData.holdMs < 0 ? qsTr("inherit") : modelData.holdMs + " ms").arg(modelData.modulation || qsTr("inherit")).arg(modelData.gainDb < 0 ? qsTr("inherit") : modelData.gainDb === 0 ? qsTr("auto") : modelData.gainDb + " dB")
+                    }
+
+                }
+
+            }
+
+            PlexComboBox {
+                width: parent.width
                 Accessible.name: qsTr("Input source")
                 model: ["usb", "rtltcp", "airspy"]
                 currentIndex: screen.draft.sourceType === "airspy" ? 2 : screen.draft.sourceType === "rtltcp" ? 1 : 0
@@ -400,82 +524,88 @@ Rectangle {
                 }
             }
 
-            Text {
-                text: qsTr("Entries")
-                color: Theme.textPrimary
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(19)
-            }
-
-            Repeater {
-                model: entryRows
-
-                ScanEntryRow {
-                    overlayParent: screen
-                    required property int index
-                    required property var entryData
-
-                    width: content.width
-                    entry: entryData
-                    label: screen.entryLabel(entryData)
-                    onChanged: function (field, value) {
-                        screen.setEntry(index, field, value);
-                    }
-                    onMove: function (delta) {
-                        screen.moveEntry(index, delta);
-                    }
-                    onRemove: screen.removeEntry(index)
+            Column {
+                width: parent.width
+                spacing: 10
+                visible: !screen.csvMode
+                Text {
+                    text: qsTr("Entries")
+                    color: Theme.textPrimary
+                    font.family: Theme.sans
+                    font.pixelSize: Theme.fontSize(19)
                 }
-            }
 
-            PlexComboBox {
-                id: systemPicker
+                Repeater {
+                    model: entryRows
 
-                width: parent.width
-                Accessible.name: qsTr("Saved system to add")
-                model: savedSystems
-                textRole: "name"
-            }
+                    ScanEntryRow {
+                        overlayParent: screen
+                        required property int index
+                        required property var entryData
 
-            OutlineButton {
-                width: parent.width
-                text: qsTr("Add saved system")
-                enabled: systemPicker.currentIndex >= 0
-                onClicked: screen.addSystem(savedSystems.get(systemPicker.currentIndex).uid)
-            }
-
-            PlexInput {
-                id: freqName
-
-                width: parent.width
-                placeholderText: qsTr("Frequency name")
-            }
-
-            PlexComboBox {
-                id: protocol
-
-                width: parent.width
-                Accessible.name: qsTr("Frequency protocol")
-                model: ["p25", "dmr", "nxdn48", "nxdn"]
-            }
-
-            PlexInput {
-                id: frequency
-
-                width: parent.width
-                placeholderText: qsTr("Frequency MHz")
-                inputMethodHints: Qt.ImhFormattedNumbersOnly
-            }
-
-            OutlineButton {
-                width: parent.width
-                text: qsTr("Add frequency")
-                enabled: sessionArgs.freqValid(frequency.text)
-                onClicked: {
-                    screen.addFrequency(freqName.text, protocol.currentText, frequency.text);
-                    freqName.clear();
-                    frequency.clear();
+                        width: content.width
+                        entry: entryData
+                        label: screen.entryLabel(entryData)
+                        onChanged: function (field, value) {
+                            screen.setEntry(index, field, value);
+                        }
+                        onMove: function (delta) {
+                            screen.moveEntry(index, delta);
+                        }
+                        onRemove: screen.removeEntry(index)
+                    }
                 }
+
+                PlexComboBox {
+                    id: systemPicker
+
+                    width: parent.width
+                    Accessible.name: qsTr("Saved system to add")
+                    model: savedSystems
+                    textRole: "name"
+                }
+
+                OutlineButton {
+                    width: parent.width
+                    text: qsTr("Add saved system")
+                    enabled: systemPicker.currentIndex >= 0
+                    onClicked: screen.addSystem(savedSystems.get(systemPicker.currentIndex).uid)
+                }
+
+                PlexInput {
+                    id: freqName
+
+                    width: parent.width
+                    placeholderText: qsTr("Frequency name")
+                }
+
+                PlexComboBox {
+                    id: protocol
+
+                    width: parent.width
+                    Accessible.name: qsTr("Frequency protocol")
+                    model: ["p25", "dmr", "nxdn48", "nxdn"]
+                }
+
+                PlexInput {
+                    id: frequency
+
+                    width: parent.width
+                    placeholderText: qsTr("Frequency MHz")
+                    inputMethodHints: Qt.ImhFormattedNumbersOnly
+                }
+
+                OutlineButton {
+                    width: parent.width
+                    text: qsTr("Add frequency")
+                    enabled: sessionArgs.freqValid(frequency.text)
+                    onClicked: {
+                        screen.addFrequency(freqName.text, protocol.currentText, frequency.text);
+                        freqName.clear();
+                        frequency.clear();
+                    }
+                }
+
             }
 
             Text {

@@ -284,7 +284,8 @@ Declared modes use these symbol profiles:
 ## Trunk Scan Target CSV (`--trunk-scan <file>` / `[trunk_scan] targets_csv`)
 
 Purpose: Rotate one tuner across explicit P25 trunk, DMR trunk, NXDN trunk, and one-frequency P25, DMR, NXDN96 and
-NXDN48 conventional targets. See
+NXDN48 conventional targets. Qt/Android can import this format as a playable scan list with a read-only
+preview and privately stored companion files. See
 `docs/trunk-scan.md` for the full setup workflow and troubleshooting guide.
 
 The header must start with this exact prefix:
@@ -325,7 +326,7 @@ Validation notes:
   parsing, with an error naming the budget.
 - Duplicate IDs and duplicate `(type, frequency_hz)` rows are rejected. `nxdn-trunk`/`nxdn48-trunk` and
   `nxdn-conventional`/`nxdn48-conventional` are distinct types, so one frequency may appear once as each.
-- Optional column names are exact-case in this format. Duplicate direct-key headers, malformed direct values, and
+- Optional column names match ASCII case-insensitively in this format. Duplicate direct-key headers, malformed direct values, and
   rows that mix a direct value with a key-file path are rejected without echoing the key value.
 - `chan_csv` and `p25_bandplan_csv` on conventional
   (`p25-conventional`/`dmr-conventional`/`nxdn-conventional`/`nxdn48-conventional`) rows are rejected;

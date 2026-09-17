@@ -1933,6 +1933,10 @@ class Setup : public QObject {
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
         profiles->setReferences(saved_systems, scan_lists);
         auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);
+        starter->setTargetFileLookup([imported_files](const QString& path) {
+            const int row = imported_files->rowForPath(path);
+            return row >= 0 && imported_files->get(row).value("type") == "trunkTargets";
+        });
         starter->setDecryptionProfiles(profiles);
         session_args->setDecryptionProfiles(profiles);
         ctx->setContextProperty(QStringLiteral("decryptionProfiles"), profiles);

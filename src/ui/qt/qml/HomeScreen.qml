@@ -19,6 +19,7 @@ Item {
     signal failureDetails
     signal replayAgain
     signal addScanList
+    signal importScanList
     signal playScanList(int row)
     signal editScanList(int row)
     signal addSystem
@@ -356,7 +357,13 @@ Item {
                     width: content.width
                     isDraft: scanLists.get(index).isDraft === true
                     listName: name
-                    entryCount: entries.length
+                    entryCount: {
+                        var changed = importedFiles.count;
+                        var list = scanLists.get(index);
+                        if (list.targetSource !== "csv") return entries.length;
+                        var row = importedFiles.rowForPath(list.targetsCsvPath || "");
+                        return row >= 0 ? importedFiles.get(row).accepted : 0;
+                    }
                     onPlay: screen.playScanList(index)
                     onEdit: screen.editScanList(index)
                 }
@@ -365,6 +372,11 @@ Item {
                 width: parent.width
                 text: qsTr("+ Add a scan list")
                 onClicked: screen.addScanList()
+            }
+            DashedActionButton {
+                width: parent.width
+                text: qsTr("Import target CSV")
+                onClicked: screen.importScanList()
             }
 
             MicroLabel {

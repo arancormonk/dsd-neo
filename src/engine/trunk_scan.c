@@ -529,8 +529,8 @@ scan_parse_type(const char* s, dsd_trunk_scan_target_type* out) {
     return -1;
 }
 
-static int
-scan_split_csv_fields(char* line, char** fields, size_t max_fields, size_t* out_count) {
+int
+dsd_trunk_scan_split_csv_fields(char* line, char** fields, size_t max_fields, size_t* out_count) {
     if (!line || !fields || max_fields == 0 || !out_count) {
         return -1;
     }
@@ -923,7 +923,7 @@ static int
 scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_trunk_scan_row_parse* parse) {
     char* fields[DSD_TRUNK_SCAN_MAX_CSV_FIELDS] = {0};
     size_t field_count = 0;
-    if (scan_split_csv_fields(line, fields, DSD_TRUNK_SCAN_MAX_CSV_FIELDS, &field_count) != 0) {
+    if (dsd_trunk_scan_split_csv_fields(line, fields, DSD_TRUNK_SCAN_MAX_CSV_FIELDS, &field_count) != 0) {
         scan_set_error(parse->err, parse->err_sz, "row %u has too many CSV fields", parse->row);
         return -1;
     }
@@ -952,6 +952,9 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
     if (scan_parse_target_key_paths(&target, fields, field_count, parse, chan_csv, options_s[0] != '\0') != 0) {
         return -1;
     }
+    target.csv_row = parse->row;
+    target.dwell_is_set = dwell_s[0] != '\0';
+    target.activity_hold_is_set = hold_s[0] != '\0';
     if (scan_parse_ms_field(dwell_s, parse->default_dwell_ms, &target.dwell_ms) != 0) {
         scan_set_error(parse->err, parse->err_sz, "row %u has invalid dwell_ms '%s'", parse->row, dwell_s);
         return -1;
@@ -1021,7 +1024,7 @@ scan_read_target_csv_header(FILE* fp, char* line, size_t line_sz, dsd_trunk_scan
 
     char* fields[DSD_TRUNK_SCAN_MAX_CSV_FIELDS] = {0};
     size_t field_count = 0;
-    if (scan_split_csv_fields(line, fields, DSD_TRUNK_SCAN_MAX_CSV_FIELDS, &field_count) != 0
+    if (dsd_trunk_scan_split_csv_fields(line, fields, DSD_TRUNK_SCAN_MAX_CSV_FIELDS, &field_count) != 0
         || field_count < DSD_TRUNK_SCAN_REQUIRED_CSV_FIELDS) {
         scan_set_error(parse->err, parse->err_sz, "trunk scan target CSV header must start with '%s'",
                        k_trunk_scan_csv_header);

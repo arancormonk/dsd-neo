@@ -156,7 +156,9 @@ copy first. There are two copy paths, with different lifetimes:
   target so a half-copied CSV is never observable.
 
 Embedded `single_key_dec`/`single_key_hex` values in a channel map travel with that copied file and therefore work on
-Android. Referenced `keys_dec_csv`/`keys_hex_csv` companion files are not copied or path-rewritten automatically.
+Android. The companion selection flow copies referenced files into a private bundle
+and rewrites the stored paths. A target CSV additionally includes its channel maps,
+band plans, scoped policy/mapping files, and dependencies inside channel maps.
 
 Both are reached through `DecoderHost` virtuals (`importContentUri` /
 `importDocument`); the desktop default of `importDocument` implements the same
@@ -165,7 +167,8 @@ semantics under `QStandardPaths::AppDataLocation`, which is what
 row per stored file, with dry-run validation counts from
 `<dsd-neo/core/csv_validate.h>`) is `src/ui/qt/imported_files_model.{h,cpp}`,
 surfaced as Settings → Imported files and the wizard's Trunking data pickers.
-The imported-file kinds are `chan`, `group`, `keysDec`, `keysHex`, `p25Bandplan`, and `src` (the **Radio IDs** picker). Source
+The imported-file kinds include `chan`, `group`, `keysDec`, `keysHex`, `p25Bandplan`,
+`src` (the **Radio IDs** picker), and `trunkTargets` (**Trunk scan targets**). Source
 ID lists use `id,name[,tags]` and supply labels only; they can be applied or cleared in a running session. A group
 list and a source ID list cannot be distinguished by content: validation uses the kind selected by the user.
 No storage permissions are involved; SAF needs none.
@@ -829,6 +832,20 @@ even after starting a single saved system. A running session can still release a
 existing hold, including from a different system's row with the same talkgroup ID.
 
 ### Scan lists
+
+**Import target CSV** opens Android's document picker. Select the target CSV and
+the companion files requested by the import flow, review the read-only target
+preview, choose the receiver settings, name the list and Save. Play uses the stored
+CSV directly, preserving its supported options and their precedence over session
+defaults. Blank target settings inherit. The original documents can be removed
+after import; private copies survive process restarts.
+
+The CSV remains authoritative; its rows are not converted into manual entries.
+Select another imported target CSV in the list editor or use **Update from file**
+in the imports library to change target contents. Replacement and removal require
+an idle decoder. Failed replacement keeps the previous file usable. Removing a
+referenced target asset marks its lists as drafts; deleting a list keeps shared
+assets. Validation reports the failing row/field without displaying key values.
 
 Home → **Scan lists** combines saved systems and bare P25/DMR/NXDN frequencies
 into a single trunk-scan session. Use the visible Edit action (or long-press) to edit entries, order, timing,

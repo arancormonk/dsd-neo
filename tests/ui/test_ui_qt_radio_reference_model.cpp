@@ -44,8 +44,6 @@
 #include <QtGlobal>
 #include <algorithm>
 #include <dsd-neo/core/safe_api.h>
-#include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <initializer_list>
 #include <memory>
@@ -62,13 +60,6 @@
 #ifndef DSD_NEO_TEST_RR_FIXTURE_DIR
 #error "DSD_NEO_TEST_RR_FIXTURE_DIR must be defined by the build"
 #endif
-
-void
-LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
-    (void)BufferIn;
-    (void)BufferOut;
-    (void)state;
-}
 
 namespace {
 

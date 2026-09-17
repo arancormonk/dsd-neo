@@ -13,17 +13,16 @@ target_sources(
         p25_network.c # WP-F2
         p25_metrics.c
         trunk_scan_validate.c
+        trunk_scan_document.cpp
         frontend.c
         frontend_snr.c
         menu_services.c
         notification_status.c
-        p25_metrics.c
         rr_import_apply.c
         scan_timing_view.c
         symbol_profile.c
         tcp_audio_connect.c
         telemetry_hooks_install.c
-        trunk_scan_validate.c
         ui_history.c
         ui_opts_snapshot.c
         ui_snapshot.c

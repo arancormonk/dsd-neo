@@ -188,7 +188,7 @@ DecoderHost::importLocalFile(const QString& sourcePath, const QString& fileName,
     // QSaveFile stages beside the target and renames over it on commit, so an
     // update never leaves a half-written CSV where a saved system points.
     QSaveFile out(destination);
-    if (!out.open(QIODevice::WriteOnly)) {
+    if (!out.open(QIODevice::WriteOnly) || !out.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
         return QString();
     }
     if (!copy_stream(source, out) || !out.commit()) {

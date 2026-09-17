@@ -431,6 +431,8 @@ Window {
         var list = mainRoot.sessionSystem;
         if (!list || !list.entries)
             list = prefs.lastStartedKind === "scan" ? scanLists.getByUid(prefs.lastStartedUid) : null;
+        if (list && list.targetSource === "csv")
+            return metrics.scanTargetId || qsTr("Target %1").arg(metrics.scanTargetOrdinal);
         var entries = list && list.entries ? list.entries : [];
         for (var i = 0; i < entries.length; ++i) {
             var entry = entries[i];
@@ -678,6 +680,12 @@ Window {
             onAddScanList: {
                 scanListEditor.openFor(-1);
                 mainRoot.scanListOpen = true;
+            }
+            onImportScanList: {
+                scanListEditor.openFor(-1);
+                scanListEditor.draft = Object.assign({}, scanListEditor.draft, {targetSource: "csv"});
+                mainRoot.scanListOpen = true;
+                scanListEditor.importTargets();
             }
             onEditSystem: function (row) {
                 wizard.openForEdit(row);

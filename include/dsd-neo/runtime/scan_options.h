@@ -84,6 +84,15 @@ typedef struct {
  * Single/double quotes group arguments; backslashes are literal. No CSV comma escaping. */
 int dsd_scan_options_parse(const char* text, unsigned int mode, int conventional, dsd_scan_options* out, char* error,
                            size_t error_size);
+
+/** Visit file operands using the scoped-option tokenizer and registry. Offsets
+ * cover the complete operand token, or the complete option token for --name=value.
+ * In the latter case prefix is the canonical option name followed by '='.
+ * Strings expire on callback return. No direct key operands are exposed.
+ * Returns -1 on malformed input or callback failure; callbacks may precede failure. */
+typedef int (*dsd_scan_option_file_cb)(void* context, const char* option, const char* path, size_t offset,
+                                       size_t length, int includes_option);
+int dsd_scan_options_visit_files(const char* text, void* context, dsd_scan_option_file_cb callback);
 #ifdef __cplusplus
 }
 #endif
