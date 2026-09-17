@@ -67,8 +67,78 @@ Item {
             }
         }
 
+        function test_reselect_manual_targets_keeps_entries() {
+            screen.addFrequency("First unsaved target", "dmr", "461");
+            screen.addFrequency("Second unsaved target", "nxdn", "462");
+            var entries = JSON.stringify(screen.entries);
+            var source = visualChild(screen, function (item) {
+                return item.Accessible.name === "Scan targets";
+            });
+            verify(source !== null);
+            compare(source.currentIndex, 0);
+            compare(screen.entries.length, 2);
+            compare(screen.draft.targetSource, "entries");
+
+            source.activated(0);
+
+            compare(screen.entries.length, 2);
+            compare(JSON.stringify(screen.entries), entries);
+            compare(screen.draft.targetSource, "entries");
+        }
+
+        function test_reselect_csv_targets_keeps_preview() {
+            var fixture = testContext.writeFixtureCsv("scan-targets.csv",
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\nCSV ID,p25-conventional,851500000,,,,,--scan-max-visit-ms 20000\n");
+            var result = importedFiles.importFile(fixture, "Targets.csv", "trunkTargets");
+            verify(result.ok, result.detail || "Import failed");
+            try {
+                screen.selectTargets(result.path);
+                compare(screen.targetRows.length, 1);
+                compare(screen.targetRows[0].id, "CSV ID");
+                var rows = JSON.stringify(screen.targetRows);
+                var source = visualChild(screen, function (item) {
+                    return item.Accessible.name === "Scan targets";
+                });
+                verify(source !== null);
+                compare(source.currentIndex, 1);
+                compare(screen.draft.targetsCsvPath, result.path);
+
+                source.activated(1);
+
+                compare(screen.draft.targetSource, "csv");
+                compare(screen.draft.targetsCsvPath, result.path);
+                compare(JSON.stringify(screen.targetRows), rows);
+
+                source.activated(0);
+                compare(screen.draft.targetSource, "entries");
+                compare(screen.draft.targetsCsvPath, "");
+                compare(screen.targetRows.length, 0);
+                compare(screen.entries.length, 0);
+            } finally {
+                importedFiles.remove(importedFiles.rowForPath(result.path));
+            }
+        }
+
+        function test_switch_to_csv_clears_manual_entries() {
+            screen.addFrequency("First unsaved target", "dmr", "461");
+            screen.addFrequency("Second unsaved target", "nxdn", "462");
+            var source = visualChild(screen, function (item) {
+                return item.Accessible.name === "Scan targets";
+            });
+            verify(source !== null);
+            compare(source.currentIndex, 0);
+            compare(screen.entries.length, 2);
+
+            source.activated(1);
+
+            compare(screen.draft.targetSource, "csv");
+            compare(screen.entries.length, 0);
+            compare(screen.draft.targetsCsvPath, "");
+            compare(screen.targetRows.length, 0);
+        }
+
         function visualChild(item, name) {
-            if (item.objectName === name)
+            if (typeof name === "function" ? name(item) : item.objectName === name)
                 return item;
 
             var kids = item.contentItem ? [item.contentItem] : item.children || [];

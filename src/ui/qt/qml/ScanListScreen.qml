@@ -288,9 +288,12 @@ Rectangle {
                 Accessible.name: qsTr("Scan targets")
                 model: [qsTr("Manual entries"), qsTr("Imported target CSV")]
                 currentIndex: screen.csvMode ? 1 : 0
-                onActivated: {
+                onActivated: function(index) {
+                    if (index === (screen.csvMode ? 1 : 0))
+                        return;
+
                     screen.draft = Object.assign({}, screen.draft, {
-                        "targetSource": currentIndex ? "csv" : "entries",
+                        "targetSource": index ? "csv" : "entries",
                         "targetsCsvPath": ""
                     });
                     screen.entries = [];
