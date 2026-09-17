@@ -44,10 +44,39 @@ Item {
         }
 
         function cleanup() {
+            wait(0);
+            screen.Window.window.requestActivate();
             while (scanLists.count)
                 scanLists.remove(0);
             decoderHost.keyboardTop = -1;
             testContext.setPrefs("appearance", 0);
+        }
+
+        function test_cancel_target_import_preserves_draft_data() {
+            return [{tag: "manual-primary"}, {tag: "csv-primary"}, {tag: "manual-sheet"}, {tag: "csv-sheet"}];
+        }
+
+        function test_cancel_target_import_preserves_draft(data) {
+            screen.addFrequency("Keep unsaved entry", "p25", "851.5");
+            if (data.tag.indexOf("csv") === 0) {
+                screen.draft = Object.assign({}, screen.draft, {targetSource: "csv", targetsCsvPath: "keep.csv"});
+                screen.targetRows = [{id: "Keep preview"}];
+            }
+            var before = screen.fingerprint();
+            var initial = screen.initialDraft;
+            var preview = JSON.stringify(screen.targetRows);
+            if (data.tag.indexOf("primary") >= 0) {
+                screen.importTargets();
+                findChild(screen, "csvPrimaryPicker").reject();
+            } else {
+                var source = testContext.writeFixtureCsv("cancel-targets.csv",
+                    "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\none,p25-trunk,851012500,missing-map.csv,,,\n");
+                findChild(screen, "targetCsvImport").begin(source, "Targets.csv", "trunkTargets");
+                findChild(screen, "csvCompanionSheet").requestDismiss();
+            }
+            compare(screen.fingerprint(), before);
+            compare(screen.initialDraft, initial);
+            compare(JSON.stringify(screen.targetRows), preview);
         }
 
         function test_edit_entries_and_persist() {

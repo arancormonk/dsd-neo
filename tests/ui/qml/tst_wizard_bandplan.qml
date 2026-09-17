@@ -46,6 +46,31 @@ Item {
             }
         }
 
+        function test_cancel_import_cleanup_data() {
+            return [{tag: "primary"}, {tag: "sheet"}];
+        }
+        function test_cancel_import_cleanup(data) {
+            tc.wizard.pickerTarget = "chan";
+            tc.wizard.chanCsvPath = "keep.csv";
+            tc.wizard.csvNotice = "Old notice";
+            tc.wizard.csvNoticeIsProblem = true;
+            var flow = findChild(tc.wizard, "wizardCsvImport");
+            verify(flow !== null);
+            if (data.tag === "primary") {
+                flow.pick("chan");
+                findChild(flow, "csvPrimaryPicker").reject();
+            } else {
+                var source = testContext.writeFixtureCsv("cancel-consumer.csv",
+                    "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,missing.csv\n");
+                flow.begin(source, "Map.csv", "chan");
+                findChild(flow, "csvCompanionSheet").requestDismiss();
+            }
+            compare(tc.wizard.chanCsvPath, "keep.csv");
+            compare(tc.wizard.csvNotice, "");
+            verify(!tc.wizard.csvNoticeIsProblem);
+            compare(tc.wizard.pickerTarget, "");
+        }
+
         function test_01_a_new_system_has_no_band_plan() {
             compare(tc.wizard.p25BandplanCsvPath, "", "openForAdd() must start without a band plan")
             tc.wizard.openForFound(null, "851.375")

@@ -3205,6 +3205,18 @@ if(DSD_ENABLE_QT_UI)
                     "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
         )
         add_test(
+            NAME UI_QT_QML_CSV_IMPORT_FLOW
+            COMMAND
+                dsd-neo_test_ui_qt_qml -input
+                ${CMAKE_CURRENT_SOURCE_DIR}/ui/qml/tst_csv_import_flow.qml
+        )
+        set_tests_properties(
+            UI_QT_QML_CSV_IMPORT_FLOW
+            PROPERTIES
+                ENVIRONMENT
+                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+        )
+        add_test(
             NAME UI_QT_QML_BACK_MODALS
             COMMAND
                 dsd-neo_test_ui_qt_qml -input

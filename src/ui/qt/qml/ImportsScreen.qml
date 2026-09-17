@@ -2,7 +2,6 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
-import QtQuick.Dialogs
 
 // The imported-files library: every channel map, talkgroup list, key file,
 // P25 band plan and radio ID list copied into app storage, with import/update/remove
@@ -15,7 +14,7 @@ Item {
     // Asks Main.qml to push the RadioReference screen over this one.
     signal openRadioReference
 
-    // FileDialog routing: a row index means "update that row in place";
+    // CSV import routing: a row index means "update that row in place";
     // -1 means a new import of pendingType.
     property int pendingRow: -1
     property string pendingType: "chan"
@@ -118,33 +117,19 @@ Item {
         }
     }
 
-    // No CSV name filter: on Android it becomes a SAF MIME filter, and the
-    // Files app indexes .csv as text/comma-separated-values — not the text/csv
-    // Qt asks for — which greys out exactly the files the user came to pick.
-    //
-    // The kind was already chosen in the sheet, and the dry run counts rows
-    // against that kind, so a file of the wrong kind lands here as "no usable
-    // rows". That check is by content, not by name: a channel map and a decimal
-    // key list are both `number,number`, and the header line is free text, so
-    // what separates them is the channel importer refusing a second column that
-    // cannot be a radio frequency. Two lists of the same kind are still
-    // indistinguishable — nothing stops one site's map being picked for another.
-    FileDialog {
-        id: fileDialog
-
-        onAccepted: {
-            var reference = selectedFile.toString();
-            var hint = reference.substring(reference.lastIndexOf('/') + 1);
-            var type = screen.pendingRow >= 0 ? importedFiles.get(screen.pendingRow).type : screen.pendingType === "keys" ? (screen.pendingKeyHex ? "keysHex" : "keysDec") : screen.pendingType;
-            csvImport.begin(reference, hint, type, screen.pendingRow);
-            screen.pendingRow = -1;
-        }
+    function importPickedFile() {
+        var type = pendingRow >= 0 ? importedFiles.get(pendingRow).type : pendingType === "keys" ? (pendingKeyHex ? "keysHex" : "keysDec") : pendingType;
+        csvImport.pick(type, pendingRow);
     }
 
     CsvImportFlow {
         id: csvImport
+        objectName: "importsCsvImport"
         overlayParent: screen
         onFinished: function (result) {
+            screen.pendingRow = -1;
+            screen.notice = "";
+            screen.noticeIsProblem = false;
             if (result.error !== "cancelled")
                 screen.resultNotice(qsTr("Imported"), result);
         }
@@ -423,7 +408,7 @@ Item {
             onClicked: {
                 typeSheet.visible = false;
                 screen.pendingRow = -1;
-                fileDialog.open();
+                screen.importPickedFile();
             }
         }
     }
@@ -463,7 +448,7 @@ Item {
                 actionSheet.visible = false;
                 screen.notice = "";
                 screen.pendingRow = screen.actionRow;
-                fileDialog.open();
+                screen.importPickedFile();
             }
         }
 

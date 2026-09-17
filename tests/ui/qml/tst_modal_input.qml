@@ -63,6 +63,22 @@ Item {
             while (savedSystems.count)
                 savedSystems.remove(0);
         }
+        function test_home_target_picker_cancel_keeps_clean_editor() {
+            testContext.useLifecycleHost(true, true, false);
+            item("homeScreen").importScanList();
+            var editor = item("scanListScreen");
+            verify(app.scanListOpen);
+            compare(editor.draft.targetSource, "entries");
+            verify(!editor.csvMode);
+            verify(editor.initialDraft.length > 0);
+            compare(editor.fingerprint(), editor.initialDraft);
+            findChild(editor, "csvPrimaryPicker").reject();
+            compare(editor.draft.targetSource, "entries");
+            verify(!editor.csvMode);
+            compare(editor.fingerprint(), editor.initialDraft);
+            editor.requestClose();
+            verify(!app.scanListOpen);
+        }
         function test_monitor_scrim_data() {
             return [
                 {

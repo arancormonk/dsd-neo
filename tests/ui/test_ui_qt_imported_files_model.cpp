@@ -19,6 +19,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -96,6 +97,22 @@ class TestHost : public dsd_qt::DecoderHost {
 
     void
     stop() override {}
+};
+
+// Model Android's URI contract before resolving fake SAF documents. The desktop
+// importer also accepts bare paths and would otherwise hide a missing file://.
+class UriTestHost : public TestHost {
+  public:
+    QStringList references;
+
+    QString
+    importDocument(const QString& reference, const QString& name, const QString& replace = QString()) override {
+        references.append(reference);
+        if (QUrl(reference).scheme().isEmpty()) {
+            return {};
+        }
+        return TestHost::importDocument(reference, name, replace);
+    }
 };
 
 bool
@@ -904,6 +921,324 @@ test_target_bundle() {
     model.remove(model.rowForPath(path));
 }
 
+// Library metadata is advisory: only a visible selection may bind a companion.
+static void
+test_library_companions() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    UriTestHost host;
+    QTemporaryDir source;
+    dsd_qt::ImportedFilesModel model(&host);
+    const QString channel = source.filePath("map.csv");
+    const QString keys = source.filePath("keys.csv");
+    const QString targets = source.filePath("targets.csv");
+    expect("library channel fixture", write_file(channel, "channel,frequency,mode\n1,851012500,p25\n"));
+    expect("library key fixture", write_file(keys, "id,value\n1,12345\n"));
+    expect("library target fixture",
+           write_file(targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_dec_csv\none,p25-"
+                               "trunk,851012500,map.csv,,,,keys.csv\n"));
+    const auto map = model.importFile(QUrl::fromLocalFile(channel).toString(), "map.csv", "chan");
+    const auto hex = model.importFile(QUrl::fromLocalFile(keys).toString(), "keys.csv", "keysHex");
+    const QString mapPath = map.value("path").toString();
+    const QString hexPath = hex.value("path").toString();
+    host.documents.insert("content://targets", targets);
+    const auto before = read_file(dsd_qt::json_store_path("imported_files.json"));
+    auto pending = model.importBundle("content://targets", "Targets.csv", "trunkTargets", {});
+    expect("library does not auto-link", pending.value("error") == "companions");
+    const auto details = pending.value("requiredDetails").toMap();
+    QString mapKey, keyKey;
+    for (auto i = details.cbegin(); i != details.cend(); ++i) {
+        const auto detail = i.value().toMap();
+        if (detail.value("type") == "chan") {
+            mapKey = i.key();
+            expect("channel candidate uses stored path", detail.value("preselected") == mapPath);
+            expect("channel candidate typed", detail.value("candidates").toList().size() == 1);
+        } else if (detail.value("type") == "keysDec") {
+            keyKey = i.key();
+            expect("hex excluded from decimal candidates", detail.value("candidates").toList().isEmpty());
+            expect("hex mismatch surfaced", detail.value("warning").toString().contains("expects decimal keys"));
+        }
+    }
+    expect("typed requirements available", !mapKey.isEmpty() && !keyKey.isEmpty());
+    expect("cancelled discovery leaves metadata unchanged",
+           read_file(dsd_qt::json_store_path("imported_files.json")) == before);
+    expect("cancelled discovery leaves library unchanged", model.count() == 2 && QFile::exists(mapPath));
+    expect("cancelled discovery leaves no staged revision",
+           QDir(dsd_qt::json_store_path("imports/bundles")).entryList(QDir::Dirs | QDir::NoDotAndDotDot).isEmpty());
+    auto rejected =
+        model.importBundle("content://targets", "Targets.csv", "trunkTargets", {{mapKey, mapPath}, {keyKey, hexPath}});
+    expect("explicit library key type mismatch refused",
+           rejected.value("error") == "companions" && rejected.value("required").toStringList() == QStringList{keyKey});
+    expect("target mismatch explains actual and expected kinds inline",
+           rejected.value("requiredDetails")
+               .toMap()
+               .value(keyKey)
+               .toMap()
+               .value("warning")
+               .toString()
+               .contains("keys.csv is a hex key file; this bundle expects decimal keys"));
+    const auto dec = model.importFile(QUrl::fromLocalFile(keys).toString(), "decimal.csv", "keysDec");
+    host.references.clear();
+    const auto imported = model.importBundle("content://targets", "Targets.csv", "trunkTargets",
+                                             {{mapKey, mapPath}, {keyKey, dec.value("path")}});
+    expect("library selections feed stager", imported.value("ok").toBool());
+    expect("library channel and trunk leaf reach host as file URLs",
+           host.references
+               == QStringList{"content://targets", QUrl::fromLocalFile(mapPath).toString(),
+                              QUrl::fromLocalFile(dec.value("path").toString()).toString()});
+    const QString stored = imported.value("path").toString();
+    const auto original = read_file(stored);
+    const int row = model.rowForPath(stored);
+    rejected = model.importBundle("content://targets", "Targets.csv", "trunkTargets",
+                                  {{mapKey, mapPath}, {keyKey, hexPath}}, row);
+    expect("rejected library replacement preserves target",
+           !rejected.value("ok").toBool() && read_file(stored) == original);
+    expect("original documents removed", QDir(source.path()).removeRecursively());
+    expect("library-owned source removable independently", model.remove(model.rowForPath(mapPath)));
+    expect("bundle owns independent private copies",
+           dsd_app_trunk_scan_validate_bundle(stored.toUtf8().constData(), nullptr, nullptr, nullptr, 0) == 0);
+}
+
+static void
+test_library_candidate_ranking() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    QTemporaryDir source;
+    dsd_qt::ImportedFilesModel model(&host);
+    const QString channels = source.filePath("map.csv");
+    const QString keys = source.filePath("keys.csv");
+    expect("ranking channel", write_file(channels, "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,keys.csv\n"));
+    expect("ranking keys", write_file(keys, "id,value\n1,12345\n"));
+    // A nested SAF map keeps its opaque identity and typed leaf requirement.
+    const QString targets = source.filePath("targets.csv");
+    expect("ranking target",
+           write_file(
+               targets,
+               "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\none,p25-trunk,851012500,map.csv,,,\n"));
+    host.documents.insert("content://targets", targets);
+    host.documents.insert("content://map", channels);
+    auto result = model.importBundle("content://targets", "Targets.csv", "trunkTargets", {});
+    const QString slot = result.value("required").toStringList().value(0);
+    const auto dec = model.importFile(keys, "keys.csv", "keysDec");
+    model.importFile(keys, "another.csv", "keysDec");
+    model.importFile(keys, "keys.csv", "keysHex");
+    result = model.importBundle("content://targets", "Targets.csv", "trunkTargets", {{slot, "content://map"}});
+    const auto details = result.value("requiredDetails").toMap();
+    const auto missing = result.value("required").toStringList();
+    expect("nested requirement offered", missing.size() == 1);
+    const auto detail = details.value(missing.value(0)).toMap();
+    expect("nested role retained", detail.value("type") == "keysDec");
+    const auto candidates = detail.value("candidates").toList();
+    expect("only role-compatible choices", candidates.size() == 2);
+    expect("basename ranks first",
+           !candidates.isEmpty() && candidates.first().toMap().value("path") == dec.value("path"));
+    expect("multiple candidates never preselected", detail.value("preselected").toString().isEmpty());
+    expect("nested label remains contextual",
+           result.value("requiredLabels").toMap().values().contains(QStringLiteral("map.csv → keys.csv")));
+}
+
+static void
+test_duplicate_library_names() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    QTemporaryDir source;
+    dsd_qt::ImportedFilesModel model(&host);
+    const QString channels = source.filePath("channels.csv");
+    const QString keys = source.filePath("leaf.csv");
+    expect("duplicate keys fixture", write_file(keys, "id,value\n1,12345\n"));
+    expect("duplicate channels fixture",
+           write_file(channels, "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,leaf.csv\n"));
+    // Bundle primaries live under distinct roots, so equal library basenames
+    // really occur even though plain library imports uniquify their paths.
+    const auto first = model.importBundle(channels, "same.csv", "chan", {});
+    const auto second = model.importBundle(channels, "same.csv", "chan", {});
+    const auto hex = model.importFile(keys, "same.csv", "keysHex");
+    expect("duplicate named bundles imported", first.value("ok").toBool() && second.value("ok").toBool());
+    const QString targets = source.filePath("targets.csv");
+    expect("duplicate target fixture",
+           write_file(targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv\n"
+                               "one,p25-trunk,851012500,same.csv,,,,same.csv\n"));
+    host.documents.insert("content://targets", targets);
+    const auto result = model.importBundle("content://targets", "Targets.csv", "trunkTargets", {});
+    const auto details = result.value("requiredDetails").toMap();
+    expect("same path different roles have distinct slots", result.value("required").toStringList().size() == 2);
+    for (auto i = details.cbegin(); i != details.cend(); ++i) {
+        const auto detail = i.value().toMap();
+        const auto candidates = detail.value("candidates").toList();
+        if (detail.value("type") == "chan") {
+            expect("equal channel basenames both offered", candidates.size() == 2);
+            expect("ambiguous names not preselected", detail.value("preselected").toString().isEmpty());
+            expect("ambiguous names surfaced", detail.value("warning").toString().contains("Several imported files"));
+        } else {
+            expect("key role excludes both same-named channels", candidates.size() == 1);
+            expect("key role uses correct private path", detail.value("preselected") == hex.value("path"));
+        }
+    }
+}
+
+static void
+test_library_warning_display_names() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    QTemporaryDir source;
+    dsd_qt::ImportedFilesModel model(&host);
+    const QString keys = source.filePath("keys.csv");
+    const QString channels = source.filePath("channels.csv");
+    expect("warning keys fixture", write_file(keys, "id,value\n1,12345\n"));
+    expect("warning channels fixture",
+           write_file(channels, "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,missing/shared.csv\n"));
+    const auto dec = model.importFile(keys, "shared.csv", "keysDec");
+    const auto hex = model.importFile(keys, "stored-hex.csv", "keysHex");
+    // Persist a display name that differs from the private filename.
+    auto rows = dsd_qt::json_store_load_array("imported_files.json");
+    auto row = rows.at(model.rowForPath(hex.value("path").toString())).toObject();
+    row.insert("name", "shared.csv");
+    rows.replace(model.rowForPath(hex.value("path").toString()), row);
+    expect("warning display name saved", dsd_qt::json_store_save_array("imported_files.json", rows));
+    dsd_qt::ImportedFilesModel reloaded(&host);
+    // A file can disappear after the model has loaded its library metadata.
+    expect("same-kind stored file removed", QFile::remove(dec.value("path").toString()));
+    const auto pending = reloaded.importBundle(channels, "Map.csv", "chan", {});
+    const auto slot = pending.value("required").toStringList().value(0);
+    const QString warning = "shared.csv is a hex key file; this bundle expects decimal keys";
+    expect("missing same-kind file adds no blank warning",
+           pending.value("requiredDetails").toMap().value(slot).toMap().value("warning") == warning);
+    const auto rejected = reloaded.importBundle(channels, "Map.csv", "chan", {{slot, hex.value("path")}});
+    expect("picked mismatch uses the library display name once",
+           rejected.value("requiredDetails").toMap().value(slot).toMap().value("warning") == warning);
+}
+
+static void
+test_channel_companion_roles() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    UriTestHost host;
+    QTemporaryDir source;
+    dsd_qt::ImportedFilesModel model(&host);
+    const QString channels = source.filePath("channels.csv");
+    const QString keys = source.filePath("keys.csv");
+    expect("channel role keys", write_file(keys, "id,value\n1,12345\n"));
+    const auto dec = model.importFile(QUrl::fromLocalFile(keys).toString(), "decimal.csv", "keysDec");
+    const auto hex = model.importFile(QUrl::fromLocalFile(keys).toString(), "hex.csv", "keysHex");
+    expect("channel role fixture",
+           write_file(channels,
+                      "channel,frequency,mode,options\n1,851012500,p25,-k same.csv\n2,852012500,p25,-K same.csv\n"));
+    host.documents.insert("content://channels", channels);
+    const auto pending = model.importBundle("content://channels", "Map.csv", "chan", {});
+    const auto details = pending.value("requiredDetails").toMap();
+    expect("channel roles get separate slots", pending.value("required").toStringList().size() == 2);
+    QVariantMap selected;
+    for (auto i = details.cbegin(); i != details.cend(); ++i) {
+        selected.insert(i.key(), i.value().toMap().value("type") == "keysDec" ? dec.value("path") : hex.value("path"));
+    }
+    host.references.clear();
+    const auto imported = model.importBundle("content://channels", "Map.csv", "chan", selected);
+    expect("channel role selections import", imported.value("ok").toBool());
+    expect("library channel companions reach host as file URLs",
+           host.references
+               == QStringList{"content://channels", QUrl::fromLocalFile(dec.value("path").toString()).toString(),
+                              QUrl::fromLocalFile(hex.value("path").toString()).toString()});
+    expect("channel role copies remain separate",
+           read_file(imported.value("path").toString()).contains("/0.csv")
+               && read_file(imported.value("path").toString()).contains("/1.csv"));
+    for (auto i = selected.begin(); i != selected.end(); ++i) {
+        i.value() = hex.value("path");
+    }
+    const auto rejected = model.importBundle("content://channels", "Map.csv", "chan", selected);
+    const auto missing = rejected.value("required").toStringList();
+    expect("channel type mismatch requests only the wrong slot",
+           rejected.value("error") == "companions" && missing.size() == 1);
+    expect("channel mismatch explains actual and expected kinds inline",
+           rejected.value("requiredDetails")
+               .toMap()
+               .value(missing.value(0))
+               .toMap()
+               .value("warning")
+               .toString()
+               .contains("hex.csv is a hex key file; this bundle expects decimal keys"));
+}
+
+static void
+test_channel_companion_uri_forms() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    UriTestHost host;
+    QTemporaryDir source;
+    dsd_qt::ImportedFilesModel model(&host);
+    const QString channels = source.filePath("channels.csv");
+    const QString keyCsvPath = source.filePath("keys # 100%.csv");
+    expect("URI channel fixture",
+           write_file(channels, "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,missing.csv\n"));
+    expect("URI key fixture", write_file(keyCsvPath, "id,value\n1,12345\n"));
+    expect("URI host rejects scheme-less input", host.importDocument(keyCsvPath, "keys.csv").isEmpty());
+    const QString fileUri = QUrl::fromLocalFile(keyCsvPath).toString(QUrl::FullyEncoded);
+    const QString contentUri = "content://test.documents/document/keys%3A1?version=2";
+    host.documents.insert("content://channels", channels);
+    host.documents.insert(contentUri, keyCsvPath);
+    const auto pending = model.importBundle("content://channels", "Map.csv", "chan", {});
+    const QString slot = pending.value("required").toStringList().value(0);
+    expect("URI channel requirement", !slot.isEmpty());
+    for (const auto& selected : {keyCsvPath, fileUri, contentUri}) {
+        host.references.clear();
+        const auto imported = model.importBundle("content://channels", "Map.csv", "chan", {{slot, selected}});
+        expect("channel companion URI form imports", imported.value("ok").toBool());
+        const QString expected = selected == keyCsvPath ? QUrl::fromLocalFile(keyCsvPath).toString() : selected;
+        expect("channel normalizes paths and preserves existing URIs",
+               host.references == QStringList{"content://channels", expected});
+        const QString path = imported.value("path").toString();
+        const auto relative = QString::fromUtf8(read_file(path)).split('\n').value(1).split(',').value(3);
+        expect("channel URI copy retains bytes",
+               read_file(QFileInfo(path).dir().filePath(relative)) == read_file(keyCsvPath));
+    }
+}
+
+static void
+test_nested_companion_uri_forms() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    UriTestHost host;
+    QTemporaryDir source;
+    dsd_qt::ImportedFilesModel model(&host);
+    const QString targets = source.filePath("targets.csv");
+    const QString channels = source.filePath("map # 100%.csv");
+    const QString keyCsvPath = source.filePath("keys # 100%.csv");
+    expect("nested URI target fixture",
+           write_file(targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                               "one,p25-trunk,851012500,map.csv,,,\n"));
+    expect("nested URI channel fixture",
+           write_file(channels, "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,missing.csv\n"));
+    expect("nested URI key fixture", write_file(keyCsvPath, "id,value\n1,12345\n"));
+    const QString channelUri = QUrl::fromLocalFile(channels).toString(QUrl::FullyEncoded);
+    const QString keyUri = QUrl::fromLocalFile(keyCsvPath).toString(QUrl::FullyEncoded);
+    const QString contentMap = "content://test.documents/document/map%3A1?version=2";
+    const QString contentKeys = "content://test.documents/document/keys%3A1?version=2";
+    host.documents.insert("content://targets", targets);
+    host.documents.insert(contentMap, channels);
+    host.documents.insert(contentKeys, keyCsvPath);
+    const auto pending = model.importBundle("content://targets", "Targets.csv", "trunkTargets", {});
+    const QString mapSlot = pending.value("required").toStringList().value(0);
+    expect("nested URI map requirement", !mapSlot.isEmpty());
+    const QStringList mapForms{channels, channelUri, contentMap};
+    const QStringList keyForms{keyCsvPath, keyUri, contentKeys};
+    for (int i = 0; i < mapForms.size(); ++i) {
+        const auto nested =
+            model.importBundle("content://targets", "Targets.csv", "trunkTargets", {{mapSlot, mapForms[i]}});
+        const auto missing = nested.value("required").toStringList();
+        expect("nested URI leaf requirement", nested.value("error") == "companions" && missing.size() == 1);
+        const auto identity = QJsonDocument::fromJson(missing.value(0).toUtf8()).array();
+        expect("nested identity retains original selection",
+               identity == QJsonArray{mapForms[i], "missing.csv", "keysDec"});
+        host.references.clear();
+        const auto imported = model.importBundle("content://targets", "Targets.csv", "trunkTargets",
+                                                 {{mapSlot, mapForms[i]}, {missing.value(0), keyForms[i]}});
+        expect("nested companion URI forms import", imported.value("ok").toBool());
+        expect("nested copies normalize paths and preserve existing URIs",
+               host.references
+                   == QStringList{"content://targets", i == 0 ? QUrl::fromLocalFile(channels).toString() : mapForms[i],
+                                  i == 0 ? QUrl::fromLocalFile(keyCsvPath).toString() : keyForms[i]});
+        expect("nested URI bundle validates",
+               dsd_app_trunk_scan_validate_bundle(imported.value("path").toString().toUtf8().constData(), nullptr,
+                                                  nullptr, nullptr, 0)
+                   == 0);
+    }
+}
+
 static void
 test_target_primary_collision(const char* label, const QByteArray& csv, const QString& companion,
                               const QByteArray& companionBytes) {
@@ -1146,6 +1481,13 @@ main(int argc, char** argv) {
     test_metadata_failure_keeps_file();
     test_channel_bundle();
     test_target_bundle();
+    test_library_companions();
+    test_library_candidate_ranking();
+    test_duplicate_library_names();
+    test_library_warning_display_names();
+    test_channel_companion_roles();
+    test_channel_companion_uri_forms();
+    test_nested_companion_uri_forms();
     test_target_channel_primary_collision();
     test_target_key_primary_collision();
     test_target_detached_copy();

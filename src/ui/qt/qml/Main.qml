@@ -683,7 +683,6 @@ Window {
             }
             onImportScanList: {
                 scanListEditor.openFor(-1);
-                scanListEditor.draft = Object.assign({}, scanListEditor.draft, {targetSource: "csv"});
                 mainRoot.scanListOpen = true;
                 scanListEditor.importTargets();
             }
@@ -790,6 +789,7 @@ Window {
     // WP-S1 editor, kept instantiated so closing a keyboard does not discard edits.
     ScanListScreen {
         id: scanListEditor
+        objectName: "scanListScreen"
         anchors.fill: safeArea
         visible: mainRoot.scanListOpen
         z: 20
