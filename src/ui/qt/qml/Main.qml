@@ -671,10 +671,7 @@ Window {
                 wizard.openForAdd(false);
                 mainRoot.wizardOpen = true;
             }
-            onNetworkSource: {
-                wizard.openForAdd(true);
-                mainRoot.wizardOpen = true;
-            }
+            onImportSystem: mainRoot.openRadioReference(false)
             onChooseSites: function (row) {
                 mainRoot.cancelPendingRestart();
                 siteChooser.openFor(row);
@@ -692,11 +689,6 @@ Window {
             onAddScanList: {
                 scanListEditor.openFor(-1);
                 mainRoot.scanListOpen = true;
-            }
-            onImportScanList: {
-                scanListEditor.openFor(-1);
-                mainRoot.scanListOpen = true;
-                scanListEditor.importTargets();
             }
             onEditSystem: function (row) {
                 wizard.openForEdit(row);
@@ -825,23 +817,18 @@ Window {
         }
         opacity: mainRoot.monitorMode ? 1.0 : 0.0
         visible: opacity > 0.0
-        // The wizard ("Save as a system"), the spectrum, and the RadioReference
-        // screen the wizard pushes from its tune step all open over a running
-        // session, and TapHandlers never take exclusive grabs, so without this a
-        // tap on the layer above also lands on "Stop listening", which sits at
-        // exactly the same rect underneath all three and ends the session.
-        // That is what "Explore from here" — the one way out of view-only — did
-        // instead of offering to hand the tuner over. The RadioReference term is
-        // what lets that screen stay lit over the monitor rather than standing
-        // down into a three-layer deadlock.
-        enabled: opacity > 0.9 && !mainRoot.wizardOpen && !mainRoot.spectrumOpen && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible && !siteChooser.visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings") && mainRoot.sessionDestination.length === 0
+        // Stand down beneath overlays so the monitor cannot acquire passive tap
+        // grabs. Otherwise closing an overlay can deliver the same release to
+        // "Stop listening" underneath. Session-menu rows keep passive grabs so
+        // the sheet can scroll when a drag starts on a destination or Cancel.
+        enabled: opacity > 0.9 && !mainRoot.wizardOpen && !mainRoot.spectrumOpen && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible && !siteChooser.visible && !sessionMenu.visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings") && mainRoot.sessionDestination.length === 0
 
         onOpenSpectrum: {
             spectrumLoader.active = true;
             mainRoot.spectrumOpen = true;
         }
         onOpenTalkgroups: mainRoot.talkgroupsOpen = true
-        onOpenSessionMenu: sessionMenu.visible = true
+        onOpenSessionMenu: sessionMenu.open()
         onEditSystem: {
             // Only a session started from a saved row has a system to edit; a
             // reattached or quick-start session has no row to write back to.
@@ -1067,73 +1054,39 @@ Window {
             onOpenLicenses: mainRoot.licensesOpen = true
         }
     }
-    ModalSheet {
+    ActionMenu {
         id: sessionMenu
-        accessibleName: qsTr("Session options")
-        OutlineButton {
-            width: parent.width
-            text: qsTr("Sites")
-            visible: monitor.sitesAvailable
-            onClicked: {
-                sessionMenu.visible = false;
-                monitor.openSites();
-            }
+        objectName: "sessionMenu"
+        title: qsTr("Session options")
+        actions: {
+            var items = [];
+            if (monitor.sitesAvailable)
+                items.push({text: qsTr("Sites"), key: "sites", objectName: "sessionMenuSites"});
+            if (metrics.radioInput)
+                items.push({text: qsTr("Spectrum"), key: "spectrum", objectName: "sessionMenuSpectrum"});
+            items.push({text: qsTr("Talkgroups"), key: "talkgroups", objectName: "sessionMenuTalkgroups"});
+            items.push({text: qsTr("History"), key: "history", objectName: "sessionMenuHistory"});
+            items.push({text: qsTr("Settings"), key: "settings", objectName: "sessionMenuSettings"});
+            items.push({text: qsTr("Diagnostics"), key: "diagnostics", objectName: "sessionMenuDiagnostics"});
+            if (mainRoot.sessionRow >= 0)
+                items.push({text: qsTr("Edit saved system"), key: "edit", objectName: "sessionMenuEdit"});
+            return items;
         }
-        OutlineButton {
-            width: parent.width
-            text: qsTr("Spectrum")
-            visible: metrics.radioInput
-            onClicked: {
-                sessionMenu.visible = false;
+        onTriggered: function (index) {
+            var key = actions[index].key;
+            if (key === "sites")
+                monitor.openSites();
+            else if (key === "spectrum") {
                 spectrumLoader.active = true;
                 mainRoot.spectrumOpen = true;
-            }
-        }
-        OutlineButton {
-            width: parent.width
-            text: qsTr("Talkgroups")
-            onClicked: {
-                sessionMenu.visible = false;
+            } else if (key === "talkgroups")
                 mainRoot.talkgroupsOpen = true;
-            }
-        }
-        OutlineButton {
-            width: parent.width
-            text: qsTr("History")
-            onClicked: {
-                sessionMenu.visible = false;
-                mainRoot.sessionDestination = "history";
-            }
-        }
-        OutlineButton {
-            width: parent.width
-            text: qsTr("Settings")
-            onClicked: {
-                sessionMenu.visible = false;
-                mainRoot.sessionDestination = "settings";
-            }
-        }
-        OutlineButton {
-            width: parent.width
-            text: qsTr("Diagnostics")
-            onClicked: {
-                sessionMenu.visible = false;
+            else if (key === "history" || key === "settings")
+                mainRoot.sessionDestination = key;
+            else if (key === "diagnostics")
                 mainRoot.diagnosticsOpen = true;
-            }
-        }
-        OutlineButton {
-            width: parent.width
-            text: qsTr("Edit saved system")
-            visible: mainRoot.sessionRow >= 0
-            onClicked: {
-                sessionMenu.visible = false;
+            else if (key === "edit")
                 monitor.editSystem();
-            }
-        }
-        OutlineButton {
-            width: parent.width
-            text: qsTr("Close")
-            onClicked: sessionMenu.visible = false
         }
     }
 
@@ -1218,7 +1171,7 @@ Window {
             mainRoot.radioReferenceOpen = false;
             Qt.inputMethod.hide();
             if (!mainRoot.radioReferenceFromWizard) {
-                // Opened from the library: the source, gain and name
+                // Opened from Home, Settings or the library: the source, gain and name
                 // are still unanswered, so the wizard asks for them.
                 mainRoot.importsOpen = false;
                 wizard.openForAdd(false);

@@ -378,7 +378,7 @@ Item {
             spacing: 8
 
             Repeater {
-                model: [qsTr("Channel map"), qsTr("Talkgroups"), qsTr("Keys"), qsTr("P25 band plan"), qsTr("Radio IDs"), qsTr("DMR key mappings"), qsTr("Vertex keystreams"), qsTr("Trunk scan targets")]
+                model: [qsTr("Channel map"), qsTr("Talkgroups"), qsTr("Keys"), qsTr("P25 band plan"), qsTr("Radio IDs"), qsTr("DMR key mappings"), qsTr("Vertex keystreams"), qsTr("Target CSV")]
                 delegate: FilterPill {
                     required property int index
                     required property string modelData

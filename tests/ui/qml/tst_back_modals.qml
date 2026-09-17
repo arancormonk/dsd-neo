@@ -56,7 +56,8 @@ Item {
             return found;
         }
         function tap(button) {
-            verify(waitForPolish(button));
+            verify(waitForPolish(app.contentItem));
+            waitForRendering(button);
             mouseClick(button, button.width / 2, button.height / 2);
         }
         function init() {
@@ -81,6 +82,7 @@ Item {
             app.requestActivate();
             tryCompare(app, "active", true);
             tryCompare(item("homeScreen"), "enabled", true);
+            item("dongleScrollBody").contentY = 0;
             wait(200); // Wait for the idle shell's opacity transition.
         }
         function cleanup() {
@@ -94,8 +96,18 @@ Item {
             app.wizardOpen = false;
             app.licensesOpen = false;
             app.radioReferenceAccountOpen = false;
+            app.scanListOpen = false;
+            app.spectrumOpen = false;
+            app.talkgroupsOpen = false;
+            app.diagnosticsOpen = false;
+            testContext.setRadioReference("available", false);
+            testContext.setMetric("radioInput", false);
+            while (scanLists.count)
+                scanLists.remove(0);
             app.sessionDestination = "";
             app.currentTab = 0;
+            app.width = 420;
+            app.height = 900;
             prefs.onboardingDone = oldOnboarding;
             prefs.autoStartOnAttach = oldAutoStart;
             prefs.backgroundListening = oldBackgroundListening;
@@ -111,7 +123,7 @@ Item {
         }
         function openManage() {
             var opener = visualChild(item("homeScreen"), function (entry) {
-                return entry.icon === "more" && entry.accessibleName === "Edit County radio" && entry.visible;
+                return entry.icon === "more" && entry.accessibleName === "More options for County radio" && entry.visible;
             });
             verify(opener !== null);
             opener.forceActiveFocus();
@@ -127,7 +139,7 @@ Item {
             var management = openManage();
             var count = savedSystems.count;
             var remove = visualChild(management.sheet, function (entry) {
-                return entry.text === "Remove this system" && typeof entry.clicked === "function";
+                return entry.text === "Remove…" && typeof entry.clicked === "function";
             });
             verify(remove !== null);
             tap(remove);
@@ -327,10 +339,238 @@ Item {
             compare(historyCleared.count, 1);
             compare(confirmed.count, 1);
         }
+        function openScanMenu() {
+            scanLists.add({name: "First list", sourceType: "usb"});
+            scanLists.add({name: "Keep list", sourceType: "usb"});
+            var menu = item("scanListManageSheet");
+            var card = visualChild(item("homeScreen"), function (entry) {
+                return entry.objectName === "scanListCard" && entry.listName === "First list";
+            });
+            verify(card !== null);
+            var scroll = item("dongleScrollBody");
+            verify(waitForPolish(app.contentItem));
+            scroll.contentY = Math.min(card.mapToItem(scroll.contentItem, 0, 0).y, scroll.contentHeight - scroll.height);
+            tap(item("scanListManageButton", card));
+            tryCompare(menu, "visible", true);
+            verify(!app.scanListOpen, "the more button opens the menu before the editor");
+            return menu;
+        }
+        function test_home_menu_cancel_over_recent_activity_data() {
+            return [{tag: "Add system", add: true}, {tag: "Saved system more", add: false}];
+        }
+        function test_home_menu_cancel_over_recent_activity(data) {
+            // Leave a 1000 x 900 Home beside the desktop navigation rail.
+            app.width = 1104;
+            app.height = 900;
+            for (var i = callHistory.count; i < 20; ++i)
+                callHistory.push("TODAY");
+            var home = item("homeScreen");
+            verify(waitForPolish(app.contentItem));
+            tryCompare(home, "width", 1000);
+            tryCompare(home, "height", 900);
+            verify(home.supportingPane);
+            var recent = visualChild(home, function (entry) {
+                return entry.model === callHistory && typeof entry.itemAt === "function";
+            });
+            verify(recent !== null);
+            tryCompare(recent, "count", 20);
+            var detail = item("homeRecentDetailSheet", home);
+            verify(!detail.visible);
+            compare(Ui.Navigation.modals.length, 0);
+
+            var menu;
+            if (data.add) {
+                testContext.setRadioReference("available", true);
+                tap(item("addSystemButton", home));
+                menu = item("addSystemMenu", home);
+            } else {
+                menu = openManage().sheet;
+            }
+            tryCompare(menu, "visible", true);
+            compare(Ui.Navigation.modals.length, 1);
+            var cancel = item("actionMenuCancel", menu);
+            verify(waitForPolish(app.contentItem));
+            waitForRendering(cancel);
+            // The right edge overlaps the supporting pane, beyond the cards.
+            var x = cancel.width - 8;
+            var y = cancel.height / 2;
+            var point = cancel.mapToItem(recent.contentItem, x, y);
+            var row = recent.itemAt(point.x, point.y);
+            verify(row !== null && row.interactive, "Cancel overlaps an interactive history row");
+            var rowPoint = cancel.mapToItem(row, x, y);
+            mouseClick(cancel, x, y);
+            tryCompare(menu, "visible", false);
+            verify(!detail.visible, "Cancel must not open Activity details underneath");
+            compare(Ui.Navigation.modals.length, 0);
+
+            // The same history row remains usable once the menu is dismissed.
+            mouseClick(row, rowPoint.x, rowPoint.y);
+            tryCompare(detail, "visible", true);
+            verify(Ui.Navigation.back(app));
+            compare(Ui.Navigation.modals.length, 0);
+        }
+        function test_scan_remove_confirms_exact_uid_data() {
+            return [{tag: "confirm", change: "none"}, {tag: "row shifted", change: "shift"},
+                {tag: "already removed", change: "removed"}, {tag: "cancel", change: "cancel"}];
+        }
+        function test_scan_remove_confirms_exact_uid(data) {
+            if (data.change === "shift")
+                scanLists.add({name: "Earlier list", sourceType: "usb"});
+            var menu = openScanMenu();
+            var removedUid = scanLists.get(data.change === "shift" ? 1 : 0).uid;
+            var keptUid = scanLists.get(data.change === "shift" ? 2 : 1).uid;
+            var confirmation = item("removeScanListConfirm");
+            tap(item("removeScanListButton", menu));
+            verify(!menu.visible);
+            tryCompare(confirmation, "visible", true);
+            compare(scanLists.count, data.change === "shift" ? 3 : 2);
+            compare(confirmation.title, "Remove First list?");
+            compare(confirmation.confirmText, "Remove list");
+            verify(item("homeScreen").managementSheetOpen);
+            if (data.change === "cancel") {
+                verify(Ui.Navigation.back(app));
+                compare(scanLists.count, 2);
+                return;
+            }
+            if (data.change === "shift" || data.change === "removed")
+                scanLists.remove(0);
+            var button = item("confirmActionButton", confirmation);
+            tap(button);
+            verify(!confirmation.visible);
+            compare(scanLists.rowForUid(removedUid), -1);
+            compare(scanLists.get(0).uid, keptUid);
+            var count = scanLists.count;
+            button.clicked();
+            compare(scanLists.count, count);
+        }
+        function test_scan_edit_routes_to_editor() {
+            var menu = openScanMenu();
+            var uid = scanLists.get(0).uid;
+            tap(item("editScanListButton", menu));
+            verify(!menu.visible);
+            verify(app.scanListOpen);
+            compare(item("scanListScreen").editUid, uid);
+        }
+        function test_scan_removal_notice_data() {
+            return [{tag: "OK"}, {tag: "Back"}, {tag: "Escape"}, {tag: "scrim"}];
+        }
+        function test_scan_removal_notice(data) {
+            scanLists.add({name: "Keep list", sourceType: "usb"});
+            var uid = scanLists.get(0).uid;
+            var notice = item("scanListRemovalError");
+            notice.open();
+            compare(notice.title, "Scan list removal failed");
+            compare(notice.message, "Could not remove the scan list.");
+            verify(item("homeScreen").managementSheetOpen);
+            verify(uiController.autoStartBlocked);
+            var button = item("confirmActionButton", notice);
+            compare(button.text, "OK");
+            verify(!item("confirmCancelButton", notice).visible);
+            confirmed.target = notice;
+            confirmed.clear();
+            if (data.tag === "OK")
+                tap(button);
+            else if (data.tag === "Back")
+                verify(Ui.Navigation.back(app));
+            else if (data.tag === "Escape")
+                keyClick(Qt.Key_Escape);
+            else
+                mouseClick(notice, 2, 2);
+            tryCompare(notice, "visible", false);
+            compare(confirmed.count, data.tag === "OK" ? 1 : 0);
+            button.clicked();
+            compare(confirmed.count, data.tag === "OK" ? 1 : 0);
+            compare(scanLists.count, 1);
+            compare(scanLists.get(0).uid, uid);
+            verify(!item("homeScreen").managementSheetOpen);
+        }
+        function test_grouped_menu_sites() {
+            var menu = openManage().sheet;
+            compare(menu.actions.length, 2);
+            menu.cancel();
+            savedSystems.update(0, {rrSid: 12, rrSiteId: 100});
+            savedSystems.add({name: "County radio", sourceType: "usb", freqMhz: "852.5",
+                rrSid: 12, rrSiteId: 101});
+            menu = openManage().sheet;
+            compare(menu.actions.length, 3);
+            tap(item("sitesSavedSystemButton", menu));
+            verify(!menu.visible);
+            tryCompare(item("siteChooserSheet"), "visible", true);
+        }
+        function test_session_menu_routes_data() {
+            var rows = [];
+            for (var height of [900, 440]) {
+                for (var text of ["Sites", "Spectrum", "Talkgroups", "History", "Settings", "Diagnostics", "Edit saved system", "Cancel"])
+                    rows.push({tag: text + "-" + height, text: text, height: height});
+            }
+            return rows;
+        }
+        function test_session_menu_routes(data) {
+            savedSystems.update(0, {rrSid: 12, rrSiteId: 100});
+            savedSystems.add({name: "County radio", sourceType: "usb", freqMhz: "852.5", rrSid: 12, rrSiteId: 101});
+            app.startSystem(0);
+            testContext.setLifecyclePhase(2);
+            testContext.setMetric("radioInput", true);
+            app.height = data.height;
+            var monitor = item("monitorScreen");
+            if (data.height < 500) {
+                tryCompare(monitor, "compactHeight", true);
+                tryCompare(item("runningSiteChooserButton"), "visible", false);
+                tryCompare(item("openSpectrumButton"), "visible", false);
+            }
+            var menu = item("sessionMenu");
+            monitor.openSessionMenu();
+            tryCompare(menu, "visible", true);
+            compare(menu.actions.length, 7);
+            var button = visualChild(menu, function (entry) {
+                return entry.text === data.text && typeof entry.clicked === "function";
+            });
+            verify(button !== null);
+            verify(waitForPolish(app.contentItem));
+            var scroll = item("modalSheetScroll", menu);
+            if (button.mapToItem(scroll, 0, button.height).y > scroll.height) {
+                // Start on a destination row: its tap handler must let the sheet flick.
+                var dragRow = item(menu.actions[3].objectName, menu);
+                var previousY = scroll.contentY;
+                mouseDrag(dragRow, dragRow.width / 2, dragRow.height / 2, 0, -190, Qt.LeftButton);
+                tryVerify(function () { return scroll.contentY > previousY; });
+                tryCompare(scroll, "moving", false);
+                verify(menu.visible, "dragging must not activate a destination");
+            }
+            verify(button.mapToItem(scroll, 0, 0).y >= 0);
+            verify(button.mapToItem(scroll, 0, button.height).y <= scroll.height);
+            tap(button);
+            verify(!menu.visible);
+            compare(decoderHost.sessionState, 2);
+            if (data.text === "Sites")
+                verify(item("siteChooserSheet").visible);
+            if (data.text === "Spectrum")
+                verify(app.spectrumOpen);
+            if (data.text === "Talkgroups")
+                verify(app.talkgroupsOpen);
+            if (data.text === "History")
+                compare(app.sessionDestination, "history");
+            if (data.text === "Settings")
+                compare(app.sessionDestination, "settings");
+            if (data.text === "Diagnostics")
+                verify(app.diagnosticsOpen);
+            if (data.text === "Edit saved system")
+                verify(app.wizardOpen);
+        }
+        function test_session_menu_conditions_and_back() {
+            var menu = item("sessionMenu");
+            app.sessionRow = -1;
+            testContext.setMetric("radioInput", false);
+            menu.open();
+            compare(menu.actions.length, 4);
+            verify(Ui.Navigation.back(app));
+            verify(!menu.visible);
+        }
         function test_auto_start_consumed_data() {
             return [{tag: "Home", kind: "home"}, {tag: "Remove", kind: "remove"},
-                {tag: "History", kind: "history"}, {tag: "Licenses", kind: "licenses"},
-                {tag: "Account", kind: "account"}];
+                {tag: "Scan menu", kind: "scan"}, {tag: "Scan remove", kind: "scanRemove"},
+                {tag: "Add system", kind: "add"}, {tag: "History", kind: "history"},
+                {tag: "Licenses", kind: "licenses"}, {tag: "Account", kind: "account"}];
         }
         function test_auto_start_consumed(data) {
             prefs.autoStartOnAttach = true;
@@ -343,7 +583,17 @@ Item {
                 sheet = openManage().sheet;
             else if (data.kind === "remove")
                 sheet = openRemove().sheet;
-            else if (data.kind === "history")
+            else if (data.kind === "scan" || data.kind === "scanRemove") {
+                sheet = openScanMenu();
+                if (data.kind === "scanRemove") {
+                    tap(item("removeScanListButton", sheet));
+                    sheet = item("removeScanListConfirm");
+                }
+            } else if (data.kind === "add") {
+                testContext.setRadioReference("available", true);
+                tap(item("addSystemButton"));
+                sheet = item("addSystemMenu");
+            } else if (data.kind === "history")
                 sheet = openHistory(false).sheet;
             else {
                 app.currentTab = 2;
