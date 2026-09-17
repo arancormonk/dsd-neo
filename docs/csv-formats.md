@@ -735,10 +735,48 @@ with the target's key/force scope on exit. An explicit clear differs from inheri
 
 Android channel-map imports copy referenced `keys_hex_csv`, `keys_dec_csv` and
 `-k`/`-K`/`-G`/`--dmr-tg-key-csv` option files into a private bundle and rewrite their
-paths. If the document provider cannot resolve a companion automatically, select
-each requested file explicitly. References with the same basename remain distinct.
-The complete bundle is validated before registration or replacing an existing map;
-a rejected update retains the prior files. Removing the map removes its owned bundle.
+paths. Target CSV imports also copy channel maps (including their nested companions)
+and P25 band plans. Desktop imports continue resolving existing relative paths beside
+the original document; Android document references use the host's document importer.
+
+When a companion cannot be resolved, the Qt import sheet offers stored library files
+of the required kind, with name and row count, and **Choose a file…**. Decimal and hex
+keys are separate kinds. Basename matches rank first but never silently link a file:
+only a sole candidate with a matching basename is visibly preselected, and the user
+can change it before confirming. Multiple candidates require an explicit choice;
+same-name files of the wrong kind are explained in the sheet. Nested references and
+roles have separate selection identities even when their names match. Each slot
+names its expected kind alongside the reference path, so two roles using the same
+path remain distinguishable. Library choices announce their plain name and checked
+state to accessibility services.
+
+If a desktop file pick identifies a stored library entry of the wrong kind, that
+slot shows the expected and found kinds and becomes unresolved. The sheet stays
+open with the other selections intact, allowing another pick. Android SAF
+`content://` selections have no canonical local path and cannot reach this library
+metadata check; document copying and bundle validation still use the host importer.
+
+Selecting a library entry passes its private stored path to the existing bundle
+stager. At each host-copy boundary, the stager converts absolute local paths to
+`file://` URLs for Android compatibility; existing `file://` and SAF `content://`
+references and the opaque selection identities remain unchanged.
+The stager copies the file into the new bundle revision, rewriting nested paths;
+it neither adopts nor moves the library entry. These independent copies let either
+library entry be removed without breaking the other. The complete bundle is validated
+before registration or replacing an existing map; a rejected update retains the prior
+files. Removing the bundle removes its owned copies. Target replacement and removal
+remain unavailable during an active or transitioning decoder session.
+
+`CsvImportFlow.pick()` (primary picker) and `begin()` (already selected document)
+start an import. `finished(result)` fires exactly once when it succeeds, fails, or
+is cancelled. Cancel, Back/Escape, scrim dismissal, and primary picker rejection
+all complete with `{ok:false, error:"cancelled"}`. Rejecting a companion picker
+clears only that slot and returns to the still-active sheet: it does **not** finish
+the import. The user can choose again or cancel the sheet. Abandoning the flow leaves
+the library unchanged. The Home scan-list shortcut changes the draft to CSV mode only
+after successful import, so cancellation preserves the editor's prior draft and
+clean/dirty state. Cancelling the Home shortcut leaves its new editor in entries
+mode with its initial clean fingerprint; closing it does not ask to discard changes.
 
 The file library also accepts **DMR key mappings** and **Vertex keystreams** as
 separate kinds. Vertex files are used by standalone vendor profiles, not by the

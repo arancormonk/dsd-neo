@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Dialogs
 import QtQuick.Window
 
 Rectangle {
@@ -92,20 +91,12 @@ Rectangle {
     }
 
     function importTargets() {
-        targetPicker.open();
-    }
-
-    FileDialog {
-        id: targetPicker
-
-        onAccepted: {
-            var uri = selectedFile.toString();
-            targetImport.begin(uri, uri.substring(uri.lastIndexOf('/') + 1), "trunkTargets");
-        }
+        targetImport.pick("trunkTargets");
     }
 
     CsvImportFlow {
         id: targetImport
+        objectName: "targetCsvImport"
 
         overlayParent: screen
         onFinished: function (result) {

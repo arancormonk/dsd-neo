@@ -221,6 +221,56 @@ ImportedFilesModel::bundleReplacementError(int row, const QString& type) const {
 }
 
 QVariantMap
+ImportedFilesModel::companionChoices(const QVariantMap& requirement) const {
+    auto detail = requirement;
+    const QString type = detail.value("type").toString();
+    const QString name = detail.value("name").toString();
+    detail.insert("kind", csv_companion_type_name(type));
+    QVariantList matching, others;
+    QStringList warnings;
+    if (!detail.value("selectionError").toString().isEmpty()) {
+        warnings << detail.value("selectionError").toString();
+    }
+    // Numeric CSVs can fit several roles, and equal names can belong to different
+    // systems. Library kind filters candidates; the user confirms their identity.
+    for (const auto& row : m_rows) {
+        const bool sameName = QFileInfo(row.name).fileName().compare(name, Qt::CaseInsensitive) == 0;
+        if (row.type == type && QFileInfo(row.path).isFile()) {
+            QVariantMap candidate{{"name", row.name},
+                                  {"path", row.path},
+                                  {"type", row.type},
+                                  {"kind", csv_companion_type_name(row.type)},
+                                  {"accepted", row.accepted}};
+            (sameName ? matching : others).append(candidate);
+        } else if (sameName) {
+            const QString warning = csv_companion_type_error(row.name, row.type, type);
+            if (!warning.isEmpty()) {
+                warnings << warning;
+            }
+        }
+    }
+    detail.insert("preselected", matching.size() == 1 && others.isEmpty() ? matching.first().toMap().value("path")
+                                                                          : QVariant(QString()));
+    matching.append(others);
+    detail.insert("candidates", matching);
+    if (matching.size() > 1) {
+        warnings.prepend(tr("Several imported files match this role. Choose the file for this system."));
+    }
+    warnings.removeDuplicates();
+    detail.insert("warning", warnings.join('\n'));
+    return detail;
+}
+
+QVariantMap
+ImportedFilesModel::companionDetails(const CsvBundleImport& bundle) const {
+    QVariantMap details;
+    for (auto i = bundle.requiredDetails.cbegin(); i != bundle.requiredDetails.cend(); ++i) {
+        details.insert(i.key(), companionChoices(i.value().toMap()));
+    }
+    return details;
+}
+
+QVariantMap
 ImportedFilesModel::importBundle(const QString& reference, const QString& fileName, const QString& type,
                                  const QVariantMap& companions, int replaceRow) {
     if (type != "chan" && type != "trunkTargets") {
@@ -233,16 +283,25 @@ ImportedFilesModel::importBundle(const QString& reference, const QString& fileNa
                 {"detail", problem == "busy" ? "Stop the decoder before replacing target files."
                                              : "Cannot replace this imported file."}};
     }
+    QVariantMap libraryEntries;
+    for (const auto& row : m_rows) {
+        const QString path = QFileInfo(row.path).canonicalFilePath();
+        if (!path.isEmpty()) {
+            libraryEntries.insert(path, QVariantMap{{"type", row.type}, {"name", row.name}});
+        }
+    }
     const Row previous = replaceRow >= 0 ? m_rows[replaceRow] : Row();
-    const auto bundle = type == "trunkTargets"
-                            ? stage_trunk_csv_bundle(m_host, reference, fileName, companions, previous.bundleRoot)
-                            : stage_csv_bundle(m_host, reference, fileName, companions, previous.bundleRoot);
+    const auto bundle =
+        type == "trunkTargets"
+            ? stage_trunk_csv_bundle(m_host, reference, fileName, companions, previous.bundleRoot, libraryEntries)
+            : stage_csv_bundle(m_host, reference, fileName, companions, previous.bundleRoot, libraryEntries);
     if (!bundle.error.isEmpty()) {
         return {{"ok", false},
                 {"error", bundle.error},
                 {"detail", bundle.detail},
                 {"required", bundle.required},
-                {"requiredLabels", bundle.requiredLabels}};
+                {"requiredLabels", bundle.requiredLabels},
+                {"requiredDetails", companionDetails(bundle)}};
     }
     if (replaceRow < 0) {
         auto result = adoptStoredFile(bundle.path, type, {{"bundleRoot", bundle.root}, {"name", bundle.name}});

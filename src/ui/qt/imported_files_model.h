@@ -152,6 +152,8 @@ class ImportedFilesModel : public QAbstractListModel {
     void countChanged();
 
   private:
+    QVariantMap companionDetails(const CsvBundleImport& bundle) const;
+    QVariantMap companionChoices(const QVariantMap& requirement) const;
     QVariantMap replaceBundle(int replaceRow, const CsvBundleImport& bundle, const QString& type);
     QString bundleReplacementError(int row, const QString& type) const;
     bool decoderBusy() const;

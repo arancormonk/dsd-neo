@@ -9,6 +9,7 @@
 #include <QJsonDocument>
 #include <QJsonValue>
 #include <QMap>
+#include <QObject>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
@@ -21,12 +22,20 @@
 #include <functional>
 #include <iterator>
 #include <stddef.h>
+#include <utility>
 #include "csv_bundle_import.h"
 #include "decoder_host.h"
 #include "json_store.h"
 
 namespace dsd_qt {
 namespace {
+QString
+documentReference(const QString& source) {
+    // Library selections are stored paths; Android's host requires a URI. Do
+    // this only at the copy boundary so opaque selection identities stay intact.
+    return QFileInfo(source).isAbsolute() ? QUrl::fromLocalFile(source).toString() : source;
+}
+
 QString
 unquote(QString text) {
     text = text.trimmed();
@@ -38,10 +47,21 @@ unquote(QString text) {
 }
 
 QString
-rewriteOptions(QString options, const std::function<QString(const QString&)>& resolve) {
+optionType(const QString& option) {
+    if (option == "-K") {
+        return "keysHex";
+    }
+    if (option == "-k") {
+        return "keysDec";
+    }
+    return option == "-G" ? "group" : "dmrTgKeys";
+}
+
+QString
+rewriteOptions(QString options, const std::function<QString(const QString&, const QString&)>& resolve) {
     options = unquote(options);
     static const QRegularExpression paths(
-        QStringLiteral("(?:^|\\s)(?:-K|-k|-G|--dmr-tg-key-csv)(?:=|\\s+)(?:\"([^\"]+)\"|'([^']+)'|(\\S+))"));
+        QStringLiteral("(?:^|\\s)(-K|-k|-G|--dmr-tg-key-csv)(?:=|\\s+)(?:\"([^\"]+)\"|'([^']+)'|(\\S+))"));
     auto matches = paths.globalMatch(options);
 
     struct Edit {
@@ -53,9 +73,10 @@ rewriteOptions(QString options, const std::function<QString(const QString&)>& re
     QList<Edit> edits;
     while (matches.hasNext()) {
         const auto match = matches.next();
-        const int group = match.capturedStart(1) >= 0 ? 1 : match.capturedStart(2) >= 0 ? 2 : 3;
+        const int group = match.capturedStart(2) >= 0 ? 2 : match.capturedStart(3) >= 0 ? 3 : 4;
         const QString original = match.captured(group);
-        edits.append({match.capturedStart(group), match.capturedLength(group), resolve(original)});
+        edits.append({match.capturedStart(group), match.capturedLength(group),
+                      resolve(original, optionType(match.captured(1)))});
     }
     for (auto i = edits.crbegin(); i != edits.crend(); ++i) {
         options.replace(i->at, i->length, i->value);
@@ -64,7 +85,7 @@ rewriteOptions(QString options, const std::function<QString(const QString&)>& re
 }
 
 QString
-rewriteMap(const QString& text, const std::function<QString(const QString&)>& resolve) {
+rewriteMap(const QString& text, const std::function<QString(const QString&, const QString&)>& resolve) {
     auto lines = text.split('\n');
     if (lines.isEmpty()) {
         return text;
@@ -82,7 +103,7 @@ rewriteMap(const QString& text, const std::function<QString(const QString&)>& re
             if (header == "keys_hex_csv" || header == "keys_dec_csv") {
                 const QString path = unquote(cells[column]);
                 if (!path.isEmpty()) {
-                    cells[column] = resolve(path);
+                    cells[column] = resolve(path, header == "keys_hex_csv" ? "keysHex" : "keysDec");
                 }
             } else if (header == "options" || header == "relevant_cli_switches") {
                 cells[column] = rewriteOptions(cells[column], resolve);
@@ -108,6 +129,74 @@ ownedRoot(const QString& root) {
 }
 } // namespace
 
+QString
+csv_companion_type_name(const QString& type) {
+    if (type == "keysHex") {
+        return QObject::tr("hex keys");
+    }
+    if (type == "keysDec") {
+        return QObject::tr("decimal keys");
+    }
+    if (type == "chan") {
+        return QObject::tr("channel map");
+    }
+    if (type == "p25Bandplan") {
+        return QObject::tr("P25 band plan");
+    }
+    if (type == "group") {
+        return QObject::tr("talkgroups");
+    }
+    if (type == "src") {
+        return QObject::tr("radio IDs");
+    }
+    if (type == "vertexKeys") {
+        return QObject::tr("Vertex keystreams");
+    }
+    if (type == "trunkTargets") {
+        return QObject::tr("scan targets");
+    }
+    return type == "dmrTgKeys" ? QObject::tr("DMR talkgroup key mapping") : type;
+}
+
+QString
+csv_companion_type_error(const QString& name, const QString& actual, const QString& expected) {
+    if (actual.isEmpty() || actual == expected) {
+        return {};
+    }
+    if (actual == "keysHex" && expected == "keysDec") {
+        return QObject::tr("%1 is a hex key file; this bundle expects decimal keys").arg(name);
+    }
+    if (actual == "keysDec" && expected == "keysHex") {
+        return QObject::tr("%1 is a decimal key file; this bundle expects hex keys").arg(name);
+    }
+    return QObject::tr("%1 is imported as %2; this bundle expects %3")
+        .arg(name, csv_companion_type_name(actual), csv_companion_type_name(expected));
+}
+
+static QString
+libraryTypeError(const QString& source, const QString& type, const QVariantMap& libraryEntries) {
+    const QUrl url(source);
+    const QFileInfo file(url.isLocalFile() ? url.toLocalFile() : source);
+    const auto entry = libraryEntries.value(file.canonicalFilePath()).toMap();
+    return csv_companion_type_error(entry.value("name").toString(), entry.value("type").toString(), type);
+}
+
+static bool
+rejectCompanionType(CsvBundleImport& result, const QString& key, const QString& source,
+                    const QVariantMap& libraryEntries) {
+    auto detail = result.requiredDetails.value(key).toMap();
+    const QString warning = libraryTypeError(source, detail.value("type").toString(), libraryEntries);
+    if (warning.isEmpty()) {
+        return false;
+    }
+    detail.insert("selectionError", warning);
+    result.requiredDetails.insert(key, detail);
+    if (!result.required.contains(key)) {
+        result.required.append(key);
+    }
+    return true;
+}
+
 void
 discard_csv_bundle(const CsvBundleImport& bundle, bool existingRoot) {
     if (!bundle.path.isEmpty()) {
@@ -122,14 +211,21 @@ discard_csv_bundle(const CsvBundleImport& bundle, bool existingRoot) {
     }
 }
 
+static QString
+channelReferenceKey(const QString& path, const QString& type) {
+    return QString::fromUtf8(QJsonDocument(QJsonArray{path, type}).toJson(QJsonDocument::Compact));
+}
+
 static QMap<QString, QString>
 resolveSources(const QString& reference, const QStringList& references, const QVariantMap& companions,
-               const QString& existingRoot, QStringList& required) {
+               const QString& existingRoot, CsvBundleImport& result) {
     QMap<QString, QString> sources;
     const QUrl original(reference);
     const QString local = original.isLocalFile() ? original.toLocalFile() : reference;
-    for (const auto& path : references) {
-        QString source = companions.value(path).toString();
+    for (const auto& key : references) {
+        const QString path = result.requiredDetails.value(key).toMap().value("reference").toString();
+        // Retain the original channel import API's explicit path-keyed choices.
+        QString source = companions.value(key, companions.value(path)).toString();
         if (source.isEmpty() && QFileInfo(local).isFile()) {
             const QString candidate = QFileInfo(path).isAbsolute() ? path : QFileInfo(local).dir().filePath(path);
             if (QFileInfo(candidate).isFile()) {
@@ -143,9 +239,9 @@ resolveSources(const QString& reference, const QStringList& references, const QV
             }
         }
         if (source.isEmpty()) {
-            required.append(path);
+            result.required.append(key);
         } else {
-            sources.insert(path, source);
+            sources.insert(key, source);
         }
     }
     return sources;
@@ -157,8 +253,9 @@ copyCompanions(DecoderHost* host, const QStringList& references, const QMap<QStr
     QMap<QString, QString> replacements;
     for (int i = 0; i < references.size(); ++i) {
         const QString relative = result.revision + '/' + QString::number(i) + ".csv";
-        const QString staged =
-            host->importDocument(sources.value(references[i]), QFileInfo(references[i]).fileName(), QString());
+        const QString staged = host->importDocument(
+            documentReference(sources.value(references[i])),
+            result.requiredDetails.value(references[i]).toMap().value("name").toString(), QString());
         if (staged.isEmpty() || !QFile::rename(staged, result.root + '/' + relative)) {
             if (!staged.isEmpty()) {
                 QFile::remove(staged);
@@ -170,15 +267,27 @@ copyCompanions(DecoderHost* host, const QStringList& references, const QMap<QStr
     return replacements;
 }
 
+static bool
+channelSourcesReady(const QMap<QString, QString>& sources, const QVariantMap& libraryEntries, CsvBundleImport& result) {
+    for (auto i = sources.cbegin(); i != sources.cend(); ++i) {
+        rejectCompanionType(result, i.key(), i.value(), libraryEntries);
+    }
+    if (!result.required.isEmpty()) {
+        result.error = "companions";
+        return false;
+    }
+    return true;
+}
+
 CsvBundleImport
 stage_csv_bundle(DecoderHost* host, const QString& reference, const QString& name, const QVariantMap& companions,
-                 const QString& existingRoot) {
+                 const QString& existingRoot, const QVariantMap& libraryEntries) {
     CsvBundleImport result;
     if (!host) {
         result.error = "open";
         return result;
     }
-    const QString copied = host->importDocument(reference, name, QString());
+    const QString copied = host->importDocument(documentReference(reference), name, QString());
     if (copied.isEmpty()) {
         result.error = "open";
         return result;
@@ -198,20 +307,23 @@ stage_csv_bundle(DecoderHost* host, const QString& reference, const QString& nam
     }
     const QString text = QString::fromUtf8(bytes);
     QStringList references;
-    (void)rewriteMap(text, [&](const QString& path) {
-        if (!references.contains(path)) {
-            references.append(path);
+    (void)rewriteMap(text, [&](const QString& path, const QString& type) {
+        const QString key = channelReferenceKey(path, type);
+        if (!references.contains(key)) {
+            references.append(key);
         }
+        result.requiredLabels.insert(key, path);
+        result.requiredDetails.insert(
+            key, QVariantMap{{"name", QFileInfo(path).fileName()}, {"type", type}, {"reference", path}});
         return path;
     });
     if (references.isEmpty()) {
         result.path = copied;
         return result;
     }
-    const auto sources = resolveSources(reference, references, companions, existingRoot, result.required);
-    if (!result.required.isEmpty()) {
+    const auto sources = resolveSources(reference, references, companions, existingRoot, result);
+    if (!channelSourcesReady(sources, libraryEntries, result)) {
         QFile::remove(copied);
-        result.error = "companions";
         return result;
     }
     const QString root = existingRoot.isEmpty()
@@ -237,7 +349,9 @@ stage_csv_bundle(DecoderHost* host, const QString& reference, const QString& nam
         discard_csv_bundle(result, !existingRoot.isEmpty());
         return result;
     }
-    const QString rewritten = rewriteMap(text, [&](const QString& path) { return replacements.value(path, path); });
+    const QString rewritten = rewriteMap(text, [&](const QString& path, const QString& type) {
+        return replacements.value(channelReferenceKey(path, type), path);
+    });
     result.path =
         root + '/' + (existingRoot.isEmpty() ? QFileInfo(copied).fileName() : ".staged-" + result.revision + ".csv");
     QFile::remove(copied);
@@ -250,6 +364,19 @@ stage_csv_bundle(DecoderHost* host, const QString& reference, const QString& nam
 }
 
 namespace {
+QString
+targetReferenceType(dsd_app_scan_file_kind kind) {
+    switch (kind) {
+        case DSD_APP_SCAN_FILE_CHANNEL: return "chan";
+        case DSD_APP_SCAN_FILE_BANDPLAN: return "p25Bandplan";
+        case DSD_APP_SCAN_FILE_KEYS_HEX: return "keysHex";
+        case DSD_APP_SCAN_FILE_KEYS_DEC: return "keysDec";
+        case DSD_APP_SCAN_FILE_GROUP: return "group";
+        case DSD_APP_SCAN_FILE_DMR_MAP: return "dmrTgKeys";
+    }
+    return {};
+}
+
 struct TargetReference {
     size_t index = 0;
     dsd_app_scan_file_kind kind = DSD_APP_SCAN_FILE_CHANNEL;
@@ -281,8 +408,9 @@ struct TargetDocument {
 class TrunkBundleStager {
   public:
     TrunkBundleStager(DecoderHost* h, CsvBundleImport& out, const QVariantMap& selections, const QString& oldRoot,
-                      const QString& fileName)
-        : host(h), result(out), companions(selections), existingRoot(oldRoot), name(fileName) {}
+                      const QString& fileName, const QVariantMap& entries)
+        : host(h), result(out), companions(selections), libraryEntries(entries), existingRoot(oldRoot), name(fileName) {
+    }
 
     QString
     stageDocument(const TargetDocument& input) {
@@ -290,8 +418,8 @@ class TrunkBundleStager {
         if (stored.contains(identity)) {
             return stored.value(identity);
         }
-        const QString copy =
-            host->importDocument(input.source, input.primary ? name : QFileInfo(input.label).fileName());
+        const QString copy = host->importDocument(documentReference(input.source),
+                                                  input.primary ? name : QFileInfo(input.label).fileName());
         if (copy.isEmpty()) {
             result.error = "open";
             return {};
@@ -340,7 +468,7 @@ class TrunkBundleStager {
     }
 
     QString
-    selectedSource(const TargetReference& ref, const QString& key, bool local) const {
+    selectedSource(const TargetReference& ref, const QString& key, bool local) {
         QString selected = companions.value(key).toString();
         if (selected.isEmpty() && local && QFileInfo(ref.resolved).isFile()) {
             selected = QUrl::fromLocalFile(ref.resolved).toString();
@@ -354,6 +482,9 @@ class TrunkBundleStager {
                 selected = QUrl::fromLocalFile(candidate).toString();
             }
         }
+        if (rejectCompanionType(result, key, selected, libraryEntries)) {
+            return {};
+        }
         return selected;
     }
 
@@ -365,7 +496,7 @@ class TrunkBundleStager {
         if (stored.contains(identity)) {
             return stored.value(identity);
         }
-        const QString copy = host->importDocument(source, QFileInfo(label).fileName());
+        const QString copy = host->importDocument(documentReference(source), QFileInfo(label).fileName());
         if (copy.isEmpty()) {
             result.error = "open";
             return {};
@@ -386,16 +517,18 @@ class TrunkBundleStager {
                     QList<dsd_app_scan_csv_replacement>& mapping) {
         for (const auto& ref : refs) {
             // Opaque, unambiguous identities are separate from the display label.
-            const QString key =
-                QString::fromUtf8(QJsonDocument(QJsonArray{input.primary ? QString() : input.source, ref.path})
-                                      .toJson(QJsonDocument::Compact));
+            const QString key = QString::fromUtf8(QJsonDocument(QJsonArray{input.primary ? QString() : input.source,
+                                                                           ref.path, targetReferenceType(ref.kind)})
+                                                      .toJson(QJsonDocument::Compact));
             const QString label = input.primary ? ref.path : input.label + QStringLiteral(" → ") + ref.path;
+            result.requiredDetails.insert(
+                key, QVariantMap{{"name", QFileInfo(ref.path).fileName()}, {"type", targetReferenceType(ref.kind)}});
+            result.requiredLabels.insert(key, label);
             const QString selected = selectedSource(ref, key, local);
             if (selected.isEmpty()) {
                 if (!result.required.contains(key)) {
                     result.required << key;
                 }
-                result.requiredLabels.insert(key, label);
                 continue;
             }
             const QString companion = ref.kind == DSD_APP_SCAN_FILE_CHANNEL
@@ -416,6 +549,7 @@ class TrunkBundleStager {
     DecoderHost* host;
     CsvBundleImport& result;
     const QVariantMap& companions;
+    const QVariantMap& libraryEntries;
     QString existingRoot, name;
     StagedCopies copies;
     QMap<QString, QString> stored;
@@ -425,7 +559,7 @@ class TrunkBundleStager {
 
 CsvBundleImport
 stage_trunk_csv_bundle(DecoderHost* host, const QString& reference, const QString& name, const QVariantMap& companions,
-                       const QString& existingRoot) {
+                       const QString& existingRoot, const QVariantMap& libraryEntries) {
     CsvBundleImport result;
     if (!host) {
         result.error = "open";
@@ -441,7 +575,7 @@ stage_trunk_csv_bundle(DecoderHost* host, const QString& reference, const QStrin
     }
     result.path = result.root + '/'
                   + (existingRoot.isEmpty() ? QStringLiteral("targets.csv") : ".staged-" + result.revision + ".csv");
-    TrunkBundleStager stager(host, result, companions, existingRoot, name);
+    TrunkBundleStager stager(host, result, companions, existingRoot, name, libraryEntries);
     stager.stageDocument({reference, QString(), false, true});
     if (result.error.isEmpty() && !result.required.isEmpty()) {
         result.error = "companions";
