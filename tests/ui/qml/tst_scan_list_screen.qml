@@ -108,7 +108,7 @@ Item {
                 compare(screen.targetRows[0].id, "CSV ID");
                 compare(screen.targetRows[0].dwellMs, -1);
                 verify(visualChild(control("scanTargetCsvBadge"), function (item) {
-                    return item.visible && item.text === "SCAN TARGETS";
+                    return item.visible && item.text === "TARGET CSV";
                 }) !== null);
                 verify(screen.validate(), screen.validationText);
                 screen.save();

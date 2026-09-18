@@ -16,6 +16,8 @@ Item {
     height: 900
     Ui.HomeScreen { id: home; anchors.fill: parent }
     Ui.OnboardingScreen { id: onboarding; anchors.fill: parent; visible: false }
+    SignalSpy { id: exploreStarted; target: home; signalName: "explore" }
+    SignalSpy { id: exploreEdited; target: home; signalName: "exploreSetup" }
     TestCase {
         name: "HomeDongleStatus"
         when: windowShown
@@ -97,6 +99,39 @@ Item {
                 var before = testContext.dongleRetryRequests();
                 mouseClick(retry);
                 compare(testContext.dongleRetryRequests(), before + 1);
+            }
+        }
+        function test_home_routes_explain_all_sources() {
+            var add = findChild(home, "addSystemButton");
+            verify(add !== null);
+            compare(add.text, "+ Add a system");
+            compare(findChild(home, "addSystemHint").text, "USB, Airspy, network or file");
+            compare(typeof home.networkSource, "undefined");
+            compare(typeof home.importScanList, "undefined");
+            verify(typeof onboarding.networkSource === "function", "onboarding keeps its shortcut");
+        }
+        function test_explore_more_only_edits_connection() {
+            var oldSource = prefs.exploreSourceType;
+            prefs.exploreSourceType = "rtltcp";
+            try {
+                var card = findChild(home, "exploreCard");
+                var more = findChild(home, "exploreManageButton");
+                compare(more.accessibleName, "Edit Explore connection");
+                compare(more.y, 0);
+                compare(card.width - (more.x + more.width / 2), Ui.Theme.cardPadding + 26);
+                var scroll = findChild(home, "dongleScrollBody");
+                verify(waitForPolish(home));
+                scroll.contentY = Math.max(0, scroll.contentHeight - scroll.height);
+                exploreStarted.clear();
+                exploreEdited.clear();
+                waitForRendering(home);
+                mouseClick(more);
+                compare(exploreEdited.count, 1);
+                compare(exploreStarted.count, 0);
+                mouseClick(card, card.width / 3, card.height / 2);
+                compare(exploreStarted.count, 1);
+            } finally {
+                prefs.exploreSourceType = oldSource;
             }
         }
         function test_retry_disabled_during_session() {

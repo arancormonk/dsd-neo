@@ -102,6 +102,7 @@ qt_add_resources(
         qml/LogoMark.qml
         qml/MicroLabel.qml
         qml/ModalSheet.qml
+        qml/ActionMenu.qml
         qml/MonitorScreen.qml
         qml/NetworkSheet.qml
         qml/OnboardingScreen.qml

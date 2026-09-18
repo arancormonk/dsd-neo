@@ -7,6 +7,7 @@ ModalSheet {
     property string title: qsTr("Confirm")
     property string message: ""
     property string confirmText: qsTr("Confirm")
+    property bool showCancel: true
     property bool destructive: false
     signal confirmed
     signal cancelled
@@ -54,6 +55,7 @@ ModalSheet {
     }
     OutlineButton {
         objectName: "confirmCancelButton"
+        visible: sheet.showCancel
         width: parent.width
         text: qsTr("Cancel")
         onClicked: sheet.cancel()

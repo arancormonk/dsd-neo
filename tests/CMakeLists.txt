@@ -3193,6 +3193,18 @@ if(DSD_ENABLE_QT_UI)
         set_target_properties(dsd-neo_test_ui_qt_qml PROPERTIES AUTOMOC ON)
         add_test(NAME UI_QT_QML_CALL_LISTS COMMAND dsd-neo_test_ui_qt_qml)
         add_test(
+            NAME UI_QT_QML_ACTION_MENU
+            COMMAND
+                dsd-neo_test_ui_qt_qml -input
+                ${CMAKE_CURRENT_SOURCE_DIR}/ui/qml/tst_action_menu.qml
+        )
+        set_tests_properties(
+            UI_QT_QML_ACTION_MENU
+            PROPERTIES
+                ENVIRONMENT
+                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+        )
+        add_test(
             NAME UI_QT_QML_MODAL_INPUT
             COMMAND
                 dsd-neo_test_ui_qt_qml -input
