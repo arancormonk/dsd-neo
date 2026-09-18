@@ -18,6 +18,7 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(20)
     }
     GradientButton {
+        objectName: "discardDialogKeep"
         width: parent.width
         text: qsTr("Keep editing")
         onClicked: {
@@ -26,6 +27,7 @@ ModalSheet {
         }
     }
     OutlineButton {
+        objectName: "discardDialogDiscard"
         width: parent.width
         text: qsTr("Discard changes")
         onClicked: {

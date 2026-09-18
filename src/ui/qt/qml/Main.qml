@@ -1043,6 +1043,7 @@ Window {
             visible: mainRoot.sessionDestination === "history"
         }
         SettingsScreen {
+            objectName: "sessionSettingsScreen"
             anchors.top: returnToSession.bottom
             anchors.left: parent.left
             anchors.right: parent.right
@@ -1057,6 +1058,7 @@ Window {
     ActionMenu {
         id: sessionMenu
         objectName: "sessionMenu"
+        anchors.fill: safeArea
         title: qsTr("Session options")
         actions: {
             var items = [];
@@ -1169,6 +1171,9 @@ Window {
         // files and the tune answers go to it rather than to savedSystems.add().
         onImported: function (result) {
             mainRoot.radioReferenceOpen = false;
+            // Session tools appear later in this file than the wizard, so they
+            // can cover it. Retire their navigation layer before the handoff.
+            mainRoot.sessionDestination = "";
             Qt.inputMethod.hide();
             if (!mainRoot.radioReferenceFromWizard) {
                 // Opened from Home, Settings or the library: the source, gain and name
@@ -1200,6 +1205,8 @@ Window {
 
     ModalSheet {
         id: failureDetails
+        objectName: "failureDetails"
+        anchors.fill: safeArea
         accessibleName: qsTr("Source failure details")
         Text {
             width: parent.width
