@@ -21,6 +21,15 @@ Item {
     width: 420
     height: 900
 
+    FakeRadioReference {
+        id: fakeAccount
+    }
+
+    SignalSpy {
+        id: accountCommit
+        signalName: "editingFinished"
+    }
+
     Loader {
         id: screenLoader
 
@@ -55,6 +64,7 @@ Item {
         when: windowShown
 
         property var screen: null
+        property string previousRrUsername: ""
 
         function test_location_button_supported_and_busy() {
             testContext.setRadioReference("credentialsReady", true)
@@ -92,6 +102,7 @@ Item {
         // The map is shared by the whole suite, so a case that left a system
         // loaded would hand the next one a screen it never set up.
         function init() {
+            previousRrUsername = prefs.rrUsername;
             tc.screen.eachSite = false
             testContext.setLocationSupported(false)
             testContext.setRadioReference("hasAppKey", false)
@@ -122,6 +133,170 @@ Item {
             // Choosing a country opens the next browse sheet; each test starts with none open.
             for (var sheetName of ["radioReferenceCountrySheet", "radioReferenceStateSheet", "radioReferenceCountySheet"])
                 findChild(tc.screen, sheetName).visible = false
+        }
+
+        function cleanup() {
+            accountCommit.target = null;
+            testContext.useRadioReferenceModel(null);
+            testContext.setPrefs("rrUsername", previousRrUsername);
+            screenLoader.z = 0;
+            settingsLoader.active = false;
+            importsLoader.active = false;
+        }
+
+        function test_login_keeps_account_editor_reachable() {
+            fakeAccount.credentialsReady = false;
+            fakeAccount.accountChecks = 0;
+            testContext.setPrefs("rrUsername", "test-listener");
+            testContext.useRadioReferenceModel(fakeAccount);
+            screenLoader.z = 1;
+            var password = findChild(tc.screen, "radioReferencePasswordField");
+            password.text = "session-secret";
+            password.editingFinished();
+            compare(fakeAccount.sessionPassword, "session-secret");
+            verify(fakeAccount.accountChecks > 0, "login must still check the account");
+            var credentials = findChild(tc.screen, "radioReferenceCredentials");
+            tryCompare(credentials, "visible", false);
+            var change = findChild(tc.screen, "radioReferenceChangeAccount");
+            verify(change !== null, "successful login must leave a Change account action");
+            verify(change.visible);
+            verify(change.title.indexOf("test-listener") >= 0);
+            change.activate();
+            tryCompare(credentials, "visible", true);
+            verify(findChild(tc.screen, "radioReferenceUsernameField").visible);
+            password.text = "replacement-secret";
+            password.editingFinished();
+            var checks = fakeAccount.accountChecks;
+            findChild(tc.screen, "radioReferenceCheckAccountButton").clicked();
+            verify(fakeAccount.accountChecks > checks);
+            compare(fakeAccount.sessionPassword, "replacement-secret");
+            var username = findChild(tc.screen, "radioReferenceUsernameField");
+            accountCommit.target = username;
+            accountCommit.clear();
+            username.input.forceActiveFocus();
+            verify(username.input.activeFocus);
+            change.activate();
+            tryCompare(credentials, "visible", false);
+            compare(accountCommit.count, 1, "Done must commit the field being edited");
+            verify(!username.input.activeFocus, "Done must release editor focus");
+            fakeAccount.errorIsSubscription = true;
+            fakeAccount.errorText = "Expired";
+            tryCompare(credentials, "visible", true);
+            verify(findChild(tc.screen, "radioReferenceNotice").text.indexOf("expired") >= 0);
+            fakeAccount.errorIsSubscription = false;
+            fakeAccount.errorText = "";
+            password.text = "";
+        }
+
+        function test_account_error_keeps_done_label_data() {
+            return [
+                {tag: "auth", error: "errorIsAuth"},
+                {tag: "expired", error: "errorIsSubscription"}
+            ];
+        }
+
+        function test_account_error_keeps_done_label(data) {
+            testContext.setPrefs("rrUsername", "test-listener");
+            testContext.setRadioReference("credentialsReady", true);
+            var credentials = findChild(tc.screen, "radioReferenceCredentials");
+            var change = findChild(tc.screen, "radioReferenceChangeAccount");
+            verify(change !== null && change.visible);
+            compare(change.title, "Account: test-listener · Change");
+            testContext.setRadioReference(data.error, true);
+            tryCompare(credentials, "visible", true);
+            compare(change.title, "Account: test-listener · Done");
+            var username = findChild(tc.screen, "radioReferenceUsernameField");
+            accountCommit.target = username;
+            accountCommit.clear();
+            username.input.forceActiveFocus();
+            verify(username.input.activeFocus);
+            change.activate();
+            compare(accountCommit.count, 1, "Done must commit even while an account error holds the form open");
+            verify(!username.input.activeFocus);
+            verify(credentials.visible, "the error must keep its correction fields available");
+            compare(change.title, "Account: test-listener · Done");
+            change.activate();
+            verify(credentials.visible);
+            compare(change.title, "Account: test-listener · Done");
+            testContext.setRadioReference(data.error, false);
+            tryCompare(credentials, "visible", false);
+            compare(change.title, "Account: test-listener · Change");
+            change.activate();
+            tryCompare(credentials, "visible", true);
+            compare(change.title, "Account: test-listener · Done");
+            change.activate();
+            tryCompare(credentials, "visible", false);
+            compare(change.title, "Account: test-listener · Change");
+        }
+
+        function test_fresh_visit_resets_filters_and_multi_site_mode() {
+            tc.screen.siteSearch = "old site";
+            tc.screen.eachSite = true;
+            var sheets = ["radioReferenceCountrySheet", "radioReferenceStateSheet", "radioReferenceCountySheet"];
+            for (var name of sheets) {
+                var search = findChild(findChild(tc.screen, name), "browseSearch");
+                verify(search !== null, name + " search");
+                search.text = "old place";
+            }
+            tc.screen.reset();
+            compare(tc.screen.siteSearch, "");
+            compare(tc.screen.eachSite, false);
+            for (var name of sheets)
+                compare(findChild(findChild(tc.screen, name), "browseSearch").text, "");
+        }
+
+        function test_browse_empty_state_data() {
+            return [
+                {tag: "country", sheet: "radioReferenceCountrySheet", key: "countries", idKey: "coid"},
+                {tag: "state", sheet: "radioReferenceStateSheet", key: "states", idKey: "stid"},
+                {tag: "county", sheet: "radioReferenceCountySheet", key: "counties", idKey: "ctid"}
+            ];
+        }
+
+        function test_browse_empty_state(data) {
+            var sheet = findChild(tc.screen, data.sheet);
+            sheet.visible = true;
+            var notice = findChild(sheet, "browseEmptyState");
+            verify(notice !== null);
+            tryCompare(notice, "visible", true);
+            compare(notice.text, "Nothing to show");
+            testContext.setRadioReference("busy", true);
+            compare(notice.text, "Loading…");
+            testContext.setRadioReference("busy", false);
+            compare(notice.text, "Nothing to show");
+            var row = {name: "Alpha"};
+            row[data.idKey] = 1;
+            testContext.setRadioReference(data.key, [row]);
+            tryCompare(notice, "visible", false);
+            var search = findChild(sheet, "browseSearch");
+            search.text = "missing";
+            tryCompare(notice, "visible", true);
+            compare(notice.text, "No matches");
+            testContext.setRadioReference("busy", true);
+            compare(notice.text, "No matches", "an unrelated request must not hide a populated list's filter result");
+            testContext.setRadioReference("busy", false);
+            search.text = "alpha";
+            tryCompare(notice, "visible", false);
+            sheet.visible = false;
+        }
+
+        function test_browse_parent_choice_clears_dependent_filters_data() {
+            return [
+                {tag: "country", choose: "chooseCountry", row: {coid: 2, name: "Canada"},
+                 sheets: ["radioReferenceStateSheet", "radioReferenceCountySheet"]},
+                {tag: "state", choose: "chooseState", row: {stid: 1, name: "Alabama"},
+                 sheets: ["radioReferenceCountySheet"]}
+            ];
+        }
+
+        function test_browse_parent_choice_clears_dependent_filters(data) {
+            for (var name of data.sheets)
+                findChild(findChild(tc.screen, name), "browseSearch").text = "old place";
+            tc.screen[data.choose](data.row);
+            for (var name of data.sheets)
+                compare(findChild(findChild(tc.screen, name), "browseSearch").text, "",
+                        "choosing a parent must clear " + name + "'s old filter");
+            verify(findChild(tc.screen, data.sheets[0]).visible);
         }
 
         function test_credential_labels_and_hint() {
@@ -241,7 +416,7 @@ Item {
         }
 
         // A conventional networked system has no control channel: the unit of
-        // choice is the repeater, and two or more of them make the scan list.
+        // choice is the repeater, and two or more make one scanning system.
         function test_04_a_conventional_system_selects_several_repeaters() {
             testContext.setRadioReference("hasAppKey", true)
             testContext.setRadioReference("credentialsReady", true)
@@ -274,6 +449,14 @@ Item {
             tc.screen.toggleSite(1)
             compare(tc.screen.selectedSites.length, 2, "a conventional system refused a second repeater")
             compare(count.text, "2 repeater(s) selected", "the repeater count did not follow the selection")
+            var hint = findChild(tc.screen, "radioReferenceRepeaterHint");
+            verify(hint !== null && hint.visible);
+            compare(hint.text, "One selected repeater tunes directly. Multiple selected repeaters are saved as one scanning system.");
+            tc.screen.plan = {ok: true, scanList: true, freqMhz: "444.525", decodeFlag: "-ft"};
+            var preview = findChild(tc.screen, "radioReferencePlanSummary");
+            verify(preview !== null && preview.visible);
+            verify(preview.text.indexOf("scanning system") >= 0);
+            verify(preview.text.indexOf("scan list") < 0);
             tc.screen.toggleSite(0)
             compare(tc.screen.selectedSites.length, 1, "tapping a chosen repeater did not deselect it")
 
@@ -357,7 +540,7 @@ Item {
 
             var sheet = findChild(tc.screen, "radioReferenceCountrySheet")
             verify(sheet !== null, "the country sheet is missing")
-            compare(sheet.rowCount, 2, "the country sheet did not take the country list")
+            compare(sheet.rows.length, 2, "the country sheet did not take the country list")
             // The screen defaults to the United States, so that is the row the
             // sheet must come up pointing at.
             compare(sheet.selectedId, 1, "the sheet did not follow the chosen country")
@@ -371,7 +554,7 @@ Item {
             testContext.setRadioReference("counties", [])
             var county = findChild(tc.screen, "radioReferenceCountySheet")
             verify(county !== null, "the county sheet is missing")
-            compare(county.rowCount, 0, "an unfetched level did not read as empty")
+            compare(county.rows.length, 0, "an unfetched level did not read as empty")
         }
 
         // A build that bakes the application key in never asks for one: the
@@ -408,7 +591,9 @@ Item {
             var sourcePanel = findChild(tc.screen, "radioReferenceSourcePanel")
             var systemList = findChild(tc.screen, "radioReferenceSystemList")
             var backRow = findChild(tc.screen, "radioReferenceBackToResults")
+            var accountRow = findChild(tc.screen, "radioReferenceChangeAccount")
             verify(backRow !== null, "the back row is missing")
+            verify(accountRow !== null && accountRow.visible, "the results stage must offer account editing")
             tryVerify(function () { return systemList.visible },
                       2000, "the results list did not appear")
             verify(sourcePanel.visible, "the find panel went missing on the results stage")
@@ -424,6 +609,7 @@ Item {
                       2000, "the find panel stayed up over a loaded system")
             verify(!systemList.visible, "the results list stayed up over a loaded system")
             verify(backRow.visible, "a loaded system offered no way back")
+            verify(!accountRow.visible, "the account row stayed up over a loaded system")
 
             // The model keeps the results list across closeSystem(); with the
             // system gone the screen must land back on it.
@@ -432,6 +618,7 @@ Item {
             tryVerify(function () { return systemList.visible },
                       2000, "closing the system did not bring the results back")
             verify(sourcePanel.visible, "closing the system did not bring the find panel back")
+            verify(accountRow.visible, "closing the system did not bring account editing back")
             verify(!backRow.visible, "the back row outlived the system it went back from")
         }
 

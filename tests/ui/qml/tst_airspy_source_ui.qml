@@ -37,6 +37,19 @@ Item {
             }
         }
 
+        function test_wizard_network_port_visibility() {
+            screenLoader.source = uiDir + "/WizardScreen.qml";
+            var wizard = screenLoader.item;
+            verify(wizard !== null);
+            wizard.openForAdd(false);
+            var port = findChild(wizard, "wizardPortField");
+            verify(port !== null);
+            for (var source of ["airspy", "rtltcp", "udp", "tcp", "usb", "file", "airspy"]) {
+                wizard.sourceType = source;
+                compare(port.visible, ["rtltcp", "udp", "tcp"].indexOf(source) >= 0, source);
+            }
+        }
+
         function test_scan_list_shared_tuner_visibility() {
             screenLoader.source = uiDir + "/ScanListScreen.qml";
             var screen = screenLoader.item;

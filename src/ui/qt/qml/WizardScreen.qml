@@ -51,6 +51,7 @@ Item {
     }
     DiscardDialog {
         id: discardDialog
+        objectName: "wizardDiscardDialog"
     }
     onStepChanged: Navigation.clearInput(wizard.Window.window)
     property int step: 0
@@ -726,7 +727,7 @@ Item {
 
                 Column {
                     width: parent.width
-                    visible: wizard.sourceType !== "usb" && wizard.sourceType !== "file"
+                    visible: wizard.sourceType === "rtltcp" || wizard.sourceType === "udp" || wizard.sourceType === "tcp"
                     spacing: 10
 
                     Text {
@@ -738,6 +739,7 @@ Item {
 
                     PlexTextField {
                         id: portField
+                        objectName: "wizardPortField"
                         label: qsTr("Port")
                         error: /^[0-9]+$/.test(text) && Number(text) >= 1 && Number(text) <= 65535 ? "" : qsTr("Enter a port from 1 to 65535.")
                         width: parent.width

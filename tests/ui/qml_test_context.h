@@ -1276,6 +1276,13 @@ class Setup : public QObject {
         return m_radio_reference_recorder != nullptr ? m_radio_reference_recorder->nearbyCalls : 0;
     }
 
+    /** Use an offline QML model for complete account/import navigation flows. */
+    Q_INVOKABLE void
+    useRadioReferenceModel(QObject* model) {
+        m_engine->rootContext()->setContextProperty(QStringLiteral("radioReference"),
+                                                    model != nullptr ? model : m_radio_reference_recorder);
+    }
+
     /**
      * @brief Set one prefs key, for the same reason setRadioReference() exists.
      *

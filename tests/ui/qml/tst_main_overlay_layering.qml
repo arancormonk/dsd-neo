@@ -24,6 +24,11 @@ Item {
     height: 900
     readonly property bool buildHasAppKey: radioReference.buildHasAppKey
 
+    FakeRadioReference {
+        id: fakeImport
+        credentialsReady: true
+    }
+
     Loader {
         id: appLoader
 
@@ -79,6 +84,7 @@ Item {
         }
 
         function cleanup() {
+            testContext.useRadioReferenceModel(null);
             tc.app.licensesOpen = false;
             tc.app.radioReferenceAccountOpen = false;
             tc.app.diagnosticsOpen = false;
@@ -87,6 +93,58 @@ Item {
             accountPrefs.rrUsername = previousRrUsername;
             accountPrefs.rrAppKey = previousRrAppKey;
             testContext.useLifecycleHost(false);
+        }
+
+        function test_session_settings_import_returns_to_wizard_then_monitor() {
+            testContext.useLifecycleHost(true, false, true);
+            testContext.useRadioReferenceModel(fakeImport);
+            fakeImport.imports = 0;
+            tc.app.startWithMap(tc.app.exploreSystem("rtltcp", "127.0.0.1", 1234, "851.0125"), -1, false);
+            tryCompare(decoderHost, "running", true);
+            tryCompare(tc.monitor, "enabled", true);
+            tc.monitor.openSessionMenu();
+            var menu = findChild(tc.app, "sessionMenu");
+            tryCompare(menu, "visible", true);
+            findChild(menu, "sessionMenuSettings").activate();
+            compare(tc.app.sessionDestination, "settings");
+            var settings = findChild(tc.app, "sessionSettingsScreen");
+            verify(settings !== null && settings.visible);
+            findChild(settings, "settingsImportsRow").activate();
+            tryCompare(tc.imports, "enabled", true);
+            findChild(tc.imports, "importFromRadioReferenceButton").activate();
+            tryCompare(tc.radioReference, "enabled", true);
+            tc.radioReference.openSystem(6673);
+            compare(tc.radioReference.selectedSites.length, 1);
+            var importButton = findChild(tc.radioReference, "radioReferenceImportButton");
+            verify(importButton.enabled);
+            importButton.activate();
+            var confirm = findChild(tc.radioReference, "radioReferenceConfirmImport");
+            verify(confirm !== null && confirm.visible && confirm.enabled);
+            confirm.activate();
+            compare(fakeImport.imports, 1);
+            compare(fakeImport.savedRow, -1, "the wizard must remain the saved-system writer");
+            tryCompare(tc.wizard, "enabled", true);
+            compare(tc.app.radioReferenceOpen, false);
+            compare(tc.app.importsOpen, false);
+            compare(tc.app.sessionDestination, "");
+            verify(!settings.visible, "session Settings covers the imported wizard");
+            verify(!tc.monitor.enabled);
+            compare(tc.wizard.freqText, "851.0125");
+            compare(tc.wizard.importedSite.rrSid, 6673);
+            compare(tc.wizard.importedSite.rrSiteId, 1);
+            compare(tc.wizard.step, 1);
+            tc.app.requestBack();
+            compare(tc.wizard.step, 0, "Back must reach the visible wizard");
+            tc.app.requestBack();
+            var discard = findChild(tc.wizard, "wizardDiscardDialog");
+            verify(discard !== null && discard.visible);
+            var discardButton = findChild(discard, "discardDialogDiscard");
+            verify(discardButton !== null);
+            discardButton.activate();
+            tryCompare(tc.app, "wizardOpen", false);
+            tryCompare(tc.monitor, "enabled", true);
+            verify(tc.monitor.visible);
+            compare(decoderHost.running, true, "leaving the wizard must keep listening");
         }
 
         function test_support_escape_data() {
