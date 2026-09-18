@@ -28,11 +28,6 @@ Item {
     signal openSessionMenu
     signal openTalkgroups
 
-    // Raised by a long-press on the header title, the same gesture that edits a
-    // card on Home. Main.qml opens the wizard on the running system — the only
-    // way to change its imported CSVs while the session is live.
-    signal editSystem
-
     // The saved-system map the session was started from (may be null for a
     // network/file quick start).
     property var system: null
@@ -191,10 +186,6 @@ Item {
                 // On a narrow phone screen, elide long budgets to leave room for controls.
                 elide: Text.ElideRight
             }
-
-            TapHandler {
-                onLongPressed: screen.editSystem()
-            }
         }
 
         Row {
@@ -212,6 +203,7 @@ Item {
             }
 
             IconButton {
+                objectName: "sessionOptionsButton"
                 icon: "more"
                 accessibleName: qsTr("Session options")
                 onClicked: screen.openSessionMenu()
@@ -567,12 +559,40 @@ Item {
 
             // Actions on the live engine; short windows keep them beside Stop.
 
-            OutlineButton {
+            UiPanel {
+                id: decryptionRow
                 objectName: "openKeySheetButton"
                 width: parent.width
-                text: qsTr("Decryption keys…")
+                height: Math.max(Theme.minimumTouchSize, decryptionLabel.implicitHeight + 20)
                 enabled: decoderHost.running
-                onClicked: keySheet.open()
+                activeFocusOnTab: enabled && Navigation.allows(decryptionRow)
+                Accessible.role: Accessible.Button
+                Accessible.name: qsTr("Decryption · %1").arg(keySheet.effectiveState)
+                readonly property bool navigationAllowed: Navigation.allows(decryptionRow)
+                Accessible.ignored: !visible || !navigationAllowed
+                Accessible.onPressAction: activate()
+                function activate() {
+                    if (enabled && Navigation.allows(decryptionRow))
+                        keySheet.open();
+                }
+                Keys.onReturnPressed: activate()
+                Keys.onSpacePressed: activate()
+                FocusFrame {}
+                Text {
+                    id: decryptionLabel
+                    objectName: "decryptionStatusText"
+                    anchors.centerIn: parent
+                    width: parent.width - 24
+                    text: qsTr("Decryption · %1 ›").arg(keySheet.effectiveState)
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(12)
+                    color: Theme.textPrimary
+                }
+                TapHandler {
+                    onTapped: decryptionRow.activate()
+                }
             }
 
             // Actions on the scan rotation (#380): the -Y list or the trunk-scan
@@ -1054,6 +1074,7 @@ Item {
                 visible: !screen.compactHeight
                 width: screen.compactHeight ? (parent.width - 20) / 3 : (parent.width - 30) / 4
                 text: qsTr("TG list")
+                accessibleName: qsTr("Talkgroups")
                 enabled: decoderHost.running
                 onClicked: screen.openTalkgroups()
             }

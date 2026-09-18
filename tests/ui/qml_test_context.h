@@ -182,6 +182,13 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         Q_EMIT sessionStateChanged();
     }
 
+    QString failure;
+
+    QString
+    failureText() const override {
+        return failure;
+    }
+
     // WP-S1: exercise the same brokered-USB gate as saved-system starts.
     bool
     localDeviceBrokered() const override {
@@ -1432,6 +1439,12 @@ class Setup : public QObject {
     }
 
     Q_INVOKABLE void
+    setLifecycleFailure(const QString& text) {
+        m_lifecycle_host->failure = text;
+        Q_EMIT m_lifecycle_host->sessionStateChanged();
+    }
+
+    Q_INVOKABLE void
     setScanTestUsb(bool brokered, bool ready) {
         m_import_host->usbBrokered = brokered;
         m_import_host->usbReady = ready;
@@ -1736,6 +1749,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("keyProfileRef")] = QString();
         metrics[QStringLiteral("keyEpoch")] = QStringLiteral("1");
         metrics[QStringLiteral("automaticKeys")] = false;
+        metrics[QStringLiteral("directKeys")] = false;
         metrics[QStringLiteral("decryptionSlots")] = QVariantList();
         // WP-F1: site identity fixture keys.
         metrics[QStringLiteral("siteProtocol")] = QString();

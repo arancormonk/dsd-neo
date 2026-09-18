@@ -68,7 +68,10 @@ Item {
     // underneath and retunes the radio — the panel closes and the receiver has
     // moved. Disabling the picture while a sheet is up is what stops that; the
     // sheets are siblings of it, so they stay live.
-    readonly property bool sheetOpen: radioSheet.visible || goToSheet.visible || confirmExplore.visible
+    // Main supplies the session sheet; standalone hosts keep a local fallback.
+    property var sharedRadioSheet: null
+    readonly property var radioSheet: sharedRadioSheet || localRadioLoader.item
+    readonly property bool sheetOpen: (radioSheet !== null && radioSheet.visible) || goToSheet.visible || confirmExplore.visible
 
     // Producing frames is what costs battery, so it follows the screen being up
     // and a session running — not merely the object existing.
@@ -1179,8 +1182,11 @@ Item {
     }
 
     // ---- Radio settings ----
-    RadioSheet {
-        id: radioSheet
+    Loader {
+        id: localRadioLoader
+        anchors.fill: parent
+        active: screen.sharedRadioSheet === null
+        sourceComponent: RadioSheet {}
     }
 
     // ---- Explore from here, confirmed ----

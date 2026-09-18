@@ -3240,6 +3240,18 @@ if(DSD_ENABLE_QT_UI)
                 ENVIRONMENT
                     "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
         )
+        add_test(
+            NAME UI_QT_QML_SESSION_TOOLS
+            COMMAND
+                dsd-neo_test_ui_qt_qml -input
+                ${CMAKE_CURRENT_SOURCE_DIR}/ui/qml/tst_main_session_tools.qml
+        )
+        set_tests_properties(
+            UI_QT_QML_SESSION_TOOLS
+            PROPERTIES
+                ENVIRONMENT
+                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+        )
         foreach(_case IN ITEMS settings_layout licenses_screen)
             string(TOUPPER "${_case}" _case_upper)
             add_test(

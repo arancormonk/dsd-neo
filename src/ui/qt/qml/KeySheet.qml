@@ -20,6 +20,19 @@ ModalSheet {
         var count = decryptionProfiles.count;
         return decryptionProfiles.forRuntimeReference(metrics.keyProfileRef || "");
     }
+    // Resolve the active runtime reference, which may belong to a scan target
+    // rather than the session default. Never infer effective keys from the editor.
+    readonly property string effectiveState: {
+        if (!sessionRunning || !metrics.optionsKnown)
+            return qsTr("Not yet known");
+        if ((metrics.keyProfileRef || "").length > 0)
+            return materialProfile.label || qsTr("Active profile");
+        if (metrics.directKeys)
+            return qsTr("Direct override");
+        if (metrics.automaticKeys)
+            return qsTr("Automatic keys");
+        return qsTr("No keys");
+    }
     function open() {
         editor.reset();
         notice = "";

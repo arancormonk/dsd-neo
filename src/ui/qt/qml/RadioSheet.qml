@@ -27,6 +27,13 @@ ModalSheet {
     objectName: "radioSheet"
     panelObjectName: "radioSheetPanel"
     spacing: 14
+    readonly property bool sessionRunning: decoderHost.running
+    onSessionRunningChanged: {
+        if (!sessionRunning) {
+            visible = false;
+            forgetRequests();
+        }
+    }
 
     // Long enough for several 250 ms polls plus the queue drain — an accepted
     // request is normally reflected well inside it, and a refused one is not

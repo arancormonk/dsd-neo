@@ -146,7 +146,7 @@ Window {
     Binding {
         target: uiController
         property: "autoStartBlocked"
-        value: mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0
+        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0
     }
     Connections {
         target: uiController
@@ -234,26 +234,31 @@ Window {
         onLeave: mainRoot.talkgroupsOpen = false
     }
     NavigationLayer {
+        id: sessionToolsLayer
         surface: sessionTools
         active: mainRoot.sessionDestination.length > 0
         onLeave: mainRoot.sessionDestination = ""
     }
     NavigationLayer {
+        id: importsLayer
         surface: importsScreen
         active: mainRoot.importsOpen && (!mainRoot.monitorMode || mainRoot.sessionDestination === "settings")
         onLeave: mainRoot.importsOpen = false
     }
     NavigationLayer {
+        id: diagnosticsLayer
         surface: diagnosticsScreen
         active: mainRoot.diagnosticsOpen
         onLeave: mainRoot.diagnosticsOpen = false
     }
     NavigationLayer {
+        id: licensesLayer
         surface: licensesScreen
         active: mainRoot.licensesOpen
         onLeave: mainRoot.licensesOpen = false
     }
     NavigationLayer {
+        id: radioReferenceAccountLayer
         surface: radioReferenceAccountScreen
         active: mainRoot.radioReferenceAccountOpen
         onLeave: mainRoot.radioReferenceAccountOpen = false
@@ -354,6 +359,21 @@ Window {
     // repeat of the same failure is reported again rather than swallowed.
     property string dismissedFailure: ""
     readonly property bool showFailure: !monitorMode && failureText.length > 0 && failureText !== dismissedFailure
+    function revealFailure() {
+        // Settings subpages can outlive a clean stop. If the failure arrives
+        // afterward, leave them through navigation so Home is actually exposed
+        // and their input/navigation cleanup still runs.
+        for (var layer of [importsLayer, diagnosticsLayer, licensesLayer, radioReferenceAccountLayer]) {
+            if (layer.active)
+                layer.leave();
+        }
+        currentTab = 0;
+    }
+    onShowFailureChanged: {
+        // A host failure can arrive after the session-active notification.
+        if (showFailure)
+            revealFailure();
+    }
 
     // Dismissing the banner abandons a start still waiting on USB access; the
     // flag must not linger, or a dongle detached minutes later while idle would
@@ -396,6 +416,15 @@ Window {
             mainRoot.exploring = false;
             mainRoot.spectrumOpen = false;
             mainRoot.talkgroupsOpen = false;
+            sessionRadio.visible = false;
+            sessionMenu.visible = false;
+            if (mainRoot.sessionDestination.length > 0) {
+                if (mainRoot.failureText.length > 0 && mainRoot.failureText !== mainRoot.dismissedFailure)
+                    mainRoot.revealFailure();
+                else
+                    mainRoot.currentTab = mainRoot.sessionDestination === "history" ? 1 : 2;
+                sessionToolsLayer.leave();
+            }
             // Row indices shift when a system is removed, and Home is reachable
             // again from here; a row remembered past its session would name a
             // different system by the time anything read it.
@@ -821,7 +850,7 @@ Window {
         // grabs. Otherwise closing an overlay can deliver the same release to
         // "Stop listening" underneath. Session-menu rows keep passive grabs so
         // the sheet can scroll when a drag starts on a destination or Cancel.
-        enabled: opacity > 0.9 && !mainRoot.wizardOpen && !mainRoot.spectrumOpen && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible && !siteChooser.visible && !sessionMenu.visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings") && mainRoot.sessionDestination.length === 0
+        enabled: opacity > 0.9 && !mainRoot.wizardOpen && !mainRoot.spectrumOpen && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible && !siteChooser.visible && !sessionMenu.visible && !sessionRadio.visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings") && mainRoot.sessionDestination.length === 0
 
         onOpenSpectrum: {
             spectrumLoader.active = true;
@@ -829,14 +858,6 @@ Window {
         }
         onOpenTalkgroups: mainRoot.talkgroupsOpen = true
         onOpenSessionMenu: sessionMenu.open()
-        onEditSystem: {
-            // Only a session started from a saved row has a system to edit; a
-            // reattached or quick-start session has no row to write back to.
-            if (mainRoot.sessionRow >= 0) {
-                wizard.openForEdit(mainRoot.sessionRow);
-                mainRoot.wizardOpen = true;
-            }
-        }
     }
 
     // ---- Spectrum (pushed over the monitor) ----
@@ -863,6 +884,7 @@ Window {
         SpectrumScreen {
             objectName: "spectrumScreen"
             exploring: mainRoot.exploring
+            sharedRadioSheet: sessionRadio
 
             onClosed: mainRoot.spectrumOpen = false
             onExploreFromHere: {
@@ -889,7 +911,7 @@ Window {
                 // logs from here on did not come from that system.
                 mainRoot.sessionSystem = mainRoot.exploreSystem(mainRoot.sessionSystem ? mainRoot.sessionSystem.sourceType : "usb", mainRoot.sessionSystem ? mainRoot.sessionSystem.host : "", mainRoot.sessionSystem ? mainRoot.sessionSystem.port : 0, exploreFreqMhz);
                 // Which also means the saved row is no longer this session's, so
-                // the monitor's edit gesture must not open — and push CSVs into —
+                // the session's edit action must not open — and push CSVs into —
                 // a system the session detached from.
                 mainRoot.sessionRow = -1;
                 uiController.flushHistory();
@@ -1018,6 +1040,17 @@ Window {
 
     Item {
         id: sessionTools
+        objectName: "sessionTools"
+        Keys.onEscapePressed: mainRoot.requestBack()
+        Keys.onBackPressed: mainRoot.requestBack()
+        function restoreLayerFocus() {
+            if (visible && enabled) Qt.callLater(function () {
+                if (sessionTools.visible && sessionTools.enabled && Navigation.allows(sessionTools) && !Navigation.contains(sessionTools, mainRoot.activeFocusItem))
+                    sessionTools.forceActiveFocus();
+            });
+        }
+        onVisibleChanged: restoreLayerFocus()
+        onEnabledChanged: restoreLayerFocus()
         anchors.fill: safeArea
         visible: mainRoot.sessionDestination.length > 0
         enabled: visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && !mainRoot.radioReferenceOpen
@@ -1025,18 +1058,41 @@ Window {
             anchors.fill: parent
             color: Theme.bg
         }
-        OutlineButton {
-            id: returnToSession
+        Item {
+            id: sessionToolsHeader
             anchors.top: parent.top
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.margins: Theme.screenPadding
-            text: mainRoot.monitorMode ? qsTr("Back to Monitor") : qsTr("Back to Listen")
-            onClicked: mainRoot.sessionDestination = ""
+            height: 46
+
+            IconButton {
+                id: sessionToolsBack
+                objectName: "sessionToolsBack"
+                icon: "back"
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                onClicked: sessionToolsLayer.leave()
+            }
+            Text {
+                objectName: "sessionToolsTitle"
+                anchors.left: sessionToolsBack.right
+                anchors.leftMargin: 14
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: mainRoot.sessionDestination === "history" ? qsTr("History") : qsTr("Settings")
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(22)
+                font.weight: Font.Bold
+                font.letterSpacing: -0.22
+                color: Theme.textPrimary
+                elide: Text.ElideRight
+            }
         }
         HistoryScreen {
             objectName: "sessionHistoryScreen"
-            anchors.top: returnToSession.bottom
+            showTitle: false
+            anchors.top: sessionToolsHeader.bottom
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
@@ -1044,7 +1100,8 @@ Window {
         }
         SettingsScreen {
             objectName: "sessionSettingsScreen"
-            anchors.top: returnToSession.bottom
+            showTitle: false
+            anchors.top: sessionToolsHeader.bottom
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
@@ -1064,8 +1121,10 @@ Window {
             var items = [];
             if (monitor.sitesAvailable)
                 items.push({text: qsTr("Sites"), key: "sites", objectName: "sessionMenuSites"});
-            if (metrics.radioInput)
+            if (metrics.radioInput) {
+                items.push({text: qsTr("Radio"), key: "radio", objectName: "sessionMenuRadio"});
                 items.push({text: qsTr("Spectrum"), key: "spectrum", objectName: "sessionMenuSpectrum"});
+            }
             items.push({text: qsTr("Talkgroups"), key: "talkgroups", objectName: "sessionMenuTalkgroups"});
             items.push({text: qsTr("History"), key: "history", objectName: "sessionMenuHistory"});
             items.push({text: qsTr("Settings"), key: "settings", objectName: "sessionMenuSettings"});
@@ -1078,6 +1137,8 @@ Window {
             var key = actions[index].key;
             if (key === "sites")
                 monitor.openSites();
+            else if (key === "radio")
+                sessionRadio.open();
             else if (key === "spectrum") {
                 spectrumLoader.active = true;
                 mainRoot.spectrumOpen = true;
@@ -1087,9 +1148,17 @@ Window {
                 mainRoot.sessionDestination = key;
             else if (key === "diagnostics")
                 mainRoot.diagnosticsOpen = true;
-            else if (key === "edit")
-                monitor.editSystem();
+            else if (key === "edit" && mainRoot.sessionRow >= 0) {
+                wizard.openForEdit(mainRoot.sessionRow);
+                mainRoot.wizardOpen = true;
+            }
         }
+    }
+
+    // Shared by Monitor and Spectrum; opening Radio never allocates the waterfall.
+    RadioSheet {
+        id: sessionRadio
+        anchors.fill: safeArea
     }
 
     // WP-F5 diagnostics overlay.

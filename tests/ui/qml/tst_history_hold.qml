@@ -12,6 +12,21 @@ Item {
         source: uiDir + "/HistoryDetailSheet.qml"
     }
 
+    Loader {
+        id: firstHistory
+        width: 420
+        height: 900
+        visible: false
+        source: uiDir + "/HistoryScreen.qml"
+    }
+    Loader {
+        id: secondHistory
+        width: 420
+        height: 900
+        visible: false
+        source: uiDir + "/HistoryScreen.qml"
+    }
+
     TestCase {
         name: "HistoryHold"
         when: windowShown
@@ -33,6 +48,34 @@ Item {
             testContext.setMetric("optionsKnown", false)
             testContext.setMetric("scanRotationActive", false)
             callHistory.sessionUid = "test-system"
+        }
+
+        function test_two_history_search_fields_share_debounced_filter() {
+            var first = findChild(firstHistory.item, "historySearch");
+            var second = findChild(secondHistory.item, "historySearch");
+            verify(first !== null && second !== null);
+            historyView.filterText = "initial";
+            compare(first.text, "initial");
+            compare(second.text, "initial");
+            first.input.text = "dispatch";
+            wait(100);
+            compare(historyView.filterText, "initial", "typing must remain debounced");
+            first.input.text = "dispatch 1";
+            tryCompare(historyView, "filterText", "dispatch 1");
+            compare(second.text, "dispatch 1");
+            second.input.text = "fire";
+            tryCompare(historyView, "filterText", "fire");
+            compare(first.text, "fire");
+            // A shared-model update cancels any older local debounce.
+            first.input.text = "pending";
+            historyView.filterText = "external";
+            wait(350);
+            compare(historyView.filterText, "external");
+            compare(first.text, "external");
+            compare(second.text, "external");
+            second.input.text = "";
+            tryCompare(historyView, "filterText", "");
+            compare(first.text, "");
         }
 
         function test_hold_data() {
