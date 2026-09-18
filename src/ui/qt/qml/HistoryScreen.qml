@@ -9,6 +9,19 @@ import "Util.js" as Util
 Item {
     id: screen
 
+    property bool showTitle: true
+
+    // Hand off pending text before another History instance can accept input.
+    // Otherwise this screen's older timer could overwrite the new editor.
+    function flushPendingSearch() {
+        if (!searchDebounce.running)
+            return;
+        searchDebounce.stop();
+        historyView.filterText = search.text;
+    }
+    onVisibleChanged: if (!visible) flushPendingSearch()
+    onEnabledChanged: if (!enabled) flushPendingSearch()
+
     // Cycles: 0 everything, 1 clear calls, 2 encrypted calls, 3 messages
     // (SMS, GPS positions, data and control notices).
     readonly property var kindLabels: [qsTr("All activity"), qsTr("Unencrypted calls"), qsTr("Encrypted"), qsTr("Messages")]
@@ -34,9 +47,12 @@ Item {
 
         Item {
             width: parent.width
-            height: Math.max(48, Theme.fontSize(24) + 20)
+            height: Math.max(screen.showTitle ? Math.max(48, Theme.fontSize(24) + 20) : 0,
+                             callHistory.count > 0 ? clearHistory.implicitHeight : 0)
+            visible: height > 0
 
             Text {
+                visible: screen.showTitle
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("History")
@@ -48,6 +64,7 @@ Item {
             }
 
             OutlineButton {
+                id: clearHistory
                 objectName: "clearHistoryButton"
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
@@ -59,13 +76,24 @@ Item {
 
         PlexTextField {
             id: search
+            objectName: "historySearch"
+            Binding {
+                target: search
+                property: "text"
+                value: historyView.filterText
+            }
 
             width: parent.width
             placeholderText: qsTr("Search talkgroup or unit")
             inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
             // Debounced: every keystroke otherwise re-evaluates the filter over
             // the full log, and on a phone that stutters the keyboard.
-            onTextChanged: searchDebounce.restart()
+            onTextChanged: {
+                if (text !== historyView.filterText)
+                    searchDebounce.restart();
+                else
+                    searchDebounce.stop();
+            }
 
             Timer {
                 id: searchDebounce
@@ -286,7 +314,6 @@ Item {
             width: Math.min(parent.width, 220)
             text: qsTr("Clear filters")
             onClicked: {
-                search.text = "";
                 historyView.filterText = "";
                 historyView.filterSystem = "";
                 historyView.filterKind = 0;

@@ -4,6 +4,7 @@ import QtTest
 import "../../../src/ui/qt/qml" as Ui
 
 Item {
+    id: root
     width: 640
     height: 360
     Ui.MonitorScreen {
@@ -44,6 +45,8 @@ Item {
         }
         function cleanup() {
             testContext.setPrefs("exploreSourceType", originalExploreSource);
+            root.width = 640;
+            root.height = 360;
             Ui.Theme.resetFontScale();
             sheet.visible = false;
             testContext.setMetric("slot1CallState", 0);
@@ -51,6 +54,30 @@ Item {
             testContext.setMetric("leadSlot", 0);
             testContext.setHostRunning(false);
         }
+        function test_quick_row_at_360_dp() {
+            root.width = 360;
+            root.height = 800;
+            Ui.Theme.fontScale = 1;
+            var button = findChild(monitor, "talkgroupsButton");
+            verify(button.visible);
+            compare(button.accessibleName, "Talkgroups");
+            var label = null;
+            for (var child of button.children) {
+                if (child instanceof Text && child.text === button.text)
+                    label = child;
+            }
+            verify(label !== null);
+            var measure = Qt.createQmlObject('import QtQuick; Text { text: "Talkgroups" }', root);
+            measure.font = label.font;
+            verify(measure.implicitWidth > label.width, "keep TG list when Talkgroups cannot fit one line");
+            measure.destroy();
+            compare(button.text, "TG list");
+            compare(label.lineCount, 1);
+            verify(button.mapToItem(monitor, button.width, 0).x <= 360);
+            root.height = 360;
+            verify(!button.visible, "compact hiding stays intact");
+        }
+
         function test_explore_subtitle_scales_data() {
             return [{tag: "unconfigured", sourceType: "", pixels: 13},
                     {tag: "configured", sourceType: "usb", pixels: 12}];

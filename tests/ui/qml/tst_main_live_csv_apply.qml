@@ -23,6 +23,7 @@ Item {
 
         function cleanup() {
             testContext.setHostRunning(false)
+            appLoader.item.wizardOpen = false
             appLoader.item.sessionRow = -1
             appLoader.item.sessionSystem = null
             if (savedRow >= 0) {
@@ -47,7 +48,19 @@ Item {
             testContext.resetCommands()
 
             var path = "/data/imports/radio IDs.csv"
-            wizard.openForEdit(savedRow)
+            // Header long-press was removed; the visible menu route still edits
+            // the running saved system and applies its CSV changes live.
+            var monitor = findChild(mainRoot, "monitorScreen")
+            var title = findChild(monitor, "monitorHeaderTitle")
+            mousePress(title, title.width / 2, title.height / 2)
+            wait(1000)
+            mouseRelease(title, title.width / 2, title.height / 2)
+            verify(!mainRoot.wizardOpen)
+            compare(mainRoot.sessionRow, savedRow)
+            monitor.openSessionMenu()
+            verify(findChild(mainRoot, "sessionMenu").visible)
+            findChild(findChild(mainRoot, "sessionMenu"), "sessionMenuEdit").activate()
+            verify(mainRoot.wizardOpen)
             wizard.assignCsvPath("src", path, false)
             wizard.commit()
             compare(commands.srcImportCalls(), 1)

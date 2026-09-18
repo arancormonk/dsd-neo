@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import QtQuick.Window
 
 // The imported-files library: every channel map, talkgroup list, key file,
 // P25 band plan and radio ID list copied into app storage, with import/update/remove
@@ -9,6 +10,12 @@ import QtQuick
 // here serves any saved system.
 Item {
     id: screen
+    Keys.onEscapePressed: Navigation.back(screen.Window.window)
+    Keys.onBackPressed: Navigation.back(screen.Window.window)
+    onVisibleChanged: if (visible) Qt.callLater(function () {
+        if (screen.visible && Navigation.allows(screen) && !Navigation.contains(screen, screen.Window.window.activeFocusItem))
+            screen.forceActiveFocus();
+    })
 
     signal closed
     // Asks Main.qml to push the RadioReference screen over this one.

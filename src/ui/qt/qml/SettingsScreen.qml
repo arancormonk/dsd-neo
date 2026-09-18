@@ -8,6 +8,7 @@ import QtQuick
 Item {
     id: screen
 
+    property bool showTitle: true
     property bool advancedOpen: false
     property bool lockoutPending: false
     property bool requestedLockoutPersistence: true
@@ -137,6 +138,8 @@ Item {
             spacing: Theme.gap
 
             Text {
+                visible: screen.showTitle
+                height: screen.showTitle ? implicitHeight : 0
                 text: qsTr("Settings")
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(24)

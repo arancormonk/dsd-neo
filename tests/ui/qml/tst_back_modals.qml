@@ -500,7 +500,7 @@ Item {
         function test_session_menu_routes_data() {
             var rows = [];
             for (var height of [900, 440]) {
-                for (var text of ["Sites", "Spectrum", "Talkgroups", "History", "Settings", "Diagnostics", "Edit saved system", "Cancel"])
+                for (var text of ["Sites", "Radio", "Spectrum", "Talkgroups", "History", "Settings", "Diagnostics", "Edit saved system", "Cancel"])
                     rows.push({tag: text + "-" + height, text: text, height: height});
             }
             return rows;
@@ -521,7 +521,7 @@ Item {
             var menu = item("sessionMenu");
             monitor.openSessionMenu();
             tryCompare(menu, "visible", true);
-            compare(menu.actions.length, 7);
+            compare(menu.actions.length, 8);
             var button = visualChild(menu, function (entry) {
                 return entry.text === data.text && typeof entry.clicked === "function";
             });
@@ -544,6 +544,8 @@ Item {
             compare(decoderHost.sessionState, 2);
             if (data.text === "Sites")
                 verify(item("siteChooserSheet").visible);
+            if (data.text === "Radio")
+                verify(item("radioSheet").visible);
             if (data.text === "Spectrum")
                 verify(app.spectrumOpen);
             if (data.text === "Talkgroups")

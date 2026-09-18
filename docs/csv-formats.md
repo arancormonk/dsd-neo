@@ -30,10 +30,10 @@ Files are picked with the system document picker and copied into app-private sto
 original can live anywhere (Downloads, Drive, …) and is not read again
 after import — use "Update from file" to pull in a changed original. Each import is validated immediately and the row
 shows how many entries loaded ("412 talkgroups · 3 rows skipped"); a file whose rows all fail to parse is flagged
-"No usable rows". While a session is running, long-press its title on the monitor screen to edit that system; saving
+"No usable rows". While a session is running, open the monitor's session menu and choose **Edit saved system**; saving
 applies the files that changed to the live session immediately, including clearing a field to "None" — that unloads the
-channel map, talkgroup list, keys, or source ID list from the running session. One limit is worth knowing: the gesture
-only works for a session this app instance started (after the Activity is recreated while the service kept running, there is no
+channel map, talkgroup list, keys, or source ID list from the running session. This action is available
+only for a session this app instance started (after the Activity is recreated while the service kept running, there is no
 saved-system row to write back to).
 
 Applying a channel map **replaces** the live one rather than merging into it, so anything the decoder learned on the
