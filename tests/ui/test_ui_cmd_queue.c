@@ -3602,7 +3602,9 @@ test_temporary_lockout_commands(uint8_t slot) {
 
     // Export uses the same canonical writer even when its source snapshot has avoids.
     union {
-        max_align_t alignment;
+        long double floating_alignment;
+        void* pointer_alignment;
+        uint64_t integer_alignment;
         unsigned char bytes[1200];
     } storage = {0};
 
