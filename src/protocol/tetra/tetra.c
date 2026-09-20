@@ -26,6 +26,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_acelp.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
@@ -75,12 +76,13 @@
  * tetra_prepare_block()
  *
  * Shared physical-layer pipeline for one 216-bit NDB block:
- * dibits → hard bits + soft costs → deinterleave → descramble.
+ * dibits → hard bits + soft costs → descramble.
  *
- * Returns the descrambled soft-decision costs in @out_soft (216 elements).
+ * Returns the descrambled, still-interleaved soft-decision costs in @out_soft
+ * (216 elements).  Interleaving depends on the logical channel:
  * The caller uses these for either:
- *   - SCH-HD: per-block depuncture(rate 2/3) + Viterbi
- *   - TCH/FS: combine two blocks then depuncture(rate 292/432) + Viterbi
+ *   - SCH-HD: per-block K=216, a=101 deinterleave
+ *   - TCH/FS: combine both halves, then 24x18 speech deinterleave
  *
  * @dibuf      – 108 hard dibits (values 0-3), one byte per dibit
  * @soft_in    – 108 soft floats per dibit, or NULL to use neutral costs
@@ -97,41 +99,38 @@ static void tetra_prepare_block(const uint8_t *dibuf, const float *soft_in,
     uint16_t soft_costs[TETRA_NDB_BLOCK_BITS];
 
     for (int i = 0; i < TETRA_NDB_BLOCK_DIBITS; i++) {
-        hard_bits[i * 2 + 0] = (dibuf[i] >> 1) & 1u;
-        hard_bits[i * 2 + 1] =  dibuf[i]        & 1u;
+        /* An inverted discriminator swaps the positive and negative symbol
+         * pairs, which is exactly dibit XOR 2: the MSB changes and the LSB
+         * does not. Frame sync records that polarity; normalize it before
+         * either hard- or soft-decision FEC sees the block. */
+        const uint8_t d = (uint8_t)((dibuf[i] ^ (state->tetra_polarity ? 2u : 0u)) & 3u);
+        hard_bits[i * 2 + 0] = (d >> 1) & 1u;
+        hard_bits[i * 2 + 1] =  d       & 1u;
 
         if (soft_in) {
             soft_costs[i * 2 + 0] = soft_symbol_to_viterbi_cost(soft_in[i], state, 0);
             soft_costs[i * 2 + 1] = soft_symbol_to_viterbi_cost(soft_in[i], state, 1);
+            if (state->tetra_polarity)
+                soft_costs[i * 2 + 0] = (uint16_t)(0xFFFFu - soft_costs[i * 2 + 0]);
         } else {
             soft_costs[i * 2 + 0] = hard_bits[i * 2 + 0] ? 0xFFFFu : 0x0000u;
             soft_costs[i * 2 + 1] = hard_bits[i * 2 + 1] ? 0xFFFFu : 0x0000u;
         }
     }
 
-    /* Step 2: Deinterleave (K=216, a=101). */
-    uint8_t  deint_hard[TETRA_NDB_BLOCK_BITS];
-    uint16_t deint_soft[TETRA_NDB_BLOCK_BITS];
-    memset(deint_hard, 0, sizeof(deint_hard));
-    for (int i = 0; i < TETRA_NDB_BLOCK_BITS; i++) deint_soft[i] = SOFT_NEUTRAL;
-
-    tetra_block_deinterleave(hard_bits, deint_hard,
-                             TETRA_NDB_BLOCK_BITS, TETRA_BLOCK_ROWS);
-    tetra_block_deinterleave_soft(soft_costs, deint_soft,
-                                  TETRA_NDB_BLOCK_BITS,
-                                  TETRA_BLOCK_ROWS, TETRA_BLOCK_COLS);
-
-    /* Step 3: Descramble. */
+    /* Step 2: Descramble the received type-5 bits back to type-4.  The
+     * transmitter scrambles after interleaving, so this must precede
+     * deinterleaving on reception. */
     uint32_t lfsr_seed;
     if (state->tetra_net_known) {
         lfsr_seed = state->tetra_lfsr_seed;
     } else {
         lfsr_seed = tetra_compute_scramb_seed(0u, 0u, (uint8_t)(cc & 0x3u));
     }
-    tetra_descramble     (deint_hard, TETRA_NDB_BLOCK_BITS, lfsr_seed);
-    tetra_descramble_soft(deint_soft, TETRA_NDB_BLOCK_BITS, lfsr_seed);
+    tetra_descramble     (hard_bits, TETRA_NDB_BLOCK_BITS, lfsr_seed);
+    tetra_descramble_soft(soft_costs, TETRA_NDB_BLOCK_BITS, lfsr_seed);
 
-    memcpy(out_soft, deint_soft, sizeof(uint16_t) * TETRA_NDB_BLOCK_BITS);
+    memcpy(out_soft, soft_costs, sizeof(uint16_t) * TETRA_NDB_BLOCK_BITS);
 }
 
 /* -------------------------------------------------------------------------
@@ -153,7 +152,11 @@ static void tetra_decode_schd(const uint16_t *soft, int cc, int block_idx,
         fprintf(stderr, "[TETRA SCH B%d] depunc malloc failed\n", block_idx);
         return;
     }
-    tetra_rcpc_depuncture_by_id(punct_id, soft, TETRA_NDB_BLOCK_BITS,
+    uint16_t deint_soft[TETRA_NDB_BLOCK_BITS];
+    tetra_block_deinterleave_soft(soft, deint_soft,
+                                  TETRA_NDB_BLOCK_BITS,
+                                  TETRA_BLOCK_ROWS, TETRA_BLOCK_COLS);
+    tetra_rcpc_depuncture_by_id(punct_id, deint_soft, TETRA_NDB_BLOCK_BITS,
                                 depunc, depunc_len);
 
     uint8_t decoded[256];
@@ -177,24 +180,22 @@ static void tetra_decode_schd(const uint16_t *soft, int cc, int block_idx,
  * TCH/FS combined decode constants
  *
  * TETRA TCH/FS uses both NDB blocks as one codeword:
- *   432 coded bits → depuncture(292/432) → ~1168 mother bits → Viterbi
- *   → 292 type-2 bits → class reorder → 2 × 137-bit ACELP codec frames
+ *   432 coded bits → speech matrix deinterleave → class-specific RCPC
+ *   → 274 type-2 bits → class reorder → 2 × 137-bit ACELP codec frames
  *
  * ETSI EN 300 392-2 §8.3 Table 8.7 / EN 300 395-2 §6
  * ------------------------------------------------------------------------- */
 #define TETRA_TCH_FS_CODED_BITS   432  /* 2 × 216 = combined blocks       */
-#define TETRA_TCH_FS_DEPUNC_LEN  1168  /* 292 × 4 (rate 1/4 mother code)  */
-#define TETRA_TCH_FS_TYPE2_BITS   292  /* Viterbi decoded info bits        */
+#define TETRA_TCH_FS_TYPE2_BITS   274  /* two complete 137-bit frames */
 
 /* -------------------------------------------------------------------------
  * tetra_decode_tch_fs()
  *
- * TCH/FS path: combine two prepared 216-bit blocks, depuncture with
- * rate 292/432, Viterbi decode → 292 type-2 bits, then ACELP reorder
- * and vocoder processing.
+ * TCH/FS path: combine two prepared 216-bit blocks, speech-deinterleave,
+ * decode the class-specific channel code, then ACELP reorder and vocoder.
  *
- * @soft_b1 – 216 descrambled soft costs from Block 1
- * @soft_b2 – 216 descrambled soft costs from Block 2
+ * @soft_b1 – 216 descrambled, interleaved soft costs from Block 1
+ * @soft_b2 – 216 descrambled, interleaved soft costs from Block 2
  * @cc      – Colour Code
  * @opts    – dsd_opts
  * @state   – dsd_state
@@ -205,36 +206,24 @@ static void tetra_decode_tch_fs(const uint16_t *soft_b1, const uint16_t *soft_b2
 {
     /* Step 1: Concatenate Block 1 + Block 2 → 432 soft costs. */
     uint16_t combined[TETRA_TCH_FS_CODED_BITS];
+    uint16_t deint[TETRA_TCH_FS_CODED_BITS];
     memcpy(combined,                          soft_b1, sizeof(uint16_t) * TETRA_NDB_BLOCK_BITS);
     memcpy(combined + TETRA_NDB_BLOCK_BITS, soft_b2, sizeof(uint16_t) * TETRA_NDB_BLOCK_BITS);
 
-    /* Step 2: Depuncture with rate 292/432 → 1168 mother bits. */
-    uint16_t *depunc = (uint16_t *)malloc(sizeof(uint16_t) * TETRA_TCH_FS_DEPUNC_LEN);
-    if (!depunc) {
-        fprintf(stderr, "[TETRA TCH/FS] depunc malloc failed\n");
-        return;
-    }
-    tetra_rcpc_depuncture_by_id(TETRA_RCPC_PUNCT_292_432,
-                                combined, TETRA_TCH_FS_CODED_BITS,
-                                depunc, TETRA_TCH_FS_DEPUNC_LEN);
+    tetra_speech_deinterleave_soft(combined, deint);
 
-    /* Step 3: Viterbi decode → up to 292 type-2 bits. */
-    uint8_t decoded[512];
+    /* Step 2: Decode the speech-specific class-0 / rate-1/3 RCPC layout. */
+    uint8_t decoded[TETRA_TCH_FS_TYPE2_BITS];
     memset(decoded, 0, sizeof(decoded));
-    int dec_len = tetra_viterbi_decode_soft(depunc, TETRA_TCH_FS_DEPUNC_LEN,
-                                            decoded, (int)sizeof(decoded));
-    free(depunc);
+    int dec_len = tetra_speech_channel_decode(deint, decoded, (int)sizeof(decoded));
 
     if (dec_len > 0)
         state->tetra_decode_ok++;
     else
         state->tetra_decode_errors++;
 
-    /* Step 4: ACELP reorder + vocoder.
-     * tetra_acelp_process_tch() expects at least 272 type-2 bits
-     * (100 class-0 + 112 class-1 + 60 class-2, interleaved for 2 frames). */
-    if (dec_len >= TETRA_TCH_FS_TYPE2_BITS ||
-        (dec_len > 0 && dec_len >= 272)) {
+    /* Step 3: ACELP reorder + vocoder. */
+    if (dec_len >= TETRA_TCH_FS_TYPE2_BITS) {
         tetra_acelp_process_tch(decoded, dec_len, 0, opts, state);
     }
 
@@ -278,8 +267,9 @@ void processTetraFrame(dsd_opts* opts, dsd_state* state)
 
     uint8_t cb_bits[10];
     for (int i = 0; i < TETRA_NDB_CB_DIBITS; i++) {
-        cb_bits[i * 2 + 0] = (cb_dibuf[i] >> 1) & 1u;
-        cb_bits[i * 2 + 1] =  cb_dibuf[i]        & 1u;
+        const uint8_t d = (uint8_t)((cb_dibuf[i] ^ (state->tetra_polarity ? 2u : 0u)) & 3u);
+        cb_bits[i * 2 + 0] = (d >> 1) & 1u;
+        cb_bits[i * 2 + 1] =  d       & 1u;
     }
 
     const int cc  = (int)((cb_bits[CB_IDX_CC1] << 1) | cb_bits[CB_IDX_CC0]);
@@ -306,9 +296,10 @@ void processTetraFrame(dsd_opts* opts, dsd_state* state)
     uint16_t b1_soft[TETRA_NDB_BLOCK_BITS];
     if (b1_valid) {
         tetra_prepare_block(state->tetra_b1_dibuf,
-                            NULL,   /* no soft – hard-only path */
+                            state->tetra_b1_soft_valid ? state->tetra_b1_soft : NULL,
                             cc, state, b1_soft);
         state->tetra_b1_valid = 0; /* consume; next frame will re-capture */
+        state->tetra_b1_soft_valid = 0;
     }
 
     /* ---------------------------------------------------------------
@@ -321,8 +312,8 @@ void processTetraFrame(dsd_opts* opts, dsd_state* state)
      * Dispatch by stealing flags.
      *
      * TCH/FS (sf1==0 && sf2==0): Both blocks carry one combined voice
-     *   codeword; concatenate 432 soft costs → depuncture(292/432) →
-     *   Viterbi → 292 type-2 bits → ACELP reorder → 2 codec frames.
+     *   codeword; concatenate 432 soft costs → speech deinterleave and
+     *   class-specific RCPC decode → 274 bits → 2 codec frames.
      *
      * SCH-HD (sf==1): Single-block signaling; per-block rate-2/3
      *   depuncture + Viterbi + MAC parser.
@@ -364,7 +355,7 @@ void processTetraFrame(dsd_opts* opts, dsd_state* state)
  *   [BB(15d)][BKN2(108d)][tail]           ← consumed here
  *
  * BSCH FEC pipeline (hard-input only):
- *   60 dibits → 120 bits → deinterleave(K=120,a=11) → descramble(seed=3)
+ *   60 dibits → 120 bits → descramble(seed=3) → deinterleave(K=120,a=11)
  *   → RCPC depuncture(2/3, 120→320) → Viterbi(out=80b)
  *   → CRC-16 gate → tetra_bsch_parse(first 60b)
  * -------------------------------------------------------------------------*/
@@ -396,37 +387,50 @@ void processTetraSBFrame(dsd_opts *opts, dsd_state *state)
      * ------------------------------------------------------------------ */
     if (!state->tetra_sb1_valid) {
         fprintf(stderr, "[TETRA SB] no SB1 capture available\n");
+        state->tetra_sb1_soft_valid = 0;
         tetra_sm_tick(opts, state);
         return;
     }
     state->tetra_sb1_valid = 0; /* consume */
 
-    /* Expand 60 dibits → 120 hard bits and preserve their decisions as
-     * confident Viterbi costs. The sync cache has no amplitudes, but hard
-     * decisions still carry information; neutral costs discard the BSCH. */
+    /* Expand 60 dibits → 120 bits. Prefer the analog decisions captured from
+     * symbol history; retain the hard-decision fallback for symbol replay and
+     * callers which do not populate history. */
     uint8_t  hard[TETRA_SB_BSCH_BITS];
     uint16_t soft[TETRA_SB_BSCH_BITS];
     for (int i = 0; i < TETRA_SB_BSCH_DIBITS; i++) {
-        uint8_t d = state->tetra_sb1_dibuf[i] & 3u;
+        uint8_t d = (uint8_t)((state->tetra_sb1_dibuf[i]
+                               ^ (state->tetra_polarity ? 2u : 0u)) & 3u);
         hard[i * 2 + 0] = (d >> 1) & 1u;
         hard[i * 2 + 1] =  d       & 1u;
     }
-    tetra_hard_bits_to_soft(hard, soft, TETRA_SB_BSCH_BITS);
+    if (state->tetra_sb1_soft_valid) {
+        for (int i = 0; i < TETRA_SB_BSCH_DIBITS; i++) {
+            soft[i * 2 + 0] = soft_symbol_to_viterbi_cost(state->tetra_sb1_soft[i], state, 0);
+            soft[i * 2 + 1] = soft_symbol_to_viterbi_cost(state->tetra_sb1_soft[i], state, 1);
+            if (state->tetra_polarity)
+                soft[i * 2 + 0] = (uint16_t)(0xFFFFu - soft[i * 2 + 0]);
+        }
+    } else {
+        tetra_hard_bits_to_soft(hard, soft, TETRA_SB_BSCH_BITS);
+    }
+    state->tetra_sb1_soft_valid = 0;
 
     /* ------------------------------------------------------------------
-     * Step 3: Deinterleave (K=120, a=11).
+     * Step 3: Descramble type-5 bits back to type-4.  Scrambling follows
+     * interleaving in the transmit chain.
+     * ------------------------------------------------------------------ */
+    tetra_descramble     (hard, TETRA_SB_BSCH_BITS, TETRA_SB_SCRAMB_SEED);
+    tetra_descramble_soft(soft, TETRA_SB_BSCH_BITS, TETRA_SB_SCRAMB_SEED);
+
+    /* ------------------------------------------------------------------
+     * Step 4: Deinterleave (K=120, a=11).
      * ------------------------------------------------------------------ */
     uint8_t  deint_hard[TETRA_SB_BSCH_BITS];
     uint16_t deint_soft[TETRA_SB_BSCH_BITS];
     tetra_block_deinterleave(hard, deint_hard, TETRA_SB_BSCH_BITS, TETRA_SB_BSCH_ROWS);
     tetra_block_deinterleave_soft(soft, deint_soft,
                                   TETRA_SB_BSCH_BITS, TETRA_SB_BSCH_ROWS, 0);
-
-    /* ------------------------------------------------------------------
-     * Step 4: Descramble with SCRAMB_INIT (seed=3; MCC=MNC=colour=0).
-     * ------------------------------------------------------------------ */
-    tetra_descramble     (deint_hard, TETRA_SB_BSCH_BITS, TETRA_SB_SCRAMB_SEED);
-    tetra_descramble_soft(deint_soft, TETRA_SB_BSCH_BITS, TETRA_SB_SCRAMB_SEED);
 
     /* ------------------------------------------------------------------
      * Step 5: RCPC depuncture (rate-2/3 → 240 mother bits).

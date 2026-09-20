@@ -4659,9 +4659,6 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=io_control_set_freq"
     )
 endif()
-if(WIN32)
-    target_compile_definitions(dsd-neo_test_app_command_queue PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP)
-endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
 
 add_executable(dsd-neo_test_app_control_rr_apply ui/test_app_control_rr_apply.c)
@@ -8015,6 +8012,8 @@ add_test(NAME EDACS_GRANT_POLICY COMMAND dsd-neo_test_edacs_grant_policy)
 # the MAC/MLE/MM, FEC, vocoder gating, and trunking paths were invisible to
 # the normal ALL_BUILD + CTest workflow.
 set(_dsd_tetra_test_sources
+    acelp_reference
+    air_chain_vector
     d_tx_granted_chan
     depuncture_regression
     interleaver_dims
@@ -8024,6 +8023,8 @@ set(_dsd_tetra_test_sources
     osmo_shim
     osmo_viterbi_backend
     rcpc_map
+    real_air_bit_trace
+    sds_reference_mac
     tetra_fmt_helpers
     tetra_integration
     tetra_phase42
@@ -8080,6 +8081,13 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
         PROPERTIES LABELS "protocol;tetra"
     )
 endforeach()
+
+target_compile_definitions(
+    dsd-neo_test_tetra_acelp_reference
+    PRIVATE
+        TETRA_ACELP_SAMPLE="${PROJECT_SOURCE_DIR}/tests/fixtures/tetra/acelp/hello_tetra.acelp"
+        TETRA_ACELP_REFERENCE="${PROJECT_SOURCE_DIR}/tests/fixtures/tetra/acelp/hello_tetra.codec"
+)
 unset(_dsd_tetra_target)
 unset(_dsd_tetra_test)
 unset(_dsd_tetra_test_name)
@@ -8089,6 +8097,31 @@ unset(_dsd_tetra_test_sources)
 # deterministic silence stub. Keep the protocol suite usable when Python is
 # intentionally absent from a minimal target environment.
 find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME TETRA_FIELD_CAPTURE_VERIFIER
+        COMMAND
+            "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tests/tools/test_verify_tetra_field_capture.py"
+    )
+    set_tests_properties(
+        TETRA_FIELD_CAPTURE_VERIFIER
+        PROPERTIES LABELS "tetra;tools" TIMEOUT 30
+    )
+
+    add_test(
+        NAME TETRA_IQ_FIXTURE_REPRODUCIBILITY
+        COMMAND
+            "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/tools/tetra/verify_iq_fixtures.py"
+            --generator "${PROJECT_SOURCE_DIR}/tools/build_iq_fixtures.py"
+            --fixtures "${PROJECT_SOURCE_DIR}/tests/fixtures/iq"
+    )
+    set_tests_properties(
+        TETRA_IQ_FIXTURE_REPRODUCIBILITY
+        PROPERTIES LABELS "tetra;iq-fixture" TIMEOUT 120
+    )
+endif()
 if(Python3_Interpreter_FOUND)
     add_executable(
         dsd-neo_test_tetra_acelp_pipeline
@@ -8136,6 +8169,30 @@ if(Python3_Interpreter_FOUND)
             LABELS "protocol;tetra;audio"
             ENVIRONMENT
                 "TETRA_VOCODER_CMD=${Python3_EXECUTABLE} \"${PROJECT_SOURCE_DIR}/tools/tetra/vocoder_stub.py\" --short-output"
+    )
+
+    add_test(
+        NAME TETRA_ACELP_TIMEOUT
+        COMMAND dsd-neo_test_tetra_acelp_short_output
+    )
+    set_tests_properties(
+        TETRA_ACELP_TIMEOUT
+        PROPERTIES
+            LABELS "protocol;tetra;audio"
+            TIMEOUT 8
+            ENVIRONMENT
+                "TETRA_VOCODER_CMD=${Python3_EXECUTABLE} \"${PROJECT_SOURCE_DIR}/tools/tetra/vocoder_stub.py\" --hang"
+    )
+
+    add_test(
+        NAME TETRA_ACELP_MISSING_COMMAND
+        COMMAND dsd-neo_test_tetra_acelp_short_output
+    )
+    set_tests_properties(
+        TETRA_ACELP_MISSING_COMMAND
+        PROPERTIES
+            LABELS "protocol;tetra;audio"
+            ENVIRONMENT "TETRA_VOCODER_CMD="
     )
 endif()
 
@@ -9556,7 +9613,7 @@ unset(_DSD_NEO_BIT_PACKING_TEST_TARGETS)
 # ---------------------------------------------------------------------------
 # Full-chain modulation decode regression tests
 #
-# Each fixture is a short cu8 I/Q capture replayed through --iq-replay, which
+# Each fixture is a short cu8 or cs16 I/Q capture replayed through --iq-replay, which
 # drives the complete chain: decimation, filtering, discriminator/CQPSK timing,
 # symbol slicing, frame sync, and the protocol layer. Assertions match decoded
 # payload fields rather than sync counts so that a silent framing or protocol
@@ -9579,8 +9636,12 @@ if(DSD_HAS_RADIO)
     # cases where decoding the payload is only half the property.
     function(dsd_neo_add_iq_decode_test test_name fixture mode expected)
         set(_not_expected_arg)
+        set(_min_matches_arg)
         if(ARGC GREATER 4)
             set(_not_expected_arg "-DNOT_EXPECTED=${ARGV4}")
+        endif()
+        if(ARGC GREATER 5)
+            set(_min_matches_arg "-DMIN_MATCHES=${ARGV5}")
         endif()
         add_test(
             NAME ${test_name}
@@ -9588,7 +9649,7 @@ if(DSD_HAS_RADIO)
                 ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
                 "-DMODE=${mode}"
                 "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
-                "-DEXPECTED=${expected}" ${_not_expected_arg} -P
+                "-DEXPECTED=${expected}" ${_not_expected_arg} ${_min_matches_arg} -P
                 "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
         )
         set_tests_properties(
@@ -9740,7 +9801,67 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_TCH_FS
         tetra_bsch_synth
         -fT
-        "\\[TETRA TCH/FS\\] CC=1  dec_bits=292"
+        "\\[TETRA TCH/FS\\] CC=1  dec_bits=274"
+    )
+    # Apache-2.0 real-air SCBS capture from GopherTrunk, deterministically
+    # resampled from its preserved 50 kHz source to 54 kHz (3 samples/symbol).
+    # The identity was independently checked upstream with a commercial
+    # receiver and SDR++; this breaks the generator/decoder feedback loop.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_SCBS
+        tetra_scbs_real_air_54k
+        -fT
+        "\\[TETRA BSCH\\] MCC=250 MNC=13 CC=0x2c"
+    )
+    # Airspy on_cc_sync_loss recording from the same network: ~10 dB
+    # in-channel SNR with visibly ISI-smeared pi/4-DQPSK. Require sustained
+    # recovery, not one lucky CRC, from the unmodified 144 kHz CS16 bytes.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_MARGINAL_CC
+        tetra_cc_marginal_real_air_144k
+        -fT
+        "\\[TETRA BSCH\\] MCC=250 MNC=13 CC=0x2c"
+        ""
+        15
+    )
+    # Deterministic complex conjugation reverses the polarity of every phase
+    # transition while preserving the public capture's noise, fading and ISI.
+    # Require the same sustained identity recovery through the inverted sync
+    # and payload-normalization path.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_REAL_AIR_MARGINAL_CC_INVERTED
+        tetra_cc_marginal_real_air_144k_inverted
+        -fT
+        "\\[TETRA BSCH\\] MCC=250 MNC=13 CC=0x2c"
+        ""
+        15
+    )
+    # Complex-conjugated IQ reverses every differential phase step. Require
+    # protected payloads after negative-polarity synchronization and dibit-MSB
+    # normalization in both the BSCH and NDB paths.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH_INVERTED
+        tetra_bsch_inverted
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_SYSINFO_INVERTED
+        tetra_bsch_inverted
+        -fT
+        "\\[TETRA SYSINFO\\] CC=1  carrier=321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CHANNEL_ALLOCATION_INVERTED
+        tetra_bsch_inverted
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=1 type=0 slots=0x4 dir=1 carrier=400"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_TCH_FS_INVERTED
+        tetra_bsch_inverted
+        -fT
+        "\\[TETRA TCH/FS\\] CC=1  dec_bits=274"
     )
     # Deterministic 300 Hz carrier error plus 14 dB complex-AWGN SNR. These
     # assertions prove acquisition and protected control decoding through the
@@ -9767,7 +9888,116 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_TCH_FS_CFO_AWGN
         tetra_bsch_cfo_awgn
         -fT
-        "\\[TETRA TCH/FS\\] CC=1  dec_bits=292"
+        "\\[TETRA TCH/FS\\] CC=1  dec_bits=274"
+    )
+    # Deterministic sensitivity bracket with the same 300 Hz CFO and noise
+    # realization as the 14 dB case. At 6 dB all three CRC-protected control
+    # messages must still decode; at 4 dB synchronization may occur but none of
+    # those messages may pass its integrity gate. TCH/FS is excluded because
+    # this channel has no equivalent whole-frame CRC acceptance signal.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH_SNR6
+        tetra_bsch_cfo_awgn_snr6
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_SYSINFO_SNR6
+        tetra_bsch_cfo_awgn_snr6
+        -fT
+        "\\[TETRA SYSINFO\\] CC=1  carrier=321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CHANNEL_ALLOCATION_SNR6
+        tetra_bsch_cfo_awgn_snr6
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=1 type=0 slots=0x4 dir=1 carrier=400"
+    )
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_TETRA_PROTECTED_CONTROL_SNR4_REJECT
+        tetra_bsch_cfo_awgn_snr4
+        -fT
+        "\\+TETRA NDB"
+        "\\[TETRA (BSCH|SYSINFO|CHANNEL-ALLOCATION)\\]"
+    )
+    # One-sample (18.5 us) delayed echo at -6.9 dB with a 3 Hz differential
+    # carrier and 2.2 rad phase. This creates time-varying frequency-selective
+    # fading across the repeated burst sequence rather than stationary AWGN.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH_TWO_RAY
+        tetra_bsch_two_ray
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_SYSINFO_TWO_RAY
+        tetra_bsch_two_ray
+        -fT
+        "\\[TETRA SYSINFO\\] CC=1  carrier=321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CHANNEL_ALLOCATION_TWO_RAY
+        tetra_bsch_two_ray
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=1 type=0 slots=0x4 dir=1 carrier=400"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_TCH_FS_TWO_RAY
+        tetra_bsch_two_ray
+        -fT
+        "\\[TETRA TCH/FS\\] CC=1  dec_bits=274"
+    )
+    # A +100 ppm transmitter/receiver sample-clock mismatch accumulates timing
+    # drift across the repeated bursts and exercises continuous timing recovery.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH_CLOCK_100PPM
+        tetra_bsch_clock_100ppm
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_SYSINFO_CLOCK_100PPM
+        tetra_bsch_clock_100ppm
+        -fT
+        "\\[TETRA SYSINFO\\] CC=1  carrier=321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CHANNEL_ALLOCATION_CLOCK_100PPM
+        tetra_bsch_clock_100ppm
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=1 type=0 slots=0x4 dir=1 carrier=400"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_TCH_FS_CLOCK_100PPM
+        tetra_bsch_clock_100ppm
+        -fT
+        "\\[TETRA TCH/FS\\] CC=1  dec_bits=274"
+    )
+    # Repeat in the opposite direction; a slow source lengthens the waveform
+    # and makes the timing loop walk across symbol boundaries in reverse.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_BSCH_CLOCK_MINUS_100PPM
+        tetra_bsch_clock_minus_100ppm
+        -fT
+        "\\[TETRA BSCH\\] MCC=460 MNC=4242"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_SYSINFO_CLOCK_MINUS_100PPM
+        tetra_bsch_clock_minus_100ppm
+        -fT
+        "\\[TETRA SYSINFO\\] CC=1  carrier=321"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_CHANNEL_ALLOCATION_CLOCK_MINUS_100PPM
+        tetra_bsch_clock_minus_100ppm
+        -fT
+        "\\[TETRA CHANNEL-ALLOCATION\\] CC=1 type=0 slots=0x4 dir=1 carrier=400"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_TCH_FS_CLOCK_MINUS_100PPM
+        tetra_bsch_clock_minus_100ppm
+        -fT
+        "\\[TETRA TCH/FS\\] CC=1  dec_bits=274"
     )
     dsd_neo_add_iq_reject_test(
         DECODE_IQ_TETRA_BAD_CRC_REJECT

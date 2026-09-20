@@ -18,7 +18,7 @@
 
 static int
 is_valid_rtl_bw_khz(int bw) {
-    return (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48);
+    return (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48 || bw == 72);
 }
 
 static int

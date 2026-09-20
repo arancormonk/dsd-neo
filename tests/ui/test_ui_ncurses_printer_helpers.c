@@ -125,6 +125,16 @@ waddnstr(WINDOW* win, const char* str, int n) { // NOLINT(misc-use-internal-link
     return 0;
 }
 
+int
+addch(const chtype ch) { // NOLINT(misc-use-internal-linkage)
+    return waddch(stdscr, ch);
+}
+
+int
+addnstr(const char* str, int n) { // NOLINT(misc-use-internal-linkage)
+    return waddnstr(stdscr, str, n);
+}
+
 /* Colour-pair trace: "+n" when a pair is switched on, "-n" when switched off, in
    render order. Lets tests assert that a highlight is balanced and that the
    section colour is restored before the rest of a line is drawn. */
@@ -164,6 +174,16 @@ wattr_off(WINDOW* win, attr_t attrs, void* opts) { // NOLINT(misc-use-internal-l
     (void)opts;
     append_color_trace('-', attrs);
     return 0;
+}
+
+int
+attron(chtype attrs) { // NOLINT(misc-use-internal-linkage)
+    return wattr_on(stdscr, (attr_t)attrs, NULL);
+}
+
+int
+attroff(chtype attrs) { // NOLINT(misc-use-internal-linkage)
+    return wattr_off(stdscr, (attr_t)attrs, NULL);
 }
 
 int

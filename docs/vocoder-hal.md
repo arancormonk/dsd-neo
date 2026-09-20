@@ -123,19 +123,26 @@ The TETRA TCH/FS ACELP codec is proprietary (ETSI EN 300 395-2) and has no freel
 
 ```
 dsd-neo → stdin  : TETRA_TCH_FRAME_BITS (137) bytes, one byte per coded bit (0/1)
-dsd-neo ← stdout : TETRA_TCH_FRAME_SAMPLES (160) × 2 bytes, PCM16LE @ 8 kHz mono
+dsd-neo ← stdout : TETRA_TCH_FRAME_SAMPLES (240) × 2 bytes, PCM16LE @ 8 kHz mono
 (repeat per frame until stdin is closed)
 ```
 
 Two frames are exchanged per NDB block pair (one per TCH/FS ACELP sub-frame).
 
 Cross-platform subprocess management is implemented in `src/protocol/tetra/tetra_acelp.c`:
+
+- PCM reads have a two-second deadline so a stalled codec cannot freeze the decoder.
+- Windows places the command shell and codec descendants in a Job Object so timeout
+  recovery and shutdown reclaim the complete process tree.
+- Decoder snapshots publish `Ready`, `Command missing`, `Start failed`, `Timed out`,
+  or `Short output` with successful-frame and error counters. The Qt Quick TETRA
+  monitor presents this state after the first codec attempt.
 - **POSIX:** `fork()` + `pipe()` + `dup2()`; pipe writes suppress per-thread
   `SIGPIPE`, and shutdown waits at most two seconds before terminating the child.
 - **Windows:** `CreateProcess()` + anonymous pipes; shutdown uses the same
   two-second bound before terminating an unresponsive child.
 
-Every response must contain exactly 160 PCM16LE samples. Short responses are
+Every response must contain exactly 240 PCM16LE samples. Short responses are
 discarded in full and reset the subprocess so partial audio cannot reach a sink.
 
 A silence-producing stub for integration testing is provided at `tools/tetra/vocoder_stub.py`.
@@ -206,11 +213,11 @@ TETRA frames bypass `processMbeFrame()`; `tetra_acelp_process_tch()` is called f
 type2_bits (292 bits from Viterbi)
     │
     ▼  tetra_acelp_reorder()
-    │  scatter 272 bits into 2 × 137-bit ACELP codec frames
+    │  scatter 274 bits into 2 × 137-bit ACELP codec frames
     │
     ▼  (for each of the 2 frames)
     │  voc_send_recv()  →  TETRA_VOCODER_CMD subprocess
-    │  receive PCM16LE [160 samples]
+    │  receive PCM16LE [240 samples]
     │
     ▼  audio routing (PA / UDP / raw FD / WAV)
 ```

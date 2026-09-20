@@ -631,6 +631,13 @@ Item {
                 color: Theme.cyan
             }
             Text {
+                objectName: "tetraTrunkStateValue"
+                text: qsTr("STATE") + " " + metrics.tetraTrunkStateText
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: metrics.tetraTrunkStateText === "Traffic" ? Theme.cyan : Theme.textSubdued
+            }
+            Text {
                 visible: metrics.tetraControlChannelText.length > 0
                 text: qsTr("CONTROL") + " " + metrics.tetraControlChannelText
                 font.family: Theme.mono
@@ -643,6 +650,46 @@ Item {
                 font.family: Theme.mono
                 font.pixelSize: 11
                 color: Theme.textSubdued
+            }
+        }
+
+        Row {
+            objectName: "tetraMmStatusRow"
+            visible: metrics.tetraMmStatusKnown
+            spacing: 5
+
+            Text {
+                text: qsTr("MM STATUS")
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.textSubdued
+            }
+            Text {
+                objectName: "tetraMmStatusValue"
+                text: metrics.tetraMmStatusText
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.cyan
+            }
+        }
+
+        Row {
+            objectName: "tetraVocoderStatusRow"
+            visible: metrics.tetraVocoderStatusKnown
+            spacing: 5
+
+            Text {
+                text: qsTr("ACELP")
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.textSubdued
+            }
+            Text {
+                objectName: "tetraVocoderStatusValue"
+                text: metrics.tetraVocoderStatusText
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.cyan
             }
         }
 

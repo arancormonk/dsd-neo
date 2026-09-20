@@ -46,22 +46,20 @@ static dsd_opts  *alloc_opts(void)  { return (dsd_opts  *)calloc(1, sizeof(dsd_o
 static void wrap_mle_cmce(const uint8_t *cmce_body, int cmce_nbits,
                            uint8_t *out, int *out_nbits)
 {
-    int total = 9 + cmce_nbits;
+    int total = 3 + cmce_nbits;
     memset(out, 0, (size_t)total);
-    pack_bits(out, 24, 0, 5); /* MLE type = C-PLANE-DATA */
-    pack_bits(out,  3, 5, 4); /* PD = CMCE */
-    memcpy(out + 9, cmce_body, (size_t)cmce_nbits);
+    pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
+    memcpy(out + 3, cmce_body, (size_t)cmce_nbits);
     *out_nbits = total;
 }
 
 static void wrap_mle_mm(const uint8_t *mm_body, int mm_nbits,
                            uint8_t *out, int *out_nbits)
 {
-    int total = 9 + mm_nbits;
+    int total = 3 + mm_nbits;
     memset(out, 0, (size_t)total);
-    pack_bits(out, 24, 0, 5); /* MLE type = C-PLANE-DATA */
-    pack_bits(out,  5, 5, 4); /* PD = MM */
-    memcpy(out + 9, mm_body, (size_t)mm_nbits);
+    pack_bits(out, TETRA_MLE_PD_MM, 0, 3);
+    memcpy(out + 3, mm_body, (size_t)mm_nbits);
     *out_nbits = total;
 }
 
@@ -203,6 +201,7 @@ static void test_phase78_cmce_d_tx_granted(void)
     pack_bits(cmce, 1, n, 1); n+=1;
     pack_bits(cmce, 0, n, 1); n+=1;
     pack_bits(cmce, 1, n, 1); n+=1;
+    pack_bits(cmce, 0, n, 1); n+=1; /* O-bit */
 
     uint8_t pdu[200]; int out_n;
     wrap_mle_cmce(cmce, n, pdu, &out_n);
@@ -220,17 +219,90 @@ static void test_phase78_mle_nwrk_broadcast(void)
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
 
-    uint8_t pdu[100];
+    uint8_t pdu[200];
     int n = 0;
-    
-    pack_bits(pdu, TETRA_MLE_D_NWRK_BROADCAST, n, 5); n+=5; // PDU type = 0
-    pack_bits(pdu, 1234, n, 14); n+=14; // la
-    pack_bits(pdu, 4321, n, 16); n+=16; // subscr_cls
-    pack_bits(pdu, 1, n, 1); n+=1; // registration
+
+    /* ETSI EN 300 392-2 V3.8.1, Annex E.2.2 table E.16. */
+    pack_bits(pdu, TETRA_MLE_PD_MLE, n, 3); n+=3;
+    pack_bits(pdu, TETRA_MLE_D_NWRK_BROADCAST, n, 3); n+=3;
+    pack_bits(pdu, 0x4321, n, 16); n+=16;
+    pack_bits(pdu, 2, n, 2); n+=2;
+    pack_bits(pdu, 0, n, 1); n+=1;
 
     tetra_mle_dispatch(pdu, n, 0, opt, st);
 
-    CHECK(st->tetra_mle_registration == 1, "tetra_mle_registration");
+    CHECK(st->tetra_mle_cell_reselect_params == 0x4321, "tetra_mle_cell_reselect_params");
+    CHECK(st->tetra_mle_cell_load == 2, "tetra_mle_cell_load");
+    CHECK(st->tetra_mle_ca_neighbor_count_valid == 0,
+          "Annex E.16 has no neighbour count");
+
+    /* Annex E.17 explicitly carries the zero value meaning no neighbour-cell
+     * information is available. */
+    memset(pdu, 0, sizeof(pdu)); n=0;
+    pack_bits(pdu, TETRA_MLE_PD_MLE, n, 3); n+=3;
+    pack_bits(pdu, TETRA_MLE_D_NWRK_BROADCAST, n, 3); n+=3;
+    pack_bits(pdu, 0x1111, n, 16); n+=16;
+    pack_bits(pdu, 1, n, 2); n+=2;
+    pack_bits(pdu, 1, n, 1); n+=1; /* O-bit */
+    pack_bits(pdu, 0, n, 1); n+=1; /* no network time */
+    pack_bits(pdu, 1, n, 1); n+=1; /* neighbour count present */
+    pack_bits(pdu, 0, n, 3); n+=3;
+    tetra_mle_dispatch(pdu, n, 0, opt, st);
+    CHECK(st->tetra_mle_ca_neighbor_count_valid == 1
+          && st->tetra_mle_ca_neighbor_count == 0,
+          "Annex E.17 no-neighbour indication accepted");
+
+    /* Annex E.18: two CA neighbours.  The first has no optional fields; the
+     * second carries only its Location Area from the ten standardized P-bits. */
+    memset(pdu, 0, sizeof(pdu)); n=0;
+    pack_bits(pdu, TETRA_MLE_PD_MLE, n, 3); n+=3;
+    pack_bits(pdu, TETRA_MLE_D_NWRK_BROADCAST, n, 3); n+=3;
+    pack_bits(pdu, 0x2222, n, 16); n+=16;
+    pack_bits(pdu, 3, n, 2); n+=2;
+    pack_bits(pdu, 1, n, 1); n+=1; /* O-bit */
+    pack_bits(pdu, 0, n, 1); n+=1; /* no network time */
+    pack_bits(pdu, 1, n, 1); n+=1; /* neighbour count present */
+    pack_bits(pdu, 2, n, 3); n+=3;
+    pack_bits(pdu, 1, n, 5); n+=5;
+    pack_bits(pdu, 2, n, 2); n+=2;
+    pack_bits(pdu, 1, n, 1); n+=1;
+    pack_bits(pdu, 1, n, 2); n+=2;
+    pack_bits(pdu, 1000, n, 12); n+=12;
+    pack_bits(pdu, 0, n, 1); n+=1; /* first neighbour O-bit */
+    pack_bits(pdu, 2, n, 5); n+=5;
+    pack_bits(pdu, 1, n, 2); n+=2;
+    pack_bits(pdu, 0, n, 1); n+=1;
+    pack_bits(pdu, 2, n, 2); n+=2;
+    pack_bits(pdu, 2000, n, 12); n+=12;
+    pack_bits(pdu, 1, n, 1); n+=1; /* second neighbour O-bit */
+    pack_bits(pdu, 0, n, 1); n+=1; /* carrier extension */
+    pack_bits(pdu, 0, n, 1); n+=1; /* MCC */
+    pack_bits(pdu, 0, n, 1); n+=1; /* MNC */
+    pack_bits(pdu, 1, n, 1); n+=1; /* LA */
+    pack_bits(pdu, 0x2345, n, 14); n+=14;
+    pack_bits(pdu, 0, n, 1); n+=1; /* maximum TX power */
+    pack_bits(pdu, 0, n, 1); n+=1; /* minimum RX access */
+    pack_bits(pdu, 0, n, 1); n+=1; /* subscriber class */
+    pack_bits(pdu, 0, n, 1); n+=1; /* BS service details */
+    pack_bits(pdu, 0, n, 1); n+=1; /* timeshare/security */
+    pack_bits(pdu, 0, n, 1); n+=1; /* TDMA frame offset */
+    tetra_mle_dispatch(pdu, n, 0, opt, st);
+    CHECK(st->tetra_mle_ca_neighbor_count_valid == 1
+          && st->tetra_mle_ca_neighbor_count == 2,
+          "Annex E.18 two-neighbour collection accepted");
+    CHECK(st->tetra_mle_ca_neighbor_cell_id[0] == 1
+          && st->tetra_mle_ca_neighbor_main_carrier[0] == 1000
+          && st->tetra_mle_ca_neighbor_cell_id[1] == 2
+          && st->tetra_mle_ca_neighbor_main_carrier[1] == 2000,
+          "Annex E.18 mandatory neighbour fields retained");
+
+    /* Remove the final Type 2 P-bit after changing the mandatory value.  No
+     * part of the incomplete broadcast may replace the previous snapshot. */
+    pack_bits(pdu, 0x3333, 6, 16);
+    tetra_mle_dispatch(pdu, n - 1, 0, opt, st);
+    CHECK(st->tetra_mle_cell_reselect_params == 0x2222
+          && st->tetra_mle_ca_neighbor_count == 2,
+          "truncated Annex E.18 preserves the previous network broadcast");
 
     free(st); free(opt);
 }
@@ -244,10 +316,11 @@ static void test_phase79_mm_attach_detach(void)
     uint8_t mm[100];
     int n = 0;
     
-    pack_bits(mm, 14, n, 5); n+=5; // PDU type = 14
-    pack_bits(mm, 1, n, 1); n+=1; // detach = 1
-    pack_bits(mm, 1, n, 1); n+=1; // class_of_grp = 1
-    pack_bits(mm, 2, n, 2); n+=2; // addr_type = 2
+    pack_bits(mm, TETRA_MM_D_ATTACH_DETACH_GROUP, n, 4); n+=4;
+    pack_bits(mm, 1, n, 1); n+=1; // group identity report
+    pack_bits(mm, 1, n, 1); n+=1; // acknowledgement request
+    pack_bits(mm, 1, n, 1); n+=1; // attach/detach mode
+    pack_bits(mm, 0, n, 1); n+=1; // no optional elements
 
     uint8_t pdu[200]; int out_n;
     wrap_mle_mm(mm, n, pdu, &out_n);
@@ -255,7 +328,12 @@ static void test_phase79_mm_attach_detach(void)
 
     CHECK(st->tetra_mm_detach_flag == 1, "tetra_mm_detach_flag");
     CHECK(st->tetra_mm_class_of_grp == 1, "tetra_mm_class_of_grp");
-    CHECK(st->tetra_mm_addr_type == 2, "tetra_mm_addr_type");
+    CHECK(st->tetra_mm_addr_type == 1, "tetra_mm_addr_type");
+    CHECK(st->tetra_mm_group_identity_valid == 1, "tetra_mm_group_identity_valid");
+    CHECK(st->tetra_mm_group_identity_report == 1, "tetra_mm_group_identity_report");
+    CHECK(st->tetra_mm_group_identity_ack_request == 1, "tetra_mm_group_identity_ack_request");
+    CHECK(st->tetra_mm_group_identity_attach_detach_mode == 1,
+          "tetra_mm_group_identity_attach_detach_mode");
 
     free(st); free(opt);
 }

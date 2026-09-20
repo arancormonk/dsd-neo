@@ -17,6 +17,9 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/tetra/tetra_acelp.h>
+#include <dsd-neo/protocol/tetra/tetra_mm.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/decode_mode.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -25,6 +28,33 @@
 namespace dsd_qt {
 
 namespace {
+
+QString
+formatTetraVocoderStatusText(const dsd_state* state) {
+    const char* label = "Unknown";
+    switch ((tetra_vocoder_status_e)state->tetra_vocoder_status) {
+        case TETRA_VOCODER_STATUS_READY:           label = "Ready"; break;
+        case TETRA_VOCODER_STATUS_COMMAND_MISSING: label = "Command missing"; break;
+        case TETRA_VOCODER_STATUS_START_FAILED:    label = "Start failed"; break;
+        case TETRA_VOCODER_STATUS_TIMEOUT:         label = "Timed out"; break;
+        case TETRA_VOCODER_STATUS_SHORT_OUTPUT:    label = "Short output"; break;
+        case TETRA_VOCODER_STATUS_UNKNOWN:         break;
+    }
+    return QStringLiteral("%1 · %2 frames · %3 errors")
+        .arg(QString::fromLatin1(label))
+        .arg(state->tetra_vocoder_frames)
+        .arg(state->tetra_vocoder_errors);
+}
+
+QString
+formatTetraTrunkStateText(const dsd_state* state) {
+    switch ((tetra_sm_state_e)state->tetra_trunk_state) {
+        case TETRA_SM_ON_CC: return QStringLiteral("Control");
+        case TETRA_SM_TUNED: return QStringLiteral("Traffic");
+        case TETRA_SM_IDLE:  return QStringLiteral("Idle");
+    }
+    return QStringLiteral("Unknown");
+}
 
 /**
  * @brief How long a lock keeps reading as locked after the last synced frame.
@@ -214,6 +244,7 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
 
     next.tetra_network_known = snapshot->tetra_net_known != 0;
     if (next.tetra_network_known) {
+        next.tetra_trunk_state_text = formatTetraTrunkStateText(snapshot);
         next.tetra_network_text = QStringLiteral("MCC %1 · MNC %2 · CC %3")
                                       .arg(snapshot->tetra_mcc)
                                       .arg(snapshot->tetra_mnc)
@@ -239,6 +270,15 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
                                                   : allocation;
         }
     }
+    next.tetra_mm_status_known = snapshot->tetra_mm_status_valid != 0U;
+    if (next.tetra_mm_status_known) {
+        next.tetra_mm_status_text = QStringLiteral("%1 · %2")
+                                        .arg(snapshot->tetra_mm_status_code)
+                                        .arg(QString::fromLatin1(tetra_mm_status_name(snapshot->tetra_mm_status_code)));
+    }
+    next.tetra_vocoder_status_known = snapshot->tetra_vocoder_status != TETRA_VOCODER_STATUS_UNKNOWN;
+    if (next.tetra_vocoder_status_known)
+        next.tetra_vocoder_status_text = formatTetraVocoderStatusText(snapshot);
 }
 
 void

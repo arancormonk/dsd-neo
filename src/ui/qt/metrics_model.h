@@ -85,8 +85,13 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int ppm READ ppm NOTIFY controlChanged)
     Q_PROPERTY(bool tetraNetworkKnown READ tetraNetworkKnown NOTIFY controlChanged)
     Q_PROPERTY(QString tetraNetworkText READ tetraNetworkText NOTIFY controlChanged)
+    Q_PROPERTY(QString tetraTrunkStateText READ tetraTrunkStateText NOTIFY controlChanged)
     Q_PROPERTY(QString tetraControlChannelText READ tetraControlChannelText NOTIFY controlChanged)
     Q_PROPERTY(QString tetraTrafficChannelText READ tetraTrafficChannelText NOTIFY controlChanged)
+    Q_PROPERTY(bool tetraMmStatusKnown READ tetraMmStatusKnown NOTIFY controlChanged)
+    Q_PROPERTY(QString tetraMmStatusText READ tetraMmStatusText NOTIFY controlChanged)
+    Q_PROPERTY(bool tetraVocoderStatusKnown READ tetraVocoderStatusKnown NOTIFY controlChanged)
+    Q_PROPERTY(QString tetraVocoderStatusText READ tetraVocoderStatusText NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
 
   public:
@@ -298,8 +303,13 @@ class MetricsModel : public QObject {
 
     bool tetraNetworkKnown() const { return m_view.tetra_network_known; }
     const QString& tetraNetworkText() const { return m_view.tetra_network_text; }
+    const QString& tetraTrunkStateText() const { return m_view.tetra_trunk_state_text; }
     const QString& tetraControlChannelText() const { return m_view.tetra_control_channel_text; }
     const QString& tetraTrafficChannelText() const { return m_view.tetra_traffic_channel_text; }
+    bool tetraMmStatusKnown() const { return m_view.tetra_mm_status_known; }
+    const QString& tetraMmStatusText() const { return m_view.tetra_mm_status_text; }
+    bool tetraVocoderStatusKnown() const { return m_view.tetra_vocoder_status_known; }
+    const QString& tetraVocoderStatusText() const { return m_view.tetra_vocoder_status_text; }
 
     /**
      * @brief Structured call identity per slot, for the monitor's hero panel.
@@ -594,8 +604,13 @@ class MetricsModel : public QObject {
         int ppm = 0;
         bool tetra_network_known = false;
         QString tetra_network_text;
+        QString tetra_trunk_state_text;
         QString tetra_control_channel_text;
         QString tetra_traffic_channel_text;
+        bool tetra_mm_status_known = false;
+        QString tetra_mm_status_text;
+        bool tetra_vocoder_status_known = false;
+        QString tetra_vocoder_status_text;
         bool audio_muted = false;
         qulonglong held_tg = 0;
         int enc_lockout_count = 0;
@@ -644,8 +659,13 @@ class MetricsModel : public QObject {
                    && squelch_off == other.squelch_off && ppm == other.ppm
                    && tetra_network_known == other.tetra_network_known
                    && tetra_network_text == other.tetra_network_text
+                   && tetra_trunk_state_text == other.tetra_trunk_state_text
                    && tetra_control_channel_text == other.tetra_control_channel_text
-                   && tetra_traffic_channel_text == other.tetra_traffic_channel_text;
+                   && tetra_traffic_channel_text == other.tetra_traffic_channel_text
+                   && tetra_mm_status_known == other.tetra_mm_status_known
+                   && tetra_mm_status_text == other.tetra_mm_status_text
+                   && tetra_vocoder_status_known == other.tetra_vocoder_status_known
+                   && tetra_vocoder_status_text == other.tetra_vocoder_status_text;
         }
     };
 

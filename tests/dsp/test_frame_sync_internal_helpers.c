@@ -36,6 +36,43 @@ reset(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state, 0, sizeof(*state));
 }
 
+static void
+test_tetra_soft_history_capture(void) {
+    static dsd_state state;
+    float history[16];
+    float captured[5] = {0};
+    DSD_MEMSET(&state, 0, sizeof(state));
+    for (int i = 0; i < 16; i++)
+        history[i] = (float)(100 + i);
+    state.symbol_history = history;
+    state.symbol_history_size = 16;
+    state.symbol_history_head = 2; /* newest is history[1], after wrap */
+    state.symbol_history_count = 16;
+
+    assert(dsd_frame_sync_test_capture_tetra_soft(&state, captured, 5, 3) == 1);
+    /* Eight-symbol window is history[10..15,0..1]; payload is its first five. */
+    for (int i = 0; i < 5; i++)
+        assert(captured[i] == (float)(110 + i));
+
+    state.symbol_history_count = 7;
+    assert(dsd_frame_sync_test_capture_tetra_soft(&state, captured, 5, 3) == 0);
+    assert(dsd_frame_sync_test_capture_tetra_soft(NULL, captured, 5, 3) == 0);
+    assert(dsd_frame_sync_test_capture_tetra_soft(&state, NULL, 5, 3) == 0);
+}
+
+static void
+test_tetra_inverted_sync_patterns_flip_only_dibit_msb(void) {
+    const char* normal[] = {TETRA_NDB_NTS_SYNC, TETRA_SB_SSB_SYNC};
+    const char* inverted[] = {INV_TETRA_NDB_NTS_SYNC, INV_TETRA_SB_SSB_SYNC};
+    for (size_t pattern = 0; pattern < sizeof(normal) / sizeof(normal[0]); pattern++) {
+        assert(strlen(normal[pattern]) == strlen(inverted[pattern]));
+        for (size_t i = 0; normal[pattern][i] != '\0'; i++) {
+            const int expected = (normal[pattern][i] - '0') ^ 2;
+            assert(inverted[pattern][i] == (char)('0' + expected));
+        }
+    }
+}
+
 static int g_vc_sync_hook_calls;
 static int g_vc_no_sync_hook_calls;
 static int g_release_hook_calls;
@@ -2931,6 +2968,8 @@ test_p25_trunk_tick_recency(void) {
 
 int
 main(void) {
+    test_tetra_soft_history_capture();
+    test_tetra_inverted_sync_patterns_flip_only_dibit_msb();
     test_p25_vc_acquisition_hooks();
     test_sps_hunt_skips_disabled_protocol_rates();
     test_sps_hunt_profile_updates_timing();

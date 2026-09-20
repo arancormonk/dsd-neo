@@ -17,6 +17,7 @@
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -76,11 +77,139 @@ static int addr_field_len(int addr_type)
     }
 }
 
+static void clear_fragment_reassembly(dsd_state *state)
+{
+    if (!state) return;
+    state->tetra_frag_active = 0;
+    state->tetra_frag_seq = 0;
+    state->tetra_frag_nbits = 0;
+    state->tetra_frag_cc = 0;
+    state->tetra_vc_grant_pending = 0;
+    state->tetra_vc_grant_call_generation = 0;
+    memset(state->tetra_frag_buf, 0, sizeof(state->tetra_frag_buf));
+}
+
+static int cmce_call_policy_allows(const dsd_opts *opts, const dsd_state *state)
+{
+    dsd_tg_policy_decision decision;
+    int rc;
+    if (!opts || !state || !state->tetra_call_active || !state->tetra_ssi_valid)
+        return 1;
+
+    int encrypted = state->tetra_enc_mode != TETRA_ENC_MODE_NONE;
+    int data_call = state->tetra_call_type != 0;
+    if (state->tetra_cmce_com_type == 0) {
+        rc = dsd_tg_policy_evaluate_private_call(opts, state,
+                                                 state->tetra_calling_ssi,
+                                                 state->tetra_active_ssi,
+                                                 encrypted, data_call, &decision);
+    } else {
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, state->tetra_gssi,
+                                               state->tetra_calling_ssi,
+                                               encrypted, data_call, &decision);
+    }
+    if (rc != 0)
+        return 0;
+    if (!decision.tune_allowed && opts->verbose > 0) {
+        fprintf(stderr, "[TETRA CHANNEL-ALLOCATION] target=%u blocked by %s\n",
+                decision.target_id,
+                dsd_tg_policy_block_reason_label(decision.block_reasons));
+    }
+    return decision.tune_allowed;
+}
+
+static void apply_channel_grant(dsd_opts *opts, dsd_state *state,
+                                long vc_hz, uint8_t slots,
+                                uint32_t generation_before)
+{
+    int fresh_call = state && state->tetra_cmce_call_generation != generation_before;
+    if (fresh_call && cmce_call_policy_allows(opts, state))
+        tetra_sm_on_grant(opts, state, vc_hz, slots);
+}
+
+/* A downlink MAC-RESOURCE SSI is the called-party address for the enclosed
+ * CMCE setup.  Communication type 0 is point-to-point; the remaining values
+ * are point-to-multipoint/acknowledged/broadcast (table 14.54).  Bind the
+ * address only after CMCE has published a complete call PDU so truncated
+ * payloads cannot create a talkgroup. */
+static void sync_cmce_call_target_from_resource(dsd_state *state)
+{
+    if (!state || !state->tetra_call_active || !state->tetra_ssi_valid)
+        return;
+    state->tetra_gssi = state->tetra_cmce_com_type == 0
+                        ? 0u : state->tetra_active_ssi;
+}
+
+uint32_t
+tetra_llc_fcs32(const uint8_t *bits, int nbits)
+{
+    if (!bits || nbits < 0) return 0;
+    uint32_t remainder = 0;
+    for (int i = 0; i < nbits; i++) {
+        uint32_t input = (uint32_t)(bits[i] & 1u);
+        if (i < 32) input ^= 1u; /* Annex C step 1. */
+        uint32_t feedback = (remainder >> 31) ^ input;
+        remainder <<= 1;
+        if (feedback) remainder ^= 0x04C11DB7u;
+    }
+    /* Multiply the complemented message polynomial by x^32. */
+    for (int i = 0; i < 32; i++) {
+        uint32_t feedback = remainder >> 31;
+        remainder <<= 1;
+        if (feedback) remainder ^= 0x04C11DB7u;
+    }
+    return ~remainder; /* Annex C step 5. */
+}
+
+/* Decode the basic-link LLC header that sits between MAC and MLE. */
+static int dispatch_basic_llc_tm_sdu(const uint8_t *bits, int nbits, int cc,
+                                     const dsd_opts *opts, dsd_state *state)
+{
+    if (!bits || nbits < 4) return 0;
+    const int pdu_type = (int)bits_to_uint(bits, 0, 4);
+    int header_bits;
+    int fcs_bits = 0;
+    const char *name;
+    switch (pdu_type) {
+    case 0: header_bits = 6; name = "BL-ADATA"; break;
+    case 1: header_bits = 5; name = "BL-DATA";  break;
+    case 2: header_bits = 4; name = "BL-UDATA"; break;
+    case 3: header_bits = 5; name = "BL-ACK"; break;
+    case 4: header_bits = 6; fcs_bits = 32; name = "BL-ADATA-FCS"; break;
+    case 5: header_bits = 5; fcs_bits = 32; name = "BL-DATA-FCS";  break;
+    case 6: header_bits = 4; fcs_bits = 32; name = "BL-UDATA-FCS"; break;
+    case 7: header_bits = 5; fcs_bits = 32; name = "BL-ACK-FCS"; break;
+    default: return 0;
+    }
+    const int payload_bits = nbits - header_bits - fcs_bits;
+    if (payload_bits < 3) {
+        /* BL-ACK without FCS may acknowledge without carrying a TL-SDU. All
+         * other recognized basic-link forms require layer-3 data. */
+        if (pdu_type != 3)
+            fprintf(stderr, "[TETRA LLC %s] CC=%d truncated; discarded\n", name, cc);
+        return 1;
+    }
+    if (fcs_bits) {
+        const uint32_t received = bits_to_uint(bits, header_bits + payload_bits, 32);
+        const uint32_t expected = tetra_llc_fcs32(bits + header_bits, payload_bits);
+        if (received != expected) {
+            fprintf(stderr,
+                    "[TETRA LLC %s] CC=%d FCS mismatch rx=0x%08X calc=0x%08X; discarded\n",
+                    name, cc, (unsigned)received, (unsigned)expected);
+            return 1;
+        }
+    }
+    fprintf(stderr, "[TETRA LLC %s] CC=%d payload_bits=%d\n", name, cc, payload_bits);
+    tetra_mle_dispatch(bits + header_bits, payload_bits, cc, opts, state);
+    return 1;
+}
+
 /* Parse the mandatory tail of a pi/4-DQPSK MAC-RESOURCE header and its
  * optional basic Channel Allocation IE (EN 300 392-2, tables 21.55/21.87).
  * Returns the first TM-SDU bit, or -1 for a truncated header. */
 static int parse_resource_optional_elements(const uint8_t *bits, int nbits, int off,
-                                            int cc, dsd_opts *opts, dsd_state *state)
+                                            int cc, dsd_opts *opts, dsd_state *state,
+                                            long *grant_hz, uint8_t *grant_slots)
 {
     if (off + 1 > nbits) return -1;
     uint32_t power_flag = bits_to_uint(bits, off, 1); off++;
@@ -160,7 +289,11 @@ static int parse_resource_optional_elements(const uint8_t *bits, int nbits, int 
         if (off + 1 > nbits) return -1;
         uint32_t further = bits_to_uint(bits, off, 1); off++;
         if (further) {
-            fprintf(stderr, "[TETRA CHANNEL-ALLOCATION] CC=%d unsupported further augmentation\n", cc);
+            /* EN 300 392-2 table 21.87 note 15 requires the receiver to
+             * discard both the allocation and any following TM-SDU. The
+             * extension has no defined length, so continuing would also lose
+             * the payload boundary. */
+            fprintf(stderr, "[TETRA CHANNEL-ALLOCATION] CC=%d invalid further augmentation; PDU discarded\n", cc);
             return -1;
         }
     }
@@ -183,10 +316,18 @@ static int parse_resource_optional_elements(const uint8_t *bits, int nbits, int 
         state->tetra_vc_carrier = (uint16_t)carrier;
         state->tetra_vc_freq_hz = vc_hz;
 
-        if (timeslots == 0)
+        if (timeslots == 0) {
+            /* A zero bitmap explicitly removes the traffic-channel assignment.
+             * Keep assignment_valid set so the audio gate can distinguish this
+             * release from conventional monitoring before any allocation. */
+            state->tetra_vc_carrier = 0;
+            state->tetra_vc_freq_hz = 0;
+            state->tetra_tx_granted_valid = 0;
             tetra_sm_on_release(opts, state);
-        else if ((up_down == 1 || up_down == 3) && vc_hz > 0 && modulation == 0)
-            tetra_sm_on_grant(opts, state, vc_hz, (uint8_t)timeslots);
+        } else if ((up_down == 1 || up_down == 3) && vc_hz > 0 && modulation == 0) {
+            if (grant_hz) *grant_hz = vc_hz;
+            if (grant_slots) *grant_slots = (uint8_t)timeslots;
+        }
     }
     return off;
 }
@@ -218,6 +359,9 @@ static void parse_mac_resource(const uint8_t *bits, int nbits, int cc,
     }
 
     int off = 2; /* skip 2-bit PDU type */
+    long grant_hz = 0;
+    uint8_t grant_slots = 0;
+    uint32_t call_generation_before = state ? state->tetra_cmce_call_generation : 0;
     uint8_t fill_bits   = (uint8_t)bits_to_uint(bits, off, 1); off += 1;
     uint8_t grant_pos   = (uint8_t)bits_to_uint(bits, off, 1); off += 1;
     uint8_t enc_mode    = (uint8_t)bits_to_uint(bits, off, 2); off += 2;
@@ -276,7 +420,8 @@ static void parse_mac_resource(const uint8_t *bits, int nbits, int cc,
      * header-only PDU. */
     if (off < nbits) {
         int payload_off = parse_resource_optional_elements(bits, nbits, off, cc,
-                                                           (dsd_opts *)(uintptr_t)opts, state);
+                                                           (dsd_opts *)(uintptr_t)opts, state,
+                                                           &grant_hz, &grant_slots);
         if (payload_off < 0) goto short_out;
         off = payload_off;
     }
@@ -320,19 +465,46 @@ static void parse_mac_resource(const uint8_t *bits, int nbits, int cc,
         if (len_ind == 63) {
             /* First fragment: seed the reassembly buffer */
             int payload_bits = nbits - off;
-            int copy = payload_bits < (int)sizeof(state->tetra_frag_buf)
-                       ? payload_bits : (int)sizeof(state->tetra_frag_buf);
-            memcpy(state->tetra_frag_buf, bits + off, (size_t)copy);
-            state->tetra_frag_nbits  = (uint16_t)copy;
+            clear_fragment_reassembly(state);
+            if (payload_bits > (int)sizeof(state->tetra_frag_buf)) {
+                fprintf(stderr,
+                        "[TETRA MAC-RESOURCE] CC=%d fragment start overflow (%d bits)\n",
+                        cc, payload_bits);
+                return;
+            }
+            memcpy(state->tetra_frag_buf, bits + off, (size_t)payload_bits);
+            state->tetra_frag_nbits  = (uint16_t)payload_bits;
             state->tetra_frag_cc     = (int8_t)cc;
             state->tetra_frag_active = 1;
+            if (grant_hz > 0) {
+                state->tetra_vc_grant_pending = 1;
+                state->tetra_vc_grant_call_generation = call_generation_before;
+            }
             fprintf(stderr, "[TETRA MAC-RESOURCE] CC=%d  fragment start (%d bits buffered)\n",
-                    cc, copy);
+                    cc, payload_bits);
         } else if (len_ind != 2) {
             /* Complete TM-SDU: dispatch directly */
-            tetra_mle_dispatch(bits + off, nbits - off, cc, opts, state);
+            int pdu_end = nbits;
+            int llc_expected = 0;
+            if (len_ind >= 3 && len_ind <= 62) {
+                const int indicated_end = (int)len_ind * 8;
+                if (indicated_end >= off && indicated_end <= nbits) {
+                    pdu_end = indicated_end;
+                    llc_expected = 1;
+                }
+            }
+            if (!llc_expected
+                || !dispatch_basic_llc_tm_sdu(bits + off, pdu_end - off,
+                                               cc, opts, state))
+                tetra_mle_dispatch(bits + off, pdu_end - off, cc, opts, state);
+            sync_cmce_call_target_from_resource(state);
+            if (grant_hz > 0)
+                apply_channel_grant((dsd_opts *)(uintptr_t)opts, state,
+                                    grant_hz, grant_slots, call_generation_before);
         }
     }
+    if (grant_hz > 0 && (off >= nbits || len_ind == 2))
+        tetra_sm_on_grant((dsd_opts *)(uintptr_t)opts, state, grant_hz, grant_slots);
     return;
 
 short_out:
@@ -526,50 +698,76 @@ static void parse_mac_frag_end(const uint8_t *bits, int nbits, int cc,
 
     if (!state) return;
 
+    if (!state->tetra_frag_active) {
+        fprintf(stderr, "[TETRA MAC-%s] CC=%d ignored without fragment start\n",
+                subtype ? "END" : "FRAG", cc);
+        return;
+    }
+    if (state->tetra_frag_cc != (int8_t)cc) {
+        fprintf(stderr,
+                "[TETRA MAC-%s] CC=%d rejected; fragment started on CC=%d\n",
+                subtype ? "END" : "FRAG", cc, (int)state->tetra_frag_cc);
+        clear_fragment_reassembly(state);
+        return;
+    }
+
+    int space = (int)sizeof(state->tetra_frag_buf) - (int)state->tetra_frag_nbits;
+    if (payload_bits > space) {
+        fprintf(stderr, "[TETRA MAC-%s] CC=%d reassembly overflow; discarding sequence\n",
+                subtype ? "END" : "FRAG", cc);
+        clear_fragment_reassembly(state);
+        return;
+    }
+
     if (!subtype) {
         /* ----------------------------------------------------------------
          * MAC-FRAG: continuation fragment — append to reassembly buffer.
          * ---------------------------------------------------------------- */
-        state->tetra_frag_active = 1;
         state->tetra_frag_seq    = (uint8_t)((state->tetra_frag_seq + 1u) & 0xFFu);
 
         if (payload_bits > 0) {
-            int space = (int)(sizeof(state->tetra_frag_buf)) - (int)state->tetra_frag_nbits;
-            int copy  = (payload_bits < space) ? payload_bits : space;
-            if (copy > 0) {
-                memcpy(state->tetra_frag_buf + state->tetra_frag_nbits,
-                       bits + payload_off, (size_t)copy);
-                state->tetra_frag_nbits = (uint16_t)(state->tetra_frag_nbits + (uint16_t)copy);
-            }
+            memcpy(state->tetra_frag_buf + state->tetra_frag_nbits,
+                   bits + payload_off, (size_t)payload_bits);
+            state->tetra_frag_nbits = (uint16_t)(state->tetra_frag_nbits + (uint16_t)payload_bits);
         }
     } else {
         /* ----------------------------------------------------------------
          * MAC-END: final fragment — append and dispatch whole TM-SDU.
          * ---------------------------------------------------------------- */
         if (payload_bits > 0) {
-            int space = (int)(sizeof(state->tetra_frag_buf)) - (int)state->tetra_frag_nbits;
-            int copy  = (payload_bits < space) ? payload_bits : space;
-            if (copy > 0) {
-                memcpy(state->tetra_frag_buf + state->tetra_frag_nbits,
-                       bits + payload_off, (size_t)copy);
-                state->tetra_frag_nbits = (uint16_t)(state->tetra_frag_nbits + (uint16_t)copy);
-            }
+            memcpy(state->tetra_frag_buf + state->tetra_frag_nbits,
+                   bits + payload_off, (size_t)payload_bits);
+            state->tetra_frag_nbits = (uint16_t)(state->tetra_frag_nbits + (uint16_t)payload_bits);
         }
 
-        /* Dispatch reassembled TM-SDU to MLE */
+        uint8_t pending_grant = state->tetra_vc_grant_pending;
+        uint32_t grant_generation = state->tetra_vc_grant_call_generation;
+
+        /* A fragmented TM-SDU still contains the LLC PDU. Decode its basic
+         * link header only after the final fragment has arrived so the FCS
+         * variants can be bounded against the complete payload. */
         if (state->tetra_frag_nbits >= 9) {
             fprintf(stderr, "[TETRA MAC-END] CC=%d  dispatching %u reassembled bits\n",
                     cc, state->tetra_frag_nbits);
-            tetra_mle_dispatch((const uint8_t *)state->tetra_frag_buf,
-                               (int)state->tetra_frag_nbits,
-                               cc, opts, state);
+            if (!dispatch_basic_llc_tm_sdu((const uint8_t *)state->tetra_frag_buf,
+                                           (int)state->tetra_frag_nbits,
+                                           cc, opts, state))
+                tetra_mle_dispatch((const uint8_t *)state->tetra_frag_buf,
+                                   (int)state->tetra_frag_nbits,
+                                   cc, opts, state);
+            sync_cmce_call_target_from_resource(state);
+        }
+
+        if (pending_grant && state->tetra_vc_freq_hz > 0 &&
+            state->tetra_vc_timeslot_bitmap != 0) {
+            apply_channel_grant((dsd_opts *)(uintptr_t)opts, state,
+                                state->tetra_vc_freq_hz,
+                                state->tetra_vc_timeslot_bitmap,
+                                grant_generation);
         }
 
         /* Clear reassembly state */
-        state->tetra_frag_active = 0;
-        state->tetra_frag_nbits  = 0;
-        state->tetra_frag_cc     = 0;
-        memset(state->tetra_frag_buf, 0, sizeof(state->tetra_frag_buf));
+        clear_fragment_reassembly(state);
     }
 }
 

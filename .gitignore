@@ -34,6 +34,11 @@ Thumbs.db
 /logs/
 *.log
 *.out
+/captures/
+/Testing/
+# Scratch content under tmp is ignored; the two tracked ETSI reference files
+# remain versioned because ignore rules do not affect tracked files.
+/tmp/*
 /.cmake-format.local.out
 /.gitleaks.sarif
 /.osv-scanner.local.out

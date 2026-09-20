@@ -8,7 +8,6 @@
  * Item 2: D-TX-* stub expansion (call_id, notification parsed)
  * Item 3: channel_info consumption++ (30+ state fields displayed)
  * Item 4: SNDCP (PD=8) minimal parser
- * Item 5: D-SDS-LONG-DATA text display in channel_info
  */
 
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
@@ -45,27 +44,25 @@ static void pack_bits(uint8_t *out, uint32_t val, int offset, int nbits)
 static dsd_state *alloc_state(void) { return (dsd_state *)calloc(1, sizeof(dsd_state)); }
 static dsd_opts  *alloc_opts(void)  { return (dsd_opts  *)calloc(1, sizeof(dsd_opts));  }
 
-/* Wrap a CMCE PDU body inside an MLE C-PLANE-DATA envelope (PD=CMCE). */
+/* Wrap a CMCE PDU body inside an protocol-discriminator envelope (PD=CMCE). */
 static void wrap_mle_cmce(const uint8_t *cmce_body, int cmce_nbits,
                            uint8_t *out, int *out_nbits)
 {
-    int total = 9 + cmce_nbits;
+    int total = 3 + cmce_nbits;
     memset(out, 0, (size_t)total);
-    pack_bits(out, TETRA_MLE_C_PLANE_DATA, 0, 5);  /* MLE type = 24 */
-    pack_bits(out, TETRA_MLE_PD_CMCE, 5, 4);        /* PD = 3       */
-    memcpy(out + 9, cmce_body, (size_t)cmce_nbits);
+    pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
+    memcpy(out + 3, cmce_body, (size_t)cmce_nbits);
     *out_nbits = total;
 }
 
-/* Wrap a generic PDU inside an MLE C-PLANE-DATA envelope with given PD. */
+/* Wrap a generic PDU inside an protocol-discriminator envelope with given PD. */
 static void wrap_mle_pd(const uint8_t *body, int body_nbits,
                          uint32_t pd, uint8_t *out, int *out_nbits)
 {
-    int total = 9 + body_nbits;
+    int total = 3 + body_nbits;
     memset(out, 0, (size_t)total);
-    pack_bits(out, TETRA_MLE_C_PLANE_DATA, 0, 5);
-    pack_bits(out, pd, 5, 4);
-    memcpy(out + 9, body, (size_t)body_nbits);
+    pack_bits(out, pd, 0, 3);
+    memcpy(out + 3, body, (size_t)body_nbits);
     *out_nbits = total;
 }
 
@@ -88,12 +85,14 @@ static void test_d_tx_expanded(void)
     pack_bits(cmce, 0x2345, 5, 14);
     pack_bits(cmce, 1, 19, 1); /* continue */
     pack_bits(cmce, 1, 20, 1); /* request permission */
-    pack_bits(cmce, 1, 21, 1); /* notification present */
-    pack_bits(cmce, 7, 22, 6); /* notification value */
+    pack_bits(cmce, 1, 21, 1); /* O-bit */
+    pack_bits(cmce, 1, 22, 1); /* notification present */
+    pack_bits(cmce, 7, 23, 6); /* notification value */
+    pack_bits(cmce, 0, 29, 1); /* terminating M-bit */
 
     uint8_t mle[64];
     int mle_nbits;
-    wrap_mle_cmce(cmce, 28, mle, &mle_nbits);
+    wrap_mle_cmce(cmce, 30, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 7, opt, st);
 
     CHECK(st->tetra_tx_continue == 1,           "D-TX-CONTINUE flag set");
@@ -107,8 +106,9 @@ static void test_d_tx_expanded(void)
     pack_bits(cmce, TETRA_CMCE_D_TX_WAIT, 0, 5);
     pack_bits(cmce, 0, 5, 14);
     pack_bits(cmce, 0, 19, 1);
+    pack_bits(cmce, 0, 20, 1); /* O-bit */
 
-    wrap_mle_cmce(cmce, 20, mle, &mle_nbits);
+    wrap_mle_cmce(cmce, 21, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 7, opt, st);
 
     CHECK(st->tetra_tx_wait == 1,                "D-TX-WAIT flag set");
@@ -123,8 +123,9 @@ static void test_d_tx_expanded(void)
     pack_bits(cmce, 1, 19, 2); /* transmission not granted */
     pack_bits(cmce, 0, 21, 1); /* request permission */
     pack_bits(cmce, 1, 22, 1); /* encryption */
+    pack_bits(cmce, 0, 24, 1); /* O-bit */
 
-    wrap_mle_cmce(cmce, 24, mle, &mle_nbits);
+    wrap_mle_cmce(cmce, 25, mle, &mle_nbits);
     tetra_mle_dispatch(mle, mle_nbits, 7, opt, st);
 
     CHECK(st->tetra_tx_interrupted == 1,         "D-TX-INTERRUPT flag set");
@@ -136,7 +137,7 @@ static void test_d_tx_expanded(void)
 }
 
 /* ====================================================================
- * Item 3+5: channel_info consumption++ & D-SDS-LONG display
+ * Item 3: channel_info consumption
  * ==================================================================== */
 static void test_channel_info_expanded(void)
 {
@@ -149,6 +150,10 @@ static void test_channel_info_expanded(void)
     st->tetra_mnc           = 1;
     st->tetra_colour        = 42;
     st->tetra_dl_carrier_hz = 390000000L;
+    st->tetra_mle_ca_neighbor_count_valid = 1;
+    st->tetra_mle_ca_neighbor_count = 2;
+    st->tetra_mm_group_identity_valid = 1;
+    st->tetra_mm_group_entry_count = 3;
     st->tetra_call_active   = 1;
     st->tetra_gssi          = 100;
     st->tetra_calling_ssi   = 999;
@@ -164,6 +169,8 @@ static void test_channel_info_expanded(void)
     st->tetra_decode_ok     = 100;
     st->tetra_decode_errors = 3;
     st->tetra_frames_total  = 200;
+    st->tetra_mm_status_valid = 1;
+    st->tetra_mm_status_code = 7;
     st->tetra_tx_continue   = 1;
     st->tetra_tx_interrupted = 1;
     st->tetra_sds_status    = 0x8001;
@@ -178,19 +185,27 @@ static void test_channel_info_expanded(void)
     st->tetra_sds_ack_msg_ref = 7;
     st->tetra_sds_short_report_valid  = 1;
     st->tetra_sds_short_report_result = 2;
-    st->tetra_mm_temp_ssi_valid = 1;
-    st->tetra_mm_temp_ssi       = 54321;
     st->tetra_sndcp_valid    = 1;
     st->tetra_sndcp_nsapi    = 5;
     st->tetra_sndcp_pdu_type = 1;
     st->tetra_d_info_valid        = 1;
     st->tetra_d_info_call_id      = 1;
     st->tetra_d_info_call_timeout = 1;
-
-    /* D-SDS-LONG-DATA text (item 5) */
-    st->tetra_sds_long_valid    = 1;
-    st->tetra_sds_long_text_len = 5;
-    memcpy(st->tetra_sds_long_text, "hello", 6);
+    st->tetra_d_info_new_call_id = 2;
+    st->tetra_d_info_new_call_id_valid = 1;
+    st->tetra_d_info_timeout = 9;
+    st->tetra_d_info_timeout_valid = 1;
+    st->tetra_d_info_status = 3;
+    st->tetra_d_info_status_valid = 1;
+    st->tetra_d_info_notification_indicator = 42;
+    st->tetra_d_info_notification_indicator_valid = 1;
+    st->tetra_call_restore_valid = 1;
+    st->tetra_call_restore_id = 17;
+    st->tetra_call_restore_grant = 3;
+    st->tetra_call_restore_new_id = 18;
+    st->tetra_call_restore_new_id_valid = 1;
+    st->tetra_call_restore_status = 3;
+    st->tetra_call_restore_status_valid = 1;
 
     char buf[1024];
     tetra_channel_info_fmt(st, buf, sizeof(buf));
@@ -199,6 +214,8 @@ static void test_channel_info_expanded(void)
 
     /* Verify key substrings present */
     CHECK(strstr(buf, "MCC:206") != NULL,     "MCC displayed");
+    CHECK(strstr(buf, "nbr:2") != NULL,       "CA neighbour count displayed");
+    CHECK(strstr(buf, "groups:3") != NULL,    "MM group count displayed");
     CHECK(strstr(buf, "TG:100") != NULL,      "TG displayed");
     CHECK(strstr(buf, "SRC:999") != NULL,     "SRC displayed");
     CHECK(strstr(buf, "CCK:4660") != NULL,    "CCK displayed");  /* 0x1234 = 4660 */
@@ -207,6 +224,8 @@ static void test_channel_info_expanded(void)
     CHECK(strstr(buf, "ok:100") != NULL,      "decode_ok displayed");
     CHECK(strstr(buf, "err:3") != NULL,       "decode_errors displayed");
     CHECK(strstr(buf, "fr:200") != NULL,      "frames_total displayed");
+    CHECK(strstr(buf, "mm:7/MS frequency bands request") != NULL,
+          "MM status displayed with ETSI label");
     CHECK(strstr(buf, "tx:CI") != NULL,       "floor-control flags displayed");
     CHECK(strstr(buf, "sts:32769") != NULL,   "SDS status displayed");
     CHECK(strstr(buf, "sds_s:42") != NULL,    "SDS short data displayed");
@@ -214,10 +233,21 @@ static void test_channel_info_expanded(void)
     CHECK(strstr(buf, "fac:3") != NULL,       "facility displayed");
     CHECK(strstr(buf, "sds_ack:ref7") != NULL,"SDS ACK displayed");
     CHECK(strstr(buf, "srpt:2") != NULL,      "SDS short report displayed");
-    CHECK(strstr(buf, "tmpSSI:54321") != NULL, "MM temp SSI displayed");
     CHECK(strstr(buf, "sndcp:5/1") != NULL,   "SNDCP info displayed");
     CHECK(strstr(buf, "dinfo:id1/t1") != NULL, "D-INFO summary displayed");
-    CHECK(strstr(buf, "LSDS:\"hello\"") != NULL, "D-SDS-LONG text displayed");
+    CHECK(strstr(buf, "dinfo:id1/t1->2/to9/st3/n42") != NULL,
+          "D-INFO optional state displayed");
+    CHECK(strstr(buf, "restore:id17/g3->18/st3") != NULL,
+          "call restore state displayed");
+
+    st->tetra_sds_report_cause = 0x21;
+    st->tetra_sds_report_msg_ref = 231;
+    tetra_channel_info_fmt(st, buf, sizeof(buf));
+    CHECK(strstr(buf, "rpt:retry/21 ref:231") != NULL,
+          "Stored message is retrying, not a terminal failure");
+    st->tetra_sds_report_cause = 0x4a;
+    tetra_channel_info_fmt(st, buf, sizeof(buf));
+    CHECK(strstr(buf, "rpt:fail/4A") != NULL, "Terminal failure status displayed");
 
     free(st);
 }
@@ -240,7 +270,7 @@ static void test_sndcp_parser(void)
     pack_bits(sndcp, 5, 0, 4);  /* NSAPI = 5 */
     pack_bits(sndcp, 3, 4, 4);  /* PDU type = 3 */
 
-    /* Wrap in MLE C-PLANE-DATA with PD=SNDCP(8) */
+    /* Prefix the SNDCP PDU with the standard 3-bit SNDCP PD. */
     uint8_t mle[64];
     int mle_nbits;
     wrap_mle_pd(sndcp, 16, TETRA_MLE_PD_SNDCP, mle, &mle_nbits);
@@ -265,28 +295,6 @@ static void test_sndcp_parser(void)
     free(opt);
 }
 
-/* ====================================================================
- * Item 5 (extra): D-SDS-LONG-DATA text not shown when empty
- * ==================================================================== */
-static void test_long_sds_not_shown_when_empty(void)
-{
-    printf("--- Item 5 extra: LSDS not shown when empty ---\n");
-    dsd_state *st = alloc_state();
-
-    st->tetra_net_known = 1;
-    st->tetra_mcc = 1;
-    st->tetra_mnc = 1;
-    st->tetra_colour = 1;
-    st->tetra_sds_long_valid    = 1;
-    st->tetra_sds_long_text_len = 0;  /* empty text */
-
-    char buf[512];
-    tetra_channel_info_fmt(st, buf, sizeof(buf));
-    CHECK(strstr(buf, "LSDS") == NULL, "LSDS not shown when text empty");
-
-    free(st);
-}
-
 /* ==================================================================== */
 int main(void)
 {
@@ -295,7 +303,6 @@ int main(void)
     test_d_tx_expanded();
     test_channel_info_expanded();
     test_sndcp_parser();
-    test_long_sds_not_shown_when_empty();
 
     printf("\n=== Phase 86 Results: %d passed, %d failed ===\n",
            g_pass, g_fail);

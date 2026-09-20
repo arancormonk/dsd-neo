@@ -21,9 +21,10 @@ Replace this stub with a real TETRA ACELP vocoder command to hear actual audio.
 """
 
 import sys
+import time
 
 FRAME_BITS    = 137   # coded bits per TCH/FS ACELP sub-frame
-FRAME_SAMPLES = 160   # PCM samples per frame (20 ms @ 8 kHz)
+FRAME_SAMPLES = 240   # PCM samples per frame (30 ms @ 8 kHz)
 PCM_SILENCE   = bytes(FRAME_SAMPLES * 2)  # pre-built silence payload
 
 
@@ -37,6 +38,11 @@ def main() -> None:
             break                       # dsd-neo closed the pipe → exit cleanly
         if len(data) < FRAME_BITS:
             break                       # short read at EOF
+
+        # --hang exercises the decoder's bounded IPC read and recovery path.
+        if "--hang" in sys.argv[1:]:
+            time.sleep(60)
+            break
 
         # --short-output exercises the decoder's IPC framing/error recovery.
         if "--short-output" in sys.argv[1:]:

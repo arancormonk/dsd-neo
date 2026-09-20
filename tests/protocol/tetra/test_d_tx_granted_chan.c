@@ -22,21 +22,22 @@ static int build(uint8_t *b, uint16_t call_id, uint8_t grant,
                  int party_present, uint32_t ssi)
 {
     memset(b, 0, 80);
-    pack(b, 24, 0, 5);       /* MLE C-PLANE-DATA */
-    pack(b, 3, 5, 4);        /* CMCE discriminator */
-    pack(b, 11, 9, 5);       /* D-TX-GRANTED */
-    pack(b, call_id, 14, 14);
-    pack(b, grant, 28, 2);
-    pack(b, request_allowed, 30, 1);
-    pack(b, encrypted, 31, 1);
-    pack(b, 0, 32, 1);       /* reserved */
-    pack(b, 0, 33, 1);       /* notification absent */
-    pack(b, party_present ? 1u : 0u, 34, 1);
+    pack(b, TETRA_MLE_PD_CMCE, 0, 3);
+    pack(b, 11, 3, 5);       /* D-TX-GRANTED */
+    pack(b, call_id, 8, 14);
+    pack(b, grant, 22, 2);
+    pack(b, request_allowed, 24, 1);
+    pack(b, encrypted, 25, 1);
+    pack(b, 0, 26, 1);       /* reserved */
+    pack(b, party_present ? 1u : 0u, 27, 1); /* O-bit */
     if (!party_present)
-        return 35;
-    pack(b, 1, 35, 2);       /* TPTI: SSI */
-    pack(b, ssi, 37, 24);
-    return 61;
+        return 28;
+    pack(b, 0, 28, 1);       /* notification absent */
+    pack(b, 1, 29, 1);       /* TPTI present */
+    pack(b, 1, 30, 2);       /* TPTI: SSI */
+    pack(b, ssi, 32, 24);
+    pack(b, 0, 56, 1);       /* terminating M-bit */
+    return 57;
 }
 
 static void test_standard_layout_and_identity(void)

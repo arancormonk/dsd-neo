@@ -49,14 +49,17 @@ main(void)
     tetra_vocoder_close();
     sf_write_sync(wav);
     sf_count_t frames = sf_seek(wav, 0, SEEK_CUR);
+    int status_ok = state->tetra_vocoder_status == TETRA_VOCODER_STATUS_READY
+                 && state->tetra_vocoder_frames == 2
+                 && state->tetra_vocoder_errors == 0;
     sf_close(wav);
 
     free(opts);
     free(state);
     remove(path);
 
-    if (frames != 320) {
-        fprintf(stderr, "FAIL: expected 320 PCM frames, got %lld\n",
+    if (frames != 480 || !status_ok) {
+        fprintf(stderr, "FAIL: expected 480 PCM frames, got %lld\n",
                 (long long)frames);
         return 1;
     }

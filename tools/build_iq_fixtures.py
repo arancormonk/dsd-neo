@@ -179,14 +179,27 @@ DPMR_DIBIT_TO_LEVEL = {1: 3.0, 0: 1.0, 2: -1.0, 3: -3.0}
 # deliberately conspicuous in decoder output so the CTest assertion proves
 # that FEC and BSCH parsing ran, rather than accepting sync alone.
 TETRA_SYNTH_NAME = "tetra_bsch_synth"
+TETRA_INVERTED_NAME = "tetra_bsch_inverted"
 TETRA_BAD_CRC_NAME = "tetra_bsch_bad_crc"
 TETRA_IMPAIRED_NAME = "tetra_bsch_cfo_awgn"
+TETRA_THRESHOLD_PASS_NAME = "tetra_bsch_cfo_awgn_snr6"
+TETRA_THRESHOLD_REJECT_NAME = "tetra_bsch_cfo_awgn_snr4"
+TETRA_MULTIPATH_NAME = "tetra_bsch_two_ray"
+TETRA_CLOCK_FAST_NAME = "tetra_bsch_clock_100ppm"
+TETRA_CLOCK_SLOW_NAME = "tetra_bsch_clock_minus_100ppm"
 TETRA_BAD_CRC_IMPAIRED_NAME = "tetra_bsch_bad_crc_cfo_awgn"
 TETRA_SYMBOL_RATE = 18000
 TETRA_BURST_REPEATS = 100
 TETRA_IMPAIRED_SEED = 0x54455452
 TETRA_IMPAIRED_CFO_HZ = 300.0
 TETRA_IMPAIRED_SNR_DB = 14.0
+TETRA_THRESHOLD_PASS_SNR_DB = 6.0
+TETRA_THRESHOLD_REJECT_SNR_DB = 4.0
+TETRA_TWO_RAY_DELAY_SAMPLES = 1
+TETRA_TWO_RAY_AMPLITUDE = 0.45
+TETRA_TWO_RAY_CFO_HZ = 3.0
+TETRA_TWO_RAY_PHASE_RAD = 2.2
+TETRA_CLOCK_ERROR_PPM = 100.0
 TETRA_SSB_SYNC = "3001213032213001213"
 TETRA_NTS_SYNC = "31003221310"
 TETRA_PHASE_STEP = {0: math.pi / 4.0, 1: 3.0 * math.pi / 4.0,
@@ -531,11 +544,11 @@ def tetra_bsch_dibits(corrupt_crc=False):
         k = 8 * ((i - 1) // 3) + p[(i - 1) % 3]
         punctured.append(mother[k - 1])
 
-    scrambled = tetra_scramble(punctured)
     interleaved = [0] * 120
     for i in range(1, 121):
-        interleaved[(11 * i) % 120] = scrambled[i - 1]
-    return [(interleaved[i] << 1) | interleaved[i + 1] for i in range(0, 120, 2)]
+        interleaved[(11 * i) % 120] = punctured[i - 1]
+    scrambled = tetra_scramble(interleaved)
+    return [(scrambled[i] << 1) | scrambled[i + 1] for i in range(0, 120, 2)]
 
 
 def tetra_control_block_dibits(info, interleave_a, seed, transmitted_bits):
@@ -554,11 +567,11 @@ def tetra_control_block_dibits(info, interleave_a, seed, transmitted_bits):
     for j in range(1, transmitted_bits + 1):
         k = 8 * ((j - 1) // 3) + p[(j - 1) % 3]
         punctured.append(mother[k - 1])
-    scrambled = tetra_scramble(punctured, seed)
     interleaved = [0] * transmitted_bits
     for i in range(1, transmitted_bits + 1):
-        interleaved[(interleave_a * i) % transmitted_bits] = scrambled[i - 1]
-    return [(interleaved[i] << 1) | interleaved[i + 1]
+        interleaved[(interleave_a * i) % transmitted_bits] = punctured[i - 1]
+    scrambled = tetra_scramble(interleaved, seed)
+    return [(scrambled[i] << 1) | scrambled[i + 1]
             for i in range(0, transmitted_bits, 2)]
 
 
@@ -609,24 +622,52 @@ def tetra_channel_allocation_dibits():
 
 def tetra_tch_fs_dibits():
     """Two 216-bit NDB blocks carrying one known TCH/FS codeword."""
-    type2 = [((i * 13 + 5) >> 2) & 1 for i in range(292)]
-    type2[-4:] = [0, 0, 0, 0]      # terminated convolutional trellis
-    mother = tetra_conv_encode(type2)
-    punctured = []
-    p = (1, 2, 5)
-    for j in range(1, 433):
-        i = j + ((j - 1) // 65)    # special TCH/4.8 index adjustment
-        k = 8 * ((i - 1) // 3) + p[(i - 1) % 3]
-        punctured.append(mother[k - 1])
+    speech = [((i * 13 + 5) >> 2) & 1 for i in range(274)]
+
+    # EN 300 395-2 speech channel coding. Class 0 is uncoded. Classes 1 and
+    # 2 share one constraint-length-5, rate-1/3 trellis, while their puncture
+    # matrices restart at the class boundary.
+    state = 0
+
+    def encode_segment(bits, pattern):
+        nonlocal state
+        coded = []
+        for pos, bit in enumerate(bits):
+            involved = (bit << 4) | state
+            lanes = [
+                (involved & 0x1F).bit_count() & 1,
+                (involved & 0x1B).bit_count() & 1,
+                (involved & 0x15).bit_count() & 1,
+            ]
+            state = (bit << 3) | (state >> 1)
+            for lane in range(3):
+                if pattern[lane][pos & 7]:
+                    coded.append(lanes[lane])
+        return coded
+
+    a1 = ((1, 1, 1, 1, 1, 1, 1, 1),
+          (1, 0, 1, 0, 1, 0, 1, 0),
+          (0, 0, 0, 0, 0, 0, 0, 0))
+    a2 = ((1, 1, 1, 1, 1, 1, 1, 1),
+          (1, 1, 1, 1, 1, 1, 1, 1),
+          (1, 0, 0, 0, 1, 0, 0, 0))
+    class1 = encode_segment(speech[102:214], a1)
+    # The deterministic fixture does not use BFI yet; zero CRC bits still
+    # exercise the exact protected length and the four terminating bits.
+    class2 = encode_segment(speech[214:] + [0] * 8 + [0] * 4, a2)
+    deinterleaved = speech[:102] + class1 + class2
+    assert len(deinterleaved) == 432 and state == 0
+
+    interleaved = [0] * 432
+    for column in range(18):
+        for line in range(24):
+            interleaved[column * 24 + line] = deinterleaved[line * 18 + column]
 
     seed = (((17 | (4242 << 6) | (460 << 20)) << 2) | 3) & 0xFFFFFFFF
     blocks = []
-    for block in (punctured[:216], punctured[216:]):
+    for block in (interleaved[:216], interleaved[216:]):
         scrambled = tetra_scramble(block, seed)
-        interleaved = [0] * 216
-        for i in range(1, 217):
-            interleaved[(101 * i) % 216] = scrambled[i - 1]
-        blocks.append([(interleaved[i] << 1) | interleaved[i + 1]
+        blocks.append([(scrambled[i] << 1) | scrambled[i + 1]
                        for i in range(0, 216, 2)])
     return blocks[0], blocks[1]
 
@@ -656,18 +697,27 @@ def modulate_tetra(dibits):
     return np.convolve(impulses, np.asarray(taps), mode="same")
 
 
-def impair_tetra(samples, sample_rate=54000):
+def impair_tetra(samples, sample_rate=54000, snr_db=TETRA_IMPAIRED_SNR_DB):
     """Apply a deterministic carrier offset and complex AWGN to TETRA IQ."""
     n = np.arange(len(samples))
     rotation = np.exp(1j * 2.0 * math.pi * TETRA_IMPAIRED_CFO_HZ * n / sample_rate)
     shifted = samples * rotation
     signal_power = np.mean(np.abs(shifted) ** 2)
-    noise_power = signal_power / (10.0 ** (TETRA_IMPAIRED_SNR_DB / 10.0))
+    noise_power = signal_power / (10.0 ** (snr_db / 10.0))
     component_sigma = math.sqrt(noise_power / 2.0)
     rng = np.random.default_rng(TETRA_IMPAIRED_SEED)
     noise = (rng.normal(0.0, component_sigma, len(samples))
              + 1j * rng.normal(0.0, component_sigma, len(samples)))
     return shifted + noise
+
+
+def tetra_sample_clock_error(samples, ppm):
+    """Resample while retaining the 54 kHz tag to model receiver clock error."""
+    ratio = 1.0 + ppm / 1_000_000.0
+    source_positions = np.arange(int(len(samples) / ratio)) * ratio
+    source_axis = np.arange(len(samples))
+    return (np.interp(source_positions, source_axis, samples.real)
+            + 1j * np.interp(source_positions, source_axis, samples.imag))
 
 
 def build_tetra_synth(out_dir):
@@ -688,10 +738,42 @@ def build_tetra_synth(out_dir):
     samples = modulate_tetra((sb + ndb + voice_ndb) * TETRA_BURST_REPEATS)
     written = write_fixture(out_dir, TETRA_SYNTH_NAME, samples, sample_rate=54000, dsp_bw_khz=54)
     print(f"{TETRA_SYNTH_NAME:28s} synth   {written // 1024:6d} KiB")
+    # Complex conjugation reverses every differential phase step. For TETRA's
+    # pi/4-DQPSK map this changes each dibit by XOR 2, matching the inverted
+    # NTS/SSB sync words and exercising payload polarity normalization.
+    inverted_written = write_fixture(out_dir, TETRA_INVERTED_NAME, np.conjugate(samples),
+                                      sample_rate=54000, dsp_bw_khz=54)
+    print(f"{TETRA_INVERTED_NAME:28s} synth   {inverted_written // 1024:6d} KiB")
     impaired = impair_tetra(samples)
     impaired_written = write_fixture(out_dir, TETRA_IMPAIRED_NAME, impaired,
                                      sample_rate=54000, dsp_bw_khz=54)
     print(f"{TETRA_IMPAIRED_NAME:28s} synth   {impaired_written // 1024:6d} KiB")
+    threshold_pass = impair_tetra(samples, snr_db=TETRA_THRESHOLD_PASS_SNR_DB)
+    threshold_pass_written = write_fixture(
+        out_dir, TETRA_THRESHOLD_PASS_NAME, threshold_pass,
+        sample_rate=54000, dsp_bw_khz=54)
+    print(f"{TETRA_THRESHOLD_PASS_NAME:28s} synth   {threshold_pass_written // 1024:6d} KiB")
+    threshold_reject = impair_tetra(samples, snr_db=TETRA_THRESHOLD_REJECT_SNR_DB)
+    threshold_reject_written = write_fixture(
+        out_dir, TETRA_THRESHOLD_REJECT_NAME, threshold_reject,
+        sample_rate=54000, dsp_bw_khz=54)
+    print(f"{TETRA_THRESHOLD_REJECT_NAME:28s} synth   {threshold_reject_written // 1024:6d} KiB")
+    two_ray = simulcast_two_ray(samples, TETRA_TWO_RAY_DELAY_SAMPLES,
+                                TETRA_TWO_RAY_AMPLITUDE, TETRA_TWO_RAY_CFO_HZ,
+                                TETRA_TWO_RAY_PHASE_RAD)
+    two_ray_written = write_fixture(out_dir, TETRA_MULTIPATH_NAME, two_ray,
+                                    sample_rate=54000, dsp_bw_khz=54)
+    print(f"{TETRA_MULTIPATH_NAME:28s} synth   {two_ray_written // 1024:6d} KiB")
+    clock_fast = tetra_sample_clock_error(samples, TETRA_CLOCK_ERROR_PPM)
+    clock_fast_written = write_fixture(out_dir, TETRA_CLOCK_FAST_NAME,
+                                       clock_fast, sample_rate=54000,
+                                       dsp_bw_khz=54)
+    print(f"{TETRA_CLOCK_FAST_NAME:28s} synth   {clock_fast_written // 1024:6d} KiB")
+    clock_slow = tetra_sample_clock_error(samples, -TETRA_CLOCK_ERROR_PPM)
+    clock_slow_written = write_fixture(out_dir, TETRA_CLOCK_SLOW_NAME,
+                                       clock_slow, sample_rate=54000,
+                                       dsp_bw_khz=54)
+    print(f"{TETRA_CLOCK_SLOW_NAME:28s} synth   {clock_slow_written // 1024:6d} KiB")
     bad_bsch = tetra_bsch_dibits(corrupt_crc=True)
     bad_sb = ([0] * 40) + bad_bsch + sync + ([0] * 15) + ([0] * 108) + [0]
     bad_samples = modulate_tetra(bad_sb * TETRA_BURST_REPEATS)
@@ -703,7 +785,9 @@ def build_tetra_synth(out_dir):
                                          bad_impaired, sample_rate=54000,
                                          dsp_bw_khz=54)
     print(f"{TETRA_BAD_CRC_IMPAIRED_NAME:28s} synth   {bad_impaired_written // 1024:6d} KiB")
-    return written + impaired_written + bad_written + bad_impaired_written
+    return (written + inverted_written + impaired_written + threshold_pass_written
+            + threshold_reject_written + two_ray_written + clock_fast_written
+            + clock_slow_written + bad_written + bad_impaired_written)
 
 
 def build_derived(out_dir):
@@ -789,7 +873,7 @@ def main():
         total += build_dpmr_synth(args.out)
         total += build_tetra_synth(args.out)
     else:
-        for entry in DERIVED_SIMULCAST + [(n,) for n, _, _, _ in DERIVED_NOISE] + [(DPMR_SYNTH_NAME,), (TETRA_SYNTH_NAME,), (TETRA_IMPAIRED_NAME,), (TETRA_BAD_CRC_NAME,), (TETRA_BAD_CRC_IMPAIRED_NAME,)]:
+        for entry in DERIVED_SIMULCAST + [(n,) for n, _, _, _ in DERIVED_NOISE] + [(DPMR_SYNTH_NAME,), (TETRA_SYNTH_NAME,), (TETRA_INVERTED_NAME,), (TETRA_IMPAIRED_NAME,), (TETRA_THRESHOLD_PASS_NAME,), (TETRA_THRESHOLD_REJECT_NAME,), (TETRA_MULTIPATH_NAME,), (TETRA_CLOCK_FAST_NAME,), (TETRA_CLOCK_SLOW_NAME,), (TETRA_BAD_CRC_NAME,), (TETRA_BAD_CRC_IMPAIRED_NAME,)]:
             if entry[0] in args.only:
                 raise SystemExit(f"{entry[0]} is a derived fixture; regenerate it with --derived-only")
     print(f"total {total // 1024} KiB in {args.out}")

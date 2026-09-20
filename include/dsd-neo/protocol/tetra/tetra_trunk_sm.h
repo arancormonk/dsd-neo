@@ -66,6 +66,24 @@ void tetra_sm_on_grant(dsd_opts *opts, dsd_state *state,
 void tetra_sm_on_release(dsd_opts *opts, dsd_state *state);
 
 /**
+ * @brief Reconcile a control-channel return completed by generic engine code.
+ *
+ * Clears traffic-only TETRA state without issuing another tuning request.
+ * The resulting state is ON_CC when a positive control frequency remains,
+ * otherwise IDLE.
+ */
+void tetra_sm_on_external_cc_return(dsd_state *state);
+
+/**
+ * @brief Settle a correlated asynchronous tune without requiring a TETRA frame.
+ *
+ * The engine calls this before its frame-dispatch gate. This lets a failed VC
+ * or CC-return request roll staged state back and retire its failed gate even
+ * though that gate is deliberately preventing protocol-frame dispatch.
+ */
+void tetra_sm_poll_tuning(dsd_opts *opts, dsd_state *state);
+
+/**
  * @brief Periodic tick: enforces hangtime timeout while TUNED.
  *
  * Also returns to the CC when trunking is disabled while tuned. Call from

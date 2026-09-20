@@ -11,6 +11,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <sndfile.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,7 @@
 #  include <windows.h>
 #else
 #  include <errno.h>
+#  include <poll.h>
 #  include <signal.h>
 #  include <time.h>
 #  include <unistd.h>
@@ -32,10 +34,10 @@
 
 /* EN 300 395-2 V1.3.1 Table 4 bit-position tables for TCH/FS — from osmo-tetra tch_reordering.c */
 
-/* 50 Class-0 (most protected) bit positions, 1-indexed */
+/* 51 Class-0 (unprotected) bit positions, 1-indexed */
 static const uint8_t class0_positions[] = {
     35, 36, 37, 38, 39, 40, 41, 42, 43, 47, 48,
-    56, 61, 62, 63, 65, 66, 67, 68, 69, 70, 74,
+    56, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 74,
     75, 83, 88, 89, 90, 91, 92, 93, 94, 95, 96,
     97, 101, 102, 110, 115, 116, 117, 118, 119,
     120, 121, 122, 123, 124, 128, 129, 137
@@ -83,7 +85,8 @@ enum {
 
 /* TETRA TCH/FS speech frame parameters (ETSI EN 300 395-2) */
 #define TETRA_TCH_FRAME_BITS     137  /* encoded bits in one ACELP codec frame       */
-#define TETRA_TCH_FRAME_SAMPLES  160  /* decoded PCM16 samples (20ms @ 8 kHz)         */
+#define TETRA_TCH_FRAME_SAMPLES  240  /* decoded PCM16 samples (30 ms @ 8 kHz)        */
+#define TETRA_VOCODER_READ_TIMEOUT_MS 2000
 
 typedef enum {
     TETRA_VOC_STATUS_UNKNOWN = 0,
@@ -92,15 +95,17 @@ typedef enum {
     TETRA_VOC_STATUS_OPEN_FAILED
 } tetra_voc_status_t;
 
-/* Convert decoded TYPE2 bits (at least 272 bits) into two consecutive codec frames.
+static int s_voc_last_timeout = 0;
+
+/* Convert decoded TYPE2 bits (at least 274 bits) into two consecutive codec frames.
  * Each frame occupies TETRA_TCH_FRAME_BITS (137) bytes in the output buffer.
  * The output buffer must be at least 2 * TETRA_TCH_FRAME_BITS = 274 bytes.
  *
  * The class-reordered TYPE2 layout is (ETSI EN 300 395-2 Table 4):
- *   [class0_frame0, class0_frame1, class0_frame0, class0_frame1, ...]  × 50 pairs
+ *   [class0_frame0, class0_frame1, class0_frame0, class0_frame1, ...]  × 51 pairs
  *   [class1 interleaved]  × 56 pairs
  *   [class2 interleaved]  × 30 pairs
- * Total: 2 × (50+56+30) = 272 input bits consumed.
+ * Total: 2 × (51+56+30) = 274 input bits consumed.
  */
 void tetra_acelp_reorder(const uint8_t* in, uint8_t* out, int len) {
     if (!in || !out || len < 2 * NUM_ACELP_BITS)
@@ -155,6 +160,7 @@ static struct {
     HANDLE h_read;    /* parent reads  PCM   ← child stdout */
     HANDLE h_proc;
     HANDLE h_thread;
+    HANDLE h_job;
     int    open;
 } s_voc;
 
@@ -208,6 +214,7 @@ static int voc_open(const char *cmd) {
     ZeroMemory(&pi, sizeof(pi));
     char cmd_buf[2048];
     DWORD last_error;
+    HANDLE job = NULL;
 
     if (!build_windows_shell_command(cmd, cmd_buf, sizeof(cmd_buf))) {
         fprintf(stderr, "[TETRA] vocoder command too long or invalid\n");
@@ -216,14 +223,42 @@ static int voc_open(const char *cmd) {
         return 0;
     }
 
-    if (!CreateProcessA(NULL, cmd_buf, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+    job = CreateJobObjectA(NULL, NULL);
+    if (job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+        ZeroMemory(&limits, sizeof(limits));
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+                                     &limits, sizeof(limits))) {
+            CloseHandle(job);
+            job = NULL;
+        }
+    }
+
+    if (!job || !CreateProcessA(NULL, cmd_buf, NULL, NULL, TRUE, CREATE_SUSPENDED,
+                                NULL, NULL, &si, &pi)) {
         last_error = GetLastError();
         fprintf(stderr, "[TETRA] failed to start vocoder command '%s' (CreateProcess=%lu)\n",
                 cmd, (unsigned long)last_error);
+        if (job) CloseHandle(job);
         CloseHandle(pipe_stdin_r);  CloseHandle(pipe_stdin_w);
         CloseHandle(pipe_stdout_r); CloseHandle(pipe_stdout_w);
         return 0;
     }
+    if (!AssignProcessToJobObject(job, pi.hProcess)) {
+        last_error = GetLastError();
+        fprintf(stderr, "[TETRA] failed to contain vocoder process tree (Win32=%lu)\n",
+                (unsigned long)last_error);
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 2000);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        CloseHandle(job);
+        CloseHandle(pipe_stdin_r);  CloseHandle(pipe_stdin_w);
+        CloseHandle(pipe_stdout_r); CloseHandle(pipe_stdout_w);
+        return 0;
+    }
+    ResumeThread(pi.hThread);
     /* close child-side handles in parent */
     CloseHandle(pipe_stdin_r);
     CloseHandle(pipe_stdout_w);
@@ -232,6 +267,7 @@ static int voc_open(const char *cmd) {
     s_voc.h_read   = pipe_stdout_r;
     s_voc.h_proc   = pi.hProcess;
     s_voc.h_thread = pi.hThread;
+    s_voc.h_job    = job;
     s_voc.open     = 1;
     s_voc_status   = TETRA_VOC_STATUS_OPEN;
     fprintf(stderr, "[TETRA] vocoder subprocess started\n");
@@ -240,13 +276,28 @@ static int voc_open(const char *cmd) {
 
 static int voc_send_recv(const uint8_t *bits, int nbits, int16_t *pcm, int nsamples) {
     DWORD nwritten, nread;
+    s_voc_last_timeout = 0;
     if (!WriteFile(s_voc.h_write, bits, (DWORD)nbits, &nwritten, NULL)
             || (int)nwritten != nbits)
         return 0;
     int pcm_bytes = nsamples * (int)sizeof(int16_t);
     DWORD got = 0;
     uint8_t *p = (uint8_t *)pcm;
+    ULONGLONG deadline = GetTickCount64() + TETRA_VOCODER_READ_TIMEOUT_MS;
     while ((int)got < pcm_bytes) {
+        DWORD available = 0;
+        if (!PeekNamedPipe(s_voc.h_read, NULL, 0, NULL, &available, NULL))
+            break;
+        if (available == 0) {
+            if (WaitForSingleObject(s_voc.h_proc, 0) == WAIT_OBJECT_0)
+                break;
+            if (GetTickCount64() >= deadline) {
+                s_voc_last_timeout = 1;
+                break;
+            }
+            Sleep(5);
+            continue;
+        }
         if (!ReadFile(s_voc.h_read, p + got, (DWORD)(pcm_bytes - (int)got), &nread, NULL)
                 || nread == 0)
             break;
@@ -259,12 +310,13 @@ void tetra_vocoder_close(void) {
     if (!s_voc.open) return;
     CloseHandle(s_voc.h_write);
     CloseHandle(s_voc.h_read);
-    if (WaitForSingleObject(s_voc.h_proc, 2000) == WAIT_TIMEOUT) {
-        TerminateProcess(s_voc.h_proc, 1);
+    if (WaitForSingleObject(s_voc.h_proc, 200) == WAIT_TIMEOUT) {
+        TerminateJobObject(s_voc.h_job, 1);
         WaitForSingleObject(s_voc.h_proc, 2000);
     }
     CloseHandle(s_voc.h_proc);
     CloseHandle(s_voc.h_thread);
+    CloseHandle(s_voc.h_job);
     memset(&s_voc, 0, sizeof(s_voc));
 }
 
@@ -350,13 +402,39 @@ static int voc_open(const char *cmd) {
     return 1;
 }
 
+static int64_t
+voc_monotonic_ms(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 static int voc_send_recv(const uint8_t *bits, int nbits, int16_t *pcm, int nsamples) {
+    s_voc_last_timeout = 0;
     if (!voc_write_all(s_voc.fd_write, bits, (size_t)nbits)) return 0;
     int pcm_bytes = nsamples * (int)sizeof(int16_t);
     int total = 0;
     uint8_t *p = (uint8_t *)pcm;
+    int64_t deadline = voc_monotonic_ms() + TETRA_VOCODER_READ_TIMEOUT_MS;
     while (total < pcm_bytes) {
+        struct pollfd ready = {s_voc.fd_read, POLLIN, 0};
+        int poll_rc;
+        int64_t remaining = deadline - voc_monotonic_ms();
+        if (remaining <= 0) {
+            s_voc_last_timeout = 1;
+            break;
+        }
+        do {
+            poll_rc = poll(&ready, 1, (int)remaining);
+        } while (poll_rc < 0 && errno == EINTR);
+        if (poll_rc == 0)
+            s_voc_last_timeout = 1;
+        if (poll_rc <= 0 || (ready.revents & (POLLERR | POLLNVAL)))
+            break;
         ssize_t r = read(s_voc.fd_read, p + total, (size_t)(pcm_bytes - total));
+        if (r < 0 && errno == EINTR) continue;
         if (r <= 0) break;
         total += (int)r;
     }
@@ -369,13 +447,13 @@ void tetra_vocoder_close(void) {
     close(s_voc.fd_read);
     int status = 0;
     int exited = 0;
-    for (int i = 0; i < 200; i++) {
+    for (int i = 0; i < 20; i++) {
         pid_t rc = waitpid(s_voc.pid, &status, WNOHANG);
         if (rc == s_voc.pid || (rc < 0 && errno == ECHILD)) {
             exited = 1;
             break;
         }
-        struct timespec pause = {0, 10000000L}; /* 10 ms, at most 2 s */
+        struct timespec pause = {0, 10000000L}; /* 10 ms, at most 200 ms */
         nanosleep(&pause, NULL);
     }
     if (!exited) {
@@ -451,18 +529,18 @@ void tetra_acelp_decode(const uint8_t* bits, int len) {
 /* -------------------------------------------------------------------------
  * tetra_acelp_process_tch()
  *
- * Full TCH/FS voice pipeline for the combined 292 type-2 bits decoded
+ * Full TCH/FS voice pipeline for the 274 speech bits decoded
  * from both NDB blocks:
  *
  *   type-2 bits → class reorder → 2 × ACELP codec frames
  *               → external vocoder subprocess (TETRA_VOCODER_CMD)
  *               → PCM16 routing (PA / UDP / raw FD / WAV)
  *
- * The reorder produces two 137-bit ACELP frames from the first 272
- * type-2 bits (100 class-0 + 112 class-1 + 60 class-2, interleaved
+ * The reorder produces two 137-bit ACELP frames from all 274
+ * type-2 bits (102 class-0 + 112 class-1 + 60 class-2, interleaved
  * for two frames).  Each frame is sent to the vocoder independently.
  *
- * @type2_bits : Viterbi-decoded type-2 bits (at least 272 required)
+ * @type2_bits : decoded sensitivity-ordered bits (at least 274 required)
  * @type2_len  : number of valid bits
  * @block_idx  : 0 for combined TCH/FS (informational)
  * @opts/state : standard dsd-neo context
@@ -494,12 +572,16 @@ void tetra_acelp_process_tch(const uint8_t *type2_bits, int type2_len,
         return;
     }
 
-    if (type2_len < 272) {
+    if (type2_len < 274) {
         fprintf(stderr,
-            "[TETRA TCH] B%d: only %d type-2 bits (need 272), skipping\n",
+            "[TETRA TCH] B%d: only %d type-2 bits (need 274), skipping\n",
             block_idx, type2_len);
         return;
     }
+
+    /* Reception activity is independent of codec availability. Do not let
+     * generic no-carrier handling use a stale pre-call activity timestamp. */
+    dsd_mark_vc_sync(state);
 
     /* —— Step 1: class reorder → 2 codec frames —— */
     uint8_t codec[2 * TETRA_TCH_FRAME_BITS];  /* 274 bytes */
@@ -509,6 +591,7 @@ void tetra_acelp_process_tch(const uint8_t *type2_bits, int type2_len,
     /* —— Step 2: vocoder + audio routing for each frame —— */
     if (!voc_ensure_open()) {
         if (s_voc_status == TETRA_VOC_STATUS_MISSING_CMD) {
+            if (state) state->tetra_vocoder_status = TETRA_VOCODER_STATUS_COMMAND_MISSING;
             if (!warned_missing_cmd) {
                 fprintf(stderr,
                     "[TETRA] audio disabled: TETRA_VOCODER_CMD is not set. "
@@ -516,6 +599,10 @@ void tetra_acelp_process_tch(const uint8_t *type2_bits, int type2_len,
                 warned_missing_cmd = 1;
             }
         } else if (s_voc_status == TETRA_VOC_STATUS_OPEN_FAILED) {
+            if (state) {
+                state->tetra_vocoder_status = TETRA_VOCODER_STATUS_START_FAILED;
+                state->tetra_vocoder_errors++;
+            }
             if (!warned_open_failed) {
                 const char *cmd = getenv("TETRA_VOCODER_CMD");
                 fprintf(stderr,
@@ -526,6 +613,8 @@ void tetra_acelp_process_tch(const uint8_t *type2_bits, int type2_len,
         }
         return;
     }
+
+    if (state) state->tetra_vocoder_status = TETRA_VOCODER_STATUS_READY;
 
     if (!tetra_has_any_audio_sink(opts)) {
         if (!warned_no_sink) {
@@ -551,12 +640,19 @@ void tetra_acelp_process_tch(const uint8_t *type2_bits, int type2_len,
         int nsamples = voc_send_recv(frame, TETRA_TCH_FRAME_BITS,
                                      pcm, TETRA_TCH_FRAME_SAMPLES);
         if (nsamples != TETRA_TCH_FRAME_SAMPLES) {
+            if (state) {
+                state->tetra_vocoder_status = s_voc_last_timeout
+                                                ? TETRA_VOCODER_STATUS_TIMEOUT
+                                                : TETRA_VOCODER_STATUS_SHORT_OUTPUT;
+                state->tetra_vocoder_errors++;
+            }
             fprintf(stderr,
                     "[TETRA] vocoder returned a short PCM frame (%d/%d samples); resetting\n",
                     nsamples, TETRA_TCH_FRAME_SAMPLES);
             tetra_vocoder_close();
             return;
         }
+        if (state) state->tetra_vocoder_frames++;
 
         /* —— Step 3: audio routing (same pattern as M17 / Codec2) —— */
         if (opts->slot1_on == 1) {

@@ -115,6 +115,13 @@ non-`.bin` file input under `-r`/WAV replay, which is likewise unthrottled; only
 
 ## Operational Limits
 
+For a TETRA hardware trunk-tracking acceptance capture, run
+`tools/tetra/verify_field_capture.py`. Its strict mode combines the v2 retune
+timeline and zero-drop checks with a provenance document and ordered realtime
+replay evidence for control-channel acquisition, allocation, traffic-channel
+decode, and control-channel reacquisition. See `tools/tetra/README.md` for the
+command and generated evidence report.
+
 - `--iq-capture` and `--iq-replay` are mutually exclusive in one invocation.
 - Single-segment v1 captures continue to replay unchanged.
 - CU8 metadata with `combine_rotate_enabled: false` selects the two-pass byte rotation and bias-128 widening so captures
@@ -145,6 +152,6 @@ non-`.bin` file input under `-r`/WAV replay, which is likewise unthrottled; only
 - `--iq-capture-format cf32` is only valid when the active backend stream is native `cf32` (for example Soapy CF32).
 - Soapy drivers that only provide `CS16` can be used for live decode, but are not currently accepted by the IQ capture
   CLI.
-- The metadata parser and public sample-format helpers recognize `cs16` metadata with 4-byte sample alignment, but live
-  capture and replay demod conversion currently accept only `cu8` and `cf32`.
+- Replay accepts little-endian interleaved `cs16` metadata with 4-byte complex-sample alignment and converts it to the
+  same normalized float IQ stream used by the Soapy CS16 backend. Live IQ capture still accepts only `cu8` and `cf32`.
 - If requested capture format does not match the active backend stream format, startup fails with a clear error.

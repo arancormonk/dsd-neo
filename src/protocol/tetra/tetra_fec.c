@@ -407,6 +407,85 @@ void tetra_block_deinterleave_soft(const uint16_t* in_costs, uint16_t* out_costs
     }
 }
 
+void tetra_speech_deinterleave_soft(const uint16_t* in_costs, uint16_t* out_costs) {
+    if (!in_costs || !out_costs) return;
+    for (int column = 0; column < 18; column++)
+        for (int line = 0; line < 24; line++)
+            out_costs[line * 18 + column] = in_costs[column * 24 + line];
+}
+
+static uint8_t parity5(uint8_t value) {
+    value ^= (uint8_t)(value >> 4);
+    value ^= (uint8_t)(value >> 2);
+    value ^= (uint8_t)(value >> 1);
+    return value & 1u;
+}
+
+int tetra_speech_channel_decode(const uint16_t* deinterleaved, uint8_t* out_bits, int out_len) {
+    if (!deinterleaved || !out_bits || out_len < 274) return -1;
+    for (int i = 0; i < 102; i++)
+        out_bits[i] = deinterleaved[i] > 0x7fffu;
+
+    static const uint8_t a1[3][8] = {
+        {1,1,1,1,1,1,1,1}, {1,0,1,0,1,0,1,0}, {0,0,0,0,0,0,0,0}
+    };
+    static const uint8_t a2[3][8] = {
+        {1,1,1,1,1,1,1,1}, {1,1,1,1,1,1,1,1}, {1,0,0,0,1,0,0,0}
+    };
+    uint16_t symbols[184][3];
+    int input = 102;
+    for (int pos = 0; pos < 184; pos++) {
+        const uint8_t (*pattern)[8] = pos < 112 ? a1 : a2;
+        const int phase = pos < 112 ? pos : pos - 112;
+        for (int lane = 0; lane < 3; lane++)
+            symbols[pos][lane] = pattern[lane][phase & 7]
+                                     ? deinterleaved[input++] : 0x7fffu;
+    }
+    if (input != 432) return -1;
+
+    uint64_t prev[16], next[16];
+    uint8_t predecessor[184][16], decision[184][16];
+    const uint64_t inf = UINT64_MAX / 4u;
+    for (int state = 0; state < 16; state++) prev[state] = state == 0 ? 0 : inf;
+    for (int pos = 0; pos < 184; pos++) {
+        for (int state = 0; state < 16; state++) next[state] = inf;
+        for (int state = 0; state < 16; state++) {
+            if (prev[state] == inf) continue;
+            for (int bit = 0; bit <= 1; bit++) {
+                const uint8_t involved = (uint8_t)((bit << 4) | state);
+                const uint8_t expected[3] = {
+                    parity5(involved & 0x1fu),
+                    parity5(involved & 0x1bu),
+                    parity5(involved & 0x15u)
+                };
+                uint64_t branch = 0;
+                for (int lane = 0; lane < 3; lane++) {
+                    const uint16_t target = expected[lane] ? 0xffffu : 0u;
+                    const uint16_t got = symbols[pos][lane];
+                    branch += target > got ? target - got : got - target;
+                }
+                const int next_state = (bit << 3) | (state >> 1);
+                const uint64_t metric = prev[state] + branch;
+                if (metric < next[next_state]) {
+                    next[next_state] = metric;
+                    predecessor[pos][next_state] = (uint8_t)state;
+                    decision[pos][next_state] = (uint8_t)bit;
+                }
+            }
+        }
+        memcpy(prev, next, sizeof(prev));
+    }
+
+    uint8_t decoded[184];
+    int state = 0;
+    for (int pos = 183; pos >= 0; pos--) {
+        decoded[pos] = decision[pos][state];
+        state = predecessor[pos][state];
+    }
+    memcpy(out_bits + 102, decoded, 172);
+    return 274;
+}
+
 int tetra_get_interleaver_dims(int punct_id, int bits_len, int *out_rows, int *out_cols) {
     if (!out_rows || !out_cols) return -1;
     /* Static interleaver dimensions table (authoritative values).

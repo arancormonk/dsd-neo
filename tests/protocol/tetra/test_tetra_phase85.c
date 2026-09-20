@@ -5,8 +5,9 @@
  * Covers functionality introduced in Phases 81-84:
  *
  * Phase 81: tetra_bits.h shared header (bits_to_uint unification)
- * Phase 82: D-SDS-LONG-DATA (PDU type 20) parser
- * Phase 83: D-FACILITY / D-SDS-ACK / D-SDS-SHORT-REPORT parsers
+ * Phase 83: D-FACILITY parser
+ * SDS transport messages are covered by test_mle_cmce.c; they are carried
+ * inside D-SDS-DATA or D-STATUS, not separate CMCE PDU types.
  * Phase 84: channel_info_fmt extensions (release cause, access, mm_addr)
  */
 
@@ -47,11 +48,10 @@ static dsd_opts  *alloc_opts(void)  { return (dsd_opts  *)calloc(1, sizeof(dsd_o
 static void wrap_mle_cmce(const uint8_t *cmce_body, int cmce_nbits,
                            uint8_t *out, int *out_nbits)
 {
-    int total = 9 + cmce_nbits;
+    int total = 3 + cmce_nbits;
     memset(out, 0, (size_t)total);
-    pack_bits(out, 24, 0, 5); /* MLE type = C-PLANE-DATA */
-    pack_bits(out,  3, 5, 4); /* PD = CMCE */
-    memcpy(out + 9, cmce_body, (size_t)cmce_nbits);
+    pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
+    memcpy(out + 3, cmce_body, (size_t)cmce_nbits);
     *out_nbits = total;
 }
 
@@ -83,14 +83,11 @@ static void test_tetra_bits_to_uint(void)
 }
 
 /* -----------------------------------------------------------------------
- * Phase 82: D-SDS-LONG-DATA (PDU type 20)
- * ----------------------------------------------------------------------- */
-/* -----------------------------------------------------------------------
  * Phase 83: D-FACILITY (PDU type 16)
  * ----------------------------------------------------------------------- */
-static void test_d_facility(void)
+static void test_d_facility_annex_e3(void)
 {
-    printf("[Phase 83] D-FACILITY parser\n");
+    printf("[Phase 83] Annex E.3 D-FACILITY parser\n");
 
     dsd_state *st = alloc_state();
     dsd_opts  *op = alloc_opts();
@@ -122,12 +119,124 @@ static void test_d_facility(void)
     free(op);
 }
 
-/* -----------------------------------------------------------------------
- * Phase 83: D-SDS-ACK (PDU type 17)
- * ----------------------------------------------------------------------- */
-/* -----------------------------------------------------------------------
- * Phase 83: D-SDS-SHORT-REPORT (PDU type 18)
- * ----------------------------------------------------------------------- */
+/* ETSI EN 300 392-2 V3.8.1, Annex E.1.2 table E.2. The contents are
+ * independent SS-PDUs: each length covers its own complete encoding and only
+ * then does the outer D-FACILITY O-bit follow. */
+static void test_d_facility_annex_e2_two_ss_pdus(void)
+{
+    printf("[Phase 83] Annex E.2 D-FACILITY with two SS-PDUs\n");
+
+    dsd_state *st = alloc_state();
+    dsd_opts  *op = alloc_opts();
+    uint8_t cmce[80];
+    uint8_t mle[88];
+    int mle_nbits = 0;
+    memset(cmce, 0, sizeof(cmce));
+
+    pack_bits(cmce, TETRA_CMCE_D_FACILITY, 0, 5);
+    pack_bits(cmce, 2, 5, 4);    /* Annex E.2: two independent SS-PDUs */
+    pack_bits(cmce, 12, 9, 11);
+    pack_bits(cmce, 7, 20, 6);   /* first SS-Type */
+    pack_bits(cmce, 3, 26, 5);   /* first SS-PDU type */
+    pack_bits(cmce, 0, 31, 1);   /* first SS-PDU O-bit */
+    pack_bits(cmce, 12, 32, 11);
+    pack_bits(cmce, 12, 43, 6);  /* second SS-Type */
+    pack_bits(cmce, 5, 49, 5);   /* second SS-PDU type */
+    pack_bits(cmce, 0, 54, 1);   /* second SS-PDU O-bit */
+    pack_bits(cmce, 0, 55, 1);   /* outer D-FACILITY O-bit */
+
+    wrap_mle_cmce(cmce, 56, mle, &mle_nbits);
+    tetra_mle_dispatch(mle, mle_nbits, 2, op, st);
+    CHECK(st->tetra_facility_valid == 1, "Annex E.2 two-SS-PDU collection accepted");
+    CHECK(st->tetra_facility_type == 7, "Annex E.2 first independent SS-Type retained");
+
+    /* Stop inside the second independently length-delimited SS-PDU. State
+     * publication must remain atomic rather than exposing the first member. */
+    st->tetra_facility_type = 9;
+    wrap_mle_cmce(cmce, 54, mle, &mle_nbits);
+    tetra_mle_dispatch(mle, mle_nbits, 2, op, st);
+    CHECK(st->tetra_facility_valid == 1, "truncated second SS-PDU preserves valid state");
+    CHECK(st->tetra_facility_type == 9, "truncated second SS-PDU preserves previous SS-Type");
+
+    /* Both SS-PDUs are complete, but Annex E requires the outer O-bit. */
+    wrap_mle_cmce(cmce, 55, mle, &mle_nbits);
+    tetra_mle_dispatch(mle, mle_nbits, 2, op, st);
+    CHECK(st->tetra_facility_type == 9, "missing outer D-FACILITY O-bit preserves state");
+
+    free(st);
+    free(op);
+}
+
+/* ETSI EN 300 392-2 V3.8.1, Annex E.1.2 table E.8.  This is the
+ * D-CONNECT example carrying a 42-bit SS-AL INVOKE1 ACK Facility as a
+ * length-delimited type-3 element.  The SS-AL values come from
+ * EN 300 392-9 (SS type 21) and EN 300 392-12-21 (INVOKE1 ACK type 11). */
+static void test_d_connect_annex_e8_ss_al_facility(void)
+{
+    printf("[Phase 83] Annex E.8 D-CONNECT with SS-AL Facility\n");
+
+    dsd_state *st = alloc_state();
+    dsd_opts  *op = alloc_opts();
+    uint8_t cmce[128];
+    uint8_t mle[136];
+    int mle_nbits = 0;
+    int off = 0;
+    memset(cmce, 0, sizeof(cmce));
+
+    pack_bits(cmce, TETRA_CMCE_D_CONNECT, off, 5); off += 5;
+    pack_bits(cmce, 0x1234, off, 14); off += 14; /* call identifier: any */
+    pack_bits(cmce, 9, off, 4); off += 4;        /* call time-out: any */
+    pack_bits(cmce, 0, off, 1); off++;           /* hook method */
+    pack_bits(cmce, 0, off, 1); off++;           /* simplex */
+    pack_bits(cmce, 1, off, 2); off += 2;        /* transmission present */
+    pack_bits(cmce, 0, off, 1); off++;           /* request permission */
+    pack_bits(cmce, 0, off, 1); off++;           /* call ownership */
+    pack_bits(cmce, 1, off, 1); off++;           /* O-bit */
+    pack_bits(cmce, 0, off, 1); off++;           /* no call priority */
+    pack_bits(cmce, 0, off, 1); off++;           /* no basic service */
+    pack_bits(cmce, 0, off, 1); off++;           /* no temporary address */
+    pack_bits(cmce, 0, off, 1); off++;           /* no notification */
+    pack_bits(cmce, 1, off, 1); off++;           /* M-bit: Facility follows */
+    pack_bits(cmce, 3, off, 4); off += 4;        /* type-3 Facility identifier */
+    pack_bits(cmce, 42, off, 11); off += 11;
+    pack_bits(cmce, 21, off, 6); off += 6;       /* SS-AL */
+    pack_bits(cmce, 11, off, 5); off += 5;       /* INVOKE1 ACK */
+    pack_bits(cmce, 1, off, 2); off += 2;        /* affected party is SSI */
+    pack_bits(cmce, 0x345678, off, 24); off += 24;
+    pack_bits(cmce, 0, off, 4); off += 4;        /* invocation accepted */
+    pack_bits(cmce, 0, off, 1); off++;           /* SS-PDU O-bit */
+    pack_bits(cmce, 0, off, 1); off++;           /* D-CONNECT terminal M-bit */
+    CHECK(off == 93, "Annex E.8 CMCE body is exactly 93 bits");
+
+    wrap_mle_cmce(cmce, off, mle, &mle_nbits);
+    tetra_mle_dispatch(mle, mle_nbits, 3, op, st);
+    CHECK(st->tetra_connect_valid == 1, "Annex E.8 D-CONNECT accepted");
+    CHECK(st->tetra_call_id == 0x1234 && st->tetra_call_timeout == 9,
+          "Annex E.8 mandatory call fields published");
+    CHECK(st->tetra_cmce_connect_tx_grant == 1,
+          "Annex E.8 transmission grant published");
+    CHECK(st->tetra_cmce_call_generation == 1,
+          "Annex E.8 complete message advances generation");
+
+    /* The 42-bit Facility is length-delimited.  Stopping inside it must not
+     * replace the last complete call state. */
+    pack_bits(cmce, 0x2222, 5, 14);
+    wrap_mle_cmce(cmce, 91, mle, &mle_nbits);
+    tetra_mle_dispatch(mle, mle_nbits, 3, op, st);
+    CHECK(st->tetra_call_id == 0x1234 && st->tetra_cmce_call_generation == 1,
+          "truncated Annex E.8 Facility preserves call state");
+
+    /* The value is complete at bit 92, but Annex E still requires the
+     * terminating outer M-bit at bit 93. */
+    wrap_mle_cmce(cmce, 92, mle, &mle_nbits);
+    tetra_mle_dispatch(mle, mle_nbits, 3, op, st);
+    CHECK(st->tetra_call_id == 0x1234 && st->tetra_cmce_call_generation == 1,
+          "missing Annex E.8 terminal M-bit preserves call state");
+
+    free(st);
+    free(op);
+}
+
 /* -----------------------------------------------------------------------
  * Phase 84: channel_info_fmt extensions
  * ----------------------------------------------------------------------- */
@@ -216,7 +325,9 @@ int main(void)
 
     /* Phase 83 */
     test_cmce_constants();
-    test_d_facility();
+    test_d_facility_annex_e3();
+    test_d_facility_annex_e2_two_ss_pdus();
+    test_d_connect_annex_e8_ss_al_facility();
 
     /* Phase 84 */
     test_channel_info_release_cause();

@@ -25,6 +25,13 @@ for file-specific license/provenance details.
   Compiled into the Qt Quick frontend's resource bundle, so it is redistributed by any build with `DSD_ENABLE_QT_UI=ON`
   — today that is the Android app.
 
+## Dependency Build Overlays
+
+- **mpg123 vcpkg overlay** (`vcpkg-ports/mpg123`; mpg123 project) -
+  LGPL-2.1-or-later. The recipe follows the Microsoft vcpkg 1.33.7 port and
+  pins the upstream SourceForge archive by SHA-512. The project-local patch only
+  supplies `sys/types.h` to CMake's `off_t` size probe for Visual Studio 2026.
+
 ## Embedded Provenance-Bearing Code
 
 - **EDACS-FME / EDACS helpers** (`src/protocol/edacs/edacs-fme.c`) - source comments credit EDACS-FM, sp5wwp/ledacs,
@@ -63,6 +70,26 @@ for file-specific license/provenance details.
     channel contributed by the reporter of [issue #348](https://github.com/arancormonk/dsd-neo/issues/348)
     for regression testing (short excerpt of off-air control-channel signalling, no voice content; the source
     file has no stable URL, so `tools/build_iq_fixtures.py` pins its SHA-256 under `LOCAL_SOURCES`).
+  - `tetra_scbs_real_air_50k.cs16` and `tetra_cc_marginal_real_air_144k.iq` are unmodified TETRA SCBS
+    control-channel captures from
+    [MattCheramie/GopherTrunk](https://github.com/MattCheramie/GopherTrunk), Apache License 2.0. The paired
+    `tetra_scbs_real_air_54k.iq` is this project's deterministic integer-arithmetic resample for the 18 ksym/s
+    decoder path, and `tetra_cc_marginal_real_air_144k_inverted.iq` is the deterministic complex conjugate used
+    to verify negative-polarity recovery with the real capture's impairments. Source commit, hashes, published capture parameters, expected cell identity, and reproduction
+    command are recorded in `tests/fixtures/iq/tetra_scbs_real_air.PROVENANCE.md`; the upstream license text is
+    `tests/fixtures/iq/tetra_scbs_real_air.APACHE-2.0.txt`.
+  - `tests/fixtures/tetra/acelp/hello_tetra.acelp` and its decoded reference
+    artifacts come from the GPL-3.0 `sq5bpf/telive` test sample. Exact source,
+    decoder, license, and hashes are recorded in the adjacent `PROVENANCE.md`.
+  - The frozen `Ahoj` SDS-TRANSFER vector in `tests/protocol/tetra/test_mle_cmce.c` derives its 64-bit SDS user
+    field and expected decoded values from the example output published by
+    [itds-consulting/tetra-multiframe-sds](https://github.com/itds-consulting/tetra-multiframe-sds), GPL-3.0.
+    This project supplies the minimal CMCE/MLE envelope used by the regression test.
+  - The complete 272-bit MAC-to-SDS `Ahoj` vector in
+    `tests/protocol/tetra/test_sds_reference_mac.c` is `sample2.text` from
+    [smarek/kaitai-tetra-sds](https://github.com/smarek/kaitai-tetra-sds), Apache License 2.0, pinned at
+    commit `33f9fe3647e23e5a344cd96bfc6555531815e6bd` and blob
+    `70e397d01cfc6e95eef97afac6961214ad9037c9`.
 
 The project `LICENSE`, `COPYRIGHT`, and this notice file are installed with binary packages. Installed third-party
 license texts currently include the vendored ezpwd and pffft notices under `share/doc/dsd-neo/licenses/`, plus the

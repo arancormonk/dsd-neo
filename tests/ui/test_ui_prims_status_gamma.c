@@ -226,6 +226,54 @@ waddnstr(WINDOW* win, const char* str, int n) {
 }
 
 int
+box(WINDOW* win, chtype verch, chtype horch) {
+    return wborder(win, verch, verch, horch, horch, 0, 0, 0, 0);
+}
+
+int
+addch(const chtype ch) {
+    return waddch(stdscr, ch);
+}
+
+int
+addnstr(const char* str, int n) {
+    return waddnstr(stdscr, str, n);
+}
+
+int
+addstr(const char* str) {
+    return waddnstr(stdscr, str, -1);
+}
+
+int
+move(int y, int x) {
+    return wmove(stdscr, y, x);
+}
+
+int
+hline(chtype ch, int n) {
+    return whline(stdscr, ch, n);
+}
+
+int
+mvhline(int y, int x, chtype ch, int n) {
+    int rc = wmove(stdscr, y, x);
+    return rc == OK ? whline(stdscr, ch, n) : rc;
+}
+
+int
+mvwhline(WINDOW* win, int y, int x, chtype ch, int n) {
+    int rc = wmove(win, y, x);
+    return rc == OK ? whline(win, ch, n) : rc;
+}
+
+int
+mvwaddnstr(WINDOW* win, int y, int x, const char* str, int n) {
+    int rc = wmove(win, y, x);
+    return rc == OK ? waddnstr(win, str, n) : rc;
+}
+
+int
 wattr_get(WINDOW* win, attr_t* attrs, NCURSES_PAIRS_T* pair, void* opts) {
     (void)opts;
     assert(win == stdscr);
@@ -260,6 +308,36 @@ wattr_set(WINDOW* win, attr_t attrs, NCURSES_PAIRS_T pair, void* opts) {
     g_last_attr_set = attrs;
     g_last_pair_set = pair;
     return OK;
+}
+
+int
+wattron(WINDOW* win, chtype attrs) {
+    return wattr_on(win, (attr_t)attrs, NULL);
+}
+
+int
+wattroff(WINDOW* win, chtype attrs) {
+    return wattr_off(win, (attr_t)attrs, NULL);
+}
+
+int
+attron(chtype attrs) {
+    return wattr_on(stdscr, (attr_t)attrs, NULL);
+}
+
+int
+attroff(chtype attrs) {
+    return wattr_off(stdscr, (attr_t)attrs, NULL);
+}
+
+int
+attr_get(attr_t* attrs, NCURSES_PAIRS_T* pair, void* opts) {
+    return wattr_get(stdscr, attrs, pair, opts);
+}
+
+int
+attr_set(attr_t attrs, NCURSES_PAIRS_T pair, void* opts) {
+    return wattr_set(stdscr, attrs, pair, opts);
 }
 
 #include "../../src/ui/terminal/ui_prims.c"

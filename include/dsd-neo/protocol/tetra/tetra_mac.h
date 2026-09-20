@@ -37,7 +37,7 @@ extern "C" {
 /* MAC-BROADCAST sub-types (2-bit broadcast_type, ETSI §21.5.1) */
 #define TETRA_MAC_BC_SYSINFO      0   /* SYSINFO (RF + MLE network params)          */
 #define TETRA_MAC_BC_ACCESS_DEF   1   /* ACCESS-DEFINE                               */
-#define TETRA_MAC_BC_RESTORE      2   /* D-RESTORE-ACK / D-RESTORE-RESPONSE (MLE)   */
+#define TETRA_MAC_BC_RESTORE      2   /* D-RESTORE-ACK / D-RESTORE-FAIL (MLE)       */
 #define TETRA_MAC_BC_NWRK_BCAST   3   /* D-NWRK-BROADCAST / D-NWRK-BCAST-EXT (MLE) */
 
 /* FRAG/END sub-types (1-bit, ETSI §21.4.4.2) */
@@ -69,8 +69,8 @@ extern "C" {
  *
  *   MAC-BROADCAST/SYSINFO      → tetra_sysinfo_known, tetra_la,
  *                                 tetra_bs_service_det, tetra_subscr_class
- *   MAC-BROADCAST/NWRK-BCAST   → tetra_nwrk_bcast_known, tetra_la,
- *                                 tetra_subscr_class (via D-NWRK-BROADCAST)
+ *   MAC-BROADCAST/NWRK-BCAST   → tetra_nwrk_bcast_known and MLE
+ *                                 cell-reselection/load state
  *   MAC-BROADCAST/RESTORE       → log only (D-RESTORE-ACK/RESPONSE)
  *   MAC-RESOURCE               → tetra_ssi_valid, tetra_active_ssi, tetra_enc_mode
  *
@@ -82,6 +82,10 @@ extern "C" {
  * ----------------------------------------------------------------------- */
 void tetra_mac_parse_schd(const uint8_t *bits, int nbits,
                           int cc, const dsd_opts *opts, dsd_state *state);
+
+/* Calculate the 32-bit LLC FCS over a TL-SDU bit array according to
+ * EN 300 392-2 Annex C. Bits are supplied and returned MSB-first. */
+uint32_t tetra_llc_fcs32(const uint8_t *bits, int nbits);
 
 /* Return a short string for a MAC PDU type code (for logging). */
 const char *tetra_mac_type_name(int pdu_type);

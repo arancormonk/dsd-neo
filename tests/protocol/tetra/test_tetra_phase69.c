@@ -106,13 +106,12 @@ static void test_resource_fill_bits(void)
     dsd_opts  *opt = alloc_opts();
 
     /*
-     * Build a 9-bit TM-SDU: MLE C-PLANE-DATA(5) + PD=CMCE(4)
+     * Build a partial TM-SDU beginning with the three-bit CMCE discriminator.
      * With fill_bits=1 → dispatch immediately → tetra_frag_active stays 0
      */
     uint8_t tmsdu[9];
     memset(tmsdu, 0, sizeof(tmsdu));
-    pack_bits(tmsdu, 24, 0, 5); /* MLE type = 24 */
-    pack_bits(tmsdu,  3, 5, 4); /* PD = CMCE */
+    pack_bits(tmsdu, TETRA_MLE_PD_CMCE, 0, 3);
 
     uint8_t pdu[128];
     int n = build_mac_resource(pdu, sizeof(pdu), 1, 4, tmsdu, 9);
@@ -150,8 +149,7 @@ static void test_mac_frag_accumulate(void)
     /* Seed with 9 bits via MAC-RESOURCE fill_bits=0 */
     uint8_t tmsdu[9];
     memset(tmsdu, 0, sizeof(tmsdu));
-    pack_bits(tmsdu, 24, 0, 5);
-    pack_bits(tmsdu,  3, 5, 4);
+    pack_bits(tmsdu, TETRA_MLE_PD_CMCE, 0, 3);
 
     uint8_t pdu[128];
     int n = build_mac_resource(pdu, sizeof(pdu), 0, 63, tmsdu, 9);
@@ -173,14 +171,15 @@ static void test_mac_frag_accumulate(void)
 /* =======================================================================
  * Test 4+5+6: Full RESOURCE → FRAG → END sequence dispatches D-ALERT
  *
- * Full TM-SDU (34 bits):
- *   MLE C-PLANE-DATA(5b=24) + PD=CMCE(4b=3) + CMCE D-ALERT(5b=0)
+ * Full TM-SDU (33 bits):
+ *   LLC BL-UDATA(4b=2) + PD=CMCE(3b=2) + CMCE D-ALERT(5b=0)
  *   + call_id(14b=5) + setup timeout(3b) + reserved/duplex/queued(3b)
+ *   + O-bit(1b=0)
  *
  * Split:
- *   RESOURCE payload: bits 0-8  (9 bits) — MLE type + PD
- *   FRAG    payload:  bits 9-13 (5 bits) — CMCE D-ALERT type
- *   END     payload:  bits 14-33(20 bits) — mandatory D-ALERT fields
+ *   RESOURCE payload: bits 0-3  (4 bits) — LLC header
+ *   FRAG    payload:  bits 4-8  (5 bits) — MLE PD + part of CMCE type
+ *   END     payload:  bits 9-32 (24 bits) — remaining D-ALERT fields
  * ======================================================================= */
 static void test_full_fragment_sequence(void)
 {
@@ -188,34 +187,35 @@ static void test_full_fragment_sequence(void)
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
 
-    /* Build the 34-bit TM-SDU. */
-    uint8_t tmsdu[34];
+    /* Build the 33-bit LLC PDU / TM-SDU. */
+    uint8_t tmsdu[33];
     memset(tmsdu, 0, sizeof(tmsdu));
-    pack_bits(tmsdu, 24, 0, 5);  /* MLE C-PLANE-DATA */
-    pack_bits(tmsdu,  3, 5, 4);  /* PD = CMCE */
-    pack_bits(tmsdu,  0, 9, 5);  /* CMCE D-ALERT (type=0) */
-    pack_bits(tmsdu,  5,14,14);  /* call_id = 5 */
-    pack_bits(tmsdu,  3,28, 3);  /* setup timeout */
-    pack_bits(tmsdu,  1,33, 1);  /* queued */
+    pack_bits(tmsdu, 2, 0, 4); /* BL-UDATA without FCS */
+    pack_bits(tmsdu, TETRA_MLE_PD_CMCE, 4, 3);
+    pack_bits(tmsdu, 0, 7, 5);
+    pack_bits(tmsdu, 5, 12, 14);
+    pack_bits(tmsdu, 3, 26, 3);
+    pack_bits(tmsdu, 1, 31, 1);
+    pack_bits(tmsdu, 0, 32, 1); /* O-bit */
 
     uint8_t pdu[128];
     int n;
 
-    /* ---- MAC-RESOURCE: first 9 bits, fill_bits=0 ---- */
-    n = build_mac_resource(pdu, sizeof(pdu), 0, 63, tmsdu, 9);
+    /* ---- MAC-RESOURCE: discriminator, fill_bits=0 ---- */
+    n = build_mac_resource(pdu, sizeof(pdu), 0, 63, tmsdu, 4);
     tetra_mac_parse_schd(pdu, n, 2, opt, st);
-    CHECK(st->tetra_frag_nbits  == 9,   "RESOURCE: 9 bits buffered");
+    CHECK(st->tetra_frag_nbits  == 4,   "RESOURCE: 4 bits buffered");
     CHECK(st->tetra_frag_active == 1,   "RESOURCE: active=1");
     CHECK(st->tetra_d_alert_valid == 0, "RESOURCE: D-ALERT not yet dispatched");
 
     /* ---- MAC-FRAG: next 5 bits ---- */
-    n = build_mac_frag_end(pdu, sizeof(pdu), 0, tmsdu + 9, 5);
+    n = build_mac_frag_end(pdu, sizeof(pdu), 0, tmsdu + 4, 5);
     tetra_mac_parse_schd(pdu, n, 2, opt, st);
-    CHECK(st->tetra_frag_nbits  == 14,  "FRAG: 14 bits accumulated");
+    CHECK(st->tetra_frag_nbits  == 9,  "FRAG: 9 bits accumulated");
     CHECK(st->tetra_d_alert_valid == 0, "FRAG: D-ALERT still not dispatched");
 
-    /* ---- MAC-END: final 20 bits ---- */
-    n = build_mac_frag_end(pdu, sizeof(pdu), 1, tmsdu + 14, 20);
+    /* ---- MAC-END: final 24 bits ---- */
+    n = build_mac_frag_end(pdu, sizeof(pdu), 1, tmsdu + 9, 24);
     tetra_mac_parse_schd(pdu, n, 2, opt, st);
 
     CHECK(st->tetra_frag_active  == 0,  "END: active cleared");
@@ -248,6 +248,45 @@ static void test_end_without_start(void)
     free(st); free(opt);
 }
 
+static void test_fragment_context_guards(void)
+{
+    printf("[test_fragment_context_guards]\n");
+    dsd_state *st = alloc_state();
+    dsd_opts *opt = alloc_opts();
+    uint8_t pdu[128];
+    uint8_t payload[40] = {0};
+
+    pack_bits(payload, TETRA_MLE_PD_CMCE, 0, 3);
+    pack_bits(payload, TETRA_CMCE_D_ALERT, 3, 5);
+
+    int n = build_mac_frag_end(pdu, sizeof(pdu), 0, payload, 9);
+    tetra_mac_parse_schd(pdu, n, 1, opt, st);
+    CHECK(st->tetra_frag_active == 0 && st->tetra_frag_nbits == 0,
+          "orphan FRAG cannot create a reassembly context");
+
+    n = build_mac_frag_end(pdu, sizeof(pdu), 1, payload, 34);
+    tetra_mac_parse_schd(pdu, n, 1, opt, st);
+    CHECK(st->tetra_d_alert_valid == 0,
+          "orphan END cannot dispatch a complete-looking TM-SDU");
+
+    n = build_mac_resource(pdu, sizeof(pdu), 0, 63, payload, 9);
+    tetra_mac_parse_schd(pdu, n, 1, opt, st);
+    n = build_mac_frag_end(pdu, sizeof(pdu), 0, payload + 9, 5);
+    tetra_mac_parse_schd(pdu, n, 2, opt, st);
+    CHECK(st->tetra_frag_active == 0 && st->tetra_frag_nbits == 0,
+          "fragment from a different colour code discards the sequence");
+
+    st->tetra_frag_active = 1;
+    st->tetra_frag_cc = 1;
+    st->tetra_frag_nbits = 1020;
+    n = build_mac_frag_end(pdu, sizeof(pdu), 0, payload, 8);
+    tetra_mac_parse_schd(pdu, n, 1, opt, st);
+    CHECK(st->tetra_frag_active == 0 && st->tetra_frag_nbits == 0,
+          "reassembly overflow discards the complete sequence");
+
+    free(st); free(opt);
+}
+
 int main(void)
 {
     printf("=== TETRA Phase 69 Test Suite: MAC Fragment Reassembly ===\n\n");
@@ -256,6 +295,7 @@ int main(void)
     test_mac_frag_accumulate();
     test_full_fragment_sequence();
     test_end_without_start();
+    test_fragment_context_guards();
 
     printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

@@ -8,10 +8,10 @@
  *   1.  tetra_decode_ok and tetra_decode_errors zero-initialize correctly
  *   2.  Fields are writable (counters can be incremented by callers)
  *
- * Phase 40 — D-SDS-DATA (CMCE type 23) parser:
+ * Phase 40 — D-SDS-DATA (CMCE type 15) parser:
  *   3.  8-bit encoded SDS: src_ssi, sds_text, sds_text_len populated
  *   4.  Short PDU (< 36 bits) handled without crash
- *   5.  ext_flag=1 PDU handled without crash, src_ssi stays 0
+ *   5.  CPTI=0 PDU handled without a calling-party address
  *   6.  7-bit text encoding decoded correctly
  *
  * Phase 41 — TETRA SB sync type IDs:
@@ -75,11 +75,10 @@ static void test_hard_bits_preserve_viterbi_evidence(void)
 static void wrap_mle_cmce(const uint8_t *cmce_body, int cmce_nbits,
                            uint8_t *out, int *out_nbits)
 {
-    memset(out, 0, (size_t)(9 + cmce_nbits));
-    pack_bits(out, 24, 0, 5);   /* mle_type = TETRA_MLE_C_PLANE_DATA */
-    pack_bits(out,  3, 5, 4);   /* pd       = TETRA_MLE_PD_CMCE       */
-    memcpy(out + 9, cmce_body, (size_t)cmce_nbits);
-    *out_nbits = 9 + cmce_nbits;
+    memset(out, 0, (size_t)(3 + cmce_nbits));
+    pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
+    memcpy(out + 3, cmce_body, (size_t)cmce_nbits);
+    *out_nbits = 3 + cmce_nbits;
 }
 
 /* -----------------------------------------------------------------------
@@ -103,21 +102,22 @@ static void test_decode_quality_fields_zero(void)
 }
 
 /* -----------------------------------------------------------------------
- * Phase 40 tests: D-SDS-DATA (CMCE type 23) parser
+ * Phase 40 tests: D-SDS-DATA (CMCE type 15) parser
  * ----------------------------------------------------------------------- */
 
 /* Test 3: 8-bit text "OK" from SSI 77777 */
 static void test_d_sds_data_8bit_text(void)
 {
     printf("[test_d_sds_data_sdti0]\n");
-    uint8_t cmce[49] = {0};
+    uint8_t cmce[50] = {0};
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
     pack_bits(cmce, 1, 5, 2);          /* CPTI: SSI */
     pack_bits(cmce, 77777, 7, 24);
     pack_bits(cmce, 0, 31, 2);         /* SDTI 0: 16 bits */
     pack_bits(cmce, 0x4F4B, 33, 16);
+    pack_bits(cmce, 0, 49, 1); /* O-bit */
     uint8_t mle[58]; int mle_nbits;
-    wrap_mle_cmce(cmce, 49, mle, &mle_nbits);
+    wrap_mle_cmce(cmce, 50, mle, &mle_nbits);
     dsd_state *st=alloc_state(); dsd_opts *opt=alloc_opts();
     tetra_mle_dispatch(mle,mle_nbits,0,opt,st);
     CHECK(st->tetra_sds_src == 77777u, "D-SDS-DATA: CPTI SSI parsed");
@@ -152,17 +152,18 @@ static void test_d_sds_data_too_short(void)
     free(st); free(opt);
 }
 
-/* Test 5: ext_flag = 1 (external subscriber number) — no crash, src remains 0 */
+/* Test 5: CPTI=0 has no calling-party address. */
 static void test_d_sds_data_ext_flag(void)
 {
     printf("[test_d_sds_data_no_calling_party]\n");
-    uint8_t cmce[25] = {0};
+    uint8_t cmce[26] = {0};
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
     pack_bits(cmce, 0, 5, 2);          /* CPTI: no address */
     pack_bits(cmce, 0, 7, 2);          /* SDTI 0 */
     pack_bits(cmce, 0x1234, 9, 16);
+    pack_bits(cmce, 0, 25, 1); /* O-bit */
     uint8_t mle[34]; int mle_nbits;
-    wrap_mle_cmce(cmce,25,mle,&mle_nbits);
+    wrap_mle_cmce(cmce,26,mle,&mle_nbits);
     dsd_state *st=alloc_state(); dsd_opts *opt=alloc_opts();
     tetra_mle_dispatch(mle,mle_nbits,0,opt,st);
     CHECK(st->tetra_sds_src == 0, "D-SDS-DATA CPTI=0: no SSI");
@@ -174,15 +175,16 @@ static void test_d_sds_data_ext_flag(void)
 static void test_d_sds_data_7bit_text(void)
 {
     printf("[test_d_sds_data_sdti3]\n");
-    uint8_t cmce[65] = {0};
+    uint8_t cmce[66] = {0};
     pack_bits(cmce, TETRA_CMCE_D_SDS_DATA, 0, 5);
     pack_bits(cmce, 1, 5, 2);          /* CPTI: SSI */
     pack_bits(cmce, 55555, 7, 24);
     pack_bits(cmce, 3, 31, 2);         /* SDTI 3: variable */
     pack_bits(cmce, 21, 33, 11);
     pack_bits(cmce, 'H', 44, 7); pack_bits(cmce, 'i', 51, 7); pack_bits(cmce, '!', 58, 7);
+    pack_bits(cmce, 0, 65, 1); /* O-bit */
     uint8_t mle[74]; int mle_nbits;
-    wrap_mle_cmce(cmce,65,mle,&mle_nbits);
+    wrap_mle_cmce(cmce,66,mle,&mle_nbits);
     dsd_state *st=alloc_state(); dsd_opts *opt=alloc_opts();
     tetra_mle_dispatch(mle,mle_nbits,0,opt,st);
     CHECK(st->tetra_sds_src == 55555u, "D-SDS-DATA SDTI3: SSI parsed");

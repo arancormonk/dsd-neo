@@ -81,7 +81,7 @@ Both contexts live in `dsd_state.codec2_3200` / `dsd_state.codec2_1600` as opaqu
 |----------|-------|
 | Standard | ETSI EN 300 395-2 (proprietary, no open-source implementation) |
 | Integration | Persistent child process (`TETRA_VOCODER_CMD` env var) |
-| Protocol | 137 bytes/frame → 160 × int16 PCM16LE @ 8 kHz |
+| Protocol | 137 bytes/frame → 240 × int16 PCM16LE @ 8 kHz |
 | Source | `src/protocol/tetra/tetra_acelp.c` |
 | Test stub | `tools/tetra/vocoder_stub.py` (produces silence) |
 

@@ -7,13 +7,6 @@
  * Phase 71 — cmce_d_sds_data rejects truncated payload atomically
  *   1. Send truncated SDS-DATA and ensure the prior valid state is retained
  *
- * Phase 72 — D-SDS-SHORT-DATA data_types 2 and 3
- *   2. data_type=2 (64-bit user defined)
- *   3. data_type=3 (variable length user defined)
- *
- * Phase 73 — CMCE D-SDS-REPORT (type 22)
- *   4. Parses D-SDS-REPORT and sets delivery_ok / cause
- *
  * Phase 74 — MAC ACCESS-DEFINE exact state caching
  *   5. Parses MAC ACCESS-DEFINE and saves num_ra, frame_len_f, ts_ptr, min_pdu_pri
  *
@@ -56,15 +49,14 @@ static void pack_bits(uint8_t *out, uint32_t val, int offset, int nbits)
 static dsd_state *alloc_state(void) { return (dsd_state *)calloc(1, sizeof(dsd_state)); }
 static dsd_opts  *alloc_opts(void)  { return (dsd_opts  *)calloc(1, sizeof(dsd_opts));  }
 
-/* Wrap a CMCE body in MLE C-PLANE-DATA + PD=CMCE header (9 overhead bits) */
+/* Wrap a CMCE body in 3-bit CMCE protocol discriminator */
 static void wrap_mle_cmce(const uint8_t *cmce_body, int cmce_nbits,
                            uint8_t *out, int *out_nbits)
 {
-    int total = 9 + cmce_nbits;
+    int total = 3 + cmce_nbits;
     memset(out, 0, (size_t)total);
-    pack_bits(out, 24, 0, 5); /* MLE type = C-PLANE-DATA */
-    pack_bits(out,  3, 5, 4); /* PD = CMCE */
-    memcpy(out + 9, cmce_body, (size_t)cmce_nbits);
+    pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
+    memcpy(out + 3, cmce_body, (size_t)cmce_nbits);
     *out_nbits = total;
 }
 
@@ -84,7 +76,7 @@ static void test_sds_data_truncation(void)
     st->tetra_sds_short_valid = 1;
     st->tetra_sds_short_data = 0xCAFEu;
 
-    /* Truncated CMCE type=23 (D-SDS-DATA), missing SDS-TL bits but enough to parse SSI */
+    /* Truncated D-SDS-DATA payload after the source SSI. */
     uint8_t cmce[40];
     memset(cmce, 0, sizeof(cmce));
     pack_bits(cmce, 15, 0, 5); /* D-SDS-DATA */
@@ -106,12 +98,6 @@ static void test_sds_data_truncation(void)
     free(st); free(opt);
 }
 
-/* =======================================================================
- * Phase 72: CMCE D-SDS-SHORT-DATA types 2 and 3
- * ======================================================================= */
-/* =======================================================================
- * Phase 73: CMCE D-SDS-REPORT (22)
- * ======================================================================= */
 /* =======================================================================
  * Phase 74: MAC ACCESS-DEFINE Fields
  * ======================================================================= */

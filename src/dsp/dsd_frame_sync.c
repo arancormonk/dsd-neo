@@ -894,6 +894,29 @@ frame_sync_capture_tetra_dibits(const char* src, uint8_t* dst, int count) {
     }
 }
 
+/* Capture the analog decisions which correspond to the payload prefix of a
+ * sync window. The newest history entry is the last sync symbol, so the first
+ * payload symbol is (window_len - 1) entries back. */
+static int
+frame_sync_capture_tetra_soft(const dsd_state* state, float* dst, int payload_len, int sync_len) {
+    int window_len = payload_len + sync_len;
+    if (!state || !dst || payload_len <= 0 || sync_len <= 0
+        || state->symbol_history == NULL
+        || dsd_symbol_history_count(state) < window_len) {
+        return 0;
+    }
+    for (int i = 0; i < payload_len; i++)
+        dst[i] = dsd_symbol_history_get_back(state, window_len - 1 - i);
+    return 1;
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_frame_sync_test_capture_tetra_soft(const dsd_state* state, float* dst, int payload_len, int sync_len) {
+    return frame_sync_capture_tetra_soft(state, dst, payload_len, sync_len);
+}
+#endif
+
 static int
 frame_sync_try_tetra(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
@@ -910,6 +933,8 @@ frame_sync_try_tetra(frame_sync_match_ctx* ctx) {
             DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "TETRA");
             state->tetra_polarity = inverted;
             frame_sync_capture_tetra_dibits(ctx->synctest119, state->tetra_b1_dibuf, 108);
+            state->tetra_b1_soft_valid = (uint8_t)frame_sync_capture_tetra_soft(
+                state, state->tetra_b1_soft, 108, 11);
             state->tetra_b1_valid = 1;
             if (opts->errorbars == 1) {
                 printFrameSync(opts, state, inverted ? "-TETRA NDB" : "+TETRA NDB", ctx->synctest_pos + 1,
@@ -929,6 +954,8 @@ frame_sync_try_tetra(frame_sync_match_ctx* ctx) {
             DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "TETRA");
             state->tetra_polarity = inverted;
             frame_sync_capture_tetra_dibits(ctx->synctest79, state->tetra_sb1_dibuf, 60);
+            state->tetra_sb1_soft_valid = (uint8_t)frame_sync_capture_tetra_soft(
+                state, state->tetra_sb1_soft, 60, 19);
             state->tetra_sb1_valid = 1;
             if (opts->errorbars == 1) {
                 printFrameSync(opts, state, inverted ? "-TETRA SB" : "+TETRA SB", ctx->synctest_pos + 1,

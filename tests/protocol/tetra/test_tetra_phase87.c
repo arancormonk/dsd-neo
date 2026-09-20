@@ -31,7 +31,7 @@ static int g_fail = 0;
 /* Exact position tables from EN 300 395-2 V1.3.1 Table 4 */
 static const uint8_t class0_positions[] = {
     35, 36, 37, 38, 39, 40, 41, 42, 43, 47, 48,
-    56, 61, 62, 63, 65, 66, 67, 68, 69, 70, 74,
+    56, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 74,
     75, 83, 88, 89, 90, 91, 92, 93, 94, 95, 96,
     97, 101, 102, 110, 115, 116, 117, 118, 119,
     120, 121, 122, 123, 124, 128, 129, 137
@@ -73,25 +73,20 @@ static const uint8_t class2_positions[] = {
 static void test_acelp_reorder(void) {
     printf("--- ACELP Class Reorder Test ---\n");
     
-    /* 292 type-2 bits */
-    uint8_t in[292];
-    for (int i = 0; i < 292; i++) {
+    /* 274 sensitivity-ordered speech bits */
+    uint8_t in[274];
+    for (int i = 0; i < 274; i++) {
         in[i] = (uint8_t)(i & 0xFF);  /* unique marker per bit */
     }
 
     uint8_t out[2 * TETRA_TCH_FRAME_BITS]; /* 274 bytes */
     memset(out, 0xFF, sizeof(out));
 
-    tetra_acelp_reorder(in, out, 292);
+    tetra_acelp_reorder(in, out, 274);
 
     /* 
      * Verify no out-of-bounds writes or frame overlaps.
-     * With 272 bits distributed into 274 bytes, two bytes should remain 0xFF
-     * because only 136 bits are placed per frame. Frame 137 has padding conceptually,
-     * but let's see which indices are actually written. The bit positions are 1..137
-     * However, there are only 136 positions in the combined tables.
-     * Wait, 50+56+30 = 136. The highest position number in class0 is 137.
-     * Let's check which index is left empty.
+     * The three classes cover all 137 positions in both codec frames.
      */
     
     /* Recreate the index presence map */
@@ -101,7 +96,7 @@ static void test_acelp_reorder(void) {
     int in_idx = 0;
     
     /* Class 0 */
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < 51; i++) {
         for (int f = 0; f < 2; f++) {
             int out_idx = f * TETRA_TCH_FRAME_BITS + class0_positions[i] - 1;
             CHECK(out[out_idx] == in[in_idx], "Class 0 mapped correctly");
@@ -130,7 +125,7 @@ static void test_acelp_reorder(void) {
         }
     }
 
-    CHECK(in_idx == 272, "Consumed exactly 272 bits");
+    CHECK(in_idx == 274, "Consumed exactly 274 bits");
 
     int double_writes = 0;
     int unwritten = 0;
@@ -148,17 +143,9 @@ static void test_acelp_reorder(void) {
     }
 
     CHECK(double_writes == 0, "No overlapping bit positions (stride is correct)");
-    /* Since each frame has 136 bit positions but length 137, exactly 2 positions should be unwritten */
-    CHECK(unwritten == 2, "Exactly 2 unmodified bytes (1 per 137-bit frame)");
-    /* Check what value remained */
-    int untouched_correct = 1;
-    for(int i=0; i<2 * TETRA_TCH_FRAME_BITS; i++) {
-        if(written[i] == 0 && out[i] != 0xFF) untouched_correct = 0;
-    }
-    CHECK(untouched_correct == 1, "Unwritten bytes retained initial pattern");
-
+    CHECK(unwritten == 0, "All 274 codec-bit positions were written");
     memset(out, 0xA5, sizeof(out));
-    tetra_acelp_reorder(in, out, 271);
+    tetra_acelp_reorder(in, out, 273);
     int short_unchanged = 1;
     for (size_t i = 0; i < sizeof(out); i++) {
         if (out[i] != 0xA5) short_unchanged = 0;

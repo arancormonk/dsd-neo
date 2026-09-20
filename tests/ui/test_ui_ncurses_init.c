@@ -237,7 +237,11 @@ test_non_tty_stderr_is_not_suppressed(void) {
 
     assert(g_unicode_init_calls == 1);
     assert(g_initscr_calls == 1);
+#if defined(DSD_USE_PDCURSES)
+    assert(g_escdelay_value == 0);
+#else
     assert(g_escdelay_value == 25);
+#endif
     assert(g_use_default_colors_calls == 1);
     assert(g_assume_default_colors_calls == 1);
     assert(g_init_pair_calls > 0);

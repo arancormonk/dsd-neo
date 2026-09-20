@@ -5,6 +5,7 @@
 
 #include <dsd-neo/protocol/tetra/tetra_channel_info.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
+#include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/core/state.h>
 
 #include <stdio.h>
@@ -41,6 +42,14 @@ tetra_channel_info_fmt(const dsd_state *state, char *buf, size_t len)
                         " DL:%.3fMHz",
                         (double)state->tetra_dl_carrier_hz / 1.0e6);
 
+    if (state->tetra_mle_ca_neighbor_count_valid)
+        off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
+                        " nbr:%u", (unsigned)state->tetra_mle_ca_neighbor_count);
+
+    if (state->tetra_mm_group_identity_valid)
+        off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
+                        " groups:%u", (unsigned)state->tetra_mm_group_entry_count);
+
     /* Talkgroup and source */
     if (state->tetra_call_active) {
         if (state->tetra_gssi)
@@ -50,6 +59,13 @@ tetra_channel_info_fmt(const dsd_state *state, char *buf, size_t len)
             off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
                             " SRC:%u", (unsigned)state->tetra_calling_ssi);
     }
+
+    if (state->tetra_tx_granted_valid && state->tetra_tx_granted_ssi)
+        off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
+                        " PTT:%u", (unsigned)state->tetra_tx_granted_ssi);
+    else if (state->tetra_tx_event_party_ssi_valid)
+        off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
+                        " TXSRC:%u", (unsigned)state->tetra_tx_event_party_ssi);
 
     /* Encryption mode */
     off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
@@ -81,13 +97,45 @@ tetra_channel_info_fmt(const dsd_state *state, char *buf, size_t len)
                             " SDS:\"%s\"", state->tetra_sds_text);
     }
 
-    /* Phase 86: D-SDS-LONG-DATA text display */
-    if (state->tetra_sds_long_valid &&
-        state->tetra_sds_long_text_len > 0 &&
-        state->tetra_sds_long_text[0] != '\0') {
-        off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
-                        " LSDS:\"%s\"", state->tetra_sds_long_text);
+    if (state->tetra_sds_forward_valid) {
+        switch (state->tetra_sds_forward_type) {
+        case 0:
+            off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
+                            " fwd:SNA:%u", (unsigned)state->tetra_sds_forward_sna);
+            break;
+        case 1:
+            off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
+                            " fwd:SSI:%u", (unsigned)state->tetra_sds_forward_ssi);
+            break;
+        case 2:
+            off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
+                            " fwd:TSI:%u/%06X",
+                            (unsigned)state->tetra_sds_forward_ssi,
+                            (unsigned)state->tetra_sds_forward_extension);
+            break;
+        case 3:
+            off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
+                            " fwd:EXT:%s", state->tetra_sds_forward_external);
+            break;
+        case 7:
+            off += snprintf(tmp + off, sizeof(tmp) - (size_t)off, " fwd:none");
+            break;
+        default:
+            break;
+        }
+        if (state->tetra_sds_storage_forward)
+            off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
+                            " vp:%u", (unsigned)state->tetra_sds_validity_period);
     }
+
+    if (state->tetra_sds_concat_valid)
+        off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
+                        " cat:%03X:%u/%u%s",
+                        (unsigned)state->tetra_sds_concat_ref,
+                        (unsigned)state->tetra_sds_concat_received,
+                        (unsigned)state->tetra_sds_concat_total,
+                        state->tetra_sds_concat_complete ? ":done" :
+                        state->tetra_sds_concat_duplicate ? ":dup" : "");
 
     /* Phase 84: Release cause (Phase 78 field) */
     if (state->tetra_cmce_release_cause_type) {
@@ -130,10 +178,16 @@ tetra_channel_info_fmt(const dsd_state *state, char *buf, size_t len)
                         (unsigned)state->tetra_sds_short_src);
 
     /* Phase 86: SDS delivery report */
-    if (state->tetra_sds_report_valid)
+    if (state->tetra_sds_report_valid) {
+        static const char *const report_classes[] = {
+            "ok", "retry", "fail", "flow", "control", "reserved", "reserved", "reserved"
+        };
         off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
-                        " rpt:%s",
-                        state->tetra_sds_report_delivery_ok ? "ok" : "fail");
+                        " rpt:%s/%02X ref:%u",
+                        report_classes[state->tetra_sds_report_cause >> 5],
+                        (unsigned)state->tetra_sds_report_cause,
+                        (unsigned)state->tetra_sds_report_msg_ref);
+    }
 
     /* Phase 86: Facility */
     if (state->tetra_facility_valid)
@@ -190,10 +244,10 @@ tetra_channel_info_fmt(const dsd_state *state, char *buf, size_t len)
         if (state->tetra_tx_timed_out)   off += snprintf(tmp + off, sizeof(tmp) - (size_t)off, "T");
     }
 
-    /* Phase 86: MM temp SSI */
-    if (state->tetra_mm_temp_ssi_valid)
-        off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
-                        " tmpSSI:%u", (unsigned)state->tetra_mm_temp_ssi);
+    if (state->tetra_mm_status_valid)
+        off += snprintf(tmp + off, sizeof(tmp) - (size_t)off, " mm:%u/%s",
+                        (unsigned)state->tetra_mm_status_code,
+                        tetra_mm_status_name(state->tetra_mm_status_code));
 
     /* Phase 86: SNDCP info */
     if (state->tetra_sndcp_valid)
@@ -202,12 +256,38 @@ tetra_channel_info_fmt(const dsd_state *state, char *buf, size_t len)
                         (unsigned)state->tetra_sndcp_nsapi,
                         (unsigned)state->tetra_sndcp_pdu_type);
 
-    /* Phase 86: D-INFO summary */
-    if (state->tetra_d_info_valid)
+    /* D-INFO: keep the compact mandatory flags, then append only optionals
+     * that were actually present on air. */
+    if (state->tetra_d_info_valid) {
         off += snprintf(tmp + off, sizeof(tmp) - (size_t)off,
                         " dinfo:id%u/t%u",
                         (unsigned)state->tetra_d_info_call_id,
                         (unsigned)state->tetra_d_info_call_timeout);
+        if (state->tetra_d_info_new_call_id_valid)
+            off += snprintf(tmp + off, sizeof(tmp) - (size_t)off, "->%u",
+                            (unsigned)state->tetra_d_info_new_call_id);
+        if (state->tetra_d_info_timeout_valid)
+            off += snprintf(tmp + off, sizeof(tmp) - (size_t)off, "/to%u",
+                            (unsigned)state->tetra_d_info_timeout);
+        if (state->tetra_d_info_status_valid)
+            off += snprintf(tmp + off, sizeof(tmp) - (size_t)off, "/st%u",
+                            (unsigned)state->tetra_d_info_status);
+        if (state->tetra_d_info_notification_indicator_valid)
+            off += snprintf(tmp + off, sizeof(tmp) - (size_t)off, "/n%u",
+                            (unsigned)state->tetra_d_info_notification_indicator);
+    }
+
+    if (state->tetra_call_restore_valid) {
+        off += snprintf(tmp + off, sizeof(tmp) - (size_t)off, " restore:id%u/g%u",
+                        (unsigned)state->tetra_call_restore_id,
+                        (unsigned)state->tetra_call_restore_grant);
+        if (state->tetra_call_restore_new_id_valid)
+            off += snprintf(tmp + off, sizeof(tmp) - (size_t)off, "->%u",
+                            (unsigned)state->tetra_call_restore_new_id);
+        if (state->tetra_call_restore_status_valid)
+            off += snprintf(tmp + off, sizeof(tmp) - (size_t)off, "/st%u",
+                            (unsigned)state->tetra_call_restore_status);
+    }
 
     snprintf(buf, len, "%s", tmp);
 }

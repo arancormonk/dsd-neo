@@ -7,9 +7,9 @@
  *  2.  tetra_enc_mode_name(1) == "on"
  *  3.  tetra_enc_mode_name(2) == "on+auth"
  *  4.  tetra_enc_mode_name(3) == "rsvd"
- *  5.  tetra_mm_status_name(0) == "normal"
- *  6.  tetra_mm_status_name(1) == "roaming not allowed"
- *  7.  tetra_mm_status_name(15) == "service disabled"
+ *  5.  tetra_mm_status_name(1) == "change energy saving request"
+ *  6.  tetra_mm_status_name(7) == "MS frequency bands request"
+ *  7.  reserved values are labelled as such
  *  8.  tetra_bsch_fmt_net(NULL) writes "MCC:? MNC:? CC:?"
  *  9.  tetra_bsch_fmt_net with net_known=0 writes "MCC:? MNC:? CC:?"
  * 10.  tetra_bsch_fmt_net with known values formats correctly
@@ -67,9 +67,9 @@ int main(void)
     CHECK_STR(tetra_enc_mode_name(3), "rsvd",    "enc_mode 3 == rsvd");
 
     /* --- tetra_mm_status_name --- */
-    CHECK_STR(tetra_mm_status_name(0),  "normal",              "mm_status 0 == normal");
-    CHECK_STR(tetra_mm_status_name(1),  "roaming not allowed", "mm_status 1 == roaming not allowed");
-    CHECK_STR(tetra_mm_status_name(15), "service disabled",    "mm_status 15 == service disabled");
+    CHECK_STR(tetra_mm_status_name(1), "change energy saving request", "status downlink 1");
+    CHECK_STR(tetra_mm_status_name(7), "MS frequency bands request", "status downlink 7");
+    CHECK_STR(tetra_mm_status_name(15), "reserved", "reserved status downlink");
 
     /* --- tetra_bsch_fmt_net --- */
     {
@@ -106,6 +106,37 @@ int main(void)
         st->tetra_enc_mode = 1;
         tetra_channel_info_fmt(st, buf, sizeof(buf));
         CHECK(strstr(buf, "enc:on") != NULL, "channel_info_fmt enc:on");
+
+        st->tetra_sds_forward_valid = 1;
+        st->tetra_sds_storage_forward = 1;
+        st->tetra_sds_validity_period = 17;
+        st->tetra_sds_forward_type = 3;
+        strcpy(st->tetra_sds_forward_external, "+123*#");
+        tetra_channel_info_fmt(st, buf, sizeof(buf));
+        CHECK(strstr(buf, "fwd:EXT:+123*# vp:17") != NULL,
+              "channel_info_fmt includes SDS forward address and validity");
+
+        st->tetra_sds_concat_valid = 1;
+        st->tetra_sds_concat_ref = 0xabc;
+        st->tetra_sds_concat_received = 2;
+        st->tetra_sds_concat_total = 3;
+        st->tetra_sds_concat_duplicate = 1;
+        tetra_channel_info_fmt(st, buf, sizeof(buf));
+        CHECK(strstr(buf, "cat:ABC:2/3:dup") != NULL,
+              "channel_info_fmt includes concatenated SDS progress");
+
+        st->tetra_tx_granted_valid = 1;
+        st->tetra_tx_granted_ssi = 123456;
+        tetra_channel_info_fmt(st, buf, sizeof(buf));
+        CHECK(strstr(buf, "PTT:123456") != NULL,
+              "channel_info_fmt includes current granted transmitter");
+
+        st->tetra_tx_granted_valid = 0;
+        st->tetra_tx_event_party_ssi_valid = 1;
+        st->tetra_tx_event_party_ssi = 654321;
+        tetra_channel_info_fmt(st, buf, sizeof(buf));
+        CHECK(strstr(buf, "TXSRC:654321") != NULL,
+              "channel_info_fmt includes floor-event transmitter");
 
         free(st);
     }

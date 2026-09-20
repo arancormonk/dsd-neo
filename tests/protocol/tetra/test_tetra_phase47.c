@@ -11,14 +11,6 @@
  *   4.  tetra_tdma_valid is set to 1 after a successful parse
  *   5.  Second BSCH with different TN/FN/MN overwrites previous values
  *
- * Phase 44 — MM D-LU-REJECT + D-TEMPORARY-ADDRESS parsers:
- *   6.  tetra_mm_lu_reject_* fields zero-initialise correctly
- *   7.  D-LU-REJECT with cause=4 sets tetra_mm_lu_reject_cause=4 and valid=1
- *   8.  D-LU-REJECT with fewer than 8 bits still sets valid=1 (cause=0)
- *   9.  tetra_mm_temp_ssi* fields zero-initialise correctly
- *  10.  D-TEMPORARY-ADDRESS with SSI=123456 sets temp_ssi and valid=1
- *  11.  D-TEMPORARY-ADDRESS with < 29 bits still sets valid=1 (ssi=0)
- *
  * Phase 45 — D-TX-GRANTED updates UI fields:
  *  12.  tetra_sds_msg_ref and tetra_sds_last_cc zero-initialise correctly
  *  13.  D-TX-GRANTED with SSI sets lastsrc to granted SSI
@@ -34,7 +26,6 @@
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
-#include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/core/state.h>
 
 #include <stdio.h>
@@ -97,32 +88,21 @@ static void bsch_build(uint8_t bits[60],
 }
 
 /* -----------------------------------------------------------------------
- * MLE / CMCE helper — wrap a raw CMCE PDU in an MLE C-PLANE-DATA frame.
+ * MLE / CMCE helper — wrap a raw CMCE PDU in an CMCE protocol-discriminator envelope.
  * ----------------------------------------------------------------------- */
 static void wrap_mle_cmce(const uint8_t *cmce_body, int cmce_nbits,
                            uint8_t *out, int *out_nbits)
 {
-    memset(out, 0, (size_t)(9 + cmce_nbits));
-    pack_bits(out, 24, 0, 5);   /* mle_type = TETRA_MLE_C_PLANE_DATA */
-    pack_bits(out,  3, 5, 4);   /* pd       = TETRA_MLE_PD_CMCE       */
-    memcpy(out + 9, cmce_body, (size_t)cmce_nbits);
-    *out_nbits = 9 + cmce_nbits;
+    memset(out, 0, (size_t)(3 + cmce_nbits));
+    pack_bits(out, TETRA_MLE_PD_CMCE, 0, 3);
+    memcpy(out + 3, cmce_body, (size_t)cmce_nbits);
+    *out_nbits = 3 + cmce_nbits;
 }
 
 /* -----------------------------------------------------------------------
- * Helper: build an MLE C-PLANE-DATA / MM wrapper.
+ * Helper: build an MM protocol-discriminator wrapper.
  *   mle_type=24, pd=5 (MM), then mm_body
  * ----------------------------------------------------------------------- */
-static void wrap_mle_mm(const uint8_t *mm_body, int mm_nbits,
-                         uint8_t *out, int *out_nbits)
-{
-    memset(out, 0, (size_t)(9 + mm_nbits));
-    pack_bits(out, 24, 0, 5);   /* mle_type = TETRA_MLE_C_PLANE_DATA */
-    pack_bits(out,  5, 5, 4);   /* pd       = TETRA_MLE_PD_MM (5)     */
-    memcpy(out + 9, mm_body, (size_t)mm_nbits);
-    *out_nbits = 9 + mm_nbits;
-}
-
 /* =======================================================================
  * Phase 43: TDMA timestamps in BSCH
  * ======================================================================= */
@@ -240,141 +220,6 @@ static void test_tdma_ndb_advance_and_rollover(void)
 }
 
 /* =======================================================================
- * Phase 44: MM D-LU-REJECT + D-TEMPORARY-ADDRESS
- * ======================================================================= */
-
-static void test_mm_lu_reject_fields_zero(void)
-{
-    printf("[test_mm_lu_reject_fields_zero]\n");
-    dsd_state *st = alloc_state();
-
-    CHECK(st->tetra_mm_lu_reject_valid == 0, "lu_reject_valid zero after calloc");
-    CHECK(st->tetra_mm_lu_reject_cause == 0, "lu_reject_cause zero after calloc");
-
-    free(st);
-}
-
-static void test_mm_d_lu_reject_cause(void)
-{
-    printf("[test_mm_d_lu_reject_cause]\n");
-
-    /*
-     * MM D-LU-REJECT PDU:
-     *   [0-4]  pdu_type = 7  (TETRA_MM_D_LOCATION_UPDATING_REJECT)
-     *   [5-7]  cause = 4     (3 bits)
-     * Total: 8 bits
-     */
-    uint8_t mm[8];
-    memset(mm, 0, sizeof(mm));
-    pack_bits(mm, 7u, 0, 5);   /* pdu_type = 7 */
-    pack_bits(mm, 4u, 5, 3);   /* cause = 4    */
-
-    uint8_t mle[9 + 8];
-    int mle_nbits;
-    wrap_mle_mm(mm, 8, mle, &mle_nbits);
-
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    tetra_mle_dispatch(mle, mle_nbits, 7, opt, st);
-
-    CHECK(st->tetra_mm_lu_reject_valid == 1, "D-LU-REJECT: valid=1");
-    CHECK(st->tetra_mm_lu_reject_cause == 4, "D-LU-REJECT: cause=4");
-
-    free(st); free(opt);
-}
-
-static void test_mm_d_lu_reject_short(void)
-{
-    printf("[test_mm_d_lu_reject_short]\n");
-
-    /* Only 5 bits — pdu_type only, no cause field */
-    uint8_t mm[5];
-    memset(mm, 0, sizeof(mm));
-    pack_bits(mm, 7u, 0, 5);
-
-    uint8_t mle[9 + 5];
-    int mle_nbits;
-    wrap_mle_mm(mm, 5, mle, &mle_nbits);
-
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    /* Must not crash */
-    tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
-
-    CHECK(st->tetra_mm_lu_reject_valid == 1, "D-LU-REJECT short: still sets valid=1");
-    CHECK(st->tetra_mm_lu_reject_cause == 0, "D-LU-REJECT short: cause defaults to 0");
-
-    free(st); free(opt);
-}
-
-static void test_mm_temp_ssi_fields_zero(void)
-{
-    printf("[test_mm_temp_ssi_fields_zero]\n");
-    dsd_state *st = alloc_state();
-
-    CHECK(st->tetra_mm_temp_ssi_valid == 0, "temp_ssi_valid zero after calloc");
-    CHECK(st->tetra_mm_temp_ssi       == 0, "temp_ssi zero after calloc");
-
-    free(st);
-}
-
-static void test_mm_d_temporary_address_ssi(void)
-{
-    printf("[test_mm_d_temporary_address_ssi]\n");
-
-    /*
-     * MM D-TEMPORARY-ADDRESS PDU:
-     *   [0-4]   pdu_type = 9
-     *   [5-28]  temporary SSI = 123456 (24 bits)
-     * Total: 29 bits
-     */
-    uint8_t mm[29];
-    memset(mm, 0, sizeof(mm));
-    pack_bits(mm, 9u,      0,  5);  /* pdu_type = 9 */
-    pack_bits(mm, 123456u, 5, 24);  /* temp_ssi     */
-
-    uint8_t mle[9 + 29];
-    int mle_nbits;
-    wrap_mle_mm(mm, 29, mle, &mle_nbits);
-
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
-
-    CHECK(st->tetra_mm_temp_ssi_valid == 1,      "D-TEMP-ADDR: valid=1");
-    CHECK(st->tetra_mm_temp_ssi       == 123456u, "D-TEMP-ADDR: ssi=123456");
-
-    free(st); free(opt);
-}
-
-static void test_mm_d_temporary_address_short(void)
-{
-    printf("[test_mm_d_temporary_address_short]\n");
-
-    /* Only pdu_type, no SSI field */
-    uint8_t mm[5];
-    memset(mm, 0, sizeof(mm));
-    pack_bits(mm, 9u, 0, 5);
-
-    uint8_t mle[9 + 5];
-    int mle_nbits;
-    wrap_mle_mm(mm, 5, mle, &mle_nbits);
-
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    tetra_mle_dispatch(mle, mle_nbits, 0, opt, st);
-
-    CHECK(st->tetra_mm_temp_ssi_valid == 1, "D-TEMP-ADDR short: still sets valid=1");
-    CHECK(st->tetra_mm_temp_ssi       == 0, "D-TEMP-ADDR short: ssi=0");
-
-    free(st); free(opt);
-}
-
-/* =======================================================================
  * Phase 45: D-TX-GRANTED updates UI fields
  * ======================================================================= */
 
@@ -392,42 +237,37 @@ static void test_tx_granted_ui_fields_zero(void)
 /*
  * Build a D-TX-GRANTED CMCE PDU with granted SSI present.
  *
- * CMCE D-TX-GRANTED layout (PDU type=10):
- *   [0-4]  pdu_type = 10
- *   [5]    tx_perm  (1 bit)
- *   [6-7]  enc_mode (2 bits)
- *   [8]    reserv   (1 bit)
- *   [9]    gp_present = 1
- *   [10-12] addr_type = 1 (SSI)
- *   [13-36] granted_ssi (24 bits)
- *   [37]   ac_present = 0
- * Total: 38 bits
+ * CMCE D-TX-GRANTED layout (PDU type=11): mandatory call and floor-control
+ * fields, O-bit, notification P-bit, transmitting-party P-bit/TPTI/SSI, and
+ * the terminating M-bit. Total: 54 bits.
  */
 static void build_d_tx_granted(uint8_t *cmce, uint32_t granted_ssi)
 {
-    memset(cmce, 0, 52);
+    memset(cmce, 0, 54);
     pack_bits(cmce, 11u,          0,  5);   /* D-TX-GRANTED */
     pack_bits(cmce,  1u,          5, 14);   /* call identifier */
     pack_bits(cmce,  3u,         19,  2);   /* granted to another */
     pack_bits(cmce,  1u,         21,  1);   /* request permission */
     pack_bits(cmce,  0u,         22,  1);   /* encryption */
     pack_bits(cmce,  0u,         23,  1);   /* reserved */
-    pack_bits(cmce,  0u,         24,  1);   /* notification absent */
-    pack_bits(cmce,  1u,         25,  1);   /* TPTI present */
-    pack_bits(cmce,  1u,         26,  2);   /* TPTI = SSI */
-    pack_bits(cmce, granted_ssi, 28, 24);   /* SSI */
+    pack_bits(cmce,  1u,         24,  1);   /* O-bit */
+    pack_bits(cmce,  0u,         25,  1);   /* notification absent */
+    pack_bits(cmce,  1u,         26,  1);   /* TPTI present */
+    pack_bits(cmce,  1u,         27,  2);   /* TPTI = SSI */
+    pack_bits(cmce, granted_ssi, 29, 24);   /* SSI */
+    pack_bits(cmce,  0u,         53,  1);   /* terminating M-bit */
 }
 
 static void test_tx_granted_identity_set(void)
 {
     printf("[test_tx_granted_identity_set]\n");
 
-    uint8_t cmce[52];
+    uint8_t cmce[54];
     build_d_tx_granted(cmce, 88888u);
 
-    uint8_t mle[9 + 52];
+    uint8_t mle[9 + 54];
     int mle_nbits;
-    wrap_mle_cmce(cmce, 52, mle, &mle_nbits);
+    wrap_mle_cmce(cmce, 54, mle, &mle_nbits);
 
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
@@ -447,12 +287,12 @@ static void test_tx_granted_without_channel_assignment(void)
 {
     printf("[test_tx_granted_without_channel_assignment]\n");
 
-    uint8_t cmce[52];
+    uint8_t cmce[54];
     build_d_tx_granted(cmce, 12345u);
 
-    uint8_t mle[9 + 52];
+    uint8_t mle[3 + 54];
     int mle_nbits;
-    wrap_mle_cmce(cmce, 52, mle, &mle_nbits);
+    wrap_mle_cmce(cmce, 54, mle, &mle_nbits);
 
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
@@ -472,12 +312,12 @@ static void test_tx_granted_floor_state(void)
 {
     printf("[test_tx_granted_floor_state]\n");
 
-    uint8_t cmce[52];
+    uint8_t cmce[54];
     build_d_tx_granted(cmce, 111u);
 
-    uint8_t mle[9 + 52];
+    uint8_t mle[3 + 54];
     int mle_nbits;
-    wrap_mle_cmce(cmce, 52, mle, &mle_nbits);
+    wrap_mle_cmce(cmce, 54, mle, &mle_nbits);
 
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
@@ -500,16 +340,8 @@ static void test_tx_granted_floor_state(void)
  * Build a minimal D-SDS-DATA CMCE PDU with an explicit msg_ref.
  *
  *   [0-4]   pdu_type = 23
- *   [5]     ext_flag = 0
- *   [6-29]  calling_ssi (24 bits)
- *   [30-33] msg_ref (4 bits)
- *   [34]    store_fwd = 0
- *   [35]    vp_flag = 0
- *   [36]    dt_flag = 0
- *   [37-44] bpc = 8
- *   [45-52] num_chars = 1
- *   [53-60] 'A' = 65
- * Total: 61 bits
+ * The helper builds table 14.13 D-SDS-DATA with CPTI=1 and SDTI=0, including
+ * the mandatory Annex E O-bit after the 16-bit user data.
  */
 static void build_d_sds_data(uint8_t *cmce, uint32_t src_ssi, uint8_t sdti)
 {
@@ -520,13 +352,15 @@ static void build_d_sds_data(uint8_t *cmce, uint32_t src_ssi, uint8_t sdti)
     pack_bits(cmce, sdti, 31, 2);
     if (sdti == 0)
         pack_bits(cmce, 0xCAFE, 33, 16);
+    if (sdti == 0)
+        pack_bits(cmce, 0, 49, 1); /* O-bit */
 }
 
 static void test_sds_msg_ref_stored(void)
 {
     printf("[test_sds_sdti_and_cc_stored]\n");
     uint8_t cmce[61]; build_d_sds_data(cmce, 22222u, 0u);
-    uint8_t mle[70]; int n; wrap_mle_cmce(cmce,49,mle,&n);
+    uint8_t mle[70]; int n; wrap_mle_cmce(cmce,50,mle,&n);
     dsd_state *st=alloc_state(); dsd_opts *opt=alloc_opts();
     tetra_mle_dispatch(mle,n,3,opt,st);
     CHECK(st->tetra_cmce_sds_data_type == 0, "SDS SDTI = 0");
@@ -538,7 +372,7 @@ static void test_sds_last_cc_stored(void)
 {
     printf("[test_sds_last_cc_stored]\n");
     uint8_t cmce[61]; build_d_sds_data(cmce,33333u,0u);
-    uint8_t mle[70]; int n; wrap_mle_cmce(cmce,49,mle,&n);
+    uint8_t mle[70]; int n; wrap_mle_cmce(cmce,50,mle,&n);
     dsd_state *st=alloc_state(); dsd_opts *opt=alloc_opts();
     tetra_mle_dispatch(mle,n,11,opt,st);
     CHECK(st->tetra_sds_last_cc == 11, "SDS last_cc = 11");
@@ -550,10 +384,10 @@ static void test_sds_msg_ref_overwrite(void)
     printf("[test_sds_source_overwrite]\n");
     dsd_state *st=alloc_state(); dsd_opts *opt=alloc_opts();
     uint8_t cmce[61],mle[70]; int n;
-    build_d_sds_data(cmce,10001u,0u); wrap_mle_cmce(cmce,49,mle,&n);
+    build_d_sds_data(cmce,10001u,0u); wrap_mle_cmce(cmce,50,mle,&n);
     tetra_mle_dispatch(mle,n,0,opt,st);
     CHECK(st->tetra_sds_src == 10001u, "first SDS source");
-    build_d_sds_data(cmce,10002u,0u); wrap_mle_cmce(cmce,49,mle,&n);
+    build_d_sds_data(cmce,10002u,0u); wrap_mle_cmce(cmce,50,mle,&n);
     tetra_mle_dispatch(mle,n,0,opt,st);
     CHECK(st->tetra_sds_src == 10002u, "second SDS source overwrites first");
     free(st); free(opt);
@@ -573,15 +407,6 @@ int main(void)
     test_bsch_tdma_tn_onebased();
     test_bsch_tdma_overwrite();
     test_tdma_ndb_advance_and_rollover();
-
-    /* Phase 44 */
-    printf("\n--- Phase 44: MM D-LU-REJECT + D-TEMPORARY-ADDRESS ---\n");
-    test_mm_lu_reject_fields_zero();
-    test_mm_d_lu_reject_cause();
-    test_mm_d_lu_reject_short();
-    test_mm_temp_ssi_fields_zero();
-    test_mm_d_temporary_address_ssi();
-    test_mm_d_temporary_address_short();
 
     /* Phase 45 */
     printf("\n--- Phase 45: D-TX-GRANTED UI fields ---\n");

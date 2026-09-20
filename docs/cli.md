@@ -532,7 +532,7 @@ Notes
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
-- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`.
+- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (0–49), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48, 72), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. TETRA should use 72 kHz, which gives an integer 4 samples/symbol at 18 ksym/s.
 - A `sql` value that is not a number leaves the squelch as it was rather than switching it off. A disabled squelch is
   reported as `off` everywhere it is shown — the startup banner, the terminal input line, the DSP panel — so it is
   never mistaken for a threshold gating at the −120 dB display floor.

@@ -58,6 +58,11 @@ manifest). The baseline, overlay ports, and triplets are the source of truth
 for exact registry versions; system-package builds enforce the OpenSSL
 requirement through `find_package(OpenSSL 3.0 REQUIRED)`.
 
+The `vcpkg-ports/mpg123` overlay follows the upstream vcpkg 1.33.7 recipe and
+pins its SourceForge archive by SHA-512. Its local CMake patch includes
+`sys/types.h` while probing `off_t`; this is required when configuring with
+Visual Studio 2026, where the unqualified probe cannot declare the type.
+
 ## Packaging Dependencies
 
 Windows builds use vcpkg overlays under `vcpkg-ports/` and triplets under

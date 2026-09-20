@@ -35,16 +35,39 @@ main(void)
     opts->dmr_stereo_wav = 1;
     opts->audio_out_fd = -1;
     uint8_t type2[292] = {0};
+    tetra_acelp_process_tch(type2, 271, 0, opts, state);
+    int rejected_activity_ok = state->last_vc_sync_time == 0
+                            && state->last_vc_sync_time_m == 0.0;
+    state->tetra_vc_assignment_valid = 1;
+    state->tetra_vc_timeslot_bitmap = 8; /* TN1 assigned, receiving TN2. */
+    state->tetra_tdma_valid = 1;
+    state->tetra_tn = 2;
+    tetra_acelp_process_tch(type2, 292, 0, opts, state);
+    rejected_activity_ok = rejected_activity_ok && state->last_vc_sync_time == 0
+                        && state->last_vc_sync_time_m == 0.0;
+    state->tetra_tn = 1;
     tetra_acelp_process_tch(type2, 292, 0, opts, state);
     tetra_vocoder_close();
     sf_write_sync(wav);
     sf_count_t frames = sf_seek(wav, 0, SEEK_CUR);
+    const char *cmd = getenv("TETRA_VOCODER_CMD");
+    uint8_t expected_status = (!cmd || !cmd[0])
+                                ? TETRA_VOCODER_STATUS_COMMAND_MISSING
+                                : (strstr(cmd, "--hang")
+                                     ? TETRA_VOCODER_STATUS_TIMEOUT
+                                     : TETRA_VOCODER_STATUS_SHORT_OUTPUT);
+    uint32_t expected_errors = expected_status == TETRA_VOCODER_STATUS_COMMAND_MISSING ? 0u : 1u;
+    int status_ok = rejected_activity_ok && state->tetra_vocoder_status == expected_status
+                 && state->last_vc_sync_time > 0
+                 && state->last_vc_sync_time_m > 0.0
+                 && state->tetra_vocoder_frames == 0
+                 && state->tetra_vocoder_errors == expected_errors;
     sf_close(wav);
     free(opts);
     free(state);
     remove(path);
 
-    if (frames != 0) {
+    if (frames != 0 || !status_ok) {
         fprintf(stderr, "FAIL: partial vocoder response wrote %lld PCM frames\n",
                 (long long)frames);
         return 1;

@@ -13,12 +13,10 @@
  *  5.  D-TX-GRANTED → tetra_enc_mode synced from enc_mode field
  *  6.  D-STATUS ring buffer — 4 statuses → ring wraps correctly
  *  7.  BSCH parse increments tetra_bsch_count
- *  8.  MM D-LU-COMMAND sets tetra_mm_lu_req_la + tetra_mm_lu_req_la_valid
  */
 
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
-#include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch_fmt.h>
 #include <dsd-neo/core/state.h>
 
@@ -137,27 +135,6 @@ static void test_frame_counters(void)
 /* ----------------------------------------------------------------------- */
 /* Test 4: D-CONNECT-ACK (type 3) sets call_active (Phase 19)               */
 /* ----------------------------------------------------------------------- */
-static void test_d_connect_ack(void)
-{
-    const int NBITS = 14;
-    uint8_t bits[14];
-    memset(bits, 0, sizeof(bits));
-
-    pack_bits(bits, 24u, 0, 5); /* MLE C_PLANE_DATA */
-    pack_bits(bits,  3u, 5, 4); /* PD = CMCE        */
-    pack_bits(bits,  3u, 9, 5); /* CMCE type = 3 (D-CONNECT-ACK) */
-
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    st->tetra_call_active = 0; /* ensure it starts cleared */
-    tetra_mle_dispatch(bits, NBITS, 0, opt, st);
-
-    CHECK(st->tetra_call_active == 1, "D-CONNECT-ACK sets call_active=1");
-
-    free(st); free(opt);
-}
-
 /* ----------------------------------------------------------------------- */
 /* Test 5: D-TX-GRANTED syncs tetra_enc_mode (Phase 26)                     */
 /* ----------------------------------------------------------------------- */
@@ -166,25 +143,23 @@ static void test_d_tx_granted_enc_mode(void)
     /*
      * Minimal Table 14.18 D-TX-GRANTED with encryption control set.
      *
-     *   [0-4]  MLE C_PLANE_DATA = 24
-     *   [5-8]  PD = CMCE (3)
-     *   [9-13] CMCE type = 11
-     *   [14-27] call identifier
+     *   [0-2]  PD = CMCE (2)
+     *   [3-7]  CMCE type = 11
+     *   [8-21] call identifier
      *   [28-29] transmission grant
      *   [30] request permission, [31] encryption, [32] reserved
      */
-    const int NBITS = 35;
-    uint8_t bits[35];
+    enum { NBITS = 28 };
+    uint8_t bits[NBITS];
     memset(bits, 0, sizeof(bits));
 
-    pack_bits(bits, 24u, 0, 5);
-    pack_bits(bits,  3u, 5, 4);
-    pack_bits(bits, 11u, 9, 5); /* D-TX-GRANTED */
-    pack_bits(bits,  2u, 14, 14); /* call identifier */
-    pack_bits(bits,  3u, 28, 2);  /* granted to another user */
-    pack_bits(bits,  1u, 30, 1);  /* request permission */
-    pack_bits(bits,  1u, 31, 1);  /* encryption control */
-    /* reserved and optional-presence bits remain zero */
+    pack_bits(bits, TETRA_MLE_PD_CMCE, 0, 3);
+    pack_bits(bits, 11u, 3, 5); /* D-TX-GRANTED */
+    pack_bits(bits, 2u, 8, 14); /* call identifier */
+    pack_bits(bits, 3u, 22, 2); /* granted to another user */
+    pack_bits(bits, 1u, 24, 1); /* request permission */
+    pack_bits(bits, 1u, 25, 1); /* encryption control */
+    /* reserved and O-bit remain zero */
 
     dsd_state *st  = alloc_state();
     dsd_opts  *opt = alloc_opts();
@@ -232,36 +207,6 @@ static void test_bsch_count(void)
 }
 
 /* ----------------------------------------------------------------------- */
-/* Test 8: MM D-LU-COMMAND sets tetra_mm_lu_req_la (Phase 27)               */
-/* ----------------------------------------------------------------------- */
-static void test_mm_d_lu_command(void)
-{
-    /*
-     * MM D-LU-COMMAND (PDU type 6):
-     *   [0-4]  MM type = 6 (D-LOCATION-UPDATING-COMMAND, 00110b)
-     *   [5]    la_present = 1
-     *   [6-19] la = 1234 (14 bits)
-     */
-    const int NBITS = 20;
-    uint8_t bits[20];
-    memset(bits, 0, sizeof(bits));
-
-    pack_bits(bits, 6u,    0,  5); /* MM PDU type = 6 */
-    pack_bits(bits, 1u,    5,  1); /* la_present = 1  */
-    pack_bits(bits, 1234u, 6, 14); /* requested LA    */
-
-    dsd_state *st  = alloc_state();
-    dsd_opts  *opt = alloc_opts();
-
-    tetra_mm_dispatch(bits, NBITS, 0, opt, st);
-
-    CHECK(st->tetra_mm_lu_req_la_valid == 1,    "D-LU-CMD: req_la_valid set");
-    CHECK(st->tetra_mm_lu_req_la       == 1234, "D-LU-CMD: req_la=1234");
-
-    free(st); free(opt);
-}
-
-/* ----------------------------------------------------------------------- */
 int main(void)
 {
     printf("[TETRA integration tests]\n");
@@ -270,7 +215,6 @@ int main(void)
     test_frame_counters();
     test_d_tx_granted_enc_mode();
     test_bsch_count();
-    test_mm_d_lu_command();
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

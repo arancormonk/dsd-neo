@@ -50,6 +50,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
+#include <dsd-neo/protocol/tetra/tetra_acelp.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
@@ -522,7 +523,7 @@ dsd_engine_setup_parse_bw_token_or_default(const char* token) {
     if (token && dsd_parse_int_arg(token, &bw) != 0) {
         bw = 0;
     }
-    if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48) {
+    if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48 || bw == 72) {
         return bw;
     }
     return 48;
@@ -1455,7 +1456,8 @@ no_carrier_p25_frames_enabled(const dsd_opts* opts) {
 
 static int
 no_carrier_generic_trunk_synctype(int synctype) {
-    if (DSD_SYNC_IS_DMR(synctype) || DSD_SYNC_IS_NXDN(synctype) || DSD_SYNC_IS_EDACS(synctype)) {
+    if (DSD_SYNC_IS_DMR(synctype) || DSD_SYNC_IS_NXDN(synctype) || DSD_SYNC_IS_EDACS(synctype)
+        || DSD_SYNC_IS_TETRA(synctype)) {
         return 1;
     }
     return DSD_SYNC_IS_X2TDMA(synctype) ? 1 : 0;
@@ -1885,6 +1887,10 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
         // so for them the carrier loss really is the end reason.
         no_carrier_clear_voice_tune_state(opts, state,
                                           accepted_cc_return ? DSD_CALL_END_EXPLICIT : DSD_CALL_END_SYNC_LOSS);
+        if (tetra_sm_get_state() == TETRA_SM_TUNED || DSD_SYNC_IS_TETRA(state->lastsynctype)) {
+            tetra_vocoder_close();
+            tetra_sm_on_external_cc_return(state);
+        }
         (void)dsd_recent_activity_clear_all(state);
         state->is_con_plus = 0;
     }
@@ -2492,6 +2498,11 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
                                    uint64_t* frame_tune_generation) {
     while (state->synctype != DSD_SYNC_NONE) {
         p25_sm_tick_guard_enter();
+        /* A failed asynchronous TETRA tune keeps the process-wide frame gate
+         * closed until its owner rolls staged state back. Poll before asking
+         * that gate whether this frame can dispatch, otherwise the protocol's
+         * own end-of-frame tick can never run to perform the rollback. */
+        tetra_sm_poll_tuning(opts, state);
         const uint64_t dispatch_generation =
             frame_tune_generation ? *frame_tune_generation : dsd_trunk_tuning_generation();
         const int frame_dispatchable =
@@ -2532,6 +2543,9 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
 
     while (!dsd_exitflag_load()) {
         dsd_runtime_pump_controls(opts, state);
+        /* Also settle TETRA tuning while unsynchronized; no protocol frame is
+         * available in this path to drive tetra_sm_tick(). */
+        tetra_sm_poll_tuning(opts, state);
         p25_sm_try_tick(opts, state);
         dsd_trunk_scan_hook_tick(opts, state);
         dsd_scan_voice_gate_tick(opts, state, 0, dsd_time_now_monotonic_s());

@@ -835,10 +835,31 @@ main(void) {
                                    &convert_have_carry, &convert_carry_byte);
     failed |= expect_int_eq("replay CF32 rejects wrong stage conversion", rc, -1);
 
-    rc = call_replay_convert_block(DSD_IQ_FORMAT_CS16, "", 0, 0, cu8_odd_tail, sizeof(cu8_odd_tail), 8U, 0, 0, 0U,
-                                   converted, sizeof(converted) / sizeof(converted[0]), &convert_phase,
+    const int16_t cs16_samples[] = {8192, -16384, 32767, -32768};
+    uint8_t cs16_raw[sizeof(cs16_samples)] = {};
+    DSD_MEMCPY(cs16_raw, cs16_samples, sizeof(cs16_samples));
+    rc = call_replay_convert_block(DSD_IQ_FORMAT_CS16, "post_mute_pre_widen", 0, 0, cs16_raw,
+                                   sizeof(cs16_raw), 8U, 0, 0, 0U, converted,
+                                   sizeof(converted) / sizeof(converted[0]), &convert_phase,
                                    &convert_have_carry, &convert_carry_byte);
-    failed |= expect_int_eq("replay converter rejects unsupported format", rc, -1);
+    failed |= expect_int_eq("replay CS16 conversion count", rc, 4);
+    failed |= expect_double_near("replay CS16 I0", converted[0], 0.25, 1e-6);
+    failed |= expect_double_near("replay CS16 Q0", converted[1], -0.5, 1e-6);
+    failed |= expect_double_near("replay CS16 I1", converted[2], 32767.0 / 32768.0, 1e-6);
+    failed |= expect_double_near("replay CS16 Q1", converted[3], -1.0, 1e-6);
+    failed |= expect_int_eq("replay CS16 preserves phase", convert_phase, 0);
+
+    rc = call_replay_convert_block(DSD_IQ_FORMAT_CS16, "post_mute_pre_widen", 0, 0, cs16_raw,
+                                   sizeof(cs16_raw) - 1U, 8U, 0, 0, 0U, converted,
+                                   sizeof(converted) / sizeof(converted[0]), &convert_phase,
+                                   &convert_have_carry, &convert_carry_byte);
+    failed |= expect_int_eq("replay CS16 rejects partial complex sample", rc, -1);
+
+    rc = call_replay_convert_block(DSD_IQ_FORMAT_CS16, "post_driver_cf32_pre_ring", 0, 0, cs16_raw,
+                                   sizeof(cs16_raw), 8U, 0, 0, 0U, converted,
+                                   sizeof(converted) / sizeof(converted[0]), &convert_phase,
+                                   &convert_have_carry, &convert_carry_byte);
+    failed |= expect_int_eq("replay CS16 rejects wrong capture stage", rc, -1);
 
     /*
      * CU8 callback chunking must preserve odd trailing bytes between callbacks,

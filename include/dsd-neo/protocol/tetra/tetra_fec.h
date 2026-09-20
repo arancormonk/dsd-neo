@@ -80,6 +80,14 @@ void tetra_block_interleave(const uint8_t* in_bits, uint8_t* out_bits, int len, 
 void tetra_block_deinterleave_bits(const uint8_t* in_bits, uint8_t* out_bits, int len, int rows, int cols);
 void tetra_block_deinterleave_soft(const uint16_t* in_costs, uint16_t* out_costs, int len, int rows, int cols);
 
+/* TCH/FS speech deinterleaver from EN 300 395-2: transpose the received
+ * 18-column by 24-line representation into the 432-bit channel-code order. */
+void tetra_speech_deinterleave_soft(const uint16_t* in_costs, uint16_t* out_costs);
+
+/* Decode one 432-bit TCH/FS channel frame into the 274 sensitivity-ordered
+ * ACELP bits for two 30 ms speech frames. Returns 274 or -1. */
+int tetra_speech_channel_decode(const uint16_t* deinterleaved, uint8_t* out_bits, int out_len);
+
 /* Helper: select interleaver dimensions for a given puncturer/frame length.
  * Returns 0 on success, -1 on unknown mapping.
  */

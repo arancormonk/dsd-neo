@@ -147,6 +147,26 @@ wattr_set(WINDOW* win, attr_t attrs, short pair, void* opts) { // NOLINT(misc-us
 }
 
 int
+attron(chtype attrs) { // NOLINT(misc-use-internal-linkage)
+    return wattr_on(stdscr, (attr_t)attrs, NULL);
+}
+
+int
+attroff(chtype attrs) { // NOLINT(misc-use-internal-linkage)
+    return wattr_off(stdscr, (attr_t)attrs, NULL);
+}
+
+int
+attr_get(attr_t* attrs, short* pair, void* opts) { // NOLINT(misc-use-internal-linkage)
+    return wattr_get(stdscr, attrs, pair, opts);
+}
+
+int
+attr_set(attr_t attrs, short pair, void* opts) { // NOLINT(misc-use-internal-linkage)
+    return wattr_set(stdscr, attrs, pair, opts);
+}
+
+int
 waddch(WINDOW* win, const chtype ch) { // NOLINT(misc-use-internal-linkage)
     (void)win;
     char text[2] = {(char)ch, '\0'};
@@ -160,6 +180,16 @@ waddnstr(WINDOW* win, const char* str, int n) { // NOLINT(misc-use-internal-link
     (void)n;
     append_text(str);
     return 0;
+}
+
+int
+addch(const chtype ch) { // NOLINT(misc-use-internal-linkage)
+    return waddch(stdscr, ch);
+}
+
+int
+addnstr(const char* str, int n) { // NOLINT(misc-use-internal-linkage)
+    return waddnstr(stdscr, str, n);
 }
 
 int

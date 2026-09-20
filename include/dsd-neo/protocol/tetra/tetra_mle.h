@@ -3,14 +3,9 @@
  * TETRA MLE (Mobile Link Entity) dispatch + CMCE call-control parser.
  * ETSI EN 300 392-2 §21.6 (D-MLE) and Chapter 14 (CMCE).
  *
- * The TM-SDU delivered by MAC-RESOURCE (after the address field) is an
- * MLE PDU on signaling channels.  For call-control messages the MLE PDU
- * wraps a CMCE (or MM) PDU using the C-PLANE-DATA bearer (type 24).
- *
- * Layout of a C-PLANE-DATA MLE PDU:
- *   Bits  0-4  : MLE PDU type  = 24 (11000b, TETRA_MLE_C_PLANE_DATA)
- *   Bits  5-8  : Protocol discriminator (4 bits, TETRA_MLE_PD_*)
- *   Bits  9+   : CMCE / MM PDU
+ * Every TM-SDU starts with the 3-bit protocol discriminator from table
+ * 18.87. When it selects the MLE protocol, a 3-bit MLE PDU type follows.
+ * For CMCE, MM and SNDCP, the selected protocol PDU follows immediately.
  *
  * Individual CMCE parsers document their ETSI table layouts in the source.
  */
@@ -26,21 +21,28 @@ extern "C" {
 #endif
 
 /* -----------------------------------------------------------------------
- * MLE PDU type constants  (5-bit field, ETSI EN 300 392-2 Table 21.77)
+ * Downlink MLE PDU type constants (3-bit, table 18.85).
  * ----------------------------------------------------------------------- */
-#define TETRA_MLE_D_NWRK_BROADCAST   0   /* D-NWRK-BROADCAST (network info) */
-#define TETRA_MLE_D_NWRK_BCAST_EXT   1   /* D-NWRK-BROADCAST-EXTENSION      */
-#define TETRA_MLE_D_RESTORE_ACK       2   /* D-RESTORE-ACK                   */
-#define TETRA_MLE_D_RESTORE_RESPONSE  3   /* D-RESTORE-RESPONSE              */
-#define TETRA_MLE_C_PLANE_DATA       24   /* Carry CMCE / MM PDU (11000b)    */
+#define TETRA_MLE_D_NEW_CELL          0
+#define TETRA_MLE_D_PREPARE_FAIL      1
+#define TETRA_MLE_D_NWRK_BROADCAST    2
+#define TETRA_MLE_D_NWRK_BCAST_EXT    3
+#define TETRA_MLE_D_RESTORE_ACK        4
+#define TETRA_MLE_D_RESTORE_FAIL       5
+#define TETRA_MLE_D_CHANNEL_RESPONSE   6
+#define TETRA_MLE_EXTENDED_PDU         7
+
+/* Downlink extended-PDU type extension (4-bit, table 18.86). */
+#define TETRA_MLE_D_NWRK_BROADCAST_DA  0
+#define TETRA_MLE_D_NWRK_BCAST_REMOVE  1
 
 /* -----------------------------------------------------------------------
- * MLE Protocol Discriminator (4-bit, inside C-PLANE-DATA PDU)
- * (ETSI EN 300 392-2 Table 21.2)
+ * Protocol discriminator (3-bit, table 18.87).
  * ----------------------------------------------------------------------- */
-#define TETRA_MLE_PD_CMCE             3   /* Call Management Control Entity  */
-#define TETRA_MLE_PD_MM               5   /* Mobility Management             */
-#define TETRA_MLE_PD_SNDCP            8   /* Sub-Network Dependent Conv.Prot.*/
+#define TETRA_MLE_PD_MM               1
+#define TETRA_MLE_PD_CMCE             2
+#define TETRA_MLE_PD_SNDCP            4
+#define TETRA_MLE_PD_MLE              5
 
 /* -----------------------------------------------------------------------
  * CMCE downlink PDU type constants (5-bit, ETSI EN 300 392-2 Table 14.66)
@@ -80,10 +82,10 @@ extern "C" {
  * PDU and dispatch to CMCE / MM decoders as appropriate.
  *
  * Updates @state:
- *   MLE D-NWRK-BROADCAST → tetra_nwrk_bcast_known, tetra_la,
- *                           tetra_subscr_class
- *   MLE D-NWRK-BCAST-EXT / D-RESTORE-ACK / D-RESTORE-RESPONSE
- *                        → decoded result and location-area state
+ *   MLE D-NWRK-BROADCAST → tetra_nwrk_bcast_known and cell-reselection state
+ *   MLE D-NWRK-BROADCAST-DA / D-NWRK-BCAST-EXT / D-NWRK-BROADCAST REMOVE /
+ *       D-RESTORE-ACK / D-RESTORE-FAIL
+ *                        → broadcast, removal, restored-call, or failure state
  *   CMCE D-ALERT / D-CALL-PROCEEDING
  *                    → tetra_call_active=1
  *   CMCE D-SETUP     → tetra_calling_ssi, tetra_gssi, tetra_call_id,
@@ -108,6 +110,9 @@ extern "C" {
  * ----------------------------------------------------------------------- */
 void tetra_mle_dispatch(const uint8_t *bits, int nbits,
                         int cc, const dsd_opts *opts, dsd_state *state);
+
+/** Clear bounded in-flight concatenated SDS reassembly contexts. */
+void tetra_sds_concat_reset(void);
 
 /* -----------------------------------------------------------------------
  * tetra_enc_mode_name()  (Phase 33)

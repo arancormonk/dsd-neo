@@ -47,7 +47,7 @@ static int g_cc_profile_at_tune = -1;
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq);
 dsd_trunk_tune_result __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq,
-                                                              int ted_sps);
+                                                              int ted_sps, uint64_t* out_request_id);
 
 int
 __wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
@@ -59,8 +59,12 @@ __wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
 }
 
 dsd_trunk_tune_result
-__wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+__wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
+                                        uint64_t* out_request_id) {
     (void)opts;
+    if (out_request_id != NULL) {
+        *out_request_id = 0U;
+    }
     g_cc_tune_calls++;
     g_cc_tune_freq = freq;
     g_cc_tune_ted_sps = ted_sps;
@@ -872,6 +876,37 @@ test_compact_visualizer_toast(void) {
     return rc;
 }
 
+static int
+seed_active_canonical_calls(dsd_opts* opts, dsd_state* state, long vc_freq, int tg) {
+    int rc = 0;
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        dsd_call_observation observation = {
+            .protocol = DSD_SYNC_P25P1_POS,
+            .slot = (uint8_t)slot,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = (uint32_t)(tg + slot),
+            .policy_target_id = (uint32_t)(tg + slot),
+            .ota_source_id = (uint32_t)(tg + slot + 10),
+            .frequency_hz = vc_freq,
+            .observed_m = 1.0 + slot,
+        };
+        rc |=
+            expect_int("seed canonical call", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+        dsd_event_sync_slot(opts, state, (uint8_t)slot);
+    }
+    return rc;
+}
+
+static int
+expect_call_phase(const char* tag, const dsd_state* state, uint8_t slot, dsd_call_phase want) {
+    dsd_call_snapshot snapshot;
+    if (dsd_call_state_get(state, slot, &snapshot) != 1) {
+        DSD_FPRINTF(stderr, "%s: canonical call unavailable\n", tag);
+        return 1;
+    }
+    return expect_int(tag, snapshot.phase, want);
+}
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 static void
 seed_active_p25_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_freq, int tg) {
@@ -905,37 +940,6 @@ seed_active_p25_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_fr
     if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0) {
         dsd_event_sync_slot(opts, state, 0U);
     }
-}
-
-static int
-seed_active_canonical_calls(dsd_opts* opts, dsd_state* state, long vc_freq, int tg) {
-    int rc = 0;
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        dsd_call_observation observation = {
-            .protocol = DSD_SYNC_P25P1_POS,
-            .slot = (uint8_t)slot,
-            .kind = DSD_CALL_KIND_GROUP_VOICE,
-            .ota_target_id = (uint32_t)(tg + slot),
-            .policy_target_id = (uint32_t)(tg + slot),
-            .ota_source_id = (uint32_t)(tg + slot + 10),
-            .frequency_hz = vc_freq,
-            .observed_m = 1.0 + slot,
-        };
-        rc |=
-            expect_int("seed canonical call", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
-        dsd_event_sync_slot(opts, state, (uint8_t)slot);
-    }
-    return rc;
-}
-
-static int
-expect_call_phase(const char* tag, const dsd_state* state, uint8_t slot, dsd_call_phase want) {
-    dsd_call_snapshot snapshot;
-    if (dsd_call_state_get(state, slot, &snapshot) != 1) {
-        DSD_FPRINTF(stderr, "%s: canonical call unavailable\n", tag);
-        return 1;
-    }
-    return expect_int(tag, snapshot.phase, want);
 }
 
 static int
@@ -1734,6 +1738,7 @@ fake_scan_control(dsd_opts* opts, dsd_state* state, int op) {
  * --trunk-scan they are handed to the coordinator through the control hook; with neither
  * scanner running they are accepted and declined with a status message.
  */
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 static int
 test_scan_hold_avoid_commands(void) {
     int rc = 0;
@@ -1924,6 +1929,7 @@ test_scan_hold_avoid_commands(void) {
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
     return rc;
 }
+#endif
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /*

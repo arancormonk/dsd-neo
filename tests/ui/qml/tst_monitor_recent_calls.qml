@@ -94,6 +94,57 @@ Item {
             tryVerify(function () { return !row.visible })
         }
 
+        function test_03b_tetra_mm_status_shows_only_after_a_valid_pdu() {
+            var row = findChild(screenLoader.item, "tetraMmStatusRow")
+            var value = findChild(screenLoader.item, "tetraMmStatusValue")
+            verify(row !== null, "the TETRA MM status row is missing")
+            verify(value !== null, "the TETRA MM status value is missing")
+
+            testContext.setMetric("tetraMmStatusKnown", false)
+            testContext.setMetric("tetraMmStatusText", "")
+            tryVerify(function () { return !row.visible })
+
+            testContext.setMetric("tetraMmStatusText", "7 · MS frequency bands request")
+            testContext.setMetric("tetraMmStatusKnown", true)
+            tryVerify(function () { return row.visible })
+            compare(value.text, "7 · MS frequency bands request")
+
+            testContext.setMetric("tetraMmStatusKnown", false)
+            tryVerify(function () { return !row.visible })
+        }
+
+        function test_03bb_tetra_vocoder_status_reports_audio_backend_health() {
+            var row = findChild(screenLoader.item, "tetraVocoderStatusRow")
+            var value = findChild(screenLoader.item, "tetraVocoderStatusValue")
+            verify(row !== null, "the TETRA vocoder status row is missing")
+            verify(value !== null, "the TETRA vocoder status value is missing")
+
+            testContext.setMetric("tetraVocoderStatusKnown", false)
+            testContext.setMetric("tetraVocoderStatusText", "")
+            tryVerify(function () { return !row.visible })
+
+            testContext.setMetric("tetraVocoderStatusText", "Timed out · 0 frames · 1 errors")
+            testContext.setMetric("tetraVocoderStatusKnown", true)
+            tryVerify(function () { return row.visible })
+            compare(value.text, "Timed out · 0 frames · 1 errors")
+
+            testContext.setMetric("tetraVocoderStatusKnown", false)
+            tryVerify(function () { return !row.visible })
+        }
+
+        function test_03bc_tetra_network_row_shows_trunk_state() {
+            var value = findChild(screenLoader.item, "tetraTrunkStateValue")
+            verify(value !== null, "the TETRA trunk state value is missing")
+
+            testContext.setMetric("tetraNetworkKnown", true)
+            testContext.setMetric("tetraTrunkStateText", "Traffic")
+            tryVerify(function () { return value.visible })
+            compare(value.text, "STATE Traffic")
+
+            testContext.setMetric("tetraNetworkKnown", false)
+            testContext.setMetric("tetraTrunkStateText", "")
+        }
+
         // On-the-fly scan controls (#380). They act on a rotation, so they appear
         // only while one is running, read the engine's hold and avoided count back
         // rather than remembering their own taps, and each button sends the one
