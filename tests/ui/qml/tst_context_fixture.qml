@@ -12,12 +12,18 @@ import QtTest
 TestCase {
     name: "QmlContextFixtureIsComplete"
 
+    function test_host_support_methods() {
+        testContext.useLifecycleHost(false);
+        compare(decoderHost.licenseNotices(), "License notices fixture");
+        compare(decoderHost.copyText("fixture"), false);
+    }
+
     function test_01_the_fixture_carries_every_reading_the_screens_read() {
         // The screens the other cases load, plus Theme.qml: the screens pull it
         // in as a singleton and it reads prefs itself.
         var missing = testContext.missingContextKeys(
             ["HistoryScreen.qml", "HistoryDetailSheet.qml", "MonitorScreen.qml", "SpectrumScreen.qml", "ExploreSetupScreen.qml", "RadioSheet.qml",
-             "ImportsScreen.qml", "WizardScreen.qml", "HomeScreen.qml", "SettingsScreen.qml", "Main.qml",
+             "ImportsScreen.qml", "WizardScreen.qml", "HomeScreen.qml", "SettingsScreen.qml", "RadioReferenceAccountEditor.qml", "RadioReferenceAccountScreen.qml", "LicensesScreen.qml", "Main.qml",
              "SiteChooserSheet.qml", "ScanListScreen.qml", "ScanListCard.qml", "ScanEntryRow.qml", "DiagnosticsScreen.qml", "RadioReferenceScreen.qml", "TalkgroupsScreen.qml", "TalkgroupCard.qml", "TalkgroupEditSheet.qml", "TalkgroupSaveFlow.qml", "Theme.qml"])
 
         compare(missing.length, 0,

@@ -72,12 +72,17 @@ option_space(unsigned char c) {
 }
 
 /* Copy one argument, removing grouping quotes without interpreting escapes. */
+static const char*
+option_skip_space(const char* cursor) {
+    while (option_space((unsigned char)*cursor)) {
+        cursor++;
+    }
+    return cursor;
+}
+
 static int
 option_token(const char** cursor, char* out, size_t size) {
-    const char* p = *cursor;
-    while (option_space((unsigned char)*p)) {
-        p++;
-    }
+    const char* p = option_skip_space(*cursor);
     if (!*p) {
         *cursor = p;
         return 0;
@@ -410,6 +415,57 @@ option_read(const char** cursor, unsigned int mode, int conventional, dsd_scan_o
 done:
     DSD_SECURE_ZERO(token, sizeof(token));
     DSD_SECURE_ZERO(argument, sizeof(argument));
+    return rc;
+}
+
+static int
+option_file_read(const char* text, const char** cursor, dsd_scan_option_file_cb callback, void* context) {
+    *cursor = option_skip_space(*cursor);
+    const char* start = *cursor;
+    char token[1024] = {0};
+    char argument[DSD_SCAN_OPTIONS_KEY_PATH_MAX] = {0};
+    int rc = option_token(cursor, token, sizeof(token));
+    if (rc <= 0) {
+        goto done;
+    }
+    char* equals = strncmp(token, "--", 2) == 0 ? strchr(token, '=') : NULL;
+    if (equals) {
+        *equals++ = '\0';
+    }
+    const scan_option_spec* spec = option_find(token);
+    rc = -1;
+    if (!spec || (equals && !spec->argument)) {
+        goto done;
+    }
+    if (spec->argument && !equals) {
+        *cursor = option_skip_space(*cursor);
+        start = *cursor;
+        if (!option_argument(cursor, argument, sizeof(argument))) {
+            goto done;
+        }
+    }
+    rc = 0;
+    if (spec->argument && (spec->field & (DSD_SCAN_OPT_FILES | DSD_SCAN_OPT_GROUP | DSD_SCAN_OPT_DMR_MAP))) {
+        rc = callback(context, spec->name, equals ? equals : argument, (size_t)(start - text),
+                      (size_t)(*cursor - start), equals != NULL);
+    }
+    rc = rc ? -1 : 1;
+done:
+    DSD_SECURE_ZERO(token, sizeof(token));
+    DSD_SECURE_ZERO(argument, sizeof(argument));
+    return rc;
+}
+
+int
+dsd_scan_options_visit_files(const char* text, void* context, dsd_scan_option_file_cb callback) {
+    if (!text || !callback) {
+        return -1;
+    }
+    const char* cursor = text;
+    int rc;
+    do {
+        rc = option_file_read(text, &cursor, callback, context);
+    } while (rc > 0);
     return rc;
 }
 

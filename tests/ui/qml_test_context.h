@@ -144,8 +144,26 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
     bool delayedStop = false; // WP-D4: stop acknowledgement is a separate edge.
 
+    Q_INVOKABLE int
+    stopCalls() const {
+        return m_stop_calls;
+    }
+
+    Q_INVOKABLE int
+    backgroundCalls() const {
+        return m_background_calls;
+    }
+
+    bool
+    moveToBackground() override {
+        ++m_background_calls;
+        // Simulate Android consuming Back so the fixture window stays open for assertions.
+        return true;
+    }
+
     void
     stop() override {
+        ++m_stop_calls;
         phase = delayedStop ? Stopping : Idle;
         m_running = false;
         Q_EMIT runningChanged();
@@ -163,6 +181,13 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     setPhase(SessionState value) {
         phase = value;
         Q_EMIT sessionStateChanged();
+    }
+
+    QString failure;
+
+    QString
+    failureText() const override {
+        return failure;
     }
 
     // WP-S1: exercise the same brokered-USB gate as saved-system starts.
@@ -202,8 +227,24 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     bool acceptStart = false;
     bool startRunning = false;
 
+    bool
+    notificationPermissionNeeded() const override {
+        return m_notification_permission_needed;
+    }
+
+    void
+    setNotificationPermissionNeeded(bool needed) {
+        if (m_notification_permission_needed != needed) {
+            m_notification_permission_needed = needed;
+            Q_EMIT notificationPermissionChanged();
+        }
+    }
+
   private:
     bool m_running = false;
+    int m_stop_calls = 0;
+    int m_background_calls = 0;
+    bool m_notification_permission_needed = false;
 };
 
 // Matches Android's contract: Running can be observed before initialization.
@@ -1052,6 +1093,16 @@ class ReadingMap : public QQmlPropertyMap {
   public:
     explicit ReadingMap(QObject* parent) : QQmlPropertyMap(this, parent) {}
 
+    Q_INVOKABLE QString
+    licenseNotices() const {
+        return QStringLiteral("License notices fixture");
+    }
+
+    Q_INVOKABLE bool
+    copyText(const QString&) const {
+        return false;
+    }
+
   Q_SIGNALS:
     void tunerChanged();
     void controlChanged();
@@ -1233,6 +1284,13 @@ class Setup : public QObject {
         return m_radio_reference_recorder != nullptr ? m_radio_reference_recorder->nearbyCalls : 0;
     }
 
+    /** Use an offline QML model for complete account/import navigation flows. */
+    Q_INVOKABLE void
+    useRadioReferenceModel(QObject* model) {
+        m_engine->rootContext()->setContextProperty(QStringLiteral("radioReference"),
+                                                    model != nullptr ? model : m_radio_reference_recorder);
+    }
+
     /**
      * @brief Set one prefs key, for the same reason setRadioReference() exists.
      *
@@ -1342,6 +1400,29 @@ class Setup : public QObject {
         }
     }
 
+    // Qt.platform.os is read-only. Load the production shell with only that
+    // platform reading substituted so desktop tests exercise the Android gate.
+    // Reject source drift instead of silently changing unrelated platform checks.
+    Q_INVOKABLE QString
+    androidMainQml() const {
+        QFile file(QStringLiteral(DSD_QML_UI_DIR "/Main.qml"));
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            return QString();
+        }
+        QString text = QString::fromUtf8(file.readAll());
+        file.close();
+        const QString pattern = QStringLiteral("Qt.platform.os");
+        if (text.count(pattern) != 1) {
+            return QString();
+        }
+        return text.replace(pattern, QStringLiteral("\"android\""));
+    }
+
+    Q_INVOKABLE void
+    setNotificationPermissionNeeded(bool needed) {
+        m_lifecycle_host->setNotificationPermissionNeeded(needed);
+    }
+
     Q_INVOKABLE void
     setKeyboardBoundary(qreal value) {
         m_lifecycle_host->keyboardBoundary = value;
@@ -1356,6 +1437,12 @@ class Setup : public QObject {
     Q_INVOKABLE void
     setLifecyclePhase(int value) {
         m_lifecycle_host->setPhase(static_cast<dsd_qt::DecoderHost::SessionState>(value));
+    }
+
+    Q_INVOKABLE void
+    setLifecycleFailure(const QString& text) {
+        m_lifecycle_host->failure = text;
+        Q_EMIT m_lifecycle_host->sessionStateChanged();
     }
 
     Q_INVOKABLE void
@@ -1667,6 +1754,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("keyProfileRef")] = QString();
         metrics[QStringLiteral("keyEpoch")] = QStringLiteral("1");
         metrics[QStringLiteral("automaticKeys")] = false;
+        metrics[QStringLiteral("directKeys")] = false;
         metrics[QStringLiteral("decryptionSlots")] = QVariantList();
         // WP-F1: site identity fixture keys.
         metrics[QStringLiteral("siteProtocol")] = QString();
@@ -1830,6 +1918,7 @@ class Setup : public QObject {
         host[QStringLiteral("inputFailureCode")] = 0;
         host[QStringLiteral("terminalReason")] = 0;
         host[QStringLiteral("audioRoute")] = QStringLiteral("System default");
+        host[QStringLiteral("notificationPermissionNeeded")] = false;
         host[QStringLiteral("usesPlatformFontScaling")] = false;
         /* Why the last session stopped, empty while nothing has failed. */
         host[QStringLiteral("failureText")] = QString();
@@ -1949,6 +2038,10 @@ class Setup : public QObject {
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
         profiles->setReferences(saved_systems, scan_lists);
         auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);
+        starter->setTargetFileLookup([imported_files](const QString& path) {
+            const int row = imported_files->rowForPath(path);
+            return row >= 0 && imported_files->get(row).value("type") == "trunkTargets";
+        });
         starter->setDecryptionProfiles(profiles);
         session_args->setDecryptionProfiles(profiles);
         ctx->setContextProperty(QStringLiteral("decryptionProfiles"), profiles);

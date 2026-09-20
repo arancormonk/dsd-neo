@@ -64,6 +64,16 @@ Item {
             verify(monitor !== null, "the monitor screen is missing")
             tryCompare(monitor, "y", 48)
             compare(monitor.height, tc.app.height - 48 - 32)
+            var screens = ["licensesScreen", "radioReferenceAccountScreen", "diagnosticsScreen",
+                           "sessionMenu", "failureDetails"];
+            for (var i = 0; i < screens.length; ++i) {
+                var screen = findChild(tc.app, screens[i]);
+                verify(screen !== null, screens[i]);
+                compare(screen.x, safe.x);
+                compare(screen.y, safe.y);
+                compare(screen.width, safe.width);
+                compare(screen.height, safe.height);
+            }
         }
 
         function test_compact_monitor_with_reduced_safe_height() {

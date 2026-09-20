@@ -70,6 +70,29 @@ Item {
             }
         }
 
+        function test_cancel_import_cleanup_data() {
+            return [{tag: "primary"}, {tag: "sheet"}];
+        }
+        function test_cancel_import_cleanup(data) {
+            tc.screen.pendingRow = 1;
+            tc.screen.notice = "Old notice";
+            tc.screen.noticeIsProblem = true;
+            var flow = findChild(tc.screen, "importsCsvImport");
+            verify(flow !== null);
+            if (data.tag === "primary") {
+                flow.pick("chan");
+                findChild(flow, "csvPrimaryPicker").reject();
+            } else {
+                var source = testContext.writeFixtureCsv("cancel-consumer.csv",
+                    "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,missing.csv\n");
+                flow.begin(source, "Map.csv", "chan");
+                findChild(flow, "csvCompanionSheet").requestDismiss();
+            }
+            compare(tc.screen.pendingRow, -1);
+            compare(tc.screen.notice, "");
+            verify(!tc.screen.noticeIsProblem);
+        }
+
         function test_the_cards_sit_centred_between_the_screen_edges() {
             var inset = tc.importButton.mapToItem(tc.screen, 0, 0).x;
             verify(inset > 0, "the import button is not inset from the edge");

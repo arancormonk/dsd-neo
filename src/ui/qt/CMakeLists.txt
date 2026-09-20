@@ -53,6 +53,7 @@ qt_add_resources(
         qml/FocusFrame.qml
         qml/IconButton.qml
         qml/DiscardDialog.qml
+        qml/ConfirmDialog.qml
         qml/ChoiceSheet.qml
         qml/DecryptionProfileEditor.qml
         qml/DecryptionProfileSelector.qml
@@ -77,6 +78,9 @@ qt_add_resources(
         qml/DashedActionButton.qml
         qml/DecodeChip.qml
         qml/DiagnosticsScreen.qml
+        qml/LicensesScreen.qml
+        qml/RadioReferenceAccountEditor.qml
+        qml/RadioReferenceAccountScreen.qml
         qml/DisclosureRow.qml
         qml/EncTag.qml
         qml/EmergencyTag.qml
@@ -98,6 +102,7 @@ qt_add_resources(
         qml/LogoMark.qml
         qml/MicroLabel.qml
         qml/ModalSheet.qml
+        qml/ActionMenu.qml
         qml/MonitorScreen.qml
         qml/NetworkSheet.qml
         qml/OnboardingScreen.qml

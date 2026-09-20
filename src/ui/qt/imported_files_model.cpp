@@ -4,6 +4,7 @@
  */
 
 #include <QIODevice>
+#include <stddef.h>
 #include <utility>
 #include "imported_files_model.h"
 
@@ -12,6 +13,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileDevice> // IWYU pragma: keep
 #include <QFileInfo>
 #include <QHash>
 #include <QJsonArray>
@@ -22,7 +24,9 @@
 #include <QUuid>
 #include <QVariant>
 
+#include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/safe_api.h>
 
 #include <QSaveFile>
 #include <QTemporaryFile>
@@ -36,6 +40,16 @@ namespace dsd_qt {
 namespace {
 
 constexpr const char kStoreFileName[] = "imported_files.json";
+
+struct PrivateCsvBytes {
+    QByteArray bytes;
+
+    ~PrivateCsvBytes() {
+        if (!bytes.isEmpty()) {
+            DSD_SECURE_ZERO(bytes.data(), static_cast<size_t>(bytes.size()));
+        }
+    }
+};
 
 } // namespace
 
@@ -95,7 +109,20 @@ ImportedFilesModel::roleNames() const {
 }
 
 bool
-ImportedFilesModel::validate(const QString& path, const QString& type, int* accepted, int* skipped) {
+ImportedFilesModel::validate(const QString& path, const QString& type, int* accepted, int* skipped, QString* detail) {
+    if (detail) {
+        detail->clear();
+    }
+    if (type == "trunkTargets") {
+        char error[512] = {};
+        *skipped = 0;
+        const int result =
+            dsd_app_trunk_scan_validate_bundle(path.toUtf8().constData(), accepted, nullptr, error, sizeof error);
+        if (detail) {
+            *detail = QString::fromUtf8(error);
+        }
+        return result == 0;
+    }
     dsd_csv_validation counts = {0U, 0U, 0U};
     const QByteArray local = path.toUtf8();
     int rc = -1;
@@ -171,22 +198,113 @@ writePrivateCsv(const QString& path, const QByteArray& data) {
            && file.write(data) == data.size() && file.commit();
 }
 
+bool
+ImportedFilesModel::decoderBusy() const {
+    return m_host && (m_host->sessionActive() || m_host->transitioning());
+}
+
+QString
+ImportedFilesModel::bundleReplacementError(int row, const QString& type) const {
+    if (row < 0) {
+        return {};
+    }
+    if (row >= count()) {
+        return "removed";
+    }
+    if (m_rows[row].type != type) {
+        return "format";
+    }
+    if (type == "trunkTargets" && decoderBusy()) {
+        return "busy";
+    }
+    return {};
+}
+
+QVariantMap
+ImportedFilesModel::companionChoices(const QVariantMap& requirement) const {
+    auto detail = requirement;
+    const QString type = detail.value("type").toString();
+    const QString name = detail.value("name").toString();
+    detail.insert("kind", csv_companion_type_name(type));
+    QVariantList matching, others;
+    QStringList warnings;
+    if (!detail.value("selectionError").toString().isEmpty()) {
+        warnings << detail.value("selectionError").toString();
+    }
+    // Numeric CSVs can fit several roles, and equal names can belong to different
+    // systems. Library kind filters candidates; the user confirms their identity.
+    for (const auto& row : m_rows) {
+        const bool sameName = QFileInfo(row.name).fileName().compare(name, Qt::CaseInsensitive) == 0;
+        if (row.type == type && QFileInfo(row.path).isFile()) {
+            QVariantMap candidate{{"name", row.name},
+                                  {"path", row.path},
+                                  {"type", row.type},
+                                  {"kind", csv_companion_type_name(row.type)},
+                                  {"accepted", row.accepted}};
+            (sameName ? matching : others).append(candidate);
+        } else if (sameName) {
+            const QString warning = csv_companion_type_error(row.name, row.type, type);
+            if (!warning.isEmpty()) {
+                warnings << warning;
+            }
+        }
+    }
+    detail.insert("preselected", matching.size() == 1 && others.isEmpty() ? matching.first().toMap().value("path")
+                                                                          : QVariant(QString()));
+    matching.append(others);
+    detail.insert("candidates", matching);
+    if (matching.size() > 1) {
+        warnings.prepend(tr("Several imported files match this role. Choose the file for this system."));
+    }
+    warnings.removeDuplicates();
+    detail.insert("warning", warnings.join('\n'));
+    return detail;
+}
+
+QVariantMap
+ImportedFilesModel::companionDetails(const CsvBundleImport& bundle) const {
+    QVariantMap details;
+    for (auto i = bundle.requiredDetails.cbegin(); i != bundle.requiredDetails.cend(); ++i) {
+        details.insert(i.key(), companionChoices(i.value().toMap()));
+    }
+    return details;
+}
+
 QVariantMap
 ImportedFilesModel::importBundle(const QString& reference, const QString& fileName, const QString& type,
                                  const QVariantMap& companions, int replaceRow) {
-    if (type != "chan") {
+    if (type != "chan" && type != "trunkTargets") {
         return replaceRow >= 0 ? updateFile(replaceRow, reference, fileName) : importFile(reference, fileName, type);
     }
-    const Row previous = replaceRow >= 0 && replaceRow < count() ? m_rows[replaceRow] : Row();
-    if (replaceRow >= 0 && previous.path.isEmpty()) {
-        return {{"ok", false}, {"error", "removed"}};
+    const QString problem = bundleReplacementError(replaceRow, type);
+    if (!problem.isEmpty()) {
+        return {{"ok", false},
+                {"error", problem},
+                {"detail", problem == "busy" ? "Stop the decoder before replacing target files."
+                                             : "Cannot replace this imported file."}};
     }
-    const auto bundle = stage_csv_bundle(m_host, reference, fileName, companions, previous.bundleRoot);
+    QVariantMap libraryEntries;
+    for (const auto& row : m_rows) {
+        const QString path = QFileInfo(row.path).canonicalFilePath();
+        if (!path.isEmpty()) {
+            libraryEntries.insert(path, QVariantMap{{"type", row.type}, {"name", row.name}});
+        }
+    }
+    const Row previous = replaceRow >= 0 ? m_rows[replaceRow] : Row();
+    const auto bundle =
+        type == "trunkTargets"
+            ? stage_trunk_csv_bundle(m_host, reference, fileName, companions, previous.bundleRoot, libraryEntries)
+            : stage_csv_bundle(m_host, reference, fileName, companions, previous.bundleRoot, libraryEntries);
     if (!bundle.error.isEmpty()) {
-        return {{"ok", false}, {"error", bundle.error}, {"required", bundle.required}};
+        return {{"ok", false},
+                {"error", bundle.error},
+                {"detail", bundle.detail},
+                {"required", bundle.required},
+                {"requiredLabels", bundle.requiredLabels},
+                {"requiredDetails", companionDetails(bundle)}};
     }
     if (replaceRow < 0) {
-        auto result = adoptStoredFile(bundle.path, type, {{"bundleRoot", bundle.root}});
+        auto result = adoptStoredFile(bundle.path, type, {{"bundleRoot", bundle.root}, {"name", bundle.name}});
         if (!result.value("ok").toBool()) {
             discard_csv_bundle(bundle);
         }
@@ -202,6 +320,9 @@ replacementBundleBytes(const CsvBundleImport& bundle, const QString& destination
         return false;
     }
     bytes = staged.readAll();
+    if (staged.error() != QFileDevice::NoError) {
+        return false;
+    }
     staged.close();
     if (!bundle.root.isEmpty()) {
         const QString prefix = QDir(QFileInfo(destination).absolutePath()).relativeFilePath(bundle.root);
@@ -217,27 +338,36 @@ ImportedFilesModel::replaceBundle(int replaceRow, const CsvBundleImport& bundle,
     const Row previous = m_rows.at(replaceRow);
     // Versioned companions are immutable. Only the existing primary path is
     // replaced, so every saved reference changes together after validation.
-    QByteArray bytes;
+    PrivateCsvBytes storage;
+    auto& bytes = storage.bytes;
     if (!replacementBundleBytes(bundle, previous.path, bytes)) {
         discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
         return {{"ok", false}, {"error", "open"}};
     }
     QTemporaryFile check(QFileInfo(previous.path).absolutePath() + "/.bundle-check-XXXXXX.csv");
-    if (!check.open() || check.write(bytes) != bytes.size() || !check.flush()) {
+    if (!check.open() || !check.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)
+        || check.write(bytes) != bytes.size() || !check.flush()) {
         discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
         return {{"ok", false}, {"error", "copy"}};
     }
     int accepted = 0, skipped = 0;
-    if (!validate(check.fileName(), type, &accepted, &skipped)) {
+    QString detail;
+    if (!validate(check.fileName(), type, &accepted, &skipped, &detail)) {
         discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
-        return {{"ok", false}, {"error", "format"}};
+        return {{"ok", false}, {"error", "format"}, {"detail", detail}};
     }
     QFile old(previous.path);
     if (!old.open(QIODevice::ReadOnly)) {
         discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
         return {{"ok", false}, {"error", "open"}};
     }
-    const QByteArray backup = old.readAll();
+    PrivateCsvBytes backupStorage;
+    backupStorage.bytes = old.readAll();
+    if (old.error() != QFileDevice::NoError) {
+        discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
+        return {{"ok", false}, {"error", "open"}};
+    }
+    const auto& backup = backupStorage.bytes;
     old.close();
     if (!writePrivateCsv(previous.path, bytes)) {
         discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
@@ -256,6 +386,9 @@ ImportedFilesModel::replaceBundle(int replaceRow, const CsvBundleImport& bundle,
         return {{"ok", false}, {"error", "copy"}};
     }
     QFile::remove(bundle.path);
+    if (type == "trunkTargets") {
+        clean_trunk_csv_revisions(previous.path, bundle.root);
+    }
     m_rows = std::move(next);
     Q_EMIT dataChanged(index(replaceRow), index(replaceRow));
     Q_EMIT countChanged();
@@ -271,16 +404,21 @@ ImportedFilesModel::adoptStoredFile(const QString& path, const QString& type, co
 
     int accepted = 0;
     int skipped = 0;
-    if (!validate(path, type, &accepted, &skipped)) {
+    QString detail;
+    if (!validate(path, type, &accepted, &skipped, &detail)) {
         // The copy landed but cannot be parsed as this type; a library row for
         // it would just be a dead entry, so take the copy back out.
         QFile::remove(path);
+        result.insert("detail", detail);
         return result;
     }
 
     Row row;
     row.path = path;
     row.name = path.section(QLatin1Char('/'), -1);
+    if (type == "trunkTargets" && !origin.value("name").toString().isEmpty()) {
+        row.name = origin.value("name").toString();
+    }
     row.type = type;
     row.importedAt = QDateTime::currentSecsSinceEpoch();
     row.accepted = accepted;
@@ -316,6 +454,9 @@ ImportedFilesModel::adoptStoredFile(const QString& path, const QString& type, co
 
 QVariantMap
 ImportedFilesModel::importFile(const QString& reference, const QString& fileName, const QString& type) {
+    if (type == "trunkTargets") {
+        return importBundle(reference, fileName, type, {});
+    }
     QVariantMap result;
     result.insert(QStringLiteral("ok"), false);
     result.insert(QStringLiteral("error"), QStringLiteral("open"));
@@ -426,6 +567,10 @@ ImportedFilesModel::updateFile(int row, const QString& reference, const QString&
 
     const Row snapshot = m_rows.at(row);
 
+    if (snapshot.type == "trunkTargets") {
+        return importBundle(reference, fileName, snapshot.type, {}, row);
+    }
+
     // Stage the pick beside the library instead of straight over the row's file.
     // Replacing first and validating afterwards has no rollback: a file that is
     // not parseable as this row's type would clobber a working CSV, leave the row
@@ -531,12 +676,25 @@ ImportedFilesModel::channelProfiles(int row) const {
     return {{"ok", ok}, {"rows", rows}};
 }
 
-void
-ImportedFilesModel::remove(int row) {
+bool
+ImportedFilesModel::canRemove(int row) const {
     if (row < 0 || row >= m_rows.size()) {
-        return;
+        return false;
+    }
+    return m_rows[row].type != "trunkTargets" || !decoderBusy();
+}
+
+bool
+ImportedFilesModel::remove(int row) {
+    if (!canRemove(row)) {
+        return false;
     }
     const auto item = m_rows.at(row);
+    auto next = m_rows;
+    next.removeAt(row);
+    if (!saveRows(next)) {
+        return false;
+    }
     QFile::remove(item.path);
     if (!item.bundleRoot.isEmpty()) {
         CsvBundleImport bundle;
@@ -544,10 +702,38 @@ ImportedFilesModel::remove(int row) {
         discard_csv_bundle(bundle);
     }
     beginRemoveRows(QModelIndex(), row, row);
-    m_rows.removeAt(row);
+    m_rows = std::move(next);
     endRemoveRows();
     Q_EMIT countChanged();
-    save();
+    return true;
+}
+
+namespace {
+void
+appendTargetPreview(const dsd_app_scan_csv_target* target, void* context) {
+    static_cast<QVariantList*>(context)->append(
+        QVariantMap{{"id", QString::fromUtf8(target->id)},
+                    {"type", QString::fromUtf8(target->type)},
+                    {"frequency", QString::number(target->frequency_hz / 1e6, 'f', 6)},
+                    {"dwellMs", target->dwell_ms},
+                    {"holdMs", target->hold_ms},
+                    {"gainDb", target->gain_db},
+                    {"modulation", QString::fromUtf8(target->modulation)}});
+}
+} // namespace
+
+QVariantMap
+ImportedFilesModel::targetPreview(const QString& path) const {
+    const int row = rowForPath(path);
+    if (row < 0 || m_rows[row].type != "trunkTargets") {
+        return {{"ok", false}, {"rows", QVariantList()}, {"error", "Select an imported target CSV."}};
+    }
+    QVariantList rows;
+    char error[512] = {};
+    const dsd_app_scan_csv_callbacks callbacks{appendTargetPreview, nullptr, &rows};
+    const bool ok =
+        dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 0, &callbacks, error, sizeof error) == 0;
+    return {{"ok", ok}, {"rows", rows}, {"error", QString::fromUtf8(error)}};
 }
 
 QVariantMap
@@ -635,6 +821,9 @@ ImportedFilesModel::load() {
                 m_pruned_paths.append(row.path);
             }
             continue;
+        }
+        if (row.type == "trunkTargets" && m_host && !m_host->sessionActive() && !m_host->transitioning()) {
+            clean_trunk_csv_revisions(row.path, row.bundleRoot);
         }
         rows.append(row);
     }

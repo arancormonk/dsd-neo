@@ -12,10 +12,12 @@
 #include "decoder_host.h"
 
 #include <QByteArray>
+#include <QClipboard>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QIODevice>
 #include <QSaveFile>
 #include <QUrl>
@@ -129,6 +131,15 @@ DecoderHost::documentInfo(const QString& path) const {
             {"modified", info.lastModified().toString(Qt::ISODate)}};
 }
 
+bool
+DecoderHost::copyText(const QString& text) const {
+    if (auto* clipboard = QGuiApplication::clipboard()) {
+        clipboard->setText(text);
+        return true;
+    }
+    return false;
+}
+
 QString
 DecoderHost::licenseNotices() const {
     QStringList notices;
@@ -188,7 +199,7 @@ DecoderHost::importLocalFile(const QString& sourcePath, const QString& fileName,
     // QSaveFile stages beside the target and renames over it on commit, so an
     // update never leaves a half-written CSV where a saved system points.
     QSaveFile out(destination);
-    if (!out.open(QIODevice::WriteOnly)) {
+    if (!out.open(QIODevice::WriteOnly) || !out.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
         return QString();
     }
     if (!copy_stream(source, out) || !out.commit()) {

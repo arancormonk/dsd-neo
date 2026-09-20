@@ -141,6 +141,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString keyProfileRef READ keyProfileRef NOTIFY controlChanged)
     Q_PROPERTY(QString keyEpoch READ keyEpoch NOTIFY controlChanged)
     Q_PROPERTY(bool automaticKeys READ automaticKeys NOTIFY controlChanged)
+    Q_PROPERTY(bool directKeys READ directKeys NOTIFY controlChanged)
     Q_PROPERTY(QVariantList decryptionSlots READ decryptionSlots NOTIFY controlChanged)
     // WP-S1: copied from the tick's held snapshot.
     Q_PROPERTY(QString scanTargetId READ scanTargetId NOTIFY controlChanged)
@@ -1044,6 +1045,11 @@ class MetricsModel : public QObject {
         return m_view.automatic_keys;
     }
 
+    bool
+    directKeys() const {
+        return m_view.direct_keys;
+    }
+
     QVariantList
     decryptionSlots() const {
         return m_view.decryption_slots;
@@ -1176,6 +1182,7 @@ class MetricsModel : public QObject {
         QString key_profile_ref;
         quint64 key_epoch = 0;
         bool automatic_keys = false;
+        bool direct_keys = false;
         QVariantList decryption_slots;
         int modulation = 0;
         int tuner_gain_db = 0;
@@ -1258,7 +1265,8 @@ class MetricsModel : public QObject {
         decryptionEquals(const View& other) const {
             return configured_force == other.configured_force && effective_force == other.effective_force
                    && key_profile_ref == other.key_profile_ref && key_epoch == other.key_epoch
-                   && automatic_keys == other.automatic_keys && decryption_slots == other.decryption_slots;
+                   && automatic_keys == other.automatic_keys && direct_keys == other.direct_keys
+                   && decryption_slots == other.decryption_slots;
         }
 
         bool

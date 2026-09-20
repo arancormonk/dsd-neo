@@ -27,6 +27,17 @@ Rectangle {
     Accessible.ignored: !visible || !isTopModal
     z: 100 + Math.max(0, Navigation.modals.indexOf(sheet))
 
+    // Subclasses with their own open(...) overload bypass this pre-visible focus capture.
+    function open() {
+        if (visible)
+            return;
+        // A caller may disable its opener when the sheet becomes visible.
+        // Capture focus before those bindings move it to the window root.
+        var window = sheet.Window.window;
+        var opener = window ? window.activeFocusItem : null;
+        visible = true;
+        previousFocus = opener;
+    }
     function requestDismiss() {
         if (dismissHandler) {
             dismissHandler();
@@ -34,6 +45,22 @@ Rectangle {
         }
         visible = false;
         dismissed();
+    }
+    function restoreFocus(opener) {
+        if (visible)
+            return false;
+        var targets = [opener];
+        for (var surface = sheet.parent; surface; surface = surface.parent)
+            targets.push(surface);
+        if (Navigation.rootSurfaces.length)
+            targets.push(Navigation.rootSurfaces[Navigation.rootSurfaces.length - 1]);
+        for (var target of targets) {
+            if (target && target !== sheet && Navigation.presented(target) && target.enabled && Navigation.allows(target)) {
+                target.forceActiveFocus();
+                return true;
+            }
+        }
+        return false;
     }
     function focusInside() {
         if (!visible || !isTopModal || adjustingFocus)
@@ -57,9 +84,11 @@ Rectangle {
             } else {
                 Navigation.removeModal(sheet);
                 Navigation.clearInput(window);
-                if (sheet.previousFocus && sheet.previousFocus !== sheet && Navigation.presented(sheet.previousFocus) && sheet.previousFocus.enabled && Navigation.allows(sheet.previousFocus))
-                    sheet.previousFocus.forceActiveFocus();
+                var opener = sheet.previousFocus;
                 sheet.previousFocus = null;
+                sheet.restoreFocus(opener);
+                // Bindings may settle or the confirmed action may hide the opener after dismissal.
+                Qt.callLater(sheet.restoreFocus, opener);
             }
         }
     }

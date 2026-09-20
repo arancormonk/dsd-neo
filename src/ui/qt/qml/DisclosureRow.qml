@@ -16,6 +16,7 @@ Item {
     // Overridden where the helper line carries an answer rather than a hint.
     property color subtitleColor: Theme.textSubdued
     property bool showDivider: false
+    property bool showCaret: true
     // The gate lives on the handler rather than on `enabled`, which is
     // hierarchical: binding it here would also disable everything the caller
     // nests inside the row.
@@ -42,9 +43,9 @@ Item {
     Column {
         id: labels
         anchors.left: parent.left
-        anchors.right: rowCaret.left
+        anchors.right: row.showCaret ? rowCaret.left : parent.right
         anchors.leftMargin: Theme.cardPadding
-        anchors.rightMargin: 12
+        anchors.rightMargin: row.showCaret ? 12 : Theme.cardPadding
         anchors.verticalCenter: parent.verticalCenter
         spacing: 3
 
@@ -70,6 +71,7 @@ Item {
 
     Caret {
         id: rowCaret
+        visible: row.showCaret
 
         anchors.right: parent.right
         anchors.rightMargin: Theme.cardPadding

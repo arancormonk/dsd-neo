@@ -8,6 +8,7 @@ Rectangle {
     id: control
 
     property string text: ""
+    property color textColor: Theme.buttonSecondaryText
     signal clicked
 
     property string accessibleName: text
@@ -51,7 +52,7 @@ Rectangle {
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(15)
         font.weight: Font.DemiBold
-        color: Theme.buttonSecondaryText
+        color: control.textColor
     }
 
     TapHandler {

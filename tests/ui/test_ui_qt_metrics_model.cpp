@@ -365,6 +365,50 @@ test_site() {
 }
 
 static void
+test_direct_key_presence() {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    dsd_qt::MetricsModel model;
+    model.refresh(&opts, &state);
+    expect("empty snapshot has no direct keys", !model.directKeys());
+    // Legacy writers can provide material without presence metadata.
+    for (auto* key : {&state.K, &state.R, &state.RR, &state.K1}) {
+        *key = 0x1234;
+        model.refresh(&opts, &state);
+        expect("legacy nonzero key remains configured", model.directKeys());
+        *key = 0;
+        model.refresh(&opts, &state);
+        expect("cleared legacy key is absent", !model.directKeys());
+    }
+    // Presence must not depend on a nonzero key value or on an active call.
+    state.basic_key_present = 1;
+    model.refresh(&opts, &state);
+    expect("zero basic key remains configured", model.directKeys());
+    state.basic_key_present = 0;
+    for (auto& present : state.scalar_key_present) {
+        present = 1;
+        model.refresh(&opts, &state);
+        expect("zero scalar key remains configured", model.directKeys());
+        present = 0;
+    }
+    state.hytera_key_segments = 1;
+    model.refresh(&opts, &state);
+    expect("Hytera presence is published", model.directKeys());
+    state.hytera_key_segments = 0;
+    state.aes_key_loaded[1] = 1;
+    model.refresh(&opts, &state);
+    expect("direct AES presence is published", model.directKeys());
+    state.keyloader = 1;
+    model.refresh(&opts, &state);
+    expect("automatic slot activation is not a direct override", !model.directKeys());
+    model.clear();
+    expect("stop clears direct-key status", !model.directKeys());
+    dsd_state_ext_free_all(&state);
+}
+
+static void
 test_decryption_metadata() {
     static dsd_opts opts;
     static dsd_state state;
@@ -622,6 +666,7 @@ main(int argc, char** argv) {
     test_options_readiness();
     test_temporary_lockout_metrics();
     test_scan_timing();
+    test_direct_key_presence();
     test_decryption_metadata();
     test_site();
     test_quality();

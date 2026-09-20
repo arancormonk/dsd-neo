@@ -7,8 +7,47 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <string.h>
 
+typedef struct {
+    size_t count;
+    size_t offsets[4], lengths[4];
+    int whole[4];
+    char paths[4][64];
+} file_spans;
+
+static int
+collect_file_span(void* context, const char* option, const char* path, size_t offset, size_t length, int whole) {
+    file_spans* spans = context;
+    assert(spans->count < 4);
+    assert(strcmp(option, "-K") == 0 || strcmp(option, "-G") == 0 || strcmp(option, "--dmr-tg-key-csv") == 0);
+    const size_t n = spans->count++;
+    spans->offsets[n] = offset;
+    spans->lengths[n] = length;
+    spans->whole[n] = whole;
+    DSD_SNPRINTF(spans->paths[n], sizeof spans->paths[n], "%s", path);
+    return 0;
+}
+
+static void
+check_file_spans(void) {
+    const char* text = "-H 0123456789 -K \"a b.csv\" --dmr-tg-key-csv='x.csv' -G foo\" bar\".csv";
+    const char* raw[] = {"\"a b.csv\"", "--dmr-tg-key-csv='x.csv'", "foo\" bar\".csv"};
+    const char* paths[] = {"a b.csv", "x.csv", "foo bar.csv"};
+    file_spans spans = {0};
+    assert(dsd_scan_options_visit_files(text, &spans, collect_file_span) == 0 && spans.count == 3);
+    for (size_t i = 0; i < spans.count; ++i) {
+        assert(spans.lengths[i] == strlen(raw[i]));
+        assert(memcmp(text + spans.offsets[i], raw[i], spans.lengths[i]) == 0);
+        assert(strcmp(spans.paths[i], paths[i]) == 0);
+        assert(spans.whole[i] == (i == 1));
+    }
+    spans.count = 0;
+    assert(dsd_scan_options_visit_files("-K", &spans, collect_file_span) == -1 && spans.count == 0);
+    assert(dsd_scan_options_visit_files("-K a.csv -K", &spans, collect_file_span) == -1 && spans.count == 1);
+}
+
 int
 main(void) {
+    check_file_spans();
     dsd_scan_options parsed = {0};
     char error[192] = {0};
     assert(dsd_scan_options_parse("--dmr-tg-key-csv mapping.csv", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))

@@ -36,6 +36,12 @@ typedef struct dsd_csv_validation {
 int dsd_csv_validate_src_file(const char* path, dsd_csv_validation* out);
 int dsd_csv_validate_group_file(const char* path, dsd_csv_validation* out);
 int dsd_csv_validate_chan_file(const char* path, dsd_csv_validation* out);
+/** Parse a mutable channel header with the importer's grammar. Returns the
+ * keys_hex_csv, keys_dec_csv and options column indices (-1 when absent). */
+int dsd_csv_channel_path_columns(char* header, int columns[3]);
+/** Whether a channel ID reserves a positional slot in the canonical importer.
+ * File-only key cells on a row without a slot are intentionally not loaded. */
+int dsd_csv_channel_has_slot(const char* channel);
 
 /** Nonsecret configured row scope. Inherited fields use -1; key_source is
  * 0 inherit, 1 direct, 2 collection, 3 explicitly empty. No key bytes or paths. */

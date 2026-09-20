@@ -12,12 +12,12 @@ UiPanel {
     signal edit
 
     objectName: "scanListCard"
-    height: Math.max(82, labels.implicitHeight + 2 * Theme.cardPadding)
+    height: Math.max(122, labels.implicitHeight + 2 * Theme.cardPadding)
 
     Column {
         id: labels
         anchors.left: parent.left
-        anchors.right: editButton.left
+        anchors.right: playButton.left
         anchors.margins: Theme.cardPadding
         anchors.verticalCenter: parent.verticalCenter
         spacing: 5
@@ -44,20 +44,24 @@ UiPanel {
     PlayCircle {
         id: playButton
         accessibleName: qsTr("Listen to %1").arg(card.listName)
+        objectName: "scanListPlay"
 
         anchors.right: parent.right
         anchors.rightMargin: Theme.cardPadding
-        anchors.verticalCenter: parent.verticalCenter
+        anchors.top: parent.top
+        anchors.topMargin: Theme.minimumTouchSize + 6
         enabled: !decoderHost.transitioning && !card.isDraft
         onClicked: card.play()
     }
 
     IconButton {
         id: editButton
+        objectName: "scanListManageButton"
         icon: "more"
-        accessibleName: qsTr("Edit %1").arg(card.listName)
-        anchors.right: playButton.left
-        anchors.verticalCenter: parent.verticalCenter
+        accessibleName: qsTr("More options for %1").arg(card.listName)
+        anchors.right: parent.right
+        anchors.rightMargin: Theme.cardPadding + (playButton.width - width) / 2
+        anchors.top: parent.top
         onClicked: card.edit()
     }
 

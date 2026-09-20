@@ -9,6 +9,19 @@ import "Util.js" as Util
 Item {
     id: screen
 
+    property bool showTitle: true
+
+    // Hand off pending text before another History instance can accept input.
+    // Otherwise this screen's older timer could overwrite the new editor.
+    function flushPendingSearch() {
+        if (!searchDebounce.running)
+            return;
+        searchDebounce.stop();
+        historyView.filterText = search.text;
+    }
+    onVisibleChanged: if (!visible) flushPendingSearch()
+    onEnabledChanged: if (!enabled) flushPendingSearch()
+
     // Cycles: 0 everything, 1 clear calls, 2 encrypted calls, 3 messages
     // (SMS, GPS positions, data and control notices).
     readonly property var kindLabels: [qsTr("All activity"), qsTr("Unencrypted calls"), qsTr("Encrypted"), qsTr("Messages")]
@@ -34,9 +47,12 @@ Item {
 
         Item {
             width: parent.width
-            height: Math.max(48, Theme.fontSize(24) + 20)
+            height: Math.max(screen.showTitle ? Math.max(48, Theme.fontSize(24) + 20) : 0,
+                             callHistory.count > 0 ? clearHistory.implicitHeight : 0)
+            visible: height > 0
 
             Text {
+                visible: screen.showTitle
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("History")
@@ -48,23 +64,36 @@ Item {
             }
 
             OutlineButton {
+                id: clearHistory
+                objectName: "clearHistoryButton"
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 visible: callHistory.count > 0
                 text: qsTr("Clear")
-                onClicked: confirmClear.visible = true
+                onClicked: confirmClear.open()
             }
         }
 
         PlexTextField {
             id: search
+            objectName: "historySearch"
+            Binding {
+                target: search
+                property: "text"
+                value: historyView.filterText
+            }
 
             width: parent.width
             placeholderText: qsTr("Search talkgroup or unit")
             inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
             // Debounced: every keystroke otherwise re-evaluates the filter over
             // the full log, and on a phone that stutters the keyboard.
-            onTextChanged: searchDebounce.restart()
+            onTextChanged: {
+                if (text !== historyView.filterText)
+                    searchDebounce.restart();
+                else
+                    searchDebounce.stop();
+            }
 
             Timer {
                 id: searchDebounce
@@ -285,7 +314,6 @@ Item {
             width: Math.min(parent.width, 220)
             text: qsTr("Clear filters")
             onClicked: {
-                search.text = "";
                 historyView.filterText = "";
                 historyView.filterSystem = "";
                 historyView.filterKind = 0;
@@ -294,65 +322,14 @@ Item {
     }
 
     // Clearing is destructive and irreversible (the persisted log goes too),
-    // so it hides behind a confirm — same shape as the home screen's manage
-    // sheet.
-    Rectangle {
+    // so it uses the shared destructive confirmation dialog.
+    ConfirmDialog {
         id: confirmClear
-
-        anchors.fill: parent
-        visible: false
-        color: Qt.alpha("#000000", 0.5)
-
-        TapHandler {
-            onTapped: confirmClear.visible = false
-        }
-
-        UiPanel {
-            anchors.centerIn: parent
-            width: parent.width - 2 * Theme.screenPadding
-            height: confirmColumn.height + 2 * Theme.cardPadding
-
-            Column {
-                id: confirmColumn
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.margins: Theme.cardPadding
-                spacing: 12
-
-                Text {
-                    width: parent.width
-                    text: qsTr("Clear call history?")
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(17)
-                    font.weight: Font.Bold
-                    color: Theme.textPrimary
-                }
-
-                Text {
-                    width: parent.width
-                    text: qsTr("Every logged call and message is removed. A call playing right now still gets logged.")
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(13)
-                    color: Theme.textSubdued
-                    wrapMode: Text.Wrap
-                }
-
-                OutlineButton {
-                    width: parent.width
-                    text: qsTr("Clear history")
-                    onClicked: {
-                        callHistory.clearAll();
-                        confirmClear.visible = false;
-                    }
-                }
-
-                OutlineButton {
-                    width: parent.width
-                    text: qsTr("Cancel")
-                    onClicked: confirmClear.visible = false
-                }
-            }
-        }
+        objectName: "clearHistoryConfirm"
+        title: qsTr("Clear call history?")
+        message: qsTr("Every logged call and message is removed. A call playing right now still gets logged.")
+        confirmText: qsTr("Clear history")
+        destructive: true
+        onConfirmed: callHistory.clearAll()
     }
 }

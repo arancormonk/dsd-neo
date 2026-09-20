@@ -20,7 +20,7 @@ Rectangle {
     Text {
         id: tag
         anchors.centerIn: parent
-        text: parent.type === "chan" ? qsTr("CHANNELS") : parent.type === "group" ? qsTr("TALKGROUPS") : parent.type === "keysDec" ? qsTr("KEYS · DEC") : parent.type === "keysHex" ? qsTr("KEYS · HEX") : parent.type === "vertexKeys" ? qsTr("VERTEX KEYS") : parent.type === "dmrTgKeys" ? qsTr("DMR KEY MAP") : parent.type === "p25Bandplan" ? qsTr("P25 BAND PLAN") : parent.type === "src" ? qsTr("RADIO IDS") : qsTr("FILE")
+        text: parent.type === "trunkTargets" ? qsTr("TARGET CSV") : parent.type === "chan" ? qsTr("CHANNELS") : parent.type === "group" ? qsTr("TALKGROUPS") : parent.type === "keysDec" ? qsTr("KEYS · DEC") : parent.type === "keysHex" ? qsTr("KEYS · HEX") : parent.type === "vertexKeys" ? qsTr("VERTEX KEYS") : parent.type === "dmrTgKeys" ? qsTr("DMR KEY MAP") : parent.type === "p25Bandplan" ? qsTr("P25 BAND PLAN") : parent.type === "src" ? qsTr("RADIO IDS") : qsTr("FILE")
         font.family: Theme.mono
         font.pixelSize: Theme.fontSize(10)
         font.letterSpacing: 1

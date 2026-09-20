@@ -48,6 +48,7 @@ Item {
     property int planRevision: 0
     property int reviewedRevision: -1
     property bool eachSite: false
+    property bool accountEditorOpen: false
     onEachSiteChanged: {
         selectedSites = [];
         refreshPlan();
@@ -166,6 +167,12 @@ Item {
         if (screen.rrLive() && (screen.systemLoaded || radioReference.busy))
             radioReference.closeSystem();
         screen.sourceMode = 0;
+        screen.accountEditorOpen = false;
+        screen.siteSearch = "";
+        screen.eachSite = false;
+        countrySheet.searchText = "";
+        stateSheet.searchText = "";
+        countySheet.searchText = "";
         zipField.text = "";
         sidField.text = "";
         screen.browseCoid = 1;
@@ -346,6 +353,8 @@ Item {
         screen.browseStateName = "";
         screen.browseCtid = -1;
         screen.browseCountyName = "";
+        stateSheet.searchText = "";
+        countySheet.searchText = "";
         countrySheet.visible = false;
         screen.browseStates();
     }
@@ -361,6 +370,7 @@ Item {
         screen.browseStateName = row.name;
         screen.browseCtid = -1;
         screen.browseCountyName = "";
+        countySheet.searchText = "";
         stateSheet.visible = false;
         screen.browseCounties();
     }
@@ -432,9 +442,14 @@ Item {
         property int selectedId: -1
         /** Whether a row can be tapped. Off while a request is running. */
         property bool rowsEnabled: true
+        property alias searchText: placeSearch.text
+        readonly property var filteredRows: (rows || []).filter(function (row) {
+            return String(row.name).toLocaleLowerCase().indexOf(searchText.trim().toLocaleLowerCase()) >= 0;
+        })
         accessibleName: title
         PlexTextField {
             id: placeSearch
+            objectName: "browseSearch"
             width: parent.width
             label: qsTr("Search %1").arg(browseSheet.title)
             placeholderText: label
@@ -442,10 +457,6 @@ Item {
 
         /** Emitted with the tapped row. */
         signal chosen(var row)
-
-        // A list that has not arrived yet is empty, which is what the notice
-        // below reports.
-        readonly property int rowCount: browseSheet.rows !== undefined && browseSheet.rows !== null ? browseSheet.rows.length : 0
 
         MicroLabel {
             text: browseSheet.title
@@ -455,7 +466,7 @@ Item {
             width: parent.width
             // ModalSheet owns scrolling; retain every choice in its content extent.
             height: listColumn.height
-            visible: browseSheet.rowCount > 0
+            visible: browseSheet.filteredRows.length > 0
 
             Column {
                 id: listColumn
@@ -463,9 +474,7 @@ Item {
                 width: parent.width
 
                 Repeater {
-                    model: browseSheet.rows.filter(function (row) {
-                        return String(row.name).toLocaleLowerCase().indexOf(placeSearch.text.trim().toLocaleLowerCase()) >= 0;
-                    })
+                    model: browseSheet.filteredRows
 
                     Item {
                         id: sheetRow
@@ -513,9 +522,10 @@ Item {
         }
 
         Text {
+            objectName: "browseEmptyState"
             width: parent.width
-            visible: browseSheet.rowCount === 0
-            text: qsTr("Loading…")
+            visible: browseSheet.filteredRows.length === 0
+            text: radioReference.busy && (browseSheet.rows || []).length === 0 ? qsTr("Loading…") : browseSheet.searchText.trim().length > 0 ? qsTr("No matches") : qsTr("Nothing to show")
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(13)
             color: Theme.textSubdued
@@ -619,11 +629,26 @@ Item {
             // Every user authenticates with their own RadioReference account and
             // needs their own premium subscription; nothing is pooled, and the
             // password is never written anywhere.
-            //
+            DisclosureRow {
+                objectName: "radioReferenceChangeAccount"
+                width: parent.width
+                visible: radioReference.credentialsReady && !screen.systemLoaded
+                showCaret: false
+                // Filled credentials do not prove a successful account check.
+                title: credentialsCard.visible ? qsTr("Account: %1 · Done").arg(prefs.rrUsername) : qsTr("Account: %1 · Change").arg(prefs.rrUsername)
+                tapEnabled: !radioReference.busy
+                onTapped: {
+                    Navigation.clearInput(screen.Window.window);
+                    screen.accountEditorOpen = !credentialsCard.visible;
+                }
+            }
+
             // Username and password lead, the way every sign-in form does. The
             // application key comes last and only where the user is the one who
             // supplies it — see offersAppKey.
             UiPanel {
+                id: credentialsCard
+
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "radioReferenceCredentials"
 
@@ -633,7 +658,7 @@ Item {
                 // password would have nowhere left to be retyped. Both account
                 // errors qualify: auth wants a correction, an expired
                 // subscription wants a different account.
-                visible: !radioReference.credentialsReady || radioReference.errorIsAuth || radioReference.errorIsSubscription
+                visible: screen.accountEditorOpen || !radioReference.credentialsReady || radioReference.errorIsAuth || radioReference.errorIsSubscription
                 height: credentialsColumn.height + 2 * Theme.cardPadding
 
                 Column {
@@ -649,97 +674,36 @@ Item {
                         text: qsTr("RadioReference account")
                     }
 
-                    PlexTextField {
-                        id: usernameField
-                        label: qsTr("RadioReference username")
-                        nextField: passwordField
-
-                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                        objectName: "radioReferenceUsernameField"
-
+                    RadioReferenceAccountEditor {
                         width: parent.width
-                        text: prefs.rrUsername
-                        placeholderText: qsTr("radioreference.com username")
-                        inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                        onEditingFinished: prefs.rrUsername = text
-                    }
+                        nextUsernameField: passwordField
+                        usernameLabel: qsTr("RadioReference username")
+                        appKeyLabel: qsTr("RadioReference application key")
+                        appKeyHeading: qsTr("Application key")
+                        passwordHint: qsTr("The password is kept only for this session and is never saved. A RadioReference premium subscription is required.")
+                        onAppKeyEdited: screen.verifyAccount()
 
-                    PlexTextField {
-                        id: passwordField
-                        label: qsTr("Password")
+                        PlexTextField {
+                            id: passwordField
+                            label: qsTr("Password")
 
-                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                        objectName: "radioReferencePasswordField"
+                            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                            objectName: "radioReferencePasswordField"
 
-                        width: parent.width
-                        // PlexTextField carries no echoMode of its own; reaching
-                        // through the `input` alias is how the wizard sets its
-                        // field validators too.
-                        input.echoMode: TextInput.Password
-                        placeholderText: qsTr("password")
-                        inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText | Qt.ImhSensitiveData
-                        // Commits on Enter or focus loss, never per keystroke,
-                        // and the password goes nowhere but memory.
-                        onEditingFinished: {
-                            if (screen.rrLive())
-                                radioReference.setPassword(text);
-                            screen.verifyAccount();
-                        }
-                    }
-
-                    Text {
-                        width: parent.width
-                        text: qsTr("The password is kept only for this session and is never saved. A RadioReference premium subscription is required.")
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(12)
-                        color: Theme.textSubdued
-                        wrapMode: Text.Wrap
-                    }
-
-                    Text {
-                        width: parent.width
-                        visible: screen.offersAppKey
-                        text: qsTr("Application key")
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(13)
-                        color: Theme.textSecondary
-                    }
-
-                    PlexTextField {
-                        id: appKeyField
-                        label: qsTr("RadioReference application key")
-
-                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                        objectName: "radioReferenceAppKeyField"
-
-                        width: parent.width
-                        visible: screen.offersAppKey
-                        mono: true
-                        text: prefs.rrAppKey
-                        placeholderText: qsTr("application key")
-                        inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                        // Commit on Enter or focus loss, not per keystroke: every
-                        // write lands in QSettings (disk on Android). The account
-                        // check fires the same way the password field's does, so
-                        // whichever field is answered last completes the form.
-                        onEditingFinished: {
-                            prefs.rrAppKey = text;
-                            screen.verifyAccount();
-                        }
-                    }
-
-                    Text {
-                        width: parent.width
-                        visible: !radioReference.buildHasAppKey
-                        text: qsTr("This build carries no application key. Request one at <a href=\"https://www.radioreference.com/account/api/apply\">radioreference.com/account/api/apply</a>.")
-                        textFormat: Text.StyledText
-                        linkColor: Theme.cyan
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(12)
-                        color: Theme.textSubdued
-                        wrapMode: Text.Wrap
-                        onLinkActivated: function (link) {
-                            Qt.openUrlExternally(link);
+                            width: parent.width
+                            // PlexTextField carries no echoMode of its own; reaching
+                            // through the `input` alias is how the wizard sets its
+                            // field validators too.
+                            input.echoMode: TextInput.Password
+                            placeholderText: qsTr("password")
+                            inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText | Qt.ImhSensitiveData
+                            // Commits on Enter or focus loss, never per keystroke,
+                            // and the password goes nowhere but memory.
+                            onEditingFinished: {
+                                if (screen.rrLive())
+                                    radioReference.setPassword(text);
+                                screen.verifyAccount();
+                            }
                         }
                     }
 
@@ -1165,7 +1129,8 @@ Item {
                         rightPadding: Theme.cardPadding
                         bottomPadding: 6
                         visible: radioReference.conventional
-                        text: qsTr("One selected repeater tunes directly. Multiple selected repeaters create a scan list.")
+                        objectName: "radioReferenceRepeaterHint"
+                        text: qsTr("One selected repeater tunes directly. Multiple selected repeaters are saved as one scanning system.")
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
@@ -1367,6 +1332,7 @@ Item {
                     }
 
                     Text {
+                        objectName: "radioReferencePlanSummary"
                         width: parent.width
                         visible: screen.planOk()
                         text: {
@@ -1380,7 +1346,7 @@ Item {
                             if (screen.planField("trunking", false))
                                 parts.push(qsTr("trunked"));
                             if (screen.planField("scanList", false))
-                                parts.push(qsTr("scan list"));
+                                parts.push(qsTr("scanning system"));
                             return parts.join(" · ");
                         }
                         font.family: Theme.mono
@@ -1499,6 +1465,7 @@ Item {
             color: Theme.alert
         }
         GradientButton {
+            objectName: "radioReferenceConfirmImport"
             width: parent.width
             text: qsTr("Import")
             enabled: screen.reviewedRevision === screen.planRevision && screen.planOk() && !radioReference.busy

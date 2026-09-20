@@ -2,7 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
-import QtQuick.Dialogs
+import QtQuick.Window
 
 // The imported-files library: every channel map, talkgroup list, key file,
 // P25 band plan and radio ID list copied into app storage, with import/update/remove
@@ -10,12 +10,18 @@ import QtQuick.Dialogs
 // here serves any saved system.
 Item {
     id: screen
+    Keys.onEscapePressed: Navigation.back(screen.Window.window)
+    Keys.onBackPressed: Navigation.back(screen.Window.window)
+    onVisibleChanged: if (visible) Qt.callLater(function () {
+        if (screen.visible && Navigation.allows(screen) && !Navigation.contains(screen, screen.Window.window.activeFocusItem))
+            screen.forceActiveFocus();
+    })
 
     signal closed
     // Asks Main.qml to push the RadioReference screen over this one.
     signal openRadioReference
 
-    // FileDialog routing: a row index means "update that row in place";
+    // CSV import routing: a row index means "update that row in place";
     // -1 means a new import of pendingType.
     property int pendingRow: -1
     property string pendingType: "chan"
@@ -32,6 +38,8 @@ Item {
     property var sessionSystem: null
 
     function nounFor(type, count) {
+        if (type === "trunkTargets")
+            return count === 1 ? qsTr("target") : qsTr("targets");
         if (type === "chan")
             return count === 1 ? qsTr("channel") : qsTr("channels");
         if (type === "group")
@@ -57,7 +65,7 @@ Item {
 
     function resultNotice(verb, result) {
         if (!result.ok) {
-            screen.notice = qsTr("Could not read that file");
+            screen.notice = result.detail || qsTr("Could not read that file");
             screen.noticeIsProblem = true;
             return;
         }
@@ -116,33 +124,19 @@ Item {
         }
     }
 
-    // No CSV name filter: on Android it becomes a SAF MIME filter, and the
-    // Files app indexes .csv as text/comma-separated-values — not the text/csv
-    // Qt asks for — which greys out exactly the files the user came to pick.
-    //
-    // The kind was already chosen in the sheet, and the dry run counts rows
-    // against that kind, so a file of the wrong kind lands here as "no usable
-    // rows". That check is by content, not by name: a channel map and a decimal
-    // key list are both `number,number`, and the header line is free text, so
-    // what separates them is the channel importer refusing a second column that
-    // cannot be a radio frequency. Two lists of the same kind are still
-    // indistinguishable — nothing stops one site's map being picked for another.
-    FileDialog {
-        id: fileDialog
-
-        onAccepted: {
-            var reference = selectedFile.toString();
-            var hint = reference.substring(reference.lastIndexOf('/') + 1);
-            var type = screen.pendingRow >= 0 ? importedFiles.get(screen.pendingRow).type : screen.pendingType === "keys" ? (screen.pendingKeyHex ? "keysHex" : "keysDec") : screen.pendingType;
-            csvImport.begin(reference, hint, type, screen.pendingRow);
-            screen.pendingRow = -1;
-        }
+    function importPickedFile() {
+        var type = pendingRow >= 0 ? importedFiles.get(pendingRow).type : pendingType === "keys" ? (pendingKeyHex ? "keysHex" : "keysDec") : pendingType;
+        csvImport.pick(type, pendingRow);
     }
 
     CsvImportFlow {
         id: csvImport
+        objectName: "importsCsvImport"
         overlayParent: screen
         onFinished: function (result) {
+            screen.pendingRow = -1;
+            screen.notice = "";
+            screen.noticeIsProblem = false;
             if (result.error !== "cancelled")
                 screen.resultNotice(qsTr("Imported"), result);
         }
@@ -391,11 +385,11 @@ Item {
             spacing: 8
 
             Repeater {
-                model: [qsTr("Channel map"), qsTr("Talkgroups"), qsTr("Keys"), qsTr("P25 band plan"), qsTr("Radio IDs"), qsTr("DMR key mappings"), qsTr("Vertex keystreams")]
+                model: [qsTr("Channel map"), qsTr("Talkgroups"), qsTr("Keys"), qsTr("P25 band plan"), qsTr("Radio IDs"), qsTr("DMR key mappings"), qsTr("Vertex keystreams"), qsTr("Target CSV")]
                 delegate: FilterPill {
                     required property int index
                     required property string modelData
-                    readonly property string kind: ["chan", "group", "keys", "p25Bandplan", "src", "dmrTgKeys", "vertexKeys"][index]
+                    readonly property string kind: ["chan", "group", "keys", "p25Bandplan", "src", "dmrTgKeys", "vertexKeys", "trunkTargets"][index]
                     objectName: "importKind_" + kind
                     text: modelData
                     caret: false
@@ -421,7 +415,7 @@ Item {
             onClicked: {
                 typeSheet.visible = false;
                 screen.pendingRow = -1;
-                fileDialog.open();
+                screen.importPickedFile();
             }
         }
     }
@@ -461,7 +455,7 @@ Item {
                 actionSheet.visible = false;
                 screen.notice = "";
                 screen.pendingRow = screen.actionRow;
-                fileDialog.open();
+                screen.importPickedFile();
             }
         }
 
@@ -490,7 +484,7 @@ Item {
 
         OutlineButton {
             width: parent.width
-            visible: decoderHost.running && importedFiles.get(screen.actionRow).type !== "vertexKeys"
+            visible: decoderHost.running && importedFiles.get(screen.actionRow).type !== "vertexKeys" && importedFiles.get(screen.actionRow).type !== "trunkTargets"
             text: qsTr("Apply to running session")
             onClicked: {
                 actionSheet.visible = false;
@@ -561,6 +555,7 @@ Item {
         id: removeSheet
 
         readonly property var profilesUsingFile: visible && screen.actionRow >= 0 && typeof decryptionProfiles !== "undefined" ? decryptionProfiles.profilesReferencingPath(importedFiles.get(screen.actionRow).path) : []
+        readonly property var listsUsingFile: visible && screen.actionRow >= 0 ? scanLists.listsReferencingPath(importedFiles.get(screen.actionRow).path) : []
         readonly property var usedBy: visible && screen.actionRow >= 0 ? savedSystems.systemsReferencingPath(importedFiles.get(screen.actionRow).path) : []
 
         Text {
@@ -591,6 +586,14 @@ Item {
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(14)
         }
+        Text {
+            width: parent.width
+            visible: removeSheet.listsUsingFile.length > 0
+            text: qsTr("Used by scan lists: %1. Removing makes these lists drafts until another target CSV is selected.").arg(removeSheet.listsUsingFile.join(", "))
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: Theme.textSecondary
+        }
         OutlineButton {
             width: parent.width
             enabled: removeSheet.profilesUsingFile.length === 0
@@ -598,8 +601,22 @@ Item {
             onClicked: {
                 removeSheet.visible = false;
                 var path = importedFiles.get(screen.actionRow).path;
+                if (!importedFiles.canRemove(screen.actionRow)) {
+                    screen.notice = qsTr("Stop the decoder before removing target CSVs.");
+                    screen.noticeIsProblem = true;
+                    return;
+                }
+                if (!scanLists.clearCsvPath(path)) {
+                    screen.notice = qsTr("Could not save the affected scan lists. The imported file was kept.");
+                    screen.noticeIsProblem = true;
+                    return;
+                }
+                if (!importedFiles.remove(screen.actionRow)) {
+                    screen.notice = qsTr("Could not remove the file. Stop the decoder before removing target CSVs.");
+                    screen.noticeIsProblem = true;
+                    return;
+                }
                 savedSystems.clearCsvPath(path);
-                importedFiles.remove(screen.actionRow);
                 screen.actionRow = -1;
                 screen.notice = qsTr("Removed");
                 screen.noticeIsProblem = false;

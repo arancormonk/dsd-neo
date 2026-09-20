@@ -10,6 +10,7 @@
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/key_material.h>
+#include <dsd-neo/core/key_presence.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <utility>
@@ -479,6 +480,12 @@ MetricsModel::fillScanTimingView(View& next, const dsd_opts* opts_snapshot, cons
 }
 
 namespace {
+bool
+direct_keys_present(const dsd_state* state) {
+    return dsd_key_basic_present(state) || dsd_key_scalar_present(state, 0) || dsd_key_scalar_present(state, 1)
+           || dsd_key_hytera_present(state) || state->aes_key_loaded[0] || state->aes_key_loaded[1];
+}
+
 struct DecryptionView {
     const dsd_call_snapshot& call;
     const dsd_call_key_selection& selected;
@@ -672,6 +679,9 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
     next.key_profile_ref = QString::fromUtf8(snapshot->key_profile_ref);
     next.key_epoch = snapshot->enc_lockout_key_epoch;
     next.automatic_keys = snapshot->keyloader == 1;
+    // Presence flags include valid zero-valued direct keys. Automatic slot
+    // activation also sets these flags, but does not constitute an override.
+    next.direct_keys = !next.automatic_keys && direct_keys_present(snapshot);
     next.decryption_slots = decryption_slot_views(opts_snapshot, snapshot);
     next.scan_mode = QString::fromLatin1(dsd_scan_mode_name(dsd_scan_mode_active(snapshot)));
     next.decode_mode = static_cast<int>(dsd_scan_mode_configured_preset(opts_snapshot, snapshot));

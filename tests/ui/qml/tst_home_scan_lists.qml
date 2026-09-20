@@ -57,6 +57,120 @@ Item {
             return null;
         }
 
+        function test_readiness_updates_without_count_change() {
+            var card = visualChild(appLoader.item, "scanListCard");
+            verify(card !== null);
+            var oldOnboarding = prefs.onboardingDone;
+            prefs.onboardingDone = true;
+            var count = scanLists.count;
+            var manualEntries = scanLists.get(0).entries;
+            scanLists.update(0, {isDraft: true});
+            tryCompare(card, "isDraft", true);
+            verify(!findChild(card, "scanListPlay").enabled);
+            var source = testContext.writeFixtureCsv("ready-targets.csv",
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\none,p25-conventional,851500000,,,,\ntwo,p25-conventional,852500000,,,,\n");
+            var result = importedFiles.importFile(source, "Ready targets.csv", "trunkTargets");
+            verify(result.ok);
+            try {
+                scanLists.update(0, {isDraft: false, targetSource: "csv", targetsCsvPath: result.path});
+                compare(scanLists.count, count);
+                tryCompare(card, "isDraft", false);
+                tryCompare(card, "entryCount", 2);
+                tryCompare(findChild(card, "scanListPlay"), "enabled", true);
+                scanLists.update(0, {targetsCsvPath: ""});
+                tryCompare(card, "entryCount", 0);
+                scanLists.update(0, {targetSource: "entries", entries: manualEntries});
+                tryCompare(card, "entryCount", 1);
+                scanLists.update(0, {entries: []});
+                tryCompare(card, "entryCount", 0);
+                compare(scanLists.count, count);
+            } finally {
+                prefs.onboardingDone = oldOnboarding;
+                importedFiles.remove(importedFiles.rowForPath(result.path));
+            }
+        }
+
+        function test_csv_draft_without_target_path() {
+            failOnWarning(/HomeScreen.qml.*Unable to assign/);
+            scanLists.add({name: "CSV draft", sourceType: "usb", targetSource: "csv", isDraft: true});
+            var card = visualChild(appLoader.item, function (entry) {
+                return entry.objectName === "scanListCard" && entry.listName === "CSV draft";
+            });
+            verify(card !== null);
+            compare(card.entryCount, 0);
+            verify(card.isDraft);
+            verify(!findChild(card, "scanListPlay").enabled);
+        }
+
+        function test_add_system_routes_data() {
+            return [{tag: "unavailable", available: false, choice: ""},
+                {tag: "manual", available: true, choice: "manual"},
+                {tag: "RadioReference Back", available: true, choice: "import", back: true},
+                {tag: "RadioReference", available: true, choice: "import"}];
+        }
+        function test_add_system_routes(data) {
+            var app = appLoader.item;
+            var oldOnboarding = prefs.onboardingDone;
+            prefs.onboardingDone = true;
+            testContext.setRadioReference("available", data.available);
+            var home = findChild(app, "homeScreen");
+            var menu = findChild(home, "addSystemMenu");
+            try {
+                verify(menu !== null);
+                findChild(home, "addSystemButton").clicked();
+                compare(menu.visible, data.available);
+                compare(app.wizardOpen, !data.available);
+                if (data.available) {
+                    compare(menu.actions.length, 2);
+                    compare(menu.actions[0].text, "Set up manually");
+                    compare(menu.actions[1].text, "Import from RadioReference");
+                    menu.activate(data.choice === "manual" ? 0 : 1);
+                }
+                compare(app.wizardOpen, data.choice !== "import");
+                compare(app.radioReferenceOpen, data.choice === "import");
+                compare(app.awaitingUsbAccess, false);
+                var wizard = findChild(app, "wizardScreen");
+                compare(wizard.sourceType, "usb");
+                if (data.choice === "import") {
+                    if (data.back) {
+                        verify(Ui.Navigation.back(app));
+                        verify(!app.radioReferenceOpen);
+                        verify(!app.wizardOpen);
+                        compare(app.currentTab, 0);
+                        tryCompare(home, "enabled", true);
+                        compare(Ui.Navigation.modals.length, 0);
+                        return;
+                    }
+                    findChild(app, "radioReferenceScreen").imported({
+                        name: "County import", freqMhz: "852.5", decodeFlag: "-f1", trunking: true,
+                        chanCsvPath: "/tmp/channels.csv", groupCsvPath: "/tmp/groups.csv"
+                    });
+                    verify(!app.radioReferenceOpen);
+                    verify(app.wizardOpen);
+                    compare(wizard.nameText, "County import");
+                    compare(wizard.freqText, "852.5");
+                }
+            } finally {
+                if (menu) menu.visible = false;
+                app.radioReferenceOpen = false;
+                app.wizardOpen = false;
+                prefs.onboardingDone = oldOnboarding;
+                testContext.setRadioReference("available", false);
+            }
+        }
+
+        function test_add_scan_list_opens_clean_editor() {
+            var app = appLoader.item;
+            findChild(app, "homeScreen").addScanList();
+            var editor = findChild(app, "scanListScreen");
+            verify(app.scanListOpen);
+            compare(editor.editUid, "");
+            compare(editor.fingerprint(), editor.initialDraft);
+            compare(Ui.Navigation.modals.length, 0);
+            editor.requestClose();
+            verify(!app.scanListOpen);
+        }
+
         function test_single_site_has_listen_and_management() {
             var row = savedSystems.count;
             var oldOnboarding = prefs.onboardingDone;
@@ -79,6 +193,19 @@ Item {
                 var title = findChild(card, "savedSystemTitle");
                 tryCompare(sites, "visible", true);
                 compare(play.visible, true);
+                verify(!play.featured);
+                var more = findChild(card, "savedSystemManageButton");
+                compare(more.accessibleName, "More options for Grouped system");
+                verify(more.y + more.height <= play.y, "menu is above Listen");
+                var scanCard = visualChild(appLoader.item, "scanListCard");
+                var scanMore = findChild(scanCard, "scanListManageButton");
+                compare(scanMore.accessibleName, "More options for Scan");
+                compare(scanMore.y, more.y);
+                compare(scanCard.width - scanMore.x, card.width - more.x);
+                compare(more.x + more.width / 2, play.x + play.width / 2);
+                var scanPlay = findChild(scanCard, "scanListPlay");
+                compare(scanMore.x + scanMore.width / 2, scanPlay.x + scanPlay.width / 2);
+                verify(scanMore.y + scanMore.height <= findChild(scanCard, "scanListPlay").y);
                 verify(sites.x + sites.width <= play.x, "site management and Listen do not overlap");
                 var start = title.mapToItem(card, 0, 0);
                 verify(start.x + title.width <= sites.x, "title and site action do not overlap");
@@ -153,6 +280,32 @@ Item {
             verify(scanLists.get(0).lastHeard > 0);
         }
 
+        function test_csv_list_play_and_label() {
+            var source = testContext.writeFixtureCsv("home-targets.csv",
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\nCSV target,p25-conventional,851500000,,,,\n");
+            var result = importedFiles.importFile(source, "Home targets.csv", "trunkTargets");
+            verify(result.ok, result.detail || "Import failed");
+            var app = appLoader.item;
+            try {
+                scanLists.update(0, {targetSource: "csv", targetsCsvPath: result.path});
+                app.startScanList(0);
+                compare(prefs.lastStartedUid, "");
+                testContext.emitSessionInitialized();
+                compare(prefs.lastStartedUid, scanLists.get(0).uid);
+                testContext.setMetric("scanTargetId", "CSV target");
+                compare(app.scanTargetLabel(), "CSV target");
+                app.sessionSystem = null;
+                compare(app.scanTargetLabel(), "CSV target");
+                var card = visualChild(app, "scanListCard");
+                verify(card !== null);
+                compare(card.entryCount, 1);
+            } finally {
+                testContext.setMetric("scanTargetId", "");
+                decoderHost.stop();
+                importedFiles.remove(importedFiles.rowForPath(result.path));
+            }
+        }
+
         // WP-S2: signal routing reuses permission handling and initialization recency.
         function test_auto_start_scan_request() {
             scanLists.update(0, {
@@ -220,7 +373,7 @@ Item {
                     kind: "saved"
                 },
                 {
-                    tag: "scan list editor",
+                    tag: "scan list management menu",
                     kind: "scan"
                 }
             ];
@@ -261,7 +414,7 @@ Item {
                 wait(1000);
                 mouseRelease(card, card.width / 4, card.height / 2);
                 sheet = visualChild(appLoader.item, function (item) {
-                    return data.kind === "saved" ? item.systemName === "Manage attached system" : item.editUid === uid;
+                    return data.kind === "saved" ? item.systemName === "Manage attached system" : item.listUid === uid && item.objectName === "scanListManageSheet";
                 });
                 verify(sheet !== null);
                 tryCompare(sheet, "visible", true);
@@ -269,15 +422,11 @@ Item {
                 compare(decoderHost.sessionState, 0, "attachment must be consumed while a card sheet is open");
                 compare(uiController.autoStartBlocked, true);
                 compare(targetModel.getByUid(uid).lastHeard, 0);
-                if (data.kind === "saved") {
-                    var cancel = visualChild(sheet, function (item) {
-                        return item.text === "Cancel" && typeof item.clicked === "function";
-                    });
-                    verify(cancel !== null);
-                    mouseClick(cancel, cancel.width / 2, cancel.height / 2);
-                } else {
-                    sheet.closed();
-                }
+                var cancel = visualChild(sheet, function (item) {
+                    return item.text === "Cancel" && typeof item.clicked === "function";
+                });
+                verify(cancel !== null);
+                mouseClick(cancel, cancel.width / 2, cancel.height / 2);
                 tryCompare(sheet, "visible", false);
                 tryCompare(uiController, "autoStartBlocked", false);
                 wait(300); // A dismissed sheet must not retry the consumed attachment.
@@ -287,7 +436,7 @@ Item {
                 testContext.emitLocalDeviceAttached();
                 compare(decoderHost.sessionState, 1);
             } finally {
-                if (sheet && data.kind === "saved")
+                if (sheet)
                     sheet.visible = false;
                 appLoader.item.scanListOpen = false;
                 prefs.autoStartOnAttach = enabled;

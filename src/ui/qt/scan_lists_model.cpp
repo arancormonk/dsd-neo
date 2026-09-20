@@ -33,10 +33,10 @@ normalize(const QVariantMap& input, const QVariantMap& base = {}) {
                           {"voiceOnly", false}, {"defaultDwellMs", 0}, {"defaultHoldMs", 0}, {"groupCsvPath", ""},
                           {"srcCsvPath", ""},   {"lastHeard", 0}}
             : base;
-    const QStringList fields{"airspy",         "name",          "sourceType",   "host",       "port",
-                             "gainDb",         "ppm",           "bandwidthKhz", "biasTee",    "voiceOnly",
-                             "defaultDwellMs", "defaultHoldMs", "groupCsvPath", "srcCsvPath", "lastHeard",
-                             "entries",        "isDraft"};
+    const QStringList fields{"airspy",         "name",          "sourceType",   "host",          "port",
+                             "gainDb",         "ppm",           "bandwidthKhz", "biasTee",       "voiceOnly",
+                             "defaultDwellMs", "defaultHoldMs", "groupCsvPath", "srcCsvPath",    "lastHeard",
+                             "entries",        "isDraft",       "targetSource", "targetsCsvPath"};
     for (const auto& field : fields) {
         if (input.contains(field)) {
             result[field] = input.value(field);
@@ -50,6 +50,14 @@ normalize(const QVariantMap& input, const QVariantMap& base = {}) {
     }
     if (!result.contains("lastHeard")) {
         result["lastHeard"] = 0;
+    }
+    if (!result.contains("targetSource")) {
+        result["targetSource"] = "entries";
+    }
+    if (result.value("targetSource") == "csv") {
+        result["entries"] = QVariantList();
+    } else {
+        result["targetsCsvPath"] = "";
     }
     QVariantList entries;
     QSet<QString> ids;
@@ -102,11 +110,9 @@ ScanListsModel::rowCount(const QModelIndex& parent) const {
 
 QHash<int, QByteArray>
 ScanListsModel::roleNames() const {
-    return {{Qt::UserRole + 1, "name"},
-            {Qt::UserRole + 2, "uid"},
-            {Qt::UserRole + 3, "lastHeard"},
-            {Qt::UserRole + 4, "entries"},
-            {Qt::UserRole + 5, "isDraft"}};
+    return {{Qt::UserRole + 1, "name"},          {Qt::UserRole + 2, "uid"},     {Qt::UserRole + 3, "lastHeard"},
+            {Qt::UserRole + 4, "entries"},       {Qt::UserRole + 5, "isDraft"}, {Qt::UserRole + 6, "targetSource"},
+            {Qt::UserRole + 7, "targetsCsvPath"}};
 }
 
 QVariant
@@ -207,6 +213,39 @@ ScanListsModel::remove(int row) {
 void
 ScanListsModel::touch(int row) {
     update(row, {{"lastHeard", QDateTime::currentSecsSinceEpoch()}});
+}
+
+QStringList
+ScanListsModel::listsReferencingPath(const QString& path) const {
+    QStringList names;
+    if (!path.isEmpty()) {
+        for (const auto& row : m_rows) {
+            if (row.value("targetSource") == "csv" && row.value("targetsCsvPath") == path) {
+                names << row.value("name").toString();
+            }
+        }
+    }
+    return names;
+}
+
+bool
+ScanListsModel::clearCsvPath(const QString& path) {
+    if (listsReferencingPath(path).isEmpty()) {
+        return true;
+    }
+    auto next = m_rows;
+    for (auto& row : next) {
+        if (row.value("targetSource") == "csv" && row.value("targetsCsvPath") == path) {
+            row["targetsCsvPath"] = "";
+            row["isDraft"] = true;
+        }
+    }
+    if (!save(next)) {
+        return false;
+    }
+    m_rows = std::move(next);
+    Q_EMIT dataChanged(index(0), index(count() - 1));
+    return true;
 }
 
 bool

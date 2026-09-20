@@ -51,6 +51,7 @@ Item {
     }
     DiscardDialog {
         id: discardDialog
+        objectName: "wizardDiscardDialog"
     }
     onStepChanged: Navigation.clearInput(wizard.Window.window)
     property int step: 0
@@ -514,24 +515,15 @@ Item {
             wizard.step = 1;
     }
 
-    // No CSV name filter for the trunking-data picks: on Android it becomes a
-    // SAF MIME filter, and the Files app indexes .csv as
-    // text/comma-separated-values — not the text/csv Qt asks for — which greys
-    // out exactly the files the user came to pick.
+    // Audio/IQ source documents keep their existing host import path.
     FileDialog {
         id: fileDialog
-
         onAccepted: {
             var reference = selectedFile.toString();
             var hint = reference.substring(reference.lastIndexOf('/') + 1);
-            if (wizard.pickerTarget === "source") {
-                var path = decoderHost.importContentUri(reference, hint);
-                if (path.length > 0)
-                    wizard.fileText = path;
-                return;
-            }
-            var type = wizard.pickerTarget === "keys" ? (wizard.pickerKeyHex ? "keysHex" : "keysDec") : wizard.pickerTarget;
-            csvImport.begin(reference, hint, type, -1);
+            var path = decoderHost.importContentUri(reference, hint);
+            if (path.length > 0)
+                wizard.fileText = path;
         }
     }
 
@@ -542,8 +534,14 @@ Item {
 
     CsvImportFlow {
         id: csvImport
+        objectName: "wizardCsvImport"
         overlayParent: wizard
         onFinished: function (result) {
+            var target = wizard.pickerTarget;
+            var keyHex = wizard.pickerKeyHex;
+            wizard.pickerTarget = "";
+            wizard.csvNotice = "";
+            wizard.csvNoticeIsProblem = false;
             if (result.error === "cancelled")
                 return;
             if (!result.ok) {
@@ -551,7 +549,7 @@ Item {
                 wizard.csvNoticeIsProblem = true;
                 return;
             }
-            wizard.assignCsvPath(wizard.pickerTarget, result.path, wizard.pickerKeyHex);
+            wizard.assignCsvPath(target, result.path, keyHex);
             if (result.error === "empty") {
                 wizard.csvNotice = qsTr("%1 has no usable rows — check the file format.").arg(result.name);
                 wizard.csvNoticeIsProblem = true;
@@ -729,7 +727,7 @@ Item {
 
                 Column {
                     width: parent.width
-                    visible: wizard.sourceType !== "usb" && wizard.sourceType !== "file"
+                    visible: wizard.sourceType === "rtltcp" || wizard.sourceType === "udp" || wizard.sourceType === "tcp"
                     spacing: 10
 
                     Text {
@@ -741,6 +739,7 @@ Item {
 
                     PlexTextField {
                         id: portField
+                        objectName: "wizardPortField"
                         label: qsTr("Port")
                         error: /^[0-9]+$/.test(text) && Number(text) >= 1 && Number(text) <= 65535 ? "" : qsTr("Enter a port from 1 to 65535.")
                         width: parent.width
@@ -1538,7 +1537,8 @@ Item {
             text: qsTr("Import new file")
             onClicked: {
                 csvSheet.visible = false;
-                fileDialog.open();
+                var type = wizard.pickerTarget === "keys" ? (wizard.pickerKeyHex ? "keysHex" : "keysDec") : wizard.pickerTarget;
+                csvImport.pick(type);
             }
         }
     }

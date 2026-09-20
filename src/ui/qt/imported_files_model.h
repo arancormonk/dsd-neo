@@ -122,7 +122,9 @@ class ImportedFilesModel : public QAbstractListModel {
 
     /** @brief Delete the stored file, then the row. Persists immediately. */
     Q_INVOKABLE QVariantMap channelProfiles(int row) const;
-    Q_INVOKABLE void remove(int row);
+    Q_INVOKABLE bool remove(int row);
+    Q_INVOKABLE bool canRemove(int row) const;
+    Q_INVOKABLE QVariantMap targetPreview(const QString& path) const;
 
     /** @brief One library row as a field map. */
     Q_INVOKABLE QVariantMap get(int row) const;
@@ -150,7 +152,11 @@ class ImportedFilesModel : public QAbstractListModel {
     void countChanged();
 
   private:
+    QVariantMap companionDetails(const CsvBundleImport& bundle) const;
+    QVariantMap companionChoices(const QVariantMap& requirement) const;
     QVariantMap replaceBundle(int replaceRow, const CsvBundleImport& bundle, const QString& type);
+    QString bundleReplacementError(int row, const QString& type) const;
+    bool decoderBusy() const;
 
     struct Row {
         QString name;
@@ -195,7 +201,8 @@ class ImportedFilesModel : public QAbstractListModel {
     static QVariant provenanceRole(const Row& row, int role);
 
     /** @brief Dry-run validate @p path as @p type; false when it cannot be parsed. */
-    static bool validate(const QString& path, const QString& type, int* accepted, int* skipped);
+    static bool validate(const QString& path, const QString& type, int* accepted, int* skipped,
+                         QString* detail = nullptr);
 
     /**
      * @brief Validate an already-stored copy and record a library row for it.
