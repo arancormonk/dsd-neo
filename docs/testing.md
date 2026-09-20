@@ -27,6 +27,69 @@ cmake --build --preset dev-debug -j
 ctest --preset dev-debug --output-on-failure
 ```
 
+### Data-event CRC integrity
+
+`DMR_EVENT_CRC` exercises real header, assembler, application decoder, history and event-file paths:
+strict rejection, marked relaxed recovery, header-chain failures, encrypted notices, UDT text detail
+lines, a BPTC-encoded RAS-shaped header, slot isolation and clean subsequent packets. Its unchanged
+MNIS LRRP vector comes from [DSD-FME issue 283](https://github.com/lwvmobile/dsd-fme/issues/283).
+The 46 received octets end in CRC `0FE81D14`; the two extra zero octets in that issue's dump are buffer
+fill. The former CRC span computes `FF38D9C7`, while the corrected span matches the transmitted value.
+A one-bit payload mutation must not publish in strict mode.
+
+The MNIS coverage follows the independent
+[node-dmr-lib assembler](https://github.com/rick51231/node-dmr-lib/blob/2a6579e3d3af8f0fde529028962d8fa0e89d2d1d/src/DMR/Util/DataBlock.js):
+omit the first three proprietary-header octets and the octet immediately before CRC32; the stored
+header already excludes CRC16. This is proprietary-format evidence, not an ETSI definition of MNIS.
+Ordinary DMR CRC32 and the separate UDT header/message CRC16 domains follow
+[ETSI TS 102 361-1 V2.6.1](https://www.etsi.org/deliver/etsi_ts/102300_102399/10236101/02.06.01_60/ts_10236101v020601p.pdf),
+§§8.2.2 and B.3.8–B.3.9, corroborated by
+[node-dmr-lib CRC32](https://github.com/rick51231/node-dmr-lib/blob/master/src/Encoders/CRC32.js)
+and [MMDVMHost CRC-CCITT](https://github.com/g4klx/MMDVMHost/blob/master/CRC.cpp).
+
+`P25_P1_MDPU_HELPERS` covers both packet rates, header versus packet failures, and CRC9-only failures
+with a passing packet CRC32. Those domains are distinct in
+[TIA-102.BAAA-A](https://qsl.net/kb9mwr/projects/dv/apco25/TIA-102-BAAA-A-Project_25-FDMA-Common_Air_Interface.pdf),
+§§6.2–6.4, and independently in
+[SDRTrunk's confirmed blocks](https://github.com/DSheirer/sdrtrunk/blob/master/src/main/java/io/github/dsheirer/module/decode/p25/phase1/message/pdu/block/ConfirmedDataBlock.java).
+`CORE_CALL_ALERT_HISTORY` covers marker placement, warning severity, long notices, detail lines and
+delayed/reacquired voice history. Strict suppression is decoder policy, not a specification requirement
+for passive-receiver user interfaces. A failed standard CRC can also be intentional:
+[Motorola's private-CRC patent](https://patents.google.com/patent/US8914699B2/en) and
+[independent RAS documentation](https://cwh050.mywikis.wiki/wiki/Restricted_Access_to_System) explain why
+suspected RAS is marked as a failed check rather than asserted to be corrupted or authenticated.
+
+### Known-key MBE playback
+
+`CORE_KEY_DIRECT` also checks recovered AMBE plaintext for all-zero RC4, AES-128 and AES-256 keys through CLI,
+typed live commands and legacy live commands, in both slots. `UI_KEY_CLEANUP` observes production volatile erasure
+while handler and TYT buffers are still alive.
+
+`UI_QT_ANDROID_HOST` runs Android host lifecycle publication with a desktop transport fixture. `ANDROID_LOCATION_JVM`
+runs the production Kotlin location broker and geocoder queue with deterministic platform stubs, without an Android
+build or emulator. It uses `kotlinc` or a cached Gradle Kotlin compiler plus Java; missing tools skip the CTest entry.
+Android CI runs `python3 tests/android/run_location_tests.py --require-tools` after its APK build, when the compiler
+is cached. Qt persistence tests use disposable directories and do not require a writable home on Linux.
+
+`CORE_MBE_FILE_IO` checks decrypted AMBE payloads, not merely output-file existence. Its NXDN vectors come
+from [NXDN TS 1-D v1.3](https://www.qsl.net/kb9mwr/projects/dv/nxdn/NXDN-TS-1-D_v0103.pdf),
+§§7.2.1.1–7.2.1.3: every EHR frame decrypts to the published 1031 Hz tone. Scrambler repetitions cover the
+16-frame reset; DES/AES cover the 32-frame session. Missing-IV, changed-to-unloaded-key, manual-key versus
+stale-CSV, and skipped-SACCH cases defend against stale crypto context and incorrect positioning.
+
+The DMR AES-128/256 and RC4 excerpts come from the Baofeng DM-32 recordings in
+[known-key-mbe-samples](https://github.com/tylerwatt12/known-key-mbe-samples/tree/2e15b86e305b7a3c71d52873518e2908747f6e09).
+The tests compare exact plaintext voice bits independently checked with OpenSSL-backed AES/OFB and an
+[RFC 6229](https://www.rfc-editor.org/rfc/rfc6229)-checked RC4 reference, both with serialized MI metadata and
+with MI recovered from the preceding superframe's Golay/CRC-protected fragments. A late-arriving AES algorithm
+without an IV must not corrupt the keyring or the plaintext of subsequent valid frames. The short vectors
+are embedded in the test; running it requires neither a network nor a radio.
+
+For full-capture verification, replay the repository's `encrypted.mbe` and `encrypted_legacy.mbe` files with
+their supplied keys using the CLI examples in [cli.md](cli.md). Compare decrypted frame logs as well as audio:
+PCM need not be byte-identical across vocoder versions or synthesis histories. These exports validate playback
+and crypto, not RF reception or demodulator sensitivity.
+
 ### Full-chain modulation decode tests
 
 The `DECODE_IQ_*` cases (CTest label `iq-decode`) are end-to-end regression
@@ -270,7 +333,8 @@ touches a `USE_RADIO` guard:
 
 ```sh
 cmake --preset dev-debug -DDSD_ENABLE_RTLSDR=OFF -DDSD_REQUIRE_RTLSDR=OFF \
-  -DDSD_ENABLE_SOAPYSDR=OFF -DDSD_REQUIRE_SOAPYSDR=OFF
+  -DDSD_ENABLE_SOAPYSDR=OFF -DDSD_REQUIRE_SOAPYSDR=OFF \
+  -DDSD_ENABLE_AIRSPY=OFF -DDSD_REQUIRE_AIRSPY=OFF
 cmake --build --preset dev-debug -j
 ctest --preset dev-debug --output-on-failure
 ```
@@ -312,6 +376,13 @@ tools/replay_ab.sh --capture ~/captures/nxdn.json --mode -fi --reps 12 \
     --out /tmp/ab /tmp/dsd-neo.before /tmp/dsd-neo.after
 tools/replay_ab_report.py /tmp/ab/summary.tsv
 ```
+
+For a declared channel mode, build `dsd-neo_test_scan_mode_replay` and pass it as the comparison binary.
+This test-only host parses the real `-C` map, prepares and enters row zero through the production scoped-mode
+API, and asserts the override before starting the real engine. It leaves scanner retuning disabled because the
+I/Q replay API rejects live retunes. For example, compare native `-fi` with a map whose first row declares
+`nxdn48`, using `--mode "-fi -Z -C /path/to/map.csv"` for both binaries. The baseline ignores the optional mode
+column. `DECODE_IQ_SCAN_*` additionally tests overrides from global presets that exclude the declared class.
 
 Reading it:
 
@@ -416,3 +487,10 @@ Fuzz-facing changes should run bounded libFuzzer smoke passes:
 ```sh
 tools/fuzz_smoke.sh
 ```
+
+Scoped scanning options are covered by `RUNTIME_SCAN_OPTIONS` and `CORE_SCAN_PROFILE`, plus conventional/trunk tune
+boundary regressions (option-only rows, policy edits beneath a staged tune, keyring changes in the tune window, a
+failed key preparation mid-rotation, per-target voice-gate intervals), CLI conflict/off-switch checks, and terminal
+loaded-key/redaction tests. The production MBE
+regression exercises clear and Motorola BP frames on both slots, with normal signalling and explicit forcing.
+`CORE_SCAN_PROFILE` tests actual group-store ownership; scanner hosts that stub group policy use `scan_group_stubs.c`.

@@ -1,9 +1,14 @@
 # CSV Input Formats
 
-DSD-neo uses small, purpose-built CSV importers for trunking helpers (channel maps, group lists) and key lists. These
-parsers are intentionally minimal and **not** full RFC 4180 CSV parsers.
+DSD-neo uses small, purpose-built CSV importers for trunking helpers (channel maps, group lists), source ID
+labels, and key lists. These parsers are intentionally minimal and **not** full RFC 4180 CSV parsers.
 
 If you want known-good starting points, see `examples/` in the repository.
+
+Group, source, key, and P25 band-plan CSVs consume each physical line in full. Lines over 998 content bytes
+(excluding LF/CRLF) or containing NUL are skipped once, without interpreting their tails as extra rows.
+The mapping importers (DMR TG-to-key and Vertex keystream) reject such data rows and retain the previous mapping.
+Channel maps retain their support for longer rows with mode/key options; a NUL byte rejects the import.
 
 ## General Rules (Unless A Format Says Otherwise)
 
@@ -11,8 +16,8 @@ If you want known-good starting points, see `examples/` in the repository.
 - Fields are split on literal commas (`,`). Quoting/escaping is **not supported**.
   - Do not include commas inside a field.
 - Avoid blank lines and comment-only lines (they may be parsed as data).
-- Extra columns after the required ones are ignored, except where a format names an optional column by header (the
-  channel map's `name`). Use the rest for notes/labels.
+- Extra columns after the required ones are ignored, except where a format names an optional column by header (such as
+  a channel map's `name` or key columns). Use the rest for notes/labels.
 - Imported text fields are copied into fixed-size runtime buffers. Keep short fields concise; long `mode` and `name`
   values are truncated in runtime display/policy state.
 
@@ -20,14 +25,15 @@ If you want known-good starting points, see `examples/` in the repository.
 
 The Android app does not take CLI flags directly. Import CSVs through the UI instead: **Settings → Imported files**
 manages the library (import, update, remove), and the add/edit-system wizard's **Trunking data** panel assigns a
-channel map, talkgroup list, or key file to a system. Files are picked with the system document picker and copied into
-app-private storage (`files/imports/`), so the original can live anywhere (Downloads, Drive, …) and is not read again
+channel map, talkgroup list, key file, P25 band plan, or source ID list (**Radio IDs**, kind `src`) to a system.
+Files are picked with the system document picker and copied into app-private storage (`files/imports/`), so the
+original can live anywhere (Downloads, Drive, …) and is not read again
 after import — use "Update from file" to pull in a changed original. Each import is validated immediately and the row
 shows how many entries loaded ("412 talkgroups · 3 rows skipped"); a file whose rows all fail to parse is flagged
-"No usable rows". While a session is running, long-press its title on the monitor screen to edit that system; saving
+"No usable rows". While a session is running, open the monitor's session menu and choose **Edit saved system**; saving
 applies the files that changed to the live session immediately, including clearing a field to "None" — that unloads the
-channel map, talkgroup list or keys from the running session. One limit is worth knowing: the gesture only works for a
-session this app instance started (after the Activity is recreated while the service kept running, there is no
+channel map, talkgroup list, keys, or source ID list from the running session. This action is available
+only for a session this app instance started (after the Activity is recreated while the service kept running, there is no
 saved-system row to write back to).
 
 Applying a channel map **replaces** the live one rather than merging into it, so anything the decoder learned on the
@@ -37,7 +43,9 @@ until the site announces it again.
 The library validates against the kind you picked, by content rather than by file name. A channel map and a decimal key
 file share the same `number,number` grammar and the header line is free text, so what separates them is the frequency
 column: picking a key list as a channel map reports "No usable rows". Two files of the same kind are still
-indistinguishable — nothing stops one site's map being picked for another.
+indistinguishable — nothing stops one site's map being picked for another. A group list (`id,mode,name`) and a
+source ID list (`id,name`) are not distinguishable by content either; the library validates against the kind you
+picked, so select **Radio IDs** for a source ID list.
 
 Programmatic validation uses the same dry-run parser: `dsd_csv_validate_*` in `<dsd-neo/core/csv_validate.h>` reports
 accepted/skipped/total row counts without touching live decoder state.
@@ -47,14 +55,14 @@ accepted/skipped/total row counts without touching live decoder state.
 The RadioReference import (`docs/radioreference-import.md`) writes into the same library through the same validator,
 and its files are ordinary CSVs in the formats below — nothing reads them differently. Two things distinguish them:
 
-- **Their header line names its origin.** `DEC,Mode,Name (generated from RadioReference)` for a group list; a
+- **Their header line names its origin.** `DEC,Mode,Name,Category,(generated from RadioReference)` for a group list; a
   trunked channel map gets `ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this
   line)`. A **conventional** channel map's header differs —
   `ChannelNumber(dec),frequency(Hz),name,(generated from RadioReference; do not delete this line)` — because its
   third field is exactly `name`, which is what opts every row into the channel map's optional name column (see
   below); a trunked map has no per-channel name to offer, so its header stays two-field and the note stays free
-  text. Both parsers discard physical line 1 unconditionally, so the text is for humans — but deleting it eats the
-  first data row.
+  text. Headers are required: group categories and conventional channel names opt in through named columns,
+  while deleting the header causes the parser to consume the first data row as the header.
 - **Their library row records provenance**, so the file can be re-fetched later. In
   `files/imported_files.json` those rows carry five extra keys beyond the ordinary
   `name`/`path`/`type`/`importedAt`/`accepted`/`skipped`: `origin` (`"radioreference"`), `rrSid` (the RadioReference
@@ -88,28 +96,53 @@ Notes:
   reach. A row outside it (including `0`) is skipped with a warning, and its slot in the LCN list below is left at 0 so
   later rows keep their LCN numbers. This is what tells a channel map apart from a decimal key list, which has the same
   `number,number` shape.
-- Extra columns are ignored; use them for labels like "default CC". Column 3 is one of them unless the header line
-  names it: a header whose third field is `name` (any capitalisation, surrounding spaces allowed) turns column 3 into
-  a channel name for every row of the file. This opt-in keeps the older maps working - two of the examples shipped in
-  `examples/` put a comma inside their third column, which a name column could not hold.
+- Optional headers after the two required columns are matched case-insensitively, with surrounding whitespace
+  trimmed: `name`, `mode`, `keys_hex_csv`, `keys_dec_csv`, `single_key_hex`, `single_key_dec`, and `options` (`relevant_CLI_switches`). They may appear in
+  any order, including after column 16. Unrecognized columns are ignored. The first `name` column wins; duplicate
+  `mode`, key, or `options` headers reject the file, including `options` repeated through its
+  `relevant_CLI_switches` alias. This preserves legacy free-text note columns, including notes with commas.
+- Channel-map headers and data rows are read in full up to 1 MiB (including the line ending and terminating NUL).
+  Longer rows reject the import with an error; they are never split into additional channels.
+- `mode` accepts `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, and `m17`, case-insensitively and trimmed.
+  Empty or missing values inherit the configured global decoder settings. Invalid nonempty values reject the import
+  with file and row diagnostics, including on rows whose channel number is invalid.
+- Under `-Y`, a declared mode selects its decoder class even when the global preset excludes it. P25 enables both
+  phases and excludes DMR and X2-TDMA. Fully declared mixed lists work without `-fa`; untyped lists retain their
+  existing behavior. The initial input uses global settings until the first scheduled row entry. Explicit global
+  modulation locks remain effective. Manual `L` cycling and avoid/advance use the same row-entry rules and visit
+  same-frequency rows with different metadata. Zero-frequency placeholders change neither the mode nor keys.
+  An NXDN48 row needs only `mode=nxdn48`, not an outer `-fi` or a decoder switch in `options`. Audio keeps the
+  startup output layout; mono voice is duplicated into both channels when that layout is stereo.
+- Modes are stored by scan-list slot: duplicate channel numbers and repeated frequencies remain distinct rows.
+  Trunk-scan target `type` is authoritative; `mode` values inside a target's `chan_csv` are validated and discarded.
 - A `name` is trimmed of surrounding whitespace, capped at 63 bytes (never splitting a UTF-8 character), and must not
   contain a comma. It is stored per row of the LCN list below, so a row whose frequency was skipped keeps its name and
   the rest stay aligned. A row whose *channel number* does not parse is different: it takes no LCN slot at all, so it
   stores no name either.
 - A row skipped for an unusable frequency keeps its name in the file's numbering but is never shown, because the
   scanner parks on the frequency it is already on rather than tuning such a row.
-- Two more optional columns carry per-row keys for the `-Y` scanner: `keys_hex_csv` (loaded like `-K`) and
+- Two optional columns carry per-row key files for the `-Y` scanner: `keys_hex_csv` (loaded like `-K`) and
   `keys_dec_csv` (loaded like `-k`). They opt in by header name at any column position past the frequency (like
   `name`, matched case-insensitively); a duplicated key header rejects the file. A row may fill both columns;
   they load into one per-row key set.
 - Each key cell names a key file path, resolved relative to the channel map. Blank cells store nothing, and a row
-  whose channel number does not parse takes no slot and stores nothing. Paths cannot contain commas: the splitter
-  does no quote handling.
+  whose channel number does not parse takes no slot and stores nothing. A file-only key path on such a row is not
+  opened. Paths cannot contain commas: the splitter does no quote handling.
+- `single_key_dec` embeds the `-b` Motorola Basic Privacy key number directly in a row. It accepts unsigned decimal
+  `0..255`. `single_key_hex` embeds the `-H` key: an optional leading `0x`, embedded ASCII whitespace, and exactly
+  10, 32, or 64 hexadecimal digits are accepted. Both direct columns may be filled together. They are also matched
+  case-insensitively at any position past the frequency.
+- A row must choose one source family: any nonblank `single_key_dec`/`single_key_hex` value together with a nonblank
+  `keys_dec_csv`/`keys_hex_csv` path rejects the import. This source conflict and direct-key syntax are validated even
+  when the channel number does not parse, although that row still takes no slot. Blank direct cells are absent; an
+  explicit decimal `0` or an all-zero hex key is present. A direct-key row installs a complete replacement key set,
+  so scalar key families not supplied by that row and all file-backed keyring entries are cleared while it is active.
 - Row keys take effect only under `-Y`: hopping onto a keyed row installs its set, hopping back onto an unkeyed
   row restores the global keys. Under plain trunking `-C` they are stored but never applied (one warning); under
   trunk-scan per-target `chan_csv` they are discarded, like `name`.
-- Validation opens the key files, so an unloadable key path fails validation. The Qt/Android picker flow (which
-  copies files) does not support per-row key files.
+- Validation opens key files and validates direct values, so an unloadable path or malformed direct key fails the
+  import. Diagnostics name the field but never repeat a direct key value. The Qt/Android picker flow supports direct
+  values because they are embedded in the copied channel map; it does not copy companion per-row key files.
 - Where a name shows: the end of the `-Y` conventional scanner's **Scan Mode** row, a `Channel:` line at the top of
   the Call Info panel, and as a prefix on the event history rows recorded while that channel is tuned. Encrypted
   traffic that reports no talkgroup still says which channel it was heard on. While a `--trunk-scan` target is on
@@ -144,19 +177,115 @@ channel,frequency_hz,name
 2,462587500,GMRS 2
 ```
 
-Example with per-row keys (`examples/conventional_scan_keyed.csv`):
+Example with file-backed and direct per-row keys (`examples/conventional_scan_keyed.csv`):
 
 ```csv
-channel,frequency_hz,name,keys_hex_csv,keys_dec_csv
-1,462562500,System A,multi_key_hex.csv,
-2,462587500,System B,,multi_key.csv
-3,462612500,Shared,,
+channel,frequency_hz,name,keys_hex_csv,keys_dec_csv,single_key_dec,single_key_hex
+1,462562500,System A,multi_key_hex.csv,,,
+2,462587500,System B,,multi_key.csv,,
+3,462612500,Shared,,,1,0000001F00
 ```
+
+### Scoped row options
+
+Channel maps and trunk-scan targets accept an optional `options` column. `relevant_CLI_switches` is an alias;
+headers match case-insensitively and naming both rejects the file. Combine `mode` and `options` in the same map
+(`examples/conventional_scan_options.csv`); run it with `-Y -C examples/conventional_scan_options.csv`.
+
+Options are parsed once when the list is loaded. They are a restricted argument list, with the following switches:
+
+| Switch | Meaning and accepted modes |
+| --- | --- |
+| `-b <decimal>` | Motorola BP number, `0..255`; DMR. |
+| `-H <hex>` | Hytera/AES key; DMR accepts 10/32/64 digits, P25 32/64, NXDN 64. |
+| `-1 <hex>` | Direct RC4/DES key, 1..16 digits; DMR/P25/NXDN. |
+| `-R <decimal>` | Direct scrambler key, `0..32767`; NXDN/dPMR. |
+| `-k <file>`, `-K <file>` | Decimal/hex key files; DMR/P25/NXDN. |
+| `-G <file>` | Group names and policy for this row or system. |
+| `-4` | Force loaded privacy keys over signalling; DMR/NXDN. |
+| `-0`, `--dmr-force-algid <hex>` | DMR algorithm fallback when identifiers are missing. `-0` means ALGID `21`. |
+| `-F` | Relax CRC checks; DMR/P25/M17. |
+| `-^` | Prefer learned P25 control-channel candidates for this target; P25. Restores the configured default on target exit. |
+| `--strict-crc` | Restore strict CRC checks; all modes, including inherited mode. |
+| `--no-force-key` | Disable privacy forcing and algorithm fallback for this row. |
+| `-e`, `--no-data-calls` | Enable/disable data-call tuning and conventional data-header holds; all modes. |
+| `--enc-lockout`, `--enc-follow` | Disable/enable encrypted-call following; all modes. |
+| `--scan-voice-only`, `--no-scan-voice-only` | Enable/disable the conventional voice gate. |
+| `--scan-voice-qualify-ms`, `--scan-voice-hold-ms` | Conventional voice-gate intervals, `100..600000` milliseconds. |
+| `--scan-max-visit-ms <ms>` | Maximum time on this row or target per visit; `0` disables the cap for it, otherwise `1000..3600000` milliseconds. All modes, and every trunk-target type. |
+
+Protocol-specific options require a declared `mode`; trunk targets use their `type`. A channel map whose rows carry
+`options` but no `mode` still runs through the typed scanner (blank rows inherit the configured decoder), since the
+legacy `-Y` scanner applies row keys but not row options, so a legacy list always uses the global
+`--scan-max-visit-ms`. Trunk-system targets reject voice-gate options: their existing `dwell_ms` and
+`activity_hold_ms` columns retain their roles, while a conventional target's voice-gate intervals replace those two
+columns while the gate is on (see `docs/trunk-scan.md`). `--scan-max-visit-ms` is the one scan-timing switch
+trunk-system targets do accept, since the per-visit cap applies to every target type. Input/output, frontend
+selection, decoder flags and scanner-wide `-t` are not accepted in `options`.
+
+Omitted settings inherit the outer CLI/configuration, including forcing. Use `--no-force-key` on a normal mixed
+clear/BP channel when forcing is configured globally. `-b 1` with normal signalling processes clear and BP calls;
+`-4` deliberately applies loaded privacy keys even to frames marked clear and can corrupt those clear calls.
+There is no automatic choice between forced Motorola and Hytera privacy.
+
+The existing `single_key_dec` and `single_key_hex` columns load the `-b` and `-H` key values, respectively.
+They do not claim an encrypted-audio mute override by themselves. Direct switches in `options` (`-b`, `-H`,
+`-1`, `-R`) arm decryption for every accepted value, including zero: DMR encrypted-audio mute flags clear,
+and undecodable P25 audio stays muted, matching standalone and live direct-key entry. Material-only columns
+and key CSV files preserve the inherited mute policy. Use `options=-R 1` for a direct NXDN scrambler and
+`options=-1 0123456789` for direct RC4. Loading a key does not itself enable forcing. A
+direct source replaces the row's complete key set; unspecified families and keyring entries are cleared.
+Explicit zero is a supplied value. Direct and file-backed key sources cannot be mixed, including across
+columns and options. Compatible direct families may be combined, but duplicate definitions reject the import.
+
+Within a row, repeated settings reject the import, even with identical values or different switch spellings:
+`-4 -4`, `-b 1 -b 2`, and `-F --strict-crc` are errors. Conflicting force settings also reject the import. The
+only accepted redundancy is one `-0` paired with one `--dmr-force-algid 21`, in either order, because both
+request the same fallback. ALGIDs are hexadecimal, with or without `0x`: `0x00` disables fallback; `0x01` and
+`0x16` are rejected because they are reserved non-algorithm markers internally. Received DMR algorithm/key
+identifiers retain precedence over algorithm fallback.
+
+Separate switches with whitespace; quote an argument with single or double quotes to retain spaces.
+Backslashes are literal, so `-G "C:\Radio Lists\groups.csv"` works without shell escaping. Hex keys may
+include an optional `0x` prefix and whitespace inside a quoted argument. Long switches that take an argument
+also accept `--name=value`; argument-free switches reject it (for example, `--scan-voice-only=yes`). An
+argument must not start with `-`; use `./-name.csv` for a filename that starts with a dash. CSV commas remain
+field separators, including inside quotes. Unknown switches, positional text, malformed quotes and duplicate
+settings are errors. Diagnostics name the row and option without repeating raw option text or key values.
+
+File paths resolve relative to the containing CSV. Key-file paths (`-K`, `-k` and the legacy columns) are
+limited to 2047 bytes for channel maps and 1023 bytes for trunk targets, after resolution and excluding the
+terminating NUL. A `-G` path is limited to 1023 bytes, the same as the global group file it replaces.
+Companion paths in a nonempty `options` cell are resolved and loaded even when the row's channel number is
+invalid and takes no scan slot. Keys and group policies are loaded before scanning starts; switching rows
+never reads these files. A group file row the importer cannot store is skipped with a warning, exactly as for
+a global `-G` import. `-G` replaces the active group policy while parked. Labels and session policy edits
+remain with that row's policy; unconfigured rows use the global policy. Global group imports and scoped
+setting changes from the frontend (forcing, CRC policy, mutes, voice gate) update the saved baseline beneath
+the active row. Changes to inherited settings take effect immediately; explicit row overrides continue to
+apply, and temporary suspension preserves active-call priority bookkeeping. Direct-key menu commands keep editing the live keys while their unmute decision updates the saved
+defaults; an explicit row mute still takes precedence. The existing Relaxed CRC checks menu toggle changes
+frame CRC checks only; it preserves the separately configured DMR CSBK CRC default. Leaving or replacing the
+scan restores that baseline. Frontend configuration saves preserve configured defaults, not temporary row
+overrides.
+
+The Qt/Android picker supports embedded values. Companion files named by `-G`, `-k` or `-K` have the same limitation
+as existing key-file columns: the picker does not copy companion files alongside the imported list.
+
+Declared modes use these symbol profiles:
+
+| Mode | Symbols per second | Levels |
+| --- | ---: | ---: |
+| P25 (both phases) | 4800 and 6000 | 4 |
+| DMR, NXDN96, YSF, M17 | 4800 | 4 |
+| NXDN48, dPMR | 2400 | 4 |
+| D-STAR | 4800 | 2 |
 
 ## Trunk Scan Target CSV (`--trunk-scan <file>` / `[trunk_scan] targets_csv`)
 
-Purpose: Rotate one tuner across explicit P25 trunk, DMR trunk, NXDN trunk, and one-frequency DMR, NXDN96 and
-NXDN48 targets. See
+Purpose: Rotate one tuner across explicit P25 trunk, DMR trunk, NXDN trunk, and one-frequency P25, DMR, NXDN96 and
+NXDN48 conventional targets. Qt/Android can import this format as a playable scan list with a read-only
+preview and privately stored companion files. See
 `docs/trunk-scan.md` for the full setup workflow and troubleshooting guide.
 
 The header must start with this exact prefix:
@@ -175,27 +304,33 @@ Columns:
 | Column | Required | Behavior |
 |--------|----------|----------|
 | `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows, `-J` log lines and the rdio `talkgroup_tag` fallback, and in log messages. Empty or too-long IDs are rejected. |
-| `type` | Yes | One of `p25-trunk`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk`, `nxdn-conventional` (NXDN96, 12.5 kHz), or `nxdn48-conventional` (NXDN48, 6.25 kHz). |
+| `type` | Yes | One of `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), or `nxdn48-conventional` (NXDN48, 6.25 kHz). |
 | `frequency_hz` | Yes | Decimal Hz only. Normal 64-bit builds accept `1..4294967295`; 32-bit builds may reject values above `LONG_MAX`. Do not use `K`/`M`/`G` suffixes in CSV. |
-| `chan_csv` | No | Optional channel-map path for trunk targets. Paths are resolved relative to this CSV. Leave empty for conventional DMR and both conventional NXDN types. |
+| `chan_csv` | No | Optional channel-map path for trunk targets (`p25-trunk`, `dmr-trunk`, `nxdn-trunk`, `nxdn48-trunk`). Paths are resolved relative to this CSV. Leave empty for conventional DMR, P25 and both conventional NXDN types. |
 | `dwell_ms` | No | Per-target idle dwell (`250..600000`). Empty uses `--trunk-scan-dwell-ms` or `[trunk_scan] idle_dwell_ms`. |
-| `activity_hold_ms` | No | Per-target conventional DMR/NXDN (NXDN96 and NXDN48) activity hold (`250..600000`). Empty uses `--trunk-scan-activity-hold-ms` or `[trunk_scan] activity_hold_ms`. |
+| `activity_hold_ms` | No | Per-target conventional DMR/P25/NXDN (NXDN96 and NXDN48) activity hold (`250..600000`). Empty uses `--trunk-scan-activity-hold-ms` or `[trunk_scan] activity_hold_ms`. P25 holds from allowed voice starts, not PDU data; `-e` has no effect on P25 conventional holds. |
 | `notes` | No | Ignored. Use for local notes. |
-| `modulation` | No | Per-target demod hint. Empty preserves global/default handling. `auto` uses target defaults and overrides global `-m` locks for that target. P25 accepts `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. |
+| `modulation` | No | Per-target demod hint. Empty preserves global/default handling. `auto` uses target defaults and overrides global `-m` locks for that target. Both P25 types accept `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. |
 | `rtl_gain` | No | Per-target RTL-family tuner gain. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. Ignored for non-RTL retuning paths. |
 | `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to this CSV. A row may fill both key columns; they load into one per-target key set. Empty uses the global keys. |
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to this CSV. Empty uses the global keys. |
-| `p25_bandplan_csv` | No | Per-target [P25 band plan CSV](#p25-band-plan-csv---p25-bandplan-file--trunking-p25_bandplan_csv) for a `p25-trunk` target, resolved relative to this CSV. The rows are parked in the target's snapshot, so one exported multi-system file can be named on every P25 row: each target seeds only the rows that carry its own WACN/SYS (and rows that carry none). |
+| `single_key_dec` | No | Embedded `-b` Motorola Basic Privacy key number (`0..255`). Explicit `0` is present and overrides the global key. May be combined with `single_key_hex`, but not either key-file column. |
+| `single_key_hex` | No | Embedded `-H` key: optional `0x`, whitespace ignored, exactly 10, 32, or 64 hex digits. May be combined with `single_key_dec`, but not either key-file column. |
+| `options` | No | Scoped switches described above; target `type` determines which protocol options apply. |
+| `p25_bandplan_csv` | No | Per-target [P25 band plan CSV](#p25-band-plan-csv---p25-bandplan-file--trunking-p25_bandplan_csv) for a `p25-trunk` target, resolved relative to this CSV. Leave empty for conventional targets, including `p25-conventional`. The rows are parked in the trunk target's snapshot, so one exported multi-system file can be named on every `p25-trunk` row: each target seeds only the rows that carry its own WACN/SYS (and rows that carry none). |
 
 Validation notes:
 
 - No fixed target-count limit. Each parked target reserves a snapshot of decoder state (~80 KB), and the list is
   capped by a 256 MB budget for those snapshots - a few thousand targets. A CSV past the cap is rejected while
   parsing, with an error naming the budget.
-- Duplicate IDs and duplicate `(type, frequency_hz)` rows are rejected. `nxdn-conventional` and
-  `nxdn48-conventional` are distinct types, so one frequency may appear once as each.
-- `chan_csv` and `p25_bandplan_csv` on conventional (`dmr-conventional`/`nxdn-conventional`/`nxdn48-conventional`)
-  rows are rejected; a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load fails
+- Duplicate IDs and duplicate `(type, frequency_hz)` rows are rejected. `nxdn-trunk`/`nxdn48-trunk` and
+  `nxdn-conventional`/`nxdn48-conventional` are distinct types, so one frequency may appear once as each.
+- Optional column names match ASCII case-insensitively in this format. Duplicate direct-key headers, malformed direct values, and
+  rows that mix a direct value with a key-file path are rejected without echoing the key value.
+- `chan_csv` and `p25_bandplan_csv` on conventional
+  (`p25-conventional`/`dmr-conventional`/`nxdn-conventional`/`nxdn48-conventional`) rows are rejected;
+  a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load fails
   the whole import.
 - Global `-C`/`[trunking] chan_csv` and `--p25-bandplan`/`[trunking] p25_bandplan_csv` are rejected in trunk scan
   mode so channel maps and band plans do not leak across systems.
@@ -208,9 +343,11 @@ Example:
 ```csv
 id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain
 county-p25,p25-trunk,851012500,,3000,,primary P25 control channel,cqpsk,18
+field-p25,p25-conventional,851500000,,1500,1200,one-frequency P25,c4fm,
 city-dmr,dmr-trunk,452012500,dmr_channels.csv,3000,,DMR Tier III control channel,auto,
 plant,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto
 site-nxdn,nxdn-trunk,461037500,,3000,,NXDN Type-C control channel,auto,
+site-nxdn48,nxdn48-trunk,461556250,nxdn_chan_map.csv,3000,,NXDN48 Type-C control channel (6.25 kHz),gfsk,
 field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96 channel,gfsk,
 field-nxdn48,nxdn48-conventional,461556250,,1500,1200,one-frequency NXDN48 (6.25 kHz) channel,gfsk,
 ```
@@ -276,14 +413,17 @@ Purpose: Provide labels and allow/block behavior for talkgroups.
 
 Required columns:
 
-1. `id` (decimal integer; talkgroup ID or radio ID depending on protocol context)
+1. `id` (decimal integer; talkgroup ID or radio ID depending on protocol context). For radio ID names without
+   policy, use the [Source ID List CSV](#source-id-list-csv---src-csv-file--trunking-src_csv) below.
 2. `mode` (string)
 3. `name` (string)
 
 Notes:
 
 - The first line is treated as header text and is required.
-- Basic/default behavior uses only the first 3 columns; extra columns are ignored.
+- Basic/default behavior uses the first 3 columns. A fourth header field named `tag`, `tags`, or `category`
+  (case-insensitive, surrounding whitespace ignored) retains that column as a category; other extra columns,
+  including `metadata`, are ignored. Categories are trimmed and capped at 49 bytes, like names.
 - `mode` is matched literally by features that consult it:
   - `A` usually means allow/normal.
   - `B` and `DE` are treated as locked out.
@@ -298,7 +438,7 @@ Extended policy columns are supported only when the header opts into this exact 
 3. `audio` (`on`/`off`, default from `mode`)
 4. `record` (`on`/`off`, default from `mode`)
 5. `stream` (`on`/`off`, default from `mode`)
-6. `tags` (free text metadata; accepted for notes/round-tripping, not applied to runtime policy)
+6. `tags` (free text category retained for frontend filtering and round-tripping; never a policy condition)
 
 Important behavior:
 
@@ -312,6 +452,46 @@ Important behavior:
 - Exact duplicates preserve first-match behavior.
 - `audio=off` forces `record=off` and `stream=off`.
 - `mode=B`/`DE` forces media fields off regardless of optional values.
+- Android: **TG list** on the live monitor lists configured talkgroups/ranges plus voice talkgroups heard this
+  session that no listed row covers. Tap a card to choose **Listening** (`A`) or **Not tuned** (`B`); the screen
+  waits for the decoder snapshot before showing the change. Search matches names or IDs; category chips use the
+  retained tags (RadioReference imports supply their category names).
+- **Listen all** and **Do not tune all** edit listed rows in the selected category, or every listed row under
+  **All**. Search text does not narrow bulk edits. Learned radio-ID alias rows and mode `D` rows are excluded.
+  In allow-list mode, heard-but-unlisted talkgroups remain blocked until individually allowed.
+- A listening edit preserves a row's name, category, priority and preemption setting, but resets its media flags
+  from the selected mode. By default, the monitor's **Skip** uses the same name-preserving block path.
+- When a group file is configured, edits atomically rewrite that file in table order, preserving ranges and
+  modeled fields. Existing extended policy headers remain extended; otherwise the output is `id,mode,name,tags`
+  when categories exist, or `id,mode,name`. Unmodeled metadata/note columns are discarded. Android rewrites its
+  app-private imported copy, not the original document.
+- A basic group-file header is promoted to the extended policy header when any canonical row has
+  `priority != 0`, `preempt` enabled, or audio/record/stream flags that differ from the mode defaults,
+  so those settings survive saving and reloading even to a new file.
+- The decoder's talkgroup-list export writes the canonical table, including aliases, all modes and ranges,
+  to the requested path. After a successful write, subsequent edits persist there. Export refuses scan-row
+  contexts and stale context/generation pairs, as do row edits after the policy changes.
+  App-control retains the export result separately from toasts: `dsd_app_tg_export_result_get` copies its
+  sequence, success/failure, request context/generation, and destination path. A frontend keeps one export
+  outstanding and waits for a newer matching successful result before registering the file; unrelated
+  commands, toast updates, or session stops cannot erase that result.
+- Without a group file, edits last only for the session. A scan row's own effective list is also edited only
+  in memory, never written into the global group file. If saving fails, the decoder keeps the live edit and
+  reports that it is session-only; the previous file remains intact.
+- `--tg-lockout-session` (or `[trunking] persist_tg_lockouts = false`) makes terminal `!`/`@` and Qt/Android
+  **Skip** temporary avoids. They block tuning and all media without editing policy rows or the file. Later
+  list edits, exports and configuration saves cannot serialize these avoids. `--tg-lockout-persist` restores
+  the default behavior for subsequent lockouts; switching modes never converts existing entries.
+- Qt/Android **Settings → Listening → Save skipped talkgroups** and the terminal **Save user TG lockouts**
+  menu setting take effect immediately. Explicit **Listening**, **Not tuned**, and bulk list edits still
+  modify the canonical list, and temporary avoids continue to override it, including when a talkgroup Hold
+  matches. The TG list shows temporary counts separately from its saved listening controls.
+- Temporary avoids also mark the terminal's active-channel lockout indicator. The preference controls quick
+  user lockouts only; existing over-the-air radio-alias learning can still append alias rows to the groups file.
+- **Clear temporary TG avoids — current list** clears only the active list's temporary avoids. It leaves saved
+  blocks, encryption lockouts, and channel/target avoids intact. Retunes and scan visits preserve avoids;
+  reloading, replacing, or clearing a list resets that scope's avoids. Stopping the decoder clears the session;
+  reopening the Android Activity while its service runs does not.
 
 Example:
 
@@ -328,6 +508,57 @@ id,mode,name,priority,preempt,audio,record,stream,tags
 1201,A,Dispatch 1,80,true,on,on,on,primary
 1202,A,Dispatch 2,40,false,on,off,on,secondary
 1300-1399,A,Ops Range,10,false,on,on,on,wide
+```
+
+## Source ID List CSV (`--src-csv <file>` / `[trunking] src_csv`)
+
+Purpose: Provide names for source radio IDs (unit IDs), shown as `SName:` in event history and in the terminal
+call display: after `SRC:` on the NXDN target/source line, and on the slot's `D XTRA` line beside the talkgroup
+label for DMR and P25 Phase 2. This list supplies labels only, with no allow/block or media policy. Private-call
+destination radio IDs still use the group list.
+
+Required columns:
+
+1. `id` (decimal `uint32_t`, `0..4294967295`; exact `1234567` or inclusive range `2000000-2000999`, using the
+   same grammar as the group list's `id`)
+2. `name` (free text, trimmed and truncated to **49 bytes**; truncation may cut a multi-byte UTF-8 tail)
+
+Optional column:
+
+3. `tags` (free text; accepted and ignored). Further columns are ignored.
+
+Notes:
+
+- The first physical line is always consumed as a header. Blank lines are skipped.
+- A row with fewer than two fields, an unparsable ID or reversed range, or an empty name is warned and skipped.
+- A physical line with more than **998 bytes of content** (excluding its LF or CRLF terminator), or one that contains
+  a NUL byte, is warned, its remainder discarded, and counted as one skipped row. Continuation fragments are never parsed as extra rows,
+  and the following line is not consumed. An overlong header is still consumed as the header and is excluded
+  from the validator's accepted/skipped/total counts, as are all headers and blank lines. It does not emit a
+  skipped-row warning.
+- Exact matches beat ranges; the **first row wins** for duplicate exact IDs. Among ranges, the narrowest
+  range wins, with the **last row winning** equal-width ties, matching the group-list grammar.
+- Names are not CSV-escaped; avoid commas and line breaks in fields.
+- Source labels prefer this list, then fall back to the active group list's **exact-row** label. A CSV alias
+  therefore wins over an OTA talker alias learned for the same RID as the `SName:` label; the OTA alias text itself
+  is kept unchanged. Source `Mode:` still comes only from a group-list exact row, never from this list.
+- Import replaces the current list. A missing or unreadable file, a read error, or an allocation failure fails
+  the import and keeps the current list. All entry points accept zero usable rows as a loaded empty list.
+  At engine startup a source-list load failure logs a warning and decoding continues without imported aliases.
+- Qt/Android call views show the resolved source label alongside its radio ID or callsign; history preserves
+  that label across sessions and includes it in text searches. Talkgroup names remain separate.
+- The list is global, loads even when trunking is disabled, and is allowed with `--trunk-scan`. It survives scan
+  target changes; its group-list fallback follows whichever policy table is active.
+- Terminal: **Trunking → Channels & groups → Import source ID list CSV...** imports the list. There is no terminal
+  clear row. Qt/Android uses the **Radio IDs** kind (`src`) and can clear the list by selecting **None**.
+
+Example (`examples/src.csv`):
+
+```csv
+id,name,tags
+1234567,Engine 21,Fire
+1234568,Ladder 4,Fire
+2000000-2000999,Dispatch consoles,Ops
 ```
 
 ## Decimal Key List CSV (`-k <file>`)
@@ -478,3 +709,75 @@ The `--calc-lcn` one-shot tool is more flexible than the CSV imports above:
 - It scans each line for the first numeric field and treats it as a frequency.
 - Frequencies may be in **Hz** (e.g., `451237500`) or **MHz** (e.g., `451.2375`).
 - The output is printed to stdout as `lcn,freq` CSV.
+
+### Frontend-generated scan lists
+
+Qt/Android scan lists generate the trunk-scan target format described in
+[trunk-scan.md](trunk-scan.md#qt-and-android-scan-lists). Per-system group lists use
+scoped `-G`, and direct keys use scoped `-b`/`-H`/`-1`/`-R` so their activation and
+mute/force semantics match standalone sessions. Key CSVs use `keys_hex_csv` or
+`keys_dec_csv`; frontend generation never uses `single_key_*`.
+
+The generator refuses comma, double quote and line breaks in file paths. Spaces
+are supported: an options cell contains `-G "absolute path/group list.csv"`
+directly, without CSV-doubling those quotes. The engine target parser strips outer
+CSV quotes but does not perform RFC-style doubled-quote unescaping. Generated
+files containing keys are private internal inputs and are not shared exports.
+
+### Scoped decryption maps and companion files
+
+The `options` column of supported conventional channel maps and trunk-scan targets
+accepts `--dmr-tg-key-csv <file>` or `--dmr-tg-key-clear` for DMR rows. Map files are
+resolved relative to the containing CSV, validated before installation, and restored
+with the target's key/force scope on exit. An explicit clear differs from inheritance.
+`--no-decryption-keys` selects an empty key set and rejects simultaneous key material.
+`--key-profile-ref <opaque-id>` carries an optional nonsecret profile revision.
+
+Android channel-map imports copy referenced `keys_hex_csv`, `keys_dec_csv` and
+`-k`/`-K`/`-G`/`--dmr-tg-key-csv` option files into a private bundle and rewrite their
+paths. Target CSV imports also copy channel maps (including their nested companions)
+and P25 band plans. Desktop imports continue resolving existing relative paths beside
+the original document; Android document references use the host's document importer.
+
+When a companion cannot be resolved, the Qt import sheet offers stored library files
+of the required kind, with name and row count, and **Choose a file…**. Decimal and hex
+keys are separate kinds. Basename matches rank first but never silently link a file:
+only a sole candidate with a matching basename is visibly preselected, and the user
+can change it before confirming. Multiple candidates require an explicit choice;
+same-name files of the wrong kind are explained in the sheet. Nested references and
+roles have separate selection identities even when their names match. Each slot
+names its expected kind alongside the reference path, so two roles using the same
+path remain distinguishable. Library choices announce their plain name and checked
+state to accessibility services.
+
+If a desktop file pick identifies a stored library entry of the wrong kind, that
+slot shows the expected and found kinds and becomes unresolved. The sheet stays
+open with the other selections intact, allowing another pick. Android SAF
+`content://` selections have no canonical local path and cannot reach this library
+metadata check; document copying and bundle validation still use the host importer.
+
+Selecting a library entry passes its private stored path to the existing bundle
+stager. At each host-copy boundary, the stager converts absolute local paths to
+`file://` URLs for Android compatibility; existing `file://` and SAF `content://`
+references and the opaque selection identities remain unchanged.
+The stager copies the file into the new bundle revision, rewriting nested paths;
+it neither adopts nor moves the library entry. These independent copies let either
+library entry be removed without breaking the other. The complete bundle is validated
+before registration or replacing an existing map; a rejected update retains the prior
+files. Removing the bundle removes its owned copies. Target replacement and removal
+remain unavailable during an active or transitioning decoder session.
+
+`CsvImportFlow.pick()` (primary picker) and `begin()` (already selected document)
+start an import. `finished(result)` fires exactly once when it succeeds, fails, or
+is cancelled. Cancel, Back/Escape, scrim dismissal, and primary picker rejection
+all complete with `{ok:false, error:"cancelled"}`. Rejecting a companion picker
+clears only that slot and returns to the still-active sheet: it does **not** finish
+the import. The user can choose again or cancel the sheet. Abandoning the flow leaves
+the library unchanged. The Home scan-list shortcut changes the draft to CSV mode only
+after successful import, so cancellation preserves the editor's prior draft and
+clean/dirty state. Cancelling the Home shortcut leaves its new editor in entries
+mode with its initial clean fingerprint; closing it does not ask to discard changes.
+
+The file library also accepts **DMR key mappings** and **Vertex keystreams** as
+separate kinds. Vertex files are used by standalone vendor profiles, not by the
+standard scoped key set. See [decryption profiles](decryption-profiles.md).

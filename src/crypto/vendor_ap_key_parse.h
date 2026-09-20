@@ -70,11 +70,9 @@ static inline int
 dsd_vendor_ap_key_parse_words(dsd_vendor_ap_key* out) {
     const size_t word_count = out->nhex / 16U;
     for (size_t word = 0; word < word_count; word++) {
-        uint64_t value = 0ULL;
-        if (dsd_parse_hex_u64_n((const char*)out->hex + (word * 16U), 16U, &value) != 0) {
+        if (dsd_parse_hex_u64_n((const char*)out->hex + (word * 16U), 16U, &out->words[word]) != 0) {
             return DSD_VENDOR_AP_KEY_INVALID;
         }
-        out->words[word] = value;
     }
 
     return DSD_VENDOR_AP_KEY_OK;

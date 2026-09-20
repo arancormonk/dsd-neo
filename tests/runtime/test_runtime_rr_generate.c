@@ -540,15 +540,17 @@ test_group_csv(void) {
     tg_set(&tgs[5], 400U, "A\r\nB\tC", "", 0);
     tg_set(&tgs[6], 500U, over, "", 0);
     tg_set(&tgs[7], 600U, exact, "", 0);
+    (void)DSD_SNPRINTF(tgs[0].category, sizeof(tgs[0].category), "%s", "Fire");
+    (void)DSD_SNPRINTF(tgs[5].category, sizeof(tgs[5].category), "%s", "  Law,\r\nDispatch  ");
 
     char want[1024];
     (void)DSD_SNPRINTF(want, sizeof(want),
-                       "DEC,Mode,Name (generated from RadioReference)\n"
+                       "DEC,Mode,Name,Category,(generated from RadioReference)\n"
                        "100,A,Lead and trail\n"
                        "200,DE,Description only\n"
                        "250,DE,TG 250\n"
-                       "300,A,Fire/ Dispatch\n"
-                       "400,A,A B C\n"
+                       "300,A,Fire/ Dispatch,Fire\n"
+                       "400,A,A B C,Law/ Dispatch\n"
                        "500,A,%.48s\n"
                        "600,A,%s\n",
                        over, exact);
@@ -584,7 +586,7 @@ test_group_csv(void) {
     tg_set(&partial[1], 260U, "Full", "", 2);
     expect("partial csv generated", dsd_rr_generate_group_csv(partial, 2U, 0, &text, &len, &warnings) == 0);
     expect_str("partial enc kept clear", text,
-               "DEC,Mode,Name (generated from RadioReference)\n"
+               "DEC,Mode,Name,Category,(generated from RadioReference)\n"
                "250,A,Partial\n"
                "260,DE,Full\n");
     free(text);
@@ -1443,12 +1445,38 @@ test_chan_argument_validation(void) {
     dsd_rr_warning_list_free(&warnings);
 }
 
+static void
+test_group_listening_policy(void) {
+    dsd_rr_talkgroup groups[3] = {{0}};
+    for (int i = 0; i < 3; ++i) {
+        groups[i].tg_dec = (uint32_t)(100 + i);
+        groups[i].enc = i;
+    }
+    for (int policy = DSD_RR_TG_KEEP_ENABLED; policy <= DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL; ++policy) {
+        char* text = NULL;
+        size_t length = 0;
+        expect(
+            "explicit policy generates groups",
+            dsd_rr_generate_group_csv_with_policy(groups, 3, (dsd_rr_encrypted_tg_policy)policy, &text, &length, NULL)
+                == 0);
+        if (text != NULL) {
+            expect("clear group always remains enabled", strstr(text, "100,A,") != NULL);
+            expect("partly encrypted policy is explicit",
+                   strstr(text, policy == DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL ? "101,DE," : "101,A,") != NULL);
+            expect("fully encrypted policy is explicit",
+                   strstr(text, policy == DSD_RR_TG_KEEP_ENABLED ? "102,A," : "102,DE,") != NULL);
+        }
+        free(text);
+    }
+}
+
 int
 main(void) {
     test_protocol_table();
     test_protocol_tokens();
     test_classify_strings();
     test_classify_from_fixtures();
+    test_group_listening_policy();
     test_group_csv();
     test_group_csv_fixture();
     test_chan_p25_ranking();

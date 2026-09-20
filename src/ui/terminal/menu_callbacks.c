@@ -11,9 +11,12 @@
 #include "menu_callbacks.h"
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <stdint.h>
@@ -173,6 +176,18 @@ cb_import_group(void* v, const char* p) {
 }
 
 void
+cb_import_src(void* v, const char* p) {
+    const UiCtx* c = mutable_ui_ctx_from_callback(v);
+    if (!c) {
+        return;
+    }
+    if (p && *p) {
+        (void)dsd_app_command_set_string(DSD_APP_CMD_IMPORT_SRC_LIST, p);
+        ui_statusf("Importing source ID list...");
+    }
+}
+
+void
 cb_import_p25_bandplan(void* v, const char* p) {
     const UiCtx* c = mutable_ui_ctx_from_callback(v);
     if (!c) {
@@ -303,8 +318,14 @@ cb_config_save_as(void* v, const char* path) {
         ui_statusf("Config save canceled");
         return;
     }
+    const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    if (!opts_snapshot || !snapshot) {
+        ui_statusf("Decoder settings are not available yet");
+        return;
+    }
     dsdneoUserConfig cfg;
-    dsd_snapshot_opts_to_user_config(c->opts, c->state, &cfg);
+    dsd_snapshot_opts_to_user_config(opts_snapshot, snapshot, &cfg);
     if (dsd_user_config_save_atomic(path, &cfg) == 0) {
         ui_submit_config_metadata(1, path);
         ui_statusf("Config saved to %s", path);

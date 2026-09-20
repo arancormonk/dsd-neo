@@ -4,22 +4,75 @@
  */
 
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <stdint.h>
+#include <string.h>
 
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/enc_lockout.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/runtime/log.h>
 
 #include <stdlib.h>
 
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
+#include "key_set_internal.h"
+
+#ifdef DSD_NEO_TEST_HOOKS
+static long key_set_alloc_fail_after = -1;
+void dsd_key_set_test_alloc_fail_after(long count);
+
+void
+dsd_key_set_test_alloc_fail_after(long count) {
+    key_set_alloc_fail_after = count;
+}
+#endif
+
+static dsd_key_set_entry*
+key_set_alloc_entries(size_t count) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (key_set_alloc_fail_after == 0) {
+        return NULL;
+    }
+    if (key_set_alloc_fail_after > 0) {
+        key_set_alloc_fail_after--;
+    }
+#endif
+    return (dsd_key_set_entry*)calloc(count, sizeof(dsd_key_set_entry));
+}
 
 static size_t
 key_set_capacity(void) {
     return sizeof(((dsd_state*)0)->rkey_array) / sizeof(((dsd_state*)0)->rkey_array[0]);
+}
+
+void
+dsd_key_state_secure_wipe(dsd_state* state) {
+    if (state == NULL) {
+        return;
+    }
+    DSD_SECURE_ZERO(state->scalar_key_present, sizeof state->scalar_key_present);
+    state->basic_key_present = 0;
+    DSD_SECURE_ZERO(state->rkey_array, sizeof(state->rkey_array));
+    DSD_SECURE_ZERO(state->rkey_array_loaded, sizeof(state->rkey_array_loaded));
+    DSD_SECURE_ZERO(state->aes_key, sizeof(state->aes_key));
+    DSD_SECURE_ZERO(&state->K, sizeof(state->K));
+    DSD_SECURE_ZERO(&state->K1, sizeof(state->K1));
+    DSD_SECURE_ZERO(&state->K2, sizeof(state->K2));
+    DSD_SECURE_ZERO(&state->K3, sizeof(state->K3));
+    DSD_SECURE_ZERO(&state->K4, sizeof(state->K4));
+    DSD_SECURE_ZERO(&state->R, sizeof(state->R));
+    DSD_SECURE_ZERO(&state->RR, sizeof(state->RR));
+    DSD_SECURE_ZERO(&state->H, sizeof(state->H));
+    DSD_SECURE_ZERO(state->A1, sizeof(state->A1));
+    DSD_SECURE_ZERO(state->A2, sizeof(state->A2));
+    DSD_SECURE_ZERO(state->A3, sizeof(state->A3));
+    DSD_SECURE_ZERO(state->A4, sizeof(state->A4));
 }
 
 static void
@@ -31,6 +84,8 @@ key_scalars_capture(dsd_key_scalars* out, const dsd_state* state) {
     out->K4 = state->K4;
     out->R = state->R;
     out->RR = state->RR;
+    DSD_MEMCPY(out->scalar_key_present, state->scalar_key_present, sizeof out->scalar_key_present);
+    out->basic_key_present = state->basic_key_present;
     out->H = state->H;
     out->hytera_key_segments = state->hytera_key_segments;
     DSD_MEMCPY(out->A1, state->A1, sizeof(out->A1));
@@ -39,6 +94,7 @@ key_scalars_capture(dsd_key_scalars* out, const dsd_state* state) {
     DSD_MEMCPY(out->A4, state->A4, sizeof(out->A4));
     DSD_MEMCPY(out->aes_key_loaded, state->aes_key_loaded, sizeof(out->aes_key_loaded));
     DSD_MEMCPY(out->aes_key_segments, state->aes_key_segments, sizeof(out->aes_key_segments));
+    DSD_MEMCPY(out->aes_key, state->aes_key, sizeof(out->aes_key));
 }
 
 static void
@@ -50,6 +106,8 @@ key_scalars_install(dsd_state* state, const dsd_key_scalars* in) {
     state->K4 = in->K4;
     state->R = in->R;
     state->RR = in->RR;
+    DSD_MEMCPY(state->scalar_key_present, in->scalar_key_present, sizeof state->scalar_key_present);
+    state->basic_key_present = in->basic_key_present;
     state->H = in->H;
     state->hytera_key_segments = in->hytera_key_segments;
     DSD_MEMCPY(state->A1, in->A1, sizeof(state->A1));
@@ -58,6 +116,7 @@ key_scalars_install(dsd_state* state, const dsd_key_scalars* in) {
     DSD_MEMCPY(state->A4, in->A4, sizeof(state->A4));
     DSD_MEMCPY(state->aes_key_loaded, in->aes_key_loaded, sizeof(state->aes_key_loaded));
     DSD_MEMCPY(state->aes_key_segments, in->aes_key_segments, sizeof(state->aes_key_segments));
+    DSD_MEMCPY(state->aes_key, in->aes_key, sizeof(state->aes_key));
 }
 
 int
@@ -74,7 +133,7 @@ dsd_key_set_capture(dsd_key_set* out, const dsd_state* state) {
     }
     dsd_key_set_entry* entries = NULL;
     if (count > 0) {
-        entries = (dsd_key_set_entry*)calloc(count, sizeof(*entries));
+        entries = key_set_alloc_entries(count);
         if (entries == NULL) {
             dsd_key_set_free(out);
             return -1;
@@ -95,6 +154,8 @@ dsd_key_set_capture(dsd_key_set* out, const dsd_state* state) {
     out->present = 0;
     out->keyloader = state->keyloader;
     key_scalars_capture(&out->scalars, state);
+    DSD_MEMCPY(out->profile_ref, state->key_profile_ref, sizeof(out->profile_ref));
+    out->profile_ref[sizeof(out->profile_ref) - 1U] = '\0';
     return 0;
 }
 
@@ -118,6 +179,8 @@ dsd_key_set_install(dsd_state* state, const dsd_key_set* ks) {
     }
     state->keyloader = ks->keyloader;
     key_scalars_install(state, &ks->scalars);
+    DSD_MEMCPY(state->key_profile_ref, ks->profile_ref, sizeof(state->key_profile_ref));
+    state->key_profile_ref[sizeof(state->key_profile_ref) - 1U] = '\0';
 }
 
 int
@@ -133,7 +196,7 @@ dsd_key_set_copy(dsd_key_set* dst, const dsd_key_set* src) {
         if (src->entries == NULL) {
             return -1;
         }
-        entries = (dsd_key_set_entry*)calloc(src->count, sizeof(*entries));
+        entries = key_set_alloc_entries(src->count);
         if (entries == NULL) {
             return -1;
         }
@@ -145,7 +208,52 @@ dsd_key_set_copy(dsd_key_set* dst, const dsd_key_set* src) {
     dst->present = src->present;
     dst->keyloader = src->keyloader;
     dst->scalars = src->scalars;
+    DSD_MEMCPY(dst->profile_ref, src->profile_ref, sizeof(dst->profile_ref));
     return 0;
+}
+
+static int
+key_scalar_words_equal(const dsd_key_scalars* a, const dsd_key_scalars* b) {
+    return a->K == b->K && a->K1 == b->K1 && a->K2 == b->K2 && a->K3 == b->K3 && a->K4 == b->K4 && a->R == b->R
+           && a->RR == b->RR && a->H == b->H && a->hytera_key_segments == b->hytera_key_segments
+           && a->basic_key_present == b->basic_key_present && a->scalar_key_present[0] == b->scalar_key_present[0]
+           && a->scalar_key_present[1] == b->scalar_key_present[1];
+}
+
+static int
+key_scalar_slot_equal(const dsd_key_scalars* a, const dsd_key_scalars* b, size_t slot) {
+    return a->A1[slot] == b->A1[slot] && a->A2[slot] == b->A2[slot] && a->A3[slot] == b->A3[slot]
+           && a->A4[slot] == b->A4[slot] && a->aes_key_loaded[slot] == b->aes_key_loaded[slot]
+           && a->aes_key_segments[slot] == b->aes_key_segments[slot];
+}
+
+static int
+key_scalars_equal(const dsd_key_scalars* a, const dsd_key_scalars* b) {
+    if (!key_scalar_words_equal(a, b)) {
+        return 0;
+    }
+    for (size_t i = 0; i < 2U; i++) {
+        if (!key_scalar_slot_equal(a, b, i)) {
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < sizeof(a->aes_key); i++) {
+        if (a->aes_key[i] != b->aes_key[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+key_entries_equal(const dsd_key_set* a, const dsd_key_set* b) {
+    for (size_t i = 0; i < a->count; i++) {
+        if (a->entries[i].index != b->entries[i].index || a->entries[i].value != b->entries[i].value
+            || a->entries[i].loaded != b->entries[i].loaded) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 int
@@ -156,21 +264,398 @@ dsd_key_set_equal(const dsd_key_set* a, const dsd_key_set* b) {
     if (a == b) {
         return 1;
     }
-    if (a->present != b->present || a->keyloader != b->keyloader || a->count != b->count) {
+    if (a->present != b->present || a->keyloader != b->keyloader || a->count != b->count
+        || strncmp(a->profile_ref, b->profile_ref, sizeof(a->profile_ref)) != 0
+        || !key_scalars_equal(&a->scalars, &b->scalars)) {
         return 0;
     }
-    for (size_t i = 0; i < a->count; i++) {
-        if (a->entries[i].index != b->entries[i].index || a->entries[i].value != b->entries[i].value
-            || a->entries[i].loaded != b->entries[i].loaded) {
-            return 0;
-        }
+    if (a->count > 0U && (a->entries == NULL || b->entries == NULL)) {
+        return 0;
     }
-    return 1;
+    return key_entries_equal(a, b);
 }
 
 static int
 key_set_path_empty(const char* path) {
     return path == NULL || path[0] == '\0';
+}
+
+static int
+key_set_is_ascii_space(unsigned char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+}
+
+static int
+key_set_text_present(const char* text) {
+    if (text == NULL) {
+        return 0;
+    }
+    while (*text != '\0') {
+        if (!key_set_is_ascii_space((unsigned char)*text)) {
+            return 1;
+        }
+        text++;
+    }
+    return 0;
+}
+
+static int
+key_set_parse_direct_dec(const char* text, unsigned long long* out) {
+    const unsigned char* p = (const unsigned char*)text;
+    while (*p != '\0' && key_set_is_ascii_space(*p)) {
+        p++;
+    }
+    if (*p < (unsigned char)'0' || *p > (unsigned char)'9') {
+        return -1;
+    }
+    unsigned int value = 0U;
+    while (*p >= (unsigned char)'0' && *p <= (unsigned char)'9') {
+        const unsigned int digit = (unsigned int)(*p - (unsigned char)'0');
+        if (value > (255U - digit) / 10U) {
+            return -1;
+        }
+        value = (value * 10U) + digit;
+        p++;
+    }
+    while (*p != '\0' && key_set_is_ascii_space(*p)) {
+        p++;
+    }
+    if (*p != '\0') {
+        return -1;
+    }
+    *out = (unsigned long long)value;
+    return 0;
+}
+
+static int
+key_set_collect_direct_hex(const char* text, char out[65], size_t* out_len) {
+    const unsigned char* p = (const unsigned char*)text;
+    while (*p != '\0' && key_set_is_ascii_space(*p)) {
+        p++;
+    }
+    if (p[0] == (unsigned char)'0' && (p[1] == (unsigned char)'x' || p[1] == (unsigned char)'X')) {
+        p += 2;
+    }
+    size_t count = 0U;
+    while (*p != '\0') {
+        if (key_set_is_ascii_space(*p)) {
+            p++;
+            continue;
+        }
+        if (dsd_hex_nibble_value(*p) < 0 || count >= 64U) {
+            DSD_SECURE_ZERO(out, 65U);
+            return -1;
+        }
+        out[count++] = (char)*p++;
+    }
+    out[count] = '\0';
+    *out_len = count;
+    return 0;
+}
+
+static void
+key_set_direct_store_segment(dsd_key_scalars* scalars, size_t segment, uint64_t value) {
+    unsigned long long* const slots[4] = {scalars->A1, scalars->A2, scalars->A3, scalars->A4};
+    slots[segment][0] = value;
+    slots[segment][1] = value;
+    for (size_t i = 0U; i < 8U; i++) {
+        scalars->aes_key[(segment * 8U) + i] = (uint8_t)((value >> (56U - (i * 8U))) & 0xFFU);
+    }
+}
+
+static int
+key_set_direct_hex_width_valid(size_t nhex) {
+    return nhex == 10U || nhex == 32U || nhex == 64U;
+}
+
+static int
+key_set_parse_direct_hex(const char* text, dsd_key_scalars* scalars, size_t* digits) {
+    char hex[65];
+    DSD_MEMSET(hex, 0, sizeof(hex));
+    size_t nhex = 0U;
+    if (key_set_collect_direct_hex(text, hex, &nhex) != 0 || !key_set_direct_hex_width_valid(nhex)) {
+        DSD_SECURE_ZERO(hex, sizeof(hex));
+        return -1;
+    }
+
+    uint64_t segments[4] = {0U, 0U, 0U, 0U};
+    const size_t segment_count = nhex == 10U ? 1U : nhex / 16U;
+    const size_t first_width = nhex == 10U ? 10U : 16U;
+    for (size_t i = 0U; i < segment_count; i++) {
+        const size_t offset = i * 16U;
+        const size_t width = (i == 0U) ? first_width : 16U;
+        if (dsd_parse_hex_u64_n(hex + offset, width, &segments[i]) != 0) {
+            DSD_SECURE_ZERO(segments, sizeof(segments));
+            DSD_SECURE_ZERO(hex, sizeof(hex));
+            return -1;
+        }
+    }
+
+    dsd_key_scalars_store_direct_hex(scalars, segments, nhex);
+    *digits = nhex;
+
+    DSD_SECURE_ZERO(segments, sizeof(segments));
+    DSD_SECURE_ZERO(hex, sizeof(hex));
+    return 0;
+}
+
+void
+dsd_key_scalars_store_direct_hex(dsd_key_scalars* scalars, const uint64_t segments[4], size_t nhex) {
+    if (scalars == NULL || segments == NULL || (!key_set_direct_hex_width_valid(nhex) && nhex != 48U)) {
+        return;
+    }
+    const size_t segment_count = nhex == 10U ? 1U : nhex / 16U;
+    scalars->H = segments[0];
+    scalars->K1 = segments[0];
+    scalars->K2 = segments[1];
+    scalars->K3 = segments[2];
+    scalars->K4 = segments[3];
+    scalars->hytera_key_segments = (uint8_t)segment_count;
+    if (segment_count > 1U) {
+        for (size_t i = 0U; i < segment_count; i++) {
+            key_set_direct_store_segment(scalars, i, segments[i]);
+        }
+        scalars->aes_key_loaded[0] = scalars->aes_key_loaded[1] = 1;
+        scalars->aes_key_segments[0] = scalars->aes_key_segments[1] = (uint8_t)segment_count;
+    }
+}
+
+dsd_key_direct_result
+dsd_key_set_load_direct_width(dsd_key_set* out, const char* single_hex, const char* single_dec, size_t* hex_digits) {
+    const int have_hex = key_set_text_present(single_hex);
+    const int have_dec = key_set_text_present(single_dec);
+    if (out == NULL || (!have_hex && !have_dec)) {
+        return DSD_KEY_DIRECT_INVALID_ARGUMENT;
+    }
+
+    dsd_key_set loaded;
+    DSD_MEMSET(&loaded, 0, sizeof(loaded));
+    loaded.present = 1U;
+    loaded.keyloader = 0;
+    loaded.scalars.basic_key_present = have_dec;
+    if (have_dec && key_set_parse_direct_dec(single_dec, &loaded.scalars.K) != 0) {
+        dsd_key_set_free(&loaded);
+        return DSD_KEY_DIRECT_INVALID_DEC;
+    }
+    size_t digits = 0;
+    if (have_hex && key_set_parse_direct_hex(single_hex, &loaded.scalars, &digits) != 0) {
+        dsd_key_set_free(&loaded);
+        return DSD_KEY_DIRECT_INVALID_HEX;
+    }
+
+    dsd_key_set_free(out);
+    *out = loaded;
+    if (hex_digits) {
+        *hex_digits = digits;
+    }
+    DSD_SECURE_ZERO(&loaded, sizeof(loaded));
+    return DSD_KEY_DIRECT_OK;
+}
+
+dsd_key_direct_result
+dsd_key_set_load_direct(dsd_key_set* out, const char* single_hex, const char* single_dec) {
+    return dsd_key_set_load_direct_width(out, single_hex, single_dec, NULL);
+}
+
+static int
+key_parse_bounded_decimal(const char* text, unsigned int limit, unsigned long long* out) {
+    const unsigned char* p = (const unsigned char*)text;
+    while (key_set_is_ascii_space(*p)) {
+        ++p;
+    }
+    if (*p < '0' || *p > '9') {
+        return -1;
+    }
+    unsigned long long value = 0;
+    while (*p >= '0' && *p <= '9') {
+        const unsigned int digit = *p++ - '0';
+        if (value > (limit - digit) / 10U) {
+            DSD_SECURE_ZERO(&value, sizeof value);
+            return -1;
+        }
+        value = value * 10U + digit;
+    }
+    while (key_set_is_ascii_space(*p)) {
+        ++p;
+    }
+    const int result = *p ? -1 : 0;
+    if (result == 0) {
+        *out = value;
+    }
+    DSD_SECURE_ZERO(&value, sizeof value);
+    return result;
+}
+
+static dsd_key_direct_result
+key_set_parse_m17(dsd_key_scalars* scalars, dsd_key_type type, const char* text) {
+    char hex[65] = {0};
+    size_t digits = 0;
+    uint64_t words[4] = {0};
+    dsd_key_direct_result rc = DSD_KEY_DIRECT_INVALID_HEX;
+    if (key_set_collect_direct_hex(text, hex, &digits)) {
+        goto done;
+    }
+    if (type == DSD_KEY_TYPE_M17_SCRAMBLER) {
+        if ((digits != 2 && digits != 4 && digits != 6) || dsd_parse_hex_u64_n(hex, digits, &words[0]) || !words[0]) {
+            goto done;
+        }
+        scalars->R = words[0];
+        scalars->scalar_key_present[0] = 1;
+    } else {
+        if (digits != 32 && digits != 48 && digits != 64) {
+            goto done;
+        }
+        for (size_t i = 0; i < digits / 16; ++i) {
+            if (dsd_parse_hex_u64_n(hex + i * 16, 16, &words[i])) {
+                goto done;
+            }
+        }
+        /* Match M17's existing availability rule; other protocols still accept zero. */
+        if (!(words[0] | words[1] | words[2] | words[3])) {
+            goto done;
+        }
+        dsd_key_scalars_store_direct_hex(scalars, words, digits);
+    }
+    rc = DSD_KEY_DIRECT_OK;
+done:
+    DSD_SECURE_ZERO(hex, sizeof(hex));
+    DSD_SECURE_ZERO(words, sizeof(words));
+    return rc;
+}
+
+/* Parsed storage belongs to the caller and is securely erased on every return. */
+static int
+key_set_parse_rc4(dsd_key_set* parsed, const char* text) {
+    size_t digits = 0;
+    int result = DSD_KEY_DIRECT_OK;
+    char hex[65] = {0};
+    uint64_t value = 0;
+    if (key_set_collect_direct_hex(text, hex, &digits) || digits < 1 || digits > 16
+        || dsd_parse_hex_u64_n(hex, digits, &value)) {
+        result = DSD_KEY_DIRECT_INVALID_HEX;
+    } else {
+        parsed->scalars.R = parsed->scalars.RR = value;
+        parsed->scalars.scalar_key_present[0] = parsed->scalars.scalar_key_present[1] = 1;
+    }
+    DSD_SECURE_ZERO(&value, sizeof value);
+    DSD_SECURE_ZERO(hex, sizeof hex);
+    return result;
+}
+
+static dsd_key_direct_result
+key_set_parse_typed_direct(dsd_key_set* parsed, dsd_key_type type, const char* text) {
+    if (!text) {
+        return DSD_KEY_DIRECT_INVALID_ARGUMENT;
+    }
+    dsd_key_direct_result result = DSD_KEY_DIRECT_OK;
+    size_t digits = 0;
+    if (type == DSD_KEY_TYPE_BASIC || type == DSD_KEY_TYPE_SCRAMBLER) {
+        unsigned long long* slot = type == DSD_KEY_TYPE_BASIC ? &parsed->scalars.K : &parsed->scalars.R;
+        if (key_parse_bounded_decimal(text, type == DSD_KEY_TYPE_BASIC ? 255U : 32767U, slot)) {
+            result = DSD_KEY_DIRECT_INVALID_DEC;
+        }
+        if (type == DSD_KEY_TYPE_BASIC) {
+            parsed->scalars.basic_key_present = 1;
+        } else {
+            parsed->scalars.scalar_key_present[0] = 1;
+        }
+    } else if (type == DSD_KEY_TYPE_M17_SCRAMBLER || type == DSD_KEY_TYPE_M17_AES) {
+        result = key_set_parse_m17(&parsed->scalars, type, text);
+    } else if (type == DSD_KEY_TYPE_HEX) {
+        if (key_set_parse_direct_hex(text, &parsed->scalars, &digits)) {
+            result = DSD_KEY_DIRECT_INVALID_HEX;
+        }
+    } else if (type == DSD_KEY_TYPE_RC4) {
+        result = key_set_parse_rc4(parsed, text);
+    } else {
+        result = DSD_KEY_DIRECT_INVALID_ARGUMENT;
+    }
+    return result;
+}
+
+dsd_key_direct_result
+dsd_key_set_load_typed(dsd_key_set* out, dsd_key_type type, const char* text) {
+    if (!out) {
+        return DSD_KEY_DIRECT_INVALID_ARGUMENT;
+    }
+    dsd_key_set parsed = {0};
+    const dsd_key_direct_result rc = key_set_parse_typed_direct(&parsed, type, text);
+    if (rc == DSD_KEY_DIRECT_OK) {
+        parsed.present = 1;
+        dsd_key_set_free(out);
+        *out = parsed;
+    }
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+    return rc;
+}
+
+static void
+key_scalars_overlay_direct(dsd_key_scalars* target, const dsd_key_scalars* parsed, dsd_key_type type) {
+    if (type == DSD_KEY_TYPE_BASIC) {
+        target->K = parsed->K;
+        target->basic_key_present = parsed->basic_key_present;
+    } else if (type == DSD_KEY_TYPE_RC4) {
+        target->R = parsed->R;
+        target->RR = parsed->RR;
+        DSD_MEMCPY(target->scalar_key_present, parsed->scalar_key_present, sizeof target->scalar_key_present);
+    } else if (type == DSD_KEY_TYPE_SCRAMBLER || type == DSD_KEY_TYPE_M17_SCRAMBLER) {
+        target->R = parsed->R;
+        target->scalar_key_present[0] = parsed->scalar_key_present[0];
+    } else {
+        dsd_key_scalars overlay = *parsed;
+        overlay.K = target->K;
+        overlay.R = target->R;
+        overlay.RR = target->RR;
+        overlay.basic_key_present = target->basic_key_present;
+        DSD_MEMCPY(overlay.scalar_key_present, target->scalar_key_present, sizeof overlay.scalar_key_present);
+        *target = overlay;
+        DSD_SECURE_ZERO(&overlay, sizeof overlay);
+    }
+}
+
+dsd_key_direct_result
+dsd_key_apply_direct(dsd_state* state, dsd_key_type key_type, const char* text, dsd_key_apply_mode mode) {
+    if (!state || (mode != DSD_KEY_APPLY_OVERLAY && mode != DSD_KEY_APPLY_REPLACE)) {
+        return DSD_KEY_DIRECT_INVALID_ARGUMENT;
+    }
+    dsd_key_set parsed = {0};
+    const dsd_key_direct_result result = key_set_parse_typed_direct(&parsed, key_type, text);
+    if (result == DSD_KEY_DIRECT_OK) {
+        state->key_profile_ref[0] = '\0';
+        if (mode == DSD_KEY_APPLY_REPLACE) {
+            dsd_key_set_install(state, &parsed);
+        } else {
+            dsd_key_scalars overlay = {0};
+            key_scalars_capture(&overlay, state);
+            key_scalars_overlay_direct(&overlay, &parsed.scalars, key_type);
+            key_scalars_install(state, &overlay);
+            DSD_SECURE_ZERO(&overlay, sizeof overlay);
+        }
+        state->keyloader = 0;
+        state->payload_keyid = state->payload_keyidR = 0;
+    }
+    dsd_key_set_free(&parsed);
+    return result;
+}
+
+void
+dsd_key_apply_mute_policy(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    state->keyloader = 0;
+    state->payload_keyid = state->payload_keyidR = 0;
+    opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
+    opts->unmute_encrypted_p25 = 0;
+}
+
+dsd_key_direct_result
+dsd_key_apply_force(dsd_state* state, int mode) {
+    if (!state || mode < 0 || mode > 2) {
+        return DSD_KEY_DIRECT_INVALID_ARGUMENT;
+    }
+    state->M = mode == 2 ? 0x21 : mode;
+    return DSD_KEY_DIRECT_OK;
 }
 
 static void
@@ -186,9 +671,8 @@ key_set_log_summary(const char* kind, const char* path, const dsd_csv_validation
 /* The throwaway state held key material: wipe the keyring before the memory goes back. */
 static void
 key_set_free_throwaway(dsd_state* tmp) {
-    DSD_MEMSET(tmp->rkey_array, 0, sizeof(tmp->rkey_array));
-    DSD_MEMSET(tmp->rkey_array_loaded, 0, sizeof(tmp->rkey_array_loaded));
     dsd_state_ext_free_all(tmp);
+    dsd_key_state_secure_wipe(tmp);
     free(tmp);
 }
 
@@ -231,7 +715,74 @@ dsd_key_set_load_csv(dsd_key_set* out, const char* hex_path, const char* dec_pat
     DSD_MEMSET(&loaded.scalars, 0, sizeof(loaded.scalars));
     dsd_key_set_free(out);
     *out = loaded;
+    DSD_SECURE_ZERO(&loaded, sizeof(loaded));
     return 0;
+}
+
+void
+dsd_scan_key_change_clear(dsd_scan_key_change* change) {
+    if (!change) {
+        return;
+    }
+    dsd_key_set_free(&change->baseline);
+    dsd_key_set_free(&change->active);
+    DSD_SECURE_ZERO(change, sizeof(*change));
+}
+
+int
+dsd_scan_key_change_prepare(const dsd_state* state, const dsd_key_set* row, dsd_scan_key_change* change) {
+    if (!state || !change) {
+        return -1;
+    }
+    dsd_scan_key_change_clear(change);
+    change->keyed = row && row->present;
+    change->changed = change->keyed ? !state->scan_keys_active_set || !dsd_key_set_equal(&state->scan_keys_active, row)
+                                    : state->scan_keys_active_set != 0;
+    if (!change->keyed) {
+        change->prepared = 1;
+        return 0;
+    }
+    /* Own the globals as well as the row: rollback may cross an unkeyed target,
+     * whose leave releases the current baseline before this change commits. */
+    change->capture_baseline = 1;
+    const int baseline_rc = state->scan_keys_active_set
+                                ? dsd_key_set_copy(&change->baseline, &state->scan_keys_baseline)
+                                : dsd_key_set_capture(&change->baseline, state);
+    if (baseline_rc || dsd_key_set_copy(&change->active, row)) {
+        dsd_scan_key_change_clear(change);
+        return -1;
+    }
+    change->prepared = 1;
+    return 0;
+}
+
+int
+dsd_scan_key_change_commit(dsd_state* state, dsd_scan_key_change* change) {
+    if (!state || !change) {
+        return 0;
+    }
+    if (!change->prepared) {
+        /* A failed or never-run prepare owns nothing and must not touch the live keyring. */
+        dsd_scan_key_change_clear(change);
+        return 0;
+    }
+    const int changed = change->changed;
+    if (!change->keyed) {
+        dsd_scan_keys_leave(state);
+    } else {
+        if (change->capture_baseline) {
+            dsd_key_set_free(&state->scan_keys_baseline);
+            state->scan_keys_baseline = change->baseline;
+            DSD_MEMSET(&change->baseline, 0, sizeof(change->baseline));
+        }
+        dsd_key_set_free(&state->scan_keys_active);
+        state->scan_keys_active = change->active;
+        DSD_MEMSET(&change->active, 0, sizeof(change->active));
+        state->scan_keys_active_set = 1;
+        dsd_key_set_install(state, &state->scan_keys_active);
+    }
+    dsd_scan_key_change_clear(change);
+    return changed;
 }
 
 int
@@ -294,8 +845,27 @@ dsd_scan_keys_resume(dsd_state* state) {
     if (dsd_key_set_capture(&fresh, state) == 0) {
         dsd_key_set_free(&state->scan_keys_baseline);
         state->scan_keys_baseline = fresh;
+        DSD_SECURE_ZERO(&fresh, sizeof(fresh));
     }
     dsd_key_set_install(state, &state->scan_keys_active);
+}
+
+dsd_key_direct_result
+dsd_scan_keys_apply_direct(dsd_state* state, dsd_key_type type, const char* text) {
+    if (state == NULL || state->scan_keys_active_set == 0) {
+        return dsd_key_apply_direct(state, type, text, DSD_KEY_APPLY_OVERLAY);
+    }
+    dsd_key_set parsed = {0};
+    const dsd_key_direct_result result = key_set_parse_typed_direct(&parsed, type, text);
+    if (result == DSD_KEY_DIRECT_OK) {
+        /* Edit only globals. Installing the row again would discard scalar/AES
+         * activation performed since entry, even if the input was rejected. */
+        key_scalars_overlay_direct(&state->scan_keys_baseline.scalars, &parsed.scalars, type);
+        state->scan_keys_baseline.keyloader = 0;
+        state->scan_keys_baseline.profile_ref[0] = '\0';
+    }
+    dsd_key_set_free(&parsed);
+    return result;
 }
 
 int

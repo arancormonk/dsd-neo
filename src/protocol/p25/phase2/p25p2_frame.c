@@ -19,6 +19,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
@@ -1206,12 +1207,12 @@ p25p2_ess_apply_slot0(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* 
     DSD_FPRINTF(stderr, " MI: 0x%016llX", state->payload_miP);
     DSD_FPRINTF(stderr, " ESSB");
 
-    if (state->R != 0 && state->payload_algid == 0xAA) {
+    if (dsd_key_scalar_present(state, 0) && state->payload_algid == 0xAA) {
         char key_text[19];
         DSD_FPRINTF(stderr, " Key %s",
                     dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, 10U, 1));
     }
-    if (state->R != 0 && state->payload_algid == 0x81) {
+    if (dsd_key_scalar_present(state, 0) && state->payload_algid == 0x81) {
         char key_text[19];
         DSD_FPRINTF(stderr, " Key %s",
                     dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, 16U, 1));
@@ -1248,12 +1249,12 @@ p25p2_ess_apply_slot1(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* 
     DSD_FPRINTF(stderr, " MI: 0x%016llX", state->payload_miN);
     DSD_FPRINTF(stderr, " ESSB");
 
-    if (state->RR != 0 && state->payload_algidR == 0xAA) {
+    if (dsd_key_scalar_present(state, 1) && state->payload_algidR == 0xAA) {
         char key_text[19];
         DSD_FPRINTF(stderr, " Key %s",
                     dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->RR, 10U, 1));
     }
-    if (state->RR != 0 && state->payload_algidR == 0x81) {
+    if (dsd_key_scalar_present(state, 1) && state->payload_algidR == 0x81) {
         char key_text[19];
         DSD_FPRINTF(stderr, " Key %s",
                     dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->RR, 16U, 1));

@@ -19,6 +19,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -339,6 +340,17 @@ void p25_sm_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25
 void p25_sm_seed_cc_from_current_tuner_if_unknown(const dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief Select a new control channel during single-system P25 trunk following.
+ *
+ * Owns the watchdog guard; call on the decoder thread without holding it.
+ * FAILED/DEFERRED leave the old channel and calls intact. OK/PENDING end the
+ * old calls, forget site acquisition data, and retain the new CC through
+ * asynchronous completion/recovery. Network band plans and user settings
+ * survive. Requires an initialized context and a positive frequency in Hz.
+ */
+dsd_trunk_tune_result p25_sm_select_control_channel(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, long hz);
+
+/**
  * @brief Start CC acquisition after a completed external retune.
  *
  * Refreshes the acquisition baseline and returns the context to ON_CC so the
@@ -373,6 +385,35 @@ int p25_sm_restart_pending_cc_acquisition(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd
  */
 int p25_sm_await_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, uint64_t request_id,
                                  const char* source);
+
+/**
+ * @brief Park the SM after an external tune to the control channel (#506).
+ *
+ * Frontend commands (user talkgroup lockout, manual return-to-CC) retune the
+ * radio to the control channel through the tuning hooks themselves, bypassing
+ * p25_sm_release(). Without this handoff the SM stays TUNED with the old
+ * assignment's slot activity and judges every later grant as a preemption of
+ * that phantom call. For a TUNED SM this ends the followed calls and clears
+ * the assignment context; a parked or hunting SM keeps its context. Either
+ * way it starts the same decoded-CC acquisition gate every return goes
+ * through, so grants stay blocked until the CC decodes after the tune.
+ *
+ * The caller holds the watchdog guard across its tune, its decoder resets and
+ * this handoff (p25_sm_tick_guard_enter()), like p25_sm_select_control_channel()
+ * does internally: a watchdog tick in between would see a TUNED context with
+ * no tuned decoder and issue a second CC return of its own.
+ *
+ * @param ctx State machine context.
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param tune_result Result of the CC tune the caller already issued.
+ * @param request_id Runtime tune request for PENDING results, 0 when unknown.
+ * @param source Short diagnostic source label.
+ * @return 1 when the SM was handed off, 0 when the tune was refused or the SM
+ *         was idle and had nothing to hand off.
+ */
+int p25_sm_on_external_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result tune_result,
+                               uint64_t request_id, const char* source);
 
 /**
  * @brief Periodic tick for timeout-based transitions.
@@ -431,6 +472,9 @@ p25_sm_ctx_t* p25_sm_get_ctx(void);
  */
 double p25_sm_hangtime_started_m(const p25_sm_ctx_t* ctx);
 
+/** Resolve the configured hangtime with the current Phase 1 error-hold extension. */
+double p25_sm_effective_hangtime(const dsd_state* state, double hangtime);
+
 /**
  * @brief Trigger explicit release and return to CC.
  *
@@ -440,6 +484,23 @@ double p25_sm_hangtime_started_m(const p25_sm_ctx_t* ctx);
  * @param reason Log tag for release reason.
  */
 void p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
+
+/**
+ * @brief End the tuned call and come to rest on the control channel WITHOUT tuning.
+ *
+ * p25_sm_release() minus the return-to-CC tune, for a caller that owns the tuner and is
+ * already moving it somewhere else: the trunk-scan coordinator evicting a target that reached
+ * its per-visit limit (issue #507). Tuning here would fight that move, so this never asks the
+ * tuner for anything -- it ends both call slots, clears the voice-channel context and decoder
+ * mirrors, drops trunk_is_tuned and settles in P25_SM_ON_CC. Session state an ordinary release
+ * keeps is kept: the counters and the encryption-reprobe memo survive.
+ *
+ * @param ctx State machine context (NULL uses the global singleton).
+ * @param opts Decoder options.
+ * @param state Decoder state.
+ * @param reason Log tag for the release reason.
+ */
+void p25_sm_abandon_carrier(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason);
 
 /**
  * @brief Record exact P25P2 frame sync while acquiring a tuned voice channel.

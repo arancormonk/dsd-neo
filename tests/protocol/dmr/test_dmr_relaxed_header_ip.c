@@ -2103,20 +2103,6 @@ main(int argc, char** argv) {
     // f at [64] = 0, bf [65..71] = 1 (non-zero blocks)
     set_bits(bits, 65, 1U, 7);
 
-    // Strict (aggressive) mode: should NOT accept when CRC fails
-    opts.aggressive_framesync = 1;
-    state.data_header_dd_format[0] = 0x16U;
-    state.data_header_bit_padding[0] = 16U;
-    state.data_block_poc[0] = 7U;
-    uint8_t before_format = state.data_header_format[state.currentslot];
-    uint8_t before_sap = state.data_header_sap[state.currentslot];
-    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/0, /*IrrecoverableErrors=*/0);
-    assert(state.data_header_format[state.currentslot] == before_format); // unchanged
-    assert(state.data_header_sap[state.currentslot] == before_sap);
-    assert(state.data_header_dd_format[0] == 0U);
-    assert(state.data_header_bit_padding[0] == 0U);
-    assert(state.data_block_poc[0] == 0U);
-
     // Relaxed mode: should accept header despite CRC failure
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;

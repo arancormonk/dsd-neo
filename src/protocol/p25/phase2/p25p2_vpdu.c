@@ -21,6 +21,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -80,6 +81,14 @@ static void
 p25p2_vpdu_print_group_label(const dsd_state* state, uint32_t id) {
     char name[50];
     if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
+        DSD_FPRINTF(stderr, " [%s]", name);
+    }
+}
+
+static void
+p25p2_vpdu_print_source_label(const dsd_state* state, uint32_t id) {
+    char name[DSD_SOURCE_ALIAS_NAME_MAX];
+    if (id != 0U && dsd_source_label_lookup(state, id, NULL, 0, name, sizeof(name))) {
         DSD_FPRINTF(stderr, " [%s]", name);
     }
 }
@@ -1436,7 +1445,7 @@ p25p2_vpdu_handle_unit_to_unit_grant_abbreviated(p25p2_vpdu_ctx* ctx, int opcode
         return;
     }
 
-    p25p2_vpdu_print_group_label(state, (uint32_t)source);
+    p25p2_vpdu_print_source_label(state, (uint32_t)source);
     if (source != target) {
         p25p2_vpdu_print_group_label(state, (uint32_t)target);
     }
@@ -1484,7 +1493,7 @@ p25p2_vpdu_handle_unit_to_unit_grant_extended(p25p2_vpdu_ctx* ctx, int opcode) {
         return;
     }
 
-    p25p2_vpdu_print_group_label(state, (uint32_t)source);
+    p25p2_vpdu_print_source_label(state, (uint32_t)source);
     if (source != target) {
         p25p2_vpdu_print_group_label(state, (uint32_t)target);
     }

@@ -9,7 +9,7 @@
 # are both observable without a daemon.
 set -euo pipefail
 
-ROOT_DIR=$(git rev-parse --show-toplevel)
+ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 

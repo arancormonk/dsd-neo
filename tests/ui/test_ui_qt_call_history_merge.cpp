@@ -111,6 +111,13 @@ test_seen_absorb(void) {
     expect_int("end never retreats", (int)end, 145);
     expect_int("src never re-learns", (int)src, 1234);
     expect("enc never clears", enc, true);
+    bool emergency = false;
+    expect("emergency-only enrichment advances",
+           call_history_seen_absorb(&end, &src, &enc, end, src, enc, &emergency, true), true);
+    expect("emergency latches on", emergency, true);
+    expect("stale ordinary read does not advance",
+           call_history_seen_absorb(&end, &src, &enc, end, src, enc, &emergency, false), false);
+    expect("emergency never clears", emergency, true);
 }
 
 void

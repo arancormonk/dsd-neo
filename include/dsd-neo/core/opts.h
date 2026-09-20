@@ -14,6 +14,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/platform/platform.h>
@@ -260,6 +261,8 @@ struct dsd_opts {
     int scan_voice_only;
     int scan_voice_qualify_ms;
     int scan_voice_hold_ms;
+    /* 0 disables; else 1000..3600000 ms cap on one scan-target visit (issue #507) */
+    int scan_max_visit_ms;
     int setmod_bw;
     int slot_preference;
     int slot1_on;
@@ -295,6 +298,7 @@ struct dsd_opts {
     uint8_t trunk_tune_private_calls;
     uint8_t trunk_tune_data_calls;
     uint8_t trunk_tune_enc_calls;
+    uint8_t persist_tg_lockouts; // Save quick user lockouts to the configured global group list.
     /* Flag set when any CLI explicitly enables or disables trunking (e.g., -T, -Y). */
     uint8_t trunk_cli_seen;
     uint8_t p25_lcw_retune;
@@ -344,9 +348,14 @@ struct dsd_opts {
     char group_in_file[1024];
     char chan_in_file[1024];
     char trunk_scan_targets_csv[1024];
+    char src_in_file[1024];              // Source ID alias CSV
     char p25_bandplan_in_file[1024];     // --p25-bandplan / [trunking] p25_bandplan_csv
     char p25_bandplan_export_file[1024]; // --p25-bandplan-export: written once at clean shutdown
     char key_in_file[1024];
+    dsd_airspy_config airspy;
+    dsd_airspy_info airspy_info; /* Decoder-owned value snapshot. */
+    int airspy_list;
+    int airspy_config_error; /* Invalid INI airspy_serial; cleared only by a valid serial override. */
     char soapy_profile[32];
     char soapy_stream_format[16];
     char soapy_antenna[64];
@@ -398,15 +407,18 @@ dsd_opts_has_digital_decode_mode(const dsd_opts* opts) {
  * as C4FM.
  */
 static inline int
-dsd_opts_modulation(const dsd_opts* opts) {
-    if (!opts) {
-        return 0;
-    }
-    const int selected = (opts->mod_c4fm != 0) + (opts->mod_qpsk != 0) + (opts->mod_gfsk != 0);
+dsd_modulation_from_flags(int c4fm, int qpsk, int gfsk) {
+    const int selected = (c4fm != 0) + (qpsk != 0) + (gfsk != 0);
     if (selected != 1) {
         return 0;
     }
-    return (opts->mod_qpsk != 0) ? 1 : ((opts->mod_gfsk != 0) ? 2 : 0);
+    return qpsk != 0 ? 1 : (gfsk != 0 ? 2 : 0);
+}
+
+/** @brief Configured modulation; ambiguous/absent flags select the C4FM starting path. */
+static inline int
+dsd_opts_modulation(const dsd_opts* opts) {
+    return opts ? dsd_modulation_from_flags(opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk) : 0;
 }
 
 /** @brief Return 1 when an enabled 4800-symbol four-level mode uses the 12.5 kHz channel profile. */
@@ -550,6 +562,11 @@ dsd_opts_audio_in_dev_is_rtltcp_spec(const char* dev) {
 }
 
 static inline int
+dsd_opts_audio_in_dev_is_airspy_spec(const char* dev) {
+    return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "airspy", "airspy:");
+}
+
+static inline int
 dsd_opts_audio_in_dev_is_soapy_spec(const char* dev) {
     return dsd_opts_audio_dev_is_exact_or_prefixed(dev, "soapy", "soapy:");
 }
@@ -688,6 +705,7 @@ dsd_opts_source_uses_effective_input_rate(const dsd_opts* opts) {
         }
         if (dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
             || dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev)
+            || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
             || dsd_opts_audio_in_dev_is_soapy_spec(opts->audio_in_dev)
             || dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev)
             || dsd_opts_audio_in_dev_is_m17udp_spec(opts->audio_in_dev)) {

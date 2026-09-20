@@ -144,7 +144,7 @@ Main Menu
 │   ├── Follow
 │   │   ├── Group calls [On]                     g
 │   │   ├── Private calls [Off]                  u
-│   │   ├── Data calls [Off]                     d
+│   │   ├── Data calls [Off]                     d   (edits configured value; adds (target: On/Off) when a parked row differs)
 │   │   ├── Allow-list mode [Off]                w
 │   │   ├── Talkgroup hold... [none]             k/l
 │   │   ├── Hangtime... [1.0 s]
@@ -152,11 +152,14 @@ Main Menu
 │   │   ├── Voice qualify... [1000 ms]
 │   │   ├── Voice hold... [2000 ms]
 │   │   ├── Reverse mute [Off]
+│   │   ├── Save user TG lockouts [On]
+│   │   ├── Clear temporary TG avoids - current list [0]
 │   │   ├── Lock out talkgroup on slot 1         !
 │   │   └── Lock out talkgroup on slot 2         @
 │   ├── Channels & groups
 │   │   ├── Import channel map CSV...
 │   │   ├── Import group list CSV...
+│   │   ├── Import source ID list CSV...
 │   │   ├── Import P25 band plan CSV...
 │   │   ├── Export learned P25 band plan...
 │   │   ├── ─────                                    (RadioReference builds)
@@ -182,7 +185,7 @@ Main Menu
 │   └── Rigctl setmod bandwidth...
 ├── Encryption
 │   ├── Mute encrypted audio [On]
-│   ├── Lock out encrypted calls [Off]           e
+│   ├── Lock out encrypted calls [Off]           e   (edits configured value; adds (target: On/Off) when a parked row differs)
 │   ├── Clear lockouts [0]
 │   ├── ─────
 │   ├── Keys
@@ -332,6 +335,11 @@ RadioReference import:
   message (a target list's `p25_bandplan_csv` column is the way in) while the export still works and covers
   every target. The export's suggested file name carries the WACN/SYS when they are known and trunk scan is
   off; under trunk scan the merged multi-target file keeps the generic name.
+- **Trunking -> Channels & groups -> Import source ID list CSV...** prompts for an `id,name[,tags]`
+  CSV of source radio ID names. These labels carry no allow/block or media policy and apply in conventional
+  decode and trunk scan alike. A successful import replaces the source list; an unreadable file, a load
+  failure, or a file with no usable rows keeps the current list and path. Source labels prefer this list,
+  then fall back to the group list's exact row, including learned talker aliases. See `docs/csv-formats.md`.
 - P25 channels are shown as four hex digits followed by the same channel as `<identifier>-<channel>` in
   parentheses (`Active Ch: 2A46 (2-2630)`, `CH:2A46 (2-2630)` in the secondary control channel list, and the
   learned Channels panel), which is the spelling a channel map CSV accepts as its first column.
@@ -345,11 +353,11 @@ RadioReference import:
 
 ### Keys
 
-A `-Y` channel-map row or a `--trunk-scan` target can carry its own key files (`keys_hex_csv`/`keys_dec_csv`
-columns; see `docs/csv-formats.md`). While the row or target is parked its keys replace the global keyring;
-leaving it restores the globals. The Import keys CSV rows edit the globals underneath a parked row, so a
-runtime import survives the next hop. The single-key rows (Basic privacy, Hytera, scrambler, RC4/DES, AES)
-disarm the keyring, so a parked keyed row overrides them again on its next hop.
+A `-Y` channel-map row or a `--trunk-scan` target can carry key files (`keys_hex_csv`/`keys_dec_csv`) or embedded
+Basic Privacy, Hytera, or AES values (`single_key_dec`/`single_key_hex`; see `docs/csv-formats.md`). While the row or
+target is parked its keys replace the globals; leaving restores them. The Import keys CSV rows edit the globals
+underneath a parked row, so a runtime import survives the next hop. The single-key menu rows disarm the keyring, so
+a parked keyed row overrides them again on its next hop.
 
 ## DSP Status
 
@@ -422,7 +430,13 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `d` | Toggle follow data calls |
 | `e` | Toggle encrypted call lockout (P25/DMR/NXDN trunking) |
 | `k` / `l` | Set/clear talkgroup hold from the most recent TG (slot-aware) |
-| `!` / `@` | Lock out slot 1 / slot 2 (where applicable) |
+| `!` / `@` | Lock out slot 1 / slot 2 (where applicable); lifetime follows **Save user TG lockouts** |
+
+**Save user TG lockouts** defaults to On: quick lockouts save to a configured global groups file. Turn it Off
+in **Trunking → Follow**, or start with `--tg-lockout-session`, to keep subsequent lockouts temporary. Clear them
+using **Clear temporary TG avoids - current list**, reload the list, or stop the decoder. List edits still save;
+changing this setting does not convert existing blocks. Scan rows with their own groups lists keep separate
+avoids, while rows inheriting the global list share its avoids.
 
 ### Slots, gain & privacy
 
@@ -495,22 +509,22 @@ While scanning, the screen says which channel you are listening to.
 The Input Output section names the `-Y` scan list row the receiver is parked on, at the end of its row:
 
 ```
-| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion
+| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec Channel: Marion
 ```
 
 The name comes from the optional `name` column of the channel map (see `docs/csv-formats.md`); a row without one
 renders exactly as it always did. The name goes last because it is the one field whose length you choose: the
-frequency and speed keep their columns, and on a narrow terminal it is the name that reaches the edge.
+frequency and hangtime keep their columns, and on a narrow terminal it is the name that reaches the edge.
 
 While `Y` holds the scan, `HOLD` appears ahead of the name with the other facts about the channel on air. While
 `b` has taken rows out of the rotation for the session, `Avoids: N` closes the row: it counts the rows that are
 out of the list, and says nothing about the channel you are hearing, which under `-Y` is never an avoided one.
-With `--scan-voice-only`, `Voice: QUALIFY|VOICE|TAIL` follows the speed (and the trunk-scan `(n/m)`): QUALIFY
+With `--scan-voice-only`, `Voice: QUALIFY|VOICE|TAIL` follows the hangtime (and the trunk-scan `(n/m)`): QUALIFY
 while synced without voice, VOICE while voice media is active, TAIL while holding past the last voice frame. A
 trunked `--trunk-scan` target shows no marker, since the gate leaves trunked targets alone.
 
 ```
-| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec HOLD Channel: Marion Avoids: 2
+| Scan Mode:  Frequency: 462.012500 MHz Hangtime: 2.00 sec HOLD Channel: Marion Avoids: 2
 ```
 
 With `--trunk-scan` the same section names the target on air and its place in the rotation:
@@ -522,6 +536,74 @@ With `--trunk-scan` the same section names the target on air and its place in th
 `county-p25` is the target's `id` column (see `docs/trunk-scan.md`), and `(3/6)` is its place in the rotation. The row
 shows no frequency: the protocol panels below it already carry the one being decoded. While a target is on air the
 Scan Mode row above it shows no name, so the screen never names two channels at once.
+
+### Scan Timing
+
+Directly under whichever scanner row is active — Scan Mode under `-Y`, Trunk Scan under `--trunk-scan`, and only the
+Trunk Scan one when both are running — a `Scan Timing` row says why the receiver is staying where it is and how much
+of that is left:
+
+```
+| Scan Timing: Idle dwell 1.8s/3.0s  hold 2.0s
+| Scan Timing: Following call  dwell 3.0s (suspended)  hang 2.0s
+| Scan Timing: Voice tail 1.5s/2.0s  dwell 3.0s (suspended)
+| Scan Timing: Manual hold  dwell 3.0s (paused)
+| Scan Timing: Hangtime 1.4s/3.0s
+```
+
+The phrase names the reason; the `remaining/total` pair after it, when there is one, is whichever window is actually
+running out.
+
+Under `-Y` without `--scan-voice-only`, `Hangtime` on the upper Scan Mode row is the configured `-t` value.
+The Scan Timing row shows the running window, which uses the scanner's whole-second comparison: this timer permits
+a step only when the time since the recorded sync second exceeds `-t`. For `-t 6`, the upper row shows `6.00 sec` while the
+countdown total is `7.0s`; for `-t 0`, those values are `0.00 sec` and `1.0s`. The setting has not changed.
+Waiting for the next clock-second boundary with `-t 0` does not guarantee a full second of silence after the
+last sync. NXDN's additional grace period is described below.
+
+| Phrase | Staying because | Running timer |
+| --- | --- | --- |
+| `Retune pending` | a backend retune request has not resolved | none |
+| `Retune retry` | the retune failed; cooling down before retrying in place | the retry cooldown |
+| `Acquiring control` | the trunking state machine is hunting a control channel | none |
+| `Following call` | the trunking state machine is following a call | none; `hang` is the budget |
+| `Voice` | conventional voice media is active (`--scan-voice-only`) | the activity hold |
+| `Voice tail` | holding past the last voice frame (`--scan-voice-only`) | the activity hold |
+| `Activity hold` | allowed conventional activity was decoded | the activity hold |
+| `Manual hold` | `Y` holds the scan here | none |
+| `Qualify` | synced under `--scan-voice-only`, no allowed voice yet | the qualify window |
+| `Idle dwell` | nothing holds the row | the idle dwell |
+| `Hangtime` | `-Y` without `--scan-voice-only`: waiting out `-t` since the last sync | next whole second after `-t` |
+
+Which phrases you can see depends on the protocol: an NXDN trunked target has no state machine to report control
+acquisition, so it never reads `Acquiring control`.
+
+The values that follow are the *effective* ones for the row on air, after CSV and option overrides:
+
+- `dwell` is the idle dwell, shown as a separate budget when it is not the running timer, including the interval
+  after hold release before the next decoder tick arms it. `(suspended)` means something on the air has disarmed
+  it — a call, a retune, a control-channel hunt — and `(paused)` means the operator hold has.
+- `hold` is the activity hold, printed only when it is not itself the running timer. It appears on conventional
+  and `-Y` rows only; a trunked target has none.
+- `hang` is the active protocol's effective hangtime, and appears only while a trunked call is being followed.
+  It includes `DSD_NEO_DMR_HANGTIME` / `DSD_NEO_P25_HANGTIME` overrides and the optional P25 Phase 1 error-hold
+  extension. NXDN uses `-t`. A zero hangtime is omitted, and idle trunked targets show their dwell instead.
+- `Visit: <remaining>/<cap>` is the per-visit cap (`--scan-max-visit-ms`, or the row's own value), and appears only
+  when a cap applies to the row on air. `Visit: paused` means the cap is not counting down right now — a hold
+  suspends it, a visit with nothing yet to count from has nothing to count, and a rotation with nowhere else to go
+  (a single target, or every alternate avoided or cooling down) re-arms the cap instead of ever firing it.
+
+With `--trunk-scan`, a suspended dwell starts again from zero once call following or the conventional hold ends
+and no retune is pending. In particular, a conventional `Voice tail` is followed by a fresh `Qualify` window;
+the tail and dwell waits add together. See the [scan timing example](trunk-scan.md#runtime-behavior) for how
+`dwell_ms` and `activity_hold_ms` affect the time before rotation.
+
+The row is not shown in compact view. The countdown is a published deadline differenced against the terminal's own
+clock, so it keeps running while the input is stalled and stops at `0.0s`; the phrase beside it is only as fresh as the
+last snapshot, which is published while samples flow. A narrow terminal cuts the row at the edge rather than wrapping
+it. On an NXDN row under `-Y`, the decoder keeps the scan two seconds past each confirmed frame, so the `Hangtime`
+countdown can initially exceed its displayed total. That total is `floor(-t) + 1` seconds, matching the scanner's
+strict whole-second comparison; even `-t 0` waits for the next whole second.
 
 Call Info repeats the answer on its own first line, because compact view hides the Input Output section:
 
@@ -566,3 +648,16 @@ row renders, so a call that outlives a scan step keeps the channel it was actual
 call heard on a scan-list row with no name stays unlabelled rather than picking up the name of the
 next channel. The bracketed name is for reading, not for parsing: a channel name may itself contain
 `]`.
+
+### Scoped scan controls and loaded keys
+
+The Input/Output pane reports loaded Motorola BP, RC4/DES and NXDN/dPMR scrambler keys while no forcing is active,
+matching its existing Hytera indication (a scrambler value prints in decimal, an RC4/DES key in hex, and the two
+keyring slots print separately when they differ). “Loaded” does not claim successful decryption. Values remain
+redacted unless `--show-keys` is enabled. Explicit forcing (BP, RC4 or TYT) replaces these lines with its own status.
+
+Force, CRC, mute and voice-gate controls edit the configured baseline while a scan row constrains their effective
+values; menu labels show that baseline. These edits are policy, not acquisition: they apply at once without ending
+the current call or re-hunting sync. Group-file imports also update the baseline, with the parked row's group policy
+restored afterward. Scalar key entry retains its existing temporary behavior. See the CSV documentation for the
+`options` column and per-row explicit-off switches.

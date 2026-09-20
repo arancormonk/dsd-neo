@@ -53,15 +53,16 @@ call_history_merge_within_window(int64_t existing_start, int64_t existing_end, i
  * @brief Whether a ring row already ingested has since learned something.
  *
  * The core merges a reacquired segment into its committed row in place: the end
- * stamp extends, a late-decoded source id fills 0 -> real, the crypto verdict
- * can flip on. The row's key does not change when that happens, so this
- * comparison — against what was last read, not against presence in a seen set —
+ * stamp extends, a late-decoded source id fills 0 -> real, and the crypto verdict
+ * and emergency can flip on. The row's key does not change when that happens, so
+ * this comparison — against what was last read, not against presence in a seen set —
  * is the only way those merges ever reach the display and the persisted log.
  */
 inline bool
 call_history_seen_row_advanced(int64_t stored_end, uint64_t stored_src, bool stored_enc, int64_t end, uint64_t src,
-                               bool enc) {
-    return end > stored_end || (stored_src == 0U && src != 0U) || (!stored_enc && enc);
+                               bool enc, bool stored_emergency = false, bool emergency = false) {
+    return end > stored_end || (stored_src == 0U && src != 0U) || (!stored_enc && enc)
+           || (!stored_emergency && emergency);
 }
 
 /**
@@ -69,15 +70,17 @@ call_history_seen_row_advanced(int64_t stored_end, uint64_t stored_src, bool sto
  *
  * One-way ratchets, matching the core's own merge semantics: the end never
  * retreats, a learned source id never un-learns, the crypto verdict never
- * clears. This is the single definition both the live noteSeen() path and its
- * tests share, so the ratchet cannot drift from the advance test above.
+ * clears; emergency also latches on. This is the single definition both the live
+ * noteSeen() path and its tests share, so the ratchet cannot drift from the
+ * advance test above.
  *
  * @return true when the row had advanced and the stored values were updated.
  */
 inline bool
 call_history_seen_absorb(int64_t* stored_end, uint64_t* stored_src, bool* stored_enc, int64_t end, uint64_t src,
-                         bool enc) {
-    if (!call_history_seen_row_advanced(*stored_end, *stored_src, *stored_enc, end, src, enc)) {
+                         bool enc, bool* stored_emergency = nullptr, bool emergency = false) {
+    if (!call_history_seen_row_advanced(*stored_end, *stored_src, *stored_enc, end, src, enc,
+                                        stored_emergency ? *stored_emergency : false, emergency)) {
         return false;
     }
     if (end > *stored_end) {
@@ -87,6 +90,9 @@ call_history_seen_absorb(int64_t* stored_end, uint64_t* stored_src, bool* stored
         *stored_src = src;
     }
     *stored_enc = *stored_enc || enc;
+    if (stored_emergency) {
+        *stored_emergency = *stored_emergency || emergency;
+    }
     return true;
 }
 

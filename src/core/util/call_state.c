@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -16,9 +17,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
 #include "call_state_internal.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
 
 _Static_assert(offsetof(dsd_call_state_ext, mutex) == 0U,
                "event-history transactions require the call-state mutex at offset zero");
@@ -507,9 +508,12 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->has_service_metadata = previous->has_service_metadata;
     snapshot->emergency = previous->emergency;
     snapshot->priority = previous->priority;
+    snapshot->media_started_m = previous->media_started_m;
+    snapshot->media_updated_m = previous->media_updated_m;
     // audio_permitted and started_m are deliberately not carried: the reacquired segment
     // re-earns audio from the next crypto update exactly as it does today, and started_m stays
-    // the reopen instant so per-segment durations remain the segment's own.
+    // the reopen instant so per-segment durations remain the segment's own. The media clocks do
+    // carry because a recoverable reopen is still part of the same logical transmission.
 }
 
 // A protocol whose end path tears down live decoder state it needs back on a heal (the DMR
@@ -570,6 +574,23 @@ call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observa
     }
 }
 
+/* Voice-error windows belong to a call, including late-entry epochs opened by
+ * the vocoder. Keep capacity, but clear the slot before its first voice frame;
+ * an identity specialization within the same epoch must keep its samples. */
+static void
+call_state_reset_voice_errors(dsd_state* state, uint8_t slot) {
+    if (slot == 0) {
+        DSD_MEMSET(state->p25_p1_voice_err_hist, 0, sizeof(state->p25_p1_voice_err_hist));
+        state->p25_p1_voice_err_hist_count = 0;
+        state->p25_p1_voice_err_hist_pos = 0;
+        state->p25_p1_voice_err_hist_sum = 0;
+    }
+    DSD_MEMSET(state->p25_p2_voice_err_hist[slot], 0, sizeof(state->p25_p2_voice_err_hist[slot]));
+    state->p25_p2_voice_err_hist_count[slot] = 0;
+    state->p25_p2_voice_err_hist_pos[slot] = 0;
+    state->p25_p2_voice_err_hist_sum[slot] = 0;
+}
+
 int
 dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation, dsd_call_boundary boundary) {
     if (!state || !observation || observation->slot >= DSD_CALL_STATE_SLOT_COUNT) {
@@ -590,6 +611,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     // assignment below (reacquires_ended_epoch implies begins_epoch), so no zeroing is needed.
     dsd_call_snapshot previous;
     if (begins_epoch) {
+        call_state_reset_voice_errors(state, observation->slot);
         previous = *snapshot;
         DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
         ext->epoch_sequence[observation->slot] = call_state_next_nonzero(ext->epoch_sequence[observation->slot]);
@@ -600,6 +622,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         snapshot->started_m = now_m;
         if (reacquires_ended_epoch) {
             call_state_seed_reacquired_snapshot(snapshot, &previous);
+            snapshot->crc_invalid = previous.crc_invalid;
             ext->events[observation->slot].reacquired_epoch = snapshot->epoch;
             // Which epoch was reopened. Whether a history row may actually be merged is the event
             // layer's call -- it pairs this against the epoch its committed row belongs to -- but
@@ -618,6 +641,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     }
     snapshot->phase = DSD_CALL_PHASE_ACTIVE;
     call_state_apply_observation(snapshot, observation);
+    snapshot->crc_invalid |= state->event_crc_invalid[observation->slot] != 0U;
     snapshot->updated_m = now_m;
     snapshot->ended_m = 0.0;
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
@@ -662,7 +686,8 @@ call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_u
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
-    if (!call_state_crypto_differs(snapshot, update)) {
+    const uint8_t crc_invalid = (uint8_t)(state->event_crc_invalid[slot] != 0U);
+    if (!call_state_crypto_differs(snapshot, update) && (!crc_invalid || snapshot->crc_invalid)) {
         // A retained ended call is re-described by every carrier repeat.
         // Bumping the revision for an identical snapshot makes consumers that
         // poll on revision churn once per repeat for no observable change.
@@ -674,6 +699,7 @@ call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_u
     snapshot->kid = update->kid;
     snapshot->mi = update->mi;
     snapshot->audio_permitted = update->audio_permitted ? 1U : 0U;
+    snapshot->crc_invalid |= crc_invalid;
     if (snapshot->phase == DSD_CALL_PHASE_ACTIVE) {
         snapshot->updated_m = call_state_observed_m(update->observed_m);
     }
@@ -682,6 +708,51 @@ call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_u
     // that order by recency.
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+static int
+key_selection_equal(const dsd_call_key_selection* a, const dsd_call_key_selection* b) {
+    return a->valid == b->valid && a->key_epoch == b->key_epoch && a->source == b->source
+           && a->signaled_id == b->signaled_id && a->effective_id == b->effective_id && a->available == b->available
+           && a->fallback == b->fallback && a->algorithm == b->algorithm && strcmp(a->profile_ref, b->profile_ref) == 0;
+}
+
+int
+dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
+                                  int signaled_id, int effective_id, int available, int fallback) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || !epoch || (unsigned int)source > DSD_CALL_KEY_DEFAULT
+        || available < -1 || available > 1 || fallback < 0 || fallback > DSD_CALL_KEY_FALLBACK_UNKNOWN_ALGORITHM) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_key_selection selection;
+    DSD_MEMSET(&selection, 0, sizeof(selection));
+    selection.valid = 1;
+    selection.key_epoch = state->enc_lockout_key_epoch;
+    selection.source = (uint8_t)source;
+    selection.signaled_id = (uint16_t)signaled_id;
+    selection.effective_id = effective_id;
+    selection.available = (int8_t)available;
+    selection.fallback = (uint8_t)fallback;
+    DSD_MEMCPY(selection.profile_ref, state->key_profile_ref, sizeof(selection.profile_ref));
+    selection.profile_ref[sizeof(selection.profile_ref) - 1U] = '\0';
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* call = &ext->calls.slots[slot];
+    if (call->epoch != epoch || call->phase == DSD_CALL_PHASE_IDLE) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    selection.algorithm = call->algid;
+    if (!key_selection_equal(&call->key_selection, &selection)) {
+        call->key_selection = selection;
+        call->revision = call_state_next_nonzero(call->revision);
+        ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    }
     dsd_call_state_ext_unlock(ext);
     return 1;
 }
@@ -711,8 +782,15 @@ dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, do
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
+    const double now_m = call_state_observed_m(observed_m);
     snapshot->media_active = media_active ? 1U : 0U;
-    snapshot->updated_m = call_state_observed_m(observed_m);
+    snapshot->updated_m = now_m;
+    if (media_active) {
+        if (snapshot->media_started_m <= 0.0) {
+            snapshot->media_started_m = now_m;
+        }
+        snapshot->media_updated_m = now_m;
+    }
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
     dsd_call_state_ext_unlock(ext);

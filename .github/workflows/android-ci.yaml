@@ -107,7 +107,7 @@ jobs:
           EOF
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.5
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           # run-vcpkg requires a full 40-char SHA1.
           # Keep this in sync with vcpkg.json's builtin-baseline.
@@ -308,16 +308,28 @@ jobs:
           set -euxo pipefail
           cmake --build --preset dev-debug -j \
             --target dsd-neo_test_ui_qt_qml \
+            dsd-neo_test_ui_qt_site_groups \
             dsd-neo_test_ui_qt_persistence \
+            dsd-neo_test_ui_qt_decryption_profiles \
             dsd-neo_test_ui_qt_call_history_model \
             dsd-neo_test_ui_qt_session_args \
+            dsd-neo_test_ui_qt_scan_list_targets \
+            dsd-neo_test_ui_qt_scan_list_roundtrip \
+            dsd-neo_test_engine_trunk_scan_scan_list \
             dsd-neo_test_ui_qt_imported_files_model \
             dsd-neo_test_ui_qt_call_history_merge \
             dsd-neo_test_ui_qt_call_line \
+            dsd-neo_test_ui_qt_auto_start_policy \
+            dsd-neo_test_ui_qt_android_host \
             dsd-neo_test_ui_qt_session_state \
+            dsd-neo_test_ui_qt_diagnostics_log \
+            dsd-neo_test_runtime_log_tap \
+            dsd-neo_test_ui_qt_p25_network_model \
+            dsd-neo_test_ui_qt_controller \
             dsd-neo_test_ui_qt_spectrum_math \
             dsd-neo_test_ui_qt_spectrum_model \
             dsd-neo_test_ui_qt_metrics_model \
+            dsd-neo_test_ui_qt_talkgroup_list_model \
             dsd-neo_test_ui_qt_radio_reference_model
 
       # The QML test carries its own headless environment (offscreen platform,
@@ -325,7 +337,7 @@ jobs:
       # here — a developer running ctest locally gets the same run.
       - name: Test
         shell: bash
-        run: ctest --preset dev-debug -R '^UI_QT_' --output-on-failure
+        run: ctest --preset dev-debug -R '^(UI_QT_|ENGINE_TRUNK_SCAN_SCAN_LIST$)' --output-on-failure
 
       # The baked RadioReference key is a compile-time constant, so the shipped
       # configuration — a build that carries its own key and must ignore any
@@ -409,7 +421,7 @@ jobs:
         uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Install the pinned NDK and SDK platform
         shell: bash
@@ -519,7 +531,7 @@ jobs:
           EOF
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.5
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.6
         with:
           # run-vcpkg requires a full 40-char SHA1.
           # Keep this in sync with vcpkg.json's builtin-baseline.
@@ -561,6 +573,9 @@ jobs:
       - name: Build the APK
         shell: bash
         run: cmake --build --preset android-app -j
+
+      - name: Test location broker on the JVM
+        run: python3 tests/android/run_location_tests.py --require-tools
 
       - name: Locate the APK
         id: apk
@@ -827,7 +842,7 @@ jobs:
 
       - name: Generate APK SBOM
         if: github.event_name != 'pull_request'
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           file: ${{ steps.names.outputs.APK_PATH }}
           format: spdx-json
@@ -1002,7 +1017,7 @@ jobs:
         id: aab_sbom
         if: steps.aab.outputs.AAB_PATH != ''
         continue-on-error: true
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           file: ${{ steps.aab.outputs.AAB_PATH }}
           format: spdx-json
@@ -1173,7 +1188,7 @@ jobs:
       # "not a tag" is all that distinguishes a nightly here.
       - name: Upload APK nightly assets (overwrite)
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: nightly
           name: nightly

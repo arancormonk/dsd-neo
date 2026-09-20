@@ -67,6 +67,24 @@ main(void) {
     opts.trunk_enable = 1;
     assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 5);
 
+    /* Combined P25 scan visits must leave room for C4FM, CQPSK and Phase 2.
+     * Explicit locks, fixed inputs and normal trunking keep the original dwell. */
+    opts.trunk_scan_enabled = 1;
+    opts.frame_p25p2 = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)&state;
+    assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
+    opts.mod_cli_lock = 1;
+    assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 5);
+    opts.mod_cli_lock = 0;
+    opts.audio_in_type = AUDIO_IN_WAV;
+    assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 5);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 5);
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    opts.trunk_scan_enabled = 0;
+    assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 5);
     opts.trunk_is_tuned = 1;
     assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
 

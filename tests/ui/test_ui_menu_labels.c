@@ -12,6 +12,7 @@
  */
 
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -21,10 +22,12 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <sndfile.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "../test_support/scan_mode_label_stubs.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/sockets.h"
@@ -214,6 +217,14 @@ test_decoder_labels(void) {
     rc |= expect_str("decode mode auto", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [Auto]");
     g_infer_mode = DSDCFG_MODE_DMR;
     rc |= expect_str("decode mode dmr", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR]");
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_P25);
+    rc |= expect_str("decode mode with row override", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR; scan p25]");
+    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
+    opts.monitor_input_audio = 1;
+    opts.use_cosine_filter = 1;
+    rc |= expect_str("monitor before snapshots", lbl_monitor(&ctx, b, sizeof(b)), "Source audio monitor [On]");
+    rc |= expect_str("filter before snapshots", lbl_cosine(&ctx, b, sizeof(b)), "Cosine filter [On]");
+    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
     rc |= expect_str("decode mode null ctx is auto", lbl_decode_mode(NULL, b, sizeof(b)), "Mode... [Auto]");
 
     state.rf_mod = 1;
@@ -242,6 +253,32 @@ test_decoder_labels(void) {
     opts.mod_p25p2_c4fm = 0;
     state.rf_mod = 7;
 
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_P25);
+    dsd_scan_settings configured = {0};
+    configured.state_rf_mod = 1;
+    configured.mod_qpsk = 1;
+    configured.mod_p25p2_profile_lock = 1;
+    dsd_test_scan_labels_configured(&configured);
+    state.rf_mod = 2;
+    rc |= expect_str("modulation reads configured snapshot", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
+    rc |= expect_str("p2 lock reads configured snapshot", lbl_p25p2_mod_lock(&ctx, b, sizeof(b)),
+                     "P25 Phase 2 modulation lock [QPSK]");
+    configured.state_rf_mod = 0;
+    configured.mod_p25p2_c4fm = 1;
+    dsd_test_scan_labels_configured(&configured);
+    rc |= expect_str("modulation follows configured toggle", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [C4FM]");
+    rc |= expect_str("configured cli p2 lock", lbl_p25p2_mod_lock(&ctx, b, sizeof(b)),
+                     "P25 Phase 2 modulation lock [C4FM]");
+    dsd_test_scan_labels_configured(NULL);
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
+    dsd_state* published_state = (dsd_state*)dsd_app_get_latest_snapshot();
+    if (published_state == NULL) {
+        DSD_FPRINTF(stderr, "published state snapshot unavailable\n");
+        return 1;
+    }
+    published_state->rf_mod = 1;
+    rc |= expect_str("modulation uses published state", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
+
     opts.use_lpf = 1;
     opts.use_hpf = 0;
     opts.use_pbf = 1;
@@ -250,7 +287,15 @@ test_decoder_labels(void) {
     rc |= expect_str("hpf off", lbl_hpf(&ctx, b, sizeof(b)), "High-pass filter [Off]");
     rc |= expect_str("pbf on", lbl_pbf(&ctx, b, sizeof(b)), "Pulse-shaping band-pass [On]");
     rc |= expect_str("hpf digital off", lbl_hpf_d(&ctx, b, sizeof(b)), "Digital high-pass filter [Off]");
-    opts.use_cosine_filter = 1;
+    /* The M17 row can disable the effective filter while the configured value
+     * shown by this toggle remains enabled. */
+    opts.use_cosine_filter = 0;
+    dsd_opts* published_opts = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
+    if (published_opts == NULL) {
+        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
+        return 1;
+    }
+    published_opts->use_cosine_filter = 1;
     rc |= expect_str("cosine on", lbl_cosine(&ctx, b, sizeof(b)), "Cosine filter [On]");
 
     opts.aggressive_framesync = 0;
@@ -336,13 +381,24 @@ test_trunking_labels(void) {
     opts.trunk_tune_data_calls = 1;
     rc |= expect_str("group calls on", lbl_tune_group(&ctx, b, sizeof(b)), "Group calls [On]");
     rc |= expect_str("private calls off", lbl_tune_priv(&ctx, b, sizeof(b)), "Private calls [Off]");
+    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
     rc |= expect_str("data calls on", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [On]");
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
     opts.reverse_mute = 1;
     opts.p25_prefer_candidates = 1;
     rc |= expect_str("reverse mute on", lbl_rev_mute(&ctx, b, sizeof(b)), "Reverse mute [On]");
     rc |= expect_str("prefer cc on", lbl_pref_cc(&ctx, b, sizeof(b)), "Prefer CC candidates [On]");
 
     state.tg_hold = 0;
+    dsd_test_tg_avoids(3, 42);
+    rc |= expect_str("temporary avoids count", lbl_tg_session_avoid_clear(&ctx, b, sizeof b),
+                     "Clear temporary TG avoids - current list [3]");
+    opts.persist_tg_lockouts = 1;
+    rc |= expect_str("save lockouts enabled", lbl_tg_lockout_persist(&ctx, b, sizeof b), "Save user TG lockouts [On]");
+    opts.persist_tg_lockouts = 0;
+    rc |=
+        expect_str("save lockouts disabled", lbl_tg_lockout_persist(&ctx, b, sizeof b), "Save user TG lockouts [Off]");
+    dsd_test_tg_avoids(0, 0);
     rc |= expect_str("tg hold none", lbl_tg_hold(&ctx, b, sizeof(b)), "Talkgroup hold... [none]");
     state.tg_hold = 4242;
     rc |= expect_str("tg hold set", lbl_tg_hold(&ctx, b, sizeof(b)), "Talkgroup hold... [4242]");
@@ -401,10 +457,12 @@ test_encryption_labels(void) {
     opts.unmute_encrypted_p25 = 1;
     rc |= expect_str("muting off", lbl_muting(&ctx, b, sizeof(b)), "Mute encrypted audio [Off]");
 
+    dsd_test_scan_labels_set(0, DSD_SCAN_MODE_INHERIT);
     opts.trunk_tune_enc_calls = 0;
     rc |= expect_str("enc lockout on", lbl_p25_enc_lockout(&ctx, b, sizeof(b)), "Lock out encrypted calls [On]");
     opts.trunk_tune_enc_calls = 1;
     rc |= expect_str("enc lockout off", lbl_p25_enc_lockout(&ctx, b, sizeof(b)), "Lock out encrypted calls [Off]");
+    dsd_test_scan_labels_set(1, DSD_SCAN_MODE_INHERIT);
     rc |= expect_str("enc lockout clear count", lbl_enc_lockout_clear(&ctx, b, sizeof(b)), "Clear lockouts [0]");
 
     state.M = 1;
@@ -413,6 +471,46 @@ test_encryption_labels(void) {
     state.M = 0x21;
     rc |= expect_str("force bp off", lbl_key_force_bp(&ctx, b, sizeof(b)), "Force basic/scrambler key [Off]");
     rc |= expect_str("force rc4 on", lbl_key_force_rc4(&ctx, b, sizeof(b)), "Force RC4 key [On]");
+    dsd_scan_settings configured = {0};
+    configured.force_key = 1;
+    configured.dmr_mute_encL = configured.dmr_mute_encR = 1;
+    configured.aggressive_framesync = 1;
+    configured.scan_voice_only = 1;
+    configured.scan_voice_hold_ms = 4000;
+    configured.trunk_tune_data_calls = 0;
+    configured.trunk_tune_enc_calls = 1;
+    dsd_opts* published = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
+    if (published == NULL) {
+        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
+        return 1;
+    }
+    published->trunk_tune_data_calls = 1;
+    published->trunk_tune_enc_calls = 0;
+    dsd_test_scan_labels_configured(&configured);
+    rc |= expect_str("muting configured", lbl_muting(&ctx, b, sizeof(b)), "Mute encrypted audio [On]");
+    rc |= expect_str("force BP configured", lbl_key_force_bp(&ctx, b, sizeof(b)), "Force basic/scrambler key [On]");
+    rc |= expect_str("force RC4 configured", lbl_key_force_rc4(&ctx, b, sizeof(b)), "Force RC4 key [Off]");
+    rc |= expect_str("CRC configured", lbl_crc_relax(&ctx, b, sizeof(b)), "Relaxed CRC checks [Off]");
+    rc |= expect_str("voice gate configured", lbl_scan_voice_only(&ctx, b, sizeof(b)), "Voice-only scan [On]");
+    rc |= expect_str("voice hold configured", lbl_scan_voice_hold(&ctx, b, sizeof(b)), "Voice hold... [4000 ms]");
+    rc |= expect_str("data calls target override", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [Off] (target: On)");
+    rc |= expect_str("enc lockout target override", lbl_p25_enc_lockout(&ctx, b, sizeof(b)),
+                     "Lock out encrypted calls [Off] (target: On)");
+    configured.trunk_tune_data_calls = 1;
+    configured.trunk_tune_enc_calls = 0;
+    dsd_test_scan_labels_configured(&configured);
+    rc |= expect_str("data calls baseline matches target", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [On]");
+    rc |= expect_str("enc lockout baseline matches target", lbl_p25_enc_lockout(&ctx, b, sizeof(b)),
+                     "Lock out encrypted calls [On]");
+    published->trunk_tune_data_calls = 0;
+    published->trunk_tune_enc_calls = 1;
+    rc |= expect_str("data calls target disabled", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [On] (target: Off)");
+    rc |= expect_str("enc lockout target disabled", lbl_p25_enc_lockout(&ctx, b, sizeof(b)),
+                     "Lock out encrypted calls [On] (target: Off)");
+    dsd_test_scan_labels_configured(NULL);
+    rc |= expect_str("data calls unscoped snapshot", lbl_tune_data(&ctx, b, sizeof(b)), "Data calls [Off]");
+    rc |= expect_str("enc lockout unscoped snapshot", lbl_p25_enc_lockout(&ctx, b, sizeof(b)),
+                     "Lock out encrypted calls [Off]");
 
     rc |= expect_str("hytera unset", lbl_key_hytera(&ctx, b, sizeof(b)), "Hytera privacy key (hex)...");
     state.H = 0x1234U;
@@ -477,7 +575,13 @@ test_input_and_audio_labels(void) {
     rc |= expect_str("output muted", lbl_out_mute(&ctx, b, sizeof(b)), "Mute [On]");
     opts.audio_out = 1;
     rc |= expect_str("output unmuted", lbl_out_mute(&ctx, b, sizeof(b)), "Mute [Off]");
-    opts.monitor_input_audio = 1;
+    opts.monitor_input_audio = 0;
+    dsd_opts* published_opts = (dsd_opts*)dsd_app_get_latest_opts_snapshot();
+    if (published_opts == NULL) {
+        DSD_FPRINTF(stderr, "published options snapshot unavailable\n");
+        return 1;
+    }
+    published_opts->monitor_input_audio = 1;
     rc |= expect_str("monitor on", lbl_monitor(&ctx, b, sizeof(b)), "Source audio monitor [On]");
     opts.input_volume_multiplier = 0;
     rc |=

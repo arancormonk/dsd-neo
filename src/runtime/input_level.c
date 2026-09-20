@@ -71,6 +71,7 @@ dsd_input_level_source_is_rf(dsd_input_level_source source) {
         case DSD_INPUT_LEVEL_SOURCE_RTL_CU8:
         case DSD_INPUT_LEVEL_SOURCE_RTL_TCP_CU8:
         case DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16:
+        case DSD_INPUT_LEVEL_SOURCE_AIRSPY_CF32:
         case DSD_INPUT_LEVEL_SOURCE_SOAPY_CF32: return 1;
         case DSD_INPUT_LEVEL_SOURCE_PCM:
         case DSD_INPUT_LEVEL_SOURCE_UNKNOWN:

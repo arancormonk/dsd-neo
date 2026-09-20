@@ -7,11 +7,11 @@ import QtQuick
 // the same register as EncTag but deliberately neutral — a file's type is a
 // fact, not a warning.
 Rectangle {
-    // "chan" | "group" | "keysDec" | "keysHex" | "p25Bandplan", as ImportedFilesModel stores it.
+    // "chan" | "group" | "keysDec" | "keysHex" | "p25Bandplan" | "src", as ImportedFilesModel stores it.
     property string type: ""
 
     implicitWidth: tag.implicitWidth + 14
-    implicitHeight: 20
+    implicitHeight: Math.max(20, tag.implicitHeight + 8)
     radius: 5
     color: "transparent"
     border.width: 1
@@ -20,14 +20,9 @@ Rectangle {
     Text {
         id: tag
         anchors.centerIn: parent
-        text: parent.type === "chan" ? qsTr("CHANNELS")
-              : parent.type === "group" ? qsTr("TALKGROUPS")
-              : parent.type === "keysDec" ? qsTr("KEYS · DEC")
-              : parent.type === "keysHex" ? qsTr("KEYS · HEX")
-              : parent.type === "p25Bandplan" ? qsTr("P25 BAND PLAN")
-              : qsTr("FILE")
+        text: parent.type === "trunkTargets" ? qsTr("TARGET CSV") : parent.type === "chan" ? qsTr("CHANNELS") : parent.type === "group" ? qsTr("TALKGROUPS") : parent.type === "keysDec" ? qsTr("KEYS · DEC") : parent.type === "keysHex" ? qsTr("KEYS · HEX") : parent.type === "vertexKeys" ? qsTr("VERTEX KEYS") : parent.type === "dmrTgKeys" ? qsTr("DMR KEY MAP") : parent.type === "p25Bandplan" ? qsTr("P25 BAND PLAN") : parent.type === "src" ? qsTr("RADIO IDS") : qsTr("FILE")
         font.family: Theme.mono
-        font.pixelSize: 10
+        font.pixelSize: Theme.fontSize(10)
         font.letterSpacing: 1
         color: Theme.textSecondary
     }

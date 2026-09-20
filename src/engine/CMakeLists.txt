@@ -55,6 +55,7 @@ target_sources(
     dsd-neo_engine
     PRIVATE
         engine.c
+        channel_scan.c
         frame_sync_hooks_install.c
         p25_bandplan_export.c
         p25_optional_hooks_install.c

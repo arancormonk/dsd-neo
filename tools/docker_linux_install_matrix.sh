@@ -10,8 +10,8 @@ Usage: tools/docker_linux_install_matrix.sh (--all | --distro ID [--distro ID ..
 
 Validate tools/install_linux.sh in pinned Linux container images.
 
-Each distro runs the Release install path, then configures a separate Debug
-build with BUILD_TESTING=ON and runs the CTest suite.
+Each distro validates default user-prefix and staged system-prefix Release
+installs, then configures a separate Debug build and runs the CTest suite.
 
 Options:
   --all          Run every distro in the matrix.
@@ -171,7 +171,8 @@ run_one() {
 
   list_archive_paths |
     tar --null -T - -cf - |
-    docker run --rm -i \
+    docker run --rm --pull=always -i \
+      --label org.dsd-neo.install-matrix="$distro" \
       --env "DSD_NEO_BUILD_JOBS=$JOBS" \
       --env "DSD_NEO_MATRIX_TESTS=$RUN_TESTS" \
       --env "DSD_NEO_MATRIX_RADIO=$radio_mode" \
@@ -201,6 +202,12 @@ run_one() {
         tar -xf - -C /workspace
         cd /workspace
         chmod +x tools/install_linux.sh tools/fetch-pinned-git.sh
+        echo "==> Default user-prefix install"
+        tools/install_linux.sh --yes --build-dir /tmp/dsd-neo-build-user
+        test -x "$HOME/.local/bin/dsd-neo"
+        "$HOME/.local/bin/dsd-neo" -h > /dev/null
+
+        echo "==> System-prefix staged install"
         tools/install_linux.sh \
           --yes \
           --prefix /usr/local \
@@ -208,7 +215,7 @@ run_one() {
           --build-dir /tmp/dsd-neo-build \
           --destdir /tmp/dsd-neo-root \
           --radio "$DSD_NEO_MATRIX_RADIO" \
-          --codec2 auto
+          --codec2 required
         test -x /tmp/dsd-neo-root/usr/local/bin/dsd-neo
         /tmp/dsd-neo-root/usr/local/bin/dsd-neo -h > /dev/null
 

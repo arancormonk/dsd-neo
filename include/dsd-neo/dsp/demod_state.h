@@ -17,6 +17,7 @@
 #include <dsd-neo/platform/platform.h>
 
 #ifdef __cplusplus
+#include <atomic>
 #include <dsd-neo/core/safe_api.h>
 #endif
 #include <dsd-neo/dsp/costas.h>
@@ -160,8 +161,10 @@ struct demod_state {
     int channel_lpf_plan_profile;  /* cached profile for channel_lpf_plan_taps */
     int channel_lpf_plan_taps_len; /* cached tap count; 0 = not designed */
     float channel_pwr;             /* mean power (RMS^2 proxy) measured after channel LPF */
-    float channel_squelch_level;   /* squelch threshold (linear power); 0 = disabled */
-    int channel_squelched;         /* 1 if squelched this block, 0 otherwise */
+    /* Squelch threshold (linear power); 0 = disabled. Written from the control thread
+     * (config apply, menus) while the demod thread reads it per block. */
+    std::atomic<float> channel_squelch_level;
+    int channel_squelched; /* 1 if squelched this block, 0 otherwise */
 
     /* Polyphase rational resampler (L/M) */
     int resamp_enabled;

@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
@@ -29,6 +30,8 @@
 #include <string.h>
 #include "command_dispatch.h"
 
+#include <dsd-neo/runtime/scan_mode.h>
+#include "../test_support/scan_mode_label_stubs.h"
 #include "csv_picker.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -72,6 +75,7 @@ typedef struct {
 
 static CmdCapture g_cmd;
 static PromptCapture g_prompt;
+static char g_picker_kind[32];
 static ChooserCapture g_chooser;
 static char g_status[256];
 static int g_status_calls;
@@ -228,6 +232,11 @@ dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-int
 }
 
 int
+dsd_app_command_submit(int cmd_id, const void* payload, size_t size) {
+    return capture_command(cmd_id, payload, size);
+}
+
+int
 dsd_app_command_action(int cmd_id) {
     return capture_command(cmd_id, NULL, 0U);
 }
@@ -359,7 +368,7 @@ ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, 
 void
 ui_csv_import_picker_open(const char* kind, const char* prompt_title, size_t cap, ui_prompt_string_done_fn on_done,
                           void* user_ctx) {
-    (void)kind;
+    DSD_SNPRINTF(g_picker_kind, sizeof g_picker_kind, "%s", kind);
     ui_prompt_open_string_async(prompt_title, NULL, cap, on_done, user_ctx);
 }
 
@@ -432,8 +441,8 @@ dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
 
 void
 dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
-    (void)opts;
-    (void)state;
+    assert(opts == dsd_app_get_latest_opts_snapshot());
+    assert(state == dsd_app_get_latest_snapshot());
     if (cfg) {
         DSD_MEMSET(cfg, 0, sizeof *cfg);
     }
@@ -623,6 +632,12 @@ cb_import_chan(void* v, const char* p) {
 
 void
 cb_import_group(void* v, const char* p) {
+    (void)v;
+    (void)p;
+}
+
+void
+cb_import_src(void* v, const char* p) {
     (void)v;
     (void)p;
 }
@@ -1293,6 +1308,14 @@ test_additional_prompt_and_toggle_actions(void) {
     rc |= expect_int("channel import cap", (int)g_prompt.cap, 1024);
 
     reset_capture();
+    act_import_src(&ctx);
+    rc |= expect_str("source picker kind", g_picker_kind, "src");
+    rc |= expect_int("source picker callback", g_prompt.str_cb == cb_import_src, 1);
+    rc |= expect_int("source picker context", g_prompt.user == &ctx, 1);
+    rc |= expect_str("source import prompt", g_prompt.title, "Source ID list CSV");
+    rc |= expect_int("source import cap", (int)g_prompt.cap, 1024);
+
+    reset_capture();
     act_import_group(&ctx);
     rc |= expect_str("group import prompt", g_prompt.title, "Group list CSV");
 
@@ -1710,6 +1733,28 @@ test_signal_chain_rows(void) {
         rc |= expect_int(simple[i].tag, g_cmd.calls, 1);
     }
 
+    static dsd_opts lockout_opts;
+    UiCtx lockout_ctx = {.opts = &lockout_opts};
+    reset_capture();
+    lockout_opts.persist_tg_lockouts = 1;
+    act_tg_lockout_persist(&lockout_ctx);
+    rc |= expect_int("disable lockout saving command", g_cmd.id, DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET);
+    rc |= expect_int("disable lockout saving payload size", (int)g_cmd.n, (int)sizeof(int32_t));
+    rc |= expect_int("disable lockout saving value", cmd_i32(), 0);
+    reset_capture();
+    lockout_opts.persist_tg_lockouts = 0;
+    act_tg_lockout_persist(&lockout_ctx);
+    rc |= expect_int("enable lockout saving command", g_cmd.id, DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET);
+    rc |= expect_int("enable lockout saving value", cmd_i32(), 1);
+
+    reset_capture();
+    dsd_test_tg_avoids(3, 42);
+    act_tg_session_avoid_clear(NULL);
+    rc |= expect_int("clear temporary command", g_cmd.id, DSD_APP_CMD_TG_SESSION_AVOID_CLEAR);
+    uint64_t avoid_context = 0;
+    DSD_MEMCPY(&avoid_context, g_cmd.data, sizeof avoid_context);
+    rc |= expect_int("clear captures snapshot context", (int)avoid_context, 42);
+    dsd_test_tg_avoids(0, 0);
     reset_capture();
     act_lockout_slot1(NULL);
     rc |= expect_int("lockout slot 1 command", g_cmd.id, DSD_APP_CMD_LOCKOUT_SLOT);
@@ -1871,6 +1916,19 @@ test_scan_voice_gate_actions(void) {
     rc |= expect_int("voice hold opens int prompt", g_prompt.calls, 1);
     rc |= expect_int("voice hold wires callback", g_prompt.int_cb == cb_scan_voice_hold, 1);
     rc |= expect_int("voice hold posts nothing yet", g_cmd.calls, 0);
+
+    dsd_scan_settings configured = {0};
+    configured.scan_voice_qualify_ms = 1800;
+    configured.scan_voice_hold_ms = 2800;
+    dsd_test_scan_labels_configured(&configured);
+    reset_capture();
+    act_scan_voice_only(&ctx);
+    rc |= expect_int("voice-only toggles configured default", cmd_i32(), 1);
+    act_scan_voice_qualify(&ctx);
+    rc |= expect_int("voice qualify configured initial", g_prompt.initial_int, 1800);
+    act_scan_voice_hold(&ctx);
+    rc |= expect_int("voice hold configured initial", g_prompt.initial_int, 2800);
+    dsd_test_scan_labels_configured(NULL);
 
     return rc;
 }

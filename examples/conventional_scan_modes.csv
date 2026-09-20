@@ -1,0 +1,10 @@
+channel,frequency_hz,name,mode
+1,467756250,NXDN48 example,nxdn48
+2,851012500,P25 example,p25
+3,461000000,DMR example,dmr
+4,461556250,NXDN96 example,nxdn96
+5,145670000,D-STAR example,dstar
+6,439987500,YSF example,ysf
+7,145500000,M17 example,m17
+8,446100000,dPMR example,dpmr
+9,150000000,Inherit configured decoder,

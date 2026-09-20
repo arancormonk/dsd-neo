@@ -283,7 +283,7 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     }
     s->channel_pwr = 0.0f;
     g_channel_pwr.store(0.0f, std::memory_order_relaxed);
-    s->channel_squelch_level = 0.0f;
+    s->channel_squelch_level.store(0.0f, std::memory_order_relaxed);
     s->channel_squelched = 0;
     s->audio_lpf_enable = 0;
     s->audio_lpf_alpha = 0.0f;
@@ -510,7 +510,7 @@ demod_apply_channel_lpf_defaults(struct demod_state* demod, const dsd_opts* opts
 
 static void
 demod_finalize_runtime_profile(struct demod_state* demod, const dsd_opts* opts) {
-    demod->channel_squelch_level = (float)opts->rtl_squelch_level;
+    demod->channel_squelch_level.store((float)opts->rtl_squelch_level, std::memory_order_relaxed);
     if (demod->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
         demod->ted_enabled = 0;
     }

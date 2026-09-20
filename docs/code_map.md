@@ -12,7 +12,7 @@ should be included via `#include <dsd-neo/...>`.
 - `cmake/` — CMake helper modules and install/uninstall scripts
 - `tools/` — development scripts (formatting, analysis, coverage)
 - `docs/` — documentation
-- `examples/` — sample CSV inputs (channel maps, groups, keys) used by the config system and tooling
+- `examples/` — sample CSV inputs (channel maps, groups, source IDs, keys) used by the config system and tooling
 - `packaging/` — packaging assets/scripts (AppImage, macOS)
 - `android/` — Android app shell: Kotlin foreground service, JNI lifecycle glue, and vendored libusb/librtlsdr
   (`android/README.md`); built only for `ANDROID` with `DSD_ENABLE_QT_UI=ON`
@@ -46,8 +46,13 @@ Generated (do not edit/commit):
   - Single-tuner trunk scan coordinator: `src/engine/trunk_scan.c` behind
     `include/dsd-neo/engine/trunk_scan.h` (see below)
   - Voice-gated scan for -Y and trunk scan (issue #381): `src/engine/scan_voice_gate.c` behind
-    `include/dsd-neo/engine/scan_voice_gate.h` (tests: `ENGINE_SCAN_VOICE_GATE`, `ENGINE_NO_CARRIER_RESET`,
-    `ENGINE_TRUNK_SCAN`)
+    `include/dsd-neo/engine/scan_voice_gate.h`; its probe returns separate active and retained last-media clocks so
+    a protocol terminator cannot erase the scanner's tail anchor (tests: `ENGINE_SCAN_VOICE_GATE`,
+    `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`). The same file owns the scan-timing publication
+    (`dsd_scan_timing_clear()` / `dsd_scan_timing_publish()`) and the -Y timing tick
+    `dsd_engine_scan_y_timing_tick()`, which stamps `dsd_state::scan_timing` with the stay reason and the absolute
+    monotonic deadline of the window that is running (issue #508); the deadline it publishes is the same instant
+    `dsd_scan_voice_gate_should_step()` flips, so the readout cannot drift from the rotation it describes
   - Installs runtime hook tables used by DSP/frame-sync code
     (`src/engine/frame_sync_hooks_install.c`, `include/dsd-neo/runtime/frame_sync_hooks.h`)
 - Build files: `src/engine/CMakeLists.txt`
@@ -62,7 +67,7 @@ Key public headers:
 ### Single-Tuner Trunk Scan
 
 `src/engine/trunk_scan.c` owns the coordinator that rotates one retunable receiver across the explicit targets of a
-target-list CSV (P25 trunk, DMR trunk, DMR conventional, NXDN trunk, and NXDN96/NXDN48 conventional). Operator-facing
+target-list CSV (P25 trunk/conventional, DMR trunk/conventional, and NXDN96/NXDN48 trunk/conventional). Operator-facing
 behavior, the CSV columns, and the CLI/config options live in `docs/trunk-scan.md`;
 `include/dsd-neo/engine/trunk_scan.h` is the whole public surface:
 
@@ -78,8 +83,15 @@ behavior, the CSV columns, and the CLI/config options live in `docs/trunk-scan.m
   `dsd_engine_trunk_scan_active_dmr_ctx()`, `dsd_engine_trunk_scan_active_chan_csv()`,
   `dsd_engine_trunk_scan_active_gfsk_symbol_rate()`, `dsd_engine_trunk_scan_active_p25_cqpsk_request()`,
   `dsd_engine_trunk_scan_saved_tuner_autogain()`, and `dsd_engine_trunk_scan_target_count()`.
-- Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()` and
-  `dsd_engine_trunk_scan_nxdn_conventional_activity()`, reached from protocol code through the runtime hooks.
+- Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()`,
+  `dsd_engine_trunk_scan_nxdn_conventional_activity()`, and `dsd_engine_trunk_scan_p25_conventional_activity()`,
+  reached from protocol code through the runtime hooks.
+
+Beside the active-target publication the coordinator also publishes the stay reason and live timing for the parked
+target into `dsd_state::scan_timing` once per tick (issue #508), from the same effective dwell/hold resolvers the
+rotation itself uses. It is a readout, not a decision: the reason function is pure and the old held/not-held verdict
+is a one-line wrapper over it, so no rotation, hold or step moves because of it. `app_control/scan_timing_view`
+turns it into a row (see below).
 
 Every parked target keeps its own snapshot of decoder state — channel map, trunking/LCN state, call and P25 identity
 metadata (the IDEN tables and the user band plan behind them), the encrypted-target lockout ledger, and the NXDN
@@ -91,11 +103,51 @@ The one deliberate crossing is by provenance: when the parked target's WACN/SYS 
 snapshot holds a P25 IDEN entry learned on that same WACN/SYS, the coordinator copies it into an empty slot at
 trust 1 (`trunk_scan_share_peer_idens()`), and `dsd_engine_p25_bandplan_export()` in
 `src/engine/p25_bandplan_export.c` merges every target's tables into one band-plan CSV. The keyring is not snapshotted: each target instead carries a static
-`dsd_key_set` (`keys_hex_csv`/`keys_dec_csv` columns) that the switch installs through the scan key swap in
+`dsd_key_set` (key-file or direct-key columns) that the switch installs through the scan key swap in
 `<dsd-neo/core/key_set.h>`, restoring the globals on unkeyed targets and at shutdown without touching the key epoch.
 
+Recovery ownership is checked at the P25 watchdog, DMR tick and engine frame-sync callback boundaries. Runtime trunk-scan
+hooks identify the parked protocol. Outside trunk scan, validated control/grant evidence retains a protocol owner
+across sync loss; unrelated protocol decodes and raw sync cannot evict it. Ownership writes and watchdog reads share the decoder/SM guard, so the
+watchdog predicate does not read the sync or CC-format hints modified by frame acquisition. DMR owns its decoded
+CC heartbeat, six-second loss grace, two-second probe window and five-second backend deadline inside each
+target's `dmr_sm_ctx_t`. Probes honor avoids and revisit the saved CC anchor between alternate frequencies.
+Probe frequency is separate from the saved anchor until control or grant evidence confirms it. Target entry and accepted CC return restart acquisition, preventing a previous call or probe from holding
+or retuning a newly parked target. Pending backend probes hold the target and disarm idle dwell; completion or timeout starts
+a fresh dwell. The subsequent decoded-acquisition wait counts toward dwell. DMR heartbeats use the completed
+tuning generation and frequency, avoiding blocking rigctl queries in the CSBK path.
+
 Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
-`tests/engine/test_engine_synced_trunk_scan_tick.c` (`ENGINE_SYNCED_TRUNK_SCAN_TICK`).
+`tests/engine/test_engine_synced_trunk_scan_tick.c` (`ENGINE_SYNCED_TRUNK_SCAN_TICK`), and
+`tests/engine/test_engine_dmr_cc_recovery.c` (`ENGINE_DMR_CC_RECOVERY`, real protocol/coordinator with simulated tuning).
+
+### Per-channel decoder modes
+
+- Core owns positional channel-map modes through `core/channel_mode.h`, implemented beside the LCN heap stores in
+  `core/util/dsd_state_trunk_lcn.c`. Extension slot 5 transfers with map adoption and is cleared on map teardown.
+- Runtime owns the exact configured decoder baseline and temporary class through `runtime/scan_mode.h` and
+  `runtime/scan_mode.c` (extension slot 6). It uses the existing preset definitions while keeping the audio sink fixed.
+  Suspend/update/resume supports global commands; scalar snapshot copies keep frontend state independent of live storage.
+  Blank rows retain scope ownership. `dsd_scan_mode_configured_view()` borrows the baseline without copying its output
+  label; consumers use their published snapshot, and persistence uses the exact configured preset (including custom sets).
+  `dsd_scan_mode_apply_modulation()` owns target flags/locks for both entry and scope updates. Inherited profiles use the
+  restored SPS hunt index, so AUTO's saved timing and the frontend's rate/levels agree after leaving a row.
+- Engine `channel_scan.c` (extension slot 7) stages typed `-Y` entries for automatic, manual, and avoid stepping through
+  tracked tuning. It commits mode/keys only after success and retains generation protection across pending requests.
+  Configuration edits retry pending tunes on a later service pass; live output-rate changes do not trigger another tune.
+  Failed rows advance to the next candidate; a later successful tune recovers any gate held by a partial backend failure.
+  `dsd_engine_channel_scan_waiting()` only inspects ownership; `dsd_engine_channel_scan_service_sync()` services pending
+  work and invalidates sync gathered before the transaction. Pending rows defer no-carrier call finalization until commit.
+  `dsd_engine_reset_no_carrier_state()` shares decoder cleanup without recursively stepping or changing tuner ownership.
+  `trunk_scan.c` selects the same classes from target types while retaining target snapshots and modulation/gain ownership.
+- DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
+  and slicer windows at committed row boundaries. Conventional rows also discard learned P25 modulation; trunk targets
+  retain their own learned modulation. Normal no-carrier protocol confirmation resets remain in use.
+  Unlocked RTL P25 trunk-scan targets try CQPSK after their first unproductive 4800-symbol/s dwell, before visiting 6000,
+  so the default three-second target visit includes the trial. This changes acquisition scheduling, not symbol timing.
+- Frontend snapshots deep-copy only scalar scope metadata. `dsd_app_snapshot_configured_mode()` exposes the baseline;
+  `dsd_scan_mode_active()` and `dsd_scan_mode_effective_profile()` distinguish combined P25 from global AUTO.
+
 
 ## Platform
 
@@ -117,6 +169,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
 - Target: `dsd-neo_core`
 - Responsibilities: cross-protocol glue (audio output helpers, vocoder glue, frame helpers, GPS, file import),
   misc/util
+- `src/core/file/dsd_file.c` reads SDRTrunk JSON MBE exports. Its file-local crypto context owns NXDN SACCH
+  position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating
+  IV expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path.
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
@@ -128,8 +183,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   frontend words it as a target or a channel and never names both at once. Those names come from a channel-map CSV
   that opts in with a `name` header column and live in a heap store beside the scan list, reached through
   `dsd_state_trunk_lcn_name_get()`/`_set()`/`_reserve()`/`_free()` in `src/core/util/dsd_state_trunk_lcn.c` and
-  released by `dsd_state_trunk_lcn_free()`. Per-row key sets (`keys_hex_csv`/`keys_dec_csv` columns, `-Y` only) live
-  in a sibling store with the same shape (`dsd_state_trunk_lcn_keys_*`), swapped by `dsd_scan_keys_enter()`/
+  released by `dsd_state_trunk_lcn_free()`. Per-row key sets (key-file or direct-key columns, `-Y` only) live in a
+  sibling store with the same shape (`dsd_state_trunk_lcn_keys_*`), swapped by `dsd_scan_keys_enter()`/
   `dsd_scan_keys_leave()` in `src/core/util/key_set.c`, and are likewise never deep-copied into the UI snapshot.
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
@@ -145,6 +200,23 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   direction the export uses. Every core CSV importer shares its token helpers through the module-private
   `src/core/file/csv_parse_internal.h`; the channel map's key column accepts decimal, `0x` hex and `<iden>-<chan>`
   spellings there.
+- API note: source ID aliases live in the opaque store declared by `<dsd-neo/core/source_alias.h>` and
+  implemented in `src/core/util/source_alias.c`, attached to state extension slot 8
+  (`DSD_STATE_EXT_CORE_SOURCE_ALIAS`). `dsd_source_alias_store_create()`/`dsd_source_alias_store_append()` build
+  a store; `dsd_source_alias_install()` takes ownership and replaces it, and `dsd_source_alias_clear()` removes it.
+  `dsd_source_alias_loaded()` distinguishes an empty imported store from no store; `dsd_source_alias_count()`
+  reports its row count. All import entry points accept a loaded empty list; startup failures warn without
+  stopping decoding. `src/core/file/source_alias_csv.c` implements `dsd_source_alias_load(path, &out)`
+  (fresh candidate, output untouched on open/read/allocation failure), `csvSrcImport()`/`csvSrcImportPath()`
+  from `<dsd-neo/core/csv_import.h>`, and `dsd_csv_validate_src_file()` from `<dsd-neo/core/csv_validate.h>`.
+  `dsd_source_alias_lookup()` uses exact-before-range matching (first exact row wins) and narrowest-range
+  matching (last row wins ties);
+  `dsd_source_label_lookup()` prefers aliases over the active group-list exact label, with mode only from
+  group policy and OTA alias text untouched. The list is global across scan rows and immutable once installed;
+  live access belongs to the decoder thread. `dsd_source_alias_copy_snapshot(dst, src)` deep-copies it for
+  both snapshot hops, reuses an unchanged clone, and preserves an owned destination store on allocation failure.
+  A shallow alias of the source is detached so destination cleanup cannot free the source. `CORE_SOURCE_ALIAS`
+  tests matching, precedence, lifecycle and policy isolation; `CORE_SOURCE_ALIAS_FAIL` covers allocation/read failures and physical-line length boundaries.
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -209,10 +281,13 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 - `dsd_trunk_scan_hook_p25_ctx()` / `dsd_trunk_scan_hook_dmr_ctx()` — the parked target's trunking state machine
   context, or NULL when trunk scan is not installed (`p25_trunk_sm.c`, `dmr_trunk_sm.c`, `nxdn_element.c`)
 - `dsd_trunk_scan_hook_tick()` — step the rotation; called from the engine decode loop
-- `dsd_trunk_scan_hook_dmr_conventional_activity()` / `dsd_trunk_scan_hook_nxdn_conventional_activity()` — report
-  decoded conventional activity so the parked target keeps its park. Pass only identity that has already cleared the
-  protocol's FEC/CRC gate; the coordinator runs it through the talkgroup policy before refreshing the hold, and ignores
-  it unless the parked target is of the matching conventional family
+- `dsd_trunk_scan_hook_dmr_conventional_activity()` / `dsd_trunk_scan_hook_nxdn_conventional_activity()` /
+  `dsd_trunk_scan_hook_p25_conventional_activity()` — report decoded conventional activity so the parked target keeps
+  its park. Pass only identity that has already cleared the protocol's FEC/CRC gate; the coordinator runs it through
+  the talkgroup policy before refreshing the hold, and ignores it unless the parked target is of the matching
+  conventional family. P25 reports voice starts only, not PDU data, and treats decryptable calls as clear for this policy.
+  Phase 2 XCCH reports only after MAC_PTT crypto resolution; Phase 1 late joins use the decoded service encryption
+  bit while crypto classification is unknown. `p25_sm_note_conventional_activity()` rejects stale/unidentified calls.
 - `dsd_trunk_scan_hook_active_chan_csv()` — the parked target's channel-map path, which `opts->chan_in_file` cannot
   answer while scanning (`src/protocol/nxdn/nxdn_trunk_diag.c`)
 - `dsd_trunk_scan_hook_enc_lockout_clear_snapshots()` — scrub the encrypted-target lockout ledger parked in every
@@ -230,7 +305,14 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 - Target: `dsd-neo_app_control`
 - Responsibilities:
   - Frontend metrics and raw telemetry snapshots used by the terminal renderer
-  - Command queue dispatch and menu service helpers
+  - Command queue dispatch and menu service helpers. Decoder-owner runtime start/stop opens/closes admission under
+    the queue mutex; stop securely cancels pending payloads. Evicted or cancelled talkgroup exports publish failed
+    completions. Successful inherited-policy scan exports update the configured persistence path.
+  - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
+    placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
+  - Source ID imports: `DSD_APP_CMD_IMPORT_SRC_LIST = 572` carries a path string;
+    `DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR = 573` has no payload. Import validates one candidate, refuses zero usable
+    rows, and adopts that same store and path on success; failure preserves both.
   - Frontend runtime/control-pump glue and telemetry hook installation
   - Public frontend boundary headers under `<dsd-neo/app_control/...>`
   - RadioReference apply: `include/dsd-neo/app_control/rr_import_apply.h` carries the by-value apply payload
@@ -244,6 +326,20 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   Such sessions therefore report the defaults — no carrier lock, no CFO, no output/symbol rate, and the
   invalid-SNR sentinel — and a frontend should omit those rows rather than render them as zeros. Applies to
   every frontend, not just the Android app
+- Shared display decisions, so no frontend has to restate one: `include/dsd-neo/app_control/call_view.h` and
+  `src/app_control/call_view.c` fold the canonical call state into a per-slot line, and
+  `include/dsd-neo/app_control/scan_timing_view.h` and `src/app_control/scan_timing_view.c` fold
+  `dsd_state::scan_timing` into the Scan Timing row — the stay phrase, the remaining/total of the window that is
+  running, and which of dwell/hold/hang is worth printing (issue #508). The decoder owns every deadline; these
+  views only difference it against the caller's monotonic clock, which is what keeps the terminal row, the Qt panel
+  and the Android app from drifting on what "suspended" or "hold" means. Tests: `APP_CONTROL_CALL_VIEW`,
+  `APP_CONTROL_SCAN_TIMING_VIEW`, and the terminal goldens in `UI_NCURSES_PRINTER_HELPERS`.
+- Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
+  copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
+  errors from the caller's held snapshot. The core vocoder maintains ring counts;
+  canonical call starts reset the affected slot. Qt publishes one `qualityChanged`
+  group, and the terminal average helpers wrap the same arithmetic. Counts are
+  corrected errors per voice frame, not BER; 0/0 FEC ratios are invalid.
 - Build files: `src/app_control/CMakeLists.txt`
 
 ## DSP
@@ -293,9 +389,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 - Path: `src/io`, `include/dsd-neo/io`
 - Targets:
   - `dsd-neo_io_iq` — I/Q capture/replay metadata and file helpers; no SDR dependency
-  - `dsd-neo_io_radio` — radio front-end and orchestrator for RTL-SDR (USB), RTL-TCP, and SoapySDR backends; provides
+  - `dsd-neo_io_radio` — radio front-end and orchestrator for RTL-SDR (USB), RTL-TCP, SoapySDR, and native Airspy backends; provides
     constellation/eye/spectrum snapshots, optional bias-tee (RTL path), and auto-PPM hooks
-    - Built when `DSD_HAS_RADIO` is true (RTL and/or Soapy available); otherwise provided as an INTERFACE stub target
+    - Built when `DSD_HAS_RADIO` is true (RTL, Soapy, or Airspy available, or the pipeline explicitly forced on); otherwise provided as an INTERFACE stub target
   - `dsd-neo_io_audio` — network audio/input backends: UDP PCM16LE input, TCP PCM16LE input, UDP audio output helpers,
     and M17 UDP helpers
   - `dsd-neo_io_udp_control` — UDP retune control server (used by the RTL-SDR/FM helpers)
@@ -305,6 +401,9 @@ Key public headers:
 
 - RTL stream C API: `include/dsd-neo/io/rtl_stream_c.h`
 - RTL C++ orchestrator: `include/dsd-neo/io/rtl_stream.h` (class `RtlSdrOrchestrator`)
+- Native Airspy adapter: `src/io/radio/airspy_source.cpp` owns SDK calls and USB lifecycle;
+  `rtl_device.cpp` connects its CF32 callbacks to the shared generation-checked input ring.
+  Value-only settings and identity/rate snapshots use `core/airspy_config.h`.
 - RTL device/config/metrics: `include/dsd-neo/io/rtl_device.h`, `include/dsd-neo/io/rtl_demod_config.h`,
   `include/dsd-neo/io/rtl_metrics.h`
 - Rig/control: `include/dsd-neo/io/control.h`, `include/dsd-neo/io/rigctl_client.h`,
@@ -338,6 +437,11 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
 - Path: `src/crypto`, `include/dsd-neo/crypto`
 - Target: `dsd-neo_crypto`
 - Responsibilities: stream/block ciphers and helpers (RC2/RC4/DES/AES/etc)
+- `nxdn_keystream.c` / `<dsd-neo/crypto/nxdn_keystream.h>` share the NXDN TS 1-D scrambler and AES IV
+  expansion between protocol data handling and MBE playback.
+- `dmr_mi.c` / `<dsd-neo/crypto/dmr_keystream.h>` own RC4 MI advancement and the pure DMR AES
+  `dmr_aes_expand_iv()` helper. The live protocol wrapper `LFSR128d()` retains slot-state updates and logging;
+  MBE playback uses the same expansion without those side effects.
 - Build files: `src/crypto/CMakeLists.txt`
 
 ## Protocols
@@ -352,6 +456,13 @@ Notes:
 
 - Optional codec integrations are expressed via feature interface targets:
   - `dsd-neo_feature_codec2` → `USE_CODEC2` (used by M17 when available)
+
+P25 manual control-channel selection lives in `src/protocol/p25/p25_cc_selection.c`. The Frequency command routes
+active single-system P25 sessions here; the module holds the watchdog guard through the runtime CC tuning hook,
+call teardown, and acquisition restart. A learned CC type identifies quiet P25 sessions in mixed modes;
+`noCarrier()` clears that evidence after another trunking protocol takes over. Extension ID 26
+(`DSD_STATE_EXT_PROTO_P25_CC_SELECTION`) retains the site-specific cache requirement across no-carrier resets,
+while network band plans and user settings survive.
 
 Key public headers (selection):
 
@@ -432,16 +543,42 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 Qt Quick frontend (`src/ui/qt`):
 
+- After the session's first decoder redraw, `UiController` refreshes live metrics on every timer tick so scan
+  countdowns and the sync-loss hold continue aging if input stalls. History, network and policy models still
+  refresh on decoder redraws; session lifecycle clears live metrics and prevents stale snapshots from restoring them.
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies
   picked documents into durable app storage through `DecoderHost::importDocument()` and dry-run validates them via
-  `<dsd-neo/core/csv_validate.h>` (`src/core/file/dsd_import.c`, and `src/core/file/p25_bandplan_csv.c` for the
-  P25 band plan kind) for row-count feedback.
+  `<dsd-neo/core/csv_validate.h>` (`src/core/file/dsd_import.c`, `src/core/file/p25_bandplan_csv.c`, and
+  `src/core/file/source_alias_csv.c`) for row-count feedback. Kinds are `chan`, `group`, `keysDec`, `keysHex`,
+  `p25Bandplan`, and `src` (source radio ID names), with `src` appended after `p25Bandplan`.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. See
-  `docs/radioreference-import.md`.
+  `docs/radioreference-import.md`. Nearby import uses `DecoderHost` request IDs and
+  generation retirement; Android's `LocationSupport.kt` owns coarse permission, fix
+  acquisition and geocoding, with `decoder_host_android` polling terminal results.
+  `AppPrefs::setLocationFix` retains the private fix and accuracy for 24 hours.
+- `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
+  ingestion, merging listed rows with uncovered talkgroups heard this session. `talkgroup_filter_model.{h,cpp}`
+  filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the monitor's **TG list** action.
+  `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
+  policy and atomically rewrites a configured group file. Scan-row lists remain session-only. Skip shares this
+  mutation path, preserving labels. Runtime's `dsd_rr_talkgroups_apply_categories()` supplies category names to
+  both RadioReference frontends before CSV generation.
+- `p25_network_model.{h,cpp}` copies four bounded lists through the frontend-neutral
+  `app_control/p25_network.h` facade using `UiController::tick`'s held snapshot.
+  `qml/NetworkSheet.qml` activates refresh only while visible; session edges and
+  scan-target changes clear it through `clearLiveModels()`. The C facade sorts
+  recent-first, resolves candidate flags from the snapshot's deep-copied extension,
+  formats CFVA through P25, and filters expired patches without mutating the snapshot.
+- `diagnostics_log.{h,cpp}` owns the process ring, the sole redaction/capture stage,
+  and the asynchronous bounded tail writer. `DiagnosticsLogModel` refreshes before
+  the redraw consume in `UiController::tick`; it persists across decoder session
+  transitions. `qml/DiagnosticsScreen.qml` provides pause, copy, clear and host share.
+  Runtime's install-once log tap and Android's stderr/host paths feed `submit()`;
+  platform sharing remains behind `DecoderHost` in Android's diagnostics provider.
 - Platform-free by rule: it may include Qt and `include/dsd-neo/app_control/` headers, never engine/io/protocol
   internals, and never platform APIs (`QJniObject`, `<android/*.h>`). Platform specifics live behind the `DecoderHost`
   interface, implemented per host (`android/decoder_host_android.cpp` today).
@@ -560,3 +697,101 @@ External dependencies (resolved via CMake):
   vocoder (`mbe-neo` 2.x).
 - Terminal frontend: curses (ncursesw/PDCurses), enabled by default with `DSD_ENABLE_TERMINAL_UI=ON`.
 - Optional: RTL‑SDR, SoapySDR >= 0.8.1, CODEC2, libcurl >= 7.56.0.
+
+### Scoped scan options
+
+- Runtime `scan_options` parses the restricted `options` argument grammar into typed values and fixed key/path
+  metadata, validates declared modes, and reports errors without echoing raw arguments. It never runs the CLI parser.
+- Core `scan_profile` merges legacy key columns, resolves and loads companion files, and materializes direct keys.
+  Positional profiles extend the existing channel-mode store in extension slot 5; runtime slot 6 retains nonsecret
+  configured/active settings. Extension IDs and the main options/state struct layouts are unchanged.
+- The talkgroup policy store supports decoder-thread retain/install/release operations. Profiles retain their own
+  context so aliases and session policy changes survive visits; frontend snapshots still clone the effective context.
+  `dsd_tg_policy_restore()` preserves active calls across temporary suspend/resume; install resets them for target
+  transitions. The CSV importer loads standalone stores through core-private helpers without a decoder-state allocation.
+  Slot 5 holds the saved global group context and suspend/resume ownership. Clearing metadata restores it first;
+  moving metadata unwinds both source and destination scopes before transferring the row definitions.
+- `dsd_scan_key_change_prepare()` allocates the incoming key copy and any needed baseline before a conventional tune;
+  commit consumes the change without allocation. Engine checks the map generation and key epoch before committing,
+  restaging the tune (and re-preparing against the current globals) when the keyring changed in the window. Both
+  coordinators reserve every scope and key allocation before saving the outgoing snapshot, so a failed preparation
+  leaves the receiver and snapshot untouched. Conventional retries keep the frame gate closed until a row commits,
+  including when a later tune is deferred or rejected; the scanner can still advance to a working row. Separately,
+  trunk-scan failures re-arm dwell or retry timers so memory pressure cannot cause a retry on every tick.
+- `dsd_channel_modes_present()` is true for declared modes and for option-bearing profiles alike, so option-only
+  channel maps run the typed scanner. `dsd_scan_settings_equal()` compares acquisition settings only; the row-scoped
+  options (forcing, CRC, mutes, voice gate, group file) are folded through `dsd_scan_mode_resume()` without
+  resetting acquisition. Conventional trunk-scan targets take their voice-gate hold/qualify from the row profile.
+  `DSD_SCAN_OPT_MAX_VISIT` is the one **scan-timing** row option accepted on trunked types as well, and its
+  `scan_max_visit_ms` travels in the same row-option block, outside `dsd_scan_settings_equal()`, so a row cap never
+  restages a tune.
+- Long DMR base-station decode loops consult the runtime frame hook `scan_visit_should_yield` at burst boundaries.
+  It maintains the owning scanner's visit clock and reports expiry without tuning. The decoder finishes its cleanup
+  and releases the SM guard before the engine advances, so cleanup cannot overwrite the next target's state.
+- App-control scopes force/CRC/voice configuration commands and group imports, while live row policy mutations stay
+  with the active context. Configuration export reads saved group paths and voice settings from the configured scope.
+
+### Android foundation integration contracts
+
+Shared command IDs 592/593/594 reserve talkgroup row set/remove/export, using
+`policy_context` and `policy_generation` to reject edits from a stale list. The
+row `fields` mask selects listen/priority/preempt/name/tags. IDs 652/653 reserve a
+typed, bounded direct key and an int32 force-key mode. These five handlers currently
+report “not implemented”; force-key is registered as a configured scan-mode setting.
+Queue storage and drain temporaries are securely erased after use and on discard,
+including eviction, coalescing and rejection. Submitters own and must erase their
+original secret payloads.
+
+Saved-system UUIDs are persisted on migration and stable across updates. `rowForUid`
+and `getByUid` are the lookup boundary for work that can outlive a row index. The
+optional direct-key/site fields are private saved configuration, not diagnostics.
+`DecoderHost` owns the platform location/share/device interfaces; `UiController::tick`
+remains the single snapshot consumer. Its existing same-thread history flush before
+a new session label is the documented exception, not permission for another reader.
+
+WP0 owns integration edits to `qt_ui.cpp`, `ui_controller.*`, `decoder_host_android.*`,
+`UsbSourceManager.kt`, `app_command_queue.c`, `command_bridge.*`, `Main.qml`,
+`qml_test_context.h`, both Qt/test CMake lists and `android-ci.yaml`. Later packages
+supply focused wiring patches for serial application in orchestrator order. New
+live models join `clearLiveModels()` for lifecycle and trunk-scan target edges.
+Context registration placeholders in `qt_ui.cpp` keep those ownership decisions
+in one place. Every new UI_QT target also belongs in Android CI's explicit build list.
+
+### Direct key application
+
+`dsd_key_apply_direct` in `src/core/util/key_set.c` owns strict direct-key parsing
+and overlay/replace semantics. `dsd_key_apply_mute_policy` reconciles startup and
+live mute behavior; `dsd_key_apply_force` maps the three configured force modes.
+The CLI and `KEY_DIRECT_SET`/`FORCE_KEY_SET` handlers share these helpers.
+`dsd_scan_keys_apply_direct` validates a direct edit before changing the global
+baseline without allocating or swapping live keys. An active row retains its
+signalled key IDs and the scalar/AES state activated since row entry. `CORE_KEY_DIRECT` exercises the
+helper, real CLI parser, real command queue, and keyed/unkeyed rotation together.
+Qt's `session_args.cpp` validates saved string key types and emits discrete argv;
+`SessionArgsBuilder::build` returns only non-secret validation metadata. Its `start` operation resolves retained
+keys and sends the arguments directly to `DecoderHost` in C++, returning only validation and acceptance status.
+
+### Qt QML editing convention
+
+Preserve each file's existing QML formatting and use focused manual edits. Do not
+run whole-file `qmlformat` during a functional change; no automatic QML formatting
+settings are prescribed. MonitorScreen's existing expanded style is retained.
+Text sizes use `Theme.fontSize(pixels)`, with the platform scale bounded to 1–1.6.
+
+#### Qt scan-list start path
+
+`scan_lists_model.{h,cpp}` persists list/entry UIDs and saved-system references
+through `json_store` (`scan_lists.json`). `scan_list_targets.{h,cpp}` is a pure
+QtCore generator with no filesystem or engine dependency. `scan_list_starter`
+checks imported paths, atomically writes the private CSV, validates through
+`app_control/trunk_scan_validate.h`, and delegates argv assembly to
+`session_args.cpp`. `Main.qml` shares the existing USB permission gate and extends
+the single `sessionInitialized` recency handler. `metrics_model` copies target
+identity from the tick's held snapshot; no extra snapshot reader is introduced.
+
+`UI_QT_SCAN_LIST_TARGETS` covers preservation/rejection and option screening;
+`UI_QT_SCAN_LIST_ROUNDTRIP` exercises persistence and the real facade.
+`ENGINE_TRUNK_SCAN_SCAN_LIST` sends a generated three-target CSV through the real
+coordinator, group-policy and key ownership code, replacing only tuning side
+effects. It verifies policy/keys on rotation and baseline restoration on shutdown.
+The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LISTS`.

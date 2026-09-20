@@ -3,15 +3,65 @@
 
 import QtQuick
 
-// Settings: appearance, listening, decoding, and the advanced tuner defaults
+// Settings: appearance, units, listening, decoding, and the advanced tuner defaults
 // folded shut. Every row writes straight through to the persisted preference.
 Item {
     id: screen
 
+    property bool showTitle: true
     property bool advancedOpen: false
+    property bool lockoutPending: false
+    property bool requestedLockoutPersistence: true
+    property string lockoutError: ""
+    readonly property string versionText: "DSD-neo " + appVersionText.replace(/^v/, "")
+    readonly property bool liveLockoutPersistence: metrics.persistTgLockouts
+    readonly property bool lockoutSessionRunning: decoderHost.sessionState === 2
+    readonly property bool lockoutEditable: !lockoutPending && (decoderHost.sessionState === 0 || decoderHost.sessionState === 4 || (lockoutSessionRunning && metrics.optionsKnown))
 
-    signal openImports()
-    signal openRadioReference()
+    onLiveLockoutPersistenceChanged: {
+        if (lockoutPending && liveLockoutPersistence === requestedLockoutPersistence) {
+            lockoutPending = false;
+            lockoutAckTimer.stop();
+        }
+    }
+    onLockoutSessionRunningChanged: {
+        lockoutPending = false;
+        lockoutAckTimer.stop();
+    }
+
+    Timer {
+        id: lockoutAckTimer
+        interval: 5000
+        onTriggered: {
+            screen.lockoutPending = false;
+            screen.lockoutError = qsTr("The decoder has not confirmed the change. The switch shows its current setting.");
+        }
+    }
+
+    Timer {
+        id: versionCopied
+        interval: 2000
+    }
+
+    function setLockoutPersistence(value) {
+        if (!lockoutEditable)
+            return;
+        lockoutError = "";
+        if (lockoutSessionRunning && !commands.setPersistTgLockouts(value)) {
+            lockoutError = qsTr("Could not change the running decoder's setting. Try again.");
+            return;
+        }
+        prefs.persistTgLockouts = value;
+        requestedLockoutPersistence = value;
+        lockoutPending = lockoutSessionRunning && liveLockoutPersistence !== value;
+        if (lockoutPending)
+            lockoutAckTimer.restart();
+    }
+
+    signal openDiagnostics
+    signal openImports
+    signal openRadioReferenceAccount
+    signal openLicenses
 
     Rectangle {
         anchors.fill: parent
@@ -21,67 +71,60 @@ Item {
     // Numeric advanced row: label left, small mono field + unit right.
     component ValueRow: Item {
         id: valueRow
-
         property string title: ""
         property string unit: ""
         property alias text: valueInput.text
         property bool showDivider: true
         signal edited(string text)
-
         width: parent ? parent.width : 0
-        height: 52
-
-        Text {
-            anchors.left: parent.left
-            anchors.leftMargin: Theme.cardPadding
-            anchors.verticalCenter: parent.verticalCenter
-            text: valueRow.title
-            font.family: Theme.sans
-            font.pixelSize: 15
-            color: Theme.textPrimary
-        }
-
-        Row {
-            anchors.right: parent.right
-            anchors.rightMargin: Theme.cardPadding
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 6
-
-            TextInput {
-                id: valueInput
-
-                width: Math.max(implicitWidth, 34)
-                horizontalAlignment: TextInput.AlignRight
-                font.family: Theme.mono
-                font.pixelSize: 14
-                color: Theme.textPrimary
-                selectionColor: Qt.alpha(Theme.cyan, 0.35)
-                selectedTextColor: Theme.textPrimary
-                onEditingFinished: valueRow.edited(text)
+        height: valueInput.implicitHeight + 16
+        PlexTextField {
+            id: valueInput
+            x: Theme.cardPadding
+            y: 8
+            width: parent.width - 2 * Theme.cardPadding
+            label: valueRow.title
+            unit: valueRow.unit
+            mono: true
+            inputMethodHints: Qt.ImhFormattedNumbersOnly
+            error: /^-?[0-9]+$/.test(text) && Number(text) >= -2147483648 && Number(text) <= 2147483647 ? "" : qsTr("Enter a whole number.")
+            onEditingFinished: {
+                if (!error.length)
+                    valueRow.edited(text);
             }
-
-            Text {
-                visible: valueRow.unit.length > 0
-                anchors.verticalCenter: parent.verticalCenter
-                text: valueRow.unit
-                font.family: Theme.mono
-                font.pixelSize: 14
-                color: Theme.textSubdued
-            }
-        }
-
-        Rectangle {
-            anchors.bottom: parent.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: Theme.cardPadding
-            height: 1
-            visible: valueRow.showDivider
-            color: Theme.divider
         }
     }
 
-    Flickable {
+    component DecimalRow: Item {
+        id: decimalRow
+        property string title: ""
+        property string subtitle: ""
+        property string unit: ""
+        property alias text: decimalInput.text
+        signal edited(string text)
+        width: parent ? parent.width : 0
+        height: decimalInput.implicitHeight + 16
+        PlexTextField {
+            id: decimalInput
+            objectName: "hangtimePreferenceField"
+            x: Theme.cardPadding
+            y: 8
+            width: parent.width - 2 * Theme.cardPadding
+            label: decimalRow.title
+            hint: decimalRow.subtitle
+            unit: decimalRow.unit
+            mono: true
+            inputMethodHints: Qt.ImhFormattedNumbersOnly
+            error: /^\d{1,2}(\.\d)?$/.test(text) && Number(text) <= 30 ? "" : qsTr("Enter seconds from 0 to 30, e.g. 2.0.")
+            onEditingFinished: {
+                if (!error.length)
+                    decimalRow.edited(text);
+            }
+        }
+    }
+
+    PlexFlickable {
+        objectName: "settingsScroll"
         anchors.fill: parent
         contentHeight: content.height + 2 * Theme.screenPadding
         clip: true
@@ -89,15 +132,17 @@ Item {
         Column {
             id: content
 
-            x: Theme.screenPadding
+            x: (parent.width - width) / 2
             y: Theme.screenPadding
-            width: parent.width - 2 * Theme.screenPadding
+            width: Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
             spacing: Theme.gap
 
             Text {
+                visible: screen.showTitle
+                height: screen.showTitle ? implicitHeight : 0
                 text: qsTr("Settings")
                 font.family: Theme.sans
-                font.pixelSize: 24
+                font.pixelSize: Theme.fontSize(24)
                 font.weight: Font.Bold
                 font.letterSpacing: -0.24
                 color: Theme.textPrimary
@@ -118,6 +163,9 @@ Item {
                     spacing: 12
 
                     MicroLabel {
+                        objectName: "settingsAppearanceHeader"
+                        width: parent.width
+                        wrapMode: Text.Wrap
                         text: qsTr("Appearance")
                     }
 
@@ -125,7 +173,9 @@ Item {
                         width: parent.width
                         model: [qsTr("System"), qsTr("Light"), qsTr("Dark")]
                         currentIndex: prefs.appearance
-                        onSelected: function (index) { prefs.appearance = index }
+                        onSelected: function (index) {
+                            prefs.appearance = index;
+                        }
                     }
 
                     Text {
@@ -133,9 +183,44 @@ Item {
                         visible: prefs.appearance === 0
                         text: qsTr("Follows your phone's dark mode schedule.")
                         font.family: Theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
+                    }
+                }
+            }
+
+            // UNITS
+            UiPanel {
+                width: parent.width
+                height: unitsColumn.height + Theme.cardPadding + 4
+
+                Column {
+                    id: unitsColumn
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: Theme.cardPadding
+                    spacing: 0
+
+                    MicroLabel {
+                        objectName: "settingsUnitsHeader"
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: qsTr("Units")
+                        leftPadding: Theme.cardPadding
+                        bottomPadding: 6
+                    }
+
+                    ToggleRow {
+                        objectName: "metricUnitsToggle"
+                        title: qsTr("Use metric units")
+                        subtitle: prefs.metricUnits ? qsTr("Distances in kilometers (km)") : qsTr("Distances in miles (mi)")
+                        checked: prefs.metricUnits
+                        onToggled: function (state) {
+                            prefs.metricUnits = state;
+                        }
                     }
                 }
             }
@@ -155,62 +240,94 @@ Item {
                     spacing: 0
 
                     MicroLabel {
+                        objectName: "settingsListeningHeader"
+                        width: parent.width
+                        wrapMode: Text.Wrap
                         text: qsTr("Listening")
                         leftPadding: Theme.cardPadding
                         bottomPadding: 6
                     }
 
-                    Item {
+                    Column {
                         width: parent.width
-                        height: 48
-
+                        x: Theme.cardPadding
+                        spacing: 6
                         Text {
-                            anchors.left: parent.left
-                            anchors.leftMargin: Theme.cardPadding
-                            anchors.verticalCenter: parent.verticalCenter
+                            width: parent.width - 2 * Theme.cardPadding
                             text: qsTr("Audio output")
-                            font.family: Theme.sans
-                            font.pixelSize: 15
-                            font.weight: Font.DemiBold
+                            wrapMode: Text.Wrap
                             color: Theme.textPrimary
+                            font.pixelSize: Theme.fontSize(14)
+                            font.bold: true
                         }
-
-                        Row {
-                            anchors.right: parent.right
-                            anchors.rightMargin: Theme.cardPadding
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 6
-
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: qsTr("Speaker")
-                                font.family: Theme.sans
-                                font.pixelSize: 14
-                                color: Theme.textSecondary
-                            }
-
-                            Caret {
-                                anchors.verticalCenter: parent.verticalCenter
-                                color: Theme.textSecondary
-                            }
+                        Text {
+                            width: parent.width - 2 * Theme.cardPadding
+                            text: decoderHost.audioRoute || qsTr("System default")
+                            wrapMode: Text.Wrap
+                            color: Theme.textSecondary
+                            font.pixelSize: Theme.fontSize(14)
                         }
+                    }
 
-                        Rectangle {
-                            anchors.bottom: parent.bottom
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.leftMargin: Theme.cardPadding
-                            height: 1
-                            color: Theme.divider
+                    ToggleRow {
+                        objectName: "persistTgLockoutsToggle"
+                        title: qsTr("Save skipped talkgroups")
+                        subtitle: qsTr("Applies to Skip immediately. Off keeps avoids until stop or list reload. Talkgroup-list edits still save.")
+                        checked: screen.lockoutSessionRunning ? screen.liveLockoutPersistence : prefs.persistTgLockouts
+                        enabled: screen.lockoutEditable
+                        showDivider: true
+                        onToggled: function (value) { screen.setLockoutPersistence(value); }
+                    }
+
+                    Text {
+                        objectName: "tgLockoutError"
+                        width: parent.width - 2 * Theme.cardPadding
+                        x: Theme.cardPadding
+                        visible: text.length > 0
+                        text: screen.lockoutError
+                        wrapMode: Text.Wrap
+                        color: Theme.textSecondary
+                        font.pixelSize: Theme.fontSize(12)
+                    }
+
+                    OutlineButton {
+                        objectName: "clearTemporaryTgAvoidsButton"
+                        width: parent.width - 2 * Theme.cardPadding
+                        x: Theme.cardPadding
+                        visible: screen.lockoutSessionRunning && metrics.temporaryTgAvoidCount > 0
+                        enabled: screen.lockoutEditable
+                        text: qsTr("Clear temporary TG avoids — current list (%1)").arg(metrics.temporaryTgAvoidCount)
+                        onClicked: {
+                            screen.lockoutError = commands.clearTemporaryTgAvoids(metrics.tgPolicyContext)
+                                ? "" : qsTr("Could not clear temporary avoids. Try again.");
                         }
                     }
 
                     ToggleRow {
                         title: qsTr("Keep listening in background")
-                        subtitle: qsTr("Shows a persistent notification")
+                        subtitle: qsTr("Notification controls are available when permission is allowed")
                         checked: prefs.backgroundListening
+                        showDivider: decoderHost.keepScreenAwakeSupported || decoderHost.localDeviceBrokered
+                        onToggled: function (state) {
+                            prefs.backgroundListening = state;
+                            var host = decoderHost;
+                            if (state && typeof host.requestNotificationPermission === "function") {
+                                prefs.notificationExplained = true;
+                                host.requestNotificationPermission();
+                            }
+                        }
+                    }
+
+                    // WP-S2: opt-in applies only to hosts that broker local USB devices.
+                    ToggleRow {
+                        visible: decoderHost.localDeviceBrokered
+                        title: qsTr("Start when a dongle is attached")
+                        subtitle: qsTr("Resume the last USB system or scan list")
+                        checked: prefs.autoStartOnAttach
                         showDivider: decoderHost.keepScreenAwakeSupported
-                        onToggled: function (state) { prefs.backgroundListening = state }
+                        onToggled: function (state) {
+                            prefs.autoStartOnAttach = state;
+                        }
                     }
 
                     ToggleRow {
@@ -219,7 +336,9 @@ Item {
                         visible: decoderHost.keepScreenAwakeSupported
                         title: qsTr("Keep screen awake")
                         checked: prefs.keepScreenAwake
-                        onToggled: function (state) { prefs.keepScreenAwake = state }
+                        onToggled: function (state) {
+                            prefs.keepScreenAwake = state;
+                        }
                     }
                 }
             }
@@ -239,202 +358,73 @@ Item {
                     spacing: 0
 
                     MicroLabel {
-                        text: qsTr("Decoding")
+                        objectName: "settingsDecodingHeader"
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: qsTr("Decoding · next start")
                         leftPadding: Theme.cardPadding
                         bottomPadding: 6
                     }
 
                     ToggleRow {
                         title: qsTr("Skip encrypted calls")
-                        subtitle: qsTr("You'd only hear noise")
+                        subtitle: qsTr("Enabled talkgroups can play when keys are usable. Explicit exclusions stay blocked.")
                         checked: prefs.skipEncrypted
                         showDivider: true
-                        onToggled: function (state) { prefs.skipEncrypted = state }
+                        onToggled: function (state) {
+                            prefs.skipEncrypted = state;
+                        }
                     }
 
                     ToggleRow {
                         title: qsTr("Auto tuner correction")
                         subtitle: qsTr("Fixes frequency drift on long runs")
                         checked: prefs.autoPpm
-                        onToggled: function (state) { prefs.autoPpm = state }
+                        onToggled: function (state) {
+                            prefs.autoPpm = state;
+                        }
+                    }
+
+                    DecimalRow {
+                        title: qsTr("Voice hang time")
+                        subtitle: qsTr("Keeps a call's channel after voice stops. Also sets channel-scanning dwell (-Y); scan lists have separate dwell settings.")
+                        unit: "s"
+                        text: prefs.hangtimeSec.toFixed(1)
+                        onEdited: function (value) {
+                            prefs.hangtimeSec = Number(value);
+                        }
                     }
                 }
             }
 
-            // TRUNKING DATA
-            UiPanel {
-                width: parent.width
-                height: importsColumn.height + Theme.cardPadding + 4
-
-                Column {
-                    id: importsColumn
-
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.topMargin: Theme.cardPadding
-                    spacing: 0
-
-                    MicroLabel {
-                        text: qsTr("Trunking data")
-                        leftPadding: Theme.cardPadding
-                        bottomPadding: 6
-                    }
-
-                    DisclosureRow {
-                        title: qsTr("Imported files")
-                        subtitle: qsTr("Channel maps, talkgroups, and keys")
-                        onTapped: screen.openImports()
-                    }
-                }
-            }
-
-            // RADIOREFERENCE ACCOUNT
-            // The username and application key persist; the password never does
-            // — it is asked for once per app session on the import screen.
-            UiPanel {
-                width: parent.width
-                visible: radioReference.available
-                height: rrColumn.height + Theme.cardPadding + 4
-
-                Column {
-                    id: rrColumn
-
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.topMargin: Theme.cardPadding
-                    spacing: 0
-
-                    MicroLabel {
-                        text: qsTr("RadioReference account")
-                        leftPadding: Theme.cardPadding
-                        bottomPadding: 6
-                    }
-
-                    DisclosureRow {
-                        title: qsTr("Import a system")
-                        // Not "talkgroups and channel maps": that framing reads
-                        // as trunked-only, and the import serves conventional
-                        // systems just as well. Same line as the wizard's entry
-                        // row on purpose — one action, one description — and
-                        // anything longer elides on a phone-width row.
-                        subtitle: qsTr("Fills in the frequency, decode mode and talkgroups")
-                        showDivider: true
-                        onTapped: screen.openRadioReference()
-                    }
-
-                    Item {
-                        width: parent.width
-                        height: 76
-
-                        Text {
-                            id: rrUserLabel
-                            anchors.left: parent.left
-                            anchors.leftMargin: Theme.cardPadding
-                            anchors.top: parent.top
-                            anchors.topMargin: 10
-                            text: qsTr("Username")
-                            font.family: Theme.sans
-                            font.pixelSize: 15
-                            color: Theme.textPrimary
-                        }
-
-                        PlexTextField {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.top: rrUserLabel.bottom
-                            anchors.margins: Theme.cardPadding
-                            anchors.topMargin: 6
-                            height: 38
-                            text: prefs.rrUsername
-                            placeholderText: qsTr("radioreference.com username")
-                            inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                            // Commit on Enter/focus loss, not per keystroke: every
-                            // write lands in QSettings (disk on Android).
-                            onEditingFinished: prefs.rrUsername = text
-                        }
-                    }
-
-                    // A build that bakes the application key in does not ask for
-                    // one: this row sat right under Username looking like a
-                    // password box. Nor does it show a stored override left over
-                    // from a keyless build — fillAuth() ignores it there, so it
-                    // is not a credential in play and a field for it would only
-                    // invite editing a key this build does not use.
-                    Item {
-                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                        objectName: "settingsRrAppKeyRow"
-
-                        width: parent.width
-                        height: 76
-                        visible: !radioReference.buildHasAppKey
-
-                        Text {
-                            id: rrKeyLabel
-                            anchors.left: parent.left
-                            anchors.leftMargin: Theme.cardPadding
-                            anchors.top: parent.top
-                            anchors.topMargin: 10
-                            text: qsTr("Application key")
-                            font.family: Theme.sans
-                            font.pixelSize: 15
-                            color: Theme.textPrimary
-                        }
-
-                        PlexTextField {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.top: rrKeyLabel.bottom
-                            anchors.margins: Theme.cardPadding
-                            anchors.topMargin: 6
-                            height: 38
-                            mono: true
-                            text: prefs.rrAppKey
-                            // No "leave empty to use this build's key" branch:
-                            // the row is shown only where this build has no key
-                            // to fall back to.
-                            placeholderText: qsTr("application key")
-                            inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                            onEditingFinished: prefs.rrAppKey = text
-                        }
-                    }
-
-                    Text {
-                        width: parent.width
-                        leftPadding: Theme.cardPadding
-                        rightPadding: Theme.cardPadding
-                        bottomPadding: 6
-                        text: qsTr("The password is asked for once per app session and is never saved. A RadioReference premium subscription is required.")
-                        font.family: Theme.sans
-                        font.pixelSize: 12
-                        color: Theme.textSubdued
-                        wrapMode: Text.Wrap
-                    }
-                }
-            }
-
-            // ADVANCED (collapsible)
+            // RADIO DEFAULTS (collapsible)
             UiPanel {
                 width: parent.width
                 height: advHeader.height + (screen.advancedOpen ? advColumn.height + 8 : 0) + Theme.cardPadding
                 clip: true
 
                 Behavior on height {
-                    NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+                    NumberAnimation {
+                        duration: 150
+                        easing.type: Easing.OutCubic
+                    }
                 }
 
                 Item {
                     id: advHeader
 
                     width: parent.width
-                    height: 44
+                    height: Math.max(48, advancedLabel.implicitHeight + 24)
 
                     MicroLabel {
+                        id: advancedLabel
+                        objectName: "settingsRadioDefaultsHeader"
+                        width: parent.width - 2 * Theme.cardPadding - 28
+                        wrapMode: Text.Wrap
                         anchors.left: parent.left
                         anchors.leftMargin: Theme.cardPadding
                         anchors.verticalCenter: parent.verticalCenter
-                        text: qsTr("Advanced")
+                        text: qsTr("Radio defaults · next start")
                     }
 
                     Caret {
@@ -445,7 +435,10 @@ Item {
                         color: Theme.textSubdued
 
                         Behavior on rotation {
-                            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+                            NumberAnimation {
+                                duration: 150
+                                easing.type: Easing.OutCubic
+                            }
                         }
                     }
 
@@ -468,9 +461,9 @@ Item {
                         unit: "dB"
                         text: String(prefs.gainDb)
                         onEdited: function (value) {
-                            var parsed = parseInt(value)
+                            var parsed = parseInt(value);
                             if (!isNaN(parsed))
-                                prefs.gainDb = parsed
+                                prefs.gainDb = parsed;
                         }
                     }
 
@@ -478,9 +471,9 @@ Item {
                         title: qsTr("PPM correction")
                         text: String(prefs.ppm)
                         onEdited: function (value) {
-                            var parsed = parseInt(value)
+                            var parsed = parseInt(value);
                             if (!isNaN(parsed))
-                                prefs.ppm = parsed
+                                prefs.ppm = parsed;
                         }
                     }
 
@@ -489,9 +482,9 @@ Item {
                         unit: "kHz"
                         text: String(prefs.bandwidthKhz)
                         onEdited: function (value) {
-                            var parsed = parseInt(value)
+                            var parsed = parseInt(value);
                             if (!isNaN(parsed) && parsed > 0)
-                                prefs.bandwidthKhz = parsed
+                                prefs.bandwidthKhz = parsed;
                         }
                     }
 
@@ -500,53 +493,143 @@ Item {
                         subtitle: qsTr("Powers an external LNA")
                         checked: prefs.biasTee
                         showDivider: true
-                        onToggled: function (state) { prefs.biasTee = state }
+                        onToggled: function (state) {
+                            prefs.biasTee = state;
+                        }
                     }
 
                     Item {
-                        width: parent.width
-                        height: 76
 
-                        Text {
-                            id: extraLabel
-                            anchors.left: parent.left
-                            anchors.leftMargin: Theme.cardPadding
-                            anchors.top: parent.top
-                            anchors.topMargin: 10
-                            text: qsTr("Extra CLI args")
-                            font.family: Theme.sans
-                            font.pixelSize: 15
-                            color: Theme.textPrimary
-                        }
+                        width: parent.width
+                        height: settingsExtraArgs.implicitHeight + 20
 
                         PlexTextField {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.top: extraLabel.bottom
-                            anchors.margins: Theme.cardPadding
-                            anchors.topMargin: 6
-                            height: 38
-                            mono: true
+                            id: settingsExtraArgs
+                            x: Theme.cardPadding
+                            y: 10
+                            width: parent.width - 2 * Theme.cardPadding
                             text: prefs.extraArgs
+                            label: qsTr("Extra decoder arguments")
                             placeholderText: qsTr("e.g. -C chan.csv -G group.csv")
                             inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                            // Commit on Enter/focus loss, not per keystroke: every
-                            // write lands in QSettings (disk on Android).
                             onEditingFinished: prefs.extraArgs = text
                         }
                     }
                 }
             }
 
-            Text {
+            // LIBRARIES
+            UiPanel {
                 width: parent.width
-                topPadding: 8
-                horizontalAlignment: Text.AlignHCenter
-                text: "DSD-neo " + appVersionText.replace(/^v/, "") + " · GPL-3.0 · " + qsTr("open source licenses")
-                font.family: Theme.mono
-                font.pixelSize: 11
-                color: Theme.textSubdued
-                wrapMode: Text.Wrap
+                height: importsColumn.height + Theme.cardPadding + 4
+
+                Column {
+                    id: importsColumn
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: Theme.cardPadding
+                    spacing: 0
+
+                    MicroLabel {
+                        objectName: "settingsLibrariesHeader"
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: qsTr("Libraries")
+                        leftPadding: Theme.cardPadding
+                        bottomPadding: 6
+                    }
+
+                    DisclosureRow {
+                        objectName: "settingsImportsRow"
+                        title: qsTr("Imported files")
+                        subtitle: qsTr("Channel maps, talkgroups, keys, band plans, radio IDs")
+                        onTapped: screen.openImports()
+                    }
+                }
+            }
+
+            // ACCOUNT
+            UiPanel {
+                width: parent.width
+                visible: radioReference.available
+                height: accountColumn.height + Theme.cardPadding + 4
+
+                Column {
+                    id: accountColumn
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: Theme.cardPadding
+                    spacing: 0
+
+                    MicroLabel {
+                        objectName: "settingsAccountHeader"
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: qsTr("Account")
+                        leftPadding: Theme.cardPadding
+                        bottomPadding: 6
+                    }
+
+                    DisclosureRow {
+                        objectName: "settingsAccountRow"
+                        title: qsTr("RadioReference")
+                        subtitle: qsTr("Username and application key")
+                        onTapped: screen.openRadioReferenceAccount()
+                    }
+                }
+            }
+
+            // ABOUT & SUPPORT
+            UiPanel {
+                width: parent.width
+                height: supportColumn.height + Theme.cardPadding + 4
+
+                Column {
+                    id: supportColumn
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: Theme.cardPadding
+                    spacing: 0
+
+                    MicroLabel {
+                        objectName: "settingsSupportHeader"
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: qsTr("About & support")
+                        leftPadding: Theme.cardPadding
+                        bottomPadding: 6
+                    }
+
+                    DisclosureRow {
+                        objectName: "settingsDiagnosticsRow"
+                        title: qsTr("Diagnostics")
+                        subtitle: qsTr("Current process and previous-run tail; not crash/ANR capture")
+                        showDivider: true
+                        onTapped: screen.openDiagnostics()
+                    }
+
+                    DisclosureRow {
+                        objectName: "settingsLicensesRow"
+                        title: qsTr("Open source licenses")
+                        showDivider: true
+                        onTapped: screen.openLicenses()
+                    }
+
+                    DisclosureRow {
+                        objectName: "settingsVersionRow"
+                        title: qsTr("Version")
+                        subtitle: versionCopied.running ? qsTr("Version copied") : screen.versionText + " · GPL-3.0"
+                        showCaret: false
+                        onTapped: {
+                            if (decoderHost.copyText(screen.versionText))
+                                versionCopied.restart();
+                        }
+                    }
+                }
             }
         }
     }

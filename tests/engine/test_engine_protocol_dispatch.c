@@ -9,6 +9,8 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,11 +36,15 @@ enum {
 static int g_called_handler = TEST_HANDLER_NONE;
 /* The verdict every stub reports, so one case can drive the whole table. */
 static dsd_frame_verdict g_handler_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
+static int g_retune_during_handler = 0;
 
 static dsd_frame_verdict
 record_handler(int handler_id) {
     assert(g_called_handler == TEST_HANDLER_NONE);
     g_called_handler = handler_id;
+    if (g_retune_during_handler) {
+        dsd_trunk_tuning_generation_advance();
+    }
     return g_handler_verdict;
 }
 
@@ -181,6 +187,7 @@ run_dispatch_case_verdict(int synctype, int expected_handler, dsd_frame_verdict 
     assert(opts != NULL);
     assert(state != NULL);
     state->synctype = synctype;
+    dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_P25);
     state->rf_mod = 1;
     state->max = 100.0F;
     state->min = -50.0F;
@@ -198,6 +205,8 @@ run_dispatch_case_verdict(int synctype, int expected_handler, dsd_frame_verdict 
      * either way a verdict left over from the previous frame must not survive. */
     assert(state->sps_hunt_last_frame_verdict
            == (expected_handler == TEST_HANDLER_NONE ? DSD_FRAME_VERDICT_PRODUCTIVE : (int)verdict));
+    /* Productivity (including sticky NXDN call confirmation) is not recovery ownership. */
+    assert(state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25);
     g_handler_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
     free(state);
     free(opts);
@@ -237,6 +246,11 @@ int
 main(void) {
     check_public_handler_table();
     check_verdict_default_is_productive();
+    run_dispatch_case(DSD_SYNC_NXDN_POS, TEST_HANDLER_NXDN);
+    run_dispatch_case_verdict(DSD_SYNC_NXDN_POS, TEST_HANDLER_NXDN, DSD_FRAME_VERDICT_UNPRODUCTIVE, 0);
+    g_retune_during_handler = 1;
+    run_dispatch_case(DSD_SYNC_NXDN_POS, TEST_HANDLER_NXDN);
+    g_retune_during_handler = 0;
     run_dispatch_case(DSD_SYNC_DMR_BS_VOICE_POS, TEST_HANDLER_DMR);
     run_dispatch_case(DSD_SYNC_DPMR_FS1_POS, TEST_HANDLER_DPMR);
     run_dispatch_case(DSD_SYNC_P25P1_POS, TEST_HANDLER_P25P1);

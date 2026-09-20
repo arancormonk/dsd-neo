@@ -22,6 +22,12 @@ Item {
 
     width: 420
     height: 900
+    readonly property bool buildHasAppKey: radioReference.buildHasAppKey
+
+    FakeRadioReference {
+        id: fakeImport
+        credentialsReady: true
+    }
 
     Loader {
         id: appLoader
@@ -41,6 +47,10 @@ Item {
         property var imports: null
         property var radioReference: null
         property var wizard: null
+        property bool previousBuildHasAppKey: false
+        property var accountPrefs: null
+        property string previousRrUsername: ""
+        property string previousRrAppKey: ""
 
         function initTestCase() {
             tc.app = appLoader.item
@@ -53,13 +63,160 @@ Item {
             verify(tc.radioReference !== null, "the RadioReference screen is missing")
             tc.wizard = findChild(tc.app, "wizardScreen")
             verify(tc.wizard !== null, "the wizard screen is missing")
+            // Keep the production prefs for capture/restore; the default map cannot persist edits.
+            testContext.useLifecycleHost(true);
+            accountPrefs = prefs;
+            testContext.useLifecycleHost(false);
         }
 
         function init() {
+            previousBuildHasAppKey = root.buildHasAppKey;
+            previousRrUsername = accountPrefs.rrUsername;
+            previousRrAppKey = accountPrefs.rrAppKey;
+            tc.app.sessionDestination = "";
+            tc.app.licensesOpen = false
+            tc.app.radioReferenceAccountOpen = false
+            tc.app.diagnosticsOpen = false
             tc.app.spectrumOpen = false
             tc.app.wizardOpen = false
             tc.app.importsOpen = false
             tc.app.radioReferenceOpen = false
+        }
+
+        function cleanup() {
+            testContext.useRadioReferenceModel(null);
+            tc.app.licensesOpen = false;
+            tc.app.radioReferenceAccountOpen = false;
+            tc.app.diagnosticsOpen = false;
+            tc.app.sessionDestination = "";
+            testContext.setRadioReference("buildHasAppKey", previousBuildHasAppKey);
+            accountPrefs.rrUsername = previousRrUsername;
+            accountPrefs.rrAppKey = previousRrAppKey;
+            testContext.useLifecycleHost(false);
+        }
+
+        function test_session_settings_import_returns_to_wizard_then_monitor() {
+            testContext.useLifecycleHost(true, false, true);
+            testContext.useRadioReferenceModel(fakeImport);
+            fakeImport.imports = 0;
+            tc.app.startWithMap(tc.app.exploreSystem("rtltcp", "127.0.0.1", 1234, "851.0125"), -1, false);
+            tryCompare(decoderHost, "running", true);
+            tryCompare(tc.monitor, "enabled", true);
+            tc.monitor.openSessionMenu();
+            var menu = findChild(tc.app, "sessionMenu");
+            tryCompare(menu, "visible", true);
+            findChild(menu, "sessionMenuSettings").activate();
+            compare(tc.app.sessionDestination, "settings");
+            var settings = findChild(tc.app, "sessionSettingsScreen");
+            verify(settings !== null && settings.visible);
+            findChild(settings, "settingsImportsRow").activate();
+            tryCompare(tc.imports, "enabled", true);
+            findChild(tc.imports, "importFromRadioReferenceButton").activate();
+            tryCompare(tc.radioReference, "enabled", true);
+            tc.radioReference.openSystem(6673);
+            compare(tc.radioReference.selectedSites.length, 1);
+            var importButton = findChild(tc.radioReference, "radioReferenceImportButton");
+            verify(importButton.enabled);
+            importButton.activate();
+            var confirm = findChild(tc.radioReference, "radioReferenceConfirmImport");
+            verify(confirm !== null && confirm.visible && confirm.enabled);
+            confirm.activate();
+            compare(fakeImport.imports, 1);
+            compare(fakeImport.savedRow, -1, "the wizard must remain the saved-system writer");
+            tryCompare(tc.wizard, "enabled", true);
+            compare(tc.app.radioReferenceOpen, false);
+            compare(tc.app.importsOpen, false);
+            compare(tc.app.sessionDestination, "");
+            verify(!settings.visible, "session Settings covers the imported wizard");
+            verify(!tc.monitor.enabled);
+            compare(tc.wizard.freqText, "851.0125");
+            compare(tc.wizard.importedSite.rrSid, 6673);
+            compare(tc.wizard.importedSite.rrSiteId, 1);
+            compare(tc.wizard.step, 1);
+            tc.app.requestBack();
+            compare(tc.wizard.step, 0, "Back must reach the visible wizard");
+            tc.app.requestBack();
+            var discard = findChild(tc.wizard, "wizardDiscardDialog");
+            verify(discard !== null && discard.visible);
+            var discardButton = findChild(discard, "discardDialogDiscard");
+            verify(discardButton !== null);
+            discardButton.activate();
+            tryCompare(tc.app, "wizardOpen", false);
+            tryCompare(tc.monitor, "enabled", true);
+            verify(tc.monitor.visible);
+            compare(decoderHost.running, true, "leaving the wizard must keep listening");
+        }
+
+        function test_support_escape_data() {
+            return [
+                {tag: "diagnostics-root", flag: "diagnosticsOpen", screen: "diagnosticsScreen", field: ""},
+                {tag: "licenses-root", flag: "licensesOpen", screen: "licensesScreen", field: ""},
+                {tag: "account-root", flag: "radioReferenceAccountOpen", screen: "radioReferenceAccountScreen", field: ""},
+                {tag: "account-username", flag: "radioReferenceAccountOpen", screen: "radioReferenceAccountScreen", field: "radioReferenceUsernameField", pref: "rrUsername", value: "escape-user"},
+                {tag: "account-app-key", flag: "radioReferenceAccountOpen", screen: "radioReferenceAccountScreen", field: "radioReferenceAppKeyField", pref: "rrAppKey", value: "escape-key"}
+            ];
+        }
+
+        function test_support_escape(data) {
+            if (data.field.length)
+                testContext.useLifecycleHost(true);
+            tc.app.requestActivate();
+            tryCompare(tc.app, "active", true);
+            testContext.setRadioReference("buildHasAppKey", false);
+            tc.app.sessionDestination = "settings";
+            tc.app[data.flag] = true;
+            var screen = findChild(tc.app, data.screen);
+            verify(screen !== null);
+            tryCompare(tc.app, "activeFocusItem", screen);
+            if (data.field.length) {
+                var field = findChild(screen, data.field);
+                verify(field !== null && field.visible);
+                field.input.forceActiveFocus();
+                tryCompare(tc.app, "activeFocusItem", field.input);
+                field.input.selectAll();
+                for (var i = 0; i < data.value.length; ++i)
+                    keyClick(data.value.charAt(i));
+                keyClick(Qt.Key_Return);
+                compare(prefs[data.pref], data.value);
+            }
+            keyClick(Qt.Key_Escape);
+            tryCompare(tc.app, data.flag, false);
+            compare(tc.app.sessionDestination, "settings");
+        }
+
+        function test_support_layers_and_back_order() {
+            tc.app.requestActivate();
+            tryCompare(tc.app, "active", true);
+            tc.app.sessionDestination = "settings";
+            tc.app.licensesOpen = true;
+            tryCompare(tc.app, "activeFocusItem", findChild(tc.app, "licensesScreen"));
+            compare(uiController.autoStartBlocked, true);
+            verify(!tc.monitor.enabled);
+            keyClick(Qt.Key_Escape);
+            compare(tc.app.licensesOpen, false);
+            compare(tc.app.sessionDestination, "settings");
+            tc.app.radioReferenceAccountOpen = true;
+            tryCompare(tc.app, "activeFocusItem", findChild(tc.app, "radioReferenceAccountScreen"));
+            compare(uiController.autoStartBlocked, true);
+            verify(!tc.monitor.enabled);
+            keyClick(Qt.Key_Escape);
+            compare(tc.app.radioReferenceAccountOpen, false);
+            compare(tc.app.sessionDestination, "settings");
+            tc.app.diagnosticsOpen = true;
+            var diagnostics = findChild(tc.app, "diagnosticsScreen");
+            findChild(diagnostics, "diagnosticsClear").activate();
+            var confirm = findChild(diagnostics, "diagnosticsClearConfirm");
+            verify(confirm.visible);
+            tryVerify(function () { return confirm.activeFocus; });
+            keyClick(Qt.Key_Escape);
+            tryCompare(confirm, "visible", false);
+            compare(tc.app.diagnosticsOpen, true);
+            keyClick(Qt.Key_Escape);
+            compare(tc.app.diagnosticsOpen, false);
+            compare(tc.app.sessionDestination, "settings");
+            tc.app.requestBack();
+            compare(tc.app.sessionDestination, "");
+            compare(uiController.autoStartBlocked, false);
         }
 
         // The baseline the other cases are measured against: with a live session

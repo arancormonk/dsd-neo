@@ -21,11 +21,14 @@
 #include <curses.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -34,6 +37,7 @@
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
@@ -76,6 +80,21 @@ ui_lookup_group_label(const dsd_state* state, unsigned long id, char* mode, size
         return 0;
     }
     return dsd_tg_policy_lookup_label(state, (uint32_t)id, mode, mode_sz, name, name_sz);
+}
+
+static int
+ui_lookup_source_label(const dsd_state* state, unsigned long id, char* mode, size_t mode_sz, char* name,
+                       size_t name_sz) {
+    if (id == 0UL || id > UINT32_MAX) {
+        if (mode && mode_sz > 0) {
+            mode[0] = '\0';
+        }
+        if (name && name_sz > 0) {
+            name[0] = '\0';
+        }
+        return 0;
+    }
+    return dsd_source_label_lookup(state, (uint32_t)id, mode, mode_sz, name, name_sz);
 }
 
 /* Small helpers to align key/value fields to a consistent value column. */
@@ -213,6 +232,38 @@ static const char* DMRBusrtTypes[32] = {
     "SIGNAL",   //31 MAC_SIGNAL
 };
 
+static int
+ui_synctype_in_scan_class(int synctype, dsd_scan_mode mode) {
+    switch (mode) {
+        case DSD_SCAN_MODE_P25: return DSD_SYNC_IS_P25(synctype);
+        case DSD_SCAN_MODE_DMR: return DSD_SYNC_IS_DMR(synctype);
+        case DSD_SCAN_MODE_NXDN96:
+        case DSD_SCAN_MODE_NXDN48: return DSD_SYNC_IS_NXDN(synctype);
+        case DSD_SCAN_MODE_DPMR: return DSD_SYNC_IS_DPMR(synctype);
+        case DSD_SCAN_MODE_DSTAR: return DSD_SYNC_IS_DSTAR(synctype);
+        case DSD_SCAN_MODE_YSF: return DSD_SYNC_IS_YSF(synctype);
+        case DSD_SCAN_MODE_M17: return DSD_SYNC_IS_M17(synctype);
+        case DSD_SCAN_MODE_INHERIT: return 1;
+    }
+    return 0;
+}
+
+static int
+ui_scan_class_idle_synctype(dsd_scan_mode mode, const dsd_state* state) {
+    switch (mode) {
+        case DSD_SCAN_MODE_P25: return state->p25_cc_is_tdma == 1 ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
+        case DSD_SCAN_MODE_DMR: return DSD_SYNC_DMR_BS_DATA_POS;
+        case DSD_SCAN_MODE_NXDN96:
+        case DSD_SCAN_MODE_NXDN48: return DSD_SYNC_NXDN_POS;
+        case DSD_SCAN_MODE_DPMR: return DSD_SYNC_DPMR_FS1_POS;
+        case DSD_SCAN_MODE_DSTAR: return DSD_SYNC_DSTAR_VOICE_POS;
+        case DSD_SCAN_MODE_YSF: return DSD_SYNC_YSF_POS;
+        case DSD_SCAN_MODE_M17: return DSD_SYNC_M17_STR_POS;
+        case DSD_SCAN_MODE_INHERIT: return DSD_SYNC_NONE;
+    }
+    return DSD_SYNC_NONE;
+}
+
 static void
 ui_update_sync_and_edacs_tree(const dsd_state* state) {
     if (state == NULL) {
@@ -222,6 +273,11 @@ ui_update_sync_and_edacs_tree(const dsd_state* state) {
     // Keep the last detected sync type available while carrier state changes.
     if (state->synctype != DSD_SYNC_NONE) {
         ncurses_last_synctype = state->synctype;
+    } else {
+        const dsd_scan_mode mode = dsd_scan_mode_active(state);
+        if (mode != DSD_SCAN_MODE_INHERIT && !ui_synctype_in_scan_class(ncurses_last_synctype, mode)) {
+            ncurses_last_synctype = ui_scan_class_idle_synctype(mode, state);
+        }
     }
 }
 
@@ -356,7 +412,9 @@ static void
 ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         int soapy_input = ui_audio_in_is_soapy(opts);
-        if (soapy_input) {
+        if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+            printw("Airspy %s %u samples/s\n", opts->airspy_info.serial, opts->airspy_info.sample_rate);
+        } else if (soapy_input) {
             if (strncmp(opts->audio_in_dev, "soapy:", 6) == 0 && opts->audio_in_dev[6] != '\0') {
                 printw("| SoapySDR: %s;", opts->audio_in_dev + 6);
             } else {
@@ -831,12 +889,47 @@ ui_render_forced_key_status_tyt(const dsd_state* state, int show_keys) {
            dsd_secret_format_hex(key_text, sizeof key_text, show_keys, state->H, 4U, 0));
 }
 
+/*
+ * Loaded-but-not-forced scalar keys, beside the Hytera line that already exists for the same
+ * purpose. Nothing prints while any forcing is active (BP, RC4, TYT or the -2 TYT key).
+ * `R` is shared: `-R` stores a 15-bit NXDN/dPMR scrambler value in it alone, while `-1`, the
+ * key menu and the keyring store 64-bit RC4/DES keys in R (slot 1) and RR (slot 2).
+ */
+static void
+ui_render_loaded_scalar_keys(const dsd_state* state, int show_keys) {
+    if (state->M != 0 || state->tyt_bp != 0) {
+        return;
+    }
+    if (state->K != 0) {
+        char key_text[16];
+        printw("| Moto BP Key Loaded (not forced): %s \n",
+               dsd_secret_format_decimal(key_text, sizeof(key_text), show_keys, state->K, 3U));
+    }
+    const int scrambler = state->R != 0 && state->R <= 0x7FFFULL && state->RR != state->R;
+    if (scrambler) {
+        char key_text[16];
+        printw("| NXDN/dPMR Scrambler Key Loaded (not forced): %s \n",
+               dsd_secret_format_decimal(key_text, sizeof(key_text), show_keys, state->R, 5U));
+    } else if (state->R == state->RR && state->R != 0) {
+        char key_text[17];
+        printw("| RC4/DES Key Loaded (not forced): %s \n",
+               dsd_secret_format_hex(key_text, sizeof(key_text), show_keys, state->R, 16U, 0));
+    } else if (state->R != 0 || state->RR != 0) {
+        char left[17];
+        char right[17];
+        printw("| RC4/DES Keys Loaded (not forced): %s / %s \n",
+               dsd_secret_format_hex(left, sizeof(left), show_keys, state->R, 16U, 0),
+               dsd_secret_format_hex(right, sizeof(right), show_keys, state->RR, 16U, 0));
+    }
+}
+
 static void
 ui_render_forced_key_status(const dsd_state* state, int show_keys) {
     if (state == NULL) {
         return;
     }
 
+    ui_render_loaded_scalar_keys(state, show_keys);
     if (state->M != 1 && state->tyt_bp == 0 && ui_hytera_key_segment_count(state) != 0U) {
         ui_render_hytera_loaded_key_status(state, show_keys);
     }
@@ -900,6 +993,109 @@ ui_render_trunk_scan_status(const dsd_opts* opts, const dsd_state* state) {
     printw("\n");
 }
 
+/* Declared here because the Scan Timing row has to truncate to the panel width, and the
+   width helper lives with the panel renderers much further down the file. */
+static int ui_get_panel_cols(void);
+
+static void ui_scan_timing_appendf(char* buf, size_t buf_sz, size_t* used, const char* fmt, ...)
+    DSD_ATTR_FORMAT(printf, 4, 5);
+
+/* Append one group of the Scan Timing row. Overflow is clamped rather than reported: the
+   row is a status line that a narrow terminal truncates anyway, and a caller that had to
+   check every group would be the thing most likely to get the grammar wrong. */
+static void
+ui_scan_timing_appendf(char* buf, size_t buf_sz, size_t* used, const char* fmt, ...) {
+    if (*used + 1U >= buf_sz) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    int wrote = DSD_VSNPRINTF(buf + *used, buf_sz - *used, fmt, ap);
+    va_end(ap);
+    if (wrote < 0) {
+        return;
+    }
+    *used += (size_t)wrote;
+    if (*used >= buf_sz) {
+        *used = buf_sz - 1U;
+    }
+}
+
+/* Why the idle dwell is not the thing counting down: suspended means something on the air
+   holds the row, paused means the operator does. */
+static const char*
+ui_scan_timing_dwell_suffix(uint8_t dwell_state) {
+    switch (dwell_state) {
+        case DSD_APP_SCAN_DWELL_SUSPENDED: return " (suspended)";
+        case DSD_APP_SCAN_DWELL_PAUSED: return " (paused)";
+        default: return "";
+    }
+}
+
+/* The Scan Timing row without its newline (issue #508): why the scanner is staying on the
+   row above and how long is left of it, from the shared app-control view so the terminal
+   and the Qt panel cannot drift on what "suspended" or "hold" means. Pure, and taking the
+   clock as an argument, so the goldens can pin the exact bytes. Returns the length
+   written, or 0 when there is no scan timing to show. */
+static int
+ui_format_scan_timing_row(const dsd_opts* opts, const dsd_state* state, double now_m, char* buf, size_t buf_sz) {
+    if (!buf || buf_sz == 0U) {
+        return 0;
+    }
+    buf[0] = '\0';
+    dsd_app_scan_timing view;
+    if (dsd_app_scan_timing_view(opts, state, now_m, &view) != 1) {
+        return 0;
+    }
+    size_t used = 0U;
+    ui_scan_timing_appendf(buf, buf_sz, &used, "| Scan Timing: %s", view.phrase);
+    if (view.timer_live) {
+        const uint32_t remaining_ds = view.remaining_ms / 100U;
+        ui_scan_timing_appendf(buf, buf_sz, &used, " %.1fs/%.1fs", (double)remaining_ds / 10.0,
+                               (double)view.span_ms / 1000.0);
+    }
+    if (view.show_dwell) {
+        ui_scan_timing_appendf(buf, buf_sz, &used, "  dwell %.1fs%s", (double)view.dwell_ms / 1000.0,
+                               ui_scan_timing_dwell_suffix(view.dwell_state));
+    }
+    if (view.show_hold) {
+        ui_scan_timing_appendf(buf, buf_sz, &used, "  hold %.1fs", (double)view.hold_ms / 1000.0);
+    }
+    if (view.show_hang) {
+        ui_scan_timing_appendf(buf, buf_sz, &used, "  hang %.1fs", (double)view.hang_ms / 1000.0);
+    }
+    /* Last, the ceiling on the whole visit (#507). A word rather than 0.0s when it is not
+       counting: a hold suspends the cap, and a zero countdown would read as a visit that
+       just ran out and a receiver that should already have moved on. */
+    if (view.show_visit) {
+        if (view.visit_live) {
+            ui_scan_timing_appendf(buf, buf_sz, &used, "  Visit: %.1fs/%.1fs", (double)view.visit_remaining_ms / 1000.0,
+                                   (double)view.visit_ms / 1000.0);
+        } else {
+            ui_scan_timing_appendf(buf, buf_sz, &used, "  Visit: paused");
+        }
+    }
+    return (int)used;
+}
+
+/* Cut to the panel width rather than wrapped: this row redraws several times a second as
+   the countdown moves, and a wrapped one would push every row below it down by one line
+   for as long as the phrase stayed long. */
+static void
+ui_render_scan_timing_row(const dsd_opts* opts, const dsd_state* state) {
+    char line[192];
+    int len = ui_format_scan_timing_row(opts, state, dsd_time_now_monotonic_s(), line, sizeof(line));
+    if (len <= 0) {
+        return;
+    }
+    int cols = ui_get_panel_cols();
+    if (len >= cols) {
+        /* Writing the final column wraps before the explicit newline. */
+        len = cols - 1;
+    }
+    printw("%.*s\n", len, line);
+}
+
 static void
 ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* state) {
     if (opts->scanner_mode == 1) {
@@ -913,7 +1109,7 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
             printw(" Frequency: %.06lf MHz",
                    (double)*dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) / 1000000);
         }
-        printw(" Speed: %.02lf sec",
+        printw(" Hangtime: %.02lf sec",
                opts->trunk_hangtime); // default aligned to OP25 (2.0s) unless overridden
         ui_render_scan_voice_gate(opts, state);
         // Why the scan stopped moving, ahead of the name so the fixed fields keep their columns.
@@ -941,9 +1137,18 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
             printw(" Avoids: %u", (unsigned int)state->lcn_avoid_count);
         }
         printw(" \n");
+        // The timing row belongs directly under the scanner row that owns the stay. With
+        // --trunk-scan running that is the Trunk Scan row below, which publishes the target's
+        // own effective dwell and hold, so the -Y row only claims it when trunk scan is off.
+        if (opts->trunk_scan_enabled != 1) {
+            ui_render_scan_timing_row(opts, state);
+        }
     }
 
     ui_render_trunk_scan_status(opts, state);
+    if (opts->trunk_scan_enabled == 1) {
+        ui_render_scan_timing_row(opts, state);
+    }
 
     if (opts->reverse_mute == 1) {
         printw("| Reverse Mute - Muting Unencrypted Voice\n");
@@ -1172,7 +1377,7 @@ ui_render_voice_error_single_slot(const dsd_opts* opts, const dsd_state* state, 
         printw("[%X][%X]", errs & 0xF, errs2 & 0xF);
         double avgv = 0.0;
         if (compute_p25p1_voice_avg_err(state, &avgv)) {
-            printw(" Avg:%4.1f%%", avgv);
+            printw(" Avg errs/frame:%4.1f", avgv);
         }
         /* Keep slot toggle state at the end, as before */
         if (slot_on == 0) {
@@ -1693,7 +1898,7 @@ ui_history_print_event_summary(const Event_History* item, const char* line_prefi
 }
 
 static int
-ui_history_print_detail_line(int history_stop_y, uint8_t slot, const char* label, const char* value) {
+ui_history_print_detail_line(int history_stop_y, const char* slot_tag, const char* label, const char* value) {
     if (value == NULL || value[0] == '\0') {
         return 1;
     }
@@ -1702,11 +1907,11 @@ ui_history_print_detail_line(int history_stop_y, uint8_t slot, const char* label
     }
 
     attron(COLOR_PAIR(4));
-    if (slot < 2) {
+    if (slot_tag != NULL) {
         if (label && label[0] != '\0') {
-            printw("|[%d] \\-- %s%s \n", slot + 1, label, value);
+            printw("|%s\\-- %s%s \n", slot_tag, label, value);
         } else {
-            printw("|[%d] \\-- %s\n", slot + 1, value);
+            printw("|%s\\-- %s\n", slot_tag, value);
         }
     } else if (label && label[0] != '\0') {
         printw("|  \\-- %s%s \n", label, value);
@@ -1725,41 +1930,48 @@ ui_history_render_single_slot_item(const Event_History* item, const ui_history_r
     attron(COLOR_PAIR(4));
     ui_history_print_event_summary(item, line_prefix, line_prefix_len, ctx);
 
-    if (!ui_history_print_detail_line(ctx->history_stop_y, UINT8_MAX, "", item->text_message)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, NULL, "", item->text_message)) {
         return;
     }
-    if (!ui_history_print_detail_line(ctx->history_stop_y, UINT8_MAX, "Alias: ", item->alias)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, NULL, "Alias: ", item->alias)) {
         return;
     }
-    if (!ui_history_print_detail_line(ctx->history_stop_y, UINT8_MAX, "GPS: ", item->gps_s)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, NULL, "GPS: ", item->gps_s)) {
         return;
     }
-    (void)ui_history_print_detail_line(ctx->history_stop_y, UINT8_MAX, "DSD-neo: ", item->internal_str);
+    (void)ui_history_print_detail_line(ctx->history_stop_y, NULL, "DSD-neo: ", item->internal_str);
+}
+
+static void
+ui_history_slot_tag(const Event_History* item, uint8_t slot, char* tag, size_t size) {
+    if (dsd_event_systype_has_slots(item->systype)) {
+        DSD_SNPRINTF(tag, size, "[S%d] ", slot + 1);
+    } else {
+        DSD_SNPRINTF(tag, size, "%s", "     ");
+    }
 }
 
 static void
 ui_history_render_dual_slot_item(const Event_History* item, uint8_t slot, const ui_history_render_ctx* ctx) {
-    char line_prefix[16];
+    char line_prefix[24];
+    char slot_tag[6];
+    ui_history_slot_tag(item, slot, slot_tag, sizeof(slot_tag));
     const int show_enc_tag = (ctx->history_mode == 1 && item->enc != 0);
-    if (show_enc_tag) {
-        DSD_SNPRINTF(line_prefix, sizeof line_prefix, "|[%d] [ENC] ", slot + 1);
-    } else {
-        DSD_SNPRINTF(line_prefix, sizeof line_prefix, "|[%d] ", slot + 1);
-    }
+    DSD_SNPRINTF(line_prefix, sizeof(line_prefix), "|%s%s", slot_tag, show_enc_tag ? "[ENC] " : "");
 
     attron(COLOR_PAIR(4));
     ui_history_print_event_summary(item, line_prefix, (int)strlen(line_prefix), ctx);
 
-    if (!ui_history_print_detail_line(ctx->history_stop_y, slot, "", item->text_message)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, slot_tag, "", item->text_message)) {
         return;
     }
-    if (!ui_history_print_detail_line(ctx->history_stop_y, slot, "Alias: ", item->alias)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, slot_tag, "Alias: ", item->alias)) {
         return;
     }
-    if (!ui_history_print_detail_line(ctx->history_stop_y, slot, "GPS: ", item->gps_s)) {
+    if (!ui_history_print_detail_line(ctx->history_stop_y, slot_tag, "GPS: ", item->gps_s)) {
         return;
     }
-    (void)ui_history_print_detail_line(ctx->history_stop_y, slot, "DSD-neo: ", item->internal_str);
+    (void)ui_history_print_detail_line(ctx->history_stop_y, slot_tag, "DSD-neo: ", item->internal_str);
 }
 
 static int
@@ -2174,7 +2386,9 @@ ui_render_nxdn_monitor_line(const dsd_opts* opts, const dsd_state* state, int id
 static void
 ui_render_nxdn_site_line(const dsd_state* state, int idas) {
     printw("| ");
-    if (idas) {
+    if (state->nxdn_last_ran > 63U) {
+        printw("%s", idas ? "IDAS - Area: --; " : "NXDN - RAN: --; ");
+    } else if (idas) {
         printw("IDAS - Area: %02d; ", state->nxdn_last_ran);
     } else {
         printw("NXDN - RAN: %02d; ", state->nxdn_last_ran);
@@ -2209,7 +2423,11 @@ ui_render_nxdn_tgt_src_line(const dsd_state* state) {
             printw(" [%s]", group_name);
             printw("[%s] ", group_mode);
         }
-        if (source != target && ui_lookup_group_label(state, source, NULL, 0, group_name, sizeof(group_name))) {
+        const int source_label =
+            source == target ? (source != 0UL && source <= UINT32_MAX
+                                && dsd_source_alias_lookup(state, (uint32_t)source, group_name, sizeof(group_name)))
+                             : ui_lookup_source_label(state, source, NULL, 0, group_name, sizeof(group_name));
+        if (source_label) {
             attron(COLOR_PAIR(4));
             printw(" [%s]", group_name);
         }
@@ -2368,12 +2586,14 @@ ui_render_edacs_channel_label(const dsd_state* state, const dsd_call_observation
                                             sizeof group_mode, group_name, sizeof group_name);
     }
     if (!label_found && observation->ota_source_id != 0U && observation->ota_source_id <= UINT32_MAX) {
-        label_found = ui_lookup_group_label(state, (unsigned long)observation->ota_source_id, group_mode,
-                                            sizeof group_mode, group_name, sizeof group_name);
+        label_found = ui_lookup_source_label(state, (unsigned long)observation->ota_source_id, group_mode,
+                                             sizeof group_mode, group_name, sizeof group_name);
     }
     if (label_found) {
         printw(" [%s]", group_name);
-        printw("[%s]", group_mode);
+        if (group_mode[0]) {
+            printw("[%s]", group_mode);
+        }
     }
 }
 
@@ -2676,15 +2896,6 @@ ui_restore_call_info_color(const dsd_state* state) {
 }
 
 static void
-ui_render_p25_talker_alias(dsd_state* state, unsigned long src, int alias_index) {
-    char group_name[50];
-    if (ui_lookup_group_label(state, src, NULL, 0, group_name, sizeof(group_name))) {
-        DSD_SNPRINTF(state->generic_talker_alias[alias_index], sizeof state->generic_talker_alias[alias_index], "%s",
-                     group_name);
-    }
-}
-
-static void
 ui_render_p25_dmr_header_dmr_bs(const dsd_state* state) {
     printw("DMR BS - DCC: %02i; ", state->dmr_color_code);
     printw("%s ", state->dmr_branding);
@@ -2703,15 +2914,6 @@ ui_render_p25_dmr_header_dmr_bs(const dsd_state* state) {
     }
 }
 
-static unsigned long
-ui_active_call_source(const dsd_state* state, uint8_t slot) {
-    dsd_call_snapshot call;
-    if (!ui_active_call_snapshot(state, slot, &call) || call.ota_source_id > ULONG_MAX) {
-        return 0UL;
-    }
-    return (unsigned long)call.ota_source_id;
-}
-
 static void
 ui_render_p25_dmr_header_p25p1(const dsd_opts* opts, dsd_state* state) {
     char callsign[7] = {0};
@@ -2727,7 +2929,6 @@ ui_render_p25_dmr_header_p25p1(const dsd_opts* opts, dsd_state* state) {
         long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
         printw("Freq: %.06lf MHz", (double)f / 1000000);
     }
-    ui_render_p25_talker_alias(state, ui_active_call_source(state, 0U), 0);
 }
 
 static void
@@ -2762,8 +2963,6 @@ ui_render_p25_dmr_header_p25p2(const dsd_opts* opts, dsd_state* state) {
     }
     printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
     ui_render_p25p2_parameter_status(state);
-    ui_render_p25_talker_alias(state, ui_active_call_source(state, 0U), 0);
-    ui_render_p25_talker_alias(state, ui_active_call_source(state, 1U), 1);
 }
 
 static void
@@ -3060,6 +3259,15 @@ ui_render_slot_group_label(const dsd_state* state, const ui_slot_view* slot, int
 }
 
 static void
+ui_render_slot_source_label(const dsd_state* state, const ui_slot_view* slot, int show_ids) {
+    char name[DSD_SOURCE_ALIAS_NAME_MAX];
+    if (show_ids && ui_lookup_source_label(state, (unsigned long)slot->source, NULL, 0, name, sizeof(name))) {
+        attron(COLOR_PAIR(4));
+        printw(" SRC: [%s]", name);
+    }
+}
+
+static void
 ui_render_slot_dxtra_line(const dsd_state* state, const ui_slot_view* slot, int show_ids) {
     printw("| D XTRA | ");
     attron(COLOR_PAIR(4));
@@ -3082,6 +3290,7 @@ ui_render_slot_dxtra_line(const dsd_state* state, const ui_slot_view* slot, int 
     }
 
     ui_render_slot_group_label(state, slot, show_ids);
+    ui_render_slot_source_label(state, slot, show_ids);
     ui_restore_call_info_color(state);
     printw("\n");
 }

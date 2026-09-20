@@ -44,6 +44,10 @@ typedef struct dsd_audio_params {
     int async_output;     /* nonzero enables low-latency async output with overrun drops */
 } dsd_audio_params;
 
+/** Android output device ID while an AAudio output is open; 0 while idle,
+ * -1 when the backend does not publish Android routing information. */
+int dsd_audio_output_device_id(void);
+
 /**
  * @brief Initialize audio subsystem.
  *

@@ -38,6 +38,12 @@ dsd_frame_sync_active_profile_symbol_rate_hz(const dsd_state* state) {
     return frame_sync_sps_profile_for_index(profile_index)->symbol_rate_hz;
 }
 
+int
+dsd_frame_sync_active_profile_levels(const dsd_state* state) {
+    const int profile_index = state ? state->sps_hunt_idx : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    return frame_sync_sps_profile_for_index(profile_index)->levels;
+}
+
 dsd_nxdn_variant
 dsd_frame_sync_active_nxdn_variant(const dsd_opts* opts, const dsd_state* state) {
     if (!opts) {

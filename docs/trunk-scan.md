@@ -1,9 +1,9 @@
 # Single-Tuner Trunk Scan
 
 Single-tuner trunk scan lets one retunable receiver rotate across several explicit targets instead of staying on one
-system. Use it when you want one DSD-neo instance to check a small set of P25 trunk, DMR trunk, DMR conventional,
-and NXDN (trunk, NXDN96 conventional, and NXDN48 conventional) targets, but you do not have a separate receiver for
-each system.
+system. Use it when you want one DSD-neo instance to check a small set of P25 trunk, P25 conventional, DMR trunk,
+DMR conventional, and NXDN (trunk, NXDN96 conventional, and NXDN48 conventional) targets, but you do not have a
+separate receiver for each system.
 
 The scan coordinator parks on one target, watches for activity, and moves to the next idle target after the configured
 dwell time. Trunking state and per-target channel maps are kept separate, so a channel number or learned control-channel
@@ -20,6 +20,9 @@ state from one system is not reused on another.
 - Global channel maps (`-C` or `[trunking] chan_csv`) cannot be used while trunk scan is active. Put each trunk target's
   optional channel map in the target CSV `chan_csv` column instead.
 - A group list (`-G` or `[trunking] group_csv`) is still global and applies to every target.
+- A source ID list (`--src-csv` or `[trunking] src_csv`) is also global and allowed while scanning. It supplies
+  source radio names only and survives target changes; its fallback uses the active group list's exact row.
+  See [Source ID List CSV](csv-formats.md#source-id-list-csv---src-csv-file--trunking-src_csv).
 
 ## Target CSV
 
@@ -32,35 +35,43 @@ id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes
 Example:
 
 ```csv
-id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain
-county-p25,p25-trunk,851012500,,3000,,P25 control channel,cqpsk,18
-city-dmr,dmr-trunk,456318750,dmr_t3_chan.csv,3000,,DMR Tier III control channel,auto,
-plant-dmr,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto
-site-nxdn,nxdn-trunk,461037500,,3000,,NXDN Type-C control channel,auto,
-field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96,gfsk,
-field-nxdn48,nxdn48-conventional,461556250,,1500,1200,one-frequency NXDN48 (6.25 kHz),gfsk,
+id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain,options,p25_bandplan_csv
+county-p25,p25-trunk,851012500,,3000,,P25 control channel,cqpsk,18,,p25_bandplan.csv
+field-p25,p25-conventional,851500000,,1500,1200,one-frequency P25,c4fm,,,
+city-dmr,dmr-trunk,456318750,dmr_t3_chan.csv,3000,,DMR Tier III control channel,auto,,,
+plant-dmr,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto,--no-force-key,
+site-nxdn,nxdn-trunk,461037500,,3000,,NXDN Type-C control channel,auto,,,
+site-nxdn48,nxdn48-trunk,461556250,nxdn_chan_map.csv,3000,,NXDN48 Type-C control channel (6.25 kHz),gfsk,,,
+field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96,gfsk,,,
+field-nxdn48,nxdn48-conventional,461556250,,1500,1200,one-frequency NXDN48 (6.25 kHz),gfsk,,,
 ```
 
-The repository includes a starter file at `examples/trunk_scan_targets.csv`.
+The repository includes a starter file at `examples/trunk_scan_targets.csv`. Companion paths in these examples
+refer to files in `examples/`; replace the illustrative frequencies, keys and band plan with your system's values.
+Omitted scoped settings inherit the outer CLI/configuration; the DMR conventional example uses
+`--no-force-key` to disable inherited privacy forcing without changing other settings.
 
 Column behavior:
 
 | Column | Required | Meaning |
 |--------|----------|---------|
 | `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows, `-J` log lines and the rdio `talkgroup_tag` fallback, and in log messages. Keep it under 64 bytes. |
-| `type` | Yes | `p25-trunk`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk`, `nxdn-conventional` (NXDN96, 12.5 kHz), or `nxdn48-conventional` (NXDN48, 6.25 kHz). |
+| `type` | Yes | `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), or `nxdn48-conventional` (NXDN48, 6.25 kHz). |
 | `frequency_hz` | Yes | Initial park/control frequency in decimal Hz. Suffixes such as `M` are not accepted in CSV. |
-| `chan_csv` | No | Channel map for a trunk target. Paths are resolved relative to the target CSV file. Leave empty for conventional DMR and both conventional NXDN types. |
+| `chan_csv` | No | Channel map for a trunk target. Paths are resolved relative to the target CSV file. Leave empty for conventional DMR, P25 and both conventional NXDN types. |
 | `dwell_ms` | No | Idle dwell for this target. Empty uses the CLI/config default. Valid range: `250..600000`. |
-| `activity_hold_ms` | No | Conventional DMR/NXDN (NXDN96 and NXDN48) activity hold for this target. Empty uses the CLI/config default. Valid range: `250..600000`. |
+| `activity_hold_ms` | No | Conventional DMR/P25/NXDN (NXDN96 and NXDN48) activity hold for this target. Empty uses the CLI/config default. Valid range: `250..600000`. |
 | `notes` | No | Ignored by DSD-neo. Use it for local notes. |
-| `modulation` | No | Demod hint for this target. Empty preserves global/default handling. `auto` uses target defaults even when a global `-m` lock is set. P25 accepts `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. |
+| `modulation` | No | Demod hint for this target. Empty preserves global/default handling. `auto` uses target defaults even when a global `-m` lock is set. Both P25 types accept `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. |
 | `rtl_gain` | No | RTL-family tuner gain for this target. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. |
 | `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to the target CSV. Parking the target installs its set; leaving it restores the global keys. A row may fill both key columns; they load into one set. Empty uses the global keys. |
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to the target CSV. Empty uses the global keys. |
-| `p25_bandplan_csv` | No | P25 band plan CSV for a `p25-trunk` target (format in [csv-formats.md](csv-formats.md)), resolved relative to the target CSV. Its rows are parked in the target's snapshot, so an exported multi-system plan can be named on every P25 row and each target keeps only the rows that carry its WACN/SYS (plus rows that carry none). |
+| `single_key_dec` | No | Embedded `-b` Motorola Basic Privacy key number (`0..255`). Explicit `0` is an active override. It may be combined with `single_key_hex`, but not either key-file column. |
+| `single_key_hex` | No | Embedded `-H` key. It accepts an optional `0x`, ignores ASCII whitespace, and requires exactly 10, 32, or 64 hex digits. It may be combined with `single_key_dec`, but not either key-file column. |
+| `options` | No | Per-target [scoped switches](#per-target-options); `relevant_CLI_switches` is an alias. This header and its alias match ASCII case-insensitively, and naming both rejects the file. The target `type` determines which protocol-specific switches are accepted. Omitted settings inherit the outer CLI/configuration. |
+| `p25_bandplan_csv` | No | P25 band plan CSV for a `p25-trunk` target (format in [csv-formats.md](csv-formats.md)), resolved relative to the target CSV. Leave empty for conventional targets, including `p25-conventional`. Its rows are parked in the trunk target's snapshot, so an exported multi-system plan can be named on every `p25-trunk` row and each target keeps only the rows that carry its WACN/SYS (plus rows that carry none). |
 
-Targets that turn out to be sites of the same P25 system (same WACN/SYS) share what one of them learned over the
+P25 trunk targets that turn out to be sites of the same system (same WACN/SYS) share what one of them learned over the
 air: when a parked target is missing a band-plan identifier that another target's table holds for the same
 WACN/SYS, the entry is copied in at trust `prov` (unconfirmed) and yields to the site's own `IDEN_UP`. Entries whose
 system is unknown or different are never copied, so the per-target isolation below still holds for everything else.
@@ -70,8 +81,8 @@ WACN/SYS into one file.
 A target's `chan_csv` may carry the optional `name` column described in [csv-formats.md](csv-formats.md), and it
 parses, but trunk scan discards the names. Each target's channel map is parked in a per-target snapshot that carries
 the frequencies positionally and no names, so a name kept from one target would sit beside the next target's list.
-Per-row `keys_hex_csv`/`keys_dec_csv` columns in a `chan_csv` are discarded the same way: keys arrive per
-trunk-scan target, not per channel-map row, and a kept set would install on the wrong target's hop.
+Per-row key-file and direct-key columns in a `chan_csv` are discarded the same way: keys arrive per trunk-scan
+target, not per channel-map row, and a kept set would install on the wrong target's hop.
 Under `--trunk-scan` the channel being heard is labelled by the target `id` instead.
 
 Target list limits and validation:
@@ -87,15 +98,16 @@ Target list limits and validation:
   values above `LONG_MAX`.
 - Duplicate `id` values are rejected.
 - Duplicate `(type, frequency_hz)` pairs are rejected.
-- A duplicated `keys_hex_csv` or `keys_dec_csv` header is rejected, and an unloadable key path fails the
-  whole import the way a bad `-K`/`-k` does.
-- `chan_csv` is only valid for `p25-trunk`, `dmr-trunk`, and `nxdn-trunk` targets; `p25_bandplan_csv` is refused
-  on conventional targets, a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load
+- A duplicated key header is rejected. An unloadable key path fails the whole import like a bad `-K`/`-k`; a malformed
+  direct key or a row mixing direct and file sources also fails, without repeating direct key material in the error.
+- `chan_csv` is only valid for `p25-trunk`, `dmr-trunk`, `nxdn-trunk` and `nxdn48-trunk` targets; `p25_bandplan_csv` is refused
+  on conventional targets, including `p25-conventional`, a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load
   fails the whole import. A global `--p25-bandplan`/`[trunking] p25_bandplan_csv` is rejected in this mode like
   `-C`.
-- `modulation` values are target-type specific: `cqpsk`/`c4fm` are P25-only, and `gfsk` is valid for DMR and both NXDN
-  target rates.
-- `nxdn-conventional` and `nxdn48-conventional` are distinct types, so the same frequency may appear once as each.
+- `modulation` values are target-type specific: `cqpsk`/`c4fm` are valid for both P25 types, and `gfsk` is valid for
+  DMR and both NXDN target rates, not P25.
+- `nxdn-trunk`/`nxdn48-trunk` and `nxdn-conventional`/`nxdn48-conventional` are distinct types, so the same frequency
+  may appear once as each.
 - `rtl_gain` only affects RTL-family inputs opened by DSD-neo. It is ignored when scan retuning is done through rigctl
   against a non-RTL audio input.
 - The parser is intentionally small. It can handle a quoted `chan_csv` that contains a comma, but it is not a full CSV
@@ -103,11 +115,10 @@ Target list limits and validation:
 
 ## CLI Usage
 
-For a mixed scan with an RTL-SDR (the shipped starter file contains P25, DMR, NXDN96 and NXDN48 rows, so use `-fa`;
-`-ft` is enough for a list with no NXDN targets):
+For a mixed scan with an RTL-SDR (each target selects its decoder class):
 
 ```sh
-dsd-neo -fa -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal
+dsd-neo -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal
 ```
 
 For an external receiver that sends PCM audio over TCP and is tuned through rigctl:
@@ -123,29 +134,85 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   --trunk-scan ~/radio/trunk_scan_targets.csv \
   --trunk-scan-dwell-ms 5000 \
   --trunk-scan-activity-hold-ms 2000 \
+  --scan-max-visit-ms 20000 \
   --frontend terminal
 ```
 
 - `--trunk-scan-dwell-ms <ms>` sets the default idle dwell for targets whose `dwell_ms` column is empty. Default:
   `3000`.
-- `--trunk-scan-activity-hold-ms <ms>` sets the default hold time after allowed conventional DMR/NXDN activity
+- `--trunk-scan-activity-hold-ms <ms>` sets the default hold time after allowed conventional DMR/P25/NXDN activity
   (NXDN96 and NXDN48 alike). Default: `1200`.
+- `--scan-max-visit-ms <ms>` caps how long one visit to a target may last: `0` disables it, any other value is
+  `1000..3600000` milliseconds. Default: `0`, so nothing changes unless you ask for it. Config: `[trunking]
+  scan_max_visit_ms`. There is no dedicated CSV column; a target overrides the cap from its `options` column. In a
+  list of two busy systems the rotation alternates between them, spending the full limit on each.
 - Per-target CSV values override these defaults.
+- The terminal's `Scan Timing` row reports the *effective* dwell and hold for the target on air — the values left
+  after the CSV column and the CLI/config default have been resolved — and labels the active protocol's effective
+  hangtime as `hang`, including protocol overrides, never as a dwell.
+  `(suspended)` beside the dwell means it is disarmed while something holds the target, not that it expired. See
+  [the terminal UI guide](ui-terminal.md).
+- `-t <seconds>` is voice/sync-loss hangtime, not the interval between trunk-scan targets. Zero does not
+  bypass target dwell or control-channel acquisition. After a followed trunked call releases, a fresh idle
+  dwell starts; repeated calls can keep a busy system parked.
+- DMR allows six seconds without decoded control on a confirmed channel before hunting. Each probe gets
+  two seconds to acquire control after the backend completes its tune. An explicit channel map is tried in
+  file order, skipping zero frequencies, avoided rows, the current probe and adjacent duplicate frequencies.
+  The known control channel is revisited between alternate probes, limiting time away during a CRC fade.
+  Without a map, the known control channel and learned current-site candidates are retried. With no eligible
+  alternative, the receiver keeps listening without resetting demodulation. A pending backend probe holds
+  the target past dwell for at most five seconds; completion or timeout starts a fresh idle dwell. Timed-out
+  requests cannot accept late completion, and frames remain gated until a replacement tune succeeds.
+  The decoded-acquisition wait counts toward dwell, so a short dwell may rotate away before every candidate
+  can be tried. Target hold allows recovery to continue on that system.
+- A DMR probe does not replace the saved control frequency until accepted control signalling confirms it.
+  A validated grant received on a completed probe also establishes the return channel before following it.
+  Valid TIII ALOHA/control-system short LC, Connect Plus control short LC, and mapped Capacity Plus rest status
+  maintain their respective control/rest channels. Relaxed CRC heartbeats can retain an established channel,
+  but cannot confirm a new probe. Heartbeats use completed tuner attribution without querying rigctl for each
+  CSBK. An unresolved CC tune blocks grants and heartbeats until its matching request completes. A decoded
+  move announcement can select the next control/rest channel.
+  A busy Capacity Plus rest announcement is followed when no call owns the tuner, including when advertised
+  calls are blocked by policy. A followed call retains the tuner through its hangtime even when a status
+  announces no busy channels; its eventual return uses the announced rest channel.
+  XPT free-channel hops do not start dedicated control-channel acquisition.
+  DMR state-machine logs at verbosity 1 or higher identify `cc-lost`, `cc-probe`, `cc-listen`, `decoded-cc`,
+  and failed tunes. `decoded-cc` is logged on acquisition even when the SM was already in its CC state.
+- Standalone `-T` auto decoding also retains the validated P25 or DMR recovery owner through loss of sync.
+  Unrelated decodes and stray syncs cannot take ownership; validated P25/DMR control or grants can. Explicit
+  decoder modes and trunk-scan target selection still constrain which protocol may recover.
 - `--scan-voice-only`: conventional targets hold only from decoded voice media (headers and data no longer hold),
   with the per-target `dwell_ms` as the qualify window in which voice must appear and `activity_hold_ms` as the
-  hold after the last voice frame; trunked targets are unchanged (control-only rotates after dwell). The
+  hold after the last voice frame, including when a terminator closes the call before the next scan tick; trunked
+  targets are unchanged (control-only rotates after dwell). The scanner-wide
   `--scan-voice-qualify-ms` and `--scan-voice-hold-ms` timings apply to the `-Y` conventional scan only, not to
-  trunk-scan targets.
+  trunk-scan targets; a conventional target can carry its own intervals in its `options` column (see
+  [Per-target options](#per-target-options)).
+- `--scan-max-visit-ms` is not conventional-only: it is the one scan-timing switch a trunked target can also carry
+  in its `options` column, because a trunked system following call after call is exactly what it exists to interrupt.
+  It is a ceiling on the visit, not another reason to stay, so it can end an ongoing call; that is why it is off by
+  default.
 
-Use the `-fa` (AUTO) command-line mode for mixed scan lists that contain NXDN targets: `-ft` enables the P25/DMR
-decoders but neither NXDN rate, so NXDN rows would sit idle with a startup warning. The two NXDN rates are separate
-decoders with separate mode presets -- `-fn` enables NXDN96 only and `-fi` enables NXDN48 only -- so **a list mixing
-`nxdn-conventional` and `nxdn48-conventional` rows requires `-fa`**. Single-rate lists can use the narrower preset.
-DSD-neo logs a warning at scan start for any target whose decoder is not enabled by the selected mode; it does not
-silently flip mode-preset frame flags.
+Each target's `type` selects its decoder class regardless of the configured global preset. Both `p25-trunk` and
+`p25-conventional` enable both phases and exclude DMR and X2-TDMA; DMR and NXDN targets enable only their declared class and rate. Mixed
+lists, including both NXDN rates, work without `-fa`. The target's `modulation` column keeps its existing precedence:
+an explicit value, including `auto`, overrides global modulation handling. An empty value preserves an explicit
+global modulation lock. Modes declared in a target's `chan_csv` do not override its type.
+NXDN48 targets do not require an outer `-fi`. Audio retains the startup output layout, with mono NXDN voice
+duplicated into both channels when the output is stereo.
+A `p25-conventional` target disables trunking and parks on its fixed frequency without a P25 trunking state-machine
+context or band-plan seeding. Its hold follows conventional voice activity, not control-channel grants.
 
-`mode.decode = "auto"` in a config file is equivalent to `-fa` for decoder selection, so it serves mixed lists too.
-Use `mode.decode = "nxdn96"` or `mode.decode = "nxdn48"` when a single-rate list is all you want enabled.
+Global mode/modulation commands update the configured settings while the parked target remains constrained.
+Stopping trunk scan restores those configured settings, and configuration saves record them rather than the parked
+target's decoder. Target gain, trunking state, and learned P25 modulation retain their existing coordinator ownership.
+The restored frontend rate and slicer levels follow the saved hunt profile, including a global AUTO preset captured
+on a rate other than 4800 symbols/s. Modulation controls display the saved configuration while a target is active.
+
+For unlocked RTL P25 targets, the first unproductive 4800-symbol/s dwell tries CQPSK before the hunt moves to Phase 2.
+Each Phase 1 demodulator gets 1125 ms of unproductive symbol input; CQPSK starts at 1125 ms and Phase 2 at 2250 ms,
+both within the default 3000 ms target dwell. Shorter custom dwells can still end before a trial; use an explicit
+target modulation or allow more acquisition time in that case.
 
 ## Config Usage
 
@@ -182,8 +249,21 @@ Voice-only scan from a config file lives in `[trunking]` (`scan_voice_only`, `sc
 `scan_voice_hold_ms`): conventional targets reuse `dwell_ms` as the qualify window and `activity_hold_ms` as the
 hold, refreshed only from decoded voice; trunked targets are unchanged.
 
+The per-visit cap lives in the same section, as `[trunking] scan_max_visit_ms`, and applies to every target type:
+`0` (the default) disables it, otherwise use `1000..3600000`. Config loading does not clamp the value, so a
+hand-written `1..999` reaches the decoder, which treats it as disabled.
+
+For temporary user talkgroup avoids, set `[trunking] persist_tg_lockouts = false` or use
+`--tg-lockout-session`. Terminal `!`/`@` and Qt/Android **Skip** then avoid targets without changing the groups
+file. This global preference also applies when scan rows inherit the global groups list. Rows with their own
+lists retain independent avoids across visits, even when they load the same file; rows inheriting the global
+list share its avoids. **Clear temporary TG avoids — current list** clears the active scope only. List reload
+or replacement resets that scope; decoder stop ends the session. `--tg-lockout-persist` restores the default
+quick-lockout behavior, which still never writes a scan row's list to the global groups file. These flags are
+global CLI options, not per-row `options` tokens.
+
 Set `tune_enc_calls = false` to enable key-aware encryption lockout. Otherwise eligible encrypted or
-encryption-unknown P25 voice grants are visited briefly and classified silently; only clear calls or calls with a
+encryption-unknown P25 trunk voice grants are visited briefly and classified silently; only clear calls or calls with a
 complete matching key for a supported algorithm continue. Missing-key calls remain silent and are released at
 classification or grant timeout, while a clear companion Phase 2 slot is preserved. A target confirmed encrypted
 without a usable key stays locked out for the rest of the session (no retry backoff); it re-verifies once after key
@@ -201,6 +281,8 @@ Config notes:
 - `targets_csv` supports the same path expansion as other config paths (`~`, `$VAR`, and `${VAR}`).
 - `targets_csv` is required when `enabled = true`.
 - `[trunking] chan_csv` is rejected when trunk scan is enabled.
+- `--validate-config` reports a warning when `[trunking] scan_max_visit_ms` is `1..999`: the decoder ignores such a
+  value, so use `0` to disable the cap or `1000..3600000` to set one.
 - Profiles can enable trunk scan. A profile may inherit `trunk_scan.targets_csv` from the base config.
 - If trunk scan is inherited from a config file, one-off CLI arguments that select another input, mode, channel map,
   file/replay input, trunking mode, or conventional `-Y` scan mode disable the inherited scan for that run. UI-only
@@ -219,7 +301,36 @@ During scanning:
 
 - The terminal names the target on air: a `| Trunk Scan:  Target: county-p25 (3/6)` row in the Input Output section,
   and a `| Target: county-p25` line at the top of Call Info, which is the one that survives compact view.
-- Idle targets rotate after their dwell time.
+  While idle, Call Info follows the parked target's protocol panel; an unknown NXDN RAN or IDAS area
+  is shown as `--`.
+- A `| Scan Timing:` row directly under the Trunk Scan row says why the receiver is staying on that target —
+  `Acquiring control`, `Following call`, `Retune pending`, `Retune retry`, `Manual hold`, `Idle dwell`, and the
+  conventional `Voice` / `Voice tail` / `Activity hold` / `Qualify` — with a countdown on whichever window is
+  running and the target's effective dwell and hold beside it. The phrase table is in
+  [the terminal UI guide](ui-terminal.md); the Qt and Android panels show the same thing.
+- Idle targets rotate after their dwell time. Call following or a conventional activity hold suspends that dwell;
+  once the target becomes idle again, a fresh full dwell starts. Time spent following the call or holding activity
+  does not use up the next idle dwell.
+- With `--scan-max-visit-ms` (or `[trunking] scan_max_visit_ms`) set, a visit also ends when it reaches the cap,
+  whatever the target is doing: a trunked call being followed, a conventional hold, a control-channel hunt. The clock
+  starts at the instant the target parks and starts again from zero on every re-park, so activity, grants and the
+  state machine's own control/voice-channel retunes never extend it; a retune the coordinator is still waiting on
+  never expires, and a completed one anchors at its own completion. Expiry advances only when another eligible target
+  exists — one that is neither avoided for the session nor still cooling down from a failed retune — and otherwise
+  re-arms, so a one-target list and an all-avoided list are unaffected and a target that becomes eligible later gets a
+  full limit rather than an immediate hop. A `Y` hold suspends the cap, and releasing it starts a fresh full limit
+  rather than the remainder; an `-I` talkgroup hold suspends it only while the followed call matches the held
+  talkgroup, and the limit runs from zero again once that call ends, so other calls on the target are still capped.
+  Operator hold release and clearing the last alternate's avoid restart the cap at the command; other suspension
+  changes restart it at the first eligible decoder tick. Time spent waiting for input between those ticks cannot
+  consume the fresh interval.
+  When the cap evicts a target mid-call, the carrier is released first, so revisiting it later restores an idle target
+  rather than a stale call or activity hold. Buffered partial P25 Phase 2 audio is flushed before the release.
+  If every alternate then fails to retune and the receiver falls back onto the same target, the call stays released
+  and its end is recorded only once. If the fallback park also fails, the coordinator retries
+  that target's control channel after the retune cooldown instead of waiting through its idle dwell. A pending fallback
+  does not start the visit clock until parking completes. A target's `options` column can carry its
+  own `--scan-max-visit-ms <ms>`, and `0` there exempts that target while the global cap is set.
 - The rotation can be driven from the terminal (Trunking menu, or the hotkeys): `Y` holds the scan on the parked
   target, `b` avoids the parked target for the rest of the session and moves on, `L` moves to the next eligible target
   now, and "Clear avoids" puts every avoided target back. A hold only pauses the idle dwell: the parked target's
@@ -236,7 +347,10 @@ During scanning:
   tuner autogain; `auto` and global-auto targets restore the saved autogain setting.
 - P25, DMR, and NXDN trunk targets stay parked while their trunking state machine is following an active call
   (NXDN stays parked while following an active grant and returns to its control channel at hangtime/release).
-- `nxdn-trunk` targets follow the site-broadcast outbound control channel: when a DFA site announces a control
+  The protocol's hangtime and release rules decide when call following ends; audio silence alone does not start
+  the idle dwell. Once call following ends and no control-channel retune is pending, a fresh `dwell_ms` interval
+  starts. The Scan Timing row can show a nonzero `hang` budget during `Following call`; idle targets show dwell.
+- `nxdn-trunk` and `nxdn48-trunk` targets follow the site-broadcast outbound control channel: when a DFA site announces a control
   channel that differs from the target's `frequency_hz`, DSD-neo adopts it (logging
   `NOTICE: NXDN trunking: site control channel is X MHz; following it`) and re-parks that target there from then on.
   A per-target `chan_csv` containing LCN rows pins the control channel instead, so an operator list always wins.
@@ -244,30 +358,53 @@ During scanning:
   only after allowed activity is decoded: a DMR voice header or data header, or an NXDN VCALL, DCALL or SDCALL header.
   NXDN48 and NXDN96 share a sync word and every decoded element, so one NXDN reporting path serves both. The allow/block list, private-call tuning,
   data-call tuning, and encrypted-call tuning controls all apply to that decision, so data headers refresh the hold
-  only when data-call tuning is enabled (`-e`, or `tune_data_calls` in a config file); it is off by default.
-  With `--scan-voice-only`, headers alone never hold: the hold refreshes only from decoded voice media (stamped
-  with the media time, so LC-less voice holds), `dwell_ms` is the qualify window and `activity_hold_ms` the hold.
-  The terminal status line marks the parked conventional target `Voice: QUALIFY`, `VOICE` or `TAIL`. Trunked
+  only when data-call tuning is enabled (the parked row's `-e` overrides the CLI/config value); it is off by default.
+- A `p25-conventional` target stays parked after a decoded P25 voice call start (Phase 1 HDU/LDU or Phase 2 PTT)
+  passes the allow/block list, group/private-call tuning and encrypted-call policy. Clear calls and calls decryptable
+  with a complete matching key can refresh `activity_hold_ms` even with `--enc-lockout`. P25 data (PDU) traffic
+  does not refresh the hold, so `-e` has no effect on this row.
+  Phase 2 PTT holds are evaluated after crypto classification; Phase 1 late joins honor the LCW encryption bit
+  before HDU/LDU2 metadata arrives.
+- With `--scan-voice-only`, all conventional types, including P25, hold only from decoded voice media, not headers
+  or voice-start reports alone. The hold refreshes from decoded voice media (stamped
+  with a retained media time, so LC-less and just-ended voice hold), `dwell_ms` is the qualify window and
+  `activity_hold_ms` the hold. The terminal status line marks the parked conventional target `Voice: QUALIFY`,
+  `VOICE` while a media-bearing call is active, or `TAIL` after it ends while the hold runs. Trunked
   targets are unchanged: control-only traffic rotates after dwell, and they carry no `Voice:` marker.
-- An `nxdn-trunk` target with a `chan_csv` reports channels it was granted but could not map, once per channel while
+  After the conventional hold expires, a fresh dwell/qualification window starts, so the two waits add together.
+  For example, with an effective `activity_hold_ms=1000` and `dwell_ms=500`, rotation occurs roughly 1.5 seconds
+  after the last decoded voice frame if no new voice arrives, no manual hold applies, and the visit cap does not
+  end the visit first. Without voice-only mode, the same hold-then-dwell sequence follows the last allowed
+  decoded activity, which can include the headers described above.
+- An `nxdn-trunk` or `nxdn48-trunk` target with a `chan_csv` reports channels it was granted but could not map, once per channel while
   it is parked (`NOTICE: NXDN trunking: grant: CH 12 has no frequency mapping in chan_csv (site.csv)`), and a summary
   for each such target at exit. Every target keeps its own list, so one target's gaps are never attributed to another.
-- `nxdn48-conventional` targets park at 2400 sym/s with the 6.25 kHz channel filter; every other GFSK-family target
-  parks at 4800 sym/s with the 12.5 kHz filter. Set `modulation = gfsk` on NXDN48 rows: that pins the symbol-rate
-  hunt to the 2400 profile for the whole dwell, whereas an empty or `auto` column lets the hunt rotate through the
-  other enabled rates during dead air, which also swings the channel filter. The parked target's type selects the
+- `nxdn48-conventional` and `nxdn48-trunk` targets park at 2400 sym/s with the 6.25 kHz channel filter; every other
+  GFSK-family target parks at 4800 sym/s with the 12.5 kHz filter. Each target's decoder class keeps the hunt on its allowed
+  symbol profile throughout dead air, including with empty or `auto` modulation. The parked target's type selects the
   symbol rate and channel filter even under a global `-m` modulation lock; the lock still governs symbol slicing, so
   DMR and NXDN rows under `-mc` or `-mq` need `modulation = gfsk` (or `auto`) to decode.
+- NXDN Type-D (distributed trunking, Icom IDAS Type-D; 6.25 kHz only) has no dedicated control channel: an idle
+  home repeater sends an Idle Repeater Message on its SCCH and a busy one carries `Go to Repeater` messages.
+  To follow one, park an `nxdn48-trunk` target on the home repeater's outbound frequency with a `chan_csv` that
+  maps repeater numbers 1-30 to outbound frequencies, plus a row `31` carrying the home repeater's frequency:
+  the home repeater's own row must equal the target's `frequency_hz`, and row `31` is what DSD-neo tunes on a
+  call's termination message and then treats as the control channel (without it the return waits for the DISC
+  message or hangtime, and a `CH 31 has no frequency mapping` notice is logged once). Calls are followed from
+  the SCCH Busy Repeater message; while the site is idle nothing but `dwell_ms` keeps the target parked, so
+  give it a dwell of several seconds. This path is inherited from DSD-FME, which tested it on a two-channel
+  Type-D system; DSD-neo has not verified it against a live Type-D site. An `--iq-capture` of a home repeater
+  spanning an idle period and one call (see `docs/testing.md`) is what would confirm it.
 - When a retune fails, DSD-neo logs a warning, briefly cools that target down, and tries another eligible target.
   While held, a failed retune retries the held target after the cooldown instead of moving on.
+  A still-pending accepted tune can temporarily show its requested frequency, including during recovery from a
+  later backend failure. Frame dispatch remains gated until recovery completes.
 
 Expected log messages include:
 
 ```text
 Trunk scan target 'county-p25' at 851012500 Hz
 Trunk scan enabled with 6 targets
-2 trunk scan target(s) have no enabled NXDN96 decoder (first: 'site-nxdn'); use -fn or -fa to decode them
-1 trunk scan target(s) have no enabled NXDN48 decoder (first: 'field-nxdn48'); use -fi or -fa to decode them
 Trunk scan target 'city-dmr' retune failed; cooling down briefly
 ```
 
@@ -280,7 +417,8 @@ in `[trunk_scan]`.
 
 `trunk scan target CSV header must start with ...`
 
-The first line must begin with `id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes`.
+The first line must begin with `id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes`. Optional column
+names after it are matched case-insensitively.
 
 `row N has invalid frequency_hz`
 
@@ -299,25 +437,27 @@ from `1` to `49` for manual RTL-family gain in dB.
 
 `row N keys_hex_csv path is too long or invalid` (and `_dec_`)
 
-The key path is resolved relative to the target CSV. Use a path that fits in 1024 bytes and, for a relative
-reference, keep the key file next to (or below) the target CSV.
+The key path is resolved relative to the target CSV. Use a resolved path of at most 1023 bytes (excluding the
+terminating NUL) and, for a relative reference, keep the key file next to (or below) the target CSV.
 
 `failed to import keys for trunk scan target '<id>' from '<file>'`
 
 The key file could not be opened or parsed. Key files use the `-K` (hex) and `-k` (decimal) formats described
 in [csv-formats.md](csv-formats.md); check the header row and the delimiter.
 
-`N trunk scan target(s) have no enabled <NAME> decoder (first: '<id>'); use <flags> to decode them`
+`row N has invalid single_key_dec value` (or `single_key_hex`)
 
-The selected decode mode does not enable the decoder those targets need, so they park and dwell without ever
-decoding. One line is logged per decoder class, not per target, and NXDN96 and NXDN48 are separate classes. Use
-`-fa` for a mixed list, `-fn` for an NXDN96-only list, `-fi` for an NXDN48-only list, `-ft`/`-f1`/`-f2` for P25, or
-`-fs`/`-ft` for DMR. A list holding both NXDN rates needs `-fa`, or `mode.decode = "auto"` in a config file, which
-selects the same decoders. DSD-neo does not flip mode-preset frame flags for you.
+Use unsigned decimal `0..255` for `single_key_dec`, or 10, 32, or 64 hex digits for `single_key_hex`. Direct key
+values are intentionally omitted from error messages.
+
+`row N combines direct keys with keys_hex_csv/keys_dec_csv`
+
+Remove either the `single_key_dec`/`single_key_hex` values or the key-file paths from that row. Direct and file key
+sources cannot be mixed for one target.
 
 `--trunk-scan cannot be combined with global -C/channel-map config`
 
-Move channel maps into the target CSV `chan_csv` column. Conventional DMR and conventional NXDN rows (both NXDN
+Move channel maps into the target CSV `chan_csv` column. Conventional DMR, P25 and NXDN rows (both NXDN
 rates) must leave `chan_csv` empty.
 
 `--trunk-scan requires an open RTL input or rigctl tuning`
@@ -332,10 +472,15 @@ rotating across unrelated scan targets.
 
 ## Limitations
 
-- P25 trunk, DMR trunk, DMR conventional, NXDN trunk, NXDN96 conventional, and NXDN48 conventional targets are
-  supported. Trunked NXDN targets are 12.5 kHz NXDN96 only: 6.25 kHz NXDN48 Type-D control channels are not a
-  trunk-scan target type, so an NXDN48 site's control channel cannot be followed. `-Y` with `-fi` remains available
-  for scanning NXDN48 channels outside trunk scan.
+- P25 trunk, P25 conventional, DMR trunk, DMR conventional, NXDN trunk at both rates (`nxdn-trunk`, `nxdn48-trunk`),
+  NXDN96 conventional, and NXDN48 conventional targets are supported. NXDN Type-C sites use one control-channel
+  format at 4800 and 9600 bps (NXDN TS 1-A), so `nxdn48-trunk` shares every decoding path with `nxdn-trunk`
+  and differs only in symbol rate and channel filter; neither the Type-C nor the Type-D NXDN48 path has been
+  verified against a live NXDN48 trunked site from trunk scan. `-Y` with `-fi` remains available for scanning
+  NXDN48 channels outside trunk scan.
+- Phase 1 P25 decode captures are available for replay verification; a replay checks decoding, not live target
+  rotation or conventional activity holds. P25 conventional target holds have not been verified on air, and
+  Phase 2 conventional parking remains untested on air.
 - There is one active receiver. Traffic on targets that are not currently parked can be missed.
 - Group policy is global across all scan targets.
 - Target CSV files are simple comma-delimited files, not full RFC 4180 CSV.
@@ -358,3 +503,159 @@ To scan multiple systems with one receiver:
 
 `-Y` conventional scanning remains a separate mode for fast conventional sync scanning and is mutually exclusive
 with trunk scan.
+
+### Per-target options
+
+The optional `options` column accepts the same [scoped switches](csv-formats.md#scoped-row-options) as conventional
+channel maps. The target `type` validates protocol-specific switches. A DMR system can use `-K Keys.csv -G Groups.csv
+-0 -F`; a conventional NXDN target can use `-R 1`. Relative paths refer to the target-list directory.
+Unspecified settings inherit the configured defaults, and `--no-force-key` can disable inherited forcing.
+A row's `-e` / `--no-data-calls` and `--enc-lockout` / `--enc-follow` override the CLI/config data-call and
+encrypted-call policy while that target is parked. The terminal `d`/`e` toggles still edit the configured global
+value; the data-call label under Trunking > Follow and the encrypted-call label under Encryption append
+`(target: On)` or `(target: Off)` when the parked row's effective value differs.
+Targets without these switches inherit that edited baseline.
+Saving configuration while parked also records the global data/encrypted-call baseline, not the row's overrides.
+
+Group policies and keys are preloaded and isolated between targets. Re-parking, failed-tune recovery and shutdown
+restore the associated options with the target. Conventional voice-gate switches are accepted on conventional target
+types only; trunk systems keep their existing activity-hold policy. While the voice gate is on, a conventional
+target's `--scan-voice-hold-ms` replaces its `activity_hold_ms` as the hold after the last voice frame and
+`--scan-voice-qualify-ms` replaces its `dwell_ms` as the window in which voice must appear; targets without them
+keep the column values. Row metadata in a target's `chan_csv` is validated and discarded; put system options on the
+target itself.
+
+`--scan-max-visit-ms <ms>` is the exception to that conventional-only rule: every target type accepts it, trunked
+included. A target that carries it wins over the global `--scan-max-visit-ms` / `[trunking] scan_max_visit_ms`
+outright, including a row `0`, which exempts that target while the global cap stays in force elsewhere; a target
+without it inherits the global. Accepted values are `0` or `1000..3600000`, the same bounds as the CLI switch. Saving
+configuration while a target is parked records the configured global, not the parked target's override.
+
+A row that names key material in `options` (`-b`, `-H`, `-1`, `-R`, `-K`, `-k`) may still fill the legacy key
+columns for the other families; the merge rejects a column that duplicates an option. Optional header names,
+including `options` and its `relevant_CLI_switches` alias, match ASCII case-insensitively.
+
+### Frontend validation boundary
+
+The facade reserved for future Qt target-CSV validation is `dsd_app_trunk_scan_validate_targets_csv` in
+`app_control/trunk_scan_validate.h`. It calls the same parser as the engine and
+always resets the owned target list, including parsed key material. It returns
+zero on success and a target count; failed validation resets the count to zero.
+Only the target CSV itself is parsed. Referenced channel/key CSVs and profiles
+are not opened or checked for readability; startup can still fail on those files.
+Qt must not include engine headers. The architecture checker rejects that include
+at configure time as well as in `tools/check_arch_rules.sh`.
+
+The Qt/Android monitor labels the active target with its saved-system name or frequency-entry name
+(falling back to the frequency), alongside its ordinal/count and hold state. Internal entry UIDs are not displayed.
+
+The UI clears live model caches when `trunk_scan_active_ordinal` changes. A quiet
+new target must not inherit the old target's held sync indication. History keeps
+calls across these boundaries.
+
+### Qt and Android scan lists
+
+Home → **Scan lists → Import target CSV** imports a prepared target list, including
+`examples/trunk_scan_targets.csv`. It is also available as **Trunk scan targets**
+in the imported-files library. Choose the CSV and any requested companion files,
+review the target preview, name the list, select its receiver settings, and Save.
+The list's Play button starts the imported CSV directly.
+
+The CSV stays authoritative. Its target IDs, order, columns and supported `options`
+are preserved; the preview shows inherited timing separately from explicit values.
+An explicit target option overrides the corresponding session default, and leaving
+the target restores the baseline. For example, a target can use `--enc-follow`,
+`--no-force-key`, or its own `--scan-max-visit-ms`. The manual editor's restriction
+on saved-system Extra arguments does not apply to a CSV's validated scoped options.
+Imported targets are read-only in the editor; use **Update from file** in the
+imports library to replace their contents.
+
+Imports make a private, durable bundle of channel maps, band plans, key files,
+scoped group/DMR mapping files, and any file dependencies within channel maps.
+Desktop companions resolve relative to the source document using the usual path
+rules. Android asks for missing documents explicitly, including the containing
+map's name for nested references. Rewritten paths are relative to the stored
+document, so moving or deleting the original documents does not break the list.
+Target and channel-map documents are limited to 64 MiB; the engine's target and row limits
+still apply. Keys and raw option cells are excluded from previews and metadata.
+
+Import, Validate and Play check required companions using the backend loaders.
+An invalid replacement leaves the previous bundle usable. Target CSV replacement
+and removal require the decoder to be idle. Removing a scan list keeps its shared
+imported asset; removing that asset makes referencing lists drafts until another
+target CSV is selected. Imported counts come from the library and Monitor uses the
+CSV's target ID. Existing manual lists keep their original behavior below.
+
+Home's **Scan lists** section starts saved systems and bare frequencies as one
+`--trunk-scan` session. Long-press a list to edit, reorder, enable or remove entries.
+The editor selects USB or RTL-TCP and one tuner configuration for the entire list.
+System source, host, port, PPM, bandwidth and bias-tee settings are replaced by the
+list's settings. Entry gain overrides system gain; otherwise system gain overrides
+the list's default. Zero dwell/hold, negative-one gain/bandwidth/bias-tee and blank
+PPM/modulation inherit their corresponding defaults. Nonzero dwell/hold must be
+250–600000 ms. Lists use the app's voice hang time, not per-system hang-time overrides;
+Extra decoder arguments containing `-t` still take precedence. Voice/sync-loss hang time
+is separate from idle dwell on every target and the activity hold on conventional targets.
+The editor does not model the per-visit cap: put `--scan-max-visit-ms <ms>` in Extra decoder
+arguments to cap every target in the session, or import a target CSV whose `options`
+cells cap individual targets.
+The older channel-scanning mode enabled with `-Y` instead uses `-t` as its dwell
+timer, so changing the app default or a saved-system hang-time override also
+changes that mode's rotation timing.
+
+Lists persist in `scan_lists.json`. Lists and entries have stable UIDs; system
+entries reference saved-system UIDs, so deleting or reordering a saved system
+cannot silently select a different system. A missing referenced system prevents
+start. Frequency entries select P25, DMR, NXDN48 or NXDN96 conventional decoding.
+
+Saved P25 (`-ft`, `-f1`, `-mq`, `-^`), DMR (`-fs`), NXDN48 (`-fi`) and NXDN96
+(`-fn`) modes retain their trunked/conventional choice. `-mq` also selects CQPSK.
+RadioReference P25 imports (`-ft -^` and `-mq -^`) retain both their modulation
+and their per-target preference for learned control-channel candidates. That
+preference is restored to the configured default when leaving the target.
+Auto, `-Y`, D-STAR, YSF, M17 and EDACS are refused. Systems with extra options are
+refused because those options cannot be scoped safely. Channel maps require a
+trunked target; P25 band plans require a P25 trunked target.
+
+Each system's group file becomes a scoped `-G` option. The list's group file is
+only the fallback for entries without their own file. Key CSVs retain their
+hex/decimal interpretation. Direct keys become scoped `-b`, `-H`, `-1` or `-R`
+options, with `-4`/`-0` forcing when selected; the legacy `single_key_*` columns
+are not used. Combining a direct key with a key CSV is refused. Source aliases
+remain global: the list's source file wins, with a warning for differing system
+source files.
+
+The starter checks files and writes a private `<AppData>/scan_lists/<uid>.csv`
+using `QSaveFile`, then validates it through the app-control facade before asking
+the host to start. Missing/unreadable files, commas, double quotes,
+CR/LF in paths, duplicate type/frequency pairs and empty enabled lists are refused.
+Relative saved paths are resolved against the working directory before generating
+the target CSV, preserving their standalone meaning. Preference extra options are token-screened against session/scan/decode overrides
+and `--show-keys`. Runtime initialization failures use the host's existing failure
+surface. Recency and `lastStartedKind=scan`/`lastStartedUid` are written only on
+`sessionInitialized`, never merely because a start was queued.
+
+Monitor displays `SCANNING · <id> (n/m)` and `HOLD`. Existing Hold/Avoid/Next/Clear
+controls operate on these targets. Target identity clears with the other live
+metrics on lifecycle transitions.
+
+Generated CSVs can contain direct keys and are owner-readable/writable only. They
+are internal session inputs, not exports; removing a list removes its generated
+CSV. Owned UTF-8 generator storage is erased on disposal. QString/QML copies of
+keys cannot promise erasure and must never be displayed or included in diagnostics.
+
+### Live decryption changes from Qt/Android
+
+Scan entries may inherit a saved system's decryption profile, select a different
+profile, or explicitly select no keys. Profile compatibility and all referenced
+files are checked before the generated CSV becomes usable. Vendor keystream modes
+are rejected because their state is outside the scoped key-set ownership contract.
+
+The retained `DECRYPTION_APPLY` result distinguishes session-default changes from
+active-target changes. A target request carries its stable ID, tuning generation
+and key epoch. Stale requests are rejected. A successful target update survives
+leaving and returning to that target; other targets and the global baseline retain
+their own keys and DMR maps. Session defaults change beneath explicit target profiles.
+These live changes do not rewrite the saved profile or alter talkgroup exclusions.
+Legacy `-Y` rows support their configured per-row profiles; live target replacement
+is exposed for the trunk-scan coordinator's stable target IDs only.

@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
+#include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_pdu.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_mbf34.h>
@@ -46,6 +47,8 @@ static int g_pdu_trunking_calls;
 static int g_status_ensure_started_calls;
 static int g_status_classify_calls;
 static int g_last_pdu_data_len;
+static uint8_t g_header_crc_invalid[2];
+static uint8_t g_data_crc_invalid[2];
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -117,7 +120,7 @@ p25_status_accum_add(dsd_state* state, int dibit_value) {
 void
 p25_decode_pdu_header(dsd_opts* opts, dsd_state* state, const uint8_t* input) {
     (void)opts;
-    (void)state;
+    DSD_MEMCPY(g_header_crc_invalid, state->event_crc_invalid, sizeof(g_header_crc_invalid));
     (void)input;
     g_pdu_header_calls++;
 }
@@ -125,7 +128,7 @@ p25_decode_pdu_header(dsd_opts* opts, dsd_state* state, const uint8_t* input) {
 void
 p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     (void)opts;
-    (void)state;
+    DSD_MEMCPY(g_data_crc_invalid, state->event_crc_invalid, sizeof(g_data_crc_invalid));
     (void)input;
     g_pdu_data_calls++;
     g_last_pdu_data_len = len;
@@ -221,6 +224,8 @@ reset_dispatch_counters(void) {
     g_status_ensure_started_calls = 0;
     g_status_classify_calls = 0;
     g_last_pdu_data_len = 0;
+    DSD_MEMSET(g_header_crc_invalid, 0, sizeof(g_header_crc_invalid));
+    DSD_MEMSET(g_data_crc_invalid, 0, sizeof(g_data_crc_invalid));
 }
 
 static void
@@ -610,10 +615,22 @@ test_decode_header_if_usable_dispatch_gate(void) {
     opts.aggressive_framesync = 0;
     p25_mpdu_decode_header_if_usable(&opts, &state, &ctx);
     rc |= expect_int("relaxed bad header dispatch", g_pdu_header_calls, 1);
+    rc |= expect_int("relaxed bad header scope", g_header_crc_invalid[0], 1);
+    rc |= expect_int("header scope restored", state.event_crc_invalid[0], 0);
+    rc |= expect_int("header other slot clean", g_header_crc_invalid[1], 0);
     rc |= expect_int("relaxed header io", ctx.io, 1);
     rc |= expect_int("relaxed header fmt", ctx.fmt, 0x17);
     rc |= expect_int("relaxed header sap", ctx.sap, 0x3D);
     rc |= expect_int("relaxed header blks", ctx.blks, 2);
+    ctx.err[0] = 0;
+    state.event_crc_invalid[1] = 1;
+    p25_mpdu_decode_header_if_usable(&opts, &state, &ctx);
+    rc |= expect_int("clean next header scope", g_header_crc_invalid[0], 0);
+    rc |= expect_int("header other slot preserved", g_header_crc_invalid[1], 1);
+    state.event_crc_invalid[0] = 1;
+    p25_mpdu_decode_header_if_usable(&opts, &state, &ctx);
+    rc |= expect_int("header inherits outer failure", g_header_crc_invalid[0], 1);
+    rc |= expect_int("header restores outer failure", state.event_crc_invalid[0], 1);
     return rc;
 }
 
@@ -820,6 +837,118 @@ test_process_mpdu_zero_block_header_orchestration(void) {
     return rc;
 }
 
+static void
+seed_integrity_packet(P25MpduContext* ctx, int rate34, int bad_header, int bad_packet) {
+    static const uint8_t payload[12] = {0x81U, 0x02U, 0x23U, 0x44U, 0x65U, 0x86U,
+                                        0xA7U, 0xC8U, 0xBDU, 0x71U, 0xFDU, 0xC9U};
+    p25_mpdu_context_init(ctx);
+    DSD_MEMCPY(ctx->mpdu_byte, k_crc16_header_c, P25_MPDU_R12_BYTES);
+    ctx->mpdu_byte[11] ^= (uint8_t)bad_header;
+    int header_bits[P25_MPDU_HEADER_BITS];
+    bytes_to_int_bits(ctx->mpdu_byte, P25_MPDU_R12_BYTES, header_bits);
+    ctx->err[0] = crc16_lb_bridge(header_bits, 80);
+    ctx->blks = 1;
+    ctx->r34 = rate34;
+    if (rate34) {
+        DSD_MEMCPY(ctx->r34bytes + 2, k_rate34_crc_payload, sizeof(k_rate34_crc_payload));
+        ctx->r34bytes[2] ^= (uint8_t)bad_packet;
+        uint16_t crc9 = p25_mpdu_candidate_crc9(ctx->r34bytes);
+        ctx->r34bytes[0] = (uint8_t)(crc9 >> 8);
+        ctx->r34bytes[1] = (uint8_t)crc9;
+        bytes_to_u8_bits(ctx->r34bytes + 2, 16, ctx->mpdu_crc_bits);
+        bytes_to_u8_bits(ctx->r34bytes + 2, 16, ctx->mpdu_crc9_bits + 7);
+    } else {
+        DSD_MEMCPY(ctx->mpdu_byte + P25_MPDU_R12_BYTES, payload, sizeof(payload));
+        ctx->mpdu_byte[P25_MPDU_R12_BYTES] ^= (uint8_t)bad_packet;
+    }
+}
+
+/* Decoder stubs expose dispatch scope only, not event or log rendering. */
+static int
+test_packet_integrity_scope(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    P25MpduContext ctx;
+    int rc = 0;
+    for (int rate34 = 0; rate34 <= 1; rate34++) {
+        for (int bad_header = 0; bad_header <= 1; bad_header++) {
+            for (int bad_packet = 0; bad_packet <= 1; bad_packet++) {
+                for (int strict = 0; strict <= 1; strict++) {
+                    DSD_MEMSET(&opts, 0, sizeof(opts));
+                    DSD_MEMSET(&state, 0, sizeof(state));
+                    opts.aggressive_framesync = strict;
+                    state.event_crc_invalid[1] = 1;
+                    seed_integrity_packet(&ctx, rate34, bad_header, bad_packet);
+                    rc |= expect_int("fixture header CRC", ctx.err[0] != 0, bad_header);
+                    reset_dispatch_counters();
+                    p25_mpdu_dispatch_payload(&opts, &state, &ctx);
+                    int invalid = bad_header || bad_packet;
+                    int dispatched = !strict || !invalid;
+                    rc |= expect_int("packet dispatch integrity gate", g_pdu_data_calls, dispatched);
+                    rc |= expect_int("packet CRC independent of header", ctx.err[1] != 0, bad_packet);
+                    if (dispatched) {
+                        rc |= expect_int("packet decoder integrity scope", g_data_crc_invalid[0], invalid);
+                        rc |= expect_int("packet other slot scope preserved", g_data_crc_invalid[1], 1);
+                    }
+                    rc |= expect_int("packet scope restored", state.event_crc_invalid[0], 0);
+                    rc |= expect_int("packet other slot restored", state.event_crc_invalid[1], 1);
+
+                    seed_integrity_packet(&ctx, rate34, 0, 0);
+                    reset_dispatch_counters();
+                    p25_mpdu_dispatch_payload(&opts, &state, &ctx);
+                    rc |= expect_int("clean next packet dispatch", g_pdu_data_calls, 1);
+                    rc |= expect_int("clean next packet scope", g_data_crc_invalid[0], 0);
+
+                    state.event_crc_invalid[0] = 1;
+                    seed_integrity_packet(&ctx, rate34, 0, 0);
+                    reset_dispatch_counters();
+                    p25_mpdu_dispatch_payload(&opts, &state, &ctx);
+                    rc |= expect_int("outer failure retained during decode", g_data_crc_invalid[0], 1);
+                    rc |= expect_int("outer failure restored after decode", state.event_crc_invalid[0], 1);
+                }
+            }
+        }
+    }
+    return rc;
+}
+
+static int
+test_confirmed_crc9_failure_with_valid_packet_crc(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    P25MpduContext ctx;
+    int rc = 0;
+    for (int strict = 0; strict <= 1; strict++) {
+        for (int corrupt_dbsn = 0; corrupt_dbsn <= 1; corrupt_dbsn++) {
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&state, 0, sizeof(state));
+            opts.aggressive_framesync = strict;
+            seed_integrity_packet(&ctx, 1, 0, 0);
+            if (corrupt_dbsn) {
+                ctx.r34bytes[0] ^= 0x80U;
+                ctx.mpdu_crc9_bits[0] ^= 1U;
+            } else {
+                ctx.r34bytes[1] ^= 1U;
+            }
+            reset_dispatch_counters();
+            p25_mpdu_dispatch_payload(&opts, &state, &ctx);
+            rc |= expect_int("CRC9 failure leaves packet CRC valid", ctx.err[1], 0);
+            rc |= expect_int("CRC9 failure strict gate", g_pdu_data_calls, !strict);
+            if (!strict) {
+                rc |= expect_int("CRC9 failure relaxed scope", g_data_crc_invalid[0], 1);
+                rc |= expect_int("CRC9 failure other slot clean", g_data_crc_invalid[1], 0);
+            }
+            rc |= expect_int("CRC9 failure scope restored", state.event_crc_invalid[0], 0);
+            seed_integrity_packet(&ctx, 1, 0, 0);
+            reset_dispatch_counters();
+            p25_mpdu_dispatch_payload(&opts, &state, &ctx);
+            rc |= expect_int("CRC9 clean next dispatch", g_pdu_data_calls, 1);
+            rc |= expect_int("CRC9 clean next scope", g_data_crc_invalid[0], 0);
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -838,6 +967,8 @@ main(void) {
     rc |= test_rate34_dispatch_reconstructs_payload_and_preserves_active_call();
     rc |= test_trunking_payload_crc_dispatch();
     rc |= test_process_mpdu_zero_block_header_orchestration();
+    rc |= test_packet_integrity_scope();
+    rc |= test_confirmed_crc9_failure_with_valid_packet_crc();
     return rc;
 }
 

@@ -57,9 +57,16 @@ jobs:
         with:
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
+      - name: Read pinned QEMU image
+        shell: bash
+        run: |
+          set -euo pipefail
+          source tools/ci-dependency-pins.env
+          echo "TONISTIIGI_BINFMT_IMAGE=$TONISTIIGI_BINFMT_IMAGE" >> "$GITHUB_ENV"
       - name: Enable QEMU for cross-arch containers
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
         with:
+          image: ${{ env.TONISTIIGI_BINFMT_IMAGE }}
           platforms: all
       - name: Ensure binfmt for aarch64 is registered
         shell: bash
@@ -116,6 +123,7 @@ jobs:
             echo "mbe_sha=$MBELIB_NEO_SHA"
             echo "codec2_sha=$CODEC2_SHA"
             echo "rtlsdr_sha=$RTL_SDR_SHA"
+            echo "airspy_sha=$AIRSPY_SHA"
             echo "soapy_sdr_sha=$SOAPY_SDR_SHA"
             echo "soapy_sdr_root=/usr"
             echo "soapy_sdr_root_key=usr"
@@ -135,7 +143,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.APPIMAGE_DEPS_DIR }}
-          key: deps-appimage-${{ runner.os }}-${{ matrix.arch }}-${{ steps.dep-shas.outputs.image_pin }}-${{ steps.dep-shas.outputs.cmake_sha }}-${{ steps.dep-shas.outputs.openssl_sha }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}-${{ steps.dep-shas.outputs.soapy_sdr_sha }}-${{ steps.dep-shas.outputs.soapy_sdr_root_key }}
+          key: deps-appimage-${{ runner.os }}-${{ matrix.arch }}-${{ steps.dep-shas.outputs.image_pin }}-${{ steps.dep-shas.outputs.cmake_sha }}-${{ steps.dep-shas.outputs.openssl_sha }}-${{ steps.dep-shas.outputs.mbe_sha }}-${{ steps.dep-shas.outputs.codec2_sha }}-${{ steps.dep-shas.outputs.rtlsdr_sha }}-${{ steps.dep-shas.outputs.soapy_sdr_sha }}-${{ steps.dep-shas.outputs.soapy_sdr_root_key }}-${{ steps.dep-shas.outputs.airspy_sha }}
           restore-keys: |
             deps-appimage-${{ runner.os }}-${{ matrix.arch }}-
 
@@ -149,6 +157,7 @@ jobs:
                grep -Fxq "mbe_sha=${{ steps.dep-shas.outputs.mbe_sha }}" "$mf" &&
                grep -Fxq "codec2_sha=${{ steps.dep-shas.outputs.codec2_sha }}" "$mf" &&
                grep -Fxq "rtlsdr_sha=${{ steps.dep-shas.outputs.rtlsdr_sha }}" "$mf" &&
+               grep -Fxq "airspy_sha=${{ steps.dep-shas.outputs.airspy_sha }}" "$mf" &&
                grep -Fxq "soapy_sdr_sha=${{ steps.dep-shas.outputs.soapy_sdr_sha }}" "$mf" &&
                grep -Fxq "soapy_sdr_root=${{ steps.dep-shas.outputs.soapy_sdr_root }}" "$mf" &&
                grep -Fxq "openssl_sha=${{ steps.dep-shas.outputs.openssl_sha }}" "$mf" &&
@@ -200,6 +209,7 @@ jobs:
             -e MBE_SHA='${{ steps.dep-shas.outputs.mbe_sha }}' \
             -e CODEC2_SHA='${{ steps.dep-shas.outputs.codec2_sha }}' \
             -e RTLSDR_SHA='${{ steps.dep-shas.outputs.rtlsdr_sha }}' \
+            -e AIRSPY_SHA='${{ steps.dep-shas.outputs.airspy_sha }}' \
             -e SOAPY_SDR_SHA='${{ steps.dep-shas.outputs.soapy_sdr_sha }}' \
             -e SOAPY_SDR_RUNTIME_ROOT='${{ steps.dep-shas.outputs.soapy_sdr_root }}' \
             -e OPENSSL_SHA='${{ steps.dep-shas.outputs.openssl_sha }}' \
@@ -222,11 +232,11 @@ jobs:
               arch=$(uname -m)
               case "$arch" in
                 x86_64)
-                  cmUrl=https://github.com/Kitware/CMake/releases/download/v3.27.9/cmake-3.27.9-linux-x86_64.sh
+                  cmUrl=https://github.com/Kitware/CMake/releases/download/v3.31.12/cmake-3.31.12-linux-x86_64.sh
                   cmSha="$CMAKE_LINUX_X86_64_SHA256"
                   ;;
                 aarch64)
-                  cmUrl=https://github.com/Kitware/CMake/releases/download/v3.27.9/cmake-3.27.9-linux-aarch64.sh
+                  cmUrl=https://github.com/Kitware/CMake/releases/download/v3.31.12/cmake-3.31.12-linux-aarch64.sh
                   cmSha="$CMAKE_LINUX_AARCH64_SHA256"
                   ;;
                 *) echo "Unsupported arch: $arch" >&2; exit 1 ;;
@@ -246,6 +256,7 @@ jobs:
               mbe_sha="$MBE_SHA"
               codec2_sha="$CODEC2_SHA"
               rtlsdr_sha="$RTLSDR_SHA"
+              airspy_sha="$AIRSPY_SHA"
               soapy_sdr_sha="$SOAPY_SDR_SHA"
               soapy_sdr_root="$SOAPY_SDR_RUNTIME_ROOT"
               openssl_sha="$OPENSSL_SHA"
@@ -324,6 +335,7 @@ jobs:
               build_dep https://github.com/arancormonk/mbelib-neo "$mbe_sha" libmbe-neo mbe_sha ""
               build_dep https://github.com/arancormonk/codec2 "$codec2_sha" codec2 codec2_sha ""
               build_dep https://github.com/arancormonk/rtl-sdr "$rtlsdr_sha" librtlsdr rtlsdr_sha "-DDETACH_KERNEL_DRIVER=ON"
+              build_dep https://github.com/airspy/airspyone_host "$airspy_sha" libairspy airspy_sha "-DINSTALL_UDEV_RULES=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
               build_dep https://github.com/pothosware/SoapySDR "$soapy_sdr_sha" SoapySDR soapy_sdr_sha \
                 "-DENABLE_APPS=OFF -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF -DENABLE_PYTHON=OFF -DENABLE_PYTHON3=OFF -DSOAPY_SDR_ROOT=$soapy_sdr_root"
 
@@ -332,6 +344,7 @@ jobs:
                 echo "mbe_sha=$mbe_sha"
                 echo "codec2_sha=$codec2_sha"
                 echo "rtlsdr_sha=$rtlsdr_sha"
+                echo "airspy_sha=$airspy_sha"
                 echo "soapy_sdr_sha=$soapy_sdr_sha"
                 echo "soapy_sdr_root=$soapy_sdr_root"
                 echo "openssl_sha=$openssl_sha"
@@ -350,7 +363,7 @@ jobs:
               fi
 
               cmake -S . -B build/appimage -G Ninja -DCMAKE_BUILD_TYPE=Release -DDSD_ENABLE_LTO=OFF \
-                -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON \
+                -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON -DDSD_REQUIRE_AIRSPY=ON \
                 -DOPENSSL_ROOT_DIR="$DEPS" \
                 -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF
               cmake --build build/appimage -j
@@ -361,7 +374,7 @@ jobs:
               cmake --install build/appimage --prefix AppDir/usr
 
               docdir="AppDir/usr/share/doc/dsd-neo"
-              required=(LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-FFTPACK.txt)
+              required=(LICENSE COPYRIGHT THIRD_PARTY.md licenses/ezpwd-LGPL-2.1-or-later.txt licenses/pffft-FFTPACK.txt licenses/libairspy-LICENSE.txt)
               for f in "${required[@]}"; do
                 if [ ! -f "$docdir/$f" ]; then
                   echo "ERROR: missing required license file: $docdir/$f" >&2
@@ -476,7 +489,7 @@ jobs:
           path: ${{ steps.names.outputs.OUT }}
           retention-days: 7
       - name: Generate artifact SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           file: ${{ steps.names.outputs.OUT }}
           format: spdx-json
@@ -593,7 +606,7 @@ jobs:
         if: >-
           (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
           (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: nightly
           name: nightly

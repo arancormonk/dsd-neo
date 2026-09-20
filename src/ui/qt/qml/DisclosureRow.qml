@@ -16,20 +16,36 @@ Item {
     // Overridden where the helper line carries an answer rather than a hint.
     property color subtitleColor: Theme.textSubdued
     property bool showDivider: false
+    property bool showCaret: true
     // The gate lives on the handler rather than on `enabled`, which is
     // hierarchical: binding it here would also disable everything the caller
     // nests inside the row.
     property bool tapEnabled: true
-    signal tapped()
+    signal tapped
 
     width: parent ? parent.width : 0
-    height: 58
+    height: Math.max(Theme.minimumTouchSize, labels.implicitHeight + 24)
+    activeFocusOnTab: tapEnabled && Navigation.allows(row)
+    Accessible.role: Accessible.Button
+    Accessible.name: title
+    Accessible.description: subtitle
+    readonly property bool navigationAllowed: Navigation.allows(row)
+    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.onPressAction: activate()
+    function activate() {
+        if (enabled && tapEnabled && Navigation.allows(row))
+            tapped();
+    }
+    Keys.onSpacePressed: activate()
+    Keys.onReturnPressed: activate()
+    FocusFrame {}
 
     Column {
+        id: labels
         anchors.left: parent.left
-        anchors.right: rowCaret.left
+        anchors.right: row.showCaret ? rowCaret.left : parent.right
         anchors.leftMargin: Theme.cardPadding
-        anchors.rightMargin: 12
+        anchors.rightMargin: row.showCaret ? 12 : Theme.cardPadding
         anchors.verticalCenter: parent.verticalCenter
         spacing: 3
 
@@ -37,24 +53,25 @@ Item {
             width: parent.width
             text: row.title
             font.family: Theme.sans
-            font.pixelSize: 15
+            font.pixelSize: Theme.fontSize(15)
             font.weight: Font.DemiBold
             color: Theme.textPrimary
-            elide: Text.ElideRight
+            wrapMode: Text.Wrap
         }
 
         Text {
             width: parent.width
             text: row.subtitle
             font.family: Theme.sans
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontSize(12)
             color: row.subtitleColor
-            elide: Text.ElideRight
+            wrapMode: Text.Wrap
         }
     }
 
     Caret {
         id: rowCaret
+        visible: row.showCaret
 
         anchors.right: parent.right
         anchors.rightMargin: Theme.cardPadding
@@ -75,6 +92,6 @@ Item {
 
     TapHandler {
         enabled: row.tapEnabled
-        onTapped: row.tapped()
+        onTapped: row.activate()
     }
 }

@@ -43,6 +43,11 @@ int dmr_ambe49_should_skip_crypto(const char ambe_d[49]);
 int dmr_voice_stream_apply_frame49(const uint8_t* ks_bits, long int* bit_counter, int algid, char ambe_d[49]);
 /** Advance the DMR RC4 message indicator by one 32-bit LFSR cycle. */
 uint32_t dmr_mi_advance32(uint32_t mi);
+/** Expand a DMR AES 32-bit MI into 16 IV bytes; return the next superframe's MI.
+ * Uses the same x^32 + x^22 + x^2 + x + 1 recurrence as live DMR AES.
+ * Does not mutate decoder state. Null output leaves the MI unchanged.
+ */
+uint32_t dmr_aes_expand_iv(uint32_t mi, uint8_t iv[16]);
 int dmr_basic_privacy_apply_frame49(unsigned long long key_id, char ambe_d[49]);
 int tyt_ap_pc4_apply_frame49(const dsd_state* state, char ambe_d[49]);
 int tyt_ep_aes_apply_frame49(const dsd_state* state, char ambe_d[49]);

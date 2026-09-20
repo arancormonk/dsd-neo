@@ -30,6 +30,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/scan_mode.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,6 +47,9 @@ const dsd_state* dsd_app_get_latest_snapshot(void);
  * @return Read-only snapshot, or NULL before the first publish.
  */
 const dsd_opts* dsd_app_get_latest_opts_snapshot(void);
+/** Read configured decoder settings from matching frontend snapshots. The state snapshot also
+ * supports dsd_scan_mode_active() and dsd_scan_mode_effective_profile(), including combined P25. */
+void dsd_app_snapshot_configured_mode(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out);
 
 #ifdef __cplusplus
 }

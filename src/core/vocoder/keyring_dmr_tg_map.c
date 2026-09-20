@@ -13,6 +13,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/safe_api.h>
@@ -176,6 +177,24 @@ keyring_dmr_tg_map_note_skipped(dsd_state* state, int slot, uint64_t epoch, uint
                 slot + 1, tg, mapped_kid, label, signaled_kid);
 }
 
+static void
+keyring_note_selection(dsd_state* state, int slot, const dsd_call_snapshot* call, dsd_key_material_need need,
+                       int signaled_kid, int kid, int mapped) {
+    uint8_t mapped_kid = 0;
+    int fallback = need == DSD_KEY_NEED_NONE ? DSD_CALL_KEY_FALLBACK_UNKNOWN_ALGORITHM : DSD_CALL_KEY_FALLBACK_NONE;
+    if (!mapped && keyring_dmr_tg_map_call_is_mappable(call)
+        && keyring_dmr_tg_map_kid(state, (uint32_t)call->ota_target_id, &mapped_kid) && need != DSD_KEY_NEED_NONE) {
+        fallback = keyring_kid_material(state, mapped_kid, NULL, NULL) ? DSD_CALL_KEY_FALLBACK_MAPPED_INCOMPATIBLE
+                                                                       : DSD_CALL_KEY_FALLBACK_MAPPED_MISSING;
+    }
+    if (state->keyloader == 1 && call->phase == DSD_CALL_PHASE_ACTIVE
+        && (DSD_SYNC_IS_DMR(call->protocol) || call->protocol == DSD_SYNC_NONE)) {
+        (void)dsd_call_state_note_key_selection(
+            state, (uint8_t)slot, call->epoch, mapped ? DSD_CALL_KEY_TALKGROUP : DSD_CALL_KEY_SIGNALED, signaled_kid,
+            kid, need == DSD_KEY_NEED_NONE ? -1 : keyring_kid_satisfies_need(state, kid, need), fallback);
+    }
+}
+
 int
 keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapshot* call, dsd_key_material_need need,
                               int signaled_kid) {
@@ -189,6 +208,8 @@ keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapsho
 
     int mapped = 0;
     const int kid = keyring_dmr_kid_for_call(state, call, need, signaled_kid, &mapped);
+    keyring_note_selection(state, slot, call, need, signaled_kid, kid, mapped);
+
     if (mapped) {
         keyring_dmr_tg_map_note(state, slot, call->epoch, (uint32_t)call->ota_target_id, kid);
         return kid;

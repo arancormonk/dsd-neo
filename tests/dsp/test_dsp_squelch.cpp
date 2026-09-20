@@ -7,6 +7,7 @@
  * With continuous flow model, squelch sets the flag and zeros the buffer but pipeline
  * continues to produce output (zeros) to maintain UI responsiveness. */
 
+#include <atomic>
 #include <cstdlib>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -80,7 +81,7 @@ main(void) {
     full_demod(s);
     if (s->channel_squelched) {
         DSD_FPRINTF(stderr, "squelch: above threshold but channel_squelched is set (pwr=%.6f, thr=%.6f)\n",
-                    s->channel_pwr, s->channel_squelch_level);
+                    s->channel_pwr, s->channel_squelch_level.load(std::memory_order_relaxed));
         free(s);
         return 1;
     }

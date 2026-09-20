@@ -20,6 +20,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 
 #ifdef USE_RADIO
+#include <dsd-neo/core/airspy_config.h>
 #include <stdint.h>
 #endif
 
@@ -106,6 +107,8 @@ int svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, in
 int svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path);
 /** @brief Import a group list CSV into runtime state. */
 int svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path);
+/** Adopt a nonempty source alias CSV; failure preserves the live list and path. */
+int svc_import_src_list(dsd_opts* opts, dsd_state* state, const char* path);
 /**
  * @brief Import a P25 band plan CSV (IDEN table) into the live state.
  *
@@ -137,6 +140,8 @@ int svc_import_keys_hex(dsd_opts* opts, dsd_state* state, const char* path);
 int svc_clear_channel_map(dsd_opts* opts, dsd_state* state);
 /** @brief Drop every loaded talkgroup entry. */
 int svc_clear_group_list(dsd_opts* opts, dsd_state* state);
+/** Clear the source alias list and its recorded path. */
+int svc_clear_src_list(dsd_opts* opts, dsd_state* state);
 /** @brief Drop the keyring and disarm the key loader (covers dec and hex). */
 int svc_clear_keys(dsd_opts* opts, dsd_state* state);
 /** @brief Set the current talkgroup hold value. */
@@ -196,9 +201,22 @@ void svc_toggle_inv_m17(dsd_opts* opts);
 int svc_rtl_enable_input(dsd_opts* opts, dsd_state* state);
 /** @brief Restart the RTL stream if active, tearing down any existing context. */
 int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
+int svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config);
+
+typedef struct {
+    uint32_t frequency;
+    int bandwidth;
+    double squelch;
+    int volume;
+} svc_airspy_tuning;
+
+/** Apply native settings and shared tuning together; restore prior tuning on failure.
+ * opts holds the requested tuning and the previous native settings on entry. */
+int svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
+                            const svc_airspy_tuning* previous_tuning);
 /** @brief Set RTL device index and mark stream for restart (applied immediately if active). */
 int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
-/** @brief Tune RTL center frequency (Hz), applying live when stream active. */
+/** @brief Tune receiver frequency (Hz); caller owns trunking and call bookkeeping. */
 int svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz);
 /** @brief Set RTL manual gain (0–49), clamping and restarting if needed. */
 int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);

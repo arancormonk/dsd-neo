@@ -11,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/key_presence.h>
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
@@ -27,9 +28,9 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
-#include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdbool.h>
@@ -108,7 +109,8 @@ dmr_flco_show_keys(const dmr_flco_ctx* ctx) {
 static unsigned int
 dmr_flco_hytera_key_segment_count(const dmr_flco_ctx* ctx) {
     const dsd_state* state = (ctx != NULL) ? ctx->state : NULL;
-    if (state == NULL || (state->K1 == 0ULL && state->K2 == 0ULL && state->K3 == 0ULL && state->K4 == 0ULL)) {
+    if (state == NULL
+        || (!dsd_key_hytera_present(state) && state->K2 == 0ULL && state->K3 == 0ULL && state->K4 == 0ULL)) {
         return 0U;
     }
     if (state->hytera_key_segments == 1U || state->hytera_key_segments == 2U || state->hytera_key_segments == 4U) {
@@ -454,12 +456,12 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
     }
     DSD_FPRINTF(stderr, " Hytera Enhanced; ");
 
-    if (ctx->slot == 0 && ctx->state->R != 0) {
+    if (ctx->slot == 0 && dsd_key_scalar_present(ctx->state, 0)) {
         char key_text[17];
         DSD_FPRINTF(stderr, "Key: %s; ",
                     dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->R, 10U, 0));
     }
-    if (ctx->slot == 1 && ctx->state->RR != 0) {
+    if (ctx->slot == 1 && dsd_key_scalar_present(ctx->state, 1)) {
         char key_text[17];
         DSD_FPRINTF(stderr, "Key: %s; ",
                     dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->RR, 10U, 0));
@@ -1142,7 +1144,7 @@ dmr_flco_print_tg_label(const dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_dmr_basic_keys(const dmr_flco_ctx* ctx) {
-    if (ctx->state->K != 0 && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 0
+    if (dsd_key_basic_present(ctx->state) && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 0
         && ctx->state->payload_algid == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[16];
@@ -1150,7 +1152,7 @@ dmr_flco_print_dmr_basic_keys(const dmr_flco_ctx* ctx) {
                     dsd_secret_format_decimal(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->K, 0U));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
-    if (ctx->state->K != 0 && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 1
+    if (dsd_key_basic_present(ctx->state) && ctx->fid == 0x10 && (ctx->so & 0x40) && ctx->slot == 1
         && ctx->state->payload_algidR == 0) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[16];
@@ -1162,7 +1164,7 @@ dmr_flco_print_dmr_basic_keys(const dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_hytera_basic_key_slot0(const dmr_flco_ctx* ctx) {
-    if (ctx->state->K1 != 0 && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 0
+    if (dsd_key_hytera_present(ctx->state) && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 0
         && ctx->state->payload_algid == 0) {
         const unsigned int segment_count = dmr_flco_hytera_key_segment_count(ctx);
         if (segment_count >= 2U) {
@@ -1177,7 +1179,7 @@ dmr_flco_print_hytera_basic_key_slot0(const dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_hytera_basic_key_slot1(const dmr_flco_ctx* ctx) {
-    if (ctx->state->K1 != 0 && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 1
+    if (dsd_key_hytera_present(ctx->state) && ctx->fid == 0x68 && (ctx->so & 0x40) && ctx->slot == 1
         && ctx->state->payload_algidR == 0) {
         const unsigned int segment_count = dmr_flco_hytera_key_segment_count(ctx);
         if (segment_count >= 2U) {
@@ -1192,14 +1194,14 @@ dmr_flco_print_hytera_basic_key_slot1(const dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_alg21_keys(const dmr_flco_ctx* ctx) {
-    if (ctx->slot == 0 && ctx->state->payload_algid == 0x21 && ctx->state->R != 0) {
+    if (ctx->slot == 0 && ctx->state->payload_algid == 0x21 && dsd_key_scalar_present(ctx->state, 0)) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[17];
         DSD_FPRINTF(stderr, "Key %s ",
                     dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->R, 10U, 0));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
-    if (ctx->slot == 1 && ctx->state->payload_algidR == 0x21 && ctx->state->RR != 0) {
+    if (ctx->slot == 1 && ctx->state->payload_algidR == 0x21 && dsd_key_scalar_present(ctx->state, 1)) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[17];
         DSD_FPRINTF(stderr, "Key %s ",
@@ -1218,14 +1220,14 @@ dmr_flco_print_loaded_keys(const dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_alg02_keys(const dmr_flco_ctx* ctx) {
-    if (ctx->slot == 0 && ctx->state->payload_algid == 0x02 && ctx->state->R != 0) {
+    if (ctx->slot == 0 && ctx->state->payload_algid == 0x02 && dsd_key_scalar_present(ctx->state, 0)) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[17];
         DSD_FPRINTF(stderr, "Key: %s ",
                     dsd_secret_format_hex(key_text, sizeof key_text, dmr_flco_show_keys(ctx), ctx->state->R, 10U, 0));
         DSD_FPRINTF(stderr, "%s ", KNRM);
     }
-    if (ctx->slot == 1 && ctx->state->payload_algidR == 0x02 && ctx->state->RR != 0) {
+    if (ctx->slot == 1 && ctx->state->payload_algidR == 0x02 && dsd_key_scalar_present(ctx->state, 1)) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[17];
         DSD_FPRINTF(stderr, "Key: %s ",
@@ -1600,11 +1602,13 @@ typedef struct {
 } dmr_slco_data;
 
 static void
-dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
+dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state, int control_channel) {
     if (state->trunk_cc_freq == 0) {
         return;
     }
-    dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0, NULL);
+    uint64_t request_id = 0U;
+    dsd_trunk_tune_result tune_result =
+        dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->trunk_cc_freq, 0, &request_id);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return;
     }
@@ -1612,6 +1616,13 @@ dmr_slco_tune_and_reset(dsd_opts* opts, dsd_state* state) {
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
     dmr_reset_blocks(opts, state);
+    if (control_channel) {
+        dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, state->trunk_cc_freq, request_id);
+    } else {
+        /* XPT has no dedicated control channel. A free-channel hop must not
+         * start (or inherit) Tier III control-channel hunting. */
+        dmr_sm_init_ctx(dmr_sm_get_ctx(), opts, NULL);
+    }
 }
 
 static void
@@ -1713,12 +1724,7 @@ dmr_slco_handle_c_sys_parms(const dsd_opts* opts, dsd_state* state, uint8_t slco
     DSD_FPRINTF(stderr, " SYS: %04X;", syscode);
     dmr_slco_print_tiii_site_parms(state, data, syscode);
 
-    if (opts->use_rigctl == 1 && state->trunk_cc_freq == 0) {
-        long int ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
-        if (ccfreq != 0) {
-            state->trunk_cc_freq = ccfreq;
-        }
-    }
+    dmr_sm_note_cc_activity(opts, state, 0);
 }
 
 static void
@@ -1763,12 +1769,16 @@ dmr_slco_handle_cap_plus(dsd_opts* opts, dsd_state* state, const dmr_slco_data* 
     DSD_FPRINTF(stderr, " SLCO Capacity Plus Site: %d - Rest LSN: %d - RS: %02X", data->capsite, data->restchannel,
                 data->cap_reserved);
 
+    if (state->trunk_chan_map[data->restchannel] > 0) {
+        dmr_sm_note_cc_activity(opts, state, state->trunk_chan_map[data->restchannel]);
+    }
+
     if (state->tg_hold != 0 && opts->trunk_enable == 1 && dmr_slco_cap_plus_busy(state)
         && dmr_slco_tg_hold_not_on_slot(state)) {
         if (state->trunk_chan_map[data->restchannel] != 0) {
             state->trunk_cc_freq = state->trunk_chan_map[data->restchannel];
         }
-        dmr_slco_tune_and_reset(opts, state);
+        dmr_slco_tune_and_reset(opts, state, 1);
     }
 }
 
@@ -1799,7 +1809,7 @@ dmr_slco_handle_xpt(dsd_opts* opts, dsd_state* state, const dmr_slco_data* data)
         if (state->trunk_chan_map[xpt_lsn] != 0) {
             state->trunk_cc_freq = state->trunk_chan_map[xpt_lsn];
         }
-        dmr_slco_tune_and_reset(opts, state);
+        dmr_slco_tune_and_reset(opts, state, 0);
     }
 }
 
@@ -1809,18 +1819,7 @@ dmr_slco_handle_con_plus_control(dsd_opts* opts, dsd_state* state, const dmr_slc
                 data->con_siteid);
     DSD_SNPRINTF(state->dmr_site_parms, sizeof(state->dmr_site_parms), "%d-%d ", data->con_netid, data->con_siteid);
 
-    if (opts->use_rigctl == 1 && opts->trunk_is_tuned == 0) {
-        long int ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
-        if (ccfreq != 0) {
-            state->trunk_cc_freq = ccfreq;
-        }
-    }
-    if (opts->audio_in_type == AUDIO_IN_RTL && opts->trunk_is_tuned == 0) {
-        long int ccfreq = (long int)opts->rtlsdr_center_freq;
-        if (ccfreq != 0) {
-            state->trunk_cc_freq = ccfreq;
-        }
-    }
+    dmr_sm_note_cc_activity(opts, state, 0);
     if ((time(NULL) - state->last_vc_sync_time) > 2) {
         rotate_symbol_out_file(opts, state);
     }

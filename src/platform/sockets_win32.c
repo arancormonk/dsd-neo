@@ -71,6 +71,81 @@ dsd_socket_connect(dsd_socket_t sock, const struct sockaddr* addr, int addrlen) 
     return connect(sock, addr, addrlen);
 }
 
+static int
+socket_wait_connect(dsd_socket_t sock, unsigned int timeout_ms, dsd_socket_cancel_fn cancelled, void* context) {
+    int code = 0;
+    for (unsigned int elapsed = 0; elapsed < timeout_ms;) {
+        if (cancelled && cancelled(context)) {
+            code = WSAEINTR;
+            return code;
+        }
+        unsigned int wait_ms = timeout_ms - elapsed;
+        if (wait_ms > 100U) {
+            wait_ms = 100U;
+        }
+        struct timeval wait = {0, (long)wait_ms * 1000L};
+        fd_set writable, errors;
+        FD_ZERO(&writable);
+        FD_ZERO(&errors);
+        FD_SET(sock, &writable);
+        FD_SET(sock, &errors);
+        const int ready = select(0, NULL, &writable, &errors, &wait);
+        elapsed += wait_ms;
+        if (ready < 0) {
+            code = dsd_socket_get_error();
+            if (code == WSAEINTR) {
+                continue;
+            }
+            return code;
+        }
+        if (ready > 0) {
+            int length = (int)sizeof(code);
+            if (dsd_socket_getsockopt(sock, SOL_SOCKET, SO_ERROR, &code, &length) != 0) {
+                code = dsd_socket_get_error();
+            }
+            return code;
+        }
+    }
+    return WSAETIMEDOUT;
+}
+
+int
+dsd_socket_connect_bounded(dsd_socket_t sock, const struct sockaddr* addr, int addrlen, unsigned int timeout_ms,
+                           // Cppcheck 2.21 loses names after a callback typedef; these match sockets.h.
+                           // cppcheck-suppress funcArgNamesDifferentUnnamed
+                           dsd_socket_cancel_fn cancelled, void* context, int* error_code) {
+    int code = 0;
+    int result = -1;
+    if (cancelled && cancelled(context)) {
+        code = WSAEINTR;
+        goto done;
+    }
+    if (dsd_socket_set_nonblocking(sock, 1) != 0) {
+        code = dsd_socket_get_error();
+        goto done;
+    }
+    if (dsd_socket_connect(sock, addr, addrlen) == 0) {
+        result = 0;
+        goto restore;
+    }
+    code = dsd_socket_get_error();
+    if (code != WSAEWOULDBLOCK && code != WSAEINPROGRESS) {
+        goto restore;
+    }
+    code = socket_wait_connect(sock, timeout_ms, cancelled, context);
+    result = code == 0 ? 0 : -1;
+restore:
+    if (dsd_socket_set_nonblocking(sock, 0) != 0 && result == 0) {
+        code = dsd_socket_get_error();
+        result = -1;
+    }
+done:
+    if (error_code) {
+        *error_code = code;
+    }
+    return result;
+}
+
 int
 dsd_socket_send(dsd_socket_t sock, const void* buf, size_t len, int flags) {
     return send(sock, (const char*)buf, (int)len, flags);

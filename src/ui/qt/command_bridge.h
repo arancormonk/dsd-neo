@@ -14,17 +14,52 @@
 #ifndef DSD_NEO_SRC_UI_QT_COMMAND_BRIDGE_H_
 #define DSD_NEO_SRC_UI_QT_COMMAND_BRIDGE_H_
 
+// Complete types are needed by inline Qt container and metatype instantiations.
+#include <QList>
 #include <QObject>
+#include <QSharedPointer> // IWYU pragma: keep
 #include <QString>
+#include <QVariantList>
+#include <QVariantMap>
+#include <QtGlobal>
+class QTemporaryFile;
 
 namespace dsd_qt {
+class DecryptionProfileProvider;
 
 class CommandBridge : public QObject {
     Q_OBJECT
 
   public:
+    void
+    setDecryptionProfiles(DecryptionProfileProvider* profiles) {
+        m_profiles = profiles;
+    }
+
+    void acknowledgeDecryptionResult(quint64 requestId);
+    Q_INVOKABLE QVariantMap decryptionContext(const QString& targetId, const QString& keyEpoch) const;
+    Q_INVOKABLE QString applyDecryptionDraft(const QString& type, const QString& value, bool forceChanged, int force,
+                                             const QVariantMap& context);
+    Q_INVOKABLE QString applyDecryptionProfile(const QString& uid, int scope, const QVariantMap& context);
+    Q_INVOKABLE QString applyDmrKeyMap(const QString& path, int scope, const QVariantMap& context);
+    Q_INVOKABLE bool setTalkgroupSelection(bool listening, const QString& context, unsigned int generation,
+                                           const QVariantList& rows);
+    void clearSessionInputs();
     explicit CommandBridge(QObject* parent = nullptr);
     ~CommandBridge() override;
+
+    // WP-D1: callers capture the model version when opening an edit sheet.
+    /** Changed fields only: name, listening, priority, preempt. One map is one atomic edit. */
+    Q_INVOKABLE bool setTalkgroupPolicy(unsigned int idStart, unsigned int idEnd, const QString& context,
+                                        unsigned int generation, const QVariantMap& changes) const;
+    Q_INVOKABLE bool renameTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,
+                                     unsigned int generation, const QString& name) const;
+    Q_INVOKABLE bool addTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,
+                                  unsigned int generation, const QString& name, bool listen, int priority,
+                                  bool preempt) const;
+    Q_INVOKABLE bool removeTalkgroup(unsigned int idStart, unsigned int idEnd, const QString& context,
+                                     unsigned int generation) const;
+    Q_INVOKABLE bool saveTalkgroupList(const QString& context, unsigned int generation, const QString& path) const;
 
     /** @brief Toggle audio mute. @return true when the command was accepted. */
     Q_INVOKABLE bool toggleMute() const;
@@ -34,6 +69,14 @@ class CommandBridge : public QObject {
 
     /** @brief Lock out the target currently active on @p slot (0 or 1). */
     Q_INVOKABLE bool lockoutSlot(int slot) const;
+    Q_INVOKABLE bool setPersistTgLockouts(bool persist) const;
+    Q_INVOKABLE bool clearTemporaryTgAvoids(const QString& context) const;
+
+    /** @brief Listen to or stop tuning one talkgroup or range; a missing exact id is added. */
+    Q_INVOKABLE bool setTalkgroupListening(unsigned int idStart, unsigned int idEnd, bool listen) const;
+
+    /** @brief Edit every listed talkgroup, or only those tagged @p tag when non-empty. */
+    Q_INVOKABLE bool setAllTalkgroupsListening(bool listen, const QString& tag) const;
 
     /** @brief Forget every encrypted-target lockout. */
     Q_INVOKABLE bool clearEncLockouts() const;
@@ -54,6 +97,7 @@ class CommandBridge : public QObject {
 
     /** @brief Retune the radio front end. */
     Q_INVOKABLE bool tuneHz(unsigned int hz) const;
+    Q_INVOKABLE bool setAirspy(const QString& key, const QString& value) const;
 
     /**
      * @brief Retune from a spectrum tap.
@@ -137,6 +181,10 @@ class CommandBridge : public QObject {
     /** @brief Import a talkgroup list CSV into the running session (atomic swap). */
     Q_INVOKABLE bool importGroupList(const QString& path) const;
 
+    // WP-D2: secret input is only copied into an erased queue payload.
+    Q_INVOKABLE bool applyEncryptionKey(const QString& type, const QString& value) const;
+    Q_INVOKABLE bool setForceKeyMode(int mode) const;
+
     /** @brief Import an encryption key CSV; @p hex picks -K semantics over -k. */
     Q_INVOKABLE bool importKeys(const QString& path, bool hex) const;
 
@@ -151,6 +199,9 @@ class CommandBridge : public QObject {
      */
     Q_INVOKABLE bool importP25Bandplan(const QString& path) const;
 
+    /** @brief Import source radio ID aliases (--src-csv) into the running session. */
+    Q_INVOKABLE bool importSrcList(const QString& path) const;
+
     /*
      * Unloading. A system that clears its CSV selection has to say so: the
      * import calls above all reject an empty path, so re-importing cannot
@@ -164,6 +215,15 @@ class CommandBridge : public QObject {
 
     /** @brief Drop the running session's keyring (both CSV kinds share one). */
     Q_INVOKABLE bool clearKeys() const;
+    /** @brief Unload the running session's source radio ID aliases. */
+    Q_INVOKABLE bool clearSrcList() const;
+
+  private:
+    QString submitDecryption(const QVariantMap& fields, int scope, const QVariantMap& context);
+    DecryptionProfileProvider* m_profiles = nullptr;
+    quint64 m_pendingKeyRequest = 0;
+    quint64 m_pendingKeySession = 0;
+    QList<QSharedPointer<QTemporaryFile>> m_selectionFiles;
 };
 
 } // namespace dsd_qt

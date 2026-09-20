@@ -9,11 +9,15 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Accepted manual retunes end both epochs without another tune or resetting session counters. */
+void p25_sm_clear_manual_selection_calls(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state);
 
 void p25_sm_note_encrypted_call_typed(dsd_opts* opts, dsd_state* state, int target, int is_group, int algid, int keyid);
 
@@ -24,6 +28,10 @@ void p25_sm_note_encrypted_call_typed(dsd_opts* opts, dsd_state* state, int targ
  */
 int p25_sm_emit_ptt_call_metadata(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
                                   int svc_bits, const uint8_t signature[17], double observed_m, int facch);
+
+/** Report an active conventional call after its crypto metadata is ready.
+ *  The target must match the accepted voice-start observation, not a retained call. */
+void p25_sm_note_conventional_activity(const dsd_opts* opts, const dsd_state* state, int slot, uint32_t target);
 
 /**
  * Apply a per-slot MAC Release boundary without releasing a retained carrier.

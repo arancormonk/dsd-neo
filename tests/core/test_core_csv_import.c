@@ -3,10 +3,13 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <assert.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -18,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../test_support/test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -902,23 +906,40 @@ test_group_import_policy_and_basic_headers(void) {
     }
     (void)dsd_close(fd);
 
-    if (write_text_file(tmpl, "id,mode,name,tag\n100,B,LOCK,90,true,on,on,on\n101,A,ALLOW,meta\n") != 0) {
-        (void)remove(tmpl);
-        free(opts);
-        free_test_state(state);
-        return 1;
-    }
+    static const struct {
+        const char* header;
+        const char* expected_tags;
+    } basic_cases[] = {
+        {"DEC,Mode,Name,Tag", "Fire"},
+        {"id,mode,name, tags ", "Fire"},
+        {"DEC,Mode,Name,Category,(generated from RadioReference)", "Fire"},
+        {"id,mode,name,metadata", ""},
+    };
+
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", tmpl);
-    if (csvGroupImport(opts, state) != 0) {
-        failed = 1;
-    }
-    if (dsd_tg_policy_lookup_id(state, 100, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
-        || lookup.entry.priority != 0 || lookup.entry.preempt != 0 || lookup.entry.audio != 0) {
-        failed = 1;
-    }
-    if (dsd_tg_policy_lookup_id(state, 101, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
-        || lookup.entry.priority != 0 || lookup.entry.preempt != 0 || lookup.entry.audio != 1) {
-        failed = 1;
+    for (size_t i = 0; i < sizeof(basic_cases) / sizeof(basic_cases[0]); i++) {
+        char text[256];
+        dsd_state_ext_free_all(state);
+        DSD_MEMSET(state, 0, sizeof(*state));
+        DSD_SNPRINTF(text, sizeof(text), "%s\n100,B,LOCK, Fire ,true,on,on,on\n101,A,ALLOW\n", basic_cases[i].header);
+        if (write_text_file(tmpl, text) != 0) {
+            failed = 1;
+            break;
+        }
+        if (csvGroupImport(opts, state) != 0) {
+            failed = 1;
+        }
+        if (dsd_tg_policy_lookup_id(state, 100, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
+            || lookup.entry.priority != 0 || lookup.entry.preempt != 0 || lookup.entry.audio != 0
+            || strcmp(lookup.entry.tags, basic_cases[i].expected_tags) != 0) {
+            DSD_FPRINTF(stderr, "basic group header case %zu lost tags or changed policy\n", i);
+            failed = 1;
+        }
+        if (dsd_tg_policy_lookup_id(state, 101, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT
+            || lookup.entry.priority != 0 || lookup.entry.preempt != 0 || lookup.entry.audio != 1
+            || lookup.entry.tags[0] != '\0') {
+            failed = 1;
+        }
     }
 
     dsd_state_ext_free_all(state);
@@ -939,7 +960,7 @@ test_group_import_policy_and_basic_headers(void) {
         }
         if (dsd_tg_policy_lookup_id(state, 200, &lookup) != 0 || lookup.entry.priority != 90
             || lookup.entry.preempt != 1 || lookup.entry.audio != 1 || lookup.entry.record != 1
-            || lookup.entry.stream != 1) {
+            || lookup.entry.stream != 1 || strcmp(lookup.entry.tags, "fire") != 0) {
             failed = 1;
         }
         if (dsd_tg_policy_lookup_id(state, 201, &lookup) != 0 || lookup.entry.priority != 0 || lookup.entry.preempt != 1
@@ -1681,6 +1702,121 @@ test_channel_import_row_key_columns(void) {
 }
 
 static int
+test_channel_import_direct_key_columns(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    dsd_state* scratch = (dsd_state*)calloc(1, sizeof(*scratch));
+    char map_tmpl[] = "dsd-neo-test-direct-rowkey-map-XXXXXX";
+    if (!opts || !state || !scratch) {
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    int fd = dsd_mkstemp(map_tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    static const char valid_map[] = "channel,frequency_hz,name,SINGLE_KEY_HEX,single_key_DEC\n"
+                                    "1,851000000,Dispatch,00112233445566778899AABBCCDDEEFF,7\n"
+                                    "2,851012500,Ops,,\n"
+                                    "bad,851025000,NoSlot,0123456789,99\n"
+                                    "3,851025000,Clear,,0\n";
+    if (write_text_file(map_tmpl, valid_map) != 0) {
+        (void)remove(map_tmpl);
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", map_tmpl);
+    state->K = 88ULL;
+    state->aes_key[0] = 0xAAU;
+    if (csvChanImport(opts, state) != 0 || state->lcn_freq_count != 3) {
+        DSD_FPRINTF(stderr, "direct row-key channel import failed\n");
+        failed = 1;
+    }
+    const dsd_key_set* row0 = dsd_state_trunk_lcn_keys_get(state, 0U);
+    if (row0 == NULL || row0->keyloader != 0 || row0->scalars.K != 7ULL || row0->scalars.K1 != 0x0011223344556677ULL
+        || row0->scalars.K2 != 0x8899AABBCCDDEEFFULL || row0->scalars.aes_key[15] != 0xFFU) {
+        DSD_FPRINTF(stderr, "direct row-key values did not land in slot 0\n");
+        failed = 1;
+    } else {
+        dsd_key_set_install(scratch, row0);
+        if (scratch->K != 7ULL || scratch->K1 != 0x0011223344556677ULL || scratch->keyloader != 0
+            || scratch->aes_key[15] != 0xFFU) {
+            DSD_FPRINTF(stderr, "direct row-key set did not install\n");
+            failed = 1;
+        }
+    }
+    if (dsd_state_trunk_lcn_keys_get(state, 1U) != NULL) {
+        DSD_FPRINTF(stderr, "blank direct cells stored a key set\n");
+        failed = 1;
+    }
+    const dsd_key_set* row2 = dsd_state_trunk_lcn_keys_get(state, 2U);
+    if (row2 == NULL || row2->present != 1U || row2->scalars.K != 0ULL) {
+        DSD_FPRINTF(stderr, "explicit zero direct key did not override globals\n");
+        failed = 1;
+    }
+    if (state->K != 88ULL || state->aes_key[0] != 0xAAU) {
+        DSD_FPRINTF(stderr, "direct row-key import leaked into live key state\n");
+        failed = 1;
+    }
+
+    dsd_state_trunk_lcn_free(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    if (write_text_file(map_tmpl, "channel,frequency_hz,keys_hex_csv,single_key_dec\n"
+                                  "1,851000000,keys.csv,1\n")
+            != 0
+        || csvChanImport(opts, state) == 0) {
+        DSD_FPRINTF(stderr, "direct/file row-key conflict was accepted\n");
+        failed = 1;
+    }
+
+    dsd_state_trunk_lcn_free(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    if (write_text_file(map_tmpl, "channel,frequency_hz,single_key_hex,single_key_hex\n"
+                                  "1,851000000,0123456789,0123456789\n")
+            != 0
+        || csvChanImport(opts, state) == 0) {
+        DSD_FPRINTF(stderr, "duplicate direct row-key header was accepted\n");
+        failed = 1;
+    }
+
+    dsd_state_trunk_lcn_free(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    if (write_text_file(map_tmpl, "channel,frequency_hz,single_key_dec\n"
+                                  "1,851000000,256\n")
+            != 0
+        || csvChanImport(opts, state) == 0) {
+        DSD_FPRINTF(stderr, "invalid direct decimal row key was accepted\n");
+        failed = 1;
+    }
+
+    dsd_state_trunk_lcn_free(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    if (write_text_file(map_tmpl, "channel,frequency_hz,single_key_hex\n"
+                                  "1,851000000,not-a-key\n")
+            != 0
+        || csvChanImport(opts, state) == 0) {
+        DSD_FPRINTF(stderr, "invalid direct hexadecimal row key was accepted\n");
+        failed = 1;
+    }
+
+    (void)remove(map_tmpl);
+    free(opts);
+    free_test_state(state);
+    free_test_state(scratch);
+    return failed;
+}
+
+static int
 test_channel_import_accepts_hex_and_iden_chan_keys(void) {
     int failed = 0;
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -2011,8 +2147,165 @@ test_p25_bandplan_export_round_trip(void) {
     return failed;
 }
 
+static void
+test_source_csv(void) {
+    const char* path = "source-import.csv";
+    FILE* fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    assert(
+        fputs(
+            "1234,Header consumed\n\n 1 , One \n2,Two,tags\n3,Three,tags,ignored\n10-20,Range\nbad,No\n20-10,No\n4, \n",
+            fp)
+        >= 0);
+    for (int i = 0; i < 1005; ++i) {
+        assert(fputc('x', fp) != EOF);
+    }
+    assert(fputs("\n5,After long\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(state);
+    assert(csvSrcImportPath(path, state) == 0);
+    assert(dsd_source_alias_count(state) == 5);
+    char name[50];
+    assert(dsd_source_alias_lookup(state, 1, name, sizeof(name)) && strcmp(name, "One") == 0);
+    assert(dsd_source_alias_lookup(state, 15, name, sizeof(name)) && strcmp(name, "Range") == 0);
+    assert(dsd_source_alias_lookup(state, 5, name, sizeof(name)) && strcmp(name, "After long") == 0);
+    assert(!dsd_source_alias_lookup(state, 1234, name, sizeof(name)));
+    assert(remove(path) == 0);
+    assert(csvSrcImportPath(path, state) == -1);
+    assert(dsd_source_alias_count(state) == 5 && dsd_source_alias_lookup(state, 1, name, sizeof(name)));
+    fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    assert(fputs("id,name\n99,Replacement\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    assert(csvSrcImportPath(path, state) == 0 && dsd_source_alias_count(state) == 1);
+    assert(!dsd_source_alias_lookup(state, 1, name, sizeof(name)));
+    assert(dsd_source_alias_lookup(state, 99, name, sizeof(name)));
+    fp = dsd_fopen_private(path, "w");
+    assert(fp);
+    assert(fputs("id,name\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(opts);
+    DSD_SNPRINTF(opts->src_in_file, sizeof(opts->src_in_file), "%s", path);
+    assert(csvSrcImport(opts, state) == 0 && dsd_source_alias_loaded(state) && dsd_source_alias_count(state) == 0);
+    free(opts);
+    assert(remove(path) == 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+/* Invalid physical lines must not import their valid prefix or continuation. */
+static void
+test_csv_physical_lines(void) {
+    static const struct {
+        const char* header;
+        const char* first;
+        const char* injected;
+        const char* next;
+        int (*validate)(const char*, dsd_csv_validation*);
+    } cases[] = {
+        {"id,mode,name", "1,A,First", "2,A,Injected", "3,A,Next", dsd_csv_validate_group_file},
+        {"id,key", "1,123", "2,456", "3,789", dsd_csv_validate_key_file_dec},
+        {"id,key", "1,123", "2,456", "3,789", dsd_csv_validate_key_file_hex},
+        {"iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid", "1,851000000,12500,1,0,0,,",
+         "2,852000000,12500,1,0,0,,", "3,853000000,12500,1,0,0,,", dsd_csv_validate_p25_bandplan_file},
+    };
+
+    for (size_t kind = 0; kind < sizeof(cases) / sizeof(cases[0]); ++kind) {
+        for (int header = 0; header < 2; ++header) {
+            for (int nul = 0; nul < 2; ++nul) {
+                char path[DSD_TEST_PATH_MAX];
+                int fd = dsd_test_mkstemp(path, sizeof(path), "csv-physical-lines");
+                assert(fd >= 0);
+                assert(dsd_close(fd) == 0);
+                FILE* fp = dsd_fopen_private(path, "wb");
+                assert(fp);
+                if (!header) {
+                    assert(DSD_FPRINTF(fp, "%s\n", cases[kind].header) > 0);
+                }
+                const char* prefix = header ? cases[kind].header : cases[kind].first;
+                assert(DSD_FPRINTF(fp, "%s,", prefix) > 0);
+                if (nul) {
+                    assert(fputc('\0', fp) != EOF);
+                } else {
+                    for (size_t n = strlen(prefix) + 1; n < 998; ++n) {
+                        assert(fputc('x', fp) != EOF);
+                    }
+                }
+                assert(DSD_FPRINTF(fp, "%s\r\n%s\r\n", cases[kind].injected, cases[kind].next) > 0);
+                assert(fclose(fp) == 0);
+                dsd_csv_validation counts;
+                assert(cases[kind].validate(path, &counts) == 0);
+                assert(counts.accepted == 1 && counts.skipped == (unsigned)!header
+                       && counts.total == 1U + (unsigned)!header);
+                dsd_state* state = calloc(1, sizeof(*state));
+                assert(state);
+                if (kind == 0) {
+                    char name[50];
+                    assert(csvGroupImportPath(path, state) == 0);
+                    assert(!dsd_tg_policy_lookup_label(state, 1, NULL, 0, name, sizeof(name)));
+                    assert(!dsd_tg_policy_lookup_label(state, 2, NULL, 0, name, sizeof(name)));
+                    assert(dsd_tg_policy_lookup_label(state, 3, NULL, 0, name, sizeof(name)));
+                    assert(strcmp(name, "Next") == 0);
+                } else if (kind == 3) {
+                    assert(csvP25BandplanImportPath(path, state) == 0);
+                    assert(state->p25_bandplan_row_count == 1 && state->p25_bandplan_rows[0].iden == 3);
+                } else {
+                    assert((kind == 1 ? csvKeyImportDecPath(path, 0, state, NULL)
+                                      : csvKeyImportHexPath(path, 0, state, NULL))
+                           == 0);
+                    assert(!state->rkey_array_loaded[1] && !state->rkey_array_loaded[2] && state->rkey_array_loaded[3]);
+                }
+                free_test_state(state);
+                assert(remove(path) == 0);
+            }
+        }
+    }
+}
+
+static void
+test_mapping_and_channel_nul_rows_are_atomic(void) {
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof(path), "csv-mapping-lines");
+    assert(fd >= 0);
+    assert(dsd_close(fd) == 0);
+    for (int nul = 0; nul < 2; ++nul) {
+        FILE* fp = dsd_fopen_private(path, "wb");
+        assert(fp);
+        assert(fputs("id,value\n1,123,", fp) >= 0);
+        if (nul) {
+            assert(fputc('\0', fp) != EOF);
+        } else {
+            for (int n = 6; n < 998; ++n) {
+                assert(fputc(' ', fp) != EOF);
+            }
+        }
+        assert(fputs("2,456\n", fp) >= 0);
+        assert(fclose(fp) == 0);
+        dsd_state* state = calloc(1, sizeof(*state));
+        assert(state);
+        assert(csvDmrTgKeyImport(state, path) == -1);
+        assert(csvVertexKsImport(state, path) == -1);
+        if (nul) {
+            dsd_opts* opts = calloc(1, sizeof(*opts));
+            assert(opts);
+            DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", path);
+            state->trunk_chan_map[1] = 851000000;
+            assert(csvChanImport(opts, state) == -1);
+            assert(state->trunk_chan_map[1] == 851000000);
+            free(opts);
+        }
+        free_test_state(state);
+    }
+    assert(remove(path) == 0);
+}
+
 int
 main(void) {
+    test_csv_physical_lines();
+    test_mapping_and_channel_nul_rows_are_atomic();
+    test_source_csv();
     if (test_group_import_missing_file() != 0) {
         return 1;
     }
@@ -2073,6 +2366,9 @@ main(void) {
         return 1;
     }
     if (test_channel_import_row_key_columns() != 0) {
+        return 1;
+    }
+    if (test_channel_import_direct_key_columns() != 0) {
         return 1;
     }
     if (test_channel_import_row_key_relative_subdir() != 0) {

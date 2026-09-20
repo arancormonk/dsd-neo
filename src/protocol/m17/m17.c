@@ -20,8 +20,11 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/ecdsa.h>
@@ -50,9 +53,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
 #include "m17_algorithms.h"
 #include "m17_confirm.h"
 #include "m17_internal.h"
@@ -309,6 +309,17 @@ m17_end_packet_call(const dsd_opts* opts, dsd_state* state) {
 }
 
 static void
+m17_note_key_selection(dsd_state* state, dsd_call_crypto_state classification) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0, &call) > 0) {
+        const int available = classification == DSD_CALL_CRYPTO_DECRYPTABLE         ? 1
+                              : classification >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING ? 0
+                                                                                    : -1;
+        (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DIRECT, call.kid, -1, available, 0);
+    }
+}
+
+static void
 m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res) {
     const int is_voice = res->packet_stream != 0U && (res->dt == 2U || res->dt == 3U);
     const int is_data = res->packet_stream == 0U || res->dt == 1U;
@@ -347,6 +358,7 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
         .audio_permitted = (uint8_t)(res->et == 0U || has_key),
     };
     (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    m17_note_key_selection(state, crypto.classification);
     if (opts) {
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
@@ -2050,6 +2062,7 @@ m17_sync_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t dst,
         .audio_permitted = 1U,
     };
     (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    m17_note_key_selection(state, crypto.classification);
     (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
     state->m17_can = can;
     state->m17_enc = 0;

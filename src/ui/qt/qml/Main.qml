@@ -24,26 +24,260 @@ Window {
     readonly property string hostFailure: decoderHost ? decoderHost.failureText : ""
     // A start the UI refused before the host was ever asked (bad saved config).
     property string startError: ""
+    property var attemptedSource: null
+    property string completionMessage: ""
+    function sourceLabel() {
+        var source = attemptedSource ? attemptedSource.system : null;
+        if (!source)
+            return "";
+        var label = source.sourceType === "airspy" ? qsTr("Airspy R2 / Mini") : source.sourceType === "rtltcp" ? "RTL-TCP " + source.host + ":" + source.port : source.sourceType === "tcp" ? "TCP audio " + source.host + ":" + source.port : source.sourceType === "udp" ? qsTr("UDP audio port %1").arg(source.port) : source.sourceType === "file" ? qsTr("Replay: %1").arg(source.filePath.substring(source.filePath.lastIndexOf('/') + 1)) : qsTr("USB RTL-SDR");
+        return source.extraArgs ? qsTr("Configured source: %1 (Advanced arguments are also in use)").arg(label) : label;
+    }
+    function failureMessage() {
+        var host = decoderHost;
+        var kind = host.inputFailureKind || 0;
+        if (startError.length)
+            return startError;
+        if (kind === 1)
+            return qsTr("Connection refused. Check the server address, port, and whether the server is running.");
+        if (kind === 2)
+            return qsTr("Connection timed out. Check the server and network connection.");
+        if (kind === 3)
+            return qsTr("The host could not be found. Check its name or enter its IP address.");
+        if (kind === 4)
+            return qsTr("The network connection could not be opened.");
+        if (kind === 5)
+            return qsTr("The replay file could not be opened. Reselect an available, supported file.");
+        if (kind === 7)
+            return qsTr("The receiver could not be opened or stopped receiving. Check its USB connection and settings.");
+        if (kind === 6)
+            return qsTr("The source configuration could not be applied. Review its settings and imported files.");
+        return awaitingUsbAccess ? usbAccessText : qsTr("The source could not be started. Review its settings or open Details.");
+    }
+    function retrySource() {
+        if (!attemptedSource || decoderHost.sessionActive || decoderHost.transitioning)
+            return;
+        pendingRestart = {
+            kind: attemptedSource.kind,
+            uid: attemptedSource.uid
+        };
+        if (decoderHost.sessionState === 4)
+            decoderHost.stop();
+        if (decoderHost.sessionState === 0)
+            Qt.callLater(finishPendingRestart);
+    }
+    function editFailedSource() {
+        cancelPendingRestart();
+        if (!attemptedSource)
+            return;
+        if (attemptedSource.kind === "explore") {
+            exploreSetup.reset(prefs.exploreSourceType, prefs.exploreHost, prefs.explorePort, prefs.exploreFreqMhz);
+            exploreSetupOpen = true;
+        } else {
+            var row = attemptedSource.kind === "scan" ? scanLists.rowForUid(attemptedSource.uid) : savedSystems.rowForUid(attemptedSource.uid);
+            if (row < 0) {
+                startError = qsTr("This source was removed. Choose another saved source.");
+                return;
+            }
+            if (attemptedSource.kind === "scan") {
+                scanListEditor.openFor(row);
+                scanListOpen = true;
+            } else {
+                wizard.openForEdit(row);
+                wizardOpen = true;
+            }
+        }
+    }
     // Set while a USB start is blocked on device access, so the platform's live
     // detail ("USB permission denied", "No RTL-SDR attached") reaches the screen
     // as it changes — the permission dialog answers long after the tap that
     // asked. Cleared when access is granted (which resumes the pending start
     // below), when the banner is dismissed, or when another system starts.
     property bool awaitingUsbAccess: false
-    // The system map whose start is waiting on that grant, and the row it came
-    // from (-1 when it came from nowhere, i.e. an explore session). The map, not
-    // just the row: an explore start has no row to look up again.
+    // WP-D4: a restart waits for confirmed Idle and resolves stable identity then.
+    property var pendingRestart: null
+    function cancelPendingRestart() {
+        pendingRestart = null;
+    }
+    function restartSite(uid) {
+        cancelPendingRestart();
+        if (decoderHost.sessionState !== 2 || savedSystems.rowForUid(uid) < 0)
+            return;
+        pendingStart = null;
+        pendingStartRow = -1;
+        awaitingUsbAccess = false;
+        pendingRestart = {
+            uid: uid
+        };
+        decoderHost.stop();
+    }
+    function finishPendingRestart() {
+        if (!pendingRestart || decoderHost.sessionState !== 0)
+            return;
+        var request = pendingRestart;
+        pendingRestart = null;
+        if (request.kind === "explore") {
+            startExploring();
+            return;
+        }
+        var scan = request.kind === "scan";
+        var row = scan ? scanLists.rowForUid(request.uid) : savedSystems.rowForUid(request.uid);
+        if (row < 0) {
+            startError = qsTr("This source was removed. Choose another source.");
+            return;
+        }
+        if (scan)
+            startScanList(row);
+        else if (!savedSystems.get(row).avoidSite)
+            startSystem(row);
+    }
+    // The system map waiting for USB access and its row (-1 for exploration).
     property var pendingStart: null
     property int pendingStartRow: -1
-    readonly property string usbAccessText:
-        awaitingUsbAccess && decoderHost && !decoderHost.localDeviceReady ? decoderHost.localDeviceStatus : ""
-    readonly property string failureText: startError.length > 0 ? startError
-                                          : usbAccessText.length > 0 ? usbAccessText : hostFailure
+    // WP-S1 shares the saved-session USB gate and initialization bookkeeping.
+    property bool pendingScanList: false
+    property bool sessionScanList: false
+    property bool scanListOpen: false
+    property string scanWarnings: ""
+    readonly property string usbAccessText: awaitingUsbAccess && decoderHost && !decoderHost.localDeviceReady ? decoderHost.localDeviceStatus : ""
+    readonly property string failureText: startError.length > 0 ? startError : usbAccessText.length > 0 ? usbAccessText : hostFailure
 
+    // WP-S2: consume each attachment once; blocked events are never deferred.
+    Binding {
+        target: uiController
+        property: "autoStartBlocked"
+        value: mainRoot.sessionDestination.length > 0 || mainRoot.wizardOpen || mainRoot.scanListOpen || mainRoot.exploreSetupOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.spectrumOpen || mainRoot.talkgroupsOpen || mainRoot.awaitingUsbAccess || homeScreen.managementSheetOpen || siteChooser.visible || Navigation.modals.length > 0
+    }
+    Connections {
+        target: uiController
+        function onAutoStartRequested(kind, uid) {
+            var row = kind === "saved" ? savedSystems.rowForUid(uid) : kind === "scan" ? scanLists.rowForUid(uid) : -1;
+            if (row < 0)
+                return;
+            if (kind === "saved")
+                mainRoot.startSystem(row);
+            else
+                mainRoot.startScanList(row);
+        }
+    }
+
+    readonly property bool expanded: safeArea.width >= 840
     property int currentTab: 0
+    property string sessionDestination: ""
+    function requestBack() {
+        cancelPendingRestart();
+        if (Navigation.back(mainRoot))
+            return;
+        if (currentTab !== 0 && !monitorMode) {
+            currentTab = 0;
+            return;
+        }
+        if (!prefs.backgroundListening && sessionActive())
+            decoderHost.stop();
+        if (!decoderHost.moveToBackground())
+            mainRoot.close();
+    }
+    function sessionActive() {
+        return decoderHost && decoderHost.sessionActive;
+    }
+    function updateSystemBars() {
+        var host = decoderHost;
+        if (host && typeof host.setDarkAppearance === "function")
+            host.setDarkAppearance(Theme.dark);
+    }
+    Component.onCompleted: updateSystemBars()
+    onActiveChanged: {
+        if (active)
+            updateSystemBars();
+    }
+    Connections {
+        target: Theme
+        function onDarkChanged() {
+            mainRoot.updateSystemBars();
+        }
+    }
+    Connections {
+        target: decoderHost
+        ignoreUnknownSignals: true
+        function onBackRequested() {
+            mainRoot.requestBack();
+        }
+    }
+    Binding {
+        target: Navigation
+        property: "rootSurfaces"
+        value: mainRoot.monitorMode ? [monitor] : !prefs.onboardingDone ? [onboarding] : [nav, mainRoot.currentTab === 0 ? homeScreen : mainRoot.currentTab === 1 ? historyRoot : settingsRoot]
+    }
+    NavigationLayer {
+        surface: wizard
+        active: mainRoot.wizardOpen
+        onLeave: wizard.requestBack()
+    }
+    NavigationLayer {
+        surface: exploreSetup
+        active: mainRoot.exploreSetupOpen
+        onLeave: exploreSetup.requestClose()
+    }
+    NavigationLayer {
+        surface: scanListEditor
+        active: mainRoot.scanListOpen
+        onLeave: scanListEditor.requestClose()
+    }
+    NavigationLayer {
+        surface: spectrumLoader
+        active: mainRoot.spectrumOpen
+        onLeave: mainRoot.spectrumOpen = false
+    }
+    NavigationLayer {
+        surface: talkgroupsScreen
+        active: mainRoot.talkgroupsOpen
+        onLeave: mainRoot.talkgroupsOpen = false
+    }
+    NavigationLayer {
+        id: sessionToolsLayer
+        surface: sessionTools
+        active: mainRoot.sessionDestination.length > 0
+        onLeave: mainRoot.sessionDestination = ""
+    }
+    NavigationLayer {
+        id: importsLayer
+        surface: importsScreen
+        active: mainRoot.importsOpen && (!mainRoot.monitorMode || mainRoot.sessionDestination === "settings")
+        onLeave: mainRoot.importsOpen = false
+    }
+    NavigationLayer {
+        id: diagnosticsLayer
+        surface: diagnosticsScreen
+        active: mainRoot.diagnosticsOpen
+        onLeave: mainRoot.diagnosticsOpen = false
+    }
+    NavigationLayer {
+        id: licensesLayer
+        surface: licensesScreen
+        active: mainRoot.licensesOpen
+        onLeave: mainRoot.licensesOpen = false
+    }
+    NavigationLayer {
+        id: radioReferenceAccountLayer
+        surface: radioReferenceAccountScreen
+        active: mainRoot.radioReferenceAccountOpen
+        onLeave: mainRoot.radioReferenceAccountOpen = false
+    }
+    NavigationLayer {
+        surface: radioReferenceScreen
+        active: mainRoot.radioReferenceOpen
+        onLeave: mainRoot.radioReferenceOpen = false
+    }
     property bool wizardOpen: false
     property bool exploreSetupOpen: false
+    property bool licensesOpen: false
+    property bool radioReferenceAccountOpen: false
+    property bool diagnosticsOpen: false // WP-F5
     property bool importsOpen: false
+    onRadioReferenceOpenChanged: {
+        if (!radioReferenceOpen)
+            radioReference.cancel();
+    }
     property bool radioReferenceOpen: false
     // Whether the RadioReference screen was pushed from the wizard. Coming back
     // to an open wizard fills in the answers it is already asking for; coming
@@ -56,8 +290,53 @@ Window {
     // The spectrum view is pushed over the monitor, so it can only be open
     // while a session is; ending one has to take it down with it.
     property bool spectrumOpen: false
+    property bool talkgroupsOpen: false
     // The saved-system map the running session was started from.
     property var sessionSystem: null
+    property bool awaitingSessionInitialized: false
+
+    property bool sessionReachedRunning: false
+
+    function recordSessionInitialized() {
+        if (!mainRoot.awaitingSessionInitialized || !mainRoot.sessionSystem)
+            return;
+        mainRoot.awaitingSessionInitialized = false;
+        // Accepted argv is only a request. These writes belong to the engine's
+        // post-initialization edge, after file validation and tuner open.
+        if (Qt.platform.os === "android" && prefs.backgroundListening && !prefs.notificationExplained && decoderHost.notificationPermissionNeeded)
+            notificationExplanation.visible = true;
+        prefs.lastStartedKind = mainRoot.sessionScanList ? "scan" : mainRoot.exploring ? "explore" : "saved";
+        prefs.lastStartedUid = mainRoot.exploring ? "" : mainRoot.sessionSystem.uid || "";
+        if (mainRoot.sessionScanList)
+            scanLists.touch(scanLists.rowForUid(prefs.lastStartedUid));
+        else if (!mainRoot.exploring)
+            savedSystems.touch(savedSystems.rowForUid(prefs.lastStartedUid));
+    }
+    Connections {
+        target: decoderHost
+        function onSessionInitialized() {
+            mainRoot.recordSessionInitialized();
+        }
+        function onSessionStateChanged() {
+            if (decoderHost.sessionState === 4)
+                mainRoot.cancelPendingRestart();
+            if (decoderHost.sessionState === 0 && mainRoot.attemptedSource && mainRoot.attemptedSource.system.sourceType === "file") {
+                var host = decoderHost;
+                mainRoot.completionMessage = host.terminalReason === 1 ? qsTr("Replay completed: %1").arg(mainRoot.attemptedSource.system.filePath.substring(mainRoot.attemptedSource.system.filePath.lastIndexOf('/') + 1)) : host.terminalReason === 2 ? qsTr("Replay stopped") : "";
+            }
+            if (decoderHost.sessionState === 0 && mainRoot.pendingRestart)
+                Qt.callLater(mainRoot.finishPendingRestart);
+
+            if (decoderHost.sessionState === 2) {
+                mainRoot.sessionReachedRunning = true;
+
+                if (!decoderHost.signalsSessionInitialized)
+                    mainRoot.recordSessionInitialized();
+            } else if (decoderHost.sessionState === 0 && mainRoot.sessionReachedRunning) {
+                mainRoot.awaitingSessionInitialized = false;
+            }
+        }
+    }
     // Whether this session is free to be retuned by hand. False for anything
     // started from a saved system — its card names a frequency, and wandering off
     // it makes the card a lie and mis-files the calls heard afterwards. Set at
@@ -72,24 +351,38 @@ Window {
         target: metrics
         function onTunerChanged() {
             if (mainRoot.exploring && metrics.centerFreqHz > 0)
-                mainRoot.lastExploreFreqMhz = Util.mhzText(metrics.centerFreqHz)
+                mainRoot.lastExploreFreqMhz = Util.mhzText(metrics.centerFreqHz);
         }
     }
 
     // Suppresses a failure banner the user has read. Reset on the next start so a
     // repeat of the same failure is reported again rather than swallowed.
     property string dismissedFailure: ""
-    readonly property bool showFailure:
-        !monitorMode && failureText.length > 0 && failureText !== dismissedFailure
+    readonly property bool showFailure: !monitorMode && failureText.length > 0 && failureText !== dismissedFailure
+    function revealFailure() {
+        // Settings subpages can outlive a clean stop. If the failure arrives
+        // afterward, leave them through navigation so Home is actually exposed
+        // and their input/navigation cleanup still runs.
+        for (var layer of [importsLayer, diagnosticsLayer, licensesLayer, radioReferenceAccountLayer]) {
+            if (layer.active)
+                layer.leave();
+        }
+        currentTab = 0;
+    }
+    onShowFailureChanged: {
+        // A host failure can arrive after the session-active notification.
+        if (showFailure)
+            revealFailure();
+    }
 
     // Dismissing the banner abandons a start still waiting on USB access; the
     // flag must not linger, or a dongle detached minutes later while idle would
     // resurrect a permission banner the user never asked about.
     onDismissedFailureChanged: {
         if (dismissedFailure.length > 0) {
-            awaitingUsbAccess = false
-            mainRoot.pendingStart = null
-            mainRoot.pendingStartRow = -1
+            awaitingUsbAccess = false;
+            mainRoot.pendingStart = null;
+            mainRoot.pendingStartRow = -1;
         }
     }
 
@@ -100,41 +393,54 @@ Window {
         target: decoderHost
         function onLocalDeviceChanged() {
             if (!mainRoot.awaitingUsbAccess || !decoderHost.localDeviceReady)
-                return
-            mainRoot.awaitingUsbAccess = false
-            var sys = mainRoot.pendingStart
-            var row = mainRoot.pendingStartRow
-            mainRoot.pendingStart = null
-            mainRoot.pendingStartRow = -1
+                return;
+            mainRoot.awaitingUsbAccess = false;
+            var sys = mainRoot.pendingStart;
+            var row = mainRoot.pendingStartRow;
+            var scan = mainRoot.pendingScanList;
+            mainRoot.pendingStart = null;
+            mainRoot.pendingStartRow = -1;
             if (sys)
-                mainRoot.startWithMap(sys, row)
+                mainRoot.startWithMap(sys, row, scan);
         }
     }
 
     onMonitorModeChanged: {
-        // The spectrum layer lives above the monitor; when the session goes so
-        // does it, or the next one would open onto a stale panorama.
+        // Pushed session screens must close with the session rather than showing
+        // stale content when the next one starts.
         if (!monitorMode) {
             // Where the exploring got to, so the next one resumes there rather
             // than back at the start frequency.
             if (mainRoot.exploring && mainRoot.lastExploreFreqMhz.length > 0)
-                prefs.exploreFreqMhz = mainRoot.lastExploreFreqMhz
-            mainRoot.exploring = false
-            mainRoot.spectrumOpen = false
+                prefs.exploreFreqMhz = mainRoot.lastExploreFreqMhz;
+            mainRoot.exploring = false;
+            mainRoot.spectrumOpen = false;
+            mainRoot.talkgroupsOpen = false;
+            sessionRadio.visible = false;
+            sessionMenu.visible = false;
+            if (mainRoot.sessionDestination.length > 0) {
+                if (mainRoot.failureText.length > 0 && mainRoot.failureText !== mainRoot.dismissedFailure)
+                    mainRoot.revealFailure();
+                else
+                    mainRoot.currentTab = mainRoot.sessionDestination === "history" ? 1 : 2;
+                sessionToolsLayer.leave();
+            }
             // Row indices shift when a system is removed, and Home is reachable
             // again from here; a row remembered past its session would name a
             // different system by the time anything read it.
-            mainRoot.sessionRow = -1
+            mainRoot.sessionRow = -1;
         }
         if (monitorMode) {
             // The frequency field usually still holds focus; the keyboard would
             // cover the session that just appeared.
-            Qt.inputMethod.hide()
+            Qt.inputMethod.hide();
             // Reattaching to a session this UI process did not start (service
             // survived an Activity restart): bound the recent-calls pane to the
             // last hour rather than the whole persisted log.
             if (monitorView.minWhen === 0)
-                monitorView.minWhen = Math.floor(Date.now() / 1000) - 3600
+                monitorView.minWhen = Math.floor(Date.now() / 1000) - 3600;
+            if (talkgroups.sinceWhen === 0)
+                talkgroups.sinceWhen = monitorView.minWhen;
         }
     }
 
@@ -143,15 +449,48 @@ Window {
     // when the host can; and when background listening is off, stop first so the
     // radio does not keep playing from a window the user just dismissed.
     onClosing: function (close) {
-        if (!prefs.backgroundListening && mainRoot.running)
-            decoderHost.stop()
-        close.accepted = !decoderHost.moveToBackground()
+        cancelPendingRestart();
+        if (Navigation.back(mainRoot)) {
+            close.accepted = false;
+            return;
+        }
+        if (!prefs.backgroundListening && mainRoot.monitorMode)
+            decoderHost.stop();
+        close.accepted = !decoderHost.moveToBackground();
     }
 
     function startSystem(row) {
-        var sys = savedSystems.get(row)
+        cancelPendingRestart();
+        if (row < 0 || (decoderHost.sessionState !== 0 && decoderHost.sessionState !== 4))
+            return;
+        var sys = savedSystems.get(row);
         if (sys)
-            mainRoot.startWithMap(sys, row)
+            mainRoot.startWithMap(sys, row, false);
+    }
+
+    function scanTargetLabel() {
+        var list = mainRoot.sessionSystem;
+        if (!list || !list.entries)
+            list = prefs.lastStartedKind === "scan" ? scanLists.getByUid(prefs.lastStartedUid) : null;
+        if (list && list.targetSource === "csv")
+            return metrics.scanTargetId || qsTr("Target %1").arg(metrics.scanTargetOrdinal);
+        var entries = list && list.entries ? list.entries : [];
+        for (var i = 0; i < entries.length; ++i) {
+            var entry = entries[i];
+            if (entry.uid !== metrics.scanTargetId)
+                continue;
+            if (entry.kind === "system")
+                return savedSystems.getByUid(entry.systemUid).name || qsTr("Saved system");
+            return entry.name || (entry.freqMhz ? entry.freqMhz + " MHz" : qsTr("Frequency"));
+        }
+        return qsTr("Target %1").arg(metrics.scanTargetOrdinal);
+    }
+
+    function startScanList(row) {
+        cancelPendingRestart();
+        var list = scanLists.get(row);
+        if (list && list.uid)
+            mainRoot.startWithMap(list, row, true);
     }
 
     /**
@@ -164,62 +503,92 @@ Window {
      * permission dance below, and would get it wrong on exactly the install
      * where it matters: a fresh one.
      */
-    function startWithMap(sys, row) {
+    function startWithMap(sys, row, scan) {
+        cancelPendingRestart();
+        mainRoot.awaitingSessionInitialized = false;
+        mainRoot.sessionReachedRunning = false;
         if (!sys || !sys.sourceType)
-            return
-        if (sys.sourceType === "usb" && decoderHost.localDeviceBrokered && !decoderHost.localDeviceReady) {
+            return;
+        attemptedSource = {
+            kind: scan ? "scan" : row < 0 ? "explore" : "saved",
+            uid: sys.uid || "",
+            system: Object.assign({}, sys)
+        };
+        completionMessage = "";
+        var wantedSerial = sys.sourceType === "airspy" ? String((sys.airspy || {}).serial || "").toUpperCase() : "";
+        if ((sys.sourceType === "usb" || sys.sourceType === "airspy") && decoderHost.localDeviceBrokered && (!decoderHost.localDeviceReady || decoderHost.localDeviceSource !== sys.sourceType || (wantedSerial.length > 0 && String(decoderHost.localDeviceSerial).toUpperCase() !== wantedSerial))) {
             // Not a silent return: the platform's status line is the only thing
             // that can say why ("USB permission denied", "No RTL-SDR attached"),
             // and it keeps updating as the permission dialog resolves. When the
             // grant lands, the Connections above resumes this start.
-            mainRoot.dismissedFailure = ""
-            mainRoot.startError = ""
-            mainRoot.awaitingUsbAccess = true
-            mainRoot.pendingStart = sys
-            mainRoot.pendingStartRow = row
-            decoderHost.requestLocalDeviceAccess()
-            return
+            mainRoot.dismissedFailure = "";
+            mainRoot.startError = "";
+            mainRoot.awaitingUsbAccess = true;
+            mainRoot.pendingStart = sys;
+            mainRoot.pendingStartRow = row;
+            mainRoot.pendingScanList = !!scan;
+            decoderHost.requestLocalDeviceAccessForSource(sys.sourceType, String((sys.airspy || {}).serial || ""));
+            return;
         }
-        mainRoot.dismissedFailure = ""
-        mainRoot.startError = ""
-        mainRoot.awaitingUsbAccess = false
-        mainRoot.pendingStart = null
-        mainRoot.pendingStartRow = -1
-        var built = sessionArgs.build(sys)
+        mainRoot.dismissedFailure = "";
+        mainRoot.startError = "";
+        mainRoot.awaitingUsbAccess = false;
+        mainRoot.pendingStart = null;
+        mainRoot.pendingStartRow = -1;
+        var built = scan ? scanListStarter.start(sys, decoderHost) : sessionArgs.start(sys, decoderHost);
         if (!built.ok) {
-            // The builder refuses for exactly two reasons; blame the field that
-            // is actually wrong or the user re-checks a frequency that was fine.
-            mainRoot.startError = built.error === "frequency"
-                ? qsTr("“%1” has no valid frequency — long-press its card to edit it.").arg(sys.name)
-                : qsTr("“%1” has an invalid PPM correction — long-press its card to edit it.").arg(sys.name)
-            return
+            // Match the rejected field without exposing a prohibited argument or a key.
+            if (scan) {
+                mainRoot.startError = built.error;
+            } else if (built.error === "frequency") {
+                mainRoot.startError = qsTr("“%1” has no valid frequency. Edit the source to correct it.").arg(sys.name);
+            } else if (built.error === "ppm") {
+                mainRoot.startError = qsTr("“%1” has an invalid PPM correction. Edit the source to correct it.").arg(sys.name);
+            } else if (built.error === "hangtime") {
+                mainRoot.startError = qsTr("Enter hang time in seconds from 0 to 30.");
+            } else if (built.error === "encryption") {
+                mainRoot.startError = qsTr("“%1” has an invalid decryption configuration. Edit the source to correct it.").arg(sys.name);
+            } else if (built.error === "unsafe-option") {
+                mainRoot.startError = qsTr("The session contains a prohibited extra option or grouped short options. Remove prohibited options and write each short option separately.");
+            } else {
+                mainRoot.startError = qsTr("The session options are invalid. Review them before starting.");
+            }
+            return;
         }
         // Side effects only after the host accepts: a refused start must not
         // stamp lastHeard, re-attribute history rows, or hide the previous
         // session's calls from the monitor pane.
-        if (!decoderHost.start(built.args)) {
+        if (!(built.started)) {
             if (decoderHost.failureText.length === 0)
-                mainRoot.startError = qsTr("“%1” could not be started.").arg(sys.name)
-            return
+                mainRoot.startError = qsTr("“%1” could not be started.").arg(sys.name);
+            return;
         }
-        mainRoot.sessionSystem = sys
-        mainRoot.sessionRow = row
+        mainRoot.exploring = (row < 0);
+        mainRoot.sessionSystem = sys;
+        mainRoot.sessionScanList = !!scan;
+        mainRoot.scanWarnings = scan ? built.warnings.join("\n") : "";
+        mainRoot.awaitingSessionInitialized = true;
+        mainRoot.sessionReachedRunning = decoderHost.sessionState === 2;
+        if (mainRoot.sessionReachedRunning && !decoderHost.signalsSessionInitialized)
+            mainRoot.recordSessionInitialized();
+        mainRoot.sessionRow = scan ? -1 : row;
         // The session's intent, decided here and nowhere else: a system someone
         // saved is a thing to listen to, and the spectrum watches it. Only a
         // session with no saved system behind it is free to wander.
-        mainRoot.exploring = (row < 0)
+        mainRoot.exploring = !scan && (row < 0);
         // Belongs to the session that just ended. Carried into this one it would be
         // written back to prefs on stop as if it were where this exploring got to —
         // a frequency from two sessions ago, on a session that may never have moved.
-        mainRoot.lastExploreFreqMhz = ""
+        mainRoot.lastExploreFreqMhz = "";
         // The previous session may have committed calls since the last 250 ms
         // tick; ingest them under its own label before the label changes hands,
         // or its tail calls read as the new system's.
-        uiController.flushHistory()
-        callHistory.sessionLabel = sys.name
+        uiController.flushHistory();
+        callHistory.sessionLabel = sys.name;
+        callHistory.sessionUid = (!scan && sys.uid) ? sys.uid : "";
         // The monitor's recent-calls pane shows this session, not the whole log.
-        monitorView.minWhen = Math.floor(Date.now() / 1000)
-        savedSystems.touch(row)
+        monitorView.minWhen = Math.floor(Date.now() / 1000);
+        talkgroups.sinceWhen = monitorView.minWhen;
     }
 
     /**
@@ -229,21 +598,22 @@ Window {
      * whether the finished import fills in an open wizard or opens a fresh one.
      */
     function openRadioReference(fromWizard) {
-        mainRoot.radioReferenceFromWizard = fromWizard
-        radioReferenceScreen.reset()
-        mainRoot.radioReferenceOpen = true
+        cancelPendingRestart();
+        mainRoot.radioReferenceFromWizard = fromWizard;
+        radioReferenceScreen.reset();
+        mainRoot.radioReferenceOpen = true;
     }
 
     /** Start an explore session from the remembered source and frequency. */
     function startExploring() {
-        var source = prefs.exploreSourceType
-        if (source !== "usb" && source !== "rtltcp") {
+        cancelPendingRestart();
+        var source = prefs.exploreSourceType;
+        if (source !== "usb" && source !== "airspy" && source !== "rtltcp") {
             // Nothing remembered to start from; ask instead of guessing.
-            mainRoot.exploreSetupOpen = true
-            return
+            mainRoot.exploreSetupOpen = true;
+            return;
         }
-        mainRoot.startWithMap(mainRoot.exploreSystem(source, prefs.exploreHost, prefs.explorePort,
-                                                     prefs.exploreFreqMhz), -1)
+        mainRoot.startWithMap(mainRoot.exploreSystem(source, prefs.exploreHost, prefs.explorePort, prefs.exploreFreqMhz), -1, false);
     }
 
     /**
@@ -263,7 +633,7 @@ Window {
             freqMhz: freqMhz,
             decodeFlag: "",
             trunking: false
-        }
+        };
     }
 
     // ---- Safe area ----
@@ -278,6 +648,9 @@ Window {
         id: safeArea
 
         objectName: "safeArea"
+        focus: true
+        Keys.onEscapePressed: mainRoot.requestBack()
+        Keys.onBackPressed: mainRoot.requestBack()
         anchors.fill: parent
         anchors.topMargin: mainRoot.SafeArea.margins.top
         anchors.leftMargin: mainRoot.SafeArea.margins.left
@@ -285,76 +658,116 @@ Window {
         anchors.bottomMargin: mainRoot.SafeArea.margins.bottom
     }
 
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: mainRoot.SafeArea.margins.bottom
+        color: nav.color
+        visible: shell.visible
+    }
     // ---- Tab shell ----
     Item {
         id: shell
 
         anchors.fill: safeArea
-        opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen
-                  || mainRoot.importsOpen || mainRoot.radioReferenceOpen
-                  || !prefs.onboardingDone) ? 0.0 : 1.0
+        opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen || mainRoot.diagnosticsOpen || mainRoot.licensesOpen || mainRoot.radioReferenceAccountOpen || mainRoot.importsOpen || mainRoot.radioReferenceOpen || mainRoot.scanListOpen || mainRoot.sessionDestination.length > 0 || !prefs.onboardingDone) ? 0.0 : 1.0
         visible: opacity > 0.0
-        enabled: opacity > 0.9
-
-        Behavior on opacity {
-            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
-        }
+        enabled: opacity > 0.9 && !siteChooser.visible
 
         HomeScreen {
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: nav.top
+            id: homeScreen
+            objectName: "homeScreen"
+            failure: ({
+                    message: mainRoot.showFailure ? mainRoot.failureMessage() : "",
+                    source: mainRoot.sourceLabel(),
+                    canRetry: !decoderHost.sessionActive && !decoderHost.transitioning
+                })
+            usbRelevant: !mainRoot.showFailure || !mainRoot.attemptedSource || mainRoot.attemptedSource.system.sourceType === "usb"
+            completionMessage: mainRoot.completionMessage
+            onRetryFailure: mainRoot.retrySource()
+            onEditFailure: mainRoot.editFailedSource()
+            onDismissFailure: mainRoot.dismissedFailure = mainRoot.failureText
+            onFailureDetails: failureDetails.visible = true
+            onReplayAgain: mainRoot.retrySource()
+            x: mainRoot.expanded ? nav.width : 0
+            y: 0
+            width: parent.width - x
+            height: parent.height - (mainRoot.expanded ? 0 : nav.height)
             visible: mainRoot.currentTab === 0
 
             onAddSystem: {
-                wizard.openForAdd(false)
-                mainRoot.wizardOpen = true
+                wizard.openForAdd(false);
+                mainRoot.wizardOpen = true;
             }
-            onNetworkSource: {
-                wizard.openForAdd(true)
-                mainRoot.wizardOpen = true
+            onImportSystem: mainRoot.openRadioReference(false)
+            onChooseSites: function (row) {
+                mainRoot.cancelPendingRestart();
+                siteChooser.openFor(row);
             }
-            onPlaySystem: function (row) { mainRoot.startSystem(row) }
+            onPlaySystem: function (row) {
+                mainRoot.startSystem(row);
+            }
+            onPlayScanList: function (row) {
+                mainRoot.startScanList(row);
+            }
+            onEditScanList: function (row) {
+                scanListEditor.openFor(row);
+                mainRoot.scanListOpen = true;
+            }
+            onAddScanList: {
+                scanListEditor.openFor(-1);
+                mainRoot.scanListOpen = true;
+            }
             onEditSystem: function (row) {
-                wizard.openForEdit(row)
-                mainRoot.wizardOpen = true
+                wizard.openForEdit(row);
+                mainRoot.wizardOpen = true;
             }
             onExplore: mainRoot.startExploring()
             onExploreSetup: {
-                exploreSetup.reset(prefs.exploreSourceType, prefs.exploreHost, prefs.explorePort,
-                                   prefs.exploreFreqMhz)
-                mainRoot.exploreSetupOpen = true
+                exploreSetup.reset(prefs.exploreSourceType, prefs.exploreHost, prefs.explorePort, prefs.exploreFreqMhz);
+                mainRoot.exploreSetupOpen = true;
             }
         }
 
         HistoryScreen {
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: nav.top
+            id: historyRoot
+            objectName: "idleHistoryScreen"
+            x: mainRoot.expanded ? nav.width : 0
+            y: 0
+            width: parent.width - x
+            height: parent.height - (mainRoot.expanded ? 0 : nav.height)
             visible: mainRoot.currentTab === 1
         }
 
         SettingsScreen {
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: nav.top
+            id: settingsRoot
+            objectName: "idleSettingsScreen"
+            x: mainRoot.expanded ? nav.width : 0
+            y: 0
+            width: parent.width - x
+            height: parent.height - (mainRoot.expanded ? 0 : nav.height)
             visible: mainRoot.currentTab === 2
 
+            onOpenDiagnostics: mainRoot.diagnosticsOpen = true
             onOpenImports: mainRoot.importsOpen = true
-            onOpenRadioReference: mainRoot.openRadioReference(false)
+            onOpenRadioReferenceAccount: mainRoot.radioReferenceAccountOpen = true
+            onOpenLicenses: mainRoot.licensesOpen = true
         }
 
         BottomNav {
             id: nav
-
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
+            objectName: "primaryNavigation"
+            x: 0
+            y: mainRoot.expanded ? 0 : parent.height - height
+            width: mainRoot.expanded ? Math.max(104, Theme.fontSize(11) * 6 + 24) : parent.width
+            height: mainRoot.expanded ? parent.height : Math.max(62, Theme.fontSize(11) + 46)
+            vertical: mainRoot.expanded
             currentIndex: mainRoot.currentTab
-            onSelected: function (index) { mainRoot.currentTab = index }
+            onSelected: function (index) {
+                mainRoot.cancelPendingRestart();
+                mainRoot.currentTab = index;
+            }
         }
     }
 
@@ -367,10 +780,6 @@ Window {
         visible: opacity > 0.0
         enabled: opacity > 0.9
 
-        Behavior on opacity {
-            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
-        }
-
         onClosed: mainRoot.exploreSetupOpen = false
         onStart: function (sourceType, host, port, freqMhz) {
             // Remembered before the start, not after: a start that fails is still
@@ -382,13 +791,44 @@ Window {
             // behind, so switching rtltcp -> usb keeps the old host and the
             // setup sheet shows it again as the current setting. An out-of-range
             // port is corrected by AppPrefs' own sanitiser, not by not writing it.
-            prefs.exploreSourceType = sourceType
-            prefs.exploreHost = host
-            prefs.explorePort = port
-            prefs.exploreFreqMhz = freqMhz
-            mainRoot.exploreSetupOpen = false
-            mainRoot.startWithMap(mainRoot.exploreSystem(sourceType, host, port, freqMhz), -1)
+            prefs.exploreSourceType = sourceType;
+            prefs.exploreHost = host;
+            prefs.explorePort = port;
+            prefs.exploreFreqMhz = freqMhz;
+            mainRoot.exploreSetupOpen = false;
+            mainRoot.startWithMap(mainRoot.exploreSystem(sourceType, host, port, freqMhz), -1, false);
         }
+    }
+
+    UiPanel {
+        z: 21
+        visible: mainRoot.monitorMode && mainRoot.scanWarnings.length > 0
+        anchors.left: safeArea.left
+        anchors.right: safeArea.right
+        anchors.bottom: safeArea.bottom
+        height: scanWarningText.implicitHeight + 32
+        Text {
+            id: scanWarningText
+            anchors.fill: parent
+            anchors.margins: 16
+            text: mainRoot.scanWarnings + qsTr("\nTap to dismiss")
+            wrapMode: Text.Wrap
+            color: Theme.textPrimary
+            font.family: Theme.sans
+        }
+        PointerBarrier {
+            onClicked: mainRoot.scanWarnings = ""
+        }
+    }
+
+    // WP-S1 editor, kept instantiated so closing a keyboard does not discard edits.
+    ScanListScreen {
+        id: scanListEditor
+        objectName: "scanListScreen"
+        anchors.fill: safeArea
+        visible: mainRoot.scanListOpen
+        z: 20
+        onClosed: mainRoot.scanListOpen = false
     }
 
     // ---- Live monitor (owns the screen while a session is active) ----
@@ -398,36 +838,26 @@ Window {
         objectName: "monitorScreen"
         anchors.fill: safeArea
         system: mainRoot.sessionSystem
+        scanTargetName: mainRoot.scanTargetLabel()
+        sitesAvailable: mainRoot.running && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && mainRoot.sessionSystem && savedSystems.siteCount(savedSystems.rowForUid(mainRoot.sessionSystem.uid || "")) > 0
+        onOpenSites: {
+            mainRoot.cancelPendingRestart();
+            siteChooser.openFor(savedSystems.rowForUid(mainRoot.sessionSystem.uid));
+        }
         opacity: mainRoot.monitorMode ? 1.0 : 0.0
         visible: opacity > 0.0
-        // The wizard ("Save as a system"), the spectrum, and the RadioReference
-        // screen the wizard pushes from its tune step all open over a running
-        // session, and TapHandlers never take exclusive grabs, so without this a
-        // tap on the layer above also lands on "Stop listening", which sits at
-        // exactly the same rect underneath all three and ends the session.
-        // That is what "Explore from here" — the one way out of view-only — did
-        // instead of offering to hand the tuner over. The RadioReference term is
-        // what lets that screen stay lit over the monitor rather than standing
-        // down into a three-layer deadlock.
-        enabled: opacity > 0.9 && !mainRoot.wizardOpen && !mainRoot.spectrumOpen
-                 && !mainRoot.radioReferenceOpen
-
-        Behavior on opacity {
-            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
-        }
+        // Stand down beneath overlays so the monitor cannot acquire passive tap
+        // grabs. Otherwise closing an overlay can deliver the same release to
+        // "Stop listening" underneath. Session-menu rows keep passive grabs so
+        // the sheet can scroll when a drag starts on a destination or Cancel.
+        enabled: opacity > 0.9 && !mainRoot.wizardOpen && !mainRoot.spectrumOpen && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible && !siteChooser.visible && !sessionMenu.visible && !sessionRadio.visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings") && mainRoot.sessionDestination.length === 0
 
         onOpenSpectrum: {
-            spectrumLoader.active = true
-            mainRoot.spectrumOpen = true
+            spectrumLoader.active = true;
+            mainRoot.spectrumOpen = true;
         }
-        onEditSystem: {
-            // Only a session started from a saved row has a system to edit; a
-            // reattached or quick-start session has no row to write back to.
-            if (mainRoot.sessionRow >= 0) {
-                wizard.openForEdit(mainRoot.sessionRow)
-                mainRoot.wizardOpen = true
-            }
-        }
+        onOpenTalkgroups: mainRoot.talkgroupsOpen = true
+        onOpenSessionMenu: sessionMenu.open()
     }
 
     // ---- Spectrum (pushed over the monitor) ----
@@ -445,26 +875,24 @@ Window {
         // The wizard can now open over a running session ("Save as a system"), and
         // TapHandlers never take exclusive grabs — without this, a tap meant for a
         // wizard field also reaches the spectrum underneath and retunes the radio.
-        enabled: opacity > 0.9 && !mainRoot.wizardOpen
-
-        Behavior on opacity {
-            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
-        }
+        enabled: opacity > 0.9 && !mainRoot.wizardOpen && !talkgroupsScreen.visible
     }
 
     Component {
         id: spectrumScreen
 
         SpectrumScreen {
+            objectName: "spectrumScreen"
             exploring: mainRoot.exploring
+            sharedRadioSheet: sessionRadio
 
             onClosed: mainRoot.spectrumOpen = false
             onExploreFromHere: {
                 // The engine is the authority on who owns the tuner; this only
                 // asks. The pill follows the options snapshot, so it flips a poll
                 // later whether or not the request was honoured.
-                commands.releaseTuner()
-                mainRoot.exploring = true
+                commands.releaseTuner();
+                mainRoot.exploring = true;
                 // Seeded here rather than waiting for the next tuner reading: the
                 // session may never move again, and an empty value would leave the
                 // stop handler with nothing to remember this band by.
@@ -475,28 +903,57 @@ Window {
                 // the monitor header and the save-as-system wizard would all then
                 // carry as if it were one. Empty is what monitorMeta() already
                 // knows to leave out.
-                var exploreFreqMhz = metrics.centerFreqHz > 0 ? Util.mhzText(metrics.centerFreqHz) : ""
+                var exploreFreqMhz = metrics.centerFreqHz > 0 ? Util.mhzText(metrics.centerFreqHz) : "";
                 if (exploreFreqMhz.length > 0)
-                    mainRoot.lastExploreFreqMhz = exploreFreqMhz
+                    mainRoot.lastExploreFreqMhz = exploreFreqMhz;
                 // The session is no longer the saved system it started as: its
                 // frequency is now whatever the user makes it, and the calls it
                 // logs from here on did not come from that system.
-                mainRoot.sessionSystem = mainRoot.exploreSystem(
-                    mainRoot.sessionSystem ? mainRoot.sessionSystem.sourceType : "usb",
-                    mainRoot.sessionSystem ? mainRoot.sessionSystem.host : "",
-                    mainRoot.sessionSystem ? mainRoot.sessionSystem.port : 0,
-                    exploreFreqMhz)
+                mainRoot.sessionSystem = mainRoot.exploreSystem(mainRoot.sessionSystem ? mainRoot.sessionSystem.sourceType : "usb", mainRoot.sessionSystem ? mainRoot.sessionSystem.host : "", mainRoot.sessionSystem ? mainRoot.sessionSystem.port : 0, exploreFreqMhz);
                 // Which also means the saved row is no longer this session's, so
-                // the monitor's edit gesture must not open — and push CSVs into —
+                // the session's edit action must not open — and push CSVs into —
                 // a system the session detached from.
-                mainRoot.sessionRow = -1
-                uiController.flushHistory()
-                callHistory.sessionLabel = qsTr("Exploring")
+                mainRoot.sessionRow = -1;
+                uiController.flushHistory();
+                callHistory.sessionLabel = qsTr("Exploring");
+                callHistory.sessionUid = "";
             }
             onSaveAsSystem: function (freqHz) {
-                wizard.openForFound(mainRoot.sessionSystem, Util.mhzText(freqHz))
-                mainRoot.wizardOpen = true
+                wizard.openForFound(mainRoot.sessionSystem, Util.mhzText(freqHz));
+                mainRoot.wizardOpen = true;
             }
+        }
+    }
+
+    // WP-D1: associate only the retained completion, using the captured system UUID.
+    TalkgroupSaveFlow {
+        id: talkgroupSave
+        onSaved: function (uid, path) {
+            if (mainRoot.sessionSystem && mainRoot.sessionSystem.uid === uid)
+                mainRoot.sessionSystem = Object.assign({}, mainRoot.sessionSystem, {
+                    groupCsvPath: path
+                });
+        }
+    }
+
+    // ---- Talkgroups (pushed over the monitor) ----
+    TalkgroupsScreen {
+        id: talkgroupsScreen
+
+        objectName: "talkgroupsScreen"
+        anchors.fill: safeArea
+        systemName: monitor.systemName
+        canSaveList: !talkgroups.persistent && (talkgroupSave.pending === null || talkgroupSave.retryAvailable)
+        saveListText: talkgroupSave.retryAvailable ? qsTr("Try again") : qsTr("Save talkgroup list")
+        saveMessage: talkgroupSave.message
+        onSaveListRequested: talkgroupSave.save(mainRoot.sessionSystem ? mainRoot.sessionSystem.uid || "" : "", talkgroups.policyContext, talkgroups.policyGeneration)
+        opacity: mainRoot.monitorMode && mainRoot.talkgroupsOpen && !mainRoot.wizardOpen ? 1.0 : 0.0
+        visible: opacity > 0.0
+        enabled: opacity > 0.9 && mainRoot.monitorMode && mainRoot.talkgroupsOpen && !mainRoot.wizardOpen && !mainRoot.radioReferenceOpen
+
+        onClosed: {
+            mainRoot.talkgroupsOpen = false;
+            Qt.inputMethod.hide();
         }
     }
 
@@ -519,15 +976,11 @@ Window {
         // otherwise land on the wizard field underneath as well.
         enabled: opacity > 0.9 && !mainRoot.radioReferenceOpen
 
-        Behavior on opacity {
-            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
-        }
-
         onClosed: {
-            mainRoot.wizardOpen = false
+            mainRoot.wizardOpen = false;
             // Over a session the monitor comes back underneath; without this it
             // returns behind the keyboard the name field was still holding.
-            Qt.inputMethod.hide()
+            Qt.inputMethod.hide();
         }
         onOpenRadioReference: mainRoot.openRadioReference(true)
         onSaved: function (row) {
@@ -539,8 +992,8 @@ Window {
             // protocol learned since), and re-importing keys bumps the
             // encrypted-target key epoch, so a name-only edit must not do either.
             if (decoderHost.running && row >= 0 && row === mainRoot.sessionRow) {
-                var was = mainRoot.sessionSystem || {}
-                var sys = savedSystems.get(row)
+                var was = mainRoot.sessionSystem || {};
+                var sys = savedSystems.get(row);
                 // Clearing a picker to "None" is a change like any other, and
                 // only the clear commands can express it — the import commands
                 // all reject an empty path. Without this the file the user just
@@ -548,36 +1001,192 @@ Window {
                 // decrypting for the rest of the session.
                 if (sys.chanCsvPath !== was.chanCsvPath) {
                     if (sys.chanCsvPath.length > 0)
-                        commands.importChannelMap(sys.chanCsvPath)
+                        commands.importChannelMap(sys.chanCsvPath);
                     else if ((was.chanCsvPath || "").length > 0)
-                        commands.clearChannelMap()
+                        commands.clearChannelMap();
                 }
                 if (sys.groupCsvPath !== was.groupCsvPath) {
                     if (sys.groupCsvPath.length > 0)
-                        commands.importGroupList(sys.groupCsvPath)
+                        commands.importGroupList(sys.groupCsvPath);
                     else if ((was.groupCsvPath || "").length > 0)
-                        commands.clearGroupList()
+                        commands.clearGroupList();
                 }
                 if (sys.keyCsvPath !== was.keyCsvPath || sys.keyCsvHex !== was.keyCsvHex) {
                     if (sys.keyCsvPath.length > 0)
-                        commands.importKeys(sys.keyCsvPath, sys.keyCsvHex)
+                        commands.importKeys(sys.keyCsvPath, sys.keyCsvHex);
                     else if ((was.keyCsvPath || "").length > 0)
-                        commands.clearKeys()
+                        commands.clearKeys();
                 }
                 // No clear counterpart: a band plan the session has already
                 // merged with what it heard off the air cannot be taken back,
                 // so "None" only takes effect at the next start.
-                if (sys.p25BandplanCsvPath !== (was.p25BandplanCsvPath || "")
-                    && sys.p25BandplanCsvPath.length > 0)
-                    commands.importP25Bandplan(sys.p25BandplanCsvPath)
+                if (sys.p25BandplanCsvPath !== (was.p25BandplanCsvPath || "") && sys.p25BandplanCsvPath.length > 0)
+                    commands.importP25Bandplan(sys.p25BandplanCsvPath);
+                if (sys.srcCsvPath !== (was.srcCsvPath || "")) {
+                    if (sys.srcCsvPath.length > 0)
+                        commands.importSrcList(sys.srcCsvPath);
+                    else if ((was.srcCsvPath || "").length > 0)
+                        commands.clearSrcList();
+                }
                 // The monitor header reads sessionSystem; without this it keeps
                 // naming and metering the system as it was before the edit.
-                mainRoot.sessionSystem = sys
+                mainRoot.sessionSystem = sys;
             }
-            mainRoot.wizardOpen = false
-            mainRoot.currentTab = 0
-            Qt.inputMethod.hide()
+            mainRoot.wizardOpen = false;
+            mainRoot.currentTab = 0;
+            Qt.inputMethod.hide();
         }
+    }
+
+    Item {
+        id: sessionTools
+        objectName: "sessionTools"
+        Keys.onEscapePressed: mainRoot.requestBack()
+        Keys.onBackPressed: mainRoot.requestBack()
+        function restoreLayerFocus() {
+            if (visible && enabled) Qt.callLater(function () {
+                if (sessionTools.visible && sessionTools.enabled && Navigation.allows(sessionTools) && !Navigation.contains(sessionTools, mainRoot.activeFocusItem))
+                    sessionTools.forceActiveFocus();
+            });
+        }
+        onVisibleChanged: restoreLayerFocus()
+        onEnabledChanged: restoreLayerFocus()
+        anchors.fill: safeArea
+        visible: mainRoot.sessionDestination.length > 0
+        enabled: visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.radioReferenceAccountOpen && !mainRoot.importsOpen && !mainRoot.radioReferenceOpen
+        Rectangle {
+            anchors.fill: parent
+            color: Theme.bg
+        }
+        Item {
+            id: sessionToolsHeader
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.margins: Theme.screenPadding
+            height: 46
+
+            IconButton {
+                id: sessionToolsBack
+                objectName: "sessionToolsBack"
+                icon: "back"
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                onClicked: sessionToolsLayer.leave()
+            }
+            Text {
+                objectName: "sessionToolsTitle"
+                anchors.left: sessionToolsBack.right
+                anchors.leftMargin: 14
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: mainRoot.sessionDestination === "history" ? qsTr("History") : qsTr("Settings")
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(22)
+                font.weight: Font.Bold
+                font.letterSpacing: -0.22
+                color: Theme.textPrimary
+                elide: Text.ElideRight
+            }
+        }
+        HistoryScreen {
+            objectName: "sessionHistoryScreen"
+            showTitle: false
+            anchors.top: sessionToolsHeader.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            visible: mainRoot.sessionDestination === "history"
+        }
+        SettingsScreen {
+            objectName: "sessionSettingsScreen"
+            showTitle: false
+            anchors.top: sessionToolsHeader.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            visible: mainRoot.sessionDestination === "settings"
+            onOpenDiagnostics: mainRoot.diagnosticsOpen = true
+            onOpenImports: mainRoot.importsOpen = true
+            onOpenRadioReferenceAccount: mainRoot.radioReferenceAccountOpen = true
+            onOpenLicenses: mainRoot.licensesOpen = true
+        }
+    }
+    ActionMenu {
+        id: sessionMenu
+        objectName: "sessionMenu"
+        anchors.fill: safeArea
+        title: qsTr("Session options")
+        actions: {
+            var items = [];
+            if (monitor.sitesAvailable)
+                items.push({text: qsTr("Sites"), key: "sites", objectName: "sessionMenuSites"});
+            if (metrics.radioInput) {
+                items.push({text: qsTr("Radio"), key: "radio", objectName: "sessionMenuRadio"});
+                items.push({text: qsTr("Spectrum"), key: "spectrum", objectName: "sessionMenuSpectrum"});
+            }
+            items.push({text: qsTr("Talkgroups"), key: "talkgroups", objectName: "sessionMenuTalkgroups"});
+            items.push({text: qsTr("History"), key: "history", objectName: "sessionMenuHistory"});
+            items.push({text: qsTr("Settings"), key: "settings", objectName: "sessionMenuSettings"});
+            items.push({text: qsTr("Diagnostics"), key: "diagnostics", objectName: "sessionMenuDiagnostics"});
+            if (mainRoot.sessionRow >= 0)
+                items.push({text: qsTr("Edit saved system"), key: "edit", objectName: "sessionMenuEdit"});
+            return items;
+        }
+        onTriggered: function (index) {
+            var key = actions[index].key;
+            if (key === "sites")
+                monitor.openSites();
+            else if (key === "radio")
+                sessionRadio.open();
+            else if (key === "spectrum") {
+                spectrumLoader.active = true;
+                mainRoot.spectrumOpen = true;
+            } else if (key === "talkgroups")
+                mainRoot.talkgroupsOpen = true;
+            else if (key === "history" || key === "settings")
+                mainRoot.sessionDestination = key;
+            else if (key === "diagnostics")
+                mainRoot.diagnosticsOpen = true;
+            else if (key === "edit" && mainRoot.sessionRow >= 0) {
+                wizard.openForEdit(mainRoot.sessionRow);
+                mainRoot.wizardOpen = true;
+            }
+        }
+    }
+
+    // Shared by Monitor and Spectrum; opening Radio never allocates the waterfall.
+    RadioSheet {
+        id: sessionRadio
+        anchors.fill: safeArea
+    }
+
+    // WP-F5 diagnostics overlay.
+    DiagnosticsScreen {
+        id: diagnosticsScreen
+        objectName: "diagnosticsScreen"
+        anchors.fill: safeArea
+        visible: mainRoot.diagnosticsOpen
+        enabled: visible
+        onClosed: mainRoot.diagnosticsOpen = false
+    }
+
+    LicensesScreen {
+        id: licensesScreen
+        objectName: "licensesScreen"
+        anchors.fill: safeArea
+        visible: mainRoot.licensesOpen
+        enabled: visible
+        onClosed: mainRoot.licensesOpen = false
+    }
+
+    RadioReferenceAccountScreen {
+        id: radioReferenceAccountScreen
+        objectName: "radioReferenceAccountScreen"
+        anchors.fill: safeArea
+        visible: mainRoot.radioReferenceAccountOpen
+        enabled: visible
+        onClosed: mainRoot.radioReferenceAccountOpen = false
     }
 
     // ---- Imported-files library (pushed from Settings) ----
@@ -586,26 +1195,22 @@ Window {
     // enabled full-screen layers means one tap lands on both, and the bottom
     // "Import file" button sits exactly over "Stop listening".
     ImportsScreen {
+        id: importsScreen
         objectName: "importsScreen"
 
         anchors.fill: safeArea
         // So a RadioReference refresh can tell whether the file it just replaced
         // is one the running session is actually using.
         sessionSystem: mainRoot.sessionSystem
-        opacity: mainRoot.importsOpen && !mainRoot.monitorMode ? 1.0 : 0.0
+        opacity: mainRoot.importsOpen && (!mainRoot.monitorMode || mainRoot.sessionDestination === "settings") ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
-
-        Behavior on opacity {
-            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
-        }
 
         onClosed: mainRoot.importsOpen = false
         onOpenRadioReference: mainRoot.openRadioReference(false)
     }
 
-    // ---- RadioReference import (pushed from Settings, the library, or the
-    // wizard) ----
+    // ---- RadioReference import (pushed from the library or the wizard) ----
     // Declared after the imports library because declaration order is z-order
     // among siblings and this opens over it.
     //
@@ -627,47 +1232,115 @@ Window {
         visible: opacity > 0.0
         enabled: opacity > 0.9
 
-        Behavior on opacity {
-            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
-        }
-
         onClosed: {
-            mainRoot.radioReferenceOpen = false
-            Qt.inputMethod.hide()
+            mainRoot.radioReferenceOpen = false;
+            Qt.inputMethod.hide();
         }
         // The wizard is the single writer of a saved system, so the generated
         // files and the tune answers go to it rather than to savedSystems.add().
         onImported: function (result) {
-            mainRoot.radioReferenceOpen = false
-            Qt.inputMethod.hide()
+            mainRoot.radioReferenceOpen = false;
+            // Session tools appear later in this file than the wizard, so they
+            // can cover it. Retire their navigation layer before the handoff.
+            mainRoot.sessionDestination = "";
+            Qt.inputMethod.hide();
             if (!mainRoot.radioReferenceFromWizard) {
-                // Opened from Settings or the library: the source, gain and name
+                // Opened from Home, Settings or the library: the source, gain and name
                 // are still unanswered, so the wizard asks for them.
-                mainRoot.importsOpen = false
-                wizard.openForAdd(false)
-                mainRoot.wizardOpen = true
+                mainRoot.importsOpen = false;
+                wizard.openForAdd(false);
+                mainRoot.wizardOpen = true;
             }
-            mainRoot.radioReferenceFromWizard = false
-            wizard.applyRadioReference(result)
+            mainRoot.radioReferenceFromWizard = false;
+            wizard.applyRadioReference(result);
+        }
+    }
+
+    SiteChooserSheet {
+        id: siteChooser
+        anchors.fill: safeArea
+        onUserAction: mainRoot.cancelPendingRestart()
+        onEditSite: function (row) {
+            wizard.openForEdit(row);
+            mainRoot.wizardOpen = true;
+        }
+        onStartSite: function (row) {
+            mainRoot.startSystem(row);
+        }
+        onRestartSite: function (uid) {
+            mainRoot.restartSite(uid);
+        }
+    }
+
+    ModalSheet {
+        id: failureDetails
+        objectName: "failureDetails"
+        anchors.fill: safeArea
+        accessibleName: qsTr("Source failure details")
+        Text {
+            width: parent.width
+            text: mainRoot.sourceLabel() + "\n\n" + mainRoot.failureText + (decoderHost.inputFailureCode ? qsTr("\nNative error: %1").arg(decoderHost.inputFailureCode) : "")
+            textFormat: Text.PlainText
+            wrapMode: Text.WrapAnywhere
+            color: Theme.textPrimary
+            font.pixelSize: Theme.fontSize(14)
+        }
+        OutlineButton {
+            width: parent.width
+            text: qsTr("Close")
+            onClicked: failureDetails.visible = false
+        }
+    }
+
+    ModalSheet {
+        id: notificationExplanation
+        objectName: "notificationExplanation"
+        parent: mainRoot.contentItem
+        anchors.fill: safeArea
+        accessibleName: qsTr("Background listening")
+        dismissHandler: function () {
+            prefs.notificationExplained = true;
+            visible = false;
+        }
+        Text {
+            width: parent.width
+            text: qsTr("Listening can continue when you leave the app. Allow notifications to keep playback status and Stop available outside the app. You can keep using the app if you decline.")
+            wrapMode: Text.Wrap
+            color: Theme.textPrimary
+            font.pixelSize: Theme.fontSize(16)
+        }
+        GradientButton {
+            width: parent.width
+            text: qsTr("Allow notifications")
+            onClicked: {
+                prefs.notificationExplained = true;
+                notificationExplanation.visible = false;
+                decoderHost.requestNotificationPermission();
+            }
+        }
+        OutlineButton {
+            width: parent.width
+            text: qsTr("Not now")
+            onClicked: {
+                prefs.notificationExplained = true;
+                notificationExplanation.visible = false;
+            }
         }
     }
 
     // ---- First-run onboarding ----
     OnboardingScreen {
+        id: onboarding
         anchors.fill: safeArea
         opacity: !prefs.onboardingDone && !mainRoot.monitorMode ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
 
-        Behavior on opacity {
-            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
-        }
-
         onGetStarted: prefs.onboardingDone = true
         onNetworkSource: {
-            prefs.onboardingDone = true
-            wizard.openForAdd(true)
-            mainRoot.wizardOpen = true
+            prefs.onboardingDone = true;
+            wizard.openForAdd(true);
+            mainRoot.wizardOpen = true;
         }
     }
 }

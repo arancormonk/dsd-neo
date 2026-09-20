@@ -35,7 +35,8 @@ dsd_cli_usage_section_intro(void) {
     printf("                 native is accepted as a headless alias for the retired non-rendering scaffold\n");
     printf("                 dsd-neo --frontend terminal 2> console_log.txt\n");
     printf("  -N            Enable terminal frontend (alias for --frontend terminal)\n");
-    printf("  -Z            Log MBE/PDU Payloads to console\n");
+    printf("  -Z            Log MBE/PDU Payloads to stderr\n");
+    printf("                 Terminal frontend suppresses TTY stderr; capture with -Z -N 2> console_log.txt\n");
     printf("      --frame-log <file>    Append one-line timestamped frame trace output\n");
     printf("      --p25-sm-log <file>   Append P25 state-machine decision diagnostics\n");
     printf("  -^            Prefer P25 CC candidates (RFSS/Adjacent/Network) during hunt\n");
@@ -176,6 +177,21 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf(" Example: dsd-neo -i udp:0.0.0.0:7355 -o pulse --frontend terminal\n");
     printf("   Bind all interfaces; point GQRX/SDR++ UDP audio to this host:port.\n");
     printf("\n");
+    printf("Native Airspy R2 / Mini:\n");
+    printf("  -i airspy[:serial=<16 hex digits>][:frequency[:bw[:sql[:vol]]]]\n");
+    printf("  --airspy-list                        List native devices\n");
+    printf("  --airspy-serial <hex>                 Select an exact device serial\n");
+    printf("  --airspy-sample-rate <Hz|auto>        Reported rate, up to 10000000 samples/s\n");
+    printf("  --airspy-gain-mode <mode>            sensitivity, linearity, manual\n");
+    printf("  --airspy-sensitivity-gain <0..21>     Sensitivity index (default 10)\n");
+    printf("  --airspy-linearity-gain <0..21>       Linearity index (default 10)\n");
+    printf("  --airspy-lna-gain <0..15>             Manual LNA index (default 1)\n");
+    printf("  --airspy-mixer-gain <0..15>           Manual mixer index (default 5)\n");
+    printf("  --airspy-vga-gain <0..15>             Manual VGA index (default 5)\n");
+    printf("  --airspy-lna-agc <0|1>               Manual-mode LNA AGC\n");
+    printf("  --airspy-mixer-agc <0|1>             Manual-mode mixer AGC\n");
+    printf("  --airspy-bias-tee <0|1>              Antenna bias power (default off)\n");
+    printf("  Example: dsd-neo -i airspy:851.375M -ft --frontend terminal\n\n");
     printf("Encoder options:\n");
     printf("  -fZ           M17 Stream Voice Encoder\n");
     printf("\n");
@@ -293,6 +309,9 @@ dsd_cli_usage_section_advanced_decoder_options(void) {
 
 static void
 dsd_cli_usage_section_advanced_key_options(void) {
+    printf("  --no-force-key Disable privacy/scrambler forcing and DMR algorithm fallback.\n");
+    printf("  --strict-crc   Disable -F CRC relaxation.\n");
+    printf("  --no-scan-voice-only Disable conventional voice-only scanning.\n");
     printf("  -b <dec>      Manually Enter Basic Privacy Key (Decimal Value of Key Number)\n");
     printf("\n");
     printf("  -H <hex>      Manually Enter Hytera 10/32/64 Char Basic Privacy Hex Key (see example below)\n");
@@ -367,6 +386,8 @@ dsd_cli_usage_section_advanced_key_options(void) {
     printf("\n");
     printf("  -0            Force RC4 Key over Missing PI header/LE Encryption Identifiers (DMR)\n");
     printf("\n");
+    printf("      --m17-scrambler-key <hex>  M17 8/16/24-bit nonzero scrambler seed (2/4/6 digits)\n");
+    printf("      --m17-aes-key <hex>  M17 AES-128/192/256 key (32/48/64 digits); separate from signature keys\n");
     printf("      --dmr-force-algid <hex>  Force DMR ALG ID over Missing PI header/LE Encryption Identifiers.\n");
     printf("\n");
     printf("  -3            Disable DMR Late Entry Encryption Identifiers (VC6 Single Burst)\n");
@@ -384,32 +405,41 @@ static void
 dsd_cli_usage_section_trunking_and_tools(void) {
     printf("Trunking Options:\n");
     printf("  -C <file>     Import Channel to Frequency Map (channum, freq) from csv file. (Capital C)\n");
-    printf("                 (See channel_map.csv for example)\n");
+    printf("                 Optional name, mode and key columns; see examples/conventional_scan_modes.csv.\n");
     printf("  -G <file>     Import Group List Allow/Block and Label from csv file.\n");
     printf("                 (See group.csv for example)\n");
+    printf("      --src-csv <file>   Source ID (radio ID) alias list CSV: id,name[,tags]; labels only, no policy.\n");
     printf("      --p25-bandplan <file>   P25 band plan CSV (IDEN table) for sites that never send IDEN_UP.\n");
     printf("                 Cannot be combined with --trunk-scan; use per-target p25_bandplan_csv.\n");
     printf("      --p25-bandplan-export <file>  Write the learned P25 band plan CSV once at clean shutdown.\n");
     printf("  -T            Enable Trunking Features (NXDN/P25/EDACS/DMR) with RIGCTL/TCP or RTL Input\n");
     printf("  -Y            Enable Scanning Mode with RIGCTL/TCP or RTL Input\n");
-    printf(
-        "                 Experimental -- Can only scan for sync with enabled decoders, don't mix NXDN and DMR/P25!\n");
-    printf("                 This is not a Trunking Feature, just scans through conventional frequencies fast!\n");
+    printf("                 Row mode: p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf or m17; blank inherits globals.\n");
+    printf("                 Scans conventional frequencies; use -T for trunking.\n");
     printf("      --trunk-scan <targets.csv>  Enable single-tuner trunk scan target rotation.\n");
     printf("                 Uses per-target chan_csv values; cannot be combined with global -C or IQ replay.\n");
     printf("      --trunk-scan-dwell-ms <ms>  Set default idle dwell per target (250..600000, default 3000).\n");
-    printf("      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR/NXDN activity hold (250..600000, default "
-           "1200).\n");
-    printf("      --scan-voice-only  Only stop scan on channels carrying voice.\n");
+    printf(
+        "      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR/P25/NXDN activity hold (250..600000, default "
+        "1200).\n");
+    printf("      --scan-voice-only  Conventional scan/targets: hold only for decoded voice.\n");
+    printf("                 Trunked targets use idle dwell and protocol call-following timers.\n");
     printf("      --scan-voice-qualify-ms <ms>  Window after sync in which voice must appear or the scan moves on "
            "(100..600000, default 1000).\n");
     printf("      --scan-voice-hold-ms <ms>  Time to stay after the last voice frame (100..600000, default 2000).\n");
+    printf("                 Global qualify/hold timings apply to -Y; trunk-scan conventional rows use\n");
+    printf("                 dwell_ms/activity_hold_ms, or their own row options.\n");
+    printf("      --scan-max-visit-ms <ms>  Maximum time on one scan target per visit (0 disables, else "
+           "1000..3600000; default 0).\n");
+    printf("                 Applies to -Y and --trunk-scan; can cut an ongoing call short.\n");
     printf("  -W            Use Imported Group List as a Trunking Allow/White List -- Only Tune with Mode A\n");
     printf("  -p            Disable Tune to Private Calls (DMR TIII, P25, NXDN Type-C and Type-D)\n");
     printf("  -E            Disable Tune to Group Calls (DMR TIII, Con+, Cap+, P25, NXDN Type-C, and Type-D)\n");
     printf("  -e            Enable Tune to Data Calls (DMR TIII, Cap+, NXDN Type-C)\n");
     printf("                 (NOTE: No Clear Distinction between Cap+ Private Voice Calls and Data Calls -- Both "
            "enabled with Data Calls)\n");
+    printf("      --tg-lockout-session   !/@ and Skip avoid targets in memory until stop or list reload\n");
+    printf("      --tg-lockout-persist   Save !/@ and Skip lockouts to the global group file (default)\n");
     printf("      --enc-lockout          P25: Silently classify voice; follow only calls with usable keys\n");
     printf("      --enc-follow           P25: Follow encrypted grants without key lockout (default)\n");
     printf("  -I <dec>      Specify TG to Hold During Trunking (DMR, P25, NXDN Type-C Trunking)\n");
@@ -417,7 +447,8 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("  -B <Hertz>    Set RIGCTL Setmod Bandwidth in Hertz (0 - default - Off)\n");
     printf("                 P25 - 12000; NXDN48 - 7000; NXDN96: 12000; DMR - 7000-12000; EDACS/PV - 12000-24000;\n");
     printf("                 May vary based on system stregnth, etc.\n");
-    printf("  -t <secs>     Set Trunking or Scan Speed VC/sync loss hangtime in seconds. (default = 2 seconds)\n");
+    printf("  -t <secs>     Voice/sync-loss hangtime in seconds (default 2); also conventional -Y scan speed.\n");
+    printf("                 Does not set --trunk-scan target dwell or DMR control-channel acquisition time.\n");
     printf("\n");
     printf(" Trunking Example TCP: dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv --frontend terminal "
            "2> log.txt\n");

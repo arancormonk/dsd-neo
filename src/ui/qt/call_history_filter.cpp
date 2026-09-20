@@ -34,6 +34,7 @@ text_matches(const QAbstractItemModel* source, const QModelIndex& idx, const QSt
     return source->data(idx, CallHistoryModel::NameRole).toString().contains(text, Qt::CaseInsensitive)
            || source->data(idx, CallHistoryModel::TgRole).toString().contains(text)
            || source->data(idx, CallHistoryModel::SrcRole).toString().contains(text)
+           || source->data(idx, CallHistoryModel::SourceNameRole).toString().contains(text, Qt::CaseInsensitive)
            || source->data(idx, CallHistoryModel::DetailRole).toString().contains(text, Qt::CaseInsensitive)
            || source->data(idx, CallHistoryModel::ChannelRole).toString().contains(text, Qt::CaseInsensitive);
 }

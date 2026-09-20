@@ -24,9 +24,13 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
@@ -43,9 +47,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "../mbe_result_context.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
 
 static void
 p25p2_record_voice_err(dsd_state* state, int voice_err) {
@@ -67,6 +68,9 @@ p25p2_record_voice_err(dsd_state* state, int voice_err) {
     state->p25_p2_voice_err_hist_sum[slot] += val;
     state->p25_p2_voice_err_hist_sum[slot] -= old;
     state->p25_p2_voice_err_hist_pos[slot] = (hpos + 1) % len;
+    if (state->p25_p2_voice_err_hist_count[slot] < len) {
+        state->p25_p2_voice_err_hist_count[slot]++;
+    }
 
     dsd_rtl_stream_metrics_hook_p25p2_err_update(slot, 0, 0, 0, 0, (int)val);
 }
@@ -231,6 +235,9 @@ update_p25_p1_voice_err_hist(dsd_state* state) {
     state->p25_p1_voice_err_hist_sum += val;
     state->p25_p1_voice_err_hist_sum -= old;
     state->p25_p1_voice_err_hist_pos = (pos + 1) % len;
+    if (state->p25_p1_voice_err_hist_count < len) {
+        state->p25_p1_voice_err_hist_count++;
+    }
 }
 
 static void
@@ -495,7 +502,7 @@ static int
 mbe_p25p1_multicrypt_enabled(const dsd_state* state) {
     switch (state->payload_algid) {
         case 0x81:
-        case 0x9F: return state->R != 0;
+        case 0x9F: return dsd_key_scalar_present(state, 0);
         case 0x83:
         case 0x84:
         case 0x89: return state->aes_key_loaded[0] == 1;
@@ -572,7 +579,7 @@ mbe_process_p25p1(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], dsd_voc
     }
 
     //P25p1 RC4 Handling
-    if (state->payload_algid == 0xAA && state->R != 0) {
+    if (state->payload_algid == 0xAA && dsd_key_scalar_present(state, 0)) {
         mbe_apply_p25p1_rc4(state, frame_ctx->imbe_d);
     }
 
@@ -875,12 +882,13 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
     char decoded_ambe_d[49];
     DSD_MEMCPY(decoded_ambe_d, frame_ctx->ambe_d, sizeof(decoded_ambe_d));
 
-    if ((state->nxdn_cipher_type == 0x01 && state->R != 0) || (state->M == 1 && state->R > 0)) {
+    if ((state->nxdn_cipher_type == 0x01 && dsd_key_scalar_present(state, 0))
+        || (state->M == 1 && dsd_key_scalar_present(state, 0))) {
         mbe_apply_nxdn_cipher1(state, frame_ctx->ambe_d);
     }
 
     //NXDN Generic Cipher 2 and Cipher 3 Keystream Application (to be tested)
-    else if ((state->nxdn_cipher_type == 0x02 && state->R != 0)
+    else if ((state->nxdn_cipher_type == 0x02 && dsd_key_scalar_present(state, 0))
              || (state->nxdn_cipher_type == 0x03 && state->aes_key_loaded[0] == 1)) {
         mbe_apply_nxdn_cipher23(state, frame_ctx->ambe_d);
     }
@@ -916,6 +924,8 @@ mbeslot_left_autoload_keys(dsd_opts* opts, dsd_state* state) {
             state->K2 = state->K3 = state->K4 = 0ULL;
             state->hytera_key_segments = 1U;
             opts->dmr_mute_encL = 0;
+            (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
+                                                    (int)target, 1, 0);
         }
     }
 }
@@ -934,32 +944,35 @@ mbeslot_right_autoload_keys(dsd_opts* opts, dsd_state* state) {
             state->K2 = state->K3 = state->K4 = 0ULL;
             state->hytera_key_segments = 1U;
             opts->dmr_mute_encR = 0;
+            (void)dsd_call_state_note_key_selection(state, 1, call.epoch, DSD_CALL_KEY_DESTINATION, call.kid,
+                                                    (int)target, 1, 0);
         }
     }
 }
 
 static void
 mbeslot_left_apply_basic_privacy(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if ((state->K > 0 && state->dmr_so & 0x40 && state->payload_keyid == 0 && state->dmr_fid == 0x10)
-        || (state->K > 0 && state->M == 1)) {
+    if ((dsd_key_basic_present(state) && state->dmr_so & 0x40 && state->payload_keyid == 0 && state->dmr_fid == 0x10)
+        || (dsd_key_basic_present(state) && state->M == 1)) {
         (void)dmr_basic_privacy_apply_frame49(state->K, frame_ctx->ambe_d);
     }
 
-    if ((state->K1 > 0 && state->dmr_so & 0x40 && state->payload_keyid == 0 && state->dmr_fid == 0x68)
-        || (state->K1 > 0 && state->M == 1)) {
+    if ((dsd_key_hytera_present(state) && state->dmr_so & 0x40 && state->payload_keyid == 0 && state->dmr_fid == 0x68)
+        || (dsd_key_hytera_present(state) && state->M == 1)) {
         (void)hytera_bp_apply_frame49(state->K1, state->K2, state->K3, state->K4, &state->DMRvcL, frame_ctx->ambe_d);
     }
 }
 
 static void
 mbeslot_right_apply_basic_privacy(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if ((state->K > 0 && state->dmr_soR & 0x40 && state->payload_keyidR == 0 && state->dmr_fidR == 0x10)
-        || (state->K > 0 && state->M == 1)) {
+    if ((dsd_key_basic_present(state) && state->dmr_soR & 0x40 && state->payload_keyidR == 0 && state->dmr_fidR == 0x10)
+        || (dsd_key_basic_present(state) && state->M == 1)) {
         (void)dmr_basic_privacy_apply_frame49(state->K, frame_ctx->ambe_d);
     }
 
-    if ((state->K1 > 0 && state->dmr_soR & 0x40 && state->payload_keyidR == 0 && state->dmr_fidR == 0x68)
-        || (state->K1 > 0 && state->M == 1)) {
+    if ((dsd_key_hytera_present(state) && state->dmr_soR & 0x40 && state->payload_keyidR == 0
+         && state->dmr_fidR == 0x68)
+        || (dsd_key_hytera_present(state) && state->M == 1)) {
         (void)hytera_bp_apply_frame49(state->K1, state->K2, state->K3, state->K4, &state->DMRvcR, frame_ctx->ambe_d);
     }
 }
@@ -996,7 +1009,8 @@ mbeslot_right_apply_vertex_standard(dsd_state* state, mbe_frame_ctx_t* frame_ctx
 
 static void
 mbeslot_left_apply_des(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (!((state->payload_algid == 0x22 && state->R != 0) || (state->payload_algid == 0x81 && state->R != 0))) {
+    if (!((state->payload_algid == 0x22 && dsd_key_scalar_present(state, 0))
+          || (state->payload_algid == 0x81 && dsd_key_scalar_present(state, 0)))) {
         return;
     }
 
@@ -1035,7 +1049,8 @@ mbeslot_left_apply_des(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
 
 static void
 mbeslot_right_apply_des(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (!((state->payload_algidR == 0x22 && state->RR != 0) || (state->payload_algidR == 0x81 && state->RR != 0))) {
+    if (!((state->payload_algidR == 0x22 && dsd_key_scalar_present(state, 1))
+          || (state->payload_algidR == 0x81 && dsd_key_scalar_present(state, 1)))) {
         return;
     }
 
@@ -1073,7 +1088,7 @@ mbeslot_right_apply_des(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
 static int
 mbeslot_left_aes_enabled(const dsd_state* state) {
     switch (state->payload_algid) {
-        case 0x02: return state->R != 0;
+        case 0x02: return dsd_key_scalar_present(state, 0);
         case 0x24:
         case 0x25:
         case 0x36:
@@ -1087,7 +1102,7 @@ mbeslot_left_aes_enabled(const dsd_state* state) {
 static int
 mbeslot_right_aes_enabled(const dsd_state* state) {
     switch (state->payload_algidR) {
-        case 0x02: return state->RR != 0;
+        case 0x02: return dsd_key_scalar_present(state, 1);
         case 0x24:
         case 0x25:
         case 0x36:
@@ -1269,7 +1284,7 @@ mbeslot_right_apply_aes_and_streams(dsd_opts* opts, dsd_state* state, mbe_frame_
 
 static void
 mbeslot_left_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (!(state->payload_algid == 0x21 && state->R != 0)) {
+    if (!(state->payload_algid == 0x21 && dsd_key_scalar_present(state, 0))) {
         return;
     }
 
@@ -1306,7 +1321,7 @@ mbeslot_left_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
 
 static void
 mbeslot_right_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (!(state->payload_algidR == 0x21 && state->RR != 0)) {
+    if (!(state->payload_algidR == 0x21 && dsd_key_scalar_present(state, 1))) {
         return;
     }
 
@@ -1343,7 +1358,7 @@ mbeslot_right_apply_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
 
 static void
 mbeslot_left_apply_p25p2_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (!(state->payload_algid == 0xAA && state->R != 0 && DSD_SYNC_IS_P25P2(state->synctype))) {
+    if (!(state->payload_algid == 0xAA && dsd_key_scalar_present(state, 0) && DSD_SYNC_IS_P25P2(state->synctype))) {
         return;
     }
 
@@ -1376,7 +1391,7 @@ mbeslot_left_apply_p25p2_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
 
 static void
 mbeslot_right_apply_p25p2_rc4(dsd_state* state, mbe_frame_ctx_t* frame_ctx) {
-    if (!(state->payload_algidR == 0xAA && state->RR != 0 && DSD_SYNC_IS_P25P2(state->synctype))) {
+    if (!(state->payload_algidR == 0xAA && dsd_key_scalar_present(state, 1) && DSD_SYNC_IS_P25P2(state->synctype))) {
         return;
     }
 

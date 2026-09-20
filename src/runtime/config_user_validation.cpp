@@ -7,9 +7,11 @@
  * Validation and diagnostics for INI-based user configuration.
  */
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/lrrp_ports.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/path_policy.h>
@@ -105,8 +107,8 @@ validate_double_entry_value(const dsdcfg_schema_entry_t* entry, const char* val,
 }
 
 static void
-validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
-                     const char* diag_section, const char* diag_key) {
+validate_standard_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
+                              int line_num, const char* diag_section, const char* diag_key) {
     if (!entry || !val || !diags) {
         return;
     }
@@ -148,6 +150,23 @@ validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg
 
         default: break;
     }
+}
+
+static void
+validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
+                     const char* diag_section, const char* diag_key) {
+    if (!entry || !val || !diags) {
+        return;
+    }
+    if (strcmp(entry->section, "input") == 0 && strncmp(entry->key, "airspy_", 7) == 0) {
+        dsd_airspy_config config;
+        dsd_airspy_config_defaults(&config);
+        if (dsd_airspy_config_set(&config, entry->key, val) != 0) {
+            dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, "Invalid Airspy setting");
+        }
+        return;
+    }
+    validate_standard_entry_value(entry, val, diags, line_num, diag_section, diag_key);
 }
 
 static int
@@ -351,12 +370,26 @@ validate_composed_lrrp_ports(const dsdneoUserConfig* cfg, const char* section, c
     }
 }
 
+/* INT keys only get a schema window check, and this key's window has to start at 0 so the
+   always-emitted default validates. A 1..999 cap therefore passes the schema walk while the
+   engine treats it as disabled, so say so here. A warning, not an error: the value loads. */
+static void
+validate_composed_scan_max_visit_ms(const dsdneoUserConfig* cfg, const char* section, const char* key,
+                                    dsdcfg_diagnostics_t* diags) {
+    if (!cfg || !diags || cfg->trunk_scan_max_visit_ms <= 0 || cfg->trunk_scan_max_visit_ms >= 1000) {
+        return;
+    }
+    dsdcfg_diags_add(diags, DSDCFG_DIAG_WARNING, 0, section ? section : "trunking", key ? key : "scan_max_visit_ms",
+                     "scan_max_visit_ms below 1000 ms is ignored; use 0 to disable or 1000..3600000");
+}
+
 static void
 validate_composed_config_base(const dsdneoUserConfig* cfg, dsdcfg_diagnostics_t* diags) {
     validate_composed_trunk_scan_requirements(cfg, "trunk_scan", "targets_csv", diags);
     validate_composed_trunk_scan_channel_map_conflict(cfg, "trunking", "chan_csv", diags);
     validate_composed_trunk_scan_p25_bandplan_conflict(cfg, "trunking", "p25_bandplan_csv", diags);
     validate_composed_lrrp_ports(cfg, "mode", "dmr_lrrp_ports", diags);
+    validate_composed_scan_max_visit_ms(cfg, "trunking", "scan_max_visit_ms", diags);
 }
 
 static void
@@ -368,6 +401,7 @@ validate_composed_profile_config(const char* profile_name, const dsdneoUserConfi
     validate_composed_trunk_scan_channel_map_conflict(cfg, section, "trunking.chan_csv", diags);
     validate_composed_trunk_scan_p25_bandplan_conflict(cfg, section, "trunking.p25_bandplan_csv", diags);
     validate_composed_lrrp_ports(cfg, section, "mode.dmr_lrrp_ports", diags);
+    validate_composed_scan_max_visit_ms(cfg, section, "trunking.scan_max_visit_ms", diags);
 }
 
 static void

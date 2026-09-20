@@ -96,6 +96,12 @@ if [[ ${#TARGETS[@]} -eq 0 ]]; then
   TARGETS=(src include apps tests tools .github/workflows)
 fi
 
+# Exercise the local guardrails before trusting a strict scan. Fixtures live
+# outside the scan targets because they intentionally contain violations.
+if [[ $STRICT -eq 1 && $CUSTOM_CONFIGS -eq 0 ]]; then
+  semgrep --test --metrics=off --disable-version-check --config semgrep/dsd-neo.yml semgrep/dsd-neo.cpp
+fi
+
 # Semgrep's default semgrepignore excludes test directories when they are
 # passed as directories. Expand directory targets to tracked files so repo
 # guardrails with /tests/** paths are enforced in full local/CI runs.

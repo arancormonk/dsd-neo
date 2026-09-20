@@ -1,3 +1,5 @@
+#include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/core/call_state.h>
 // SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
@@ -8,6 +10,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
@@ -16,6 +19,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
@@ -29,6 +33,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -37,11 +42,10 @@
 #include <string.h>
 #include "services.h"
 
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/state_ext.h"
-#include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/io/rtl_stream_fwd.h"
-#include "dsd-neo/platform/sockets.h"
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/io/rtl_stream_fwd.h>
+#include <dsd-neo/platform/sockets.h>
 
 void
 dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
@@ -155,6 +159,7 @@ static uint32_t g_chan_import_chan[4];
 static long int g_chan_import_freq[4];
 /* Per-row names, NULL for a row the file leaves unnamed. */
 static const char* g_chan_import_name[4];
+static dsd_scan_mode g_chan_import_mode[4];
 /* Per-row key seed: set entries load a one-slot key set into the row. */
 static int g_chan_import_has_key[4];
 static unsigned long long g_chan_import_key[4];
@@ -177,6 +182,7 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) {
         // Names are positional: the row index is the slot the frequency just took.
         const size_t row = (size_t)state->lcn_freq_count;
         state->trunk_lcn_freq[state->lcn_freq_count++] = g_chan_import_freq[i];
+        (void)dsd_channel_mode_set(state, row, g_chan_import_mode[i]);
         if (g_chan_import_name[i] != NULL) {
             (void)dsd_state_trunk_lcn_name_set(state, row, g_chan_import_name[i]);
         }
@@ -284,6 +290,53 @@ dsd_engine_p25_bandplan_export(const dsd_opts* opts, const dsd_state* state, con
     return g_bandplan_export_result;
 }
 
+/* One candidate must be adopted without a second load. */
+struct dsd_source_alias_store {
+    int marker;
+};
+
+static dsd_source_alias_store g_src_candidate;
+static int g_src_load_result, g_src_load_calls, g_src_install_calls, g_src_free_calls, g_src_clear_calls;
+static size_t g_src_count;
+static dsd_source_alias_store* g_src_installed;
+
+int
+dsd_source_alias_load(const char* path, dsd_source_alias_store** out) {
+    (void)path;
+    g_src_load_calls++;
+    if (g_src_load_result != 0) {
+        return g_src_load_result;
+    }
+    *out = &g_src_candidate;
+    return 0;
+}
+
+size_t
+dsd_source_alias_store_count(const dsd_source_alias_store* store) {
+    return store == &g_src_candidate ? g_src_count : 0;
+}
+
+void
+dsd_source_alias_install(dsd_state* state, dsd_source_alias_store* store) {
+    (void)state;
+    g_src_install_calls++;
+    g_src_installed = store;
+}
+
+void
+dsd_source_alias_store_free(dsd_source_alias_store* store) {
+    if (store == &g_src_candidate) {
+        g_src_free_calls++;
+    }
+}
+
+int
+dsd_source_alias_clear(dsd_state* state) {
+    (void)state;
+    g_src_clear_calls++;
+    return 0;
+}
+
 int
 dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
@@ -301,13 +354,6 @@ dsd_tg_policy_clear(dsd_state* state) {
     (void)state;
     g_tg_policy_clear_calls++;
     return 0;
-}
-
-/* The throwaway import state may carry module extensions; nothing under test
- * allocates one, so releasing it is a no-op here. */
-void
-dsd_state_ext_free_all(dsd_state* state) {
-    (void)state;
 }
 
 int
@@ -444,6 +490,18 @@ rtl_stream_start(RtlSdrContext* ctx) {
     note_rtl_lifecycle_call();
     g_rtl_start_calls++;
     return g_rtl_start_result;
+}
+
+int
+rtl_stream_airspy_controls(const dsd_airspy_config* config) {
+    (void)config;
+    return 0;
+}
+
+int
+rtl_stream_airspy_info(dsd_airspy_info* info) {
+    (void)info;
+    return 0;
 }
 
 int
@@ -851,9 +909,9 @@ test_file_network_and_import_failure_contracts(void) {
 
     g_chan_import_result = -1;
     rc |= expect_int("channel import failure", svc_import_channel_map(&opts, &state, "channels.csv"), -1);
-    rc |= expect_str("channel import path stored", opts.chan_in_file, "channels.csv");
+    rc |= expect_str("failed channel import keeps path", opts.chan_in_file, "");
     rc |= expect_int("group import failure", svc_import_group_list(&opts, &state, "groups.csv"), -1);
-    rc |= expect_str("group import path stored", opts.group_in_file, "groups.csv");
+    rc |= expect_str("failed group import keeps path", opts.group_in_file, "");
     rc |= expect_int("keys dec import failure", svc_import_keys_dec(&opts, &state, "keys.csv"), -1);
     rc |= expect_str("keys dec import path stored", opts.key_in_file, "keys.csv");
     rc |= expect_int("keys hex import failure", svc_import_keys_hex(&opts, &state, "keys.hex"), -1);
@@ -872,6 +930,7 @@ test_channel_map_reimport_replaces_previous_map(void) {
 
     g_chan_import_result = 0;
     g_chan_import_count = 3;
+    g_chan_import_mode[0] = DSD_SCAN_MODE_NXDN48;
     g_chan_import_chan[0] = 101;
     g_chan_import_freq[0] = 851000000L;
     g_chan_import_chan[1] = 102;
@@ -914,7 +973,7 @@ test_channel_map_reimport_replaces_previous_map(void) {
     rc |= expect_int("failed reimport rc", svc_import_channel_map(&opts, &state, "bad.csv"), -1);
     rc |= expect_int("failed reimport preserves lcn count", state.lcn_freq_count, 2);
     rc |= expect_int("failed reimport preserves chan", (int)state.trunk_chan_map[201], 860000000);
-    rc |= expect_str("failed reimport still stores path", opts.chan_in_file, "bad.csv");
+    rc |= expect_str("failed reimport keeps path", opts.chan_in_file, "b.csv");
 
     // The importer reports success for any file it can open, so a mispicked CSV
     // parses to an empty map. Adopting that would replace the live map with
@@ -960,10 +1019,12 @@ test_channel_map_reimport_replaces_previous_map(void) {
     // the names it had, and the imported one is still released exactly once. The count of
     // frees is what ASan checks; a copy instead of a move would read back freed memory here.
     g_chan_import_count = 0;
+    const dsd_scan_mode kept_mode = dsd_channel_mode_get(&state, 0U);
     g_chan_import_name_without_row = "Orphan";
     rc |= expect_int("named empty import refused", svc_import_channel_map(&opts, &state, "empty.csv"), -1);
     rc |= expect_str("refused adopt keeps the live names", dsd_state_trunk_lcn_name_get(&state, 0U), "Repeater 1");
     g_chan_import_name_without_row = NULL;
+    rc |= expect_int("refused adopt keeps mode", dsd_channel_mode_get(&state, 0U), kept_mode);
 
     dsd_state_trunk_lcn_free(&state);
     return rc;
@@ -1029,6 +1090,7 @@ test_clear_services_unload_what_the_importers_loaded(void) {
 
     rc |= expect_int("chan map clear ok", svc_clear_channel_map(&opts, &state), 0);
     rc |= expect_str("chan map clear forgets the path", opts.chan_in_file, "");
+    rc |= expect_int("chan map clear releases modes", dsd_channel_modes_present(&state), 0);
     rc |= expect_int("chan map clear empties the map", (int)state.trunk_chan_map[101], 0);
     rc |= expect_int("chan map clear empties used count", (int)state.trunk_chan_map_used_count, 0);
     rc |= expect_int("chan map clear empties lcn list", state.lcn_freq_count, 0);
@@ -1205,9 +1267,50 @@ test_p25_bandplan_import_and_export_services(void) {
     return rc;
 }
 
+static int
+test_source_alias_services(void) {
+    int rc = 0;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->src_in_file, sizeof opts->src_in_file, "%s", "first.csv");
+    rc |= expect_int("source null path", svc_import_src_list(opts, state, NULL), -1);
+    rc |= expect_int("source empty path", svc_import_src_list(opts, state, ""), -1);
+    rc |= expect_int("source empty skips load", g_src_load_calls, 0);
+    g_src_load_result = -1;
+    rc |= expect_int("source load failure", svc_import_src_list(opts, state, "missing.csv"), -1);
+    rc |= expect_int("source failure skips install", g_src_install_calls, 0);
+    rc |= expect_str("source failure preserves path", opts->src_in_file, "first.csv");
+    g_src_load_result = 0;
+    g_src_count = 0;
+    rc |= expect_int("source zero rows accepted", svc_import_src_list(opts, state, "empty.csv"), 0);
+    rc |= expect_int("source empty adopted", g_src_free_calls, 0);
+    rc |= expect_int("source empty installed", g_src_install_calls, 1);
+    rc |= expect_str("source empty updates path", opts->src_in_file, "empty.csv");
+    g_src_count = 2;
+    opts->trunk_scan_enabled = 1;
+    rc |= expect_int("source allowed under trunk scan", svc_import_src_list(opts, state, "good.csv"), 0);
+    rc |= expect_int("source loads once per request", g_src_load_calls, 3);
+    rc |= expect_int("source installed per success", g_src_install_calls, 2);
+    rc |= expect_int("source adopts same candidate", g_src_installed == &g_src_candidate, 1);
+    rc |= expect_int("source adopted candidate not freed", g_src_free_calls, 0);
+    rc |= expect_str("source success path", opts->src_in_file, "good.csv");
+    rc |= expect_int("source clear", svc_clear_src_list(opts, state), 0);
+    rc |= expect_int("source clear calls core", g_src_clear_calls, 1);
+    rc |= expect_str("source clear path", opts->src_in_file, "");
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_source_alias_services();
     rc |= test_mute_and_protocol_inversion_toggles();
     rc |= test_lrrp_event_log_and_history_state();
     rc |= test_p2_trunking_and_slot_controls();
@@ -1223,4 +1326,18 @@ main(void) {
     rc |= test_clear_services_unload_what_the_importers_loaded();
     rc |= test_p25_bandplan_import_and_export_services();
     return rc ? 1 : 0;
+}
+
+int
+dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
+                                  int signaled_id, int effective_id, int available, int fallback) {
+    (void)state;
+    (void)slot;
+    (void)epoch;
+    (void)source;
+    (void)signaled_id;
+    (void)effective_id;
+    (void)available;
+    (void)fallback;
+    return 0;
 }

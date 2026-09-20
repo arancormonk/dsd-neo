@@ -25,6 +25,8 @@ extern "C" {
 
 /** Activate imported key material for an explicit decoder slot. */
 void keyring_activate_slot(dsd_opts* opts, dsd_state* state, int slot);
+/** Storage index used by legacy destination-key imports and autoload. */
+uint16_t keyring_destination_index(uint32_t destination);
 /** Return whether the first required AES segments exist for an imported key ID. */
 int keyring_aes_segments_complete(const dsd_state* state, int key_id, unsigned int required_segments);
 

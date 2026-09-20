@@ -6,14 +6,22 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -22,6 +30,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
@@ -37,6 +46,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -50,16 +60,19 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/provoice/provoice.h>
+#include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
 #include <limits.h>
 #include <mbelib-neo/mbelib.h>
@@ -69,14 +82,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "dsd-neo/core/dibit.h"
-#include "dsd-neo/core/key_set.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_ext.h"
-#include "dsd-neo/core/state_fwd.h"
-#include "dsd-neo/platform/sockets.h"
-#include "dsd-neo/runtime/trunk_tuning_hooks.h"
 #include "engine_hooks_install.h"
 
 struct CODEC2;
@@ -361,6 +366,20 @@ import_group_csv_if_needed(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* Source labels apply to conventional decode as well as trunking. */
+static int
+import_src_csv_if_needed(dsd_opts* opts, dsd_state* state) {
+    if (opts->src_in_file[0] != '\0' && !dsd_source_alias_loaded(state)) {
+        if (csvSrcImport(opts, state) != 0) {
+            LOG_WARN("Unable to load source ID list '%s'; continuing without imported source aliases.\n",
+                     opts->src_in_file);
+            return 0;
+        }
+        LOG_INFO("NOTICE: Imported source ID list from %s\n", opts->src_in_file);
+    }
+    return 0;
+}
+
 static int
 import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -372,7 +391,10 @@ import_trunking_csvs_if_needed(dsd_opts* opts, dsd_state* state) {
     if (import_global_p25_bandplan_if_needed(opts, state) != 0) {
         return -1;
     }
-    return import_group_csv_if_needed(opts, state);
+    if (import_group_csv_if_needed(opts, state) != 0) {
+        return -1;
+    }
+    return import_src_csv_if_needed(opts, state);
 }
 
 static void
@@ -692,6 +714,8 @@ dsd_engine_setup_parse_tcp_input(dsd_opts* opts, dsd_state* state) {
             dsd_sleep_ms(1000);
             continue;
         }
+        const int code = dsd_socket_get_error();
+        dsd_input_failure_report(dsd_input_failure_classify_socket(code), code);
         LOG_ERROR("TCP Connection Failure.\n");
         return -1;
     }
@@ -1165,6 +1189,9 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     dsd_engine_setup_enable_iq_replay_if_selected(opts);
     dsd_engine_setup_parse_rtltcp_input(opts);
     dsd_engine_setup_parse_soapy_input(opts);
+    if (dsd_normalize_airspy_input_spec(opts) != 0) {
+        return -1;
+    }
     if (dsd_engine_setup_parse_rtl_input(opts, state) != 0) {
         return -1;
     }
@@ -1359,15 +1386,35 @@ no_carrier_step_retune(const dsd_opts* opts, dsd_state* state, long int freq, in
 // call still open as an explicit release rather than a sync loss.
 static int
 no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, time_t now) {
-    if (opts->scan_voice_only == 1 && state->scan_voice_gate_sync_m >= 0.0) {
+    /* The per-visit cap (issue #507) outranks every reason to stay, because every reason to stay
+     * can outlast it: sync refreshes the hangtime anchor for as long as a repeater transmits, and
+     * the voice gate holds for as long as media keeps arriving. Opt-in, so with the cap off this
+     * is a no-op and the rules below decide alone. */
+    if (dsd_engine_scan_visit_expired(opts, state, dsd_time_now_monotonic_s())) {
+        return 1;
+    }
+    if (dsd_scan_voice_gate_owns_step(opts, state)) {
         return dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s());
     }
     return (now - state->last_cc_sync_time) > opts->trunk_hangtime;
 }
 
+static void
+no_carrier_rearm_abandoned_scan(const dsd_opts* opts, dsd_state* state, time_t now) {
+    if (opts->scan_max_visit_ms < 1000 && opts->scan_voice_only != 1) {
+        return;
+    }
+    /* The receiver stayed on this row. An expired cap or voice gate would keep unwinding
+     * every decoded frame until a tune succeeds. Reopen its windows so decoding can resume
+     * and another attempt waits an interval, including when no tuner is available. */
+    state->last_cc_sync_time = now;
+    state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
+}
+
 static int
-no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, time_t now) {
-    if (opts->scanner_mode != 1 || !no_carrier_scanner_step_is_due(opts, state, now)) {
+no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t now) {
+    if (opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || !no_carrier_scanner_step_is_due(opts, state, now)) {
         return 0;
     }
     // An operator hold pauses the rotation where it stands. The dwell timer is left alone:
@@ -1376,6 +1423,13 @@ no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, t
         return 0;
     }
 
+    if (dsd_channel_modes_present(state)) {
+        const int result = dsd_engine_channel_scan_step(opts, state);
+        if (result < 0) {
+            no_carrier_rearm_abandoned_scan(opts, state, now);
+        }
+        return result > 0;
+    }
     no_carrier_reset_nxdn_scan_markers(state);
     if (state->lcn_freq_roll >= state->lcn_freq_count) {
         state->lcn_freq_roll = 0;
@@ -1399,6 +1453,7 @@ no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, t
     // reacquirable by whatever decodes next -- on a different frequency.
     int moved = 0;
     if (freq != 0 && no_carrier_step_retune(opts, state, freq, &moved) != 0) {
+        no_carrier_rearm_abandoned_scan(opts, state, now);
         return moved;
     }
     state->lcn_freq_roll++;
@@ -1417,7 +1472,8 @@ no_carrier_is_cc_return_due(const dsd_opts* opts, const dsd_state* state, time_t
     if ((opts->trunk_enable != 1) || (opts->trunk_is_tuned != 1)) {
         return 0;
     }
-    if (p25_sm_vc_reacquire_hold_active(p25_sm_get_ctx(), opts, state, dsd_time_now_monotonic_s())) {
+    if (dsd_trunk_p25_recovery_allowed(opts, state)
+        && p25_sm_vc_reacquire_hold_active(p25_sm_get_ctx(), opts, state, dsd_time_now_monotonic_s())) {
         return 0;
     }
 
@@ -1427,7 +1483,8 @@ no_carrier_is_cc_return_due(const dsd_opts* opts, const dsd_state* state, time_t
 
 static int
 no_carrier_has_mapped_dmr_rest_channel(const dsd_state* state) {
-    if (state->dmr_rest_channel < 0 || state->dmr_rest_channel >= DSD_TRUNK_CHAN_MAP_SIZE) {
+    if (state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25 || state->dmr_rest_channel < 0
+        || state->dmr_rest_channel >= DSD_TRUNK_CHAN_MAP_SIZE) {
         return 0;
     }
     return (state->trunk_chan_map[state->dmr_rest_channel] != 0) ? 1 : 0;
@@ -1484,6 +1541,9 @@ no_carrier_clear_stale_p25_return_hints_after_generic_activity(const dsd_opts* o
     if (opts->trunk_enable != 1) {
         return;
     }
+    if (state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25) {
+        return; // A raw false sync cannot erase validated P25 ownership or return hints.
+    }
     if (!no_carrier_generic_trunk_synctype(state->lastsynctype)
         && !no_carrier_generic_trunk_synctype(state->synctype)) {
         return;
@@ -1494,6 +1554,7 @@ no_carrier_clear_stale_p25_return_hints_after_generic_activity(const dsd_opts* o
     state->p2_sysid = 0;
     state->p2_rfssid = 0;
     state->p2_siteid = 0;
+    state->p25_cc_is_tdma = 2; // The shared CC anchor no longer identifies a P25 session.
     state->p25_sys_is_tdma = 0;
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
@@ -1509,6 +1570,9 @@ static int
 no_carrier_is_p25_trunk_return(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state || opts->trunk_enable != 1 || !no_carrier_p25_frames_enabled(opts)) {
         return 0;
+    }
+    if (state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25) {
+        return 1;
     }
     if (no_carrier_has_mapped_dmr_rest_channel(state)) {
         return 0;
@@ -1618,7 +1682,7 @@ no_carrier_return_to_cc_correlated(dsd_opts* opts, dsd_state* state, uint64_t* o
 static int
 no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, int p25_return,
                                    int clear_generic_p25_alias, int* helper_attempted,
-                                   dsd_trunk_tune_result* helper_result) {
+                                   dsd_trunk_tune_result* helper_result, uint64_t* out_request_id) {
     if (helper_result) {
         *helper_result = DSD_TRUNK_TUNE_RESULT_OK;
     }
@@ -1641,6 +1705,7 @@ no_carrier_try_helper_return_to_cc(dsd_opts* opts, dsd_state* state, long cc, in
 
     uint64_t tune_request_id = 0U;
     dsd_trunk_tune_result tune_result = no_carrier_return_to_cc_correlated(opts, state, &tune_request_id);
+    *out_request_id = tune_request_id;
     if (tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
         (void)p25_sm_await_pending_cc_tune(p25_sm_get_ctx(), opts, state, tune_request_id, "no-carrier");
     } else if (tune_result == DSD_TRUNK_TUNE_RESULT_OK) {
@@ -1678,7 +1743,8 @@ no_carrier_generic_recovery_is_current(const dsd_state* state, long cc, dsd_trun
 }
 
 static int
-no_carrier_accept_generic_gate_recovery(const dsd_opts* opts, dsd_state* state, long cc) {
+no_carrier_accept_generic_gate_recovery(const dsd_opts* opts, dsd_state* state, long cc, uint64_t* out_request_id) {
+    *out_request_id = s_no_carrier_generic_recovery_request_id;
     no_carrier_clear_generic_recovery_tracking();
     no_carrier_sync_helper_tune_cache(opts, state, cc);
     state->edacs_tuned_lcn = -1;
@@ -1688,7 +1754,7 @@ no_carrier_accept_generic_gate_recovery(const dsd_opts* opts, dsd_state* state, 
 
 static int
 no_carrier_try_generic_gate_recovery(dsd_opts* opts, dsd_state* state, long cc, int p25_return,
-                                     int clear_generic_p25_alias, int* helper_attempted) {
+                                     int clear_generic_p25_alias, int* helper_attempted, uint64_t* out_request_id) {
     if (p25_return) {
         return 0;
     }
@@ -1703,7 +1769,7 @@ no_carrier_try_generic_gate_recovery(dsd_opts* opts, dsd_state* state, long cc, 
         const uint64_t unresolved_request_id = dsd_trunk_tuning_pending_request();
         if (unresolved_request_id == 0U) {
             if (no_carrier_generic_recovery_is_current(state, cc, status)) {
-                return no_carrier_accept_generic_gate_recovery(opts, state, cc);
+                return no_carrier_accept_generic_gate_recovery(opts, state, cc, out_request_id);
             }
             /* The old target failed, changed, or was superseded by a newer
              * completed tune. Establish a fresh boundary for the current CC. */
@@ -1752,7 +1818,7 @@ no_carrier_try_generic_gate_recovery(dsd_opts* opts, dsd_state* state, long cc, 
         return 0;
     }
 
-    return no_carrier_accept_generic_gate_recovery(opts, state, cc);
+    return no_carrier_accept_generic_gate_recovery(opts, state, cc, out_request_id);
 }
 
 static int
@@ -1833,8 +1899,48 @@ no_carrier_apply_p25_cc_symbolrate(dsd_opts* opts, dsd_state* state) {
     no_carrier_enable_p25_cc_slots(opts);
 }
 
+static int
+no_carrier_tick_dmr_owner(dsd_opts* opts, dsd_state* state) {
+    if (dsd_trunk_dmr_recovery_allowed(opts, state)) {
+        if (!p25_sm_tick_guard_try_enter()) {
+            return 1;
+        }
+        dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+        if (dmr_sm_get_state(ctx) == DMR_SM_TUNED || ctx->cc_tune_request_id != 0U) {
+            /* The DMR owner applies its grant/voice deadlines and tracks the
+             * accepted return; generic/P25 recovery must not race it. */
+            dmr_sm_tick_ctx(ctx, opts, state);
+            p25_sm_tick_guard_leave();
+            return 1;
+        }
+        p25_sm_tick_guard_leave();
+    }
+    return 0;
+}
+
+static void
+no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accepted_cc_return,
+                            int clear_failed_helper_state, int clear_unreturnable_voice_state, uint64_t request_id) {
+    if (accepted_cc_return || clear_failed_helper_state || clear_unreturnable_voice_state) {
+        // An accepted return actually retuned to the control channel, so any call still open ended
+        // with that hop rather than with the fade that prompted it. The other two paths never
+        // changed frequency -- the helper failed, or there was no control channel to return to --
+        // so for them the carrier loss really is the end reason.
+        no_carrier_clear_voice_tune_state(opts, state,
+                                          accepted_cc_return ? DSD_CALL_END_EXPLICIT : DSD_CALL_END_SYNC_LOSS);
+        if (accepted_cc_return && dsd_trunk_dmr_recovery_allowed(opts, state)) {
+            dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, cc, request_id);
+        }
+        (void)dsd_recent_activity_clear_all(state);
+        state->is_con_plus = 0;
+    }
+}
+
 static void
 no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state, time_t now) {
+    if (no_carrier_tick_dmr_owner(opts, state)) {
+        return;
+    }
     if (!no_carrier_is_cc_return_due(opts, state, now)) {
         return;
     }
@@ -1842,6 +1948,7 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
     long cc = no_carrier_select_control_channel(state);
     const int p25_return = no_carrier_is_p25_trunk_return(opts, state);
     const int clear_generic_p25_alias = no_carrier_should_clear_generic_p25_alias(state, cc, p25_return);
+    uint64_t cc_return_request_id = 0U;
     int accepted_cc_return = 0;
     int clear_failed_helper_state = 0;
     int clear_unreturnable_voice_state = 0;
@@ -1850,14 +1957,14 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
         dsd_trunk_tune_result p25_helper_result = DSD_TRUNK_TUNE_RESULT_OK;
         int generic_helper_attempted = 0;
         if (no_carrier_try_helper_return_to_cc(opts, state, cc, p25_return, clear_generic_p25_alias,
-                                               &p25_helper_attempted, &p25_helper_result)) {
+                                               &p25_helper_attempted, &p25_helper_result, &cc_return_request_id)) {
             no_carrier_enable_p25_cc_slots_if_known(opts, state);
             accepted_cc_return = 1;
         } else if (no_carrier_helper_result_is_deferred(p25_helper_attempted, p25_helper_result)) {
             /* Another P25 transition owns the guard; leave the staged
              * voice state intact so the main loop can retry safely. */
         } else if (no_carrier_try_generic_gate_recovery(opts, state, cc, p25_return, clear_generic_p25_alias,
-                                                        &generic_helper_attempted)) {
+                                                        &generic_helper_attempted, &cc_return_request_id)) {
             accepted_cc_return = 1;
         } else if (!generic_helper_attempted
                    && no_carrier_apply_direct_cc_return(opts, state, cc, p25_helper_attempted)) {
@@ -1877,16 +1984,8 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
         clear_unreturnable_voice_state = 1;
     }
 
-    if (accepted_cc_return || clear_failed_helper_state || clear_unreturnable_voice_state) {
-        // An accepted return actually retuned to the control channel, so any call still open ended
-        // with that hop rather than with the fade that prompted it. The other two paths never
-        // changed frequency -- the helper failed, or there was no control channel to return to --
-        // so for them the carrier loss really is the end reason.
-        no_carrier_clear_voice_tune_state(opts, state,
-                                          accepted_cc_return ? DSD_CALL_END_EXPLICIT : DSD_CALL_END_SYNC_LOSS);
-        (void)dsd_recent_activity_clear_all(state);
-        state->is_con_plus = 0;
-    }
+    no_carrier_finish_cc_return(opts, state, cc, accepted_cc_return, clear_failed_helper_state,
+                                clear_unreturnable_voice_state, cc_return_request_id);
 }
 
 static void
@@ -2119,6 +2218,8 @@ no_carrier_unload_keys_if_needed(dsd_state* state) {
     state->R = 0;
     state->RR = 0;
     state->K = 0;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = 0;
+    state->basic_key_present = 0;
     state->K1 = 0;
     state->K2 = 0;
     state->K3 = 0;
@@ -2130,6 +2231,7 @@ no_carrier_unload_keys_if_needed(dsd_state* state) {
     DSD_MEMSET(state->A4, 0, sizeof(state->A4));
     DSD_MEMSET(state->aes_key_loaded, 0, sizeof(state->aes_key_loaded));
     DSD_MEMSET(state->aes_key_segments, 0, sizeof(state->aes_key_segments));
+    DSD_SECURE_ZERO(state->aes_key, sizeof(state->aes_key));
     state->H = 0;
 }
 
@@ -2144,6 +2246,7 @@ no_carrier_reset_dmr_misc_state(dsd_state* state) {
     DSD_MEMSET(state->p25_apx_alias_rx, 0, sizeof(state->p25_apx_alias_rx));
     DSD_MEMSET(state->p25_l3h_alias_phase1, 0, sizeof(state->p25_l3h_alias_phase1));
     DSD_MEMSET(state->data_header_valid, 0, sizeof(state->data_header_valid));
+    DSD_MEMSET(state->data_header_crc_invalid, 0, sizeof(state->data_header_crc_invalid));
     DSD_MEMSET(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));
     DSD_MEMSET(state->cap_plus_block_num, 0, sizeof(state->cap_plus_block_num));
     DSD_MEMSET(state->data_block_crc_valid, 0, sizeof(state->data_block_crc_valid));
@@ -2192,13 +2295,15 @@ no_carrier_reset_p25_metrics_and_cache(dsd_state* state) {
 }
 
 static int
-engine_trunk_tuning_owner_active(const dsd_opts* opts) {
-    return opts && (opts->trunk_enable == 1 || opts->trunk_scan_enabled == 1);
+engine_trunk_tuning_owner_active(const dsd_opts* opts, const dsd_state* state) {
+    return opts
+           && (opts->trunk_enable == 1 || opts->trunk_scan_enabled == 1
+               || (opts->scanner_mode == 1 && dsd_channel_modes_present(state)));
 }
 
 static void
-no_carrier_retire_inactive_tune_failures(const dsd_opts* opts) {
-    if (!engine_trunk_tuning_owner_active(opts)) {
+no_carrier_retire_inactive_tune_failures(const dsd_opts* opts, const dsd_state* state) {
+    if (!engine_trunk_tuning_owner_active(opts, state)) {
         dsd_trunk_tuning_retire_failed_requests();
     }
 }
@@ -2316,7 +2421,14 @@ void
 noCarrier(dsd_opts* opts, dsd_state* state) {
     const time_t now = time(NULL);
 
-    no_carrier_retire_inactive_tune_failures(opts);
+    if (opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && dsd_channel_modes_present(state)) {
+        /* Typed rows use tracked tunes, bypassing the legacy scan caches. */
+        s_last_rigctl_freq = -1;
+#ifdef USE_RADIO
+        s_last_rtl_freq = 0;
+#endif
+    }
+    no_carrier_retire_inactive_tune_failures(opts, state);
 
 #ifdef USE_RADIO
     maybe_request_rtl_fsk_reacquire_on_no_sync(opts, state, now);
@@ -2334,8 +2446,19 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     // calls as it retunes, so the finalizer has to know whether the frequency moved out from under
     // whatever it is about to close.
     const int scanner_retuned = no_carrier_step_scanner_mode_if_needed(opts, state, now);
+    if (dsd_channel_modes_present(state) && (scanner_retuned || dsd_engine_channel_scan_waiting(state))) {
+        /* Row ownership ends outgoing calls at commit/failure with an explicit
+         * hop reason. A pending tune must not close them as sync loss first. */
+        return;
+    }
     no_carrier_return_to_control_channel_if_needed(opts, state, now);
     no_carrier_finalize_canonical_calls(opts, state, scanner_retuned);
+    dsd_engine_reset_no_carrier_state(opts, state);
+}
+
+void
+dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
+    const time_t now = time(NULL);
     no_carrier_clear_stale_p25_return_hints_after_generic_activity(opts, state);
     no_carrier_reset_dibit_and_dmr_buffers(state);
     no_carrier_close_mbe_outputs_if_needed(opts, state);
@@ -2359,7 +2482,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     no_carrier_clear_stale_follow_state_if_needed(opts, state, now);
     no_carrier_reset_ysf_and_dstar_strings(state);
     no_carrier_reset_m17_and_sample_buffers(state);
-} //nocarrier
+}
 
 static int
 live_scanner_apply_audio_gain(dsd_opts* opts, dsd_state* state) {
@@ -2490,11 +2613,14 @@ static void
 live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_max, int* last_min,
                                    uint64_t* frame_tune_generation) {
     while (state->synctype != DSD_SYNC_NONE) {
+        if (!dsd_engine_channel_scan_service_sync(opts, state)) {
+            break;
+        }
         p25_sm_tick_guard_enter();
         const uint64_t dispatch_generation =
             frame_tune_generation ? *frame_tune_generation : dsd_trunk_tuning_generation();
         const int frame_dispatchable =
-            dsd_trunk_tuning_frame_is_dispatchable(dispatch_generation, engine_trunk_tuning_owner_active(opts));
+            dsd_trunk_tuning_frame_is_dispatchable(dispatch_generation, engine_trunk_tuning_owner_active(opts, state));
         if (!frame_tune_generation || frame_dispatchable) {
             processFrame(opts, state);
         } else {
@@ -2514,7 +2640,23 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
                 break;
             }
         }
+        /* A busy legacy -Y row can keep syncing indefinitely. Maintain the visit clock
+         * independently of the voice gate and return to noCarrier() when it expires. */
+        dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
+        if (dsd_engine_scan_visit_expired(opts, state, dsd_time_now_monotonic_s())) {
+            /* noCarrier() owns the hop, and it only runs once this loop exits. Dropping sync is how
+             * the voice-gate escape above hands control back, and the cap needs the same door: a
+             * row that keeps syncing would otherwise never let the outer loop reach the step. */
+            state->synctype = DSD_SYNC_NONE;
+            break;
+        }
         dsd_runtime_pump_controls(opts, state);
+        if (!dsd_engine_channel_scan_service_sync(opts, state)) {
+            break;
+        }
+        /* Refresh after controls, even with the voice gate off: continuous sync
+         * keeps moving the legacy hangtime anchor throughout this inner loop. */
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
         if (frame_tune_generation) {
             *frame_tune_generation = dsd_trunk_tuning_generation();
         }
@@ -2532,11 +2674,31 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
     while (!dsd_exitflag_load()) {
         dsd_runtime_pump_controls(opts, state);
         p25_sm_try_tick(opts, state);
+        if (opts->trunk_scan_enabled != 1 && p25_sm_tick_guard_try_enter()) {
+            if (dsd_trunk_dmr_recovery_allowed(opts, state)) {
+                dmr_sm_tick_ctx(dmr_sm_get_ctx(), opts, state);
+            }
+            p25_sm_tick_guard_leave();
+        }
         dsd_trunk_scan_hook_tick(opts, state);
         dsd_scan_voice_gate_tick(opts, state, 0, dsd_time_now_monotonic_s());
+        dsd_engine_scan_visit_tick(opts, state, dsd_time_now_monotonic_s());
         dsd_runtime_pump_controls(opts, state);
 
+        if (dsd_engine_channel_scan_pending(opts, state)) {
+            dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
+            dsd_sleep_ms(1);
+            continue;
+        }
         noCarrier(opts, state);
+        if (dsd_engine_channel_scan_pending(opts, state)) {
+            dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
+            dsd_sleep_ms(1);
+            continue;
+        }
+        /* noCarrier and pending-row commits can replace the visit anchors. Publish
+         * the incoming visit before getFrameSync starts emitting its snapshots. */
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
         frame_tune_generation = dsd_trunk_tuning_generation();
         state->synctype = getFrameSync(opts, state);
         live_scanner_update_thresholds(state, &last_max, &last_min);
@@ -2736,6 +2898,7 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
         }
     }
     dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_engine_channel_scan_leave(opts, state);
     autosave_user_config(opts, state);
     dsd_engine_cleanup_print_stats(state);
 
@@ -2931,6 +3094,7 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
         return -1;
     }
 
+    dsd_input_failure_clear();
     reset_device_io_caches();
     dsd_bootstrap_enable_ftz_daz_if_enabled();
     init_rrc_filter_memory();
@@ -2966,5 +3130,10 @@ ENGINE_OUT:
         hooks->stop(opts, state, hooks->context);
     }
     dsd_engine_cleanup(opts, state);
+    dsd_input_failure failure;
+    dsd_input_failure_get(&failure);
+    if (failure.kind == DSD_INPUT_FAILURE_DEVICE) {
+        rc = 1;
+    }
     return rc;
 }

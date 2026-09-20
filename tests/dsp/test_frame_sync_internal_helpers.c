@@ -9,14 +9,18 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <stdlib.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
@@ -1378,7 +1382,10 @@ test_manual_p25p2_c4fm_bypasses_profile_gating(void) {
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_NONE);
 
     opts.mod_p25p2_c4fm = 1;
+    assert(dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_P25) == 0);
+    assert(opts.mod_p25p2_c4fm == 1);
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P2_SYNC, 20) == DSD_SYNC_P25P2_POS);
+    dsd_scan_mode_leave(&opts, &state);
 }
 
 static void
@@ -2131,6 +2138,47 @@ test_sps_hunt_restores_learned_p25p1_cqpsk(void) {
  * estimate comes from raw un-derotated IQ and the sync-hamming candidate can only tie -- so the
  * hunt tries it on alternate visits to the profile instead.
  */
+/* Pin the acquisition schedule in symbol time: a default target visit must
+ * include a CQPSK trial even though the row enables both P25 phases. */
+static void
+test_trunk_scan_p25_probe_fits_visit(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = fake_output_rate_hz,
+                                                .apply_demod_profile = fake_apply_demod_profile};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    reset_fake_profile_capture();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_scan_enabled = 1;
+    opts->trunk_enable = 1;
+    state->rtl_ctx = (struct RtlSdrContext*)state;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
+    state->p25_p1_validated_rf_mod = -1;
+    const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(opts, state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    const double first_trial_ms = 1000.0 * dwell / 4800;
+    assert(first_trial_ms < DSD_TRUNK_SCAN_IDLE_DWELL_DEFAULT_MS);
+    assert(2.0 * first_trial_ms < DSD_TRUNK_SCAN_IDLE_DWELL_DEFAULT_MS);
+    state->sps_hunt_counter = dwell - 1;
+    assert(!frame_sync_no_sync_sps_hunt(opts, state));
+    assert(state->rf_mod == 0);
+    state->sps_hunt_counter = dwell;
+    assert(frame_sync_no_sync_sps_hunt(opts, state));
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(state->rf_mod == 1 && state->p25_p1_mod_probe_active);
+    assert(g_profile_cqpsk == 1 && g_profile_rate == 4800);
+    assert(g_profile_channel == DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    /* An unproductive CQPSK trial must still give Phase 2 its turn. */
+    state->sps_hunt_counter = dwell;
+    assert(frame_sync_no_sync_sps_hunt(opts, state));
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    dsd_scan_mode_leave(opts, state);
+    dsd_state_ext_free_all(state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    free(state);
+    free(opts);
+}
+
 static void
 test_p25p1_auto_hunt_alternates_cqpsk_probe(void) {
     static dsd_opts opts;
@@ -2923,8 +2971,57 @@ test_p25_trunk_tick_recency(void) {
 }
 #endif
 
+static void
+test_scan_class_matchers_and_no_sync(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->ssize = 36;
+    opts->msize = 15;
+    for (int m = DSD_SCAN_MODE_P25; m <= DSD_SCAN_MODE_M17; m++) {
+        assert(dsd_scan_mode_enter(opts, state, (dsd_scan_mode)m) == 0);
+        const int expected = (int)dsd_scan_mode_profile((dsd_scan_mode)m).sps_profile_index;
+        dsd_frame_sync_reset_acquisition(opts, state, 1);
+        for (int p = 0; p < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; p++) {
+            const int allowed = p == expected || (m == DSD_SCAN_MODE_P25 && p == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+            assert(dsd_frame_sync_test_sps_hunt_profile_has_candidate(opts, p) == allowed);
+        }
+        for (int n = 0; n < 120; n++) {
+            state->sps_hunt_counter =
+                dsd_frame_sync_sps_hunt_dwell_passes(opts, state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+            (void)frame_sync_no_sync_sps_hunt(opts, state);
+            assert(state->sps_hunt_idx == expected
+                   || (m == DSD_SCAN_MODE_P25 && state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4));
+        }
+        state->sps_hunt_idx = expected;
+        if (m != DSD_SCAN_MODE_P25) {
+            assert(dsd_frame_sync_test_try_protocol_matches(opts, state, P25P1_SYNC, 24) == DSD_SYNC_NONE);
+            assert(dsd_frame_sync_test_try_protocol_matches(opts, state, P25P2_SYNC, 20) == DSD_SYNC_NONE);
+        }
+        if (m != DSD_SCAN_MODE_DMR) {
+            assert(dsd_frame_sync_test_try_protocol_matches(opts, state, DMR_MS_RC_SYNC, 24) == DSD_SYNC_NONE);
+        }
+        state->profile_proof_valid = 1;
+        state->symbol_history_count = 45;
+        state->sps_hunt_counter = 300;
+        state->p25_p1_validated_rf_mod = 1;
+        state->sbuf[0] = 123.0f;
+        dsd_frame_sync_reset_acquisition(opts, state, 1);
+        assert(!state->profile_proof_valid && !state->symbol_history_count && !state->sps_hunt_counter);
+        assert(state->p25_p1_validated_rf_mod == -1 && state->sidx == 0 && state->midx == 0);
+        assert(fabsf(state->sbuf[0] - state->min) < 0.01f);
+    }
+    dsd_scan_mode_leave(opts, state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
+    test_scan_class_matchers_and_no_sync();
     test_p25_vc_acquisition_hooks();
     test_sps_hunt_skips_disabled_protocol_rates();
     test_sps_hunt_profile_updates_timing();
@@ -2968,6 +3065,7 @@ main(void) {
     test_hamming_helpers_find_best_patterns();
 #ifdef USE_RADIO
     test_sps_hunt_restores_learned_p25p1_cqpsk();
+    test_trunk_scan_p25_probe_fits_visit();
     test_p25p1_auto_hunt_alternates_cqpsk_probe();
     test_p25p1_probe_survives_its_dwell();
     test_validated_p25p1_modulation_outranks_the_heuristics();

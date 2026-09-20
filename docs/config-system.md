@@ -76,6 +76,7 @@ data = true
 enabled = true
 chan_csv = "~/dsd-neo/dmr_t3_chan.csv"   # path expansion supported
 group_csv = "$HOME/dsd-neo/group.csv"
+src_csv = "$HOME/dsd-neo/src.csv"         # source radio ID names; labels only
 p25_bandplan_csv = "~/dsd-neo/p25_bandplan.csv"
 allow_list = true
 
@@ -102,6 +103,7 @@ Path expansion is applied to:
 - `[input] file_path`
 - `[trunking] chan_csv`
 - `[trunking] group_csv`
+- `[trunking] src_csv`
 - `[trunking] p25_bandplan_csv`
 - `[trunk_scan] targets_csv`
 - `[logging] event_log`
@@ -281,7 +283,7 @@ small subset is exposed as config keys for convenience (for example
 | `pulse_source` | STRING | PulseAudio source device | (empty) |
 | `pulse_input` | STRING | Deprecated read alias for `pulse_source` | (empty) |
 | `rtl_device` | INT (0-255) | RTL-SDR device index | `0` |
-| `rtl_freq` | FREQ | RTL-SDR frequency | `851.375M` |
+| `rtl_freq` | FREQ | RTL-SDR frequency; saving during trunking or scanning records the accepted tune target, not the startup frequency | `851.375M` |
 | `rtl_gain` | INT (0-49) | RTL-SDR gain in dB | `0` |
 | `rtl_ppm` | INT (-1000-1000) | Frequency correction | `0` |
 | `rtl_bw_khz` | INT (4-48) | DSP bandwidth | `48` |
@@ -333,17 +335,26 @@ small subset is exposed as config keys for convenience (for example
 | `enabled` | BOOL | Enable trunking | `false` |
 | `chan_csv` | PATH | Channel map CSV | (empty) |
 | `group_csv` | PATH | Group list CSV | (empty) |
+| `src_csv` | PATH | Source ID alias list CSV (`--src-csv`; labels only, loads regardless of trunking) | (empty) |
 | `p25_bandplan_csv` | PATH | P25 band plan CSV (`--p25-bandplan`; see `docs/csv-formats.md`) | (empty) |
 | `allow_list` | BOOL | Use as allow list | `false` |
 | `tune_group_calls` | BOOL | Follow group calls | `true` |
 | `tune_private_calls` | BOOL | Follow private calls | `true` |
 | `tune_data_calls` | BOOL | Follow data calls | `false` |
 | `tune_enc_calls` | BOOL | Follow P25 encrypted grants without key-aware lockout; `false` silently classifies and follows only usable matching keys | `true` |
+| `persist_tg_lockouts` | BOOL | Save quick `!`/`@` and Qt/Android **Skip** lockouts to the global groups file; `false` keeps temporary avoids in memory | `true` |
 | `scanner` | BOOL | Use the channel map as a conventional scanner (`-Y`) instead of following a control channel | `false` |
 | `scan_voice_only` | BOOL | Step `-Y`/conventional scan on unless decoded voice holds the row | `false` |
 | `scan_voice_qualify_ms` | INT (100-600000) | Window after sync in which voice must appear or the scan moves on | `1000` |
 | `scan_voice_hold_ms` | INT (100-600000) | Time to stay after the last voice frame | `2000` |
+| `scan_max_visit_ms` | INT (0-3600000) | Maximum time on one `-Y`/trunk-scan target per visit; can cut an ongoing call short; `0` disables, else `1000..3600000` | `0` |
 | `p25_prefer_candidates` | BOOL | Prefer learned P25 control-channel candidates when hunting (`-^`) | `false` |
+
+Loading a configuration during a session with a different `group_csv` imports that file before making it the
+save destination. If the import fails, the configuration is rejected and the previous list and destination stay
+in place. An unchanged path preserves temporary avoids. During scan-row visits, this updates the global list
+while retaining the row's own list and avoids.
+
 **[trunk_scan] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
@@ -624,6 +635,12 @@ is rejected by Soapy metadata, or the driver rejects `writeSetting`.
 
 ### Trunking
 
+`[trunking] src_csv` is the global source ID alias list, equivalent to `--src-csv <file>`. When set, it loads
+regardless of whether trunking is enabled, so conventional decode also gets source names. It supplies labels only;
+source labels prefer this list and fall back to the active group list's exact row, with OTA alias text untouched.
+A load failure logs a warning and lets decoding continue. A successfully read file with zero usable rows installs
+an empty list, matching live imports from the terminal and Qt/Android.
+
 When `[trunking] enabled = true`:
 
 - Trunking is activated for the selected mode.
@@ -642,6 +659,8 @@ When `[trunk_scan] enabled = true`:
   `chan_csv` / `p25_bandplan_csv` if it needs a channel map or a band plan.
 - The group policy remains global, so `[trunking] group_csv`, `allow_list`, and tune controls apply uniformly across all
   scan targets.
+- `[trunking] src_csv` is also global and allowed under trunk scan (`--src-csv` on the CLI). It is not swapped
+  with scan rows; the source-label fallback uses whichever group policy table is active.
 - One tuner is rotated across targets. Calls on systems that are not currently parked can be missed.
 - Runtime still needs a retuning path, either RTL-family input opened by DSD-neo or rigctl tuning. IQ replay is rejected.
 - Full user workflow, examples, and troubleshooting: `docs/trunk-scan.md`.
@@ -672,6 +691,9 @@ Config/CLI interaction:
 
 - `--validate-config` reports an error when `trunk_scan.enabled = true` lacks `targets_csv`.
 - `--validate-config` reports an error when trunk scan and `[trunking] chan_csv` are both enabled.
+- `--validate-config` reports a warning when `[trunking] scan_max_visit_ms` is `1..999`. Config loading is range-free
+  by design, so such a value loads, but the decoder treats anything below `1000` as disabled; use `0` to disable the
+  per-visit cap or `1000..3600000` to set one. The CLI switch rejects `1..999` outright.
 - If trunk scan is inherited from a config file, one-off CLI arguments that select another input, mode, channel map,
   file/replay input, trunking mode, or conventional `-Y` scan mode disable the inherited scan for that run. UI-only
   flags such as
@@ -837,3 +859,17 @@ restart to take full effect.
 - Profile support for switching configurations.
 - Include directive for modular configs.
 - Interactive bootstrap can persist user choices automatically.
+
+### Decoder settings while scanning
+
+Channel-map `mode` cells and trunk-scan target types are temporary decoder constraints. `[mode] decode` and demod
+settings continue to describe the configured global settings. Saving from a frontend or shutdown while parked on a
+typed row writes those configured settings. A global mode/modulation command updates that baseline and reapplies the
+current row constraint. Clearing/replacing the map, leaving the scanner, or manually tuning away restores configuration.
+Filter and source-monitor toggles show and edit the configured baseline, even when a row's decoder preset constrains
+their effective values. Changing source monitoring alone preserves the active call and decoder acquisition.
+
+P25 scan mode enables both phases; it is a scan class rather than a new global `decode` value. No CLI preset or
+persisted decode enum changes. Channel numbers and frequencies remain decimal integer channel numbers and Hz.
+
+The native Airspy backend uses `[input] source = "airspy"`, shared radio tuning fields, and `airspy_*` receiver settings. `airspy_sample_rate = 0` preserves automatic selection separately from the actual rate. See [the complete Airspy configuration](airspy.md#receiver-settings).

@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <ctype.h>
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/lrrp_ports.h>
 #include <dsd-neo/core/opts.h>
@@ -21,12 +22,14 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
@@ -184,12 +187,15 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->trunk_tune_private_calls = 1;
     cfg->trunk_tune_data_calls = 0;
     cfg->trunk_tune_enc_calls = 1;
+    cfg->trunk_persist_tg_lockouts = 1;
     cfg->trunk_scan_idle_dwell_ms = 3000;
     cfg->trunk_scan_activity_hold_ms = 1200;
     cfg->trunk_scan_voice_only = 0;
     cfg->trunk_scan_voice_qualify_ms = 1000;
     cfg->trunk_scan_voice_hold_ms = 2000;
+    cfg->trunk_scan_max_visit_ms = 0;
     cfg->rtl_auto_ppm = 0;
+    dsd_airspy_config_defaults(&cfg->airspy);
     cfg->soapy_bandwidth_hz = -1;
     cfg->soapy_bandwidth_hz_is_set = 0;
     cfg->input_warn_db = -40.0;
@@ -820,6 +826,7 @@ render_input_source(FILE* out, dsdneoUserInputSource source) {
         case DSDCFG_INPUT_PULSE: DSD_FPRINTF(out, "source = \"pulse\"\n"); break;
         case DSDCFG_INPUT_RTL: DSD_FPRINTF(out, "source = \"rtl\"\n"); break;
         case DSDCFG_INPUT_RTLTCP: DSD_FPRINTF(out, "source = \"rtltcp\"\n"); break;
+        case DSDCFG_INPUT_AIRSPY: DSD_FPRINTF(out, "source = \"airspy\"\n"); break;
         case DSDCFG_INPUT_SOAPY: DSD_FPRINTF(out, "source = \"soapy\"\n"); break;
         case DSDCFG_INPUT_FILE: DSD_FPRINTF(out, "source = \"file\"\n"); break;
         case DSDCFG_INPUT_TCP: DSD_FPRINTF(out, "source = \"tcp\"\n"); break;
@@ -948,6 +955,10 @@ render_input_section(FILE* out, const dsdneoUserConfig* cfg) {
         case DSDCFG_INPUT_PULSE: render_input_pulse(out, cfg); break;
         case DSDCFG_INPUT_RTL: render_input_rtl(out, cfg); break;
         case DSDCFG_INPUT_RTLTCP: render_input_rtltcp(out, cfg); break;
+        case DSDCFG_INPUT_AIRSPY:
+            render_input_rtl(out, cfg);
+            dsd_airspy_config_render(out, &cfg->airspy);
+            break;
         case DSDCFG_INPUT_SOAPY: render_input_soapy(out, cfg); break;
         case DSDCFG_INPUT_FILE: render_input_file(out, cfg); break;
         case DSDCFG_INPUT_TCP: render_input_tcp(out, cfg); break;
@@ -1017,16 +1028,21 @@ render_trunking_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->trunk_p25_bandplan_csv[0]) {
         DSD_FPRINTF(out, "p25_bandplan_csv = \"%s\"\n", cfg->trunk_p25_bandplan_csv);
     }
+    if (cfg->trunk_src_csv[0]) {
+        DSD_FPRINTF(out, "src_csv = \"%s\"\n", cfg->trunk_src_csv);
+    }
     DSD_FPRINTF(out, "allow_list = %s\n", ini_bool(cfg->trunk_use_allow_list));
     DSD_FPRINTF(out, "tune_group_calls = %s\n", ini_bool(cfg->trunk_tune_group_calls));
     DSD_FPRINTF(out, "tune_private_calls = %s\n", ini_bool(cfg->trunk_tune_private_calls));
     DSD_FPRINTF(out, "tune_data_calls = %s\n", ini_bool(cfg->trunk_tune_data_calls));
     DSD_FPRINTF(out, "tune_enc_calls = %s\n", ini_bool(cfg->trunk_tune_enc_calls));
+    DSD_FPRINTF(out, "persist_tg_lockouts = %s\n", ini_bool(cfg->trunk_persist_tg_lockouts));
     DSD_FPRINTF(out, "scanner = %s\n", ini_bool(cfg->trunk_scanner));
     DSD_FPRINTF(out, "p25_prefer_candidates = %s\n", ini_bool(cfg->trunk_p25_prefer_candidates));
     DSD_FPRINTF(out, "scan_voice_only = %s\n", ini_bool(cfg->trunk_scan_voice_only));
     DSD_FPRINTF(out, "scan_voice_qualify_ms = %d\n", cfg->trunk_scan_voice_qualify_ms);
     DSD_FPRINTF(out, "scan_voice_hold_ms = %d\n", cfg->trunk_scan_voice_hold_ms);
+    DSD_FPRINTF(out, "scan_max_visit_ms = %d\n", cfg->trunk_scan_max_visit_ms);
     DSD_FPRINTF(out, "\n");
 }
 
@@ -1274,22 +1290,34 @@ apply_input_rtl_auto_ppm(const dsdneoUserConfig* cfg, dsd_opts* opts) {
 }
 
 static void
-apply_input_config(const dsdneoUserConfig* cfg, dsd_opts* opts, int apply_file_input_rate_now) {
-    if (!cfg || !opts || !cfg->has_input) {
-        return;
-    }
-
-    opts->staged_file_sample_rate = 0;
+apply_input_source_config(const dsdneoUserConfig* cfg, dsd_opts* opts, int apply_file_input_rate_now) {
     switch (cfg->input_source) {
         case DSDCFG_INPUT_PULSE: apply_input_source_pulse(cfg, opts); break;
         case DSDCFG_INPUT_RTL: apply_input_source_rtl(cfg, opts); break;
         case DSDCFG_INPUT_RTLTCP: apply_input_source_rtltcp(cfg, opts); break;
+        case DSDCFG_INPUT_AIRSPY:
+            opts->airspy = cfg->airspy;
+            opts->airspy_config_error = cfg->airspy_invalid;
+            DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "airspy");
+            opts->rtltcp_enabled = 0;
+            apply_shared_radio_tuning_from_config(cfg, opts);
+            break;
         case DSDCFG_INPUT_SOAPY: apply_input_source_soapy(cfg, opts); break;
         case DSDCFG_INPUT_FILE: apply_input_source_file(cfg, opts, apply_file_input_rate_now); break;
         case DSDCFG_INPUT_TCP: apply_input_source_tcp(cfg, opts); break;
         case DSDCFG_INPUT_UDP: apply_input_source_udp(cfg, opts); break;
         default: break;
     }
+}
+
+static void
+apply_input_config(const dsdneoUserConfig* cfg, dsd_opts* opts, int apply_file_input_rate_now) {
+    if (!cfg || !opts || !cfg->has_input) {
+        return;
+    }
+
+    opts->staged_file_sample_rate = 0;
+    apply_input_source_config(cfg, opts, apply_file_input_rate_now);
     apply_input_rtl_auto_ppm(cfg, opts);
     /* Source-independent advisory threshold; clamp to the same [-200, 0] window
        the CLI, env, and runtime menu command enforce. */
@@ -1402,11 +1430,13 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     apply_trunking_path(opts->group_in_file, sizeof opts->group_in_file, cfg->trunk_group_csv);
     /* Path only: the engine imports the band plan at start, once the CLI has had its say. */
     apply_trunking_path(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file, cfg->trunk_p25_bandplan_csv);
+    apply_trunking_path(opts->src_in_file, sizeof opts->src_in_file, cfg->trunk_src_csv);
     opts->trunk_use_allow_list = cfg->trunk_use_allow_list ? 1 : 0;
     opts->trunk_tune_group_calls = cfg->trunk_tune_group_calls ? 1 : 0;
     opts->trunk_tune_private_calls = cfg->trunk_tune_private_calls ? 1 : 0;
     opts->trunk_tune_data_calls = cfg->trunk_tune_data_calls ? 1 : 0;
     opts->trunk_tune_enc_calls = cfg->trunk_tune_enc_calls ? 1 : 0;
+    opts->persist_tg_lockouts = cfg->trunk_persist_tg_lockouts ? 1 : 0;
     /* Exactly one automatic tuner owner, the invariant ui_handle_trunk_set/
        ui_handle_scanner_toggle (src/app_control/actions/actions_trunk.c) and
        rr_apply_tuner_owner (src/app_control/app_command_queue.c) both enforce.
@@ -1426,6 +1456,7 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     opts->scan_voice_only = cfg->trunk_scan_voice_only ? 1 : 0;
     opts->scan_voice_qualify_ms = cfg->trunk_scan_voice_qualify_ms;
     opts->scan_voice_hold_ms = cfg->trunk_scan_voice_hold_ms;
+    opts->scan_max_visit_ms = cfg->trunk_scan_max_visit_ms;
 }
 
 static void
@@ -1634,7 +1665,7 @@ dsd_finalize_user_config_file_input_after_cli(const dsdneoUserConfig* cfg, dsd_o
 }
 
 static void
-snapshot_input_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+snapshot_other_input_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->has_input = 1;
     if (strncmp(opts->audio_in_dev, "rtl:", 4) == 0) {
         cfg->input_source = DSDCFG_INPUT_RTL;
@@ -1677,6 +1708,18 @@ snapshot_input_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     if (cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP) {
         cfg->rtl_auto_ppm = opts->rtl_auto_ppm ? 1 : 0;
     }
+}
+
+static void
+snapshot_input_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+    if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        cfg->has_input = 1;
+        cfg->input_source = DSDCFG_INPUT_AIRSPY;
+        cfg->airspy = opts->airspy;
+        snapshot_apply_live_rtl_values(opts, cfg);
+    } else {
+        snapshot_other_input_config(opts, cfg);
+    }
 
     /* LOW advisories exist for every input source, so the threshold snapshots unconditionally. */
     cfg->input_warn_db = opts->input_warn_db;
@@ -1711,9 +1754,10 @@ snapshot_mode_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserCon
     /* Exact, not the AUTO-falling-back spelling: a decoder set no preset reproduces must render
        no `decode` key at all. Saving it as "auto" would reload as every decoder enabled, so a
        session that never chose a mode would come back wider than it was saved. */
-    cfg->decode_mode = dsd_infer_decode_mode_preset_exact(opts);
+    cfg->decode_mode = dsd_scan_mode_configured_preset_exact(opts, state);
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     cfg->has_dmr_mono = 1;
-    cfg->dmr_mono = opts->dmr_mono ? 1 : 0;
+    cfg->dmr_mono = (configured ? configured->dmr_mono : opts->dmr_mono) ? 1 : 0;
     cfg->dmr_lrrp_ports[0] = '\0';
     for (int i = 0; i < opts->lrrp_extra_port_count && i < DSD_LRRP_EXTRA_PORT_MAX; i++) {
         size_t used = strlen(cfg->dmr_lrrp_ports);
@@ -1736,16 +1780,17 @@ snapshot_mode_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserCon
 }
 
 static void
-snapshot_demod_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
-    if (!opts->mod_cli_lock) {
+snapshot_demod_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    if (!(configured ? configured->mod_cli_lock : opts->mod_cli_lock)) {
         return;
     }
     cfg->has_demod = 1;
-    if (opts->mod_gfsk) {
+    if (configured ? configured->mod_gfsk : opts->mod_gfsk) {
         cfg->demod_path = DSDCFG_DEMOD_GFSK;
-    } else if (opts->mod_qpsk) {
+    } else if (configured ? configured->mod_qpsk : opts->mod_qpsk) {
         cfg->demod_path = DSDCFG_DEMOD_QPSK;
-    } else if (opts->mod_c4fm) {
+    } else if (configured ? configured->mod_c4fm : opts->mod_c4fm) {
         cfg->demod_path = DSDCFG_DEMOD_C4FM;
     } else {
         cfg->demod_path = DSDCFG_DEMOD_AUTO;
@@ -1753,25 +1798,32 @@ snapshot_demod_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 }
 
 static void
-snapshot_trunking_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+snapshot_trunking_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     cfg->has_trunking = 1;
     cfg->trunk_enabled = (opts->trunk_enable) ? 1 : 0;
     DSD_SNPRINTF(cfg->trunk_chan_csv, sizeof cfg->trunk_chan_csv, "%s", opts->chan_in_file);
     cfg->trunk_chan_csv[sizeof cfg->trunk_chan_csv - 1] = '\0';
-    DSD_SNPRINTF(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, "%s", opts->group_in_file);
+    DSD_SNPRINTF(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, "%s",
+                 configured ? configured->group_in_file : opts->group_in_file);
     cfg->trunk_group_csv[sizeof cfg->trunk_group_csv - 1] = '\0';
     DSD_SNPRINTF(cfg->trunk_p25_bandplan_csv, sizeof cfg->trunk_p25_bandplan_csv, "%s", opts->p25_bandplan_in_file);
     cfg->trunk_p25_bandplan_csv[sizeof cfg->trunk_p25_bandplan_csv - 1] = '\0';
+    DSD_SNPRINTF(cfg->trunk_src_csv, sizeof cfg->trunk_src_csv, "%s", opts->src_in_file);
+    cfg->trunk_src_csv[sizeof cfg->trunk_src_csv - 1] = '\0';
+    cfg->trunk_persist_tg_lockouts = opts->persist_tg_lockouts != 0;
     cfg->trunk_use_allow_list = opts->trunk_use_allow_list ? 1 : 0;
     cfg->trunk_tune_group_calls = opts->trunk_tune_group_calls ? 1 : 0;
     cfg->trunk_tune_private_calls = opts->trunk_tune_private_calls ? 1 : 0;
-    cfg->trunk_tune_data_calls = opts->trunk_tune_data_calls ? 1 : 0;
-    cfg->trunk_tune_enc_calls = opts->trunk_tune_enc_calls ? 1 : 0;
+    cfg->trunk_tune_data_calls = (configured ? configured->trunk_tune_data_calls : opts->trunk_tune_data_calls) != 0;
+    cfg->trunk_tune_enc_calls = (configured ? configured->trunk_tune_enc_calls : opts->trunk_tune_enc_calls) != 0;
     cfg->trunk_scanner = opts->scanner_mode ? 1 : 0;
-    cfg->trunk_p25_prefer_candidates = opts->p25_prefer_candidates ? 1 : 0;
-    cfg->trunk_scan_voice_only = opts->scan_voice_only ? 1 : 0;
-    cfg->trunk_scan_voice_qualify_ms = opts->scan_voice_qualify_ms;
-    cfg->trunk_scan_voice_hold_ms = opts->scan_voice_hold_ms;
+    cfg->trunk_p25_prefer_candidates =
+        (configured ? configured->p25_prefer_candidates : opts->p25_prefer_candidates) != 0;
+    cfg->trunk_scan_voice_only = (configured ? configured->scan_voice_only : opts->scan_voice_only) ? 1 : 0;
+    cfg->trunk_scan_voice_qualify_ms = configured ? configured->scan_voice_qualify_ms : opts->scan_voice_qualify_ms;
+    cfg->trunk_scan_voice_hold_ms = configured ? configured->scan_voice_hold_ms : opts->scan_voice_hold_ms;
+    cfg->trunk_scan_max_visit_ms = configured ? configured->scan_max_visit_ms : opts->scan_max_visit_ms;
 }
 
 static void
@@ -1858,8 +1910,8 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     snapshot_input_config(opts, cfg);
     snapshot_output_config(opts, cfg);
     snapshot_mode_config(opts, state, cfg);
-    snapshot_demod_config(opts, cfg);
-    snapshot_trunking_config(opts, cfg);
+    snapshot_demod_config(opts, state, cfg);
+    snapshot_trunking_config(opts, state, cfg);
     snapshot_radioreference_config(opts, cfg);
     snapshot_trunk_scan_config(opts, cfg);
     snapshot_logging_config(opts, cfg);

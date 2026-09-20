@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/rtl_device.h>
+#include <stdint.h>
 #include <stdio.h>
 
 static int
@@ -131,10 +132,43 @@ test_in_use_is_not_implied_by_the_slot(void) {
     return rc;
 }
 
+#ifdef DSD_NEO_TEST_RTL_OPEN_WRAP
+int dsd_test_rtl_open_failure(void);
+struct rtlsdr_dev;
+// GNU ld --wrap requires external linkage and the reserved symbol name on both declarations.
+// NOLINTBEGIN(bugprone-reserved-identifier, misc-use-internal-linkage)
+int __wrap_rtlsdr_open(struct rtlsdr_dev** device, uint32_t index);
+
+int
+__wrap_rtlsdr_open(struct rtlsdr_dev** device, uint32_t index) {
+    (void)device;
+    (void)index;
+    return -6; // LIBUSB_ERROR_BUSY at interface claim, without physical hardware.
+}
+
+// NOLINTEND(bugprone-reserved-identifier, misc-use-internal-linkage)
+
+static int
+test_native_open_error(void) {
+    rtl_device_clear_open_error();
+    int rc = expect_int("new session clears device error", rtl_device_last_open_error(), 0);
+    rc |= expect_int("failed claim has no device", dsd_test_rtl_open_failure(), 1);
+    rc |= expect_int("raw claim error survives cleanup", rtl_device_last_open_error(), -6);
+    rtl_device_clear_open_error();
+    rc |= expect_int("next non-USB session has no stale failure", rtl_device_last_open_error(), 0);
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
 
+#ifdef DSD_NEO_TEST_RTL_OPEN_WRAP
+    rc |= test_native_open_error();
+#else
+    DSD_FPRINTF(stderr, "IO_RTL_PREOPENED_FD: skipped native open-error probe (no --wrap support)\n");
+#endif
     rc |= test_slot_starts_empty();
     rc |= test_set_and_clear_round_trip();
     rc |= test_zero_is_a_real_descriptor();

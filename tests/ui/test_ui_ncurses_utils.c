@@ -141,6 +141,11 @@ test_lockout_label_policy_lookup(void) {
     rc |= expect_int_eq("range-only match does not lock label", ui_is_locked_from_label(state, "TG: 1005"), 0);
     rc |= expect_int_eq("later locked target is evaluated",
                         ui_is_locked_from_label(state, "Grant TG: 789 TGT: 456 SG: 321"), 1);
+    rc |= expect_int_eq("add temporary label avoid", dsd_tg_policy_session_avoid_add(state, 789), 0);
+    rc |= expect_int_eq("temporary avoid marks saved listening TG", ui_is_locked_from_label(state, "TG: 789"), 1);
+    rc |= expect_int_eq("temporary avoid marks private target", ui_is_locked_from_label(state, "TGT: 789"), 1);
+    dsd_tg_policy_session_avoid_clear(state);
+    rc |= expect_int_eq("clearing temporary avoid restores label", ui_is_locked_from_label(state, "TG: 789"), 0);
 
     size_t cursor = 0U;
     ui_target_token token;

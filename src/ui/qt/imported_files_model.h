@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief Library of imported CSV files (channel maps, talkgroups, keys, P25 band plans), persisted as JSON.
+ * @brief Library of imported CSV files (channel maps, talkgroups, keys, P25 band plans, radio IDs), persisted as JSON.
  *
  * The wizard's pickers and the imports screen share this model: importing copies
  * the picked document into durable app storage through DecoderHost::importDocument(),
@@ -28,6 +28,7 @@
 #include <QtGlobal>
 
 namespace dsd_qt {
+struct CsvBundleImport;
 
 class DecoderHost;
 
@@ -41,7 +42,7 @@ class ImportedFilesModel : public QAbstractListModel {
     enum Roles {
         NameRole = Qt::UserRole + 1,
         PathRole,       // absolute stored path; the row's identity
-        TypeRole,       // "chan" | "group" | "keysDec" | "keysHex" | "p25Bandplan"
+        TypeRole,       // "chan" | "group" | "keysDec" | "keysHex" | "p25Bandplan" | "src"
         ImportedAtRole, // seconds since epoch
         AcceptedRole,   // usable rows at the last validation
         SkippedRole,    // malformed rows at the last validation
@@ -63,6 +64,11 @@ class ImportedFilesModel : public QAbstractListModel {
         return static_cast<int>(m_rows.size());
     }
 
+    /** WP-D1: generate an app-owned destination without registering or writing a file. */
+    Q_INVOKABLE QString newTalkgroupListPath() const;
+    /** Register a successfully exported list in place; the engine keeps writing this path. */
+    Q_INVOKABLE bool registerTalkgroupList(const QString& path);
+
     /**
      * @brief Copy a picked document into the library, validate it, record a row.
      *
@@ -72,6 +78,8 @@ class ImportedFilesModel : public QAbstractListModel {
      *         the user can fix the file and update, but the UI should warn.
      */
     Q_INVOKABLE QVariantMap importFile(const QString& reference, const QString& fileName, const QString& type);
+    Q_INVOKABLE QVariantMap importBundle(const QString& reference, const QString& fileName, const QString& type,
+                                         const QVariantMap& companions, int replaceRow = -1);
 
     /**
      * @brief Re-pick flow: replace the row's stored file and re-validate.
@@ -91,7 +99,7 @@ class ImportedFilesModel : public QAbstractListModel {
      *
      * @param sourcePath Absolute path of the generated file.
      * @param fileName   Display name to store it under.
-     * @param type       "chan" | "group" | "keysDec" | "keysHex" | "p25Bandplan".
+     * @param type       "chan" | "group" | "keysDec" | "keysHex" | "p25Bandplan" | "src".
      * @param origin     Provenance: {origin, rrSid, rrSiteIds, rrKind, rrPartialEnc}.
      * @return Same shape as importFile().
      */
@@ -113,7 +121,10 @@ class ImportedFilesModel : public QAbstractListModel {
     Q_INVOKABLE QVariantMap refreshGeneratedFile(int row, const QString& sourcePath);
 
     /** @brief Delete the stored file, then the row. Persists immediately. */
-    Q_INVOKABLE void remove(int row);
+    Q_INVOKABLE QVariantMap channelProfiles(int row) const;
+    Q_INVOKABLE bool remove(int row);
+    Q_INVOKABLE bool canRemove(int row) const;
+    Q_INVOKABLE QVariantMap targetPreview(const QString& path) const;
 
     /** @brief One library row as a field map. */
     Q_INVOKABLE QVariantMap get(int row) const;
@@ -141,6 +152,12 @@ class ImportedFilesModel : public QAbstractListModel {
     void countChanged();
 
   private:
+    QVariantMap companionDetails(const CsvBundleImport& bundle) const;
+    QVariantMap companionChoices(const QVariantMap& requirement) const;
+    QVariantMap replaceBundle(int replaceRow, const CsvBundleImport& bundle, const QString& type);
+    QString bundleReplacementError(int row, const QString& type) const;
+    bool decoderBusy() const;
+
     struct Row {
         QString name;
         QString path;
@@ -168,6 +185,8 @@ class ImportedFilesModel : public QAbstractListModel {
          * — blocked from tuning — the first time they refresh. Defaults to true,
          * which is what a row written before this existed was generated with. */
         bool rrPartialEnc = true;
+        int rrEncryptionPolicy = 0;
+        QString bundleRoot;
     };
 
     static Row rowFromMap(const QVariantMap& map);
@@ -182,7 +201,8 @@ class ImportedFilesModel : public QAbstractListModel {
     static QVariant provenanceRole(const Row& row, int role);
 
     /** @brief Dry-run validate @p path as @p type; false when it cannot be parsed. */
-    static bool validate(const QString& path, const QString& type, int* accepted, int* skipped);
+    static bool validate(const QString& path, const QString& type, int* accepted, int* skipped,
+                         QString* detail = nullptr);
 
     /**
      * @brief Validate an already-stored copy and record a library row for it.
@@ -205,7 +225,8 @@ class ImportedFilesModel : public QAbstractListModel {
     QVariantMap commitReplacedRow(int row, int accepted, int skipped, bool keepProvenance = true);
 
     void load();
-    void save() const;
+    bool save() const;
+    bool saveRows(const QList<Row>& rows) const;
 
     DecoderHost* m_host = nullptr;
     QList<Row> m_rows;

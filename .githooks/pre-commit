@@ -13,7 +13,7 @@ for p in "${staged_paths[@]}"; do
   # well; skipping them here means the hook never even offers them.
   case "$p" in
     build/* | src/third_party/*) continue ;;
-    android/third_party/libusb/* | android/third_party/librtlsdr/*) continue ;;
+    android/third_party/libusb/* | android/third_party/librtlsdr/* | android/third_party/libairspy/*) continue ;;
   esac
   files+=("$p")
 done

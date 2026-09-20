@@ -23,7 +23,9 @@
  */
 
 #include <aaudio/AAudio.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/string_utils.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/audio_concealment.h>
 #include <dsd-neo/platform/threading.h>
@@ -31,7 +33,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "dsd-neo/core/safe_api.h"
 #define DSD_NEO_AUDIO_BACKEND_AAUDIO 1
 #include "audio_error_internal.h"
 #include "audio_stream_internal.h"
@@ -100,6 +101,13 @@ enum {
  *============================================================================*/
 
 static int s_initialized = 0;
+static atomic_int s_output_device_id = 0;
+static atomic_int s_output_stream_count = 0;
+
+int
+dsd_audio_output_device_id(void) {
+    return atomic_load(&s_output_stream_count) > 0 ? atomic_load(&s_output_device_id) : 0;
+}
 
 /*============================================================================
  * Internal Helpers
@@ -417,6 +425,9 @@ aaudio_stream_open(dsd_audio_stream* stream) {
     }
 
     stream->handle = handle;
+    if (!stream->is_input) {
+        atomic_store(&s_output_device_id, AAudioStream_getDeviceId(handle));
+    }
     return 0;
 }
 
@@ -1419,6 +1430,8 @@ dsd_audio_open_output(const dsd_audio_params* params) {
         }
     }
 
+    stream->route_registered = 1;
+    atomic_fetch_add(&s_output_stream_count, 1);
     return stream;
 }
 
@@ -1567,6 +1580,12 @@ void
 dsd_audio_close(dsd_audio_stream* stream) {
     if (!stream) {
         return;
+    }
+    if (stream->route_registered) {
+        stream->route_registered = 0;
+        if (atomic_fetch_sub(&s_output_stream_count, 1) == 1) {
+            atomic_store(&s_output_device_id, 0);
+        }
     }
 
     if (!stream->is_input && stream->use_async) {

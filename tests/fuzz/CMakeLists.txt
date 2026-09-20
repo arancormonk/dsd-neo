@@ -62,12 +62,16 @@ dsd_neo_add_fuzzer(
   core_csv_import
   dsd-neo_runtime
   dsd-neo_crypto
+  dsd-neo_test_call_state_support
 )
 target_sources(
     dsd-neo_fuzz_core_csv_import
     PRIVATE
         ${PROJECT_SOURCE_DIR}/src/core/file/dsd_import.c
         ${PROJECT_SOURCE_DIR}/src/core/file/p25_bandplan_csv.c
+        # Source CSV parsing owns a candidate alias store before installing it.
+        ${PROJECT_SOURCE_DIR}/src/core/file/source_alias_csv.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/source_alias.c
         ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
         # p25_bandplan_csv.c seeds the live IDEN tables through this.
         ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c
@@ -76,6 +80,7 @@ target_sources(
         ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
         # A channel-map row's key cells load through the key-set helpers.
         ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/scan_profile.c
         ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
         # csvDmrTgKeyImport() clears the live map through keyring_dmr_tg_map_reset().
         ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c

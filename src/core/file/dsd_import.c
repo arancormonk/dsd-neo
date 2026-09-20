@@ -1,27 +1,33 @@
 // SPDX-License-Identifier: ISC
-#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/scan_profile.h>
+#include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../util/key_set_internal.h"
+#include "../util/talkgroup_policy_internal.h"
 #include "csv_parse_internal.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/secret_redaction.h"
-#include "dsd-neo/core/state_fwd.h"
 
 static int
 csv_rkey_index(unsigned long long keynumber, unsigned long long offset, size_t* out_index) {
@@ -35,94 +41,6 @@ csv_rkey_index(unsigned long long keynumber, unsigned long long offset, size_t* 
     }
     *out_index = (size_t)(keynumber + offset);
     return 1;
-}
-
-static int
-group_parse_u32_token(const char* token, uint32_t* out) {
-    unsigned long long v = 0;
-    char* end = NULL;
-    const char* p = token;
-    if (!token || !out) {
-        return 0;
-    }
-    while (*p != '\0' && is_ascii_space((unsigned char)*p)) {
-        p++;
-    }
-    if (*p == '\0' || *p == '+' || *p == '-') {
-        return 0;
-    }
-    errno = 0;
-    v = strtoull(p, &end, 10);
-    if (errno != 0 || end == p || v > UINT32_MAX) {
-        return 0;
-    }
-    while (*end != '\0' && is_ascii_space((unsigned char)*end)) {
-        end++;
-    }
-    if (*end != '\0') {
-        return 0;
-    }
-    *out = (uint32_t)v;
-    return 1;
-}
-
-static int
-group_parse_single_id(const char* token, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
-    if (!token || !out_start || !out_end || !out_is_range) {
-        return 0;
-    }
-    if (!group_parse_u32_token(token, out_start)) {
-        return 0;
-    }
-    *out_end = *out_start;
-    *out_is_range = 0;
-    return 1;
-}
-
-static int
-group_parse_range_id(char* token, char* dash, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
-    uint32_t start = 0;
-    uint32_t end = 0;
-    if (!token || !dash || !out_start || !out_end || !out_is_range) {
-        return 0;
-    }
-    if (strchr(dash + 1, '-') != NULL) {
-        return 0;
-    }
-
-    *dash = '\0';
-    const char* start_token = trim_ws(token);
-    const char* end_token = trim_ws(dash + 1);
-    if (!start_token || !end_token || start_token[0] == '\0' || end_token[0] == '\0') {
-        return 0;
-    }
-    if (!group_parse_u32_token(start_token, &start) || !group_parse_u32_token(end_token, &end)) {
-        return 0;
-    }
-    if (start > end) {
-        return 0;
-    }
-    *out_start = start;
-    *out_end = end;
-    *out_is_range = (start != end) ? 1 : 0;
-    return 1;
-}
-
-static int
-group_parse_id_field(char* token, uint32_t* out_start, uint32_t* out_end, int* out_is_range) {
-    if (!token || !out_start || !out_end || !out_is_range) {
-        return 0;
-    }
-    token = trim_ws(token);
-    if (!token || token[0] == '\0') {
-        return 0;
-    }
-
-    char* dash = strchr(token, '-');
-    if (!dash) {
-        return group_parse_single_id(token, out_start, out_end, out_is_range);
-    }
-    return group_parse_range_id(token, dash, out_start, out_end, out_is_range);
 }
 
 enum group_parse_value_result {
@@ -188,6 +106,7 @@ typedef struct {
     int policy_active;
     unsigned int prefix_len;
     int invalid_order;
+    int basic_tags;
 } group_policy_header;
 
 typedef struct {
@@ -202,7 +121,7 @@ typedef struct {
 
 static group_policy_header
 group_parse_policy_header(char* header_line) {
-    group_policy_header info = {0, 0, 0};
+    group_policy_header info = {0};
     char* fields[16];
     static const char* expected[] = {"preempt", "audio", "record", "stream", "tags"};
     size_t field_count = csv_split_preserve_empty(header_line, fields, sizeof(fields) / sizeof(fields[0]));
@@ -212,6 +131,9 @@ group_parse_policy_header(char* header_line) {
         return info;
     }
     if (csv_ascii_casecmp(trim_ws(fields[3]), "priority") != 0) {
+        const char* col = trim_ws(fields[3]);
+        info.basic_tags = csv_ascii_casecmp(col, "tag") == 0 || csv_ascii_casecmp(col, "tags") == 0
+                          || csv_ascii_casecmp(col, "category") == 0;
         return info;
     }
     info.policy_active = 1;
@@ -369,15 +291,34 @@ group_apply_policy_fields(const group_policy_header* header, const char* filenam
     group_enforce_media_constraints(filename, row_count, entry, mode_blocking, has_audio, has_record, has_stream);
 }
 
+static void
+group_apply_tags_field(const group_policy_header* header, size_t field_count, char** fields,
+                       dsd_tg_policy_entry* entry) {
+    const char* value = NULL;
+    if (!header || !fields || !entry) {
+        return;
+    }
+    if (header->policy_active && header->prefix_len >= 6 && field_count > 8) {
+        value = trim_ws(fields[8]);
+    } else if (!header->policy_active && header->basic_tags && field_count > 3) {
+        value = trim_ws(fields[3]);
+    }
+    if (value) {
+        DSD_SNPRINTF(entry->tags, sizeof(entry->tags), "%s", value);
+    }
+}
+
 static int
-group_commit_entry(dsd_state* state, const dsd_tg_policy_entry* entry, int is_range, const char* filename,
-                   unsigned int row_count, size_t* dropped_policy_alloc_rows) {
+group_commit_entry(dsd_state* state, dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry, int is_range,
+                   const char* filename, unsigned int row_count, size_t* dropped_policy_alloc_rows) {
     int rc = 0;
-    if (!state || !entry || !filename || !dropped_policy_alloc_rows) {
+    if ((!state && !store) || !entry || !filename || !dropped_policy_alloc_rows) {
         return -1;
     }
 
-    rc = is_range ? dsd_tg_policy_add_range_entry(state, entry) : dsd_tg_policy_append_exact(state, entry);
+    rc = store      ? dsd_tg_policy_store_append(store, entry)
+         : is_range ? dsd_tg_policy_add_range_entry(state, entry)
+                    : dsd_tg_policy_append_exact(state, entry);
     if (rc == -1) {
         (*dropped_policy_alloc_rows)++;
         return rc;
@@ -394,8 +335,8 @@ group_commit_entry(dsd_state* state, const dsd_tg_policy_entry* entry, int is_ra
 
 /** @brief Parse and commit one group data row. @return 0 when the row loaded. */
 static int
-group_import_row(dsd_state* state, const char* filename, unsigned int row_count, char* buffer,
-                 const group_policy_header* header, size_t* dropped_policy_alloc_rows) {
+group_import_row(dsd_state* state, dsd_tg_policy_store* store, const char* filename, unsigned int row_count,
+                 char* buffer, const group_policy_header* header, size_t* dropped_policy_alloc_rows) {
     char* fields[32];
     size_t field_count = 0;
     uint32_t id_start = 0;
@@ -412,7 +353,7 @@ group_import_row(dsd_state* state, const char* filename, unsigned int row_count,
         return -1;
     }
 
-    if (!group_parse_id_field(fields[0], &id_start, &id_end, &is_range)) {
+    if (!csv_parse_id_field(fields[0], &id_start, &id_end, &is_range)) {
         LOG_WARN("WARNING: Group file '%s' row %u has invalid id '%s'; skipping.\n", filename, row_count, fields[0]);
         return -1;
     }
@@ -421,20 +362,36 @@ group_import_row(dsd_state* state, const char* filename, unsigned int row_count,
     name_field = fields[2];
     group_entry_init(&entry, id_start, id_end, is_range, mode_field, name_field, row_count, &mode_blocking);
     group_apply_policy_fields(header, filename, row_count, field_count, fields, &entry, mode_blocking);
-    return group_commit_entry(state, &entry, is_range, filename, row_count, dropped_policy_alloc_rows);
+    group_apply_tags_field(header, field_count, fields, &entry);
+    return group_commit_entry(state, store, &entry, is_range, filename, row_count, dropped_policy_alloc_rows);
+}
+
+/* Rows dropped for want of memory are a warning, as they always were: the import keeps
+ * what it could load. A read error is a failure, since the file was not fully read. */
+static int
+group_import_finish(FILE* fp, const char* filename, size_t dropped_policy_alloc_rows) {
+    if (dropped_policy_alloc_rows > 0) {
+        LOG_WARN("WARNING: Group file '%s' skipped %zu rows due to policy allocation failure.\n", filename,
+                 dropped_policy_alloc_rows);
+    }
+
+    const int rc = ferror(fp) ? -1 : 0;
+    fclose(fp);
+    return rc;
 }
 
 /* stats may be NULL; when set, counts data rows so a dry run can report them. */
 static int
-group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_validation* stats) {
+group_import_path(const char* group_file_path, dsd_state* state, dsd_tg_policy_store* store,
+                  dsd_csv_validation* stats) {
     char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
     char buffer[BSIZE];
     FILE* fp = NULL;
     unsigned int row_count = 0;
     size_t dropped_policy_alloc_rows = 0;
-    group_policy_header header = {0, 0, 0};
+    group_policy_header header = {0};
 
-    if (!group_file_path || group_file_path[0] == '\0' || !state) {
+    if (!group_file_path || group_file_path[0] == '\0' || (!state && !store)) {
         return -1;
     }
 
@@ -443,11 +400,15 @@ group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_v
         return -1;
     }
 
-    while (fgets(buffer, BSIZE, fp)) {
+    int invalid_line = 0;
+    while (csv_read_line(fp, buffer, sizeof(buffer), &invalid_line) > 0) {
         row_count++;
         trim_eol(buffer);
 
         if (row_count == 1) {
+            if (invalid_line) {
+                continue;
+            }
             char header_copy[BSIZE];
             DSD_SNPRINTF(header_copy, sizeof(header_copy), "%s", buffer);
             header = group_parse_policy_header(header_copy);
@@ -460,23 +421,37 @@ group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_v
             continue; //don't want labels
         }
 
-        if (csv_line_is_blank(buffer)) {
+        if (!csv_data_row_ready(buffer, invalid_line, filename, (unsigned)row_count, stats)) {
             continue;
         }
-        if (stats) {
-            stats->total++;
-        }
-        if (group_import_row(state, filename, row_count, buffer, &header, &dropped_policy_alloc_rows) == 0 && stats) {
+        if (group_import_row(state, store, filename, row_count, buffer, &header, &dropped_policy_alloc_rows) == 0
+            && stats) {
             stats->accepted++;
         }
     }
 
-    if (dropped_policy_alloc_rows > 0) {
-        LOG_WARN("WARNING: Group file '%s' skipped %zu rows due to policy allocation failure.\n", filename,
-                 dropped_policy_alloc_rows);
-    }
+    return group_import_finish(fp, filename, dropped_policy_alloc_rows);
+}
 
-    fclose(fp);
+static int
+group_import_path_stats(const char* path, dsd_state* state, dsd_csv_validation* stats) {
+    return group_import_path(path, state, NULL, stats);
+}
+
+int
+dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out) {
+    if (!out) {
+        return -1;
+    }
+    dsd_tg_policy_store* store = dsd_tg_policy_store_create();
+    if (!store) {
+        return -1;
+    }
+    if (group_import_path(path, NULL, store, NULL) != 0) {
+        dsd_tg_policy_release(store);
+        return -1;
+    }
+    *out = store;
     return 0;
 }
 
@@ -558,6 +533,12 @@ csv_chan_parse_key(const char* token, long int* out) {
     return parse_dec_long_strict(p, out);
 }
 
+int
+dsd_csv_channel_has_slot(const char* channel) {
+    long int parsed = -1;
+    return channel && csv_chan_parse_key(channel, &parsed) && parsed >= 0 && parsed < 0xFFFF;
+}
+
 static int
 csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field, long int* chan_number,
                             int* freq_parsed) {
@@ -622,14 +603,8 @@ csv_key_import_dec_normalize_keynumber(const char* field, int* id_ok) {
         return keynumber;
     }
 
-    uint8_t hash_bits[24];
-    keynumber &= 0xFFFFFFULL; // truncate to 24-bits (max allowed)
-    for (int i = 0; i < 24; i++) {
-        hash_bits[i] = (uint8_t)(((keynumber << i) & 0x800000ULL) >> 23); // load into array for CRC16
-    }
-    const uint16_t hash = dsd_crc_ccitt16_bits(hash_bits, 24U);
     LOG_INFO("Hashed ");
-    return hash & 0xFFFFULL; // make sure its no larger than 16-bits
+    return keyring_destination_index((uint32_t)(keynumber & 0xFFFFFFULL));
 }
 
 static int
@@ -665,16 +640,50 @@ csv_key_import_dec_apply_field(dsd_state* state, int field_count, const char* fi
 
 /*
  * The channel map's columns past the frequency have always been free-text notes
- * -- two shipped examples put commas in theirs -- so column 3 is a channel name
- * only when the header line says `name`. The per-row key columns opt in the
- * same way, by header name at any field index >= 2; a duplicated key header
- * rejects the file.
+ * -- two shipped examples put commas in theirs -- so metadata opts in by header
+ * name at any field index >= 2. Unknown fields stay notes; the first name wins,
+ * and duplicated mode/key headers reject the file.
  */
+enum {
+    CHAN_NUMBER,
+    CHAN_FREQUENCY,
+    CHAN_NAME,
+    CHAN_MODE,
+    CHAN_KEYS_HEX,
+    CHAN_KEYS_DEC,
+    CHAN_SINGLE_HEX,
+    CHAN_SINGLE_DEC,
+    CHAN_OPTIONS,
+    CHAN_FIELD_COUNT
+};
+
 typedef struct {
-    int has_name;
-    int keys_hex_idx;
-    int keys_dec_idx;
+    int index[CHAN_FIELD_COUNT];
 } chan_header_cols;
+
+/* Walk every field, retaining only the named columns. No field-count truncation. */
+static size_t
+chan_select_fields(char* line, const chan_header_cols* cols, char** fields) {
+    size_t count = 0;
+    char* cell = line;
+    for (int i = 0; i < CHAN_FIELD_COUNT; i++) {
+        fields[i] = NULL;
+    }
+    while (cell) {
+        char* next = strchr(cell, ',');
+        if (next) {
+            *next++ = '\0';
+        }
+        for (int i = 0; i < CHAN_FIELD_COUNT; i++) {
+            if (cols->index[i] >= 0 && (size_t)cols->index[i] == count) {
+                fields[i] = cell;
+            }
+        }
+        count++;
+        cell = next;
+    }
+    return count;
+}
 
 static const char*
 chan_key_cell(char** fields, size_t field_count, int idx) {
@@ -682,6 +691,11 @@ chan_key_cell(char** fields, size_t field_count, int idx) {
         return NULL;
     }
     return trim_ws(fields[idx]);
+}
+
+static int
+chan_key_cell_present(const char* cell) {
+    return cell != NULL && cell[0] != '\0';
 }
 
 static int
@@ -700,64 +714,147 @@ chan_resolve_key_cell(const char* base_path, const char* cell, char* out, size_t
 
 static int
 chan_parse_header(char* header_line, chan_header_cols* out) {
-    char* fields[16];
-    out->has_name = 0;
-    out->keys_hex_idx = -1;
-    out->keys_dec_idx = -1;
-    const size_t field_count = csv_split_preserve_empty(header_line, fields, sizeof(fields) / sizeof(fields[0]));
-    if (field_count >= 3 && csv_ascii_casecmp(trim_ws(fields[2]), "name") == 0) {
-        out->has_name = 1;
+    static const char* const names[CHAN_FIELD_COUNT] = {
+        "", "", "name", "mode", "keys_hex_csv", "keys_dec_csv", "single_key_hex", "single_key_dec", "options"};
+    for (int i = 0; i < CHAN_FIELD_COUNT; i++) {
+        out->index[i] = i < 2 ? i : -1;
     }
-    for (size_t i = 2; i < field_count; i++) {
-        const char* name = trim_ws(fields[i]);
-        if (csv_ascii_casecmp(name, "keys_hex_csv") == 0) {
-            if (out->keys_hex_idx >= 0) {
-                LOG_ERROR("channel map header duplicates 'keys_hex_csv'\n");
-                return -1;
-            }
-            out->keys_hex_idx = (int)i;
-        } else if (csv_ascii_casecmp(name, "keys_dec_csv") == 0) {
-            if (out->keys_dec_idx >= 0) {
-                LOG_ERROR("channel map header duplicates 'keys_dec_csv'\n");
-                return -1;
-            }
-            out->keys_dec_idx = (int)i;
+    char* cell = header_line;
+    int index = 0;
+    while (cell) {
+        char* next = strchr(cell, ',');
+        if (next) {
+            *next++ = '\0';
         }
+        const char* name = trim_ws(cell);
+        if (csv_ascii_casecmp(name, "relevant_CLI_switches") == 0) {
+            name = "options";
+        }
+        for (int i = CHAN_NAME; index >= 2 && i < CHAN_FIELD_COUNT; i++) {
+            if (csv_ascii_casecmp(name, names[i]) != 0) {
+                continue;
+            }
+            if (out->index[i] >= 0) {
+                if (i == CHAN_NAME) {
+                    break;
+                }
+                LOG_ERROR("channel map header duplicates '%s'\n", names[i]);
+                return -1;
+            }
+            out->index[i] = index;
+            break;
+        }
+        index++;
+        cell = next;
     }
     return 0;
 }
 
 /**
- * @brief Load the key files named by a row's key cells into that row's key set.
+ * @brief Load the key source named by a row into that row's key set.
  *
  * Paths resolve against the map file, so a map and its key files relocate as a
  * unit. Key paths cannot contain commas: the splitter does no quote handling.
  *
- * @return 0 when the row named no key file or its keys loaded, -1 on an unusable
- *         path, a load failure or allocation failure.
+ * A row may use the two file columns or the two direct scalar columns, but not
+ * both source families. Direct values never appear in a diagnostic.
+ *
+ * @return 0 when the row named no key source or its keys loaded, -1 on invalid
+ *         input, an unusable path, a load failure or allocation failure.
  */
-static int
-chan_import_row_keys(dsd_state* state, char** fields, size_t field_count, const chan_header_cols* cols,
-                     const char* base_path, int row_number, int show_keys, size_t slot) {
-    const char* hex_cell = chan_key_cell(fields, field_count, cols->keys_hex_idx);
-    const char* dec_cell = chan_key_cell(fields, field_count, cols->keys_dec_idx);
-    const int have_hex = (hex_cell != NULL && hex_cell[0] != '\0');
-    const int have_dec = (dec_cell != NULL && dec_cell[0] != '\0');
-    if (!have_hex && !have_dec) {
-        return 0;
-    }
-    char hex_path[CSV_IMPORT_PATH_MAX] = "";
-    char dec_path[CSV_IMPORT_PATH_MAX] = "";
-    if (chan_resolve_key_cell(base_path, hex_cell, hex_path, sizeof(hex_path), row_number) != 0
-        || chan_resolve_key_cell(base_path, dec_cell, dec_path, sizeof(dec_path), row_number) != 0) {
+int
+dsd_csv_channel_path_columns(char* header, int columns[3]) {
+    if (!header || !columns) {
         return -1;
     }
-    dsd_key_set ks;
-    DSD_MEMSET(&ks, 0, sizeof(ks));
-    if (dsd_key_set_load_csv(&ks, have_hex ? hex_path : NULL, have_dec ? dec_path : NULL, show_keys) != 0) {
+    chan_header_cols parsed;
+    if (chan_parse_header(header, &parsed) != 0) {
+        return -1;
+    }
+    columns[0] = parsed.index[CHAN_KEYS_HEX];
+    columns[1] = parsed.index[CHAN_KEYS_DEC];
+    columns[2] = parsed.index[CHAN_OPTIONS];
+    return 0;
+}
+
+static int
+chan_import_direct_keys(dsd_key_set* ks, const char* single_hex_cell, const char* single_dec_cell,
+                        const char* base_path, int row_number) {
+    const dsd_key_direct_result direct_rc = dsd_key_set_load_direct(ks, single_hex_cell, single_dec_cell);
+    if (direct_rc != DSD_KEY_DIRECT_OK) {
+        char row_text[32] = "?";
+        const char* field = "single_key_dec/single_key_hex";
+        if (direct_rc == DSD_KEY_DIRECT_INVALID_DEC) {
+            field = "single_key_dec";
+        } else if (direct_rc == DSD_KEY_DIRECT_INVALID_HEX) {
+            field = "single_key_hex";
+        }
+        (void)DSD_SNPRINTF(row_text, sizeof(row_text), "%d", row_number);
+        LOG_ERROR("channel map file '%s' row %s: invalid %s value\n", base_path, row_text, field);
+        return -1;
+    }
+    return 0;
+}
+
+static int
+chan_import_key_files(dsd_key_set* ks, const char* hex_cell, const char* dec_cell, const char* base_path,
+                      int row_number, int show_keys) {
+    char hex_path[CSV_IMPORT_PATH_MAX] = "";
+    char dec_path[CSV_IMPORT_PATH_MAX] = "";
+    if (chan_resolve_key_cell(base_path, hex_cell, hex_path, sizeof(hex_path), row_number) != 0) {
+        return -1;
+    }
+    if (chan_resolve_key_cell(base_path, dec_cell, dec_path, sizeof(dec_path), row_number) != 0) {
+        return -1;
+    }
+    const int have_hex = chan_key_cell_present(hex_cell);
+    const int have_dec = chan_key_cell_present(dec_cell);
+    if (dsd_key_set_load_csv(ks, have_hex ? hex_path : NULL, have_dec ? dec_path : NULL, show_keys) == 0) {
+        return 0;
+    }
+    char row_text[32] = "?";
+    (void)DSD_SNPRINTF(row_text, sizeof(row_text), "%d", row_number);
+    LOG_ERROR("channel map file '%s' row %s: failed to load row key file\n", base_path, row_text);
+    return -1;
+}
+
+static int
+chan_import_row_keys(dsd_state* state, char** fields, size_t field_count, const char* base_path, int row_number,
+                     int show_keys, int store, size_t slot) {
+    const char* hex_cell = chan_key_cell(fields, field_count, CHAN_KEYS_HEX);
+    const char* dec_cell = chan_key_cell(fields, field_count, CHAN_KEYS_DEC);
+    const char* single_hex_cell = chan_key_cell(fields, field_count, CHAN_SINGLE_HEX);
+    const char* single_dec_cell = chan_key_cell(fields, field_count, CHAN_SINGLE_DEC);
+    const int have_files = chan_key_cell_present(hex_cell) || chan_key_cell_present(dec_cell);
+    const int have_direct = chan_key_cell_present(single_hex_cell) || chan_key_cell_present(single_dec_cell);
+    if (!have_files && !have_direct) {
+        return 0;
+    }
+    if (have_files && have_direct) {
         char row_text[32] = "?";
         (void)DSD_SNPRINTF(row_text, sizeof(row_text), "%d", row_number);
-        LOG_ERROR("channel map file '%s' row %s: failed to load row key file\n", base_path, row_text);
+        LOG_ERROR("channel map file '%s' row %s: direct keys cannot be combined with key CSV files\n", base_path,
+                  row_text);
+        return -1;
+    }
+
+    /* A row whose channel number is invalid owns no scan-list slot. Its direct
+     * cells still need syntax validation, but a file-only row keeps the legacy
+     * behavior of not opening a key path that could never be activated. */
+    if (!store && !have_direct) {
+        return 0;
+    }
+
+    dsd_key_set ks;
+    DSD_MEMSET(&ks, 0, sizeof(ks));
+    if (have_direct && chan_import_direct_keys(&ks, single_hex_cell, single_dec_cell, base_path, row_number) != 0) {
+        return -1;
+    }
+    if (!store) {
+        dsd_key_set_free(&ks);
+        return 0;
+    }
+    if (have_files && chan_import_key_files(&ks, hex_cell, dec_cell, base_path, row_number, show_keys) != 0) {
         return -1;
     }
     if (dsd_state_trunk_lcn_keys_set(state, slot, &ks) != 0) {
@@ -768,46 +865,96 @@ chan_import_row_keys(dsd_state* state, char** fields, size_t field_count, const 
     return 0;
 }
 
+static int
+chan_import_options(dsd_state* state, char** fields, dsd_scan_mode mode, const char* base_path, int row_number,
+                    int show_keys, int store, size_t slot) {
+    dsd_scan_options parsed = {0};
+    char error[192] = "could not load options or companion file";
+    int rc = dsd_scan_options_parse(fields[CHAN_OPTIONS], (unsigned int)mode, 1, &parsed, error, sizeof(error));
+    if (!rc) {
+        rc =
+            dsd_scan_options_merge_keys(&parsed, chan_key_cell(fields, CHAN_FIELD_COUNT, CHAN_KEYS_HEX),
+                                        chan_key_cell(fields, CHAN_FIELD_COUNT, CHAN_KEYS_DEC),
+                                        chan_key_cell(fields, CHAN_FIELD_COUNT, CHAN_SINGLE_HEX),
+                                        chan_key_cell(fields, CHAN_FIELD_COUNT, CHAN_SINGLE_DEC), error, sizeof(error));
+    }
+    dsd_scan_row_profile* profile = NULL;
+    dsd_key_set keys = {0};
+    if (!rc) {
+        rc = dsd_scan_options_resolve(&parsed, base_path, error, sizeof(error));
+    }
+    if (!rc) {
+        rc = dsd_scan_profile_load(&parsed, show_keys, &profile, &keys);
+    }
+    if (!rc && store && keys.present) {
+        rc = dsd_state_trunk_lcn_keys_set(state, slot, &keys);
+    }
+    if (!rc && store) {
+        rc = dsd_channel_profile_set(state, slot, profile);
+        if (!rc) {
+            profile = NULL;
+        }
+    }
+    dsd_scan_profile_free(profile);
+    dsd_key_set_free(&keys);
+    DSD_SECURE_ZERO(&parsed, sizeof(parsed));
+    if (rc) {
+        LOG_ERROR("channel map file '%s' row %d: %s\n", base_path, row_number, error);
+    }
+    return rc;
+}
+
 /**
  * @brief Parse one channel row into @p state.
  *
  * Empty fields are preserved rather than collapsed, so `1,,851000000` reads as a
  * blank frequency and is skipped instead of promoting column 3 into its place.
  *
- * When the header opted into per-row keys, a non-blank key cell on a row that
- * took a slot resolves its path against the map file and loads it into the
- * row's key set. Key paths cannot contain commas: the splitter does no quote
- * handling. A load failure fails the whole import, like a bad `-K`.
+ * When the header opts into per-row keys, a row that took a slot stores either
+ * its direct scalar values or a key file resolved against the map. Direct cells
+ * are still validated on a row that took no slot, while file-only paths on such
+ * a row are not opened. Key paths cannot contain commas: the splitter does no
+ * quote handling. Invalid direct input or a key-file load failure rejects the
+ * whole import.
  *
  * @return 1 when a frequency loaded, -1 on allocation failure or key load failure.
  */
 static int
 chan_import_row(dsd_state* state, char* buffer, const chan_header_cols* cols, const char* base_path, int row_number,
                 int show_keys, int* out_field_count, long int* out_chan_number) {
-    char* fields[16];
+    char* fields[CHAN_FIELD_COUNT];
     int freq_parsed = 0;
     long int chan_number = -1;
-    // The row's scan-list slot is the count before it: every row that takes one
-    // appends, so the name index and the slot index stay equal by construction.
     const int lcn_before = state->lcn_freq_count;
-
-    const size_t field_count = csv_split_preserve_empty(buffer, fields, sizeof(fields) / sizeof(fields[0]));
-    for (size_t i = 0; i < field_count && i < 2; i++) {
-        if (csv_chan_import_apply_field(state, (int)i, fields[i], &chan_number, &freq_parsed) != 0) {
+    const size_t field_count = chan_select_fields(buffer, cols, fields);
+    dsd_scan_mode mode = DSD_SCAN_MODE_INHERIT;
+    if (dsd_scan_mode_parse(fields[CHAN_MODE], &mode) != 0) {
+        LOG_ERROR("channel map file '%s' row %d: invalid mode\n", base_path, row_number);
+        return -1;
+    }
+    for (int i = 0; i < 2 && fields[i]; i++) {
+        if (csv_chan_import_apply_field(state, i, fields[i], &chan_number, &freq_parsed) != 0) {
             return -1;
         }
     }
-    if (cols->has_name && field_count >= 3 && state->lcn_freq_count > lcn_before) {
-        if (dsd_state_trunk_lcn_name_set(state, (size_t)lcn_before, fields[2]) != 0) {
+    const int row_has_slot = state->lcn_freq_count > lcn_before;
+    if (row_has_slot) {
+        if ((fields[CHAN_NAME] && dsd_state_trunk_lcn_name_set(state, (size_t)lcn_before, fields[CHAN_NAME]) != 0)
+            || dsd_channel_mode_set(state, (size_t)lcn_before, mode) != 0) {
             LOG_ERROR("channel map import out of memory\n");
             return -1;
         }
     }
-    if ((cols->keys_hex_idx >= 0 || cols->keys_dec_idx >= 0) && state->lcn_freq_count > lcn_before) {
-        if (chan_import_row_keys(state, fields, field_count, cols, base_path, row_number, show_keys, (size_t)lcn_before)
-            != 0) {
-            return -1;
-        }
+    int keys_rc;
+    if (chan_key_cell_present(chan_key_cell(fields, CHAN_FIELD_COUNT, CHAN_OPTIONS))) {
+        keys_rc = chan_import_options(state, fields, mode, base_path, row_number, show_keys, row_has_slot,
+                                      row_has_slot ? (size_t)lcn_before : 0U);
+    } else {
+        keys_rc = chan_import_row_keys(state, fields, CHAN_FIELD_COUNT, base_path, row_number, show_keys, row_has_slot,
+                                       row_has_slot ? (size_t)lcn_before : 0U);
+    }
+    if (keys_rc != 0) {
+        return -1;
     }
     *out_field_count = (int)field_count;
     *out_chan_number = chan_number;
@@ -838,6 +985,51 @@ chan_import_row_report(const dsd_state* state, dsd_csv_validation* stats, const 
     LOG_INFO("\n");
 }
 
+/* Read a physical row intact. A malformed/oversized row must never become two
+ * independent channels or lose a trailing mode/key column. */
+static int
+chan_read_line(FILE* fp, char** buffer, size_t* capacity) {
+    const size_t max_capacity = (size_t)1024 * 1024;
+    size_t used = 0;
+    int ch;
+    while ((ch = fgetc(fp)) != EOF) {
+        if (ch == '\0') {
+            return -1;
+        }
+        if (used + 1 >= *capacity) {
+            if (*capacity >= max_capacity) {
+                return -1;
+            }
+            const size_t next = *capacity ? *capacity * 2 : 1024U;
+            char* grown = (char*)malloc(next);
+            if (!grown) {
+                return -1;
+            }
+            if (*buffer) {
+                /* Rows may contain direct keys; erase the old storage before
+                 * releasing it, just as the final buffer is erased below. */
+                DSD_MEMCPY(grown, *buffer, used);
+                DSD_SECURE_ZERO(*buffer, *capacity);
+                free(*buffer);
+            }
+            *buffer = grown;
+            *capacity = next;
+        }
+        (*buffer)[used++] = (char)ch;
+        if (ch == '\n') {
+            break;
+        }
+    }
+    if (ferror(fp)) {
+        return -1;
+    }
+    if (used == 0) {
+        return 0;
+    }
+    (*buffer)[used] = '\0';
+    return 1;
+}
+
 /* stats may be NULL; when set, counts data rows so a dry run can report them. */
 static int
 chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validation* stats, int show_keys) {
@@ -847,7 +1039,8 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
 
     char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
 
-    char buffer[BSIZE];
+    char* buffer = NULL;
+    size_t capacity = 0;
     FILE* fp = csv_open_user_read_file("channel map file", chan_file_path, filename, sizeof filename);
     if (fp == NULL) {
         return -1;
@@ -855,18 +1048,18 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
     int row_count = 0;
     chan_header_cols cols;
     DSD_MEMSET(&cols, 0, sizeof(cols));
-    cols.keys_hex_idx = -1;
-    cols.keys_dec_idx = -1;
+    int rc = 0;
 
-    while (fgets(buffer, BSIZE, fp)) {
+    int read_result;
+    while ((read_result = chan_read_line(fp, &buffer, &capacity)) > 0) {
         int field_count = 0;
         long int chan_number = -1;
         row_count++;
         if (row_count == 1) {
-            // Split in place: the header is not needed again, and the next fgets refills the buffer.
+            // Split in place: the header is not needed again, and the next read refills the buffer.
             if (chan_parse_header(buffer, &cols) != 0) {
-                fclose(fp);
-                return -1;
+                rc = -1;
+                break;
             }
             continue; //don't want labels
         }
@@ -876,13 +1069,22 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
         const int freq_parsed =
             chan_import_row(state, buffer, &cols, filename, row_count, show_keys, &field_count, &chan_number);
         if (freq_parsed < 0) {
-            fclose(fp);
-            return -1;
+            rc = -1;
+            break;
         }
         chan_import_row_report(state, stats, filename, row_count, freq_parsed, field_count, chan_number);
     }
+    if (read_result < 0) {
+        LOG_ERROR("channel map file '%s': unable to read row %d (I/O, memory, or 1 MiB row limit)\n", filename,
+                  row_count + 1);
+        rc = -1;
+    }
+    if (buffer) {
+        DSD_SECURE_ZERO(buffer, capacity);
+        free(buffer);
+    }
     fclose(fp);
-    return 0;
+    return rc;
 }
 
 /* Dry-run entry for the validator: counts rows and never reveals key values. */
@@ -917,7 +1119,8 @@ key_import_dec_stats(int show_keys, const char* key_file_path, dsd_state* state,
     }
     int row_count = 0;
 
-    while (fgets(buffer, BSIZE, fp)) {
+    int invalid_line = 0;
+    while (csv_read_line(fp, buffer, sizeof(buffer), &invalid_line) > 0) {
         unsigned long long int keynumber = 0;
         int field_count = 0;
         int id_ok = 0;
@@ -926,11 +1129,8 @@ key_import_dec_stats(int show_keys, const char* key_file_path, dsd_state* state,
         if (row_count == 1) {
             continue; //don't want labels
         }
-        if (csv_line_is_blank(buffer)) {
+        if (!csv_data_row_ready(buffer, invalid_line, filename, (unsigned)row_count, stats)) {
             continue;
-        }
-        if (stats) {
-            stats->total++;
         }
         char* saveptr = NULL;
         const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
@@ -960,8 +1160,10 @@ key_import_dec_stats(int show_keys, const char* key_file_path, dsd_state* state,
         }
         LOG_INFO("\n");
     }
+    DSD_SECURE_ZERO(buffer, sizeof(buffer));
+    const int rc = ferror(fp) ? -1 : 0;
     fclose(fp);
-    return 0;
+    return rc;
 }
 
 int
@@ -1171,17 +1373,15 @@ key_import_hex_stats(int show_keys, const char* key_file_path, dsd_state* state,
     }
     int row_count = 0;
 
-    while (fgets(buffer, BSIZE, fp)) {
+    int invalid_line = 0;
+    while (csv_read_line(fp, buffer, sizeof(buffer), &invalid_line) > 0) {
         int stored_segments = 0;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels
         }
-        if (csv_line_is_blank(buffer)) {
+        if (!csv_data_row_ready(buffer, invalid_line, filename, (unsigned)row_count, stats)) {
             continue;
-        }
-        if (stats) {
-            stats->total++;
         }
         unsigned long long keynumber = csv_key_import_hex_parse_row(state, buffer, &stored_segments);
         if (stats && stored_segments > 0) {
@@ -1214,8 +1414,10 @@ key_import_hex_stats(int show_keys, const char* key_file_path, dsd_state* state,
 
         LOG_INFO("\n");
     }
+    DSD_SECURE_ZERO(buffer, sizeof(buffer));
+    const int rc = ferror(fp) ? -1 : 0;
     fclose(fp);
-    return 0;
+    return rc;
 }
 
 int
@@ -1241,12 +1443,13 @@ typedef int (*csv_validate_run_fn)(const char* path, dsd_state* state, dsd_csv_v
  */
 static int
 csv_validate_into_throwaway(const char* path, dsd_csv_validation* out, csv_validate_run_fn run) {
-    if (!path || path[0] == '\0' || !out || !run) {
+    if (!out) {
         return -1;
     }
-    out->accepted = 0U;
-    out->skipped = 0U;
-    out->total = 0U;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!path || path[0] == '\0' || !run) {
+        return -1;
+    }
 
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     int rc = -1;
@@ -1255,6 +1458,7 @@ csv_validate_into_throwaway(const char* path, dsd_csv_validation* out, csv_valid
         dsd_state_ext_free_all(state);
     }
     dsd_state_trunk_lcn_free(state);
+    dsd_key_state_secure_wipe(state);
     free(state);
 
     if (rc != 0) {
@@ -1287,6 +1491,64 @@ dsd_csv_validate_chan_file(const char* path, dsd_csv_validation* out) {
     return csv_validate_into_throwaway(path, out, chan_validate_run);
 }
 
+static int
+csv_profile_key_source(const dsd_key_set* keys) {
+    if (!keys || !keys->present) {
+        return 0;
+    }
+    if (keys->keyloader) {
+        return keys->count ? 2 : 3;
+    }
+    const dsd_key_scalars* key = &keys->scalars;
+    return key->basic_key_present || key->scalar_key_present[0] || key->scalar_key_present[1] || key->aes_key_loaded[0]
+                   || key->hytera_key_segments
+               ? 1
+               : 3;
+}
+
+static void
+csv_describe_channel_profile(const dsd_state* state, int index, dsd_csv_channel_profile* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->index = (size_t)index;
+    const long int hz = *dsd_state_trunk_lcn_slot_const(state, index);
+    out->frequency_hz = hz > 0 ? (uint64_t)hz : 0;
+    DSD_SNPRINTF(out->name, sizeof(out->name), "%s", dsd_state_trunk_lcn_name_get(state, (size_t)index));
+    DSD_SNPRINTF(out->mode, sizeof(out->mode), "%s", dsd_scan_mode_name(dsd_channel_mode_get(state, (size_t)index)));
+    const dsd_key_set* keys = dsd_state_trunk_lcn_keys_get(state, (size_t)index);
+    out->key_source = csv_profile_key_source(keys);
+    if (keys) {
+        DSD_SNPRINTF(out->profile_ref, sizeof(out->profile_ref), "%s", keys->profile_ref);
+    }
+    const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)index);
+    out->force = profile && (profile->values.present & DSD_SCAN_OPT_FORCE) ? profile->values.force : -1;
+    out->dmr_mapping_count = profile && (profile->values.present & DSD_SCAN_OPT_DMR_MAP) ? profile->dmr_map.count : -1;
+}
+
+int
+dsd_csv_inspect_channel_profiles(const char* path, void* context, dsd_csv_channel_profile_cb callback) {
+    if (!path || !callback) {
+        return -1;
+    }
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!state) {
+        return -1;
+    }
+    dsd_csv_validation stats = {0};
+    const int result = chan_validate_run(path, state, &stats);
+    if (result == 0) {
+        for (int i = 0; i < state->lcn_freq_count; ++i) {
+            dsd_csv_channel_profile row;
+            csv_describe_channel_profile(state, i, &row);
+            callback(&row, context);
+        }
+    }
+    dsd_state_ext_free_all(state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_key_state_secure_wipe(state);
+    free(state);
+    return result;
+}
+
 int
 dsd_csv_validate_key_file_dec(const char* path, dsd_csv_validation* out) {
     return csv_validate_into_throwaway(path, out, csv_validate_run_key_dec);
@@ -1297,11 +1559,7 @@ dsd_csv_validate_key_file_hex(const char* path, dsd_csv_validation* out) {
     return csv_validate_into_throwaway(path, out, csv_validate_run_key_hex);
 }
 
-typedef struct {
-    uint32_t tg[DSD_DMR_TG_KEY_MAP_MAX];
-    uint8_t kid[DSD_DMR_TG_KEY_MAP_MAX];
-    int count;
-} dmr_tg_key_tmp_t;
+typedef dsd_dmr_key_map dmr_tg_key_tmp_t;
 
 static int
 dmr_tg_key_parse_row(const char* path, int row_count, char* line, void* ctx) {
@@ -1383,12 +1641,18 @@ csv_mapping_import_rows(const char* csv_label, const char* open_label, const cha
     int rows = 0;
     int rc = 0;
 
-    while (fgets(buffer, BSIZE, fp) != NULL) {
+    int invalid_line = 0;
+    while (csv_read_line(fp, buffer, sizeof(buffer), &invalid_line) > 0) {
         row_count++;
         if (row_count == 1) {
             continue; //header
         }
 
+        if (invalid_line) {
+            LOG_ERROR("%s '%s' row %d is overlong or contains NUL.\n", csv_label, filename, row_count);
+            rc = -1;
+            break;
+        }
         trim_eol(buffer);
         char* line = trim_ws(buffer);
         if (line == NULL || line[0] == '\0') {
@@ -1401,11 +1665,29 @@ csv_mapping_import_rows(const char* csv_label, const char* open_label, const cha
         rows++;
     }
 
+    if (ferror(fp)) {
+        rc = -1;
+    }
     fclose(fp);
 
     if (rc == 0 && rows == 0) {
         LOG_ERROR("%s '%s' contains no mappings.\n", csv_label, filename);
         rc = -1;
+    }
+    return rc;
+}
+
+int
+dsd_dmr_key_map_load(const char* path, dsd_dmr_key_map* out) {
+    if (!path || !*path || !out) {
+        return -1;
+    }
+    dsd_dmr_key_map parsed = {0};
+    char filename[CSV_IMPORT_PATH_MAX] = {0};
+    const int rc = csv_mapping_import_rows("DMR TG key ID map CSV", "DMR TG key ID mapping file", path, filename,
+                                           sizeof(filename), dmr_tg_key_parse_row, &parsed);
+    if (rc == 0) {
+        *out = parsed;
     }
     return rc;
 }
@@ -1449,6 +1731,31 @@ csvVertexKsImport(dsd_state* state, const char* path) {
         vertex_ks_apply_to_state(state, tmp, filename);
     }
 
+    DSD_SECURE_ZERO(tmp, sizeof(*tmp));
+    free(tmp);
+    return rc;
+}
+
+int
+dsd_csv_validate_vertex_file(const char* path, dsd_csv_validation* out) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!path || !*path) {
+        return -1;
+    }
+    vertex_map_tmp_t* tmp = (vertex_map_tmp_t*)calloc(1, sizeof(*tmp));
+    if (!tmp) {
+        return -1;
+    }
+    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
+    const int rc = csv_mapping_import_rows("Vertex KS CSV", "Vertex KS mapping file", path, filename, sizeof filename,
+                                           vertex_ks_parse_row, tmp);
+    if (rc == 0) {
+        out->accepted = out->total = (unsigned int)tmp->count;
+    }
+    DSD_SECURE_ZERO(tmp, sizeof(*tmp));
     free(tmp);
     return rc;
 }

@@ -24,6 +24,7 @@ if(DSD_HAS_RADIO)
     target_sources(
         dsd-neo_io_radio
         PRIVATE
+            radio/airspy_source.cpp
             radio/rtl_auto_ppm.cpp
             radio/rtl_device.cpp
             radio/rtl_demod_config.cpp
@@ -53,7 +54,10 @@ if(DSD_HAS_RADIO)
         PRIVATE dsd-neo_core dsd-neo_io_iq dsd-neo_platform
     )
     # SoapySDR exports C++-only warning flags; keep it private so they do not leak into C dependents.
-    target_link_libraries(dsd-neo_io_radio PRIVATE dsd-neo_feature_soapy)
+    target_link_libraries(
+        dsd-neo_io_radio
+        PRIVATE dsd-neo_feature_soapy dsd-neo_feature_airspy
+    )
 
     target_link_libraries(dsd-neo_io_radio PRIVATE dsd-neo_warnings)
 
@@ -91,6 +95,7 @@ if(DSD_HAS_RADIO)
                 dsd-neo_io_iq
                 dsd-neo_platform
                 dsd-neo_feature_soapy
+                dsd-neo_feature_airspy
                 dsd-neo_warnings
         )
     endif()

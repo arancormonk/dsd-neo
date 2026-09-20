@@ -12,6 +12,7 @@
  * for stream I/O and uses the mainloop API for device enumeration.
  */
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/audio_concealment.h>
@@ -29,7 +30,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "dsd-neo/core/safe_api.h"
 #define DSD_NEO_AUDIO_BACKEND_PULSE 1
 #include "audio_error_internal.h"
 #include "audio_stream_internal.h"
@@ -1025,3 +1025,8 @@ dsd_audio_backend_name(void) {
 }
 
 #endif /* DSD_PLATFORM_POSIX */
+
+int
+dsd_audio_output_device_id(void) {
+    return -1;
+}

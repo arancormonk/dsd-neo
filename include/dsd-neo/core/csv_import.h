@@ -23,7 +23,18 @@ struct p25_bandplan_row;
 extern "C" {
 #endif
 
+/**
+ * Import a group list (docs/csv-formats.md, "Group List CSV") into the state's talkgroup
+ * policy. Malformed rows are skipped with a warning, as are rows dropped for an allocation
+ * failure, and the import still returns 0 with whatever loaded. Returns -1 when the file
+ * cannot be opened or a read error interrupts it.
+ */
+/* Source aliases: replace on success; preserve live store on open/read/allocation failure. */
+int csvSrcImport(const dsd_opts* opts, dsd_state* state);
+int csvSrcImportPath(const char* path, dsd_state* state);
+
 int csvGroupImport(const dsd_opts* opts, dsd_state* state);
+/** csvGroupImport() on an explicit path. */
 int csvGroupImportPath(const char* group_file_path, dsd_state* state);
 int csvChanImport(const dsd_opts* opts, dsd_state* state);
 int csvKeyImportDec(const dsd_opts* opts, dsd_state* state);

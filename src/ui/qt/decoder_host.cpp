@@ -3,12 +3,21 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QLatin1String>
+#include <QList>
+#include <QMap>
+#include <QVariant>
+#include <initializer_list>
+#include <utility>
 #include "decoder_host.h"
 
 #include <QByteArray>
+#include <QClipboard>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QIODevice>
 #include <QSaveFile>
 #include <QUrl>
@@ -113,6 +122,44 @@ DecoderHost::DecoderHost(QObject* parent) : QObject(parent) {
 
 DecoderHost::~DecoderHost() = default;
 
+QVariantMap
+DecoderHost::documentInfo(const QString& path) const {
+    const QFileInfo info(path);
+    return {{"name", info.fileName()},
+            {"exists", info.isFile()},
+            {"sizeBytes", info.size()},
+            {"modified", info.lastModified().toString(Qt::ISODate)}};
+}
+
+bool
+DecoderHost::copyText(const QString& text) const {
+    if (auto* clipboard = QGuiApplication::clipboard()) {
+        clipboard->setText(text);
+        return true;
+    }
+    return false;
+}
+
+QString
+DecoderHost::licenseNotices() const {
+    QStringList notices;
+    for (const auto* name : {"LICENSE", "COPYRIGHT", "THIRD_PARTY.md", "src/ui/qt/fonts/IBMPlex-LICENSE.txt",
+                             "src/third_party/ezpwd/lesser.txt", "src/third_party/pffft/COPYING"}) {
+        QFile file(QStringLiteral(":/dsdneo/notices/") + QLatin1String(name));
+        if (file.open(QIODevice::ReadOnly)) {
+            notices.append(QLatin1String(name) + QStringLiteral("\n\n") + QString::fromUtf8(file.readAll()));
+        }
+    }
+    for (const auto* name :
+         {"libusb-LGPL-2.1-or-later.txt", "librtlsdr-GPL-2.0-or-later.txt", "libairspy-LICENSE.txt"}) {
+        QFile file(QStringLiteral("assets:/doc/dsd-neo/licenses/") + QLatin1String(name));
+        if (file.open(QIODevice::ReadOnly)) {
+            notices.append(QString::fromUtf8(file.readAll()));
+        }
+    }
+    return notices.join(QStringLiteral("\n\n"));
+}
+
 QString
 DecoderHost::importDocument(const QString& reference, const QString& fileName, const QString& replacePath) {
     const QUrl url(reference);
@@ -152,7 +199,7 @@ DecoderHost::importLocalFile(const QString& sourcePath, const QString& fileName,
     // QSaveFile stages beside the target and renames over it on commit, so an
     // update never leaves a half-written CSV where a saved system points.
     QSaveFile out(destination);
-    if (!out.open(QIODevice::WriteOnly)) {
+    if (!out.open(QIODevice::WriteOnly) || !out.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
         return QString();
     }
     if (!copy_stream(source, out) || !out.commit()) {
