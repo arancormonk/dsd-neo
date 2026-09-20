@@ -19,6 +19,7 @@ void cb_raw_wav(void* v, const char* path);
 void cb_dsp_out(void* v, const char* name);
 void cb_import_chan(void* v, const char* p);
 void cb_import_group(void* v, const char* p);
+void cb_import_src(void* v, const char* p);
 void cb_import_p25_bandplan(void* v, const char* p);
 void cb_export_p25_bandplan(void* v, const char* p);
 void cb_keys_dec(void* v, const char* p);

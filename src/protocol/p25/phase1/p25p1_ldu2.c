@@ -20,6 +20,7 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/key_presence.h>
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
@@ -445,7 +446,8 @@ ldu2_maybe_finalize_lsd_alias(const dsd_opts* opts, dsd_state* state) {
     if (tsrc != 0) {
         const char* mode = "D";
         dsd_tg_policy_entry alias_entry;
-        if (p25_crypto_metadata_is_confirmed_encrypted(state, 0) && opts->trunk_tune_enc_calls == 0 && state->R == 0) {
+        if (p25_crypto_metadata_is_confirmed_encrypted(state, 0) && opts->trunk_tune_enc_calls == 0
+            && !dsd_key_scalar_present(state, 0)) {
             mode = "DE";
         }
         if (dsd_tg_policy_make_exact_entry((uint32_t)tsrc, mode, str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias_entry)

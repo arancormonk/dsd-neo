@@ -6,15 +6,18 @@
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/sndfile_fwd.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
@@ -4870,9 +4873,250 @@ test_history_reset_drops_pending_end_alert(void) {
     return rc;
 }
 
+static void
+test_source_alias_collision(int protocol) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    Event_History_I* history = calloc(2, sizeof(*history));
+    assert(opts && state && history);
+    reset_fixture(opts, state, history);
+    char group_path[DSD_TEST_PATH_MAX], source_path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(group_path, sizeof(group_path), "alias-collision-group");
+    assert(fd >= 0);
+    assert(dsd_close(fd) == 0);
+    fd = dsd_test_mkstemp(source_path, sizeof(source_path), "alias-collision-source");
+    assert(fd >= 0);
+    assert(dsd_close(fd) == 0);
+    FILE* fp = dsd_fopen_private(group_path, "w");
+    assert(fp);
+    assert(fputs("id,mode,name\n1201,A,Talkgroup 1201\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    fp = dsd_fopen_private(source_path, "w");
+    assert(fp);
+    assert(fputs("id,name\n1201,Radio 1201\n1202,Unit X\n", fp) >= 0);
+    assert(fclose(fp) == 0);
+    assert(csvGroupImportPath(group_path, state) == 0);
+    assert(csvSrcImportPath(source_path, state) == 0);
+    assert(remove(group_path) == 0 && remove(source_path) == 0);
+    state->lastsynctype = protocol;
+    assert(observe_test_call(state, 0U, protocol, DSD_CALL_KIND_GROUP_VOICE, 1201, 1201, 0, 0, DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    watchdog_event_current(opts, state, 0);
+    const Event_History* item = &history[0].Event_History_Items[0];
+    assert(strcmp(item->t_name, "Talkgroup 1201") == 0 && strcmp(item->s_name, "Radio 1201") == 0);
+    assert(strstr(item->event_string, "TName: Talkgroup 1201; Mode: A;"));
+    assert(strstr(item->event_string, "SName: Radio 1201; Mode: A;"));
+    assert(observe_test_call(state, 0U, protocol, DSD_CALL_KIND_GROUP_VOICE, 9999, 1202, 0, 0, DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    watchdog_event_current(opts, state, 0);
+    assert(strstr(item->event_string, "SName: Unit X; "));
+    assert(!strstr(item->event_string, "Mode:"));
+    assert(dsd_source_alias_clear(state) == 0);
+    assert(observe_test_call(state, 0U, protocol, DSD_CALL_KIND_GROUP_VOICE, 9999, 1201, 0, 0, DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    watchdog_event_current(opts, state, 0);
+    assert(strstr(item->event_string, "SName: Talkgroup 1201; Mode: A;"));
+    dsd_state_ext_free_all(state);
+    free(history);
+    free(state);
+    free(opts);
+}
+
+static int
+test_crc_invalid_data_notice_isolation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "crc-events");
+    assert(fd >= 0);
+    assert(dsd_close(fd) == 0);
+    DSD_SNPRINTF(opts.event_out_file, sizeof opts.event_out_file, "%s", path);
+    Event_History* staged = &event_history[0].Event_History_Items[0];
+    DSD_SNPRINTF(staged->text_message, sizeof staged->text_message, "decoded text");
+    DSD_SNPRINTF(staged->gps_s, sizeof staged->gps_s, "decoded position");
+    char notice[4096];
+    DSD_MEMSET(notice, 'X', sizeof notice - 1U);
+    notice[sizeof notice - 1U] = '\0';
+    dsd_call_observation data = dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 0U, 100U, 200U);
+    state.event_crc_invalid[0] = 1U;
+    assert(dsd_event_emit_data_notice(&opts, &state, 0U, &data, notice) == 0);
+    int rc = expect_has_substr("long failed notice retains prefix",
+                               event_history[0].Event_History_Items[1].event_string, " [CRC ERR] ");
+    rc |= expect_int("failed data warns", event_history[0].Event_History_Items[1].severity, DSD_EVENT_SEVERITY_WARNING);
+    assert(dsd_event_emit_data_notice_with_gps(&opts, &state, 0U, &data, "GPS packet", "explicit position") == 0);
+    rc |= expect_has_substr("GPS variant marks history", event_history[0].Event_History_Items[1].event_string,
+                            "[CRC ERR]");
+    FILE* f = fopen(path, "rb");
+    assert(f != NULL);
+    char buf[8192];
+    size_t n = fread(buf, 1U, sizeof buf - 1U, f);
+    fclose(f);
+    buf[n] = '\0';
+    rc |= expect_has_substr("failed text detail marked", buf, "[CRC ERR] Text: decoded text");
+    rc |= expect_has_substr("failed GPS detail marked", buf, "[CRC ERR] GPS: decoded position");
+    rc |= expect_has_substr("explicit GPS detail marked", buf, "[CRC ERR] GPS: explicit position");
+    for (const char* line = buf; *line != '\0';) {
+        const char* end = strchr(line, '\n');
+        const char* marker = strstr(line, "[CRC ERR]");
+        rc |= expect_int("every failed log line marked", marker != NULL && (end == NULL || marker < end), 1);
+        if (end == NULL) {
+            break;
+        }
+        line = end + 1;
+    }
+    data.slot = 1U;
+    assert(dsd_event_emit_data_notice(&opts, &state, 1U, &data, "other slot") == 0);
+    rc |= expect_int("other slot not tainted",
+                     strstr(event_history[1].Event_History_Items[1].event_string, "[CRC ERR]") != NULL, 0);
+    state.event_crc_invalid[0] = 0U;
+    data.slot = 0U;
+    assert(dsd_event_emit_data_notice(&opts, &state, 0U, &data, "clean next") == 0);
+    rc |= expect_int("next notice not tainted",
+                     strstr(event_history[0].Event_History_Items[1].event_string, "[CRC ERR]") != NULL, 0);
+    rc |= expect_int("next notice informational", event_history[0].Event_History_Items[1].severity,
+                     DSD_EVENT_SEVERITY_INFO);
+    remove(path);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_crc_invalid_voice_delayed_and_reacquired(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    int rc = 0;
+    // A clean first fragment is upgraded by a failed reacquired header, then remains
+    // marked through another clean reacquisition and enrichment. Emergency and
+    // priority metadata learned on that fragment must survive the same merges.
+    for (int pass = 0; pass < 3; pass++) {
+        state.event_crc_invalid[0] = pass == 1;
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 100U,
+            .policy_target_id = 100U,
+            .ota_source_id = 200U,
+            .has_service_metadata = 1U,
+            .emergency = pass == 1,
+            .priority = pass == 1 ? 3U : 0U,
+            .observed_m = g_observed_m,
+        };
+        g_observed_m += 0.1;
+        assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        state.event_crc_invalid[0] = 0U;
+        // Publication deliberately happens after dispatch restored its CRC scope.
+        dsd_event_sync_slot(&opts, &state, 0U);
+        dsd_call_snapshot call;
+        assert(dsd_call_state_get(&state, 0U, &call) == 1);
+        assert(dsd_event_enrich_gps(&state, 0U, call.epoch, "voice position") == 1);
+        assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        if (pass != 0) {
+            rc |= expect_has_substr("delayed merged voice retains CRC marker",
+                                    event_history[0].Event_History_Items[1].event_string, "[CRC ERR]");
+            rc |= expect_int("delayed merged voice warns", event_history[0].Event_History_Items[1].severity,
+                             DSD_EVENT_SEVERITY_WARNING);
+            rc |= expect_int("delayed merged voice retains emergency",
+                             event_history[0].Event_History_Items[1].emergency, 1);
+            rc |= expect_int("delayed merged voice retains highest priority",
+                             event_history[0].Event_History_Items[1].priority, 3);
+        }
+    }
+    rc |= expect_int("failed reacquisition does not duplicate voice", committed_history_rows(&event_history[0]), 1);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 500U, 900U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("fresh voice epoch not tainted",
+                     strstr(event_history[0].Event_History_Items[0].event_string, "[CRC ERR]") != NULL, 0);
+    rc |= expect_int("fresh voice epoch informational", event_history[0].Event_History_Items[0].severity,
+                     DSD_EVENT_SEVERITY_INFO);
+    rc |= expect_int("fresh voice epoch has no emergency", event_history[0].Event_History_Items[0].emergency, 0);
+    rc |= expect_int("fresh voice epoch has no priority", event_history[0].Event_History_Items[0].priority, 0);
+    // PI headers can update a verified call's crypto without another identity observation.
+    // Even an otherwise identical carrier repeat must not hide a newly failed CRC.
+    const dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_ENCRYPTED, .algid = 0x24, .kid = 7, .mi = 0x12345678};
+    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    state.event_crc_invalid[0] = 1;
+    assert(dsd_call_state_update_crypto(&state, 0U, &crypto) == 1);
+    state.event_crc_invalid[0] = 0;
+    assert(end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_has_substr("metadata-only CRC failure marks delayed voice",
+                            event_history[0].Event_History_Items[1].event_string, "[CRC ERR]");
+    rc |= expect_int("metadata-only CRC failure warns", event_history[0].Event_History_Items[1].severity,
+                     DSD_EVENT_SEVERITY_WARNING);
+    // A later clean transmission must not inherit the old history depth's CRC flag on push.
+    for (int pass = 0; pass < 2; pass++) {
+        assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 600U, 901U, 0U, 0U,
+                                 DSD_CALL_BOUNDARY_BEGIN)
+               == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_int("clean committed/reacquired call has no stale CRC marker",
+                         strstr(event_history[0].Event_History_Items[1].event_string, "[CRC ERR]") != NULL, 0);
+        rc |= expect_int("clean committed/reacquired call remains informational",
+                         event_history[0].Event_History_Items[1].severity, DSD_EVENT_SEVERITY_INFO);
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_crc_invalid_enrichment_marks_voice(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    int rc = 0;
+    for (int late = 0; late < 2; late++) {
+        reset_fixture(&opts, &state, event_history);
+        assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                                 DSD_CALL_BOUNDARY_BEGIN)
+               == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        dsd_call_snapshot call;
+        assert(dsd_call_state_get(&state, 0U, &call) == 1);
+        if (late) {
+            assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+            dsd_event_sync_slot(&opts, &state, 0U);
+        }
+        state.event_crc_invalid[0] = 1;
+        assert(dsd_event_enrich_gps(&state, 0U, call.epoch, "lat 1.0 lon 2.0") == 1);
+        state.event_crc_invalid[0] = 0;
+        if (!late) {
+            assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+            dsd_event_sync_slot(&opts, &state, 0U);
+        }
+        rc |= expect_has_substr("failed GPS enrichment marks voice",
+                                event_history[0].Event_History_Items[1].event_string, "[CRC ERR]");
+        rc |= expect_has_substr("GPS enrichment remains available", event_history[0].Event_History_Items[1].gps_s,
+                                "lat 1.0 lon 2.0");
+        rc |= expect_int("failed GPS enrichment warns", event_history[0].Event_History_Items[1].severity,
+                         DSD_EVENT_SEVERITY_WARNING);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_has_substr("CRC enrichment survives later rendering",
+                                event_history[0].Event_History_Items[1].event_string, "[CRC ERR]");
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
 int
 main(void) {
+    test_source_alias_collision(DSD_SYNC_NXDN_POS);
+    test_source_alias_collision(DSD_SYNC_P25P1_POS);
+    test_source_alias_collision(DSD_SYNC_DMR_BS_VOICE_POS);
     int rc = 0;
+    rc |= test_crc_invalid_data_notice_isolation();
+    rc |= test_crc_invalid_voice_delayed_and_reacquired();
+    rc |= test_crc_invalid_enrichment_marks_voice();
 
     rc |= test_event_history_revision_primitives();
     rc |= test_watchdog_current_marks_only_semantic_changes();

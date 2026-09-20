@@ -10,10 +10,29 @@ Item {
 
     property string text: ""
     property bool selected: false
-    signal clicked()
+    signal clicked
+
+    property string accessibleName: text
+    activeFocusOnTab: enabled && visible && Navigation.allows(control)
+    Accessible.role: Accessible.RadioButton
+    Accessible.name: accessibleName
+    Accessible.focusable: true
+    readonly property bool navigationAllowed: Navigation.allows(control)
+    Accessible.ignored: !visible || !navigationAllowed
+    Accessible.onPressAction: activate()
+    function activate() {
+        if (enabled && Navigation.allows(control))
+            clicked();
+    }
+    Keys.onSpacePressed: activate()
+    Keys.onReturnPressed: activate()
+    Keys.onEnterPressed: activate()
+    FocusFrame {}
+    Accessible.checkable: true
+    Accessible.checked: selected
 
     implicitWidth: label.implicitWidth + 32
-    implicitHeight: 40
+    implicitHeight: Math.max(Theme.minimumTouchSize, label.implicitHeight + 24)
 
     // Gradient border only exists while selected; at rest a plain 1px outline.
     Rectangle {
@@ -22,8 +41,14 @@ Item {
         visible: control.selected
         gradient: Gradient {
             orientation: Gradient.Horizontal
-            GradientStop { position: 0.0; color: Theme.cyan }
-            GradientStop { position: 1.0; color: Theme.magenta }
+            GradientStop {
+                position: 0.0
+                color: Theme.cyan
+            }
+            GradientStop {
+                position: 1.0
+                color: Theme.magenta
+            }
         }
     }
 
@@ -49,14 +74,17 @@ Item {
     Text {
         id: label
         anchors.centerIn: parent
+        width: Math.max(0, control.width - 24)
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.Wrap
         text: control.text
         font.family: Theme.sans
-        font.pixelSize: 14
+        font.pixelSize: Theme.fontSize(14)
         font.weight: control.selected ? Font.Bold : Font.DemiBold
         color: control.selected ? Theme.textPrimary : Theme.buttonSecondaryText
     }
 
     TapHandler {
-        onTapped: control.clicked()
+        onTapped: control.activate()
     }
 }

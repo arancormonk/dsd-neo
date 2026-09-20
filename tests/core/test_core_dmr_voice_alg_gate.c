@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/key_material.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/state.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
@@ -75,6 +76,18 @@ main(void) {
     state.K1 = 0x0123456789ULL;
     rc |= expect_eq("missing-alg-hbp-key-slot0", dsd_dmr_missing_alg_key_can_decrypt(&state, 0), 1);
     rc |= expect_eq("missing-alg-hbp-key-slot1", dsd_dmr_missing_alg_key_can_decrypt(&state, 1), 1);
+
+    dsd_key_set direct;
+    DSD_MEMSET(&direct, 0, sizeof(direct));
+    if (dsd_key_set_load_direct(&direct, "0123456789", "7") != DSD_KEY_DIRECT_OK) {
+        rc = 1;
+    } else {
+        DSD_MEMSET(&state, 0, sizeof(state));
+        dsd_key_set_install(&state, &direct);
+        rc |= expect_eq("direct-bp-missing-alg-decryptable", dsd_dmr_missing_alg_key_can_decrypt(&state, 0), 1);
+        rc |= expect_eq("direct-hbp-missing-alg-decryptable", dsd_dmr_missing_alg_key_can_decrypt(&state, 1), 1);
+    }
+    dsd_key_set_free(&direct);
 
     DSD_MEMSET(&state, 0, sizeof(state));
     state.M = 0x24;
@@ -147,15 +160,15 @@ main(void) {
 
     // AES-128 (0x24) keys off aes_loaded, not the scalar.
     rc |= expect_eq("kid-aes-supplied",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 1, 0}), 1);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 1, 0, 0}), 1);
     rc |= expect_eq("kid-aes-absent",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 0, 1}), 0);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 0, 1, 0}), 0);
 
     // RC4 (0x21) keys off the scalar, not aes_loaded.
     rc |= expect_eq("kid-rc4-supplied",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &(dsd_dmr_key_material){0x1234ULL, 0, 0}), 1);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &(dsd_dmr_key_material){0x1234ULL, 0, 0, 0}), 1);
     rc |= expect_eq("kid-rc4-absent",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &(dsd_dmr_key_material){0ULL, 1, 1}), 0);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &(dsd_dmr_key_material){0ULL, 1, 1, 0}), 0);
 
     // The slot wrapper still reads the slot's own activated flag.
     state.aes_key_loaded[0] = 1;
@@ -166,11 +179,11 @@ main(void) {
     // change completeness -- the slot here has no quartet at all, and the supplied verdict wins
     // in both directions.
     rc |= expect_eq("kid-kirisun-supplied",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, &(dsd_dmr_key_material){0ULL, 1, 1}), 1);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, &(dsd_dmr_key_material){0ULL, 1, 1, 0}), 1);
     rc |= expect_eq("kid-kirisun-absent",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, &(dsd_dmr_key_material){0ULL, 1, 0}), 0);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, &(dsd_dmr_key_material){0ULL, 1, 0, 0}), 0);
     rc |= expect_eq("kid-kirisun37-supplied",
-                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x37, &(dsd_dmr_key_material){0ULL, 0, 1}), 1);
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x37, &(dsd_dmr_key_material){0ULL, 0, 1, 0}), 1);
     // ...and the slot wrapper keeps reading the slot's own quartet, which is still absent.
     rc |= expect_eq("slot-wrapper-kirisun", dsd_dmr_voice_slot_can_decrypt(&state, 0, 0x36, 0ULL), 0);
 

@@ -5,10 +5,13 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 
+#include <math.h>
 #include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -36,27 +39,59 @@ scan_voice_resolve_ms(int configured, int fallback) {
 
 static int
 scan_voice_snapshot_is_voice(const dsd_call_snapshot* call) {
-    if (!call || call->phase != DSD_CALL_PHASE_ACTIVE) {
-        return 0;
-    }
-    if (!call->media_active) {
+    if (!call || (call->phase != DSD_CALL_PHASE_ACTIVE && call->phase != DSD_CALL_PHASE_ENDED)) {
         return 0;
     }
     if (call->kind == DSD_CALL_KIND_DATA) {
         return 0;
     }
-    if ((call->updated_m - call->started_m) < DSD_SCAN_VOICE_MIN_SPAN_S) {
+    if (call->media_started_m <= 0.0 || call->media_updated_m <= 0.0) {
+        return 0;
+    }
+    double span_started_m = call->media_started_m;
+    /* A recoverable reopen retains the logical transmission's media clocks but
+     * starts a new segment. Qualify from the later boundary so one post-gap
+     * vocoder frame cannot borrow the pre-gap media span. */
+    if (call->started_m > span_started_m) {
+        span_started_m = call->started_m;
+    }
+    if ((call->media_updated_m - span_started_m) < DSD_SCAN_VOICE_MIN_SPAN_S) {
         return 0;
     }
     return 1;
 }
 
-double
-dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || !state) {
-        return -1.0;
+static int
+scan_voice_snapshot_policy_allows(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call) {
+    const uint64_t target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
+    if (target == 0U) {
+        /* Unknown identity (LC never decoded) counts as voice. */
+        return 1;
     }
-    double newest = -1.0;
+    const int encrypted =
+        call->crypto == DSD_CALL_CRYPTO_ENCRYPTED || call->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    dsd_tg_policy_decision decision;
+    int rc = 0;
+    if (call->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+        rc = dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)call->ota_source_id, (uint32_t)target,
+                                                 encrypted, 0, &decision);
+    } else {
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)target, (uint32_t)call->ota_source_id, encrypted,
+                                               0, &decision);
+    }
+    return rc == 0 && decision.tune_allowed;
+}
+
+int
+dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_voice_probe_result* out) {
+    if (!out) {
+        return -1;
+    }
+    out->active_media_m = -1.0;
+    out->retained_media_m = -1.0;
+    if (!opts || !state) {
+        return -1;
+    }
     for (int slot_i = 0; slot_i < DSD_CALL_STATE_SLOT_COUNT; slot_i++) {
         dsd_call_snapshot call;
         /* dsd_call_state_get() fills the whole snapshot on success; a failed get skips the slot. */
@@ -66,29 +101,46 @@ dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state) {
         if (!scan_voice_snapshot_is_voice(&call)) {
             continue;
         }
-        uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
-        if (target != 0U) {
-            const int encrypted =
-                (call.crypto == DSD_CALL_CRYPTO_ENCRYPTED || call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
-            dsd_tg_policy_decision decision;
-            int rc = 0;
-            if (call.kind == DSD_CALL_KIND_PRIVATE_VOICE) {
-                rc = dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)call.ota_source_id, (uint32_t)target,
-                                                         encrypted, 0, &decision);
-            } else {
-                rc = dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)target, (uint32_t)call.ota_source_id,
-                                                       encrypted, 0, &decision);
-            }
-            if (rc != 0 || !decision.tune_allowed) {
-                continue;
-            }
+        if (!scan_voice_snapshot_policy_allows(opts, state, &call)) {
+            continue;
         }
-        /* Unknown identity (LC never decoded) counts as voice. */
-        if (call.updated_m > newest) {
-            newest = call.updated_m;
+        if (call.media_updated_m > out->retained_media_m) {
+            out->retained_media_m = call.media_updated_m;
+        }
+        if (call.phase == DSD_CALL_PHASE_ACTIVE && call.media_active && call.media_updated_m > out->active_media_m) {
+            out->active_media_m = call.media_updated_m;
         }
     }
-    return newest;
+    return out->retained_media_m >= 0.0 ? 1 : 0;
+}
+
+int
+dsd_scan_tg_hold_call_active(const dsd_state* state) {
+    if (!state || state->tg_hold == 0U) {
+        return 0;
+    }
+    const uint64_t hold = (uint64_t)state->tg_hold;
+    for (int slot_i = 0; slot_i < DSD_CALL_STATE_SLOT_COUNT; slot_i++) {
+        dsd_call_snapshot call;
+        /* dsd_call_state_get() fills the whole snapshot on success; a failed get skips the slot. */
+        if (dsd_call_state_get(state, (uint8_t)slot_i, &call) <= 0) {
+            continue;
+        }
+        if (call.phase != DSD_CALL_PHASE_ACTIVE || call.kind == DSD_CALL_KIND_DATA) {
+            continue;
+        }
+        /* The remapped policy target is the identity the hold is compared against everywhere
+         * else (talkgroup_policy.c); the OTA target stands in when no remap applies. */
+        const uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
+        if (hold == target) {
+            return 1;
+        }
+        /* A private call is held by either end, exactly as the policy layer holds it. */
+        if (call.kind == DSD_CALL_KIND_PRIVATE_VOICE && hold == call.ota_source_id) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 void
@@ -96,6 +148,11 @@ dsd_scan_voice_gate_note_retune(dsd_state* state, double now_m) {
     if (!state) {
         return;
     }
+    /* Successful parking opens the per-visit cap too. Suspension handling can restart it,
+     * but sync and voice activity must never extend a visit. */
+    state->scan_visit_since_m = now_m;
+    state->scan_visit_roll_seen = state->lcn_freq_roll;
+    state->scan_visit_rearm_pending = 0U;
     state->scan_voice_gate_arrive_m = now_m;
     state->scan_voice_gate_sync_m = -1.0;
     state->scan_voice_gate_voice_m = -1.0;
@@ -118,8 +175,7 @@ scan_voice_gate_track_visit(dsd_state* state, double now_m) {
      * legacy hangtime rule. */
     const uint8_t hold_now = state->lcn_scan_hold ? 1U : 0U;
     if (state->scan_voice_gate_hold_seen && !hold_now) {
-        state->scan_voice_gate_sync_m = -1.0;
-        state->scan_voice_gate_voice_m = -1.0;
+        dsd_scan_voice_gate_note_retune(state, now_m);
     }
     state->scan_voice_gate_hold_seen = hold_now;
 }
@@ -158,17 +214,25 @@ dsd_scan_voice_gate_tick(const dsd_opts* opts, dsd_state* state, int synced, dou
     if (state->scan_voice_gate_sync_m < 0.0 && synced) {
         state->scan_voice_gate_sync_m = now_m;
     }
-    const double media_m = dsd_scan_voice_probe(opts, state);
-    const int media_in_visit = media_m >= 0.0 && media_m >= state->scan_voice_gate_arrive_m;
-    if (media_in_visit && media_m > state->scan_voice_gate_voice_m) {
-        state->scan_voice_gate_voice_m = media_m;
+    dsd_scan_voice_probe_result media;
+    const int probe_rc = dsd_scan_voice_probe(opts, state, &media);
+    const int retained_in_visit = probe_rc > 0 && media.retained_media_m >= state->scan_voice_gate_arrive_m;
+    const int active_in_visit = media.active_media_m >= 0.0 && media.active_media_m >= state->scan_voice_gate_arrive_m;
+    if (retained_in_visit && media.retained_media_m > state->scan_voice_gate_voice_m) {
+        state->scan_voice_gate_voice_m = media.retained_media_m;
     }
-    scan_voice_gate_publish_phase(state, media_in_visit);
+    scan_voice_gate_publish_phase(state, active_in_visit);
+}
+
+int
+dsd_scan_voice_gate_owns_step(const dsd_opts* opts, const dsd_state* state) {
+    return scan_voice_gate_enabled(opts) && state
+           && (state->scan_voice_gate_voice_m >= 0.0 || state->scan_voice_gate_sync_m >= 0.0);
 }
 
 int
 dsd_scan_voice_gate_should_step(const dsd_opts* opts, const dsd_state* state, double now_m) {
-    if (!scan_voice_gate_enabled(opts) || !state) {
+    if (!dsd_scan_voice_gate_owns_step(opts, state)) {
         return 0;
     }
     if (state->lcn_scan_hold) {
@@ -184,4 +248,260 @@ dsd_scan_voice_gate_should_step(const dsd_opts* opts, const dsd_state* state, do
     }
     /* Never synced this visit: the caller falls back to the legacy hangtime rule. */
     return 0;
+}
+
+/* ---- Per-visit cap for the -Y row (issue #507) ------------------------------ */
+
+/* The cap the row on air is subject to, in ms, with anything below 1000 meaning off. Deliberately
+ * not scan_voice_resolve_ms(): that maps 0 to a default window, and here 0 is the default and it
+ * means disabled. Config loading is range-free by design, so a hand-written 1..999 reaches the
+ * engine and must read as off rather than as a millisecond-long visit. */
+static int
+scan_visit_cap_enabled(const dsd_opts* opts) {
+    return opts->scan_max_visit_ms >= 1000;
+}
+
+/* The -Y scanner owns this anchor only while it is the scanner that is running: under
+ * --trunk-scan the coordinator keeps its own per-target anchor (trunk_scan.c), and with no
+ * scanner there is no visit to measure. */
+static int
+scan_visit_scanner_owns(const dsd_opts* opts) {
+    return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1;
+}
+
+/* While this holds the cap neither counts down nor expires: the operator's row hold, and a
+ * talkgroup hold on the very call being followed -- cutting that call short is exactly what the
+ * operator asked the hold to prevent. */
+static int
+scan_visit_suspended(const dsd_state* state) {
+    return state->lcn_scan_hold || dsd_scan_tg_hold_call_active(state);
+}
+
+/*
+ * The visit cannot end right now, and it must not be allowed to age in the meantime either: the
+ * tick re-arms it and the deadline hides it, which is the one question both have to ask the same
+ * way (requirement 5, and the shape trunk_scan.c already uses).
+ *
+ * Either the visit is suspended, or there is nowhere to go: a rotation with fewer than two usable
+ * rows would only hop back onto the row it is already on and interrupt its audio. Freezing the
+ * anchor instead of re-arming would let it age for as long as that lasts, and then fire the
+ * instant the operator clears an avoid or a placeholder gets a frequency.
+ */
+static int
+scan_visit_rearms(const dsd_state* state) {
+    return scan_visit_suspended(state) || dsd_state_trunk_lcn_usable_count(state) < 2;
+}
+
+void
+dsd_engine_scan_visit_tick(const dsd_opts* opts, dsd_state* state, double now_m) {
+    if (!opts || !state) {
+        return;
+    }
+    if (!scan_visit_scanner_owns(opts)) {
+        /* Not this scanner's rotation: drop the anchor rather than leave one behind. A runtime
+         * switch into --trunk-scan hands the rotation to the coordinator, and an anchor from the
+         * visit before it would otherwise be minutes stale by the time -Y takes it back -- and
+         * fire the instant it did. The first owning tick anchors a fresh full limit. */
+        state->scan_visit_since_m = -1.0;
+        state->scan_visit_roll_seen = state->lcn_freq_roll;
+        state->scan_visit_rearm_pending = 0U;
+        return;
+    }
+    if (!scan_visit_cap_enabled(opts)) {
+        /* Disabled leaves no anchor behind, so enabling the cap later grants a full fresh limit
+         * instead of expiring against a park from minutes ago. */
+        state->scan_visit_since_m = -1.0;
+        state->scan_visit_roll_seen = state->lcn_freq_roll;
+        state->scan_visit_rearm_pending = 0U;
+        return;
+    }
+    if (state->lcn_freq_roll != state->scan_visit_roll_seen) {
+        /* The untyped `L` cycle and an avoid move the roll without a retune note, so the row under
+         * the anchor changed and the new one is owed its own full limit. */
+        state->scan_visit_roll_seen = state->lcn_freq_roll;
+        state->scan_visit_since_m = now_m;
+        state->scan_visit_rearm_pending = 0U;
+    }
+    if (state->scan_visit_since_m < 0.0) {
+        state->scan_visit_since_m = now_m;
+    }
+    const int rearm = scan_visit_rearms(state);
+    if (rearm || state->scan_visit_rearm_pending) {
+        /* Remember the suspension across input stalls: time since the last suspended tick
+         * cannot consume the fresh interval owed when a hold or an avoid stops applying. */
+        state->scan_visit_since_m = now_m;
+    }
+    state->scan_visit_rearm_pending = rearm ? 1U : 0U;
+}
+
+double
+dsd_engine_scan_visit_deadline_m(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return -1.0;
+    }
+    if (!scan_visit_scanner_owns(opts) || !scan_visit_cap_enabled(opts)) {
+        return -1.0;
+    }
+    if (state->scan_visit_since_m < 0.0 || state->scan_visit_rearm_pending) {
+        /* No park to measure from. */
+        return -1.0;
+    }
+    if (state->lcn_freq_roll != state->scan_visit_roll_seen) {
+        /* An untyped `L` or avoid moved the row and no tick has reconciled it yet, so the anchor
+         * still describes the row before it. The pump can do that between the tick and the step
+         * predicate; firing on it would cut the new visit to zero. The next tick re-anchors. */
+        return -1.0;
+    }
+    if (dsd_engine_channel_scan_waiting(state)) {
+        /* A row transaction owns the receiver: the cap must not fire into a tune already on its
+         * way, and the commit re-opens the visit itself. Unlike the cases below this one is not a
+         * re-arm -- the commit stamps its own anchor, so there is nothing to slide. */
+        return -1.0;
+    }
+    if (scan_visit_rearms(state)) {
+        return -1.0;
+    }
+    return state->scan_visit_since_m + ((double)opts->scan_max_visit_ms / 1000.0);
+}
+
+int
+dsd_engine_scan_visit_expired(const dsd_opts* opts, const dsd_state* state, double now_m) {
+    const double deadline_m = dsd_engine_scan_visit_deadline_m(opts, state);
+    return deadline_m >= 0.0 && now_m >= deadline_m;
+}
+
+void
+dsd_scan_timing_clear(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    DSD_MEMSET(&state->scan_timing, 0, sizeof(state->scan_timing));
+    state->scan_timing.started_m = -1.0;
+    state->scan_timing.deadline_m = -1.0;
+    state->scan_timing.visit_deadline_m = -1.0;
+}
+
+void
+dsd_scan_timing_publish(dsd_state* state, const dsd_scan_timing_publication* report) {
+    if (!state || !report) {
+        return;
+    }
+    state->scan_timing = *report;
+}
+
+/* Seed the -Y report. The effective windows are the row's, not the live timer's: they
+ * stay visible while a hold pauses the countdown, and are 0 when the voice gate is off
+ * because the legacy hangtime rule has neither a qualify nor a hold window. */
+static void
+scan_y_timing_seed(const dsd_opts* opts, dsd_scan_timing_publication* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->started_m = -1.0;
+    out->deadline_m = -1.0;
+    /* Above the early return: the per-visit cap is independent of the voice gate, and a
+     * zeroed double would read as a deadline at monotonic 0. */
+    out->visit_deadline_m = -1.0;
+    out->conventional = 1U;
+    /* Also above the early return: the cap is independent of the voice gate, so it stays visible
+     * in legacy hangtime mode, where there is neither a qualify nor a hold window to report. */
+    out->visit_limit_ms = scan_visit_cap_enabled(opts) ? (uint32_t)opts->scan_max_visit_ms : 0U;
+    if (!scan_voice_gate_enabled(opts)) {
+        return;
+    }
+    out->dwell_ms = (uint32_t)scan_voice_resolve_ms(opts->scan_voice_qualify_ms, DSD_SCAN_VOICE_DEFAULT_QUALIFY_MS);
+    out->hold_ms = (uint32_t)scan_voice_resolve_ms(opts->scan_voice_hold_ms, DSD_SCAN_VOICE_DEFAULT_HOLD_MS);
+}
+
+/* Anti-drift: dsd_scan_voice_gate_should_step() flips at anchor + span_ms / 1000.0, so
+ * the published deadline is that same expression rather than a second approximation. */
+static void
+scan_y_timing_arm(dsd_scan_timing_publication* out, double started_m, uint32_t span_ms) {
+    out->started_m = started_m;
+    out->deadline_m = started_m + ((double)span_ms / 1000.0);
+    out->span_ms = span_ms;
+}
+
+/* The gate owns the step: voice (or its tail) counts down the hold window from the last
+ * media frame, and a synced-but-silent visit counts down the qualify window. */
+static void
+scan_y_timing_fill_gate(const dsd_state* state, dsd_scan_timing_publication* out) {
+    if (state->scan_voice_gate_voice_m >= 0.0) {
+        out->reason = state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_VOICE
+                          ? (uint8_t)DSD_SCAN_STAY_VOICE
+                          : (uint8_t)DSD_SCAN_STAY_ACTIVITY_HOLD;
+        scan_y_timing_arm(out, state->scan_voice_gate_voice_m, out->hold_ms);
+        return;
+    }
+    /* dsd_scan_voice_gate_owns_step() is true and no voice anchor exists, so the sync
+     * anchor is the one that is set. */
+    out->reason = (uint8_t)DSD_SCAN_STAY_IDLE_DWELL;
+    scan_y_timing_arm(out, state->scan_voice_gate_sync_m, out->dwell_ms);
+}
+
+/* -t parses any non-negative double, so the second-to-millisecond conversion has to
+ * saturate rather than wrap on its way into the publication's uint32_t. */
+static uint32_t
+scan_y_timing_span_ms(double seconds) {
+    const double span_ms = seconds * 1000.0;
+    if (span_ms >= (double)UINT32_MAX) {
+        return UINT32_MAX;
+    }
+    return (uint32_t)llround(span_ms);
+}
+
+/* The legacy rule waits out -t since the last sync and knows nothing else, so it reports
+ * no dwell and no hold. Without an anchor there is nothing to count down.
+ *
+ * The anchor is the wall-clock last_cc_sync_time the step rule itself compares
+ * (engine.c no_carrier_scanner_step_is_due), not its monotonic twin: NXDN stamps the
+ * wall clock two seconds ahead after a confirmed frame without touching the monotonic
+ * field, and a countdown read from the twin would reach zero two seconds early. The
+ * window is re-expressed on the monotonic clock through the two clocks sampled together,
+ * so it can start in the future and stays put from tick to tick. */
+static void
+scan_y_timing_fill_hangtime(const dsd_opts* opts, const dsd_state* state, double now_m, double now_wall_s,
+                            dsd_scan_timing_publication* out) {
+    out->reason = (uint8_t)DSD_SCAN_STAY_HANGTIME;
+    out->dwell_ms = 0U;
+    out->hold_ms = 0U;
+    if (state->last_cc_sync_time == 0 || !(opts->trunk_hangtime >= 0.0f)) {
+        return;
+    }
+    out->started_m = now_m + ((double)state->last_cc_sync_time - now_wall_s);
+    /* noCarrier compares whole seconds with strict >. The next integer after
+     * -t is the first wall-clock tick that permits a hop, including for -t 0. */
+    const double span_s = floor((double)opts->trunk_hangtime) + 1.0;
+    out->deadline_m = out->started_m + span_s;
+    out->span_ms = scan_y_timing_span_ms(span_s);
+}
+
+void
+dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now_m, double now_wall_s) {
+    if (!opts || !state) {
+        return;
+    }
+    /* Under --trunk-scan the coordinator publishes for its parked target; the two must
+     * never both write the field. With no scanner running there is nothing to report. */
+    if (opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1) {
+        return;
+    }
+    dsd_scan_timing_publication report;
+    scan_y_timing_seed(opts, &report);
+    if (dsd_engine_channel_scan_waiting(state)) {
+        report.reason = (uint8_t)DSD_SCAN_STAY_RETUNE_PENDING;
+    } else if (state->lcn_scan_hold) {
+        /* The rotation is parked by the operator: the window is paused, not expired.
+         * dsd_scan_voice_gate_should_step() returns 0 here and the no-carrier step
+         * returns early, so publishing a deadline would count down to a hop that the
+         * release, not the clock, actually causes. */
+        report.reason = (uint8_t)DSD_SCAN_STAY_MANUAL_HOLD;
+    } else if (dsd_scan_voice_gate_owns_step(opts, state)) {
+        scan_y_timing_fill_gate(state, &report);
+    } else {
+        scan_y_timing_fill_hangtime(opts, state, now_m, now_wall_s, &report);
+    }
+    /* The cap rides beside the step timer instead of folding into deadline_m/reason: both can be
+     * counting down at once, and the reason names the rule the hop would be blamed on. Under a
+     * hold the deadline function returns < 0, so MANUAL_HOLD reports the cap as paused. */
+    report.visit_deadline_m = dsd_engine_scan_visit_deadline_m(opts, state);
+    dsd_scan_timing_publish(state, &report);
 }

@@ -6,3 +6,4 @@
 src/third_party/**
 android/third_party/libusb/**
 android/third_party/librtlsdr/**
+android/third_party/libairspy/**

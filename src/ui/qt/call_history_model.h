@@ -33,6 +33,7 @@
 #include <QTimer>
 #include <Qt>
 #include <QtGlobal>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
 namespace dsd_qt {
@@ -41,6 +42,7 @@ class CallHistoryModel : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     Q_PROPERTY(QString sessionLabel READ sessionLabel WRITE setSessionLabel NOTIFY sessionLabelChanged)
+    Q_PROPERTY(QString sessionUid READ sessionUid WRITE setSessionUid NOTIFY sessionUidChanged)
     Q_PROPERTY(QStringList systemLabels READ systemLabels NOTIFY countChanged)
 
   public:
@@ -49,14 +51,17 @@ class CallHistoryModel : public QAbstractListModel {
         TgRole,
         SrcRole,
         EncRole,
+        EmergencyRole,
         WhenRole,         // call start, seconds since epoch
         DurationSecsRole, // -1 when unknown
         SystemNameRole,
-        DayLabelRole, // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
-        TimeTextRole, // "12:04"
-        KindRole,     // RowKind: voice call or data/control notice
-        DetailRole,   // notice payload: decoded text message or GPS string
-        ChannelRole   // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
+        SystemUidRole,
+        DayLabelRole,  // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
+        TimeTextRole,  // "12:04"
+        KindRole,      // RowKind: voice call or data/control notice
+        DetailRole,    // notice payload: decoded text message or GPS string
+        ChannelRole,   // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
+        SourceNameRole // resolved source label, falling back to the OTA source text
     };
 
     /** @brief What a row logs; pinned values because rows persist as JSON. */
@@ -89,6 +94,14 @@ class CallHistoryModel : public QAbstractListModel {
 
     void setSessionLabel(const QString& label);
 
+    /** Saved-system identity of the session; empty for exploring and scan lists. */
+    QString
+    sessionUid() const {
+        return m_sessionUid;
+    }
+
+    void setSessionUid(const QString& uid);
+
     /** @brief Distinct system names present in the log, for the filter pill. */
     QStringList systemLabels() const;
 
@@ -100,14 +113,18 @@ class CallHistoryModel : public QAbstractListModel {
      * not its index, which shifts on every push. Updates are granular
      * (insert/change/remove), never a model reset — a reset would destroy every
      * delegate and the reader's scroll position per ingest.
+     *
+     * Options must accompany the snapshot to attribute hold-eligible rows.
+     * Scanning enabled through extra arguments also excludes that attribution.
      */
-    void refresh(const dsd_state* snapshot);
+    void refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot = nullptr);
 
     Q_INVOKABLE void clearAll();
 
   Q_SIGNALS:
     void countChanged();
     void sessionLabelChanged();
+    void sessionUidChanged();
 
   public:
     /** @brief One logged call or notice. Public only so file-local helpers can build one. */
@@ -116,9 +133,18 @@ class CallHistoryModel : public QAbstractListModel {
         QString name;
         qulonglong tg = 0;
         qulonglong src = 0;
+        QString sourceName;
+        /* Keep the selected label's fragment identity separate from the merged
+         * call span. Same-second fragments use their push stamp/slot as a stable
+         * tie-break; the same fragment may still enrich its label in place. */
+        qint64 sourceNameWhen = 0;
+        qulonglong sourceNameSeq = 0;
+        int sourceNameSlot = 0;
+        bool emergency = false;
         bool enc = false;
         int durationSecs = -1;
         QString systemName;
+        QString systemUid;
         int kind = KindVoice;
         QString detail;
         /* The scan channel the row was heard on: a -Y row name or a trunk-scan
@@ -151,7 +177,9 @@ class CallHistoryModel : public QAbstractListModel {
         qint64 when = 0;
         qint64 end = 0;
         qulonglong src = 0;
+        bool emergency = false;
         bool enc = false;
+        QString sourceName;
     };
 
     /** @brief A ring row worth ingesting: brand new, or a seen row that advanced. */
@@ -170,10 +198,11 @@ class CallHistoryModel : public QAbstractListModel {
      * @return SeenNew for a first sighting, SeenAdvanced when a voice row already
      *         ingested has since learned something, SeenUnchanged otherwise.
      */
-    int noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool enc, bool voice);
+    int noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool emergency, bool enc, bool voice,
+                 const QString& sourceName);
 
     /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced. */
-    QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2]);
+    QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid);
 
     /**
      * @brief Absorb @p row into a recent same-target row when the two overlap
@@ -216,6 +245,7 @@ class CallHistoryModel : public QAbstractListModel {
     QList<Row> m_rows; // newest first
     QHash<QString, SeenState> m_seen;
     QString m_sessionLabel;
+    QString m_sessionUid;
     /* Rows starting at or before this stamp were cleared by the user; persisted so
      * the still-populated ring cannot resurrect them after an Activity restart. */
     qint64 m_clearedThrough = 0;

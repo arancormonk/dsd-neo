@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
@@ -21,6 +22,7 @@
 #include <mbelib-neo/mbelib.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/call_state.h"
 #include "dsd-neo/core/dibit.h"
@@ -114,6 +116,7 @@ init_opts_output_defaults(dsd_opts* opts) {
     opts->chan_in_file[0] = 0;
     opts->key_in_file[0] = 0;
     opts->p25_bandplan_in_file[0] = 0;
+    opts->src_in_file[0] = 0;
     opts->p25_bandplan_export_file[0] = 0;
     //end import filenames
     opts->szNumbers[0] = 0;
@@ -192,6 +195,10 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->rtlsdr_ppm_error = 0; //initialize ppm with 0 value;
     opts->rtlsdr_center_freq =
         850000000; //set to an initial value (if user is using a channel map, then they won't need to specify anything other than -i rtl if desired)
+    dsd_airspy_config_defaults(&opts->airspy);
+    DSD_MEMSET(&opts->airspy_info, 0, sizeof opts->airspy_info);
+    opts->airspy_list = 0;
+    opts->airspy_config_error = 0;
     opts->soapy_bandwidth_hz = -1;
     opts->soapy_profile[0] = '\0';
     opts->soapy_stream_format[0] = '\0';
@@ -337,6 +344,7 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->scan_voice_only = 0;
     opts->scan_voice_qualify_ms = 1000;
     opts->scan_voice_hold_ms = 2000;
+    opts->scan_max_visit_ms = 0;
     opts->trunk_cli_seen = 0;
 
     //reverse mute
@@ -366,6 +374,7 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
 
     //Trunking - Tune Encrypted Calls (P25 only on applicable grants with svc opts)
     opts->trunk_tune_enc_calls = 1; //enabled by default
+    opts->persist_tg_lockouts = 1;
 
     //P25 LCW explicit retune (format 0x44)
     //Enabled by default so explicit-only P25 systems follow voice grants out-of-the-box.
@@ -783,6 +792,8 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->K = 0;
     state->R = 0;
     state->RR = 0;
+    state->scalar_key_present[0] = state->scalar_key_present[1] = 0;
+    state->basic_key_present = 0;
     state->H = 0;
     state->K1 = 0;
     state->K2 = 0;
@@ -931,6 +942,14 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->scan_voice_gate_roll_seen = 0;
     state->scan_voice_gate_hold_seen = 0;
     state->scan_voice_gate_phase = (uint8_t)DSD_SCAN_VOICE_GATE_OFF;
+    /* No visit anchored: -1.0, never 0.0, which would read as a park at monotonic 0. */
+    state->scan_visit_since_m = -1.0;
+    state->scan_visit_roll_seen = 0;
+    state->scan_visit_rearm_pending = 0U;
+    DSD_MEMSET(&state->scan_timing, 0, sizeof(state->scan_timing));
+    state->scan_timing.started_m = -1.0;
+    state->scan_timing.deadline_m = -1.0;
+    state->scan_timing.visit_deadline_m = -1.0;
 }
 
 static void
@@ -984,6 +1003,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_chan_iden = 0;
 
     //values displayed in ncurses terminal
+    state->trunk_recovery_protocol = 0;
     state->p25_cc_freq = 0;
     state->p25_last_cc_msg_time = 0;
     state->p25_last_cc_msg_time_m = 0.0;
@@ -1202,6 +1222,8 @@ init_state_codec2_and_events(dsd_state* state) {
 
     // Allocate per-slot event history (2 slots)
     state->event_history_s = calloc(2, sizeof(Event_History_I));
+    DSD_MEMSET(state->event_crc_invalid, 0, sizeof(state->event_crc_invalid));
+    DSD_MEMSET(state->data_header_crc_invalid, 0, sizeof(state->data_header_crc_invalid));
 
     //debug
 
@@ -1278,6 +1300,9 @@ freeState(dsd_state* state) {
 
     if (state->cli_argv) {
         for (int i = 0; i < state->cli_argc_effective; i++) {
+            if (state->cli_argv[i]) {
+                DSD_SECURE_ZERO(state->cli_argv[i], strlen(state->cli_argv[i]));
+            }
             free(state->cli_argv[i]);
         }
         free((void*)state->cli_argv);

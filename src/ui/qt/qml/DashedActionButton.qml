@@ -8,51 +8,71 @@ Item {
     id: control
 
     property string text: ""
-    signal clicked()
+    signal clicked
 
-    implicitHeight: 54
+    activeFocusOnTab: enabled && Navigation.allows(control)
+    Accessible.role: Accessible.Button
+    Accessible.name: text
+    Accessible.focusable: true
+    readonly property bool navigationAllowed: Navigation.allows(control)
+    Accessible.ignored: !navigationAllowed
+    Accessible.onPressAction: activate()
+    function activate() {
+        if (enabled && Navigation.allows(control))
+            clicked();
+    }
+    Keys.onReturnPressed: activate()
+    Keys.onSpacePressed: activate()
+    FocusFrame {}
+    implicitHeight: Math.max(54, label.implicitHeight + 24)
 
     Canvas {
         id: outline
         anchors.fill: parent
         onPaint: {
-            var ctx = getContext("2d")
-            ctx.reset()
-            ctx.strokeStyle = String(Theme.controlBorder)
-            ctx.lineWidth = 1
-            ctx.setLineDash([5, 5])
-            ctx.beginPath()
-            var r = Theme.radiusPanel
-            ctx.moveTo(r + 0.5, 0.5)
-            ctx.lineTo(width - r - 0.5, 0.5)
-            ctx.arcTo(width - 0.5, 0.5, width - 0.5, r + 0.5, r)
-            ctx.lineTo(width - 0.5, height - r - 0.5)
-            ctx.arcTo(width - 0.5, height - 0.5, width - r - 0.5, height - 0.5, r)
-            ctx.lineTo(r + 0.5, height - 0.5)
-            ctx.arcTo(0.5, height - 0.5, 0.5, height - r - 0.5, r)
-            ctx.lineTo(0.5, r + 0.5)
-            ctx.arcTo(0.5, 0.5, r + 0.5, 0.5, r)
-            ctx.stroke()
+            var ctx = getContext("2d");
+            ctx.reset();
+            ctx.strokeStyle = String(Theme.controlBorder);
+            ctx.lineWidth = 1;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            var r = Theme.radiusPanel;
+            ctx.moveTo(r + 0.5, 0.5);
+            ctx.lineTo(width - r - 0.5, 0.5);
+            ctx.arcTo(width - 0.5, 0.5, width - 0.5, r + 0.5, r);
+            ctx.lineTo(width - 0.5, height - r - 0.5);
+            ctx.arcTo(width - 0.5, height - 0.5, width - r - 0.5, height - 0.5, r);
+            ctx.lineTo(r + 0.5, height - 0.5);
+            ctx.arcTo(0.5, height - 0.5, 0.5, height - r - 0.5, r);
+            ctx.lineTo(0.5, r + 0.5);
+            ctx.arcTo(0.5, 0.5, r + 0.5, 0.5, r);
+            ctx.stroke();
         }
 
         Connections {
             target: Theme
-            function onDarkChanged() { outline.requestPaint() }
+            function onDarkChanged() {
+                outline.requestPaint();
+            }
         }
         onWidthChanged: requestPaint()
         onHeightChanged: requestPaint()
     }
 
     Text {
+        id: label
+        width: parent.width - 24
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.Wrap
         anchors.centerIn: parent
         text: control.text
         font.family: Theme.sans
-        font.pixelSize: 15
+        font.pixelSize: Theme.fontSize(15)
         font.weight: Font.DemiBold
         color: Theme.cyan
     }
 
     TapHandler {
-        onTapped: control.clicked()
+        onTapped: control.activate()
     }
 }

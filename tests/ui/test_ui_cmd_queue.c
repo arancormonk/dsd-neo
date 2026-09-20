@@ -8,20 +8,34 @@
  */
 
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_mode.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/scan_profile.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/threading.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +46,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/config.h"
+#include "test_support.h"
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 static int g_io_control_tune_result = RTL_STREAM_TUNE_OK;
@@ -62,7 +77,7 @@ dsd_trunk_tune_result
 __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                         uint64_t* out_request_id) {
     (void)opts;
-    if (out_request_id != NULL) {
+    if (out_request_id) {
         *out_request_id = 0U;
     }
     g_cc_tune_calls++;
@@ -169,6 +184,7 @@ init_test_context(dsd_opts* opts, dsd_state* state) {
     initState(state);
     state->cli_argc_effective = 0;
     state->cli_argv = NULL;
+    dsd_app_frontend_runtime_start(opts, state);
 }
 
 static int
@@ -617,8 +633,8 @@ test_file_network_and_import_commands(void) {
     post_string(DSD_APP_CMD_IMPORT_KEYS_DEC, missing_csv);
     post_string(DSD_APP_CMD_IMPORT_KEYS_HEX, missing_csv);
     rc |= expect_int("import failure group applied", dsd_app_drain_cmds(&opts, &state), 4);
-    rc |= expect_str("channel import path copied", opts.chan_in_file, missing_csv);
-    rc |= expect_str("group import path copied", opts.group_in_file, missing_csv);
+    rc |= expect_str("failed channel import keeps path", opts.chan_in_file, "");
+    rc |= expect_str("failed group import keeps path", opts.group_in_file, "");
     rc |= expect_str("key import path copied", opts.key_in_file, missing_csv);
     rc |= expect_contains("key import failure toast", state.ui_msg, "Failed: Keys (HEX)");
 
@@ -957,6 +973,17 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_true("accepted RTL frequency timeout reports pending",
                       strstr(state.ui_msg, "Accepted: RTL frequency -> 851500000 Hz (pending)") != NULL);
     rc |= expect_int("accepted RTL frequency timeout tune calls", g_io_control_tune_calls, 1);
+    opts.scanner_mode = 1;
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 852000000U);
+    rc |= expect_int("legacy scanner tune drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("legacy manual tune preserves scanner", opts.scanner_mode, 1);
+    rc |= expect_int("typed metadata for manual tune", dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_DMR), 0);
+    rc |= expect_int("typed mode before manual tune", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    post_u32(DSD_APP_CMD_RTL_SET_FREQ, 853000000U);
+    rc |= expect_int("typed scanner tune drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("typed manual tune releases scanner", opts.scanner_mode, 0);
+    rc |= expect_int("typed manual tune releases mode", dsd_scan_mode_active(&state), DSD_SCAN_MODE_INHERIT);
+    rc |= expect_contains("manual tune explains scanner exit", state.ui_msg, "scanner stopped");
     freeState(&state);
 #endif
 
@@ -1029,6 +1056,11 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
 
     init_test_context(&opts, &state);
     seed_active_p25_voice(&opts, &state, 853000000L, 854000000L, 2201);
+    dsd_tg_policy_entry dispatch_entry;
+    rc |= expect_int(
+        "seed lockout named row",
+        dsd_tg_policy_make_exact_entry(2201, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &dispatch_entry), 0);
+    rc |= expect_int("append lockout named row", dsd_tg_policy_append_exact(&state, &dispatch_entry), 0);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
     const uint64_t lockout_history_revision = state.event_history_s[0].revision;
     rc |= expect_int("deferred lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U),
@@ -1046,7 +1078,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
                                                 sizeof(lockout_name)),
                      1);
     rc |= expect_str("deferred lockout policy mode", lockout_mode, "B");
-    rc |= expect_str("deferred lockout policy name", lockout_name, "LOCKOUT");
+    rc |= expect_str("deferred lockout policy name", lockout_name, "Dispatch");
     rc |= expect_true("deferred lockout advances event history revision",
                       state.event_history_s[0].revision > lockout_history_revision);
     rc |= expect_true("deferred lockout reports cleanup separately",
@@ -1156,6 +1188,166 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
 
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    return rc;
+}
+
+static dsd_trunk_tune_result
+stub_tune_to_freq_ok(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+/* #506: the user lockout retunes the radio to the control channel itself, bypassing
+ * p25_sm_release(). The P25 SM must still be handed its parked state, or it keeps
+ * judging every later grant as a preemption of the assignment it was following. */
+static int
+test_lockout_hands_p25_sm_back_to_cc(int persist) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.persist_tg_lockouts = (uint8_t)persist;
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.trunk_tune_group_calls = 1;
+    state.trunk_chan_map[0x1234] = 852000000L;
+    state.trunk_chan_map[0x1235] = 853000000L;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = stub_tune_to_freq_ok});
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, &opts, &state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 852000000L, 1201, 1202, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    ev = p25_sm_ev_active_call(0, 1201, 0, 1202, 1, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_int("SM follows the seeded assignment", p25_sm_get_state(sm), P25_SM_TUNED);
+    rc |= expect_int("SM slot carries voice before lockout", sm->slots[0].voice_active, 1);
+
+    // A refused CC tune leaves the assignment, and the SM, exactly where they were.
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    rc |= expect_int("deferred lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("deferred lockout drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("deferred lockout leaves the SM tuned", p25_sm_get_state(sm), P25_SM_TUNED);
+    rc |= expect_int("deferred lockout keeps the SM slot voice", sm->slots[0].voice_active, 1);
+    rc |= expect_true("deferred lockout keeps the SM voice channel", sm->vc_freq_hz == 852000000L);
+
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_int("lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("lockout drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("lockout tuned the CC", g_cc_tune_calls, 1);
+    rc |= expect_int("lockout clears trunk tuned", opts.trunk_is_tuned, 0);
+    rc |= expect_int("lockout parks the P25 SM on the CC", p25_sm_get_state(sm), P25_SM_ON_CC);
+    rc |= expect_int("lockout clears the SM slot voice", sm->slots[0].voice_active, 0);
+    rc |= expect_true("lockout clears the SM voice channel", sm->vc_freq_hz == 0);
+    rc |= expect_int("lockout gates grants until the CC decodes", sm->cc_sync_pending, 1);
+
+    // The site keeps trunking: once the CC decodes again, a grant for another
+    // talkgroup is followed instead of being refused as a preemption.
+    state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_group_grant(0x1234, 852000000L, 1201, 1202, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_true("avoided grant remains blocked", p25_sm_get_state(sm) != P25_SM_TUNED);
+    rc |= expect_str("grant refusal identifies lockout kind", state.p25_sm_last_reason,
+                     persist ? "grant-blocked-mode" : "grant-blocked-session-avoid");
+    ev = p25_sm_ev_group_grant(0x1235, 853000000L, 1300, 1301, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_int("next grant is followed after lockout", p25_sm_get_state(sm), P25_SM_TUNED);
+    rc |= expect_true("next grant tunes the new voice channel", sm->vc_freq_hz == 853000000L);
+    rc |= expect_int("next grant marks trunk tuned", opts.trunk_is_tuned, 1);
+
+    // The manual return-to-CC command takes the same shortcut past the SM.
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |=
+        expect_int("return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("return-to-CC tuned the CC", g_cc_tune_calls, 1);
+    rc |= expect_int("return-to-CC parks the P25 SM on the CC", p25_sm_get_state(sm), P25_SM_ON_CC);
+    rc |= expect_true("return-to-CC clears the SM voice channel", sm->vc_freq_hz == 0);
+
+    p25_sm_init_ctx(sm, NULL, NULL);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    freeState(&state);
+    return rc;
+}
+
+/* #506 follow-up: the manual channel cycle moves the radio exactly the way the
+ * lockout and the return-to-CC do -- through the tuning hooks, past
+ * p25_sm_release() -- on both of its legs. Either one left the SM judging later
+ * grants as preemptions of the assignment it was still following. */
+static int
+test_channel_cycle_hands_p25_sm_back_to_cc(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.trunk_tune_group_calls = 1;
+    state.trunk_chan_map[0x1234] = 852000000L;
+    state.trunk_chan_map[0x1235] = 853000000L;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = stub_tune_to_freq_ok});
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, &opts, &state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 852000000L, 1201, 1202, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    ev = p25_sm_ev_active_call(0, 1201, 0, 1202, 1, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_int("SM follows the seeded assignment", p25_sm_get_state(sm), P25_SM_TUNED);
+    rc |= expect_int("SM slot carries voice before the cycle", sm->slots[0].voice_active, 1);
+
+    // Candidate leg: p25_prefer_candidates routes the cycle through the P25 CC hook.
+    opts.p25_prefer_candidates = 1;
+    rc |= expect_int("candidate seeded", p25_cc_add_candidate(&state, 857000000L, 1), 1);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_int("candidate cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("candidate cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("candidate cycle tuned the candidate", g_cc_tune_calls, 1);
+    rc |= expect_true("candidate cycle used the candidate frequency", g_cc_tune_freq == 857000000L);
+    rc |= expect_int("candidate cycle parks the P25 SM on the CC", p25_sm_get_state(sm), P25_SM_ON_CC);
+    rc |= expect_int("candidate cycle clears the SM slot voice", sm->slots[0].voice_active, 0);
+    rc |= expect_true("candidate cycle clears the SM voice channel", sm->vc_freq_hz == 0);
+    rc |= expect_int("candidate cycle gates grants until the CC decodes", sm->cc_sync_pending, 1);
+
+    // The site keeps trunking: the next grant is followed instead of refused as a
+    // preemption of the call the SM was still holding.
+    state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_group_grant(0x1235, 853000000L, 1300, 1301, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_int("next grant is followed after a candidate cycle", p25_sm_get_state(sm), P25_SM_TUNED);
+    rc |= expect_true("next grant tunes the new voice channel", sm->vc_freq_hz == 853000000L);
+    ev = p25_sm_ev_active_call(0, 1300, 0, 1301, 1, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_int("SM slot carries voice again", sm->slots[0].voice_active, 1);
+
+    // LCN leg: with no candidate preference the same key falls through to the raw
+    // channel cycle, which moves the radio just as far past the SM.
+    opts.p25_prefer_candidates = 0;
+    state.lcn_freq_count = 1;
+    state.lcn_freq_roll = 0;
+    state.trunk_lcn_freq[0] = 851000000L;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_int("channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("channel cycle used the raw tune", g_io_control_tune_calls, 1);
+    rc |= expect_int("channel cycle parks the P25 SM on the CC", p25_sm_get_state(sm), P25_SM_ON_CC);
+    rc |= expect_int("channel cycle clears the SM slot voice", sm->slots[0].voice_active, 0);
+    rc |= expect_true("channel cycle clears the SM voice channel", sm->vc_freq_hz == 0);
+    rc |= expect_int("channel cycle gates grants until the CC decodes", sm->cc_sync_pending, 1);
+
+    p25_sm_init_ctx(sm, NULL, NULL);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    freeState(&state);
     return rc;
 }
 
@@ -1727,9 +1919,11 @@ static int g_scan_control_result = 0;
 static int
 fake_scan_control(dsd_opts* opts, dsd_state* state, int op) {
     (void)opts;
-    (void)state;
     g_scan_control_calls++;
     g_scan_control_last_op = op;
+    if (op == DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE && g_scan_control_result >= 0) {
+        DSD_SNPRINTF(state->trunk_scan_active_id, sizeof(state->trunk_scan_active_id), "incoming");
+    }
     return g_scan_control_result;
 }
 
@@ -1755,6 +1949,9 @@ test_scan_hold_avoid_commands(void) {
     state.trunk_lcn_freq[3] = 858000000L;
     state.lcn_freq_roll = 2; /* row 1 (857 MHz) is on air */
     state.last_cc_sync_time_m = 42.0;
+    opts.scan_max_visit_ms = 1000;
+    state.scan_visit_since_m = 42.0;
+    state.scan_visit_roll_seen = state.lcn_freq_roll;
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
 
@@ -1763,6 +1960,7 @@ test_scan_hold_avoid_commands(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("scan hold drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("scan hold sets flag", state.lcn_scan_hold, 1);
+    rc |= expect_int("scan hold publishes timing before snapshot", state.scan_timing.reason, DSD_SCAN_STAY_MANUAL_HOLD);
     rc |= expect_true("scan hold keeps dwell", state.last_cc_sync_time_m == 42.0);
     rc |= expect_contains("scan hold toast", state.ui_msg, "hold on");
     rc |= expect_int("scan hold release queued", dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE),
@@ -1770,7 +1968,28 @@ test_scan_hold_avoid_commands(void) {
     rc |= expect_int("scan hold release drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("scan hold release clears flag", state.lcn_scan_hold, 0);
     rc |= expect_true("scan hold release restarts dwell", state.last_cc_sync_time_m > 42.0);
+    rc |= expect_true("scan hold release restarts the cap", state.scan_visit_since_m >= state.last_cc_sync_time_m);
+    rc |= expect_true("scan hold release publishes a full cap",
+                      state.scan_timing.visit_deadline_m >= state.last_cc_sync_time_m + 1.0);
     rc |= expect_contains("scan hold release toast", state.ui_msg, "hold off");
+    rc |= expect_int("scan release publishes hangtime", state.scan_timing.reason, DSD_SCAN_STAY_HANGTIME);
+    rc |= expect_true("scan release publishes a fresh deadline",
+                      state.scan_timing.deadline_m > state.last_cc_sync_time_m);
+
+    // A hold and release drained without a gate tick must also reset the voice
+    // qualify window, rather than retaining an expired sync from the old visit.
+    opts.scan_voice_only = 1;
+    state.scan_voice_gate_sync_m = 42.0;
+    state.scan_voice_gate_hold_seen = 0U;
+    rc |= expect_int("voice-gate hold queued", dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("voice-gate release queued", dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("voice-gate toggles drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_true("voice-gate release resets old sync", state.scan_voice_gate_sync_m < 0.0);
+    rc |= expect_true("voice-gate release restarts the visit", state.scan_voice_gate_arrive_m > 42.0);
+    rc |= expect_int("unsynced release uses the fresh hangtime", state.scan_timing.reason, DSD_SCAN_STAY_HANGTIME);
+    opts.scan_voice_only = 0;
 
     /* Manual next while held still moves, and the hold stays on. */
     state.lcn_scan_hold = 1;
@@ -1851,11 +2070,13 @@ test_scan_hold_avoid_commands(void) {
     rc |= expect_int("trunk-scan hold leaves -Y flag", state.lcn_scan_hold, 0);
     rc |= expect_contains("trunk-scan hold toast", state.ui_msg, "hold on");
     g_scan_control_result = 0;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "avoided");
     rc |= expect_int("trunk-scan avoid queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("trunk-scan avoid drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("trunk-scan avoid op", g_scan_control_last_op, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE);
     rc |= expect_int("trunk-scan avoid leaves -Y count", (int)state.lcn_avoid_count, 0);
+    rc |= expect_contains("trunk-scan avoid names the outgoing target", state.ui_msg, "Avoiding target avoided");
     g_scan_control_result = 2;
     rc |= expect_int("trunk-scan clear queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID_CLEAR),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -2106,9 +2327,1435 @@ test_scan_voice_gate_commands(void) {
     return rc;
 }
 
+static int
+test_scoped_setting_toggles(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    int rc = 0;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->use_cosine_filter = 1;
+    opts->monitor_input_audio = 0;
+    opts->inverted_dmr = 0;
+    opts->inverted_x2tdma = 0;
+    opts->inverted_dpmr = 0;
+    opts->inverted_m17 = 0;
+    rc |= expect_int("enter DMR for toggles", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR), 0);
+    const int commands[] = {DSD_APP_CMD_INV_DMR_TOGGLE,       DSD_APP_CMD_INV_X2_TOGGLE,
+                            DSD_APP_CMD_INV_DPMR_TOGGLE,      DSD_APP_CMD_INV_M17_TOGGLE,
+                            DSD_APP_CMD_COSINE_FILTER_TOGGLE, DSD_APP_CMD_INPUT_MONITOR_TOGGLE};
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); ++i) {
+        if (commands[i] == DSD_APP_CMD_INPUT_MONITOR_TOGGLE) {
+            const dsd_call_observation call = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+                                               .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                               .ota_target_id = 1201,
+                                               .observed_m = 1.0};
+            rc |= expect_int("seed call before monitor toggle",
+                             dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN), 1);
+            state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+            state->rf_mod = 2;
+            state->sps_hunt_counter = 17;
+        }
+        rc |= expect_int("scoped toggle queued", dsd_app_command_action(commands[i]), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int("scoped toggle drained", dsd_app_drain_cmds(opts, state), 1);
+    }
+    dsd_call_snapshot call;
+    rc |= expect_int("monitor keeps call", dsd_call_state_get(state, 0, &call), 1);
+    rc |= expect_int("monitor keeps call active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_int("monitor keeps acquired sync", state->synctype, DSD_SYNC_DMR_BS_VOICE_POS);
+    rc |= expect_int("monitor keeps acquired modulation", state->rf_mod, 2);
+    rc |= expect_int("monitor keeps hunt accounting", state->sps_hunt_counter, 17);
+    rc |= expect_int("hop to NXDN", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48), 0);
+    rc |= expect_int("hop keeps invert", opts->inverted_dmr, 1);
+    rc |= expect_int("hop keeps filter", opts->use_cosine_filter, 0);
+    rc |= expect_int("hop keeps monitor", opts->monitor_input_audio, 1);
+    dsd_scan_mode_leave(opts, state);
+    rc |= expect_int("exit keeps invert", opts->inverted_dmr, 1);
+    rc |= expect_int("exit keeps X2 invert", opts->inverted_x2tdma, 1);
+    rc |= expect_int("exit keeps dPMR invert", opts->inverted_dpmr, 1);
+    rc |= expect_int("exit keeps M17 invert", opts->inverted_m17, 1);
+    rc |= expect_int("exit keeps filter", opts->use_cosine_filter, 0);
+    rc |= expect_int("exit keeps monitor", opts->monitor_input_audio, 1);
+    rc |= expect_int("enter P25 for helper toggle", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25), 0);
+    rc |= expect_int("helper toggle queued", dsd_app_command_action(DSD_APP_CMD_MOD_P2_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("helper toggle drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("helper remains on row", opts->mod_p25p2_profile_lock, 1);
+    rc |= expect_int("helper applies 6000 on first press", state->sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    rc |= expect_int("helper applies current input timing", state->samplesPerSymbol, 8);
+    dsd_scan_mode_leave(opts, state);
+    rc |= expect_int("exit keeps helper", opts->mod_p25p2_profile_lock, 1);
+    rc |= expect_int("exit keeps helper profile", state->sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    /* These commands leave the trunk-scan owner running. Its decoder scope must
+     * survive until the coordinator switches targets or shuts down. */
+    opts->trunk_scan_enabled = 1;
+    rc |= expect_int("enter target NXDN", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48), 0);
+    rc |= expect_int("trunk enable queued", dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk enable drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("enable preserves target class", dsd_scan_mode_active(state), DSD_SCAN_MODE_NXDN48);
+    rc |= expect_int("release queued with target owner", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release drained with target owner", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("release preserves target owner", opts->trunk_scan_enabled, 1);
+    rc |= expect_int("release preserves target class", dsd_scan_mode_active(state), DSD_SCAN_MODE_NXDN48);
+    post_empty(DSD_APP_CMD_SCANNER_TOGGLE);
+    rc |= expect_int("scanner toggle during trunk scan drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("trunk scan excludes conventional scanner", opts->scanner_mode, 0);
+    rc |= expect_int("refused scanner preserves target", dsd_scan_mode_active(state), DSD_SCAN_MODE_NXDN48);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_scoped_mode_commands_and_config(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 96000;
+    int rc = 0;
+    rc |= expect_int("configured NXDN",
+                     dsd_apply_decode_mode_preset(DSDCFG_MODE_NXDN48, DSD_DECODE_PRESET_PROFILE_CLI, opts, state), 0);
+    opts->scanner_mode = 1;
+    rc |= expect_int("enter scan P25", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25), 0);
+    state->sps_hunt_counter = 17;
+    rc |= expect_int("repeat configured mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_NXDN48),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("repeat configured mode drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("repeat keeps row P25", opts->frame_p25p1, 1);
+    rc |= expect_int("repeat keeps dwell", state->sps_hunt_counter, 17);
+    rc |= expect_int("change configured mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_M17),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("change configured mode drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("row still P25", opts->frame_p25p1, 1);
+    rc |= expect_int("row excludes M17", opts->frame_m17, 0);
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(opts, state, &saved);
+    rc |= expect_int("configuration saves baseline M17", saved.decode_mode, DSDCFG_MODE_M17);
+    rc |= expect_int("scanner toggle queued", dsd_app_command_action(DSD_APP_CMD_SCANNER_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("scanner toggle drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("exit restores M17", opts->frame_m17, 1);
+    rc |= expect_int("exit restores M17 filter", opts->use_cosine_filter, 0);
+    rc |= expect_int("exit restores configured timing at live input rate", state->samplesPerSymbol, 20);
+    rc |= expect_int("exit restores configured profile", state->sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    opts->scanner_mode = 1;
+    rc |= expect_int("reenter scan P25", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25), 0);
+    dsd_key_set row_keys = {0};
+    row_keys.present = 1;
+    opts->mod_cli_lock = 0;
+    rc |= expect_int("config exit row keys", dsd_scan_keys_enter(state, &row_keys), 1);
+    dsdneoUserConfig cfg = {0};
+    cfg.has_trunking = 1;
+    cfg.trunk_scanner = 0;
+    cfg.has_mode = 1;
+    cfg.decode_mode = DSDCFG_MODE_NXDN48;
+    rc |= expect_int("config exit queued", dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof(cfg)),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("config exit drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("config stops scanner", opts->scanner_mode, 0);
+    rc |= expect_int("config releases scope", dsd_scan_mode_active(state), DSD_SCAN_MODE_INHERIT);
+    rc |= expect_int("config keeps new baseline", opts->frame_nxdn48, 1);
+    rc |= expect_int("config releases P25", opts->frame_p25p1, 0);
+    rc |= expect_int("config releases row keys", state->scan_keys_active_set, 0);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_scoped_row_option_commands(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->scan_voice_only = 0;
+    opts->scan_voice_hold_ms = 2000;
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    opts->dmr_mute_encL = opts->dmr_mute_encR = 1;
+    opts->trunk_tune_data_calls = 0;
+    opts->trunk_tune_enc_calls = 1;
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", "global.csv");
+    state->M = 0;
+    int rc = expect_int("enter option row", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR), 0);
+    const dsd_scan_option_values row = {.present = DSD_SCAN_OPT_FORCE | DSD_SCAN_OPT_CRC | DSD_SCAN_OPT_VOICE
+                                                   | DSD_SCAN_OPT_HOLD | DSD_SCAN_OPT_GROUP | DSD_SCAN_OPT_MUTE_DMR
+                                                   | DSD_SCAN_OPT_DATA | DSD_SCAN_OPT_ENC,
+                                        .force = 0x21,
+                                        .strict_crc = 0,
+                                        .voice_only = 1,
+                                        .hold_ms = 4000,
+                                        .mute_dmr = 1,
+                                        .tune_data_calls = 1,
+                                        .tune_enc_calls = 0,
+                                        .group_file = "row.csv"};
+    rc |= expect_int("install row options", dsd_scan_mode_options(opts, state, &row), 0);
+    rc |= expect_int("queue force default", post_empty(DSD_APP_CMD_FORCE_PRIV_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("queue CRC default", post_empty(DSD_APP_CMD_AGGR_SYNC_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("queue hold default", dsd_app_command_set_i32(DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET, 3000),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("queue mute default", post_empty(DSD_APP_CMD_ALL_MUTES_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("queue data default", post_empty(DSD_APP_CMD_TRUNK_DATA_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |=
+        expect_int("queue encrypted default", post_empty(DSD_APP_CMD_TRUNK_ENC_TOGGLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("option commands drained", dsd_app_drain_cmds(opts, state), 6);
+    rc |= expect_int("row keeps data policy", opts->trunk_tune_data_calls, 1);
+    rc |= expect_int("row keeps encrypted policy", opts->trunk_tune_enc_calls, 0);
+    rc |= expect_int("row keeps force", state->M, 0x21);
+    rc |= expect_int("row keeps hold", opts->scan_voice_hold_ms, 4000);
+    rc |= expect_int("row keeps mute", opts->dmr_mute_encL, 1);
+    dsd_scan_settings configured;
+    dsd_scan_mode_configured(opts, state, &configured);
+    rc |= expect_int("configured force updated", configured.force_key, 1);
+    rc |= expect_int("configured mute updated", configured.dmr_mute_encL, 0);
+    rc |= expect_int("configured CRC updated", configured.aggressive_framesync, 0);
+    rc |= expect_int("configured CSBK CRC default preserved", configured.dmr_crc_relaxed_default, 0);
+    rc |= expect_int("configured data updated", configured.trunk_tune_data_calls, 1);
+    rc |= expect_int("configured encrypted updated", configured.trunk_tune_enc_calls, 0);
+    rc |= expect_int("queue data default again", post_empty(DSD_APP_CMD_TRUNK_DATA_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("queue encrypted default again", post_empty(DSD_APP_CMD_TRUNK_ENC_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("policy commands drained", dsd_app_drain_cmds(opts, state), 2);
+    rc |= expect_int("row data override survives toggle", opts->trunk_tune_data_calls, 1);
+    rc |= expect_int("row encrypted override survives toggle", opts->trunk_tune_enc_calls, 0);
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(opts, state, &saved);
+    rc |= expect_int("saved configured data", saved.trunk_tune_data_calls, 0);
+    rc |= expect_int("saved configured encrypted", saved.trunk_tune_enc_calls, 1);
+    rc |= expect_int("saved configured hold", saved.trunk_scan_voice_hold_ms, 3000);
+    rc |= expect_int("saved configured gate", saved.trunk_scan_voice_only, 0);
+    rc |= expect_str("saved configured groups", saved.trunk_group_csv, "global.csv");
+    rc |= expect_int("clear row options", dsd_scan_mode_options(opts, state, NULL), 0);
+    rc |= expect_int("clear options restores force", state->M, 1);
+    rc |= expect_int("clear options restores hold", opts->scan_voice_hold_ms, 3000);
+    rc |= expect_int("clear options restores mute", opts->dmr_mute_encL, 0);
+    rc |= expect_str("clear options restores groups", opts->group_in_file, "global.csv");
+    rc |= expect_int("clear options restores data policy", opts->trunk_tune_data_calls, 0);
+    rc |= expect_int("clear options restores encrypted policy", opts->trunk_tune_enc_calls, 1);
+    dsd_scan_mode_leave(opts, state);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* Direct key commands keep their live key ownership while their unmute decision
+ * persists in the configured scope, including beneath an explicit row mute. */
+static int
+test_scoped_direct_key_mutes(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    const int commands[] = {DSD_APP_CMD_KEY_BASIC_SET, DSD_APP_CMD_KEY_SCRAMBLER_SET, DSD_APP_CMD_KEY_RC4DES_SET,
+                            DSD_APP_CMD_KEY_HYTERA_SET, DSD_APP_CMD_KEY_AES_SET};
+    int rc = 0;
+    for (int row_mutes = 0; row_mutes < 2; row_mutes++) {
+        for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+            opts->dmr_mute_encL = opts->dmr_mute_encR = 1;
+            state->R = 99;
+            dsd_key_set keys = {0};
+            keys.present = 1;
+            keys.scalars.R = 55;
+            rc |= expect_true("enter row keys", dsd_scan_keys_enter(state, &keys));
+            rc |= expect_int("enter key command scope", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR), 0);
+            dsd_scan_option_values row = {.present = DSD_SCAN_OPT_MUTE_DMR, .mute_dmr = 1};
+            (void)dsd_scan_mode_options(opts, state, row_mutes ? &row : NULL);
+            uint64_t payload[5] = {7, 8, 9, 10, 11};
+            uint32_t short_key = 7;
+            const void* data = i < 2 ? (const void*)&short_key : (const void*)payload;
+            size_t size = i < 2    ? sizeof(uint32_t)
+                          : i == 2 ? sizeof(uint64_t)
+                          : i == 3 ? sizeof(dsd_app_hytera_key_payload)
+                                   : sizeof(dsd_app_aes_key_payload);
+            rc |= expect_int("post direct key", dsd_app_command_submit(commands[i], data, size),
+                             DSD_APP_COMMAND_SUBMIT_QUEUED);
+            rc |= expect_int("direct key drained", dsd_app_drain_cmds(opts, state), 1);
+            rc |= expect_int("row mute respected left", opts->dmr_mute_encL, row_mutes);
+            rc |= expect_int("row mute respected right", opts->dmr_mute_encR, row_mutes);
+            dsd_scan_settings configured;
+            dsd_scan_mode_configured(opts, state, &configured);
+            rc |= expect_int("direct key saved left unmute", configured.dmr_mute_encL, 0);
+            rc |= expect_int("direct key saved right unmute", configured.dmr_mute_encR, 0);
+            rc |= expect_true("direct key retains row ownership", state->scan_keys_active_set != 0);
+            const uint64_t live[] = {state->K, state->R, state->RR, state->K4, state->A4[0]};
+            const uint64_t expected[] = {7, 7, 7, 11, 10};
+            rc |= expect_true("direct key updates live material", live[i] == expected[i]);
+            post_empty(DSD_APP_CMD_AGGR_SYNC_TOGGLE);
+            (void)dsd_app_drain_cmds(opts, state);
+            rc |= expect_int("CRC toggle preserves row mute", opts->dmr_mute_encL, row_mutes);
+            (void)dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48);
+            (void)dsd_scan_mode_options(opts, state, NULL);
+            rc |= expect_int("next row inherits unmute", opts->dmr_mute_encL, 0);
+            dsd_scan_keys_leave(state);
+            rc |= expect_true("leave restores global key", state->R == 99);
+            dsd_scan_mode_leave(opts, state);
+        }
+    }
+    for (int relaxed = 0; relaxed < 2; relaxed++) {
+        opts->dmr_crc_relaxed_default = (uint8_t)relaxed;
+        for (int toggle = 0; toggle < 2; toggle++) {
+            post_empty(DSD_APP_CMD_AGGR_SYNC_TOGGLE);
+            (void)dsd_app_drain_cmds(opts, state);
+            rc |= expect_int("menu CRC toggle preserves CSBK policy", opts->dmr_crc_relaxed_default, relaxed);
+        }
+    }
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_source_alias_commands(void) {
+    int rc = 0;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    const char* path = "ui_cmd_queue_sources.csv";
+    const char* missing = "ui_cmd_queue_sources_missing.csv";
+    static const unsigned char data[] = "id,name,tags\n1201,Engine 21,Fire\n2000-2099,Dispatch,Ops\n";
+    char name[50];
+    remove(missing);
+    init_test_context(opts, state);
+    post_string(DSD_APP_CMD_IMPORT_SRC_LIST, missing);
+    rc |= expect_int("source missing drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_contains("source failure toast", state->ui_msg, "Failed: Source ID list import ->");
+    rc |= expect_str("source missing no path", opts->src_in_file, "");
+    rc |= expect_int("source missing not loaded", dsd_source_alias_loaded(state), 0);
+    rc |= write_file_bytes(path, data, sizeof(data) - 1U);
+    post_string(DSD_APP_CMD_IMPORT_SRC_LIST, path);
+    rc |= expect_int("source import drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_contains("source success toast", state->ui_msg, "Applied: Source ID list imported ->");
+    rc |= expect_str("source imported path", opts->src_in_file, path);
+    rc |= expect_int("source exact lookup", dsd_source_alias_lookup(state, 1201, name, sizeof name), 1);
+    rc |= expect_str("source exact name", name, "Engine 21");
+    rc |= expect_int("source range lookup", dsd_source_alias_lookup(state, 2050, name, sizeof name), 1);
+    rc |= expect_str("source range name", name, "Dispatch");
+    post_string(DSD_APP_CMD_IMPORT_SRC_LIST, missing);
+    rc |= expect_int("source failed replacement drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_contains("source replacement failure toast", state->ui_msg, "Failed: Source ID list import ->");
+    rc |= expect_str("source failed replacement keeps path", opts->src_in_file, path);
+    rc |= expect_int("source failed replacement keeps lookup", dsd_source_alias_lookup(state, 1201, name, sizeof name),
+                     1);
+    rc |= expect_str("source failed replacement keeps name", name, "Engine 21");
+    static const unsigned char empty[] = "id,name\n";
+    rc |= write_file_bytes(path, empty, sizeof(empty) - 1U);
+    post_string(DSD_APP_CMD_IMPORT_SRC_LIST, path);
+    rc |= expect_int("source empty import drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("source empty import loaded", dsd_source_alias_loaded(state), 1);
+    rc |= expect_int("source empty import replaces aliases", (int)dsd_source_alias_count(state), 0);
+    rc |= expect_contains("source empty import applied", state->ui_msg, "Applied:");
+    /* Through the public action helper, as the Qt bridge submits it: a clear that is not
+       in the action allowlist is rejected before it is ever queued. */
+    rc |= expect_int("source clear accepted as action", dsd_app_command_action(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("source clear drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_str("source clear toast", state->ui_msg, "Applied: Source ID list cleared");
+    rc |= expect_str("source cleared path", opts->src_in_file, "");
+    rc |= expect_int("source cleared lookup", dsd_source_alias_lookup(state, 1201, name, sizeof name), 0);
+    /* The sibling clears the same frontend flow relies on. */
+    rc |= expect_int("channel map clear accepted as action",
+                     dsd_app_command_action(DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("group list clear accepted as action", dsd_app_command_action(DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("keys clear accepted as action", dsd_app_command_action(DSD_APP_CMD_IMPORT_KEYS_CLEAR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("sibling clears drained", dsd_app_drain_cmds(opts, state), 3);
+    freeState(state);
+    free(state);
+    free(opts);
+    remove(path);
+    return rc;
+}
+
+static int
+test_talkgroup_list_commands(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    const char* path = "dsd_neo_test_talkgroup_commands.csv";
+    static const char csv[] = "DEC,Mode,Name,Tag\n1001,A,Fire Dispatch,FIRE\n2001,A,EMS Dispatch,EMS\n"
+                              "3001,D,Radio,FIRE\n4001,A,Untagged\n";
+    int rc = write_file_bytes(path, csv, sizeof csv - 1U);
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    rc |= expect_int("load talkgroup command fixture", dsd_tg_policy_reload_group_file(opts, state), 0);
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    seed_active_p25_voice(opts, state, 851000000L, 852000000L, 1001);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+#endif
+    dsd_app_tg_listen_payload one = {1001, 1001, 0};
+    rc |= expect_int("block talkgroup queued", dsd_app_command_set_tg_listen(&one), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("block talkgroup drained", dsd_app_drain_cmds(opts, state), 1);
+    dsd_tg_policy_lookup lookup;
+    rc |= expect_int("blocked talkgroup lookup", dsd_tg_policy_lookup_id(state, 1001, &lookup), 0);
+    rc |= expect_str("blocked mode", lookup.entry.mode, "B");
+    rc |= expect_str("blocked name retained", lookup.entry.name, "Fire Dispatch");
+    rc |= expect_str("blocked tags retained", lookup.entry.tags, "FIRE");
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= expect_int("blocked call returns to CC", g_cc_tune_calls, 1);
+#endif
+    FILE* file = dsd_fopen_existing_regular_file(path, "r");
+    char contents[512] = {0};
+    if (file) {
+        size_t bytes = fread(contents, 1, sizeof contents - 1U, file);
+        contents[bytes] = '\0';
+        const int close_result = fclose(file);
+        rc |= expect_int("close rewritten groups", close_result, 0);
+    } else {
+        rc = 1;
+    }
+    rc |= expect_contains("rewrite contains named blocked row", contents, "1001,B,Fire Dispatch,FIRE\n");
+    rc |= expect_int("reload persisted blocked mode", dsd_tg_policy_reload_group_file(opts, state), 0);
+    rc |= expect_int("reloaded talkgroup lookup", dsd_tg_policy_lookup_id(state, 1001, &lookup), 0);
+    rc |= expect_str("reloaded mode", lookup.entry.mode, "B");
+    one.listen = 1;
+    rc |= expect_int("listen queued", dsd_app_command_set_tg_listen(&one), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("listen drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("listening lookup", dsd_tg_policy_lookup_id(state, 1001, &lookup), 0);
+    rc |= expect_str("listening mode", lookup.entry.mode, "A");
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= expect_int("listen does not retune", g_cc_tune_calls, 1);
+#endif
+    dsd_app_tg_listen_all_payload all = {0, "FIRE"};
+    rc |= expect_int("category block queued", dsd_app_command_set_tg_listen_all(&all), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("category block drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("category row lookup", dsd_tg_policy_lookup_id(state, 1001, &lookup), 0);
+    rc |= expect_str("category row blocked", lookup.entry.mode, "B");
+    rc |= expect_int("other category lookup", dsd_tg_policy_lookup_id(state, 2001, &lookup), 0);
+    rc |= expect_str("other category unchanged", lookup.entry.mode, "A");
+    rc |= expect_int("alias row lookup", dsd_tg_policy_lookup_id(state, 3001, &lookup), 0);
+    rc |= expect_str("alias row unchanged", lookup.entry.mode, "D");
+    rc |= expect_int("untagged row lookup", dsd_tg_policy_lookup_id(state, 4001, &lookup), 0);
+    rc |= expect_str("untagged row unchanged", lookup.entry.mode, "A");
+    freeState(state);
+    free(state);
+    free(opts);
+    remove(path);
+    return rc;
+}
+
+/* An export completion must survive the rest of a drain before the UI polls. */
+static int
+test_talkgroup_export_result(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    const char* path = "dsd_neo_test_d1_retained_export.csv";
+    remove(path);
+    int rc = expect_int("seed retained export policy", dsd_tg_policy_set_mode(state, 42, 42, "A"), 0);
+
+    union {
+        unsigned char bytes[sizeof(dsd_app_tg_export_payload) + 128];
+        // cppcheck-suppress unusedStructMember -- this member provides alignment for the payload header.
+        uint64_t align;
+    } storage = {0};
+
+    dsd_app_tg_export_payload* request = (dsd_app_tg_export_payload*)storage.bytes;
+    dsd_tg_policy_table_version(state, &request->policy_context, &request->policy_generation);
+    DSD_SNPRINTF(request->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", path);
+    rc |= expect_int("retained export queued",
+                     dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, sizeof storage),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+    rc |= expect_int("export and unrelated command drain together", dsd_app_drain_cmds(opts, state), 2);
+    rc |= expect_str("unrelated command overwrote export toast", state->ui_msg, "Applied: Source ID list cleared");
+    dsd_app_tg_export_result result;
+    rc |= expect_int("completion available on first poll", dsd_app_tg_export_result_get(&result), 1);
+    rc |= expect_true("first completion has sequence", result.sequence != 0);
+    rc |= expect_int("retained export succeeded", result.success, 1);
+    rc |= expect_true("retained request context", result.policy_context == request->policy_context);
+    rc |= expect_true("retained request generation", result.policy_generation == request->policy_generation);
+    rc |= expect_str("retained written path", result.path, path);
+    rc |= expect_str("persistence activated before success", opts->group_in_file, result.path);
+    const dsd_app_tg_export_result success = result;
+    post_empty(DSD_APP_CMD_UI_MSG_CLEAR);
+    dsd_app_drain_cmds(opts, state);
+    dsd_app_tg_export_result_get(&result);
+    rc |= expect_true("unrelated drain preserves sequence", result.sequence == success.sequence);
+    rc |= expect_str("unrelated drain preserves path", result.path, path);
+    rc |= expect_int("null completion output refused", dsd_app_tg_export_result_get(NULL), 0);
+
+    /* Failures retain the request identity too, including refused contexts. */
+    for (int failure = 0; failure < 4; ++failure) {
+        dsd_scan_row_profile profile = {0};
+        if (failure == 2) {
+            profile.values.present = DSD_SCAN_OPT_GROUP;
+            dsd_scan_groups_begin(state);
+            dsd_scan_groups_enter(state, &profile);
+        }
+        dsd_tg_policy_table_version(state, &request->policy_context, &request->policy_generation);
+        if (failure == 0) {
+            request->policy_context++;
+        } else if (failure == 1) {
+            request->policy_generation++;
+        } else if (failure == 3) {
+            DSD_SNPRINTF(request->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path),
+                         "%s/missing.csv", path);
+        }
+        uint64_t sequence = result.sequence;
+        dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, sizeof storage);
+        post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+        rc |= expect_int("failed export and unrelated command drained", dsd_app_drain_cmds(opts, state), 2);
+        rc |= expect_int("failed export result available", dsd_app_tg_export_result_get(&result), 1);
+        rc |= expect_true("each completion advances sequence", result.sequence > sequence);
+        rc |= expect_int("retained failure", result.success, 0);
+        rc |= expect_true("failed request context retained", result.policy_context == request->policy_context);
+        rc |= expect_true("failed request generation retained", result.policy_generation == request->policy_generation);
+        rc |= expect_str("failed destination retained", result.path, request->path);
+        rc |= expect_str("failed export keeps successful persistence", opts->group_in_file, path);
+        if (failure == 2) {
+            dsd_scan_groups_leave(state);
+        }
+    }
+    /* Identical requests are still distinct completions; reads return owned copies. */
+    DSD_SNPRINTF(request->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", path);
+    dsd_tg_policy_table_version(state, &request->policy_context, &request->policy_generation);
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        uint64_t sequence = result.sequence;
+        dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, sizeof storage);
+        post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+        dsd_app_drain_cmds(opts, state);
+        dsd_app_tg_export_result_get(&result);
+        rc |= expect_true("repeated successful export advances sequence", result.sequence > sequence && result.success);
+        rc |= expect_str("prior owned copy preserved", success.path, path);
+    }
+    uint64_t sequence = result.sequence;
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, offsetof(dsd_app_tg_export_payload, path));
+    post_empty(DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR);
+    dsd_app_drain_cmds(opts, state);
+    dsd_app_tg_export_result_get(&result);
+    rc |= expect_true("invalid envelope publishes failure", result.sequence > sequence && !result.success);
+    rc |= expect_str("invalid path is not published", result.path, "");
+    freeState(state);
+    free(state);
+    free(opts);
+    remove(path);
+    return rc;
+}
+
+/* WP-D1: exercise the decoder-thread API, including the resulting effective policy. */
+static int
+test_talkgroup_row_commands(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_state* loaded = calloc(1, sizeof(*loaded));
+    if (!opts || !state || !loaded) {
+        free(opts);
+        free(state);
+        free(loaded);
+        return 1;
+    }
+    init_test_context(opts, state);
+    int rc = 0;
+    const char* path = "dsd_neo_test_d1_export.csv";
+    remove(path);
+    /* Exact A deletion: blocked range, allowed range in allowlist, last allowlist row. */
+    for (int scenario = 0; scenario < 3; ++scenario) {
+        dsd_tg_policy_clear(state);
+        opts->trunk_use_allow_list = scenario != 0;
+        opts->trunk_tune_group_calls = 1;
+        dsd_tg_policy_entry e;
+        if (scenario < 2) {
+            dsd_tg_policy_make_exact_entry(1000, scenario == 0 ? "B" : "A", "Range", DSD_TG_POLICY_SOURCE_IMPORTED, &e);
+            e.id_end = 1099;
+            e.is_range = 1;
+            dsd_tg_policy_add_range_entry(state, &e);
+        }
+        dsd_tg_policy_set_mode(state, 1001, 1001, "A");
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+        seed_active_p25_voice(opts, state, 851000000L, 852000000L, 1001);
+        reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+#endif
+        dsd_app_tg_range_payload p = {1001, 1001, 0, 0};
+        dsd_tg_policy_table_version(state, &p.policy_context, &p.policy_generation);
+        dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &p, sizeof p);
+        rc |= expect_int("remove drains", dsd_app_drain_cmds(opts, state), 1);
+        dsd_tg_policy_decision decision;
+        dsd_tg_policy_evaluate_group_call(opts, state, 1001, 0, 0, 0, &decision);
+        rc |= expect_int("resulting policy allow", decision.tune_allowed, scenario == 1);
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+        rc |= expect_int("exact-over-range and allowlist release", g_cc_tune_calls, scenario != 1);
+        dsd_call_snapshot call;
+        dsd_call_state_get(state, 0, &call);
+        rc |= expect_int("canonical active state after removal", call.phase == DSD_CALL_PHASE_ACTIVE, scenario == 1);
+#endif
+    }
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    /* Row-set release, and a metadata edit must not release an already blocked call. */
+    dsd_tg_policy_clear(state);
+    opts->trunk_use_allow_list = 0;
+    dsd_tg_policy_set_mode(state, 1001, 1001, "A");
+    seed_active_p25_voice(opts, state, 851000000L, 852000000L, 1001);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_app_tg_row_payload block = {.id_start = 1001, .id_end = 1001, .fields = DSD_APP_TG_FIELD_LISTEN, .listen = 0};
+    dsd_tg_policy_table_version(state, &block.policy_context, &block.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &block, sizeof block);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_int("row set releases newly blocked call", g_cc_tune_calls, 1);
+    seed_active_p25_voice(opts, state, 851000000L, 852000000L, 1001);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    block.fields = DSD_APP_TG_FIELD_NAME;
+    DSD_SNPRINTF(block.name, sizeof block.name, "%s", "Renamed");
+    dsd_tg_policy_table_version(state, &block.policy_context, &block.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &block, sizeof block);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_int("metadata edit does not newly block call", g_cc_tune_calls, 0);
+#endif
+    dsd_tg_policy_clear(state);
+    dsd_tg_policy_entry e;
+    const char* modes[] = {"A", "B", "D", "DE"};
+    for (int i = 0; i < 4; ++i) {
+        dsd_tg_policy_make_exact_entry(2000 + i, modes[i], "Named", DSD_TG_POLICY_SOURCE_IMPORTED, &e);
+        e.priority = i * 25;
+        e.preempt = i == 1;
+        dsd_tg_policy_append_exact(state, &e);
+    }
+    dsd_tg_policy_make_exact_entry(3000, "D", "Learned", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &e);
+    dsd_tg_policy_append_exact(state, &e);
+    e.id_start = 4000;
+    e.id_end = 4099;
+    e.is_range = 1;
+    DSD_SNPRINTF(e.mode, sizeof e.mode, "%s", "A");
+    e.source = DSD_TG_POLICY_SOURCE_IMPORTED;
+    dsd_tg_policy_add_range_entry(state, &e);
+    dsd_app_tg_row_payload edit = {
+        .id_start = 2000, .id_end = 2000, .fields = DSD_APP_TG_FIELD_PRIORITY, .priority = 50};
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    edit.policy_context++;
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_contains("stale context set refused", state->ui_msg, "stale");
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    edit.policy_generation++;
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_contains("stale generation set refused", state->ui_msg, "stale");
+    edit.priority = 99;
+    edit.id_start = edit.id_end = 2002;
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
+    dsd_app_drain_cmds(opts, state);
+    dsd_tg_policy_lookup lookup;
+    dsd_tg_policy_lookup_id(state, 2002, &lookup);
+    rc |= expect_int("alias priority unchanged", lookup.entry.priority, 50);
+    dsd_app_tg_range_payload rem = {2002, 2002, edit.policy_context, edit.policy_generation};
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_int("mode D remove refused", (int)dsd_tg_policy_entry_count(state), 6);
+
+    union {
+        unsigned char bytes[sizeof(dsd_app_tg_export_payload) + 128];
+        // cppcheck-suppress unusedStructMember -- this member provides alignment for the payload header.
+        uint64_t align;
+    } storage = {0};
+
+    dsd_app_tg_export_payload* exp = (dsd_app_tg_export_payload*)storage.bytes;
+    DSD_SNPRINTF(exp->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", path);
+    dsd_tg_policy_table_version(state, &exp->policy_context, &exp->policy_generation);
+    exp->policy_context++;
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_contains("stale export refused", state->ui_msg, "stale");
+    rc |= expect_str("stale export keeps empty path", opts->group_in_file, "");
+    dsd_tg_policy_table_version(state, &exp->policy_context, &exp->policy_generation);
+    rc |= expect_int("inherited policy scan scope", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR), 0);
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("export sets persistence path", opts->group_in_file, path);
+    rc |= expect_contains("export completion toast", state->ui_msg, "Applied:");
+    rc |= expect_int("reload export", dsd_tg_policy_reload_group_file(opts, loaded), 0);
+    rc |= expect_int("canonical rows exported", (int)dsd_tg_policy_entry_count(loaded), 6);
+    for (size_t i = 0; i < 6; ++i) {
+        dsd_tg_policy_entry actual;
+        dsd_tg_policy_entry_at(state, i, &e);
+        if (!dsd_tg_policy_entry_at(loaded, i, &actual)) {
+            rc = 1;
+            continue;
+        }
+        rc |= expect_str("export mode roundtrip", actual.mode, e.mode);
+        rc |= expect_str("export name roundtrip", actual.name, e.name);
+        rc |= expect_int("export priority roundtrip", actual.priority, e.priority);
+        rc |= expect_int("export preempt roundtrip", actual.preempt, e.preempt);
+        rc |= expect_int("export range roundtrip", actual.id_end, e.id_end);
+    }
+    dsd_scan_mode_leave(opts, state);
+    rc |= expect_int("rotate inherited policy row", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48), 0);
+    post_empty(DSD_APP_CMD_ALL_MUTES_TOGGLE);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("export path survives rotation and scoped command", opts->group_in_file, path);
+    /* A failed export cannot redirect subsequent persistence. */
+    DSD_SNPRINTF(exp->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s",
+                 "dsd_neo_d1_missing_dir/groups.csv");
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_str("failed export keeps path", opts->group_in_file, path);
+    rc |= expect_contains("failed export toast", state->ui_msg, "failed");
+    exp->path[0] = 0;
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_contains("empty export path refused", state->ui_msg, "Invalid");
+    DSD_SNPRINTF(exp->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", path);
+    edit.id_start = edit.id_end = 2000;
+    edit.fields = DSD_APP_TG_FIELD_NAME | DSD_APP_TG_FIELD_TAGS;
+    DSD_SNPRINTF(edit.name, sizeof edit.name, "%s", "Persisted");
+    DSD_SNPRINTF(edit.tags, sizeof edit.tags, "%s", "FIRE");
+    dsd_tg_policy_table_version(state, &edit.policy_context, &edit.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &edit, sizeof edit);
+    dsd_app_drain_cmds(opts, state);
+    dsd_tg_policy_reload_group_file(opts, loaded);
+    dsd_tg_policy_lookup_id(loaded, 2000, &lookup);
+    rc |= expect_str("edit persists to exported file", lookup.entry.name, "Persisted");
+    rc |= expect_str("tags persist to exported file", lookup.entry.tags, "FIRE");
+    rem.id_start = rem.id_end = 2000;
+    dsd_tg_policy_table_version(state, &rem.policy_context, &rem.policy_generation);
+    rem.policy_generation++;
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_contains("stale remove refused", state->ui_msg, "stale");
+    dsd_tg_policy_table_version(state, &rem.policy_context, &rem.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &rem, sizeof rem);
+    dsd_app_drain_cmds(opts, state);
+    dsd_tg_policy_reload_group_file(opts, loaded);
+    dsd_tg_policy_lookup_id(loaded, 2000, &lookup);
+    rc |= expect_int("remove persists to exported file", lookup.match, DSD_TG_POLICY_MATCH_NONE);
+    dsd_scan_row_profile profile = {0};
+    profile.values.present = DSD_SCAN_OPT_GROUP;
+    dsd_scan_groups_begin(state);
+    dsd_scan_groups_enter(state, &profile);
+    dsd_tg_policy_table_version(state, &exp->policy_context, &exp->policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
+    dsd_app_drain_cmds(opts, state);
+    rc |= expect_contains("scan export refused", state->ui_msg, "scan");
+    dsd_scan_groups_leave(state);
+    remove(path);
+    freeState(loaded);
+    free(loaded);
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_direct_key_updates_preserve_fifo(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    dsd_app_key_direct_payload basic = {DSD_APP_KEY_TYPE_BASIC, "42"};
+    dsd_app_key_direct_payload rc4 = {DSD_APP_KEY_TYPE_RC4, "0011223344"};
+    int rc = 0;
+    rc |=
+        expect_int("BASIC direct key queued", dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &basic, sizeof basic),
+                   DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |=
+        expect_int("independent RC4 direct key queued",
+                   dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &rc4, sizeof rc4), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("different direct-key types both drain", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_true("both direct-key slots erased", dsd_app_command_test_storage_cleared());
+    DSD_SECURE_ZERO(&basic, sizeof basic);
+    DSD_SECURE_ZERO(&rc4, sizeof rc4);
+    freeState(&state);
+    return rc;
+}
+
+static int
+test_coalesced_setter_erases_old_tail(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    unsigned char padded[72];
+    const int32_t gain = 5;
+    DSD_MEMSET(padded, 0x5a, sizeof padded);
+    DSD_MEMCPY(padded, &gain, sizeof gain);
+    int rc = 0;
+    // Gain is coalescible. Fill the accepted envelope beyond its scalar value
+    // to prove a shorter overwrite erases bytes rather than only reducing n.
+    rc |= expect_int("padded setter queued", dsd_app_command_submit(DSD_APP_CMD_GAIN_SET, padded, sizeof padded),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("short setter coalesced", dsd_app_command_set_i32(DSD_APP_CMD_GAIN_SET, 9),
+                     DSD_APP_COMMAND_SUBMIT_COALESCED);
+    rc |= expect_true("coalescing erased old payload tail", dsd_app_command_test_tail_padding_cleared());
+    rc |= expect_int("coalesced setter drains once", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("new setter value applied", (int)opts.audio_gain, 9);
+    rc |= expect_true("coalesced setter slot erased on drain", dsd_app_command_test_storage_cleared());
+    DSD_SECURE_ZERO(padded, sizeof padded);
+    freeState(&state);
+    return rc;
+}
+
+static int
+test_foundation_commands(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+    rc |= expect_int("row set id", DSD_APP_CMD_TG_ROW_SET, 592);
+    rc |= expect_int("row remove id", DSD_APP_CMD_TG_ROW_REMOVE, 593);
+    rc |= expect_int("export id", DSD_APP_CMD_TG_LIST_EXPORT, 594);
+    rc |= expect_int("direct key id", DSD_APP_CMD_KEY_DIRECT_SET, 652);
+    rc |= expect_int("force key id", DSD_APP_CMD_FORCE_KEY_SET, 653);
+    dsd_app_tg_row_payload row = {0};
+    dsd_tg_policy_table_version(&state, &row.policy_context, &row.policy_generation);
+    row.id_start = row.id_end = 42;
+    row.fields = DSD_APP_TG_FIELD_NAME;
+    DSD_SNPRINTF(row.name, sizeof row.name, "%s", "Dispatch");
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &row, sizeof row);
+    rc |= expect_int("row stub drains", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("row applied toast", state.ui_msg, "Applied:");
+    row.policy_context++;
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &row, sizeof row);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_contains("stale row rejected", state.ui_msg, "stale");
+    dsd_app_tg_range_payload range = {42, 42, 0, 0};
+    dsd_tg_policy_table_version(&state, &range.policy_context, &range.policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_ROW_REMOVE, &range, sizeof range);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_contains("remove applied toast", state.ui_msg, "Applied:");
+
+    union {
+        unsigned char bytes[sizeof(dsd_app_tg_export_payload) + 32];
+        // cppcheck-suppress unusedStructMember -- this member provides alignment for the payload header.
+        uint64_t alignment;
+    } export_storage = {0};
+
+    dsd_app_tg_export_payload* export_payload = (dsd_app_tg_export_payload*)export_storage.bytes;
+    dsd_tg_policy_table_version(&state, &export_payload->policy_context, &export_payload->policy_generation);
+    // The flexible path member owns only the bytes remaining after the header.
+    DSD_SNPRINTF(export_payload->path, sizeof export_storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s",
+                 "test.csv");
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, export_payload, sizeof export_storage);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_contains("export applied toast", state.ui_msg, "Applied:");
+    remove("test.csv");
+    dsd_app_key_direct_payload key = {DSD_APP_KEY_TYPE_RC4, "0011223344"};
+    dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_true("direct key applied", state.R == 0x0011223344ULL && state.RR == state.R);
+    rc |= expect_true("key absent from toast", strstr(state.ui_msg, key.value) == NULL);
+    rc |= expect_true("drained slot erased", dsd_app_command_test_storage_cleared());
+    // Put the secret at the eviction head, then fill all 127 usable slots.
+    dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
+    for (int i = 0; i < 126; ++i) {
+        post_empty(DSD_APP_CMD_TOGGLE_COMPACT);
+    }
+    dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
+    rc |= expect_true("evicted sensitive slot erased", dsd_app_command_test_storage_cleared());
+    key.value[1] = '\0';
+    dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, 5);
+    rc |= expect_true("short rejected key tail erased", dsd_app_command_test_tail_padding_cleared());
+    rc |= expect_int("full queue drains including rejected key", dsd_app_drain_cmds(&opts, &state), 127);
+    rc |= expect_true("rejected slot erased", dsd_app_command_test_storage_cleared());
+    dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, NULL, sizeof key);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_true("null payload never reuses old key", dsd_app_command_test_storage_cleared());
+    rc |= expect_int("force setter queued", dsd_app_command_set_i32(DSD_APP_CMD_FORCE_KEY_SET, 2),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_true("force setter applied", state.M == 0x21);
+    DSD_SECURE_ZERO(&key, sizeof key);
+    freeState(&state);
+    return rc;
+}
+
+/* WP-D2: configured force, effective row override, epoch and rejection contracts. */
+static int
+test_direct_key_and_force_scope(void) {
+    static dsd_state state;
+    static dsd_opts opts;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    int rc = 0;
+    rc |= expect_int("enter force scope", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    dsd_scan_option_values row = {.present = DSD_SCAN_OPT_FORCE | DSD_SCAN_OPT_MUTE_DMR, .force = 0x21, .mute_dmr = 1};
+    (void)dsd_scan_mode_options(&opts, &state, &row);
+    uint64_t epoch = state.enc_lockout_key_epoch;
+    dsd_app_command_set_i32(DSD_APP_CMD_FORCE_KEY_SET, 1);
+    dsd_app_drain_cmds(&opts, &state);
+    dsd_scan_settings configured;
+    dsd_scan_mode_configured(&opts, &state, &configured);
+    rc |= expect_true("force configured and effective scopes", configured.force_key == 1 && state.M == 0x21);
+    rc |= expect_true("force change bumps epoch", state.enc_lockout_key_epoch != epoch);
+    epoch = state.enc_lockout_key_epoch;
+    dsd_app_command_set_i32(DSD_APP_CMD_FORCE_KEY_SET, 1);
+    dsd_app_command_set_i32(DSD_APP_CMD_FORCE_KEY_SET, 3);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_true("idempotent or invalid force keeps epoch", state.enc_lockout_key_epoch == epoch);
+    dsd_app_key_direct_payload key = {DSD_APP_KEY_TYPE_BASIC, "0"};
+    dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
+    dsd_app_drain_cmds(&opts, &state);
+    dsd_scan_mode_configured(&opts, &state, &configured);
+    rc |= expect_true("direct zero arms configured decryption",
+                      configured.dmr_mute_encL == 0 && configured.dmr_mute_encR == 0);
+    rc |= expect_true("direct respects row mute", opts.dmr_mute_encL == 1 && opts.dmr_mute_encR == 1);
+    rc |= expect_true("direct bumps epoch", state.enc_lockout_key_epoch != epoch);
+    epoch = state.enc_lockout_key_epoch;
+    for (int type = 0; type < 4; ++type) {
+        key.key_type = type;
+        DSD_MEMSET(key.value, 'Z', sizeof key.value);
+        key.value[sizeof key.value - 1] = 0;
+        dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
+        dsd_app_drain_cmds(&opts, &state);
+        rc |= expect_true("invalid direct is atomic", state.K == 0 && state.enc_lockout_key_epoch == epoch);
+        rc |= expect_true("invalid text never in toast", strstr(state.ui_msg, key.value) == NULL);
+        rc |= expect_contains("invalid toast names shape", state.ui_msg, "Expected");
+    }
+    DSD_MEMSET(key.value, 'Z', sizeof key.value);
+    dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
+    dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_true("unterminated direct rejected", state.enc_lockout_key_epoch == epoch);
+    DSD_SECURE_ZERO(&key, sizeof key);
+    (void)dsd_scan_mode_options(&opts, &state, NULL);
+    rc |= expect_true("unkeyed row inherits force and mute", state.M == 1 && opts.dmr_mute_encL == 0);
+    dsd_scan_mode_leave(&opts, &state);
+    freeState(&state);
+    return rc;
+}
+
+/* A CSV row has activated both signalled KIDs before the global edit arrives. */
+static int
+test_direct_key_preserves_active_keyring(int reject) {
+    static dsd_state state;
+    static dsd_opts opts;
+    int rc = 0;
+    for (int type = DSD_APP_KEY_TYPE_BASIC; type <= DSD_APP_KEY_TYPE_SCRAMBLER; ++type) {
+        init_test_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_WAV;
+        opts.wav_sample_rate = 48000;
+        state.K = 23;
+        state.R = 83;
+        state.RR = 89;
+        state.rkey_array[3] = 19;
+        state.rkey_array_loaded[3] = 1;
+        rc |= expect_int("enter active key test scope", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+        dsd_scan_option_values row_options = {.present = DSD_SCAN_OPT_MUTE_DMR, .mute_dmr = 1};
+        (void)dsd_scan_mode_options(&opts, &state, &row_options);
+        dsd_key_set row = {.count = 8, .present = 1, .keyloader = 1};
+        row.entries = calloc(row.count, sizeof(*row.entries));
+        if (!row.entries) {
+            freeState(&state);
+            return 1;
+        }
+        const int offsets[] = {0, 0x101, 0x201, 0x301};
+        for (int slot = 0; slot < 2; ++slot) {
+            for (int segment = 0; segment < 4; ++segment) {
+                dsd_key_set_entry* entry = &row.entries[slot * 4 + segment];
+                entry->index = (uint32_t)((slot ? 11 : 7) + offsets[segment]);
+                entry->value = 17U + (uint64_t)slot * 4U + (uint64_t)segment;
+                entry->loaded = 1;
+            }
+        }
+        rc |= expect_true("enter populated CSV key row", dsd_scan_keys_enter(&state, &row));
+        state.payload_keyid = 7;
+        state.payload_keyidR = 11;
+        keyring_activate_slot(&opts, &state, 0);
+        keyring_activate_slot(&opts, &state, 1);
+        // The vocoder can have filled this derived AES buffer since row entry, too.
+        DSD_MEMSET(state.aes_key, 0x5a, sizeof state.aes_key);
+        rc |= expect_true("positive key activation marker", state.R == 17 && state.RR == 21 && state.A4[0] == 20
+                                                                && state.A4[1] == 24 && state.aes_key_segments[0] == 4
+                                                                && state.aes_key_segments[1] == 4);
+        dsd_key_set effective = {0}, baseline = {0}, after = {0};
+        rc |= expect_int("capture activated keys", dsd_key_set_capture(&effective, &state), 0);
+        rc |= expect_int("capture configured keys", dsd_key_set_copy(&baseline, &state.scan_keys_baseline), 0);
+        const uint64_t epoch = state.enc_lockout_key_epoch;
+        dsd_scan_settings configured;
+        dsd_scan_mode_configured(&opts, &state, &configured);
+        dsd_app_key_direct_payload key = {.key_type = type};
+        DSD_SNPRINTF(key.value, sizeof key.value, "%s",
+                     reject                         ? "invalid"
+                     : type == DSD_APP_KEY_TYPE_HEX ? "0000000000"
+                                                    : "0");
+        rc |= expect_int("post global key during active call",
+                         dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+        DSD_SECURE_ZERO(&key, sizeof key);
+        rc |= expect_int("drain global key during active call", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_true(reject ? "rejection preserves signalled KIDs" : "global edit preserves signalled KIDs",
+                          state.payload_keyid == 7 && state.payload_keyidR == 11);
+        rc |= expect_int("capture effective keys after command", dsd_key_set_capture(&after, &state), 0);
+        rc |= expect_true(reject ? "rejection preserves activated scalar and AES state"
+                                 : "global edit preserves activated scalar and AES state",
+                          dsd_key_set_equal(&effective, &after));
+        rc |= expect_true("row identity preserved",
+                          state.scan_keys_active_set && dsd_key_set_equal(&row, &state.scan_keys_active));
+        if (reject) {
+            rc |= expect_true("rejection preserves baseline", dsd_key_set_equal(&baseline, &state.scan_keys_baseline));
+            rc |= expect_true("rejection preserves epoch", state.enc_lockout_key_epoch == epoch);
+            dsd_scan_settings after_settings;
+            dsd_scan_mode_configured(&opts, &state, &after_settings);
+            rc |= expect_true("rejection preserves configured mutes",
+                              after_settings.dmr_mute_encL == configured.dmr_mute_encL
+                                  && after_settings.dmr_mute_encR == configured.dmr_mute_encR
+                                  && after_settings.unmute_encrypted_p25 == configured.unmute_encrypted_p25);
+        } else {
+            rc |= expect_true("accepted baseline edit bumps epoch", state.enc_lockout_key_epoch != epoch);
+            rc |= expect_true("global basic baseline overlay",
+                              state.scan_keys_baseline.scalars.K == (type == DSD_APP_KEY_TYPE_BASIC ? 0 : 23));
+            rc |= expect_true("global scalar baseline overlay",
+                              state.scan_keys_baseline.scalars.R == (type >= DSD_APP_KEY_TYPE_RC4 ? 0 : 83));
+            rc |= expect_true("global right baseline overlay",
+                              state.scan_keys_baseline.scalars.RR == (type == DSD_APP_KEY_TYPE_RC4 ? 0 : 89));
+        }
+        keyring_activate_slot(&opts, &state, 0);
+        keyring_activate_slot(&opts, &state, 1);
+        rc |= expect_true("next vocoder activation uses signalled row keys",
+                          state.R == 17 && state.RR == 21 && state.A4[0] == 20 && state.A4[1] == 24
+                              && state.aes_key_loaded[0] && state.aes_key_loaded[1]);
+        rc |= expect_true("active CSV keyloader retained", state.keyloader == 1);
+        rc |= expect_true("active row mute retained", opts.dmr_mute_encL == 1 && opts.dmr_mute_encR == 1);
+        dsd_key_set_free(&effective);
+        dsd_key_set_free(&baseline);
+        dsd_key_set_free(&after);
+        dsd_key_set_free(&row);
+        dsd_scan_keys_leave(&state);
+        dsd_scan_mode_leave(&opts, &state);
+        freeState(&state);
+    }
+    return rc;
+}
+
+struct restart_producer {
+    dsd_mutex_t mutex;
+    dsd_cond_t condition;
+    int phase;
+    int result[3];
+};
+
+static DSD_THREAD_RETURN_TYPE
+restart_producer_run(void* opaque) {
+    struct restart_producer* producer = opaque;
+    dsd_app_key_direct_payload key = {DSD_APP_KEY_TYPE_BASIC, "73"};
+    for (int phase = 0; phase < 3; ++phase) {
+        dsd_mutex_lock(&producer->mutex);
+        while (producer->phase != phase * 2 + 1) {
+            dsd_cond_wait(&producer->condition, &producer->mutex);
+        }
+        producer->result[phase] = dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key);
+        producer->phase++;
+        dsd_cond_signal(&producer->condition);
+        dsd_mutex_unlock(&producer->mutex);
+    }
+    DSD_SECURE_ZERO(&key, sizeof key);
+    DSD_THREAD_RETURN;
+}
+
+static void
+restart_producer_step(struct restart_producer* producer, int phase) {
+    dsd_mutex_lock(&producer->mutex);
+    producer->phase = phase * 2 + 1;
+    dsd_cond_signal(&producer->condition);
+    if (phase == 0) {
+        dsd_mutex_unlock(&producer->mutex);
+        dsd_app_frontend_runtime_stop();
+        dsd_mutex_lock(&producer->mutex);
+    }
+    while (producer->phase != phase * 2 + 2) {
+        dsd_cond_wait(&producer->condition, &producer->mutex);
+    }
+    dsd_mutex_unlock(&producer->mutex);
+}
+
+static int
+test_producer_stop_restart(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    struct restart_producer producer = {0};
+    dsd_mutex_init(&producer.mutex);
+    dsd_cond_init(&producer.condition);
+    dsd_thread_t thread;
+    dsd_app_frontend_runtime_start(&opts, &state);
+    int rc = expect_int("producer thread started", dsd_thread_create(&thread, restart_producer_run, &producer), 0);
+    if (!rc) {
+        restart_producer_step(&producer, 0);
+        dsd_app_frontend_runtime_stop();
+        restart_producer_step(&producer, 1);
+        dsd_app_frontend_runtime_start(&opts, &state);
+        rc |= expect_int("restart has no prior producer commands", dsd_app_drain_cmds(&opts, &state), 0);
+        restart_producer_step(&producer, 2);
+        dsd_thread_join(thread);
+        rc |= expect_true("racing producer is admitted or rejected",
+                          producer.result[0] == DSD_APP_COMMAND_SUBMIT_QUEUED
+                              || producer.result[0] == DSD_APP_COMMAND_SUBMIT_REJECTED);
+        rc |= expect_int("closed session rejects producer", producer.result[1], DSD_APP_COMMAND_SUBMIT_REJECTED);
+        rc |= expect_true("persistent producer submits to current session", producer.result[2] > 0);
+        rc |= expect_int("only current producer request drains", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_true("current request applied", state.K == 73);
+    }
+    dsd_app_frontend_runtime_stop();
+    dsd_cond_destroy(&producer.condition);
+    dsd_mutex_destroy(&producer.mutex);
+    freeState(&state);
+    return rc;
+}
+
+static int
+test_session_queue_cancellation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+    for (int failed = 0; failed < 2; ++failed) {
+        dsd_app_frontend_runtime_start(&opts, &state);
+        dsd_app_key_direct_payload key = {DSD_APP_KEY_TYPE_BASIC, "73"};
+        rc |= expect_true("session key accepted",
+                          dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key) > 0);
+        if (failed) {
+            opts.scanner_mode = 1;
+            opts.trunk_scan_enabled = 1;
+            rc |= expect_true("actual failed engine setup", dsd_engine_run_with_lifecycle(&opts, &state, NULL) != 0);
+            opts.scanner_mode = 0;
+            opts.trunk_scan_enabled = 0;
+        }
+        dsd_app_frontend_runtime_stop();
+        rc |= expect_true("stop or failure erases pending storage", dsd_app_command_test_storage_cleared());
+        rc |= expect_int("closed session rejects late key",
+                         dsd_app_command_submit(DSD_APP_CMD_KEY_DIRECT_SET, &key, sizeof key),
+                         DSD_APP_COMMAND_SUBMIT_REJECTED);
+        DSD_SECURE_ZERO(&key, sizeof key);
+        state.K = 19;
+        dsd_app_frontend_runtime_start(&opts, &state);
+        rc |= expect_int("restart has no stale commands", dsd_app_drain_cmds(&opts, &state), 0);
+        rc |= expect_true("restart keeps new system key", state.K == 19);
+        dsd_app_frontend_runtime_stop();
+    }
+    freeState(&state);
+    DSD_SECURE_ZERO(&state, sizeof state);
+    return rc;
+}
+
+static int
+test_export_disposal(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+
+    struct {
+        uint64_t context;
+        unsigned int generation;
+    } request = {0};
+
+    /* Use byte offsets because the flexible wire member can precede tail padding. */
+    unsigned char wire[offsetof(dsd_app_tg_export_payload, path) + 1024] = {0};
+    dsd_tg_policy_table_version(&state, &request.context, &request.generation);
+    DSD_MEMCPY(wire + offsetof(dsd_app_tg_export_payload, policy_context), &request.context, sizeof request.context);
+    DSD_MEMCPY(wire + offsetof(dsd_app_tg_export_payload, policy_generation), &request.generation,
+               sizeof request.generation);
+    char path[1024];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "cancelled_export");
+    if (fd < 0) {
+        dsd_app_frontend_runtime_stop();
+        freeState(&state);
+        return expect_true("export temporary path available", 0);
+    }
+    dsd_close(fd);
+    DSD_SNPRINTF((char*)wire + offsetof(dsd_app_tg_export_payload, path),
+                 sizeof wire - offsetof(dsd_app_tg_export_payload, path), "%s", path);
+    remove(path);
+    for (int cancel = 0; cancel < 2; ++cancel) {
+        dsd_app_frontend_runtime_start(&opts, &state);
+        dsd_app_tg_export_result before = {0}, after = {0};
+        dsd_app_tg_export_result_get(&before);
+        rc |= expect_true("export accepted before disposal",
+                          dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, wire, sizeof wire) > 0);
+        if (cancel) {
+            dsd_app_frontend_runtime_stop();
+        } else {
+            for (int i = 0; i < 127; ++i) {
+                post_empty(DSD_APP_CMD_TOGGLE_COMPACT);
+            }
+        }
+        dsd_app_tg_export_result_get(&after);
+        rc |= expect_true("discarded export completes as failure", after.sequence > before.sequence && !after.success);
+        rc |= expect_true("discarded export remains identifiable", after.policy_context == request.context
+                                                                       && after.policy_generation == request.generation
+                                                                       && strcmp(after.path, path) == 0);
+        rc |= expect_str("discarded export preserves path", opts.group_in_file, "");
+        FILE* file = fopen(path, "rb");
+        rc |= expect_true("discarded export writes no file", !file);
+        if (file) {
+            fclose(file);
+        }
+        dsd_app_drain_cmds(&opts, &state);
+        dsd_app_frontend_runtime_stop();
+    }
+    freeState(&state);
+    return rc;
+}
+
+static int
+expect_file_bytes(const char* path, const char* expected) {
+    char contents[1024] = {0};
+    FILE* file = dsd_fopen_existing_regular_file(path, "rb");
+    if (!file) {
+        return 1;
+    }
+    const size_t bytes = fread(contents, 1, sizeof contents - 1U, file);
+    const int failed = ferror(file) || bytes != strlen(expected) || strcmp(contents, expected) != 0;
+    fclose(file);
+    return expect_true("group file bytes unchanged", !failed);
+}
+
+static int
+test_temporary_lockout_commands(uint8_t slot) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsd_temporary_tg");
+    if (fd < 0) {
+        freeState(&state);
+        return 1;
+    }
+    dsd_close(fd);
+    char export_path[DSD_TEST_PATH_MAX];
+    const int export_fd = dsd_test_mkstemp(export_path, sizeof export_path, "dsd_temporary_tg_export");
+    if (export_fd < 0) {
+        freeState(&state);
+        remove(path);
+        return 1;
+    }
+    dsd_close(export_fd);
+    const char* csv = "id,mode,name,notes\n123,A,Dispatch,keep this unmodeled note\n456,A,EMS,note\n";
+    int rc = write_file_bytes(path, csv, strlen(csv));
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", path);
+    rc |= expect_int("import temporary fixture", dsd_tg_policy_reload_group_file(&opts, &state), 0);
+    dsd_call_observation observation = {.protocol = DSD_SYNC_P25P1_POS,
+                                        .slot = slot,
+                                        .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                        .ota_target_id = 123,
+                                        .policy_target_id = 123,
+                                        .ota_source_id = 1,
+                                        .observed_m = 1.0};
+    rc |= expect_int("seed lockout call", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(&opts, &state, slot);
+    rc |= expect_true("queue temporary preference", dsd_app_command_set_i32(DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET, 0) > 0);
+    rc |= expect_true("queue temporary slot lockout", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, slot) > 0);
+    rc |= expect_true("queue persistent preference after lockout",
+                      dsd_app_command_set_i32(DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET, 1) > 0);
+    rc |= expect_int("FIFO preference and lockout drain", dsd_app_drain_cmds(&opts, &state), 3);
+    rc |= expect_true("preference only affects subsequent commands",
+                      opts.persist_tg_lockouts && dsd_tg_policy_session_avoid_contains(&state, 123));
+    rc |= expect_file_bytes(path, csv);
+    rc |= expect_true("invalid persistence queued", dsd_app_command_set_i32(DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET, 2) > 0);
+    rc |= expect_int("invalid persistence drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("invalid persistence unchanged", opts.persist_tg_lockouts == 1);
+    dsd_tg_policy_lookup lookup;
+    rc |= expect_int("lookup original row", dsd_tg_policy_lookup_id(&state, 123, &lookup), 0);
+    rc |= expect_str("temporary avoid preserves saved mode", lookup.entry.mode, "A");
+    rc |= expect_str("temporary avoid preserves label", lookup.entry.name, "Dispatch");
+
+    // An ordinary edit persists, but must not serialize the temporary overlay.
+    dsd_app_tg_listen_payload block = {456, 456, 0};
+    rc |= expect_true("queue permanent list edit", dsd_app_command_set_tg_listen(&block) > 0);
+    rc |= expect_int("permanent list edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(path, "id,mode,name\n123,A,Dispatch\n456,B,EMS\n");
+    rc |= expect_true("edit keeps temporary avoid", dsd_tg_policy_session_avoid_contains(&state, 123));
+
+    // Export uses the same canonical writer even when its source snapshot has avoids.
+    union {
+        max_align_t alignment;
+        unsigned char bytes[1200];
+    } storage = {0};
+
+    dsd_app_tg_export_payload* export = (dsd_app_tg_export_payload*)storage.bytes;
+    dsd_tg_policy_table_version(&state, &export->policy_context, &export->policy_generation);
+    DSD_SNPRINTF(export->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", export_path);
+    rc |= expect_true("export temporary policy queued",
+                      dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, export,
+                                             offsetof(dsd_app_tg_export_payload, path) + strlen(export_path) + 1U)
+                          > 0);
+    rc |= expect_int("export temporary policy drained", dsd_app_drain_cmds(&opts, &state), 1);
+    dsd_app_tg_export_result result;
+    rc |= expect_true("export reports successful write", dsd_app_tg_export_result_get(&result) && result.success);
+    rc |= expect_str("export reports new destination", result.path, export_path);
+    rc |= expect_file_bytes(export_path, "id,mode,name\n123,A,Dispatch\n456,B,EMS\n");
+    rc |= expect_file_bytes(path, "id,mode,name\n123,A,Dispatch\n456,B,EMS\n");
+
+    uint64_t context = 0;
+    dsd_tg_policy_table_version(&state, &context, NULL);
+    const uint64_t wrong_context = context + 1U;
+    rc |= expect_true("stale clear queued",
+                      dsd_app_command_submit(DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, &wrong_context, sizeof wrong_context)
+                          > 0);
+    rc |= expect_int("stale clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("stale clear preserves avoids", dsd_tg_policy_session_avoid_contains(&state, 123));
+    (void)dsd_enc_lockout_note(&state, 789, 1, 0x84, 1);
+    rc |= expect_true("current clear queued",
+                      dsd_app_command_submit(DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, &context, sizeof context) > 0);
+    rc |= expect_int("current clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("current clear removes temporary avoid", !dsd_tg_policy_session_avoid_contains(&state, 123));
+    rc |= expect_true("clear retains encryption lockout", dsd_enc_lockout_lookup(&state, 789, 1, NULL));
+    rc |= expect_file_bytes(path, "id,mode,name\n123,A,Dispatch\n456,B,EMS\n");
+    rc |= expect_int("reloaded file", dsd_tg_policy_reload_group_file(&opts, &state), 0);
+    dsd_tg_policy_decision decision;
+    rc |= expect_true("temporary TG receives again",
+                      dsd_tg_policy_evaluate_group_call(&opts, &state, 123, 1, 0, 0, &decision) == 0
+                          && decision.tune_allowed);
+    rc |= expect_true("saved block remains",
+                      dsd_tg_policy_evaluate_group_call(&opts, &state, 456, 1, 0, 0, &decision) == 0
+                          && !decision.tune_allowed);
+    freeState(&state);
+    remove(path);
+    remove(export_path);
+    return rc;
+}
+
+static int
+test_config_group_path_reloads_before_persist(int scoped) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char first[DSD_TEST_PATH_MAX], second[DSD_TEST_PATH_MAX], missing[DSD_TEST_PATH_MAX];
+    const int first_fd = dsd_test_mkstemp(first, sizeof first, "dsd_config_groups_a");
+    const int second_fd = dsd_test_mkstemp(second, sizeof second, "dsd_config_groups_b");
+    const int missing_fd = dsd_test_mkstemp(missing, sizeof missing, "dsd_config_groups_missing");
+    if (first_fd < 0 || second_fd < 0 || missing_fd < 0) {
+        return 1;
+    }
+    dsd_close(first_fd);
+    dsd_close(second_fd);
+    dsd_close(missing_fd);
+    remove(missing);
+    const char* a = "id,mode,name\n111,A,First\n";
+    const char* b = "id,mode,name\n222,A,Second\n";
+    int rc = write_file_bytes(first, a, strlen(a));
+    rc |= write_file_bytes(second, b, strlen(b));
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", first);
+    rc |= expect_int("config seed first groups", dsd_tg_policy_reload_group_file(&opts, &state), 0);
+    rc |= expect_int("config seed old avoid", dsd_tg_policy_session_avoid_add(&state, 111), 0);
+    dsd_scan_row_profile* row = NULL;
+    dsd_key_set keys = {0};
+    if (scoped) {
+        dsd_scan_options parsed = {0};
+        parsed.values.present = DSD_SCAN_OPT_GROUP;
+        DSD_SNPRINTF(parsed.values.group_file, sizeof parsed.values.group_file, "%s", second);
+        rc |= expect_int("config load row groups", dsd_scan_profile_load(&parsed, 0, &row, &keys), 0);
+        rc |= expect_int("config begin row scope", dsd_scan_groups_begin(&state), 0);
+        dsd_scan_groups_enter(&state, row);
+        rc |= expect_int("config seed row avoid", dsd_tg_policy_session_avoid_add(&state, 777), 0);
+    }
+    dsdneoUserConfig cfg = {0};
+    cfg.has_trunking = 1;
+    cfg.trunk_persist_tg_lockouts = 1;
+    DSD_SNPRINTF(cfg.trunk_group_csv, sizeof cfg.trunk_group_csv, "%s", second);
+    rc |= expect_true("config new groups queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("config new groups drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("config new groups path", opts.group_in_file, second);
+    if (scoped) {
+        rc |= expect_true("config preserves active row avoid", dsd_tg_policy_session_avoid_contains(&state, 777));
+        dsd_scan_groups_leave(&state);
+    }
+    rc |= expect_int("config resets old avoids", (int)dsd_tg_policy_session_avoid_count(&state, 0, UINT32_MAX), 0);
+    dsd_app_tg_listen_payload edit = {222, 222, 0};
+    rc |= expect_true("config persisted edit queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("config persisted edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(first, a);
+    rc |= expect_file_bytes(second, "id,mode,name\n222,B,Second\n");
+
+    rc |= expect_int("config seed retained avoid", dsd_tg_policy_session_avoid_add(&state, 222), 0);
+    rc |= expect_true("config unchanged groups queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("config unchanged groups drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("config unchanged path retains avoid", dsd_tg_policy_session_avoid_contains(&state, 222));
+    DSD_SNPRINTF(cfg.trunk_group_csv, sizeof cfg.trunk_group_csv, "%s", missing);
+    cfg.trunk_persist_tg_lockouts = 0;
+    rc |= expect_true("config missing groups queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("config missing groups drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("config failure retains groups path", opts.group_in_file, second);
+    rc |= expect_true("config failure retains avoid", dsd_tg_policy_session_avoid_contains(&state, 222));
+    rc |= expect_int("config failure does not apply remaining options", opts.persist_tg_lockouts, 1);
+    rc |= write_file_bytes(missing, a, strlen(a));
+    edit.listen = 1;
+    rc |= expect_true("config edit after failure queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("config edit after failure drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(missing, a);
+    rc |= expect_file_bytes(second, b);
+    // A failed explicit import must preserve the same table/path pairing as a failed config load.
+    remove(missing);
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, missing);
+    rc |= expect_int("explicit missing import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("explicit missing import keeps destination", opts.group_in_file, second);
+    rc |= expect_true("explicit missing import keeps avoid", dsd_tg_policy_session_avoid_contains(&state, 222));
+    dsd_scan_profile_free(row);
+    dsd_key_set_free(&keys);
+    freeState(&state);
+    remove(first);
+    remove(second);
+    remove(missing);
+    return rc;
+}
+
 int
 main(void) {
-    int rc = 0;
+    int rc = test_session_queue_cancellation();
+    rc |= test_producer_stop_restart();
+    rc |= test_export_disposal();
+    rc |= test_direct_key_preserves_active_keyring(0);
+    rc |= test_direct_key_preserves_active_keyring(1);
+    rc |= test_direct_key_and_force_scope();
+    rc |= test_direct_key_updates_preserve_fifo();
+    rc |= test_coalesced_setter_erases_old_tail();
+    rc |= test_foundation_commands();
+    rc |= test_talkgroup_list_commands();
+    rc |= test_config_group_path_reloads_before_persist(0);
+    rc |= test_config_group_path_reloads_before_persist(1);
+    rc |= test_temporary_lockout_commands(0);
+    rc |= test_temporary_lockout_commands(1);
+    rc |= test_talkgroup_row_commands();
+    rc |= test_talkgroup_export_result();
+    rc |= test_source_alias_commands();
+    rc |= test_scoped_direct_key_mutes();
+    rc |= test_scoped_row_option_commands();
+    rc |= test_scoped_setting_toggles();
+    rc |= test_scoped_mode_commands_and_config();
     rc |= test_command_api();
     rc |= test_manual_tune_queue_semantics();
     rc |= test_setter_coalescing_preserves_fifo_boundaries();
@@ -2123,6 +3770,9 @@ main(void) {
     rc |= test_scan_voice_gate_commands();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
+    rc |= test_lockout_hands_p25_sm_back_to_cc(1);
+    rc |= test_lockout_hands_p25_sm_back_to_cc(0);
+    rc |= test_channel_cycle_hands_p25_sm_back_to_cc();
 #ifdef USE_RADIO
     rc |= test_manual_tune_trunking_gate_and_reacquisition();
 #endif

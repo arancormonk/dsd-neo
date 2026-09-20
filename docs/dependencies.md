@@ -74,6 +74,13 @@ and pacman bootstrap paths. Overlay ports, CI source checkouts, and validation
 container images must use immutable source references and hashes as described in
 `docs/supply-chain-guardrails.md`.
 
+AppImage's pinned libcrypto tracks OpenSSL 3.5 LTS (supported through April 2030),
+independently of the vcpkg registry's OpenSSL version. Keep each runtime's
+`libssl` and `libcrypto` compatible: a newer `libssl.so.3` can require symbols
+that an older `libcrypto.so.3` does not provide despite the shared major version.
+The AppImage CMake installer stays on 3.31 because pinned SoapySDR and AppImage
+helper sources still declare policy versions rejected by CMake 4.
+
 ## Tooling Dependencies
 
 CI and local quality tools are tracked through:
@@ -82,7 +89,7 @@ CI and local quality tools are tracked through:
 - `.github/requirements/*.txt`
 - `.github/dependabot.yml`
 - `.github/workflows/*.yml`
-- `tools/*.sh`
+- `tools/*.sh` and `tools/lib/*.sh`
 
 Hashed Python requirements are used where Python tooling is installed in CI.
 GitHub Actions are pinned to immutable commit SHAs by policy.
@@ -116,3 +123,5 @@ Dependency updates should:
 - run `tools/osv_scan.sh`
 - receive human review when they affect compiled code, workflows, packaging, or
   release behavior
+
+Native Airspy R2/Mini support is optional (`DSD_ENABLE_AIRSPY`, `DSD_REQUIRE_AIRSPY`) and uses libairspy directly. Install `libairspy-dev` on Debian/Ubuntu or `airspy` with Homebrew. Windows uses the pinned overlay; Android builds the vendored driver against its shared libusb. See [Airspy](airspy.md).

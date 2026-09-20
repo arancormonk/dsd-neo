@@ -12,7 +12,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
-- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 targets; use `-fa` for mixed lists with NXDN), `-C chan.csv`, `-G group.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`
+- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 trunk and conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
@@ -29,10 +29,11 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Follow DMR trunking (TCP PCM input + rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv --frontend terminal`
 - Follow DMR trunking (RTL‑SDR): `dsd-neo -fs -i rtl:0:450M:26:-2:48:0:2 -T -C connect_plus_chan.csv -G group.csv --frontend terminal`
 - Follow DMR trunking (SoapySDR): `dsd-neo -fs -i soapy:driver=airspy -T -C connect_plus_chan.csv -G group.csv --frontend terminal`
-- Scan several P25/DMR/NXDN targets with one tuner: `dsd-neo -fa -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal` (`-ft` is enough when the list has no NXDN targets; `-fn` for NXDN96-only lists, `-fi` for NXDN48-only lists, `-fa` whenever both NXDN rates appear)
+- Scan several P25/DMR/NXDN targets with one tuner: `dsd-neo -fa -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal` (each target selects its own decoder class, so the global preset only matters outside trunk scan)
 - Capture RTL I/Q + metadata: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq --frontend terminal`
 - Inspect a capture: `dsd-neo --iq-info p25-control.iq.json`
 - Replay a capture through demod: `dsd-neo --iq-replay p25-control.iq.json -f1 --frontend terminal`
+- Replay with separate talkgroup and source radio names: `dsd-neo --iq-replay p25-control.iq.json -f1 -G examples/group.csv --src-csv examples/src.csv --frontend terminal`
 - Play saved MBE files: `dsd-neo -r *.mbe`
 - Decode MBE to a WAV (no speaker output): `dsd-neo -o null -w decoded.wav -r call.mbe`
 
@@ -111,7 +112,11 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 - `--frontend terminal` Use the terminal UI (`-N` is the supported short alias)
 - `--frontend native` remains accepted and maps to headless mode. The retired native provider was a non-rendering
   scaffold; this keeps existing invocations working without restoring its provider/threading layer.
-- `-Z` Log MBE/PDU payloads to the console (verbose), including encrypted P25 voice frames when media is gated
+- `-Z` Log MBE/PDU payloads to stderr (verbose), including encrypted P25 voice frames when media is gated.
+  With `--frontend terminal` / `-N`, redirect stderr to capture them:
+  `dsd-neo -Z --frontend terminal 2> console_log.txt`. The terminal frontend suppresses stderr when it is a TTY
+  to protect the screen, and warns before opening the UI if payload logging is enabled without a redirect.
+  Already-redirected stderr is preserved; `--frontend none -Z` leaves console payload output visible.
 - `--frame-log <file>` Append one-line timestamped frame traces (separate from event log)
 - `--p25-sm-log <file>` Append one-line P25 state-machine decision diagnostics (separate from stdout/stderr, event log, and frame log)
 - `-O` List PulseAudio input sources and output sinks
@@ -199,6 +204,18 @@ Windows console runs:
 - `--rdio-upload-retries <n>` API upload attempts per call (default 1)
 - `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload
 - `-r <files>` Play saved MBE files
+  SDRTrunk JSON exports support P25, DMR, and NXDN enhanced-half-rate voice. NXDN playback accepts clear voice,
+  the 15-bit scrambler, DES-OFB, and AES-256-OFB; use `-R`, `-1`, or `-H`, respectively, or a key CSV indexed by
+  the recorded key ID. For an encrypted NXDN scrambler export without algorithm metadata, use `-4 -R <key>`.
+  DES/AES require a recorded 64-bit `encryption_mi`; an absent IV is not guessed. SACCH tags align the scrambler
+  to each 16-frame superframe and DES/AES to their 32-frame sessions. Exports that omit the positions of
+  FACCH-stolen voice within an RF frame cannot fully reconstruct that frame's keystream alignment.
+  NXDN full-rate voice is not supported by this reader.
+  DMR AES-128/AES-256 exports use ALGID `0x24`/`0x25` and a 32-bit MI. For metadata-free DMR exports, use
+  `-H '<key>' --dmr-force-algid 24` (or `25`); audio remains muted until a Golay/CRC-verified late-entry MI
+  supplies the next superframe's context. For example:
+  `dsd-neo -o null -w decoded.wav -H '<key>' --dmr-force-algid 25 -r call.mbe`.
+  These are known-key playback modes, not key recovery.
 - `-c <file>` Save symbol captures to a .bin file
 - `--symbol-capture-format <soft|legacy>` Select the current soft/v2 writer. `legacy` remains accepted as an alias; it
   does not reactivate the removed one-byte writer.
@@ -215,12 +232,22 @@ Windows console runs:
   appends a `Reacquired:` continuation carrying the stamp of the row it extends. While scanning a `-Y` list
   or rotating `--trunk-scan` targets, each line names the channel it was heard on in brackets between the
   timestamp and the protocol token; lines from a receiver that is not scanning a named channel are unchanged.
+  In the terminal, `\` cycles Slot 1 / Slot 2 / Slots 1+2; the merged view tags DMR base-station,
+  P25 Phase 2 and X2-TDMA rows `[S1]`/`[S2]`, while FDMA rows carry no slot tag.
+  DMR and P25 Phase 1 data accepted with a failed header, packet, or confirmed-block CRC under `-F`
+  carry `[CRC ERR]` after the timestamp, on both the event and its detail lines. History exposes these
+  as warnings. Strict CRC mode does not publish these failed data PDUs, including MNIS, UDT and
+  encrypted-PDU notices. DMR's separate relaxed-CRC configuration follows the same marking policy.
+  Suspected RAS voice events also retain the marker through delayed commits and reacquisition.
+  The marker means a CRC check failed, not that every decoded field is wrong: RAS can intentionally
+  alter the check. Absence of the marker is not a universal verification guarantee for every protocol.
 
   ```text
   2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: 00050061; SRC: 00001234;
   2026-04-30 09:12:04 Talker Alias: ENGINE 12
   2026-04-30 09:12:11 TMS SRC: 1234; DST: 42; Slot 1;
   2026-04-30 09:12:11 Text: MEET AT THE NORTH GATE
+  2026-04-30 09:12:15 [CRC ERR] MNIS TGT: 42; SRC: 1234; IP ID: 5501;
   2026-04-30 09:12:20 DMR TGT: 00000100; SRC: 00000000; Slot 1;
   2026-04-30 09:12:20 Reacquired: DMR TGT: 00000100; SRC: 00004321; Slot 1;
   ```
@@ -431,7 +458,7 @@ Notes
 - Disable DMR/dPMR/NXDN/M17 input filtering: `-l`
 - Analog filter bitmap (advanced): `-v <hex>` (bitmask for HPF/LPF/PBF)
 - Modulation optimizations: `-ma` (auto), `-mc` (C4FM), `-mg` (GFSK), `-mq` (QPSK), `-m2` (P25p2 QPSK 6000 sps)
-- Relax CRC checks: `-F` (P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT). No effect on NXDN, which always requires
+- Relax CRC checks: `-F` (P25p1 data, P25p2 MAC_SIGNAL, DMR RAS/CRC, M17 LSF/PKT). No effect on NXDN, which always requires
   CRC-verified content (see the NXDN note under "Modes & Decoders" above).
 - M17 signed voice-stream verification: `--m17-signature-public-key <hex>` accepts a 64-byte secp256r1 public key as
   raw `X||Y` hex.
@@ -444,36 +471,90 @@ Notes
 
 ## Trunking & Scanning
 
+Quick talkgroup lockouts (`!`/`@` in the terminal and **Skip** in Qt/Android) save to the configured global
+groups file by default. Use `--tg-lockout-session` to keep them temporary, or `--tg-lockout-persist` to select
+the default saving behavior explicitly. The equivalent configuration key is `[trunking] persist_tg_lockouts`.
+The terminal **Save user TG lockouts** menu and Qt/Android **Settings → Listening → Save skipped talkgroups**
+change this preference immediately for subsequent lockouts and preserve it through their normal settings save.
+
+Temporary avoids block tuning, audio, recording and streaming without modifying the saved list. Explicit list
+edits still save, and exports omit temporary avoids. Use **Clear temporary TG avoids — current list** to undo
+them in the current scope. They also clear on list reload/replacement or decoder stop; ordinary retunes and
+scan visits preserve them. Scan rows with their own lists stay isolated; rows using the global list share its
+avoids. Changing the persistence setting does not change the lifetime of existing blocks.
+
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`
-- Conventional scan mode: `-Y` (not trunking; scans for sync on enabled decoders). For NXDN the hold is refreshed
+- Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). For NXDN the hold is refreshed
   only by frames whose content passed a CRC, so an open squelch on an empty channel no longer parks the scan.
   A channel map with a `name` column (see `docs/csv-formats.md`) names the row being listened to in the Scan Mode
-  row, in Call Info, and on the event history rows recorded while it is tuned. A map with `keys_hex_csv`/`keys_dec_csv`
-  columns loads a per-row key set instead of the global keyring while that row is tuned; leaving `-Y` (scanner
-  toggle, trunk set, tuner release) hands the foreground keyring back to the global keys.
+  row, in Call Info, and on the event history rows recorded while it is tuned. A map can load a per-row key set from
+  `keys_hex_csv`/`keys_dec_csv`, or embed `-b`/`-H` equivalents in `single_key_dec`/`single_key_hex`; leaving `-Y`
+  (scanner toggle, trunk set, tuner release) hands the foreground keyring back to the global keys. A row may not mix
+  direct and file sources.
   While scanning, the terminal's Trunking menu and hotkeys hold the scan on the channel on air (`Y`), avoid it for the
   rest of the session (`b`), step to the next channel (`L`, skipping avoided rows) and clear all avoids; see
   `docs/ui-terminal.md`.
   Voice-only scan: `--scan-voice-only` steps on unless decoded voice frames hold the row. `--scan-voice-qualify-ms
   <100..600000>` (default `1000`) is the window after sync in which voice must appear or the scan moves on;
   `--scan-voice-hold-ms <100..600000>` (default `2000`) is the time to stay after the last voice frame. Encrypted
-  voice without a key holds unless the talkgroup policy blocks it; unknown identity counts as voice.
+  voice without a key holds unless the talkgroup policy blocks it; unknown identity counts as voice. The last-media
+  time survives an over-the-air terminator, so the full hold still runs when a protocol closes the call before the
+  scanner's next tick.
+  Per-visit ceiling: `--scan-max-visit-ms <ms>` (also `--scan-max-visit-ms=<ms>`; `0` disables, otherwise
+  `1000..3600000`; default `0`) is the longest one visit to a row may last, with or without `--scan-voice-only`. It is a
+  ceiling, not a reason to stay, so it can cut an ongoing call short: that is the point on an open microphone, and why
+  it is off by default. The clock starts when the row parks and starts again from zero on every re-park; sync, decoded
+  voice, the voice-gate hold and the `-t` hangtime never restart it. Expiry hops only while at least two rows are usable
+  (a non-zero frequency, not avoided); with fewer the limit re-arms instead of firing, so a one-row list is unaffected
+  and a row that becomes usable later gets a full limit rather than an immediate hop. A `Y` hold suspends the limit and
+  releasing it starts a fresh full limit, not the remainder; an `-I` talkgroup hold suspends it only while the call
+  being followed matches the held talkgroup, and the limit runs again from zero once that call ends. Other calls on the
+  row are still capped. Suspensions observed across stalled input restart at the first eligible decoder tick;
+  operator hold release restarts at the command. A typed row can carry its own `--scan-max-visit-ms <ms>` in the
+  `options` column, where `0` exempts that row; legacy untyped rows apply row keys but not row options, so they always
+  use the global value. A failed legacy hop keeps the row and restarts the visit and qualification windows so decoding
+  can resume before another attempt. Two caveats on legacy lists: a row whose frequency also appears on the next row
+  "hops" to the same frequency, ending the call as an explicit hop rather than moving the receiver, and a low `-t`
+  already steps a quiet row about a second after
+  its last sync, so the cap only changes what happens on a row that keeps syncing.
+  Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`, `nxdn48`, `dpmr`, `dstar`, `ysf`, or `m17` for
+  each row. See [the mixed-mode example](../examples/conventional_scan_modes.csv). Declared rows work even when
+  excluded by the global preset; blank rows inherit it. Modes take effect at the first scheduled row entry, including
+  manual `L` cycling. Existing dwell and voice-hold defaults remain unchanged.
+  The open audio sink retains its rate/channel count while logical DMR slot decoding may change. Global mode and
+  modulation commands update the saved configuration, and exiting scanning restores it.
+  Blank-mode rows retain that saved configuration while AUTO hunts. Loading a configuration that disables scanning
+  releases the row's decoder and keys. A manual frequency setting exits a typed scan and reports that in its status
+  message; legacy untyped scans retain their existing manual-tune behavior. Manual `L` skips zero-frequency placeholders,
+  while automatic scanning continues to park on them for the configured dwell.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
-  - Rotates one tuner across CSV-defined P25 trunk, DMR trunk, DMR conventional, NXDN trunk, NXDN96 conventional
+  - Rotates one tuner across CSV-defined P25 trunk, P25 conventional (`p25-conventional`), DMR trunk, DMR
+    conventional, NXDN trunk (`nxdn-trunk` NXDN96, `nxdn48-trunk` NXDN48), NXDN96 conventional
     (`nxdn-conventional`) and NXDN48 conventional (`nxdn48-conventional`) targets. Full guide: `docs/trunk-scan.md`.
   - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`.
-  - Use per-target `chan_csv` (and `p25_bandplan_csv`) entries in the target CSV; global `-C` and `--p25-bandplan`
-    are rejected in this mode. Targets that are sites of one P25 system (same WACN/SYS) share the band plan one of
-    them learned over the air.
+  - Use per-target `chan_csv` (and `p25_bandplan_csv`) entries in the target CSV; leave both empty on conventional
+    rows, including `p25-conventional`. Global `-C` and `--p25-bandplan` are rejected in this mode. P25 trunk targets
+    that are sites of one system (same WACN/SYS) share the band plan one of them learned over the air.
   - Optional per-target `modulation` and `rtl_gain` columns can override demod hints and RTL-family tuner gain for the
-    active target. Optional `keys_hex_csv`/`keys_dec_csv` columns load a per-target key set while the target is
-    parked; leaving the target restores the global keys.
+    active target. Both P25 types accept `auto`, `c4fm`, or `cqpsk`. Optional `keys_hex_csv`/`keys_dec_csv` columns load a per-target key set, while
+    `single_key_dec`/`single_key_hex` embed `-b`/`-H` equivalents; a target cannot mix direct and file key sources.
+    Leaving the target restores the global keys.
   - Idle dwell: `--trunk-scan-dwell-ms <250..600000>` (default `3000`).
-  - Conventional DMR/NXDN activity hold (both NXDN rates): `--trunk-scan-activity-hold-ms <250..600000>`
+  - Conventional DMR/P25/NXDN activity hold (both NXDN rates): `--trunk-scan-activity-hold-ms <250..600000>`
     (default `1200`).
-  - Voice-only scan (`--scan-voice-only` with the qualify/hold flags above): conventional targets hold only from
+  - Maximum time per visit: `--scan-max-visit-ms <ms>` (`0` disables, otherwise `1000..3600000`; default `0`).
+    Unlike the activity hold above it applies to every target type, trunked and conventional, and it is a ceiling
+    rather than a reason to stay: it can cut an ongoing call short, which is the point on a busy system that would
+    otherwise starve the rest of the list. A target's `options` column can override it, and `0` there exempts that
+    target. Full rules in `docs/trunk-scan.md`.
+  - `p25-conventional` parks without a trunking state machine and holds after voice starts allowed by the
+    group/private and encrypted-call policy. PDU data never refreshes its hold, so `-e` has no effect on that row.
+    Phase 1 decode captures are available for replay checks, not proof of on-air target holds; Phase 2 conventional
+    parking is untested on air.
+  - Voice-only scan (`--scan-voice-only`): conventional targets hold only from
     decoded voice, with `dwell_ms` as the qualify window and `activity_hold_ms` as the hold; trunked targets are
-    unchanged (control-only rotates after dwell) and show no `Voice:` marker on the status line.
+    unchanged (control-only rotates after dwell) and show no `Voice:` marker on the status line. A conventional
+    target shows `VOICE` while its call is active and `TAIL` after the call ends while the hold remains.
   - Cannot be combined with conventional `-Y` scan mode or IQ replay.
   - Single-tuner limitation: systems not currently parked can be missed while another target is being monitored.
 - Channel map CSV: `-C <file>` (e.g., `connect_plus_chan.csv`). The channel column takes decimal, `0x2A46` hex, or
@@ -485,6 +566,9 @@ Notes
   tables learned this run (every target's under `--trunk-scan`, tagged with their WACN/SYS) in the same format, so
   the next run can load them with `--p25-bandplan`. The terminal menu has the same action live.
 - Group list CSV (allow/block + labels, optional `priority/preempt/audio/record/stream` policy columns): `-G <file>`
+- Source ID list CSV (radio ID names, labels only): `--src-csv <file>` (also `--src-csv=<file>`); format in
+  `docs/csv-formats.md`, starter in `examples/src.csv`. Source names prefer this list, then the group list's exact
+  row; OTA alias text is unchanged. Loads regardless of trunking and is allowed with `--trunk-scan`.
 - CSV formats and examples: `docs/csv-formats.md` and `examples/`
 - Use group list as allow/whitelist: `-W`
 - Tune controls: `-E` disable group calls, `-p` disable private calls, `-e` enable data calls, `--enc-lockout`
@@ -506,6 +590,17 @@ Notes
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode)
 - Hang time after voice/sync loss (seconds): `-t <secs>`
+  - This is not the idle dwell between `--trunk-scan` targets. DMR control/rest-channel acquisition has its own
+    two-second window; use target `dwell_ms` to budget each visit. See [trunk-scan timing](trunk-scan.md).
+  - Hangtime and dwell decide when a quiet channel is done; `--scan-max-visit-ms` ends a visit that is not done, so
+    neither substitutes for the other.
+  - Under `-Y` without `--scan-voice-only`, the terminal's `Scan Timing` row counts down to the first whole-second
+    tick when the time since the last sync exceeds `-t`. The `Scan Mode` row shows the configured `-t` value;
+    the countdown total is `floor(-t) + 1` seconds. For example, `-t 6` shows `Hangtime: 6.00 sec` above a
+    countdown with a `7.0s` total, while `-t 0` shows `0.00 sec` above a `1.0s` total. These describe the setting
+    and the scanner's timing window, respectively. The one-second window for `-t 0` means waiting for the next
+    clock-second boundary, not a guaranteed full second of silence after the last sync. NXDN holds the scan two
+    extra seconds after each confirmed frame, so its countdown can initially exceed the displayed total.
   - P25 Talk Complete, TDU, TDULC, MAC_END_PTT, MAC_IDLE, and MAC_HANGTIME mark a transmission boundary. They close
     that slot's media and start or refresh the traffic-carrier inactivity timer without returning to the control
     channel. A follow-up PTT/ACTIVE on the retained carrier opens a clean call epoch without retuning.
@@ -529,6 +624,16 @@ Notes
   - Env (priority preemption):
     - `DSD_NEO_TG_PREEMPT_MIN_DWELL_MS=<ms>` — minimum active call dwell before displacement (default `750`)
     - `DSD_NEO_TG_PREEMPT_COOLDOWN_MS=<ms>` — cooldown between displacement attempts (default `1000`)
+
+During single-system P25 trunking, **Input > RTL-SDR > Frequency** selects a new control channel and keeps trunk
+following enabled. This also works in mixed `-ft` mode when P25 is active, including after sync loss on a learned
+P25 control channel. An accepted tune ends current calls and relearns the NAC and site, while preserving explicit
+identity/modulation overrides, same-network band plans (including `--p25-bandplan`), channel mappings, groups, and keys.
+Subsequent calls return to the newly selected channel.
+A failed or deferred request leaves the previous channel and calls intact; retry a deferred request. Pending tunes
+receive the configured CC acquisition grace after hardware completion. If completion fails, hunting retries the
+selected channel. Old site candidates are discarded; disk candidates require a freshly learned site and its own
+cache file. Direct frequency changes are disabled during `--trunk-scan`, whose target list controls tuning.
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
@@ -635,16 +740,20 @@ Examples
 ## Keys & Privacy (advanced)
 
 By default, DSD-neo redacts radio keys and keystream material in logs and terminal status. Add `--show-keys` to reveal
-those values for the current CLI run only.
+those values for the current CLI run only. Successful direct-key loading itself does not emit diagnostics.
+The `-b`, `-H`, `-R`, and `-1` options accept zero as a supplied key and arm decryption; encrypted-lockout still controls audibility.
+Presence is retained separately from the numeric value, including all-zero RC4 and AES keys, across startup,
+live key commands and scoped scan-key restoration. Entering zero supplies a key; omitting the option starts without one.
+Out-of-range decimal keys are rejected without changing the installed key.
 
-- Basic Privacy key (decimal): `-b <dec>`
+- Basic Privacy key (decimal, 0–255): `-b <dec>`
 - Hytera 10/32/64‑char BP or AES‑128/256 key (hex, groups of 16): `-H '<hex…>'`
-- dPMR/NXDN scrambler (decimal): `-R <dec>`
+- dPMR/NXDN scrambler (decimal, 0–32767): `-R <dec>`
 - RC4/DES key (hex): `-1 <hex>`
 - TYT Basic Privacy (16‑bit, hex, enforced): `-2 <hex>`
 - TYT Advanced Privacy PC4 (128/256-bit hex stream, groups of 16): `-! '<hex…>'`
 - Retevis Advanced Privacy RC2 (128/256-bit hex stream, groups of 16): `-@ '<hex…>'`
-- TYT Enhanced Privacy AES‑128 (hex stream): `-5 '<hex…>'`
+- TYT Enhanced Privacy AES‑128: `-5 '<16 hex digits> <16 hex digits>'` (two words, one quoted argument)
 - Baofeng AP PC5 key override (hex): `--dmr-baofeng-pc5 <hex>` (32 or 64 hex chars)
 - Connect Systems EE72 key override (hex): `--dmr-csi-ee72 <hex>` (18 hex chars)
 - Vertex ALG `0x07` key->keystream map CSV: `--dmr-vertex-ks-csv <file>` (`key_hex,bits:hex[:offset[:step]]`)
@@ -653,12 +762,20 @@ those values for the current CLI run only.
 - Generic keystream (length:hexbytes, optional frame align): `-S <bits:hex[:offset[:step]]>` (e.g., `-S 49:123456789ABC80`, `-S 168:<hex>:0:49`)
 - For Vertex Std voice ALG `0x07`, prefer `--dmr-vertex-ks-csv` for repeatable key->keystream mapping. Use `-S` for
   one-off manual keystream experiments.
+- M17 stream scrambler: `--m17-scrambler-key <hex>` accepts a nonzero seed of 2, 4 or 6 hex digits (8/16/24 bit).
+- M17 stream AES: `--m17-aes-key <hex>` accepts 32, 48 or 64 hex digits (128/192/256 bit). These are separate
+  from M17 signature-verification keys. The generic `-H` grammar remains unchanged.
+- `--no-decryption-keys` explicitly installs an empty set, including in supported scan-row options.
+- `--dmr-tg-key-clear` explicitly clears group-to-key selection overrides. Scoped rows restore their baseline on exit.
+- `--key-profile-ref <opaque-id>` attaches a nonsecret frontend profile revision (1–63 letters, digits, `_` or `-`)
+  to the installed key set. It does not supply key material.
 - Import keys CSV (decimal): `-k <file>`
 - Import keys CSV (hex): `-K <file>`
 - A runtime key import or clear (Keys menu, `IMPORT_KEYS_*` commands) edits the global keys even while a keyed
   `-Y` row or trunk-scan target is parked, so the change survives the next hop. Scalar key commands (`-b`/`-1`/
-  `-H`/`-R` style entries) are not preserved this way: they disarm the keyloader and a keyed row overwrites them
-  on the next hop.
+  `-H`/`-R` legacy menu entries) can disarm the keyloader and be overwritten by a keyed hop. The typed
+  `KEY_DIRECT_SET`/`DECRYPTION_APPLY` frontend entry points instead update the global baseline beneath an
+  active keyed row; the row keeps its effective keys. See [decryption scope](decryption-profiles.md).
 - Force key over identifiers: `-4` (DMR BP/NXDN scrambler), `-0` (DMR RC4 when PI/LE missing),
   `--dmr-force-algid <hex>` (DMR ALGID when PI/LE missing; a fallback only — an ALG ID or KEY ID
   received over the air via PI header/LE always takes precedence; `-M` is reserved for M17 in DSD-neo).
@@ -668,6 +785,14 @@ those values for the current CLI run only.
   without writing it to the slot.
 - Select DMR key by talkgroup: `--dmr-tg-key-csv <file>` (per-TG override of the signaled KEY ID;
   rows are `tg_dec,keyid_hex` into the `-K`/`-k` keyring — see `docs/csv-formats.md`)
+- Conflicting outer force switches emit one warning describing the final selection. Existing precedence is retained:
+  long-option ALGID settings are applied before short options, and the last `-4`/`-0` wins. Use per-row settings for
+  mixed scans. `--no-force-key` explicitly disables forcing after those settings; `--strict-crc` similarly disables
+  `-F`. `--no-scan-voice-only` is the inverse of `--scan-voice-only` (the last of these long switches wins).
+- Channel maps and trunk-target lists can combine mode/type with a restricted `options` column, including direct
+  `-1` RC4/DES and `-R` scrambler keys, group files, force settings, CRC policy and conventional voice-gate intervals.
+  See [scoped row options](csv-formats.md#scoped-row-options) for the supported switches and inheritance rules.
+  The outer conventional command remains `-Y -C <file>`; `-Y` does not take a filename argument.
 - Disable DMR Late Entry IDs: `-3` (avoid false ENC)
 
 ## Tools & Extras
@@ -871,3 +996,5 @@ of thousands of characters per second, so prefer level `1` unless you need the w
 - [ ] `soapy` decode works with at least one SDRPlay path and one Airspy path (if hardware is available).
 
 Tip: Many options can be mixed; start simple, add only what you need.
+
+Native Airspy R2 and Mini input uses `-i airspy[:serial=<hex>][:frequency]`. See [the native Airspy guide](airspy.md) for driver installation, receiver controls, and CF32 capture.

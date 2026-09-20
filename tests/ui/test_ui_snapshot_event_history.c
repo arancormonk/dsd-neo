@@ -9,11 +9,18 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -121,6 +128,16 @@ assert_render_fields(const dsd_state* snap) {
     assert(snap->trunk_scan_hold == 1U);
     assert(snap->trunk_scan_active_avoided == 1U);
     assert(snap->trunk_scan_avoided_count == 3U);
+    /* The scan timing publication rides the same inline range. The renderer differences
+       its absolute anchors against its own clock, so every field has to survive the copy. */
+    assert(snap->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_IDLE_DWELL);
+    assert(snap->scan_timing.conventional == 1U);
+    assert(fabs(snap->scan_timing.started_m - 120.5) < 1e-6);
+    assert(fabs(snap->scan_timing.deadline_m - 123.5) < 1e-6);
+    assert(snap->scan_timing.span_ms == 3000U);
+    assert(snap->scan_timing.dwell_ms == 3000U);
+    assert(snap->scan_timing.hold_ms == 2000U);
+    assert(snap->scan_timing.hang_ms == 7000U);
 }
 
 static void
@@ -210,6 +227,14 @@ main(void) {
     state->trunk_scan_hold = 1U;
     state->trunk_scan_active_avoided = 1U;
     state->trunk_scan_avoided_count = 3U;
+    state->scan_timing.reason = (uint8_t)DSD_SCAN_STAY_IDLE_DWELL;
+    state->scan_timing.conventional = 1U;
+    state->scan_timing.started_m = 120.5;
+    state->scan_timing.deadline_m = 123.5;
+    state->scan_timing.span_ms = 3000U;
+    state->scan_timing.dwell_ms = 3000U;
+    state->scan_timing.hold_ms = 2000U;
+    state->scan_timing.hang_ms = 7000U;
 
     assert(dsd_trunk_cc_candidates_add(state, 851006250L, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);
     assert(dsd_trunk_cc_candidates_add(state, 852006250L, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);
@@ -336,6 +361,27 @@ main(void) {
     assert(lookup.match == DSD_TG_POLICY_MATCH_EXACT);
     assert(strcmp(lookup.entry.name, "POLICY-ONLY") == 0);
 
+    for (int alias_version = 0; alias_version < 2; ++alias_version) {
+        dsd_source_alias_store* aliases = dsd_source_alias_store_create();
+        assert(aliases);
+        dsd_source_alias_entry alias = {.id_start = 7777, .id_end = 7777};
+        DSD_SNPRINTF(alias.name, sizeof(alias.name), "Unit %d", alias_version);
+        assert(dsd_source_alias_store_append(aliases, &alias) == 0);
+        dsd_source_alias_install(state, aliases);
+        dsd_app_telemetry_publish_snapshot(state);
+        snap = dsd_app_get_latest_snapshot();
+        char alias_name[50];
+        assert(dsd_source_label_lookup(snap, 7777, NULL, 0, alias_name, sizeof(alias_name)));
+        assert(strcmp(alias_name, alias.name) == 0);
+    }
+    assert(dsd_source_alias_clear(state) == 0);
+    dsd_app_telemetry_publish_snapshot(state);
+    snap = dsd_app_get_latest_snapshot();
+    assert(!dsd_source_alias_loaded(snap));
+    char alias_name[50];
+    assert(dsd_source_label_lookup(snap, 7777, NULL, 0, alias_name, sizeof(alias_name)));
+    assert(strcmp(alias_name, "POLICY-ONLY") == 0);
+
     /* A cleared channel map must not leave the previous map's names in the snapshot. */
     dsd_state_trunk_lcn_name_free(state);
     dsd_state_trunk_lcn_avoid_free(state);
@@ -359,6 +405,24 @@ main(void) {
     assert(dsd_app_notification_get(&notification) == 1);
     assert(strcmp(notification.protocol, "P25p2") == 0);
     assert(notification.cc_freq_hz == 851006250);
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    assert(opts);
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_NXDN48, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
+    dsd_app_telemetry_publish_snapshot(state);
+    snap = dsd_app_get_latest_snapshot();
+    assert(dsd_scan_mode_active(snap) == DSD_SCAN_MODE_P25);
+    assert(snap->state_ext[DSD_STATE_EXT_RUNTIME_SCAN_MODE] != state->state_ext[DSD_STATE_EXT_RUNTIME_SCAN_MODE]);
+    dsd_scan_settings settings;
+    dsd_app_snapshot_configured_mode(opts, snap, &settings);
+    assert(settings.frame_nxdn48 == 1 && settings.frame_p25p1 == 0);
+    dsd_scan_mode_leave(opts, state);
+    assert(dsd_scan_mode_active(snap) == DSD_SCAN_MODE_P25);
+    dsd_app_telemetry_publish_snapshot(state);
+    snap = dsd_app_get_latest_snapshot();
+    assert(dsd_scan_mode_active(snap) == DSD_SCAN_MODE_INHERIT);
+    free(opts);
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");
     dsd_state_ext_free_all(state);

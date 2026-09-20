@@ -14,6 +14,7 @@
 #ifndef DSD_NEO_RUNTIME_CONFIG_H
 #define DSD_NEO_RUNTIME_CONFIG_H
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/platform/platform.h>
 
 /* Include schema types first (before extern "C" for C++ compat) */
@@ -507,7 +508,8 @@ typedef enum DSD_ATTR_PACKED {
     DSDCFG_INPUT_SOAPY,
     DSDCFG_INPUT_FILE,
     DSDCFG_INPUT_TCP,
-    DSDCFG_INPUT_UDP
+    DSDCFG_INPUT_UDP,
+    DSDCFG_INPUT_AIRSPY
 } dsdneoUserInputSource;
 
 typedef enum DSD_ATTR_PACKED {
@@ -560,6 +562,8 @@ typedef struct dsdneoUserConfig {
     int rtl_auto_ppm; /* bool */
     char rtltcp_host[128];
     int rtltcp_port;
+    dsd_airspy_config airspy;
+    int airspy_invalid; /* Invalid airspy_serial; other invalid Airspy keys warn and keep prior values. */
     char soapy_args[256];
     char soapy_profile[32];
     char soapy_stream_format[16];
@@ -609,16 +613,19 @@ typedef struct dsdneoUserConfig {
     char trunk_chan_csv[1024];
     char trunk_group_csv[1024];
     char trunk_p25_bandplan_csv[1024];
+    char trunk_src_csv[1024]; // Source radio ID alias CSV path (labels only).
     int trunk_use_allow_list;
     int trunk_tune_group_calls;
     int trunk_tune_private_calls;
     int trunk_tune_data_calls;
     int trunk_tune_enc_calls;
+    int trunk_persist_tg_lockouts;
     int trunk_scanner;
     int trunk_p25_prefer_candidates;
     int trunk_scan_voice_only;
     int trunk_scan_voice_qualify_ms;
     int trunk_scan_voice_hold_ms;
+    int trunk_scan_max_visit_ms;
 
     /* [radioreference] */
     int has_radioreference;

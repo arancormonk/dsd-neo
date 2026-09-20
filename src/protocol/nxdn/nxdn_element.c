@@ -22,12 +22,15 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
+#include <dsd-neo/crypto/nxdn_keystream.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
@@ -36,6 +39,10 @@
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/secret_redaction.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -45,10 +52,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/secret_redaction.h"
-#include "dsd-neo/core/state_fwd.h"
 #include "nxdn_confirm.h"
 #include "nxdn_crc.h"
 
@@ -97,8 +100,6 @@ static void nxdn_element_handle_vcall(dsd_opts* opts, dsd_state* state, const ui
 static void nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits);
 static void nxdn_element_handle_vcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                          size_t elements_bits);
-static void nxdn_pdu_scrambler_keystream_creation(uint8_t* ks, int lfsr, int len_bits);
-static void nxdn_lfsr128_expand_iv_from_mi64(uint64_t mi, uint8_t out[16]);
 static int nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[32]);
 static void nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 static void nxdn_dcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
@@ -132,6 +133,14 @@ static void
 nxdn_print_group_label(const dsd_state* state, uint32_t id) {
     char name[50];
     if (id != 0U && dsd_tg_policy_lookup_label(state, id, NULL, 0, name, sizeof(name))) {
+        DSD_FPRINTF(stderr, " [%s]", name);
+    }
+}
+
+static void
+nxdn_print_source_label(const dsd_state* state, uint32_t id) {
+    char name[DSD_SOURCE_ALIAS_NAME_MAX];
+    if (id != 0U && dsd_source_label_lookup(state, id, NULL, 0, name, sizeof(name))) {
         DSD_FPRINTF(stderr, " [%s]", name);
     }
 }
@@ -564,40 +573,6 @@ nxdn_data_call_option_to_str(uint8_t data_call_option, char* duplex, size_t dupl
     if (mode != NULL && mode_sz > 0U) {
         const char* mode_str = modes[data_call_option & 0x0FU];
         DSD_SNPRINTF(mode, mode_sz, "%s", mode_str);
-    }
-}
-
-static void
-nxdn_pdu_scrambler_keystream_creation(uint8_t* ks, int lfsr, int len_bits) {
-    if (ks == NULL || len_bits <= 0) {
-        return;
-    }
-
-    for (int i = 0; i < len_bits; i++) {
-        ks[i] = (uint8_t)(lfsr & 0x1);
-        const int bit = ((lfsr >> 1) ^ (lfsr >> 0)) & 1;
-        lfsr = (lfsr >> 1) | (bit << 14);
-    }
-}
-
-static void
-nxdn_lfsr128_expand_iv_from_mi64(uint64_t mi, uint8_t out[16]) {
-    if (out == NULL) {
-        return;
-    }
-
-    DSD_MEMSET(out, 0, 16U);
-    uint64_t lfsr = mi;
-    for (int i = 0; i < 8; i++) {
-        out[i] = (uint8_t)((lfsr >> (56 - (i * 8))) & 0xFFU);
-    }
-
-    int x = 64;
-    for (int cnt = 0; cnt < 64; cnt++) {
-        uint64_t bit = ((lfsr >> 63) ^ (lfsr >> 61) ^ (lfsr >> 45) ^ (lfsr >> 37) ^ (lfsr >> 26) ^ (lfsr >> 14)) & 1U;
-        lfsr = (lfsr << 1) | bit;
-        out[x / 8] = (uint8_t)((out[x / 8] << 1) | (uint8_t)bit);
-        x++;
     }
 }
 
@@ -1606,6 +1581,7 @@ static void
 nxdn_vcall_assgn_load_scrambler_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info) {
     if (state->rkey_array[info->destination_id] != 0) {
         state->R = state->rkey_array[info->destination_id];
+        state->scalar_key_present[0] = 0;
         DSD_FPRINTF(stderr, " %s", KYEL);
         char key_text[24];
         DSD_FPRINTF(stderr, " Key Loaded: %s",
@@ -1629,10 +1605,10 @@ nxdn_vcall_assgn_can_tune(const dsd_opts* opts, const dsd_state* state, int poli
 
 static void
 nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info, long int freq) {
-    nxdn_print_group_label(state, info->destination_id != 0U ? info->destination_id : info->source_unit_id);
     if (info->destination_id != 0U) {
-        nxdn_print_group_label(state, info->source_unit_id);
+        nxdn_print_group_label(state, info->destination_id);
     }
+    nxdn_print_source_label(state, info->source_unit_id);
     const int is_private_call = (info->call_type == 4U) ? 1 : 0;
     const int data_call = (info->message_type == 0x0DU || info->message_type == 0x0EU) ? 1 : 0;
     const int hold_matches = (state->tg_hold != 0 && state->tg_hold == info->destination_id) ? 1 : 0;
@@ -2187,6 +2163,7 @@ nxdn_vcall_load_aes_key(dsd_state* state, uint32_t key_index) {
         state->aes_key[i + 24] = (state->A4[0] >> (56 - (i * 8))) & 0xFF;
     }
     state->R = state->A1[0];
+    state->scalar_key_present[0] = 0;
 }
 
 static void
@@ -2197,11 +2174,14 @@ nxdn_vcall_load_key(const dsd_opts* opts, dsd_state* state, const struct nxdn_vc
     if (info->cipher_type == 1U && dsd_frame_sync_active_nxdn_variant(opts, state) == DSD_NXDN_VARIANT_48) {
         if (state->rkey_array[info->key_id] != 0) {
             state->R = state->rkey_array[info->key_id];
+            state->scalar_key_present[0] = 0;
         } else if (state->rkey_array[info->destination_id] != 0) {
             state->R = state->rkey_array[info->destination_id];
+            state->scalar_key_present[0] = 0;
         }
     } else if (info->cipher_type == 2U && state->rkey_array[info->key_id] != 0) {
         state->R = state->rkey_array[info->key_id];
+        state->scalar_key_present[0] = 0;
     } else if (info->cipher_type == 3U) {
         uint32_t key_index = 0;
         if (state->rkey_array[info->key_id] != 0) {
@@ -2219,21 +2199,21 @@ nxdn_vcall_print_cipher(const dsd_opts* opts, const dsd_state* state, const stru
         DSD_FPRINTF(stderr, "Key ID %u - ", info->key_id & 0xFFU);
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
-    if (info->cipher_type == 0x01U && state->R > 0) {
+    if (info->cipher_type == 0x01U && dsd_key_scalar_present(state, 0)) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[16];
         DSD_FPRINTF(stderr, "Value: %s",
                     dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 5U));
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
-    if (info->cipher_type == 0x02U && state->R > 0) {
+    if (info->cipher_type == 0x02U && dsd_key_scalar_present(state, 0)) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[17];
         DSD_FPRINTF(stderr, "Value: %s",
                     dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->R, 16U, 0));
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
-    if (info->cipher_type == 0x03U && state->R > 0) {
+    if (info->cipher_type == 0x03U && dsd_key_scalar_present(state, 0)) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[17];
         DSD_FPRINTF(stderr, "KS: %s",
@@ -2262,7 +2242,7 @@ nxdn_vcall_has_key(const dsd_state* state, uint8_t cipher_type) {
         return state->aes_key_loaded[0] == 1;
     }
     if (cipher_type == 1U || cipher_type == 2U) {
-        return state->R != 0U;
+        return dsd_key_scalar_present(state, 0);
     }
     return 0;
 }
@@ -2280,6 +2260,27 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type,
         .audio_permitted = (uint8_t)(cipher_type == 0U || has_key),
     };
     if (dsd_call_state_update_crypto(state, 0U, &update) > 0) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, 0, &call) > 0) {
+            dsd_call_key_source source = DSD_CALL_KEY_DIRECT;
+            int selected = -1;
+            if (state->keyloader == 1) {
+                source = DSD_CALL_KEY_DEFAULT;
+                if (state->rkey_array[key_id] != 0) {
+                    source = DSD_CALL_KEY_SIGNALED;
+                    selected = key_id;
+                } else if (cipher_type == 1
+                           && call.ota_target_id < sizeof(state->rkey_array) / sizeof(state->rkey_array[0])
+                           && state->rkey_array[call.ota_target_id] != 0) {
+                    source = DSD_CALL_KEY_DESTINATION;
+                    selected = (int)call.ota_target_id;
+                } else if (cipher_type == 3) {
+                    selected = 0;
+                }
+            }
+            (void)dsd_call_state_note_key_selection(state, 0, call.epoch, source, key_id, selected,
+                                                    cipher_type ? has_key : -1, 0);
+        }
         dsd_event_sync_slot(opts, state, 0U);
     }
 }
@@ -2466,6 +2467,8 @@ nxdn_vcall_iv_load_aes_key(dsd_state* state) {
     }
 
     state->R = state->A1[0];
+
+    state->scalar_key_present[0] = 0;
 }
 
 static void
@@ -2478,8 +2481,9 @@ nxdn_vcall_iv_prepare_cipher(dsd_state* state) {
     }
     if (state->nxdn_cipher_type == 0x02 && state->keyloader == 1 && state->rkey_array[state->nxdn_key] != 0) {
         state->R = state->rkey_array[state->nxdn_key];
+        state->scalar_key_present[0] = 0;
     }
-    if (state->nxdn_cipher_type == 0x02 && state->R != 0) {
+    if (state->nxdn_cipher_type == 0x02 && dsd_key_scalar_present(state, 0)) {
         state->nxdn_new_iv = 1;
     }
     if (state->nxdn_cipher_type == 0x03 && state->aes_key_loaded[0] == 1) {
@@ -2652,6 +2656,7 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
         state->lastsynctype = DSD_SYNC_NONE;
         if (state->rkey_array[info->id] != 0) {
             state->R = state->rkey_array[info->id];
+            state->scalar_key_present[0] = 0;
         }
         if (state->M == 1) {
             nxdn_cipher_force(state, 0x1);

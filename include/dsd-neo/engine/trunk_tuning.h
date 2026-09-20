@@ -30,6 +30,13 @@ dsd_trunk_tune_result dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_st
 dsd_trunk_tune_result dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t request_id);
 dsd_trunk_tune_result dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                                    uint64_t* out_request_id);
+/**
+ * @brief Release the call state a tuned voice channel owns, without tuning.
+ *
+ * Ends the canonical call rows with DSD_CALL_END_EXPLICIT, clears the VC frequency mirrors and
+ * the crypto/audio gating state, and drops trunk_is_tuned; does not tune.
+ */
+void dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }

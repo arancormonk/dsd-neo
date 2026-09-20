@@ -59,6 +59,7 @@ This project is an active work in progress as we decouple from the upstream fork
 - Built‑in trunking workflow
 
   - Follow P25 and DMR trunked voice automatically using channel maps and group lists (`-C ...csv`, `-G group.csv`, `-T`, `--frontend terminal`; `-N` is the short alias).
+  - Name source radio IDs separately with `--src-csv examples/src.csv` (labels only, with group-list fallback; works in conventional decode too).
   - Rotate one tuner across CSV-defined P25 trunk, DMR trunk, NXDN trunk, and one-frequency DMR, NXDN96 and NXDN48
     targets with `--trunk-scan targets.csv`.
   - On‑the‑fly retune control via rigctl (`-U`) for external SDR front-ends (e.g., SDR++). For RTL/RTL‑TCP input, DSD-neo retunes directly (optional external UDP retune control can be enabled on loopback with `--rtl-udp-control <port>`; remote exposure requires `--rtl-udp-control-bind <ipv4>`; see `docs/udp-control.md`).
@@ -351,7 +352,8 @@ cmake --build --preset dev-debug -j
 # neither
 cmake --preset dev-debug \
   -DDSD_ENABLE_RTLSDR=OFF \
-  -DDSD_ENABLE_SOAPYSDR=OFF
+  -DDSD_ENABLE_SOAPYSDR=OFF \
+  -DDSD_ENABLE_AIRSPY=OFF
 cmake --build --preset dev-debug -j
 ```
 
@@ -392,13 +394,14 @@ Common options:
   - Or run `dsd-neo -h` for quick usage in your terminal.
   - Digital/analog output gain: `-g <float>` (digital; `0` = auto, `1` ≈ 2%, `50` = 100%) and `-n <float>` (analog 0–100%).
   - Single-tuner trunk scan workflow: `docs/trunk-scan.md`
-  - CSV formats (channel maps, trunk scan targets, group lists, key lists): `docs/csv-formats.md` (examples in `examples/`)
+  - CSV formats (channel maps, trunk scan targets, group lists, source ID lists, key lists): `docs/csv-formats.md` (examples in `examples/`)
 
 Quick examples
 
 - UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse --frontend terminal`
 - DMR trunking from TCP PCM input (with rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv --frontend terminal`
 - Single-tuner P25/DMR/NXDN trunk scan from RTL-SDR: `dsd-neo -fa -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal`
+- Source radio names during replay: `dsd-neo --iq-replay p25-control.iq.json -f1 -G examples/group.csv --src-csv examples/src.csv --frontend terminal`
 - IQ capture + inspect + replay: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq --frontend terminal` then `dsd-neo --iq-info p25-control.iq.json` then `dsd-neo --iq-replay p25-control.iq.json -f1 --frontend terminal`
 
 ## Configuration
@@ -462,7 +465,8 @@ Quick examples
   - `tools/clang_tidy.sh` (promotes broad bugprone/performance/portability findings; targeted TUs supported).
   - `tools/cppcheck.sh` (use `--strict` for broader checks).
   - `tools/iwyu.sh` (include hygiene via include-what-you-use; excludes `src/third_party`).
-  - `tools/gcc_fanalyzer.sh` (GCC `-fanalyzer` path-sensitive diagnostics; excludes `src/third_party`).
+  - `tools/gcc_fanalyzer.sh` (GCC `-fanalyzer` path-sensitive diagnostics; C translation units only, excludes
+    `src/third_party`).
   - `tools/scan_build.sh` (Clang Static Analyzer via `scan-build`, heavier full-build pass; excludes `src/third_party`; supports repeatable `--cmake-arg` passthrough).
   - `tools/semgrep.sh` (additional SAST and project guardrail rules; use `--strict` to fail on findings; excludes `src/third_party`).
   - `tools/shell_lint.sh` (ShellCheck plus `shfmt -d` for shell scripts and hooks).
@@ -482,10 +486,16 @@ Quick examples
 - Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and a CI-aligned pre-push analysis pass
   (architecture rules, security guardrails including workflow source/download pins, install-destination checks, clang-format, CMake format,
   clang-tidy, cppcheck, IWYU, GCC fanalyzer, Lizard, Semgrep, zizmor, OSV scan, and shell/workflow lint) on changed
-  paths.
-- Optional full scan-build pre-push/preflight pass: set `DSD_HOOK_RUN_SCAN_BUILD=1`.
+  paths. The checks run in concurrent lanes sized to the machine's core count and every failure is reported at the
+  end; `DSD_HOOK_JOBS=N` sets the worker budget shared out across the whole run (each check that runs keeps at least
+  one worker, so a budget below the number of concurrent checks does not shrink it further) and `DSD_HOOK_SERIAL=1`
+  runs the checks one at a time with streaming output, stopping at the first failure.
+- Optional full scan-build pre-push/preflight pass: set `DSD_HOOK_RUN_SCAN_BUILD=1`. It rebuilds from scratch, since
+  the analyzer only sees translation units the build recompiles; `DSD_HOOK_SCAN_BUILD_REUSE=1` takes the faster
+  incremental answer, which covers only what changed since the last run.
 - Manual preflight runner: `tools/preflight_ci.sh` runs the same CI-aligned checks as `pre-push` without pushing.
-- Full quality preflight: `tools/quality_preflight.sh` enables missing-tool failures, includes scan-build, and runs the full local guardrail set.
+- Full quality preflight: `tools/quality_preflight.sh` enables missing-tool failures, includes scan-build, and runs the full local guardrail set,
+  overlapping gitleaks with the pre-push checks and the whole-tree lint with the fuzz build; every failure is reported at the end.
 - Review expectations and high-risk change checklist: `docs/code-quality-guardrails.md`.
 - Supply-chain update policy: `docs/supply-chain-guardrails.md`.
 

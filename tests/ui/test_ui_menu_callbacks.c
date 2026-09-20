@@ -13,6 +13,7 @@
 #include <assert.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -300,10 +301,22 @@ dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
     return g_config_save_rc;
 }
 
+const dsd_opts*
+dsd_app_get_latest_opts_snapshot(void) {
+    static dsd_opts snapshot;
+    return &snapshot;
+}
+
+const dsd_state*
+dsd_app_get_latest_snapshot(void) {
+    static dsd_state snapshot;
+    return &snapshot;
+}
+
 void
 dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
-    (void)opts;
-    (void)state;
+    assert(opts == dsd_app_get_latest_opts_snapshot());
+    assert(state == dsd_app_get_latest_snapshot());
     if (cfg) {
         DSD_MEMSET(cfg, 0, sizeof *cfg);
     }
@@ -479,6 +492,16 @@ test_path_and_file_callbacks(void) {
     reset_capture();
     cb_import_chan(&ctx, "channels.csv");
     rc |= expect_cmd_string("channel import command", DSD_APP_CMD_IMPORT_CHANNEL_MAP, "channels.csv");
+
+    reset_capture();
+    cb_import_src(&ctx, "sources.csv");
+    rc |= expect_cmd_string("source import command", DSD_APP_CMD_IMPORT_SRC_LIST, "sources.csv");
+    rc |= expect_str("source import status", g_status, "Importing source ID list...");
+
+    reset_capture();
+    cb_import_src(&ctx, "");
+    cb_import_src(&ctx, NULL);
+    rc |= expect_int("source cancel no status", g_status_calls, 0);
 
     reset_capture();
     cb_import_group(&ctx, "groups.csv");

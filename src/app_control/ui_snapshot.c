@@ -5,18 +5,21 @@
 
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "dsd-neo/core/call_state.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
 #include "snapshot_internal.h"
 
 static dsd_state g_pub;     // latest published by demod thread
@@ -145,10 +148,17 @@ _Static_assert(UI_SNAPSHOT_FIELD_END(scan_keys_active_set) <= offsetof(dsd_state
 _Static_assert(offsetof(dsd_state, trunk_scan_active_id) >= offsetof(dsd_state, vertex_ks_count)
                    && UI_SNAPSHOT_FIELD_END(trunk_scan_avoided_count) <= UI_SNAPSHOT_FIELD_END(ui_msg),
                "trunk_scan_active_id..trunk_scan_avoided_count must ride the vertex_ks_count..ui_msg range");
-/* Voice-gated scan memory rides the same range so the status line sees the phase. */
+/* Voice-gated scan memory and the per-visit cap bookkeeping beside it ride the same range so the
+ * status line sees the phase and the Scan Timing row sees the cap. */
 _Static_assert(offsetof(dsd_state, scan_voice_gate_arrive_m) >= offsetof(dsd_state, vertex_ks_count)
-                   && UI_SNAPSHOT_FIELD_END(scan_voice_gate_phase) <= UI_SNAPSHOT_FIELD_END(ui_msg),
-               "scan_voice_gate_* must ride the vertex_ks_count..ui_msg range");
+                   && UI_SNAPSHOT_FIELD_END(scan_visit_rearm_pending) <= UI_SNAPSHOT_FIELD_END(ui_msg),
+               "scan_voice_gate_*/scan_visit_* must ride the vertex_ks_count..ui_msg range");
+/* The scan timing publication is plain inline bytes beside the voice-gate memory, so like
+ * them it has to be inside a copy range -- left out of one it would silently never reach
+ * the UI. */
+_Static_assert(offsetof(dsd_state, scan_timing) >= offsetof(dsd_state, vertex_ks_count)
+                   && UI_SNAPSHOT_FIELD_END(scan_timing) <= UI_SNAPSHOT_FIELD_END(ui_msg),
+               "scan_timing must ride the vertex_ks_count..ui_msg range");
 
 /* The embedded trunk_lcn_freq[] is a plain array copied by the byte ranges
  * above; the scan-list heap tail past it needs an explicit deep copy.
@@ -227,10 +237,18 @@ static void
 ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, dibit_buf, trunk_lcn_freq);
     ui_snapshot_copy_trunk_chan_map(dst, src);
+    dst->keyloader = src->keyloader;
+    DSD_MEMCPY(dst->key_profile_ref, src->key_profile_ref, sizeof(dst->key_profile_ref));
+    dst->key_profile_ref[sizeof(dst->key_profile_ref) - 1U] = '\0';
     (void)dsd_tg_policy_copy_snapshot(dst, src);
+    (void)dsd_source_alias_copy_snapshot(dst, src);
 
     UI_SNAPSHOT_COPY_RANGE(dst, src, audio_out_idx, lastsample);
-    UI_SNAPSHOT_COPY_RANGE(dst, src, err_str, aout_gainA);
+    UI_SNAPSHOT_COPY_RANGE(dst, src, err_str, optind);
+    /* Decoder-owned argv is private, and may outlive neither session nor playback. */
+    dst->cli_argc_effective = 0;
+    dst->cli_argv = NULL;
+    UI_SNAPSHOT_COPY_RANGE(dst, src, config_autosave_enabled, aout_gainA);
     UI_SNAPSHOT_COPY_RANGE(dst, src, aout_max_buf_idx, last_dibit);
 
     UI_SNAPSHOT_COPY_RANGE(dst, src, input_sample_buffer, directmode);
@@ -289,6 +307,7 @@ dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     ui_snapshot_copy_render_state(&g_pub, state);
+    dsd_scan_mode_copy_snapshot(&g_pub, state);
     ui_snapshot_copy_trunk_cc_candidates(&g_pub, state, &g_pub_cc_candidates);
     // Clone canonical calls, recent activity, and history under the core transaction lock.
     if (state->event_history_s != NULL) {
@@ -331,6 +350,7 @@ dsd_app_get_latest_snapshot(void) {
     }
     if (g_consume_seq != g_pub_seq) {
         ui_snapshot_copy_render_state(&g_consume, &g_pub);
+        dsd_scan_mode_copy_snapshot(&g_consume, &g_pub);
         ui_snapshot_copy_trunk_cc_candidates(&g_consume, &g_pub, &g_consume_cc_candidates);
         (void)dsd_call_state_copy_to_state(&g_consume, &g_pub);
         g_consume_seq = g_pub_seq;
@@ -350,4 +370,9 @@ dsd_app_get_latest_snapshot(void) {
     }
     dsd_mutex_unlock(&g_mu);
     return &g_consume;
+}
+
+void
+dsd_app_snapshot_configured_mode(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out) {
+    dsd_scan_mode_configured(opts, state, out);
 }

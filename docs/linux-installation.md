@@ -38,7 +38,13 @@ specific dependency prefix.
 
 ## Runtime Loader Setup
 
-For `/usr` or `/usr/local` dependency installs, the script refreshes the Linux
+The bootstrap installer embeds source-built dependency directories in the
+installed binary's runtime search path, including for `$HOME/.local`. Its
+installed-binary smoke test removes the installer's temporary library-path
+environment so a missing runtime dependency fails the installation instead of
+appearing only in a new shell. No `LD_LIBRARY_PATH` setup is needed.
+
+For `/usr` or `/usr/local` dependency installs, the script also refreshes the Linux
 dynamic linker cache with `ldconfig`. If you install `mbelib-neo` manually into
 one of those prefixes and `dsd-neo` reports that `libmbe-neo.so.2` cannot be
 opened, run:
@@ -47,21 +53,25 @@ opened, run:
 sudo ldconfig
 ```
 
-For non-system prefixes such as `$HOME/.local`, use environment variables
-instead of `ldconfig`:
+For a user-prefix install, add the executable directory to `PATH` if your
+distribution does not already include it, or run `$HOME/.local/bin/dsd-neo`:
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
-export LD_LIBRARY_PATH="$HOME/.local/lib:$HOME/.local/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
 
 Useful options:
 
 - `--radio auto|required|off` controls RTL-SDR and SoapySDR package setup.
   `required` fails configure if either backend is unavailable.
-- `--codec2 auto|required|off` controls Codec2 setup. Alpine does not ship a
-  Codec2 development package in the validated image, so `required` builds the
-  pinned source fallback there.
+- `--codec2 auto|required|off` controls Codec2 setup (default: `required`).
+  Missing development packages trigger a pinned source build, including on
+  Alpine, so the default installation retains M17 voice support. Explicit
+  `auto` permits a build without Codec2; `off` disables it.
+- libcurl and expat development packages are installed and required at
+  configure time, preserving rdio uploads and RadioReference import.
+- A package installation failure is fatal, including for optional radio or
+  Codec2 packages. `auto` tolerates unavailable packages, not failed transactions.
 - `--build-dir DIR` chooses the CMake build directory.
 - `--dry-run` prints package, dependency, build, and install commands.
 
@@ -79,6 +89,10 @@ pacman. The Docker matrix validates the bootstrap path on pinned images for:
 - Arch Linux base-devel for source-build validation; use AUR for normal Arch
   installs.
 
+openSUSE Leap 16.0 provides RTL-SDR but no SoapySDR development package in its
+standard repositories. Its default `--radio auto` installation includes RTL-SDR
+and omits SoapySDR; `--radio required` requires both and fails there.
+
 Run one Docker validation target:
 
 ```sh
@@ -91,8 +105,19 @@ Run the full local matrix:
 tools/docker_linux_install_matrix.sh --all
 ```
 
-The Docker wrapper copies the current checkout into each container instead of
-mounting the repo writable, so validation does not leave root-owned build
-outputs in the working tree. Container image pins live in
-`tools/ci-dependency-pins.env` and are checked by
-`tools/check_workflow_download_pins.sh`.
+The Docker wrapper pulls each pinned image and starts a fresh, automatically
+removed container. It copies the current checkout, including uncommitted source
+changes, instead of mounting the repo writable, so validation does not leave
+root-owned build outputs in the working tree. Containers carry the
+`org.dsd-neo.install-matrix` label to distinguish them from unrelated workloads.
+
+Each image validates the default user-prefix installation first, then an
+independent `/usr/local` build staged with `DESTDIR`. Both installed binaries
+must start outside the installer environment. Codec2 is required on every image;
+both radio backends are required except for Leap's documented SoapySDR gap.
+A separate Debug build runs the CTest suite; use `--no-tests` to run only the two
+installation checks. `--jobs N` limits build/test parallelism inside each container.
+
+Container image pins live in `tools/ci-dependency-pins.env` and are checked by
+`tools/check_workflow_download_pins.sh`. Pulling a pinned image does not advance
+its version: refreshing a supported tag requires updating its recorded digest.

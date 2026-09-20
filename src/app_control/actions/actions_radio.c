@@ -48,6 +48,7 @@ ui_modulation_demod_rate(const dsd_opts* opts, const dsd_state* state) {
  */
 static dsd_decode_mode_profile
 ui_modulation_profile(const dsd_opts* opts) {
+    /* Command dispatch suspends the scan scope before modulation edits. */
     return dsd_decode_mode_profile_for(dsd_infer_decode_mode_preset(opts));
 }
 

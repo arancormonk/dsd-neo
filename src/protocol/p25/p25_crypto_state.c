@@ -50,6 +50,7 @@ p25_crypto_reset_slot(dsd_state* state, int slot) {
     }
 
     if (state->keyloader == 1) {
+        state->scalar_key_present[slot] = 0;
         if (slot == 0) {
             state->R = 0ULL;
         } else {

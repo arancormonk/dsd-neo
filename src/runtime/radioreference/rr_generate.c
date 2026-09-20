@@ -29,10 +29,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Human-facing only: both importers discard physical line 1 without looking at
- * it. The group header stays at three columns so it can never be mistaken for a
- * policy header, whose 4th field would have to read "priority". */
-#define RR_GROUP_HEADER "DEC,Mode,Name (generated from RadioReference)\n"
+/* The fourth field opts into categories without being mistaken for an extended
+ * policy header, whose fourth field must read "priority". */
+#define RR_GROUP_HEADER "DEC,Mode,Name,Category,(generated from RadioReference)\n"
 #define RR_CHAN_HEADER  "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
 
 /* The importer's opt-in for the channel map's name column is the header's
@@ -94,15 +93,16 @@ typedef struct {
 } rr_text;
 
 /**
- * @brief Append a string, growing the buffer by doubling.
+ * @brief Append a counted string, growing the buffer by doubling.
  *
  * A failure is sticky: later appends become no-ops and the caller checks once.
  *
- * @param text Buffer.
- * @param add  String to append.
+ * @param text    Buffer.
+ * @param add     Bytes to append.
+ * @param add_len Length of @p add, not counting the terminator.
  */
 static void
-rr_text_add(rr_text* text, const char* add) {
+rr_text_add_n(rr_text* text, const char* add, size_t add_len) {
     if (text->failed) {
         return;
     }
@@ -111,7 +111,6 @@ rr_text_add(rr_text* text, const char* add) {
         return;
     }
 
-    const size_t add_len = strlen(add);
     const size_t needed = text->len + add_len + 1U;
     if (needed > text->cap) {
         size_t next = (text->cap == 0U) ? 1024U : text->cap;
@@ -134,6 +133,24 @@ rr_text_add(rr_text* text, const char* add) {
     DSD_MEMCPY(text->data + text->len, add, add_len);
     text->len += add_len;
     text->data[text->len] = '\0';
+}
+
+/**
+ * @brief Append a NUL-terminated string.
+ *
+ * @param text Buffer.
+ * @param add  String to append.
+ */
+static void
+rr_text_add(rr_text* text, const char* add) {
+    if (text->failed) {
+        return;
+    }
+    if (add == NULL) {
+        text->failed = 1;
+        return;
+    }
+    rr_text_add_n(text, add, strlen(add));
 }
 
 /**
@@ -170,7 +187,7 @@ rr_text_chan_row(rr_text* text, long chan, long long freq_hz, const char* note) 
         text->failed = 1;
         return;
     }
-    rr_text_add(text, line);
+    rr_text_add_n(text, line, (size_t)written);
 }
 
 /**
@@ -1349,11 +1366,11 @@ rr_tg_key_cmp(const void* lhs, const void* rhs) {
  * @return "DE" or "A".
  */
 static const char*
-rr_group_mode(const dsd_rr_talkgroup* talkgroup, int partial_enc_as_de) {
-    if (talkgroup->enc >= 2) {
+rr_group_mode(const dsd_rr_talkgroup* talkgroup, dsd_rr_encrypted_tg_policy policy) {
+    if (talkgroup->enc >= 2 && policy != DSD_RR_TG_KEEP_ENABLED) {
         return "DE";
     }
-    if (talkgroup->enc == 1 && partial_enc_as_de) {
+    if (talkgroup->enc == 1 && policy == DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL) {
         return "DE";
     }
     return "A";
@@ -1362,7 +1379,7 @@ rr_group_mode(const dsd_rr_talkgroup* talkgroup, int partial_enc_as_de) {
 /**
  * @brief Append one talkgroup row.
  *
- * No space follows either comma: the importer trims the mode column but hands
+ * No space follows a comma: the importer trims the mode column but hands
  * the name column through verbatim, so " Fire Dispatch" would keep its space in
  * the UI and in event history.
  *
@@ -1370,19 +1387,24 @@ rr_group_mode(const dsd_rr_talkgroup* talkgroup, int partial_enc_as_de) {
  * @param talkgroup Talkgroup.
  * @param mode      Mode column.
  * @param name      Sanitized name column.
+ * @param category  Sanitized category column; omitted when empty.
  */
 static void
-rr_text_group_row(rr_text* text, const dsd_rr_talkgroup* talkgroup, const char* mode, const char* name) {
-    char line[128];
-    const int written = DSD_SNPRINTF(line, sizeof(line), "%lu,%s,%s\n", (unsigned long)talkgroup->tg_dec, mode, name);
+rr_text_group_row(rr_text* text, const dsd_rr_talkgroup* talkgroup, const char* mode, const char* name,
+                  const char* category) {
+    char line[256];
+    const int written =
+        category[0]
+            ? DSD_SNPRINTF(line, sizeof(line), "%lu,%s,%s,%s\n", (unsigned long)talkgroup->tg_dec, mode, name, category)
+            : DSD_SNPRINTF(line, sizeof(line), "%lu,%s,%s\n", (unsigned long)talkgroup->tg_dec, mode, name);
     /* BSIZE is 999 and the importer reads with fgets, so a longer line would be
-     * split into two malformed rows. The 49-byte name cap makes this
+     * split into two malformed rows. The 49-byte name and category caps make this
      * unreachable; the check is here so it stays unreachable. */
     if (written <= 0 || (size_t)written >= sizeof(line)) {
         text->failed = 1;
         return;
     }
-    rr_text_add(text, line);
+    rr_text_add_n(text, line, (size_t)written);
 }
 
 /** What a group-CSV pass did, so the warnings can be worded once at the end. */
@@ -1405,7 +1427,8 @@ typedef struct {
  * @param counts            Running tallies.
  */
 static void
-rr_group_emit(rr_text* text, const dsd_rr_talkgroup* talkgroup, int partial_enc_as_de, rr_group_counts* counts) {
+rr_group_emit(rr_text* text, const dsd_rr_talkgroup* talkgroup, dsd_rr_encrypted_tg_policy policy,
+              rr_group_counts* counts) {
     const char* label = (talkgroup->alpha_tag[0] != '\0')     ? talkgroup->alpha_tag
                         : (talkgroup->description[0] != '\0') ? talkgroup->description
                                                               : NULL;
@@ -1417,7 +1440,11 @@ rr_group_emit(rr_text* text, const dsd_rr_talkgroup* talkgroup, int partial_enc_
     if (name[0] == '\0') {
         (void)DSD_SNPRINTF(name, sizeof(name), "TG %lu", (unsigned long)talkgroup->tg_dec);
     }
-    rr_text_group_row(text, talkgroup, rr_group_mode(talkgroup, partial_enc_as_de), name);
+    char category[RR_NAME_MAX + 1U] = {0};
+    if (talkgroup->category[0]) {
+        (void)rr_sanitize_name(talkgroup->category, category, sizeof(category));
+    }
+    rr_text_group_row(text, talkgroup, rr_group_mode(talkgroup, policy), name, category);
     counts->emitted++;
 }
 
@@ -1447,12 +1474,22 @@ rr_group_warn(dsd_rr_warning_list* warnings, const rr_group_counts* counts) {
 int
 dsd_rr_generate_group_csv(const dsd_rr_talkgroup* talkgroups, size_t count, int partial_enc_as_de, char** out,
                           size_t* out_len, dsd_rr_warning_list* warnings) {
+    return dsd_rr_generate_group_csv_with_policy(
+        talkgroups, count, partial_enc_as_de ? DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL : DSD_RR_TG_EXCLUDE_FULL, out,
+        out_len, warnings);
+}
+
+int
+dsd_rr_generate_group_csv_with_policy(const dsd_rr_talkgroup* talkgroups, size_t count,
+                                      dsd_rr_encrypted_tg_policy policy, char** out, size_t* out_len,
+                                      dsd_rr_warning_list* warnings) {
     if (out == NULL || out_len == NULL) {
         return -1;
     }
     *out = NULL;
     *out_len = 0;
-    if (talkgroups == NULL || count == 0U) {
+    if (talkgroups == NULL || count == 0U || policy < DSD_RR_TG_KEEP_ENABLED
+        || policy > DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL) {
         return -1;
     }
 
@@ -1475,7 +1512,7 @@ dsd_rr_generate_group_csv(const dsd_rr_talkgroup* talkgroups, size_t count, int 
             counts.duplicates++;
             continue;
         }
-        rr_group_emit(&text, &talkgroups[keys[i].order], partial_enc_as_de, &counts);
+        rr_group_emit(&text, &talkgroups[keys[i].order], policy, &counts);
     }
     free(keys);
 

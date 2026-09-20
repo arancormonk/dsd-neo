@@ -61,7 +61,6 @@ static void p25_voice_release_or_preserve_companion(p25_sm_ctx_t* ctx, dsd_opts*
                                                     const char* slot_log);
 static void handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
 static void handle_crypto_pending(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
-static double p25_sm_effective_hangtime(const dsd_state* state, double hangtime);
 static int p25_sm_crypto_classification_in_flight(const p25_sm_ctx_t* ctx, const dsd_state* state, double now_m,
                                                   double grant_timeout);
 
@@ -786,6 +785,37 @@ p25_sm_await_pending_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state
     return 1;
 }
 
+int
+p25_sm_on_external_cc_tune(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result tune_result,
+                           uint64_t request_id, const char* source) {
+    if (!ctx || !opts || !state || !ctx->initialized || !dsd_trunk_tune_result_is_ok(tune_result)) {
+        return 0;
+    }
+    if (ctx->state == P25_SM_IDLE) {
+        return 0;
+    }
+    const char* reason = source ? source : "external-cc-tune";
+    p25_sm_diagf(opts, state, ctx, "external_cc_tune",
+                 "source=%s state=%s freq=%ld ch=0x%04X tg=%d result=%s request=%llu", reason,
+                 p25_sm_state_name(ctx->state), ctx->vc_freq_hz, ctx->vc_channel & 0xFFFF, ctx->vc_tg,
+                 p25_tune_result_name(tune_result), (unsigned long long)request_id);
+    // Only a followed assignment has slot activity and a voice channel to drop.
+    // A parked or hunting SM keeps its stale-regrant guard and followed history;
+    // the radio still moved, so the acquisition gate is re-armed either way.
+    if (ctx->state == P25_SM_TUNED) {
+        p25_sm_clear_manual_selection_calls(ctx, opts, state);
+    }
+    // The same handoff the no-carrier and scan retunes use: grants stay gated
+    // until the pending tune completes and a CC block decodes after that
+    // boundary. In trunk-scan mode `ctx` is the coordinator's context on
+    // purpose -- its TUNED hold is what kept the scan parked on this target.
+    p25_sm_start_cc_acquisition_for_result(ctx, opts, state, tune_result, request_id, dsd_time_now_monotonic_s(),
+                                           reason, P25_SM_CC_ACQUISITION_RETURN);
+    ctx->t_hunt_try_m = 0.0;
+    set_state(ctx, opts, state, P25_SM_ON_CC, reason);
+    return 1;
+}
+
 /* ============================================================================
  * Grant Filtering
  * ============================================================================ */
@@ -801,6 +831,7 @@ grant_block_log_tag(int is_indiv, uint32_t block_reasons) {
         const char* indiv_tag;
         const char* group_tag;
     } k_tags[] = {
+        {DSD_TG_POLICY_BLOCK_SESSION_AVOID, "indiv-blocked-session-avoid", "grant-blocked-session-avoid"},
         {DSD_TG_POLICY_BLOCK_HOLD, "indiv-blocked-hold", "grant-blocked-hold"},
         {DSD_TG_POLICY_BLOCK_PRIVATE_DISABLED, "indiv-blocked-private", "indiv-blocked-private"},
         {DSD_TG_POLICY_BLOCK_GROUP_DISABLED, "grant-blocked-group", "grant-blocked-group"},
@@ -2456,6 +2487,8 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     if (!ctx || !ev || !opts || !state) {
         return;
     }
+
+    dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_P25);
 
     // Check grant policy
     if (!grant_allowed(ctx, opts, state, ev, &decision, &eval_ctx, 1)) {
@@ -4637,7 +4670,7 @@ p25_release_return_to_cc_accepted(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
 }
 
 static void
-p25_release_clear_context(p25_sm_ctx_t* ctx) {
+p25_release_clear_context(p25_sm_ctx_t* ctx, int count_return) {
     p25_grant_clear_slot_state(ctx);
     p25_sm_clear_followed_history(ctx);
     ctx->vc_freq_hz = 0;
@@ -4651,12 +4684,14 @@ p25_release_clear_context(p25_sm_ctx_t* ctx) {
     ctx->t_voice_m = 0.0;
     ctx->vc_activity_seen = 0;
     p25_sm_reset_vc_reacquire_tracking(ctx);
-    ctx->release_count++;
-    ctx->cc_return_count++;
+    if (count_return) {
+        ctx->release_count++;
+        ctx->cc_return_count++;
+    }
 }
 
 static void
-p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
+p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state, int count_return) {
     if (state) {
         (void)dsd_tg_policy_clear_active_call(state, -1);
         state->p25_p2_audio_allowed[0] = 0;
@@ -4680,15 +4715,41 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
         state->dmr_soR = 0;
         p25_crypto_reset_slot(state, 0);
         p25_crypto_reset_slot(state, 1);
-        state->p25_sm_release_count++;
         // Mirror of ctx->cc_return_count for readers without the ctx (UI, NULL-ctx
         // diag lines); p25_release_clear_context() bumps the ctx side on the same
         // two release paths that call this helper.
-        state->p25_sm_cc_return_count++;
+        if (count_return) {
+            state->p25_sm_release_count++;
+            state->p25_sm_cc_return_count++;
+        }
     }
     if (opts) {
         opts->trunk_is_tuned = 0;
     }
+}
+
+void
+p25_sm_clear_manual_selection_calls(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
+    const double ended_m = dsd_time_now_monotonic_s();
+    p25_call_end_slot(opts, state, 0, ended_m);
+    p25_call_end_slot(opts, state, 1, ended_m);
+    p25_release_clear_context(ctx, 0);
+    p25_release_clear_decoder_state(opts, state, 0);
+    ctx->vc_is_tdma = 0;
+    ctx->vc_cqpsk_retry_done = 0;
+    DSD_MEMSET(ctx->recent_call_ends, 0, sizeof(ctx->recent_call_ends));
+    state->p25_sm_force_release = 0;
+    state->trunk_sm_force_release = 0;
+    state->p25_sm_posthang_start = 0;
+    state->p25_sm_posthang_start_m = 0.0;
+    state->payload_mi = state->payload_miR = 0;
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+    state->p2_is_lcch = 0;
+    state->p25_vc_cqpsk_override = -1;
+    state->p25_p1_nid_evidence = 0;
+    state->p25_p1_nid_evidence_symbolcnt = 0;
+    (void)dsd_recent_activity_clear_all(state);
 }
 
 static void
@@ -4785,8 +4846,8 @@ p25_release_locked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const ch
     p25_call_end_slot(opts, state, 0, ended_m);
     p25_call_end_slot(opts, state, 1, ended_m);
 
-    p25_release_clear_context(ctx);
-    p25_release_clear_decoder_state(opts, state);
+    p25_release_clear_context(ctx, 1);
+    p25_release_clear_decoder_state(opts, state, 1);
     p25_sm_start_cc_acquisition_for_result(ctx, opts, state, tune_result, tune_request_id, tune_start_m, "release",
                                            P25_SM_CC_ACQUISITION_RETURN);
 
@@ -4822,7 +4883,7 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
         const double ended_m = dsd_time_now_monotonic_s();
         p25_call_end_slot(opts, state, 0, ended_m);
         p25_call_end_slot(opts, state, 1, ended_m);
-        p25_release_clear_context(ctx);
+        p25_release_clear_context(ctx, 1);
         const uint32_t release_count = ctx->release_count;
         const uint32_t cc_return_count = ctx->cc_return_count;
         // The reprobe backoff is session state, like the counters below: it
@@ -4832,7 +4893,7 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
         // next grant repeat.
         p25_sm_enc_reprobe_memo_t enc_reprobes[P25_SM_ENC_REPROBE_MEMO_MAX];
         DSD_MEMCPY(enc_reprobes, ctx->enc_reprobes, sizeof(enc_reprobes));
-        p25_release_clear_decoder_state(opts, state);
+        p25_release_clear_decoder_state(opts, state, 1);
         p25_sm_init_ctx(ctx, opts, state);
         DSD_MEMCPY(ctx->enc_reprobes, enc_reprobes, sizeof(ctx->enc_reprobes));
         ctx->tune_count = tune_count;
@@ -5445,7 +5506,7 @@ p25_sm_tick_on_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double no
     try_next_cc(ctx, opts, state, now_m);
 }
 
-static double
+double
 p25_sm_effective_hangtime(const dsd_state* state, double hangtime) {
     if (!state || hangtime <= 0.0) {
         return hangtime;
@@ -5453,8 +5514,8 @@ p25_sm_effective_hangtime(const dsd_state* state, double hangtime) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     double thr_pct = (cfg && cfg->p25p1_err_hold_pct_is_set) ? cfg->p25p1_err_hold_pct : 0.0;
     double add_s = (cfg && cfg->p25p1_err_hold_s_is_set) ? cfg->p25p1_err_hold_s : 0.0;
-    if (thr_pct > 0.0 && add_s > 0.0 && state->p25_p1_voice_err_hist_len > 0) {
-        double avg = (double)state->p25_p1_voice_err_hist_sum / (double)state->p25_p1_voice_err_hist_len;
+    if (thr_pct > 0.0 && add_s > 0.0 && state->p25_p1_voice_err_hist_count > 0) {
+        double avg = (double)state->p25_p1_voice_err_hist_sum / (double)state->p25_p1_voice_err_hist_count;
         if (avg >= thr_pct) {
             return hangtime + add_s;
         }
@@ -6099,7 +6160,15 @@ p25_sm_tick_ctx(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state) {
 
     switch (ctx->state) {
         case P25_SM_IDLE:
-            // Nothing to do
+            /* Control blocks can establish a CC before the first voice grant.
+             * Use their actual decode time so sync loss still expires normally. */
+            if (state && state->trunk_recovery_protocol == DSD_TRUNK_RECOVERY_P25 && state->p25_cc_freq > 0
+                && state->p25_last_cc_msg_time_m > 0.0) {
+                ctx->t_cc_sync_m = state->p25_last_cc_msg_time_m;
+                p25_sm_set_expected_cc_nac(ctx, state, 0);
+                set_state(ctx, opts, state, P25_SM_ON_CC, "decoded-cc");
+                p25_sm_tick_on_cc(ctx, opts, state, now_m, ctx->config.cc_grace_s);
+            }
             break;
 
         case P25_SM_ON_CC: p25_sm_tick_on_cc(ctx, opts, state, now_m, ctx->config.cc_grace_s); break;
@@ -6288,6 +6357,35 @@ p25_sm_conventional_resolve_call(const dsd_state* state, const p25_sm_event_t* e
 }
 
 static int
+p25_sm_conventional_call_encrypted(const dsd_call_snapshot* call) {
+    switch (call->crypto) {
+        case DSD_CALL_CRYPTO_ENCRYPTED:
+        case DSD_CALL_CRYPTO_ENCRYPTED_PENDING: return 1;
+        case DSD_CALL_CRYPTO_UNKNOWN:
+            /* A late-join LCW can precede HDU/LDU2 classification. Its service bit
+             * is evidence; absent service metadata is not proof of clear voice. */
+            return !call->has_service_metadata || (call->service_options & 0x40U) != 0U;
+        default: return 0;
+    }
+}
+
+void
+p25_sm_note_conventional_activity(const dsd_opts* opts, const dsd_state* state, int slot, uint32_t target) {
+    if (!opts || opts->trunk_enable == 1 || !state || slot < 0 || slot > 1 || target == 0U) {
+        return;
+    }
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_P25(call.protocol) || call.ota_target_id != target || call.ota_source_id > UINT32_MAX
+        || (call.kind != DSD_CALL_KIND_GROUP_VOICE && call.kind != DSD_CALL_KIND_PRIVATE_VOICE)) {
+        return;
+    }
+    const int encrypted = p25_sm_conventional_call_encrypted(&call);
+    dsd_trunk_scan_hook_p25_conventional_activity(opts, state, target, (uint32_t)call.ota_source_id,
+                                                  call.kind == DSD_CALL_KIND_PRIVATE_VOICE, encrypted, 0);
+}
+
+static int
 p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, int ptt_retransmit) {
     if (!state || !ev) {
         return 0;
@@ -6318,6 +6416,11 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
     }
     (void)dsd_call_state_observe(state, &observation, boundary);
     p25_call_publish_crypto(opts, state, slot, 0.0);
+    /* Raw MAC_PTT still has to resolve its ALGID/KID after publishing identity.
+     * XCCH reports the hold once that classification is complete. */
+    if (!ev->ptt_signature_valid) {
+        p25_sm_note_conventional_activity(opts, state, slot, call.target);
+    }
     (void)dsd_call_state_update_media(state, (uint8_t)slot, 1, 0.0);
     dsd_event_sync_slot(opts, state, (uint8_t)slot);
     return 1;
@@ -6621,6 +6724,54 @@ p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* 
         ctx = p25_sm_get_ctx();
     }
     do_release(ctx, opts, state, reason ? reason : "explicit-release", 1);
+}
+
+void
+p25_sm_abandon_carrier(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reason) {
+    if (!ctx) {
+        ctx = p25_sm_get_ctx();
+    }
+    const char* safe_reason = reason ? reason : "abandon-carrier";
+
+    // The same guard do_release() takes. Two teardowns of one carrier would double-count the
+    // release and race each other's slot clears, so the loser leaves the work to the winner --
+    // which performs an equivalent teardown under its own reason.
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&g_p25_sm_release_lock, &expected, 1)) {
+        p25_sm_diagf(opts, state, ctx, "release_contended", "reason=%s", safe_reason);
+        return;
+    }
+    const int had_carrier = p25_release_should_return_to_cc(ctx, opts);
+    if (had_carrier && ctx->vc_is_tdma && opts && state) {
+        /* Deliver the partial superframe while the outgoing call and audio gates still exist. */
+        dsd_p25_optional_hook_p25p2_flush_partial_audio(opts, state);
+    }
+
+    // The teardown the force-release latch asks for is happening right here. Leaving it armed
+    // would have the next SM tick attempt its own release, and that one does tune back to a
+    // control channel -- against a caller that is already moving the tuner.
+    const int had_force_release = p25_release_take_force_request(state);
+    p25_sm_diagf(opts, state, ctx, "abandon_carrier", "reason=%s force=%d", safe_reason, had_force_release);
+    sm_log(opts, state, safe_reason);
+    p25_release_log_channel(ctx, opts, state, safe_reason);
+
+    const double ended_m = dsd_time_now_monotonic_s();
+    p25_call_end_slot(opts, state, 0, ended_m);
+    p25_call_end_slot(opts, state, 1, ended_m);
+
+    // An abandoned voice carrier counts as a release, but no CC return occurred. Idle
+    // target evictions only clear retained state and must not invent either event.
+    p25_release_clear_context(ctx, 0);
+    p25_release_clear_decoder_state(opts, state, 0);
+    if (had_carrier) {
+        ctx->release_count++;
+        if (state) {
+            state->p25_sm_release_count++;
+        }
+    }
+    set_state(ctx, opts, state, P25_SM_ON_CC, safe_reason);
+
+    atomic_store(&g_p25_sm_release_lock, 0);
 }
 
 /* ============================================================================

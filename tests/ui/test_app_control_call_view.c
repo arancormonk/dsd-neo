@@ -642,8 +642,53 @@ test_lead_slot_prefers_active_then_lower_slot(void) {
     assert(dsd_app_lead_slot(both_active, 0U) == -1);
 }
 
+static void
+test_source_labels_keep_identity(void) {
+    Event_History_I* history;
+    dsd_state* state = make_state_with_history(&history);
+    observe_group_call(state, 0U, 1201U, 1201U, 100.0);
+    Event_History* item = &history[0].Event_History_Items[0];
+    item->source_id = 1201U;
+    stage_group_name(history, 0U, 1201U, "Talkgroup 1201");
+    DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Radio 1201");
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 101.0, &view);
+    assert(strcmp(view.name, "Talkgroup 1201") == 0);
+    assert(strcmp(view.src_text, "Radio 1201 (1201)") == 0);
+    /* No truncated aliases, including a staged label wider than an OTA callsign. */
+    DSD_MEMSET(item->s_name, 'A', sizeof(item->s_name) - 1U);
+    dsd_app_slot_call_view(state, 0U, 101.0, &view);
+    assert(strlen(view.src_text) == strlen(item->s_name) + strlen(" (1201)"));
+    item->source_id = 1202U;
+    dsd_app_slot_call_view(state, 0U, 101.0, &view);
+    assert(strcmp(view.src_text, "1201") == 0);
+    destroy_state(state);
+}
+
+static void
+test_service_metadata(void) {
+    dsd_state* state = make_state();
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0, 123, 456);
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.has_service_metadata = 1;
+    observation.emergency = 1;
+    observation.priority = 3;
+    observation.observed_m = 100;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0, 101, &view);
+    assert(view.has_service_metadata == 1);
+    assert(view.emergency == 1);
+    assert(view.priority == 3);
+    dsd_app_slot_call_view(NULL, 0, 101, &view);
+    assert(view.has_service_metadata == 0 && view.emergency == 0 && view.priority == 0);
+    destroy_state(state);
+}
+
 int
 main(void) {
+    test_service_metadata();
+    test_source_labels_keep_identity();
     test_idle_slot_reports_none();
     test_active_call_reports_identity();
     test_tg_id_falls_back_to_policy_target_id();

@@ -14,6 +14,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_STREAM_C_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_IO_RTL_STREAM_C_H_H
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/platform/platform.h>
 
 #include <stddef.h>
@@ -26,6 +27,9 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* Decoder/control-pump thread only. */
+int rtl_stream_airspy_controls(const dsd_airspy_config* config);
+int rtl_stream_airspy_info(dsd_airspy_info* info);
 
 typedef enum DSD_ATTR_PACKED rtl_stream_output_kind {
     RTL_STREAM_OUTPUT_AUDIO_MONITOR = 0,

@@ -20,6 +20,9 @@ extern "C" {
 
 void processFrame(dsd_opts* opts, dsd_state* state);
 void noCarrier(dsd_opts* opts, dsd_state* state);
+/** Reset decoder buffers and protocol state after calls have been finalized.
+ * Performs no scanner step or return-to-control-channel tuning. */
+void dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }

@@ -136,6 +136,7 @@ rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t req
 }
 
 extern "C" void
+// cppcheck-suppress funcArgNamesDifferentUnnamed -- The public declaration names user_data; callback typedef confuses cppcheck.
 rtl_stream_register_tune_completion_callback(rtl_stream_tune_completion_callback callback, void* user_data) {
     dsd_rtl_stream_register_tune_completion_callback(callback, user_data);
 }

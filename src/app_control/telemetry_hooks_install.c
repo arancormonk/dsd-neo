@@ -43,6 +43,7 @@ dsd_app_frontend_control_pump(dsd_opts* opts, dsd_state* state) {
 
 void
 dsd_app_frontend_runtime_start(const dsd_opts* initial_opts, const dsd_state* initial_state) {
+    dsd_app_command_session_set_open(1);
     dsd_app_install_telemetry_hooks();
     if (initial_opts) {
         dsd_app_telemetry_publish_opts_snapshot(initial_opts);
@@ -55,6 +56,7 @@ dsd_app_frontend_runtime_start(const dsd_opts* initial_opts, const dsd_state* in
 
 void
 dsd_app_frontend_runtime_stop(void) {
+    dsd_app_command_session_set_open(0);
     dsd_runtime_set_control_pump(NULL);
     dsd_telemetry_hooks_set((dsd_telemetry_hooks){0});
     /* Clearing the hooks stops the feed but leaves the last record behind, and that

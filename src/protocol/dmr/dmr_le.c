@@ -8,6 +8,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/key_presence.h>
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
@@ -61,7 +62,7 @@ dmr_maybe_infer_algid_from_key(dsd_state* state, uint8_t slot_idx, unsigned long
     if (slot_idx == 0U) {
         const unsigned int so = state->dmr_so;
         const int so_enc_or_unknown = (so == 0) || ((so & 0x40U) != 0);
-        if (state->payload_algid == 0 && state->R != 0 && so_enc_or_unknown) {
+        if (state->payload_algid == 0 && dsd_key_scalar_present(state, 0) && so_enc_or_unknown) {
             state->payload_algid = (state->R <= 0xFFFFFFFFFFULL) ? 0x21 : 0x22;
             state->payload_keyid = 0xFF;
             state->payload_mi = mi_final;
@@ -71,7 +72,7 @@ dmr_maybe_infer_algid_from_key(dsd_state* state, uint8_t slot_idx, unsigned long
 
     const unsigned int so = state->dmr_soR;
     const int so_enc_or_unknown = (so == 0) || ((so & 0x40U) != 0);
-    if (state->payload_algidR == 0 && state->RR != 0 && so_enc_or_unknown) {
+    if (state->payload_algidR == 0 && dsd_key_scalar_present(state, 1) && so_enc_or_unknown) {
         state->payload_algidR = (state->RR <= 0xFFFFFFFFFFULL) ? 0x21 : 0x22;
         state->payload_keyidR = 0xFF;
         state->payload_miR = mi_final;

@@ -35,6 +35,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -232,13 +233,27 @@ dmr_heuristic_fill_gaps(dsd_state* state, const dmr_heuristic_anchor_stats* stat
     return filled;
 }
 
+// Channel-map notices deliberately use history slot 0 even when learned on slot 1.
+// Carry the originating burst's CRC failure across that attribution change.
+static void
+dmr_cspdu_emit_channel_notice(dsd_opts* opts, dsd_state* state, const char* msg) {
+    const int prev_alert = opts->call_alert;
+    const uint8_t saved_crc_invalid = state->event_crc_invalid[0];
+    opts->call_alert = 0;
+    state->event_crc_invalid[0] |= state->event_crc_invalid[state->currentslot & 1];
+    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, 0xFFFFFFU, 0xFFFFFFU);
+    (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, msg);
+    state->event_crc_invalid[0] = saved_crc_invalid;
+    opts->call_alert = prev_alert;
+    dsd_event_sync_slot(opts, state, 0);
+}
+
 static void
 dmr_heuristic_report_fill(dsd_opts* opts, dsd_state* state, const dmr_heuristic_anchor_stats* stats, long step,
                           int filled) {
     char msg[160];
     double mhz0;
     double step_khz;
-    int prev_alert;
 
     if (!opts || !state || !stats || filled <= 0) {
         return;
@@ -248,12 +263,7 @@ dmr_heuristic_report_fill(dsd_opts* opts, dsd_state* state, const dmr_heuristic_
     step_khz = (double)step / 1000.0;
     DSD_SNPRINTF(msg, sizeof(msg), "DMR TIII: Heuristic filled %d LCNs (%0.3f kHz step) from %04d@%0.6f MHz;", filled,
                  step_khz, stats->first_lcn, mhz0);
-    prev_alert = opts->call_alert;
-    opts->call_alert = 0;
-    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, 0xFFFFFFU, 0xFFFFFFU);
-    (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, msg);
-    opts->call_alert = prev_alert;
-    dsd_event_sync_slot(opts, state, 0);
+    dmr_cspdu_emit_channel_notice(opts, state, msg);
 }
 
 // Attempt to fill missing LCNs heuristically from learned anchors.
@@ -315,13 +325,7 @@ dmr_learn_chan_map(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int fre
         // Print in MHz with 6 decimal places
         double mhz = (double)freq / 1000000.0;
         DSD_SNPRINTF(msg, sizeof(msg), "DMR TIII: Learned LCN %04u -> %010.6f MHz;", lpcn, mhz);
-        int prev_alert = opts->call_alert;
-        opts->call_alert = 0; // suppress beeper for system-status events
-        const dsd_call_observation observation =
-            dsd_call_observation_data(state->lastsynctype, 0U, 0xFFFFFFU, 0xFFFFFFU);
-        (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, msg);
-        opts->call_alert = prev_alert;
-        dsd_event_sync_slot(opts, state, 0);
+        dmr_cspdu_emit_channel_notice(opts, state, msg);
     }
 
     // Try heuristic gap fill after learning a new anchor
@@ -604,18 +608,7 @@ dmr_cspdu_pf0_handle_aloha(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits
     DSD_FPRINTF(stderr, "\n");
     dmr_decode_syscode(opts, state, cs_pdu_bits, csbk_fid, 0);
 
-    if (opts->use_rigctl == 1 && opts->trunk_is_tuned == 0) {
-        long int ccfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
-        if (ccfreq != 0) {
-            state->trunk_cc_freq = ccfreq;
-        }
-    }
-    if (opts->audio_in_type == AUDIO_IN_RTL && opts->trunk_is_tuned == 0) {
-        long int ccfreq = (long int)opts->rtlsdr_center_freq;
-        if (ccfreq != 0) {
-            state->trunk_cc_freq = ccfreq;
-        }
-    }
+    dmr_sm_note_cc_activity(opts, state, 0);
     if (opts->trunk_is_tuned == 0) {
         rotate_symbol_out_file(opts, state);
     }
@@ -1328,11 +1321,8 @@ dmr_cspdu_pf0_c_bcast_try_switch_tscc(dsd_opts* opts, dsd_state* state, long f1,
     }
 
     if (next > 0 && next != cur) {
-        const long previous_cc = state->trunk_cc_freq;
-        state->trunk_cc_freq = next;
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_return_to_cc(opts, state, NULL);
-        if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-            state->trunk_cc_freq = previous_cc;
+        const dsd_trunk_tune_result result = dmr_sm_return_to_cc(dmr_sm_get_ctx(), opts, state, next);
+        if (!dsd_trunk_tune_result_is_ok(result)) {
             return;
         }
         DSD_FPRINTF(stderr, "\n Switched to announced TSCC: %.6lf MHz\n", (double)next / 1000000.0);
@@ -1737,12 +1727,12 @@ dmr_cspdu_cap_plus_3e_update_multiblock(dsd_state* state, const uint8_t cs_pdu_b
 }
 
 static void
-dmr_cspdu_cap_plus_3e_sync_rest(dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
+dmr_cspdu_cap_plus_3e_sync_rest(const dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
     if (ctx->rest_channel != state->dmr_rest_channel) {
         state->dmr_rest_channel = ctx->rest_channel;
     }
     if (state->trunk_chan_map[ctx->rest_channel] != 0) {
-        opts->trunk_is_tuned = 1;
+        dmr_sm_note_cc_activity(opts, state, state->trunk_chan_map[ctx->rest_channel]);
     }
 }
 
@@ -2039,24 +2029,22 @@ dmr_cspdu_cap_plus_3e_dump_payload(const dsd_opts* opts, dsd_state* state, const
 
 static void
 dmr_cspdu_cap_plus_3e_try_return_to_rest(dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
-    uint16_t empty[24];
-    int busy;
-
-    DSD_MEMSET(empty, 0, sizeof(empty));
-    busy = memcmp(empty, ctx->t_tg, sizeof(empty));
-    if (busy || opts->trunk_enable != 1 || state->trunk_cc_freq == state->trunk_chan_map[ctx->rest_channel]) {
+    const long rest = state->trunk_chan_map[ctx->rest_channel];
+    if (opts->trunk_enable != 1 || rest <= 0) {
         return;
     }
-    if (state->trunk_chan_map[ctx->rest_channel] != 0) {
-        state->trunk_cc_freq = state->trunk_chan_map[ctx->rest_channel];
+    if (opts->trunk_is_tuned == 1) {
+        /* Save the announced return destination without cutting short voice
+         * hangtime when the other slot reports empty busy banks. */
+        state->trunk_cc_freq = rest;
+        return;
     }
-
-    uint8_t dummy[12];
-    uint8_t* dbits = NULL;
-    DSD_MEMSET(dummy, 0, sizeof(dummy));
-    dummy[0] = 46;
-    dummy[1] = 253;
-    dmr_cspdu(opts, state, dbits, dummy, 1, 0);
+    if (state->trunk_cc_freq == rest) {
+        return;
+    }
+    /* Busy status can announce a new rest channel even when every advertised
+     * call is blocked or unmapped. Follow it unless a call owns the tuner. */
+    (void)dmr_sm_return_to_cc(dmr_sm_get_ctx(), opts, state, rest);
 }
 
 static void
@@ -2656,12 +2644,14 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
     csbk_pf = dmr_cspdu_apply_protect_flag_checks(IrrecoverableErrors, csbk_o, csbk_fid, csbk_pf);
 
     if (IrrecoverableErrors == 0 && CRCCorrect == 1) {
+        dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_DMR);
         //clear stale Active Channel messages here
         (void)dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS);
 
         //update time to prevent random 'Control Channel Signal Lost' hopping
         //in the middle of voice call on current Control Channel (con+ and t3)
         dsd_mark_cc_sync(state);
+        dmr_sm_note_cc_heartbeat(opts, state);
 
         dmr_cspdu_init_cc_anchor(opts, state);
 
@@ -2675,6 +2665,7 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
     // a last_cc_sync_time refresh to prevent premature CC hunts if configured.
     // This does not process the PDU further — it only keeps the CC timer warm.
     else if (opts->dmr_crc_relaxed_default) {
+        dmr_sm_note_cc_heartbeat(opts, state);
         state->last_cc_sync_time = time(NULL);
         state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
     }

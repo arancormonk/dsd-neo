@@ -19,7 +19,7 @@ Item {
 
     objectName: "radioReferenceScreen"
 
-    signal closed()
+    signal closed
     // The result map from performImport(): {name, freqMhz, decodeFlag, trunking,
     // chanCsvPath, groupCsvPath}. chanCsvPath is absent when no channel map was
     // generated, which is a valid outcome — see the one-repeater case below.
@@ -44,12 +44,25 @@ Item {
     // buildImportPlan() takes. One entry for a trunked system; a conventional
     // networked import selects several repeaters.
     property var selectedSites: []
+    property string siteSearch: ""
+    property int planRevision: 0
+    property int reviewedRevision: -1
+    property bool eachSite: false
+    onEachSiteChanged: {
+        selectedSites = [];
+        refreshPlan();
+    }
 
     // Import options. The two overrides are tri-state: -1 follows what the
     // RadioReference record says, 0 and 1 are the user's own answer. Without
     // that a pre-checked toggle could not be turned off — assigning to the
     // property would destroy the binding that pre-checked it.
-    property bool partialEncAsDe: true
+    property int encryptionPolicy: 1
+    readonly property var encryptionPolicies: [qsTr("Keep talkgroups enabled"), qsTr("Exclude fully encrypted talkgroups"), qsTr("Exclude fully and partly encrypted talkgroups")]
+    onEncryptionPolicyChanged: refreshPlan()
+    ChoiceSheet {
+        id: encryptionPolicyChoices
+    }
     property int simulcastOverride: -1
     property int eskOverride: -1
 
@@ -61,8 +74,7 @@ Item {
     property string notice: ""
     property bool noticeIsProblem: false
 
-    readonly property bool systemLoaded: radioReference.systemDetails.sid !== undefined
-                                         && radioReference.systemDetails.sid > 0
+    readonly property bool systemLoaded: radioReference.systemDetails.sid !== undefined && radioReference.systemDetails.sid > 0
 
     // Whether the application key is the user's to supply — and so whether this
     // screen offers a field for it and names it as a possible culprit. A build
@@ -76,8 +88,8 @@ Item {
     // than the protocol enum keeps QML out of the business of tracking C
     // enumerator values.
     readonly property string typeDescr: {
-        var descr = radioReference.systemDetails.typeDescr
-        return descr !== undefined ? String(descr) : ""
+        var descr = radioReference.systemDetails.typeDescr;
+        return descr !== undefined ? String(descr) : "";
     }
     readonly property bool isP25: screen.typeDescr.indexOf("Project 25") >= 0
     readonly property bool isEdacs: screen.typeDescr.indexOf("EDACS") >= 0
@@ -87,12 +99,12 @@ Item {
     readonly property var siteList: radioReference.sites
 
     onSiteListChanged: {
-        screen.simulcastOverride = -1
-        screen.eskOverride = -1
+        screen.simulcastOverride = -1;
+        screen.eskOverride = -1;
         // Belongs to the system in hand like the two overrides do, not to the
         // screen: the back row makes "system A, back, system B" one visit, and
         // A's answer would otherwise be written into B's import provenance.
-        screen.partialEncAsDe = true
+        screen.encryptionPolicy = 1;
         // A single-site trunked system has exactly one right answer, so give
         // it: the preview and the Import button light up without asking for a
         // tap on the only row there is. Conventional lists stay untouched —
@@ -104,8 +116,8 @@ Item {
         //
         // Assigned once rather than cleared and then filled: every write to
         // selectedSites runs refreshPlan(), and that builds both CSVs.
-        screen.selectedSites = (radioReference.trunked && screen.siteList.length === 1) ? [0] : []
-        screen.refreshPlan()
+        screen.selectedSites = (radioReference.trunked && screen.siteList.length === 1) ? [0] : [];
+        screen.refreshPlan();
     }
 
     // What the RadioReference record itself says, which is where the toggles
@@ -113,18 +125,17 @@ Item {
     // site on this system": a system can have one simulcast cell and five
     // ordinary ones, and the demodulator answer differs between them.
     readonly property bool recordSimulcast: {
-        var sites = radioReference.sites
-        var i = screen.selectedSites.length > 0 ? screen.selectedSites[0] : -1
-        return i >= 0 && i < sites.length && sites[i].simulcast === true
+        var sites = radioReference.sites;
+        var i = screen.selectedSites.length > 0 ? screen.selectedSites[0] : -1;
+        return i >= 0 && i < sites.length && sites[i].simulcast === true;
     }
-    readonly property bool simulcast: screen.simulcastOverride >= 0
-                                      ? screen.simulcastOverride === 1 : screen.recordSimulcast
+    readonly property bool simulcast: screen.simulcastOverride >= 0 ? screen.simulcastOverride === 1 : screen.recordSimulcast
     readonly property bool recordEsk: radioReference.systemDetails.esk === true
     readonly property bool esk: screen.eskOverride >= 0 ? screen.eskOverride === 1 : screen.recordEsk
 
     onSimulcastChanged: screen.refreshPlan()
+    onSimulcastOverrideChanged: screen.refreshPlan()
     onEskChanged: screen.refreshPlan()
-    onPartialEncAsDeChanged: screen.refreshPlan()
     onSelectedSitesChanged: screen.refreshPlan()
 
     /**
@@ -136,8 +147,8 @@ Item {
      * is a method, not a reading. It scans the file as text, comments included.
      */
     function rrLive() {
-        var rr = radioReference
-        return typeof rr.loadSystem === "function"
+        var rr = radioReference;
+        return typeof rr.loadSystem === "function";
     }
 
     /** Clear everything that belongs to one visit. */
@@ -153,94 +164,98 @@ Item {
         // it is what holds the credentials form open for the retype, and the
         // password lives nowhere else. An idle visit that ended on one keeps it.
         if (screen.rrLive() && (screen.systemLoaded || radioReference.busy))
-            radioReference.closeSystem()
-        screen.sourceMode = 0
-        zipField.text = ""
-        sidField.text = ""
-        screen.browseCoid = 1
-        screen.browseCountryName = qsTr("United States")
-        screen.browseStid = -1
-        screen.browseStateName = ""
-        screen.browseCtid = -1
-        screen.browseCountyName = ""
-        screen.selectedSites = []
-        screen.partialEncAsDe = true
-        screen.simulcastOverride = -1
-        screen.eskOverride = -1
-        screen.plan = ({})
-        screen.notice = ""
-        screen.noticeIsProblem = false
+            radioReference.closeSystem();
+        screen.sourceMode = 0;
+        zipField.text = "";
+        sidField.text = "";
+        screen.browseCoid = 1;
+        screen.browseCountryName = qsTr("United States");
+        screen.browseStid = -1;
+        screen.browseStateName = "";
+        screen.browseCtid = -1;
+        screen.browseCountyName = "";
+        screen.selectedSites = [];
+        screen.encryptionPolicy = 1;
+        screen.simulcastOverride = -1;
+        screen.eskOverride = -1;
+        screen.plan = ({});
+        screen.notice = "";
+        screen.noticeIsProblem = false;
     }
 
     // Each preview field with the value a screen that has no plan yet shows: a
     // bare `screen.plan.warnings.length` would throw before the first preview.
     function planOk() {
-        return screen.plan.ok === true
+        return screen.plan.ok === true;
     }
 
     function planBlockedReason() {
-        return screen.plan.blockedReason !== undefined ? screen.plan.blockedReason : ""
+        return screen.plan.blockedReason !== undefined ? screen.plan.blockedReason : "";
     }
 
     // The one blocked plan that is a question, not a refusal: no site picked yet.
     // It is also the state a SUCCESSFUL import leaves behind, which is why it must
     // not read as an error.
     function planAwaitingSelection() {
-        return screen.plan.awaitingSelection === true
+        return screen.plan.awaitingSelection === true;
     }
 
     function planWarnings() {
-        return screen.plan.warnings !== undefined ? screen.plan.warnings : []
+        return screen.plan.warnings !== undefined ? screen.plan.warnings : [];
     }
 
     function planField(key, fallback) {
-        return screen.plan[key] !== undefined ? screen.plan[key] : fallback
+        return screen.plan[key] !== undefined ? screen.plan[key] : fallback;
     }
 
     function systemName() {
-        var name = radioReference.systemDetails.name
-        return name !== undefined ? name : ""
+        var name = radioReference.systemDetails.name;
+        return name !== undefined ? name : "";
     }
 
     function refreshPlan() {
+        planRevision++;
         if (!screen.rrLive()) {
-            screen.plan = ({})
-            return
+            screen.plan = ({});
+            return;
         }
-        screen.plan = radioReference.buildImportPlan(screen.selectedSites, {
-                                                         "partialEncAsDe": screen.partialEncAsDe,
-                                                         "simulcast": screen.simulcast,
-                                                         "esk": screen.esk
-                                                     })
+        var options = {
+            "eachSite": screen.eachSite,
+            "encryptionPolicy": screen.encryptionPolicy,
+            "esk": screen.esk
+        };
+        if (screen.simulcastOverride >= 0)
+            options.simulcast = screen.simulcastOverride === 1;
+        screen.plan = radioReference.buildImportPlan(screen.selectedSites, options);
     }
 
     function siteSelected(index) {
         for (var i = 0; i < screen.selectedSites.length; i++) {
             if (screen.selectedSites[i] === index)
-                return true
+                return true;
         }
-        return false
+        return false;
     }
 
     // A trunked import is one site, so a tap replaces the selection; a
     // conventional one is a set of repeaters, so a tap adds or removes.
     function toggleSite(index) {
-        if (!radioReference.conventional) {
-            screen.selectedSites = [index]
-            return
+        if (!radioReference.conventional && !screen.eachSite) {
+            screen.selectedSites = [index];
+            return;
         }
-        var next = []
-        var found = false
+        var next = [];
+        var found = false;
         for (var i = 0; i < screen.selectedSites.length; i++) {
             if (screen.selectedSites[i] === index) {
-                found = true
-                continue
+                found = true;
+                continue;
             }
-            next.push(screen.selectedSites[i])
+            next.push(screen.selectedSites[i]);
         }
         if (!found)
-            next.push(index)
-        screen.selectedSites = next
+            next.push(index);
+        screen.selectedSites = next;
     }
 
     // Site rows carrying their index into radioReference.sites, sorted by
@@ -249,28 +264,31 @@ Item {
     // alphabetical nor geographic. Trunked sites keep the record's order, where
     // it carries meaning.
     readonly property var siteRows: {
-        var rows = []
-        var sites = radioReference.sites
+        var rows = [];
+        var sites = radioReference.sites;
         for (var i = 0; i < sites.length; i++)
-            rows.push({ "index": i, "site": sites[i] })
+            rows.push({
+                "index": i,
+                "site": sites[i]
+            });
         if (radioReference.conventional) {
             rows.sort(function (a, b) {
-                return String(a.site.descr).localeCompare(String(b.site.descr))
-            })
+                return String(a.site.descr).localeCompare(String(b.site.descr));
+            });
         }
-        return rows
+        return rows;
     }
 
     function clearNotice() {
-        screen.notice = ""
-        screen.noticeIsProblem = false
+        screen.notice = "";
+        screen.noticeIsProblem = false;
     }
 
     // ---- Actions on the model ----
 
     function verifyAccount() {
         if (screen.rrLive() && radioReference.credentialsReady)
-            radioReference.checkAccount()
+            radioReference.checkAccount();
     }
 
     /**
@@ -284,110 +302,108 @@ Item {
      * Move focus off first, which commits it, then check what the form holds.
      */
     function checkAccountTapped() {
-        credentialsColumn.forceActiveFocus()
+        credentialsColumn.forceActiveFocus();
         if (screen.rrLive() && !radioReference.credentialsReady) {
-            screen.notice = qsTr("Fill in every field above first.")
-            screen.noticeIsProblem = true
-            return
+            screen.notice = qsTr("Fill in every field above first.");
+            screen.noticeIsProblem = true;
+            return;
         }
-        screen.clearNotice()
-        screen.verifyAccount()
+        screen.clearNotice();
+        screen.verifyAccount();
     }
 
     function findByZip() {
-        screen.clearNotice()
-        Qt.inputMethod.hide()
+        screen.clearNotice();
+        Qt.inputMethod.hide();
         if (screen.rrLive())
-            radioReference.lookupZip(zipField.text)
+            radioReference.lookupZip(zipField.text);
     }
 
     function findBySid() {
-        screen.clearNotice()
-        Qt.inputMethod.hide()
-        var sid = parseInt(sidField.text, 10)
+        screen.clearNotice();
+        Qt.inputMethod.hide();
+        var sid = parseInt(sidField.text, 10);
         if (!isNaN(sid) && sid > 0 && screen.rrLive())
-            radioReference.loadSystem(sid)
+            radioReference.loadSystem(sid);
     }
 
     function openSystem(sid) {
-        screen.clearNotice()
+        screen.clearNotice();
         if (screen.rrLive())
-            radioReference.loadSystem(sid)
+            radioReference.loadSystem(sid);
     }
 
     function browseCountries() {
         if (screen.rrLive())
-            radioReference.loadCountries()
-        countrySheet.visible = true
+            radioReference.loadCountries();
+        countrySheet.visible = true;
     }
 
     function chooseCountry(row) {
-        screen.browseCoid = row.coid
-        screen.browseCountryName = row.name
-        screen.browseStid = -1
-        screen.browseStateName = ""
-        screen.browseCtid = -1
-        screen.browseCountyName = ""
-        countrySheet.visible = false
-        screen.browseStates()
+        screen.browseCoid = row.coid;
+        screen.browseCountryName = row.name;
+        screen.browseStid = -1;
+        screen.browseStateName = "";
+        screen.browseCtid = -1;
+        screen.browseCountyName = "";
+        countrySheet.visible = false;
+        screen.browseStates();
     }
 
     function browseStates() {
         if (screen.rrLive())
-            radioReference.loadCountryStates(screen.browseCoid)
-        stateSheet.visible = true
+            radioReference.loadCountryStates(screen.browseCoid);
+        stateSheet.visible = true;
     }
 
     function chooseState(row) {
-        screen.browseStid = row.stid
-        screen.browseStateName = row.name
-        screen.browseCtid = -1
-        screen.browseCountyName = ""
-        stateSheet.visible = false
-        screen.browseCounties()
+        screen.browseStid = row.stid;
+        screen.browseStateName = row.name;
+        screen.browseCtid = -1;
+        screen.browseCountyName = "";
+        stateSheet.visible = false;
+        screen.browseCounties();
     }
 
     function browseCounties() {
         if (screen.browseStid < 0)
-            return
+            return;
         if (screen.rrLive())
-            radioReference.loadStateCounties(screen.browseStid)
-        countySheet.visible = true
+            radioReference.loadStateCounties(screen.browseStid);
+        countySheet.visible = true;
     }
 
     function chooseCounty(row) {
-        screen.browseCtid = row.ctid
-        screen.browseCountyName = row.name
-        countySheet.visible = false
-        screen.clearNotice()
+        screen.browseCtid = row.ctid;
+        screen.browseCountyName = row.name;
+        countySheet.visible = false;
+        screen.clearNotice();
         if (screen.rrLive())
-            radioReference.loadCountySystems(screen.browseCtid)
+            radioReference.loadCountySystems(screen.browseCtid);
     }
 
     // getStateInfo answers with the whole state's system list, so this is one
     // round trip rather than a county the user would have to guess at first.
     function findStatewide() {
         if (screen.browseStid < 0)
-            return
-        screen.clearNotice()
+            return;
+        screen.clearNotice();
         if (screen.rrLive())
-            radioReference.loadStateSystems(screen.browseStid)
+            radioReference.loadStateSystems(screen.browseStid);
     }
 
     function doImport() {
         if (!screen.planOk() || !screen.rrLive())
-            return
+            return;
         // -1: this screen never writes a saved system. The wizard owns that, and
         // it is the half that knows whether it is editing a row or adding one.
-        var result = radioReference.performImport(screen.plan, screen.systemName(), -1)
+        var result = radioReference.performImport(screen.plan, screen.systemName(), -1);
         if (result.ok !== true) {
-            screen.notice = result.error === "import"
-                            ? qsTr("The generated files could not be added to your library.")
-                            : qsTr("The import could not be completed.")
-            screen.noticeIsProblem = true
-            return
+            screen.notice = result.error === "import" ? qsTr("The generated files could not be added to your library.") : qsTr("The import could not be completed.");
+            screen.noticeIsProblem = true;
+            return;
         }
-        screen.imported(result)
+        screen.imported(result);
     }
 
     Rectangle {
@@ -400,11 +416,9 @@ Item {
     // below are its only consumers and always will be: no other screen browses
     // places.
     //
-    // ModalSheet sizes its panel to its content and neither clips nor scrolls,
-    // so an uncapped list pushes the title off the top and everything else off
-    // the bottom with no way back to either. The cap and the Flickable are what
-    // keep the list inside the panel; written once because a level that got it
-    // wrong would be a sheet with no way out of it.
+    // Keep long browse lists bounded inside ModalSheet's outer scroll area so
+    // browsing rows does not immediately scroll the title out of sight. The
+    // outer sheet additionally handles short windows and the soft keyboard.
     component BrowseSheet: ModalSheet {
         id: browseSheet
 
@@ -418,26 +432,30 @@ Item {
         property int selectedId: -1
         /** Whether a row can be tapped. Off while a request is running. */
         property bool rowsEnabled: true
+        accessibleName: title
+        PlexTextField {
+            id: placeSearch
+            width: parent.width
+            label: qsTr("Search %1").arg(browseSheet.title)
+            placeholderText: label
+        }
 
         /** Emitted with the tapped row. */
         signal chosen(var row)
 
         // A list that has not arrived yet is empty, which is what the notice
         // below reports.
-        readonly property int rowCount: browseSheet.rows !== undefined && browseSheet.rows !== null
-                                        ? browseSheet.rows.length : 0
+        readonly property int rowCount: browseSheet.rows !== undefined && browseSheet.rows !== null ? browseSheet.rows.length : 0
 
         MicroLabel {
             text: browseSheet.title
         }
 
-        Flickable {
+        Item {
             width: parent.width
-            height: Math.min(listColumn.height, 46 * 5)
+            // ModalSheet owns scrolling; retain every choice in its content extent.
+            height: listColumn.height
             visible: browseSheet.rowCount > 0
-            clip: true
-            contentHeight: listColumn.height
-            boundsBehavior: Flickable.StopAtBounds
 
             Column {
                 id: listColumn
@@ -445,31 +463,49 @@ Item {
                 width: parent.width
 
                 Repeater {
-                    model: browseSheet.rows
+                    model: browseSheet.rows.filter(function (row) {
+                        return String(row.name).toLocaleLowerCase().indexOf(placeSearch.text.trim().toLocaleLowerCase()) >= 0;
+                    })
 
                     Item {
                         id: sheetRow
+                        required property int index
+                        objectName: "browseRow" + index
 
                         required property var modelData
 
                         width: listColumn.width
-                        height: 46
-
+                        height: Math.max(Theme.minimumTouchSize, placeLabel.implicitHeight + 24)
+                        activeFocusOnTab: browseSheet.rowsEnabled
+                        Accessible.role: Accessible.RadioButton
+                        Accessible.name: modelData.name
+                        readonly property bool navigationAllowed: Navigation.allows(sheetRow)
+                        Accessible.ignored: !navigationAllowed
+                        Accessible.checkable: true
+                        Accessible.checked: modelData[browseSheet.idKey] === browseSheet.selectedId
+                        Accessible.onPressAction: choose()
+                        function choose() {
+                            if (browseSheet.rowsEnabled && Navigation.allows(sheetRow))
+                                browseSheet.chosen(modelData);
+                        }
+                        Keys.onReturnPressed: choose()
+                        Keys.onSpacePressed: choose()
+                        FocusFrame {}
                         Text {
+                            id: placeLabel
                             anchors.left: parent.left
                             anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
                             text: sheetRow.modelData.name
                             font.family: Theme.sans
-                            font.pixelSize: 15
-                            color: sheetRow.modelData[browseSheet.idKey] === browseSheet.selectedId
-                                   ? Theme.cyan : Theme.textPrimary
-                            elide: Text.ElideRight
+                            font.pixelSize: Theme.fontSize(15)
+                            color: sheetRow.modelData[browseSheet.idKey] === browseSheet.selectedId ? Theme.cyan : Theme.textPrimary
+                            wrapMode: Text.Wrap
                         }
 
                         TapHandler {
                             enabled: browseSheet.rowsEnabled
-                            onTapped: browseSheet.chosen(sheetRow.modelData)
+                            onTapped: sheetRow.choose()
                         }
                     }
                 }
@@ -481,65 +517,15 @@ Item {
             visible: browseSheet.rowCount === 0
             text: qsTr("Loading…")
             font.family: Theme.sans
-            font.pixelSize: 13
+            font.pixelSize: Theme.fontSize(13)
             color: Theme.textSubdued
         }
     }
 
     // One browse row: label left, current choice and caret right.
-    component BrowseRow: Item {
-        id: browseRow
-
-        property string title: ""
+    component BrowseRow: DisclosureRow {
         property string value: ""
-        property bool showDivider: false
-        signal tapped()
-
-        width: parent ? parent.width : 0
-        height: 52
-        opacity: enabled ? 1.0 : 0.5
-
-        Text {
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            text: browseRow.title
-            font.family: Theme.sans
-            font.pixelSize: 15
-            color: Theme.textPrimary
-        }
-
-        Row {
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 6
-
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: browseRow.value
-                font.family: Theme.sans
-                font.pixelSize: 14
-                color: Theme.textSecondary
-            }
-
-            Caret {
-                anchors.verticalCenter: parent.verticalCenter
-                rotation: -90
-                color: Theme.textSubdued
-            }
-        }
-
-        Rectangle {
-            anchors.bottom: parent.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: 1
-            visible: browseRow.showDivider
-            color: Theme.divider
-        }
-
-        TapHandler {
-            onTapped: browseRow.tapped()
-        }
+        subtitle: value
     }
 
     // Header: back chevron, title.
@@ -552,21 +538,13 @@ Item {
         anchors.margins: Theme.screenPadding
         height: 46
 
-        Text {
+        IconButton {
             id: back
-
-            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-            objectName: "radioReferenceBack"
-
+            icon: "back"
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            text: "‹"
-            font.pixelSize: 28
-            color: Theme.textSecondary
-
-            TapHandler {
-                onTapped: screen.closed()
-            }
+            objectName: "radioReferenceBack"
+            onClicked: screen.closed()
         }
 
         Text {
@@ -575,7 +553,7 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: qsTr("RadioReference")
             font.family: Theme.sans
-            font.pixelSize: 22
+            font.pixelSize: Theme.fontSize(22)
             font.weight: Font.Bold
             font.letterSpacing: -0.22
             color: Theme.textPrimary
@@ -601,21 +579,14 @@ Item {
         // same set the form offers: a build that bakes the application key in,
         // with no override stored, leaves username and password as the two
         // possible culprits.
-        text: radioReference.errorIsSubscription
-              ? qsTr("This account's RadioReference premium subscription has expired.")
-              : radioReference.errorIsAuth
-                ? (screen.offersAppKey
-                   ? qsTr("RadioReference did not accept that username, password or application key.")
-                   : qsTr("RadioReference did not accept that username or password."))
-                : radioReference.errorText.length > 0 ? radioReference.errorText : screen.notice
+        text: radioReference.errorIsSubscription ? qsTr("This account's RadioReference premium subscription has expired.") : radioReference.errorIsAuth ? (screen.offersAppKey ? qsTr("RadioReference did not accept that username, password or application key.") : qsTr("RadioReference did not accept that username or password.")) : radioReference.errorText.length > 0 ? radioReference.errorText : screen.notice
         font.family: Theme.sans
-        font.pixelSize: 13
-        color: (radioReference.errorText.length > 0 || screen.noticeIsProblem)
-               ? Theme.magenta : Theme.textSubdued
+        font.pixelSize: Theme.fontSize(13)
+        color: (radioReference.errorText.length > 0 || screen.noticeIsProblem) ? Theme.magenta : Theme.textSubdued
         wrapMode: Text.Wrap
     }
 
-    Flickable {
+    PlexFlickable {
         id: body
 
         anchors.top: noticeLine.visible ? noticeLine.bottom : header.bottom
@@ -630,9 +601,9 @@ Item {
         Column {
             id: content
 
-            x: Theme.screenPadding
+            x: (parent.width - width) / 2
             y: Theme.screenPadding
-            width: parent.width - 2 * Theme.screenPadding
+            width: Math.min(Theme.formWidth, parent.width - 2 * Theme.screenPadding)
             spacing: Theme.gap
             // Deliberately NOT `enabled: !radioReference.busy`. `enabled` is
             // hierarchical, so binding it on a container fights the explicit
@@ -662,8 +633,7 @@ Item {
                 // password would have nowhere left to be retyped. Both account
                 // errors qualify: auth wants a correction, an expired
                 // subscription wants a different account.
-                visible: !radioReference.credentialsReady || radioReference.errorIsAuth
-                         || radioReference.errorIsSubscription
+                visible: !radioReference.credentialsReady || radioReference.errorIsAuth || radioReference.errorIsSubscription
                 height: credentialsColumn.height + 2 * Theme.cardPadding
 
                 Column {
@@ -679,16 +649,10 @@ Item {
                         text: qsTr("RadioReference account")
                     }
 
-                    Text {
-                        width: parent.width
-                        text: qsTr("Username")
-                        font.family: Theme.sans
-                        font.pixelSize: 13
-                        color: Theme.textSecondary
-                    }
-
                     PlexTextField {
                         id: usernameField
+                        label: qsTr("RadioReference username")
+                        nextField: passwordField
 
                         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                         objectName: "radioReferenceUsernameField"
@@ -700,16 +664,9 @@ Item {
                         onEditingFinished: prefs.rrUsername = text
                     }
 
-                    Text {
-                        width: parent.width
-                        text: qsTr("Password")
-                        font.family: Theme.sans
-                        font.pixelSize: 13
-                        color: Theme.textSecondary
-                    }
-
                     PlexTextField {
                         id: passwordField
+                        label: qsTr("Password")
 
                         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                         objectName: "radioReferencePasswordField"
@@ -720,14 +677,13 @@ Item {
                         // field validators too.
                         input.echoMode: TextInput.Password
                         placeholderText: qsTr("password")
-                        inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                                          | Qt.ImhSensitiveData
+                        inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText | Qt.ImhSensitiveData
                         // Commits on Enter or focus loss, never per keystroke,
                         // and the password goes nowhere but memory.
                         onEditingFinished: {
                             if (screen.rrLive())
-                                radioReference.setPassword(text)
-                            screen.verifyAccount()
+                                radioReference.setPassword(text);
+                            screen.verifyAccount();
                         }
                     }
 
@@ -735,7 +691,7 @@ Item {
                         width: parent.width
                         text: qsTr("The password is kept only for this session and is never saved. A RadioReference premium subscription is required.")
                         font.family: Theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
@@ -745,12 +701,13 @@ Item {
                         visible: screen.offersAppKey
                         text: qsTr("Application key")
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSecondary
                     }
 
                     PlexTextField {
                         id: appKeyField
+                        label: qsTr("RadioReference application key")
 
                         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                         objectName: "radioReferenceAppKeyField"
@@ -766,8 +723,8 @@ Item {
                         // check fires the same way the password field's does, so
                         // whichever field is answered last completes the form.
                         onEditingFinished: {
-                            prefs.rrAppKey = text
-                            screen.verifyAccount()
+                            prefs.rrAppKey = text;
+                            screen.verifyAccount();
                         }
                     }
 
@@ -778,10 +735,12 @@ Item {
                         textFormat: Text.StyledText
                         linkColor: Theme.cyan
                         font.family: Theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
-                        onLinkActivated: function (link) { Qt.openUrlExternally(link) }
+                        onLinkActivated: function (link) {
+                            Qt.openUrlExternally(link);
+                        }
                     }
 
                     OutlineButton {
@@ -835,7 +794,18 @@ Item {
                         width: parent.width
                         model: [qsTr("Zip code"), qsTr("Browse"), qsTr("System ID")]
                         currentIndex: screen.sourceMode
-                        onSelected: function (index) { screen.sourceMode = index }
+                        onSelected: function (index) {
+                            screen.sourceMode = index;
+                        }
+                    }
+
+                    OutlineButton {
+                        objectName: "radioReferenceNearby"
+                        width: parent.width
+                        text: qsTr("Use my location")
+                        visible: decoderHost.locationSupported
+                        enabled: !radioReference.busy
+                        onClicked: radioReference.lookupNearby()
                     }
 
                     // Zip code
@@ -846,6 +816,7 @@ Item {
 
                         PlexTextField {
                             id: zipField
+                            label: qsTr("ZIP code")
 
                             // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                             objectName: "radioReferenceZipField"
@@ -861,7 +832,7 @@ Item {
                                 bottom: 0
                                 top: 99999
                             }
-                            onEditingFinished: screen.findByZip()
+                            onAccepted: screen.findByZip()
                         }
 
                         OutlineButton {
@@ -926,6 +897,7 @@ Item {
 
                         PlexTextField {
                             id: sidField
+                            label: qsTr("RadioReference system ID")
 
                             // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                             objectName: "radioReferenceSidField"
@@ -938,7 +910,7 @@ Item {
                                 bottom: 1
                                 top: 999999
                             }
-                            onEditingFinished: screen.findBySid()
+                            onAccepted: screen.findBySid()
                         }
 
                         OutlineButton {
@@ -990,9 +962,7 @@ Item {
                             required property int index
 
                             title: systemRow.modelData.name
-                            subtitle: systemRow.modelData.city.length > 0
-                                      ? systemRow.modelData.city + " · SID " + systemRow.modelData.sid
-                                      : "SID " + systemRow.modelData.sid
+                            subtitle: systemRow.modelData.city.length > 0 ? systemRow.modelData.city + " · SID " + systemRow.modelData.sid : "SID " + systemRow.modelData.sid
                             showDivider: systemRow.index < radioReference.systems.length - 1
                             tapEnabled: !radioReference.busy
                             onTapped: screen.openSystem(systemRow.modelData.sid)
@@ -1009,10 +979,27 @@ Item {
             // from one search.
             Item {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                id: backToResults
                 objectName: "radioReferenceBackToResults"
+                Accessible.role: Accessible.Button
+                Accessible.name: radioReference.systems.length > 0 ? qsTr("All systems") : qsTr("Search")
+                readonly property bool navigationAllowed: Navigation.allows(backToResults)
+                Accessible.ignored: !navigationAllowed
+                Accessible.onPressAction: goBack()
+                activeFocusOnTab: !radioReference.busy && Navigation.allows(backToResults)
+                Keys.onReturnPressed: goBack()
+                Keys.onSpacePressed: goBack()
+                FocusFrame {}
+                function goBack() {
+                    if (radioReference.busy || !Navigation.allows(backToResults))
+                        return;
+                    screen.clearNotice();
+                    if (screen.rrLive())
+                        radioReference.closeSystem();
+                }
 
                 width: parent.width
-                height: 40
+                height: Math.max(48, Theme.fontSize(14) + 24)
                 visible: screen.systemLoaded
                 opacity: radioReference.busy ? 0.5 : 1.0
 
@@ -1024,7 +1011,7 @@ Item {
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
                         text: "‹"
-                        font.pixelSize: 22
+                        font.pixelSize: Theme.fontSize(22)
                         color: Theme.cyan
                     }
 
@@ -1034,7 +1021,7 @@ Item {
                         // is in hand, otherwise the find-a-system panel.
                         text: radioReference.systems.length > 0 ? qsTr("All systems") : qsTr("Search")
                         font.family: Theme.sans
-                        font.pixelSize: 14
+                        font.pixelSize: Theme.fontSize(14)
                         font.weight: Font.DemiBold
                         color: Theme.cyan
                     }
@@ -1043,9 +1030,7 @@ Item {
                 TapHandler {
                     enabled: !radioReference.busy
                     onTapped: {
-                        screen.clearNotice()
-                        if (screen.rrLive())
-                            radioReference.closeSystem()
+                        backToResults.goBack();
                     }
                 }
             }
@@ -1072,7 +1057,7 @@ Item {
                         width: parent.width
                         text: screen.systemName()
                         font.family: Theme.sans
-                        font.pixelSize: 17
+                        font.pixelSize: Theme.fontSize(17)
                         font.weight: Font.Bold
                         color: Theme.textPrimary
                         wrapMode: Text.Wrap
@@ -1081,16 +1066,16 @@ Item {
                     Text {
                         width: parent.width
                         text: {
-                            var details = radioReference.systemDetails
-                            var parts = []
+                            var details = radioReference.systemDetails;
+                            var parts = [];
                             if (details.typeDescr !== undefined && String(details.typeDescr).length > 0)
-                                parts.push(details.typeDescr)
+                                parts.push(details.typeDescr);
                             if (details.flavorDescr !== undefined && String(details.flavorDescr).length > 0)
-                                parts.push(details.flavorDescr)
-                            return parts.join(" · ")
+                                parts.push(details.flavorDescr);
+                            return parts.join(" · ");
                         }
                         font.family: Theme.mono
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
@@ -1099,18 +1084,17 @@ Item {
                         width: parent.width
                         visible: radioReference.talkgroupSummary.count !== undefined
                         text: {
-                            var summary = radioReference.talkgroupSummary
-                            var line = summary.count === 1 ? qsTr("1 talkgroup")
-                                                           : qsTr("%1 talkgroups").arg(summary.count)
+                            var summary = radioReference.talkgroupSummary;
+                            var line = summary.count === 1 ? qsTr("1 talkgroup") : qsTr("%1 talkgroups").arg(summary.count);
                             if (summary.encCount > 0)
-                                line += " · " + qsTr("%1 encrypted").arg(summary.encCount)
-                            var categories = summary.categories !== undefined ? summary.categories : []
+                                line += " · " + qsTr("%1 encrypted").arg(summary.encCount);
+                            var categories = summary.categories !== undefined ? summary.categories : [];
                             if (categories.length > 0)
-                                line += " · " + qsTr("%1 categories").arg(categories.length)
-                            return line
+                                line += " · " + qsTr("%1 categories").arg(categories.length);
+                            return line;
                         }
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSecondary
                         wrapMode: Text.Wrap
                     }
@@ -1141,10 +1125,24 @@ Item {
                         bottomPadding: 6
                     }
 
+                    PlexTextField {
+                        width: parent.width - 2 * Theme.cardPadding
+                        x: Theme.cardPadding
+                        placeholderText: radioReference.conventional ? qsTr("Search repeaters") : qsTr("Search sites")
+                        text: screen.siteSearch
+                        onTextChanged: screen.siteSearch = text
+                    }
                     // Two things a conventional import has to say, because
                     // neither is guessable from the list itself. The third — that
                     // scanning needs an RTL-SDR or a rigctl radio — rides in
                     // plan.warnings with every other warning.
+                    OutlineButton {
+                        width: parent.width
+                        visible: radioReference.trunked
+                        text: (screen.eachSite ? "✓ " : "") + qsTr("Import each selected site as its own system")
+                        onClicked: screen.eachSite = !screen.eachSite
+                    }
+
                     Text {
                         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                         objectName: "radioReferenceRepeaterCount"
@@ -1156,7 +1154,7 @@ Item {
                         visible: radioReference.conventional
                         text: qsTr("%1 repeater(s) selected").arg(screen.selectedSites.length)
                         font.family: Theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
@@ -1166,16 +1164,18 @@ Item {
                         leftPadding: Theme.cardPadding
                         rightPadding: Theme.cardPadding
                         bottomPadding: 6
-                        visible: radioReference.conventional && screen.selectedSites.length === 1
-                        text: qsTr("One repeater tunes straight to its frequency — no scan list is written, which is what a single repeater wants.")
+                        visible: radioReference.conventional
+                        text: qsTr("One selected repeater tunes directly. Multiple selected repeaters create a scan list.")
                         font.family: Theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
 
                     Repeater {
-                        model: screen.siteRows
+                        model: screen.siteRows.filter(function (row) {
+                            return String(row.site.descr).toLocaleLowerCase().indexOf(screen.siteSearch.trim().toLocaleLowerCase()) >= 0;
+                        })
 
                         Item {
                             id: siteRow
@@ -1185,9 +1185,24 @@ Item {
                             readonly property bool chosen: screen.siteSelected(siteRow.modelData.index)
 
                             width: sitesColumn.width
-                            height: 58
-
+                            height: Math.max(Theme.minimumTouchSize, siteLabels.implicitHeight + 24)
+                            activeFocusOnTab: !radioReference.busy
+                            Accessible.role: radioReference.conventional || screen.eachSite ? Accessible.CheckBox : Accessible.RadioButton
+                            Accessible.name: modelData.site.descr
+                            readonly property bool navigationAllowed: Navigation.allows(siteRow)
+                            Accessible.ignored: !navigationAllowed
+                            Accessible.checkable: true
+                            Accessible.checked: chosen
+                            Accessible.onPressAction: choose()
+                            function choose() {
+                                if (!radioReference.busy && Navigation.allows(siteRow))
+                                    screen.toggleSite(modelData.index);
+                            }
+                            Keys.onReturnPressed: choose()
+                            Keys.onSpacePressed: choose()
+                            FocusFrame {}
                             Column {
+                                id: siteLabels
                                 anchors.left: parent.left
                                 anchors.right: siteMark.left
                                 anchors.leftMargin: Theme.cardPadding
@@ -1200,15 +1215,12 @@ Item {
                                     // A conventional repeater has no meaningful
                                     // site number — the value is a DMR-ID-like
                                     // identifier — so it is named, not numbered.
-                                    text: radioReference.conventional
-                                          ? siteRow.modelData.site.descr
-                                          : qsTr("Site %1 · %2").arg(siteRow.modelData.site.siteNumber)
-                                                                .arg(siteRow.modelData.site.descr)
+                                    text: radioReference.conventional ? siteRow.modelData.site.descr : qsTr("Site %1 · %2").arg(siteRow.modelData.site.siteNumber).arg(siteRow.modelData.site.descr)
                                     font.family: Theme.sans
-                                    font.pixelSize: 15
+                                    font.pixelSize: Theme.fontSize(15)
                                     font.weight: Font.DemiBold
                                     color: siteRow.chosen ? Theme.cyan : Theme.textPrimary
-                                    elide: Text.ElideRight
+                                    wrapMode: Text.Wrap
                                 }
 
                                 Text {
@@ -1218,26 +1230,24 @@ Item {
                                     // has no field for it, because DMR reads it
                                     // off air.
                                     text: {
-                                        var site = siteRow.modelData.site
+                                        var site = siteRow.modelData.site;
                                         if (radioReference.conventional) {
-                                            var parts = []
+                                            var parts = [];
                                             if (site.freqMhz.length > 0)
-                                                parts.push(site.freqMhz + " MHz")
+                                                parts.push(site.freqMhz + " MHz");
                                             if (site.colorCode.length > 0)
-                                                parts.push(qsTr("CC %1").arg(site.colorCode))
-                                            return parts.join(" · ")
+                                                parts.push(qsTr("CC %1").arg(site.colorCode));
+                                            return parts.join(" · ");
                                         }
-                                        var line = site.freqCount === 1
-                                                   ? qsTr("1 frequency")
-                                                   : qsTr("%1 frequencies").arg(site.freqCount)
+                                        var line = site.freqCount === 1 ? qsTr("1 frequency") : qsTr("%1 frequencies").arg(site.freqCount);
                                         if (site.controlFreqMhz.length > 0)
-                                            line += " · " + qsTr("control %1 MHz").arg(site.controlFreqMhz)
-                                        return line
+                                            line += " · " + qsTr("control %1 MHz").arg(site.controlFreqMhz);
+                                        return line;
                                     }
                                     font.family: Theme.sans
-                                    font.pixelSize: 12
+                                    font.pixelSize: Theme.fontSize(12)
                                     color: Theme.textSubdued
-                                    elide: Text.ElideRight
+                                    wrapMode: Text.Wrap
                                 }
                             }
 
@@ -1252,7 +1262,7 @@ Item {
                                 anchors.verticalCenter: parent.verticalCenter
                                 width: 18
                                 height: 18
-                                radius: 9
+                                radius: radioReference.conventional || screen.eachSite ? 3 : 9
                                 color: siteRow.chosen ? Theme.cyan : "transparent"
                                 border.width: 1
                                 border.color: siteRow.chosen ? Theme.cyan : Theme.controlBorder
@@ -1269,7 +1279,7 @@ Item {
 
                             TapHandler {
                                 enabled: !radioReference.busy
-                                onTapped: screen.toggleSite(siteRow.modelData.index)
+                                onTapped: siteRow.choose()
                             }
                         }
                     }
@@ -1300,35 +1310,36 @@ Item {
                         bottomPadding: 6
                     }
 
-                    ToggleRow {
+                    DisclosureRow {
                         objectName: "radioReferencePartialEncRow"
-                        title: qsTr("Treat partly encrypted as encrypted")
-                        subtitle: qsTr("Blocks those talkgroups instead of playing noise")
-                        checked: screen.partialEncAsDe
+                        title: screen.encryptionPolicies[screen.encryptionPolicy - 1]
+                        subtitle: screen.encryptionPolicy === 1 ? qsTr("Individual calls follow your listening policy and available decryption keys.") : qsTr("Exclude these talkgroups entirely, including their unencrypted calls. Adding keys will not unblock them.")
                         showDivider: screen.isP25 || screen.isEdacs
-                        onToggled: function (state) { screen.partialEncAsDe = state }
+                        onTapped: encryptionPolicyChoices.open(qsTr("Listening policy"), screen.encryptionPolicies, function (index) {
+                            screen.encryptionPolicy = index + 1;
+                        })
                     }
 
                     ToggleRow {
                         objectName: "radioReferenceSimulcastRow"
                         visible: screen.isP25
                         title: qsTr("Simulcast (LSM/QPSK)")
-                        subtitle: screen.recordSimulcast
-                                  ? qsTr("Detected from the RadioReference site record")
-                                  : qsTr("Turn on if standard P25 never locks here")
+                        subtitle: screen.recordSimulcast ? qsTr("Detected from the RadioReference site record") : qsTr("Turn on if standard P25 never locks here")
                         checked: screen.simulcast
-                        onToggled: function (state) { screen.simulcastOverride = state ? 1 : 0 }
+                        onToggled: function (state) {
+                            screen.simulcastOverride = state ? 1 : 0;
+                        }
                     }
 
                     ToggleRow {
                         objectName: "radioReferenceEskRow"
                         visible: screen.isEdacs
                         title: qsTr("ESK")
-                        subtitle: screen.recordEsk
-                                  ? qsTr("Detected from the RadioReference system flavor")
-                                  : qsTr("EDACS scrambling — turn on if this system uses it")
+                        subtitle: screen.recordEsk ? qsTr("Detected from the RadioReference system flavor") : qsTr("EDACS scrambling — turn on if this system uses it")
                         checked: screen.esk
-                        onToggled: function (state) { screen.eskOverride = state ? 1 : 0 }
+                        onToggled: function (state) {
+                            screen.eskOverride = state ? 1 : 0;
+                        }
                     }
                 }
             }
@@ -1359,21 +1370,21 @@ Item {
                         width: parent.width
                         visible: screen.planOk()
                         text: {
-                            var parts = []
-                            var freq = screen.planField("freqMhz", "")
+                            var parts = [];
+                            var freq = screen.planField("freqMhz", "");
                             if (freq.length > 0)
-                                parts.push(freq + " MHz")
-                            var flag = screen.planField("decodeFlag", "")
+                                parts.push(freq + " MHz");
+                            var flag = screen.planField("decodeFlag", "");
                             if (flag.length > 0)
-                                parts.push(Util.decodeLabel(flag))
+                                parts.push(Util.decodeLabel(flag));
                             if (screen.planField("trunking", false))
-                                parts.push(qsTr("trunked"))
+                                parts.push(qsTr("trunked"));
                             if (screen.planField("scanList", false))
-                                parts.push(qsTr("scan list"))
-                            return parts.join(" · ")
+                                parts.push(qsTr("scan list"));
+                            return parts.join(" · ");
                         }
                         font.family: Theme.mono
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSecondary
                         wrapMode: Text.Wrap
                     }
@@ -1382,17 +1393,15 @@ Item {
                         width: parent.width
                         visible: screen.planOk()
                         text: {
-                            var files = []
+                            var files = [];
                             if (screen.planField("groupCsvText", "").length > 0)
-                                files.push(qsTr("talkgroup list"))
+                                files.push(qsTr("talkgroup list"));
                             if (screen.planField("chanCsvText", "").length > 0)
-                                files.push(qsTr("channel map"))
-                            return files.length > 0
-                                   ? qsTr("Generates: %1").arg(files.join(" · "))
-                                   : qsTr("No files — the session simply tunes this frequency.")
+                                files.push(qsTr("channel map"));
+                            return files.length > 0 ? qsTr("Generates: %1").arg(files.join(" · ")) : qsTr("No files — the session simply tunes this frequency.");
                         }
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
@@ -1410,7 +1419,7 @@ Item {
                         visible: screen.planBlockedReason().length > 0
                         text: screen.planBlockedReason()
                         font.family: Theme.sans
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontSize(13)
                         color: screen.planAwaitingSelection() ? Theme.textSubdued : Theme.magenta
                         wrapMode: Text.Wrap
                     }
@@ -1420,7 +1429,7 @@ Item {
                         visible: radioReference.systemDetails.hasCustomBandplan === true
                         text: qsTr("This system publishes a custom band plan, which this import does not carry. Import a P25 band plan CSV (Imports → P25 band plan) if grants do not tune.")
                         font.family: Theme.sans
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontSize(12)
                         color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
@@ -1436,7 +1445,7 @@ Item {
                             width: previewColumn.width
                             text: "• " + warningLine.modelData
                             font.family: Theme.sans
-                            font.pixelSize: 12
+                            font.pixelSize: Theme.fontSize(12)
                             color: Theme.textSubdued
                             wrapMode: Text.Wrap
                         }
@@ -1461,8 +1470,48 @@ Item {
         // Disabled rather than hidden: a button that vanishes when a site is
         // deselected reads as the screen breaking.
         enabled: !radioReference.busy && screen.planOk() && screen.planBlockedReason().length === 0
-        text: qsTr("Import this system")
-        onClicked: screen.doImport()
+        text: qsTr("Review import · %1 selected").arg(screen.selectedSites.length)
+        onClicked: {
+            screen.reviewedRevision = screen.planRevision;
+            reviewSheet.visible = true;
+        }
+    }
+
+    ModalSheet {
+        id: reviewSheet
+        accessibleName: qsTr("Review import")
+        Text {
+            width: parent.width
+            text: screen.systemName() + "\n" + screen.typeDescr + "\n" + screen.selectedSites.map(function (index) {
+                return screen.siteList[index] ? screen.siteList[index].descr : "";
+            }).join("\n") + "\n\n" + screen.encryptionPolicies[screen.encryptionPolicy - 1] + (screen.encryptionPolicy === 1 ? qsTr("\nCalls follow listening policy and available keys.") : qsTr("\nExcluded talkgroups cannot play even their unencrypted calls.")) + (screen.isP25 ? "\n" + (screen.simulcast ? qsTr("P25 simulcast (LSM/QPSK)") : qsTr("Standard P25")) : "") + (radioReference.conventional && screen.selectedSites.length > 1 ? qsTr("\nA USB RTL-SDR or RTL-TCP source is required to scan these repeaters.") : "") + "\n\n" + qsTr("Generated files:") + (screen.plan.groupCsvText ? qsTr("\nTalkgroup list") : "") + (screen.plan.chanCsvText ? qsTr("\nChannel map") : "")
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: Theme.textPrimary
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(15)
+        }
+        Text {
+            width: parent.width
+            visible: screen.reviewedRevision !== screen.planRevision
+            text: qsTr("The selection changed. Close this review and review the updated import.")
+            wrapMode: Text.Wrap
+            color: Theme.alert
+        }
+        GradientButton {
+            width: parent.width
+            text: qsTr("Import")
+            enabled: screen.reviewedRevision === screen.planRevision && screen.planOk() && !radioReference.busy
+            onClicked: {
+                reviewSheet.visible = false;
+                screen.doImport();
+            }
+        }
+        OutlineButton {
+            width: parent.width
+            text: qsTr("Back to selection")
+            onClicked: reviewSheet.visible = false
+        }
     }
 
     // ---- Browse sheets ----
@@ -1477,7 +1526,7 @@ Item {
         selectedId: screen.browseCoid
         rowsEnabled: !radioReference.busy
         onChosen: function (row) {
-            screen.chooseCountry(row)
+            screen.chooseCountry(row);
         }
     }
 
@@ -1491,7 +1540,7 @@ Item {
         selectedId: screen.browseStid
         rowsEnabled: !radioReference.busy
         onChosen: function (row) {
-            screen.chooseState(row)
+            screen.chooseState(row);
         }
     }
 
@@ -1505,47 +1554,33 @@ Item {
         selectedId: screen.browseCtid
         rowsEnabled: !radioReference.busy
         onChosen: function (row) {
-            screen.chooseCounty(row)
+            screen.chooseCounty(row);
         }
     }
 
-    // Declared after the sheets so it also covers one that is still open when a
-    // request starts. Covering is not what stops the taps, though — the layers
-    // underneath disable themselves on `busy`.
-    Rectangle {
-        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+    ModalSheet {
         objectName: "radioReferenceBusyOverlay"
-
-        anchors.fill: parent
+        accessibleName: qsTr("RadioReference request")
         visible: radioReference.busy
-        color: Qt.alpha("#000000", 0.5)
-
-        Column {
-            anchors.centerIn: parent
-            width: parent.width - 4 * Theme.screenPadding
-            spacing: 14
-
-            Text {
-                width: parent.width
-                text: radioReference.statusText.length > 0
-                      ? radioReference.statusText : qsTr("Talking to RadioReference…")
-                font.family: Theme.sans
-                font.pixelSize: 15
-                color: Theme.textPrimary
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.Wrap
-            }
-
-            OutlineButton {
-                // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                objectName: "radioReferenceCancelButton"
-
-                width: parent.width
-                text: qsTr("Cancel")
-                onClicked: {
-                    if (screen.rrLive())
-                        radioReference.cancel()
-                }
+        dismissHandler: function () {
+            if (screen.rrLive())
+                radioReference.cancel();
+        }
+        Text {
+            width: parent.width
+            text: radioReference.statusText.length ? radioReference.statusText : qsTr("Talking to RadioReference…")
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(15)
+            color: Theme.textPrimary
+            wrapMode: Text.Wrap
+        }
+        OutlineButton {
+            objectName: "radioReferenceCancelButton"
+            width: parent.width
+            text: qsTr("Cancel")
+            onClicked: {
+                if (screen.rrLive())
+                    radioReference.cancel();
             }
         }
     }

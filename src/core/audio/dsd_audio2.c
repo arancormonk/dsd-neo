@@ -16,6 +16,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -273,7 +274,7 @@ DSD_AUDIO2_INTERNAL int
 dsd_p25_algid_can_decrypt(const dsd_state* state) {
     int algid = state->payload_algid;
     if (algid == 0xAA || algid == 0x81 || algid == 0x9F) {
-        return state->R != 0;
+        return dsd_key_scalar_present(state, 0);
     }
     if (algid == 0x84 || algid == 0x89) {
         return state->aes_key_loaded[0] == 1;
@@ -284,7 +285,7 @@ dsd_p25_algid_can_decrypt(const dsd_state* state) {
 DSD_AUDIO2_INTERNAL int
 dsd_nxdn_can_decrypt(const dsd_state* state) {
     if (state->nxdn_cipher_type == 0x1 || state->nxdn_cipher_type == 0x2) {
-        return state->R != 0;
+        return dsd_key_scalar_present(state, 0);
     }
     if (state->nxdn_cipher_type == 0x3) {
         return state->aes_key_loaded[0] == 1;
@@ -316,7 +317,8 @@ dsd_fdma_crypto_muted(const dsd_opts* opts, const dsd_state* state, int include_
         return 0;
     }
 
-    const int can_p25 = dsd_p25_algid_can_decrypt(state) || (state->payload_algid == 0x83 && state->R != 0);
+    const int can_p25 =
+        dsd_p25_algid_can_decrypt(state) || (state->payload_algid == 0x83 && dsd_key_scalar_present(state, 0));
     return (can_p25 || (include_nxdn && dsd_nxdn_can_decrypt(state))) ? 0 : 1;
 }
 
@@ -1116,14 +1118,20 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
     encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
 
     if (!encL && opts->slot1_on != 0) {
-        dsd_output_float_block(opts, state, state->f_l, 160, 1);
+        if (opts->audio_out == 1 && opts->pulse_digi_out_channels == 2) {
+            float stereo[320];
+            audio_mono_to_stereo_f32(state->f_l, stereo, 160);
+            dsd_output_float_block(opts, state, stereo, 160, 2);
+        } else {
+            dsd_output_float_block(opts, state, state->f_l, 160, 1);
+        }
     }
     dsd_audio_maybe_reset_output_ring_left(state);
     DSD_MEMSET(state->f_l, 0.0f, sizeof(state->f_l));
     DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
 }
 
-//Mono - Short (SB16LE) - Drop-in replacement for playSyntesizedVoice, but easier to manipulate
+// Mono source, formatted for the device opened at startup (which stays stereo in AUTO/mixed scans).
 void
 playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     size_t len = state->audio_out_idx;
@@ -1140,7 +1148,13 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
         if (opts->use_hpf_d == 1) {
             hpf_dL(state, mono_samp, (int)len);
         }
-        dsd_output_s16_block(opts, state, mono_samp, len, 1);
+        if (opts->audio_out == 1 && opts->pulse_digi_out_channels == 2) {
+            short stereo[1920];
+            audio_mono_to_stereo_s16(mono_samp, stereo, len);
+            dsd_output_s16_block(opts, state, stereo, len, 2);
+        } else {
+            dsd_output_s16_block(opts, state, mono_samp, len, 1);
+        }
         dsd_write_static_wav_from_mono(opts, mono_samp, len);
     }
     dsd_audio_reset_short_mono_left_working_state(state);
@@ -1196,9 +1210,9 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     unsigned long TGL = dsd_audio_call_target(state, 0U);
     unsigned long TGR = dsd_audio_call_target(state, 1U);
 
-    (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
-
     dsd_dmr_apply_tg_hold_and_slot_preference_ss3(opts, state, TGL, TGR, &encL, &encR);
+    // Apply the final policy after Hold so a temporary avoid cannot be unmuted again.
+    (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
     dsd_apply_slot_hard_mute_flags(opts, &encL, &encR);
     dsd_dmr_apply_mono_slot_gate(opts, state, &encL, &encR);
     dsd_hpf_short_triplet_if_enabled(opts, state);

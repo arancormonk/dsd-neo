@@ -34,14 +34,22 @@ Column {
     spacing: 8
 
     Row {
+        width: parent.width
         spacing: 8
 
         TextInput {
             id: field
 
-            width: Math.max(implicitWidth, 60)
+            width: Math.max(48, parent.width - frequencyUnit.implicitWidth - 8)
+            height: Math.max(Theme.minimumTouchSize, implicitHeight)
+            verticalAlignment: TextInput.AlignVCenter
+            clip: true
+            Accessible.role: Accessible.EditableText
+            Accessible.name: qsTr("Frequency in MHz")
+            readonly property bool navigationAllowed: Navigation.allows(root)
+            Accessible.ignored: !visible || !navigationAllowed
             font.family: Theme.mono
-            font.pixelSize: root.pixelSize
+            font.pixelSize: Theme.fontSize(root.pixelSize)
             font.weight: Font.Medium
             color: Theme.textPrimary
             inputMethodHints: Qt.ImhFormattedNumbersOnly
@@ -50,18 +58,31 @@ Column {
             }
             selectionColor: Qt.alpha(Theme.cyan, 0.35)
             selectedTextColor: Theme.textPrimary
-            onAccepted: root.accepted()
+            onAccepted: {
+                root.accepted();
+                focus = false;
+                Qt.inputMethod.hide();
+            }
         }
 
         Text {
+            id: frequencyUnit
             text: "MHz"
             anchors.baseline: field.baseline
             font.family: Theme.mono
-            font.pixelSize: 15
+            font.pixelSize: Theme.fontSize(15)
             color: Theme.textSubdued
         }
     }
 
+    Text {
+        width: parent.width
+        visible: field.text.length > 0 && !sessionArgs.freqValid(field.text)
+        text: qsTr("Enter a positive frequency in MHz.")
+        wrapMode: Text.Wrap
+        color: Theme.alert
+        font.pixelSize: Theme.fontSize(12)
+    }
     Rectangle {
         width: root.width
         height: 2

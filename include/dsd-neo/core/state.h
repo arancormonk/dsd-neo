@@ -25,6 +25,7 @@
 #include <time.h>
 
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/key_set.h>
 
@@ -45,7 +46,6 @@ enum DSD_ATTR_PACKED {
      * tail behind dsd_state_trunk_lcn_slot(). */
     DSD_TRUNK_LCN_EMBEDDED = 26,
     DSD_VERTEX_KS_MAP_MAX = 64,
-    DSD_DMR_TG_KEY_MAP_MAX = 256,
     DSD_RTL_SYMBOL_CACHE_CAP = 512,
 };
 
@@ -139,31 +139,34 @@ typedef enum DSD_ATTR_PACKED {
 // readability/maintainability without measurable benefit. Suppress the padding
 // warning for this aggregate while keeping all other clang-tidy checks active.
 typedef struct {
-    uint8_t write;      // If this event needs to be written to a log file
-    uint8_t color_pair; //this value corresponds to which color pair the line should be in ncurses
-    uint8_t severity;   // neutral event severity for non-terminal frontends
-    uint8_t category;   // neutral event category for non-terminal frontends
-    int8_t systype;     //indentifier of which decoded system type this is from (P25, DMR, etc)
-    int8_t subtype;     //subtype of systpe (VLC, TLC, PDU data, System Event, etc)
-    uint32_t sys_id1;   //sys_id1 through 5 will be a hierarchy of system identifiers
-    uint32_t sys_id2;   // For example, trunked P25 has WACN:SYS:CC:SITE_ID:RFSS_ID
-    uint32_t sys_id3;   //conventional may only use NAC, RAN, or Color Codes
-    uint32_t sys_id4;   //
-    uint32_t sys_id5;   //
-    int8_t gi;          //group or individual
-    uint8_t enc;        //clear or encrypted
-    uint8_t enc_alg;    //alg if encrypted
-    uint16_t enc_key;   //enc key id value, if encrypted (not key value or key variable)
-    uint64_t mi;        //mi, or iv base value from OTA if provided
-    uint16_t svc;       //other relevant svc opts if applicable
-    uint32_t source_id; //source radio id or other source value
-    uint32_t target_id; //group or individual target, or destination value
-    char src_str[200];  //source, expressed as a string for M17, YSF, DSTAR, dPMR
-    char tgt_str[200];  //target, expressed as a string for M17, YSF, DSTAR, dPMR
-    char t_name[200];   //this is the string present from any csv groupName import
-    char s_name[200];   //same as above, but if loaded from a src value and not tg value
-    char t_mode[200];   //mode, or A,B,D,DE from csv group import file
-    char s_mode[200];   //mode, or A,B,D,DE from csv group import file
+    uint8_t write;       // If this event needs to be written to a log file
+    uint8_t color_pair;  //this value corresponds to which color pair the line should be in ncurses
+    uint8_t severity;    // neutral event severity for non-terminal frontends
+    uint8_t category;    // neutral event category for non-terminal frontends
+    uint8_t crc_invalid; // Known failed CRC; zero does not imply verification.
+    int8_t systype;      //indentifier of which decoded system type this is from (P25, DMR, etc)
+    int8_t subtype;      //subtype of systpe (VLC, TLC, PDU data, System Event, etc)
+    uint32_t sys_id1;    //sys_id1 through 5 will be a hierarchy of system identifiers
+    uint32_t sys_id2;    // For example, trunked P25 has WACN:SYS:CC:SITE_ID:RFSS_ID
+    uint32_t sys_id3;    //conventional may only use NAC, RAN, or Color Codes
+    uint32_t sys_id4;    //
+    uint32_t sys_id5;    //
+    int8_t gi;           //group or individual
+    uint8_t emergency;   // emergency indication observed during this call
+    uint8_t priority;    // observed service priority
+    uint8_t enc;         //clear or encrypted
+    uint8_t enc_alg;     //alg if encrypted
+    uint16_t enc_key;    //enc key id value, if encrypted (not key value or key variable)
+    uint64_t mi;         //mi, or iv base value from OTA if provided
+    uint16_t svc;        //other relevant svc opts if applicable
+    uint32_t source_id;  //source radio id or other source value
+    uint32_t target_id;  //group or individual target, or destination value
+    char src_str[200];   //source, expressed as a string for M17, YSF, DSTAR, dPMR
+    char tgt_str[200];   //target, expressed as a string for M17, YSF, DSTAR, dPMR
+    char t_name[200];    //this is the string present from any csv groupName import
+    char s_name[200];    //same as above, but if loaded from a src value and not tg value
+    char t_mode[200];    //mode, or A,B,D,DE from csv group import file
+    char s_mode[200];    //mode, or A,B,D,DE from csv group import file
     // Name of the scan channel this transmission was heard on, or "" when the receiver was not
     // scanning a named channel. Resolved once per call epoch, on the epoch's first render, and
     // rendered as a bracketed prefix between the row's timestamp and its protocol token.
@@ -396,6 +399,42 @@ typedef enum {
     DSD_SCAN_VOICE_GATE_TAIL = 3,
 } dsd_scan_voice_gate_phase;
 
+/** Why the receiver is staying on the scanner's current row (issue #508). Frontend-neutral:
+ * the decoder owns every deadline and the UI only renders what is published. NONE means
+ * nothing holds the row -- for --trunk-scan that is exactly the old "not held" verdict. */
+typedef enum {
+    DSD_SCAN_STAY_NONE = 0,
+    DSD_SCAN_STAY_RETUNE_PENDING = 1, /**< a backend retune request has not resolved */
+    DSD_SCAN_STAY_RETUNE_RETRY = 2,   /**< retune failed; cooling down before retrying in place */
+    DSD_SCAN_STAY_CC_ACQUIRE = 3,     /**< trunking SM is acquiring a control channel */
+    DSD_SCAN_STAY_CALL_FOLLOW = 4,    /**< trunking SM is following a call, hangtime included */
+    DSD_SCAN_STAY_VOICE = 5,          /**< conventional row: voice media is active */
+    DSD_SCAN_STAY_ACTIVITY_HOLD = 6,  /**< conventional row: activity hold / voice tail running */
+    DSD_SCAN_STAY_MANUAL_HOLD = 7,    /**< operator hold (Y): the dwell is paused, not expired */
+    DSD_SCAN_STAY_IDLE_DWELL = 8,     /**< nothing holds it; the idle dwell / qualify window runs */
+    DSD_SCAN_STAY_HANGTIME = 9,       /**< -Y legacy rule: waiting out -t since the last sync */
+} dsd_scan_stay_reason;
+
+/** Live scan timing for the frontends' Scan Timing row (issue #508). Plain inline
+ * scalars: it rides the vertex_ks_count..ui_msg snapshot copy range (ui_snapshot.c static
+ * assert) and must never grow a pointer, or the byte-range copy would alias decoder memory. */
+struct dsd_scan_timing_publication {
+    double started_m;  /**< monotonic start of the live window; < 0 when there is none */
+    double deadline_m; /**< monotonic expiry; < 0 = no live timer (suspended/paused/unanchored) */
+    /** Monotonic expiry of the per-visit cap (issue #507); < 0 = no live cap, whether it is
+     * disabled, not yet anchored, or suspended by a hold. Never zeroed into place: 0.0 would
+     * read as a deadline at monotonic 0, which is long past. */
+    double visit_deadline_m;
+    uint32_t span_ms;  /**< full width of the live window; 0 when there is no timer */
+    uint32_t dwell_ms; /**< effective idle dwell (or -Y qualify) for the row on air; 0 = n/a */
+    uint32_t hold_ms;  /**< effective activity hold; 0 on trunked rows and when n/a */
+    /** Effective per-visit cap for the row on air in ms; 0 = off (issue #507). */
+    uint32_t visit_limit_ms;
+    uint32_t hang_ms;     /**< active protocol's effective hangtime budget; 0 when n/a */
+    uint8_t reason;       /**< dsd_scan_stay_reason */
+    uint8_t conventional; /**< 1 = conventional / -Y row, so hold_ms means something */
+};
+
 // dsd_state is a C aggregate, not a C++ class: it is allocated once and zeroed by
 // initState() before anything reads it, and C code — which is most of its users —
 // has no constructors to write. A C++ TU that includes this header would otherwise
@@ -446,6 +485,8 @@ struct dsd_state {
     uint8_t hytera_key_segments;
     unsigned long long int R;
     unsigned long long int RR;
+    uint8_t scalar_key_present[2];
+    uint8_t basic_key_present;
     unsigned long long int H;
     unsigned long long int HYTL;
     unsigned long long int HYTR;
@@ -456,8 +497,9 @@ struct dsd_state {
     unsigned long long int p2_cc; //p1 NAC
     unsigned long long int p2_siteid;
     unsigned long long int p2_rfssid;
-    long int p25_cc_freq;   // P25 control-channel frequency from network status
-    long int trunk_cc_freq; // generic trunk-owner control-channel frequency
+    long int p25_cc_freq;        // P25 control-channel frequency from network status
+    long int trunk_cc_freq;      // generic trunk-owner control-channel frequency
+    int trunk_recovery_protocol; // validated owner; runtime trunk-scan recovery enum, survives raw sync loss
     unsigned long long int edacs_site_id;
     time_t last_cc_sync_time;    //use this to start hunting for CC after signal lost
     time_t p25_last_cc_msg_time; //last decoded P25 control-channel message
@@ -480,6 +522,10 @@ struct dsd_state {
     time_t slco_sfrag_last[2];
     //event history itemized per slot
     Event_History_I* event_history_s;
+    // Decoder-thread-only scoped failure context; dispatch must save and restore each slot.
+    uint8_t event_crc_invalid[2];
+    // DMR header-chain failure retained until the protocol resets the assembly.
+    uint8_t data_header_crc_invalid[2];
     // Codec2 contexts (NULL when codec2 unavailable; unconditional for ABI stability)
     struct CODEC2* codec2_3200; // M17 fullrate
     struct CODEC2* codec2_1600; // M17 halfrate
@@ -530,10 +576,11 @@ struct dsd_state {
     uint8_t* trunk_lcn_avoid;
     size_t trunk_lcn_avoid_capacity;
     /* Sparse per-row key set per scan-list row, indexed like trunk_lcn_name. NULL until a
-     * channel-map CSV opts in with a `keys_hex_csv`/`keys_dec_csv` header column. Read it
-     * through dsd_state_trunk_lcn_keys_get(). Never inside a UI_SNAPSHOT_COPY_RANGE, for the
-     * same reason as the stores above -- and additionally because key material is never
-     * deep-copied into the snapshot. */
+     * channel-map CSV opts in with a key-file or direct-key header column. Read it through
+     * dsd_state_trunk_lcn_keys_get(); returned pointers are decoder-thread-only and invalidated
+     * by later store growth. Never inside a UI_SNAPSHOT_COPY_RANGE, for the same reason as the
+     * stores above -- and additionally because key material is never deep-copied into the
+     * snapshot. */
     dsd_key_set* trunk_lcn_keys;
     size_t trunk_lcn_keys_capacity;
     /* Scan key swap state: the lazily captured global keys plus the active row set copy.
@@ -1246,7 +1293,8 @@ struct dsd_state {
 
     // P25 Phase 1 voice error moving average (last N IMBE frames)
     uint8_t p25_p1_voice_err_hist[64];
-    int p25_p1_voice_err_hist_len;          // window length (<=64), default 50
+    int p25_p1_voice_err_hist_len;          // ring capacity (<=64), default 50
+    int p25_p1_voice_err_hist_count;        // populated frames this call (<=capacity)
     int p25_p1_voice_err_hist_pos;          // ring head
     unsigned int p25_p1_voice_err_hist_sum; // sum of values in window
 
@@ -1329,7 +1377,8 @@ struct dsd_state {
 
     // P25 Phase 2 voice error moving average per slot (errs2 from AMBE decode)
     uint8_t p25_p2_voice_err_hist[2][64];
-    int p25_p2_voice_err_hist_len; // window length (<=64), default 50
+    int p25_p2_voice_err_hist_len;      // ring capacity (<=64), default 50
+    int p25_p2_voice_err_hist_count[2]; // populated frames per slot this call
     int p25_p2_voice_err_hist_pos[2];
     unsigned int p25_p2_voice_err_hist_sum[2];
 
@@ -1465,7 +1514,8 @@ struct dsd_state {
     long int nxdn_grant_freq;
 
     //multi-key array
-    int keyloader; //let us know the keyloader is active
+    int keyloader;            //let us know the keyloader is active
+    char key_profile_ref[64]; /**< Opaque material-source identity, safe for frontend metadata. */
 
     //dmr late entry mi
 
@@ -1682,6 +1732,20 @@ struct dsd_state {
     int scan_voice_gate_roll_seen;
     uint8_t scan_voice_gate_hold_seen;
     uint8_t scan_voice_gate_phase;
+    /* Per-visit cap bookkeeping for -Y (issue #507). scan_visit_since_m is the monotonic instant
+     * the row on air was tuned (-1.0 = no visit anchored, so the cap cannot fire) and
+     * scan_visit_roll_seen is the lcn_freq_roll this bookkeeping last saw, so an untyped `L` or
+     * avoid that moves the row without a retune note re-anchors. Deliberately separate from the
+     * scan_voice_gate_* anchors above: the cap applies under the voice gate and under the legacy
+     * hangtime rule alike, so it must not depend on gate-only code running -- the gate tick
+     * returns early with the gate off. Rides the vertex_ks_count..ui_msg range. */
+    double scan_visit_since_m;
+    int scan_visit_roll_seen;
+    uint8_t scan_visit_rearm_pending; /**< resume a suspended visit at the next eligible tick */
+    /* Scan state + live timing for the Scan Timing row (issue #508). Written by the
+     * --trunk-scan coordinator for its parked target, or by the -Y timing tick when trunk
+     * scan is off; the two never both write it. Rides the vertex_ks_count..ui_msg range. */
+    dsd_scan_timing_publication scan_timing;
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];
@@ -2799,7 +2863,10 @@ void dsd_state_trunk_lcn_keys_free(dsd_state* state);
  */
 int dsd_state_trunk_lcn_keys_set(dsd_state* state, size_t index, dsd_key_set* ks);
 
-/** Key set of scan-list row @p index, or NULL when the row carries no keys. */
+/**
+ * Key set of scan-list row @p index, or NULL when the row carries no keys.
+ * Decoder thread only; the pointer is invalidated by subsequent key-store growth.
+ */
 const dsd_key_set* dsd_state_trunk_lcn_keys_get(const dsd_state* state, size_t index);
 
 /** Non-zero when any row in the store carries a key set. */

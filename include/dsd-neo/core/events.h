@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #ifdef DSD_NEO_EVENT_HISTORY_TRANSACTIONS
 #include <dsd-neo/platform/threading.h>
 #endif
@@ -31,6 +32,14 @@ extern "C" {
 
 void init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop);
 void push_event_history(Event_History_I* event_struct);
+
+// Only the two-slot protocols annotate their log lines with a slot number. X2-TDMA belongs here for
+// the same reason the other two do: it carries two timeslots and its callers attribute every
+// observation through state->currentslot, so a log line without the annotation is ambiguous.
+static inline int
+dsd_event_systype_has_slots(int systype) {
+    return DSD_SYNC_IS_DMR_BS(systype) || DSD_SYNC_IS_P25P2(systype) || DSD_SYNC_IS_X2TDMA(systype);
+}
 
 /** Opaque guard for serializing event-history mutations with telemetry snapshots. */
 typedef struct {

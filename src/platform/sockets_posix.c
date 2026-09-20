@@ -4,6 +4,8 @@
  */
 
 #include <arpa/inet.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -11,12 +13,10 @@
 #include <netinet/in.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/socket.h>
-#include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/platform/platform.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
 
@@ -64,6 +64,85 @@ dsd_socket_accept(dsd_socket_t sock, struct sockaddr* addr, int* addrlen) {
 int
 dsd_socket_connect(dsd_socket_t sock, const struct sockaddr* addr, int addrlen) {
     return connect(sock, addr, (socklen_t)addrlen);
+}
+
+static int
+socket_wait_connect(dsd_socket_t sock, unsigned int timeout_ms, dsd_socket_cancel_fn cancelled, void* context) {
+    int code = 0;
+    for (unsigned int elapsed = 0; elapsed < timeout_ms;) {
+        if (cancelled && cancelled(context)) {
+            code = ECANCELED;
+            return code;
+        }
+        unsigned int wait_ms = timeout_ms - elapsed;
+        if (wait_ms > 100U) {
+            wait_ms = 100U;
+        }
+        struct timeval wait = {0, (long)wait_ms * 1000L};
+        fd_set writable, errors;
+        FD_ZERO(&writable);
+        FD_ZERO(&errors);
+        FD_SET(sock, &writable);
+        FD_SET(sock, &errors);
+        const int ready = select(sock + 1, NULL, &writable, &errors, &wait);
+        elapsed += wait_ms;
+        if (ready < 0) {
+            code = dsd_socket_get_error();
+            if (code == EINTR) {
+                continue;
+            }
+            return code;
+        }
+        if (ready > 0) {
+            int length = (int)sizeof(code);
+            if (dsd_socket_getsockopt(sock, SOL_SOCKET, SO_ERROR, &code, &length) != 0) {
+                code = dsd_socket_get_error();
+            }
+            return code;
+        }
+    }
+    return ETIMEDOUT;
+}
+
+int
+dsd_socket_connect_bounded(dsd_socket_t sock, const struct sockaddr* addr, int addrlen, unsigned int timeout_ms,
+                           // Cppcheck 2.21 loses names after a callback typedef; these match sockets.h.
+                           // cppcheck-suppress funcArgNamesDifferentUnnamed
+                           dsd_socket_cancel_fn cancelled, void* context, int* error_code) {
+    int code = 0;
+    int result = -1;
+    if (sock < 0 || sock >= FD_SETSIZE) {
+        code = EINVAL;
+        goto done;
+    }
+    if (cancelled && cancelled(context)) {
+        code = ECANCELED;
+        goto done;
+    }
+    if (dsd_socket_set_nonblocking(sock, 1) != 0) {
+        code = dsd_socket_get_error();
+        goto done;
+    }
+    if (dsd_socket_connect(sock, addr, addrlen) == 0) {
+        result = 0;
+        goto restore;
+    }
+    code = dsd_socket_get_error();
+    if (code != EINPROGRESS && code != EWOULDBLOCK) {
+        goto restore;
+    }
+    code = socket_wait_connect(sock, timeout_ms, cancelled, context);
+    result = code == 0 ? 0 : -1;
+restore:
+    if (dsd_socket_set_nonblocking(sock, 0) != 0 && result == 0) {
+        code = dsd_socket_get_error();
+        result = -1;
+    }
+done:
+    if (error_code) {
+        *error_code = code;
+    }
+    return result;
 }
 
 int

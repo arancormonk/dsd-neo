@@ -12,15 +12,37 @@
  * without dragging in the full initState/freeState dependency chain.
  */
 
+#include <dsd-neo/core/channel_mode.h>
+#include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/state_fwd.h"
+
+/* Shared geometric growth for the positional stores. Allocation and ownership
+ * remain with each store (key arrays must securely erase the old allocation). */
+static size_t
+trunk_lcn_grown_capacity(size_t current, size_t needed, size_t element_size) {
+    size_t capacity = current > 0 ? current : 16;
+    while (capacity < needed) {
+        if (capacity > SIZE_MAX / 2) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2;
+    }
+    return capacity <= SIZE_MAX / element_size ? capacity : 0;
+}
 
 int
 dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed) {
@@ -34,15 +56,8 @@ dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed) {
     if (ext_needed <= state->trunk_lcn_freq_ext_capacity) {
         return 0;
     }
-    size_t capacity = state->trunk_lcn_freq_ext_capacity > 0 ? state->trunk_lcn_freq_ext_capacity : 16;
-    while (capacity < ext_needed) {
-        if (capacity > SIZE_MAX / 2) {
-            capacity = ext_needed;
-            break;
-        }
-        capacity *= 2;
-    }
-    if (capacity > SIZE_MAX / sizeof(long int)) {
+    const size_t capacity = trunk_lcn_grown_capacity(state->trunk_lcn_freq_ext_capacity, ext_needed, sizeof(long int));
+    if (!capacity) {
         return -1;
     }
     long int* ext = (long int*)realloc(state->trunk_lcn_freq_ext, capacity * sizeof *ext);
@@ -64,15 +79,8 @@ dsd_state_trunk_lcn_name_reserve(dsd_state* state, size_t count) {
     if (count <= state->trunk_lcn_name_capacity) {
         return 0;
     }
-    size_t capacity = state->trunk_lcn_name_capacity > 0 ? state->trunk_lcn_name_capacity : 16;
-    while (capacity < count) {
-        if (capacity > SIZE_MAX / 2) {
-            capacity = count;
-            break;
-        }
-        capacity *= 2;
-    }
-    if (capacity > SIZE_MAX / DSD_CHANNEL_LABEL_SIZE) {
+    const size_t capacity = trunk_lcn_grown_capacity(state->trunk_lcn_name_capacity, count, DSD_CHANNEL_LABEL_SIZE);
+    if (!capacity) {
         return -1;
     }
     char (*names)[DSD_CHANNEL_LABEL_SIZE] =
@@ -198,13 +206,9 @@ dsd_state_trunk_lcn_avoid_reserve(dsd_state* state, size_t count) {
     if (count <= state->trunk_lcn_avoid_capacity) {
         return 0;
     }
-    size_t capacity = state->trunk_lcn_avoid_capacity > 0 ? state->trunk_lcn_avoid_capacity : 16;
-    while (capacity < count) {
-        if (capacity > SIZE_MAX / 2) {
-            capacity = count;
-            break;
-        }
-        capacity *= 2;
+    const size_t capacity = trunk_lcn_grown_capacity(state->trunk_lcn_avoid_capacity, count, sizeof(uint8_t));
+    if (!capacity) {
+        return -1;
     }
     uint8_t* flags = (uint8_t*)realloc(state->trunk_lcn_avoid, capacity);
     if (!flags) {
@@ -234,22 +238,25 @@ dsd_state_trunk_lcn_keys_reserve(dsd_state* state, size_t count) {
     if (count <= state->trunk_lcn_keys_capacity) {
         return 0;
     }
-    size_t capacity = state->trunk_lcn_keys_capacity > 0 ? state->trunk_lcn_keys_capacity : 16;
-    while (capacity < count) {
-        if (capacity > SIZE_MAX / 2) {
-            capacity = count;
-            break;
-        }
-        capacity *= 2;
-    }
-    if (capacity > SIZE_MAX / sizeof(dsd_key_set)) {
+    const size_t capacity = trunk_lcn_grown_capacity(state->trunk_lcn_keys_capacity, count, sizeof(dsd_key_set));
+    if (!capacity) {
         return -1;
     }
-    dsd_key_set* keys = (dsd_key_set*)realloc(state->trunk_lcn_keys, capacity * sizeof(*keys));
+    dsd_key_set* keys = (dsd_key_set*)calloc(capacity, sizeof(*keys));
     if (!keys) {
         return -1;
     }
-    DSD_MEMSET(keys + state->trunk_lcn_keys_capacity, 0, (capacity - state->trunk_lcn_keys_capacity) * sizeof(*keys));
+    /* Structural move: each entry pointer keeps its single owner in the new
+     * array. Deep-freeing the old structs would invalidate the moved sets. The
+     * decoder thread owns imports/growth, so no reader can observe the brief
+     * unpublished copy or retain a pointer across this call. */
+    dsd_key_set* const old_keys = state->trunk_lcn_keys;
+    const size_t old_capacity = state->trunk_lcn_keys_capacity;
+    if (old_keys != NULL && old_capacity > 0U) {
+        DSD_MEMCPY(keys, old_keys, old_capacity * sizeof(*keys));
+        DSD_SECURE_ZERO(old_keys, old_capacity * sizeof(*old_keys));
+        free(old_keys);
+    }
     state->trunk_lcn_keys = keys;
     state->trunk_lcn_keys_capacity = capacity;
     return 0;
@@ -263,6 +270,7 @@ dsd_state_trunk_lcn_keys_free(dsd_state* state) {
     for (size_t i = 0; i < state->trunk_lcn_keys_capacity; i++) {
         dsd_key_set_free(&state->trunk_lcn_keys[i]);
     }
+    DSD_SECURE_ZERO(state->trunk_lcn_keys, state->trunk_lcn_keys_capacity * sizeof(*state->trunk_lcn_keys));
     free(state->trunk_lcn_keys);
     state->trunk_lcn_keys = NULL;
     state->trunk_lcn_keys_capacity = 0;
@@ -278,7 +286,7 @@ dsd_state_trunk_lcn_keys_set(dsd_state* state, size_t index, dsd_key_set* ks) {
     }
     dsd_key_set_free(&state->trunk_lcn_keys[index]);
     state->trunk_lcn_keys[index] = *ks;
-    DSD_MEMSET(ks, 0, sizeof(*ks));
+    DSD_SECURE_ZERO(ks, sizeof(*ks));
     return 0;
 }
 
@@ -403,6 +411,7 @@ dsd_state_trunk_lcn_free(dsd_state* state) {
     if (!state) {
         return;
     }
+    dsd_channel_modes_clear(state);
     free(state->trunk_lcn_freq_ext);
     state->trunk_lcn_freq_ext = NULL;
     state->trunk_lcn_freq_ext_capacity = 0;
@@ -423,4 +432,344 @@ dsd_state_trunk_lcn_user_list_present(const dsd_opts* opts, const dsd_state* sta
         return 0;
     }
     return (state->lcn_freq_count > 1) ? 1 : 0;
+}
+
+typedef struct {
+    size_t capacity;
+    size_t declared_count;
+    dsd_scan_mode* rows;
+    dsd_scan_row_profile** profiles;
+    size_t profile_capacity;
+    /* Rows whose profile carries at least one option. Like declared_count, a nonzero value
+     * routes the scan through the typed scanner, which is the only path that applies them. */
+    size_t profile_count;
+    dsd_tg_policy_store* group_baseline;
+    dsd_tg_policy_store* group_suspended_row;
+    int group_active;
+    int group_suspended;
+    dsd_dmr_key_map map_baseline;
+    dsd_dmr_key_map map_row;
+    int map_active;
+    int map_suspended;
+} channel_modes;
+
+static void
+channel_modes_cleanup(void* ptr) {
+    channel_modes* modes = (channel_modes*)ptr;
+    for (size_t i = 0; i < modes->profile_capacity; i++) {
+        dsd_scan_profile_free(modes->profiles[i]);
+    }
+    free((void*)modes->profiles);
+    dsd_tg_policy_release(modes->group_baseline);
+    dsd_tg_policy_release(modes->group_suspended_row);
+    free(modes->rows);
+    free(modes);
+}
+
+dsd_scan_mode
+dsd_channel_mode_get(const dsd_state* state, size_t row) {
+    const channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    return modes && row < modes->capacity ? modes->rows[row] : DSD_SCAN_MODE_INHERIT;
+}
+
+int
+dsd_channel_modes_present(const dsd_state* state) {
+    const channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    return modes && (modes->declared_count != 0 || modes->profile_count != 0);
+}
+
+static int
+channel_profile_has_options(const dsd_scan_row_profile* profile) {
+    return profile != NULL && profile->values.present != 0;
+}
+
+int
+dsd_channel_mode_set(dsd_state* state, size_t row, dsd_scan_mode mode) {
+    if (!state || row >= SIZE_MAX / sizeof(dsd_scan_mode) || (unsigned)mode > DSD_SCAN_MODE_M17) {
+        return -1;
+    }
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes) {
+        if (mode == DSD_SCAN_MODE_INHERIT) {
+            return 0;
+        }
+        modes = (channel_modes*)calloc(1, sizeof(*modes));
+        if (!modes) {
+            return -1;
+        }
+        (void)dsd_state_ext_set(state, DSD_STATE_EXT_CORE_CHANNEL_MODES, modes, channel_modes_cleanup);
+    }
+    if (row >= modes->capacity) {
+        const size_t capacity = trunk_lcn_grown_capacity(modes->capacity, row + 1, sizeof(dsd_scan_mode));
+        if (!capacity) {
+            return -1;
+        }
+        dsd_scan_mode* rows = (dsd_scan_mode*)realloc(modes->rows, capacity * sizeof(*rows));
+        if (!rows) {
+            return -1;
+        }
+        DSD_MEMSET(rows + modes->capacity, 0, (capacity - modes->capacity) * sizeof(*rows));
+        modes->rows = rows;
+        modes->capacity = capacity;
+    }
+    if (modes->rows[row] != DSD_SCAN_MODE_INHERIT) {
+        modes->declared_count--;
+    }
+    modes->rows[row] = mode;
+    if (mode != DSD_SCAN_MODE_INHERIT) {
+        modes->declared_count++;
+    }
+    return 0;
+}
+
+void
+dsd_channel_modes_clear(dsd_state* state) {
+    dsd_scan_groups_leave(state);
+    dsd_scan_maps_leave(state);
+    (void)dsd_state_ext_set(state, DSD_STATE_EXT_CORE_CHANNEL_MODES, NULL, NULL);
+}
+
+void
+dsd_channel_modes_move(dsd_state* dst, dsd_state* src) {
+    if (!dst || !src || dst == src) {
+        return;
+    }
+    dsd_scan_groups_leave(dst);
+    dsd_scan_groups_leave(src);
+    dsd_scan_maps_leave(dst);
+    dsd_scan_maps_leave(src);
+    void* ptr = dsd_state_ext_get(src, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    /* Detach without cleanup before the source's normal teardown. */
+    src->state_ext[DSD_STATE_EXT_CORE_CHANNEL_MODES] = NULL;
+    src->state_ext_cleanup[DSD_STATE_EXT_CORE_CHANNEL_MODES] = NULL;
+    (void)dsd_state_ext_set(dst, DSD_STATE_EXT_CORE_CHANNEL_MODES, ptr, channel_modes_cleanup);
+}
+
+int
+dsd_scan_groups_begin(dsd_state* state) {
+    if (!state) {
+        return -1;
+    }
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (modes) {
+        return 0;
+    }
+    modes = (channel_modes*)calloc(1, sizeof(*modes));
+    if (!modes) {
+        return -1;
+    }
+    (void)dsd_state_ext_set(state, DSD_STATE_EXT_CORE_CHANNEL_MODES, modes, channel_modes_cleanup);
+    return 0;
+}
+
+const dsd_scan_row_profile*
+dsd_channel_profile_get(const dsd_state* state, size_t row) {
+    const channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    return modes && row < modes->profile_capacity ? modes->profiles[row] : NULL;
+}
+
+int
+dsd_channel_profile_set(dsd_state* state, size_t row, dsd_scan_row_profile* profile) {
+    if (row >= SIZE_MAX / sizeof(dsd_scan_row_profile*) || dsd_scan_groups_begin(state)) {
+        return -1;
+    }
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes) {
+        return -1;
+    }
+    if (row >= modes->profile_capacity) {
+        size_t capacity = trunk_lcn_grown_capacity(modes->profile_capacity, row + 1, sizeof(*modes->profiles));
+        if (!capacity) {
+            return -1;
+        }
+        dsd_scan_row_profile** profiles =
+            (dsd_scan_row_profile**)realloc((void*)modes->profiles, capacity * sizeof(*profiles));
+        if (!profiles) {
+            return -1;
+        }
+        DSD_MEMSET((void*)(profiles + modes->profile_capacity), 0,
+                   (capacity - modes->profile_capacity) * sizeof(*profiles));
+        modes->profiles = profiles;
+        modes->profile_capacity = capacity;
+    }
+    modes->profile_count -= channel_profile_has_options(modes->profiles[row]);
+    dsd_scan_profile_free(modes->profiles[row]);
+    modes->profiles[row] = profile;
+    modes->profile_count += channel_profile_has_options(profile);
+    return 0;
+}
+
+void
+dsd_scan_groups_leave(dsd_state* state) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes || !modes->group_active) {
+        return;
+    }
+    if (!modes->group_suspended) {
+        dsd_tg_policy_install(state, modes->group_baseline);
+    }
+    dsd_tg_policy_release(modes->group_baseline);
+    dsd_tg_policy_release(modes->group_suspended_row);
+    modes->group_baseline = NULL;
+    modes->group_suspended_row = NULL;
+    modes->group_active = modes->group_suspended = 0;
+}
+
+void
+dsd_scan_groups_enter(dsd_state* state, const dsd_scan_row_profile* profile) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes) {
+        return;
+    }
+    if (!profile || !(profile->values.present & DSD_SCAN_OPT_GROUP)) {
+        dsd_scan_groups_leave(state);
+        return;
+    }
+    if (!modes->group_active) {
+        modes->group_baseline = dsd_tg_policy_retain(state);
+        modes->group_active = 1;
+    }
+    dsd_tg_policy_install(state, profile->groups);
+}
+
+int
+dsd_scan_groups_row_active(const dsd_state* state) {
+    const channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    return modes && modes->group_active && !modes->group_suspended;
+}
+
+int
+dsd_scan_groups_suspend(dsd_state* state) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes || !modes->group_active || modes->group_suspended) {
+        return 0;
+    }
+    modes->group_suspended_row = dsd_tg_policy_retain(state);
+    dsd_tg_policy_restore(state, modes->group_baseline);
+    modes->group_suspended = 1;
+    return 1;
+}
+
+void
+dsd_scan_groups_resume(dsd_state* state) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes || !modes->group_suspended) {
+        return;
+    }
+    dsd_tg_policy_release(modes->group_baseline);
+    modes->group_baseline = dsd_tg_policy_retain(state);
+    dsd_tg_policy_restore(state, modes->group_suspended_row);
+    dsd_tg_policy_release(modes->group_suspended_row);
+    modes->group_suspended_row = NULL;
+    modes->group_suspended = 0;
+}
+
+void
+dsd_dmr_key_map_capture(const dsd_state* state, dsd_dmr_key_map* out) {
+    if (!state || !out) {
+        return;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    const int count = state->dmr_tg_key_map_count;
+    if (count < 0 || count > DSD_DMR_TG_KEY_MAP_MAX) {
+        return;
+    }
+    out->count = count;
+    DSD_MEMCPY(out->tg, state->dmr_tg_key_map_tg, (size_t)count * sizeof(out->tg[0]));
+    DSD_MEMCPY(out->kid, state->dmr_tg_key_map_kid, (size_t)count * sizeof(out->kid[0]));
+}
+
+int
+dsd_dmr_key_map_validate(const dsd_dmr_key_map* map) {
+    if (!map || map->count < 0 || map->count > DSD_DMR_TG_KEY_MAP_MAX) {
+        return -1;
+    }
+    for (int i = 0; i < map->count; ++i) {
+        if (!map->tg[i] || map->tg[i] > 0xFFFFFFU) {
+            return -1;
+        }
+        for (int j = 0; j < i; ++j) {
+            if (map->tg[j] == map->tg[i]) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+int
+dsd_dmr_key_map_install(dsd_state* state, const dsd_dmr_key_map* map) {
+    if (!state || dsd_dmr_key_map_validate(map)) {
+        return -1;
+    }
+    DSD_MEMSET(state->dmr_tg_key_map_tg, 0, sizeof(state->dmr_tg_key_map_tg));
+    DSD_MEMSET(state->dmr_tg_key_map_kid, 0, sizeof(state->dmr_tg_key_map_kid));
+    state->dmr_tg_key_map_count = map->count;
+    DSD_MEMCPY(state->dmr_tg_key_map_tg, map->tg, (size_t)map->count * sizeof(map->tg[0]));
+    DSD_MEMCPY(state->dmr_tg_key_map_kid, map->kid, (size_t)map->count * sizeof(map->kid[0]));
+    DSD_MEMSET(state->dmr_tg_key_note_epoch, 0, sizeof(state->dmr_tg_key_note_epoch));
+    DSD_MEMSET(state->dmr_tg_key_skip_epoch, 0, sizeof(state->dmr_tg_key_skip_epoch));
+    return 0;
+}
+
+void
+dsd_scan_maps_leave(dsd_state* state) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes || !modes->map_active) {
+        return;
+    }
+    if (!modes->map_suspended) {
+        (void)dsd_dmr_key_map_install(state, &modes->map_baseline);
+    }
+    modes->map_active = modes->map_suspended = 0;
+    DSD_MEMSET(&modes->map_baseline, 0, sizeof(modes->map_baseline));
+    DSD_MEMSET(&modes->map_row, 0, sizeof(modes->map_row));
+}
+
+int
+dsd_scan_maps_enter(dsd_state* state, const dsd_scan_row_profile* profile) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes) {
+        return 0;
+    }
+    dsd_dmr_key_map before = {0};
+    dsd_dmr_key_map_capture(state, &before);
+    if (!profile || !(profile->values.present & DSD_SCAN_OPT_DMR_MAP)) {
+        dsd_scan_maps_leave(state);
+    } else {
+        if (dsd_dmr_key_map_install(state, &profile->dmr_map)) {
+            return 0;
+        }
+        if (!modes->map_active) {
+            modes->map_baseline = before;
+        }
+        modes->map_active = 1;
+        modes->map_row = profile->dmr_map;
+    }
+    dsd_dmr_key_map after = {0};
+    dsd_dmr_key_map_capture(state, &after);
+    return before.count != after.count || memcmp(before.tg, after.tg, sizeof(before.tg)) != 0
+           || memcmp(before.kid, after.kid, sizeof(before.kid)) != 0;
+}
+
+int
+dsd_scan_maps_suspend(dsd_state* state) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes || !modes->map_active || modes->map_suspended) {
+        return 0;
+    }
+    (void)dsd_dmr_key_map_install(state, &modes->map_baseline);
+    modes->map_suspended = 1;
+    return 1;
+}
+
+void
+dsd_scan_maps_resume(dsd_state* state) {
+    channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (!modes || !modes->map_suspended) {
+        return;
+    }
+    dsd_dmr_key_map_capture(state, &modes->map_baseline);
+    (void)dsd_dmr_key_map_install(state, &modes->map_row);
+    modes->map_suspended = 0;
 }

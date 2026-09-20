@@ -11,14 +11,18 @@
 #include "menu_actions.h"
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -145,6 +149,15 @@ config_profile_copy_source_path(const UiCtx* c, char* path, size_t path_size) {
     return 1;
 }
 
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 10
+/* GCC's analyzer loses the tie between pctx->n and the count that filled
+ * pctx->names, so it walks a path where the names were allocated but this loop
+ * runs zero times and reports them as leaked.
+ * The analyzer arrived in GCC 10; before that the option below is unknown,
+ * which -Werror turns into a build failure. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wanalyzer-malloc-leak"
+#endif
 static void
 config_profile_free_context(ProfileSelCtx* pctx) {
     if (!pctx) {
@@ -159,6 +172,9 @@ config_profile_free_context(ProfileSelCtx* pctx) {
     free((void*)pctx->names);
     free(pctx);
 }
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 10
+#pragma GCC diagnostic pop
+#endif
 
 static ProfileSelCtx*
 config_profile_create_context(dsd_state* state, const char* path, const char** names, int count) {
@@ -250,8 +266,14 @@ act_config_save_current(void* v) {
         return;
     }
 
+    const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    if (!opts_snapshot || !snapshot) {
+        ui_statusf("Decoder settings are not available yet");
+        return;
+    }
     dsdneoUserConfig cfg;
-    dsd_snapshot_opts_to_user_config(c->opts, c->state, &cfg);
+    dsd_snapshot_opts_to_user_config(opts_snapshot, snapshot, &cfg);
     if (dsd_user_config_save_atomic(path, &cfg) == 0) {
         ui_statusf("Config saved to %s", path);
     } else {
@@ -271,8 +293,14 @@ act_config_save_default(void* v) {
         ui_statusf("No default config path; nothing saved");
         return;
     }
+    const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    if (!opts_snapshot || !snapshot) {
+        ui_statusf("Decoder settings are not available yet");
+        return;
+    }
     dsdneoUserConfig cfg;
-    dsd_snapshot_opts_to_user_config(c->opts, c->state, &cfg);
+    dsd_snapshot_opts_to_user_config(opts_snapshot, snapshot, &cfg);
     if (dsd_user_config_save_atomic(path, &cfg) == 0) {
         ui_submit_config_metadata(1, path);
         ui_statusf("Config saved to %s", path);
@@ -380,6 +408,12 @@ act_import_group(void* v) {
 }
 
 void
+act_import_src(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    ui_csv_import_picker_open("src", "Source ID list CSV", 1024, cb_import_src, c);
+}
+
+void
 act_allow_toggle(void* v) {
     UNUSED(v);
     (void)dsd_app_command_action(DSD_APP_CMD_TRUNK_WLIST_TOGGLE);
@@ -418,20 +452,26 @@ act_hangtime(void* v) {
 void
 act_scan_voice_only(void* v) {
     UiCtx* c = (UiCtx*)v;
-    int32_t on = (c && c->opts && c->opts->scan_voice_only) ? 0 : 1;
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
+    const int active = configured ? configured->scan_voice_only : (c && c->opts && c->opts->scan_voice_only);
+    int32_t on = active ? 0 : 1;
     (void)dsd_app_command_set_i32(DSD_APP_CMD_SCAN_VOICE_ONLY_SET, on);
 }
 
 void
 act_scan_voice_qualify(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_int_async("Voice qualify (ms)", c->opts->scan_voice_qualify_ms, cb_scan_voice_qualify, c);
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
+    const int ms = configured ? configured->scan_voice_qualify_ms : c->opts->scan_voice_qualify_ms;
+    ui_prompt_open_int_async("Voice qualify (ms)", ms, cb_scan_voice_qualify, c);
 }
 
 void
 act_scan_voice_hold(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_int_async("Voice hold (ms)", c->opts->scan_voice_hold_ms, cb_scan_voice_hold, c);
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
+    const int ms = configured ? configured->scan_voice_hold_ms : c->opts->scan_voice_hold_ms;
+    ui_prompt_open_int_async("Voice hold (ms)", ms, cb_scan_voice_hold, c);
 }
 
 void
@@ -1259,6 +1299,128 @@ act_toggle_ui_p25_callsign(void* v) {
 
 #ifdef USE_RADIO
 
+static void
+submit_airspy_setting(void* key, const char* value) {
+    if (!value) {
+        return;
+    }
+    dsd_app_airspy_setting_payload p = {0};
+    DSD_SNPRINTF(p.key, sizeof p.key, "%s", (const char*)key);
+    DSD_SNPRINTF(p.value, sizeof p.value, "%s", value);
+    (void)dsd_app_command_submit(DSD_APP_CMD_AIRSPY_SET, &p, sizeof p);
+}
+
+bool
+is_airspy_input(const void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    return c && c->opts && dsd_opts_audio_in_dev_is_airspy_spec(c->opts->audio_in_dev);
+}
+
+bool
+is_non_airspy_input(const void* v) {
+    return !is_airspy_input(v);
+}
+
+// NcMenuItem action callbacks require a mutable context signature.
+// cppcheck-suppress-begin constParameterPointer
+void
+airspy_set_serial(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%s", c->opts->airspy.serial);
+    ui_prompt_open_string_async("Serial (16 hex digits; empty selects first device)", current, 39,
+                                submit_airspy_setting, (void*)"airspy_serial");
+}
+
+void
+airspy_set_sample_rate(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%u", c->opts->airspy.sample_rate);
+    ui_prompt_open_string_async("Sample rate in samples/s (auto selects automatically)", current, 39,
+                                submit_airspy_setting, (void*)"airspy_sample_rate");
+}
+
+void
+airspy_set_gain_mode(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    const char* modes[] = {"sensitivity", "linearity", "manual"};
+    int mode = c->opts->airspy.gain_mode;
+    DSD_SNPRINTF(current, sizeof current, "%s", modes[mode >= 0 && mode <= 2 ? mode : 0]);
+    ui_prompt_open_string_async("Gain mode: sensitivity, linearity, manual", current, 39, submit_airspy_setting,
+                                (void*)"airspy_gain_mode");
+}
+
+void
+airspy_set_sensitivity_gain(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.sensitivity_gain);
+    ui_prompt_open_string_async("Sensitivity index (0..21)", current, 39, submit_airspy_setting,
+                                (void*)"airspy_sensitivity_gain");
+}
+
+void
+airspy_set_linearity_gain(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.linearity_gain);
+    ui_prompt_open_string_async("Linearity index (0..21)", current, 39, submit_airspy_setting,
+                                (void*)"airspy_linearity_gain");
+}
+
+void
+airspy_set_lna_gain(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.lna_gain);
+    ui_prompt_open_string_async("LNA index (0..15)", current, 39, submit_airspy_setting, (void*)"airspy_lna_gain");
+}
+
+void
+airspy_set_mixer_gain(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.mixer_gain);
+    ui_prompt_open_string_async("Mixer index (0..15)", current, 39, submit_airspy_setting, (void*)"airspy_mixer_gain");
+}
+
+void
+airspy_set_vga_gain(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.vga_gain);
+    ui_prompt_open_string_async("VGA index (0..15)", current, 39, submit_airspy_setting, (void*)"airspy_vga_gain");
+}
+
+void
+airspy_set_lna_agc(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.lna_agc);
+    ui_prompt_open_string_async("LNA AGC (0 off, 1 on)", current, 39, submit_airspy_setting, (void*)"airspy_lna_agc");
+}
+
+void
+airspy_set_mixer_agc(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.mixer_agc);
+    ui_prompt_open_string_async("Mixer AGC (0 off, 1 on)", current, 39, submit_airspy_setting,
+                                (void*)"airspy_mixer_agc");
+}
+
+void
+airspy_set_bias_tee(void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    char current[40];
+    DSD_SNPRINTF(current, sizeof current, "%d", c->opts->airspy.bias_tee);
+    ui_prompt_open_string_async("Bias tee (0 off, 1 on)", current, 39, submit_airspy_setting, (void*)"airspy_bias_tee");
+}
+
+// cppcheck-suppress-end constParameterPointer
+
 void
 rtl_restart(void* v) {
     UNUSED(v);
@@ -1349,6 +1511,12 @@ rtl_toggle_tuner_autogain(void* v) {
 }
 
 void
+switch_to_airspy(void* v) {
+    UNUSED(v);
+    (void)dsd_app_command_action(DSD_APP_CMD_AIRSPY_ENABLE_INPUT);
+}
+
+void
 switch_to_rtl(void* vctx) {
     UNUSED(vctx);
     (void)dsd_app_command_action(DSD_APP_CMD_RTL_ENABLE_INPUT);
@@ -1426,6 +1594,26 @@ DSD_SIMPLE_ACTION(act_vis_spectrum, DSD_APP_CMD_SPECTRUM_TOGGLE)
 #undef DSD_SIMPLE_ACTION
 
 void
+// cppcheck-suppress constParameterPointer -- NcMenuItem.on_select requires a void* callback.
+act_tg_lockout_persist(void* v) {
+    const UiCtx* ctx = (const UiCtx*)v;
+    if (ctx && ctx->opts) {
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_TG_LOCKOUT_PERSIST_SET, !ctx->opts->persist_tg_lockouts);
+    }
+}
+
+void
+act_tg_session_avoid_clear(void* v) {
+    (void)v;
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    if (snapshot) {
+        uint64_t context = 0;
+        dsd_tg_policy_table_version(snapshot, &context, NULL);
+        (void)dsd_app_command_submit(DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, &context, sizeof context);
+    }
+}
+
+void
 act_lockout_slot1(void* v) {
     UNUSED(v);
     (void)dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U);
@@ -1487,7 +1675,10 @@ act_decode_mode(void* v) {
        and Auto is the one choice the command layer never treats as a no-op: it
        re-enables every protocol and resets the modulation, so a stray second Enter
        would drag a settled QPSK session back to C4FM. */
-    const dsdneoUserDecodeMode now = (c && c->opts) ? dsd_infer_decode_mode_preset(c->opts) : DSDCFG_MODE_AUTO;
+    const dsd_opts* opts_snapshot = c ? dsd_app_get_latest_opts_snapshot() : NULL;
+    const dsd_state* snapshot = c ? dsd_app_get_latest_snapshot() : NULL;
+    const dsdneoUserDecodeMode now =
+        opts_snapshot ? dsd_scan_mode_configured_preset(opts_snapshot, snapshot) : DSDCFG_MODE_AUTO;
     ui_chooser_start_at("Decoder mode", g_decode_mode_labels, (int)DECODE_MODE_CHOICE_COUNT,
                         decode_mode_choice_index(now), chooser_done_decode_mode, NULL);
 }

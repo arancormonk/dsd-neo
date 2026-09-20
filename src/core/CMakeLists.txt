@@ -31,6 +31,7 @@ target_sources(
         util/dsd_state_trunk_lcn.c
         util/dsd_state_p25_bandplan.c
         util/key_set.c
+        util/scan_profile.c
         util/channel_label.c
         util/enc_lockout.c
         util/dsd_events.c
@@ -38,10 +39,12 @@ target_sources(
         util/edacs_afs.c
         util/dsd_alias.c
         util/talkgroup_policy.c
+        util/source_alias.c
         util/synctype.c
         file/dsd_file.c
         file/dsd_import.c
         file/p25_bandplan_csv.c
+        file/source_alias_csv.c
         file/p25_sm_log.c
         gps/dsd_gps.c
 )

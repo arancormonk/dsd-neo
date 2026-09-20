@@ -197,6 +197,9 @@ BPTC_128x77_Extract_Data(uint8_t InputDataMatrix[8][16], uint8_t DMRDataExtracte
         /* Apply Hamming (16,11,4) code correction */
         if (Hamming_16_11_4_decode(LineUncorrected, LineCorrected, 1) == false) {
             HammingIrrecoverableErrorNb++;
+            // The decoder leaves LineCorrected unwritten on failure. Preserve the
+            // received row rather than copying uninitialized or previous-row data.
+            continue;
         }
 
         /* Re-inject the line in the matrix (only the util data [11 bit],

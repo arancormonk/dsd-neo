@@ -29,8 +29,10 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -714,9 +716,44 @@ test_mac_release_stamps_the_countdown(void) {
     return rc;
 }
 
+static int
+test_short_noisy_call_hold(void) {
+    int rc = 0;
+    dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_PCT", "5", 1);
+    dsd_setenv("DSD_NEO_P25P1_ERR_HOLD_S", "20", 1);
+    dsd_neo_config_init();
+    for (int count = 0; count <= 9; count += 9) {
+        reset_test_state(10.0f, 1);
+        start_tuned_fdma();
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, CLEAR_TG, 0, CLEAR_SRC, 1, 0);
+        /* The just-started call owns nine frames in a fifty-frame ring. */
+        g_state.p25_p1_voice_err_hist_len = 50;
+        g_state.p25_p1_voice_err_hist_count = count;
+        g_state.p25_p1_voice_err_hist_sum = (unsigned int)(count * 10);
+        for (int i = 0; i < count; ++i) {
+            g_state.p25_p1_voice_err_hist[i] = 10;
+        }
+        (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+        set_hangtime_started(ctx, dsd_time_now_monotonic_s() - 15.0);
+        p25_sm_tick_ctx(ctx, &g_opts, &g_state);
+        rc |= expect(count ? "short noisy call gets error hold" : "empty ring does not extend hold",
+                     g_opts.trunk_is_tuned == (count != 0));
+        if (count) {
+            set_hangtime_started(ctx, dsd_time_now_monotonic_s() - 35.0);
+            p25_sm_tick_ctx(ctx, &g_opts, &g_state);
+            rc |= expect("noisy call releases after extended deadline", g_opts.trunk_is_tuned == 0);
+        }
+    }
+    dsd_unsetenv("DSD_NEO_P25P1_ERR_HOLD_PCT");
+    dsd_unsetenv("DSD_NEO_P25P1_ERR_HOLD_S");
+    dsd_neo_config_init();
+    return rc;
+}
+
 int
 main(void) {
-    int rc = 0;
+    int rc = test_short_noisy_call_hold();
     rc |= test_p1_identity_wait_rearms_hangtime();
     rc |= test_followed_voice_start_cancels_hangtime();
     rc |= test_locked_out_repeats_do_not_arm_beside_a_live_companion();

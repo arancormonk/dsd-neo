@@ -339,6 +339,7 @@ dmr_dburst_handle_bptc(dmr_data_burst_ctx* ctx) {
     ctx->crc_extracted ^= ctx->crcmask;
 
     dmr_dburst_handle_bptc_crc(ctx);
+    ctx->crc_original_validity = ctx->crc_correct;
 
     if (ctx->opts->aggressive_framesync == 0 && ctx->crc_correct == 0 && ctx->irrecoverable_errors == 0
         && ctx->bptc_reserved_bits == 4) {
@@ -348,12 +349,12 @@ dmr_dburst_handle_bptc(dmr_data_burst_ctx* ctx) {
         ctx->is_ras = 0;
     }
     if (ctx->is_ras == 1) {
-        ctx->crc_original_validity = ctx->crc_correct;
+        // Retain the standard CRC verdict separately from the RAS acceptance heuristic.
         ctx->crc_correct = 1;
     }
 
     if (ctx->databurst == 0x04 || ctx->databurst == 0x06) {
-        ctx->state->data_block_crc_valid[ctx->slot][0] = (ctx->crc_correct != 0);
+        ctx->state->data_block_crc_valid[ctx->slot][0] = (ctx->crc_original_validity != 0);
     }
 
     dmr_dburst_copy_bptc_outputs(ctx);
@@ -749,12 +750,16 @@ dmr_dburst_dispatch_by_type(dmr_data_burst_ctx* ctx) {
             break;
         case 0x04:
             ctx->state->data_block_counter[ctx->slot] = 0;
-            ctx->state->data_header_valid[ctx->slot] = 1;
+            // Arm only a checked header or the existing relaxed RAS heuristic. The raw CRC
+            // remains in data_block_crc_valid; acceptance is not an integrity verdict.
+            ctx->state->data_header_valid[ctx->slot] =
+                (uint8_t)(ctx->crc_correct != 0 && ctx->irrecoverable_errors == 0);
+            ctx->state->data_header_crc_invalid[ctx->slot] = (uint8_t)(ctx->crc_original_validity == 0);
             dmr_block_assembler(ctx->opts, ctx->state, ctx->dmr_pdu, ctx->pdu_len, ctx->databurst, 2);
             break;
         case 0x05: dmr_block_assembler(ctx->opts, ctx->state, ctx->dmr_pdu, ctx->pdu_len, ctx->databurst, 2); break;
         case 0x06:
-            dmr_dheader(ctx->opts, ctx->state, ctx->dmr_pdu, ctx->dmr_pdu_bits, ctx->crc_correct,
+            dmr_dheader(ctx->opts, ctx->state, ctx->dmr_pdu, ctx->dmr_pdu_bits, ctx->crc_original_validity,
                         ctx->irrecoverable_errors);
             break;
         case 0x07:
@@ -840,6 +845,12 @@ dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
         return;
     }
 
+    const uint8_t saved_crc_invalid = state->event_crc_invalid[ctx.slot];
+    // MBC continuation bursts have no independent CRC; their aggregate is checked by the assembler.
+    if (ctx.databurst != 0x05 && (ctx.is_ras || ctx.crc_correct == 0)) {
+        state->event_crc_invalid[ctx.slot] = 1;
+    }
     dmr_dburst_dispatch_by_type(&ctx);
+    state->event_crc_invalid[ctx.slot] = saved_crc_invalid;
     dmr_dburst_finalize_status(&ctx);
 }

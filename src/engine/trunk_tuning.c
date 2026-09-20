@@ -82,7 +82,7 @@ dsd_engine_select_p25_sps_profile(dsd_state* state, int is_tdma) {
  */
 static int
 dsd_engine_cc_is_p25(const dsd_state* state) {
-    if (dsd_engine_trunk_scan_active_p25_ctx() != NULL) {
+    if (dsd_engine_trunk_scan_active_is_p25_class(state)) {
         return 1;
     }
     // Under trunk scan the coordinator knows the parked target's protocol, and that beats sync
@@ -104,7 +104,8 @@ dsd_engine_cc_is_p25(const dsd_state* state) {
 
 static int
 dsd_engine_is_p25_profile_retune(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
-    if (!opts || !state || opts->trunk_enable != 1 || ted_sps <= 0) {
+    if (!opts || !state || ted_sps <= 0
+        || (opts->trunk_enable != 1 && !dsd_engine_trunk_scan_active_is_p25_class(state))) {
         return 0;
     }
     return dsd_engine_cc_is_p25(state);
@@ -133,8 +134,8 @@ static void DSD_ATTR_USED
 dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     // Skipping is safe for the other protocols rather than merely harmless: DMR and NXDN96 are
     // already parked at 4800 sym/s with the four-level profile, and NXDN48/EDACS carry rates
-    // this function cannot express at all. An nxdn48-conventional scan target relies on that
-    // skip: the coordinator seeds its 2400 sym/s timing, and the front end gets the matching
+    // this function cannot express at all. The nxdn48-conventional and nxdn48-trunk scan targets
+    // rely on that skip: the coordinator seeds their 2400 sym/s timing, and the front end gets the matching
     // 6.25 kHz chain from dsd_engine_gfsk_cc_symbol_rate().
     if (!opts || !state || state->p25_cc_freq == 0 || !dsd_engine_cc_is_p25(state)) {
         return;
@@ -146,8 +147,11 @@ dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     dsd_engine_select_p25_sps_profile(state, state->p25_cc_is_tdma == 1);
 }
 
-static void DSD_ATTR_USED
-dsd_engine_reset_return_to_cc_state(dsd_opts* opts, dsd_state* state) {
+void
+dsd_engine_release_tuned_call_state(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
     const double ended_m = dsd_time_now_monotonic_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         // The state machine is leaving this voice channel by decision, not because the carrier
@@ -433,46 +437,72 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
     state->p25_last_vc_tune_time_m = state->last_vc_sync_time_m;
 }
 
+static int
+dsd_engine_tune_rigctl(const dsd_opts* opts, long int freq) {
+    if (opts->setmod_bw != 0 && !SetModulation(opts->rigctl_sockfd, opts->setmod_bw)) {
+        DSD_FPRINTF(stderr, "Rigctl modulation update failed for bandwidth %d.\n", opts->setmod_bw);
+    }
+    if (!SetFreq(opts->rigctl_sockfd, freq)) {
+        DSD_FPRINTF(stderr, "Rigctl frequency update failed for %ld Hz.\n", freq);
+        return 0;
+    }
+    return 1;
+}
+
+static int
+dsd_engine_conventional_scan_active(const dsd_opts* opts) {
+    return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1;
+}
+
+#ifdef USE_RADIO
 static dsd_trunk_tune_result
-dsd_engine_tune_with_backend(const dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
+dsd_engine_tune_rtl(dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
+    if (!state->rtl_ctx) {
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    const int rc = request_id != 0U ? rtl_stream_tune_tagged(state->rtl_ctx, (uint32_t)freq, request_id)
+                                    : rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
+    if (rc == RTL_STREAM_TUNE_OK) {
+        uint32_t applied = 0U;
+        opts->rtlsdr_center_freq =
+            (rtl_stream_get_last_applied_freq(&applied) == 0 && applied != 0U) ? applied : (uint32_t)freq;
+        return DSD_TRUNK_TUNE_RESULT_OK;
+    }
+    if (rc == RTL_STREAM_TUNE_DEFERRED) {
+        return DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    }
+    if (rc == RTL_STREAM_TUNE_TIMEOUT) {
+        /* The controller still owns the request after the bounded wait.
+         * Tagged calls publish their terminal result asynchronously. */
+        opts->rtlsdr_center_freq = (uint32_t)freq;
+        return DSD_TRUNK_TUNE_RESULT_PENDING;
+    }
+    return DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+#endif
+
+static dsd_trunk_tune_result
+dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, uint64_t request_id) {
+    const int conventional_scan = dsd_engine_conventional_scan_active(opts);
     if (opts->use_rigctl == 1) {
-        if (opts->setmod_bw != 0) {
-            if (!SetModulation(opts->rigctl_sockfd, opts->setmod_bw)) {
-                DSD_FPRINTF(stderr, "Rigctl modulation update failed for bandwidth %d.\n", opts->setmod_bw);
-            }
-        }
-        if (!SetFreq(opts->rigctl_sockfd, freq)) {
-            DSD_FPRINTF(stderr, "Rigctl frequency update failed for %ld Hz.\n", freq);
+        if (!dsd_engine_tune_rigctl(opts, freq)) {
             return DSD_TRUNK_TUNE_RESULT_FAILED;
         }
+        opts->rtlsdr_center_freq = (uint32_t)freq;
 #ifdef USE_RADIO
-        if (opts->audio_in_type == AUDIO_IN_RTL) {
+        if (opts->audio_in_type == AUDIO_IN_RTL && !conventional_scan) {
             rtl_stream_apply_pending_retune_profile_for_target((uint32_t)freq);
         }
 #endif
-        return DSD_TRUNK_TUNE_RESULT_OK;
+        if (!conventional_scan || opts->audio_in_type != AUDIO_IN_RTL) {
+            return DSD_TRUNK_TUNE_RESULT_OK;
+        }
     }
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
 #ifdef USE_RADIO
-    if (state->rtl_ctx) {
-        int rc = request_id != 0U ? rtl_stream_tune_tagged(state->rtl_ctx, (uint32_t)freq, request_id)
-                                  : rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
-        if (rc == RTL_STREAM_TUNE_OK) {
-            return DSD_TRUNK_TUNE_RESULT_OK;
-        }
-        if (rc == RTL_STREAM_TUNE_DEFERRED) {
-            return DSD_TRUNK_TUNE_RESULT_DEFERRED;
-        }
-        if (rc == RTL_STREAM_TUNE_TIMEOUT) {
-            /* The controller still owns the request after the bounded wait.
-             * Tagged calls publish their terminal result asynchronously. */
-            return DSD_TRUNK_TUNE_RESULT_PENDING;
-        }
-        return DSD_TRUNK_TUNE_RESULT_FAILED;
-    }
-    return DSD_TRUNK_TUNE_RESULT_FAILED;
+    return dsd_engine_tune_rtl(opts, state, freq, request_id);
 #else
     (void)state;
     (void)request_id;
@@ -583,7 +613,7 @@ dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t reque
         }
     }
 
-    dsd_engine_reset_return_to_cc_state(opts, state);
+    dsd_engine_release_tuned_call_state(opts, state);
 
     /* Keep symbol timing aligned with the current control-channel mode. */
     dsd_engine_apply_cc_symbol_timing(opts, state);
@@ -731,6 +761,33 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
     return result;
 }
 
+#ifdef USE_RADIO
+static void
+dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {
+    if (opts->audio_in_type == AUDIO_IN_RTL && ted_sps > 0) {
+        if (dsd_engine_conventional_scan_active(opts)) {
+            const int rate = dsd_frame_sync_active_profile_symbol_rate_hz(state);
+            const int levels = dsd_frame_sync_active_profile_levels(state);
+            dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, state->rf_mod == 1, rate, levels,
+                                                         dsd_rtl_channel_profile_for(opts, rate, levels, state->rf_mod),
+                                                         ted_sps, 0);
+        } else {
+            dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
+        }
+    }
+}
+#endif
+
+static void
+dsd_engine_scan_tune_failed(const dsd_opts* opts, uint64_t request_id, dsd_trunk_tune_result result) {
+    if (dsd_engine_conventional_scan_active(opts) && opts->use_rigctl == 1 && opts->audio_in_type == AUDIO_IN_RTL) {
+        /* A rigctl leg may have moved before RTL failed. Completion disagreement
+         * retains the frame gate until the scanner establishes a new boundary. */
+        dsd_trunk_tuning_request_publish(request_id, DSD_TRUNK_TUNE_RESULT_OK);
+    }
+    dsd_trunk_tuning_request_complete(request_id, result);
+}
+
 dsd_trunk_tune_result
 dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t* out_request_id) {
     dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -756,9 +813,7 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     (void)ted_sps;
 #else
     dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
-    if (opts->audio_in_type == AUDIO_IN_RTL && ted_sps > 0) {
-        dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
-    }
+    dsd_engine_prepare_scan_profile(opts, state, freq, ted_sps);
 #endif
 
     dsd_engine_maybe_drain_audio(opts, state);
@@ -767,7 +822,7 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
 #ifdef USE_RADIO
         dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
 #endif
-        dsd_trunk_tuning_request_complete(tune_request_id, result);
+        dsd_engine_scan_tune_failed(opts, tune_request_id, result);
         return result;
     }
 

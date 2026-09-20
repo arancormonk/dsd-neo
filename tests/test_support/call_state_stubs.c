@@ -12,6 +12,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 
 static const dsd_state* g_stub_state;
 
@@ -175,9 +176,23 @@ dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, do
         return -1;
     }
     stub_select_state(state);
-    g_stub_calls[slot].media_active = media_active != 0;
-    (void)observed_m;
-    return 0;
+    dsd_call_snapshot* call = &g_stub_calls[slot];
+    if (call->epoch == 0U || call->phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    /* Production substitutes its monotonic clock when callers pass zero. These source-isolation
+     * tests deliberately link no timing backend, so wall time supplies the same positive-stamp
+     * contract; tests that exercise a specific timeline pass it explicitly. */
+    const double now_m = observed_m > 0.0 ? observed_m : (double)time(NULL);
+    call->media_active = media_active != 0;
+    call->updated_m = now_m;
+    if (media_active) {
+        if (call->media_started_m <= 0.0) {
+            call->media_started_m = now_m;
+        }
+        call->media_updated_m = now_m;
+    }
+    return 1;
 }
 
 int
@@ -295,4 +310,18 @@ dsd_event_enrich_gps(dsd_state* state, uint8_t slot, uint64_t epoch, const char*
                  sizeof(state->event_history_s[slot].Event_History_Items[0].gps_s), "%s", gps);
     state->event_history_s[slot].revision++;
     return 1;
+}
+
+int
+dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, uint64_t epoch, dsd_call_key_source source,
+                                  int signaled_id, int effective_id, int available, int fallback) {
+    (void)state;
+    (void)slot;
+    (void)epoch;
+    (void)source;
+    (void)signaled_id;
+    (void)effective_id;
+    (void)available;
+    (void)fallback;
+    return 0;
 }

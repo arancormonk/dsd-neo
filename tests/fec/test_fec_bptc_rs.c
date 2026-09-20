@@ -124,6 +124,17 @@ test_bptc_128x77(void) {
     irr = BPTC_128x77_Extract_Data(mat_err, extracted);
     assert(irr == 0);
 
+    // An uncorrectable row must retain its received bits, not the previous row's
+    // decoded output. The block remains failed even when its checksum happens to match.
+    DSD_MEMCPY(mat_err, mat, sizeof(mat_err));
+    mat_err[1][0] ^= 1U;
+    mat_err[1][1] ^= 1U;
+    irr = BPTC_128x77_Extract_Data(mat_err, extracted);
+    assert(irr != 0);
+    for (int col = 0; col < 11; col++) {
+        assert(extracted[11 + col] == mat_err[1][col]);
+    }
+
     return 0;
 }
 

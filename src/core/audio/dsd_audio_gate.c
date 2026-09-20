@@ -14,6 +14,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/key_material.h>
+#include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -96,40 +97,20 @@ dsd_audio_p25_policy_tg_valid_for_slot(const dsd_state* state, int slot, uint32_
     return dsd_audio_p25_patch_member_active(state, ota_target, (uint32_t)call.policy_target_id);
 }
 
-static uint32_t
-dsd_audio_group_source_id(const dsd_state* state, unsigned long tg) {
-    uint32_t id = (uint32_t)tg;
-    if (!state) {
-        return 0;
-    }
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        dsd_call_snapshot call;
-        if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-            || call.ota_source_id > UINT32_MAX) {
-            continue;
-        }
-        if (call.ota_target_id == id || call.policy_target_id == id) {
-            return (uint32_t)call.ota_source_id;
+static int
+dsd_audio_call_for_target(const dsd_state* state, int slot, uint32_t ota_target, uint32_t policy_tg,
+                          dsd_call_snapshot* call) {
+    // Mono callers prefer the current slot; an explicit slot never borrows its companion's call kind or source.
+    const int first = slot >= 0 ? slot : (state->currentslot == 1 ? 1 : 0);
+    const int count = slot >= 0 ? 1 : DSD_CALL_STATE_SLOT_COUNT;
+    for (int i = 0; i < count; ++i) {
+        if (dsd_call_state_get(state, (uint8_t)(first ^ i), call) > 0 && call->phase == DSD_CALL_PHASE_ACTIVE
+            && call->ota_source_id <= UINT32_MAX && call->ota_target_id <= UINT32_MAX
+            && (call->ota_target_id == ota_target || call->policy_target_id == policy_tg)) {
+            return 1;
         }
     }
     return 0;
-}
-
-static uint32_t
-dsd_audio_group_source_id_for_slot(const dsd_state* state, int slot, uint32_t ota_target, uint32_t policy_tg) {
-    if (!state || slot < 0 || slot > 1) {
-        return dsd_audio_group_source_id(state, policy_tg);
-    }
-
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || call.ota_source_id > UINT32_MAX) {
-        return 0;
-    }
-    if (call.ota_target_id == ota_target || call.policy_target_id == policy_tg) {
-        return (uint32_t)call.ota_source_id;
-    }
-    return dsd_audio_group_source_id(state, policy_tg);
 }
 
 static uint32_t
@@ -213,8 +194,7 @@ dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot) {
         return 0;
     }
 
-    const unsigned long long r_key = (slot == 0) ? state->R : state->RR;
-    return (r_key != 0ULL || state->K != 0ULL || state->K1 != 0ULL) ? 1 : 0;
+    return dsd_key_scalar_present(state, slot) || dsd_key_basic_present(state) || dsd_key_hytera_present(state);
 }
 
 int
@@ -228,20 +208,25 @@ dsd_dmr_voice_kid_can_decrypt(const dsd_state* state, int slot, int algid, const
         // change Kirisun completeness and the caller has to say which key it means.
         return key->kirisun_complete ? 1 : 0;
     }
+    if (dsd_dmr_alg_key_need(algid) == DSD_KEY_NEED_SCALAR && key->scalar_present) {
+        return 1;
+    }
     return dsd_dmr_voice_alg_can_decrypt(algid, key->r_key, key->aes_loaded);
 }
 
 dsd_dmr_key_material
 dsd_dmr_slot_key_material(const dsd_state* state, int slot, int key_id, int mapped) {
-    dsd_dmr_key_material material = {0ULL, 0, 0};
+    dsd_dmr_key_material material = {0};
     if (!state || !dsd_dmr_slot_valid(slot)) {
         return material;
     }
 
     material.r_key = (slot == 0) ? state->R : state->RR;
+    material.scalar_present = dsd_key_scalar_present(state, slot);
     material.aes_loaded = state->aes_key_loaded[slot];
     material.kirisun_complete = dsd_dmr_kirisun_slot_key_complete(state, slot);
     if (mapped) {
+        material.scalar_present = 0;
         (void)keyring_kid_material(state, key_id, &material.r_key, &material.aes_loaded);
         material.kirisun_complete = keyring_kid_kirisun_complete(state, key_id);
     }
@@ -254,7 +239,7 @@ dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsi
         return 0;
     }
     const dsd_dmr_key_material key = {r_key, state->aes_key_loaded[slot],
-                                      dsd_dmr_kirisun_slot_key_complete(state, slot)};
+                                      dsd_dmr_kirisun_slot_key_complete(state, slot), state->scalar_key_present[slot]};
     return dsd_dmr_voice_kid_can_decrypt(state, slot, algid, &key);
 }
 
@@ -321,11 +306,18 @@ dsd_p25p2_slot_crypto_permits_audio(const dsd_opts* opts, const dsd_state* state
 }
 
 static int
+dsd_audio_hold_overrides_policy(const dsd_tg_policy_decision* decision) {
+    // Temporary avoids stay in force until explicitly cleared, including on a held TG.
+    return decision->tg_hold_active && decision->tg_hold_match
+           && !(decision->block_reasons & DSD_TG_POLICY_BLOCK_SESSION_AVOID);
+}
+
+static int
 dsd_p25p2_media_decision_allows_audio(const dsd_tg_policy_decision* decision) {
     if (!decision) {
         return 1;
     }
-    if (decision->tg_hold_active && decision->tg_hold_match) {
+    if (dsd_audio_hold_overrides_policy(decision)) {
         return 1;
     }
     if (!decision->audio_allowed || (decision->block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u) {
@@ -383,14 +375,19 @@ dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot
     int enc = (enc_in != 0) ? 1 : 0;
     if (slot >= 0 && slot <= 1) {
         policy_tg = dsd_audio_p25_policy_target_for_slot(state, slot, ota_tg);
-        source_id = dsd_audio_group_source_id_for_slot(state, slot, ota_tg, policy_tg);
     } else {
         policy_tg = dsd_audio_p25_policy_target_for_group(state, ota_tg);
-        source_id = dsd_audio_group_source_id(state, policy_tg);
     }
 
-    if (dsd_tg_policy_evaluate_group_call(opts, state, policy_tg, source_id, 0, 0, &decision) == 0) {
-        if (decision.tg_hold_active && decision.tg_hold_match) {
+    dsd_call_snapshot call;
+    const int have_call = dsd_audio_call_for_target(state, slot, ota_tg, policy_tg, &call);
+    source_id = have_call ? (uint32_t)call.ota_source_id : 0;
+    const int rc =
+        have_call && call.kind == DSD_CALL_KIND_PRIVATE_VOICE
+            ? dsd_tg_policy_evaluate_private_call(opts, state, source_id, (uint32_t)call.ota_target_id, 0, 0, &decision)
+            : dsd_tg_policy_evaluate_group_call(opts, state, policy_tg, source_id, 0, 0, &decision);
+    if (rc == 0) {
+        if (dsd_audio_hold_overrides_policy(&decision)) {
             enc = 0;
         } else if (!decision.audio_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u) {
             enc = 1;
@@ -481,7 +478,7 @@ dsd_audio_record_policy_blocks(const dsd_opts* opts, const dsd_state* state, int
         return 0;
     }
 
-    if (decision.tg_hold_active && decision.tg_hold_match) {
+    if (dsd_audio_hold_overrides_policy(&decision)) {
         return 0;
     }
     if (!decision.record_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u) {

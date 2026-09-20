@@ -12,18 +12,37 @@
  * ring walk must be gated on commit_rev, not on staged-row renders; and a
  * relaunched model must not re-ingest rows its predecessor already logged. */
 
+#include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
+#include <QIODevice>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
+#include <QLatin1String>
+#include <QList>
+#include <QModelIndex>
 #include <QSettings>
+#include <QSignalSpy>
 #include <QStandardPaths>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
+#include <initializer_list>
+#include <memory>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include "../test_support/qt_test_paths.h"
+#include "json_store.h"
 
 #include "call_history_model.h"
 #include "dsd-neo/core/safe_api.h"
@@ -124,6 +143,93 @@ struct RingFixture {
         rings[slot].revision++;
     }
 };
+
+void
+test_system_identity_persistence(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    const time_t when = 1754500800;
+    {
+        CallHistoryModel model;
+        model.setSessionLabel("Same name");
+        model.setSessionUid("system-a");
+        ring.commit(0, 1001, 2001, when, when + 4);
+        model.refresh(ring.state, opts.get());
+        expect("ingest exposes saved identity",
+               model.data(model.index(0), CallHistoryModel::SystemUidRole) == "system-a");
+        model.setSessionUid("system-b");
+        ring.commit(0, 1001, 2001, when + 5, when + 9);
+        model.refresh(ring.state, opts.get());
+        expect("same-named systems do not merge", model.count() == 2);
+        expect("changing session identity preserves old rows",
+               model.data(model.index(1), CallHistoryModel::SystemUidRole) == "system-a");
+        expect("new calls carry the new identity",
+               model.data(model.index(0), CallHistoryModel::SystemUidRole) == "system-b");
+    }
+    {
+        CallHistoryModel restored;
+        expect("session identity persists", restored.sessionUid() == "system-b");
+        expect("row identity persists",
+               restored.data(restored.index(0), CallHistoryModel::SystemUidRole) == "system-b"
+                   && restored.data(restored.index(1), CallHistoryModel::SystemUidRole) == "system-a");
+        restored.refresh(ring.state, opts.get());
+        expect("identity does not change ring deduplication", restored.count() == 2);
+    }
+    auto rows = dsd_qt::json_store_load_array("call_history.json");
+    auto legacy = rows.at(1).toObject();
+    legacy.remove("systemUid");
+    rows.replace(1, legacy);
+    expect("legacy history fixture saved", dsd_qt::json_store_save_array("call_history.json", rows));
+    CallHistoryModel legacyModel;
+    expect("legacy row has no hold identity",
+           legacyModel.data(legacyModel.index(1), CallHistoryModel::SystemUidRole).toString().isEmpty());
+}
+
+void
+test_scanning_rows_never_gain_hold_identity(void) {
+    for (int scanMode = 0; scanMode < 2; ++scanMode) {
+        resetStorage();
+        RingFixture ring;
+        auto opts = std::make_unique<dsd_opts>();
+        opts->scanner_mode = scanMode == 0;
+        opts->trunk_scan_enabled = scanMode == 1;
+        const time_t when = 1754500900;
+        {
+            CallHistoryModel model;
+            // A saved system can carry -Y or --trunk-scan in extra arguments.
+            model.setSessionLabel("Saved source");
+            model.setSessionUid("saved-source");
+            ring.commit(0, 1001, 2001, when, when + 4);
+            model.refresh(ring.state, opts.get());
+            expect("effective scanning excludes row identity even without a channel label",
+                   model.count() == 1
+                       && model.data(model.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
+        }
+        CallHistoryModel restored;
+        expect("scanned row remains ineligible after reload",
+               restored.count() == 1
+                   && restored.data(restored.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
+        opts->scanner_mode = 0;
+        opts->trunk_scan_enabled = 0;
+        ring.commit(0, 1001, 2001, when + 5, when + 9);
+        restored.refresh(ring.state, opts.get());
+        expect("later single-system call is eligible and cannot merge into a scan row",
+               restored.count() == 2
+                   && restored.data(restored.index(0), CallHistoryModel::SystemUidRole) == "saved-source"
+                   && restored.data(restored.index(1), CallHistoryModel::SystemUidRole).toString().isEmpty());
+        ring.commit(0, 3001, 4001, when + 20, when + 24, "", "", "Retained scan target");
+        restored.refresh(ring.state, opts.get());
+        expect("retained scan-labelled rows stay ineligible after rotation stops",
+               restored.count() == 3
+                   && restored.data(restored.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
+        ring.commit(0, 5001, 6001, when + 30, when + 34);
+        restored.refresh(ring.state);
+        expect("unknown effective options cannot grant hold identity",
+               restored.count() == 4
+                   && restored.data(restored.index(0), CallHistoryModel::SystemUidRole).toString().isEmpty());
+    }
+}
 
 void
 test_two_slots_same_second_same_talkgroup(void) {
@@ -281,6 +387,24 @@ test_reacquisition_merge_updates_in_place(void) {
     model.refresh(ring.state);
     expect("first fragment lands", model.count() == 1);
 
+    QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+    expect("dataChanged spy connects", changed.isValid());
+    item->emergency = 1;
+    item->priority = 3;
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    expect("late emergency alone updates the row",
+           model.count() == 1 && model.data(model.index(0), CallHistoryModel::EmergencyRole).toBool());
+    expect("late emergency emits one dataChanged signal", changed.count() == 1);
+    if (changed.count() == 1) {
+        const QList<QVariant>& arguments = changed.at(0);
+        expect("late emergency signals the existing row",
+               qvariant_cast<QModelIndex>(arguments.at(0)) == model.index(0)
+                   && qvariant_cast<QModelIndex>(arguments.at(1)) == model.index(0));
+        expect("late emergency notifies the emergency role",
+               qvariant_cast<QVector<int>>(arguments.at(2)).contains(CallHistoryModel::EmergencyRole));
+    }
+
     // The core's reacquisition merge: end extends, src fills, enc flips — in
     // place, same slot/seq/start.
     item->event_time = when + 45;
@@ -331,17 +455,153 @@ test_relaunch_does_not_reingest(void) {
     RingFixture ring;
     const time_t when = 1754500500;
     ring.commit(0, 4005, 300, when, when + 8);
-    ring.commit(1, 4005, 400, when, when + 8);
+    ring.commit(1, 4005, 400, when, when + 8)->emergency = 1;
     {
         CallHistoryModel model;
         model.refresh(ring.state);
         expect("both rows land before the restart", model.count() == 2);
     } // destructor flushes the stores
+    for (const char* store : {"call_history.json", "call_history_seen.json"}) {
+        QFile file(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QLatin1Char('/')
+                   + QLatin1String(store));
+        expect("history store opens", file.open(QIODevice::ReadOnly));
+        const QJsonArray rows = QJsonDocument::fromJson(file.readAll()).array();
+        int marked = 0;
+        expect("both rows persisted", rows.size() == 2);
+        for (const auto& value : rows) {
+            const QJsonObject row = value.toObject();
+            if (row.contains(QLatin1String("em"))) {
+                expect("em is written only when true", row.value(QLatin1String("em")).toBool());
+                ++marked;
+            }
+        }
+        expect("one emergency key, ordinary row omits it", marked == 1);
+    }
     // The Activity restarts while the service's ring still holds both rows.
     CallHistoryModel relaunched;
     expect("relaunched model restores the log", relaunched.count() == 2);
+    int emergencies = 0;
+    for (int i = 0; i < relaunched.count(); ++i) {
+        emergencies += relaunched.data(relaunched.index(i), CallHistoryModel::EmergencyRole).toBool() ? 1 : 0;
+    }
+    expect("only the emergency row restores its flag", emergencies == 1);
     relaunched.refresh(ring.state);
     expect("relaunched model does not re-ingest ring rows", relaunched.count() == 2);
+}
+
+void
+test_source_labels_survive_merge_and_relaunch(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754500500;
+    Event_History* item = ring.commit(0, 1201, 1201, when, when + 8, "", "Talkgroup 1201");
+    DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Radio 1201");
+    {
+        CallHistoryModel model;
+        model.refresh(ring.state);
+        expect("source alias has its own role",
+               model.data(model.index(0), CallHistoryModel::SourceNameRole).toString() == QStringLiteral("Radio 1201"));
+        expect("source alias preserves numeric ID",
+               model.data(model.index(0), CallHistoryModel::SrcRole).toUInt() == 1201U);
+        expect("source alias preserves group name",
+               model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("Talkgroup 1201"));
+        DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Enriched 1201");
+        ring.touchCommitted(0);
+        model.refresh(ring.state);
+        expect("alias-only enrichment updates the existing row",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Enriched 1201"));
+        item = ring.commit(0, 1201, 1201, when + 9, when + 15, "", "Talkgroup 1201");
+        DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Unit 1201");
+        model.refresh(ring.state);
+        expect("source alias follows merged fragment",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Unit 1201"));
+    }
+    CallHistoryModel restored;
+    expect("source alias survives persistence",
+           restored.data(restored.index(0), CallHistoryModel::SourceNameRole).toString()
+               == QStringLiteral("Unit 1201"));
+    item = ring.commit(1, 4005, 0, when + 60, when + 65);
+    DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", "N0CALL");
+    restored.refresh(ring.state);
+    expect("textual source survives without an alias",
+           restored.data(restored.index(0), CallHistoryModel::SourceNameRole).toString() == QStringLiteral("N0CALL"));
+}
+
+/* Refresh timing must not choose the label: backlog scans newest-first, while
+ * incremental refresh sees the same fragments oldest-first. Also cover two
+ * distinct fragments stamped in the same second. */
+void
+test_source_label_is_independent_of_refresh_timing(void) {
+    const time_t when = 1754500600;
+    for (int sameSecond = 0; sameSecond < 2; sameSecond++) {
+        for (int incremental = 0; incremental < 2; incremental++) {
+            resetStorage();
+            RingFixture ring;
+            CallHistoryModel model;
+            Event_History* item = ring.commit(0, 1201, 1201, when, when + 8);
+            DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Old alias");
+            if (incremental) {
+                model.refresh(ring.state);
+            }
+            item = ring.commit(0, 1201, 1201, when + (sameSecond ? 0 : 9), when + 15);
+            DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "New alias");
+            model.refresh(ring.state);
+            expect("batched and incremental fragments select the latest alias",
+                   model.count() == 1
+                       && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                              == QStringLiteral("New alias"));
+        }
+    }
+}
+
+/* The selected label belongs to neither end of this merged span. A restart
+ * must retain that provenance, not use the merged start/end for the next merge. */
+void
+test_source_label_provenance_survives_merged_span_and_relaunch(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754500700;
+    ring.commit(0, 1201, 1201, when, when + 3);
+    Event_History* item = ring.commit(0, 1201, 1201, when + 10, when + 15);
+    DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Middle alias");
+    ring.commit(0, 1201, 1201, when + 20, when + 25);
+    {
+        CallHistoryModel model;
+        model.refresh(ring.state);
+        expect("unlabelled fragments extend the call without replacing its label",
+               model.count() == 1 && model.data(model.index(0), CallHistoryModel::DurationSecsRole).toInt() == 25
+                   && model.data(model.index(0), CallHistoryModel::SourceNameRole).toString()
+                          == QStringLiteral("Middle alias"));
+    }
+
+    CallHistoryModel restored;
+    item = ring.commit(1, 1201, 1201, when + 5, when + 8);
+    DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Older alias");
+    restored.refresh(ring.state);
+    expect("backfilled alias newer than the merged start does not replace the selected label",
+           restored.count() == 1
+               && restored.data(restored.index(0), CallHistoryModel::SourceNameRole).toString()
+                      == QStringLiteral("Middle alias"));
+
+    item = ring.commit(1, 1201, 1201, when + 18, when + 19);
+    DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Later alias");
+    restored.refresh(ring.state);
+    expect("newer alias older than the merged end replaces the selected label",
+           restored.count() == 1
+               && restored.data(restored.index(0), CallHistoryModel::SourceNameRole).toString()
+                      == QStringLiteral("Later alias"));
+
+    DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", "Enriched alias");
+    ring.touchCommitted(1);
+    restored.refresh(ring.state);
+    expect("selected fragment still accepts alias-only enrichment after merging and relaunch",
+           restored.count() == 1
+               && restored.data(restored.index(0), CallHistoryModel::SourceNameRole).toString()
+                      == QStringLiteral("Enriched alias"));
 }
 
 } // namespace
@@ -353,7 +613,7 @@ main(int argc, char** argv) {
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(
         QStringLiteral("dsd-neo-call-history-%1").arg(QCoreApplication::applicationPid()));
-    QStandardPaths::setTestModeEnabled(true);
+    dsd_test_qt_isolate_paths();
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir(dataDir).removeRecursively();
     QTemporaryDir settingsDir;
@@ -364,6 +624,11 @@ main(int argc, char** argv) {
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
     QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope, settingsDir.path());
 
+    test_system_identity_persistence();
+    test_scanning_rows_never_gain_hold_identity();
+    test_source_labels_survive_merge_and_relaunch();
+    test_source_label_is_independent_of_refresh_timing();
+    test_source_label_provenance_survives_merged_span_and_relaunch();
     test_two_slots_same_second_same_talkgroup();
     test_textual_targets_stay_distinct();
     test_alias_only_row_is_logged();

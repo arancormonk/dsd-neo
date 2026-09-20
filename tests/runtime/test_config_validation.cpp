@@ -1196,6 +1196,61 @@ test_scan_voice_ms_out_of_range(void) {
     return rc;
 }
 
+/* The loader is deliberately range-free, so a 1..999 cap - a value the engine treats as
+ * disabled - is only caught here. It is a WARNING, not an error: the rest of the config still
+ * loads, matching how an unknown key is treated. */
+static int
+run_scan_max_visit_ms_case(const char* ini, int expect_warning) {
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    (void)dsd_user_config_validate(path, &diags);
+
+    int result = 0;
+    int found = 0;
+    for (int i = 0; i < diags.count; i++) {
+        if (diags.items[i].level == DSDCFG_DIAG_WARNING && strstr(diags.items[i].key, "scan_max_visit_ms")) {
+            found++;
+        }
+    }
+    if (expect_warning && found == 0) {
+        DSD_FPRINTF(stderr, "FAIL: expected a scan_max_visit_ms warning for:\n%s", ini);
+        result = 1;
+    }
+    if (!expect_warning && found != 0) {
+        DSD_FPRINTF(stderr, "FAIL: unexpected %d scan_max_visit_ms warning(s) for:\n%s", found, ini);
+        result = 1;
+    }
+    if (diags.error_count != 0) {
+        DSD_FPRINTF(stderr, "FAIL: scan_max_visit_ms case reported %d error(s) for:\n%s", diags.error_count, ini);
+        result = 1;
+    }
+
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+    return result;
+}
+
+static int
+test_scan_max_visit_ms_validation(void) {
+    int rc = 0;
+    /* Below the 1000 ms floor: inside the schema window (min 0) but ignored by the engine. */
+    rc |= run_scan_max_visit_ms_case("[trunking]\nscan_max_visit_ms = 500\n", 1);
+    /* Above the ceiling: the schema walk warns. */
+    rc |= run_scan_max_visit_ms_case("[trunking]\nscan_max_visit_ms = 3600001\n", 1);
+    /* 0 disables the cap, and both bounds of the accepted window are silent. */
+    rc |= run_scan_max_visit_ms_case("[trunking]\nscan_max_visit_ms = 0\n", 0);
+    rc |= run_scan_max_visit_ms_case("[trunking]\nscan_max_visit_ms = 1000\n", 0);
+    rc |= run_scan_max_visit_ms_case("[trunking]\nscan_max_visit_ms = 3600000\n", 0);
+    /* The composed rule is paired onto profiles the same way the other composed rules are. */
+    rc |= run_scan_max_visit_ms_case("[profile.cap]\ntrunking.scan_max_visit_ms = 500\n", 1);
+    return rc;
+}
+
 static int
 test_input_warn_db_double_validation(void) {
     // In-range double: no diagnostics for the key
@@ -1749,6 +1804,7 @@ main(void) {
     rc |= test_int_out_of_range();
     rc |= test_int_out_of_range_negative_max();
     rc |= test_scan_voice_ms_out_of_range();
+    rc |= test_scan_max_visit_ms_validation();
     rc |= test_input_warn_db_double_validation();
     rc |= test_dmr_lrrp_ports_validation();
     rc |= test_diags_have_line_numbers();

@@ -9,8 +9,10 @@
 
 #include <curses.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/curses_compat.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <dsd-neo/ui/ncurses.h>
 #include <stdio.h>
@@ -23,10 +25,16 @@ static int s_stderr_suppressed = 0;
 static int s_saved_stderr_fd = -1;
 
 void
-dsd_terminal_open(dsd_opts* opts, dsd_state* state) {
+dsd_terminal_open(const dsd_opts* opts, dsd_state* state) {
 
-    UNUSED(opts);
     UNUSED(state);
+
+    // Warn on the normal screen, before curses takes over or stderr is suppressed.
+    if (opts && opts->payload && !s_stderr_suppressed && dsd_isatty(dsd_fileno(stderr))) {
+        LOG_WARN("MBE/PDU payload logging (-Z) is enabled, but the terminal frontend suppresses stderr; "
+                 "re-run with 2> console_log.txt to capture payload output.\n");
+        fflush(stderr);
+    }
 
     // menu overlays are nonblocking and do not gate demod processing
     dsd_unicode_init_locale();
@@ -92,7 +100,6 @@ dsd_terminal_open(dsd_opts* opts, dsd_state* state) {
 
     noecho();
     cbreak();
-
     // When ncurses UI is active, suppress direct stderr logging to prevent
     // screen corruption from background fprintf calls in protocol paths.
     // This avoids mixed ncurses/stdio output overwriting the UI until resize.

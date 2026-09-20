@@ -211,13 +211,14 @@ int dsd_rr_site_is_simulcast(const dsd_rr_site* site);
 /**
  * @brief Generate a group (talkgroup) CSV.
  *
- * Three columns, sorted ascending by ID, duplicate IDs dropped keeping the
- * first. Encrypted talkgroups get mode "DE", which blocks tuning, audio,
- * recording and streaming for that ID. Names are sanitized for a parser with no
- * quoting: commas become slashes, control bytes are stripped, whitespace runs
- * collapse, and the result is truncated on a UTF-8 boundary to fit the
- * importer's 49-byte name field. No space follows a comma, because the importer
- * does not trim the name column.
+ * ID, mode and name columns, plus a fourth category column when non-empty.
+ * Sorted ascending by ID, duplicate IDs dropped keeping the first. Encrypted
+ * talkgroups get mode "DE", which blocks tuning, audio, recording and streaming
+ * for that ID. Names and categories are sanitized for a parser with no quoting:
+ * commas become slashes, control bytes are stripped, whitespace runs collapse,
+ * and each result is truncated on a UTF-8 boundary to fit the importer's 49-byte
+ * fields. No space follows a comma, because the importer does not trim the name
+ * column. Category shortening is not included in talkgroup-name warnings.
  *
  * @param talkgroups      Talkgroups to emit.
  * @param count           Number of talkgroups.
@@ -227,6 +228,19 @@ int dsd_rr_site_is_simulcast(const dsd_rr_site* site);
  * @param warnings        Optional; receives preview warnings.
  * @return 0 on success, -1 on invalid argument or allocation failure.
  */
+typedef enum {
+    DSD_RR_TG_POLICY_LEGACY = 0,
+    DSD_RR_TG_KEEP_ENABLED = 1,
+    DSD_RR_TG_EXCLUDE_FULL = 2,
+    DSD_RR_TG_EXCLUDE_FULL_AND_PARTIAL = 3
+} dsd_rr_encrypted_tg_policy;
+
+/** Explicit whole-talkgroup policy. KEEP_ENABLED delegates individual calls to
+ * the canonical listening/key-availability policy; exclusions emit DE rows. */
+int dsd_rr_generate_group_csv_with_policy(const dsd_rr_talkgroup* talkgroups, size_t count,
+                                          dsd_rr_encrypted_tg_policy policy, char** out, size_t* out_len,
+                                          dsd_rr_warning_list* warnings);
+
 int dsd_rr_generate_group_csv(const dsd_rr_talkgroup* talkgroups, size_t count, int partial_enc_as_de, char** out,
                               size_t* out_len, dsd_rr_warning_list* warnings);
 

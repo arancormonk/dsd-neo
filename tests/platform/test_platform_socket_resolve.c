@@ -3,12 +3,12 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include "dsd-neo/core/safe_api.h"
 
 #if DSD_PLATFORM_WIN_NATIVE
 #include <winsock2.h>
@@ -197,7 +197,9 @@ expect_tcp_loopback_accepts(void) {
 
     client = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
     if (client == DSD_INVALID_SOCKET
-        || dsd_socket_connect(client, (const struct sockaddr*)&listener_addr, (int)sizeof(listener_addr)) != 0) {
+        || dsd_socket_connect_bounded(client, (const struct sockaddr*)&listener_addr, (int)sizeof(listener_addr), 1000U,
+                                      NULL, NULL, NULL)
+               != 0) {
         DSD_FPRINTF(stderr, "TCP connect failed: %s\n", strerror(dsd_socket_get_error()));
         rc = 1;
         goto done;
@@ -259,6 +261,28 @@ done:
 }
 #endif
 
+static int
+cancel_connect(void* context) {
+    return *(int*)context;
+}
+
+static int
+test_cancelled_connect(void) {
+    int cancel = 1, code = 0;
+    struct sockaddr_in address;
+    if (dsd_socket_resolve("127.0.0.1", 1, &address) != 0) {
+        return 1;
+    }
+    dsd_socket_t socket = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+    if (socket == DSD_INVALID_SOCKET) {
+        return 1;
+    }
+    const int result = dsd_socket_connect_bounded(socket, (const struct sockaddr*)&address, sizeof(address), 10000U,
+                                                  cancel_connect, &cancel, &code);
+    dsd_socket_close(socket);
+    return result != -1 || code == 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -267,6 +291,7 @@ main(void) {
         return 1;
     }
 
+    rc |= test_cancelled_connect();
     rc |= expect_numeric_ipv4_resolves("127.0.0.1", 7355);
     rc |= expect_numeric_ipv4_resolves("192.168.1.50", 7355);
     if (dsd_socket_resolve(NULL, 7355, &(struct sockaddr_in){0}) != -1) {

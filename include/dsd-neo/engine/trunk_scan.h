@@ -11,8 +11,11 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_ENGINE_TRUNK_SCAN_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_ENGINE_TRUNK_SCAN_H_
 
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -51,14 +54,16 @@ typedef enum {
     DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK = 3,
     DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL = 4,
     DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL = 5,
+    DSD_TRUNK_SCAN_TARGET_NXDN48_TRUNK = 6,
+    DSD_TRUNK_SCAN_TARGET_P25_CONVENTIONAL = 7,
 } dsd_trunk_scan_target_type;
 
 typedef enum {
-    DSD_TRUNK_SCAN_MODULATION_UNSET = 0,
-    DSD_TRUNK_SCAN_MODULATION_AUTO = 1,
-    DSD_TRUNK_SCAN_MODULATION_C4FM = 2,
-    DSD_TRUNK_SCAN_MODULATION_CQPSK = 3,
-    DSD_TRUNK_SCAN_MODULATION_GFSK = 4,
+    DSD_TRUNK_SCAN_MODULATION_UNSET = DSD_SCAN_MODULATION_INHERIT,
+    DSD_TRUNK_SCAN_MODULATION_AUTO = DSD_SCAN_MODULATION_AUTO,
+    DSD_TRUNK_SCAN_MODULATION_C4FM = DSD_SCAN_MODULATION_C4FM,
+    DSD_TRUNK_SCAN_MODULATION_CQPSK = DSD_SCAN_MODULATION_CQPSK,
+    DSD_TRUNK_SCAN_MODULATION_GFSK = DSD_SCAN_MODULATION_GFSK,
 } dsd_trunk_scan_modulation;
 
 typedef struct {
@@ -70,6 +75,12 @@ typedef struct {
      * Loaded into the target's key set at init; empty means the global keys. */
     char keys_hex_csv[1024];
     char keys_dec_csv[1024];
+    /* Parsed direct `-H`/`-b` equivalents. Kept as fixed metadata so raw key
+     * text never survives parsing or reaches a diagnostic. */
+    dsd_key_scalars single_key_scalars;
+    uint8_t single_keys_present;
+    /** Nonsecret, validated per-target overrides. Group path is relative-resolved at import. */
+    dsd_scan_option_values row_options;
     /* Per-target P25 band plan CSV (trunk targets only), resolved relative to the targets CSV at
      * parse time and loaded into the target's own band-plan store at init; empty means none. */
     char p25_bandplan_csv[1024];
@@ -103,6 +114,10 @@ int dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_
 int dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t err_sz);
 void dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state);
 void dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state);
+/** Maintain the visit clock and report expiry without tuning or releasing the call.
+ * Decoder thread only; the caller must hold the SM guard. Used by long protocol loops
+ * to unwind before the next coordinator tick performs the advance. */
+int dsd_engine_trunk_scan_visit_expired(const dsd_opts* opts, dsd_state* state);
 /**
  * @brief Apply an operator scan control (a dsd_trunk_scan_control_op from
  * runtime/trunk_scan_hooks.h) to the parked target list.
@@ -151,6 +166,9 @@ void dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const
 /** @copydoc dsd_engine_trunk_scan_dmr_conventional_activity */
 void dsd_engine_trunk_scan_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                       uint32_t source, int is_private, int encrypted, int data_call);
+/** @copydoc dsd_engine_trunk_scan_dmr_conventional_activity */
+void dsd_engine_trunk_scan_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
+                                                     uint32_t source, int is_private, int encrypted, int data_call);
 size_t dsd_engine_trunk_scan_target_count(const dsd_state* state);
 int dsd_engine_trunk_scan_saved_tuner_autogain(const dsd_state* state, int* out_on);
 int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_enable);
@@ -171,6 +189,13 @@ int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* 
  *         parked target is P25.
  */
 int dsd_engine_trunk_scan_active_gfsk_symbol_rate(const dsd_state* state);
+/**
+ * @brief Non-zero while the parked target is p25-trunk or p25-conventional.
+ *
+ * Identifies the demodulation class, not ownership of a P25 trunk state machine.
+ * Returns 0 when no target is parked for the supplied decoder state.
+ */
+int dsd_engine_trunk_scan_active_is_p25_class(const dsd_state* state);
 /**
  * @brief Append the parked targets' learned IDEN entries as band-plan rows.
  *

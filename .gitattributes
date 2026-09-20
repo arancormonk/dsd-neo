@@ -5,3 +5,4 @@
 src/third_party/** linguist-vendored
 android/third_party/libusb/** linguist-vendored
 android/third_party/librtlsdr/** linguist-vendored
+android/third_party/libairspy/** linguist-vendored

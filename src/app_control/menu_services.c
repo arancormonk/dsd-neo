@@ -3,7 +3,9 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
@@ -12,10 +14,12 @@
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rigctl_client.h>
@@ -25,8 +29,10 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
+#include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -346,7 +352,7 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
  * untouched and the imported one for that same call to free exactly once.
  */
 static int
-chan_map_adopt(dsd_state* dst, dsd_state* src) {
+chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
     // src is an arbitrary dsd_state*, so the sign and the tail are checked here rather
     // than inherited from the importer: a negative count would become a huge size_t.
     const int src_count = src->lcn_freq_count > 0 ? src->lcn_freq_count : 0;
@@ -358,6 +364,8 @@ chan_map_adopt(dsd_state* dst, dsd_state* src) {
         LOG_ERROR("channel map adopt out of memory\n");
         return -1;
     }
+    dsd_engine_channel_scan_leave(opts, dst);
+    dsd_scan_keys_leave(dst);
     DSD_MEMCPY(dst->trunk_chan_map, src->trunk_chan_map, sizeof dst->trunk_chan_map);
     DSD_MEMCPY(dst->trunk_chan_map_used, src->trunk_chan_map_used, sizeof dst->trunk_chan_map_used);
     dst->trunk_chan_map_used_count = src->trunk_chan_map_used_count;
@@ -366,6 +374,7 @@ chan_map_adopt(dsd_state* dst, dsd_state* src) {
         DSD_MEMCPY(dst->trunk_lcn_freq_ext, src->trunk_lcn_freq_ext,
                    (size_t)(src_count - DSD_TRUNK_LCN_EMBEDDED) * sizeof(dst->trunk_lcn_freq_ext[0]));
     }
+    dsd_channel_modes_move(dst, src);
     dsd_state_trunk_lcn_name_free(dst);
     dst->trunk_lcn_name = src->trunk_lcn_name;
     dst->trunk_lcn_name_capacity = src->trunk_lcn_name_capacity;
@@ -384,6 +393,10 @@ chan_map_adopt(dsd_state* dst, dsd_state* src) {
     dsd_state_trunk_lcn_avoid_free(dst);
     dst->lcn_avoid_count = 0;
     dst->lcn_scan_hold = 0;
+    // The visit the per-visit cap was measuring belonged to a row that no longer exists.
+    dst->scan_visit_since_m = -1.0;
+    dst->scan_visit_roll_seen = 0;
+    dst->scan_visit_rearm_pending = 0U;
     DSD_MEMSET(dst->dmr_lcn_trust, 0, sizeof dst->dmr_lcn_trust);
     dst->trunk_chan_map_seq++;
     return 0;
@@ -399,6 +412,8 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     if (opts->trunk_scan_enabled == 1) {
         return -1;
     }
+    char old_path[sizeof(opts->chan_in_file)];
+    DSD_MEMCPY(old_path, opts->chan_in_file, sizeof(old_path));
     DSD_STRNCPY(opts->chan_in_file, path, sizeof opts->chan_in_file - 1);
     opts->chan_in_file[sizeof opts->chan_in_file - 1] = '\0';
 
@@ -409,6 +424,7 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     // dsd_tg_policy_reload_group_file() uses for the same reason.
     dsd_state* imported = (dsd_state*)calloc(1, sizeof(*imported));
     if (!imported) {
+        DSD_MEMCPY(opts->chan_in_file, old_path, sizeof(old_path));
         return -1;
     }
     const int import_rc = csvChanImport(opts, imported);
@@ -419,7 +435,7 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     const int mapped_any = (imported->trunk_chan_map_used_count > 0);
     int adopt_rc = -1;
     if (import_rc == 0 && mapped_any) {
-        adopt_rc = chan_map_adopt(state, imported);
+        adopt_rc = chan_map_adopt(opts, state, imported);
     }
     if (import_rc == 0 && mapped_any && adopt_rc == 0) {
         dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
@@ -427,7 +443,11 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     dsd_state_ext_free_all(imported);
     dsd_state_trunk_lcn_free(imported);
     free(imported);
-    return (import_rc == 0 && mapped_any && adopt_rc == 0) ? 0 : -1;
+    if (import_rc == 0 && mapped_any && adopt_rc == 0) {
+        return 0;
+    }
+    DSD_MEMCPY(opts->chan_in_file, old_path, sizeof(old_path));
+    return -1;
 }
 
 int
@@ -484,12 +504,17 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof state->trunk_lcn_freq);
     // Releases the per-row name, avoid and key stores along with the scan-list heap tail.
     // Clearing the map leaves -Y: hand the foreground keyring back to the globals first.
+    dsd_engine_channel_scan_leave(opts, state);
     dsd_scan_keys_leave(state);
     dsd_state_trunk_lcn_free(state);
     state->lcn_freq_count = 0;
     state->lcn_freq_roll = 0;
     state->lcn_avoid_count = 0;
     state->lcn_scan_hold = 0;
+    // Nothing left to visit, so the per-visit cap has nothing to measure from.
+    state->scan_visit_since_m = -1.0;
+    state->scan_visit_roll_seen = 0;
+    state->scan_visit_rearm_pending = 0U;
     // Provenance goes with the map, exactly as in chan_map_adopt(): a surviving
     // "learned on the control channel" byte would authorize an off-CC tune to a
     // frequency no longer in the map.
@@ -527,13 +552,43 @@ svc_clear_keys(dsd_opts* opts, dsd_state* state) {
 }
 
 int
-svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path) {
+svc_import_src_list(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
         return -1;
     }
+    dsd_source_alias_store* candidate = NULL;
+    if (dsd_source_alias_load(path, &candidate) != 0) {
+        return -1;
+    }
+    dsd_source_alias_install(state, candidate);
+    DSD_SNPRINTF(opts->src_in_file, sizeof opts->src_in_file, "%s", path);
+    return 0;
+}
+
+int
+svc_clear_src_list(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
+    opts->src_in_file[0] = '\0';
+    return dsd_source_alias_clear(state);
+}
+
+int
+svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path) {
+    if (!opts || !state || !path || !*path || strlen(path) >= sizeof opts->group_in_file) {
+        return -1;
+    }
+    char previous[sizeof opts->group_in_file];
+    DSD_MEMCPY(previous, opts->group_in_file, sizeof previous);
     DSD_STRNCPY(opts->group_in_file, path, sizeof opts->group_in_file - 1);
     opts->group_in_file[sizeof opts->group_in_file - 1] = '\0';
-    return dsd_tg_policy_reload_group_file(opts, state);
+    const int rc = dsd_tg_policy_reload_group_file(opts, state);
+    if (rc != 0) {
+        // Keep the retained table paired with its original save destination after a failed import.
+        DSD_MEMCPY(opts->group_in_file, previous, sizeof opts->group_in_file);
+    }
+    return rc;
 }
 
 int
@@ -770,12 +825,105 @@ done:
     return result;
 }
 
+static void
+svc_airspy_restore_tuning(dsd_opts* opts, const svc_airspy_tuning* tuning) {
+    opts->rtlsdr_center_freq = tuning->frequency;
+    opts->rtl_dsp_bw_khz = tuning->bandwidth;
+    opts->rtl_squelch_level = tuning->squelch;
+    opts->rtl_volume_multiplier = tuning->volume;
+}
+
+static int
+svc_airspy_reopen(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config, const dsd_airspy_config* previous,
+                  const svc_airspy_tuning* previous_tuning) {
+    opts->airspy = *config;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s", config->serial[0] ? ":serial=" : "",
+                 config->serial);
+    int rc = svc_rtl_restart(opts, state);
+    if (rc != 0) {
+        opts->airspy = *previous;
+        svc_airspy_restore_tuning(opts, previous_tuning);
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s", previous->serial[0] ? ":serial=" : "",
+                     previous->serial);
+        (void)svc_rtl_restart(opts, state);
+    }
+    return rc;
+}
+
+/* Squelch is a linear power level; differences below this are the same threshold. */
+static int
+svc_airspy_squelch_changed(double previous, double current) {
+    return fabs(previous - current) > 1e-12;
+}
+
+/* In-place path: native controls first, then the shared tuning the stream did not reopen for. */
+static int
+svc_airspy_apply_live(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
+                      const svc_airspy_tuning* previous_tuning) {
+    int rc = rtl_stream_airspy_controls(config);
+    if (rc != 0) {
+        svc_airspy_restore_tuning(opts, previous_tuning);
+        return rc;
+    }
+    opts->airspy = *config;
+    if (previous_tuning->frequency != opts->rtlsdr_center_freq) {
+        uint32_t frequency = opts->rtlsdr_center_freq;
+        opts->rtlsdr_center_freq = previous_tuning->frequency;
+        rc = svc_rtl_set_freq(opts, state, frequency);
+        if (rc == RTL_STREAM_TUNE_TIMEOUT) {
+            /* Accepted-but-pending requests remain owned by the controller. DEFERRED
+             * means the request was never queued (replay, PPM training, or a
+             * competing tagged retune), so it is reported as a failure. */
+            opts->rtlsdr_center_freq = frequency;
+            rc = 0;
+        }
+        if (rc != 0) {
+            svc_airspy_restore_tuning(opts, previous_tuning);
+            return rc;
+        }
+    }
+    if (svc_airspy_squelch_changed(previous_tuning->squelch, opts->rtl_squelch_level)) {
+        rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
+    }
+    return 0;
+}
+
+int
+svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
+                        const svc_airspy_tuning* previous_tuning) {
+    if (!opts || !state || !previous_tuning || !dsd_airspy_config_valid(config)) {
+        return -1;
+    }
+    if (!dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
+    dsd_airspy_config previous = opts->airspy;
+    /* Both DSP bandwidth and monitor volume are copied when the stream opens. */
+    int reopen = previous.sample_rate != config->sample_rate || strcmp(previous.serial, config->serial) != 0
+                 || previous_tuning->bandwidth != opts->rtl_dsp_bw_khz
+                 || previous_tuning->volume != opts->rtl_volume_multiplier;
+    int rc = (reopen || !state->rtl_ctx) ? svc_airspy_reopen(opts, state, config, &previous, previous_tuning)
+                                         : svc_airspy_apply_live(opts, state, config, previous_tuning);
+    (void)rtl_stream_airspy_info(&opts->airspy_info);
+    return rc;
+}
+
+int
+svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config) {
+    if (!opts) {
+        return -1;
+    }
+    const svc_airspy_tuning tuning = {opts->rtlsdr_center_freq, opts->rtl_dsp_bw_khz, opts->rtl_squelch_level,
+                                      opts->rtl_volume_multiplier};
+    return svc_airspy_apply_config(opts, state, config, &tuning);
+}
+
 int
 svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index) {
     if (!opts || !state) {
         return -1;
     }
-    if (svc_radio_source_is_soapy(opts)) {
+    if (svc_radio_source_is_soapy(opts) || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         return DSD_ERR_NOT_SUPPORTED;
     }
     if (index < 0) {
@@ -801,6 +949,9 @@ svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz) {
 
 int
 svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
+    if (opts && dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        return DSD_ERR_NOT_SUPPORTED;
+    }
     if (!opts || !state) {
         return -1;
     }

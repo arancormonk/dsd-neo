@@ -14,6 +14,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TRUNK_SCAN_HOOKS_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TRUNK_SCAN_HOOKS_H_
 
+#include <dsd-neo/core/dmr_key_map.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
@@ -36,6 +38,16 @@ typedef enum {
     DSD_TRUNK_SCAN_CONTROL_ADVANCE = 4,      /**< Move to the next eligible target now */
 } dsd_trunk_scan_control_op;
 
+enum { DSD_TRUNK_KEY_MATERIAL = 1U, DSD_TRUNK_KEY_MAP = 2U, DSD_TRUNK_KEY_FORCE = 4U };
+
+enum {
+    DSD_TRUNK_KEY_APPLIED = 1,
+    DSD_TRUNK_KEY_INVALID = -1,
+    DSD_TRUNK_KEY_STALE = -2,
+    DSD_TRUNK_KEY_UNAVAILABLE = -3,
+    DSD_TRUNK_KEY_BUSY = -4
+};
+
 enum {
     DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE = -3, /**< Trunk scan is not installed */
     DSD_TRUNK_SCAN_CONTROL_BUSY = -2,        /**< The coordinator's tick guard is held; try again */
@@ -53,18 +65,43 @@ typedef struct {
                                       int is_private, int encrypted, int data_call);
     void (*nxdn_conventional_activity)(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
                                        int is_private, int encrypted, int data_call);
+    void (*p25_conventional_activity)(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
+                                      int is_private, int encrypted, int data_call);
     const char* (*active_chan_csv)(const dsd_state* state);
     void (*enc_lockout_clear_snapshots)(const dsd_state* state);
     int (*control)(dsd_opts* opts, dsd_state* state, int op);
+    int (*decryption_apply)(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
+                            uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map, int force);
 } dsd_trunk_scan_hooks;
 
 void dsd_trunk_scan_hooks_set(dsd_trunk_scan_hooks hooks);
+int dsd_trunk_scan_hook_decryption_apply(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
+                                         uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map,
+                                         int force);
 
 void* dsd_trunk_scan_hook_p25_ctx(void);
 void* dsd_trunk_scan_hook_dmr_ctx(void);
+
+typedef enum {
+    DSD_TRUNK_RECOVERY_UNKNOWN = 0,
+    DSD_TRUNK_RECOVERY_P25,
+    DSD_TRUNK_RECOVERY_DMR,
+} dsd_trunk_recovery_protocol;
+
+/** Publish validated protocol evidence under the decoder/SM guard (or while stopped).
+ * Only P25/DMR control or grant evidence transfers ownership. Other protocol decodes,
+ * raw sync detection and no-carrier resets must not change this retained owner. */
+void dsd_trunk_recovery_note_protocol(dsd_state* state, dsd_trunk_recovery_protocol protocol);
+
+/** Recovery ownership: a parked target overrides retained standalone ownership.
+ * Decoder-thread callers may inspect their retained owner directly; other threads
+ * must hold the decoder/SM guard. These predicates do not read volatile
+ * sync, modulation or CC hints written outside that guard by frame acquisition. */
+int dsd_trunk_p25_recovery_allowed(const dsd_opts* opts, const dsd_state* state);
+int dsd_trunk_dmr_recovery_allowed(const dsd_opts* opts, const dsd_state* state);
 void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
 /**
- * @brief Report decoded conventional DMR/NXDN activity to the scan coordinator.
+ * @brief Report decoded conventional DMR/NXDN/P25 activity to the scan coordinator.
  *
  * Lets protocol code refresh the parked target's activity hold without
  * depending on engine-owned scan headers. No-op when trunk scan is not
@@ -78,6 +115,9 @@ void dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const d
 /** @copydoc dsd_trunk_scan_hook_dmr_conventional_activity */
 void dsd_trunk_scan_hook_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                     uint32_t source, int is_private, int encrypted, int data_call);
+/** @copydoc dsd_trunk_scan_hook_dmr_conventional_activity */
+void dsd_trunk_scan_hook_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
+                                                   uint32_t source, int is_private, int encrypted, int data_call);
 
 /**
  * @brief Path of the channel map belonging to the currently parked scan target.

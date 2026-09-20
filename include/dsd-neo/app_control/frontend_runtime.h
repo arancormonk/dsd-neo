@@ -18,6 +18,9 @@
 extern "C" {
 #endif
 
+/** Decoder-owner lifecycle, serialized with command draining. Start opens command
+ * admission for a fresh session; stop closes admission and securely cancels pending
+ * commands, including failed export completions. Producers may race these edges. */
 void dsd_app_frontend_runtime_start(const dsd_opts* initial_opts, const dsd_state* initial_state);
 void dsd_app_frontend_runtime_stop(void);
 

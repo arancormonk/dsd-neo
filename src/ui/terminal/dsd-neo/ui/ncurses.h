@@ -22,7 +22,7 @@
 extern "C" {
 #endif
 
-void dsd_terminal_open(dsd_opts* opts, dsd_state* state);
+void dsd_terminal_open(const dsd_opts* opts, dsd_state* state);
 void dsd_terminal_render(dsd_opts* opts, dsd_state* state);
 void dsd_terminal_close(void);
 

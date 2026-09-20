@@ -4,6 +4,8 @@ This guide covers using non-RTL SDR hardware with `dsd-neo` through the SoapySDR
 
 ## When to use this
 
+Airspy R2 and Mini also have a [native libairspy backend](airspy.md).
+
 Use SoapySDR input when your radio is not being accessed directly via `librtlsdr` (for example Airspy, SDRplay,
 HackRF, LimeSDR, USRP, PlutoSDR, and other devices with Soapy modules).
 

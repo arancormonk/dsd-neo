@@ -15,6 +15,18 @@
    Regenerate with: grep -oE '\.(on_select|label_fn|is_enabled) = [a-z_0-9]+' src/ui/terminal/menu_items.c */
 
 #define AUDIT_ACTIONS(X)                                                                                               \
+    X(switch_to_airspy)                                                                                                \
+    X(airspy_set_serial)                                                                                               \
+    X(airspy_set_sample_rate)                                                                                          \
+    X(airspy_set_gain_mode)                                                                                            \
+    X(airspy_set_sensitivity_gain)                                                                                     \
+    X(airspy_set_linearity_gain)                                                                                       \
+    X(airspy_set_lna_gain)                                                                                             \
+    X(airspy_set_mixer_gain)                                                                                           \
+    X(airspy_set_vga_gain)                                                                                             \
+    X(airspy_set_lna_agc)                                                                                              \
+    X(airspy_set_mixer_agc)                                                                                            \
+    X(airspy_set_bias_tee)                                                                                             \
     X(act_allow_toggle)                                                                                                \
     X(act_anytone_bp)                                                                                                  \
     X(act_auto_ppm_freeze)                                                                                             \
@@ -49,12 +61,15 @@
     X(act_hpf_toggle)                                                                                                  \
     X(act_import_chan)                                                                                                 \
     X(act_import_group)                                                                                                \
+    X(act_import_src)                                                                                                  \
     X(act_import_p25_bandplan)                                                                                         \
     X(act_iq_dc_k_prompt)                                                                                              \
     X(act_ken_scr)                                                                                                     \
     X(act_keys_dec)                                                                                                    \
     X(act_keys_hex)                                                                                                    \
     X(act_lcw_toggle)                                                                                                  \
+    X(act_tg_lockout_persist)                                                                                          \
+    X(act_tg_session_avoid_clear)                                                                                      \
     X(act_lockout_slot1)                                                                                               \
     X(act_lockout_slot2)                                                                                               \
     X(act_lpf_toggle)                                                                                                  \
@@ -289,6 +304,8 @@
     X(lbl_tcp_rcvtimeo)                                                                                                \
     X(lbl_tcp_waitall)                                                                                                 \
     X(lbl_ted_gain)                                                                                                    \
+    X(lbl_tg_lockout_persist)                                                                                          \
+    X(lbl_tg_session_avoid_clear)                                                                                      \
     X(lbl_tg_hold)                                                                                                     \
     X(lbl_toggle_payload)                                                                                              \
     X(lbl_trunk)                                                                                                       \
@@ -314,6 +331,8 @@
     X(lbl_window_freeze)
 
 #define AUDIT_PREDICATES(X)                                                                                            \
+    X(is_airspy_input)                                                                                                 \
+    X(is_non_airspy_input)                                                                                             \
     X(const_view_active)                                                                                               \
     X(eye_view_active)                                                                                                 \
     X(io_rtl_active)                                                                                                   \

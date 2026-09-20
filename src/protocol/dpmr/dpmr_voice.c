@@ -17,6 +17,7 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/key_presence.h>
 
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
@@ -25,7 +26,11 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/secret_redaction.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
@@ -38,10 +43,6 @@
 #include <stdio.h>
 #include "dpmr_confirm.h"
 #include "dpmr_internal.h"
-#include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
-#include "dsd-neo/core/secret_redaction.h"
-#include "dsd-neo/core/state_fwd.h"
 
 typedef struct {
     uint8_t CCH[NB_OF_DPMR_VOICE_FRAME_TO_DECODE][72];
@@ -334,7 +335,7 @@ dpmr_print_scrambler_state(const dsd_opts* opts, const dsd_state* state) {
     DSD_FPRINTF(stderr, "%s", KRED);
     DSD_FPRINTF(stderr, " Scrambler");
     DSD_FPRINTF(stderr, "%s", KNRM);
-    if (state->R != 0) {
+    if (dsd_key_scalar_present(state, 0)) {
         DSD_FPRINTF(stderr, "%s", KYEL);
         char key_text[16];
         DSD_FPRINTF(stderr, " Key %s ",
@@ -369,10 +370,21 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
         .audio_permitted = 1U,
     };
     if (state->dPMRVoiceFS2Frame.Version[0] == 3U) {
-        crypto.classification = state->R != 0U ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED;
-        crypto.audio_permitted = state->R != 0U;
+        crypto.classification =
+            dsd_key_scalar_present(state, 0) ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED;
+        crypto.audio_permitted = dsd_key_scalar_present(state, 0);
     }
     (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, 0, &call) > 0) {
+            const int available = crypto.classification == DSD_CALL_CRYPTO_DECRYPTABLE ? 1
+                                  : crypto.classification == DSD_CALL_CRYPTO_ENCRYPTED ? 0
+                                                                                       : -1;
+            (void)dsd_call_state_note_key_selection(state, 0, call.epoch, DSD_CALL_KEY_DIRECT, call.kid, -1, available,
+                                                    0);
+        }
+    }
     dsd_event_sync_slot(opts, state, 0U);
 }
 
@@ -397,7 +409,7 @@ dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR
                 state->nxdn_cipher_type = 0x01;
                 state->dmr_encL = 1;
             }
-            if (state->R != 0) {
+            if (dsd_key_scalar_present(state, 0)) {
                 state->dmr_encL = 0;
             }
             if (opts->payload == 1) {
@@ -513,69 +525,16 @@ dpmr_crc7(const uint8_t* input, uint32_t bit_length) {
  * "Mapping of dialled strings to the AI address space" */
 void
 dpmr_convert_air_interface_id(uint32_t ai_id, char id[8]) {
+    /* Place values from the standard's mapping table: the leading digits are
+     * decimal-spaced and the trailing ones base-11, which is what lets a dialled
+     * '*' ride in the same address space as the digits. */
+    static const uint32_t k_place_value[7] = {1464100U, 146410U, 14641U, 1331U, 121U, 11U, 1U};
     uint32_t remaining = ai_id;
-    uint32_t digit;
 
-    /* 1st digit */
-    digit = remaining / 1464100;
-    remaining = remaining % 1464100;
-    if (digit == 10) {
-        id[0] = '*';
-    } else {
-        id[0] = digit + '0';
-    }
-
-    /* 2nd digit */
-    digit = remaining / 146410;
-    remaining = remaining % 146410;
-    if (digit == 10) {
-        id[1] = '*';
-    } else {
-        id[1] = digit + '0';
-    }
-
-    /* 3rd digit */
-    digit = remaining / 14641;
-    remaining = remaining % 14641;
-    if (digit == 10) {
-        id[2] = '*';
-    } else {
-        id[2] = digit + '0';
-    }
-
-    /* 4th digit */
-    digit = remaining / 1331;
-    remaining = remaining % 1331;
-    if (digit == 10) {
-        id[3] = '*';
-    } else {
-        id[3] = digit + '0';
-    }
-
-    /* 5th digit */
-    digit = remaining / 121;
-    remaining = remaining % 121;
-    if (digit == 10) {
-        id[4] = '*';
-    } else {
-        id[4] = digit + '0';
-    }
-
-    /* 6th digit */
-    digit = remaining / 11;
-    remaining = remaining % 11;
-    if (digit == 10) {
-        id[5] = '*';
-    } else {
-        id[5] = digit + '0';
-    }
-
-    /* 7th digit */
-    digit = remaining;
-    if (digit == 10) {
-        id[6] = '*';
-    } else {
-        id[6] = digit + '0';
+    for (size_t i = 0U; i < 7U; i++) {
+        const uint32_t digit = remaining / k_place_value[i];
+        remaining = remaining % k_place_value[i];
+        id[i] = (digit == 10U) ? '*' : (char)(digit + '0');
     }
 
     /* Add the "end of string" */

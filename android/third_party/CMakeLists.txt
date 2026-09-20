@@ -50,43 +50,69 @@ set_target_properties(
 # messages to liblog.
 target_link_libraries(dsd-neo_vendor_libusb PUBLIC log)
 
-# --- librtlsdr ---------------------------------------------------------------
-# Library sources only; the rtl_* command-line tools and their getopt/convenience
-# helpers are not vendored.
-add_library(
-    dsd-neo_vendor_rtlsdr
-    STATIC
-    librtlsdr/src/librtlsdr.c
-    librtlsdr/src/tuner_e4k.c
-    librtlsdr/src/tuner_fc0012.c
-    librtlsdr/src/tuner_fc0013.c
-    librtlsdr/src/tuner_fc2580.c
-    librtlsdr/src/tuner_r82xx.c
-)
+# Native Airspy shares the same libusb instance as librtlsdr.
+if(DSD_ENABLE_AIRSPY)
+    add_library(
+        dsd-neo_vendor_airspy
+        STATIC
+        libairspy/airspy.c
+        libairspy/iqconverter_float.c
+        libairspy/iqconverter_int16.c
+    )
+    target_include_directories(
+        dsd-neo_vendor_airspy
+        SYSTEM
+        PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/libairspy"
+    )
+    target_link_libraries(dsd-neo_vendor_airspy PUBLIC dsd-neo_vendor_libusb m)
+    set_target_properties(
+        dsd-neo_vendor_airspy
+        PROPERTIES POSITION_INDEPENDENT_CODE ON C_STANDARD 17
+    )
+    target_compile_options(dsd-neo_vendor_airspy PRIVATE -fvisibility=hidden)
+    add_library(Airspy::Airspy ALIAS dsd-neo_vendor_airspy)
+    set(Airspy_FOUND TRUE PARENT_SCOPE)
+endif()
 
-target_include_directories(
-    dsd-neo_vendor_rtlsdr
-    SYSTEM
-    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/librtlsdr/include"
-)
+if(DSD_ENABLE_RTLSDR AND DSD_ANDROID_VENDORED_RTLSDR)
+    # --- librtlsdr ---------------------------------------------------------------
+    # Library sources only; the rtl_* command-line tools and their getopt/convenience
+    # helpers are not vendored.
+    add_library(
+        dsd-neo_vendor_rtlsdr
+        STATIC
+        librtlsdr/src/librtlsdr.c
+        librtlsdr/src/tuner_e4k.c
+        librtlsdr/src/tuner_fc0012.c
+        librtlsdr/src/tuner_fc0013.c
+        librtlsdr/src/tuner_fc2580.c
+        librtlsdr/src/tuner_r82xx.c
+    )
 
-# rtlsdr_STATIC empties RTLSDR_API; DETACH_KERNEL_DRIVER stays off deliberately —
-# a descriptor from UsbDeviceConnection grants no usbfs detach rights.
-target_compile_definitions(dsd-neo_vendor_rtlsdr PUBLIC rtlsdr_STATIC)
-target_compile_options(dsd-neo_vendor_rtlsdr PRIVATE -fvisibility=hidden)
-set_target_properties(
-    dsd-neo_vendor_rtlsdr
-    PROPERTIES POSITION_INDEPENDENT_CODE ON
-)
+    target_include_directories(
+        dsd-neo_vendor_rtlsdr
+        SYSTEM
+        PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/librtlsdr/include"
+    )
 
-target_link_libraries(dsd-neo_vendor_rtlsdr PUBLIC dsd-neo_vendor_libusb)
+    # rtlsdr_STATIC empties RTLSDR_API; DETACH_KERNEL_DRIVER stays off deliberately —
+    # a descriptor from UsbDeviceConnection grants no usbfs detach rights.
+    target_compile_definitions(dsd-neo_vendor_rtlsdr PUBLIC rtlsdr_STATIC)
+    target_compile_options(dsd-neo_vendor_rtlsdr PRIVATE -fvisibility=hidden)
+    set_target_properties(
+        dsd-neo_vendor_rtlsdr
+        PROPERTIES POSITION_INDEPENDENT_CODE ON
+    )
 
-# --- what the root CMakeLists consumes ---------------------------------------
-# Same variable names FindRTLSDR.cmake would define, so nothing downstream has to
-# know where the library came from.
-set(RTLSDR_FOUND TRUE PARENT_SCOPE)
-set(RTLSDR_LIBRARIES dsd-neo_vendor_rtlsdr PARENT_SCOPE)
-set(RTLSDR_INCLUDE_DIRS
-    "${CMAKE_CURRENT_SOURCE_DIR}/librtlsdr/include"
-    PARENT_SCOPE
-)
+    target_link_libraries(dsd-neo_vendor_rtlsdr PUBLIC dsd-neo_vendor_libusb)
+
+    # --- what the root CMakeLists consumes ---------------------------------------
+    # Same variable names FindRTLSDR.cmake would define, so nothing downstream has to
+    # know where the library came from.
+    set(RTLSDR_FOUND TRUE PARENT_SCOPE)
+    set(RTLSDR_LIBRARIES dsd-neo_vendor_rtlsdr PARENT_SCOPE)
+    set(RTLSDR_INCLUDE_DIRS
+        "${CMAKE_CURRENT_SOURCE_DIR}/librtlsdr/include"
+        PARENT_SCOPE
+    )
+endif()

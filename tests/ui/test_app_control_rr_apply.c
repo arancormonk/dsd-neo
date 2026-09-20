@@ -9,6 +9,7 @@
  */
 
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -245,6 +246,7 @@ init_test_context(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state, 0, sizeof(*state));
     initOpts(opts);
     initState(state);
+    dsd_app_frontend_runtime_start(opts, state);
     state->cli_argc_effective = 0;
     state->cli_argv = NULL;
 }

@@ -12,8 +12,8 @@ recorded here so nobody mistakes them for wire behaviour:
 
 No request bodies are stored here, and no appKey, username or password appears in any file.
 
-These files are the parsing contract for `src/runtime/radioreference/`. Everything below was
-observed, not inferred.
+These files are the parsing contract for `src/runtime/radioreference/`. The captured fixtures below were
+observed, not inferred; the synthetic addition is explicitly identified.
 
 ## Fixture inventory
 
@@ -37,7 +37,15 @@ observed, not inferred.
 
 `fault_subscription.xml` was **not** captured: no subscription-class fault was ever observed. An
 expired premium account surfaces through `getUserData`'s `subExpireDate`, exactly as the plan
-assumed. Nothing was synthesized.
+assumed. None of the captured responses was synthesized.
+
+## Synthetic position regression fixture
+
+`trs_sites_nil_lat.xml` is synthetic, not a live capture. A valid site precedes a site with
+`lat xsi:nil="true"`, a valid longitude, and a valid range, checking that position validity
+cannot carry over between records. The live `trs_sites_p25.xml` has no nil latitude:
+site 16863 carries `(41.65503, -91.60244, 20)` and site 48391 carries the `(0,0,0)` sentinel.
+The SOAP test also constructs decimal grammar and range-boundary cases in memory.
 
 ## Corrections to the plan's API description
 

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Synthetic fixture: a nil latitude must not inherit the preceding site's position. -->
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <SOAP-ENV:Body>
+    <getTrsSitesResponse>
+      <return>
+        <item><siteId>1</siteId><lat>41.65503</lat><lon>-91.60244</lon><range>20</range></item>
+        <item><siteId>2</siteId><lat xsi:nil="true"/><lon>-91.60244</lon><range>20</range></item>
+      </return>
+    </getTrsSitesResponse>
+  </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>

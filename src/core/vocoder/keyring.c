@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
@@ -13,6 +14,19 @@
 #include <dsd-neo/core/state_fwd.h>
 
 static const int k_aes_segment_offsets[4] = {0x000, 0x101, 0x201, 0x301};
+
+uint16_t
+keyring_destination_index(uint32_t destination) {
+    if (destination <= 0xFFFFU) {
+        return (uint16_t)destination;
+    }
+    uint8_t bits[24];
+    destination &= 0xFFFFFFU;
+    for (int i = 0; i < 24; ++i) {
+        bits[i] = (uint8_t)((destination >> (23 - i)) & 1U);
+    }
+    return dsd_crc_ccitt16_bits(bits, 24U);
+}
 
 static int
 keyring_rkey_index_valid(const dsd_state* state, int index) {
@@ -88,6 +102,7 @@ keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id) {
     if (state == NULL || slot < 0 || slot > 1) {
         return;
     }
+    state->scalar_key_present[slot] = 0;
     const unsigned long long int scalar_key = keyring_rkey_value(state, key_id);
     if (slot == 0) {
         state->R = scalar_key;

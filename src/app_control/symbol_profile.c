@@ -15,6 +15,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "services.h"
@@ -29,11 +30,18 @@ svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mo
         return;
     }
 
+    /* TETRA deliberately uses COUNT as a no-hunt sentinel.  Do not publish it
+       as an array index, while still letting scan mode defer a valid profile. */
     if ((int)profile.sps_profile_index >= 0
         && (int)profile.sps_profile_index < (int)DSD_FRAME_SYNC_SPS_PROFILE_COUNT) {
         state->sps_hunt_idx = (int)profile.sps_profile_index;
-        state->sps_hunt_counter = 0;
     }
+    if (dsd_scan_mode_updating(state)) {
+        /* The saved configuration needs its new profile, but acquisition and
+         * frontend changes wait until the row constraint has been reapplied. */
+        return;
+    }
+    state->sps_hunt_counter = 0;
 
 #ifdef USE_RADIO
     if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {

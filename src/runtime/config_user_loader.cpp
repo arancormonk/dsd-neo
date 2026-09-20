@@ -7,6 +7,7 @@
  * INI loading and profile overlay support for user configuration.
  */
 
+#include <dsd-neo/runtime/airspy_config.h>
 #if defined(_WIN32)
 #include <algorithm>
 #endif
@@ -14,6 +15,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <stdio.h>
@@ -156,6 +158,10 @@ parse_input_source_value(const char* val, dsdneoUserInputSource* out_source) {
     }
     if (dsd_strcasecmp(val, "rtltcp") == 0) {
         *out_source = DSDCFG_INPUT_RTLTCP;
+        return 0;
+    }
+    if (dsd_strcasecmp(val, "airspy") == 0) {
+        *out_source = DSDCFG_INPUT_AIRSPY;
         return 0;
     }
     if (dsd_strcasecmp(val, "soapy") == 0) {
@@ -349,6 +355,19 @@ apply_input_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* v
         }
         return;
     }
+    if (strncmp(key_lc, "airspy_", 7) == 0) {
+        if (dsd_airspy_config_set(&cfg->airspy, key_lc, val) != 0) {
+            LOG_WARN("Config: invalid %s = '%s'; %s\n", key_lc, val,
+                     strcmp(key_lc, "airspy_serial") == 0 ? "Airspy selection requires an explicit serial override"
+                                                          : "keeping previous/default value");
+            if (strcmp(key_lc, "airspy_serial") == 0) {
+                cfg->airspy_invalid = 1;
+            }
+        } else if (strcmp(key_lc, "airspy_serial") == 0) {
+            cfg->airspy_invalid = 0;
+        }
+        return;
+    }
     apply_input_source_keys(cfg, key_lc, val);
     if (apply_input_rtl_keys(cfg, key_lc, val, mode)) {
         return;
@@ -432,6 +451,8 @@ apply_trunking_section_path_key(dsdneoUserConfig* cfg, const char* key_lc, const
         copy_path_expanded(cfg->trunk_chan_csv, sizeof cfg->trunk_chan_csv, val);
     } else if (strcmp(key_lc, "group_csv") == 0) {
         copy_path_expanded(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, val);
+    } else if (strcmp(key_lc, "src_csv") == 0) {
+        copy_path_expanded(cfg->trunk_src_csv, sizeof cfg->trunk_src_csv, val);
     } else if (strcmp(key_lc, "p25_bandplan_csv") == 0) {
         copy_path_expanded(cfg->trunk_p25_bandplan_csv, sizeof cfg->trunk_p25_bandplan_csv, val);
     } else {
@@ -441,7 +462,7 @@ apply_trunking_section_path_key(dsdneoUserConfig* cfg, const char* key_lc, const
 }
 
 static int
-apply_trunking_section_voice_gate_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
+apply_trunking_section_scan_timing_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "scan_voice_only") == 0) {
         assign_bool_key(&cfg->trunk_scan_voice_only, val);
     } else if (strcmp(key_lc, "scan_voice_qualify_ms") == 0) {
@@ -454,6 +475,11 @@ apply_trunking_section_voice_gate_key(dsdneoUserConfig* cfg, const char* key_lc,
         if (user_config_parse_int_value(val, &parsed) == 0) {
             cfg->trunk_scan_voice_hold_ms = parsed;
         }
+    } else if (strcmp(key_lc, "scan_max_visit_ms") == 0) {
+        int parsed = 0;
+        if (user_config_parse_int_value(val, &parsed) == 0) {
+            cfg->trunk_scan_max_visit_ms = parsed;
+        }
     } else {
         return 0;
     }
@@ -462,7 +488,7 @@ apply_trunking_section_voice_gate_key(dsdneoUserConfig* cfg, const char* key_lc,
 
 static void
 apply_trunking_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
-    if (apply_trunking_section_voice_gate_key(cfg, key_lc, val)) {
+    if (apply_trunking_section_scan_timing_key(cfg, key_lc, val)) {
         return;
     }
     if (apply_trunking_section_path_key(cfg, key_lc, val)) {
@@ -478,6 +504,8 @@ apply_trunking_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char
         assign_bool_key(&cfg->trunk_tune_private_calls, val);
     } else if (strcmp(key_lc, "tune_data_calls") == 0) {
         assign_bool_key(&cfg->trunk_tune_data_calls, val);
+    } else if (strcmp(key_lc, "persist_tg_lockouts") == 0) {
+        assign_bool_key(&cfg->trunk_persist_tg_lockouts, val);
     } else if (strcmp(key_lc, "tune_enc_calls") == 0) {
         assign_bool_key(&cfg->trunk_tune_enc_calls, val);
     } else if (strcmp(key_lc, "scanner") == 0) {

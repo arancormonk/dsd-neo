@@ -17,6 +17,8 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_xcch.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -718,6 +720,111 @@ test_raw_ptt_markers_are_slot_local(void) {
         return 1;
     }
     return 0;
+}
+
+static int g_conventional_holds;
+
+static void
+observe_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
+                              int is_private, int encrypted, int data_call) {
+    dsd_tg_policy_decision decision;
+    const int rc =
+        is_private ? dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, data_call, &decision)
+                   : dsd_tg_policy_evaluate_group_call(opts, state, target, source, encrypted, data_call, &decision);
+    if (rc == 0 && decision.tune_allowed) {
+        g_conventional_holds++;
+    }
+}
+
+static void
+conventional_ptt_payload(int payload[180], int facch, int encrypted) {
+    uint8_t mac[23] = {0x20, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x80, 0x12,
+                       0x34, 0,    0,    123,  3,    0xE8, 0,    0,    0,    0,    0};
+    mac[10] = encrypted ? 0xAA : 0x80;
+    for (int i = 0; i < 180; i++) {
+        payload[i] = (mac[i / 8] >> (7 - i % 8)) & 1;
+    }
+    /* CRC12 for the fixed MAC above: SACCH has 168 data bits, FACCH 144. */
+    static const uint16_t crc[2][2] = {{0x84B, 0xD0D}, {0x1F8, 0x5A8}};
+    const int data_bits = facch ? 144 : 168;
+    for (int i = 0; i < 12; i++) {
+        payload[data_bits + i] = (crc[facch][encrypted] >> (11 - i)) & 1;
+    }
+}
+
+static int
+test_conventional_voice_start_encryption_policy(void) {
+    int fail = 0;
+    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){.p25_conventional_activity = observe_conventional_activity});
+    for (int encrypted = 0; encrypted <= 1; encrypted++) {
+        reset_test_state();
+        g_opts.trunk_enable = 0;
+        g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P1_POS;
+        p25_sm_init_ctx(p25_sm_get_ctx(), &g_opts, &g_state);
+        p25_crypto_reset_slot(&g_state, 0);
+        g_conventional_holds = 0;
+        if (!p25_sm_emit_active_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, encrypted ? 0x40 : 0)
+            || g_conventional_holds != (encrypted ? 0 : 1)) {
+            DSD_FPRINTF(stderr, "FAIL: Late-join Phase 1 service encryption bypassed conventional hold policy\n");
+            fail = 1;
+        }
+    }
+
+    static const struct {
+        int encrypted;
+        int has_key;
+        int follow;
+        int holds;
+    } cases[] = {{0, 0, 0, 1}, {1, 0, 0, 0}, {1, 1, 0, 1}, {1, 0, 1, 1}};
+
+    for (int facch = 0; facch <= 1; facch++) {
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            reset_test_state();
+            g_opts.trunk_enable = 0;
+            g_opts.trunk_tune_enc_calls = cases[i].follow;
+            g_state.synctype = g_state.lastsynctype = DSD_SYNC_P25P2_POS;
+            g_state.currentslot = facch ? 1 : 0; /* Both transports describe slot 2. */
+            p25_sm_init_ctx(p25_sm_get_ctx(), &g_opts, &g_state);
+            p25_crypto_reset_slot(&g_state, 1);
+            g_state.RR = cases[i].has_key ? UINT64_C(0x123456789A) : 0U;
+            int payload[180];
+            conventional_ptt_payload(payload, facch, cases[i].encrypted);
+            g_conventional_holds = 0;
+            if (facch) {
+                process_FACCH_MAC_PDU(&g_opts, &g_state, payload);
+            } else {
+                process_SACCH_MAC_PDU(&g_opts, &g_state, payload);
+            }
+            if (g_state.p25_crypto_state[1] == DSD_P25_CRYPTO_UNKNOWN || g_conventional_holds != cases[i].holds) {
+                DSD_FPRINTF(stderr, "FAIL: %s PTT case %zu refreshed %d holds, expected %d\n",
+                            facch ? "FACCH" : "SACCH", i, g_conventional_holds, cases[i].holds);
+                fail = 1;
+            }
+        }
+        /* An unidentified PTT after a missed END must not refresh the retained call. */
+        int payload[180];
+        conventional_ptt_payload(payload, facch, 0);
+        for (int i = 128; i < 144; i++) {
+            payload[i] = 0;
+        }
+        const uint16_t crc = facch ? 0x30E : 0x8F5;
+        const int data_bits = facch ? 144 : 168;
+        for (int i = 0; i < 12; i++) {
+            payload[data_bits + i] = (crc >> (11 - i)) & 1;
+        }
+        g_conventional_holds = 0;
+        if (facch) {
+            process_FACCH_MAC_PDU(&g_opts, &g_state, payload);
+        } else {
+            process_SACCH_MAC_PDU(&g_opts, &g_state, payload);
+        }
+        if (g_state.p25_crypto_state[1] != DSD_P25_CRYPTO_CLEAR || g_conventional_holds != 0) {
+            DSD_FPRINTF(stderr, "FAIL: Unidentified PTT refreshed a retained conventional call\n");
+            fail = 1;
+        }
+    }
+    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    return fail;
 }
 
 static int
@@ -2028,6 +2135,147 @@ test_unassigned_companion_start_is_rejected(void) {
 }
 
 // Test: State name function for 4-state model
+/* #506: a frontend command that retunes to the control channel itself (user
+ * lockout, manual return-to-CC) bypasses p25_sm_release(). The SM must be handed
+ * its parked state, or every later grant is judged as a preemption of the
+ * assignment it was following. */
+static int
+test_external_cc_tune_hands_off_assignment(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 852500000;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || !ctx.slots[0].voice_active) {
+        DSD_FPRINTF(stderr, "FAIL: External CC tune fixture did not follow the first assignment\n");
+        return 1;
+    }
+
+    // The command path resets the decoder without informing the SM: a grant for
+    // another talkgroup is then refused as a preemption of the phantom call.
+    g_opts.trunk_is_tuned = 0;
+    g_state.p25_vc_freq[0] = g_state.p25_vc_freq[1] = 0;
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = 0;
+    ev = p25_sm_ev_group_grant(0x1235, 852500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || ctx.vc_freq_hz != 851500000 || ctx.slots[0].ota_tg != 1000) {
+        DSD_FPRINTF(stderr, "FAIL: Uninformed SM no longer reproduces the #506 phantom-call refusal\n");
+        return 1;
+    }
+
+    if (!p25_sm_on_external_cc_tune(&ctx, &g_opts, &g_state, DSD_TRUNK_TUNE_RESULT_OK, 0U, "user-lockout")) {
+        DSD_FPRINTF(stderr, "FAIL: External CC tune was not handed off\n");
+        return 1;
+    }
+    if (ctx.state != P25_SM_ON_CC || ctx.slots[0].voice_active || ctx.slots[0].last_active_m > 0.0
+        || ctx.vc_freq_hz != 0 || !ctx.cc_sync_pending || g_return_requests != 0 || canonical_slot_is_active(0U)) {
+        DSD_FPRINTF(stderr, "FAIL: External CC tune left assignment state behind (state=%s)\n",
+                    p25_sm_state_name(ctx.state));
+        return 1;
+    }
+
+    // Grants stay gated until the CC decodes after the tune, as for every return.
+    ev = p25_sm_ev_group_grant(0x1235, 852500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || ctx.vc_freq_hz != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Grant accepted before the CC decoded after the external tune\n");
+        return 1;
+    }
+
+    // A parked SM is only re-gated: a manual return keeps its stale-regrant guard.
+    ctx.recent_call_ends[0].valid = 1;
+    if (!p25_sm_on_external_cc_tune(&ctx, &g_opts, &g_state, DSD_TRUNK_TUNE_RESULT_OK, 0U, "return-to-cc")
+        || ctx.state != P25_SM_ON_CC || !ctx.cc_sync_pending || !ctx.recent_call_ends[0].valid) {
+        DSD_FPRINTF(stderr, "FAIL: External CC tune on a parked SM did not preserve its context\n");
+        return 1;
+    }
+    ctx.recent_call_ends[0].valid = 0;
+    g_state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_group_grant(0x1235, 852500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || ctx.vc_freq_hz != 852500000 || ctx.slots[0].ota_tg != 2000) {
+        DSD_FPRINTF(stderr, "FAIL: Next grant was not followed after the external CC tune (state=%s freq=%ld)\n",
+                    p25_sm_state_name(ctx.state), ctx.vc_freq_hz);
+        return 1;
+    }
+
+    // A refused tune and an idle SM have nothing to hand off.
+    if (p25_sm_on_external_cc_tune(&ctx, &g_opts, &g_state, DSD_TRUNK_TUNE_RESULT_FAILED, 0U, "user-lockout")
+        || ctx.state != P25_SM_TUNED) {
+        DSD_FPRINTF(stderr, "FAIL: Refused external CC tune changed SM state\n");
+        return 1;
+    }
+    p25_sm_ctx_t idle;
+    g_state.p25_cc_freq = 0;
+    p25_sm_init_ctx(&idle, &g_opts, &g_state);
+    if (p25_sm_on_external_cc_tune(&idle, &g_opts, &g_state, DSD_TRUNK_TUNE_RESULT_OK, 0U, "user-lockout")
+        || idle.state != P25_SM_IDLE) {
+        DSD_FPRINTF(stderr, "FAIL: Idle SM was handed an external CC tune\n");
+        return 1;
+    }
+    return 0;
+}
+
+/* The asynchronous leg: a PENDING CC tune keeps grants gated until the tuner
+ * reports completion, and then until the CC decodes after that boundary. */
+static int
+test_external_cc_tune_pending_waits_for_completion(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 852500000;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    const uint64_t request_id = dsd_trunk_tuning_request_begin();
+    if (ctx.state != P25_SM_TUNED || request_id == 0U) {
+        DSD_FPRINTF(stderr, "FAIL: Pending external CC tune fixture did not start\n");
+        return 1;
+    }
+
+    if (!p25_sm_on_external_cc_tune(&ctx, &g_opts, &g_state, DSD_TRUNK_TUNE_RESULT_PENDING, request_id, "user-lockout")
+        || ctx.state != P25_SM_ON_CC || !ctx.cc_tune_pending || ctx.cc_tune_request_id != request_id
+        || ctx.vc_freq_hz != 0 || ctx.slots[0].voice_active) {
+        DSD_FPRINTF(stderr, "FAIL: Pending external CC tune was not awaited (state=%s)\n",
+                    p25_sm_state_name(ctx.state));
+        return 1;
+    }
+
+    // Still moving: the grant waits for the tuner.
+    ev = p25_sm_ev_group_grant(0x1235, 852500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || !ctx.cc_tune_pending) {
+        DSD_FPRINTF(stderr, "FAIL: Grant accepted while the external CC tune was still pending\n");
+        return 1;
+    }
+
+    // Tuner done, CC not yet decoded after it: the grant still waits.
+    dsd_trunk_tuning_request_complete(request_id, DSD_TRUNK_TUNE_RESULT_OK);
+    ev = p25_sm_ev_group_grant(0x1235, 852500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || ctx.cc_tune_pending || !ctx.cc_sync_pending) {
+        DSD_FPRINTF(stderr, "FAIL: Completed external CC tune did not move to the decoded-CC gate\n");
+        return 1;
+    }
+
+    g_state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_group_grant(0x1235, 852500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    dsd_trunk_tuning_requests_reset();
+    if (ctx.state != P25_SM_TUNED || ctx.vc_freq_hz != 852500000) {
+        DSD_FPRINTF(stderr, "FAIL: Next grant was not followed after the pending external CC tune (state=%s)\n",
+                    p25_sm_state_name(ctx.state));
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_state_names(void) {
     if (strcmp(p25_sm_state_name(P25_SM_IDLE), "IDLE") != 0) {
@@ -2901,6 +3149,7 @@ main(void) {
     fail += test_raw_ptt_boundary_invalidation();
     fail += test_raw_ptt_markers_are_slot_local();
     fail += test_conventional_raw_ptt_retransmissions_coalesce();
+    fail += test_conventional_voice_start_encryption_policy();
     fail += test_trunked_late_voice_is_rejected_after_encryption_lockout();
     fail += test_source_less_identity_change_does_not_inherit_rid();
     fail += test_p2_resolved_crypto_survives_pending_active();
@@ -2929,6 +3178,8 @@ main(void) {
     fail += test_anonymous_followup_restarts_crypto_pending();
     fail += test_source_less_duplicate_grant_republishes_crypto();
     fail += test_unassigned_companion_start_is_rejected();
+    fail += test_external_cc_tune_hands_off_assignment();
+    fail += test_external_cc_tune_pending_waits_for_completion();
     fail += test_state_names();
     fail += test_config_defaults();
     fail += test_singleton();

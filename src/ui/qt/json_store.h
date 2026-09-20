@@ -29,7 +29,7 @@ QString json_store_path(const QString& fileName);
 QJsonArray json_store_load_array(const QString& fileName);
 
 /** @brief Atomically write @p array to @p fileName, creating directories as needed. */
-void json_store_save_array(const QString& fileName, const QJsonArray& array);
+bool json_store_save_array(const QString& fileName, const QJsonArray& array);
 
 } // namespace dsd_qt
 
