@@ -10,8 +10,10 @@
 extern "C" {
 #endif
 
-void dsd_frame_sync_estimate_sorted_window_levels(const float* sorted_levels, int count, float* out_min,
-                                                  float* out_max);
+// Estimate frame-sync window levels from a symbol amplitude window of the
+// given count in any order, via a single pass that retains the five smallest
+// and five largest values.
+void dsd_frame_sync_estimate_window_levels(const float* levels, int count, float* out_min, float* out_max);
 
 #ifdef __cplusplus
 }

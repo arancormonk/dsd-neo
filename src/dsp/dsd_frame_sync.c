@@ -48,7 +48,6 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -2444,7 +2443,6 @@ typedef struct {
     char modulation[8];
     char symbol_history[FRAME_SYNC_HISTORY_CAPACITY];
     float lbuf[48];
-    float lbuf2[48];
 } frame_sync_runtime_ctx;
 
 static void
@@ -2524,21 +2522,9 @@ frame_sync_materialize_ready_windows(frame_sync_runtime_ctx* rt) {
     }
 }
 
-static int
-frame_sync_compare_float(const void* left, const void* right) {
-    const float a = *(const float*)left;
-    const float b = *(const float*)right;
-    return (a > b) - (a < b);
-}
-
 static void
 frame_sync_window_levels(const dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt) {
-    const int level_count = rt->level_count;
-    for (int i = 0; i < level_count; i++) {
-        rt->lbuf2[i] = rt->lbuf[i];
-    }
-    qsort(rt->lbuf2, level_count, sizeof(float), frame_sync_compare_float);
-    dsd_frame_sync_estimate_sorted_window_levels(rt->lbuf2, level_count, &rt->lmin, &rt->lmax);
+    dsd_frame_sync_estimate_window_levels(rt->lbuf, rt->level_count, &rt->lmin, &rt->lmax);
 
     if (frame_sync_active_profile_modulation(opts, state) == 1) {
         dsd_state_push_minmax_window(state, opts->msize, rt->lmin, rt->lmax);
