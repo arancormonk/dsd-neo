@@ -4981,6 +4981,40 @@ target_compile_definitions(
 )
 add_test(NAME ENGINE_CHANNEL_SCAN COMMAND dsd-neo_test_engine_channel_scan)
 
+# The live scanner's stepped slicer threshold refresh (the level extremes are
+# compared as truncated ints, so a move refreshes only when it leaves its integer
+# bucket), pinned so the behaviour cannot drift unnoticed.
+add_executable(
+    dsd-neo_test_engine_slicer_thresholds
+    engine/test_engine_slicer_thresholds.c
+    ${PROJECT_SOURCE_DIR}/src/engine/slicer_thresholds.c
+)
+target_include_directories(
+    dsd-neo_test_engine_slicer_thresholds
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+# Keep the nonfinite guard and the NaN-rejecting assertions effective in
+# fast-math builds too (perf-bench builds the tests with fast-math on).
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+        dsd-neo_test_engine_slicer_thresholds
+        PRIVATE -fno-fast-math
+    )
+elseif(MSVC)
+    target_compile_options(
+        dsd-neo_test_engine_slicer_thresholds
+        PRIVATE /fp:precise
+    )
+endif()
+target_link_libraries(
+    dsd-neo_test_engine_slicer_thresholds
+    PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME ENGINE_SLICER_THRESHOLDS
+    COMMAND dsd-neo_test_engine_slicer_thresholds
+)
+
 add_executable(
     dsd-neo_test_engine_trunk_scan
     ${PROJECT_SOURCE_DIR}/src/core/util/scan_profile.c
