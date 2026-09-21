@@ -5,8 +5,10 @@
 
 #include "frame_sync_level.h"
 
-#include <float.h>
+#include <float.h> // IWYU pragma: keep
 #include <stddef.h>
+
+// IWYU pragma: no_include <__float_float.h>
 
 // Ranks read from the retained endpoints: with lmn ascending and lmx
 // descending, sums are accumulated in the same ascending value order the
