@@ -4,16 +4,16 @@
 #
 #    uv tool run --python 3.14 --from pip-tools pip-compile --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file=.github/requirements/zizmor.txt --strip-extras --upgrade .github/requirements/zizmor.in
 #
-zizmor==1.30.0 \
-    --hash=sha256:0148b61f6315ad363ae748f838e8ed81e1cfb3ade6bbe480e7516e4fba630b82 \
-    --hash=sha256:0e69a86290dff4c41b51c381a27029b5dc2b748c0510a9a333b18f862ea1bc68 \
-    --hash=sha256:1f15ed62ff34ad7875427384b03a2f72995d9ab8ddcb50dc141b25763de3aaa2 \
-    --hash=sha256:39f15155db3e4af9bb5cf125a236c67fd84ddd3174f60b4111b27c691b337e00 \
-    --hash=sha256:51c96204572b9f96b940806a371a9c57c8cff30cf93d3bd73c2febe483f942df \
-    --hash=sha256:7569a58319fb270c14a64663a6565929035f26f6f6d13059314f796e988129eb \
-    --hash=sha256:9a17ac3bb043afbbd9d3c8b6f309fa5b319c6a32e3259fbaf050f6fcd3d0a9cd \
-    --hash=sha256:9c08a7c34b33ed6f9a3a3d28fcf8c64e3e078c53c51bc9ce05c32ec3ba7feae9 \
-    --hash=sha256:baa02978518248bf9f011e6ceca7b7c5efb5b893810cd4954e01785e1b68f959 \
-    --hash=sha256:ca321b5b1cb85d08ac0c3c86275bfd5a6b5564c176437e3b41e10bd1e4463296 \
-    --hash=sha256:e4193537785dd07177227e4695871ffae1d7fe3f6043c217498445e71b477bc1
-    # via -r .github/requirements/zizmor.in
+zizmor==1.30.1 \
+    --hash=sha256:06e039fae8e185e2a1a8b002f2d95a6f5c3b548048bdd79e004dcb501fcd0868 \
+    --hash=sha256:15679642e8c4f825ba3f22537c698b1bbbad19ead23640f62ec45ebbe7abc803 \
+    --hash=sha256:17fda74e15fe41a6aa354ea4cf71fc7ff3cd025cda6584bb6d7466b3f1d00fe6 \
+    --hash=sha256:42512bb4a1bce4c787d221d1572ff6b691fa52a3d129b2910be8afaf860c5871 \
+    --hash=sha256:4a5ef2fa4fbd2984f794cfc2f95790bd03fa0bae801487ed550e044675874e60 \
+    --hash=sha256:5e8a3d54c3d9d51307371f4d1d49f8f9e56de00205c6cc660c6846a95ad4e135 \
+    --hash=sha256:92906f448365672ebb657fb50d36f997290a3aaba8cac723214741ea9054845d \
+    --hash=sha256:bf63099a27ef3bf1329dbab44bb9d1027124855c71bd0eca864d5c8e1c5c0db1 \
+    --hash=sha256:cbb7e5cb2fec471066d5c326bcaa69ed3eefdcf6a76d7ad38335b924acf86c07 \
+    --hash=sha256:eee12266b793cb87ad4a7e3af2e72404f8a63e3de5eb099b80bf7b1cfd232a8e \
+    --hash=sha256:f9eb092f089e35fa9fb3b70aeec0a19eca7dacf2ab161f1d50b18351895f085c
+    # via -r zizmor.in
