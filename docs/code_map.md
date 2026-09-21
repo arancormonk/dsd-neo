@@ -53,6 +53,8 @@ Generated (do not edit/commit):
     `dsd_engine_scan_y_timing_tick()`, which stamps `dsd_state::scan_timing` with the stay reason and the absolute
     monotonic deadline of the window that is running (issue #508); the deadline it publishes is the same instant
     `dsd_scan_voice_gate_should_step()` flips, so the readout cannot drift from the rotation it describes
+  - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
+    `include/dsd-neo/engine/slicer_thresholds.h` (test: `ENGINE_SLICER_THRESHOLDS`)
   - Installs runtime hook tables used by DSP/frame-sync code
     (`src/engine/frame_sync_hooks_install.c`, `include/dsd-neo/runtime/frame_sync_hooks.h`)
 - Build files: `src/engine/CMakeLists.txt`

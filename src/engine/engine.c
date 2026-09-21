@@ -36,6 +36,7 @@
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/engine/slicer_thresholds.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/fec/block_codes.h>
@@ -2596,21 +2597,7 @@ live_scanner_emit_start_log_if_enabled(const dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-live_scanner_update_thresholds(dsd_state* state, int* last_max, int* last_min) {
-    int current_max = (int)state->max;
-    int current_min = (int)state->min;
-    if (current_max == *last_max && current_min == *last_min) {
-        return;
-    }
-    state->center = ((state->max) + (state->min)) / 2;
-    state->umid = (((state->max) - state->center) * 5 / 8) + state->center;
-    state->lmid = (((state->min) - state->center) * 5 / 8) + state->center;
-    *last_max = current_max;
-    *last_min = current_min;
-}
-
-static void
-live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_max, int* last_min,
+live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_threshold_cache* threshold_cache,
                                    uint64_t* frame_tune_generation) {
     while (state->synctype != DSD_SYNC_NONE) {
         if (!dsd_engine_channel_scan_service_sync(opts, state)) {
@@ -2661,15 +2648,16 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
             *frame_tune_generation = dsd_trunk_tuning_generation();
         }
         state->synctype = getFrameSync(opts, state);
-        live_scanner_update_thresholds(state, last_max, last_min);
+        (void)dsd_engine_slicer_thresholds_refresh(state, threshold_cache);
     }
 }
 
 static void
 live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
-    int last_max = INT_MIN;
-    int last_min = INT_MAX;
+    dsd_engine_slicer_threshold_cache threshold_cache;
     uint64_t frame_tune_generation;
+
+    dsd_engine_slicer_threshold_cache_init(&threshold_cache);
 
     while (!dsd_exitflag_load()) {
         dsd_runtime_pump_controls(opts, state);
@@ -2701,8 +2689,8 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
         dsd_engine_scan_y_timing_tick(opts, state, dsd_time_now_monotonic_s(), dsd_time_now_realtime_s());
         frame_tune_generation = dsd_trunk_tuning_generation();
         state->synctype = getFrameSync(opts, state);
-        live_scanner_update_thresholds(state, &last_max, &last_min);
-        live_scanner_process_synced_frames(opts, state, &last_max, &last_min, &frame_tune_generation);
+        (void)dsd_engine_slicer_thresholds_refresh(state, &threshold_cache);
+        live_scanner_process_synced_frames(opts, state, &threshold_cache, &frame_tune_generation);
     }
 }
 
