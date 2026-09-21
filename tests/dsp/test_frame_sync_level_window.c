@@ -26,7 +26,7 @@ test_short_window_uses_edges(void) {
     float lmin = 0.0f;
     float lmax = 0.0f;
 
-    dsd_frame_sync_estimate_sorted_window_levels(sorted_levels, 12, &lmin, &lmax);
+    dsd_frame_sync_estimate_window_levels(sorted_levels, 12, &lmin, &lmax);
 
     int rc = 0;
     rc |= expect_close("short lmin", (-100.0f - 4.0f - 3.0f) / 3.0f, lmin);
@@ -42,7 +42,7 @@ test_long_window_drops_outer_outliers(void) {
     float lmin = 0.0f;
     float lmax = 0.0f;
 
-    dsd_frame_sync_estimate_sorted_window_levels(sorted_levels, 24, &lmin, &lmax);
+    dsd_frame_sync_estimate_window_levels(sorted_levels, 24, &lmin, &lmax);
 
     int rc = 0;
     rc |= expect_close("long lmin", (-4.0f - 3.0f - 2.0f) / 3.0f, lmin);
@@ -56,8 +56,8 @@ test_missing_output_is_noop(void) {
     float lmin = 12.0f;
     float lmax = 34.0f;
 
-    dsd_frame_sync_estimate_sorted_window_levels(sorted_levels, 3, NULL, &lmax);
-    dsd_frame_sync_estimate_sorted_window_levels(sorted_levels, 3, &lmin, NULL);
+    dsd_frame_sync_estimate_window_levels(sorted_levels, 3, NULL, &lmax);
+    dsd_frame_sync_estimate_window_levels(sorted_levels, 3, &lmin, NULL);
 
     int rc = 0;
     rc |= expect_close("missing out min unchanged", 12.0f, lmin);
@@ -70,7 +70,7 @@ test_empty_input_clears_outputs(void) {
     float lmin = 12.0f;
     float lmax = 34.0f;
 
-    dsd_frame_sync_estimate_sorted_window_levels(NULL, 3, &lmin, &lmax);
+    dsd_frame_sync_estimate_window_levels(NULL, 3, &lmin, &lmax);
     int rc = 0;
     rc |= expect_close("null input lmin", 0.0f, lmin);
     rc |= expect_close("null input lmax", 0.0f, lmax);
@@ -78,7 +78,7 @@ test_empty_input_clears_outputs(void) {
     lmin = 12.0f;
     lmax = 34.0f;
     const float sorted_levels[1] = {9.0f};
-    dsd_frame_sync_estimate_sorted_window_levels(sorted_levels, 0, &lmin, &lmax);
+    dsd_frame_sync_estimate_window_levels(sorted_levels, 0, &lmin, &lmax);
     rc |= expect_close("zero count lmin", 0.0f, lmin);
     rc |= expect_close("zero count lmax", 0.0f, lmax);
     return rc;
@@ -92,13 +92,31 @@ test_tiny_window_uses_average(void) {
     float lmax = 0.0f;
     int rc = 0;
 
-    dsd_frame_sync_estimate_sorted_window_levels(one_level, 1, &lmin, &lmax);
+    dsd_frame_sync_estimate_window_levels(one_level, 1, &lmin, &lmax);
     rc |= expect_close("one lmin", 7.0f, lmin);
     rc |= expect_close("one lmax", 7.0f, lmax);
 
-    dsd_frame_sync_estimate_sorted_window_levels(two_levels, 2, &lmin, &lmax);
+    dsd_frame_sync_estimate_window_levels(two_levels, 2, &lmin, &lmax);
     rc |= expect_close("two lmin", 3.0f, lmin);
     rc |= expect_close("two lmax", 3.0f, lmax);
+    return rc;
+}
+
+static int
+test_unsorted_input_matches_sorted(void) {
+    const float sorted_levels[12] = {-100.0f, -4.0f, -3.0f, -2.0f, -1.0f, 0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 100.0f};
+    const float shuffled_levels[12] = {3.0f, -100.0f, 0.0f, 5.0f, -3.0f, 1.0f, 4.0f, -4.0f, -1.0f, 100.0f, -2.0f, 2.0f};
+    float lmin_sorted = 0.0f;
+    float lmax_sorted = 0.0f;
+    float lmin_shuffled = 0.0f;
+    float lmax_shuffled = 0.0f;
+
+    dsd_frame_sync_estimate_window_levels(sorted_levels, 12, &lmin_sorted, &lmax_sorted);
+    dsd_frame_sync_estimate_window_levels(shuffled_levels, 12, &lmin_shuffled, &lmax_shuffled);
+
+    int rc = 0;
+    rc |= expect_close("unsorted lmin", lmin_sorted, lmin_shuffled);
+    rc |= expect_close("unsorted lmax", lmax_sorted, lmax_shuffled);
     return rc;
 }
 
@@ -110,5 +128,6 @@ main(void) {
     rc |= test_tiny_window_uses_average();
     rc |= test_short_window_uses_edges();
     rc |= test_long_window_drops_outer_outliers();
+    rc |= test_unsorted_input_matches_sorted();
     return rc;
 }
