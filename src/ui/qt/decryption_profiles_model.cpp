@@ -605,13 +605,13 @@ struct ProfileCompiler {
     }
 
     bool
-    managedMappings(const QVariantList& mappings) {
-        if (mappings.size() > DSD_DMR_TG_KEY_MAP_MAX) {
+    managedMappings(const QVariantList& mappingRows) {
+        if (mappingRows.size() > DSD_DMR_TG_KEY_MAP_MAX) {
             return fail(QObject::tr("A DMR profile supports up to 256 talkgroup overrides."));
         }
         QByteArray csv("tg_dec,keyid_hex\n");
         QSet<quint32> groups;
-        for (const auto& value : mappings) {
+        for (const auto& value : mappingRows) {
             const auto mapping = value.toMap();
             bool tgOk = false, kidOk = false;
             const auto tg = mapping.value("talkgroup").toUInt(&tgOk);
