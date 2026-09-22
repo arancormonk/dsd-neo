@@ -56,7 +56,7 @@ static struct {
     dsd_cond_t condition;
     int entered;
     int resume;
-    atomic_int drain_done;
+    dsd_atomic_u64 drain_done;
     int baseline;
     int stalled;
     int failures;
@@ -168,7 +168,7 @@ resume_flush(void* opaque) {
     /* Neither observation publishes the drain's writes to the watchdog. In the
      * red run, TSan can therefore observe the unguarded store replacement. */
     while (dsd_app_command_test_policy_guard_waits() <= g_flush.baseline
-           && !atomic_load_explicit(&g_flush.drain_done, memory_order_relaxed)) {
+           && dsd_atomic_u64_load_relaxed(&g_flush.drain_done) == 0U) {
         if (dsd_time_now_monotonic_s() >= deadline) {
             g_flush.stalled = 1; /* Fixture failure, never evidence of contention. */
             break;
@@ -217,7 +217,7 @@ setup(void) {
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
     DSD_MEMSET(&g_flush, 0, sizeof(g_flush));
-    atomic_init(&g_flush.drain_done, 0);
+    dsd_atomic_u64_init(&g_flush.drain_done, 0U);
     dsd_mutex_init(&g_flush.mutex);
     dsd_cond_init(&g_flush.condition);
     initOpts(&g_opts);
@@ -326,7 +326,7 @@ drain_during_flush(void) {
         release_barrier();
     }
     const int drained = dsd_app_drain_cmds(&g_opts, &g_state);
-    atomic_store_explicit(&g_flush.drain_done, 1, memory_order_relaxed);
+    dsd_atomic_u64_store_relaxed(&g_flush.drain_done, 1U);
     rc |= expect(drained == 1, "one command drained");
     if (started) {
         dsd_thread_join(releaser);

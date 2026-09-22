@@ -104,7 +104,9 @@ static atomic_int g_mu_init = 0;
 static atomic_int g_overflow = 0;
 static atomic_int g_overflow_warn_gate = 0;
 #ifdef DSD_NEO_TEST_HOOKS
-static atomic_int g_test_policy_guard_waits = 0;
+/* Relaxed on purpose: observing this count must not publish the drain's writes
+ * (a synchronizing counter would hide an unguarded store swap from TSan). */
+static dsd_atomic_u64 g_test_policy_guard_waits;
 #endif
 /* WP-D1: the last export completion is independent of transient decoder toasts.
  * Protected by g_mu; retained without a reader first having to arm publication. */
@@ -4994,6 +4996,26 @@ cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     return UI_CMD_APPLY_COMPLETED;
 }
 
+/*
+ * Settings whose lifecycle startup owns. The frontend kind belongs to startup and
+ * ui_start/ui_stop: runtime config/profile loads may carry persisted frontend
+ * defaults, but flipping it live can strand an active frontend session before the
+ * UI thread has a chance to shut it down. The trunk-scan coordinator is likewise
+ * only installed at startup, and its flag must keep saying whether one is
+ * installed: the scanner-exclusivity refusals and P25 recovery admission read it
+ * (#554). Both are put back after the config is applied; nonzero means the config
+ * asked to change one of them, which the caller reports as restart-required.
+ */
+static int
+cfg_restore_lifecycle_owned(dsd_opts* opts, const dsdneoUserConfig* cfg, dsd_frontend_kind old_frontend_kind,
+                            int old_trunk_scan_enabled) {
+    opts->frontend_kind = old_frontend_kind;
+    opts->trunk_scan_enabled = old_trunk_scan_enabled;
+    const int frontend_changed = cfg->frontend_kind_is_set && cfg->frontend_kind != old_frontend_kind;
+    const int trunk_scan_changed = cfg->has_trunk_scan && (cfg->trunk_scan_enabled ? 1 : 0) != old_trunk_scan_enabled;
+    return frontend_changed || trunk_scan_changed;
+}
+
 static int
 ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
@@ -5012,6 +5034,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     int old_symbol_center = state->symbolCenter;
     int old_jitter = state->jitter;
     dsd_frontend_kind old_frontend_kind = opts->frontend_kind;
+    const int old_trunk_scan_enabled = opts->trunk_scan_enabled;
 #ifdef USE_RADIO
     int airspy_rc = 0;
     dsd_airspy_config old_airspy = opts->airspy;
@@ -5028,13 +5051,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         return prepare_rc;
     }
     dsd_apply_user_config_to_opts(&cfg, opts, state);
-    /*
-     * Frontend lifecycle is owned by startup and ui_start/ui_stop.
-     * Runtime config/profile loads may carry persisted frontend defaults,
-     * but flipping this live can strand an active frontend session before
-     * the UI thread has a chance to shut it down.
-     */
-    opts->frontend_kind = old_frontend_kind;
+    const int restart_required = cfg_restore_lifecycle_owned(opts, &cfg, old_frontend_kind, old_trunk_scan_enabled);
 #ifdef USE_RADIO
     if (cfg_is_live_airspy(&cfg, old_audio_in_dev, old_audio_in_type)) {
         opts->airspy = old_airspy;
@@ -5057,7 +5074,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     if (cfg.has_input && cfg.input_source == DSDCFG_INPUT_AIRSPY && old_audio_in_type != AUDIO_IN_RTL) {
         return UI_CMD_APPLY_RESTART_REQUIRED;
     }
-    if (cfg.frontend_kind_is_set && cfg.frontend_kind != old_frontend_kind) {
+    if (restart_required) {
         return UI_CMD_APPLY_RESTART_REQUIRED;
     }
     return (reconfigure_rc == 0) ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;
@@ -5264,7 +5281,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (guarded) {
         if (!p25_sm_tick_guard_try_enter()) {
 #ifdef DSD_NEO_TEST_HOOKS
-            atomic_fetch_add(&g_test_policy_guard_waits, 1);
+            (void)dsd_atomic_u64_fetch_add_relaxed(&g_test_policy_guard_waits, 1U);
 #endif
             p25_sm_tick_guard_enter();
         }
@@ -5331,7 +5348,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
 #ifdef DSD_NEO_TEST_HOOKS
 int
 dsd_app_command_test_policy_guard_waits(void) {
-    return atomic_load(&g_test_policy_guard_waits);
+    return (int)dsd_atomic_u64_load_relaxed(&g_test_policy_guard_waits);
 }
 
 static int

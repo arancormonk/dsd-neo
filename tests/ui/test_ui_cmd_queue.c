@@ -3972,6 +3972,30 @@ test_skip_commands(uint8_t slot) {
 }
 
 static int
+test_config_keeps_trunk_scan_lifecycle(void) {
+    /* The coordinator is installed at startup only, so a live config may not flip the flag
+     * the scanner-exclusivity refusals and P25 recovery admission read (#554). */
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int installed = 0; installed <= 1; ++installed) {
+        init_test_context(&opts, &state);
+        opts.trunk_scan_enabled = installed;
+        opts.trunk_scan_idle_dwell_ms = 100;
+        dsdneoUserConfig cfg = {0};
+        cfg.has_trunk_scan = 1;
+        cfg.trunk_scan_enabled = !installed;
+        cfg.trunk_scan_idle_dwell_ms = 4321;
+        rc |= expect_true("trunk-scan lifecycle config queued", dsd_app_command_apply_config(&cfg) > 0);
+        rc |= expect_int("trunk-scan lifecycle config drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("live config keeps the coordinator flag", opts.trunk_scan_enabled, installed);
+        rc |= expect_int("live config still applies trunk-scan tuning", opts.trunk_scan_idle_dwell_ms, 4321);
+        freeState(&state);
+    }
+    return rc;
+}
+
+static int
 test_config_refuses_scanner_under_trunk_scan(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -4181,6 +4205,7 @@ int
 main(void) {
     int rc = test_session_queue_cancellation();
     rc |= test_config_refuses_scanner_under_trunk_scan();
+    rc |= test_config_keeps_trunk_scan_lifecycle();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_config_rtl_restart_under_policy_guard();
 #endif
