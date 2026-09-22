@@ -1546,6 +1546,30 @@ dsd_tg_policy_evaluate_group_call(const dsd_opts* opts, const dsd_state* state, 
     return 0;
 }
 
+int
+dsd_tg_policy_apply_ota_final_blocks(const dsd_opts* opts, const dsd_state* state, uint32_t ota_target,
+                                     uint32_t policy_target, uint32_t src, dsd_tg_policy_decision* decision) {
+    if (!decision || ota_target == 0U || ota_target == policy_target) {
+        return 0;
+    }
+    dsd_tg_policy_decision ota;
+    if (dsd_tg_policy_evaluate_group_call(opts, state, ota_target, src, 0, 0, &ota) != 0) {
+        return 0;
+    }
+    const uint32_t final = ota.block_reasons & DSD_TG_POLICY_BLOCK_OTA_FINAL;
+    if (final == 0U) {
+        return 0;
+    }
+    decision->block_reasons |= final;
+    decision->tune_allowed = 0;
+    if (final & ~(uint32_t)DSD_TG_POLICY_BLOCK_ENC_LOCKOUT) {
+        decision->audio_allowed = 0;
+        decision->record_allowed = 0;
+        decision->stream_allowed = 0;
+    }
+    return 1;
+}
+
 static int
 tg_policy_evaluate_private_call(const dsd_opts* opts, const dsd_state* state, uint32_t src, uint32_t dst, int encrypted,
                                 int data_call, int allow_unlisted, dsd_tg_policy_decision* out) {

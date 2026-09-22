@@ -13,7 +13,6 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
@@ -306,18 +305,6 @@ dsd_p25p2_slot_crypto_permits_audio(const dsd_opts* opts, const dsd_state* state
     return p25_crypto_audio_permitted(opts, state, slot);
 }
 
-static void
-dsd_audio_apply_ota_call_skip(const dsd_state* state, uint32_t ota_target, uint32_t policy_target,
-                              dsd_tg_policy_decision* decision) {
-    if (ota_target != policy_target && !dsd_tg_policy_call_skip_empty(state)
-        && dsd_tg_policy_call_skip_active(state, ota_target, dsd_time_now_monotonic_s())) {
-        decision->block_reasons |= DSD_TG_POLICY_BLOCK_CALL_SKIP;
-        decision->audio_allowed = 0;
-        decision->record_allowed = 0;
-        decision->stream_allowed = 0;
-    }
-}
-
 static int
 dsd_audio_hold_overrides_policy(const dsd_tg_policy_decision* decision) {
     // Explicit temporary blocks also mute a held talkgroup.
@@ -366,12 +353,30 @@ dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int
     } else {
         uint32_t policy_target = dsd_audio_p25_policy_target_for_slot(state, slot, target);
         if (dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source, 0, 0, &decision) == 0) {
-            dsd_audio_apply_ota_call_skip(state, target, policy_target, &decision);
+            (void)dsd_tg_policy_apply_ota_final_blocks(opts, state, target, policy_target, source, &decision);
             return dsd_p25p2_media_decision_allows_audio(&decision);
         }
     }
 
     return 0;
+}
+
+// A private call is judged on its endpoints; a group call on its policy target
+// plus the over-the-air supergroup's final blocks.
+static int
+dsd_audio_group_gate_decision(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                              uint32_t ota_tg, uint32_t policy_tg, dsd_tg_policy_decision* decision) {
+    const uint32_t source_id = call ? (uint32_t)call->ota_source_id : 0;
+    if (call && call->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+        return dsd_tg_policy_evaluate_private_call(opts, state, source_id, (uint32_t)call->ota_target_id, 0, 0,
+                                                   decision);
+    }
+    const int rc = dsd_tg_policy_evaluate_group_call(opts, state, policy_tg, source_id, 0, 0, decision);
+    if (rc == 0) {
+        (void)dsd_tg_policy_apply_ota_final_blocks(opts, state, call ? (uint32_t)call->ota_target_id : ota_tg,
+                                                   policy_tg, source_id, decision);
+    }
+    return rc;
 }
 
 static int
@@ -380,7 +385,6 @@ dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot
     dsd_tg_policy_decision decision;
     uint32_t ota_tg = (uint32_t)tg;
     uint32_t policy_tg = 0;
-    uint32_t source_id = 0;
 
     if (!opts || !state || !enc_out) {
         return -1;
@@ -395,13 +399,7 @@ dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot
 
     dsd_call_snapshot call;
     const int have_call = dsd_audio_call_for_target(state, slot, ota_tg, policy_tg, &call);
-    source_id = have_call ? (uint32_t)call.ota_source_id : 0;
-    const int rc =
-        have_call && call.kind == DSD_CALL_KIND_PRIVATE_VOICE
-            ? dsd_tg_policy_evaluate_private_call(opts, state, source_id, (uint32_t)call.ota_target_id, 0, 0, &decision)
-            : dsd_tg_policy_evaluate_group_call(opts, state, policy_tg, source_id, 0, 0, &decision);
-    if (rc == 0) {
-        dsd_audio_apply_ota_call_skip(state, have_call ? (uint32_t)call.ota_target_id : ota_tg, policy_tg, &decision);
+    if (dsd_audio_group_gate_decision(opts, state, have_call ? &call : NULL, ota_tg, policy_tg, &decision) == 0) {
         if (dsd_audio_hold_overrides_policy(&decision)) {
             enc = 0;
         } else if (!decision.audio_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u) {
@@ -460,7 +458,7 @@ dsd_audio_record_policy_evaluate(const dsd_opts* opts, const dsd_state* state, c
     }
     const int rc = dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source_id, 0, 0, decision);
     if (rc == 0) {
-        dsd_audio_apply_ota_call_skip(state, ota_target, policy_target, decision);
+        (void)dsd_tg_policy_apply_ota_final_blocks(opts, state, ota_target, policy_target, source_id, decision);
     }
     return rc;
 }
