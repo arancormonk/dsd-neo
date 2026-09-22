@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_pdu_internal.h"
 #include "dsd-neo/core/call_state.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -198,6 +199,22 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
         if (!strstr(state->dmr_lrrp_gps[0], "NMEA / LOCN") || !strstr(state->dmr_lrrp_gps[0], "(22.50000, 45.00000)")) {
             DSD_FPRINTF(stderr, "\nLOCN: missing decoded state: %s\n", state->dmr_lrrp_gps[0]);
             return 2 + (1 - invalid) * 2;
+        }
+    }
+    state->currentslot = 0;
+    state->data_header_format[0] = 13;
+    state->data_header_dd_format[0] = 0x00;
+    for (int invalid = 1; invalid >= 0; --invalid) {
+        if (!truncate_output(path)) {
+            return 100;
+        }
+        state->event_crc_invalid[0] = (uint8_t)invalid;
+        dmr_sd_pdu_process(opts, state, (uint16_t)(sizeof locn - 1), locn, 1U);
+        if (!expect_rows(path, !invalid, "00123456", "22.50000", "45.00000", "T4 short-data LOCN")) {
+            return 20;
+        }
+        if (!strstr(state->dmr_lrrp_gps[0], "NMEA / LOCN")) {
+            return 21;
         }
     }
     static const uint16_t ports[] = {4001, 49198};

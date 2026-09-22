@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_pdu_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -133,7 +134,6 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
 
 // Under test
 int decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input);
-void dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 void dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 void utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input);
 
@@ -682,7 +682,7 @@ main(void) {
         st.data_header_format[0] = 0;
         st.dmr_lrrp_source[0] = 1234;
         st.dmr_lrrp_target[0] = 5678;
-        dmr_sd_pdu(&opts, &st, (uint16_t)sizeof text, text);
+        dmr_sd_pdu_process(&opts, &st, (uint16_t)sizeof text, text, 1U);
         if (g_datacall_calls != 1U || g_datacall_src != 1234U || g_datacall_dst != 5678U) {
             DSD_FPRINTF(stderr, "short data datacall mismatch calls=%u src=%u dst=%u\n", g_datacall_calls,
                         g_datacall_src, g_datacall_dst);

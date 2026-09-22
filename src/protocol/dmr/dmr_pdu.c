@@ -295,12 +295,6 @@ dmr_sd_pdu_process(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t
     (void)dsd_event_emit_data_notice(opts, state, slot, &observation, summary);
 }
 
-void
-dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU) {
-    /* Public compatibility entry point: strict decoding only, with no CRC-proven transmitter workaround. */
-    dmr_sd_pdu_process(opts, state, len, DMR_PDU, 0U);
-}
-
 // ETSI TS 102 361-3 V1.3.1 clause 7.2.4: SAID, DAID, SPID and DPID are indices into tables the
 // radio holds (7.15-7.18), not compressed values. The labels below use those tables' wording.
 static const char*

@@ -259,16 +259,6 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* DMR_PDU) {
-    (void)opts;
-    (void)state;
-    g_sd_pdu_calls++;
-    g_sd_pdu_last_len = len;
-    g_sd_pdu_first_byte = DMR_PDU ? DMR_PDU[0] : 0U;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 dmr_sd_pdu_process(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* dmr_pdu, uint8_t packet_crc_valid) {
     (void)opts;
     (void)state;
