@@ -1401,7 +1401,7 @@ apply_demod_config(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state
     if (!cfg || !opts || !state || !cfg->has_demod) {
         return;
     }
-    if (opts->frame_dpmr == 1) {
+    if (cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_DPMR) {
         apply_demod_mode(opts, state, 1, 0, 0, 0, 0);
         return;
     }
