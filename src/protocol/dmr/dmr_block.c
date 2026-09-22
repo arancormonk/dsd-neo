@@ -1286,7 +1286,7 @@ static void
 dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, uint8_t mnis_type, uint32_t msrc,
                                     uint32_t mdst, uint16_t mnis_ip_id) {
     if (mnis_type == 0x11) {
-        uint8_t pdu_crc_ok = dmr_block_type1_lrrp_crc_ok(ctx->state, ctx->slot);
+        uint8_t pdu_crc_ok = (uint8_t)(ctx->state->event_crc_invalid[ctx->slot] == 0);
         dmr_lrrp(ctx->opts, ctx->state, len, msrc, mdst, ctx->state->dmr_pdu_sf[ctx->slot] + 7, pdu_crc_ok);
     } else if (mnis_type == 0x33) {
         // ARS records are length prefixed; a fixed dump window would run past the record

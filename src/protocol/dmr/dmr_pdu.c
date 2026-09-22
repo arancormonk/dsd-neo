@@ -775,7 +775,8 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
             return 1;
         case 4001:
             DSD_FPRINTF(stderr, "LRRP;");
-            dmr_lrrp(opts, state, payload_len, src24, dst24, payload, 1);
+            // P25 Phase 1 arrives with currentslot == 0, matching the event_crc_invalid[0] scope in p25p1_mdpu.c.
+            dmr_lrrp(opts, state, payload_len, src24, dst24, payload, (uint8_t)(state->event_crc_invalid[slot] == 0));
             dsd_event_history_transaction transaction;
             dsd_event_history_transaction_begin(state, &transaction);
             dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0],
@@ -865,7 +866,7 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
                          "P25 Tier 2 LOCN SRC(IP): %d.%d.%d.%d; DST(IP): %d.%d.%d.%d; ", input[12], input[13],
                          input[14], input[15], input[16], input[17], input[18], input[19]);
             DSD_FPRINTF(stderr, "P25 Tier 2 Location Service;");
-            dmr_lrrp(opts, state, payload_len, src24, dst24, payload, 1);
+            dmr_lrrp(opts, state, payload_len, src24, dst24, payload, (uint8_t)(state->event_crc_invalid[slot] == 0));
             return 1;
         default: break;
     }
@@ -1757,7 +1758,7 @@ dmr_locn_compute_lat_lon(dmr_locn_data* d, double* latitude, double* longitude) 
 
 static void DSD_ATTR_USED
 dmr_locn_write_file(const dsd_opts* opts, const dsd_state* state, double latitude, double longitude) {
-    if (opts->lrrp_file_output != 1) {
+    if (opts->lrrp_file_output != 1 || state->event_crc_invalid[state->currentslot & 1]) {
         return;
     }
     char timestr[9];

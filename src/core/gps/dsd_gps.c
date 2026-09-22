@@ -55,10 +55,22 @@ static const uint32_t POSITION_ERROR_POW10[8] = {
     1U, 10U, 100U, 1000U, 10000U, 100000U, 1000000U, 10000000U,
 };
 
-static void
-gps_write_lrrp_compact(const dsd_opts* opts, uint32_t src, double latitude, double longitude, int speed_kph,
-                       int azimuth) {
+// Location files feed mapping tools that cannot see a CRC verdict. A CRC-failed burst can carry a plausible
+// but wrong fix (issue #550); mirror the pdu_crc_ok gate in dmr_lrrp_write_file_if_needed.
+// Callers must run inside an event_crc_invalid save/set/restore scope indexed by the same slot they pass;
+// outside such a scope the gate is inert.
+static int
+gps_lrrp_row_allowed(const dsd_opts* opts, const dsd_state* state, int slot) {
     if (opts == NULL || opts->lrrp_file_output != 1) {
+        return 0;
+    }
+    return state == NULL || state->event_crc_invalid[slot & 1] == 0;
+}
+
+static void
+gps_write_lrrp_compact(const dsd_opts* opts, const dsd_state* state, int slot, uint32_t src, double latitude,
+                       double longitude, int speed_kph, int azimuth) {
+    if (!gps_lrrp_row_allowed(opts, state, slot)) {
         return;
     }
 
@@ -84,9 +96,9 @@ gps_write_lrrp_compact(const dsd_opts* opts, uint32_t src, double latitude, doub
 }
 
 static void DSD_ATTR_USED
-gps_write_lrrp_slash_colon(const dsd_opts* opts, uint32_t src, double latitude, double longitude, int speed_kph,
-                           int azimuth) {
-    if (opts == NULL || opts->lrrp_file_output != 1) {
+gps_write_lrrp_slash_colon(const dsd_opts* opts, const dsd_state* state, int slot, uint32_t src, double latitude,
+                           double longitude, int speed_kph, int azimuth) {
+    if (!gps_lrrp_row_allowed(opts, state, slot)) {
         return;
     }
 
@@ -203,8 +215,8 @@ lip_emit_position_metadata(const dsd_opts* opts, dsd_state* state, int slot, con
 
     lip_print_time_elapsed(time_elapsed);
     lip_store_state_strings(state, slot, gps);
-    gps_write_lrrp_compact(opts, gps->add_hash, lat_sf * gps->latitude, lon_sf * gps->longitude, gps->speed_kph,
-                           gps->direction_deg);
+    gps_write_lrrp_compact(opts, state, slot, gps->add_hash, lat_sf * gps->latitude, lon_sf * gps->longitude,
+                           gps->speed_kph, gps->direction_deg);
 }
 
 static uint8_t
@@ -377,7 +389,7 @@ nmea_store_and_report(const dsd_opts* opts, dsd_state* state, int slot, uint32_t
 
     int speed_int = (int)speed_kph;
     int azimuth = (type == 2) ? (int)cog : 0;
-    gps_write_lrrp_compact(opts, src, latitude, longitude, speed_int, azimuth);
+    gps_write_lrrp_compact(opts, state, slot, src, latitude, longitude, speed_int, azimuth);
 }
 
 void
@@ -557,7 +569,7 @@ nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint32
     (void)gps_enrich_active_call(state, slot_idx, src, state->dmr_embedded_gps[slot_idx], NULL);
 
     // save to LRRP report for mapping/logging
-    gps_write_lrrp_compact(opts, src, latitude, longitude, 0, (int)heading);
+    gps_write_lrrp_compact(opts, state, slot_idx, src, latitude, longitude, 0, (int)heading);
 }
 
 //externalize embedded GPS - Confirmed working now on NE, NW, SE, and SW coordinates
@@ -596,7 +608,7 @@ dmr_embedded_gps_store_clear_fix(const dsd_opts* opts, dsd_state* state, uint8_t
         && call.ota_source_id <= UINT32_MAX) {
         src = (uint32_t)call.ota_source_id;
     }
-    gps_write_lrrp_compact(opts, src, fix->lat_sf * fix->latitude, fix->lon_sf * fix->longitude, 0, 0);
+    gps_write_lrrp_compact(opts, state, slot, src, fix->lat_sf * fix->latitude, fix->lon_sf * fix->longitude, 0, 0);
 }
 
 void
@@ -761,7 +773,7 @@ apx_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]
             }
 
             //save to LRRP report for mapping/logging
-            gps_write_lrrp_compact(opts, src, latitude, longitude, 0, 0);
+            gps_write_lrrp_compact(opts, state, slot_idx, src, latitude, longitude, 0, 0);
         }
     }
 
@@ -924,7 +936,7 @@ nxdn_gps_report(const dsd_opts* opts, dsd_state* state, const uint8_t* input, ui
     }
 
     if (src != 0U) {
-        gps_write_lrrp_slash_colon(opts, src, latitude, longitude, (int)speed_kph, (int)heading);
+        gps_write_lrrp_slash_colon(opts, state, 0, src, latitude, longitude, (int)speed_kph, (int)heading);
     }
 
     state->dmr_lrrp_source[0] = 0U;
