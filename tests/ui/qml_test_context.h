@@ -447,8 +447,16 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
-    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
-    lockoutSlot(int) const {
+    lockoutSlot(int slot) {
+        ++m_lockout_slot_calls;
+        m_last_lockout_slot = slot;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    skipSlot(int slot) {
+        ++m_skip_slot_calls;
+        m_last_skip_slot = slot;
         return true;
     }
 
@@ -641,6 +649,10 @@ class CommandRecorder : public QObject {
 
     void
     reset() {
+        m_lockout_slot_calls = 0;
+        m_last_lockout_slot = -1;
+        m_skip_slot_calls = 0;
+        m_last_skip_slot = -1;
         m_hold_calls = 0;
         m_last_hold_tg = 0;
         m_key_apply_calls = 0;
@@ -762,6 +774,26 @@ class CommandRecorder : public QObject {
     }
 
     int
+    lockoutSlotCalls() const {
+        return m_lockout_slot_calls;
+    }
+
+    int
+    lastLockoutSlot() const {
+        return m_last_lockout_slot;
+    }
+
+    int
+    skipSlotCalls() const {
+        return m_skip_slot_calls;
+    }
+
+    int
+    lastSkipSlot() const {
+        return m_last_skip_slot;
+    }
+
+    int
     holdCalls() const {
         return m_hold_calls;
     }
@@ -807,6 +839,10 @@ class CommandRecorder : public QObject {
     }
 
   private:
+    int m_lockout_slot_calls = 0;
+    int m_last_lockout_slot = -1;
+    int m_skip_slot_calls = 0;
+    int m_last_skip_slot = -1;
     int m_hold_calls = 0;
     double m_last_hold_tg = 0;
     int m_key_apply_calls = 0;
@@ -988,6 +1024,16 @@ class CallLogStore : public QAbstractListModel {
         endInsertRows();
         Q_EMIT countChanged();
         return row.name;
+    }
+
+    Q_INVOKABLE QString
+    pushWithIds(qulonglong tg, qulonglong src) {
+        const QString call = push(QStringLiteral("TODAY"));
+        m_rows[0].tg = tg;
+        m_rows[0].src = src;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::TgRole, CallHistoryModel::SrcRole});
+        return call;
     }
 
     Q_INVOKABLE QString
@@ -1198,6 +1244,26 @@ class Setup : public QObject {
         }
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
         return true;
+    }
+
+    Q_INVOKABLE int
+    lockoutSlotCalls() const {
+        return m_commands->lockoutSlotCalls();
+    }
+
+    Q_INVOKABLE int
+    lastLockoutSlot() const {
+        return m_commands->lastLockoutSlot();
+    }
+
+    Q_INVOKABLE int
+    skipSlotCalls() const {
+        return m_commands->skipSlotCalls();
+    }
+
+    Q_INVOKABLE int
+    lastSkipSlot() const {
+        return m_commands->lastSkipSlot();
     }
 
     Q_INVOKABLE int
@@ -1834,6 +1900,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("encLockoutCount")] = 0;
         metrics[QStringLiteral("persistTgLockouts")] = true;
         metrics[QStringLiteral("temporaryTgAvoidCount")] = 0;
+        metrics[QStringLiteral("callSkipCount")] = 0;
         metrics[QStringLiteral("tgPolicyContext")] = QStringLiteral("0");
         // On-the-fly scan controls (#380): no rotation running at rest.
         metrics[QStringLiteral("scanRotationActive")] = false;

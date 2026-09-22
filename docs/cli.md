@@ -471,17 +471,32 @@ Notes
 
 ## Trunking & Scanning
 
-Quick talkgroup lockouts (`!`/`@` in the terminal and **Skip** in Qt/Android) save to the configured global
+Quick talkgroup lockouts (`!`/`@` in the terminal and **Avoid TG**/**Lock out** in Qt/Android) save to the configured global
 groups file by default. Use `--tg-lockout-session` to keep them temporary, or `--tg-lockout-persist` to select
 the default saving behavior explicitly. The equivalent configuration key is `[trunking] persist_tg_lockouts`.
-The terminal **Save user TG lockouts** menu and Qt/Android **Settings → Listening → Save skipped talkgroups**
+The terminal **Save user TG lockouts** menu and Qt/Android **Settings → Listening → Save avoided talkgroups**
 change this preference immediately for subsequent lockouts and preserve it through their normal settings save.
+The Qt/Android button reads **Lock out** when saving is on and **Avoid TG** when it is off.
 
 Temporary avoids block tuning, audio, recording and streaming without modifying the saved list. Explicit list
-edits still save, and exports omit temporary avoids. Use **Clear temporary TG avoids — current list** to undo
-them in the current scope. They also clear on list reload/replacement or decoder stop; ordinary retunes and
-scan visits preserve them. Scan rows with their own lists stay isolated; rows using the global list share its
-avoids. Changing the persistence setting does not change the lifetime of existing blocks.
+edits still save, and exports omit temporary avoids. Use Qt/Android **Clear temporary avoids and call skips — current
+list** or terminal **Clear temporary TG avoids - current list** to undo them in the current scope. They also clear
+on list reload/replacement or decoder stop; ordinary retunes and scan visits preserve them. Scan rows with their
+own lists stay isolated; rows using the global list share its avoids. Changing the persistence setting does not
+change the lifetime of existing blocks.
+
+Qt/Android **Skip** leaves the call without touching the talkgroup list, blocking tuning and all media for its
+target. On P25 a group-call skip lasts while the receiver keeps seeing the talkgroup's call (control-channel
+grant updates, or the call on the voice channel the receiver is parked on for the other slot); it expires 15 s
+after the receiver last saw it and after 10 minutes at most. Transmissions with gaps under 15 s are skipped
+together, so the unit skipped is the conversation; a new call that starts within 15 s of the previous one ending
+is missed; and if the receiver follows another call on a different carrier for longer than 15 s while the skipped
+call continues, the skipped call is followed again when next seen (tap **Skip** again).
+
+P25 private calls, DMR, NXDN and EDACS skips last 15 s from the press in this version; ProVoice has no skip.
+Skips never persist, are unaffected by `persist_tg_lockouts`, and survive scan-target revisits like session avoids,
+subject to their expiry. **Clear temporary avoids and call skips — current list** clears both in the active scope;
+list reload/replacement or decoder stop also clears them.
 
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`
 - Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). For NXDN the hold is refreshed

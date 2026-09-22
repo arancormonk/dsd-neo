@@ -25,6 +25,7 @@
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -569,6 +570,19 @@ main(int argc, char** argv) {
     check(bridge.setPersistTgLockouts(false));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(opts.persist_tg_lockouts == 0);
+    dsd_call_observation call = {};
+    call.protocol = DSD_SYNC_P25P1_POS;
+    call.slot = 0U;
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    call.ota_target_id = 42;
+    call.policy_target_id = 42;
+    call.ota_source_id = 1;
+    call.observed_m = dsd_time_now_monotonic_s();
+    check(dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    check(!dsd_tg_policy_call_skip_active(&state, 42, dsd_time_now_monotonic_s()));
+    check(bridge.skipSlot(0));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(dsd_tg_policy_call_skip_active(&state, 42, dsd_time_now_monotonic_s()));
     check(dsd_tg_policy_session_avoid_add(&state, 42) == 0);
     check(!bridge.clearTemporaryTgAvoids("invalid context"));
     check(bridge.clearTemporaryTgAvoids(QString::number(context + 1)));
@@ -577,6 +591,7 @@ main(int argc, char** argv) {
     check(bridge.clearTemporaryTgAvoids(QString::number(context)));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     check(!dsd_tg_policy_session_avoid_contains(&state, 42));
+    check(!dsd_tg_policy_call_skip_active(&state, 42, dsd_time_now_monotonic_s()));
     refreshVersion();
     const QString version = QString::number(context);
     check(!bridge.renameTalkgroup(42, 42, version, generation, QString(50, QLatin1Char('x'))));

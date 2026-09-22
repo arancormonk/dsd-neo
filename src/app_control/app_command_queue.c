@@ -2239,7 +2239,8 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
 }
 
 static int
-apply_lockout_decoder_transition_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
+apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_live, const char* tune_reason,
+                                   const char* sm_source) {
     long cc_freq = 0;
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
@@ -2247,8 +2248,7 @@ apply_lockout_decoder_transition_locked(dsd_opts* opts, dsd_state* state, int p2
     if (opts->trunk_enable == 1) {
         cc_freq = current_cc_freq(state);
         if (cc_freq != 0
-            && !request_manual_tune(opts, state, cc_freq, sym_rate, "Lockout return-to-CC", &tune_result,
-                                    &request_id)) {
+            && !request_manual_tune(opts, state, cc_freq, sym_rate, tune_reason, &tune_result, &request_id)) {
             return UI_CMD_APPLY_FAILED;
         }
     }
@@ -2265,9 +2265,19 @@ apply_lockout_decoder_transition_locked(dsd_opts* opts, dsd_state* state, int p2
     if (p25_live) {
         /* With no CC known nothing was tuned; tune_result is still FAILED and the
          * handoff declines, leaving the SM to its own stale-context recovery. */
-        hand_p25_sm_to_cc(opts, state, tune_result, request_id, "user-lockout");
+        hand_p25_sm_to_cc(opts, state, tune_result, request_id, sm_source);
     }
     return UI_CMD_APPLY_COMPLETED;
+}
+
+static int
+apply_lockout_decoder_transition_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
+    return apply_user_block_transition_locked(opts, state, p25_live, "Lockout return-to-CC", "user-lockout");
+}
+
+static int
+apply_skip_decoder_transition_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
+    return apply_user_block_transition_locked(opts, state, p25_live, "Skip return-to-CC", "user-skip");
 }
 
 static int
@@ -2954,6 +2964,7 @@ dsd_app_command_set_u8(int cmd_id, uint8_t value) {
     switch (cmd_id) {
         case DSD_APP_CMD_TG_HOLD_TOGGLE:
         case DSD_APP_CMD_CALL_ALERT_EVENTS_SET:
+        case DSD_APP_CMD_SKIP_SLOT:
         case DSD_APP_CMD_LOCKOUT_SLOT: return dsd_app_command_submit(cmd_id, &value, sizeof value);
         default: return DSD_APP_COMMAND_SUBMIT_REJECTED;
     }
@@ -3114,6 +3125,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_TG_HOLD_TOGGLE, sizeof(uint8_t)},
     {DSD_APP_CMD_CALL_ALERT_EVENTS_SET, sizeof(uint8_t)},
     {DSD_APP_CMD_LOCKOUT_SLOT, sizeof(uint8_t)},
+    {DSD_APP_CMD_SKIP_SLOT, sizeof(uint8_t)},
     {DSD_APP_CMD_RTL_SET_FREQ, sizeof(uint32_t)},
     {DSD_APP_CMD_MOD_SET, sizeof(int32_t)},
     {DSD_APP_CMD_DECODE_MODE_SET, sizeof(int32_t)},
@@ -4392,6 +4404,9 @@ apply_cmd_foundation(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
                 return UI_CMD_APPLY_FAILED;
             }
             dsd_tg_policy_session_avoid_clear(state);
+            p25_sm_tick_guard_enter();
+            dsd_tg_policy_call_skip_clear(state);
+            p25_sm_tick_guard_leave();
             ui_set_toast(state, 3, "Cleared temporary TG avoids in current list");
             return UI_CMD_APPLY_COMPLETED;
         }
@@ -4480,6 +4495,18 @@ tg_lockout_report(dsd_opts* opts, dsd_state* state, unsigned int tg) {
     }
 }
 
+static void
+slot_block_note_event(const dsd_opts* opts, dsd_state* state, uint8_t slot, const char* text) {
+    const int eh_slot = slot == 0 ? 0 : 1;
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
+    DSD_SNPRINTF(state->event_history_s[eh_slot].Event_History_Items[0].internal_str,
+                 sizeof state->event_history_s[eh_slot].Event_History_Items[0].internal_str, "%s", text);
+    dsd_event_history_mark_dirty(&state->event_history_s[eh_slot]);
+    dsd_event_history_transaction_end(&transaction);
+    watchdog_event_current(opts, state, eh_slot);
+}
+
 static int
 apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state) {
@@ -4506,15 +4533,10 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
         return UI_CMD_APPLY_FAILED;
     }
 
-    int eh_slot = (slot == 0) ? 0 : 1;
-    dsd_event_history_transaction transaction;
-    dsd_event_history_transaction_begin(state, &transaction);
-    DSD_SNPRINTF(state->event_history_s[eh_slot].Event_History_Items[0].internal_str,
-                 sizeof state->event_history_s[eh_slot].Event_History_Items[0].internal_str,
-                 "Target: %u; has been locked out; %s.", tg, temporary ? "Session Only" : "User Lock Out");
-    dsd_event_history_mark_dirty(&state->event_history_s[eh_slot]);
-    dsd_event_history_transaction_end(&transaction);
-    watchdog_event_current(opts, state, eh_slot);
+    char text[128];
+    DSD_SNPRINTF(text, sizeof text, "Target: %u; has been locked out; %s.", tg,
+                 temporary ? "Session Only" : "User Lock Out");
+    slot_block_note_event(opts, state, slot, text);
 
     tg_lockout_report(opts, state, tg);
 
@@ -4524,6 +4546,50 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
                  tg);
         ui_set_toast(state, 4, "TG %u locked out%s; return-to-CC tune failed", tg,
                      temporary ? " for this session" : "");
+    }
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+static int
+apply_cmd_skip_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (c->id != DSD_APP_CMD_SKIP_SLOT) {
+        return UI_CMD_APPLY_UNHANDLED;
+    }
+    if (!state || opts->frame_provoice == 1) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    uint8_t slot = 0;
+    DSD_MEMCPY(&slot, c->data, sizeof slot);
+    slot &= 1U;
+    p25_sm_tick_guard_enter();
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        p25_sm_tick_guard_leave();
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    const uint64_t target = call.ota_target_id ? call.ota_target_id : call.policy_target_id;
+    if (!target || target > UINT32_MAX || call.ota_source_id > UINT32_MAX) {
+        p25_sm_tick_guard_leave();
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    const unsigned int tg = (uint32_t)target;
+    const int fallback = call.kind == DSD_CALL_KIND_PRIVATE_VOICE || !DSD_SYNC_IS_P25(call.protocol);
+    const int arm_rc =
+        dsd_tg_policy_call_skip_arm(state, tg, (uint32_t)call.ota_source_id, fallback, dsd_time_now_monotonic_s());
+    if (arm_rc != 0) {
+        p25_sm_tick_guard_leave();
+        ui_set_toast(state, 4, "Could not skip TG %u", tg);
+        return UI_CMD_APPLY_FAILED;
+    }
+    char text[128];
+    DSD_SNPRINTF(text, sizeof text, "Target: %u; call skipped.", tg);
+    slot_block_note_event(opts, state, slot, text);
+    const int transition_status = apply_skip_decoder_transition_locked(opts, state, p25_sm_owns_trunk(opts, state));
+    p25_sm_tick_guard_leave();
+    ui_set_toast(state, 3, "TG %u skipped", tg);
+    if (transition_status == UI_CMD_APPLY_FAILED) {
+        LOG_WARN("WARNING: TG %u was skipped, but the return-to-CC cleanup tune was not accepted.\n", tg);
+        ui_set_toast(state, 4, "TG %u skipped; return-to-CC tune failed", tg);
     }
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -5013,10 +5079,10 @@ apply_cmd_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
 static int
 apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const dsd_app_command_handler_fn k_command_groups[] = {
-        apply_cmd_basic_a,      apply_cmd_slot_controls,  apply_cmd_payload_filters, apply_cmd_constellation,
-        apply_cmd_eye_spectrum, apply_cmd_trunk_controls, apply_cmd_lockout_slot,    apply_cmd_tg_listen,
-        apply_cmd_provoice_m17, apply_cmd_scan_controls,  apply_cmd_channel_cycle,   apply_cmd_capture_playback,
-        apply_cmd_misc_config,  apply_cmd_foundation,
+        apply_cmd_basic_a,          apply_cmd_slot_controls,  apply_cmd_payload_filters, apply_cmd_constellation,
+        apply_cmd_eye_spectrum,     apply_cmd_trunk_controls, apply_cmd_lockout_slot,    apply_cmd_skip_slot,
+        apply_cmd_tg_listen,        apply_cmd_provoice_m17,   apply_cmd_scan_controls,   apply_cmd_channel_cycle,
+        apply_cmd_capture_playback, apply_cmd_misc_config,    apply_cmd_foundation,
     };
     if (!c) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;

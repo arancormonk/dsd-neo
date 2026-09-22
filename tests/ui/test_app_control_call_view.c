@@ -104,6 +104,7 @@ test_active_call_reports_identity(void) {
     assert(strcmp(view.name, "51023") == 0);
     assert(view.tg_id == 51023U);
     assert(view.enc == 0U);
+    assert(view.started_m == 10.0);
     assert(view.elapsed_ms >= 1900U && view.elapsed_ms <= 2100U);
     destroy_state(state);
 }
@@ -174,6 +175,7 @@ test_ended_call_holds_then_expires(void) {
     dsd_app_slot_call held;
     dsd_app_slot_call_view(state, 0U, 13.0, &held);
     assert(held.state == DSD_APP_CALL_LINE_ENDED);
+    assert(held.started_m == 10.0);
     /* Elapsed freezes at the end, it does not keep counting. */
     assert(held.elapsed_ms >= 1900U && held.elapsed_ms <= 2100U);
 
@@ -618,28 +620,95 @@ test_freq_helpers_are_null_safe(void) {
    panel headlined slot 1 while the notification headlined whichever call started later,
    so the same record named different units on the two surfaces. */
 static void
-test_lead_slot_prefers_active_then_lower_slot(void) {
+test_lead_slot_prefers_earliest_active_then_lowest_ended(void) {
+    const double first_earlier[2] = {1.0, 5.0};
+    const double second_earlier[2] = {5.0, 1.0};
+    const double equal[2] = {1.0, 1.0};
     const int none[2] = {DSD_APP_CALL_LINE_NONE, DSD_APP_CALL_LINE_IDLE};
-    assert(dsd_app_lead_slot(none, 2U) == -1);
+    assert(dsd_app_lead_slot(none, second_earlier, 2U) == -1);
 
     const int second_only[2] = {DSD_APP_CALL_LINE_IDLE, DSD_APP_CALL_LINE_ACTIVE};
-    assert(dsd_app_lead_slot(second_only, 2U) == 1);
+    assert(dsd_app_lead_slot(second_only, first_earlier, 2U) == 1);
 
     /* An open epoch outranks a merely-ended one even on the higher slot: the ended hold
        keeps slot 0 renderable for seconds after its call finished, and headlining it
        would bury the transmission actually on the air. */
     const int ended_over_active[2] = {DSD_APP_CALL_LINE_ENDED, DSD_APP_CALL_LINE_ACTIVE};
-    assert(dsd_app_lead_slot(ended_over_active, 2U) == 1);
+    assert(dsd_app_lead_slot(ended_over_active, first_earlier, 2U) == 1);
 
-    /* Equal rank falls to the lower slot, in both directions, so the headline does not
-       swap between two simultaneous transmissions as their relative timings shift. */
+    /* The earliest active epoch keeps the headline; exact ties and missing starts
+       retain the lowest-index fallback. Ended calls still use only slot order. */
     const int both_active[2] = {DSD_APP_CALL_LINE_ACTIVE, DSD_APP_CALL_LINE_ACTIVE};
-    assert(dsd_app_lead_slot(both_active, 2U) == 0);
+    assert(dsd_app_lead_slot(both_active, second_earlier, 2U) == 1);
+    assert(dsd_app_lead_slot(both_active, first_earlier, 2U) == 0);
+    assert(dsd_app_lead_slot(both_active, equal, 2U) == 0);
+    assert(dsd_app_lead_slot(both_active, NULL, 2U) == 0);
     const int both_ended[2] = {DSD_APP_CALL_LINE_ENDED, DSD_APP_CALL_LINE_ENDED};
-    assert(dsd_app_lead_slot(both_ended, 2U) == 0);
+    assert(dsd_app_lead_slot(both_ended, second_earlier, 2U) == 0);
 
-    assert(dsd_app_lead_slot(NULL, 2U) == -1);
-    assert(dsd_app_lead_slot(both_active, 0U) == -1);
+    assert(dsd_app_lead_slot(NULL, second_earlier, 2U) == -1);
+    assert(dsd_app_lead_slot(both_active, second_earlier, 0U) == -1);
+}
+
+static void
+test_lead_slot_submillisecond_starts_stay_ordered_across_samples(void) {
+    dsd_state* state = make_state();
+    observe_group_call(state, 1U, 1202U, 4242U, 100.0000);
+    observe_group_call(state, 0U, 1201U, 4241U, 100.0004);
+    const double samples[3] = {100.0016, 100.0022, 100.0026};
+    const uint32_t elapsed[3][2] = {{1U, 1U}, {1U, 2U}, {2U, 2U}};
+    for (int sample = 0; sample < 3; sample++) {
+        int line_states[DSD_CALL_STATE_SLOT_COUNT];
+        double started[DSD_CALL_STATE_SLOT_COUNT];
+        for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+            dsd_app_slot_call view;
+            dsd_app_slot_call_view(state, (uint8_t)slot, samples[sample], &view);
+            assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+            assert(view.elapsed_ms == elapsed[sample][slot]);
+            line_states[slot] = view.state;
+            started[slot] = view.started_m;
+        }
+        /* Rounded elapsed values tie, separate, then tie again; the exact starts
+           preserve the same headline at every sampling instant. */
+        assert(started[0] == 100.0004);
+        assert(started[1] == 100.0000);
+        assert(dsd_app_lead_slot(line_states, started, DSD_CALL_STATE_SLOT_COUNT) == 1);
+    }
+    destroy_state(state);
+}
+
+static void
+test_lead_slot_late_identity_uses_original_start(void) {
+    dsd_state* state = make_state();
+    observe_group_call(state, 0U, 0U, 0U, 1.0);
+    observe_group_call(state, 1U, 1202U, 4242U, 5.0);
+
+    dsd_app_slot_call first;
+    dsd_app_slot_call second;
+    dsd_app_slot_call_view(state, 0U, 6.0, &first);
+    dsd_app_slot_call_view(state, 1U, 6.0, &second);
+    assert(first.state == DSD_APP_CALL_LINE_IDLE);
+    assert(second.state == DSD_APP_CALL_LINE_ACTIVE);
+    int line_states[2] = {first.state, second.state};
+    double started[2] = {first.started_m, second.started_m};
+    assert(dsd_app_lead_slot(line_states, started, 2U) == 1);
+
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    assert(dsd_call_state_enrich_text(state, 0U, call.epoch, NULL, "Earlier call", NULL, NULL, 6.0) == 1);
+    dsd_app_slot_call_view(state, 0U, 6.5, &first);
+    dsd_app_slot_call_view(state, 1U, 6.5, &second);
+    assert(first.state == DSD_APP_CALL_LINE_ACTIVE);
+    assert(strcmp(first.tg_text, "Earlier call") == 0);
+    assert(first.started_m == 1.0);
+    assert(second.state == DSD_APP_CALL_LINE_ACTIVE);
+    assert(second.started_m == 5.0);
+    line_states[0] = first.state;
+    line_states[1] = second.state;
+    started[0] = first.started_m;
+    started[1] = second.started_m;
+    assert(dsd_app_lead_slot(line_states, started, 2U) == 0);
+    destroy_state(state);
 }
 
 static void
@@ -721,7 +790,9 @@ main(void) {
     test_vc_freq_falls_back_through_the_chain();
     test_cc_freq_prefers_trunk_over_p25();
     test_freq_helpers_are_null_safe();
-    test_lead_slot_prefers_active_then_lower_slot();
+    test_lead_slot_prefers_earliest_active_then_lowest_ended();
+    test_lead_slot_submillisecond_starts_stay_ordered_across_samples();
+    test_lead_slot_late_identity_uses_original_start();
     printf("APP_CONTROL_CALL_VIEW ok\n");
     return 0;
 }

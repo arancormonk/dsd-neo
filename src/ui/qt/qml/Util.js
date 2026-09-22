@@ -7,6 +7,13 @@ function talkgroupHeadline(name, tgText, tgId) {
     return tgId > 0 && name === tgText ? "TG " + tgText : name.length > 0 ? name : tgText;
 }
 
+// String.arg(double) uses QString's six-significant-digit formatting. Convert
+// numeric IDs to decimal text first so seven-digit IDs never become exponents.
+function idText(id) {
+    var n = Number(id);
+    return isFinite(n) ? String(Math.round(n)) : "";
+}
+
 // Decode chip catalog: label ↔ CLI flags. The empty flag is the engine's own
 // default (P25 Phase 1+2, DMR and YSF enabled together), so "Auto" passes
 // nothing. Each entry carries the whole flag set its system type needs — the

@@ -38,12 +38,29 @@ Item {
         name: "TalkgroupEditSheet"
         when: windowShown
         function init() {
+            testContext.resetCommands();
             verify(loader.item !== null, "edit sheet must load");
             loader.item.bridge = recorder;
             loader.item.openRow(42, 49, "Dispatch", true, true, 25, false, "18446744073709551614", 9);
             recorder.edits = 0;
             recorder.removes = 0;
             waitForRendering(loader.item);
+        }
+        function cleanup() {
+            loader.item.visible = false;
+            testContext.resetCommands();
+        }
+        function test_seven_digit_heading_data() {
+            return [
+                {tag: "exact", end: 1234567, text: "Talkgroup 1234567"},
+                {tag: "range", end: 1234570, text: "Talkgroup 1234567–1234570"}
+            ];
+        }
+        function test_seven_digit_heading(data) {
+            // JSON numbers match the double-valued IDs supplied by the models.
+            var ids = JSON.parse("[1234567," + data.end + "]");
+            loader.item.openRow(ids[0], ids[1], "", true, true, 0, false, "7", 1);
+            compare(findChild(loader.item, "talkgroupEditHeading").text, data.text);
         }
         function test_presets_steppers_and_preempt() {
             var sheet = loader.item;

@@ -126,6 +126,7 @@ MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m)
         out.enc_text = slot_enc_text(view.algid, view.kid);
     }
     out.seconds = static_cast<int>(view.elapsed_ms / 1000U);
+    out.started_m = view.started_m;
     return out;
 }
 
@@ -312,8 +313,8 @@ MetricsModel::~MetricsModel() = default;
 bool
 MetricsModel::View::operator==(const View& other) const {
     return site == other.site && qualityEquals(other) && tunerEquals(other) && slot_call[0] == other.slot_call[0]
-           && slot_call[1] == other.slot_call[1] && controlEquals(other) && scanTimingEquals(other)
-           && ui_message == other.ui_message;
+           && slot_call[1] == other.slot_call[1] && lead_slot == other.lead_slot && controlEquals(other)
+           && scanTimingEquals(other) && ui_message == other.ui_message;
 }
 
 void
@@ -326,6 +327,7 @@ MetricsModel::publish(const View& next) {
     const bool tunerMoved = !next.tunerEquals(m_view);
     const bool slot1Moved = !(next.slot_call[0] == m_view.slot_call[0]);
     const bool slot2Moved = !(next.slot_call[1] == m_view.slot_call[1]);
+    const bool leadMoved = next.lead_slot != m_view.lead_slot;
     const bool controlMoved = !next.controlEquals(m_view);
     const bool scanTimingMoved = !next.scanTimingEquals(m_view);
     const bool messageMoved = next.ui_message != m_view.ui_message;
@@ -345,7 +347,7 @@ MetricsModel::publish(const View& next) {
     if (slot2Moved) {
         Q_EMIT slot2Changed();
     }
-    if (slot1Moved || slot2Moved) {
+    if (slot1Moved || slot2Moved || leadMoved) {
         Q_EMIT leadSlotChanged();
     }
     if (controlMoved) {
@@ -384,6 +386,7 @@ MetricsModel::fillListeningControlView(View& next, const dsd_opts* opts_snapshot
     next.enc_lockout_count = dsd_enc_lockout_active_count(snapshot);
     next.persist_tg_lockouts = opts_snapshot->persist_tg_lockouts != 0;
     next.temporary_tg_avoid_count = dsd_tg_policy_session_avoid_count(snapshot, 0, UINT32_MAX);
+    next.call_skip_count = dsd_tg_policy_call_skip_count(snapshot, dsd_time_now_monotonic_s());
     uint64_t tg_context = 0;
     dsd_tg_policy_table_version(snapshot, &tg_context, nullptr);
     next.tg_policy_context = QString::number(tg_context);
@@ -705,16 +708,27 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
 }
 
 void
+MetricsModel::fillSlotCalls(View& next, const dsd_state* snapshot, double now_m) {
+    int line_states[DSD_CALL_STATE_SLOT_COUNT];
+    double started[DSD_CALL_STATE_SLOT_COUNT];
+    for (quint8 slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; ++slot) {
+        next.slot_call[slot] = slotCallView(snapshot, slot, now_m);
+        line_states[slot] = next.slot_call[slot].state;
+        started[slot] = next.slot_call[slot].started_m;
+    }
+    next.lead_slot = dsd_app_lead_slot(line_states, started, DSD_CALL_STATE_SLOT_COUNT);
+}
+
+void
 MetricsModel::fillQualityView(View& next, const dsd_state* snapshot) {
     dsd_app_p25_quality_from_state(snapshot, &next.quality);
-    const int line_states[] = {next.slot_call[0].state, next.slot_call[1].state};
-    const int lead = dsd_app_lead_slot(line_states, DSD_CALL_STATE_SLOT_COUNT);
+    // Filled by refresh() before this call: the quality row must headline the same slot as the hero.
     next.voice_errs = next.quality.p1_voice;
-    if (lead >= 0) {
+    if (next.lead_slot >= 0) {
         if (!next.voice_errs.valid) {
-            next.voice_errs = next.quality.p2_voice[lead];
+            next.voice_errs = next.quality.p2_voice[next.lead_slot];
         }
-        next.last_frame = next.quality.last_frame[lead];
+        next.last_frame = next.quality.last_frame[next.lead_slot];
     } else {
         // Late-entry media may precede any decoded identity. The facade already
         // limits these readings to active non-P25 media; keep the first valid
@@ -827,9 +841,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     }
 
     const double now_m = dsd_time_now_monotonic_s();
-    next.slot_call[0] = slotCallView(snapshot, 0, now_m);
-    next.slot_call[1] = slotCallView(snapshot, 1, now_m);
-
+    fillSlotCalls(next, snapshot, now_m);
     fillQualityView(next, snapshot);
     fillSiteView(next, snapshot);
 

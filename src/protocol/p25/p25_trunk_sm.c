@@ -831,6 +831,7 @@ grant_block_log_tag(int is_indiv, uint32_t block_reasons) {
         const char* indiv_tag;
         const char* group_tag;
     } k_tags[] = {
+        {DSD_TG_POLICY_BLOCK_CALL_SKIP, "indiv-blocked-call-skip", "grant-blocked-call-skip"},
         {DSD_TG_POLICY_BLOCK_SESSION_AVOID, "indiv-blocked-session-avoid", "grant-blocked-session-avoid"},
         {DSD_TG_POLICY_BLOCK_HOLD, "indiv-blocked-hold", "grant-blocked-hold"},
         {DSD_TG_POLICY_BLOCK_PRIVATE_DISABLED, "indiv-blocked-private", "indiv-blocked-private"},
@@ -1215,6 +1216,10 @@ p25_grant_eval_group_policy(const dsd_opts* opts, const dsd_state* state, const 
             != 0) {
             return -1;
         }
+        if (i == 0 && (candidate.block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP)) {
+            *out_decision = candidate;
+            return 0;
+        }
         if (!have_first) {
             first = candidate;
             have_first = 1;
@@ -1266,6 +1271,13 @@ p25_grant_handle_policy_block(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state
                               const p25_grant_eval_ctx_t* eval_ctx, const dsd_tg_policy_decision* decision) {
     if (!opts || !state || !eval_ctx || !decision || decision->tune_allowed) {
         return 0;
+    }
+    if (decision->block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP) {
+        const double now_m = dsd_time_now_monotonic_s();
+        dsd_tg_policy_call_skip_touch(state, (uint32_t)eval_ctx->tg, now_m);
+        if (decision->target_id != (uint32_t)eval_ctx->tg) {
+            dsd_tg_policy_call_skip_touch(state, decision->target_id, now_m);
+        }
     }
     p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_block",
                  "reason=%s tg=%d policy_tg=%u svc=0x%02X data=%d enc=%d indiv=%d block=0x%08X",
@@ -1922,9 +1934,12 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
     if (state) {
         if (ctx->vc_is_tdma && logical_slot >= 0 && logical_slot <= 1) {
             state->p25_p2_media_rejected[logical_slot] = 0;
+            ctx->slots[logical_slot].rejected_target_id = 0;
         } else {
             state->p25_p2_media_rejected[0] = 0;
+            ctx->slots[0].rejected_target_id = 0;
             state->p25_p2_media_rejected[1] = 0;
+            ctx->slots[1].rejected_target_id = 0;
         }
     }
     p25_grant_begin_crypto_classification(ctx, state, ev, eval_ctx, slot, data_call, now_m);
@@ -2107,6 +2122,7 @@ p25_grant_refresh_duplicate_slot(p25_sm_ctx_t* ctx, dsd_state* state, const dsd_
     if (state && ctx->vc_is_tdma) {
         state->p25_p2_active_slot = route->slot;
         state->p25_p2_media_rejected[route->slot] = 0;
+        ctx->slots[route->slot].rejected_target_id = 0;
     }
 }
 
@@ -3720,6 +3736,9 @@ p25_voice_start_apply_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
     if (!p25_voice_start_apply_identity(ctx, opts, state, slot, ev, now_m, ptt_retransmit, out_new_epoch)) {
         if (state && ctx->vc_is_tdma) {
             state->p25_p2_media_rejected[slot] = 1;
+            if (ev->is_group && ev->tg > 0) {
+                ctx->slots[slot].rejected_target_id = (uint32_t)ev->tg;
+            }
             state->p25_p2_audio_allowed[slot] = 0;
         }
         return 0;
@@ -3732,6 +3751,7 @@ p25_voice_start_apply_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
     }
     if (state && ctx->vc_is_tdma) {
         state->p25_p2_media_rejected[slot] = 0;
+        ctx->slots[slot].rejected_target_id = 0;
     }
     return 1;
 }
@@ -4691,13 +4711,15 @@ p25_release_clear_context(p25_sm_ctx_t* ctx, int count_return) {
 }
 
 static void
-p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state, int count_return) {
+p25_release_clear_decoder_state(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int count_return) {
     if (state) {
         (void)dsd_tg_policy_clear_active_call(state, -1);
         state->p25_p2_audio_allowed[0] = 0;
         state->p25_p2_audio_allowed[1] = 0;
         state->p25_p2_media_rejected[0] = 0;
+        ctx->slots[0].rejected_target_id = 0;
         state->p25_p2_media_rejected[1] = 0;
+        ctx->slots[1].rejected_target_id = 0;
         state->p25_p1_identity_pending = 0;
         state->p25_p1_identity_epoch_started = 0;
         state->p25_p2_active_slot = -1;
@@ -4734,7 +4756,7 @@ p25_sm_clear_manual_selection_calls(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state
     p25_call_end_slot(opts, state, 0, ended_m);
     p25_call_end_slot(opts, state, 1, ended_m);
     p25_release_clear_context(ctx, 0);
-    p25_release_clear_decoder_state(opts, state, 0);
+    p25_release_clear_decoder_state(ctx, opts, state, 0);
     ctx->vc_is_tdma = 0;
     ctx->vc_cqpsk_retry_done = 0;
     DSD_MEMSET(ctx->recent_call_ends, 0, sizeof(ctx->recent_call_ends));
@@ -4847,7 +4869,7 @@ p25_release_locked(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const ch
     p25_call_end_slot(opts, state, 1, ended_m);
 
     p25_release_clear_context(ctx, 1);
-    p25_release_clear_decoder_state(opts, state, 1);
+    p25_release_clear_decoder_state(ctx, opts, state, 1);
     p25_sm_start_cc_acquisition_for_result(ctx, opts, state, tune_result, tune_request_id, tune_start_m, "release",
                                            P25_SM_CC_ACQUISITION_RETURN);
 
@@ -4893,7 +4915,7 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
         // next grant repeat.
         p25_sm_enc_reprobe_memo_t enc_reprobes[P25_SM_ENC_REPROBE_MEMO_MAX];
         DSD_MEMCPY(enc_reprobes, ctx->enc_reprobes, sizeof(enc_reprobes));
-        p25_release_clear_decoder_state(opts, state, 1);
+        p25_release_clear_decoder_state(ctx, opts, state, 1);
         p25_sm_init_ctx(ctx, opts, state);
         DSD_MEMCPY(ctx->enc_reprobes, enc_reprobes, sizeof(ctx->enc_reprobes));
         ctx->tune_count = tune_count;
@@ -6201,6 +6223,27 @@ p25_sm_get_ctx(void) {
     return &g_sm_ctx;
 }
 
+void
+p25_sm_clear_rejected_slot(const dsd_state* state, int slot) {
+    // Keep state for call-site symmetry with the other slot helpers.
+    if (!state || slot < 0 || slot > 1) {
+        return;
+    }
+    p25_sm_get_ctx()->slots[slot].rejected_target_id = 0;
+}
+
+void
+p25_sm_touch_rejected_slot_skip(dsd_opts* opts, dsd_state* state, int slot) {
+    (void)opts; // Kept for call-site symmetry with the other slot helpers.
+    if (!state || slot < 0 || slot > 1 || !state->p25_p2_media_rejected[slot]) {
+        return;
+    }
+    const uint32_t target = p25_sm_get_ctx()->slots[slot].rejected_target_id;
+    if (target != 0) {
+        dsd_tg_policy_call_skip_touch(state, target, dsd_time_now_monotonic_s());
+    }
+}
+
 int
 p25_sm_slot_grant_newer_than(int slot, double observed_m) {
     if (slot < 0 || slot > 1 || observed_m <= 0.0) {
@@ -6762,7 +6805,7 @@ p25_sm_abandon_carrier(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, cons
     // An abandoned voice carrier counts as a release, but no CC return occurred. Idle
     // target evictions only clear retained state and must not invent either event.
     p25_release_clear_context(ctx, 0);
-    p25_release_clear_decoder_state(opts, state, 0);
+    p25_release_clear_decoder_state(ctx, opts, state, 0);
     if (had_carrier) {
         ctx->release_count++;
         if (state) {

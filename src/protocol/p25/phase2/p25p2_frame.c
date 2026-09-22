@@ -103,7 +103,9 @@ p25p2_teardown_call(dsd_opts* opts, dsd_state* state) {
     state->p25_p2_audio_allowed[0] = 0;
     state->p25_p2_audio_allowed[1] = 0;
     state->p25_p2_media_rejected[0] = 0;
+    p25_sm_clear_rejected_slot(state, 0);
     state->p25_p2_media_rejected[1] = 0;
+    p25_sm_clear_rejected_slot(state, 1);
     p25_crypto_reset_slot(state, 0);
     p25_crypto_reset_slot(state, 1);
     p25_p2_audio_ring_reset(state, -1);
@@ -831,6 +833,7 @@ p25p2_prepare_voice_crypto(dsd_opts* opts, dsd_state* state) {
     if (slot < 0 || slot > 1) {
         return;
     }
+    p25_sm_touch_rejected_slot_skip(opts, state, slot);
     if (state->p25_p2_media_rejected[slot]) {
         state->p25_p2_audio_allowed[slot] = 0;
         p25p2_audio_gate_diag(opts, state, "prepare-rejected");

@@ -25,6 +25,7 @@ Item {
             testContext.setMetric("persistTgLockouts", true);
             testContext.setMetric("optionsKnown", true);
             testContext.setMetric("temporaryTgAvoidCount", 0);
+            testContext.setMetric("callSkipCount", 0);
             testContext.setMetric("tgPolicyContext", "9007199254740993");
         }
 
@@ -36,7 +37,30 @@ Item {
             testContext.setMetric("persistTgLockouts", true);
             testContext.setMetric("optionsKnown", false);
             testContext.setMetric("temporaryTgAvoidCount", 0);
+            testContext.setMetric("callSkipCount", 0);
             testContext.setMetric("tgPolicyContext", "0");
+        }
+
+        function test_avoid_copy() {
+            var toggle = openScreen();
+            compare(toggle.title, "Save avoided talkgroups");
+            compare(toggle.subtitle, "Applies to Avoid TG immediately, saving it to the talkgroup list. Off keeps avoids until stop or list reload, and the button reads Avoid TG. Skip is unaffected. Talkgroup-list edits still save.");
+        }
+
+        function test_clear_call_skip_without_avoids() {
+            testContext.setLifecyclePhase(2);
+            testContext.setMetric("callSkipCount", 1);
+            openScreen();
+            var clear = findChild(screenLoader.item, "clearTemporaryTgAvoidsButton");
+            verify(clear.visible && clear.enabled);
+            compare(clear.text, "Clear temporary avoids and call skips — current list (1)");
+            clear.activate();
+            compare(commands.avoidClearRequests(), ["9007199254740993"]);
+            testContext.setMetric("temporaryTgAvoidCount", 2);
+            compare(clear.text, "Clear temporary avoids and call skips — current list (3)");
+            testContext.setMetric("temporaryTgAvoidCount", 0);
+            testContext.setMetric("callSkipCount", 0);
+            tryCompare(clear, "visible", false);
         }
 
         function test_stopped_preference() {
@@ -93,6 +117,7 @@ Item {
             clear.activate();
             compare(commands.avoidClearRequests(), ["9007199254740993"]);
             testContext.setMetric("temporaryTgAvoidCount", 0);
+            testContext.setMetric("callSkipCount", 0);
             tryCompare(clear, "visible", false);
         }
     }
