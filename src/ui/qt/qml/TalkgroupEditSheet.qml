@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtQuick.Controls
+import "Util.js" as Util
 
 ModalSheet {
     id: sheet
@@ -91,7 +92,8 @@ ModalSheet {
     }
 
     Text {
-        text: qsTr("Talkgroup %1").arg(sheet.idStart === sheet.idEnd ? sheet.idStart : sheet.idStart + "–" + sheet.idEnd)
+        objectName: "talkgroupEditHeading"
+        text: qsTr("Talkgroup %1").arg(sheet.idStart === sheet.idEnd ? Util.idText(sheet.idStart) : Util.idText(sheet.idStart) + "–" + Util.idText(sheet.idEnd))
         color: Theme.textPrimary
         font.pixelSize: Theme.fontSize(20)
     }

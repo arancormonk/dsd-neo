@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
@@ -305,11 +306,23 @@ dsd_p25p2_slot_crypto_permits_audio(const dsd_opts* opts, const dsd_state* state
     return p25_crypto_audio_permitted(opts, state, slot);
 }
 
+static void
+dsd_audio_apply_ota_call_skip(const dsd_state* state, uint32_t ota_target, uint32_t policy_target,
+                              dsd_tg_policy_decision* decision) {
+    if (ota_target != policy_target && !dsd_tg_policy_call_skip_empty(state)
+        && dsd_tg_policy_call_skip_active(state, ota_target, dsd_time_now_monotonic_s())) {
+        decision->block_reasons |= DSD_TG_POLICY_BLOCK_CALL_SKIP;
+        decision->audio_allowed = 0;
+        decision->record_allowed = 0;
+        decision->stream_allowed = 0;
+    }
+}
+
 static int
 dsd_audio_hold_overrides_policy(const dsd_tg_policy_decision* decision) {
-    // Temporary avoids stay in force until explicitly cleared, including on a held TG.
+    // Explicit temporary blocks also mute a held talkgroup.
     return decision->tg_hold_active && decision->tg_hold_match
-           && !(decision->block_reasons & DSD_TG_POLICY_BLOCK_SESSION_AVOID);
+           && !(decision->block_reasons & (DSD_TG_POLICY_BLOCK_SESSION_AVOID | DSD_TG_POLICY_BLOCK_CALL_SKIP));
 }
 
 static int
@@ -353,6 +366,7 @@ dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int
     } else {
         uint32_t policy_target = dsd_audio_p25_policy_target_for_slot(state, slot, target);
         if (dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source, 0, 0, &decision) == 0) {
+            dsd_audio_apply_ota_call_skip(state, target, policy_target, &decision);
             return dsd_p25p2_media_decision_allows_audio(&decision);
         }
     }
@@ -387,6 +401,7 @@ dsd_audio_group_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot
             ? dsd_tg_policy_evaluate_private_call(opts, state, source_id, (uint32_t)call.ota_target_id, 0, 0, &decision)
             : dsd_tg_policy_evaluate_group_call(opts, state, policy_tg, source_id, 0, 0, &decision);
     if (rc == 0) {
+        dsd_audio_apply_ota_call_skip(state, have_call ? (uint32_t)call.ota_target_id : ota_tg, policy_tg, &decision);
         if (dsd_audio_hold_overrides_policy(&decision)) {
             enc = 0;
         } else if (!decision.audio_allowed || (decision.block_reasons & DSD_TG_POLICY_BLOCK_ALLOWLIST) != 0u) {
@@ -443,7 +458,11 @@ dsd_audio_record_policy_evaluate(const dsd_opts* opts, const dsd_state* state, c
     if (call->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
         return dsd_tg_policy_evaluate_private_call(opts, state, source_id, ota_target, 0, 0, decision);
     }
-    return dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source_id, 0, 0, decision);
+    const int rc = dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source_id, 0, 0, decision);
+    if (rc == 0) {
+        dsd_audio_apply_ota_call_skip(state, ota_target, policy_target, decision);
+    }
+    return rc;
 }
 
 static uint32_t

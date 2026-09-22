@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -846,7 +847,10 @@ test_reload_group_file(void) {
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
     rc |= expect_true("seed temporary avoid before reload", dsd_tg_policy_session_avoid_add(st, 100) == 0);
     generation_before = policy_generation(st);
+    rc |= expect_true("seed call skip before reload",
+                      dsd_tg_policy_call_skip_arm(st, 100, 1, 0, dsd_time_now_monotonic_s()) == 0);
     rc |= expect_true("reload success", dsd_tg_policy_reload_group_file(opts, st) == 0);
+    rc |= expect_true("reload clears skips", dsd_tg_policy_call_skip_count(st, dsd_time_now_monotonic_s()) == 0);
     rc |= expect_true("reload clears temporary avoids", !dsd_tg_policy_session_avoid_contains(st, 100));
     rc |= expect_true("reload replaced policy rows", policy_count(st) == 2u);
     generation_after = policy_generation(st);
@@ -1423,6 +1427,121 @@ test_session_avoids(void) {
     return rc;
 }
 
+static int
+test_call_skips(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_state* snapshot = calloc(1, sizeof(*snapshot));
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    if (!state || !snapshot || !opts) {
+        free_test_state(state);
+        free_test_state(snapshot);
+        free(opts);
+        return 1;
+    }
+    opts->trunk_tune_group_calls = opts->trunk_tune_private_calls = 1;
+    dsd_tg_policy_entry entry;
+    init_entry(&entry, 123, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED);
+    int rc = expect_true("skip seed row", dsd_tg_policy_append_exact(state, &entry) == 0);
+    const unsigned int generation = policy_generation(state);
+    const double now = dsd_time_now_monotonic_s();
+    const double quiet = DSD_TG_CALL_SKIP_QUIET_S;
+    rc |= expect_true("skip ledger initially empty", dsd_tg_policy_call_skip_empty(state)
+                                                         && dsd_tg_policy_call_skip_empty(snapshot)
+                                                         && dsd_tg_policy_call_skip_empty(NULL));
+    rc |= expect_true("skip invalid arguments", dsd_tg_policy_call_skip_arm(NULL, 123, 1, 0, now) == 1
+                                                    && dsd_tg_policy_call_skip_arm(state, 0, 1, 0, now) == 1);
+    rc |= expect_true("arm skip", dsd_tg_policy_call_skip_arm(state, 123, 1, 0, now) == 0);
+    rc |= expect_true("armed skip ledger nonempty", !dsd_tg_policy_call_skip_empty(state));
+    dsd_tg_policy_decision decision;
+    rc |= expect_true("skip blocks all policy outputs",
+                      dsd_tg_policy_evaluate_group_call(opts, state, 123, 1, 0, 0, &decision) == 0
+                          && !decision.tune_allowed && !decision.audio_allowed && !decision.record_allowed
+                          && !decision.stream_allowed && (decision.block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP));
+    rc |= expect_true(
+        "skip label precedes avoid",
+        strcmp(dsd_tg_policy_block_reason_label(DSD_TG_POLICY_BLOCK_CALL_SKIP | DSD_TG_POLICY_BLOCK_SESSION_AVOID),
+               "call-skip")
+            == 0);
+    rc |= expect_true("private source skip",
+                      dsd_tg_policy_evaluate_private_call(opts, state, 123, 5, 0, 0, &decision) == 0
+                          && !decision.audio_allowed && (decision.block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP));
+    rc |= expect_true("private destination skip",
+                      dsd_tg_policy_evaluate_private_grant(opts, state, 5, 123, 0, 0, &decision) == 0
+                          && !decision.tune_allowed && (decision.block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP));
+    dsd_tg_policy_lookup lookup;
+    rc |=
+        expect_true("skip preserves rows", policy_count(state) == 1 && dsd_tg_policy_lookup_id(state, 123, &lookup) == 0
+                                               && strcmp(lookup.entry.mode, "A") == 0);
+    rc |= expect_true("snapshot carries skip",
+                      dsd_tg_policy_copy_snapshot(snapshot, state) == 0
+                          && dsd_tg_policy_evaluate_group_call(opts, snapshot, 123, 1, 0, 0, &decision) == 0
+                          && !decision.audio_allowed && (decision.block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP));
+    rc |= expect_true("touch extends skip", dsd_tg_policy_call_skip_touch(state, 123, now + 10.0) == 1
+                                                && dsd_tg_policy_call_skip_active(state, 123, now + quiet + 1.0));
+    rc |= expect_true("snapshot reuse copies refresh",
+                      dsd_tg_policy_copy_snapshot(snapshot, state) == 0
+                          && dsd_tg_policy_call_skip_active(snapshot, 123, now + quiet + 1.0));
+    rc |= expect_true("quiet boundary inclusive", dsd_tg_policy_call_skip_active(state, 123, now + 10.0 + quiet));
+    rc |= expect_true("quiet expiry", !dsd_tg_policy_call_skip_active(state, 123, now + 10.0 + quiet + 0.1));
+    rc |= expect_true("expired count", dsd_tg_policy_call_skip_count(state, now + 10.0 + quiet + 0.1) == 0);
+    rc |= expect_true("expiry queries retain ledger entries", !dsd_tg_policy_call_skip_empty(state));
+    rc |= expect_true("expired touch drops entry", dsd_tg_policy_call_skip_touch(state, 123, now + 30.0) == 0
+                                                       && dsd_tg_policy_call_skip_touch(state, 123, now) == 0
+                                                       && !dsd_tg_policy_call_skip_active(state, 123, now));
+    rc |= expect_true("unarmed touch stays absent", dsd_tg_policy_call_skip_touch(state, 456, now) == 0);
+    rc |= expect_true("arm expired entry for evaluator",
+                      dsd_tg_policy_call_skip_arm(state, 123, 1, 0, now - quiet - 1.0) == 0
+                          && dsd_tg_policy_evaluate_group_call(opts, state, 123, 1, 0, 0, &decision) == 0
+                          && decision.tune_allowed && decision.audio_allowed && decision.record_allowed
+                          && decision.stream_allowed);
+    rc |= expect_true("rearm resets clocks", dsd_tg_policy_call_skip_arm(state, 123, 2, 0, now) == 0);
+    for (int elapsed = 10; elapsed <= (int)DSD_TG_CALL_SKIP_MAX_AGE_S; elapsed += 10) {
+        rc |= expect_true("fresh repeated touch", dsd_tg_policy_call_skip_touch(state, 123, now + elapsed) == 1);
+    }
+    rc |= expect_true("age cap overrides fresh touch",
+                      !dsd_tg_policy_call_skip_active(state, 123, now + DSD_TG_CALL_SKIP_MAX_AGE_S + 0.1));
+    rc |= expect_true("fallback armed", dsd_tg_policy_call_skip_arm(state, 123, 2, 1, now) == 0);
+    rc |= expect_true("fallback ignores touch", dsd_tg_policy_call_skip_touch(state, 123, now + 10.0) == 0
+                                                    && !dsd_tg_policy_call_skip_active(state, 123, now + quiet + 0.1));
+    dsd_tg_policy_call_skip_clear(state);
+    for (uint32_t id = 1; id <= DSD_TG_CALL_SKIP_MAX; ++id) {
+        rc |= expect_true("fill skip ledger", dsd_tg_policy_call_skip_arm(state, id, 0, 0, now + id) == 0);
+    }
+    rc |= expect_true("refresh oldest before eviction", dsd_tg_policy_call_skip_touch(state, 1, now + 9.0) == 1);
+    rc |= expect_true("overflow evicts stalest",
+                      dsd_tg_policy_call_skip_arm(state, 99, 0, 0, now + 10.0) == 0
+                          && !dsd_tg_policy_call_skip_active(state, 2, now + 10.0)
+                          && dsd_tg_policy_call_skip_active(state, 1, now + 10.0)
+                          && dsd_tg_policy_call_skip_count(state, now + 10.0) == DSD_TG_CALL_SKIP_MAX);
+    dsd_tg_policy_store* retained = dsd_tg_policy_retain(state);
+    dsd_tg_policy_install(state, NULL);
+    dsd_tg_policy_install(state, retained);
+    rc |= expect_true("install keeps skip", dsd_tg_policy_call_skip_active(state, 99, now + 10.0));
+    dsd_tg_policy_install(state, NULL);
+    dsd_tg_policy_restore(state, retained);
+    dsd_tg_policy_release(retained);
+    rc |= expect_true("restore keeps skip", dsd_tg_policy_call_skip_active(state, 99, now + 10.0));
+    dsd_tg_policy_call_skip_clear(state);
+    rc |= expect_true("skip mutations preserve generation", policy_generation(state) == generation);
+    rc |= expect_true("skip clear removes all", dsd_tg_policy_call_skip_count(state, now) == 0);
+    rc |= expect_true("cleared skip ledger empty", dsd_tg_policy_call_skip_empty(state));
+    rc |= expect_true("snapshot reuse copies clear", dsd_tg_policy_copy_snapshot(snapshot, state) == 0
+                                                         && dsd_tg_policy_call_skip_count(snapshot, now) == 0);
+    rc |= expect_true("skip coexists with avoid",
+                      dsd_tg_policy_call_skip_arm(state, 123, 1, 0, now) == 0
+                          && dsd_tg_policy_session_avoid_add(state, 123) == 0
+                          && dsd_tg_policy_evaluate_group_call(opts, state, 123, 1, 0, 0, &decision) == 0
+                          && (decision.block_reasons & DSD_TG_POLICY_BLOCK_SESSION_AVOID)
+                          && (decision.block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP)
+                          && strcmp(dsd_tg_policy_block_reason_label(decision.block_reasons), "call-skip") == 0);
+    rc |= expect_true("list clear drops skips",
+                      dsd_tg_policy_clear(state) == 0 && dsd_tg_policy_call_skip_count(state, now) == 0);
+    free_test_state(state);
+    free_test_state(snapshot);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1431,6 +1550,7 @@ main(void) {
     rc |= test_set_fields_remove_bounds();
     rc |= test_block_reason_labels();
     rc |= test_session_avoids();
+    rc |= test_call_skips();
     rc |= test_lockout_replaces_alias_metadata();
     rc |= test_snapshot_reclones_recreated_context();
     rc |= test_snapshot_reclones_recreated_empty_reload_context();

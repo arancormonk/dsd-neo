@@ -15,7 +15,9 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -23,6 +25,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "../../../src/protocol/p25/phase2/p25p2_frame_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -805,6 +808,90 @@ test_note_enc_suppressed_requires_prior_suppression(void) {
     return rc;
 }
 
+static dsd_trunk_tune_result
+skip_tune_request(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+static int
+test_call_skip_rejected_slot_refresh(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = skip_tune_request,
+                                                        .return_to_cc_request = return_to_cc_result});
+    state.p25_cc_freq = state.trunk_cc_freq = 850000000;
+    state.p2_wacn = 0xBEE00;
+    state.p2_sysid = 0x1A2;
+    state.p2_cc = 0x293;
+    state.p25_chan_tdma_explicit[2] = 2;
+    state.trunk_chan_map[0x2000] = state.trunk_chan_map[0x2001] = 851000000;
+    state.p25_crypto_state[0] = state.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+    int rc = expect_eq("skip companion active", p25_sm_emit_active_call(&opts, &state, 0, 1234, 0, 42, 1, 0), 1);
+    rc |= expect_eq("skip selected call active", p25_sm_emit_active_call(&opts, &state, 1, 5678, 0, 43, 1, 0), 1);
+    const double armed_m = dsd_time_now_monotonic_s();
+    rc |= expect_eq("skip second slot arm", dsd_tg_policy_call_skip_arm(&state, 5678, 43, 0, armed_m), 0);
+    p25_sm_release(ctx, &opts, &state, "user-skip");
+    rc |= expect_eq("skip returns to CC", ctx->state, P25_SM_ON_CC);
+    state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.01;
+    p25_sm_event_t grant = p25_sm_ev_group_grant(0x2000, 851000000, 1234, 42, 0);
+    p25_sm_event(ctx, &opts, &state, &grant);
+    rc |= expect_eq("skip companion reacquired", ctx->state, P25_SM_TUNED);
+    rc |= expect_eq("reacquired companion voice", p25_sm_emit_active_call(&opts, &state, 0, 1234, 0, 42, 1, 0), 1);
+    rc |= expect_eq("skipped slot rejected", p25_sm_emit_active_call(&opts, &state, 1, 5678, 0, 43, 1, 0), 0);
+    rc |= expect_eq("rejected slot latch", state.p25_p2_media_rejected[1], 1);
+    rc |= expect_eq("rejected attribution retained", ctx->slots[1].rejected_target_id == 5678, 1);
+    p25_sm_emit_active(&opts, &state, 1);
+    rc |= expect_eq("anonymous ACTIVE preserves rejection", ctx->slots[1].rejected_target_id == 5678, 1);
+    state.currentslot = 1;
+    // Costs about 15.2 s: real voice bursts must refresh across the production clock's quiet window.
+    const double until_m = armed_m + DSD_TG_CALL_SKIP_QUIET_S + 0.2;
+    while (dsd_time_now_monotonic_s() <= until_m) {
+        process_2V(&opts, &state);
+        dsd_sleep_ms(100);
+    }
+    rc |= expect_eq("rejected voice outlives quiet window",
+                    dsd_tg_policy_call_skip_active(&state, 5678, dsd_time_now_monotonic_s()), 1);
+    rc |= expect_eq("rejected voice remains muted", state.p25_p2_audio_allowed[1], 0);
+    const double ended_m = dsd_time_now_monotonic_s();
+    (void)p25_sm_emit_end_call_at(&opts, &state, 1, 5678, 43, ended_m);
+    rc |= expect_eq("quiet skip expires",
+                    dsd_tg_policy_call_skip_active(&state, 5678, ended_m + DSD_TG_CALL_SKIP_QUIET_S + 1.0), 0);
+    rc |= expect_eq("backdate quiet skip",
+                    dsd_tg_policy_call_skip_arm(&state, 5678, 43, 0, ended_m - DSD_TG_CALL_SKIP_QUIET_S - 1.0), 0);
+    grant = p25_sm_ev_group_grant(0x2001, 851000000, 5678, 43, 0);
+    p25_sm_event(ctx, &opts, &state, &grant);
+    rc |= expect_eq("quiet skipped TG followed again", ctx->slots[1].grant_active, 1);
+    rc |= expect_eq("accepted grant clears rejected identity", ctx->slots[1].rejected_target_id, 0);
+    rc |= expect_eq("next voice accepted", p25_sm_emit_active_call(&opts, &state, 1, 5678, 0, 43, 1, 0), 1);
+
+    const double now = dsd_time_now_monotonic_s();
+    rc |= expect_eq("seed teardown skip", dsd_tg_policy_call_skip_arm(&state, 5678, 43, 0, now - 10.0), 0);
+    ctx->slots[1].rejected_target_id = 5678;
+    state.p25_p2_media_rejected[1] = 0;
+    p25_sm_touch_rejected_slot_skip(&opts, &state, 1);
+    rc |= expect_eq("clear latch never refreshes", dsd_tg_policy_call_skip_active(&state, 5678, now + 10.0), 0);
+    state.p25_p2_media_rejected[1] = 1;
+    opts.pulse_digi_rate_out = 0;
+    p25p2_teardown_call(&opts, &state);
+    rc |= expect_eq("teardown clears rejected identity", ctx->slots[1].rejected_target_id, 0);
+    rc |= expect_eq("teardown clears latch", state.p25_p2_media_rejected[1], 0);
+    ctx->slots[1].rejected_target_id = 5678;
+    p25_sm_init_ctx(ctx, &opts, &state);
+    rc |= expect_eq("init clears rejected identity", ctx->slots[1].rejected_target_id, 0);
+    state.p25_p2_media_rejected[1] = 1;
+    p25_sm_touch_rejected_slot_skip(&opts, &state, 1);
+    rc |= expect_eq("missing attribution never refreshes", dsd_tg_policy_call_skip_active(&state, 5678, now + 10.0), 0);
+    dsd_state_ext_free_all(&state);
+    install_trunk_tuning_hooks();
+    return rc;
+}
+
 int
 main(void) {
     install_trunk_tuning_hooks();
@@ -826,5 +913,6 @@ main(void) {
     rc |= test_enc_key_identity_change_reemits_lockout();
     rc |= test_companion_voice_burst_preserves_clear_superframe();
     rc |= test_note_enc_suppressed_requires_prior_suppression();
+    rc |= test_call_skip_rejected_slot_refresh();
     return rc;
 }

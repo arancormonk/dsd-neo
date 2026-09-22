@@ -548,6 +548,10 @@ Qt Quick frontend (`src/ui/qt`):
 - After the session's first decoder redraw, `UiController` refreshes live metrics on every timer tick so scan
   countdowns and the sync-loss hold continue aging if input stalls. History, network and policy models still
   refresh on decoder redraws; session lifecycle clears live metrics and prevents stale snapshots from restoring them.
+- `dsd_app_lead_slot()` in `app_control/call_view.c` selects the earliest exact start among identified active
+  calls for the Monitor hero, its quality row and the Android notification. Later calls on the other slot do not
+  displace it. Exact ties prefer the lower slot; when no call is active, the lowest ended slot wins. An earlier
+  call gaining identity late takes the headline using its original start.
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies
@@ -566,9 +570,15 @@ Qt Quick frontend (`src/ui/qt`):
   ingestion, merging listed rows with uncovered talkgroups heard this session. `talkgroup_filter_model.{h,cpp}`
   filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the monitor's **TG list** action.
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
-  policy and atomically rewrites a configured group file. Scan-row lists remain session-only. Skip shares this
-  mutation path, preserving labels. Runtime's `dsd_rr_talkgroups_apply_categories()` supplies category names to
-  both RadioReference frontends before CSV generation.
+  policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares
+  this mutation path, preserving labels; with `persist_tg_lockouts` off it becomes **Avoid**, adding a session
+  avoid without changing rows. **Skip** submits `DSD_APP_CMD_SKIP_SLOT`, arms the core call-skip ledger and leaves
+  the call without changing rows or saving. P25 group skips refresh while the receiver sees the call and expire
+  at `DSD_TG_CALL_SKIP_QUIET_S` of quiet or `DSD_TG_CALL_SKIP_MAX_AGE_S` from the press; private and non-P25 skips
+  use the fixed quiet-window duration from the press. ProVoice has no skip. The active policy context retains
+  unexpired skips across scan visits; **Clear temporary avoids and call skips — current list** clears them with
+  session avoids. Runtime's `dsd_rr_talkgroups_apply_categories()` supplies category names to both RadioReference
+  frontends before CSV generation.
 - `p25_network_model.{h,cpp}` copies four bounded lists through the frontend-neutral
   `app_control/p25_network.h` facade using `UiController::tick`'s held snapshot.
   `qml/NetworkSheet.qml` activates refresh only while visible; session edges and

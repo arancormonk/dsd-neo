@@ -430,13 +430,18 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `d` | Toggle follow data calls |
 | `e` | Toggle encrypted call lockout (P25/DMR/NXDN trunking) |
 | `k` / `l` | Set/clear talkgroup hold from the most recent TG (slot-aware) |
-| `!` / `@` | Lock out slot 1 / slot 2 (where applicable); lifetime follows **Save user TG lockouts** |
+| `!` / `@` | Lock out slot 1 / slot 2 (where applicable); lifetime follows **Save user TG lockouts**, like Qt/Android **Avoid**/**Lock out** |
 
 **Save user TG lockouts** defaults to On: quick lockouts save to a configured global groups file. Turn it Off
 in **Trunking → Follow**, or start with `--tg-lockout-session`, to keep subsequent lockouts temporary. Clear them
 using **Clear temporary TG avoids - current list**, reload the list, or stop the decoder. List edits still save;
 changing this setting does not convert existing blocks. Scan rows with their own groups lists keep separate
 avoids, while rows inheriting the global list share its avoids.
+
+Qt/Android **Skip** is a separate call-skip action: it leaves the call without changing the talkgroup list and
+expires independently of **Save user TG lockouts**. See [Skip lifetimes](cli.md#trunking--scanning). The terminal's
+**Clear temporary TG avoids - current list** also clears call skips in that scope; Qt/Android labels this action
+**Clear temporary avoids and call skips — current list**.
 
 ### Slots, gain & privacy
 

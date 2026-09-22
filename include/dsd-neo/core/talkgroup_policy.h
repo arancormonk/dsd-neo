@@ -57,6 +57,7 @@ typedef enum {
     DSD_TG_POLICY_BLOCK_STREAM = 1u << 9,
     DSD_TG_POLICY_BLOCK_ENC_LOCKOUT = 1u << 10,
     DSD_TG_POLICY_BLOCK_SESSION_AVOID = 1u << 11,
+    DSD_TG_POLICY_BLOCK_CALL_SKIP = 1u << 12,
 } dsd_tg_policy_block_reason;
 
 /** @brief Return the highest-priority diagnostic label for a block-reason mask. */
@@ -170,6 +171,35 @@ int dsd_tg_policy_session_avoid_contains(const dsd_state* state, uint32_t id);
 size_t dsd_tg_policy_session_avoid_count(const dsd_state* state, uint32_t start, uint32_t end);
 /** Clear only temporary blocks in the current scope; NULL/empty is a no-op. */
 void dsd_tg_policy_session_avoid_clear(dsd_state* state);
+
+/** Maximum concurrent call skips and their monotonic lifetime limits, in seconds. */
+#define DSD_TG_CALL_SKIP_MAX       8
+#define DSD_TG_CALL_SKIP_QUIET_S   15.0
+#define DSD_TG_CALL_SKIP_MAX_AGE_S 600.0
+
+/**
+ * @brief Arm or re-arm an exact-ID call skip without changing policy rows or generation.
+ *
+ * Fresh skips block group targets and private endpoints. Re-arming resets both clocks;
+ * a full ledger evicts the entry with the oldest last-seen time. Fallback skips expire
+ * from the press time and ignore touches. Retained policy contexts keep their skips.
+ * Live mutations require the caller's decoder/watchdog synchronization guard.
+ *
+ * @return 0 applied, 1 invalid (NULL state or zero ID), -1 allocation failure.
+ */
+int dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s);
+/** Refresh a fresh non-fallback skip. Returns 1 refreshed, 0 otherwise; expired entries
+ * are dropped and missing entries are never armed. Requires the same guard as arm. */
+int dsd_tg_policy_call_skip_touch(dsd_state* state, uint32_t id, double now_mono_s);
+/** Return whether an ID has a fresh skip, without mutating the store. */
+int dsd_tg_policy_call_skip_active(const dsd_state* state, uint32_t id, double now_mono_s);
+/** Return whether the ledger has no entries, without reading the clock or checking expiry. */
+int dsd_tg_policy_call_skip_empty(const dsd_state* state);
+/** Count fresh skips; safe on a frontend snapshot store, without changing its clocks. */
+size_t dsd_tg_policy_call_skip_count(const dsd_state* state, double now_mono_s);
+/** Clear call skips without changing rows or generation. NULL/empty is a no-op.
+ * Live callers require the same guard as arm. */
+void dsd_tg_policy_call_skip_clear(dsd_state* state);
 
 /** Rows in table order (file order, then runtime appends). 0 without a policy context.
  * Works on live decoder state and frontend snapshot copies. */

@@ -5061,7 +5061,7 @@ target_compile_definitions(
 )
 target_link_libraries(
     dsd-neo_test_engine_dmr_cc_recovery
-    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+    PRIVATE dsd-neo_app_control dsd-neo_engine ${LIBS} dsd-neo_test_support
 )
 add_test(
     NAME ENGINE_DMR_CC_RECOVERY
@@ -5273,6 +5273,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         PRIVATE
             "LINKER:--wrap=dsd_trunk_tuning_hook_tune_to_cc"
             "LINKER:--wrap=io_control_set_freq"
+            "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)

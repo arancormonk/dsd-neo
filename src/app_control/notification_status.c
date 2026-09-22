@@ -75,6 +75,7 @@ dsd_app_notification_publish_state(const dsd_state* state) {
        half-written record. */
     dsd_app_slot_call slots[DSD_CALL_STATE_SLOT_COUNT];
     int line_states[DSD_CALL_STATE_SLOT_COUNT];
+    double started[DSD_CALL_STATE_SLOT_COUNT];
     const double now_m = dsd_time_now_monotonic_s();
     /* int, not uint8_t: DSD_CALL_STATE_SLOT_COUNT is an int-typed enum constant, and
        comparing a narrower loop variable against it is what
@@ -83,8 +84,9 @@ dsd_app_notification_publish_state(const dsd_state* state) {
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         dsd_app_slot_call_view(state, (uint8_t)slot, now_m, &slots[slot]);
         line_states[slot] = slots[slot].state;
+        started[slot] = slots[slot].started_m;
     }
-    const int8_t lead = (int8_t)dsd_app_lead_slot(line_states, (unsigned)DSD_CALL_STATE_SLOT_COUNT);
+    const int8_t lead = (int8_t)dsd_app_lead_slot(line_states, started, (unsigned)DSD_CALL_STATE_SLOT_COUNT);
 
     const long int vc = dsd_app_vc_freq(state);
     const long int cc = dsd_app_cc_freq(state);

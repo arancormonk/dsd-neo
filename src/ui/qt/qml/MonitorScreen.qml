@@ -15,6 +15,7 @@ Item {
             siteSheet.visible = false;
             networkSheet.visible = false;
             historyDetail.visible = false;
+            otherSlotMenu.visible = false;
         }
     }
 
@@ -36,9 +37,11 @@ Item {
     // should agree with the history rows it sits above.
     property string systemName: system ? system.name : callHistory.sessionLabel.length > 0 ? callHistory.sessionLabel : qsTr("Listening")
 
-    // Which slot the hero shows: an active call wins, then a recently ended one, and
-    // between equals the lower slot. Decided by dsd_app_lead_slot() rather than here, so
-    // this panel and the Android notification cannot headline different slots.
+    // Which slot the hero shows: the earliest active call keeps the headline, then a
+    // recently ended one; exact start ties and ended calls prefer the lower slot.
+    // dsd_app_lead_slot() compares exact starts so this panel and the Android notification
+    // agree despite different polling rates. An earlier call gaining identity late takes
+    // the headline once, using its original start.
     readonly property int heroSlot: metrics ? metrics.leadSlot : 0
     readonly property bool heroActive: heroSlot === 1 ? metrics.slot1CallState === 2 : heroSlot === 2 ? metrics.slot2CallState === 2 : false
     readonly property string heroName: heroSlot === 1 ? metrics.slot1CallName : heroSlot === 2 ? metrics.slot2CallName : ""
@@ -65,6 +68,15 @@ Item {
     readonly property string otherTg: otherSlot === 1 ? metrics.slot1TgText : otherSlot === 2 ? metrics.slot2TgText : ""
     readonly property double otherTgId: otherSlot === 1 ? metrics.slot1TgId : otherSlot === 2 ? metrics.slot2TgId : 0
     readonly property bool otherEnc: otherSlot === 1 ? metrics.slot1CallEnc : otherSlot === 2 ? metrics.slot2CallEnc : false
+
+    component AvoidAction: OutlineButton {
+        property int heroSlot: 0
+        property bool running: false
+        text: metrics.persistTgLockouts ? qsTr("Lock out") : qsTr("Avoid")
+        accessibleName: metrics.persistTgLockouts ? qsTr("Lock out talkgroup and save") : qsTr("Avoid talkgroup for this session")
+        enabled: running && heroSlot !== 0
+        onClicked: commands.lockoutSlot(heroSlot === 2 ? 1 : 0)
+    }
 
     // Ticks the recent-calls age labels ("now", "1m", "2h") once a minute:
     // Util.shortAge reads the clock, which is not a binding dependency, so
@@ -652,12 +664,12 @@ Item {
             }
 
             // The concurrent TDMA call on the non-hero slot: identity plus its own
-            // skip, so a second conversation is never invisible or untouchable.
+            // call controls, so a second conversation is never invisible or untouchable.
             UiPanel {
                 width: parent.width
                 objectName: "otherSlotPanel"
                 visible: screen.otherActive
-                height: 48
+                height: 56
 
                 MicroLabel {
                     id: otherSlotLabel
@@ -701,16 +713,31 @@ Item {
 
                 OutlineButton {
                     id: otherSkip
-                    anchors.right: parent.right
-                    anchors.rightMargin: 8
+                    objectName: "otherSlotSkip"
+                    anchors.right: otherMore.left
+                    anchors.rightMargin: 4
                     anchors.verticalCenter: parent.verticalCenter
                     width: 70
-                    implicitHeight: 32
-                    height: 32
+                    implicitHeight: 48
+                    height: 48
                     text: qsTr("Skip")
-                    accessibleName: metrics.persistTgLockouts ? qsTr("Skip talkgroup; saving enabled") : qsTr("Skip talkgroup for this session")
+                    accessibleName: qsTr("Skip this call on slot %1").arg(screen.otherSlot)
                     enabled: decoderHost.running
-                    onClicked: commands.lockoutSlot(screen.otherSlot === 2 ? 1 : 0)
+                    onClicked: commands.skipSlot(screen.otherSlot === 2 ? 1 : 0)
+                }
+
+                IconButton {
+                    id: otherMore
+                    objectName: "otherSlotMore"
+                    anchors.right: parent.right
+                    anchors.rightMargin: 4
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 48
+                    height: 48
+                    icon: "more"
+                    accessibleName: qsTr("More actions for slot %1").arg(screen.otherSlot)
+                    enabled: decoderHost.running
+                    onClicked: otherSlotMenu.openForOtherSlot()
                 }
             }
 
@@ -1019,6 +1046,60 @@ Item {
         objectName: "monitorHistoryDetail"
     }
 
+    ActionMenu {
+        id: otherSlotMenu
+        objectName: "otherSlotMenu"
+        property int menuSlot: 0
+        property double menuTgId: 0
+        property bool menuPersist: false
+        readonly property bool persistTgLockouts: metrics.persistTgLockouts
+        property bool menuHeld: false
+        readonly property bool heldHere: menuTgId > 0 && menuHeld
+        title: qsTr("Slot %1").arg(menuSlot)
+        onPersistTgLockoutsChanged: {
+            if (visible && persistTgLockouts !== menuPersist)
+                visible = false;
+        }
+
+        function openForOtherSlot() {
+            menuSlot = screen.otherSlot;
+            menuTgId = screen.otherTgId;
+            menuPersist = metrics.persistTgLockouts;
+            menuHeld = metrics.heldTg === menuTgId;
+            open();
+        }
+        function closeIfCallChanged() {
+            if (visible && (screen.otherSlot !== menuSlot || screen.otherTgId !== menuTgId || !screen.otherActive))
+                visible = false;
+        }
+        Connections {
+            target: screen
+            function onOtherSlotChanged() { otherSlotMenu.closeIfCallChanged(); }
+            function onOtherTgIdChanged() { otherSlotMenu.closeIfCallChanged(); }
+            function onOtherActiveChanged() { otherSlotMenu.closeIfCallChanged(); }
+        }
+        actions: [
+            {
+                objectName: "otherSlotHold",
+                text: heldHere ? qsTr("Release hold") : qsTr("Hold TG %1").arg(Util.idText(menuTgId)),
+                description: qsTr("Only this talkgroup is heard; the other slot goes quiet"),
+                enabled: decoderHost.running && (heldHere || menuTgId > 0)
+            },
+            {
+                objectName: "otherSlotAvoid",
+                text: menuPersist ? qsTr("Lock out") : qsTr("Avoid"),
+                description: menuPersist ? qsTr("Lock out talkgroup and save") : qsTr("Avoid talkgroup for this session"),
+                enabled: decoderHost.running && menuSlot !== 0
+            }
+        ]
+        onTriggered: function (index) {
+            if (index === 0)
+                commands.holdTalkgroup(heldHere ? 0 : menuTgId);
+            else if (index === 1)
+                commands.lockoutSlot(menuSlot === 2 ? 1 : 0);
+        }
+    }
+
     // WP-D2: the modal consumes input above every monitor control.
     KeySheet {
         id: keySheet
@@ -1036,47 +1117,77 @@ Item {
         anchors.rightMargin: Theme.screenPadding
         anchors.bottomMargin: 8
         height: liveActions.implicitHeight
-        Row {
+        Column {
             id: liveActions
             objectName: "monitorLiveActions"
             width: parent.width
             spacing: 10
+            readonly property real cell: (width - 30) / 4
 
-            OutlineButton {
-                width: screen.compactHeight ? (parent.width - 20) / 3 : (parent.width - 30) / 4
-                text: screen.muted ? qsTr("Unmute") : qsTr("Mute")
-                enabled: decoderHost.running
-                // The label follows metrics.audioMuted once the engine applies the
-                // command — the button never guesses at the outcome.
-                onClicked: commands.toggleMute()
+            Row {
+                objectName: "monitorCallActions"
+                width: parent.width
+                spacing: 10
+
+                OutlineButton {
+                    objectName: "muteButton"
+                    width: liveActions.cell
+                    text: screen.muted ? qsTr("Unmute") : qsTr("Mute")
+                    enabled: decoderHost.running
+                    // The label follows the engine snapshot after the command applies.
+                    onClicked: commands.toggleMute()
+                }
+
+                OutlineButton {
+                    objectName: "holdTalkgroupButton"
+                    width: liveActions.cell
+                    text: screen.holding ? qsTr("Release") : qsTr("Hold TG")
+                    // Callsigns and dial strings have no numeric talkgroup to hold.
+                    enabled: decoderHost.running && (screen.holding || screen.heroTgId > 0)
+                    border.color: screen.holding ? Theme.cyan : Theme.controlBorder
+                    onClicked: commands.holdTalkgroup(screen.holding ? 0 : screen.heroTgId)
+                }
+
+                OutlineButton {
+                    objectName: "skipButton"
+                    width: liveActions.cell
+                    text: qsTr("Skip")
+                    accessibleName: qsTr("Skip this call")
+                    enabled: decoderHost.running && screen.heroSlot !== 0
+                    onClicked: commands.skipSlot(screen.heroSlot === 2 ? 1 : 0)
+                }
+
+                OutlineButton {
+                    objectName: "talkgroupsButton"
+                    visible: !screen.compactHeight
+                    width: liveActions.cell
+                    text: qsTr("TG list")
+                    accessibleName: qsTr("Talkgroups")
+                    enabled: decoderHost.running
+                    onClicked: screen.openTalkgroups()
+                }
+
+                AvoidAction {
+                    objectName: "avoidButtonCompact"
+                    heroSlot: screen.heroSlot
+                    running: decoderHost.running
+                    visible: screen.compactHeight
+                    width: liveActions.cell
+                }
             }
 
-            OutlineButton {
-                width: screen.compactHeight ? (parent.width - 20) / 3 : (parent.width - 30) / 4
-                text: screen.holding ? qsTr("Release") : qsTr("Hold TG")
-                // Disabled, not a silent no-op, when the call has no numeric
-                // talkgroup (M17/D-STAR callsigns, dPMR dial strings).
-                enabled: decoderHost.running && (screen.holding || screen.heroTgId > 0)
-                border.color: screen.holding ? Theme.cyan : Theme.controlBorder
-                onClicked: commands.holdTalkgroup(screen.holding ? 0 : screen.heroTgId)
-            }
-
-            OutlineButton {
-                width: screen.compactHeight ? (parent.width - 20) / 3 : (parent.width - 30) / 4
-                text: qsTr("Skip")
-                accessibleName: metrics.persistTgLockouts ? qsTr("Skip talkgroup; saving enabled") : qsTr("Skip talkgroup for this session")
-                enabled: decoderHost.running && screen.heroSlot !== 0
-                onClicked: commands.lockoutSlot(screen.heroSlot === 2 ? 1 : 0)
-            }
-
-            OutlineButton {
-                objectName: "talkgroupsButton"
+            Row {
+                objectName: "monitorAvoidActions"
                 visible: !screen.compactHeight
-                width: screen.compactHeight ? (parent.width - 20) / 3 : (parent.width - 30) / 4
-                text: qsTr("TG list")
-                accessibleName: qsTr("Talkgroups")
-                enabled: decoderHost.running
-                onClicked: screen.openTalkgroups()
+                width: parent.width
+                spacing: 10
+
+                AvoidAction {
+                    objectName: "avoidButton"
+                    heroSlot: screen.heroSlot
+                    running: decoderHost.running
+                    width: 2 * liveActions.cell + 10
+                }
             }
         }
     }

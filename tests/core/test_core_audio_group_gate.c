@@ -12,6 +12,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -174,6 +175,52 @@ test_session_avoid_overrides_hold(dsd_opts* opts, dsd_state* st) {
             rc |= expect_eq("avoid-private-record-blocked", record, 0);
             dsd_tg_policy_session_avoid_clear(st);
             rc |= expect_eq("avoid-private-cleared", dsd_p25p2_decode_audio_allowed(opts, st, slot, 0), 1);
+        }
+    }
+    return rc;
+}
+
+static int
+test_call_skip_mutes_slot(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (uint8_t slot = 0; slot < 2; ++slot) {
+        for (int kind = 0; kind < 4; ++kind) {
+            DSD_MEMSET(opts, 0, sizeof(*opts));
+            reset_state(st);
+            opts->trunk_tune_group_calls = opts->trunk_tune_private_calls = 1;
+            st->synctype = DSD_SYNC_P25P2_POS;
+            st->currentslot = slot;
+            st->tg_hold = 123;
+            st->p25_crypto_state[slot] = DSD_P25_CRYPTO_CLEAR;
+            st->p25_p2_audio_allowed[slot] = 1;
+            const uint32_t ota = kind == 3 ? 9000 : 123;
+            const uint32_t skipped = kind == 2 ? 456 : ota;
+            if (kind == 3) {
+                seed_active_patch_member(st, 9000, 123);
+            }
+            rc |= expect_eq("skip seed call",
+                            seed_call(st, slot, DSD_SYNC_P25P2_POS,
+                                      kind == 1 || kind == 2 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE,
+                                      ota, 123, 456),
+                            1);
+            for (int blocked = 1; blocked >= 0; --blocked) {
+                const double now = dsd_time_now_monotonic_s();
+                rc |= expect_eq("skip arm current or expired",
+                                dsd_tg_policy_call_skip_arm(st, skipped, 456, 0,
+                                                            blocked ? now : now - DSD_TG_CALL_SKIP_QUIET_S - 1.0),
+                                0);
+                int muted = -1, left = -1, right = -1, record = -1;
+                rc |= expect_eq("skip mono", dsd_audio_group_gate_mono(opts, st, ota, 0, &muted), 0);
+                rc |= expect_eq("skip mono verdict", muted, blocked);
+                rc |= expect_eq(
+                    "skip dual",
+                    dsd_audio_group_gate_dual(opts, st, slot == 0 ? ota : 0, slot == 1 ? ota : 0, 0, 0, &left, &right),
+                    0);
+                rc |= expect_eq("skip dual verdict", slot == 0 ? left : right, blocked);
+                rc |= expect_eq("skip decode verdict", dsd_p25p2_decode_audio_allowed(opts, st, slot, 0), !blocked);
+                rc |= expect_eq("skip record", dsd_audio_record_gate_mono(opts, st, &record), 0);
+                rc |= expect_eq("skip record verdict", record, !blocked);
+            }
         }
     }
     return rc;
@@ -526,6 +573,7 @@ main(void) {
     }
 
     rc |= test_session_avoid_overrides_hold(opts, st);
+    rc |= test_call_skip_mutes_slot(opts, st);
     rc |= test_private_audio_policy(opts, st);
     if (rc == 0) {
         printf("CORE_AUDIO_GROUP_GATE: OK\n");

@@ -9,6 +9,7 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -26,9 +27,12 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
+#include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -40,6 +44,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "../../src/app_control/commands_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -57,12 +62,20 @@ static int g_cc_tune_calls = 0;
 static long int g_cc_tune_freq = 0;
 static int g_cc_tune_ted_sps = 0;
 static int g_cc_profile_at_tune = -1;
+static int g_skip_arm_refused = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq);
 dsd_trunk_tune_result __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq,
                                                               int ted_sps, uint64_t* out_request_id);
+int __real_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s);
+int __wrap_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s);
+
+int
+__wrap_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s) {
+    return g_skip_arm_refused ? -1 : __real_dsd_tg_policy_call_skip_arm(state, id, src, fallback, now_mono_s);
+}
 
 int
 __wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq) {
@@ -1272,6 +1285,181 @@ test_lockout_hands_p25_sm_back_to_cc(int persist) {
     p25_sm_init_ctx(sm, NULL, NULL);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_trunk_tuning_requests_reset();
+    freeState(&state);
+    return rc;
+}
+
+static int
+test_skip_hands_p25_sm_back_to_cc(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.persist_tg_lockouts = 1;
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.trunk_tune_group_calls = 1;
+    state.trunk_chan_map[0x1234] = 852000000L;
+    state.trunk_chan_map[0x1235] = 853000000L;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = stub_tune_to_freq_ok});
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, &opts, &state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 852000000L, 1201, 1202, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    ev = p25_sm_ev_active_call(0, 1201, 0, 1202, 1, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_int("SM follows the seeded assignment", p25_sm_get_state(sm), P25_SM_TUNED);
+    rc |= expect_int("SM slot carries voice before skip", sm->slots[0].voice_active, 1);
+
+    // A refused CC tune leaves the assignment, and the SM, exactly where they were.
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    rc |= expect_int("deferred skip queued", dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, 0U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("deferred skip drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("deferred skip leaves the SM tuned", p25_sm_get_state(sm), P25_SM_TUNED);
+    rc |= expect_int("deferred skip keeps the SM slot voice", sm->slots[0].voice_active, 1);
+    rc |= expect_true("deferred skip keeps the SM voice channel", sm->vc_freq_hz == 852000000L);
+
+    rc |= expect_true("refused skip remains armed",
+                      dsd_tg_policy_call_skip_active(&state, 1201, dsd_time_now_monotonic_s()));
+    int muted = 0;
+    rc |= expect_int("refused skip media gate", dsd_audio_group_gate_mono(&opts, &state, 1201, 0, &muted), 0);
+    rc |= expect_int("refused skip remains muted", muted, 1);
+    rc |= expect_str("refused skip toast", state.ui_msg, "TG 1201 skipped; return-to-CC tune failed");
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_int("skip queued", dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, 0U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("skip drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("skip tuned the CC", g_cc_tune_calls, 1);
+    rc |= expect_int("skip clears trunk tuned", opts.trunk_is_tuned, 0);
+    rc |= expect_int("skip parks the P25 SM on the CC", p25_sm_get_state(sm), P25_SM_ON_CC);
+    rc |= expect_int("skip clears the SM slot voice", sm->slots[0].voice_active, 0);
+    rc |= expect_true("skip clears the SM voice channel", sm->vc_freq_hz == 0);
+    rc |= expect_int("skip gates grants until the CC decodes", sm->cc_sync_pending, 1);
+
+    // The site keeps trunking: once the CC decodes again, a grant for another
+    // talkgroup is followed instead of being refused as a preemption.
+    state.p25_last_cc_msg_time_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_group_grant(0x1234, 852000000L, 1201, 1202, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_true("skipped grant remains blocked", p25_sm_get_state(sm) != P25_SM_TUNED);
+    rc |= expect_str("grant refusal identifies skip kind", state.p25_sm_last_reason, "grant-blocked-call-skip");
+    const double refresh_m = dsd_time_now_monotonic_s();
+    rc |= expect_int("backdate active skip", dsd_tg_policy_call_skip_arm(&state, 1201, 1202, 0, refresh_m - 10.0), 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_true("repeated grant refreshes skip", dsd_tg_policy_call_skip_active(&state, 1201, refresh_m + 10.0));
+    state.p25_patch_count = 1;
+    state.p25_patch_sgid[0] = 1201;
+    state.p25_patch_is_patch[0] = state.p25_patch_active[0] = 1;
+    state.p25_patch_last_update[0] = time(NULL);
+    state.p25_patch_wgid_count[0] = 1;
+    state.p25_patch_wgid[0][0] = 1300;
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_int("skipped supergroup rejects eligible member", p25_sm_get_state(sm), P25_SM_ON_CC);
+    rc |= expect_str("patched skip reason", state.p25_sm_last_reason, "grant-blocked-call-skip");
+    rc |= expect_true("one skip entry for patched call", dsd_tg_policy_call_skip_count(&state, refresh_m) == 1);
+    ev = p25_sm_ev_group_grant(0x1235, 853000000L, 1300, 1301, 0);
+    p25_sm_event(sm, &opts, &state, &ev);
+    rc |= expect_int("next grant is followed after skip", p25_sm_get_state(sm), P25_SM_TUNED);
+    rc |= expect_true("next grant tunes the new voice channel", sm->vc_freq_hz == 853000000L);
+    rc |= expect_int("next grant marks trunk tuned", opts.trunk_is_tuned, 1);
+
+    // The manual return-to-CC command takes the same shortcut past the SM.
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |=
+        expect_int("return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("return-to-CC tuned the CC", g_cc_tune_calls, 1);
+    rc |= expect_int("return-to-CC parks the P25 SM on the CC", p25_sm_get_state(sm), P25_SM_ON_CC);
+    rc |= expect_true("return-to-CC clears the SM voice channel", sm->vc_freq_hz == 0);
+
+    p25_sm_init_ctx(sm, NULL, NULL);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    freeState(&state);
+    return rc;
+}
+
+struct skip_reader {
+    dsd_opts* opts;
+    dsd_state* state;
+    atomic_int stop;
+    int failures;
+    unsigned int blocked;
+    unsigned int allowed;
+};
+
+static DSD_THREAD_RETURN_TYPE
+skip_reader_run(void* opaque) {
+    struct skip_reader* reader = opaque;
+    while (!atomic_load(&reader->stop)) {
+        p25_sm_tick_guard_enter();
+        int left = -1, right = -1;
+        dsd_tg_policy_decision decision;
+        reader->failures |= dsd_audio_group_gate_dual(reader->opts, reader->state, 1201, 1201, 0, 0, &left, &right);
+        reader->failures |= dsd_tg_policy_evaluate_group_call(reader->opts, reader->state, 1201, 1202, 0, 0, &decision);
+        const int blocked = (decision.block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP) != 0;
+        reader->failures |=
+            left != blocked || right != blocked || decision.audio_allowed != !blocked
+            || decision.tune_allowed != !blocked || decision.record_allowed != !blocked
+            || decision.stream_allowed != !blocked
+            || dsd_tg_policy_call_skip_count(reader->state, dsd_time_now_monotonic_s()) != (size_t)blocked;
+        if (blocked) {
+            ++reader->blocked;
+        } else {
+            ++reader->allowed;
+        }
+        p25_sm_tick_guard_leave();
+        dsd_thread_yield();
+    }
+    DSD_THREAD_RETURN;
+}
+
+static int
+test_skip_command_reader_stress(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.trunk_tune_group_calls = 1;
+    state.synctype = state.lastsynctype = DSD_SYNC_P25P2_POS;
+    const dsd_call_observation call = {.protocol = DSD_SYNC_P25P2_POS,
+                                       .slot = 0,
+                                       .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                       .ota_target_id = 1201,
+                                       .policy_target_id = 1201,
+                                       .ota_source_id = 1202,
+                                       .observed_m = dsd_time_now_monotonic_s()};
+    int rc = expect_int("stress seeds Phase 2 call", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN), 1);
+    rc |= expect_int("stress creates retained store",
+                     dsd_tg_policy_call_skip_arm(&state, 1201, 1202, 0, call.observed_m), 0);
+    dsd_tg_policy_call_skip_clear(&state);
+    uint64_t context = 0;
+    dsd_tg_policy_table_version(&state, &context, NULL);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_FAILED);
+    struct skip_reader reader = {.opts = &opts, .state = &state};
+    atomic_init(&reader.stop, 0);
+    dsd_thread_t thread;
+    const int started = dsd_thread_create(&thread, skip_reader_run, &reader) == 0;
+    rc |= expect_true("skip reader started", started);
+    if (started) {
+        for (int i = 0; i < 100; ++i) {
+            rc |= expect_true("stress skip queued", dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, 0) > 0);
+            rc |= expect_int("stress skip drained", dsd_app_drain_cmds(&opts, &state), 1);
+            dsd_sleep_ms(1);
+            rc |= expect_true("stress clear queued",
+                              dsd_app_command_submit(DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, &context, sizeof context) > 0);
+            rc |= expect_int("stress clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+            dsd_sleep_ms(1);
+        }
+        atomic_store(&reader.stop, 1);
+        dsd_thread_join(thread);
+        rc |= expect_int("concurrent policy verdicts consistent", reader.failures, 0);
+        rc |= expect_true("reader observed both policy states", reader.blocked > 0 && reader.allowed > 0);
+        rc |= expect_true("stress final count cleared",
+                          dsd_tg_policy_call_skip_count(&state, dsd_time_now_monotonic_s()) == 0);
+    }
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
     freeState(&state);
     return rc;
 }
@@ -3648,6 +3836,140 @@ test_temporary_lockout_commands(uint8_t slot) {
 }
 
 static int
+test_skip_commands(uint8_t slot) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsd_call_skip");
+    if (fd < 0) {
+        freeState(&state);
+        return 1;
+    }
+    dsd_close(fd);
+    char export_path[DSD_TEST_PATH_MAX];
+    const int export_fd = dsd_test_mkstemp(export_path, sizeof export_path, "dsd_call_skip_export");
+    if (export_fd < 0) {
+        freeState(&state);
+        remove(path);
+        return 1;
+    }
+    dsd_close(export_fd);
+    const char* csv = "id,mode,name,notes\n123,A,Dispatch,keep this unmodeled note\n456,A,EMS,note\n";
+    int rc = write_file_bytes(path, csv, strlen(csv));
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", path);
+    rc |= expect_int("import skip fixture", dsd_tg_policy_reload_group_file(&opts, &state), 0);
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    dsd_tg_policy_table_version(&state, &context, &generation);
+    rc |= expect_true("idle skip queued", dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, slot) > 0);
+    rc |= expect_int("idle skip drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("idle skip no-op", dsd_tg_policy_call_skip_count(&state, dsd_time_now_monotonic_s()) == 0);
+    rc |= expect_true("idle skip stages no event",
+                      strstr(state.event_history_s[slot].Event_History_Items[0].internal_str, "call skipped.") == NULL);
+    rc |= expect_true("idle skip commits no event",
+                      strstr(state.event_history_s[slot].Event_History_Items[1].internal_str, "call skipped.") == NULL);
+    const int protocols[] = {DSD_SYNC_P25P1_POS, DSD_SYNC_P25P2_POS, DSD_SYNC_DMR_BS_VOICE_POS, DSD_SYNC_NXDN_POS,
+                             DSD_SYNC_P25P2_POS};
+    for (int persist = 0; persist <= 1; ++persist) {
+        opts.persist_tg_lockouts = (uint8_t)persist;
+        for (size_t i = 0; i < sizeof protocols / sizeof protocols[0]; ++i) {
+            dsd_event_history_reset(&state);
+            const double now = dsd_time_now_monotonic_s();
+            dsd_call_observation observation = {.protocol = protocols[i],
+                                                .slot = slot,
+                                                .kind =
+                                                    i == 4 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE,
+                                                .ota_target_id = 123,
+                                                .policy_target_id = 456,
+                                                .ota_source_id = 1,
+                                                .observed_m = now};
+            rc |=
+                expect_int("seed skip call", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+            dsd_event_sync_slot(&opts, &state, slot);
+            opts.frame_provoice = 1;
+            rc |= expect_true("ProVoice skip queued", dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, slot) > 0);
+            rc |= expect_int("ProVoice skip drained", dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_true("ProVoice skip no-op", dsd_tg_policy_call_skip_count(&state, now) == 0);
+            opts.frame_provoice = 0;
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+            g_skip_arm_refused = 1;
+            rc |= expect_true("refused skip arm queued", dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, slot) > 0);
+            rc |= expect_int("refused skip arm drained", dsd_app_drain_cmds(&opts, &state), 1);
+            g_skip_arm_refused = 0;
+            rc |= expect_str("refused skip arm toast", state.ui_msg, "Could not skip TG 123");
+            rc |= expect_call_phase("refused skip arm keeps call active", &state, slot, DSD_CALL_PHASE_ACTIVE);
+            rc |= expect_true("refused skip arm keeps ledger empty", dsd_tg_policy_call_skip_count(&state, now) == 0);
+            rc |= expect_true("refused skip arm stages no event",
+                              strstr(state.event_history_s[slot].Event_History_Items[0].internal_str, "call skipped.")
+                                  == NULL);
+            rc |= expect_true("refused skip arm commits no event",
+                              strstr(state.event_history_s[slot].Event_History_Items[1].internal_str, "call skipped.")
+                                  == NULL);
+#endif
+            // Deliberately disagree with the call snapshot: fallback follows the call itself.
+            state.synctype = state.lastsynctype = DSD_SYNC_P25P1_POS;
+            const uint8_t requested_slot = persist ? (uint8_t)(slot | 2U) : slot;
+            rc |= expect_true("skip queued", dsd_app_command_set_u8(DSD_APP_CMD_SKIP_SLOT, requested_slot) > 0);
+            rc |= expect_int("skip drained", dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_str("skip toast", state.ui_msg, "TG 123 skipped");
+            rc |= expect_call_phase("skip ends call", &state, slot, DSD_CALL_PHASE_ENDED);
+            rc |=
+                expect_contains("skip committed event", state.event_history_s[slot].Event_History_Items[1].internal_str,
+                                "Target: 123; call skipped.");
+            rc |= expect_str("skip leaves no staged text",
+                             state.event_history_s[slot].Event_History_Items[0].internal_str, "");
+            rc |= expect_true("one OTA skip per press", dsd_tg_policy_call_skip_active(&state, 123, now)
+                                                            && !dsd_tg_policy_call_skip_active(&state, 456, now)
+                                                            && dsd_tg_policy_call_skip_count(&state, now) == 1);
+            const int fallback = i >= 2;
+            rc |= expect_int("snapshot determines refresh rule", dsd_tg_policy_call_skip_touch(&state, 123, now + 10.0),
+                             !fallback);
+            rc |=
+                expect_true("skip alive before quiet expiry", dsd_tg_policy_call_skip_active(&state, 123, now + 10.0));
+            rc |= expect_int("snapshot determines lifetime", dsd_tg_policy_call_skip_active(&state, 123, now + 20.0),
+                             !fallback);
+            rc |= expect_file_bytes(path, csv);
+            unsigned int after = 0;
+            dsd_tg_policy_table_version(&state, NULL, &after);
+            rc |= expect_true("skip preserves edit generation", after == generation);
+            const uint64_t wrong = context + 1;
+            rc |= expect_true("stale skip clear queued",
+                              dsd_app_command_submit(DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, &wrong, sizeof wrong) > 0);
+            rc |= expect_int("stale skip clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_true("stale clear preserves skip", dsd_tg_policy_call_skip_active(&state, 123, now));
+            rc |= expect_true("skip clear queued",
+                              dsd_app_command_submit(DSD_APP_CMD_TG_SESSION_AVOID_CLEAR, &context, sizeof context) > 0);
+            rc |= expect_int("skip clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+            rc |= expect_true("clear drops skip", dsd_tg_policy_call_skip_count(&state, now) == 0);
+        }
+    }
+    rc |= expect_int("export seed skip", dsd_tg_policy_call_skip_arm(&state, 123, 1, 0, dsd_time_now_monotonic_s()), 0);
+
+    union {
+        max_align_t alignment;
+        unsigned char bytes[1200];
+    } storage = {0};
+
+    dsd_app_tg_export_payload* export = (dsd_app_tg_export_payload*)storage.bytes;
+    dsd_tg_policy_table_version(&state, &export->policy_context, &export->policy_generation);
+    DSD_SNPRINTF(export->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", export_path);
+    rc |= expect_true("export skip policy queued",
+                      dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, export,
+                                             offsetof(dsd_app_tg_export_payload, path) + strlen(export_path) + 1U)
+                          > 0);
+    rc |= expect_int("export skip policy drained", dsd_app_drain_cmds(&opts, &state), 1);
+    dsd_app_tg_export_result result;
+    rc |= expect_true("skip export successful", dsd_app_tg_export_result_get(&result) && result.success);
+    rc |= expect_file_bytes(export_path, "id,mode,name\n123,A,Dispatch\n456,A,EMS\n");
+    rc |= expect_file_bytes(path, csv);
+    freeState(&state);
+    remove(path);
+    remove(export_path);
+    return rc;
+}
+
+static int
 test_config_group_path_reloads_before_persist(int scoped) {
     static dsd_opts opts;
     static dsd_state state;
@@ -3745,6 +4067,8 @@ main(void) {
     rc |= test_talkgroup_list_commands();
     rc |= test_config_group_path_reloads_before_persist(0);
     rc |= test_config_group_path_reloads_before_persist(1);
+    rc |= test_skip_commands(0);
+    rc |= test_skip_commands(1);
     rc |= test_temporary_lockout_commands(0);
     rc |= test_temporary_lockout_commands(1);
     rc |= test_talkgroup_row_commands();
@@ -3770,6 +4094,8 @@ main(void) {
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
     rc |= test_lockout_hands_p25_sm_back_to_cc(1);
     rc |= test_lockout_hands_p25_sm_back_to_cc(0);
+    rc |= test_skip_hands_p25_sm_back_to_cc();
+    rc |= test_skip_command_reader_stress();
     rc |= test_channel_cycle_hands_p25_sm_back_to_cc();
 #ifdef USE_RADIO
     rc |= test_manual_tune_trunking_gate_and_reacquisition();

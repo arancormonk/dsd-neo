@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import "Util.js" as Util
 
 // Settings: appearance, units, listening, decoding, and the advanced tuner defaults
 // folded shut. Every row writes straight through to the persisted preference.
@@ -271,8 +272,8 @@ Item {
 
                     ToggleRow {
                         objectName: "persistTgLockoutsToggle"
-                        title: qsTr("Save skipped talkgroups")
-                        subtitle: qsTr("Applies to Skip immediately. Off keeps avoids until stop or list reload. Talkgroup-list edits still save.")
+                        title: qsTr("Save avoided talkgroups")
+                        subtitle: qsTr("Applies to Avoid immediately, saving it to the talkgroup list. Off keeps avoids until stop or list reload, and the button reads Avoid. Skip is unaffected. Talkgroup-list edits still save.")
                         checked: screen.lockoutSessionRunning ? screen.liveLockoutPersistence : prefs.persistTgLockouts
                         enabled: screen.lockoutEditable
                         showDivider: true
@@ -294,9 +295,9 @@ Item {
                         objectName: "clearTemporaryTgAvoidsButton"
                         width: parent.width - 2 * Theme.cardPadding
                         x: Theme.cardPadding
-                        visible: screen.lockoutSessionRunning && metrics.temporaryTgAvoidCount > 0
+                        visible: screen.lockoutSessionRunning && metrics.temporaryTgAvoidCount + metrics.callSkipCount > 0
                         enabled: screen.lockoutEditable
-                        text: qsTr("Clear temporary TG avoids — current list (%1)").arg(metrics.temporaryTgAvoidCount)
+                        text: qsTr("Clear temporary avoids and call skips — current list (%1)").arg(Util.idText(metrics.temporaryTgAvoidCount + metrics.callSkipCount))
                         onClicked: {
                             screen.lockoutError = commands.clearTemporaryTgAvoids(metrics.tgPolicyContext)
                                 ? "" : qsTr("Could not clear temporary avoids. Try again.");

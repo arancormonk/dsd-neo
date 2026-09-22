@@ -267,6 +267,98 @@ test_quality() {
 }
 
 static void
+test_lead_slot_keeps_earlier_call_and_quality() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    state.synctype = DSD_SYNC_P25P2_POS;
+    dsd_qt::MetricsModel model;
+
+    dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 1U, 4242U, 1202U);
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    call.observed_m = dsd_time_now_monotonic_s() - 2.0;
+    expect("slot 2 opens first", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    state.p25_p2_voice_err_hist_len = 50;
+    state.p25_p2_voice_err_hist_count[1] = 3;
+    state.p25_p2_voice_err_hist_sum[1] = 6;
+    model.refresh(&opts, &state);
+    expect("slot 2 alone headlines with its quality", model.leadSlot() == 2 && model.voiceErrsValid()
+                                                          && model.voiceErrsSamples() == 3
+                                                          && model.voiceErrsPerFrame() == 2.0);
+
+    call.slot = 0U;
+    call.ota_target_id = 1201U;
+    call.observed_m += 1.0;
+    expect("slot 1 opens later", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    state.p25_p2_voice_err_hist_count[0] = 4;
+    state.p25_p2_voice_err_hist_sum[0] = 20;
+    model.refresh(&opts, &state);
+    expect("earlier slot 2 call keeps the headline",
+           model.slot1CallState() == 2 && model.slot2CallState() == 2 && model.leadSlot() == 2);
+    expect("quality stays with the earlier slot 2 call", model.voiceErrsValid() && model.voiceErrsSamples() == 3
+                                                             && model.voiceErrsPerFrame() == 2.0
+                                                             && model.slot1VoiceErrsPerFrame() == 5.0);
+
+    expect("earlier slot 2 call ends", dsd_call_state_end(&state, 1U, dsd_time_now_monotonic_s()) == 1);
+    model.refresh(&opts, &state);
+    expect("remaining slot 1 call takes the headline",
+           model.slot1CallState() == 2 && model.slot2CallState() == 3 && model.leadSlot() == 1);
+    expect("quality moves to the remaining slot 1 call",
+           model.voiceErrsValid() && model.voiceErrsSamples() == 4 && model.voiceErrsPerFrame() == 5.0);
+    freeState(&state);
+}
+
+static void
+test_lead_slot_change_alone_notifies() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    state.synctype = DSD_SYNC_P25P2_POS;
+    dsd_qt::MetricsModel model;
+
+    /* Stamps ahead of the poll keep both displayed durations at zero, even if the
+     * test is descheduled. Restarting an epoch can then change only the lead. */
+    dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 4242U, 1201U);
+    call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    call.observed_m = dsd_time_now_monotonic_s() + 60.0;
+    expect("initial lead opens", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_observation other = call;
+    other.slot = 1U;
+    other.ota_target_id = 1202U;
+    other.observed_m += 0.0004;
+    expect("companion opens", dsd_call_state_observe(&state, &other, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    model.refresh(&opts, &state);
+    expect("initial lead is slot 1", model.leadSlot() == 1);
+
+    int slot1_changes = 0;
+    int slot2_changes = 0;
+    int quality_changes = 0;
+    int lead_changes = 0;
+    int notified_lead = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::slot1Changed, [&]() { ++slot1_changes; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::slot2Changed, [&]() { ++slot2_changes; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::qualityChanged, [&]() { ++quality_changes; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::leadSlotChanged, [&]() {
+        ++lead_changes;
+        notified_lead = model.leadSlot();
+    });
+
+    call.observed_m += 0.0008;
+    expect("initial lead restarts with the same identity",
+           dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    model.refresh(&opts, &state);
+    expect("slot fields and quality did not change", slot1_changes == 0 && slot2_changes == 0 && quality_changes == 0);
+    expect("lead-only change publishes and notifies", model.leadSlot() == 2 && lead_changes == 1 && notified_lead == 2);
+    model.refresh(&opts, &state);
+    expect("unchanged lead is silent", lead_changes == 1);
+    model.clear();
+    expect("clear notifies the no-lead sentinel", model.leadSlot() == 0 && lead_changes == 2 && notified_lead == 0);
+    freeState(&state);
+}
+
+static void
 test_site() {
     static dsd_opts opts;
     static dsd_state state;
@@ -485,6 +577,42 @@ test_temporary_lockout_metrics() {
 }
 
 static void
+test_call_skip_metrics() {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsd_state snapshot;
+    initOpts(&opts);
+    initState(&state);
+    initState(&snapshot);
+    dsd_qt::MetricsModel model;
+    model.refresh(&opts, &snapshot);
+    int changes = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&]() { ++changes; });
+    const double now = dsd_time_now_monotonic_s();
+    expect("seed metric skip", dsd_tg_policy_call_skip_arm(&state, 100, 1, 0, now) == 0);
+    expect("publish skip snapshot", dsd_tg_policy_copy_snapshot(&snapshot, &state) == 0);
+    model.refresh(&opts, &snapshot);
+    expect("skip count notifies", changes == 1 && model.callSkipCount() == 1 && model.temporaryTgAvoidCount() == 0);
+    model.refresh(&opts, &snapshot);
+    expect("stable skip count does not notify twice", changes == 1);
+    dsd_tg_policy_call_skip_clear(&state);
+    model.refresh(&opts, &snapshot);
+    expect("held snapshot keeps skip", changes == 1 && model.callSkipCount() == 1);
+    expect("publish skip clear through reuse", dsd_tg_policy_copy_snapshot(&snapshot, &state) == 0);
+    model.refresh(&opts, &snapshot);
+    expect("skip clear notifies", changes == 2 && model.callSkipCount() == 0);
+    expect("seed expired metric skip",
+           dsd_tg_policy_call_skip_arm(&state, 100, 1, 0, now - DSD_TG_CALL_SKIP_QUIET_S - 1.0) == 0);
+    expect("publish expired skip", dsd_tg_policy_copy_snapshot(&snapshot, &state) == 0);
+    model.refresh(&opts, &snapshot);
+    expect("expired skips not counted", changes == 2 && model.callSkipCount() == 0);
+    model.clear();
+    expect("stopped skips unavailable", model.callSkipCount() == 0);
+    freeState(&snapshot);
+    freeState(&state);
+}
+
+static void
 test_options_readiness() {
     static dsd_opts opts;
     static dsd_state state;
@@ -663,11 +791,14 @@ main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     test_options_readiness();
     test_temporary_lockout_metrics();
+    test_call_skip_metrics();
     test_scan_timing();
     test_direct_key_presence();
     test_decryption_metadata();
     test_site();
     test_quality();
+    test_lead_slot_keeps_earlier_call_and_quality();
+    test_lead_slot_change_alone_notifies();
     test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 0);
     test_quality_without_identity(DSD_SYNC_DMR_BS_VOICE_POS, 1);
     test_quality_without_identity(DSD_SYNC_NXDN_POS, 0);
@@ -921,7 +1052,7 @@ main(int argc, char** argv) {
          * slot, which no C test of dsd_app_lead_slot() and no QML case can see. */
         expect("the only live call headlines", model.leadSlot() == 1);
 
-        /* Slot 2 live as well: an open epoch on the lower slot still outranks it. */
+        /* Slot 2 live as well: the earlier open epoch keeps the headline. */
         dsd_call_observation other = named;
         other.slot = 1U;
         other.ota_target_id = 1202U;
@@ -929,7 +1060,7 @@ main(int argc, char** argv) {
         (void)dsd_call_state_observe(&state, &other, DSD_CALL_BOUNDARY_BEGIN);
         model.refresh(&opts, &state);
         expect("slot 2 is live too", model.slot2CallState() == 2);
-        expect("between two live calls the lower slot headlines", model.leadSlot() == 1);
+        expect("between two live calls the earlier slot 1 call headlines", model.leadSlot() == 1);
 
         /* With slot 1 ended and slot 2 still open, the open epoch wins outright — the
          * rule that made two surfaces name different units before it was shared. */
