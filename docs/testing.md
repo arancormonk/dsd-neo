@@ -35,7 +35,15 @@ lines, a BPTC-encoded RAS-shaped header, slot isolation and clean subsequent pac
 MNIS LRRP vector comes from [DSD-FME issue 283](https://github.com/lwvmobile/dsd-fme/issues/283).
 The 46 received octets end in CRC `0FE81D14`; the two extra zero octets in that issue's dump are buffer
 fill. The former CRC span computes `FF38D9C7`, while the corrected span matches the transmitted value.
-A one-bit payload mutation must not publish in strict mode.
+A one-bit payload mutation must not publish in strict mode. With `-F` and `-L`, the clean captured MNIS
+packet must append exactly one location row, while the CRC32-failed packet must append none.
+
+`CORE_GPS_LRRP_CRC_GATING` checks that the real GPS decoders retain their state strings while suppressing
+CRC-failed location rows, with slot isolation and both file date formats. `DMR_USBD_LIP_LRRP_CRC` runs
+BPTC-encoded USBD LIP bursts through the real burst handler in strict and relaxed/RAS modes, checking
+decoded coordinates, file rows, unchanged state strings and CRC-flag restoration. `DMR_LRRP_EVENT_CRC_GATING`
+checks LOCN and UDP ports 4001/49198 against the event CRC verdict, including the LRRP suppression summary
+and clean rows. `DMR_LRRP_CRC_GATING` remains the token-level counterpart over `dmr_pdu.c`.
 
 The MNIS coverage follows the independent
 [node-dmr-lib assembler](https://github.com/rick51231/node-dmr-lib/blob/2a6579e3d3af8f0fde529028962d8fa0e89d2d1d/src/DMR/Util/DataBlock.js):

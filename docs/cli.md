@@ -241,6 +241,7 @@ Windows console runs:
   Suspected RAS voice events also retain the marker through delayed commits and reacquisition.
   The marker means a CRC check failed, not that every decoded field is wrong: RAS can intentionally
   alter the check. Absence of the marker is not a universal verification guarantee for every protocol.
+  A `-L` location file never receives a row from a PDU that would carry this marker.
 
   ```text
   2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: 00050061; SRC: 00001234;
@@ -265,7 +266,13 @@ For rdio-scanner API uploads that should not persist on disk, use API-only mode 
 and post-upload deletion, for example `-7 /dev/shm/dsd-neo-rdio -P --rdio-mode api --rdio-api-delete-after-upload`.
 Rdio API uploads do not follow HTTP redirects; use the final trusted HTTP/HTTPS endpoint directly.
 DirWatch modes keep the WAV and JSON files because the watcher needs stable files to ingest.
-- `-L <file>` Append LRRP (location) data
+- `-L <file>` Append LRRP (location) data. Rows are gated by the dispatch CRC verdict for DMR data
+  PDUs (LRRP, LOCN, LIP, UDT NMEA), DMR voice-LC embedded GPS, and P25 Phase 1 data PDUs reaching
+  the IP/UDP LRRP ports; P25 Harris/APX voice-LC GPS and NXDN are unchanged. Under `-F`, CRC-failed
+  data still decodes on screen and reaches history / the `-J` log marked `[CRC ERR]`, with LRRP
+  position tokens shown as suppressed and no location row appended. Bursts accepted by the RAS
+  heuristic under `-F` are also excluded because their CRC could not be verified; the burst line
+  shows `-RAS`.
 - `--lrrp-extra-port <n>` Also decode UDP port `<n>` as LRRP. Repeatable, at most 8 ports.
   The registered location port 4001 is always decoded; this adds ports a system uses
   instead of it, which would otherwise be reported as `Unknown UDP Port`. Ports the decoder

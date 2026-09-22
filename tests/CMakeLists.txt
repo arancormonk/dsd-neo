@@ -7683,6 +7683,21 @@ target_link_libraries(
 )
 add_test(NAME DMR_EVENT_CRC COMMAND dsd-neo_test_dmr_event_crc)
 
+# DMR USBD LIP: CRC-failed location fixes never reach the -L file (#550)
+add_executable(
+    dsd-neo_test_dmr_usbd_lip_lrrp_crc
+    protocol/dmr/test_dmr_usbd_lip_lrrp_crc.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_usbd_lip_lrrp_crc
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_usbd_lip_lrrp_crc
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_USBD_LIP_LRRP_CRC COMMAND dsd-neo_test_dmr_usbd_lip_lrrp_crc)
+
 add_executable(
     dsd-neo_test_dmr_ms_data
     protocol/dmr/test_dmr_ms_data.c
@@ -8247,6 +8262,32 @@ add_test(
     COMMAND dsd-neo_test_dmr_lrrp_ip_udp_lengths
 )
 
+# DMR LOCN and IP/UDP LRRP: location files honor the dispatch CRC verdict (#550)
+add_executable(
+    dsd-neo_test_dmr_lrrp_event_crc_gating
+    protocol/dmr/test_dmr_lrrp_event_crc_gating.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_lrrp_event_crc_gating
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_include_directories(
+    dsd-neo_test_dmr_lrrp_event_crc_gating
+    SYSTEM
+    PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_event_crc_gating
+    PRIVATE dsd-neo_platform dsd-neo_test_support
+)
+add_test(
+    NAME DMR_LRRP_EVENT_CRC_GATING
+    COMMAND dsd-neo_test_dmr_lrrp_event_crc_gating
+)
+
 # DMR UDP/IPv4 compressed header: index tables 7.15-7.18, extended ports, opcode gate (#450)
 add_executable(
     dsd-neo_test_dmr_udp_comp_header
@@ -8330,6 +8371,31 @@ target_link_libraries(
 add_test(
     NAME DMR_EMBEDDED_GPS_POSITION_ERROR
     COMMAND dsd-neo_test_dmr_embedded_gps_position_error
+)
+
+# Core GPS: CRC-failed location rows are suppressed while decoded state is retained (#550)
+add_executable(
+    dsd-neo_test_core_gps_lrrp_crc_gating
+    core/test_core_gps_lrrp_crc_gating.c
+    ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    test_support/call_state_stubs.c
+)
+target_include_directories(
+    dsd-neo_test_core_gps_lrrp_crc_gating
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_include_directories(
+    dsd-neo_test_core_gps_lrrp_crc_gating
+    SYSTEM
+    PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_core_gps_lrrp_crc_gating
+    PRIVATE dsd-neo_platform dsd-neo_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME CORE_GPS_LRRP_CRC_GATING
+    COMMAND dsd-neo_test_core_gps_lrrp_crc_gating
 )
 
 # DMR embedded talker alias: do not truncate when header length is inconsistent with payload
@@ -10085,6 +10151,7 @@ add_test(NAME P25_STATUS_SYMBOL COMMAND dsd-neo_test_p25_status_symbol)
 
 set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_core_apx_embedded_alias_utf16
+    dsd-neo_test_core_gps_lrrp_crc_gating
     dsd-neo_test_core_hytera_bp_silence
     dsd-neo_test_core_straight_keystream_validation
     dsd-neo_test_csi72
@@ -10095,6 +10162,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_locn_time_fallback
     dsd-neo_test_dmr_lrrp_crc_gating
     dsd-neo_test_dmr_lrrp_empty_payload_type
+    dsd-neo_test_dmr_lrrp_event_crc_gating
     dsd-neo_test_dmr_lrrp_ip_udp_lengths
     dsd-neo_test_dmr_lrrp_position_token_precedence
     dsd-neo_test_dmr_lrrp_response_token_lengths
