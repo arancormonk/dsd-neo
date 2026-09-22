@@ -226,6 +226,50 @@ test_call_skip_mutes_slot(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+// A patched call is judged on the member WG its grant matched, but a user block
+// on the over-the-air supergroup itself is final: it mutes the member-matched
+// call too (a Lock out whose return to the CC fails leaves the call running).
+// An allow-list miss on the supergroup is not a block on it.
+static int
+test_supergroup_block_mutes_patched_member(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (uint8_t slot = 0; slot < 2; ++slot) {
+        for (int block = 0; block < 3; ++block) {
+            DSD_MEMSET(opts, 0, sizeof(*opts));
+            reset_state(st);
+            opts->trunk_tune_group_calls = 1;
+            st->synctype = DSD_SYNC_P25P2_POS;
+            st->currentslot = slot;
+            st->p25_crypto_state[slot] = DSD_P25_CRYPTO_CLEAR;
+            st->p25_p2_audio_allowed[slot] = 1;
+            seed_active_patch_member(st, 9000, 123);
+            rc |= expect_eq("sg block member row", seed_policy_group(st, 123U, "A", "MEMBER"), 0);
+            if (block == 0) {
+                rc |= expect_eq("sg block mode row", seed_policy_group(st, 9000U, "B", "SG"), 0);
+            } else if (block == 1) {
+                rc |= expect_eq("sg block session avoid", dsd_tg_policy_session_avoid_add(st, 9000U), 0);
+            } else {
+                opts->trunk_use_allow_list = 1;
+            }
+            const int blocked = block != 2;
+            rc |= expect_eq("sg block seed call",
+                            seed_call(st, slot, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 9000, 123, 456), 1);
+            int muted = -1, left = -1, right = -1, record = -1;
+            rc |= expect_eq("sg block mono", dsd_audio_group_gate_mono(opts, st, 9000, 0, &muted), 0);
+            rc |= expect_eq("sg block mono verdict", muted, blocked);
+            rc |= expect_eq(
+                "sg block dual",
+                dsd_audio_group_gate_dual(opts, st, slot == 0 ? 9000 : 0, slot == 1 ? 9000 : 0, 0, 0, &left, &right),
+                0);
+            rc |= expect_eq("sg block dual verdict", slot == 0 ? left : right, blocked);
+            rc |= expect_eq("sg block decode verdict", dsd_p25p2_decode_audio_allowed(opts, st, slot, 0), !blocked);
+            rc |= expect_eq("sg block record", dsd_audio_record_gate_mono(opts, st, &record), 0);
+            rc |= expect_eq("sg block record verdict", record, !blocked);
+        }
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -574,6 +618,7 @@ main(void) {
 
     rc |= test_session_avoid_overrides_hold(opts, st);
     rc |= test_call_skip_mutes_slot(opts, st);
+    rc |= test_supergroup_block_mutes_patched_member(opts, st);
     rc |= test_private_audio_policy(opts, st);
     if (rc == 0) {
         printf("CORE_AUDIO_GROUP_GATE: OK\n");

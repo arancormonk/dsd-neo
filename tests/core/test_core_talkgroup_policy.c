@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -1547,6 +1548,83 @@ test_call_skips(void) {
     return rc;
 }
 
+static int
+eval_member_with_ota(const dsd_opts* opts, const dsd_state* state, uint32_t ota, dsd_tg_policy_decision* decision,
+                     int* applied) {
+    if (dsd_tg_policy_evaluate_group_call(opts, state, 123, 1, 0, 0, decision) != 0) {
+        return 1;
+    }
+    *applied = dsd_tg_policy_apply_ota_final_blocks(opts, state, ota, 123, 1, decision);
+    return 0;
+}
+
+// A patched call is judged on the member WG its grant matched (123 here); only
+// the over-the-air supergroup's own final blocks are merged into that decision.
+static int
+test_ota_final_blocks(void) {
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    if (!state || !opts) {
+        free_test_state(state);
+        free(opts);
+        return 1;
+    }
+    opts->trunk_tune_group_calls = 1;
+    dsd_tg_policy_entry entry;
+    init_entry(&entry, 123, "A", "Member", DSD_TG_POLICY_SOURCE_IMPORTED);
+    int rc = expect_true("ota seed member", dsd_tg_policy_append_exact(state, &entry) == 0);
+    init_entry(&entry, 9001, "B", "Blocked SG", DSD_TG_POLICY_SOURCE_IMPORTED);
+    rc |= expect_true("ota seed blocked sg", dsd_tg_policy_append_exact(state, &entry) == 0);
+    rc |= expect_true("ota seed avoided sg", dsd_tg_policy_session_avoid_add(state, 9002) == 0);
+    rc |= expect_true("ota seed skipped sg",
+                      dsd_tg_policy_call_skip_arm(state, 9003, 1, 0, dsd_time_now_monotonic_s()) == 0);
+    (void)dsd_enc_lockout_note(state, 9004, 1, 0x84, 4);
+
+    dsd_tg_policy_decision decision;
+    int applied = -1;
+    rc |= expect_true("ota same target is a no-op", eval_member_with_ota(opts, state, 123, &decision, &applied) == 0
+                                                        && !applied && decision.tune_allowed);
+    rc |= expect_true("ota zero target is a no-op",
+                      eval_member_with_ota(opts, state, 0, &decision, &applied) == 0 && !applied);
+    rc |= expect_true("ota NULL decision refused",
+                      dsd_tg_policy_apply_ota_final_blocks(opts, state, 9001, 123, 1, NULL) == 0);
+
+    const uint32_t media_final[] = {9001, 9002, 9003};
+    const uint32_t media_reason[] = {DSD_TG_POLICY_BLOCK_MODE, DSD_TG_POLICY_BLOCK_SESSION_AVOID,
+                                     DSD_TG_POLICY_BLOCK_CALL_SKIP};
+    for (size_t i = 0; i < sizeof media_final / sizeof media_final[0]; ++i) {
+        rc |= expect_true("ota media-final block merged",
+                          eval_member_with_ota(opts, state, media_final[i], &decision, &applied) == 0 && applied
+                              && (decision.block_reasons & media_reason[i]) && !decision.tune_allowed
+                              && !decision.audio_allowed && !decision.record_allowed && !decision.stream_allowed);
+    }
+
+    // The encryption ledger blocks tuning only; it never gated media.
+    opts->trunk_tune_enc_calls = 0;
+    rc |= expect_true("ota enc lockout blocks tune only",
+                      eval_member_with_ota(opts, state, 9004, &decision, &applied) == 0 && applied
+                          && (decision.block_reasons & DSD_TG_POLICY_BLOCK_ENC_LOCKOUT) && !decision.tune_allowed
+                          && decision.audio_allowed && decision.record_allowed && decision.stream_allowed);
+    opts->trunk_tune_enc_calls = 1;
+    rc |= expect_true("ota enc lockout inert in follow mode",
+                      eval_member_with_ota(opts, state, 9004, &decision, &applied) == 0 && !applied);
+
+    // Allow-list and Hold misses on the supergroup are what a member overrides.
+    opts->trunk_use_allow_list = 1;
+    rc |= expect_true("ota allow-list miss not merged",
+                      eval_member_with_ota(opts, state, 9005, &decision, &applied) == 0 && !applied
+                          && decision.tune_allowed && decision.audio_allowed);
+    opts->trunk_use_allow_list = 0;
+    state->tg_hold = 123;
+    rc |= expect_true("ota hold miss not merged", eval_member_with_ota(opts, state, 9005, &decision, &applied) == 0
+                                                      && !applied && decision.tune_allowed);
+    state->tg_hold = 0;
+
+    free_test_state(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1556,6 +1634,7 @@ main(void) {
     rc |= test_block_reason_labels();
     rc |= test_session_avoids();
     rc |= test_call_skips();
+    rc |= test_ota_final_blocks();
     rc |= test_lockout_replaces_alias_metadata();
     rc |= test_snapshot_reclones_recreated_context();
     rc |= test_snapshot_reclones_recreated_empty_reload_context();

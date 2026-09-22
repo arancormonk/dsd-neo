@@ -908,8 +908,10 @@ test_compact_visualizer_toast(void) {
 }
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+// A patched call's policy target is the member WG the grant matched, while its
+// over-the-air target stays the supergroup the frontends show.
 static void
-seed_active_p25_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_freq, int tg) {
+seed_active_p25_patched_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_freq, int tg, int policy_tg) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->trunk_enable = 1;
     opts->frame_p25p1 = 1;
@@ -932,7 +934,7 @@ seed_active_p25_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_fr
         .slot = 0U,
         .kind = DSD_CALL_KIND_GROUP_VOICE,
         .ota_target_id = (uint32_t)tg,
-        .policy_target_id = (uint32_t)tg,
+        .policy_target_id = (uint32_t)policy_tg,
         .ota_source_id = (uint32_t)(tg + 1),
         .frequency_hz = vc_freq,
         .observed_m = 1.0,
@@ -940,6 +942,11 @@ seed_active_p25_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_fr
     if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0) {
         dsd_event_sync_slot(opts, state, 0U);
     }
+}
+
+static void
+seed_active_p25_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_freq, int tg) {
+    seed_active_p25_patched_voice(opts, state, cc_freq, vc_freq, tg, tg);
 }
 
 static int
@@ -2962,6 +2969,114 @@ test_talkgroup_list_commands(void) {
     return rc;
 }
 
+static int
+lockout_patched_call(dsd_opts* opts, dsd_state* state, uint32_t supergroup, uint32_t member) {
+    const dsd_call_observation observation = {.protocol = DSD_SYNC_P25P1_POS,
+                                              .slot = 0U,
+                                              .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                              .ota_target_id = supergroup,
+                                              .policy_target_id = member,
+                                              .ota_source_id = 1,
+                                              .observed_m = dsd_time_now_monotonic_s()};
+    int rc = expect_int("seed patched call", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    rc |= expect_true("patched lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U) > 0);
+    rc |= expect_int("patched lockout drained", dsd_app_drain_cmds(opts, state), 1);
+    return rc;
+}
+
+/* On a patched P25 call the policy target is whichever member WG the grant
+ * matched, while the frontends show the supergroup. User blocks address the
+ * supergroup: Lock out writes it, and a list edit blocking it releases the call.
+ * A block on the member alone would leave the supergroup free to tune again. */
+static int
+test_patched_call_user_blocks_target_supergroup(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
+    const char* path = "dsd_neo_test_patched_lockout.csv";
+    static const char csv[] = "DEC,Mode,Name,Tag\n2001,A,Member WG,PATCH\n2002,A,Other Member WG,PATCH\n";
+    int rc = write_file_bytes(path, csv, sizeof csv - 1U);
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    rc |= expect_int("load patched lockout fixture", dsd_tg_policy_reload_group_file(opts, state), 0);
+    dsd_tg_policy_lookup lookup;
+
+    opts->persist_tg_lockouts = 0;
+    rc |= lockout_patched_call(opts, state, 1001, 2001);
+    rc |= expect_true("session lockout avoids the supergroup", dsd_tg_policy_session_avoid_contains(state, 1001));
+    rc |= expect_true("session lockout leaves the member", !dsd_tg_policy_session_avoid_contains(state, 2001));
+    rc |= expect_str("session lockout names the supergroup", state->ui_msg, "TG 1001 locked out for this session");
+    rc |= expect_contains("session lockout event names the supergroup",
+                          state->event_history_s[0].Event_History_Items[1].internal_str,
+                          "Target: 1001; has been locked out; Session Only.");
+    dsd_tg_policy_session_avoid_clear(state);
+
+    opts->persist_tg_lockouts = 1;
+    rc |= lockout_patched_call(opts, state, 1002, 2001);
+    rc |= expect_int("saved lockout supergroup lookup", dsd_tg_policy_lookup_id(state, 1002, &lookup), 0);
+    rc |= expect_str("saved lockout blocks the supergroup", lookup.entry.mode, "B");
+    rc |= expect_int("saved lockout member lookup", dsd_tg_policy_lookup_id(state, 2001, &lookup), 0);
+    rc |= expect_str("saved lockout leaves the member", lookup.entry.mode, "A");
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    // Blocking the supergroup in the list releases its patched call, even
+    // though the member the call was matched on still listens.
+    seed_active_p25_patched_voice(opts, state, 851000000L, 852000000L, 1101, 2002);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_app_tg_listen_payload block_sg = {1101, 1101, 0};
+    rc |= expect_true("supergroup block queued", dsd_app_command_set_tg_listen(&block_sg) > 0);
+    rc |= expect_int("supergroup block drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("supergroup block releases patched call", g_cc_tune_calls, 1);
+
+    // An allow-list miss on the supergroup stays open to a listed member, so an
+    // unrelated edit must not release a call followed through that member.
+    opts->trunk_use_allow_list = 1;
+    seed_active_p25_patched_voice(opts, state, 851000000L, 852000000L, 1201, 2002);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_app_tg_listen_payload block_other = {3001, 3001, 0};
+    rc |= expect_true("unrelated block queued", dsd_app_command_set_tg_listen(&block_other) > 0);
+    rc |= expect_int("unrelated block drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("allow-list miss on supergroup keeps member call", g_cc_tune_calls, 0);
+    opts->trunk_use_allow_list = 0;
+
+    // A Lock out whose return to the CC is deferred leaves the patched call
+    // running and judged on its member; the supergroup avoid must still mute it,
+    // as locking the member used to.
+    opts->persist_tg_lockouts = 0;
+    seed_active_p25_patched_voice(opts, state, 851000000L, 852000000L, 1301, 2002);
+    state->p25_patch_count = 1;
+    state->p25_patch_sgid[0] = 1301;
+    state->p25_patch_is_patch[0] = 1U;
+    state->p25_patch_active[0] = 1U;
+    state->p25_patch_last_update[0] = time(NULL);
+    state->p25_patch_wgid_count[0] = 1U;
+    state->p25_patch_wgid[0][0] = 2002;
+    int muted = -1;
+    rc |= expect_true("patched call audible before lockout",
+                      dsd_audio_group_gate_mono(opts, state, 1301, 0, &muted) == 0 && muted == 0);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    rc |= expect_true("deferred patched lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U) > 0);
+    rc |= expect_int("deferred patched lockout drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_true("deferred patched lockout avoids the supergroup",
+                      dsd_tg_policy_session_avoid_contains(state, 1301));
+    rc |= expect_call_phase("deferred patched lockout keeps the call", state, 0U, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_true("deferred patched lockout mutes the call",
+                      dsd_audio_group_gate_mono(opts, state, 1301, 0, &muted) == 0 && muted == 1);
+    dsd_tg_policy_session_avoid_clear(state);
+#endif
+    freeState(state);
+    free(state);
+    free(opts);
+    remove(path);
+    return rc;
+}
+
 /* An export completion must survive the rest of a drain before the UI polls. */
 static int
 test_talkgroup_export_result(void) {
@@ -4221,6 +4336,7 @@ main(void) {
     rc |= test_coalesced_setter_erases_old_tail();
     rc |= test_foundation_commands();
     rc |= test_talkgroup_list_commands();
+    rc |= test_patched_call_user_blocks_target_supergroup();
     rc |= test_config_group_path_reloads_before_persist(0);
     rc |= test_config_group_path_reloads_before_persist(1);
     rc |= test_skip_commands(0);

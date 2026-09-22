@@ -1216,7 +1216,11 @@ p25_grant_eval_group_policy(const dsd_opts* opts, const dsd_state* state, const 
             != 0) {
             return -1;
         }
-        if (i == 0 && (candidate.block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP)) {
+        // A block on the supergroup itself is final (see DSD_TG_POLICY_BLOCK_OTA_FINAL):
+        // a member reprieve here cost an encryption-locked SG a tune / classify /
+        // re-lock cycle per grant update, and let unlisted members in blacklist
+        // mode carry nearly any patch through its SG's user lockout.
+        if (i == 0 && (candidate.block_reasons & DSD_TG_POLICY_BLOCK_OTA_FINAL)) {
             *out_decision = candidate;
             return 0;
         }
