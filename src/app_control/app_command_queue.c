@@ -103,6 +103,9 @@ static dsd_mutex_t g_mu;
 static atomic_int g_mu_init = 0;
 static atomic_int g_overflow = 0;
 static atomic_int g_overflow_warn_gate = 0;
+#ifdef DSD_NEO_TEST_HOOKS
+static atomic_int g_test_policy_guard_waits = 0;
+#endif
 /* WP-D1: the last export completion is independent of transient decoder toasts.
  * Protected by g_mu; retained without a reader first having to arm publication. */
 static dsd_app_tg_export_result g_tg_export_result;
@@ -1186,10 +1189,12 @@ ui_cmd_leave_typed_scan_after_tune(dsd_opts* opts, dsd_state* state, int result)
         || !dsd_channel_modes_present(state)) {
         return 0;
     }
+    p25_sm_tick_guard_enter();
     dsd_engine_channel_scan_leave(opts, state);
     dsd_scan_keys_leave(state);
     opts->scanner_mode = 0;
     state->lcn_freq_roll = 0;
+    p25_sm_tick_guard_leave();
     return 1;
 }
 
@@ -2255,7 +2260,7 @@ apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_liv
 
     reset_call_tracking(opts, state, 1);
     if (opts->trunk_enable == 1) {
-        noCarrier(opts, state);
+        dsd_engine_no_carrier_locked(opts, state);
         state->trunk_cc_freq = cc_freq;
     }
     /* Wall clock only: the P25 handoff below stamps the monotonic CC sync from the
@@ -2278,11 +2283,6 @@ apply_lockout_decoder_transition_locked(dsd_opts* opts, dsd_state* state, int p2
 static int
 apply_skip_decoder_transition_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
     return apply_user_block_transition_locked(opts, state, p25_live, "Skip return-to-CC", "user-skip");
-}
-
-static int
-apply_lockout_decoder_transition(dsd_opts* opts, dsd_state* state) {
-    return run_manual_retune_guarded(opts, state, apply_lockout_decoder_transition_locked);
 }
 
 static int
@@ -2471,7 +2471,7 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
         apply_cfg_rtl_common(opts, cfg);
         opts->rtltcp_enabled = 0;
     }
-    (void)svc_rtl_restart(opts, state);
+    (void)svc_rtl_restart_locked(opts, state);
 }
 #endif
 
@@ -4083,7 +4083,7 @@ tg_listen_release_blocked_calls(dsd_opts* opts, dsd_state* state, unsigned int e
     if (!(tg_listen_blocked_slots(opts, state) & eligible_slots)) {
         return;
     }
-    if (apply_lockout_decoder_transition(opts, state) == UI_CMD_APPLY_FAILED) {
+    if (apply_lockout_decoder_transition_locked(opts, state, p25_sm_owns_trunk(opts, state)) == UI_CMD_APPLY_FAILED) {
         ui_set_toast(state, 4, "Talkgroup not tuned; return-to-CC tune failed");
     }
 }
@@ -4404,9 +4404,7 @@ apply_cmd_foundation(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
                 return UI_CMD_APPLY_FAILED;
             }
             dsd_tg_policy_session_avoid_clear(state);
-            p25_sm_tick_guard_enter();
             dsd_tg_policy_call_skip_clear(state);
-            p25_sm_tick_guard_leave();
             ui_set_toast(state, 3, "Cleared temporary TG avoids in current list");
             return UI_CMD_APPLY_COMPLETED;
         }
@@ -4540,7 +4538,7 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
 
     tg_lockout_report(opts, state, tg);
 
-    const int transition_status = apply_lockout_decoder_transition(opts, state);
+    const int transition_status = apply_lockout_decoder_transition_locked(opts, state, p25_sm_owns_trunk(opts, state));
     if (transition_status == UI_CMD_APPLY_FAILED) {
         LOG_WARN("WARNING: User lockout for TG %u was applied, but the return-to-CC cleanup tune was not accepted.\n",
                  tg);
@@ -4561,15 +4559,12 @@ apply_cmd_skip_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
     uint8_t slot = 0;
     DSD_MEMCPY(&slot, c->data, sizeof slot);
     slot &= 1U;
-    p25_sm_tick_guard_enter();
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
-        p25_sm_tick_guard_leave();
         return UI_CMD_APPLY_COMPLETED;
     }
     const uint64_t target = call.ota_target_id ? call.ota_target_id : call.policy_target_id;
     if (!target || target > UINT32_MAX || call.ota_source_id > UINT32_MAX) {
-        p25_sm_tick_guard_leave();
         return UI_CMD_APPLY_COMPLETED;
     }
     const unsigned int tg = (uint32_t)target;
@@ -4577,7 +4572,6 @@ apply_cmd_skip_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
     const int arm_rc =
         dsd_tg_policy_call_skip_arm(state, tg, (uint32_t)call.ota_source_id, fallback, dsd_time_now_monotonic_s());
     if (arm_rc != 0) {
-        p25_sm_tick_guard_leave();
         ui_set_toast(state, 4, "Could not skip TG %u", tg);
         return UI_CMD_APPLY_FAILED;
     }
@@ -4585,7 +4579,6 @@ apply_cmd_skip_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
     DSD_SNPRINTF(text, sizeof text, "Target: %u; call skipped.", tg);
     slot_block_note_event(opts, state, slot, text);
     const int transition_status = apply_skip_decoder_transition_locked(opts, state, p25_sm_owns_trunk(opts, state));
-    p25_sm_tick_guard_leave();
     ui_set_toast(state, 3, "TG %u skipped", tg);
     if (transition_status == UI_CMD_APPLY_FAILED) {
         LOG_WARN("WARNING: TG %u was skipped, but the return-to-CC cleanup tune was not accepted.\n", tg);
@@ -4975,6 +4968,10 @@ cfg_airspy_settings_valid(const dsdneoUserConfig* cfg) {
 
 static int
 cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    if (cfg->has_trunking && cfg->trunk_scanner && !cfg->trunk_enabled && opts->trunk_scan_enabled == 1) {
+        ui_set_toast(state, 3, "Trunk scan active: conventional scanner unavailable");
+        return UI_CMD_APPLY_FAILED;
+    }
     if (!cfg_airspy_settings_valid(cfg)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
@@ -5040,7 +5037,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     if (cfg_is_live_airspy(&cfg, old_audio_in_dev, old_audio_in_type)) {
         opts->airspy = old_airspy;
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", old_audio_in_dev);
-        airspy_rc = svc_airspy_apply_config(opts, state, &cfg.airspy, &old_airspy_tuning);
+        airspy_rc = svc_airspy_apply_config_locked(opts, state, &cfg.airspy, &old_airspy_tuning);
     }
     apply_cfg_live_rtl_ppm_request(opts, &cfg, old_audio_in_type);
 #endif
@@ -5182,8 +5179,61 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
     return 0;
 }
 
+/* Every free, publish or realloc of the live talkgroup policy store runs under
+ * the P25 SM tick guard: the watchdog's release-time audio flush evaluates policy
+ * under it (#554). The guard is not re-entrant. Nothing reached from these commands
+ * may acquire it with p25_sm_tick_guard_enter(), run_manual_retune_guarded(),
+ * svc_rtl_restart(), svc_airspy_apply_config() or noCarrier(); use the _locked forms.
+ * TRUNK_SET and RTL_SET_FREQ deliberately use narrow brackets instead. */
 static int
-apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+command_writes_policy_store(const struct dsd_app_command* c) {
+    static const int commands[] = {
+        DSD_APP_CMD_IMPORT_GROUP_LIST,
+        DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
+        DSD_APP_CMD_CONFIG_APPLY,
+        DSD_APP_CMD_RR_APPLY_IMPORT,
+        DSD_APP_CMD_IMPORT_CHANNEL_MAP,
+        DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR,
+        DSD_APP_CMD_TUNER_RELEASE,
+        DSD_APP_CMD_SCANNER_TOGGLE,
+        DSD_APP_CMD_TG_LISTEN_SET,
+        DSD_APP_CMD_TG_LISTEN_SET_ALL,
+        DSD_APP_CMD_TG_ROW_SET,
+        DSD_APP_CMD_TG_ROW_REMOVE,
+        DSD_APP_CMD_TG_SELECTION_SET,
+        DSD_APP_CMD_LOCKOUT_SLOT,
+        DSD_APP_CMD_TG_SESSION_AVOID_CLEAR,
+        DSD_APP_CMD_SKIP_SLOT,
+    };
+    if (!c) {
+        return 0;
+    }
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+        if (commands[i] == c->id) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void
+apply_cmd_leave_scanner_scope(dsd_opts* opts, dsd_state* state, int guarded) {
+    if (opts->scanner_mode == 1 || opts->trunk_scan_enabled == 1) {
+        return;
+    }
+    if (!guarded) {
+        p25_sm_tick_guard_enter();
+    }
+    /* A suspended scope leaves the newly applied configuration in place. */
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_scan_keys_leave(state);
+    if (!guarded) {
+        p25_sm_tick_guard_leave();
+    }
+}
+
+static int
+apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded) {
     const int mode_update = command_updates_scan_mode(c);
     const int was_scanner = opts && opts->scanner_mode == 1;
     const int scoped = mode_update && opts && state && dsd_scan_mode_suspend(opts, state);
@@ -5195,15 +5245,31 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (groups_suspended) {
         dsd_scan_groups_resume(state);
     }
-    if (was_scanner && opts->scanner_mode != 1 && opts->trunk_scan_enabled != 1) {
-        /* A suspended scope leaves the newly applied configuration in place. */
-        dsd_engine_channel_scan_leave(opts, state);
-        dsd_scan_keys_leave(state);
+    if (was_scanner) {
+        apply_cmd_leave_scanner_scope(opts, state, guarded);
     }
     if (scoped && dsd_scan_mode_resume(opts, state)) {
         reset_call_tracking(opts, state, 1);
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
         svc_publish_symbol_profile(opts, state, dsd_scan_mode_effective_profile(opts, state));
+    }
+    return result;
+}
+
+static int
+apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    const int guarded = command_writes_policy_store(c);
+    if (guarded) {
+        if (!p25_sm_tick_guard_try_enter()) {
+#ifdef DSD_NEO_TEST_HOOKS
+            atomic_fetch_add_explicit(&g_test_policy_guard_waits, 1, memory_order_relaxed);
+#endif
+            p25_sm_tick_guard_enter();
+        }
+    }
+    const int result = apply_cmd_scoped(opts, state, c, guarded);
+    if (guarded) {
+        p25_sm_tick_guard_leave();
     }
     return result;
 }
@@ -5261,6 +5327,11 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
+int
+dsd_app_command_test_policy_guard_waits(void) {
+    return atomic_load_explicit(&g_test_policy_guard_waits, memory_order_relaxed);
+}
+
 static int
 command_bytes_zero(const void* storage, size_t size) {
     const unsigned char* bytes = storage;

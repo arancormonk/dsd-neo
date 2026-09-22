@@ -35,6 +35,11 @@ dsd_trunk_p25_recovery_allowed(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state || opts->trunk_enable != 1) {
         return 0;
     }
+    /* Conventional scanning and P25 recovery are exclusive: -Y row policy
+     * stores rotate without a P25 tick in flight (#554). */
+    if (opts->scanner_mode == 1) {
+        return 0;
+    }
     if (opts->trunk_scan_enabled == 1) {
         return dsd_trunk_scan_hook_p25_ctx() != NULL;
     }

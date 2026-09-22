@@ -784,15 +784,21 @@ svc_rtl_enable_input(dsd_opts* opts, dsd_state* state) {
 
 int
 svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state) {
-        return -1;
-    }
-    int result = 0;
-
     /* P25 retunes hold this guard through their synchronous wait and
      * orchestrator bookkeeping. Quiesce them before destroying the stream's
      * wait primitives or replacing the context they use. */
     p25_sm_tick_guard_enter();
+    const int result = svc_rtl_restart_locked(opts, state);
+    p25_sm_tick_guard_leave();
+    return result;
+}
+
+int
+svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
+    int result = 0;
 
     /* Stop and destroy any existing stream context. */
     if (state->rtl_ctx) {
@@ -821,7 +827,6 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
     }
 
 done:
-    p25_sm_tick_guard_leave();
     return result;
 }
 
@@ -834,18 +839,18 @@ svc_airspy_restore_tuning(dsd_opts* opts, const svc_airspy_tuning* tuning) {
 }
 
 static int
-svc_airspy_reopen(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config, const dsd_airspy_config* previous,
-                  const svc_airspy_tuning* previous_tuning) {
+svc_airspy_reopen_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
+                       const dsd_airspy_config* previous, const svc_airspy_tuning* previous_tuning, int guard_held) {
     opts->airspy = *config;
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s", config->serial[0] ? ":serial=" : "",
                  config->serial);
-    int rc = svc_rtl_restart(opts, state);
+    int rc = guard_held ? svc_rtl_restart_locked(opts, state) : svc_rtl_restart(opts, state);
     if (rc != 0) {
         opts->airspy = *previous;
         svc_airspy_restore_tuning(opts, previous_tuning);
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s", previous->serial[0] ? ":serial=" : "",
                      previous->serial);
-        (void)svc_rtl_restart(opts, state);
+        (void)(guard_held ? svc_rtl_restart_locked(opts, state) : svc_rtl_restart(opts, state));
     }
     return rc;
 }
@@ -888,9 +893,9 @@ svc_airspy_apply_live(dsd_opts* opts, dsd_state* state, const dsd_airspy_config*
     return 0;
 }
 
-int
-svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
-                        const svc_airspy_tuning* previous_tuning) {
+static int
+svc_airspy_apply_config_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
+                             const svc_airspy_tuning* previous_tuning, int guard_held) {
     if (!opts || !state || !previous_tuning || !dsd_airspy_config_valid(config)) {
         return -1;
     }
@@ -902,10 +907,23 @@ svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_confi
     int reopen = previous.sample_rate != config->sample_rate || strcmp(previous.serial, config->serial) != 0
                  || previous_tuning->bandwidth != opts->rtl_dsp_bw_khz
                  || previous_tuning->volume != opts->rtl_volume_multiplier;
-    int rc = (reopen || !state->rtl_ctx) ? svc_airspy_reopen(opts, state, config, &previous, previous_tuning)
-                                         : svc_airspy_apply_live(opts, state, config, previous_tuning);
+    int rc = (reopen || !state->rtl_ctx)
+                 ? svc_airspy_reopen_impl(opts, state, config, &previous, previous_tuning, guard_held)
+                 : svc_airspy_apply_live(opts, state, config, previous_tuning);
     (void)rtl_stream_airspy_info(&opts->airspy_info);
     return rc;
+}
+
+int
+svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
+                        const svc_airspy_tuning* previous_tuning) {
+    return svc_airspy_apply_config_impl(opts, state, config, previous_tuning, 0);
+}
+
+int
+svc_airspy_apply_config_locked(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
+                               const svc_airspy_tuning* previous_tuning) {
+    return svc_airspy_apply_config_impl(opts, state, config, previous_tuning, 1);
 }
 
 int

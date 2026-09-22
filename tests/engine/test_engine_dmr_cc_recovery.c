@@ -505,6 +505,9 @@ standalone_recovery(void) {
     p25_sm_try_tick(&g_opts, &g_state);
     rc |= expect(p25->state == P25_SM_ON_CC && dsd_trunk_p25_recovery_allowed(&g_opts, &g_state),
                  "decoded P25 control activity starts standalone recovery before the first voice grant");
+    g_opts.scanner_mode = 1;
+    rc |= expect(!dsd_trunk_p25_recovery_allowed(&g_opts, &g_state), "conventional scanner excludes P25 recovery");
+    g_opts.scanner_mode = 0;
     g_state.p25_last_cc_msg_time_m = old_try;
     p25->t_cc_sync_m = g_state.last_cc_sync_time_m = old_try;
     p25->t_hunt_try_m = old_try;

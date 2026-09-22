@@ -802,6 +802,49 @@ test_rtl_restart_quiesces_p25_retunes(void) {
 }
 
 static int
+test_locked_restarts(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    reset_rtl_restart_stubs();
+    g_p25_tick_guard_depth = 1;
+    g_rtl_create_result = 0;
+    int rc = expect_int("locked RTL restart reports start failure", svc_rtl_restart_locked(&opts, &state), -1);
+    rc |= expect_int("locked RTL restart never enters", g_p25_tick_guard_enter_calls, 0);
+    rc |= expect_int("locked RTL restart never leaves", g_p25_tick_guard_leave_calls, 0);
+    rc |= expect_int("locked RTL restart retains caller hold", g_p25_tick_guard_depth, 1);
+    rc |= expect_int("locked RTL lifecycle guarded", g_rtl_lifecycle_outside_guard, 0);
+    rc |= expect_int("locked RTL destroys failed stream", g_rtl_destroy_calls, 1);
+
+    for (int locked = 0; locked <= 1; ++locked) {
+        reset_rtl_restart_stubs();
+        g_p25_tick_guard_depth = locked;
+        g_rtl_create_result = 0;
+        dsd_airspy_config_defaults(&opts.airspy);
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "airspy");
+        dsd_airspy_config next = opts.airspy;
+        next.sample_rate = 2500000;
+        const svc_airspy_tuning tuning = {851000000, 12, 0.0, 2};
+        const int result = locked ? svc_airspy_apply_config_locked(&opts, &state, &next, &tuning)
+                                  : svc_airspy_apply_config(&opts, &state, &next, &tuning);
+        rc |= expect_int("Airspy reopen reports start failure", result, -1);
+        rc |= expect_int("Airspy candidate and rollback both restart", g_rtl_start_calls, 2);
+        rc |= expect_int("Airspy candidate and rollback both destroyed", g_rtl_destroy_calls, 2);
+        rc |= expect_int("Airspy restart enter count", g_p25_tick_guard_enter_calls, locked ? 0 : 2);
+        rc |= expect_int("Airspy restart leave count", g_p25_tick_guard_leave_calls, locked ? 0 : 2);
+        rc |= expect_int("Airspy restart preserves caller depth", g_p25_tick_guard_depth, locked);
+        rc |= expect_int("Airspy restart does not nest", g_p25_tick_guard_errors, 0);
+        rc |= expect_int("Airspy lifecycle guarded", g_rtl_lifecycle_outside_guard, 0);
+        rc |= expect_int("Airspy restores previous rate", (int)opts.airspy.sample_rate, 0);
+        rc |= expect_int("Airspy restores previous frequency", (int)opts.rtlsdr_center_freq, 851000000);
+    }
+    reset_rtl_restart_stubs();
+    return rc;
+}
+
+static int
 test_rtl_service_option_contracts(void) {
     int rc = 0;
     static dsd_opts opts;
@@ -1317,6 +1360,7 @@ main(void) {
     rc |= test_payload_symbol_and_pulse_state();
 #ifdef USE_RADIO
     rc |= test_rtl_restart_quiesces_p25_retunes();
+    rc |= test_locked_restarts();
     rc |= test_rtl_service_option_contracts();
 #endif
     rc |= test_file_network_and_import_failure_contracts();

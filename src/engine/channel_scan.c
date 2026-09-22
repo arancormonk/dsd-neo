@@ -83,6 +83,9 @@ channel_scan_end_calls(dsd_opts* opts, dsd_state* state) {
 
 static int
 channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
+    /* Row commits run only in conventional scanner mode. Entry into that mode
+     * is guarded (or precedes startup), and P25 recovery admission excludes it,
+     * so policy installation cannot overlap an admitted watchdog tick (#554). */
     /* Hardware has moved. Even if a later retry rolls back, frames cannot use
      * the outgoing profile until a row is successfully committed. */
     scan->needs_commit = 1;
