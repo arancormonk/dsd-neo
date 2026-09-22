@@ -29,8 +29,11 @@ typedef struct {
     uint8_t data[RS_12_9_POLY_MAXDEG];
 } rs_12_9_poly_t;
 
+// Zero input syndrome; the codeword is unchanged.
 #define RS_12_9_CORRECT_ERRORS_RESULT_NO_ERRORS_FOUND          0
+// Exactly one legal symbol corrected, with a zero residual syndrome.
 #define RS_12_9_CORRECT_ERRORS_RESULT_ERRORS_CORRECTED         1
+// Nonzero syndrome with no single legal root, or a nonzero residual after correction.
 #define RS_12_9_CORRECT_ERRORS_RESULT_ERRORS_CANT_BE_CORRECTED 2
 typedef uint8_t rs_12_9_correct_errors_result_t;
 
@@ -40,6 +43,9 @@ extern "C" {
 
 void rs_12_9_calc_syndrome(const rs_12_9_codeword_t* codeword, rs_12_9_poly_t* syndrome);
 uint8_t rs_12_9_check_syndrome(const rs_12_9_poly_t* syndrome);
+// Normally called with a nonzero syndrome; a zero input syndrome defensively returns NO_ERRORS_FOUND.
+// Corrects at most one symbol; anything else is reported uncorrectable. errors_found reports the root count.
+// On failure, codeword may have been modified and must be ignored by the caller.
 rs_12_9_correct_errors_result_t rs_12_9_correct_errors(rs_12_9_codeword_t* codeword, const rs_12_9_poly_t* syndrome,
                                                        uint8_t* errors_found);
 
