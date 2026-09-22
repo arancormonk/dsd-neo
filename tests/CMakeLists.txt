@@ -5232,6 +5232,45 @@ else()
 endif()
 add_test(NAME RUNTIME_CONFIG_APPLY COMMAND dsd-neo_test_runtime_config_apply)
 
+# Real watchdog flush versus policy replacement; private queue contention probe.
+add_executable(
+    dsd-neo_test_engine_p25_policy_store_guard
+    engine/test_engine_p25_policy_store_guard.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/app_command_queue.c
+)
+target_compile_definitions(
+    dsd-neo_test_engine_p25_policy_store_guard
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_include_directories(
+    dsd-neo_test_engine_p25_policy_store_guard
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/app_control
+        ${PROJECT_SOURCE_DIR}/src/engine
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_engine_p25_policy_store_guard
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_engine_p25_policy_store_guard
+        PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+    )
+endif()
+add_test(
+    NAME ENGINE_P25_POLICY_STORE_GUARD
+    COMMAND dsd-neo_test_engine_p25_policy_store_guard
+)
+set_tests_properties(ENGINE_P25_POLICY_STORE_GUARD PROPERTIES TIMEOUT 180)
+
 # Compile the queue here to enable private storage-erasure probes without adding
 # diagnostic accessors to the production library or public frontend API.
 add_executable(
@@ -5276,7 +5315,23 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
     )
 endif()
+if(
+    DSD_HAS_RADIO
+    AND NOT APPLE
+    AND NOT WIN32
+    AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+)
+    target_compile_definitions(
+        dsd-neo_test_app_command_queue
+        PRIVATE DSD_NEO_TEST_RTL_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_app_command_queue
+        PRIVATE "LINKER:--wrap=rtl_stream_create"
+    )
+endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
+set_tests_properties(APP_COMMAND_QUEUE PROPERTIES TIMEOUT 120)
 
 add_executable(dsd-neo_test_ui_key_cleanup ui/test_ui_key_cleanup.c)
 target_link_libraries(
@@ -11117,5 +11172,11 @@ if(
     add_test(
         NAME RUNTIME_AIRSPY_CLI_OVERRIDE
         COMMAND dsd-neo_test_ui_airspy_config_apply M2
+    )
+    set_tests_properties(
+        UI_MENU_AIRSPY_CONFIG_FAILURE
+        UI_MENU_AIRSPY_CONFIG_TUNING
+        RUNTIME_AIRSPY_CLI_OVERRIDE
+        PROPERTIES TIMEOUT 120
     )
 endif()

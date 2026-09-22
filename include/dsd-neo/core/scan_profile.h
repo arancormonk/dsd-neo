@@ -76,20 +76,24 @@ int dsd_channel_profile_set(dsd_state* state, size_t row, dsd_scan_row_profile* 
 int dsd_scan_groups_begin(dsd_state* state);
 /** Install the row's preloaded policy (the global policy is retained as the baseline on the first
  * entry), or restore the baseline for a profile without groups. No allocation; the scope must
- * have been reserved with dsd_scan_groups_begin(). */
+ * have been reserved with dsd_scan_groups_begin(). Non-acquiring; caller holds the P25 SM tick
+ * guard when the policy store is observable by a running watchdog. */
 void dsd_scan_groups_enter(dsd_state* state, const dsd_scan_row_profile* profile);
 /** Install an explicit row mapping, or restore globals for inheritance. The
  * shared profile scope must be reserved by dsd_scan_groups_begin before tuning.
  * Returns nonzero when the effective map changed. No allocation or file I/O. */
 int dsd_scan_maps_enter(dsd_state* state, const dsd_scan_row_profile* profile);
-/** Restore the baseline policy and drop the scope. Safe when no scope is active. */
+/** Restore the baseline policy and drop the scope. Safe when no scope is active.
+ * Non-acquiring; caller holds the P25 SM tick guard when observable by a running watchdog. */
 void dsd_scan_groups_leave(dsd_state* state);
 /** Park the row policy so a group import edits the global baseline beneath it. Returns 1 when
- * parked (resume is then owed), 0 when no row policy is active. */
+ * parked (resume is then owed), 0 when no row policy is active.
+ * Non-acquiring; caller holds the P25 SM tick guard when observable by a running watchdog. */
 int dsd_scan_groups_suspend(dsd_state* state);
 /** A scan row's own group list is the effective policy (edits must not be written to the global group file). */
 int dsd_scan_groups_row_active(const dsd_state* state);
-/** Adopt the edited global baseline and restore the parked policy with active calls intact. */
+/** Adopt the edited global baseline and restore the parked policy with active calls intact.
+ * Non-acquiring; caller holds the P25 SM tick guard when observable by a running watchdog. */
 void dsd_scan_groups_resume(dsd_state* state);
 #ifdef __cplusplus
 }

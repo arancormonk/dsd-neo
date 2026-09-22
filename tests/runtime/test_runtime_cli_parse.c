@@ -6384,6 +6384,62 @@ test_trunk_scan_long_options_parse(void) {
 }
 
 static int
+test_trunk_scanner_option_order(void) {
+    int failed = 0;
+    for (int trunk_last = 0; trunk_last <= 1; ++trunk_last) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        initOpts(&opts);
+        initState(&state);
+        char program[] = "dsd-neo";
+        char trunk[] = "-T";
+        char scanner[] = "-Y";
+        char* argv[] = {program, trunk_last ? scanner : trunk, trunk_last ? trunk : scanner, NULL};
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int rc = dsd_parse_args(3, argv, &opts, &state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE || opts.trunk_enable != trunk_last || opts.scanner_mode != !trunk_last) {
+            DSD_FPRINTF(stderr, "-T/-Y order: trunk_last=%d rc=%d trunk=%d scanner=%d\n", trunk_last, rc,
+                        opts.trunk_enable, opts.scanner_mode);
+            failed = 1;
+        }
+        freeState(&state);
+    }
+    return failed;
+}
+
+static int
+test_trunk_scan_still_refuses_scanner_after_trunk(void) {
+    /* Long options apply before the short-option loop, so -Y still refuses an active --trunk-scan
+     * even though a later -T clears scanner mode: the conflict check is unchanged by that rule. */
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    initOpts(&opts);
+    initState(&state);
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-Y";
+    char arg2[] = "-T";
+    char arg3[] = "--trunk-scan";
+    char arg4[] = "targets.csv";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    const int rc = dsd_parse_args(5, argv, &opts, &state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        DSD_FPRINTF(stderr, "-Y -T --trunk-scan: rc=%d exit=%d trunk=%d scanner=%d trunk_scan=%d\n", rc, exit_rc,
+                    opts.trunk_enable, opts.scanner_mode, opts.trunk_scan_enabled);
+        test_rc = 1;
+    }
+    freeState(&state);
+    return test_rc;
+}
+
+static int
 test_trunk_scan_conflicts_with_scanner_mode(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -8192,6 +8248,8 @@ main(void) {
     rc |= test_bootstrap_inherited_trunk_scan_preserves_max_visit_override();
     rc |= test_input_source_tcp_ipv4_roundtrip();
     rc |= test_trunk_scan_long_options_parse();
+    rc |= test_trunk_scanner_option_order();
+    rc |= test_trunk_scan_still_refuses_scanner_after_trunk();
     rc |= test_trunk_scan_conflicts_with_scanner_mode();
     rc |= test_trunk_scan_rejects_global_channel_map();
     rc |= test_trunk_scan_cli_clears_inherited_channel_map();

@@ -310,6 +310,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   - Command queue dispatch and menu service helpers. Decoder-owner runtime start/stop opens/closes admission under
     the queue mutex; stop securely cancels pending payloads. Evicted or cancelled talkgroup exports publish failed
     completions. Successful inherited-policy scan exports update the configured persistence path.
+    `app_command_queue.c` uses `command_writes_policy_store()` to guard live policy transactions against the P25
+    watchdog's release-time audio flush; callees must use `_locked` forms to avoid acquiring the guard again.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
   - Source ID imports: `DSD_APP_CMD_IMPORT_SRC_LIST = 572` carries a path string;

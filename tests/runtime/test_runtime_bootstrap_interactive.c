@@ -268,10 +268,12 @@ test_rtltcp_trunking_imports_group_allow_list_and_null_output(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
 
+    opts.scanner_mode = 1;
     rc |= with_stdin_text(input, dsd_bootstrap_interactive, &opts, &state);
     rc |= expect_str("rtltcp-audio-in", opts.audio_in_dev, "rtltcp:host.example:2345:851.375M:30:-5:12:7:2");
     rc |= expect_int("rtltcp-decode-mode", g_last_decode_mode, DSDCFG_MODE_P25P1);
     rc |= expect_int("rtltcp-trunk-enable", opts.trunk_enable, 1);
+    rc |= expect_int("rtltcp-trunk-clears-scanner", opts.scanner_mode, 0);
     rc |= expect_str("rtltcp-channel-file", opts.chan_in_file, "chan.csv");
     rc |= expect_str("rtltcp-group-file", opts.group_in_file, "group.csv");
     rc |= expect_int("rtltcp-channel-import", g_chan_import_calls, 1);

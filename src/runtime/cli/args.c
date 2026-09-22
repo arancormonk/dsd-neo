@@ -2212,6 +2212,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         case 'T':                                                                                                      \
             /* Enable trunking features. */                                                                            \
+            opts->scanner_mode = 0;                                                                                    \
             opts->trunk_enable = 1;                                                                                    \
             opts->trunk_cli_seen = 1;                                                                                  \
             break;                                                                                                     \

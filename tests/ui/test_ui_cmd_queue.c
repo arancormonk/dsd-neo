@@ -27,10 +27,12 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/io/rtl_stream_fwd.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -3970,6 +3972,152 @@ test_skip_commands(uint8_t slot) {
 }
 
 static int
+test_config_keeps_trunk_scan_lifecycle(void) {
+    /* The coordinator is installed at startup only, so a live config may not flip the flag
+     * the scanner-exclusivity refusals and P25 recovery admission read (#554). */
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int installed = 0; installed <= 1; ++installed) {
+        init_test_context(&opts, &state);
+        opts.trunk_scan_enabled = installed;
+        opts.trunk_scan_idle_dwell_ms = 100;
+        dsdneoUserConfig cfg = {0};
+        cfg.has_trunk_scan = 1;
+        cfg.trunk_scan_enabled = !installed;
+        cfg.trunk_scan_idle_dwell_ms = 4321;
+        rc |= expect_true("trunk-scan lifecycle config queued", dsd_app_command_apply_config(&cfg) > 0);
+        rc |= expect_int("trunk-scan lifecycle config drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int("live config keeps the coordinator flag", opts.trunk_scan_enabled, installed);
+        rc |= expect_int("live config still applies trunk-scan tuning", opts.trunk_scan_idle_dwell_ms, 4321);
+        freeState(&state);
+    }
+    return rc;
+}
+
+static int
+test_config_refuses_scanner_under_trunk_scan(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    opts.trunk_enable = 1;
+    opts.persist_tg_lockouts = 1;
+    dsdneoUserConfig cfg = {0};
+    cfg.has_trunking = 1;
+    cfg.trunk_scanner = 1;
+    /* A conflicting config must be refused even before trying to load this path. */
+    DSD_SNPRINTF(cfg.trunk_group_csv, sizeof(cfg.trunk_group_csv), "missing-policy-554.csv");
+    int rc = expect_true("conflicting scanner config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("conflicting scanner config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("conflicting scanner config toast", state.ui_msg,
+                     "Trunk scan active: conventional scanner unavailable");
+    rc |= expect_true("conflicting scanner config preserves ownership",
+                      opts.trunk_scan_enabled == 1 && opts.trunk_enable == 1 && opts.scanner_mode == 0);
+    rc |= expect_true("conflicting scanner config preserves policy defaults",
+                      opts.persist_tg_lockouts == 1 && opts.group_in_file[0] == '\0');
+    freeState(&state);
+    return rc;
+}
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+static int g_config_rtl_creates;
+
+// GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+int __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx);
+
+int
+__wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
+    (void)opts;
+    *out_ctx = NULL;
+    ++g_config_rtl_creates;
+    return -1;
+}
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+
+static int
+test_config_rtl_restart_under_policy_guard(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.audio_out_type = 9;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl:0:851375000:22:0:24:0:2");
+    dsdneoUserConfig cfg = {0};
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_device = 0;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof(cfg.rtl_freq), "460.125M");
+    cfg.rtl_gain = 22;
+    cfg.rtl_bw_khz = 24;
+    cfg.rtl_volume = 2;
+    g_config_rtl_creates = 0;
+    int rc = expect_true("RTL restart config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("RTL restart config completes without nesting", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("RTL restart config reached stream creation", g_config_rtl_creates, 1);
+    rc |= expect_true("failed RTL restart leaves no stream", state.rtl_ctx == NULL && opts.rtl_started == 0);
+    freeState(&state);
+    return rc;
+}
+#endif
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+static int g_dmr_policy_returns;
+
+static dsd_trunk_tune_result
+dmr_policy_return(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    ++g_dmr_policy_returns;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static int
+test_dmr_policy_command_ticks_owner(int command) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.trunk_enable = opts.trunk_is_tuned = opts.frame_dmr = 1;
+    opts.audio_in_type = AUDIO_IN_NULL;
+    opts.audio_out_type = 9;
+    state.synctype = state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.trunk_cc_freq = 451000000;
+    dsd_trunk_recovery_note_protocol(&state, DSD_TRUNK_RECOVERY_DMR);
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.return_to_cc_request = dmr_policy_return});
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    dmr_sm_init_ctx(ctx, &opts, &state);
+    ctx->state = DMR_SM_TUNED;
+    ctx->vc_freq_hz = 452000000;
+    ctx->t_tune_m = dsd_time_now_monotonic_s() - ctx->grant_timeout_s - 1.0;
+    const dsd_call_observation call = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+                                       .slot = 0,
+                                       .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                       .ota_target_id = 1234,
+                                       .policy_target_id = 1234,
+                                       .ota_source_id = 42,
+                                       .frequency_hz = 452000000,
+                                       .observed_m = dsd_time_now_monotonic_s()};
+    int rc = expect_true("expired DMR call seeded", dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    g_dmr_policy_returns = 0;
+    rc |= expect_true("DMR policy command queued", dsd_app_command_set_u8(command, 0) > 0);
+    rc |= expect_int("DMR policy command drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("DMR deadline tick returned to CC", g_dmr_policy_returns, 1);
+    rc |= expect_int("DMR deadline tick leaves TUNED", dmr_sm_get_state(ctx), DMR_SM_ON_CC);
+    rc |= expect_true("DMR deadline tick starts acquisition", ctx->cc_acquiring && ctx->cc_tune_request_id == 0U);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    dmr_sm_init_ctx(ctx, NULL, NULL);
+    freeState(&state);
+    return rc;
+}
+#endif
+
+static int
 test_config_group_path_reloads_before_persist(int scoped) {
     static dsd_opts opts;
     static dsd_state state;
@@ -4056,6 +4204,15 @@ test_config_group_path_reloads_before_persist(int scoped) {
 int
 main(void) {
     int rc = test_session_queue_cancellation();
+    rc |= test_config_refuses_scanner_under_trunk_scan();
+    rc |= test_config_keeps_trunk_scan_lifecycle();
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+    rc |= test_config_rtl_restart_under_policy_guard();
+#endif
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= test_dmr_policy_command_ticks_owner(DSD_APP_CMD_LOCKOUT_SLOT);
+    rc |= test_dmr_policy_command_ticks_owner(DSD_APP_CMD_SKIP_SLOT);
+#endif
     rc |= test_producer_stop_restart();
     rc |= test_export_disposal();
     rc |= test_direct_key_preserves_active_keyring(0);

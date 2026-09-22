@@ -505,8 +505,9 @@ Skips never persist, are unaffected by `persist_tg_lockouts`, and survive scan-t
 subject to their expiry. **Clear temporary avoids and call skips — current list** clears both in the active scope;
 list reload/replacement or decoder stop also clears them.
 
-- Enable trunking (NXDN/P25/EDACS/DMR): `-T`
-- Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). For NXDN the hold is refreshed
+- Enable trunking (NXDN/P25/EDACS/DMR): `-T`. The later of `-T`/`-Y` wins.
+- Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). The
+  later of `-T`/`-Y` wins. For NXDN the hold is refreshed
   only by frames whose content passed a CRC, so an open squelch on an empty channel no longer parks the scan.
   A channel map with a `name` column (see `docs/csv-formats.md`) names the row being listened to in the Scan Mode
   row, in Call Info, and on the event history rows recorded while it is tuned. A map can load a per-row key set from

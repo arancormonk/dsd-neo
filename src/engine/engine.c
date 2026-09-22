@@ -1901,22 +1901,24 @@ no_carrier_apply_p25_cc_symbolrate(dsd_opts* opts, dsd_state* state) {
 }
 
 static int
-no_carrier_tick_dmr_owner(dsd_opts* opts, dsd_state* state) {
-    if (dsd_trunk_dmr_recovery_allowed(opts, state)) {
-        if (!p25_sm_tick_guard_try_enter()) {
-            return 1;
-        }
-        dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
-        if (dmr_sm_get_state(ctx) == DMR_SM_TUNED || ctx->cc_tune_request_id != 0U) {
-            /* The DMR owner applies its grant/voice deadlines and tracks the
-             * accepted return; generic/P25 recovery must not race it. */
-            dmr_sm_tick_ctx(ctx, opts, state);
-            p25_sm_tick_guard_leave();
-            return 1;
-        }
+no_carrier_tick_dmr_owner(dsd_opts* opts, dsd_state* state, int guard_held) {
+    if (!dsd_trunk_dmr_recovery_allowed(opts, state)) {
+        return 0;
+    }
+    if (!guard_held && !p25_sm_tick_guard_try_enter()) {
+        return 1;
+    }
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    const int active = dmr_sm_get_state(ctx) == DMR_SM_TUNED || ctx->cc_tune_request_id != 0U;
+    if (active) {
+        /* The DMR owner applies its grant/voice deadlines and tracks the
+         * accepted return; generic/P25 recovery must not race it. */
+        dmr_sm_tick_ctx(ctx, opts, state);
+    }
+    if (!guard_held) {
         p25_sm_tick_guard_leave();
     }
-    return 0;
+    return active;
 }
 
 static void
@@ -1938,8 +1940,8 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
 }
 
 static void
-no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state, time_t now) {
-    if (no_carrier_tick_dmr_owner(opts, state)) {
+no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state, time_t now, int guard_held) {
+    if (no_carrier_tick_dmr_owner(opts, state, guard_held)) {
         return;
     }
     if (!no_carrier_is_cc_return_due(opts, state, now)) {
@@ -2418,8 +2420,8 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
     DSD_MEMSET(state->static_ks_counter, 0, sizeof(state->static_ks_counter));
 }
 
-void
-noCarrier(dsd_opts* opts, dsd_state* state) {
+static void
+no_carrier_run(dsd_opts* opts, dsd_state* state, int guard_held) {
     const time_t now = time(NULL);
 
     if (opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && dsd_channel_modes_present(state)) {
@@ -2452,9 +2454,19 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
          * hop reason. A pending tune must not close them as sync loss first. */
         return;
     }
-    no_carrier_return_to_control_channel_if_needed(opts, state, now);
+    no_carrier_return_to_control_channel_if_needed(opts, state, now, guard_held);
     no_carrier_finalize_canonical_calls(opts, state, scanner_retuned);
     dsd_engine_reset_no_carrier_state(opts, state);
+}
+
+void
+noCarrier(dsd_opts* opts, dsd_state* state) {
+    no_carrier_run(opts, state, 0);
+}
+
+void
+dsd_engine_no_carrier_locked(dsd_opts* opts, dsd_state* state) {
+    no_carrier_run(opts, state, 1);
 }
 
 void
@@ -2603,6 +2615,8 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         if (!dsd_engine_channel_scan_service_sync(opts, state)) {
             break;
         }
+        /* processFrame() runs under the tick guard: nothing below it may pump
+         * controls, since a guarded command apply would self-deadlock (#554). */
         p25_sm_tick_guard_enter();
         const uint64_t dispatch_generation =
             frame_tune_generation ? *frame_tune_generation : dsd_trunk_tuning_generation();
