@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -344,12 +345,11 @@ test_udp_mixed_ports(dsd_opts* opts, dsd_state* state) {
     DSD_MEMCPY(packet + 28, text, sizeof text);
     CHECK(decode_ip_pdu(opts, state, 32, packet) == 1);
     const Event_History* notice = &state->event_history_s[0].Event_History_Items[1];
-    const Event_History* staged = &state->event_history_s[0].Event_History_Items[0];
     DSD_FPRINTF(stderr, "\nY1 ordinary UDP: notice text='%s'; staged text='%s'\n", notice->text_message,
-                staged->text_message);
+                dsd_event_staged_text(state, 0));
     CHECK(strstr(notice->text_message, "OK") != NULL);
     CHECK(notice->gps_s[0] == '\0');
-    CHECK(staged->text_message[0] == '\0');
+    CHECK(dsd_event_staged_text(state, 0)[0] == '\0');
     return failed;
 }
 
@@ -360,12 +360,11 @@ test_compressed_mixed_ports(dsd_opts* opts, dsd_state* state) {
     const uint8_t packet[9] = {0x00, 0x00, 0x00, 0x02, 0x01, 0x00, 0x4F, 0x00, 0x4B};
     dmr_udp_comp_pdu(opts, state, sizeof packet, packet);
     const Event_History* notice = &state->event_history_s[0].Event_History_Items[1];
-    const Event_History* staged = &state->event_history_s[0].Event_History_Items[0];
     DSD_FPRINTF(stderr, "\nY1 compressed UDP: notice text='%s'; staged text='%s'\n", notice->text_message,
-                staged->text_message);
+                dsd_event_staged_text(state, 0));
     CHECK(strstr(notice->text_message, "OK") != NULL);
     CHECK(notice->gps_s[0] == '\0');
-    CHECK(staged->text_message[0] == '\0');
+    CHECK(dsd_event_staged_text(state, 0)[0] == '\0');
     return failed;
 }
 

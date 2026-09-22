@@ -977,12 +977,7 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
     }
 
     if (have_events) {
-        dsd_event_history_transaction transaction;
-        dsd_event_history_transaction_begin(state, &transaction);
-        DSD_SNPRINTF(state->event_history_s[slot_idx].Event_History_Items[0].text_message,
-                     sizeof(state->event_history_s[slot_idx].Event_History_Items[0].text_message), "%s", local_out);
-        dsd_event_history_mark_dirty(&state->event_history_s[slot_idx]);
-        dsd_event_history_transaction_end(&transaction);
+        dsd_event_stage_text(state, slot_idx, local_out);
 
         if (valid) {
             uint32_t source = (uint32_t)state->dmr_lrrp_source[slot_idx];

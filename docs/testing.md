@@ -38,6 +38,7 @@ fill. The former CRC span computes `FF38D9C7`, while the corrected span matches 
 A one-bit payload mutation must not publish in strict mode. With `-F` and `-L`, the clean captured MNIS
 packet must append exactly one location row, while the CRC32-failed packet must append none.
 
+`CORE_EVENTS_STAGED_PAYLOAD` checks that data-notice staging is independent of active-call enrichment.
 `CORE_GPS_LRRP_CRC_GATING` checks that the real GPS decoders retain their state strings while suppressing
 CRC-failed location rows, with slot isolation and both file date formats; the LIP vectors follow
 TS 102 361-4 Table 6.79 and TS 100 392-18-1 Table 6.1. `DMR_USBD_LIP_LRRP_CRC` runs

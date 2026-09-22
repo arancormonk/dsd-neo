@@ -193,9 +193,15 @@ typedef struct {
 } Event_History;
 
 //event history for number of each items above
-// Ring length, shared with every consumer that walks the items: index 0 is the
-// staged (still-active) row, indexes 1..DSD_EVENT_HISTORY_LEN-1 are committed rows.
+// Ring length, shared with every consumer that walks the items: index 0 is the active
+// call's row, retaining its enrichment until commit; indexes 1..DSD_EVENT_HISTORY_LEN-1
+// are committed rows. Data-PDU payloads for notices live separately in staged.
 #define DSD_EVENT_HISTORY_LEN 255
+
+typedef struct {
+    char gps_s[2000];
+    char text_message[2000];
+} Event_History_Staged;
 
 typedef struct Event_History_I {
     Event_History Event_History_Items[DSD_EVENT_HISTORY_LEN];
@@ -212,6 +218,8 @@ typedef struct Event_History_I {
     // `revision`, so a consumer that mirrors committed rows only (the Qt call
     // history) can skip rescanning the ring while this is unchanged.
     uint64_t commit_rev;
+    // Decoder-thread scratch consumed by next data notice; snapshots incidental, no dirty marks; frontends never render
+    Event_History_Staged staged;
 } Event_History_I;
 
 //new audio filter stuff from: https://github.com/NedSimao/FilteringLibrary

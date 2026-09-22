@@ -924,24 +924,14 @@ p25_handle_sap4_packet_data(dsd_opts* opts, dsd_state* state, const P25PduDataFi
 
 static void
 p25_store_lrrp_text_for_history(dsd_state* state) {
-    if (state == NULL || state->event_history_s == NULL) {
+    const char* src = dsd_event_staged_text(state, 0);
+    if (src[0] == '\0') {
         return;
     }
-    dsd_event_history_transaction transaction;
-    dsd_event_history_transaction_begin(state, &transaction);
-    if (state->event_history_s[0].Event_History_Items[0].text_message[0] == '\0') {
-        dsd_event_history_transaction_end(&transaction);
-        return;
-    }
-
-    const char* src = (const char*)state->event_history_s[0].Event_History_Items[0].text_message;
     size_t cap = sizeof(state->dmr_lrrp_gps[0]);
     size_t maxcpy = cap - 7 - 1; /* prefix "LRRP: " + N + NUL */
     DSD_SNPRINTF(state->dmr_lrrp_gps[0], cap, "LRRP: %.*s", (int)maxcpy, src);
-    DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s,
-                 sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dmr_lrrp_gps[0]);
-    dsd_event_history_mark_dirty(&state->event_history_s[0]);
-    dsd_event_history_transaction_end(&transaction);
+    dsd_event_stage_gps(state, 0, state->dmr_lrrp_gps[0]);
 }
 
 static P25PduDecodeStatus
@@ -980,10 +970,7 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
         utf8_to_text(state, write_history, (uint16_t)span, payload);
     }
     p25_store_lrrp_text_for_history(state);
-    const char* summary = "";
-    if (state != NULL && state->event_history_s != NULL) {
-        summary = state->event_history_s[0].Event_History_Items[0].text_message;
-    }
+    const char* summary = dsd_event_staged_text(state, 0);
     p25_emit_pdu_json_for_fields(pdu, len, encrypted, summary);
     return status;
 }

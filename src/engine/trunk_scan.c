@@ -1409,6 +1409,10 @@ trunk_scan_restore_call_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot
         }
         dsd_event_history_transaction_end(&transaction);
     }
+    // A target change cancels any PDU in flight; staging is never part of a saved call row.
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        dsd_event_stage_clear(state, (uint8_t)slot);
+    }
     state->dmr_so = snapshot->dmr_so;
     state->dmr_soR = snapshot->dmr_soR;
 }

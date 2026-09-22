@@ -11,6 +11,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -549,14 +550,12 @@ main(void) {
         st.dmr_lrrp_source[0] = 111U;
         st.dmr_lrrp_target[0] = 222U;
         if (st.event_history_s != NULL) {
-            DSD_MEMSET(st.event_history_s[0].Event_History_Items[0].text_message, 0,
-                       sizeof(st.event_history_s[0].Event_History_Items[0].text_message));
+            dsd_event_stage_text(&st, 0, "");
         }
         uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
         rc |= expect_u8("nmea-valid", ok, 1U);
         if (st.event_history_s != NULL) {
-            rc |= expect_has_substr(st.event_history_s[0].Event_History_Items[0].text_message, "$GPRMC,TEST*71",
-                                    "nmea-valid-text");
+            rc |= expect_has_substr(dsd_event_staged_text(&st, 0), "$GPRMC,TEST*71", "nmea-valid-text");
         } else {
             DSD_FPRINTF(stderr, "%s\n", "nmea-valid-text: event_history_s is NULL");
             rc |= 1;
@@ -574,13 +573,12 @@ main(void) {
         st.dmr_lrrp_source[0] = 333U;
         st.dmr_lrrp_target[0] = 444U;
         if (st.event_history_s != NULL) {
-            DSD_MEMSET(st.event_history_s[0].Event_History_Items[0].text_message, 0,
-                       sizeof(st.event_history_s[0].Event_History_Items[0].text_message));
+            dsd_event_stage_text(&st, 0, "");
         }
         uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
         rc |= expect_u8("nmea-invalid", ok, 0U);
         if (st.event_history_s != NULL) {
-            rc |= expect_i("nmea-invalid-text-empty", st.event_history_s[0].Event_History_Items[0].text_message[0], 0);
+            rc |= expect_i("nmea-invalid-text-empty", dsd_event_staged_text(&st, 0)[0], 0);
         } else {
             DSD_FPRINTF(stderr, "%s\n", "nmea-invalid-text-empty: event_history_s is NULL");
             rc |= 1;
@@ -599,15 +597,13 @@ main(void) {
         st.dmr_lrrp_target[0] = 666U;
         reset_watchdog_capture();
         if (st.event_history_s != NULL) {
-            DSD_MEMSET(st.event_history_s[0].Event_History_Items[0].text_message, 0,
-                       sizeof(st.event_history_s[0].Event_History_Items[0].text_message));
+            dsd_event_stage_text(&st, 0, "");
         }
         uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
         rc |= expect_u8("nmea-missing-star", ok, 0U);
         rc |= expect_i("nmea-missing-star-watchdog", g_watchdog_calls, 0);
         if (st.event_history_s != NULL) {
-            rc |= expect_i("nmea-missing-star-text-empty", st.event_history_s[0].Event_History_Items[0].text_message[0],
-                           0);
+            rc |= expect_i("nmea-missing-star-text-empty", dsd_event_staged_text(&st, 0)[0], 0);
         } else {
             DSD_FPRINTF(stderr, "%s\n", "nmea-missing-star-text-empty: event_history_s is NULL");
             rc |= 1;

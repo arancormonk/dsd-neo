@@ -123,6 +123,23 @@ dsd_event_history_item_set_message(Event_History* item, dsd_event_severity sever
     }
 }
 
+/**
+ * Stage a data PDU's text/GPS independently of the active call's history row.
+ * Replace operations accept NULL or "" to clear; append ignores NULL. Clear resets both fields.
+ * Writers are no-ops without history or for a slot outside DSD_CALL_STATE_SLOT_COUNT, and
+ * getters return "" in those cases. Staging alone does not change history revisions.
+ * Writers take the history transaction internally: never call them while holding a history
+ * transaction (the mutex is non-recursive).
+ * Getters return borrowed, decoder-thread-owned views into state, invalidated by the next
+ * staging write, consumption or reset. They are not telemetry snapshot fields.
+ */
+void dsd_event_stage_text(dsd_state* state, uint8_t slot, const char* text);
+void dsd_event_stage_text_append(dsd_state* state, uint8_t slot, const char* text);
+void dsd_event_stage_gps(dsd_state* state, uint8_t slot, const char* gps);
+const char* dsd_event_staged_text(const dsd_state* state, uint8_t slot);
+const char* dsd_event_staged_gps(const dsd_state* state, uint8_t slot);
+void dsd_event_stage_clear(dsd_state* state, uint8_t slot);
+
 void write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
                              const char* event_string);
 void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
@@ -144,7 +161,7 @@ int dsd_event_history_copy_snapshot(const dsd_state* state, Event_History_I out[
  */
 void dsd_event_flush_pending_alerts(dsd_opts* opts, dsd_state* state);
 /**
- * Clear every history row on both slots and the per-slot commit bookkeeping with it.
+ * Clear every history row, staged data payload and per-slot commit bookkeeping on both slots.
  *
  * Callers must not hold an event-history transaction: this opens its own. Clearing the rows
  * without clearing the bookkeeping would leave a reacquired transmission trying to merge into
@@ -157,7 +174,7 @@ int dsd_event_state_copy_snapshot_incremental(dsd_state* dst, const dsd_state* s
 int dsd_event_state_copy_snapshot(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2]);
 void watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot);
 /**
- * Commit a data/control notice using neutral event metadata.
+ * Commit a data/control notice using neutral event metadata, consuming the slot's staged data payload.
  *
  * Only DSD_EVENT_CATEGORY_DATA and DSD_EVENT_CATEGORY_CONTROL are accepted.
  * Invalid categories are rejected without changing event history.
@@ -166,7 +183,7 @@ int dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint
                                           const dsd_call_observation* observation, dsd_event_category category,
                                           const char* notice);
 /**
- * Commit a data/control notice with GPS owned by the new event, leaving the active row's staged payload unchanged.
+ * Commit a data/control notice with GPS owned by the new event, leaving the staged payload and active row unchanged.
  *
  * Only DSD_EVENT_CATEGORY_DATA and DSD_EVENT_CATEGORY_CONTROL are accepted.
  * Invalid categories or a NULL GPS value are rejected without changing event history.

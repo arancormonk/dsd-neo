@@ -131,8 +131,8 @@ main(void) {
         DSD_FPRINTF(stderr, "utf16_to_text printed: %s\n", buf);
         assert(0 && "UTF-16 text was not transcoded as expected");
     }
-    if (strcmp(st.event_history_s[0].Event_History_Items[0].text_message, kExpectedEvent) != 0) {
-        DSD_FPRINTF(stderr, "event text: %s\n", st.event_history_s[0].Event_History_Items[0].text_message);
+    if (strcmp(dsd_event_staged_text(&st, 0), kExpectedEvent) != 0) {
+        DSD_FPRINTF(stderr, "event text: %s\n", dsd_event_staged_text(&st, 0));
         assert(0 && "event text was not the UTF-8 of the printable characters");
     }
 
@@ -147,8 +147,8 @@ main(void) {
         DSD_FPRINTF(stderr, "utf16le_to_text printed: %s\n", buf);
         assert(0 && "UTF-16LE text was not transcoded as expected");
     }
-    if (strcmp(st.event_history_s[0].Event_History_Items[0].text_message, kPangramUtf8) != 0) {
-        DSD_FPRINTF(stderr, "event text: %s\n", st.event_history_s[0].Event_History_Items[0].text_message);
+    if (strcmp(dsd_event_staged_text(&st, 0), kPangramUtf8) != 0) {
+        DSD_FPRINTF(stderr, "event text: %s\n", dsd_event_staged_text(&st, 0));
         assert(0 && "UTF-16LE event text was not the pangram");
     }
 

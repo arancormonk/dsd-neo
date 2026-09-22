@@ -34,6 +34,7 @@ target_sources(
         util/channel_label.c
         util/enc_lockout.c
         util/dsd_events.c
+        util/dsd_event_staging.c
         util/call_state.c
         util/edacs_afs.c
         util/dsd_alias.c

@@ -153,7 +153,7 @@ run_packet(dsd_opts* opts, dsd_state* st, const uint8_t* packet, size_t packet_l
     uint8_t copy[512];
     assert(packet_len <= sizeof copy);
     DSD_MEMCPY(copy, packet, packet_len);
-    st->event_history_s[0].Event_History_Items[0].text_message[0] = '\0';
+    dsd_event_stage_text(st, 0, "");
     st->dmr_lrrp_gps[0][0] = '\0';
     dsd_test_capture_stderr cap;
     assert(dsd_test_capture_stderr_begin(&cap, prefix) == 0);
@@ -173,7 +173,7 @@ main(void) {
     assert(st.event_history_s != NULL);
 
     char buf[1024];
-    const char* text_message = st.event_history_s[0].Event_History_Items[0].text_message;
+    const char* text_message = dsd_event_staged_text(&st, 0);
 
     /* 1. The reporter's vector: every accented character survives, including the last one. */
     run_packet(&opts, &st, kPangramPacket, sizeof kPangramPacket, buf, sizeof buf, "dmr_tms_le");

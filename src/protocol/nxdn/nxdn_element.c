@@ -1074,12 +1074,7 @@ nxdn_dcall_print_payload(const dsd_opts* opts, const dsd_state* state, const str
 
 static void
 nxdn_dcall_watchdog(dsd_opts* opts, dsd_state* state, const char* event_text) {
-    dsd_event_history_transaction transaction;
-    dsd_event_history_transaction_begin(state, &transaction);
-    DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].text_message,
-                 sizeof(state->event_history_s[0].Event_History_Items[0].text_message), "%s", event_text);
-    dsd_event_history_mark_dirty(&state->event_history_s[0]);
-    dsd_event_history_transaction_end(&transaction);
+    dsd_event_stage_text(state, 0, event_text);
     const uint32_t source = (uint32_t)state->dmr_lrrp_source[0];
     const uint32_t target = (uint32_t)state->dmr_lrrp_target[0];
     char comp_string[128];

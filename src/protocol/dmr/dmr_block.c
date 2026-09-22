@@ -748,22 +748,12 @@ dmr_udt_append_text_event(dsd_state* state, uint8_t slot, char c) {
     char tmp[2];
     tmp[0] = c;
     tmp[1] = 0;
-    dsd_event_history_transaction transaction;
-    dsd_event_history_transaction_begin(state, &transaction);
-    dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
-               sizeof state->event_history_s[slot].Event_History_Items[0].text_message, tmp);
-    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
-    dsd_event_history_transaction_end(&transaction);
+    dsd_event_stage_text_append(state, slot, tmp);
 }
 
 static void
 dmr_udt_set_text_event(dsd_state* state, uint8_t slot, const char* text) {
-    dsd_event_history_transaction transaction;
-    dsd_event_history_transaction_begin(state, &transaction);
-    DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].text_message,
-                 sizeof(state->event_history_s[slot].Event_History_Items[0].text_message), "%s", text);
-    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
-    dsd_event_history_transaction_end(&transaction);
+    dsd_event_stage_text(state, slot, text);
 }
 
 static void
@@ -1040,9 +1030,6 @@ dmr_udt_finalize(dmr_udt_ctx* ctx) {
     if (ctx->event_gps[0] != '\0') {
         (void)dsd_event_emit_data_notice_with_gps(ctx->opts, ctx->state, ctx->slot, &observation, ctx->udt_string,
                                                   ctx->event_gps);
-    } else if (ctx->udt_format2 == 0x0B) {
-        // See decode_ip_pdu_emit_notice: an empty LIP notice must not consume the active call's GPS.
-        (void)dsd_event_emit_data_notice_with_gps(ctx->opts, ctx->state, ctx->slot, &observation, ctx->udt_string, "");
     } else {
         (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, ctx->slot, &observation, ctx->udt_string);
     }
@@ -1302,13 +1289,7 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
         // dmr_locn() call on the next line passes the same pointer with the unadjusted length.
         utf8_to_text(ctx->state, 0, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
         dmr_locn(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
-        dsd_event_history_transaction transaction;
-        dsd_event_history_transaction_begin(ctx->state, &transaction);
-        DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].gps_s,
-                     sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].gps_s), "%s",
-                     ctx->state->dmr_lrrp_gps[ctx->slot]);
-        dsd_event_history_mark_dirty(&ctx->state->event_history_s[ctx->slot]);
-        dsd_event_history_transaction_end(&transaction);
+        dsd_event_stage_gps(ctx->state, ctx->slot, ctx->state->dmr_lrrp_gps[ctx->slot]);
     }
 
     // LRRP/LOCN rewrite dmr_lrrp_gps with the decoded position and ARS appends its summary to it,
