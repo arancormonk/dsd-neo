@@ -2248,7 +2248,7 @@ test_scan_hold_avoid_commands(void) {
     opts.audio_in_type = AUDIO_IN_RTL;
     dsd_trunk_scan_hooks hooks = {0};
     hooks.control = fake_scan_control;
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(&hooks);
     g_scan_control_calls = 0;
     g_scan_control_result = 1;
     rc |= expect_int("trunk-scan hold queued", dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE),
@@ -2302,8 +2302,7 @@ test_scan_hold_avoid_commands(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("trunk-scan refused cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_contains("trunk-scan refused cycle toast", state.ui_msg, "only one target");
-    dsd_trunk_scan_hooks none = {0};
-    dsd_trunk_scan_hooks_set(none);
+    dsd_trunk_scan_hooks_set(NULL);
     freeState(&state);
 
     /* Neither scanner running: accepted, declined, nothing changes. */

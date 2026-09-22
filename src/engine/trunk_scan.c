@@ -3605,8 +3605,7 @@ trunk_scan_uninstall_runtime_hooks(const dsd_trunk_scan_coord* coord) {
         return;
     }
     g_trunk_scan_coord = NULL;
-    dsd_trunk_scan_hooks hooks = {0};
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(NULL);
 }
 
 static void
@@ -3650,7 +3649,7 @@ trunk_scan_install_runtime_hooks(dsd_trunk_scan_coord* coord) {
     hooks.enc_lockout_clear_snapshots = trunk_scan_clear_enc_lockout_snapshots;
     hooks.control = dsd_engine_trunk_scan_control;
     hooks.decryption_apply = trunk_scan_apply_decryption;
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(&hooks);
 }
 
 static int

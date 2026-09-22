@@ -1440,7 +1440,7 @@ test_example_targets() {
     }
     dsd_engine_trunk_scan_shutdown(opts, state);
     dsd_trunk_tuning_hooks_set({});
-    dsd_trunk_scan_hooks_set({});
+    dsd_trunk_scan_hooks_set(nullptr);
     dsd_state_trunk_lcn_free(state);
     dsd_state_ext_free_all(state);
     DSD_SECURE_ZERO(state, sizeof *state);

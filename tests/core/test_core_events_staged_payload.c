@@ -35,18 +35,18 @@ __wrap_beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len)
 #pragma GCC diagnostic pop
 #endif
 
-static dsd_opts opts;
-static dsd_state state;
+static dsd_opts g_opts;
+static dsd_state g_state;
 static Event_History_I history[2];
 
 static void
 reset_fixture(void) {
-    dsd_state_ext_free_all(&state);
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
+    dsd_state_ext_free_all(&g_state);
+    DSD_MEMSET(&g_opts, 0, sizeof g_opts);
+    DSD_MEMSET(&g_state, 0, sizeof g_state);
     DSD_MEMSET(history, 0, sizeof history);
-    state.event_history_s = history;
-    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    g_state.event_history_s = history;
+    g_state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
     init_event_history(&history[0], 0, DSD_EVENT_HISTORY_LEN);
     init_event_history(&history[1], 0, DSD_EVENT_HISTORY_LEN);
 }
@@ -62,12 +62,12 @@ seed_enriched_call(void) {
         .policy_target_id = 1201,
         .observed_m = 1.0,
     };
-    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    dsd_event_sync_slot(&opts, &state, 0);
+    assert(dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(&g_opts, &g_state, 0);
     dsd_call_snapshot call;
-    assert(dsd_call_state_get(&state, 0, &call) == 1);
-    assert(dsd_event_enrich_gps(&state, 0, call.epoch, "GPS A") == 1);
-    assert(dsd_event_enrich_text(&state, 0, call.epoch, "text A") == 1);
+    assert(dsd_call_state_get(&g_state, 0, &call) == 1);
+    assert(dsd_event_enrich_gps(&g_state, 0, call.epoch, "GPS A") == 1);
+    assert(dsd_event_enrich_text(&g_state, 0, call.epoch, "text A") == 1);
 }
 
 static int
@@ -82,7 +82,7 @@ expect_text(const char* tag, const char* got, const char* expected) {
 static void
 emit_notice(void) {
     const dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 0, 222, 1201);
-    assert(dsd_event_emit_data_notice(&opts, &state, 0, &observation, "PDU from 222;") == 0);
+    assert(dsd_event_emit_data_notice(&g_opts, &g_state, 0, &observation, "PDU from 222;") == 0);
 }
 
 static int
@@ -100,14 +100,14 @@ test_notice_does_not_consume_call(void) {
 
 static void
 stage_packet(void) {
-    dsd_event_stage_text(&state, 0, "text B");
-    dsd_event_stage_gps(&state, 0, "GPS B");
+    dsd_event_stage_text(&g_state, 0, "text B");
+    dsd_event_stage_gps(&g_state, 0, "GPS B");
 }
 
 static int
 expect_staging(const char* gps, const char* text) {
-    int failed = expect_text("staged GPS", dsd_event_staged_gps(&state, 0), gps);
-    return failed | expect_text("staged text", dsd_event_staged_text(&state, 0), text);
+    int failed = expect_text("staged GPS", dsd_event_staged_gps(&g_state, 0), gps);
+    return failed | expect_text("staged text", dsd_event_staged_text(&g_state, 0), text);
 }
 
 static int
@@ -164,7 +164,7 @@ test_explicit_gps_preserves_staging(void) {
     seed_enriched_call();
     stage_packet();
     const dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 0, 333, 1201);
-    assert(dsd_event_emit_data_notice_with_gps(&opts, &state, 0, &observation, "Explicit GPS;", "GPS C") == 0);
+    assert(dsd_event_emit_data_notice_with_gps(&g_opts, &g_state, 0, &observation, "Explicit GPS;", "GPS C") == 0);
     int failed = expect_staging("GPS B", "text B") | expect_call_payload();
     failed |= expect_text("explicit notice GPS", history[0].Event_History_Items[1].gps_s, "GPS C");
     failed |= expect_text("explicit notice text", history[0].Event_History_Items[1].text_message, "");
@@ -176,25 +176,25 @@ static int
 test_staging_guards_and_reset(void) {
     reset_fixture();
     stage_packet();
-    dsd_event_stage_text(&state, 1, "slot 1");
-    dsd_event_stage_gps(&state, 1, "GPS 1");
-    dsd_event_history_reset(&state);
+    dsd_event_stage_text(&g_state, 1, "slot 1");
+    dsd_event_stage_gps(&g_state, 1, "GPS 1");
+    dsd_event_history_reset(&g_state);
     int failed = expect_staging("", "");
-    failed |= expect_text("reset slot-1 text", dsd_event_staged_text(&state, 1), "");
-    failed |= expect_text("reset slot-1 GPS", dsd_event_staged_gps(&state, 1), "");
+    failed |= expect_text("reset slot-1 text", dsd_event_staged_text(&g_state, 1), "");
+    failed |= expect_text("reset slot-1 GPS", dsd_event_staged_gps(&g_state, 1), "");
     stage_packet();
-    dsd_event_stage_text(&state, 0, NULL);
-    dsd_event_stage_gps(&state, 0, NULL);
+    dsd_event_stage_text(&g_state, 0, NULL);
+    dsd_event_stage_gps(&g_state, 0, NULL);
     failed |= expect_staging("", "");
     stage_packet();
-    dsd_event_stage_clear(&state, 0);
+    dsd_event_stage_clear(&g_state, 0);
     failed |= expect_staging("", "");
     stage_packet();
-    Event_History_I* saved = state.event_history_s;
+    Event_History_I* saved = g_state.event_history_s;
     for (int i = 0; i < 3; ++i) {
-        dsd_state* target = i == 0 ? NULL : &state;
+        dsd_state* target = i == 0 ? NULL : &g_state;
         uint8_t slot = i == 2 ? 2U : 0U;
-        state.event_history_s = i == 1 ? NULL : saved;
+        g_state.event_history_s = i == 1 ? NULL : saved;
         dsd_event_stage_text(target, slot, "ignored");
         dsd_event_stage_text_append(target, slot, "ignored");
         dsd_event_stage_gps(target, slot, "ignored");
@@ -202,7 +202,7 @@ test_staging_guards_and_reset(void) {
         failed |= expect_text("invalid state/slot text", dsd_event_staged_text(target, slot), "");
         failed |= expect_text("invalid state/slot GPS", dsd_event_staged_gps(target, slot), "");
     }
-    state.event_history_s = saved;
+    g_state.event_history_s = saved;
     return failed | expect_staging("GPS B", "text B");
 }
 
@@ -211,8 +211,8 @@ test_call_commit_keeps_packet_staged(void) {
     reset_fixture();
     seed_enriched_call();
     stage_packet();
-    assert(dsd_call_state_end(&state, 0, 2.0) == 1);
-    dsd_event_sync_slot(&opts, &state, 0);
+    assert(dsd_call_state_end(&g_state, 0, 2.0) == 1);
+    dsd_event_sync_slot(&g_opts, &g_state, 0);
     assert(history[0].Event_History_Items[1].source_id == 111);
     int failed = expect_text("T10f committed call GPS", history[0].Event_History_Items[1].gps_s, "GPS A");
     failed |= expect_text("T10f committed call text", history[0].Event_History_Items[1].text_message, "text A");
@@ -224,22 +224,22 @@ test_call_commit_keeps_packet_staged(void) {
 static int
 test_append_isolation_and_counters(void) {
     reset_fixture();
-    assert(dsd_call_state_ensure(&state) >= 0);
+    assert(dsd_call_state_ensure(&g_state) >= 0);
     uint64_t revision[2], push_seq[2], commit_rev[2];
     for (int slot = 0; slot < 2; ++slot) {
         revision[slot] = history[slot].revision;
         push_seq[slot] = history[slot].push_seq;
         commit_rev[slot] = history[slot].commit_rev;
     }
-    dsd_event_stage_text(&state, 1, "A");
-    dsd_event_stage_text_append(&state, 1, "B");
-    dsd_event_stage_text_append(&state, 1, "C");
-    dsd_event_stage_text_append(&state, 1, NULL);
-    dsd_event_stage_gps(&state, 1, "GPS 1");
+    dsd_event_stage_text(&g_state, 1, "A");
+    dsd_event_stage_text_append(&g_state, 1, "B");
+    dsd_event_stage_text_append(&g_state, 1, "C");
+    dsd_event_stage_text_append(&g_state, 1, NULL);
+    dsd_event_stage_gps(&g_state, 1, "GPS 1");
     int failed = expect_staging("", "");
-    failed |= expect_text("T10g appended text", dsd_event_staged_text(&state, 1), "ABC");
-    failed |= expect_text("T10g isolated GPS", dsd_event_staged_gps(&state, 1), "GPS 1");
-    dsd_event_stage_clear(&state, 1);
+    failed |= expect_text("T10g appended text", dsd_event_staged_text(&g_state, 1), "ABC");
+    failed |= expect_text("T10g isolated GPS", dsd_event_staged_gps(&g_state, 1), "GPS 1");
+    dsd_event_stage_clear(&g_state, 1);
     for (int slot = 0; slot < 2; ++slot) {
         assert(history[slot].revision == revision[slot]);
         assert(history[slot].push_seq == push_seq[slot]);
@@ -269,6 +269,6 @@ main(void) {
     failed |= test_call_commit_keeps_packet_staged();
     failed |= test_append_isolation_and_counters();
     test_raw_pdu_not_consumed();
-    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(&g_state);
     return failed;
 }

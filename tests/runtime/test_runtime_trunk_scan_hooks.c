@@ -100,7 +100,7 @@ main(void) {
 
     /* Nothing installed (headless, tests, -Y): the control op reports unavailable. */
     dsd_trunk_scan_hooks none = {0};
-    dsd_trunk_scan_hooks_set(none);
+    dsd_trunk_scan_hooks_set(&none);
     assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE)
            == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
     assert(g_control_calls == 0);
@@ -111,7 +111,7 @@ main(void) {
     dsd_trunk_scan_hooks hooks = {0};
     hooks.control = fake_control;
     hooks.p25_conventional_activity = fake_p25_activity;
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(&hooks);
 
     g_control_result = 1;
     assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE) == 1);
@@ -136,8 +136,8 @@ main(void) {
     assert(g_last_op == DSD_TRUNK_SCAN_CONTROL_ADVANCE);
     assert(g_control_calls == 4);
 
-    /* Uninstalling restores the unavailable answer. */
-    dsd_trunk_scan_hooks_set(none);
+    /* Uninstalling (NULL clears every slot) restores the unavailable answer. */
+    dsd_trunk_scan_hooks_set(NULL);
     assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE)
            == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
     assert(g_control_calls == 4);
