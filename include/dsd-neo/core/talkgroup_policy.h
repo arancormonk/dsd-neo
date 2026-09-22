@@ -264,9 +264,10 @@ int dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state)
  * result is one reference the caller must eventually dsd_tg_policy_release(); the state's
  * own extension slot holds its own reference, so installing a store never transfers the
  * caller's.
- * Stores observable by a running P25 watchdog may only be replaced or edited
- * (reload_group_file, clear, install, restore, set_*, remove_*, session_avoid_*)
- * with the P25 SM tick guard held by the caller: release-time audio flushes read
+ * Stores observable by a running P25 watchdog may only be replaced or edited (every
+ * replacement or edit: reload_group_file, clear, install, restore, the table editors,
+ * the session-avoid and call-skip ledgers) with the P25 SM tick guard held by the
+ * caller: release-time audio flushes read
  * policy under that guard. These functions are non-acquiring. Detached construction
  * (dsd_tg_policy_load, snapshot copies) and pre-start/post-stop lifecycle work are exceptions.
  */

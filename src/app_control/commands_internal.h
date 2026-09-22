@@ -18,7 +18,7 @@ void dsd_app_command_session_set_open(int open);
 
 int dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state);
 #ifdef DSD_NEO_TEST_HOOKS
-/* Contended policy transactions only; relaxed so observation adds no synchronization. */
+/* Counts contended policy transactions; a count only, it carries no payload. */
 int dsd_app_command_test_policy_guard_waits(void);
 /* Boolean probes only: tests must never export command payloads as diagnostics. */
 int dsd_app_command_test_storage_cleared(void);

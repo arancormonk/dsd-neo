@@ -2615,6 +2615,8 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         if (!dsd_engine_channel_scan_service_sync(opts, state)) {
             break;
         }
+        /* processFrame() runs under the tick guard: nothing below it may pump
+         * controls, since a guarded command apply would self-deadlock (#554). */
         p25_sm_tick_guard_enter();
         const uint64_t dispatch_generation =
             frame_tune_generation ? *frame_tune_generation : dsd_trunk_tuning_generation();

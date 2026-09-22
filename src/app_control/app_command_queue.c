@@ -4968,12 +4968,14 @@ cfg_airspy_settings_valid(const dsdneoUserConfig* cfg) {
 
 static int
 cfg_prepare_runtime_apply(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    if (!cfg_airspy_settings_valid(cfg)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    /* Refused before any mutation: the conventional scanner and a trunk-scan
+     * coordinator are exclusive tuner owners (same rule as the scanner toggle). */
     if (cfg->has_trunking && cfg->trunk_scanner && !cfg->trunk_enabled && opts->trunk_scan_enabled == 1) {
         ui_set_toast(state, 3, "Trunk scan active: conventional scanner unavailable");
         return UI_CMD_APPLY_FAILED;
-    }
-    if (!cfg_airspy_settings_valid(cfg)) {
-        return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
     if (!cfg->has_trunking || !cfg->trunk_group_csv[0]) {
         return UI_CMD_APPLY_COMPLETED;
@@ -5262,7 +5264,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (guarded) {
         if (!p25_sm_tick_guard_try_enter()) {
 #ifdef DSD_NEO_TEST_HOOKS
-            atomic_fetch_add_explicit(&g_test_policy_guard_waits, 1, memory_order_relaxed);
+            atomic_fetch_add(&g_test_policy_guard_waits, 1);
 #endif
             p25_sm_tick_guard_enter();
         }
@@ -5329,7 +5331,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
 #ifdef DSD_NEO_TEST_HOOKS
 int
 dsd_app_command_test_policy_guard_waits(void) {
-    return atomic_load_explicit(&g_test_policy_guard_waits, memory_order_relaxed);
+    return atomic_load(&g_test_policy_guard_waits);
 }
 
 static int

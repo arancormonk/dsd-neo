@@ -784,6 +784,9 @@ svc_rtl_enable_input(dsd_opts* opts, dsd_state* state) {
 
 int
 svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
     /* P25 retunes hold this guard through their synchronous wait and
      * orchestrator bookkeeping. Quiesce them before destroying the stream's
      * wait primitives or replacing the context they use. */
