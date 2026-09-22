@@ -8,11 +8,18 @@ The original uppercase `C-CODE` files compile with MSVC in this adapter. On
 platforms where `long` is 64 bits, apply osmo-tetra's 64-bit and symbol patches
 first, then use matching source filename case in `CMakeLists.txt`.
 
+The repository provides a local preparation helper under
+`third_party/tetra_acelp/`. Put `en_30039502v010301p0.zip` there and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File third_party\tetra_acelp\prepare.ps1
+```
+
 Build on Windows with an MSVC developer environment:
 
 ```powershell
 cmake -S tools/tetra/acelp_adapter -B build/tetra-acelp-adapter `
-  -DETSI_TETRA_C_CODE='E:/path/to/extracted/C-CODE'
+  -DETSI_TETRA_C_CODE="$PWD/third_party/tetra_acelp/reference/C-CODE"
 cmake --build build/tetra-acelp-adapter --config Release
 $env:TETRA_VOCODER_CMD = '"E:\Git\dsd-neo\build\tetra-acelp-adapter\Release\tetra-acelp-adapter.exe"'
 # Start dsd-neo from this PowerShell session.

@@ -10,7 +10,8 @@ ETSI does not make those sources redistributable here.
 - For real speech, configure `acelp_adapter/` as its own CMake build with
   `-DETSI_TETRA_C_CODE` set to a local `C-CODE` directory, then set
   `TETRA_VOCODER_CMD` to the resulting `tetra-acelp-adapter` executable.
-  Instructions are in `acelp_adapter/README.md`.
+  A local preparation helper is in `third_party/tetra_acelp/`; build
+  instructions are in `acelp_adapter/README.md`.
 - Do not commit the ETSI archive, the `C-CODE` tree, or the adapter binary.
   A local checkout dropped under `tools/tetra/etsi/` or
   `acelp_adapter/C-CODE/` is gitignored.

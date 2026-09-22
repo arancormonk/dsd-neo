@@ -37,6 +37,8 @@ Thumbs.db
 /captures/
 /Testing/
 # Local ETSI EN 300 395-2 speech sources. Never commit these.
+/third_party/tetra_acelp/en_30039502v010301p0.zip
+/third_party/tetra_acelp/reference/
 /tools/tetra/etsi/
 /tools/tetra/acelp_adapter/C-CODE/
 
