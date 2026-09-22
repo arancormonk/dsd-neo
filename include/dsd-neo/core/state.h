@@ -1764,12 +1764,15 @@ struct dsd_state {
      * tetra_b1_valid:   1 when tetra_b1_dibuf holds a fresh capture, cleared
      *                   after processTetraFrame() consumes it.
      * tetra_polarity:   0 = normal (+TETRA), 1 = inverted (-TETRA).
+     *                     Written from the synchronisation burst only.
+     * tetra_nts2:        1 = this NDB matched training sequence 2.
      * ───────────────────────────────────────────────────────────────────────── */
     uint8_t tetra_b1_dibuf[108];
     float tetra_b1_soft[108];
     uint8_t tetra_b1_valid;
     uint8_t tetra_b1_soft_valid;
     uint8_t tetra_polarity;
+    uint8_t tetra_nts2;
 
     /* tetra_sb1_dibuf: 60 hard dibits of the BSCH block captured from the
      * synchronisation burst (SB) scan window at SSB detection.

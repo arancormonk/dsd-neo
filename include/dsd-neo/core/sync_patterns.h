@@ -84,13 +84,13 @@
 #define INV_PROVOICE_EA_SYNC           "13313133113113333311313133133311"
 #define PROVOICE_EA_SYNC               "31131311331331111133131311311133"
 
-/* TETRA Normal Downlink Burst (NDB) Normal Training Sequence (NTS), 22 bits
- * Reference: ETSI EN 300 392-2 Table 9.33
- * NTS bits: 1,1,0,1,0,0,0,0,1,1,1,0,1,0,0,1,1,1,0,1,0,0 -> 11 dibits
- * Reversing the discriminator/IQ spectrum reverses every differential phase
- * step. In the dsd-neo slicer map that is dibit XOR 2 (MSB flipped). */
-#define TETRA_NDB_NTS_SYNC         "31003221310" /* NTS dibits (non-inverted) */
-#define INV_TETRA_NDB_NTS_SYNC     "13221003132" /* NTS dibits (inverted, XOR 2) */
+/* TETRA Normal Downlink Burst training sequences, 22 bits (ETSI EN 300 392-2
+ * Table 9.33). NTS1: 1,1,0,1,0,0,0,0,1,1,1,0,1,0,0,1,1,1,0,1,0,0.
+ * NTS2 is exactly NTS1 with every dibit XOR 2, so it aliases a polarity-
+ * inverted NTS1. Polarity has to come from the synchronisation burst.
+ * NTS1 carries one logical channel (TCH/FS or SCH/F). NTS2 carries two. */
+#define TETRA_NDB_NTS_SYNC         "31003221310" /* NTS1 */
+#define INV_TETRA_NDB_NTS_SYNC     "13221003132" /* NTS2, also inverted NTS1 */
 
 /* TETRA Synchronisation Burst SSB training sequence (ETSI EN 300 392-2 §9.4.4.3.4).
  * y_bits[38] = { 1,1, 0,0, 0,0, 0,1, 1,0, 0,1, 1,1, 0,0, 1,1, 1,0, 1,0, 0,1,

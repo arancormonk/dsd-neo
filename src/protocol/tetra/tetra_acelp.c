@@ -147,10 +147,12 @@ void tetra_acelp_reorder(const uint8_t* in, uint8_t* out, int len) {
  *              (8 kHz, mono, little-endian)
  *   repeat indefinitely until stdin is closed.
  *
- * tetra-rx from osmo-tetra, or any wrapper around the codec binary,
- * can be used as the external vocoder command.
- * See tools/tetra/README.md and tools/tetra/vocoder_stub.py for a
- * silence-producing stub suitable for integration testing.
+ * Do not vendor ETSI ACELP sources into this repository. The top-level
+ * build does not compile a speech codec. tools/tetra/acelp_adapter is a
+ * separate CMake project that the developer points at a local C-CODE tree.
+ * tools/tetra/vocoder_stub.py is the silence stub used by tests.
+ * Linux and macOS launch TETRA_VOCODER_CMD with sh -c. Windows uses
+ * cmd.exe /C. The byte protocol above is the same on both.
  * ========================================================================= */
 
 #ifdef _WIN32

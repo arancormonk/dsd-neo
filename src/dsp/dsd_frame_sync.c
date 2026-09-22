@@ -299,6 +299,8 @@ enum {
     FRAME_SYNC_WINDOW_119 = 1u << 9,
 };
 
+typedef struct frame_sync_runtime_ctx frame_sync_runtime_ctx;
+
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;
@@ -319,6 +321,7 @@ typedef struct {
     char* synctest48;
     char* synctest79;
     char* synctest119;
+    frame_sync_runtime_ctx* history;
 } frame_sync_match_ctx;
 
 static unsigned int
@@ -930,6 +933,29 @@ frame_sync_capture_tetra_dibits(const char* src, uint8_t* dst, int count) {
 /* Capture the analog decisions which correspond to the payload prefix of a
  * sync window. The newest history entry is the last sync symbol, so the first
  * payload symbol is (window_len - 1) entries back. */
+/* Block 1 ends 7 dibits before the normal training sequence. Those 7 dibits
+ * are AACH half 1, not speech. newest_age is the age of the newest dibit to
+ * keep (0 = most recently consumed symbol). Defined below, once the sync
+ * history struct is complete. */
+static int frame_sync_capture_tetra_dibits_aged(const frame_sync_runtime_ctx* rt, uint8_t* dst, int count,
+                                                int newest_age);
+
+static int
+frame_sync_capture_tetra_soft_aged(const dsd_state* state, float* dst, int count, int newest_age) {
+    int oldest_age;
+    if (!state || !dst || count <= 0 || newest_age < 0 || state->symbol_history == NULL) {
+        return 0;
+    }
+    oldest_age = newest_age + count - 1;
+    if (dsd_symbol_history_count(state) <= oldest_age) {
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        dst[i] = dsd_symbol_history_get_back(state, oldest_age - i);
+    }
+    return 1;
+}
+
 static int
 frame_sync_capture_tetra_soft(const dsd_state* state, float* dst, int payload_len, int sync_len) {
     int window_len = payload_len + sync_len;
@@ -964,11 +990,19 @@ frame_sync_try_tetra(frame_sync_match_ctx* ctx) {
         if (strcmp(sync, TETRA_NDB_NTS_SYNC) == 0 || inverted) {
             frame_sync_set_basic_lock(ctx);
             DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "TETRA");
-            state->tetra_polarity = inverted;
-            frame_sync_capture_tetra_dibits(ctx->synctest119, state->tetra_b1_dibuf, 108);
-            state->tetra_b1_soft_valid = (uint8_t)frame_sync_capture_tetra_soft(
-                state, state->tetra_b1_soft, 108, 11);
-            state->tetra_b1_valid = 1;
+            /* NTS2 aliases inverted NTS1. Keep the polarity learned from the
+             * synchronisation burst and only record which training matched. */
+            state->tetra_nts2 = (uint8_t)(inverted ^ (state->tetra_polarity ? 1 : 0));
+            /* Training occupies ages 0..10. AACH half 1 is ages 11..17.
+             * Block 1 is the 108 dibits at ages 18..125. */
+            if (frame_sync_capture_tetra_dibits_aged(ctx->history, state->tetra_b1_dibuf, 108, 18)) {
+                state->tetra_b1_soft_valid =
+                    (uint8_t)frame_sync_capture_tetra_soft_aged(state, state->tetra_b1_soft, 108, 18);
+                state->tetra_b1_valid = 1;
+            } else {
+                state->tetra_b1_soft_valid = 0;
+                state->tetra_b1_valid = 0;
+            }
             if (opts->errorbars == 1) {
                 printFrameSync(opts, state, inverted ? "-TETRA NDB" : "+TETRA NDB", ctx->synctest_pos + 1,
                                ctx->modulation);
@@ -2523,7 +2557,7 @@ frame_sync_process_dibit_and_payload(dsd_opts* opts, dsd_state* state, float sym
     return dibit;
 }
 
-typedef struct {
+typedef struct frame_sync_runtime_ctx {
     int t;
     int dibit;
     int synctest_pos;
@@ -2573,6 +2607,27 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
     rt->synctest8[8] = 0;
     rt->synctest16[16] = 0;
     rt->modulation[7] = 0;
+}
+
+static int
+frame_sync_capture_tetra_dibits_aged(const frame_sync_runtime_ctx* rt, uint8_t* dst, int count, int newest_age) {
+    int oldest_age;
+    if (!rt || !dst || count <= 0 || newest_age < 0) {
+        return 0;
+    }
+    oldest_age = newest_age + count - 1;
+    if (rt->history_count <= oldest_age) {
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        int age = oldest_age - i;
+        int idx = rt->history_head - 1 - age;
+        while (idx < 0) {
+            idx += FRAME_SYNC_HISTORY_CAPACITY;
+        }
+        dst[i] = (uint8_t)((rt->symbol_history[idx] - '0') & 0x3);
+    }
+    return 1;
 }
 
 static void
@@ -3014,6 +3069,7 @@ frame_sync_eval_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx*
         .synctest48 = rt->synctest48,
         .synctest79 = rt->synctest79,
         .synctest119 = rt->synctest119,
+        .history = rt,
     };
     return frame_sync_try_protocol_matches(&match_ctx);
 }

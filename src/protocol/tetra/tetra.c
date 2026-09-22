@@ -3,22 +3,16 @@
  * TETRA NDB (Normal Downlink Burst) frame processor
  * ETSI EN 300 392-2 §9.4.3 / §9.4.5 / §23.4
  *
- * NDB structure (510 bits = 255 dibits):
+ * NDB structure (510 bits = 255 dibits), dibits relative to the training
+ * sequence start L (osmo-tetra NDB_BLK* / ETSI EN 300 392-2 §9.4.4.2.5):
  *
- *   [1d tail][← Block1: 108d/216b →][← NTS: 11d/22b (consumed by sync) →]
- *   [← Block2: 108d/216b →][1d tail][← CB: 5d/10b →]
+ *   Block1 [L-115, L-7) 108d | AACH1 [L-7, L) 7d | NTS [L, L+11) 11d
+ *   AACH2 [L+11, L+19) 8d | Block2 [L+19, L+127) 108d
  *
- * Phase 1+2 (original): read Block 2 + CB, run FEC for the live block.
- * Phase 4 (this file):  Block 1 hard dibits are recovered from the sync scan
- *   window by dsd_frame_sync.c and stored in state->tetra_b1_dibuf[].  Both
- *   blocks are now decoded independently; each NDB block is a self-contained
- *   TETRA TCH/HR or SCH-HD sub-frame (ETSI §9.4.3).
- *
- * CB field bit layout (ETSI EN 300 392-2 Table 9.36):
- *   bits 1-2  : Colour Code (CC, MSB first)
- *   bit  3    : Stealing Flag 1 – Block 1  (0=TCH, 1=SCH-HD)
- *   bit  4    : Stealing Flag 2 – Block 2  (0=TCH, 1=SCH-HD)
- *   bits 5-10 : reserved
+ * NTS1 is one logical channel. Its 432 bits are one scrambled block: SCH/F
+ * (deinterleave a=103, rate 2/3, CRC-16) or TCH/FS (speech matrix). NTS2 is
+ * two half-slots, each scrambled from a fresh LFSR, and is not TCH/FS.
+ * AACH, not a tail field after Block 2, carries the access-assign flags.
  */
 
 #include <dsd-neo/core/dibit.h>
@@ -47,17 +41,6 @@
 /* Number of encoded bits in one NDB block */
 #define TETRA_NDB_BLOCK_BITS     216
 
-/* Tail bits after Block 2 (1 dibit, discarded) */
-#define TETRA_NDB_TAIL_DIBITS      1
-/* Control Bits field (5 dibits = 10 bits) */
-#define TETRA_NDB_CB_DIBITS        5
-
-/* CB bit indices within the flat 10-bit unpacked array (0-indexed, MSB-first) */
-#define CB_IDX_CC1   0   /* Colour Code bit 1 (MSB) */
-#define CB_IDX_CC0   1   /* Colour Code bit 0 (LSB) */
-#define CB_IDX_SF1   2   /* Stealing Flag 1 – Block 1 (0=TCH, 1=SCH-HD) */
-#define CB_IDX_SF2   3   /* Stealing Flag 2 – Block 2 (0=TCH, 1=SCH-HD) */
-
 /* Block permutation interleaver parameter for a 216-bit NDB/SB2 block.
  * ETSI EN 300 392-2 §8.2.4.1 / osmo-tetra tetra_blk_param[TPSAP_T_NDB]:
  *   K = 216 bits, a (interleave_a) = 101.
@@ -71,30 +54,34 @@
  * 0x7FFF makes either candidate bit equally likely. Hard-only captured dibits
  * are mapped to confident 0x0000/0xFFFF costs below. */
 #define SOFT_NEUTRAL ((uint16_t)0x7FFFu)
+#define TETRA_CRC_OK  0x1D0Fu
+
+/* SCH/F: one 432-bit logical channel, interleaver a=103, rate 2/3.
+ * gcd(432, 103) = 1. Type-2 is 268 info + 16 CRC + 4 tail. */
+#define TETRA_SCHF_BITS      432
+#define TETRA_SCHF_A         103
+#define TETRA_SCHF_TYPE1     268
+#define TETRA_SCHF_TYPE2     288
+#define TETRA_SCHF_DEPUNC    (TETRA_SCHF_TYPE2 * 4)
+
+static uint32_t tetra_lfsr_seed_for(const dsd_state *state, int cc)
+{
+    if (state->tetra_net_known)
+        return state->tetra_lfsr_seed;
+    return tetra_compute_scramb_seed(0u, 0u, (uint8_t)(cc & 0x3u));
+}
 
 /* -------------------------------------------------------------------------
  * tetra_prepare_block()
  *
- * Shared physical-layer pipeline for one 216-bit NDB block:
- * dibits → hard bits + soft costs → descramble.
- *
- * Returns the descrambled, still-interleaved soft-decision costs in @out_soft
- * (216 elements).  Interleaving depends on the logical channel:
- * The caller uses these for either:
- *   - SCH-HD: per-block K=216, a=101 deinterleave
- *   - TCH/FS: combine both halves, then 24x18 speech deinterleave
- *
- * @dibuf      – 108 hard dibits (values 0-3), one byte per dibit
- * @soft_in    – 108 soft floats per dibit, or NULL to use neutral costs
- * @cc         – Colour Code (for LFSR seed)
- * @state      – dsd_state (for LFSR seed lookup)
- * @out_soft   – output: 216 descrambled soft-decision costs
+ * Expand 108 dibits into 216 soft costs. Descrambling is optional: a
+ * half-slot (SCH/HD) restarts the LFSR, but NTS1 is one 432-bit scrambled
+ * block and must be descrambled only after the two halves are joined.
  * ------------------------------------------------------------------------- */
 static void tetra_prepare_block(const uint8_t *dibuf, const float *soft_in,
                                 int cc, dsd_state *state,
-                                uint16_t *out_soft)
+                                uint16_t *out_soft, int descramble)
 {
-    /* Step 1: dibits → hard bits + soft costs. */
     uint8_t  hard_bits [TETRA_NDB_BLOCK_BITS];
     uint16_t soft_costs[TETRA_NDB_BLOCK_BITS];
 
@@ -118,17 +105,8 @@ static void tetra_prepare_block(const uint8_t *dibuf, const float *soft_in,
         }
     }
 
-    /* Step 2: Descramble the received type-5 bits back to type-4.  The
-     * transmitter scrambles after interleaving, so this must precede
-     * deinterleaving on reception. */
-    uint32_t lfsr_seed;
-    if (state->tetra_net_known) {
-        lfsr_seed = state->tetra_lfsr_seed;
-    } else {
-        lfsr_seed = tetra_compute_scramb_seed(0u, 0u, (uint8_t)(cc & 0x3u));
-    }
-    tetra_descramble     (hard_bits, TETRA_NDB_BLOCK_BITS, lfsr_seed);
-    tetra_descramble_soft(soft_costs, TETRA_NDB_BLOCK_BITS, lfsr_seed);
+    if (descramble)
+        tetra_descramble_soft(soft_costs, TETRA_NDB_BLOCK_BITS, tetra_lfsr_seed_for(state, cc));
 
     memcpy(out_soft, soft_costs, sizeof(uint16_t) * TETRA_NDB_BLOCK_BITS);
 }
@@ -194,8 +172,8 @@ static void tetra_decode_schd(const uint16_t *soft, int cc, int block_idx,
  * TCH/FS path: combine two prepared 216-bit blocks, speech-deinterleave,
  * decode the class-specific channel code, then ACELP reorder and vocoder.
  *
- * @soft_b1 – 216 descrambled, interleaved soft costs from Block 1
- * @soft_b2 – 216 descrambled, interleaved soft costs from Block 2
+ * @soft_b1 – first 216 descrambled type-4 soft costs
+ * @soft_b2 – next 216; the LFSR must already have run across both halves
  * @cc      – Colour Code
  * @opts    – dsd_opts
  * @state   – dsd_state
@@ -204,6 +182,14 @@ static void tetra_decode_tch_fs(const uint16_t *soft_b1, const uint16_t *soft_b2
                                 int cc,
                                 dsd_opts *opts, dsd_state *state)
 {
+    /* A weak CB can otherwise feed unrelated/incorrect colour-code bursts
+     * into the same stateful speech decoder.  Keep this field filter opt-in;
+     * networks with no fixed observed CB colour code retain old behaviour. */
+    const char *cc_filter = getenv("TETRA_TCH_CC_FILTER");
+    if (cc_filter && cc_filter[0] >= '0' && cc_filter[0] <= '3' &&
+        cc_filter[1] == '\0' && cc != cc_filter[0] - '0')
+        return;
+
     /* Step 1: Concatenate Block 1 + Block 2 → 432 soft costs. */
     uint16_t combined[TETRA_TCH_FS_CODED_BITS];
     uint16_t deint[TETRA_TCH_FS_CODED_BITS];
@@ -224,6 +210,29 @@ static void tetra_decode_tch_fs(const uint16_t *soft_b1, const uint16_t *soft_b2
 
     /* Step 3: ACELP reorder + vocoder. */
     if (dec_len >= TETRA_TCH_FS_TYPE2_BITS) {
+        const char *bit_dump = getenv("TETRA_TCH_BIT_DUMP");
+        if (bit_dump && bit_dump[0]) {
+            static FILE *dump_fp;
+            if (!dump_fp)
+                dump_fp = fopen(bit_dump, "w");
+            if (dump_fp) {
+                int weak = 0;
+                for (int i = 0; i < 102; i++) {
+                    uint16_t c = deint[i];
+                    uint16_t dist = c > 0x7fffu ? (uint16_t)(c - 0x7fffu) : (uint16_t)(0x7fffu - c);
+                    if (dist < 0x1000u)
+                        weak++;
+                }
+                fprintf(dump_fp, "cc=%d tn=%u pol=%d nts2=%d weak=%d ", cc,
+                        state ? (unsigned)state->tetra_tn : 0u,
+                        state ? (int)state->tetra_polarity : -1,
+                        state ? (int)state->tetra_nts2 : -1, weak);
+                for (int i = 0; i < TETRA_TCH_FS_TYPE2_BITS; i++)
+                    fputc('0' + (decoded[i] & 1), dump_fp);
+                fputc('\n', dump_fp);
+                fflush(dump_fp);
+            }
+        }
         tetra_acelp_process_tch(decoded, dec_len, 0, opts, state);
     }
 
@@ -233,6 +242,29 @@ static void tetra_decode_tch_fs(const uint16_t *soft_b1, const uint16_t *soft_b2
             fprintf(stderr, "%d", decoded[i] & 1);
         fprintf(stderr, "\n");
     }
+}
+
+/* SCH/F uses the same 432 descrambled bits as TCH/FS, then a different
+ * interleaver (a=103) and rate-2/3 code. A matching CRC-16 means this NTS1
+ * burst is signalling and must not be fed to the speech vocoder. */
+static int tetra_schf_crc_ok(const uint16_t *type4)
+{
+    uint16_t deint[TETRA_SCHF_BITS];
+    uint8_t decoded[TETRA_SCHF_TYPE2];
+    uint16_t *depunc = (uint16_t *)malloc(sizeof(uint16_t) * TETRA_SCHF_DEPUNC);
+    if (!depunc)
+        return 0;
+
+    tetra_block_deinterleave_soft(type4, deint, TETRA_SCHF_BITS, TETRA_SCHF_A, 0);
+    tetra_rcpc_depuncture_by_id(TETRA_RCPC_PUNCT_2_3, deint, TETRA_SCHF_BITS,
+                                depunc, TETRA_SCHF_DEPUNC);
+    memset(decoded, 0, sizeof(decoded));
+    int dec_len = tetra_viterbi_decode_soft(depunc, TETRA_SCHF_DEPUNC,
+                                            decoded, (int)sizeof(decoded));
+    free(depunc);
+    if (dec_len < TETRA_SCHF_TYPE2)
+        return 0;
+    return tetra_crc16_ccitt_bits(decoded, TETRA_SCHF_TYPE1 + 16) == TETRA_CRC_OK;
 }
 
 /* -------------------------------------------------------------------------
@@ -246,6 +278,9 @@ void processTetraFrame(dsd_opts* opts, dsd_state* state)
     soft_symbol_frame_begin(state);
     tetra_tdma_advance_ndb(state);
 
+    /* AACH half 2 sits between the training sequence and Block 2. */
+    skipDibit(opts, state, 8);
+
     /* ---------------------------------------------------------------
      * Read Block 2 live (108 dibits = 216 bits).
      * --------------------------------------------------------------- */
@@ -255,83 +290,50 @@ void processTetraFrame(dsd_opts* opts, dsd_state* state)
     for (int i = 0; i < TETRA_NDB_BLOCK_DIBITS; i++)
         b2_dibuf[i] = (uint8_t)getDibitAndSoftSymbol(opts, state, &b2_soft_in[i]);
 
-    /* Consume post-block tail dibit (no information). */
-    skipDibit(opts, state, TETRA_NDB_TAIL_DIBITS);
+    /* Colour code and stealing flags live in the Reed-Muller AACH, which is
+     * not decoded yet. NTS1 is the single-channel burst, so try TCH/FS there.
+     * The network colour from BSCH is not the 2-bit burst colour; pass 0 and
+     * let the scrambler use tetra_lfsr_seed once the network is known. */
+    const int cc = 0;
 
-    /* ---------------------------------------------------------------
-     * Read CB (5 dibits = 10 bits), extract CC, SF1, SF2.
-     * --------------------------------------------------------------- */
-    uint8_t cb_dibuf[TETRA_NDB_CB_DIBITS];
-    for (int i = 0; i < TETRA_NDB_CB_DIBITS; i++)
-        cb_dibuf[i] = (uint8_t)getDibitSoft(opts, state, NULL);
-
-    uint8_t cb_bits[10];
-    for (int i = 0; i < TETRA_NDB_CB_DIBITS; i++) {
-        const uint8_t d = (uint8_t)((cb_dibuf[i] ^ (state->tetra_polarity ? 2u : 0u)) & 3u);
-        cb_bits[i * 2 + 0] = (d >> 1) & 1u;
-        cb_bits[i * 2 + 1] =  d       & 1u;
-    }
-
-    const int cc  = (int)((cb_bits[CB_IDX_CC1] << 1) | cb_bits[CB_IDX_CC0]);
-    const int sf1 = (int)  cb_bits[CB_IDX_SF1];
-    const int sf2 = (int)  cb_bits[CB_IDX_SF2];
-
-    /* Update display fields (show Block 2 type; Block 1 type logged per-block). */
     snprintf(state->fsubtype, sizeof(state->fsubtype),
-             sf2 ? " SCH-HD       " : " TCH          ");
+             state->tetra_nts2 ? " NTS2         " : " NTS1         ");
     snprintf(state->ftype, sizeof(state->ftype), " TETRA");
 
     if (opts->errorbars) {
-        fprintf(stderr, " [TETRA NDB  CC=%d  SF1=%d(%s)  SF2=%d(%s)]",
-                cc,
-                sf1, sf1 ? "SCH-HD" : "TCH",
-                sf2, sf2 ? "SCH-HD" : "TCH");
+        fprintf(stderr, " [TETRA NDB  NTS%d  pol=%d]",
+                state->tetra_nts2 ? 2 : 1, (int)state->tetra_polarity);
     }
 
-    /* ---------------------------------------------------------------
-     * Phase 4: Process Block 1 using hard-dibit capture from scan window.
-     * tetra_b1_valid is set by dsd_frame_sync.c at sync detection time.
-     * --------------------------------------------------------------- */
+    /* NTS1 carries one 432-bit logical channel. Scrambling runs across
+     * Block1||Block2; restarting the LFSR on Block 2 descrambles the second
+     * half with the wrong keystream. SCH/F and TCH/FS share those bits and
+     * are separated by the SCH/F CRC. NTS2 is two half-slots, not TCH/FS. */
     int b1_valid = state->tetra_b1_valid;
-    uint16_t b1_soft[TETRA_NDB_BLOCK_BITS];
-    if (b1_valid) {
+    if (!state->tetra_nts2 && b1_valid) {
+        uint16_t b1_soft[TETRA_NDB_BLOCK_BITS];
+        uint16_t b2_soft[TETRA_NDB_BLOCK_BITS];
+        uint16_t type4[TETRA_SCHF_BITS];
+
         tetra_prepare_block(state->tetra_b1_dibuf,
                             state->tetra_b1_soft_valid ? state->tetra_b1_soft : NULL,
-                            cc, state, b1_soft);
-        state->tetra_b1_valid = 0; /* consume; next frame will re-capture */
-        state->tetra_b1_soft_valid = 0;
-    }
+                            cc, state, b1_soft, 0);
+        tetra_prepare_block(b2_dibuf, b2_soft_in, cc, state, b2_soft, 0);
+        memcpy(type4, b1_soft, sizeof(b1_soft));
+        memcpy(type4 + TETRA_NDB_BLOCK_BITS, b2_soft, sizeof(b2_soft));
+        tetra_descramble_soft(type4, TETRA_SCHF_BITS, tetra_lfsr_seed_for(state, cc));
 
-    /* ---------------------------------------------------------------
-     * Prepare Block 2 with full soft-decision data.
-     * --------------------------------------------------------------- */
-    uint16_t b2_prep[TETRA_NDB_BLOCK_BITS];
-    tetra_prepare_block(b2_dibuf, b2_soft_in, cc, state, b2_prep);
-
-    /* ---------------------------------------------------------------
-     * Dispatch by stealing flags.
-     *
-     * TCH/FS (sf1==0 && sf2==0): Both blocks carry one combined voice
-     *   codeword; concatenate 432 soft costs → speech deinterleave and
-     *   class-specific RCPC decode → 274 bits → 2 codec frames.
-     *
-     * SCH-HD (sf==1): Single-block signaling; per-block rate-2/3
-     *   depuncture + Viterbi + MAC parser.
-     *
-     * Mixed (one TCH, one SCH-HD): The solo TCH half cannot form a
-     *   complete speech frame. Only the SCH-HD block is decoded.
-     * --------------------------------------------------------------- */
-    if (sf1 == 0 && sf2 == 0 && b1_valid) {
-        /* TCH/FS: combined FEC decode over both blocks */
-        tetra_decode_tch_fs(b1_soft, b2_prep, cc, opts, state);
-    } else {
-        /* Process each SCH-HD block independently */
-        if (sf1 == 1 && b1_valid)
-            tetra_decode_schd(b1_soft, cc, 1, opts, state);
-        if (sf2 == 1)
-            tetra_decode_schd(b2_prep, cc, 2, opts, state);
-        /* sf==0 without partner block → TCH data lost, skip */
+        if (tetra_schf_crc_ok(type4)) {
+            state->tetra_decode_ok++;
+            snprintf(state->fsubtype, sizeof(state->fsubtype), " SCH/F         ");
+            if (opts->payload || opts->errorbars)
+                fprintf(stderr, "[TETRA SCH/F] tn=%u CRC OK\n", (unsigned)state->tetra_tn);
+        } else {
+            tetra_decode_tch_fs(type4, type4 + TETRA_NDB_BLOCK_BITS, cc, opts, state);
+        }
     }
+    state->tetra_b1_valid = 0;
+    state->tetra_b1_soft_valid = 0;
 
     /* ---------------------------------------------------------------
      * Phase 8: event watchdog + ncurses UI refresh (same as DMR/D-STAR).
@@ -370,7 +372,6 @@ void processTetraFrame(dsd_opts* opts, dsd_state* state)
 #define TETRA_SB_TYPE2_BITS    80
 #define TETRA_SB_TYPE1_BITS    60
 #define TETRA_SB_DEPUNC_LEN    (TETRA_SB_TYPE2_BITS * 4)
-#define TETRA_CRC_OK           0x1D0Fu
 
 void processTetraSBFrame(dsd_opts *opts, dsd_state *state)
 {

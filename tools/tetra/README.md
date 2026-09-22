@@ -1,3 +1,24 @@
+TETRA speech codec
+
+dsd-neo stops at a 137-bit speech frame and plays PCM from whatever command
+`TETRA_VOCODER_CMD` names. The ETSI ACELP codec is not in this repository, and
+the top-level CMake build does not compile one. Downloading the standard from
+ETSI does not make those sources redistributable here.
+
+- Automated tests point `TETRA_VOCODER_CMD` at `vocoder_stub.py` below. The stub
+  returns silence and checks the pipe, not speech quality.
+- For real speech, configure `acelp_adapter/` as its own CMake build with
+  `-DETSI_TETRA_C_CODE` set to a local `C-CODE` directory, then set
+  `TETRA_VOCODER_CMD` to the resulting `tetra-acelp-adapter` executable.
+  Instructions are in `acelp_adapter/README.md`.
+- Do not commit the ETSI archive, the `C-CODE` tree, or the adapter binary.
+  A local checkout dropped under `tools/tetra/etsi/` or
+  `acelp_adapter/C-CODE/` is gitignored.
+- Linux and macOS launch the command with `sh -c`. Windows launches it with
+  `cmd.exe /C`. Both sides use the same pipe: 137 bytes in (one byte per bit,
+  value 0 or 1), 480 bytes out (240 PCM16LE samples at 8 kHz). Write diagnostics
+  to stderr.
+
 Vocoder stub and testing
 
 Quick test for `TETRA_VOCODER_CMD` integration

@@ -88,6 +88,8 @@ Both contexts live in `dsd_state.codec2_3200` / `dsd_state.codec2_1600` as opaqu
 If `TETRA_VOCODER_CMD` is unset, TETRA voice frames are fully decoded (FEC, Viterbi, class reorder)
 but audio output is suppressed—no codec2/mbelib fallback is attempted.
 
+The top-level build does not compile this codec and must not gain a fetch step for it. A developer who already has the ETSI `C-CODE` sources builds `tools/tetra/acelp_adapter` as a second CMake project and points `TETRA_VOCODER_CMD` at that executable. Those sources are not committed. Linux and macOS start the command through `sh -c`; Windows starts it through `cmd.exe /C`.
+
 ---
 
 ## 2. Vocoder Library Ecosystem

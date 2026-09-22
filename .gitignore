@@ -36,6 +36,10 @@ Thumbs.db
 *.out
 /captures/
 /Testing/
+# Local ETSI EN 300 395-2 speech sources. Never commit these.
+/tools/tetra/etsi/
+/tools/tetra/acelp_adapter/C-CODE/
+
 # Scratch content under tmp is ignored; the two tracked ETSI reference files
 # remain versioned because ignore rules do not affect tracked files.
 /tmp/*
