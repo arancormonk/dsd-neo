@@ -70,6 +70,7 @@ static int g_dsd_write_calls;
 static int g_dsd_write_fd;
 static size_t g_dsd_write_bytes;
 static uint8_t g_dsd_write_data[1920 * sizeof(short)];
+static int g_sf_write_short_calls;
 static int g_dmr_missing_alg_key_allowed[2];
 static int g_dmr_voice_slot_allowed[2];
 static int g_gate_mono_forced_enc = -1;
@@ -140,6 +141,7 @@ sf_count_t
 sf_write_short(SNDFILE* sndfile, const short* ptr, sf_count_t items) {
     (void)sndfile;
     (void)ptr;
+    g_sf_write_short_calls++;
     return items;
 }
 
@@ -316,6 +318,7 @@ reset_sink_capture(void) {
     g_dsd_write_fd = -1;
     g_dsd_write_bytes = 0;
     DSD_MEMSET(g_dsd_write_data, 0, sizeof(g_dsd_write_data));
+    g_sf_write_short_calls = 0;
 }
 
 static void
@@ -1305,6 +1308,74 @@ test_audio_gate_target_preserves_p25_ota_identity(void) {
     return rc;
 }
 
+/* The short mono path (1-channel integer output: -f1, NXDN, dPMR, ProVoice,
+ * D-STAR and MBE playback) applies the talkgroup gate like every other output
+ * path. Crypto was already settled upstream, so only the policy verdict mutes
+ * it, and a muted frame reaches neither a sink nor the static WAV. */
+static int
+test_mono_short_voice_honors_talkgroup_gate(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    static short history[960];
+    const int sinks[] = {0, 1, 8};
+    int rc = 0;
+    opts->audio_out = 1;
+    opts->slot1_on = 1;
+    opts->floating_point = 0;
+    opts->pulse_digi_out_channels = 1;
+    opts->audio_out_stream = (dsd_audio_stream*)opts;
+    opts->audio_out_fd = 42;
+    opts->wav_out_f = (SNDFILE*)opts;
+    opts->static_wav_file = 1;
+    g_audio_write_channels = 1;
+
+    // A patched P25 call: the gate is asked about the supergroup it shows.
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 9400U,
+        .policy_target_id = 9502U,
+    };
+    rc |=
+        expect_int("mono gate call observed", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    state->synctype = DSD_SYNC_P25P1_POS;
+
+    for (size_t sink = 0; sink < sizeof(sinks) / sizeof(sinks[0]); sink++) {
+        opts->audio_out_type = sinks[sink];
+        for (size_t frames = 160U; frames <= 960U; frames += 800U) {
+            for (int muted = 1; muted >= 0; --muted) {
+                for (size_t i = 0; i < 160U; i++) {
+                    state->s_l[i] = (short)(i + 1U);
+                }
+                state->audio_out_idx = (int)frames;
+                state->audio_out_buf_p = history + frames;
+                reset_sink_capture();
+                reset_gate_capture();
+                g_gate_mono_forced_enc = muted;
+                playSynthesizedVoiceMS(opts, state);
+                const int writes = g_audio_write_calls + g_dsd_write_calls + g_udp_blast_calls;
+                rc |= expect_int("mono gate receives OTA supergroup", (int)g_gate_mono_tg, 9400);
+                rc |= expect_int(muted ? "muted mono frame reaches no sink" : "allowed mono frame reaches its sink",
+                                 writes, muted ? 0 : 1);
+                rc |= expect_int(muted ? "muted mono frame skips static wav" : "allowed mono frame writes static wav",
+                                 g_sf_write_short_calls, muted ? 0 : 1);
+                // The 960-sample history rewind nets to zero either way.
+                rc |= expect_int("mono frame keeps history position", state->audio_out_buf_p == history + frames, 1);
+                rc |= expect_int("mono frame resets its length", state->audio_out_idx, 0);
+                rc |= expect_int("mono frame working state reset", state->s_l[0], 0);
+            }
+        }
+    }
+    reset_gate_capture();
+    g_audio_write_channels = 2;
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* A mono vocoder frame must retain its duration, pitch and samples when the
  * startup preset leaves a stereo device open during a mixed-protocol scan. */
 static int
@@ -1451,6 +1522,7 @@ main(void) {
     rc |= test_float_playback_orchestrators_emit_expected_blocks();
     rc |= test_audio_gate_target_preserves_p25_ota_identity();
     rc |= test_mono_voice_preserves_samples_in_configured_output();
+    rc |= test_mono_short_voice_honors_talkgroup_gate();
     rc |= test_ss3_hold_respects_policy_mute();
     rc |= test_silent_s16_helper();
     return rc;

@@ -1759,6 +1759,16 @@ mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_c
     }
 }
 
+// Each file replays its own traffic. An SDRTrunk JSON export leaves its last
+// call open at EOF, and a raw .imb/.amb/.dmb that follows publishes no identity
+// of its own, so the talkgroup gate would judge it on the previous file's call.
+static void
+mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state) {
+    if (dsd_call_state_end(state, 0U, 0.0) > 0) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
+}
+
 void
 playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
 
@@ -1775,6 +1785,7 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
         if (opts->mbe_in_f == NULL) {
             continue;
         }
+        mbe_file_end_replayed_call(opts, state);
         mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
         DSD_FPRINTF(stderr, "\n playing %s\n", opts->mbe_in_file);
         while (opts->mbe_in_f != NULL && feof(opts->mbe_in_f) == 0) {
