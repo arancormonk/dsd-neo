@@ -377,6 +377,24 @@ dmr_udp_event_category(uint16_t src_port, uint16_t dst_port) {
 
 enum { DMR_UDP_COMP_PORT_TEXT = 5016U, DMR_UDP_COMP_PORT_LIP = 5017U };
 
+typedef enum {
+    DMR_UDP_COMP_SERVICE_NONE,
+    DMR_UDP_COMP_SERVICE_TEXT,
+    DMR_UDP_COMP_SERVICE_LIP,
+} dmr_udp_comp_service_type;
+
+static dmr_udp_comp_service_type
+dmr_udp_comp_service(uint16_t src_port, uint16_t dst_port) {
+    // Text takes precedence when either endpoint selects it.
+    if (src_port == DMR_UDP_COMP_PORT_TEXT || dst_port == DMR_UDP_COMP_PORT_TEXT) {
+        return DMR_UDP_COMP_SERVICE_TEXT;
+    }
+    if (src_port == DMR_UDP_COMP_PORT_LIP || dst_port == DMR_UDP_COMP_PORT_LIP) {
+        return DMR_UDP_COMP_SERVICE_LIP;
+    }
+    return DMR_UDP_COMP_SERVICE_NONE;
+}
+
 // One SPID or DPID: the 7-bit index as sent and the UDP port it stands for. They never share a
 // variable, because a port number read from the extended header is not an index (issue #450).
 typedef struct {
@@ -444,11 +462,12 @@ dmr_udp_comp_decode_payload(const dsd_opts* opts, dsd_state* state, uint16_t src
         return 0;
     }
     len -= ptr;
-    if (src_port == DMR_UDP_COMP_PORT_TEXT || dst_port == DMR_UDP_COMP_PORT_TEXT) {
+    const dmr_udp_comp_service_type service = dmr_udp_comp_service(src_port, dst_port);
+    if (service == DMR_UDP_COMP_SERVICE_TEXT) {
         utf16_to_text(state, 1, len, pdu + ptr); //assumming text starts right at the ptr value
         return 0;
     }
-    if (src_port == DMR_UDP_COMP_PORT_LIP || dst_port == DMR_UDP_COMP_PORT_LIP) {
+    if (service == DMR_UDP_COMP_SERVICE_LIP) {
         uint8_t bits[127 * 8];
         uint16_t decode_len = len;
         if (decode_len > 127U) {
@@ -460,7 +479,7 @@ dmr_udp_comp_decode_payload(const dsd_opts* opts, dsd_state* state, uint16_t src
         char previous_gps[sizeof(state->dmr_embedded_gps[slot])];
         DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", state->dmr_embedded_gps[slot]);
         state->dmr_embedded_gps[slot][0] = '\0';
-        lip_protocol_decoder(opts, state, bits);
+        lip_pdu_decoder(opts, state, bits, (size_t)decode_len * 8U, (uint32_t)state->dmr_lrrp_source[slot]);
         if (state->dmr_embedded_gps[slot][0] != '\0') {
             return 1;
         }
@@ -538,6 +557,10 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     if (has_gps) {
         (void)dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, &observation, category, comp_string,
                                                              state->dmr_embedded_gps[slot]);
+    } else if (dmr_udp_comp_service(src_port, dst_port) == DMR_UDP_COMP_SERVICE_LIP) {
+        // See decode_ip_pdu_emit_notice: an empty LIP notice must not consume the active call's GPS.
+        (void)dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, &observation, category, comp_string,
+                                                             "");
     } else {
         (void)dsd_event_emit_data_notice_classified(opts, state, slot, &observation, category, comp_string);
     }
@@ -845,6 +868,8 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
             utf16_to_text(state, 1, payload_len, payload);
             return 1;
         case 5017: {
+            DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "LIP SRC: %u; DST: %u;", src24,
+                         dst24);
             uint8_t bits[127 * 12 * 8];
             uint16_t decode_len = payload_len;
             if (decode_len > (uint16_t)(sizeof(bits) / 8U)) {
@@ -852,7 +877,7 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
             }
             DSD_MEMSET(bits, 0, sizeof(bits));
             dsd_unpack_bytes_to_bits(payload, payload_len, bits, sizeof(bits), decode_len);
-            lip_protocol_decoder(opts, state, bits);
+            lip_pdu_decoder(opts, state, bits, (size_t)decode_len * 8U, src24);
             return 1;
         }
         case 9361:
@@ -984,6 +1009,33 @@ decode_ip_pdu_event_category(uint8_t protocol, uint16_t src_port, uint16_t dst_p
     return dmr_udp_event_category(src_port, dst_port);
 }
 
+static int
+decode_ip_pdu_emit_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t prot, uint32_t src24, uint32_t dst24,
+                          uint16_t src_port, uint16_t dst_port, const char* previous_gps) {
+    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, src24, dst24);
+    const dsd_event_category category = decode_ip_pdu_event_category(prot, src_port, dst_port);
+    const int lip_pdu = prot == 17 && dst_port == 5017;
+    const int fresh = prot != 1 && state->dmr_embedded_gps[slot][0] != '\0';
+    if (fresh) {
+        return dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, &observation, category,
+                                                              state->dmr_lrrp_gps[slot], state->dmr_embedded_gps[slot])
+               == 0;
+    }
+    if (state->dmr_embedded_gps[slot][0] == '\0') {
+        DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "%s", previous_gps);
+    }
+    // LIP and ICMP notices must carry only their own GPS, even when it is empty.
+    // A consuming notice would take the active call's staged GPS and clear it.
+    // ICMP also must not claim a fix produced by an enclosed packet.
+    if (prot == 1 || lip_pdu) {
+        return dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, &observation, category,
+                                                              state->dmr_lrrp_gps[slot], "")
+               == 0;
+    }
+    return dsd_event_emit_data_notice_classified(opts, state, slot, &observation, category, state->dmr_lrrp_gps[slot])
+           == 0;
+}
+
 //IP PDU header decode and port forward to appropriate decoder
 int
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
@@ -1000,7 +1052,7 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
         return 0;
     }
 
-    uint8_t slot = state->currentslot;
+    uint8_t slot = (uint8_t)(state->currentslot & 1);
     uint8_t version = input[0] >> 4;
     uint8_t ihl = input[0] & 0xF;
     uint8_t tos = input[1];
@@ -1042,12 +1094,12 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
         }
     }
     decode_ip_pdu_print_endpoints(prot, src24, dst24, src_port, dst_port, input);
+    char previous_gps[sizeof state->dmr_embedded_gps[slot]];
+    DSD_SNPRINTF(previous_gps, sizeof previous_gps, "%s", state->dmr_embedded_gps[slot]);
+    state->dmr_embedded_gps[slot][0] = '\0';
     decode_ip_pdu_dispatch(opts, state, slot, prot, src24, dst24, effective_len, ip_header_len, input);
 
-    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, src24, dst24);
-    const dsd_event_category category = decode_ip_pdu_event_category(prot, src_port, dst_port);
-    return dsd_event_emit_data_notice_classified(opts, state, slot, &observation, category, state->dmr_lrrp_gps[slot])
-           == 0;
+    return decode_ip_pdu_emit_notice(opts, state, slot, prot, src24, dst24, src_port, dst_port, previous_gps);
 }
 
 typedef struct {

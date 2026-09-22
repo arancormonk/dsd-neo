@@ -7743,6 +7743,7 @@ add_test(NAME DMR_EVENT_CRC COMMAND dsd-neo_test_dmr_event_crc)
 add_executable(
     dsd-neo_test_dmr_usbd_lip_lrrp_crc
     protocol/dmr/test_dmr_usbd_lip_lrrp_crc.c
+    test_support/dmr_bptc_test_encoder.c
 )
 target_include_directories(
     dsd-neo_test_dmr_usbd_lip_lrrp_crc
@@ -7753,6 +7754,20 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
 )
 add_test(NAME DMR_USBD_LIP_LRRP_CRC COMMAND dsd-neo_test_dmr_usbd_lip_lrrp_crc)
+add_executable(
+    dsd-neo_test_dmr_lip_carriers
+    protocol/dmr/test_dmr_lip_carriers.c
+    test_support/dmr_bptc_test_encoder.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_lip_carriers
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lip_carriers
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_LIP_CARRIERS COMMAND dsd-neo_test_dmr_lip_carriers)
 
 add_executable(
     dsd-neo_test_dmr_ms_data
@@ -8422,7 +8437,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_embedded_gps_position_error
-    PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE dsd-neo_platform dsd-neo_test_support ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(
     NAME DMR_EMBEDDED_GPS_POSITION_ERROR

@@ -999,7 +999,7 @@ dmr_udt_handle_lip(dmr_udt_ctx* ctx) {
     char previous_gps[sizeof(ctx->state->dmr_embedded_gps[ctx->slot])];
     DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
     ctx->state->dmr_embedded_gps[ctx->slot][0] = '\0';
-    lip_protocol_decoder(ctx->opts, ctx->state, ctx->cs_bits + 96);
+    lip_pdu_decoder(ctx->opts, ctx->state, ctx->cs_bits + 96, (size_t)ctx->payload_bits, ctx->udt_source);
     DSD_SNPRINTF(ctx->event_gps, sizeof(ctx->event_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
     if (ctx->event_gps[0] == '\0') {
         DSD_SNPRINTF(ctx->state->dmr_embedded_gps[ctx->slot], sizeof(ctx->state->dmr_embedded_gps[ctx->slot]), "%s",
@@ -1040,6 +1040,9 @@ dmr_udt_finalize(dmr_udt_ctx* ctx) {
     if (ctx->event_gps[0] != '\0') {
         (void)dsd_event_emit_data_notice_with_gps(ctx->opts, ctx->state, ctx->slot, &observation, ctx->udt_string,
                                                   ctx->event_gps);
+    } else if (ctx->udt_format2 == 0x0B) {
+        // See decode_ip_pdu_emit_notice: an empty LIP notice must not consume the active call's GPS.
+        (void)dsd_event_emit_data_notice_with_gps(ctx->opts, ctx->state, ctx->slot, &observation, ctx->udt_string, "");
     } else {
         (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, ctx->slot, &observation, ctx->udt_string);
     }

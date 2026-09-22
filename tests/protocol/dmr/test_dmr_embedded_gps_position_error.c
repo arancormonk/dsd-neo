@@ -11,6 +11,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -24,19 +25,12 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-void dmr_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]);
-void apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[]);
-void lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input);
-void nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int type);
-void nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot);
-uint8_t nmea_sentence_checker(dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t slot, int len_bytes);
-void nxdn_gps_report(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src);
 
 static int g_watchdog_calls;
 static uint32_t g_watchdog_src;
@@ -213,7 +207,7 @@ set_bits_msb(uint8_t* bits_out, int out_bits_len, int bit_offset, uint32_t value
 }
 
 static int
-test_packed_nmea_formats(dsd_opts* opts, dsd_state* st) {
+test_packed_nmea_formats(const dsd_opts* opts, dsd_state* st) {
     int rc = 0;
 
     {
@@ -296,34 +290,38 @@ test_packed_nmea_formats(dsd_opts* opts, dsd_state* st) {
 }
 
 static int
-test_lip_and_vendor_gps(dsd_opts* opts, dsd_state* st) {
+test_lip_and_vendor_gps(const dsd_opts* opts, dsd_state* st) {
     int rc = 0;
 
     {
         uint8_t bits[96];
         DSD_MEMSET(bits, 0, sizeof bits);
-        set_bits_msb(bits, (int)sizeof bits, 6, 2U, 2); // time elapsed
-        bits[8] = 1U;                                   // west
-        set_bits_msb(bits, (int)sizeof bits, 9, 0x010000U, 24);
-        bits[33] = 1U; // south
-        set_bits_msb(bits, (int)sizeof bits, 34, 0x020000U, 23);
-        set_bits_msb(bits, (int)sizeof bits, 57, 3U, 2);
-        set_bits_msb(bits, (int)sizeof bits, 59, 40U, 7);
-        set_bits_msb(bits, (int)sizeof bits, 66, 6U, 4);
-        set_bits_msb(bits, (int)sizeof bits, 70, 5U, 3);
-        set_bits_msb(bits, (int)sizeof bits, 73, 0x5AU, 8);
+        set_bits_msb(bits, (int)sizeof bits, 4, 2U, 2); // time elapsed
+        bits[6] = 1U;                                   // west
+        set_bits_msb(bits, (int)sizeof bits, 7, 0x010000U, 24);
+        bits[31] = 1U; // south
+        set_bits_msb(bits, (int)sizeof bits, 32, 0x020000U, 23);
+        set_bits_msb(bits, (int)sizeof bits, 55, 3U, 3);
+        set_bits_msb(bits, (int)sizeof bits, 58, 40U, 7);
+        set_bits_msb(bits, (int)sizeof bits, 65, 6U, 4);
+        set_bits_msb(bits, (int)sizeof bits, 69, 5U, 3);
+        set_bits_msb(bits, (int)sizeof bits, 72, 0x5AU, 8);
 
         st->currentslot = 1;
         DSD_MEMSET(st->dmr_embedded_gps[1], 0, sizeof st->dmr_embedded_gps[1]);
         DSD_MEMSET(st->event_history_s[1].Event_History_Items[0].gps_s, 0,
                    sizeof st->event_history_s[1].Event_History_Items[0].gps_s);
         lip_protocol_decoder(opts, st, bits);
+        rc |= expect_has_substr(st->dmr_embedded_gps[1], "Dir: 135", "T3 direction=6");
 
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "090; LIP:", "lip-slot1-prefix");
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "S", "lip-south");
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "W", "lip-west");
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "Err: 2000m", "lip-position-error");
         rc |= expect_has_substr(st->event_history_s[1].Event_History_Items[0].gps_s, "090; LIP:", "lip-event");
+        set_bits_msb(bits, (int)sizeof bits, 65, 1U, 4);
+        lip_protocol_decoder(opts, st, bits);
+        rc |= expect_has_substr(st->dmr_embedded_gps[1], "Dir: 22", "T3 direction=1");
     }
 
     {
@@ -353,7 +351,67 @@ test_lip_and_vendor_gps(dsd_opts* opts, dsd_state* st) {
 }
 
 static int
-test_nxdn_gps_report_paths(dsd_opts* opts, dsd_state* st) {
+test_lip_ownership(const dsd_opts* opts, dsd_state* st) {
+    uint8_t bits[76] = {0};
+    set_bits_msb(bits, sizeof bits, 2, 1, 2);
+    set_bits_msb(bits, sizeof bits, 4, 1, 1);
+    set_bits_msb(bits, sizeof bits, 5, 0xC00000, 24);
+    set_bits_msb(bits, sizeof bits, 29, 1, 1);
+    set_bits_msb(bits, sizeof bits, 30, 0x600000, 23);
+    set_bits_msb(bits, sizeof bits, 53, 1, 3);
+    set_bits_msb(bits, sizeof bits, 56, 20, 7);
+    set_bits_msb(bits, sizeof bits, 68, 32, 8);
+    st->currentslot = 1;
+    seed_active_call(st, 1, 123456);
+    lip_pdu_decoder(opts, st, bits, sizeof bits, 123456);
+    int rc = expect_has_substr(st->event_history_s[1].Event_History_Items[0].gps_s, "LIP:", "T3 matching LIP owner");
+    seed_active_call(st, 1, 999);
+    DSD_SNPRINTF(st->event_history_s[1].Event_History_Items[0].gps_s,
+                 sizeof st->event_history_s[1].Event_History_Items[0].gps_s, "%s", "existing call GPS");
+    st->event_crc_invalid[1] = 1;
+    lip_pdu_decoder(opts, st, bits, sizeof bits, 123456);
+    rc |= expect_i("T3 foreign LIP owner",
+                   strcmp(st->event_history_s[1].Event_History_Items[0].gps_s, "existing call GPS"), 0);
+    st->event_crc_invalid[1] = 0;
+    seed_active_call(st, 1, 987654);
+    DSD_SNPRINTF(st->event_history_s[1].Event_History_Items[0].gps_s,
+                 sizeof st->event_history_s[1].Event_History_Items[0].gps_s, "%s", "existing call GPS");
+    lip_pdu_decoder(opts, st, bits, sizeof bits, 0);
+    rc |= expect_i("T3 unknown LIP owner",
+                   strcmp(st->event_history_s[1].Event_History_Items[0].gps_s, "existing call GPS"), 0);
+    return rc;
+}
+
+static int
+test_lip_position_errors(const dsd_opts* opts, dsd_state* st) {
+    const uint8_t codes[] = {0, 5, 6, 7};
+    const char* expected[] = {"Err: 2m", "Err: 200000m", "Err: >200km", "Unknown Pos Err"};
+    uint8_t bits[96] = {0};
+    set_bits_msb(bits, sizeof bits, 69, 5U, 3);
+    int rc = 0;
+    for (size_t i = 0; i < sizeof codes; ++i) {
+        set_bits_msb(bits, sizeof bits, 55, codes[i], 3);
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "lip_error") != 0) {
+            return 1;
+        }
+        lip_protocol_decoder(opts, st, bits);
+        dsd_test_capture_stderr_end(&cap);
+        char output[2048];
+        if (dsd_test_capture_stderr_read(&cap, output, sizeof output) != 0) {
+            return 1;
+        }
+        rc |= expect_has_substr(st->dmr_embedded_gps[st->currentslot], expected[i], "T3 LIP position error");
+        if (codes[i] == 5) {
+            rc |= expect_has_substr(output, "Less than or equal to 200000m", "T3 LIP code-5 console");
+            rc |= expect_has_substr(output, "Reserved (5)", "T3 USBD reason");
+        }
+    }
+    return rc;
+}
+
+static int
+test_nxdn_gps_report_paths(const dsd_opts* opts, dsd_state* st) {
     int rc = 0;
     uint8_t bits[280];
 
@@ -441,15 +499,28 @@ main(void) {
     rc |= test_lip_and_vendor_gps(&opts, &st);
     rc |= test_nxdn_gps_report_paths(&opts, &st);
 
+    rc |= test_lip_position_errors(&opts, &st);
+    rc |= test_lip_ownership(&opts, &st);
+
     uint8_t lc_bits[80];
     DSD_MEMSET(lc_bits, 0, sizeof lc_bits);
     st.currentslot = 0;
 
-    // pos_err == 5: less than 200km (200000m)
+    // pos_err == 5: less than or equal to 200km (200000m)
     {
         DSD_MEMSET(st.dmr_embedded_gps[0], 0, sizeof st.dmr_embedded_gps[0]);
         set_pos_err(lc_bits, 5);
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "voice_error") != 0) {
+            return 100;
+        }
         dmr_embedded_gps(&opts, &st, lc_bits);
+        dsd_test_capture_stderr_end(&cap);
+        char output[2048];
+        if (dsd_test_capture_stderr_read(&cap, output, sizeof output) != 0) {
+            return 100;
+        }
+        rc |= expect_has_substr(output, "Less than or equal to 200000m", "T3 voice code-5 console");
         rc |= expect_has_substr(st.dmr_embedded_gps[0], "Err: 200000m", "pos_err=5");
     }
 
