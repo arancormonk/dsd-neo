@@ -95,6 +95,8 @@ typedef struct {
     uint8_t tg_hash;
 
     uint8_t slot;
+    uint8_t burst_slot;
+    uint8_t slot_collapsed;
     uint8_t slot_idx;
     uint8_t unk;
     uint8_t is_kenwood_sc;
@@ -150,6 +152,11 @@ dmr_flco_print_type_color(uint8_t type, const char* type1_color, const char* typ
     }
 }
 
+static int
+dmr_flco_single_slot_collapse(const dsd_opts* opts, const dsd_state* state) {
+    return state->dmr_ms_mode == 1 || (opts->dmr_mono == 1 && state->dmr_stereo == 0);
+}
+
 static void
 dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect,
                   uint32_t* IrrecoverableErrors, uint8_t type) {
@@ -162,7 +169,10 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
     ctx->type = type;
     ctx->restchannel = -1;
 
-    if (state->dmr_ms_mode == 1 || (opts->dmr_mono == 1 && state->dmr_stereo == 0)) {
+    const int collapse = dmr_flco_single_slot_collapse(opts, state);
+    ctx->burst_slot = (uint8_t)(state->currentslot & 1);
+    ctx->slot_collapsed = (uint8_t)(collapse && ctx->burst_slot != 0);
+    if (collapse) {
         state->currentslot = 0;
     }
 
@@ -1314,16 +1324,12 @@ dmr_flco_finalize(dmr_flco_ctx* ctx) {
     }
 }
 
-//combined flco handler (vlc, tlc, emb), minus the superfluous structs and strings
-void
-dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
-         uint8_t type) {
-    dmr_flco_ctx ctx;
-    dmr_flco_ctx_init(&ctx, opts, state, lc_bits, CRCCorrect, IrrecoverableErrors, type);
+static void
+dmr_flco_run(dmr_flco_ctx* ctx) {
     dmr_flco_ensure_heal_hook();
-    dmr_flco_detect_special_modes(&ctx);
-    ctx.protected_lc = dmr_flco_is_protected(&ctx);
-    dmr_flco_print_protected_lc(&ctx);
+    dmr_flco_detect_special_modes(ctx);
+    ctx->protected_lc = dmr_flco_is_protected(ctx);
+    dmr_flco_print_protected_lc(ctx);
 
     // A terminator burst ends the slot's call before any LC-payload gate. The
     // burst type is FEC-protected separately from the LC, so a protected LC,
@@ -1337,44 +1343,61 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
     // ends them only recoverably: if voice bursts keep coming, the next media
     // mark heals the epoch and restores the stashed slot crypto, so the cost
     // of the ambiguity is one burst, not a split call or lost decryption.
-    if (ctx.type == 2U && !(dmr_flco_lc_readable(&ctx) && ctx.flco == 0x30U)) {
-        dmr_flco_handle_terminator(&ctx);
+    if (ctx->type == 2U && !(dmr_flco_lc_readable(ctx) && ctx->flco == 0x30U)) {
+        dmr_flco_handle_terminator(ctx);
     }
 
-    if (*ctx.IrrecoverableErrors == 0) {
-        if (dmr_flco_handle_no_error_paths(&ctx)) {
-            dmr_flco_finalize(&ctx);
+    if (*ctx->IrrecoverableErrors == 0) {
+        if (dmr_flco_handle_no_error_paths(ctx)) {
+            dmr_flco_finalize(ctx);
             return;
         }
-    } else if (ctx.type != 2U && dmr_flco_handle_irrecoverable_hytera_enhanced(&ctx)) {
+    } else if (ctx->type != 2U && dmr_flco_handle_irrecoverable_hytera_enhanced(ctx)) {
         // Gated off terminator bursts: the handler above just ended the call and reset the
         // slot's crypto for the heal, and letting a Hytera-Enhanced-shaped FEC-failed LC
         // re-populate payload_algid/keyid/mi here would leave dmr_fid=0 beside a non-zero
         // ALGID and make dmr_flco_slot_crypto_is_clear() refuse the restore forever.
-        dmr_flco_finalize(&ctx);
+        dmr_flco_finalize(ctx);
         return;
     }
 
-    int regular_state = dmr_flco_prepare_regular_state(&ctx);
+    int regular_state = dmr_flco_prepare_regular_state(ctx);
     if (regular_state > 0) {
-        dmr_flco_print_regular_header(&ctx);
-        dmr_flco_print_call_class(&ctx);
-        const int is_private = dmr_flco_call_kind(&ctx) == DSD_CALL_KIND_PRIVATE_VOICE;
-        dsd_trunk_scan_hook_dmr_conventional_activity(opts, state, ctx.target, ctx.source, is_private,
-                                                      (ctx.so & 0x40U) != 0U, 0);
-        dmr_flco_print_emergency_flag(&ctx);
-        if (ctx.type != 2U && ctx.CRCCorrect == 1U) {
-            dmr_flco_publish_voice(&ctx);
+        dmr_flco_print_regular_header(ctx);
+        dmr_flco_print_call_class(ctx);
+        const int is_private = dmr_flco_call_kind(ctx) == DSD_CALL_KIND_PRIVATE_VOICE;
+        dsd_trunk_scan_hook_dmr_conventional_activity(ctx->opts, ctx->state, ctx->target, ctx->source, is_private,
+                                                      (ctx->so & 0x40U) != 0U, 0);
+        dmr_flco_print_emergency_flag(ctx);
+        if (ctx->type != 2U && ctx->CRCCorrect == 1U) {
+            dmr_flco_publish_voice(ctx);
         }
-        dmr_flco_apply_enc_lockout(&ctx);
-        dmr_flco_print_service_options(&ctx);
-        dmr_flco_print_branding(&ctx);
-        dmr_flco_print_tg_label(&ctx);
-        dmr_flco_print_loaded_keys(&ctx);
-        dmr_flco_print_extended_keys(&ctx);
+        dmr_flco_apply_enc_lockout(ctx);
+        dmr_flco_print_service_options(ctx);
+        dmr_flco_print_branding(ctx);
+        dmr_flco_print_tg_label(ctx);
+        dmr_flco_print_loaded_keys(ctx);
+        dmr_flco_print_extended_keys(ctx);
     }
 
-    dmr_flco_finalize(&ctx);
+    dmr_flco_finalize(ctx);
+}
+
+//combined flco handler (vlc, tlc, emb), minus the superfluous structs and strings
+void
+dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
+         uint8_t type) {
+    dmr_flco_ctx ctx;
+    dmr_flco_ctx_init(&ctx, opts, state, lc_bits, CRCCorrect, IrrecoverableErrors, type);
+    // The burst handler indexed its CRC scope by the TACT slot. Mono mode re-homes this
+    // LC onto slot 0, so its CRC verdict must follow it (issue #552 item 3). OR and
+    // restore preserve an outer slot-0 verdict, including across the early-return paths.
+    const uint8_t saved = state->event_crc_invalid[0];
+    if (ctx.slot_collapsed) {
+        state->event_crc_invalid[0] |= state->event_crc_invalid[ctx.burst_slot];
+    }
+    dmr_flco_run(&ctx);
+    state->event_crc_invalid[0] = saved;
 }
 
 static const char*

@@ -7755,6 +7755,24 @@ target_link_libraries(
 )
 add_test(NAME DMR_USBD_LIP_LRRP_CRC COMMAND dsd-neo_test_dmr_usbd_lip_lrrp_crc)
 add_executable(
+    dsd-neo_test_dmr_flco_mono_crc_scope
+    protocol/dmr/test_dmr_flco_mono_crc_scope.c
+    test_support/dmr_bptc_test_encoder.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_flco_mono_crc_scope
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_flco_mono_crc_scope
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(
+    NAME DMR_FLCO_MONO_CRC_SCOPE
+    COMMAND dsd-neo_test_dmr_flco_mono_crc_scope
+)
+
+add_executable(
     dsd-neo_test_dmr_lip_carriers
     protocol/dmr/test_dmr_lip_carriers.c
     test_support/dmr_bptc_test_encoder.c
