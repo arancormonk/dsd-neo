@@ -545,7 +545,7 @@ dsd_engine_setup_parse_bw_token_or_default(const char* token) {
     if (token && dsd_parse_int_arg(token, &bw) != 0) {
         bw = 0;
     }
-    if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48) {
+    if (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48 || bw == 72) {
         return bw;
     }
     return 48;
