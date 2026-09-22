@@ -505,6 +505,10 @@ Skips never persist, are unaffected by `persist_tg_lockouts`, and survive scan-t
 subject to their expiry. **Clear temporary avoids and call skips — current list** clears both in the active scope;
 list reload/replacement or decoder stop also clears them.
 
+On P25, a lockout (`B`/`DE` row), avoid or skip of a patched supergroup blocks the whole patch: a member talkgroup
+that is allowed, listed or held does not readmit the supergroup's grants. A member still selects the patch when
+the supergroup is merely unlisted in allow-list mode (`-W`) or does not match the Hold.
+
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`. The later of `-T`/`-Y` wins.
 - Conventional scan mode: `-Y` (not trunking; scans for sync on the row's decoder class or the global decoders). The
   later of `-T`/`-Y` wins. For NXDN the hold is refreshed
@@ -609,6 +613,8 @@ list reload/replacement or decoder stop also clears them.
     ledger including the copies parked by trunk scan. DMR and NXDN lockouts share the same session ledger instead of
     writing "ENC LO" rows into the group list. While `--enc-follow` is active the ledger is suspended rather than
     erased, so toggling back to `--enc-lockout` does not owe a fresh probe per target.
+  - A locked P25 supergroup stays locked for the whole patch: its member talkgroups are not locked themselves, but
+    they do not readmit the supergroup's grants.
 - Hold talkgroup: `-I <dec>`
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode)

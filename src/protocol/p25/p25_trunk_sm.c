@@ -1192,6 +1192,18 @@ p25_grant_policy_candidate_is_better(const dsd_tg_policy_decision* candidate, co
     return (candidate->preempt_requested && !best->preempt_requested) ? 1 : 0;
 }
 
+// Blocks placed on the over-the-air supergroup itself are final: every member of
+// the patch rides the SG's traffic, so an unblocked or held member must not
+// readmit a grant the user skipped or locked out (mode B/DE or a session avoid)
+// or the encryption ledger locked (it is armed on the SG). A member reprieve
+// there cost a tune / classify / re-lock cycle per grant update, and in
+// blacklist mode, where every unlisted member is allowed, it let nearly any
+// patch through its SG's lockout. An allow-list or Hold miss on the SG stays
+// open to members: that is what patch-aware following is for.
+#define P25_GRANT_SG_FINAL_BLOCKS                                                                                      \
+    (DSD_TG_POLICY_BLOCK_CALL_SKIP | DSD_TG_POLICY_BLOCK_ENC_LOCKOUT | DSD_TG_POLICY_BLOCK_SESSION_AVOID               \
+     | DSD_TG_POLICY_BLOCK_MODE)
+
 static int
 p25_grant_eval_group_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm_event_t* ev,
                             const p25_grant_eval_ctx_t* eval_ctx, dsd_tg_policy_decision* out_decision) {
@@ -1216,7 +1228,7 @@ p25_grant_eval_group_policy(const dsd_opts* opts, const dsd_state* state, const 
             != 0) {
             return -1;
         }
-        if (i == 0 && (candidate.block_reasons & DSD_TG_POLICY_BLOCK_CALL_SKIP)) {
+        if (i == 0 && (candidate.block_reasons & P25_GRANT_SG_FINAL_BLOCKS)) {
             *out_decision = candidate;
             return 0;
         }
