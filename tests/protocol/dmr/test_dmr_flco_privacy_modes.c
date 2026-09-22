@@ -236,8 +236,7 @@ capture_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* st
 
 static void
 clear_scan_hooks(void) {
-    dsd_trunk_scan_hooks hooks = {0};
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(NULL);
 }
 
 static dsd_trunk_tune_result
@@ -636,7 +635,7 @@ test_flco_scan_hook_reports_encrypted_service_option(void) {
 
     dsd_trunk_scan_hooks hooks = {0};
     hooks.dmr_conventional_activity = capture_scan_dmr_conventional_activity;
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(&hooks);
 
     uint8_t bits[80];
     uint32_t irr = 0;
@@ -666,7 +665,7 @@ test_hytera_flco_scan_hook_uses_final_call_type(void) {
 
     dsd_trunk_scan_hooks hooks = {0};
     hooks.dmr_conventional_activity = capture_scan_dmr_conventional_activity;
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(&hooks);
 
     uint8_t bits[80];
     uint32_t irr = 0;

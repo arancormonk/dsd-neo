@@ -1028,7 +1028,7 @@ set_parked_scan_target_ctx(int parked_ctx) {
     } else if (parked_ctx == 2) {
         hooks.dmr_ctx = parked_scan_ctx_marker;
     }
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(&hooks);
 }
 
 /*
@@ -1159,7 +1159,7 @@ reset_scan_activity_capture(void) {
 
     dsd_trunk_scan_hooks hooks = {0};
     hooks.nxdn_conventional_activity = capture_scan_nxdn_conventional_activity;
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(&hooks);
 }
 
 /*
@@ -1215,7 +1215,7 @@ run_data_header_scan_activity_case(const char* tag, uint8_t message_type, uint8_
         rc |= expect_int(label, g_scan_activity_data_call, 1);
     }
 
-    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    dsd_trunk_scan_hooks_set(NULL);
     free(state);
     free(opts);
     return rc;

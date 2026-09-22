@@ -68,8 +68,8 @@ dsd_trunk_dmr_recovery_allowed(const dsd_opts* opts, const dsd_state* state) {
 }
 
 void
-dsd_trunk_scan_hooks_set(dsd_trunk_scan_hooks hooks) {
-    g_trunk_scan_hooks = hooks;
+dsd_trunk_scan_hooks_set(const dsd_trunk_scan_hooks* hooks) {
+    g_trunk_scan_hooks = hooks ? *hooks : (dsd_trunk_scan_hooks){0};
 }
 
 void*

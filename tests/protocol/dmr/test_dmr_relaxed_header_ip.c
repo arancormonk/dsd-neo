@@ -1491,7 +1491,7 @@ reset_scan_activity_capture(void) {
 
     dsd_trunk_scan_hooks hooks = {0};
     hooks.dmr_conventional_activity = capture_scan_dmr_conventional_activity;
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(&hooks);
 }
 
 /*
@@ -1543,7 +1543,7 @@ run_dmr_data_header_scan_activity_case(const char* tag, uint8_t dpf, uint8_t gi,
         }
     }
 
-    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    dsd_trunk_scan_hooks_set(NULL);
     return rc;
 }
 

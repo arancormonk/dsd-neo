@@ -59,7 +59,7 @@ set_scan_chan_csv_hook(const char* path) {
     g_active_chan_csv = path;
     dsd_trunk_scan_hooks hooks = {0};
     hooks.active_chan_csv = test_active_chan_csv;
-    dsd_trunk_scan_hooks_set(hooks);
+    dsd_trunk_scan_hooks_set(&hooks);
 }
 
 /*
@@ -101,7 +101,7 @@ test_chan_map_path_resolves_under_trunk_scan(void) {
     nxdn_trunk_diag_log_missing_channel_once(&opts, &state, 44, "grant");
     rc |= expect_eq_size("global-chan-map-records", nxdn_trunk_diag_collect_unmapped_channels(&state, NULL, 0), 2);
 
-    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    dsd_trunk_scan_hooks_set(NULL);
     g_active_chan_csv = NULL;
     dsd_state_ext_free_all(&state);
     return rc;
