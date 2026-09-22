@@ -69,9 +69,11 @@ dsd_unicode_supported(void) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
+lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
+    (void)bit_count;
+    (void)src;
     (void)opts;
-    (void)input;
+    (void)bits;
     g_lip_calls++;
     uint8_t slot = (state->currentslot == 1) ? 1U : 0U;
     DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof(state->dmr_embedded_gps[slot]), "%s",
@@ -182,7 +184,7 @@ expect_count(unsigned int got, unsigned int want, const char* tag) {
 
 static const char*
 staged_text(const dsd_state* st) {
-    return st->event_history_s[0].Event_History_Items[0].text_message;
+    return dsd_event_staged_text(st, 0);
 }
 
 // Every case starts from empty spies, an empty staged text payload and no embedded GPS, so a
@@ -191,7 +193,7 @@ static void
 run_case(dsd_opts* opts, dsd_state* st, const uint8_t* pdu, size_t len) {
     reset_spies();
     st->currentslot = 0;
-    st->event_history_s[0].Event_History_Items[0].text_message[0] = '\0';
+    dsd_event_stage_text(st, 0, "");
     st->dmr_embedded_gps[0][0] = '\0';
     dmr_udp_comp_pdu(opts, st, (uint16_t)len, pdu);
 }

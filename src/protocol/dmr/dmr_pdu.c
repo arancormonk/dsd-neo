@@ -78,23 +78,15 @@ utf16_text_collect_scalar(dsd_state* state, uint8_t slot, uint32_t scalar) {
     }
     char utf8[DSD_UTF8_MAX_BYTES + 1];
     if (dsd_utf8_encode_scalar(scalar, utf8, sizeof utf8) > 0U) {
-        dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
-                   sizeof state->event_history_s[slot].Event_History_Items[0].text_message, utf8);
+        dsd_event_stage_text_append(state, slot, utf8);
     }
 }
 
 static void
 utf16_text_render(dsd_state* state, uint8_t wr, int little_endian, uint16_t len, const uint8_t* input) {
     uint8_t slot = state->currentslot;
-    // Only opened when wr says so, and closed under the same condition a loop
-    // later. A zeroed guard makes the close a no-op instead of a read of an
-    // indeterminate pointer if those two ever drift apart.
-    dsd_event_history_transaction transaction = {0};
     if (wr == 1) {
-        dsd_event_history_transaction_begin(state, &transaction);
-        DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].text_message,
-                     sizeof(state->event_history_s[slot].Event_History_Items[0].text_message), "%s",
-                     ""); //full text string
+        dsd_event_stage_text(state, slot, "");
     }
     // Pairs are combined and unpaired halves shown as U+FFFD before anything reaches stderr, so
     // the C runtime never sees a code unit it cannot encode (issue #358).
@@ -123,14 +115,6 @@ utf16_text_render(dsd_state* state, uint8_t wr, int little_endian, uint16_t len,
             utf16_text_collect_scalar(state, slot, scalars[0]);
         }
     }
-
-    //add elipses to indicate this is possibly truncated
-
-    //debug
-    if (wr == 1) {
-        dsd_event_history_mark_dirty(&state->event_history_s[slot]);
-        dsd_event_history_transaction_end(&transaction);
-    }
 }
 
 void
@@ -148,14 +132,8 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
     uint8_t slot = state->currentslot;
     DSD_FPRINTF(stderr, "\n UTF8 Text: ");
 
-    // Zeroed for the same reason as utf16_to_text above: the open and the close
-    // sit on either side of a loop, both behind wr.
-    dsd_event_history_transaction transaction = {0};
     if (wr == 1) {
-        dsd_event_history_transaction_begin(state, &transaction);
-        DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].text_message,
-                     sizeof(state->event_history_s[slot].Event_History_Items[0].text_message), "%s",
-                     ""); //full text string
+        dsd_event_stage_text(state, slot, "");
     }
 
     for (uint16_t i = 0; i < len; i++) {
@@ -175,27 +153,14 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
         //this is the long version, complete message for logging purposes
         if (wr == 1 && c < 0x7F && c >= 0x20) {
             const char c_str[2] = {c, '\0'};
-            dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
-                       sizeof state->event_history_s[slot].Event_History_Items[0].text_message, c_str);
+            dsd_event_stage_text_append(state, slot, c_str);
         }
-    }
-
-    //add elipses to indicate this is possibly truncated
-    if (wr == 1) {
-        dsd_event_history_mark_dirty(&state->event_history_s[slot]);
-        dsd_event_history_transaction_end(&transaction);
     }
 }
 
 static void
 dmr_sd_pdu_store_text(dsd_state* state, uint8_t slot, const char* text) {
-    dsd_event_history_transaction transaction;
-    dsd_event_history_transaction_begin(state, &transaction);
-    Event_History* item = &state->event_history_s[slot].Event_History_Items[0];
-    DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", text != NULL ? text : "");
-    dsd_event_history_item_set_metadata(item, DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_DATA);
-    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
-    dsd_event_history_transaction_end(&transaction);
+    dsd_event_stage_text(state, slot, text);
 }
 
 static void
@@ -209,14 +174,7 @@ dmr_sd_pdu_print_raw(const uint8_t* dmr_pdu, uint16_t len) {
 static void
 dmr_sd_pdu_copy_location(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t len, const uint8_t* dmr_pdu) {
     dmr_locn(opts, state, len, dmr_pdu);
-    dsd_event_history_transaction transaction;
-    dsd_event_history_transaction_begin(state, &transaction);
-    DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].gps_s,
-                 sizeof(state->event_history_s[slot].Event_History_Items[0].gps_s), "%s", state->dmr_lrrp_gps[slot]);
-    dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0], DSD_EVENT_SEVERITY_INFO,
-                                        DSD_EVENT_CATEGORY_DATA);
-    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
-    dsd_event_history_transaction_end(&transaction);
+    dsd_event_stage_gps(state, slot, state->dmr_lrrp_gps[slot]);
 }
 
 static void
@@ -295,12 +253,6 @@ dmr_sd_pdu_process(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t
     (void)dsd_event_emit_data_notice(opts, state, slot, &observation, summary);
 }
 
-void
-dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU) {
-    /* Public compatibility entry point: strict decoding only, with no CRC-proven transmitter workaround. */
-    dmr_sd_pdu_process(opts, state, len, DMR_PDU, 0U);
-}
-
 // ETSI TS 102 361-3 V1.3.1 clause 7.2.4: SAID, DAID, SPID and DPID are indices into tables the
 // radio holds (7.15-7.18), not compressed values. The labels below use those tables' wording.
 static const char*
@@ -377,6 +329,24 @@ dmr_udp_event_category(uint16_t src_port, uint16_t dst_port) {
 
 enum { DMR_UDP_COMP_PORT_TEXT = 5016U, DMR_UDP_COMP_PORT_LIP = 5017U };
 
+typedef enum {
+    DMR_UDP_COMP_SERVICE_NONE,
+    DMR_UDP_COMP_SERVICE_TEXT,
+    DMR_UDP_COMP_SERVICE_LIP,
+} dmr_udp_comp_service_type;
+
+static dmr_udp_comp_service_type
+dmr_udp_comp_service(uint16_t src_port, uint16_t dst_port) {
+    // Text takes precedence when either endpoint selects it.
+    if (src_port == DMR_UDP_COMP_PORT_TEXT || dst_port == DMR_UDP_COMP_PORT_TEXT) {
+        return DMR_UDP_COMP_SERVICE_TEXT;
+    }
+    if (src_port == DMR_UDP_COMP_PORT_LIP || dst_port == DMR_UDP_COMP_PORT_LIP) {
+        return DMR_UDP_COMP_SERVICE_LIP;
+    }
+    return DMR_UDP_COMP_SERVICE_NONE;
+}
+
 // One SPID or DPID: the 7-bit index as sent and the UDP port it stands for. They never share a
 // variable, because a port number read from the extended header is not an index (issue #450).
 typedef struct {
@@ -444,11 +414,12 @@ dmr_udp_comp_decode_payload(const dsd_opts* opts, dsd_state* state, uint16_t src
         return 0;
     }
     len -= ptr;
-    if (src_port == DMR_UDP_COMP_PORT_TEXT || dst_port == DMR_UDP_COMP_PORT_TEXT) {
+    const dmr_udp_comp_service_type service = dmr_udp_comp_service(src_port, dst_port);
+    if (service == DMR_UDP_COMP_SERVICE_TEXT) {
         utf16_to_text(state, 1, len, pdu + ptr); //assumming text starts right at the ptr value
         return 0;
     }
-    if (src_port == DMR_UDP_COMP_PORT_LIP || dst_port == DMR_UDP_COMP_PORT_LIP) {
+    if (service == DMR_UDP_COMP_SERVICE_LIP) {
         uint8_t bits[127 * 8];
         uint16_t decode_len = len;
         if (decode_len > 127U) {
@@ -460,7 +431,7 @@ dmr_udp_comp_decode_payload(const dsd_opts* opts, dsd_state* state, uint16_t src
         char previous_gps[sizeof(state->dmr_embedded_gps[slot])];
         DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", state->dmr_embedded_gps[slot]);
         state->dmr_embedded_gps[slot][0] = '\0';
-        lip_protocol_decoder(opts, state, bits);
+        lip_pdu_decoder(opts, state, bits, (size_t)decode_len * 8U, (uint32_t)state->dmr_lrrp_source[slot]);
         if (state->dmr_embedded_gps[slot][0] != '\0') {
             return 1;
         }
@@ -777,22 +748,11 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
             DSD_FPRINTF(stderr, "LRRP;");
             // P25 Phase 1 arrives with currentslot == 0, matching the event_crc_invalid[0] scope in p25p1_mdpu.c.
             dmr_lrrp(opts, state, payload_len, src24, dst24, payload, (uint8_t)(state->event_crc_invalid[slot] == 0));
-            dsd_event_history_transaction transaction;
-            dsd_event_history_transaction_begin(state, &transaction);
-            dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0],
-                                                DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_DATA);
-            dsd_event_history_mark_dirty(&state->event_history_s[slot]);
-            dsd_event_history_transaction_end(&transaction);
             return 1;
         case 4004:
             DSD_FPRINTF(stderr, "XCMP;");
             DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "XCMP SRC: %d; DST: %d;", src24,
                          dst24);
-            dsd_event_history_transaction_begin(state, &transaction);
-            dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0],
-                                                DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_CONTROL);
-            dsd_event_history_mark_dirty(&state->event_history_s[slot]);
-            dsd_event_history_transaction_end(&transaction);
             return 1;
         case 4005: {
             DSD_FPRINTF(stderr, "ARS;");
@@ -845,6 +805,8 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
             utf16_to_text(state, 1, payload_len, payload);
             return 1;
         case 5017: {
+            DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "LIP SRC: %u; DST: %u;", src24,
+                         dst24);
             uint8_t bits[127 * 12 * 8];
             uint16_t decode_len = payload_len;
             if (decode_len > (uint16_t)(sizeof(bits) / 8U)) {
@@ -852,7 +814,7 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
             }
             DSD_MEMSET(bits, 0, sizeof(bits));
             dsd_unpack_bytes_to_bits(payload, payload_len, bits, sizeof(bits), decode_len);
-            lip_protocol_decoder(opts, state, bits);
+            lip_pdu_decoder(opts, state, bits, (size_t)decode_len * 8U, src24);
             return 1;
         }
         case 9361:
@@ -984,6 +946,26 @@ decode_ip_pdu_event_category(uint8_t protocol, uint16_t src_port, uint16_t dst_p
     return dmr_udp_event_category(src_port, dst_port);
 }
 
+static int
+decode_ip_pdu_emit_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t prot, uint32_t src24, uint32_t dst24,
+                          uint16_t src_port, uint16_t dst_port, const char* previous_gps) {
+    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, src24, dst24);
+    const dsd_event_category category = decode_ip_pdu_event_category(prot, src_port, dst_port);
+    // An ICMP wrapper never claims a fix produced by its enclosed packet.
+    const int fresh = prot != 1 && state->dmr_embedded_gps[slot][0] != '\0';
+    if (fresh) {
+        return dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, &observation, category,
+                                                              state->dmr_lrrp_gps[slot], state->dmr_embedded_gps[slot])
+               == 0;
+    }
+    if (state->dmr_embedded_gps[slot][0] == '\0') {
+        DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot], "%s", previous_gps);
+    }
+    // Consuming notices take only the data PDU's staging, never the active call's enrichment.
+    return dsd_event_emit_data_notice_classified(opts, state, slot, &observation, category, state->dmr_lrrp_gps[slot])
+           == 0;
+}
+
 //IP PDU header decode and port forward to appropriate decoder
 int
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
@@ -1000,7 +982,7 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
         return 0;
     }
 
-    uint8_t slot = state->currentslot;
+    uint8_t slot = (uint8_t)(state->currentslot & 1);
     uint8_t version = input[0] >> 4;
     uint8_t ihl = input[0] & 0xF;
     uint8_t tos = input[1];
@@ -1042,12 +1024,12 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
         }
     }
     decode_ip_pdu_print_endpoints(prot, src24, dst24, src_port, dst_port, input);
+    char previous_gps[sizeof state->dmr_embedded_gps[slot]];
+    DSD_SNPRINTF(previous_gps, sizeof previous_gps, "%s", state->dmr_embedded_gps[slot]);
+    state->dmr_embedded_gps[slot][0] = '\0';
     decode_ip_pdu_dispatch(opts, state, slot, prot, src24, dst24, effective_len, ip_header_len, input);
 
-    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, src24, dst24);
-    const dsd_event_category category = decode_ip_pdu_event_category(prot, src_port, dst_port);
-    return dsd_event_emit_data_notice_classified(opts, state, slot, &observation, category, state->dmr_lrrp_gps[slot])
-           == 0;
+    return decode_ip_pdu_emit_notice(opts, state, slot, prot, src24, dst24, src_port, dst_port, previous_gps);
 }
 
 typedef struct {

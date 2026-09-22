@@ -165,7 +165,116 @@ nmea_harris_print_src_prefix(uint16_t header, uint32_t src, int slot) {
 }
 
 typedef struct {
-    uint8_t add_hash;
+    uint8_t time_elapsed;
+    uint8_t lon_sign;
+    uint32_t lon;
+    uint8_t lat_sign;
+    uint32_t lat;
+    uint8_t pos_err;
+    uint8_t hor_vel;
+    uint8_t dir_tra;
+    uint8_t reason;
+    uint8_t reason_is_user_data;
+} lip_fields;
+
+static void
+lip_fields_from_usbd(const uint8_t* input, lip_fields* f) {
+    f->time_elapsed = (uint8_t)convert_bits_into_output(input + 4, 2);
+    f->lon_sign = input[6];
+    f->lon = (uint32_t)convert_bits_into_output(input + 7, 24);
+    f->lat_sign = input[31];
+    f->lat = (uint32_t)convert_bits_into_output(input + 32, 23);
+    f->pos_err = (uint8_t)convert_bits_into_output(input + 55, 3);
+    f->hor_vel = (uint8_t)convert_bits_into_output(input + 58, 7);
+    f->dir_tra = (uint8_t)convert_bits_into_output(input + 65, 4);
+    f->reason = (uint8_t)convert_bits_into_output(input + 69, 3);
+    f->reason_is_user_data = 0;
+}
+
+static void
+lip_fields_from_short_report(const uint8_t* bits, lip_fields* f) {
+    // TS 100 392-18-1 Table 6.1: fixed 76-bit short report, with no optional-element bits.
+    f->time_elapsed = (uint8_t)convert_bits_into_output(bits + 2, 2);
+    f->lon_sign = bits[4];
+    f->lon = (uint32_t)convert_bits_into_output(bits + 5, 24);
+    f->lat_sign = bits[29];
+    f->lat = (uint32_t)convert_bits_into_output(bits + 30, 23);
+    f->pos_err = (uint8_t)convert_bits_into_output(bits + 53, 3);
+    f->hor_vel = (uint8_t)convert_bits_into_output(bits + 56, 7);
+    f->dir_tra = (uint8_t)convert_bits_into_output(bits + 63, 4);
+    f->reason_is_user_data = bits[67];
+    f->reason = (uint8_t)convert_bits_into_output(bits + 68, 8);
+}
+
+static void
+gps_print_position_error(uint8_t pos_err, unsigned int metres) {
+    if (pos_err == 7U) {
+        DSD_FPRINTF(stderr, "\n  Position Error: Unknown or Invalid");
+    } else if (pos_err == 6U) {
+        DSD_FPRINTF(stderr, "\n  Position Error: More than 200km");
+    } else if (pos_err == 5U) {
+        DSD_FPRINTF(stderr, "\n  Position Error: Less than or equal to 200000m");
+    } else {
+        DSD_FPRINTF(stderr, "\n  Position Error: Less than %dm", metres);
+    }
+}
+
+static const char*
+lip_reason_label(uint8_t lip_value) {
+    // TS 100 392-18-1 Table 6.94; every unlisted value is reserved.
+    static const char* const labels[131] = {
+        [0] = "Subscriber unit is powered ON",
+        [1] = "Subscriber unit is powered OFF",
+        [2] = "Emergency condition is detected",
+        [3] = "Push-to-talk condition is detected",
+        [4] = "Status",
+        [5] = "Transmit inhibit mode ON",
+        [6] = "Transmit inhibit mode OFF",
+        [7] = "System access (TMO ON)",
+        [8] = "DMO ON",
+        [9] = "Enter service (after being out of service)",
+        [10] = "Service loss",
+        [11] = "Cell reselection or change of serving cell",
+        [12] = "Low battery",
+        [13] = "Subscriber unit is connected to a car kit",
+        [14] = "Subscriber unit is disconnected from a car kit",
+        [15] = "Subscriber unit asks for transfer initialization configuration",
+        [16] = "Arrival at destination",
+        [17] = "Arrival at a defined location",
+        [18] = "Approaching a defined location",
+        [19] = "SDS type-1 entered",
+        [20] = "User application initiated",
+        [21] = "Lost ability to determine location",
+        [22] = "Regained ability to determine location",
+        [23] = "Leaving point",
+        [24] = "Ambience Listening call is detected",
+        [25] = "Start of temporary reporting",
+        [26] = "Return to normal reporting",
+        [27] = "Call setup type 1 detected",
+        [28] = "Call setup type 2 detected",
+        [29] = "Positioning device in MS ON",
+        [30] = "Positioning device in MS OFF",
+        [32] = "Response to an immediate location request",
+        [129] = "Maximum reporting interval exceeded since the last location information report",
+        [130] = "Maximum reporting distance limit travelled since last location information report",
+    };
+    return lip_value < sizeof labels / sizeof labels[0] && labels[lip_value] != NULL ? labels[lip_value] : "Reserved";
+}
+
+static void
+lip_print_reason(const lip_fields* f, int hash_prefix) {
+    if (hash_prefix >= 0) {
+        // TS 102 361-4 Table 6.80 compresses LIP reason 32 to zero; other codes are reserved.
+        DSD_FPRINTF(stderr, " Reason: %s (%u);", f->reason == 0 ? lip_reason_label(32) : "Reserved", f->reason);
+    } else if (f->reason_is_user_data) {
+        DSD_FPRINTF(stderr, " User data: 0x%02X;", f->reason);
+    } else {
+        DSD_FPRINTF(stderr, " Reason: %s (%u);", lip_reason_label(f->reason), f->reason);
+    }
+}
+
+typedef struct {
+    int hash_prefix;
     double latitude;
     double longitude;
     unsigned int position_error;
@@ -177,46 +286,92 @@ typedef struct {
     const char* lonstr;
 } lip_state_strings;
 
-static void DSD_ATTR_USED
+static void
 lip_store_state_strings(dsd_state* state, int slot, const lip_state_strings* gps) {
     if (!state || !gps) {
         return;
     }
-
-    if (gps->pos_err != 0x7U) {
+    char prefix[16] = "";
+    if (gps->hash_prefix >= 0) {
+        DSD_SNPRINTF(prefix, sizeof prefix, "%03d; ", gps->hash_prefix);
+    }
+    if (gps->pos_err <= 5U) {
         DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
-                     "%03d; LIP: %.5lf%s%s %.5lf%s%s; Err: %dm; Spd: %d km/h; Dir: %d%s", gps->add_hash, gps->latitude,
+                     "%sLIP: %.5lf%s%s %.5lf%s%s; Err: %dm; Spd: %d km/h; Dir: %d%s", prefix, gps->latitude,
                      gps->deg_glyph, gps->latstr, gps->longitude, gps->deg_glyph, gps->lonstr, gps->position_error,
                      gps->speed_kph, gps->direction_deg, gps->deg_glyph);
+    } else if (gps->pos_err == 6U) {
+        DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
+                     "%sLIP: %.5lf%s%s %.5lf%s%s; Err: >200km; Spd: %d km/h; Dir: %d%s", prefix, gps->latitude,
+                     gps->deg_glyph, gps->latstr, gps->longitude, gps->deg_glyph, gps->lonstr, gps->speed_kph,
+                     gps->direction_deg, gps->deg_glyph);
     } else {
         DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof state->dmr_embedded_gps[slot],
-                     "%03d; LIP: %.5lf%s%s %.5lf%s%s Unknown Pos Err; Spd: %d km/h; Dir %d%s", gps->add_hash,
-                     gps->latitude, gps->deg_glyph, gps->latstr, gps->longitude, gps->deg_glyph, gps->lonstr,
-                     gps->speed_kph, gps->direction_deg, gps->deg_glyph);
+                     "%sLIP: %.5lf%s%s %.5lf%s%s Unknown Pos Err; Spd: %d km/h; Dir %d%s", prefix, gps->latitude,
+                     gps->deg_glyph, gps->latstr, gps->longitude, gps->deg_glyph, gps->lonstr, gps->speed_kph,
+                     gps->direction_deg, gps->deg_glyph);
     }
-
-    (void)gps_enrich_active_call(state, (uint8_t)slot, 0U, state->dmr_embedded_gps[slot], NULL);
 }
 
-static void DSD_ATTR_USED
-lip_emit_position_metadata(const dsd_opts* opts, dsd_state* state, int slot, const lip_state_strings* gps,
-                           double lat_sf, double lon_sf, uint8_t reason, uint8_t time_elapsed) {
-    if (gps->pos_err == 0x7U) {
-        DSD_FPRINTF(stderr, "\n  Position Error: Unknown or Invalid;");
-    } else {
-        DSD_FPRINTF(stderr, "\n  Position Error: Less than %dm;", gps->position_error);
+static void
+lip_report(const dsd_opts* opts, dsd_state* state, const lip_fields* f, uint32_t src, int hash_prefix,
+           uint32_t expected_source) {
+    DSD_FPRINTF(stderr, "Location Information Protocol; ");
+    if (hash_prefix < 0) {
+        DSD_FPRINTF(stderr, "Short Location Report; ");
     }
-
-    if (reason != 0U) {
-        DSD_FPRINTF(stderr, " Reserved: %d;", reason);
-    } else {
-        DSD_FPRINTF(stderr, " Request Response; ");
+    uint32_t lat = f->lat;
+    uint32_t lon = f->lon;
+    double lat_unit = 180.0 / 16777216.0;
+    double lon_unit = 360.0 / 33554432.0;
+    double lon_sf = 1.0f;
+    double lat_sf = 1.0f;
+    const char* latstr = "N";
+    const char* lonstr = "E";
+    const char* deg_glyph = dsd_degrees_glyph();
+    if (f->lat_sign) {
+        lat = 0x800000 - lat;
+        latstr = "S";
+        lat_sf = -1.0f;
     }
-
-    lip_print_time_elapsed(time_elapsed);
-    lip_store_state_strings(state, slot, gps);
-    gps_write_lrrp_compact(opts, state, slot, gps->add_hash, lat_sf * gps->latitude, lon_sf * gps->longitude,
-                           gps->speed_kph, gps->direction_deg);
+    double latitude = (double)lat * lat_unit;
+    if (f->lon_sign) {
+        lon = 0x1000000 - lon;
+        lonstr = "W";
+        lon_sf = -1.0f;
+    }
+    double longitude = (double)lon * lon_unit;
+    float v = lip_velocity_kph(f->hor_vel);
+    float dir = (float)f->dir_tra * 22.5f; // TS 100 392-18-1 Table 6.45.
+    int vt = (int)v;
+    int dt = (int)dir;
+    if (fabs(latitude) <= 90.0 && fabs(longitude) <= 180.0) {
+        int slot = state->currentslot & 1;
+        if (hash_prefix >= 0) {
+            DSD_FPRINTF(stderr, "Src(Hash); %03d;  ", hash_prefix);
+        } else {
+            DSD_FPRINTF(stderr, "Src: %u; ", src);
+        }
+        DSD_FPRINTF(stderr, "Lat: %.5lf%s%s Lon: %.5lf%s%s (%.5lf, %.5lf); Spd: %d km/h; Dir: %d%s", latitude,
+                    deg_glyph, latstr, longitude, deg_glyph, lonstr, lat_sf * latitude, lon_sf * longitude, vt, dt,
+                    deg_glyph);
+        unsigned int position_error = f->pos_err <= 5U ? (unsigned int)(2U * POSITION_ERROR_POW10[f->pos_err]) : 0U;
+        lip_state_strings gps = {hash_prefix, latitude, longitude, position_error, f->pos_err,
+                                 vt,          dt,       deg_glyph, latstr,         lonstr};
+        gps_print_position_error(f->pos_err, position_error);
+        DSD_FPRINTF(stderr, ";");
+        lip_print_reason(f, hash_prefix);
+        lip_print_time_elapsed(f->time_elapsed);
+        lip_store_state_strings(state, slot, &gps);
+        // Carrier reports need a known source before enriching an active call.
+        // USBD hashes retain the existing wildcard-source behavior.
+        if (hash_prefix >= 0 || expected_source != 0U) {
+            (void)gps_enrich_active_call(state, (uint8_t)slot, expected_source, state->dmr_embedded_gps[slot], NULL);
+        }
+        gps_write_lrrp_compact(opts, state, slot, src, lat_sf * latitude, lon_sf * longitude, vt, dt);
+    } else {
+        DSD_FPRINTF(stderr, " Position Calculation Error;");
+    }
 }
 
 static uint8_t
@@ -298,85 +453,63 @@ nmea_print_invalid_reason(uint8_t start_value, uint8_t end_value, uint8_t checks
 
 void
 lip_protocol_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* input) {
-    //NOTE: This is defined in ETSI TS 102 361-4 V1.12.1 (2023-07) p208
+    // ETSI TS 102 361-4 V1.12.1 Table 6.79: service 0..3, time 4..5, longitude 6..30,
+    // latitude 31..54, position error 55..57, velocity 58..64, direction 65..68,
+    // reason 69..71 and source hash 72..79. The 16-bit burst CRC follows at bit 80.
+    lip_fields f;
+    lip_fields_from_usbd(input, &f);
+    uint8_t add_hash = (uint8_t)convert_bits_into_output(input + 72, 8);
+    lip_report(opts, state, &f, add_hash, add_hash, 0U);
+}
 
-    //NOTE: This format is pretty much the same as DMR EMB GPS, but has a few extra elements,
-    //so I got lazy and just lifted most of the code from there, also assuming same lat/lon calcs
-    //since those have been tested to work in DMR EMB GPS and units are same in LIP
+static const char*
+lip_extension_label(uint8_t extension) {
+    // TS 100 392-18-1 Table 6.92.
+    static const char* const labels[16] = {
+        "Reserved",
+        "Immediate location report request",
+        "Reserved",
+        "Long location report",
+        "Location report acknowledgement",
+        "Basic location parameters request/response",
+        "Add/modify trigger request/response",
+        "Remove trigger request/response",
+        "Report trigger request/response",
+        "Report basic location parameters request/response",
+        "Location reporting enable/disable request/response",
+        "Location reporting temporary control request/response",
+        "Backlog request/response",
+        "Reserved",
+        "Reserved",
+        "Reserved",
+    };
+    return labels[extension & 15U];
+}
 
-    DSD_FPRINTF(stderr, "Location Information Protocol; ");
-
-    // uint8_t service_type = (uint8_t)convert_bits_into_output(&input[0], 4); //checked before arrival here
-    uint8_t time_elapsed = (uint8_t)convert_bits_into_output(&input[6], 2);
-    uint8_t lon_sign = input[8];
-    uint32_t lon = (uint32_t)convert_bits_into_output(&input[9], 24); //8, 25
-    uint8_t lat_sign = input[33];
-    uint32_t lat = (uint32_t)convert_bits_into_output(&input[34], 23); //33, 24
-    uint8_t pos_err = (uint8_t)convert_bits_into_output(&input[57], 2);
-    uint8_t hor_vel = (uint8_t)convert_bits_into_output(&input[59], 7);
-    uint8_t dir_tra = (uint8_t)convert_bits_into_output(&input[66], 4);
-    uint8_t reason = (uint8_t)convert_bits_into_output(&input[70], 3);
-    uint8_t add_hash = (uint8_t)convert_bits_into_output(&input[73], 8); //MS Source Address Hash
-
-    //NOTE: May need to use double instead of float to avoid rounding errors
-    double latitude = 0.0;
-    double longitude = 0.0;
-    /* Avoid pow(2, n): use exact constants for 2^24 and 2^25 */
-    double lat_unit = 180.0 / 16777216.0; // 180 / (2^24)
-    double lon_unit = 360.0 / 33554432.0; // 360 / (2^25)
-    double lon_sf = 1.0f;                 //float value we can multiple longitude with
-    double lat_sf = 1.0f;                 //float value we can multiple latitude with
-
-    char latstr[3];
-    char lonstr[3];
-    DSD_SNPRINTF(latstr, sizeof latstr, "%s", "N");
-    DSD_SNPRINTF(lonstr, sizeof lonstr, "%s", "E");
-
-    const char* deg_glyph = dsd_degrees_glyph();
-
-    //lat and lon calculations (two's complement conversion)
-    if (lat_sign) {
-        lat = 0x800000 - lat;
-        DSD_SNPRINTF(latstr, sizeof latstr, "%s", "S");
-        lat_sf = -1.0f;
+void
+lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
+    if (bit_count < 2) {
+        DSD_FPRINTF(stderr, "LIP: truncated;");
+        return;
     }
-    latitude = ((double)lat * lat_unit);
-
-    if (lon_sign) {
-        lon = 0x1000000 - lon;
-        DSD_SNPRINTF(lonstr, sizeof lonstr, "%s", "W");
-        lon_sf = -1.0f;
-    }
-    longitude = ((double)lon * lon_unit);
-
-    //6.3.63 Position Error
-    //6.3.17 Horizontal velocity
-    /*
-    Horizontal velocity shall be encoded for speeds 0 km/h to 28 km/h in 1 km/h steps and
-    from 28 km/h onwards using equation: v = C × (1 + x)^(K-A) + B where:
-  */
-    float v = lip_velocity_kph(hor_vel);
-
-    float dir = (((float)dir_tra + 11.25f) / 22.5f); //page 68, Table 6.45
-
-    //truncated and rounded forms
-    int vt = (int)v;
-    int dt = (int)dir;
-
-    //sanity check
-    if (fabs(latitude) <= 90.0 && fabs(longitude) <= 180.0) {
-        int slot = state->currentslot;
-        DSD_FPRINTF(stderr, "Src(Hash); %03d;  Lat: %.5lf%s%s Lon: %.5lf%s%s (%.5lf, %.5lf); Spd: %d km/h; Dir: %d%s",
-                    add_hash, latitude, deg_glyph, latstr, longitude, deg_glyph, lonstr, lat_sf * latitude,
-                    lon_sf * longitude, vt, dt, deg_glyph);
-
-        //6.3.63 Position Error (2 * 10^pos_err) via tiny LUT
-        unsigned int position_error = (unsigned int)(2U * POSITION_ERROR_POW10[pos_err & 7U]);
-        lip_state_strings gps = {add_hash, latitude, longitude, position_error, pos_err,
-                                 vt,       dt,       deg_glyph, latstr,         lonstr};
-        lip_emit_position_metadata(opts, state, slot, &gps, lat_sf, lon_sf, reason, time_elapsed);
+    uint8_t type = (uint8_t)convert_bits_into_output(bits, 2);
+    if (type == 0) {
+        if (bit_count < 76) {
+            DSD_FPRINTF(stderr, "LIP: short location report truncated (%zu bits);", bit_count);
+            return;
+        }
+        lip_fields f;
+        lip_fields_from_short_report(bits, &f);
+        lip_report(opts, state, &f, src, -1, src);
+    } else if (type == 1) {
+        if (bit_count < 6) {
+            DSD_FPRINTF(stderr, "LIP: PDU type extension truncated (%zu bits);", bit_count);
+            return;
+        }
+        uint8_t extension = (uint8_t)convert_bits_into_output(bits + 2, 4);
+        DSD_FPRINTF(stderr, "LIP: %s (PDU type extension %u); not decoded;", lip_extension_label(extension), extension);
     } else {
-        DSD_FPRINTF(stderr, " Position Calculation Error;");
+        DSD_FPRINTF(stderr, "LIP: reserved PDU type %u; not decoded;", type);
     }
 }
 
@@ -673,13 +806,7 @@ dmr_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[]
             if (pos_err <= 0x5) {
                 position_error = (unsigned int)(2U * POSITION_ERROR_POW10[pos_err]);
             }
-            if (pos_err == 0x7) {
-                DSD_FPRINTF(stderr, "\n  Position Error: Unknown or Invalid");
-            } else if (pos_err == 0x6) {
-                DSD_FPRINTF(stderr, "\n  Position Error: More than 200km");
-            } else {
-                DSD_FPRINTF(stderr, "\n  Position Error: Less than %dm", position_error);
-            }
+            gps_print_position_error(pos_err, position_error);
 
             dmr_embedded_gps_fix fix = {latitude, longitude, lat_sf, lon_sf, position_error,
                                         pos_err,  deg_glyph, latstr, lonstr};
@@ -850,12 +977,7 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
     }
 
     if (have_events) {
-        dsd_event_history_transaction transaction;
-        dsd_event_history_transaction_begin(state, &transaction);
-        DSD_SNPRINTF(state->event_history_s[slot_idx].Event_History_Items[0].text_message,
-                     sizeof(state->event_history_s[slot_idx].Event_History_Items[0].text_message), "%s", local_out);
-        dsd_event_history_mark_dirty(&state->event_history_s[slot_idx]);
-        dsd_event_history_transaction_end(&transaction);
+        dsd_event_stage_text(state, slot_idx, local_out);
 
         if (valid) {
             uint32_t source = (uint32_t)state->dmr_lrrp_source[slot_idx];

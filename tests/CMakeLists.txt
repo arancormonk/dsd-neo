@@ -3965,6 +3965,27 @@ add_test(NAME RUNTIME_CALL_ALERT COMMAND dsd-neo_test_runtime_call_alert)
 
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
+        dsd-neo_test_core_events_staged_payload
+        core/test_core_events_staged_payload.c
+    )
+    target_include_directories(
+        dsd-neo_test_core_events_staged_payload
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_core_events_staged_payload
+        PRIVATE dsd-neo_core dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_core_events_staged_payload
+        PRIVATE "LINKER:--wrap=beeper"
+    )
+    add_test(
+        NAME CORE_EVENTS_STAGED_PAYLOAD
+        COMMAND dsd-neo_test_core_events_staged_payload
+    )
+
+    add_executable(
         dsd-neo_test_core_call_alert_history
         core/test_core_call_alert_history.c
     )
@@ -5017,6 +5038,7 @@ add_test(
 
 add_executable(
     dsd-neo_test_engine_trunk_scan
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
     ${PROJECT_SOURCE_DIR}/src/core/util/scan_profile.c
     test_support/scan_group_stubs.c
     engine/test_engine_trunk_scan.c
@@ -7743,6 +7765,7 @@ add_test(NAME DMR_EVENT_CRC COMMAND dsd-neo_test_dmr_event_crc)
 add_executable(
     dsd-neo_test_dmr_usbd_lip_lrrp_crc
     protocol/dmr/test_dmr_usbd_lip_lrrp_crc.c
+    test_support/dmr_bptc_test_encoder.c
 )
 target_include_directories(
     dsd-neo_test_dmr_usbd_lip_lrrp_crc
@@ -7753,6 +7776,54 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
 )
 add_test(NAME DMR_USBD_LIP_LRRP_CRC COMMAND dsd-neo_test_dmr_usbd_lip_lrrp_crc)
+add_executable(
+    dsd-neo_test_dmr_flco_mono_crc_scope
+    protocol/dmr/test_dmr_flco_mono_crc_scope.c
+    test_support/dmr_bptc_test_encoder.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_flco_mono_crc_scope
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_flco_mono_crc_scope
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(
+    NAME DMR_FLCO_MONO_CRC_SCOPE
+    COMMAND dsd-neo_test_dmr_flco_mono_crc_scope
+)
+
+add_executable(
+    dsd-neo_test_dmr_lc_rs_verdict
+    protocol/dmr/test_dmr_lc_rs_verdict.c
+    test_support/dmr_bptc_test_encoder.c
+    test_support/dmr_rs_test_encoder.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_lc_rs_verdict
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lc_rs_verdict
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_LC_RS_VERDICT COMMAND dsd-neo_test_dmr_lc_rs_verdict)
+
+add_executable(
+    dsd-neo_test_dmr_lip_carriers
+    protocol/dmr/test_dmr_lip_carriers.c
+    test_support/dmr_bptc_test_encoder.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_lip_carriers
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lip_carriers
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_LIP_CARRIERS COMMAND dsd-neo_test_dmr_lip_carriers)
 
 add_executable(
     dsd-neo_test_dmr_ms_data
@@ -8021,6 +8092,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_time_fallback
@@ -8048,6 +8120,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_time_valid
@@ -8072,6 +8145,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_token_alignment
@@ -8098,6 +8172,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_response_token_lengths
@@ -8124,6 +8199,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_resync_prefix
@@ -8150,6 +8226,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_position_token_precedence
@@ -8177,6 +8254,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_crc_gating
@@ -8201,6 +8279,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_empty_payload_type
@@ -8228,6 +8307,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_wrapped_document
@@ -8255,6 +8335,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_pdu_utf16_text
@@ -8279,6 +8360,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_tms_utf16le
@@ -8299,6 +8381,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_ip_udp_lengths
@@ -8325,6 +8408,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_lrrp_event_crc_gating
@@ -8351,6 +8435,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_udp_comp_header
@@ -8390,6 +8475,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_locn_time_fallback
@@ -8410,6 +8496,7 @@ add_executable(
     protocol/dmr/test_dmr_embedded_gps_position_error.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
     test_support/call_state_stubs.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_dmr_embedded_gps_position_error
@@ -8422,7 +8509,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_embedded_gps_position_error
-    PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
+    PRIVATE dsd-neo_platform dsd-neo_test_support ${DSD_NEO_TEST_MATH_LIB}
 )
 add_test(
     NAME DMR_EMBEDDED_GPS_POSITION_ERROR
@@ -8435,6 +8522,7 @@ add_executable(
     core/test_core_gps_lrrp_crc_gating.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
     test_support/call_state_stubs.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
 )
 target_include_directories(
     dsd-neo_test_core_gps_lrrp_crc_gating

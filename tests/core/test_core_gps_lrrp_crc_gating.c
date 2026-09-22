@@ -135,20 +135,21 @@ expect_rows(const char* path, int expected, const char* src, const char* lat, co
 }
 
 static int
-run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
+test_usbd_lip(const dsd_opts* opts, dsd_state* state, const char* path) {
+    int rc = 0;
     uint8_t lip[96] = {0};
-    set_bits_msb(lip, 6, 2, 1);
-    set_bits_msb(lip, 8, 1, 1);
-    set_bits_msb(lip, 9, 24, 0xC00000);
-    set_bits_msb(lip, 33, 1, 1);
-    set_bits_msb(lip, 34, 23, 0x600000);
-    set_bits_msb(lip, 57, 2, 1);
-    set_bits_msb(lip, 59, 7, 20);
-    set_bits_msb(lip, 73, 7, 0x2D);
-    // Service, direction, reason and spare bits are zero. Bit 80 participates in the legacy hash read.
-    char clean_lip[sizeof state->dmr_embedded_gps[1]];
-    const char* lip_tags[] = {"LIP clean", "LIP CRC-invalid", "LIP slot isolation"};
-    for (int i = 0; i < 3; ++i) {
+    set_bits_msb(lip, 4, 2, 1);
+    set_bits_msb(lip, 6, 1, 1);
+    set_bits_msb(lip, 7, 24, 0xC00000);
+    set_bits_msb(lip, 31, 1, 1);
+    set_bits_msb(lip, 32, 23, 0x600000);
+    set_bits_msb(lip, 55, 3, 1);
+    set_bits_msb(lip, 58, 7, 20);
+    set_bits_msb(lip, 72, 8, 0xDA);
+    // Service, direction, reason and spare bits are zero. Bit 80 belongs to the CRC, never the hash.
+    char clean_lip[sizeof state->dmr_embedded_gps[1]] = "";
+    const char* lip_tags[] = {"LIP clean", "LIP CRC-invalid", "LIP slot isolation", "LIP CRC bit 80"};
+    for (int i = 0; i < 4; ++i) {
         if (!truncate_output(path)) {
             return 100;
         }
@@ -156,25 +157,135 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
         state->event_crc_invalid[0] = (i == 2);
         state->event_crc_invalid[1] = (i == 1);
         DSD_MEMSET(state->dmr_embedded_gps[1], 0, sizeof state->dmr_embedded_gps[1]);
+        lip[80] = (uint8_t)(i == 3);
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "lip_reason") != 0) {
+            return 100;
+        }
         lip_protocol_decoder(opts, state, lip);
-        if (!expect_rows(path, i == 1 ? 0 : 1, "00000090", "-22.500000", "-45.000000", 20, 0, "19990102",
+        dsd_test_capture_stderr_end(&cap);
+        char output[2048];
+        if (dsd_test_capture_stderr_read(&cap, output, sizeof output) != 0) {
+            return 100;
+        }
+        if (!strstr(output, "Response to an immediate location request")) {
+            DSD_FPRINTF(stderr, "T1 reason: missing Response to an immediate location request in %s\n", output);
+            rc = 1;
+        }
+        if (!expect_rows(path, i == 1 ? 0 : 1, "00000218", "-22.500000", "-45.000000", 20, 0, "19990102",
                          lip_tags[i])) {
-            return 1 + i * 2;
+            rc = 1;
         }
         const char* gps = state->dmr_embedded_gps[1];
         if (i == 0) {
-            if (!strstr(gps, "090; LIP:") || !strstr(gps, "22.50000S") || !strstr(gps, "45.00000W")
+            if (!strstr(gps, "218; LIP:") || !strstr(gps, "22.50000S") || !strstr(gps, "45.00000W")
                 || !strstr(gps, "Err: 20m")) {
                 DSD_FPRINTF(stderr, "\nLIP clean: unexpected state: %s\n", gps);
-                return 2;
+                rc = 1;
             }
             DSD_MEMCPY(clean_lip, gps, sizeof clean_lip);
         } else if (memcmp(clean_lip, gps, sizeof clean_lip) != 0) {
             DSD_FPRINTF(stderr, "\n%s: decoded state changed: %s\n", lip_tags[i], gps);
-            return 2 + i * 2;
+            rc = 1;
         }
     }
 
+    return rc;
+}
+
+static int
+capture_lip_pdu(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t count, char output[2048]) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "short_lip") != 0) {
+        return 1;
+    }
+    lip_pdu_decoder(opts, state, bits, count, 123456);
+    dsd_test_capture_stderr_end(&cap);
+    return dsd_test_capture_stderr_read(&cap, output, 2048) != 0;
+}
+
+static int
+test_short_lip(dsd_opts* opts, dsd_state* state, const char* path) {
+    uint8_t bits[76] = {0};
+    set_bits_msb(bits, 2, 2, 1);
+    set_bits_msb(bits, 4, 1, 1);
+    set_bits_msb(bits, 5, 24, 0xC00000);
+    set_bits_msb(bits, 29, 1, 1);
+    set_bits_msb(bits, 30, 23, 0x600000);
+    set_bits_msb(bits, 53, 3, 1);
+    set_bits_msb(bits, 56, 7, 20);
+    state->currentslot = 1;
+    opts->lrrp_file_output = 1;
+    const char* expected = "LIP: 22.50000S 45.00000W; Err: 20m; Spd: 20 km/h; Dir: 0";
+    const char* labels[] = {"Response to an immediate location request", "Response to an immediate location request",
+                            "User data: 0xA5", "Emergency condition is detected"};
+    int rc = 0;
+    for (int i = 0; i < 4; ++i) {
+        state->event_crc_invalid[1] = (uint8_t)(i == 1);
+        set_bits_msb(bits, 67, 1, (uint32_t)(i == 2));
+        const uint32_t reasons[] = {32, 32, 0xA5, 2};
+        set_bits_msb(bits, 68, 8, reasons[i]);
+        if (!truncate_output(path)) {
+            return 100;
+        }
+        char output[2048];
+        if (capture_lip_pdu(opts, state, bits, sizeof bits, output)) {
+            return 100;
+        }
+        if (!expect_rows(path, i == 1 ? 0 : 1, "00123456", "-22.500000", "-45.000000", 20, 0, "19990102",
+                         "T7 short LIP")
+            || strcmp(state->dmr_embedded_gps[1], expected) != 0 || !strstr(output, labels[i])
+            || (i == 2 && strstr(output, "Reason:"))) {
+            DSD_FPRINTF(stderr, "T7 short LIP variant %d: state=%s; console=%s\n", i, state->dmr_embedded_gps[1],
+                        output);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+static int
+test_unsupported_lip(const dsd_opts* opts, dsd_state* state, const char* path) {
+    const struct {
+        unsigned type;
+        unsigned extension;
+        size_t length;
+        const char* label;
+    } cases[] = {
+        {1, 3, 76, "Long location report"},
+        {1, 1, 76, "Immediate location report request"},
+        {0, 0, 75, "truncated"},
+        {2, 0, 76, "reserved PDU type"},
+        {0, 0, 1, "truncated"},
+        {1, 0, 5, "truncated"},
+        {3, 0, 76, "reserved PDU type"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        uint8_t bits[76] = {0};
+        set_bits_msb(bits, 0, 2, cases[i].type);
+        set_bits_msb(bits, 2, 4, cases[i].extension);
+        DSD_SNPRINTF(state->dmr_embedded_gps[1], sizeof state->dmr_embedded_gps[1], "%s", "retained fix");
+        if (!truncate_output(path)) {
+            return 100;
+        }
+        char output[2048];
+        if (capture_lip_pdu(opts, state, bits, cases[i].length, output)) {
+            return 100;
+        }
+        if (!expect_rows(path, 0, NULL, NULL, NULL, 0, 0, NULL, "T7 unsupported LIP")
+            || strcmp(state->dmr_embedded_gps[1], "retained fix") != 0 || !strstr(output, cases[i].label)) {
+            DSD_FPRINTF(stderr, "T7 unsupported LIP variant %zu: state=%s; console=%s\n", i, state->dmr_embedded_gps[1],
+                        output);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+static int
+run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
     uint8_t nmea[192] = {0};
     // Long UDT NMEA: valid fix, 22 degrees 30 minutes S, 45 degrees W, stationary.
     set_bits_msb(nmea, 3, 1, 1);
@@ -305,6 +416,7 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
     opts->lrrp_file_output = 0;
     state->event_crc_invalid[0] = 0;
     state->event_crc_invalid[1] = 0;
+    const uint8_t lip[96] = {0};
     lip_protocol_decoder(opts, state, lip);
     if (!expect_rows(path, 0, NULL, NULL, NULL, 0, 0, NULL, "Output disabled")) {
         return 17;
@@ -327,7 +439,10 @@ main(void) {
     }
     DSD_SNPRINTF(opts.lrrp_out_file, sizeof opts.lrrp_out_file, "%s", path);
     opts.lrrp_file_output = 1;
-    int rc = run_cases(&opts, &state, path);
+    int rc = test_usbd_lip(&opts, &state, path);
+    rc |= test_short_lip(&opts, &state, path);
+    rc |= test_unsupported_lip(&opts, &state, path);
+    rc |= run_cases(&opts, &state, path);
     remove(path);
     if (rc == 0) {
         DSD_FPRINTF(stdout, "CORE_GPS_LRRP_CRC_GATING: PASS\n");

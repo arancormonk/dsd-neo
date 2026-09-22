@@ -9,6 +9,7 @@
 #include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -1913,6 +1914,8 @@ test_call_event_current_rows_isolated_per_target(void) {
     DSD_SNPRINTF(event_history[0].Event_History_Items[1].event_string,
                  sizeof event_history[0].Event_History_Items[1].event_string, "%s", "shared-committed");
 
+    dsd_event_stage_text(&state, 0, "cancelled target-b PDU");
+    dsd_event_stage_text(&state, 1, "cancelled slot-1 PDU");
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0U
@@ -1920,6 +1923,11 @@ test_call_event_current_rows_isolated_per_target(void) {
         || event_history[0].Event_History_Items[0].target_id != 101U
         || strcmp(event_history[0].Event_History_Items[1].event_string, "shared-committed") != 0) {
         DSD_FPRINTF(stderr, "scan target did not restore its current event row without changing history\n");
+        test_rc = 1;
+    }
+
+    if (dsd_event_staged_text(&state, 0)[0] != '\0' || dsd_event_staged_text(&state, 1)[0] != '\0') {
+        DSD_FPRINTF(stderr, "scan restore retained a cancelled PDU's staged text\n");
         test_rc = 1;
     }
 
