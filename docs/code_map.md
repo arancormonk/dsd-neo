@@ -219,6 +219,13 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   both snapshot hops, reuses an unchanged clone, and preserves an owned destination store on allocation failure.
   A shallow alias of the source is detached so destination cleanup cannot free the source. `CORE_SOURCE_ALIAS`
   tests matching, precedence, lifecycle and policy isolation; `CORE_SOURCE_ALIAS_FAIL` covers allocation/read failures and physical-line length boundaries.
+- Invariant (patched P25 calls): a call snapshot's `policy_target_id` is the member WG the grant matched, while
+  `ota_target_id` is the supergroup every frontend shows. `DSD_TG_POLICY_BLOCK_OTA_FINAL` in
+  `<dsd-neo/core/talkgroup_policy.h>` names the supergroup blocks no member overrides (call skip, encryption
+  lockout, session avoid, mode B/DE). The P25 grant path stops at them before considering members, and every
+  consumer that judges a live call on its policy target also calls `dsd_tg_policy_apply_ota_final_blocks()` with
+  the over-the-air target: the audio/record/P25p2 media gates, the row-edit release in app-control and the Qt block
+  label. User blocks (Lock out, Avoid TG, Skip) are written against the over-the-air target.
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime

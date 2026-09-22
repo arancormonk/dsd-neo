@@ -527,6 +527,12 @@ struct DecryptionView {
             } else {
                 dsd_tg_policy_evaluate_group_call(opts, state, static_cast<uint32_t>(call.policy_target_id),
                                                   static_cast<uint32_t>(call.ota_source_id), needs_key, 0, &policy);
+                if (call.ota_target_id <= UINT32_MAX) {
+                    // A patched call also carries its supergroup's own final blocks.
+                    (void)dsd_tg_policy_apply_ota_final_blocks(opts, state, static_cast<uint32_t>(call.ota_target_id),
+                                                               static_cast<uint32_t>(call.policy_target_id),
+                                                               static_cast<uint32_t>(call.ota_source_id), &policy);
+                }
             }
             if (policy.block_reasons) {
                 block = QString::fromUtf8(dsd_tg_policy_block_reason_label(policy.block_reasons));
