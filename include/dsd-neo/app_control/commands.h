@@ -109,6 +109,8 @@ enum dsd_app_command_id {
     // ProVoice debug toggles
     DSD_APP_CMD_PROVOICE_ESK_TOGGLE = 308,
     DSD_APP_CMD_PROVOICE_MODE_TOGGLE = 309,
+    // Per-call skip; unlike LOCKOUT_SLOT, never changes a policy row or saves a CSV.
+    DSD_APP_CMD_SKIP_SLOT = 310, // payload: uint8_t slot (0=slot1, 1=slot2)
 
     // UI utility
     DSD_APP_CMD_UI_MSG_CLEAR = 400, // clear transient toast message in canonical state

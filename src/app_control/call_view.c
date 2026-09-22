@@ -215,6 +215,7 @@ dsd_app_slot_call_view(const dsd_state* state, uint8_t slot, double now_m, dsd_a
         out->kid = call.kid;
     }
 
+    out->started_m = call.started_m;
     const double ref_m = (line == DSD_APP_CALL_LINE_ENDED) ? call.ended_m : now_m;
     const double elapsed = ref_m - call.started_m;
     const double elapsed_ms = (elapsed > 0.0) ? (elapsed * 1000.0) : 0.0;
@@ -226,16 +227,21 @@ dsd_app_slot_call_view(const dsd_state* state, uint8_t slot, double now_m, dsd_a
 }
 
 int
-dsd_app_lead_slot(const int* line_states, unsigned count) {
+dsd_app_lead_slot(const int* line_states, const double* started_m, unsigned count) {
     if (line_states == NULL) {
         return -1;
     }
-    /* Two passes rather than one ranked comparison: the first slot found ACTIVE wins
-       outright, so an ended call on a lower slot never outranks a live one above it. */
+    /* Rank open epochs first, so an ended call never outranks a live one. Strict
+       comparison preserves the lowest index for exact ties and missing starts. */
+    int lead = -1;
     for (unsigned slot = 0; slot < count; slot++) {
-        if (line_states[slot] == DSD_APP_CALL_LINE_ACTIVE) {
-            return (int)slot;
+        if (line_states[slot] == DSD_APP_CALL_LINE_ACTIVE
+            && (lead < 0 || (started_m != NULL && started_m[slot] < started_m[lead]))) {
+            lead = (int)slot;
         }
+    }
+    if (lead >= 0) {
+        return lead;
     }
     for (unsigned slot = 0; slot < count; slot++) {
         if (line_states[slot] == DSD_APP_CALL_LINE_ENDED) {

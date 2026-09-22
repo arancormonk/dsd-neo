@@ -26,7 +26,6 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
-#include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -130,6 +129,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int encLockoutCount READ encLockoutCount NOTIFY controlChanged)
     Q_PROPERTY(bool persistTgLockouts READ persistTgLockouts NOTIFY controlChanged)
     Q_PROPERTY(qulonglong temporaryTgAvoidCount READ temporaryTgAvoidCount NOTIFY controlChanged)
+    Q_PROPERTY(qulonglong callSkipCount READ callSkipCount NOTIFY controlChanged)
     Q_PROPERTY(QString tgPolicyContext READ tgPolicyContext NOTIFY controlChanged)
     Q_PROPERTY(bool tunerControlled READ tunerControlled NOTIFY controlChanged)
     Q_PROPERTY(bool trunkingEnabled READ trunkingEnabled NOTIFY controlChanged)
@@ -536,11 +536,7 @@ class MetricsModel : public QObject {
      */
     int
     leadSlot() const {
-        int states[DSD_CALL_STATE_SLOT_COUNT];
-        for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-            states[slot] = m_view.slot_call[slot].state;
-        }
-        return dsd_app_lead_slot(states, static_cast<unsigned>(DSD_CALL_STATE_SLOT_COUNT)) + 1;
+        return m_view.lead_slot + 1;
     }
 
     const QString&
@@ -680,6 +676,11 @@ class MetricsModel : public QObject {
     bool
     persistTgLockouts() const {
         return m_view.persist_tg_lockouts;
+    }
+
+    qulonglong
+    callSkipCount() const {
+        return m_view.call_skip_count;
     }
 
     qulonglong
@@ -1083,6 +1084,7 @@ class MetricsModel : public QObject {
         bool emergency = false;
         int priority = 0;
         int seconds = 0;
+        double started_m = 0.0; // Lead ranking only; displayed duration equality uses seconds.
 
         bool
         operator==(const SlotCall& other) const {
@@ -1138,15 +1140,15 @@ class MetricsModel : public QObject {
         double squelch_db = 0.0;
         qulonglong held_tg = 0;
         qulonglong temporary_tg_avoid_count = 0;
+        qulonglong call_skip_count = 0;
         QString tg_policy_context;
         QString tuner_gain_text;
         QString sync_label;
         QString scan_mode;
         QString ui_message;
-        /* Sized from the canonical constant rather than a literal 2: leadSlot() ranks the
-         * whole array through dsd_app_lead_slot(), so the two must agree or the ranking
-         * would read past the end the day a third slot appears. */
+        /* Slot views and lead ranking share the canonical slot count. */
         SlotCall slot_call[DSD_CALL_STATE_SLOT_COUNT];
+        int lead_slot = -1;
         int channel_bandwidth_hz = 0;
         int decode_mode = 0;
         int configured_force = 0;
@@ -1252,7 +1254,7 @@ class MetricsModel : public QObject {
         tgLockoutsEqual(const View& other) const {
             return persist_tg_lockouts == other.persist_tg_lockouts
                    && temporary_tg_avoid_count == other.temporary_tg_avoid_count
-                   && tg_policy_context == other.tg_policy_context;
+                   && call_skip_count == other.call_skip_count && tg_policy_context == other.tg_policy_context;
         }
 
         bool
@@ -1273,6 +1275,7 @@ class MetricsModel : public QObject {
     static QStringList fillNxdnSite(SiteView& site, const dsd_state* snapshot);
     static QStringList fillEdacsSite(SiteView& site, const dsd_state* snapshot);
     void fillSiteView(View& next, const dsd_state* snapshot) const;
+    static void fillSlotCalls(View& next, const dsd_state* snapshot, double now_m);
     static void fillQualityView(View& next, const dsd_state* snapshot);
 
     /** @brief Build one slot's structured call identity from the snapshot. */

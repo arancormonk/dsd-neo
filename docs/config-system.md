@@ -342,7 +342,7 @@ small subset is exposed as config keys for convenience (for example
 | `tune_private_calls` | BOOL | Follow private calls | `true` |
 | `tune_data_calls` | BOOL | Follow data calls | `false` |
 | `tune_enc_calls` | BOOL | Follow P25 encrypted grants without key-aware lockout; `false` silently classifies and follows only usable matching keys | `true` |
-| `persist_tg_lockouts` | BOOL | Save quick `!`/`@` and Qt/Android **Skip** lockouts to the global groups file; `false` keeps temporary avoids in memory | `true` |
+| `persist_tg_lockouts` | BOOL | Save quick `!`/`@` and Qt/Android **Lock out** actions to the configured global groups file; `false` keeps temporary avoids in memory and labels the Qt/Android button **Avoid TG**. **Skip** is unaffected | `true` |
 | `scanner` | BOOL | Use the channel map as a conventional scanner (`-Y`) instead of following a control channel | `false` |
 | `scan_voice_only` | BOOL | Step `-Y`/conventional scan on unless decoded voice holds the row | `false` |
 | `scan_voice_qualify_ms` | INT (100-600000) | Window after sync in which voice must appear or the scan moves on | `1000` |
@@ -352,8 +352,11 @@ small subset is exposed as config keys for convenience (for example
 
 Loading a configuration during a session with a different `group_csv` imports that file before making it the
 save destination. If the import fails, the configuration is rejected and the previous list and destination stay
-in place. An unchanged path preserves temporary avoids. During scan-row visits, this updates the global list
-while retaining the row's own list and avoids.
+in place. An unchanged path preserves temporary avoids and unexpired call skips. During scan-row visits, this
+updates the global list while retaining the row's own list, avoids and call skips.
+
+Qt/Android **Settings → Listening → Save avoided talkgroups** controls `persist_tg_lockouts`. Explicit list edits
+still save; **Skip** never saves or changes the list. See [Skip lifetimes](cli.md#trunking--scanning).
 
 **[trunk_scan] section:**
 | Key | Type | Description | Default |

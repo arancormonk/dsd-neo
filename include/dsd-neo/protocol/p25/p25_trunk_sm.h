@@ -150,6 +150,9 @@ typedef struct {
     // locked-out slot's MAC repeats, an encryption-lockout reprobe assignment
     // -- can neither restart nor erase the countdown by construction.
     double last_followed_m;
+    // Group identity retained while the TDMA media rejection latch is set.
+    uint32_t rejected_target_id;
+
     int voice_active;        // 1 if voice is currently active on this slot
     int algid;               // Current algorithm ID for this slot
     int keyid;               // Current key ID for this slot
@@ -748,6 +751,12 @@ void p25_sm_note_enc_suppressed(dsd_opts* opts, dsd_state* state, int slot);
  * not extend an existing deadline.
  */
 void p25_sm_emit_crypto_pending(dsd_opts* opts, dsd_state* state, int slot);
+
+/** Refresh an armed skip for a rejected TDMA slot with a retained group identity.
+ * Decoder thread only; a clear latch, invalid slot or absent identity is a no-op. */
+void p25_sm_touch_rejected_slot_skip(dsd_opts* opts, dsd_state* state, int slot);
+/** Clear retained rejection attribution beside the Phase 2 media-latch reset. */
+void p25_sm_clear_rejected_slot(const dsd_state* state, int slot);
 
 /** Emit a pending indication that explicitly starts a new classification deadline. */
 void p25_sm_emit_crypto_pending_epoch(dsd_opts* opts, dsd_state* state, int slot);
