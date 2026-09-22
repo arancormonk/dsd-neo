@@ -119,7 +119,7 @@ Item {
             testContext.setMetric("persistTgLockouts", data.persist);
             var menu = openMenu();
             var avoid = item("otherSlotAvoid");
-            compare(avoid.text, data.persist ? "Lock out" : "Avoid");
+            compare(avoid.text, data.persist ? "Lock out" : "Avoid TG");
             var description = item("actionMenuDescription1");
             verify(description.visible);
             compare(description.text, data.persist ? "Lock out talkgroup and save" : "Avoid talkgroup for this session");
@@ -135,7 +135,7 @@ Item {
         function test_avoid_label_is_captured_on_open(data) {
             testContext.setMetric("persistTgLockouts", data.persist);
             var menu = openMenu();
-            var expectedLabel = data.persist ? "Lock out" : "Avoid";
+            var expectedLabel = data.persist ? "Lock out" : "Avoid TG";
             var expectedDescription = data.persist ? "Lock out talkgroup and save" : "Avoid talkgroup for this session";
             compare(item("otherSlotAvoid").text, expectedLabel);
             testContext.setMetric("persistTgLockouts", !data.persist);
@@ -148,7 +148,7 @@ Item {
             compare(testContext.lockoutSlotCalls(), 0);
             compare(testContext.skipSlotCalls(), 0);
             openMenu();
-            compare(item("otherSlotAvoid").text, data.persist ? "Avoid" : "Lock out");
+            compare(item("otherSlotAvoid").text, data.persist ? "Avoid TG" : "Lock out");
             compare(item("actionMenuDescription1").text, data.persist ? "Avoid talkgroup for this session" : "Lock out talkgroup and save");
             mouseClick(item("otherSlotAvoid"));
             compare(testContext.lockoutSlotCalls(), 1);

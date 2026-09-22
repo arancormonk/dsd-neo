@@ -273,7 +273,7 @@ Item {
                     ToggleRow {
                         objectName: "persistTgLockoutsToggle"
                         title: qsTr("Save avoided talkgroups")
-                        subtitle: qsTr("Applies to Avoid immediately, saving it to the talkgroup list. Off keeps avoids until stop or list reload, and the button reads Avoid. Skip is unaffected. Talkgroup-list edits still save.")
+                        subtitle: qsTr("Applies to Avoid TG immediately, saving it to the talkgroup list. Off keeps avoids until stop or list reload, and the button reads Avoid TG. Skip is unaffected. Talkgroup-list edits still save.")
                         checked: screen.lockoutSessionRunning ? screen.liveLockoutPersistence : prefs.persistTgLockouts
                         enabled: screen.lockoutEditable
                         showDivider: true

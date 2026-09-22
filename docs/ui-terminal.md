@@ -430,7 +430,7 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `d` | Toggle follow data calls |
 | `e` | Toggle encrypted call lockout (P25/DMR/NXDN trunking) |
 | `k` / `l` | Set/clear talkgroup hold from the most recent TG (slot-aware) |
-| `!` / `@` | Lock out slot 1 / slot 2 (where applicable); lifetime follows **Save user TG lockouts**, like Qt/Android **Avoid**/**Lock out** |
+| `!` / `@` | Lock out slot 1 / slot 2 (where applicable); lifetime follows **Save user TG lockouts**, like Qt/Android **Avoid TG**/**Lock out** |
 
 **Save user TG lockouts** defaults to On: quick lockouts save to a configured global groups file. Turn it Off
 in **Trunking → Follow**, or start with `--tg-lockout-session`, to keep subsequent lockouts temporary. Clear them

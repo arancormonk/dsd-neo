@@ -79,9 +79,9 @@ call on another carrier for longer than 15 s lets the skipped call be followed
 again when next seen; tap **Skip** again. DMR, NXDN, EDACS and P25 private-call skips
 last 15 s from the tap in this version; ProVoice has no skip.
 
-**Avoid** blocks the talkgroup for the session, until stop or list reload/replacement.
+**Avoid TG** blocks the talkgroup for the session, until stop or list reload/replacement.
 **Lock out** saves the block to the configured talkgroup list. **Settings → Listening
-→ Save avoided talkgroups** selects **Lock out** when on (the default) and **Avoid**
+→ Save avoided talkgroups** selects **Lock out** when on (the default) and **Avoid TG**
 when off. Without a group file, or on a scan row's own list, lockouts stay in memory.
 **Skip** is unaffected by this setting and never saves. Avoids and unexpired call
 skips survive scan-target revisits; **Clear temporary avoids and call skips — current
@@ -850,7 +850,7 @@ even after starting a single saved system. A running session can still release a
 existing hold, including from a different system's row with the same talkgroup ID.
 
 The other active slot's **SLOT n** strip has its own **Skip** and a **More actions**
-menu with **Hold TG** and **Avoid**/**Lock out**. Holding that talkgroup replaces any
+menu with **Hold TG** and **Avoid TG**/**Lock out**. Holding that talkgroup replaces any
 existing hold and silences the other slot; **Release hold** clears it. The menu closes
 if its slot or talkgroup changes or the call ends.
 

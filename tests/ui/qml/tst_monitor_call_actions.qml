@@ -83,7 +83,7 @@ Item {
                 root.height = 360;
             }
             var avoid = button(data.compact ? "avoidButtonCompact" : "avoidButton");
-            compare(avoid.text, data.persist ? "Lock out" : "Avoid");
+            compare(avoid.text, data.persist ? "Lock out" : "Avoid TG");
             compare(avoid.accessibleName, data.persist ? "Lock out talkgroup and save" : "Avoid talkgroup for this session");
             verify(avoid.enabled && avoid.visible);
             waitForRendering(monitor);

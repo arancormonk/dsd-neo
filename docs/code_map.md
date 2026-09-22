@@ -571,7 +571,7 @@ Qt Quick frontend (`src/ui/qt`):
   filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the monitor's **TG list** action.
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares
-  this mutation path, preserving labels; with `persist_tg_lockouts` off it becomes **Avoid**, adding a session
+  this mutation path, preserving labels; with `persist_tg_lockouts` off it becomes **Avoid TG**, adding a session
   avoid without changing rows. **Skip** submits `DSD_APP_CMD_SKIP_SLOT`, arms the core call-skip ledger and leaves
   the call without changing rows or saving. P25 group skips refresh while the receiver sees the call and expire
   at `DSD_TG_CALL_SKIP_QUIET_S` of quiet or `DSD_TG_CALL_SKIP_MAX_AGE_S` from the press; private and non-P25 skips

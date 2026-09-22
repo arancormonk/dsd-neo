@@ -254,7 +254,7 @@ The per-visit cap lives in the same section, as `[trunking] scan_max_visit_ms`, 
 hand-written `1..999` reaches the decoder, which treats it as disabled.
 
 For temporary user talkgroup avoids, set `[trunking] persist_tg_lockouts = false` or use
-`--tg-lockout-session`. Terminal `!`/`@` and Qt/Android **Avoid** then avoid targets without changing the groups
+`--tg-lockout-session`. Terminal `!`/`@` and Qt/Android **Avoid TG** then avoid targets without changing the groups
 file. This global preference also applies when scan rows inherit the global groups list. Rows with their own
 lists retain independent avoids across visits, even when they load the same file; rows inheriting the global
 list share its avoids. Qt/Android **Skip** leaves the call without editing the list and keeps its expiring block

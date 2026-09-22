@@ -471,12 +471,12 @@ Notes
 
 ## Trunking & Scanning
 
-Quick talkgroup lockouts (`!`/`@` in the terminal and **Avoid**/**Lock out** in Qt/Android) save to the configured global
+Quick talkgroup lockouts (`!`/`@` in the terminal and **Avoid TG**/**Lock out** in Qt/Android) save to the configured global
 groups file by default. Use `--tg-lockout-session` to keep them temporary, or `--tg-lockout-persist` to select
 the default saving behavior explicitly. The equivalent configuration key is `[trunking] persist_tg_lockouts`.
 The terminal **Save user TG lockouts** menu and Qt/Android **Settings → Listening → Save avoided talkgroups**
 change this preference immediately for subsequent lockouts and preserve it through their normal settings save.
-The Qt/Android button reads **Lock out** when saving is on and **Avoid** when it is off.
+The Qt/Android button reads **Lock out** when saving is on and **Avoid TG** when it is off.
 
 Temporary avoids block tuning, audio, recording and streaming without modifying the saved list. Explicit list
 edits still save, and exports omit temporary avoids. Use Qt/Android **Clear temporary avoids and call skips — current

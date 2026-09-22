@@ -480,7 +480,7 @@ Important behavior:
   in memory, never written into the global group file. If saving fails, the decoder keeps the live edit and
   reports that it is session-only; the previous file remains intact.
 - `--tg-lockout-session` (or `[trunking] persist_tg_lockouts = false`) makes terminal `!`/`@` temporary avoids
-  and changes Qt/Android **Lock out** to **Avoid**. They block tuning and all media without editing policy rows or the file. Later
+  and changes Qt/Android **Lock out** to **Avoid TG**. They block tuning and all media without editing policy rows or the file. Later
   list edits, exports and configuration saves cannot serialize these avoids. `--tg-lockout-persist` restores
   the default behavior for subsequent lockouts; switching modes never converts existing entries.
 - Qt/Android **Settings → Listening → Save avoided talkgroups** and the terminal **Save user TG lockouts**

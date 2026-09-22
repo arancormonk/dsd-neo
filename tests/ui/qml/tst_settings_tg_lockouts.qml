@@ -44,7 +44,7 @@ Item {
         function test_avoid_copy() {
             var toggle = openScreen();
             compare(toggle.title, "Save avoided talkgroups");
-            compare(toggle.subtitle, "Applies to Avoid immediately, saving it to the talkgroup list. Off keeps avoids until stop or list reload, and the button reads Avoid. Skip is unaffected. Talkgroup-list edits still save.");
+            compare(toggle.subtitle, "Applies to Avoid TG immediately, saving it to the talkgroup list. Off keeps avoids until stop or list reload, and the button reads Avoid TG. Skip is unaffected. Talkgroup-list edits still save.");
         }
 
         function test_clear_call_skip_without_avoids() {

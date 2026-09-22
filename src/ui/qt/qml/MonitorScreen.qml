@@ -72,7 +72,7 @@ Item {
     component AvoidAction: OutlineButton {
         property int heroSlot: 0
         property bool running: false
-        text: metrics.persistTgLockouts ? qsTr("Lock out") : qsTr("Avoid")
+        text: metrics.persistTgLockouts ? qsTr("Lock out") : qsTr("Avoid TG")
         accessibleName: metrics.persistTgLockouts ? qsTr("Lock out talkgroup and save") : qsTr("Avoid talkgroup for this session")
         enabled: running && heroSlot !== 0
         onClicked: commands.lockoutSlot(heroSlot === 2 ? 1 : 0)
@@ -1087,7 +1087,7 @@ Item {
             },
             {
                 objectName: "otherSlotAvoid",
-                text: menuPersist ? qsTr("Lock out") : qsTr("Avoid"),
+                text: menuPersist ? qsTr("Lock out") : qsTr("Avoid TG"),
                 description: menuPersist ? qsTr("Lock out talkgroup and save") : qsTr("Avoid talkgroup for this session"),
                 enabled: decoderHost.running && menuSlot !== 0
             }
