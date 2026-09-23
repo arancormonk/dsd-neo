@@ -26,10 +26,13 @@
  *
  * The METRIC line ends with the received-tone fields tools/replay_ab.sh reads into its tone and tone_lock_ms
  * columns. They read NA until a tone detector publishes a received tone; the CTCSS detector (#522) fills them in
- * for CTCSS and the DCS detector (#523) for DCS. The contract, which replay_ab.sh relies on because it splits the
- * line on spaces:
+ * for CTCSS and the DCS detector (#523) for DCS. This file owns the field names and the contract below, and
+ * replay_ab.sh and the report own the columns; a detector that wants more (a lock percentage, say) adds its own
+ * field and column. The contract, which replay_ab.sh relies on because it splits the line on spaces:
  *   tone=<label>       the received tone or code as the detector names it, with no whitespace: "151.4" (Hz, one
- *                      decimal) for CTCSS, "D023N" or "D023I" for DCS; NA when none was confirmed.
+ *                      decimal) for CTCSS; for DCS the detector's one canonical label, such as "D023N". Every DCS
+ *                      waveform has two spellings (D023N is also D047I), and the DCS detector (#523) defines which
+ *                      one it prints; NA when none was confirmed.
  *   tone_lock_ms=<ms>  stream time of the first confirmed lock, on the same clock as first_audible_ms (see above),
  *                      with two decimals; NA when nothing locked.
  * When the label changes during a run, tone= is the last one confirmed and tone_lock_ms the first lock of any.
@@ -737,7 +740,8 @@ analog_note_resolution(void) {
     }
     if (g_totals.cqpsk_reads > 0U) {
         /* Those reads are symbols, not samples at the output rate, and how many arrive is not tied to the stream
-         * length, so total_ms can come out far too low or far too high. */
+         * length, so total_ms can come out far too low or far too high. tools/replay_ab.sh (its off_path column)
+         * and the -fA cases in tests/CMakeLists.txt match "CQPSK symbols instead of monitor samples". */
         DSD_FPRINTF(stderr,
                     "analog replay: warning: the RTL front end delivered %llu CQPSK symbols instead of monitor "
                     "samples; total_ms counts them as samples, so it does not measure stream time\n",

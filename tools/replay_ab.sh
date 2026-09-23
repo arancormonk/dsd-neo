@@ -35,7 +35,9 @@ set -euo pipefail
 #   --reps <n>         Repeats per build (default 12)
 #   --rate <mode>      --iq-replay-rate value: realtime (default) or fast
 #   --metric <kind>    digital (default) or analog: also score the host's
-#                      ANALOG METRIC / ANALOG PROBE lines
+#                      ANALOG METRIC / ANALOG PROBE lines. Give the host no
+#                      --analog-* bounds: summary.tsv records each run's exit
+#                      status, and the report leaves non-zero ones out
 #   --out <dir>        Where to write logs and summary.tsv (default: mktemp -d)
 #
 # Example:
@@ -138,7 +140,7 @@ summary="$out/summary.tsv"
 analog_keys=(tone_snr_db inband_db clip audible_ms first_audible_ms rms_dbfs)
 probe_keys=(hz dbfs dbc)
 printf 'variant\tcase\trep\terrs\tvoice\tsync' > "$summary"
-printf '\t%s' "${analog_keys[@]}" probe_hz probe_dbfs probe_dbc tone tone_lock_ms >> "$summary"
+printf '\t%s' "${analog_keys[@]}" probe_hz probe_dbfs probe_dbc tone tone_lock_ms rc off_path >> "$summary"
 printf '\n' >> "$summary"
 
 # Value of key=value on the last (or, with which=first, the first) line of the log
@@ -186,13 +188,25 @@ for r in $(seq 1 "$reps"); do
       analog+=("$(line_value "$log" 'ANALOG PROBE:' "$key" first)")
     done
     analog+=("$(line_value "$log" 'ANALOG METRIC:' tone)" "$(line_value "$log" 'ANALOG METRIC:' tone_lock_ms)")
+    # off_path is 1 when the analog replay host warned that the RTL front end left
+    # the monitor path and delivered CQPSK symbols (the -fA modulation auto-switch):
+    # such a repeat measures the switch, not the build, and is not deterministic.
+    # The text is the host's warning in tests/engine/analog_replay.c. With rc, it
+    # lets replay_ab_report.py leave bad repeats out instead of pairing them.
+    off_path=0
+    if grep -qF 'CQPSK symbols instead of monitor samples' "$log"; then
+      off_path=1
+    fi
     {
       printf '%s\t%s\t%s\t%s\t%s\t%s' \
         "$name" "$(basename "$capture")-$rate" "$r" "${errs:-NA}" "$voice" "$sync"
-      printf '\t%s' "${analog[@]}"
+      printf '\t%s' "${analog[@]}" "$rc" "$off_path"
       printf '\n'
     } >> "$summary"
     exit_note=$([ "$rc" -ne 0 ] && echo " (exit $rc)" || true)
+    if [ "$off_path" -eq 1 ]; then
+      exit_note="$exit_note (off the monitor path)"
+    fi
     if [ "$metric" = analog ]; then
       # analog[] follows the summary header: snr inband clip audible first rms probe_hz probe_dbfs ...
       printf '  r%-3s %-24s snr=%-8s inband=%-8s audible_ms=%-9s rms=%-8s probe_dbfs=%-8s%s\n' \

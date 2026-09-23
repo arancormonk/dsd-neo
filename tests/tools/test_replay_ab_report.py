@@ -23,19 +23,19 @@ REPLAY_AB = ROOT / "tools" / "replay_ab.sh"
 COLUMNS = [
     "variant", "case", "rep", "errs", "voice", "sync",
     "tone_snr_db", "inband_db", "clip", "audible_ms", "first_audible_ms", "rms_dbfs",
-    "probe_hz", "probe_dbfs", "probe_dbc", "tone", "tone_lock_ms",
+    "probe_hz", "probe_dbfs", "probe_dbc", "tone", "tone_lock_ms", "rc", "off_path",
 ]
 
 
 def analog_row(build, rep, snr, inband="30.00", audible="1500.00", tone="NA", lock="NA", probe="NA",
-               probe_hz="NA", probe_dbfs="NA"):
+               probe_hz="NA", probe_dbfs="NA", rc="0", off_path="0"):
     return [build, "cap.json-fast", str(rep), "0", "0", "0", snr, inband, "0", audible, "0.00", "-36.00",
-            probe_hz, probe_dbfs, probe, tone, lock]
+            probe_hz, probe_dbfs, probe, tone, lock, rc, off_path]
 
 
 def missing_row(build, rep):
-    """A repeat whose host printed no ANALOG METRIC line (it crashed or timed out): every analog column is NA."""
-    return [build, "cap.json-fast", str(rep), "NA", "0", "0"] + ["NA"] * (len(COLUMNS) - 6)
+    """A repeat whose host printed no ANALOG METRIC line (here a timeout): every analog column is NA."""
+    return [build, "cap.json-fast", str(rep), "NA", "0", "0"] + ["NA"] * (len(COLUMNS) - 8) + ["124", "0"]
 
 
 def write_script(path, text):
@@ -163,7 +163,10 @@ class ReplayAbReport(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout)
         for metric in ("tone_snr_db", "inband_db", "audible_ms", "rms_dbfs"):
             self.assertRegex(metric_line(result.stdout, metric, "host.branch"), r"\s0/3\s+NA\s+NA\s+NA\s+-\s+-$")
-        self.assertIn("warning: host.branch produced no analog measurement in any of 3 repeats", result.stdout)
+        self.assertIn("warning: host.branch produced no usable analog measurement in any of 3 repeats",
+                      result.stdout)
+        self.assertIn("warning: host.branch: 3 of 3 repeats left out of the report: 3 exited non-zero (status 124)",
+                      result.stdout)
         self.assertNotIn("warning: host.main", result.stdout)
 
     def test_partial_coverage_is_counted_and_paired_on_common_repeats(self):
@@ -180,7 +183,48 @@ class ReplayAbReport(unittest.TestCase):
         self.assertIn("+1.00 +/- 0.00", line)
         self.assertTrue(line.rstrip().endswith("2/2"), line)
         self.assertRegex(metric_line(result.stdout, "tone_snr_db", "a"), r"\s3/3\s")
-        self.assertIn("note: b produced analog measurements in only 2 of 3 repeats", result.stdout)
+        self.assertIn("note: b produced usable analog measurements in only 2 of 3 repeats", result.stdout)
+
+    def test_repeats_that_exited_non_zero_or_left_the_monitor_path_are_not_paired(self):
+        # The host prints its metrics from the stop hook, so a run that crashed afterwards, or one whose front end
+        # delivered CQPSK symbols, still has numbers in every column. Paired as normal, b would read +39.50 here.
+        rows = [
+            analog_row("a", 1, "20.00"), analog_row("b", 1, "21.50"),
+            analog_row("a", 2, "30.00"), analog_row("b", 2, "99.00", rc="139"),
+            analog_row("a", 3, "10.00"), analog_row("b", 3, "70.00", off_path="1"),
+        ]
+        write_summary(self.summary, rows)
+        result = report(self.summary, "--baseline", "a")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        line = metric_line(result.stdout, "tone_snr_db", "b")
+        self.assertRegex(line, r"\s1/3\s+21\.50\s")
+        self.assertIn("+1.50 +/- 0.00", line)
+        self.assertTrue(line.rstrip().endswith("1/1"), line)
+        self.assertIn("warning: b: 2 of 3 repeats left out of the report: 1 exited non-zero (status 139); 1 ran off "
+                      "the monitor path", result.stdout)
+        self.assertIn("note: b produced usable analog measurements in only 1 of 3 repeats", result.stdout)
+        self.assertNotIn("warning: a:", result.stdout)
+
+    def test_build_flagged_in_every_repeat_fails_the_report(self):
+        rows = []
+        for rep in (1, 2):
+            rows.append(analog_row("host.main", rep, "25.00"))
+            rows.append(analog_row("host.branch", rep, "25.00", rc="139"))
+        write_summary(self.summary, rows)
+        result = report(self.summary, "--baseline", "host.main")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertRegex(metric_line(result.stdout, "tone_snr_db", "host.branch"), r"\s0/2\s+NA\s")
+        self.assertIn("warning: host.branch produced no usable analog measurement in any of 2 repeats",
+                      result.stdout)
+
+    def test_summary_without_run_status_columns_still_pairs(self):
+        # summary.tsv files written before replay_ab.sh recorded rc and off_path.
+        rows = [analog_row("a", 1, "20.00")[:-2], analog_row("b", 1, "21.00")[:-2]]
+        write_summary(self.summary, rows, COLUMNS[:-2])
+        result = report(self.summary, "--baseline", "a")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("+1.00 +/- 0.00", metric_line(result.stdout, "tone_snr_db", "b"))
+        self.assertNotIn("left out of the report", result.stdout)
 
     def test_digital_summary_still_reports_errors_per_voice_frame(self):
         rows = [
@@ -217,6 +261,14 @@ echo "ANALOG METRIC: rate_hz=48000 total_ms=1500.00 captured_ms=1500.00 audible_
   "tone_dbfs=-36.00 tone_snr_db=$snr tone=$tone tone_lock_ms=$lock"
 echo "ANALOG PROBE: hz=12500.0 dbfs=-100.00 dbc=-64.00"
 echo "ANALOG PROBE: hz=5000.0 dbfs=-80.00 dbc=-44.00"
+# The host's own warning text (tests/engine/analog_replay.c), which replay_ab.sh matches.
+case "$*" in *--fake-off-path*)
+  echo "analog replay: warning: the RTL front end delivered 35121 CQPSK symbols instead of monitor samples;" \\
+    "total_ms counts them as samples, so it does not measure stream time" >&2 ;;
+esac
+# Crashes after the stop hook printed its metrics.
+case "$*" in *--fake-crash*) exit 139 ;; esac
+exit 0
 """
 
 
@@ -267,10 +319,43 @@ class ReplayAbAnalogMetric(unittest.TestCase):
             self.assertEqual(row["probe_dbc"], "-64.00")
             self.assertEqual(row["tone"], "NA")
             self.assertEqual(row["tone_lock_ms"], "NA")
+            self.assertEqual(row["rc"], "0")
+            self.assertEqual(row["off_path"], "0")
 
         result = report(out / "summary.tsv", "--baseline", "host.main")
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("+1.00 +/- 0.00", metric_line(result.stdout, "tone_snr_db", "host.boost"))
+
+    def test_crashed_and_off_path_runs_are_recorded_and_left_out(self):
+        # Both variants print a full ANALOG METRIC line in every repeat; only the exit status and the host's
+        # warning say that none of it measures the build.
+        crash = self.wrapper("host.crash", "--fake-crash --fake-boost")
+        off_path = self.wrapper("host.offpath", "--fake-off-path --fake-boost")
+        out = self.tmp / "out"
+        result = self.replay_ab("--metric", "analog", "--reps", "2", "--out", str(out), str(self.host), str(crash),
+                                str(off_path))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("(exit 139)", result.stdout)
+        self.assertIn("(off the monitor path)", result.stdout)
+        lines = (out / "summary.tsv").read_text(encoding="utf-8").splitlines()
+        rows = {(row["variant"], row["rep"]): row for row in (dict(zip(COLUMNS, line.split("\t"))) for line in lines[1:])}
+        for rep in ("1", "2"):
+            self.assertEqual((rows[("host.main", rep)]["rc"], rows[("host.main", rep)]["off_path"]), ("0", "0"))
+            self.assertEqual((rows[("host.crash", rep)]["rc"], rows[("host.crash", rep)]["off_path"]), ("139", "0"))
+            self.assertEqual((rows[("host.offpath", rep)]["rc"], rows[("host.offpath", rep)]["off_path"]),
+                             ("0", "1"))
+            self.assertEqual(rows[("host.crash", rep)]["tone_snr_db"], "26.00")
+
+        result = report(out / "summary.tsv", "--baseline", "host.main")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        for build in ("host.crash", "host.offpath"):
+            self.assertRegex(metric_line(result.stdout, "tone_snr_db", build), r"\s0/2\s+NA\s")
+            self.assertIn(f"warning: {build} produced no usable analog measurement in any of 2 repeats",
+                          result.stdout)
+        self.assertIn("warning: host.crash: 2 of 2 repeats left out of the report: 2 exited non-zero (status 139)",
+                      result.stdout)
+        self.assertIn("warning: host.offpath: 2 of 2 repeats left out of the report: 2 ran off the monitor path",
+                      result.stdout)
 
     def test_received_tone_fields_follow_the_host_contract(self):
         # tone= must not be confused with the host's tone_hz= (the expected test tone), and a detector's label and

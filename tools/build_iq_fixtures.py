@@ -169,7 +169,7 @@ FIXTURES = [
 #                    tools/analog_oracle.py, not assumed: it finds 150 bit/s data
 #                    repeating every 21 bits, which is neither CTCSS nor DCS
 #                    (docs/testing.md), so they are no-false-lock material for tone
-#                    and code detectors. Issue #518 first reserved them as
+#                    and code detectors. Early plans for issue #518 named them
 #                    nfm_dcs_real_a/b, before the oracle ran.
 #
 # The nominal 39.0625 kHz rate of the squelch captures is stored as 39062 Hz in their

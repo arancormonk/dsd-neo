@@ -289,9 +289,11 @@ Known gaps and caveats:
   direction: 1.41 s of the 8 s excerpt in `realtime`, usually about 0.75 s in `fast`, and in some `fast` runs over 44 s,
   from more than 2 million symbols out of a capture of 384,000 samples. The host warns whenever the front end delivered
   CQPSK symbols, and every registered `-fA` case that expects its bounds to hold fails on that warning. The same excerpt
-  shifted 1 kHz off centre replays in full. For #524 this is a requirement: `-fM` must lock the modulation so that the
-  auto-switch cannot take the front end off the AM path, and its `am_airband_real` case must carry the same
-  CQPSK-warning guard (`NOT_EXPECTED`). The `-fA` behaviour itself is a product defect that this test work leaves alone.
+  shifted 1 kHz off centre replays in full. Any case or A/B on `am_airband_real` therefore needs a mode that locks the
+  modulation, so that the auto-switch cannot take the front end off the AM path (the `-fM` preset of #524), and has to
+  carry the same CQPSK-warning guard (`NOT_EXPECTED`) as the `-fA` cases; under `-fA` it measures the CQPSK path, and
+  `tools/replay_ab.sh` leaves such repeats out (its `off_path` column). The auto-switch running under `-fA` is a
+  decoder defect; these checks keep it from passing as a result, and do not change it.
 
 ### Analog monitor audio checks
 
@@ -438,9 +440,13 @@ labels synthetic CTCSS, DCS and no-tone signals. On the committed fixtures:
 | `nfm_squelch_real_b` | none | the same 150.0 bit/s, 21-bit pattern |
 
 So the two "unknown squelch" captures do not carry DCS, which is 134.4 bit/s in 23-bit words: they are no-false-lock
-material for CTCSS and DCS detectors, not accept cases. Issue #518 first reserved them as `nfm_dcs_real_a/_b`; they
-are named after their source instead, because they hold no DCS, and the corpus has no real DCS recording yet. A real
-DCS accept case needs another source. The wiki's CTCSS page, which links the I/Q recording, carries audio samples at
+material for CTCSS and DCS detectors, not accept cases. Issue #518's validation plan counted this recording as its
+NFM+DCS source, and early plans named the excerpts `nfm_dcs_real_a/_b`; they are named after their source instead,
+because they hold no DCS, and the corpus has no real DCS recording yet. A real DCS accept case needs another source.
+
+Every DCS waveform has two spellings, because inverting a DCS word gives another valid word: the oracle prints both
+(`D023N = D047I`, and `D023I = D047N` for the inverted waveform). A detector reports one canonical label per waveform,
+and the DCS detector (#523) defines which; compare an oracle label with a detector's by waveform, not by spelling. The wiki's CTCSS page, which links the I/Q recording, carries audio samples at
 151.4, 173.8 and 186.2 Hz without saying which tones the recording holds; the oracle finds the first two. These
 labels, including "none" for both squelch captures, are recorded here and are not pinned by any test until a
 maintainer confirms them. Until then a fixture gets only no-false-lock and stability assertions.
@@ -623,23 +629,31 @@ it replaced one fragile constant with two.
 Analog DSP changes (channel width, AM demodulation, de-emphasis, tone detection) are judged the same way, on the
 real excerpts in `tests/fixtures/iq` and on any longer real capture, with `--metric analog`. The builds are analog
 replay hosts rather than `dsd-neo`, and `summary.tsv` gains the analog columns: `tone_snr_db`, `inband_db`, `clip`,
-`audible_ms`, `first_audible_ms`, `rms_dbfs`, the first probe given as `probe_hz`, `probe_dbfs` and `probe_dbc`, and
-then `tone` and `tone_lock_ms`. `probe_dbc` needs `--analog-expect-tone-hz`, so on a real capture, which has no test
+`audible_ms`, `first_audible_ms`, `rms_dbfs`, the first probe given as `probe_hz`, `probe_dbfs` and `probe_dbc`,
+`tone` and `tone_lock_ms`, and last the run's exit status `rc` and `off_path`, 1 when the host warned that the front end
+delivered CQPSK symbols instead of monitor samples. `probe_dbc` needs `--analog-expect-tone-hz`, so on a real capture, which has no test
 tone, it is `NA` and `probe_dbfs` is the probe's level. The report pairs each column per repeat, pairs probe levels
 only between builds that probed the same frequency (a wrapper that puts its own `--analog-probe-hz` first changes
-which probe comes first), and gives the tone label each build settled on. Its `n` column counts the repeats in which
-a build measured that column. A build missing a column that another build measured gets an explicit `NA` row, and a
-build that measured nothing in any repeat (it crashed, timed out, or is not an analog replay host) makes the report
+which probe comes first), and gives the tone label each build settled on. A repeat that exited non-zero or ran off the
+monitor path is left out of every column and counted in a per-build warning, even though the host prints its metrics
+before it exits: it measured a crash, a timeout or the modulation auto-switch, not the build. So give the host no
+`--analog-*` bounds in `--mode`, since a missed bound exits 1. Its `n` column counts the repeats in which a build
+measured that column. A build missing a column that another build measured gets an explicit `NA` row, and a build
+with no usable repeat (it crashed, timed out, left the monitor path, or is not an analog replay host) makes the report
 warn and exit 1, rather than leave the other builds' rows looking like a clean result. `TOOLS_REPLAY_AB_REPORT`
 (`tests/tools/test_replay_ab_report.py`, stdlib only) covers the per-repeat pairing, the A-vs-A control, probe
-frequency keying, the coverage reporting, the received-tone columns and the duplicate-name refusal.
+frequency keying, the coverage reporting, crashed and off-path repeats, the received-tone columns and the
+duplicate-name refusal.
 
 `tone` and `tone_lock_ms` come from the host's `ANALOG METRIC:` line and read `NA` until a tone detector publishes a
-received tone. The CTCSS detector (#522) fills them in the host for CTCSS, the DCS detector (#523) for DCS, to this
-contract (also in the file comment of `tests/engine/analog_replay.c`), since replay_ab.sh splits the line on spaces:
+received tone. The host defines the two fields and replay_ab.sh and the report pair them; the CTCSS detector (#522)
+fills them in the host for CTCSS, the DCS detector (#523) for DCS, and a detector that needs another statistic (a lock
+percentage, say) adds its own field and column. The contract (also in the file comment of
+`tests/engine/analog_replay.c`), which matters because replay_ab.sh splits the line on spaces:
 
-- `tone=<label>`: the received tone or code with no whitespace, `151.4` (Hz, one decimal) for CTCSS and `D023N` or
-  `D023I` for DCS; `NA` when none was confirmed. When the label changes during a run, the last one confirmed.
+- `tone=<label>`: the received tone or code with no whitespace, `151.4` (Hz, one decimal) for CTCSS and the DCS
+  detector's canonical label, such as `D023N`, for DCS (see [Tone and code labels](#tone-and-code-labels)); `NA` when
+  none was confirmed. When the label changes during a run, the last one confirmed.
 - `tone_lock_ms=<ms>`: stream time of the first confirmed lock, on the same clock as `first_audible_ms`, with two
   decimals; `NA` when nothing locked.
 
@@ -670,9 +684,9 @@ Run the control first, one host against a copy of itself. While the front end st
 is sample-deterministic, so the control must read `+0.00 +/- 0.00` with no differing repeats: 12 realtime repeats on
 `nfm_ctcss_real` and on `nfm_tone_synth` did, for every column. A run whose log carries the host's CQPSK-symbols
 warning is not deterministic (see the `am_airband_real` gap under
-[Full-chain modulation decode tests](#full-chain-modulation-decode-tests)), and its control is expected to differ;
-such a run measures the auto-switch, not the change. A difference that shows up in a monitor-path control is the
-harness's, not the change's. Attach the report to the pull request with the capture, flags and repeat count.
+[Full-chain modulation decode tests](#full-chain-modulation-decode-tests)) and measures the auto-switch, not the
+change; the report leaves it out as `off_path` and warns, and a build with no other repeats fails the report. A
+difference that shows up in a monitor-path control is the harness's, not the change's. Attach the report to the pull request with the capture, flags and repeat count.
 
 ### Analog listen-test sign-off
 
