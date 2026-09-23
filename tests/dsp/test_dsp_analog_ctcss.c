@@ -201,6 +201,15 @@ compare_doubles(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 
+/* p50/p95/worst of @p count timings, for the PR evidence. Sorts in place. */
+static void
+report_timings(const char* what, double* times, int count) {
+    qsort(times, (size_t)count, sizeof(times[0]), compare_doubles);
+    printf("%s: p50 %.0f ms, p95 %.0f ms, worst %.0f ms (%d cases)\n", what, times[count / 2],
+           times[(count * 95) / 100], times[count - 1], count);
+    (void)fflush(stdout);
+}
+
 /* All 50 tones, every rate, at +10 and 0 dB in-band tone-to-noise: the right value within
    400 ms of sample time. Prints the p95 and worst lock times for the PR evidence. */
 static void
@@ -221,10 +230,9 @@ test_every_tone_locks_within_bound(void) {
                 times[count++] = t;
             }
         }
-        qsort(times, (size_t)count, sizeof(times[0]), compare_doubles);
-        printf("CTCSS lock at %+.0f dB in-band: p50 %.0f ms, p95 %.0f ms, worst %.0f ms (%d cases)\n", snrs[si],
-               times[count / 2], times[(count * 95) / 100], times[count - 1], count);
-        (void)fflush(stdout);
+        char what[64];
+        DSD_SNPRINTF(what, sizeof(what), "CTCSS lock at %+.0f dB in-band", snrs[si]);
+        report_timings(what, times, count);
     }
 }
 
@@ -327,6 +335,8 @@ test_tone_under_voice_locks(void) {
 /* The tone stops while the carrier (noise) carries on: the lock is gone within 350 ms. */
 static void
 test_tone_loss_within_bound(void) {
+    double times[RATE_COUNT * DSD_CTCSS_TONE_COUNT];
+    int count = 0;
     for (int ri = 0; ri < RATE_COUNT; ri++) {
         for (int k = 3; k < DSD_CTCSS_TONE_COUNT; k += 11) {
             const int fs = k_rates[ri];
@@ -347,14 +357,18 @@ test_tone_loss_within_bound(void) {
             assert(loss_ms <= (double)LOSS_BOUND_MS);
             /* Carrier still up, no tone: "none", positively. */
             assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
+            times[count++] = loss_ms;
         }
     }
+    report_timings("CTCSS loss after the tone stops", times, count);
 }
 
 /* A reverse burst -- the transmitter flipping its tone's phase before it unkeys -- ends the
    lock within 150 ms, without waiting for the tone to stop. */
 static void
 test_reverse_burst_drops_fast(void) {
+    double times[RATE_COUNT * DSD_CTCSS_TONE_COUNT];
+    int count = 0;
     for (int ri = 0; ri < RATE_COUNT; ri++) {
         for (int k = 5; k < DSD_CTCSS_TONE_COUNT; k += 9) {
             const int fs = k_rates[ri];
@@ -373,8 +387,10 @@ test_reverse_burst_drops_fast(void) {
                 DSD_FPRINTF(stderr, "slow burst: fs=%d hz=%.1f -> %.0f ms\n", fs, hz, loss_ms);
             }
             assert(loss_ms <= (double)BURST_LOSS_BOUND_MS);
+            times[count++] = loss_ms;
         }
     }
+    report_timings("CTCSS loss on a reverse burst", times, count);
 }
 
 /* Every metric is a ratio, so the RTL live scale (about 1/pi), the unscaled replay and
