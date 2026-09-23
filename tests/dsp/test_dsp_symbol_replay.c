@@ -660,12 +660,14 @@ init_analog_monitor_fixture(dsd_opts* opts, dsd_state* state) {
 }
 
 static double g_tone_phase = 0.0;
+/* The rate the generated tone is sampled at; tests that change the input rate change it too. */
+static double g_tone_fs = 48000.0;
 
 static void
 fill_tone_block(float* block, unsigned int count, double hz, double amp) {
     for (unsigned int i = 0; i < count; i++) {
         block[i] = (float)(amp * cos(g_tone_phase));
-        g_tone_phase += 2.0 * M_PI * hz / 48000.0;
+        g_tone_phase += 2.0 * M_PI * hz / g_tone_fs;
         if (g_tone_phase > 2.0 * M_PI) {
             g_tone_phase -= 2.0 * M_PI;
         }
@@ -825,6 +827,33 @@ test_rx_tone_unusable_rate_is_unavailable(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/*
+ * A change between two input rates the front end can use (a 48 kHz WAV reopened at 44.1 kHz):
+ * the redesign drops the lock and moves the generation on the first block at the new rate,
+ * and the tone then locks again at that rate on its own evidence.
+ */
+static void
+test_rx_tone_usable_rate_change_drops_lock(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+    const uint32_t generation = state.analog_rx.generation;
+
+    opts.wav_sample_rate = 44100;
+    g_tone_fs = 44100.0;
+    feed_tone_blocks(&opts, &state, 1);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_ACQUIRING);
+    assert(state.analog_rx.ctcss_tenths_hz == 0 && state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE);
+    assert(state.analog_rx.generation != generation);
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+    g_tone_fs = 48000.0;
+    dsd_state_ext_free_all(&state);
+}
+
 static uint64_t g_fake_now_ms = 0U;
 
 static uint64_t
@@ -922,6 +951,7 @@ main(void) {
     test_rx_tone_tap_reads_raw_block_before_voice_filters();
     test_rx_tone_clears_on_unannounced_retune();
     test_rx_tone_unusable_rate_is_unavailable();
+    test_rx_tone_usable_rate_change_drops_lock();
     test_rx_tone_paused_stream_starts_a_new_reception();
     return 0;
 }

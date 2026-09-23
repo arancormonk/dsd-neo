@@ -70,9 +70,20 @@ static long int g_cc_tune_freq = 0;
 static int g_cc_tune_ted_sps = 0;
 static int g_cc_profile_at_tune = -1;
 static int g_skip_arm_refused = 0;
+/* TCP audio connect and Pulse input open: the real functions unless a test arms a result. */
+static int g_tcp_connect_stub_armed = 0;
+static int g_tcp_connect_stub_rc = 0;
+static int g_tcp_connect_calls = 0;
+static int g_open_audio_input_stub_armed = 0;
+static int g_open_audio_input_stub_rc = 0;
+static int g_open_audio_input_calls = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int __real_svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port);
+int __wrap_svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port);
+int __real_openAudioInput(dsd_opts* opts);
+int __wrap_openAudioInput(dsd_opts* opts);
 int __wrap_io_control_set_freq(dsd_opts* opts, dsd_state* state, long int freq);
 dsd_trunk_tune_result __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq,
                                                               int ted_sps, uint64_t* out_request_id);
@@ -82,6 +93,31 @@ int __wrap_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t s
 int
 __wrap_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s) {
     return g_skip_arm_refused ? -1 : __real_dsd_tg_policy_call_skip_arm(state, id, src, fallback, now_mono_s);
+}
+
+/* An armed connect succeeds or fails without a socket; a success leaves the options as the
+   real service does: TCP input on the requested endpoint. */
+int
+__wrap_svc_tcp_connect_audio(dsd_opts* opts, const char* host, int port) {
+    if (!g_tcp_connect_stub_armed) {
+        return __real_svc_tcp_connect_audio(opts, host, port);
+    }
+    g_tcp_connect_calls++;
+    if (g_tcp_connect_stub_rc == 0 && opts && host) {
+        DSD_SNPRINTF(opts->tcp_hostname, sizeof opts->tcp_hostname, "%s", host);
+        opts->tcp_portno = port;
+        opts->audio_in_type = AUDIO_IN_TCP;
+    }
+    return g_tcp_connect_stub_rc;
+}
+
+int
+__wrap_openAudioInput(dsd_opts* opts) {
+    if (!g_open_audio_input_stub_armed) {
+        return __real_openAudioInput(opts);
+    }
+    g_open_audio_input_calls++;
+    return g_open_audio_input_stub_rc;
 }
 
 int
@@ -114,6 +150,20 @@ reset_io_control_tune_stub(int result) {
     g_io_control_tune_result = result;
     g_io_control_tune_calls = 0;
     g_io_control_tune_freq = 0;
+}
+
+static void
+arm_tcp_connect_stub(int armed, int rc) {
+    g_tcp_connect_stub_armed = armed;
+    g_tcp_connect_stub_rc = rc;
+    g_tcp_connect_calls = 0;
+}
+
+static void
+arm_open_audio_input_stub(int armed, int rc) {
+    g_open_audio_input_stub_armed = armed;
+    g_open_audio_input_stub_rc = rc;
+    g_open_audio_input_calls = 0;
 }
 
 static void
@@ -1998,6 +2048,87 @@ test_config_apply_input_change_clears_received_tone(void) {
     freeState(&state);
     return rc;
 }
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/*
+ * Connecting TCP audio -- from the settings form with a host and port, or the menu's
+ * connect to the configured endpoint -- puts a new stream on the input, and the tone the old
+ * input carried goes with it (issue #522). That includes reconnecting TCP to TCP at the same
+ * rate, which moves no rate and no generation the tap could notice. A refused connection
+ * leaves the input, and so its tone, where they were.
+ */
+static int
+test_tcp_connect_clears_received_tone(void) {
+    static const struct {
+        int cmd;
+        int connect_rc;
+        int clears;
+        const char* tag;
+    } cases[] = {
+        {DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, 0, 1, "tcp connect to an endpoint clears the received tone"},
+        {DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG, -1, 0, "refused tcp connect to an endpoint keeps the received tone"},
+        {DSD_APP_CMD_TCP_CONNECT_AUDIO, 0, 1, "tcp reconnect clears the received tone"},
+        {DSD_APP_CMD_TCP_CONNECT_AUDIO, -1, 0, "refused tcp reconnect keeps the received tone"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        init_test_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_TCP;
+        DSD_SNPRINTF(opts.tcp_hostname, sizeof opts.tcp_hostname, "%s", "127.0.0.1");
+        opts.tcp_portno = 7355;
+        seed_received_tone(&state);
+        const uint32_t seeded = state.analog_rx.generation;
+        arm_tcp_connect_stub(1, cases[i].connect_rc);
+        const int queued = cases[i].cmd == DSD_APP_CMD_TCP_CONNECT_AUDIO_CFG
+                               ? post_host_port(cases[i].cmd, "127.0.0.1", 7355)
+                               : post_empty(cases[i].cmd);
+        rc |= expect_int(cases[i].tag, queued, DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(cases[i].tag, g_tcp_connect_calls, 1);
+        rc |= expect_int(cases[i].tag, opts.audio_in_type, AUDIO_IN_TCP);
+        if (cases[i].clears) {
+            rc |= expect_received_tone_cleared(cases[i].tag, &state, seeded);
+        } else {
+            rc |= expect_true(cases[i].tag, state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                                && state.analog_rx.ctcss_tenths_hz == 1000
+                                                && state.analog_rx.generation == seeded);
+        }
+        freeState(&state);
+    }
+    arm_tcp_connect_stub(0, 0);
+    return rc;
+}
+
+/*
+ * Stopping playback back onto live Pulse input clears the playback's tone even when Pulse
+ * then fails to open: the playback is gone either way, and its tone does not describe
+ * whatever the input becomes next (issue #522).
+ */
+static int
+test_stop_playback_pulse_failure_clears_received_tone(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.audio_out_type = 0;
+    opts.audio_in_type = AUDIO_IN_WAV;
+    seed_received_tone(&state);
+    const uint32_t seeded = state.analog_rx.generation;
+    arm_open_audio_input_stub(1, -1);
+    rc |= expect_int("stop playback onto pulse queued", post_empty(DSD_APP_CMD_STOP_PLAYBACK),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("stop playback onto pulse drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("stop playback tried to open pulse", g_open_audio_input_calls, 1);
+    rc |= expect_int("stop playback switched to pulse", opts.audio_in_type, AUDIO_IN_PULSE);
+    rc |= expect_received_tone_cleared("failed pulse open still clears the received tone", &state, seeded);
+    arm_open_audio_input_stub(0, 0);
+    freeState(&state);
+    return rc;
+}
+#endif
 
 /*
  * Modulation and decode mode as setters rather than toggles. A panel showing
@@ -5590,6 +5721,10 @@ main(void) {
     rc |= test_input_switch_clears_received_tone();
     rc |= test_playback_switches_clear_received_tone();
     rc |= test_config_apply_input_change_clears_received_tone();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= test_tcp_connect_clears_received_tone();
+    rc |= test_stop_playback_pulse_failure_clears_received_tone();
+#endif
     rc |= test_trunk_set();
     rc |= test_scan_voice_gate_commands();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP

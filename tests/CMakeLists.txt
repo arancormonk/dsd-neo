@@ -5587,6 +5587,8 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
             "LINKER:--wrap=dsd_audio_ensure_analog_output"
             "LINKER:--wrap=dsd_audio_ensure_digital_output"
+            "LINKER:--wrap=svc_tcp_connect_audio"
+            "LINKER:--wrap=openAudioInput"
     )
 endif()
 if(

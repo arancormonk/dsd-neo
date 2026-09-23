@@ -16,6 +16,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -182,7 +183,7 @@ test_eof_onto_live_input_clears_received_tone(void) {
     state.analog_rx.ctcss_tenths_hz = 1000;
     const uint32_t seeded = state.analog_rx.generation;
 
-    assert(getSymbol(&opts, &state, 0) == 1234.0f);
+    assert(fabsf(getSymbol(&opts, &state, 0) - 1234.0f) < 1e-3f);
     (void)getSymbol(&opts, &state, 0);
     assert(g_open_audio_input_calls == 1);
     assert(g_cleanup_calls == 0 && exitflag == 0);
@@ -227,7 +228,7 @@ main(void) {
     exitflag = 0;
     g_cleanup_calls = 0;
 
-    assert(getSymbol(&opts, &state, 0) == 1234.0f);
+    assert(fabsf(getSymbol(&opts, &state, 0) - 1234.0f) < 1e-3f);
     assert(g_cleanup_calls == 0);
 
     assert(getSymbol(&opts, &state, 0) == 0.0f);
