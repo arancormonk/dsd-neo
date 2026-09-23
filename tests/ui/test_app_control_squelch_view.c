@@ -9,9 +9,11 @@
 #include <assert.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <math.h>
