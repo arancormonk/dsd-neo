@@ -10,9 +10,13 @@
  */
 
 #include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 
 static const int k_expected_tenths[] = {
     670,  693,  719,  744,  770,  797,  825,  854,  885,  915,  948,  974,  1000, 1035, 1072, 1109, 1148,
@@ -89,9 +93,64 @@ test_format(void) {
     assert(dsd_ctcss_format(1000, buf, 0) == -1);
 }
 
+static int g_fake_output_kind = 0;
+
+static int
+fake_output_kind(void) {
+    return g_fake_output_kind;
+}
+
+/* Detection runs for the analog FM monitor on audio it can hear, and nowhere else: the one
+   rule the decoder's tap and every frontend's row share. */
+static void
+test_detection_active(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    assert(opts != NULL);
+    assert(dsd_analog_tone_detection_active(NULL) == 0);
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+
+    static const int pcm[] = {AUDIO_IN_PULSE, AUDIO_IN_STDIN, AUDIO_IN_WAV, AUDIO_IN_UDP, AUDIO_IN_TCP};
+    for (size_t i = 0; i < sizeof(pcm) / sizeof(pcm[0]); i++) {
+        opts->audio_in_type = pcm[i];
+        assert(dsd_analog_tone_detection_active(opts) == 1);
+    }
+    /* Symbol captures and no input carry no audio to hear. */
+    static const int no_audio[] = {AUDIO_IN_SYMBOL_BIN, AUDIO_IN_SYMBOL_FLT, AUDIO_IN_NULL};
+    for (size_t i = 0; i < sizeof(no_audio) / sizeof(no_audio[0]); i++) {
+        opts->audio_in_type = no_audio[i];
+        assert(dsd_analog_tone_detection_active(opts) == 0);
+    }
+
+    /* RTL: only while the stream outputs monitor audio (output kind 0), which is also what the
+       hook answers with nothing installed. */
+    opts->audio_in_type = AUDIO_IN_RTL;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    assert(dsd_analog_tone_detection_active(opts) == 1);
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_kind = fake_output_kind};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_fake_output_kind = 0;
+    assert(dsd_analog_tone_detection_active(opts) == 1);
+    g_fake_output_kind = 1; /* FSK discriminator samples: a digital family */
+    assert(dsd_analog_tone_detection_active(opts) == 0);
+    g_fake_output_kind = 2; /* CQPSK symbols */
+    assert(dsd_analog_tone_detection_active(opts) == 0);
+    g_fake_output_kind = 0;
+
+    /* Not the analog FM monitor: digital decoding, or analog without the input monitored. */
+    opts->analog_only = 0;
+    assert(dsd_analog_tone_detection_active(opts) == 0);
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 0;
+    assert(dsd_analog_tone_detection_active(opts) == 0);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    free(opts);
+}
+
 int
 main(void) {
     test_table();
     test_format();
+    test_detection_active();
     return 0;
 }

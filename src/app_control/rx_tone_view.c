@@ -4,7 +4,6 @@
  */
 
 #include <dsd-neo/app_control/rx_tone_view.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -18,18 +17,6 @@
 /* The configured receive policy. Tone filtering is #527; until it exists the policy is off,
    and this text comes from the configuration side, never from the received tone. */
 #define RX_TONE_POLICY_OFF_TEXT "off"
-
-/**
- * @brief Whether the analog FM monitor is running, which is when detection runs.
- *
- * Decided from the options rather than from the publication: right after a reset the
- * publication reads INACTIVE until the next block, and the row should not blink off and on
- * across every retune.
- */
-static int
-rx_tone_monitor_active(const dsd_opts* opts) {
-    return opts->analog_only == 1 && opts->monitor_input_audio == 1;
-}
 
 static void
 rx_tone_set_text(dsd_app_rx_tone* out, const char* text) {
@@ -86,7 +73,10 @@ dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, dsd_app_rx_to
     if (!opts || !state || !out) {
         return -1;
     }
-    if (!rx_tone_monitor_active(opts)) {
+    /* The tap's own question (runtime/analog_tones.h), so the row is on screen exactly while
+       detection listens. Not the publication's state: right after a reset it reads INACTIVE
+       until the next block, and the row should not blink off and on across every retune. */
+    if (!dsd_analog_tone_detection_active(opts)) {
         out->status = DSD_APP_RX_TONE_HIDDEN;
         return 0;
     }

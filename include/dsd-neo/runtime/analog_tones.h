@@ -18,6 +18,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_ANALOG_TONES_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_ANALOG_TONES_H_
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -66,6 +67,23 @@ int dsd_ctcss_format(int tenths_hz, char* buf, size_t buf_size);
  * @return Characters written (terminator excluded), or -1 as for dsd_ctcss_format().
  */
 int dsd_ctcss_format_label(int tenths_hz, char* buf, size_t buf_size);
+
+/**
+ * @brief Whether received-tone detection runs: the analog FM monitor, on audio it can hear.
+ *
+ * Analog-only decoding with input monitoring, on a PCM input (Pulse, stdin, WAV, UDP, TCP) or
+ * on an RTL-family stream whose output is monitor audio (asked of the RTL stream-metrics hook,
+ * whose default answers monitor audio). Symbol-file and null inputs carry no audio to hear.
+ * The -8 source monitor during digital decoding and EDACS analog voice are out: neither is
+ * analog-only.
+ *
+ * The decoder's tap and every frontend's received-tone row ask this one question, so a row is
+ * never on screen for a session in which nothing is listening -- for instance while an RTL
+ * stream still outputs a digital family's samples.
+ *
+ * @return 1 when detection runs, 0 otherwise (and for NULL).
+ */
+int dsd_analog_tone_detection_active(const dsd_opts* opts);
 
 #ifdef __cplusplus
 }

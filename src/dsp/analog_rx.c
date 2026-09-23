@@ -302,10 +302,6 @@ dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publica
  * Decoder-thread glue
  * ---------------------------------------------------------------------------------------- */
 
-/* RTL stream output kind that carries monitor audio: RTL_STREAM_OUTPUT_AUDIO_MONITOR in the IO
-   header DSP may not include, and DSD_DEMOD_OUTPUT_AUDIO_MONITOR in a C++-only one. */
-enum { ANALOG_RX_RTL_OUTPUT_AUDIO_MONITOR = 0 };
-
 /* Log key for "Received tone:" lines: nothing logged yet this reception, "none", or a tone. */
 enum { ANALOG_RX_LOG_UNSET = -1, ANALOG_RX_LOG_NONE = 0 };
 
@@ -346,24 +342,6 @@ analog_rx_session_create(const dsd_opts* opts, dsd_state* state) {
         return NULL;
     }
     return session;
-}
-
-/**
- * @brief Whether the analog FM monitor is running, which is the only time detection runs.
- *
- * Analog-only decoding with input monitoring, on PCM input or on an RTL-family stream whose
- * output is monitor audio. The -8 source monitor during digital decoding and EDACS analog
- * voice are deliberately out: neither is analog-only.
- */
-static int
-analog_rx_monitor_active(const dsd_opts* opts) {
-    if (opts->analog_only != 1 || opts->monitor_input_audio != 1) {
-        return 0;
-    }
-    if (opts->audio_in_type != AUDIO_IN_RTL) {
-        return 1;
-    }
-    return dsd_rtl_stream_metrics_hook_output_kind() == ANALOG_RX_RTL_OUTPUT_AUDIO_MONITOR;
 }
 
 static int
@@ -453,7 +431,9 @@ dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* block, un
     if (!opts || !state || !block || count == 0U) {
         return;
     }
-    if (!analog_rx_monitor_active(opts)) {
+    /* The same question every frontend's row asks (runtime/analog_tones.h), so the row is on
+       screen exactly while this tap listens. */
+    if (!dsd_analog_tone_detection_active(opts)) {
         if (state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_INACTIVE || state->analog_rx.carrier_open) {
             dsd_analog_rx_reset(state);
         }

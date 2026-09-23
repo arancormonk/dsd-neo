@@ -16,6 +16,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -105,6 +106,12 @@ test_states_and_formats(void) {
     free(state);
 }
 
+/* An RTL stream whose output is CQPSK symbols rather than monitor audio. */
+static int
+fake_symbol_output_kind(void) {
+    return 2;
+}
+
 static void
 test_hidden_outside_the_fm_monitor(void) {
     static dsd_opts opts;
@@ -119,6 +126,19 @@ test_hidden_outside_the_fm_monitor(void) {
     opts.analog_only = 1;
     opts.monitor_input_audio = 0;
     assert_view(&opts, state, DSD_APP_RX_TONE_HIDDEN, "");
+
+    /* The FM monitor on input the tap never hears -- a symbol capture, or an RTL stream still
+       outputting a digital family's samples -- is hidden too: the row is shown exactly while
+       detection runs, not while the options merely ask for it. */
+    opts.monitor_input_audio = 1;
+    opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    assert_view(&opts, state, DSD_APP_RX_TONE_HIDDEN, "");
+    opts.audio_in_type = AUDIO_IN_RTL;
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_kind = fake_symbol_output_kind};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    assert_view(&opts, state, DSD_APP_RX_TONE_HIDDEN, "");
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    assert_view(&opts, state, DSD_APP_RX_TONE_LOCKED, "CTCSS 100.0 Hz");
     free(state);
 }
 

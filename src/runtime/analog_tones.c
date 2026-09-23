@@ -3,8 +3,11 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -13,7 +16,7 @@
  * tone some radios offer as a 51st; it is left out on purpose, because it sits 1.4 Hz from
  * 151.4 Hz and a detector that snapped it to the table would name the wrong tone.
  */
-static const uint16_t k_ctcss_tones_tenths[DSD_CTCSS_TONE_COUNT] = {
+static const uint16_t k_ctcss_tones_tenths[] = {
     670,  693,  719,  744,  770,  797,  825,  854,  885,  915,  948,  974,  1000, 1035, 1072, 1109, 1148,
     1188, 1230, 1273, 1318, 1365, 1413, 1462, 1514, 1567, 1598, 1622, 1655, 1679, 1713, 1738, 1773, 1799,
     1835, 1862, 1899, 1928, 1966, 1995, 2035, 2065, 2107, 2181, 2257, 2291, 2336, 2418, 2503, 2541,
@@ -79,4 +82,29 @@ dsd_ctcss_format(int tenths_hz, char* buf, size_t buf_size) {
 int
 dsd_ctcss_format_label(int tenths_hz, char* buf, size_t buf_size) {
     return ctcss_format_with("CTCSS ", " Hz", tenths_hz, buf, buf_size);
+}
+
+/* RTL stream output kind that carries monitor audio: RTL_STREAM_OUTPUT_AUDIO_MONITOR in the IO
+   header runtime may not include. */
+enum { ANALOG_TONES_RTL_OUTPUT_AUDIO_MONITOR = 0 };
+
+static int
+analog_tone_input_carries_audio(const dsd_opts* opts) {
+    switch (opts->audio_in_type) {
+        case AUDIO_IN_PULSE:
+        case AUDIO_IN_STDIN:
+        case AUDIO_IN_WAV:
+        case AUDIO_IN_UDP:
+        case AUDIO_IN_TCP: return 1;
+        case AUDIO_IN_RTL: return dsd_rtl_stream_metrics_hook_output_kind() == ANALOG_TONES_RTL_OUTPUT_AUDIO_MONITOR;
+        default: return 0;
+    }
+}
+
+int
+dsd_analog_tone_detection_active(const dsd_opts* opts) {
+    if (opts == NULL || opts->analog_only != 1 || opts->monitor_input_audio != 1) {
+        return 0;
+    }
+    return analog_tone_input_carries_audio(opts);
 }
