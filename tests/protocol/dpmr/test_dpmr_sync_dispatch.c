@@ -97,7 +97,10 @@ test_dispatch_close_only_syncs(void) {
 
     opts.mbe_out_f = stdout;
     state.synctype = DSD_SYNC_DPMR_FS1_POS;
+    /* FDMA voice is slot 0, whatever slot a TDMA decode left current. */
+    state.currentslot = 1;
     dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(state.currentslot == 0);
     assert(g_close_calls == 1);
     assert(g_voice_calls == 0);
 

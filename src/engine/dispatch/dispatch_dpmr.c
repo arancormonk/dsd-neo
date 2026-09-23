@@ -111,6 +111,9 @@ dpmr_handle_voice_frame(dsd_opts* opts, dsd_state* state) {
  */
 dsd_frame_verdict
 dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
+    /* FDMA voice is slot 0. The shared vocoder, record and audio paths read
+     * currentslot, which a DMR, P25 Phase 2 or X2-TDMA decode may have left at 1. */
+    state->currentslot = 0;
 
     //dPMR
     if ((state->synctype == DSD_SYNC_DPMR_FS1_POS) || (state->synctype == DSD_SYNC_DPMR_FS1_NEG)) {

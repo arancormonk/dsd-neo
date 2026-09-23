@@ -16,9 +16,13 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
 #include <mbelib-neo/mbelib.h>
+#include <sndfile.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -956,6 +960,118 @@ test_process_ysf_terminator_enriches_identity_before_call_end(void) {
     assert(strcmp(committed->src_str, "TERMSRC002") == 0);
 }
 
+/* The vocoder writes each voice frame's per-call WAV block (-P) behind its record
+ * gate; YSF must not write a second copy of the same frame. The vocoder is stubbed
+ * here, so nothing may reach the WAV. */
+static void
+test_process_ysf_ehr_voice_leaves_call_wav_to_vocoder(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch[180];
+
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    g_dibit_stream_len = 0;
+    g_dibit_stream_pos = 0;
+    g_process_mbe_call_count = 0;
+
+    char wav_path[] = "dsdneo_ysf_wav_XXXXXX";
+    const int fd = dsd_mkstemp(wav_path);
+    assert(fd >= 0);
+    (void)dsd_close(fd);
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    info.samplerate = 8000;
+    info.channels = 1;
+    info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+    opts.wav_out_f = sf_open(wav_path, SFM_WRITE, &info);
+    assert(opts.wav_out_f != NULL);
+    opts.dmr_stereo_wav = 1;
+
+    make_fich_bits_for_vd_type1(fich_bits);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    encode_dch_payload_to_input("VD1DST0001VD1SRC0002", 20U, dch, 176U, 9U, 0);
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+
+    processYSF(&opts, &state);
+    assert(g_process_mbe_call_count == 4);
+
+    sf_close(opts.wav_out_f);
+    opts.wav_out_f = NULL;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    SNDFILE* written = sf_open(wav_path, SFM_READ, &info);
+    assert(written != NULL);
+    sf_close(written);
+    assert(info.frames == 0);
+    (void)remove(wav_path);
+    dsd_state_ext_free_all(&state);
+}
+
+/* V/D2 decodes straight through mbelib and never reaches the vocoder's per-call
+ * WAV write, so YSF writes those frames itself, under the call's record policy:
+ * an allowed call records, and an allow-list (-W) no YSF call can match does not. */
+static void
+test_process_ysf_vd_type2_writes_call_wav_under_record_policy(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch2[100];
+
+    for (int blocked = 1; blocked >= 0; --blocked) {
+        InitAllFecFunction();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+        DSD_MEMSET(g_mbe_inbound_errs2, 0, sizeof(g_mbe_inbound_errs2));
+        g_dibit_stream_len = 0;
+        g_dibit_stream_pos = 0;
+        g_mbe_call_count = 0;
+        opts.floating_point = 1;
+        opts.dmr_stereo_wav = 1;
+        opts.trunk_use_allow_list = blocked;
+
+        char wav_path[] = "dsdneo_ysf_vd2_wav_XXXXXX";
+        const int fd = dsd_mkstemp(wav_path);
+        assert(fd >= 0);
+        (void)dsd_close(fd);
+        SF_INFO info;
+        DSD_MEMSET(&info, 0, sizeof(info));
+        info.samplerate = 8000;
+        info.channels = 1;
+        info.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+        opts.wav_out_f = sf_open(wav_path, SFM_WRITE, &info);
+        assert(opts.wav_out_f != NULL);
+
+        make_fich_bits_for_vd_type2(fich_bits);
+        encode_fich_input(fich_bits, 0, 0, fich_input);
+        encode_dch_payload_to_input("VD2SRC4444", 10U, dch2, 96U, 5U, 0);
+        append_dibits_to_stream(fich_input, 100U);
+        for (size_t block = 0; block < 5U; block++) {
+            append_dibits_to_stream(&dch2[block * 20U], 20U);
+            append_type2_vech_dibits((block % 2U) == 0U ? 1U : 0U);
+        }
+
+        processYSF(&opts, &state);
+        assert(g_mbe_call_count == 5);
+
+        sf_close(opts.wav_out_f);
+        opts.wav_out_f = NULL;
+        DSD_MEMSET(&info, 0, sizeof(info));
+        SNDFILE* written = sf_open(wav_path, SFM_READ, &info);
+        assert(written != NULL);
+        sf_close(written);
+        assert(blocked ? info.frames == 0 : info.frames == (sf_count_t)5 * 160);
+        (void)remove(wav_path);
+        dsd_state_ext_free_all(&state);
+    }
+}
+
 int
 main(void) {
     test_dch_csd1_tracks_destination_and_source();
@@ -974,6 +1090,8 @@ main(void) {
     test_process_ysf_fich_verdict_is_sticky_per_transmission();
     test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors();
     test_process_ysf_terminator_enriches_identity_before_call_end();
+    test_process_ysf_ehr_voice_leaves_call_wav_to_vocoder();
+    test_process_ysf_vd_type2_writes_call_wav_under_record_policy();
     return 0;
 }
 

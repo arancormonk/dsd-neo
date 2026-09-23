@@ -1327,15 +1327,21 @@ purge_audio_buffers_if_needed(dsd_state* state) {
     }
 }
 
+// Playback settles crypto itself (decode_audio_is_allowed), so its recordings,
+// WAV and MBE capture, answer to the replayed call's talkgroup policy alone; the
+// call is on slot 0.
+static int
+sdrtrunk_json_record_allowed(const dsd_opts* opts, const dsd_state* state) {
+    int allow = 0;
+    return dsd_audio_record_policy_gate_slot(opts, state, 0, &allow) == 0 && allow;
+}
+
 static void
 run_decode_audio_output_path(dsd_opts* opts, dsd_state* state) {
     if (opts->floating_point == 0) {
         processAudio(opts, state);
     }
-    // Playback settles crypto itself (decode_audio_is_allowed), so its WAVs
-    // answer to the replayed call's talkgroup policy alone; the call is on slot 0.
-    int record = 0;
-    (void)dsd_audio_record_policy_gate_slot(opts, state, 0, &record);
+    const int record = sdrtrunk_json_record_allowed(opts, state);
     if (record && opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
         writeSynthesizedVoice(opts, state);
     }
@@ -1449,7 +1455,7 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
     }
 
     if (decode_audio_is_allowed(is_enc, ks_available)) {
-        if (opts->mbe_out_f != NULL) {
+        if (opts->mbe_out_f != NULL && sdrtrunk_json_record_allowed(opts, state)) {
             saveAmbe2450Data(opts, state, ambe_d);
         }
         run_decode_audio_output_path(opts, state);
@@ -1502,7 +1508,7 @@ imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const
     }
 
     if (decode_audio_is_allowed(is_enc, ks_available)) {
-        if (opts->mbe_out_f != NULL) {
+        if (opts->mbe_out_f != NULL && sdrtrunk_json_record_allowed(opts, state)) {
             saveImbe4400Data(opts, state, imbe_d);
         }
         run_decode_audio_output_path(opts, state);

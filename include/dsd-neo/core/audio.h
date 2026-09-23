@@ -207,6 +207,14 @@ int dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsi
 /** @brief Mono per-call WAV gate combining decrypt state with TG/allow-list/TG-hold policy. */
 int dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* allow_out);
 /**
+ * @brief Non-zero when the current Phase 1 voice frame belongs to a live P25 call.
+ *
+ * Excludes SDRTrunk JSON playback and a protocol that borrows the Phase 1 decoder
+ * (YSF full rate runs its IMBE frames with synctype P25P1 for a YSF call).
+ * Recording applies the P25 speaker rule, reverse mute included, only then.
+ */
+int dsd_audio_p25p1_live_voice(const dsd_state* state);
+/**
  * @brief WAV gate for TG/allow-list/TG-hold policy alone, on the call in @p slot.
  *
  * For writers whose decode path settles crypto itself and never sets the DMR

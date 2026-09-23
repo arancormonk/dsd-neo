@@ -3,6 +3,7 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
@@ -44,6 +45,9 @@ dsd_dispatch_matches_nxdn(int synctype) {
  */
 dsd_frame_verdict
 dsd_dispatch_handle_nxdn(dsd_opts* opts, dsd_state* state) {
+    /* FDMA voice is slot 0. The shared vocoder, record and audio paths read
+     * currentslot, which a DMR, P25 Phase 2 or X2-TDMA decode may have left at 1. */
+    state->currentslot = 0;
     const int frame_result = nxdn_frame(opts, state);
 
     if (frame_result == 2) {

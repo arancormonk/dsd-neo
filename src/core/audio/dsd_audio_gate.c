@@ -428,6 +428,16 @@ dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsigned
     return rc;
 }
 
+int
+dsd_audio_p25p1_live_voice(const dsd_state* state) {
+    if (!state || !DSD_SYNC_IS_P25P1(state->synctype) || state->mbe_file_type == 3) {
+        return 0;
+    }
+    dsd_call_snapshot call;
+    return !(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+             && !DSD_SYNC_IS_P25(call.protocol));
+}
+
 static int
 dsd_audio_record_slot_allows_audio(const dsd_opts* opts, const dsd_state* state, int slot) {
     int enc = 0;
@@ -437,13 +447,21 @@ dsd_audio_record_slot_allows_audio(const dsd_opts* opts, const dsd_state* state,
         return 0;
     }
 
+    // P25 recording follows the speaker rule, reverse mute (-q) included, so a
+    // clear call that -q keeps off the speakers stays out of the per-call WAV.
     if (DSD_SYNC_IS_P25P2(state->synctype)) {
-        return (state->p25_p2_audio_allowed[slot] != 0) ? 1 : 0;
+        return (state->p25_p2_audio_allowed[slot] != 0 && p25_crypto_audio_output_permitted(opts, state, slot)) ? 1 : 0;
+    }
+    if (dsd_audio_p25p1_live_voice(state)) {
+        return p25_crypto_audio_output_permitted(opts, state, 0);
     }
 
     enc = (slot == 1) ? state->dmr_encR : state->dmr_encL;
     dmr_unmute_slot = (slot == 1) ? (opts->dmr_mute_encR == 0) : (opts->dmr_mute_encL == 0);
-    if (opts->unmute_encrypted_p25 == 1 || enc == 0 || dmr_unmute_slot) {
+    // The P25 unmute override is not a DMR control: DMR audio answers to its slot
+    // flags alone, and so does its recording.
+    const int p25_unmute = opts->unmute_encrypted_p25 == 1 && !DSD_SYNC_IS_DMR(state->synctype);
+    if (p25_unmute || enc == 0 || dmr_unmute_slot) {
         return 1;
     }
     return 0;

@@ -428,10 +428,28 @@ edacs_emit_fd_audio(const dsd_opts* opts, const short* analog1, const short* ana
     edacs_emit_fd_audio_block(opts->audio_out_fd, analog3, "analog3");
 }
 
+// Analog voice never reaches the vocoder output gates, so its talkgroup gate is
+// applied here: the active call on slot 0, as every other output path asks.
+static int
+edacs_analog_call_muted(const dsd_opts* opts, const dsd_state* state) {
+    dsd_call_snapshot call;
+    unsigned long target = 0UL;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        && call.ota_target_id <= UINT32_MAX) {
+        target = (unsigned long)call.ota_target_id;
+    }
+    int muted = 0;
+    (void)dsd_audio_group_gate_mono(opts, state, target, 0, &muted);
+    return muted;
+}
+
 void
 edacs_emit_analog_audio(dsd_opts* opts, dsd_state* state, const short* analog1, const short* analog2,
                         const short* analog3) {
     if (!edacs_analog_triplet_args_valid(opts, state, analog1, analog2, analog3)) {
+        return;
+    }
+    if (edacs_analog_call_muted(opts, state)) {
         return;
     }
     if (edacs_should_emit_pulse_audio(opts)) {
@@ -467,8 +485,13 @@ edacs_write_static_wav_block(SNDFILE* wav, const short* src) {
     edacs_write_wav_short_block(wav, ss, 320, "edacs static WAV");
 }
 
-static void
-edacs_write_analog_wav(dsd_opts* opts, const short* analog1, const short* analog2, const short* analog3) {
+void
+edacs_write_analog_wav(dsd_opts* opts, const dsd_state* state, const short* analog1, const short* analog2,
+                       const short* analog3) {
+    int allow = 0;
+    if (dsd_audio_record_policy_gate_slot(opts, state, 0, &allow) != 0 || !allow) {
+        return;
+    }
     if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
         edacs_write_wav_short_block(opts->wav_out_f, analog1, 960, "edacs WAV analog1");
         edacs_write_wav_short_block(opts->wav_out_f, analog2, 960, "edacs WAV analog2");
@@ -733,7 +756,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         opts->rtl_pwr = pwr;
         count = edacs_update_squelch_count(pwr, sql, count);
         edacs_print_analog_status(opts, state, afs, lcn, pwr, sql);
-        edacs_write_analog_wav(opts, analog1, analog2, analog3);
+        edacs_write_analog_wav(opts, state, analog1, analog2, analog3);
 
         if (edacs_should_release_voice(sr, sql_disabled, now, no_sql_watchdog_s)) {
             count = 0;
