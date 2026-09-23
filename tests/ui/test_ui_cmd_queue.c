@@ -207,6 +207,17 @@ init_test_context(dsd_opts* opts, dsd_state* state) {
     dsd_app_frontend_runtime_start(opts, state);
 }
 
+/*
+ * DECODE_MODE_SET opens the sink the new mode writes to when the session plays to a local audio device, which is
+ * what initOpts() selects. Cases that change the decode mode play to the null output instead, so no test opens a
+ * host audio stream whether or not the ensure helpers are link-time wrapped on this toolchain.
+ */
+static void
+init_decode_mode_context(dsd_opts* opts, dsd_state* state) {
+    init_test_context(opts, state);
+    opts->audio_out_type = 9;
+}
+
 static int
 post_empty(int id) {
     return dsd_app_command_submit(id, NULL, 0U);
@@ -1911,7 +1922,7 @@ test_modulation_and_decode_mode_setters(void) {
 
     /* Decode mode goes through the same preset helper the CLI uses, so a mode
      * chosen here means what it means at startup. DMR must leave P25 off. */
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.frame_p25p1 = 1;
     opts.frame_p25p2 = 1;
     opts.frame_dmr = 0;
@@ -1941,7 +1952,7 @@ test_modulation_and_decode_mode_setters(void) {
     /* A mode on a different symbol rate has to carry the hunt with it: NXDN48 is
      * 2400 sym/s, and a decoder left on the 4800 profile is looking for it at
      * twice the symbol clock through a 12.5 kHz filter. */
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.frame_dmr = 1;
     opts.frame_p25p1 = 0;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
@@ -1963,7 +1974,7 @@ test_modulation_and_decode_mode_setters(void) {
      * (playSynthesizedVoiceSS3/FS3). Held to dmr_stereo == 1 here because the
      * alternative pairs it with dmr_mono == 0, which no preset produces and which
      * dmr_handle_voice() has no branch for on MS voice. */
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.frame_p25p1 = 1;
     opts.frame_dmr = 0;
     opts.pulse_digi_out_channels = 1;
@@ -1985,7 +1996,7 @@ test_modulation_and_decode_mode_setters(void) {
      * put the modulation back to the preset's, discarding the operator's own pick.
      * ui_handle_mod_set() has held this contract since it was written; this is the
      * same one for the decode chips beside it. */
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.frame_p25p1 = 1;
     opts.frame_p25p2 = 1;
     opts.frame_dmr = 0;
@@ -2014,7 +2025,7 @@ test_modulation_and_decode_mode_setters(void) {
     /* Two picker rows spell DMR, and this toast is the only thing that says which
      * one landed. It has to name the row the operator chose, which means reading
      * the same table the picker was built from rather than a second one. */
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.frame_p25p1 = 1;
     opts.frame_dmr = 0;
     rc |= expect_int("dmr mono mode queued",
@@ -2028,7 +2039,7 @@ test_modulation_and_decode_mode_setters(void) {
      * byte, so an out-of-range value does not stay out of range: 260 casts to 4,
      * which is DSDCFG_MODE_DMR, and the DMR preset would run for a command nobody
      * could have meant. */
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.frame_p25p1 = 1;
     opts.frame_dmr = 0;
     rc |= expect_int("out-of-range mode queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, 260),
@@ -2039,7 +2050,7 @@ test_modulation_and_decode_mode_setters(void) {
     freeState(&state);
 
     /* Back to auto re-enables the set the engine starts with. */
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.frame_dmr = 1;
     opts.frame_p25p1 = 0;
     rc |=
@@ -2627,7 +2638,7 @@ test_scoped_mode_commands_and_config(void) {
         free(state);
         return 1;
     }
-    init_test_context(opts, state);
+    init_decode_mode_context(opts, state);
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->wav_sample_rate = 96000;
     int rc = 0;
@@ -4392,8 +4403,64 @@ test_squelch_edit_keeps_live_acquisition(void) {
 }
 #endif
 
-#if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP)
-/* The RTL receive-family requests and sink helpers a decode-mode change makes, recorded instead of run. */
+#ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+/* The sink helpers a decode-mode change calls, recorded instead of run (every build, radio or not). */
+static int g_ensure_analog_calls;
+static int g_ensure_digital_calls;
+
+// GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+int __wrap_dsd_audio_ensure_analog_output(dsd_opts* opts);
+int __wrap_dsd_audio_ensure_digital_output(dsd_opts* opts);
+
+int
+__wrap_dsd_audio_ensure_analog_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_analog_calls++;
+    return 0;
+}
+
+int
+__wrap_dsd_audio_ensure_digital_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_digital_calls++;
+    return 0;
+}
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+
+/*
+ * DECODE_MODE_SET opens the sink the new mode writes to: the raw monitor sink for Analog, the digital voice sink for
+ * a digital mode. Holds without a radio front end.
+ */
+static int
+test_decode_mode_set_ensures_family_sink(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_decode_mode_context(&opts, &state);
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
+    rc |= expect_int("analog sink mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("analog sink mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("analog mode ensures the raw sink", g_ensure_analog_calls, 1);
+    rc |= expect_int("analog mode leaves the digital sink", g_ensure_digital_calls, 0);
+
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
+    rc |= expect_int("digital sink mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_NXDN48),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("digital sink mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("digital mode ensures the digital sink", g_ensure_digital_calls, 1);
+    rc |= expect_int("digital mode leaves the raw sink", g_ensure_analog_calls, 0);
+    freeState(&state);
+    return rc;
+}
+#endif
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP) && defined(DSD_NEO_TEST_AUDIO_ENSURE_WRAP)
+/* The RTL receive-family requests a decode-mode change makes, recorded instead of run. */
 static int g_rx_sequence;
 static int g_analog_req_calls;
 static int g_analog_req_family;
@@ -4404,8 +4471,6 @@ static int g_demod_req_calls;
 static int g_demod_req_order;
 static int g_demod_req_rate;
 static int g_demod_req_ted_sps;
-static int g_ensure_analog_calls;
-static int g_ensure_digital_calls;
 static int g_fake_analog_active;
 static unsigned int g_fake_digital_rate;
 
@@ -4416,8 +4481,6 @@ int __wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz
                                             int ted_sps, int ted_sps_is_override);
 int __wrap_rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on);
 unsigned int __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
-int __wrap_dsd_audio_ensure_analog_output(dsd_opts* opts);
-int __wrap_dsd_audio_ensure_digital_output(dsd_opts* opts);
 
 int
 __wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
@@ -4465,20 +4528,6 @@ __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbo
     return g_fake_digital_rate;
 }
 
-int
-__wrap_dsd_audio_ensure_analog_output(dsd_opts* opts) {
-    (void)opts;
-    g_ensure_analog_calls++;
-    return 0;
-}
-
-int
-__wrap_dsd_audio_ensure_digital_output(dsd_opts* opts) {
-    (void)opts;
-    g_ensure_digital_calls++;
-    return 0;
-}
-
 // NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 
 static void
@@ -4503,7 +4552,7 @@ test_decode_mode_set_switches_rtl_receive_family(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     int rc = 0;
-    init_test_context(&opts, &state);
+    init_decode_mode_context(&opts, &state);
     opts.audio_in_type = AUDIO_IN_RTL;
     state.rtl_ctx = (RtlSdrContext*)fake_ctx;
     rc |= expect_int("dmr start queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
@@ -4704,7 +4753,10 @@ main(void) {
     rc |= test_squelch_commands_edit_the_configured_default();
     rc |= test_squelch_edit_keeps_live_acquisition();
 #endif
-#if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP)
+#ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+    rc |= test_decode_mode_set_ensures_family_sink();
+#endif
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP) && defined(DSD_NEO_TEST_AUDIO_ENSURE_WRAP)
     rc |= test_decode_mode_set_switches_rtl_receive_family();
 #endif
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP

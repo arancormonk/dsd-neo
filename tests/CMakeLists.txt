@@ -5507,7 +5507,7 @@ endif()
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
         dsd-neo_test_app_command_queue
-        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP
+        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP DSD_NEO_TEST_AUDIO_ENSURE_WRAP
     )
     target_link_options(
         dsd-neo_test_app_command_queue
@@ -5515,6 +5515,8 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_trunk_tuning_hook_tune_to_cc"
             "LINKER:--wrap=io_control_set_freq"
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
+            "LINKER:--wrap=dsd_audio_ensure_analog_output"
+            "LINKER:--wrap=dsd_audio_ensure_digital_output"
     )
 endif()
 if(
@@ -5536,8 +5538,6 @@ if(
             "LINKER:--wrap=rtl_stream_request_demod_profile"
             "LINKER:--wrap=rtl_stream_get_analog_profile"
             "LINKER:--wrap=rtl_stream_output_rate_for_family"
-            "LINKER:--wrap=dsd_audio_ensure_analog_output"
-            "LINKER:--wrap=dsd_audio_ensure_digital_output"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
@@ -5625,11 +5625,14 @@ endif()
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
         dsd-neo_test_app_control_rr_apply
-        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP
+        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP DSD_NEO_TEST_AUDIO_ENSURE_WRAP
     )
     target_link_options(
         dsd-neo_test_app_control_rr_apply
-        PRIVATE "LINKER:--wrap=io_control_set_freq"
+        PRIVATE
+            "LINKER:--wrap=io_control_set_freq"
+            "LINKER:--wrap=dsd_audio_ensure_analog_output"
+            "LINKER:--wrap=dsd_audio_ensure_digital_output"
     )
 endif()
 add_test(NAME APP_CONTROL_RR_APPLY COMMAND dsd-neo_test_app_control_rr_apply)
