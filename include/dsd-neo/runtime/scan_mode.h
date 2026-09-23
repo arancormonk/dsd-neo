@@ -167,9 +167,11 @@ const dsd_scan_option_values* dsd_scan_mode_row_options(const dsd_state* state);
  * one is suspended, dsd_opts holds the configured values and takes the level. Under a live scope
  * the configured baseline takes it, and dsd_opts does too unless the installed row options
  * override the squelch. Nothing is pushed. Returns 1 when the level is now in force in dsd_opts
- * (the caller hands it to the demod), 0 when a row override shadows it, -1 without opts. As with
- * dsd_scan_mode_target_modulation(), the scope is written through the state's extension slot, so
- * the state itself is not modified. */
+ * (the caller hands it to the demod), 0 when a row override shadows it, -1 without opts. It writes
+ * the scan scope attached to @p state; the pointer is const only because that scope lives in the
+ * state's extension slot, as with dsd_scan_mode_target_modulation(). Call it only on the decoder
+ * thread with the live state, never with a frontend snapshot (dsd_app_get_latest_snapshot()): it
+ * would edit the snapshot's scope copy while frontends read it, and the live scope would not change. */
 int dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, double level);
 /** Deep-copy scalar scope metadata for frontend snapshots. No live extension pointer is shared. */
 void dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src);
