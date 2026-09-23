@@ -321,7 +321,8 @@ bool
 MetricsModel::View::operator==(const View& other) const {
     return site == other.site && qualityEquals(other) && tunerEquals(other) && slot_call[0] == other.slot_call[0]
            && slot_call[1] == other.slot_call[1] && lead_slot == other.lead_slot && controlEquals(other)
-           && scanTimingEquals(other) && rxToneEquals(other) && ui_message == other.ui_message;
+           && scanTimingEquals(other) && rxToneEquals(other) && rx_tone_configured_text == other.rx_tone_configured_text
+           && ui_message == other.ui_message;
 }
 
 void
@@ -338,6 +339,7 @@ MetricsModel::publish(const View& next) {
     const bool controlMoved = !next.controlEquals(m_view);
     const bool scanTimingMoved = !next.scanTimingEquals(m_view);
     const bool rxToneMoved = !next.rxToneEquals(m_view);
+    const bool rxToneConfiguredMoved = next.rx_tone_configured_text != m_view.rx_tone_configured_text;
     const bool messageMoved = next.ui_message != m_view.ui_message;
     m_view = next;
     if (siteMoved) {
@@ -366,6 +368,9 @@ MetricsModel::publish(const View& next) {
     }
     if (rxToneMoved) {
         Q_EMIT rxToneChanged();
+    }
+    if (rxToneConfiguredMoved) {
+        Q_EMIT rxToneConfiguredTextChanged();
     }
     if (messageMoved) {
         Q_EMIT uiMessageChanged();

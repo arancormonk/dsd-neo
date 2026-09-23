@@ -803,8 +803,11 @@ test_rx_tone() {
     dsd_qt::MetricsModel model;
     int changes = 0;
     int scan_changes = 0;
+    int configured_changes = 0;
     QObject::connect(&model, &dsd_qt::MetricsModel::rxToneChanged, [&]() { ++changes; });
     QObject::connect(&model, &dsd_qt::MetricsModel::scanTimingChanged, [&]() { ++scan_changes; });
+    /* The configured policy has its own signal, so nothing received ever announces it. */
+    QObject::connect(&model, &dsd_qt::MetricsModel::rxToneConfiguredTextChanged, [&]() { ++configured_changes; });
     expect("the configured policy reads off before the first frame",
            model.rxToneConfiguredText() == QStringLiteral("off"));
 
@@ -826,7 +829,8 @@ test_rx_tone() {
                                                 && model.rxToneText() == QStringLiteral("CTCSS 100.0 Hz")
                                                 && model.rxToneKind() == DSD_ANALOG_TONE_KIND_CTCSS
                                                 && model.rxToneTenthsHz() == 1000 && model.rxToneCarrier());
-    expect("the received tone has its own notification", changes > before && scan_changes == 0);
+    expect("the received tone has its own notification",
+           changes > before && scan_changes == 0 && configured_changes == 0);
     expect("received and configured stay apart", model.rxToneConfiguredText() == QStringLiteral("off"));
     const int settled = changes;
     model.refresh(&opts, &state);
@@ -872,6 +876,7 @@ test_rx_tone() {
     /* The configured policy is configuration, not session state: stop leaves it as it was. */
     expect("stop keeps the configured policy", model.rxToneConfiguredText() == QStringLiteral("off"));
     expect("stop notifies the received-tone group", changes > before_stop);
+    expect("nothing received ever announced the configured policy", configured_changes == 0);
 
     freeState(&state);
 }

@@ -175,7 +175,9 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int rxToneKind READ rxToneKind NOTIFY rxToneChanged)
     Q_PROPERTY(int rxToneTenthsHz READ rxToneTenthsHz NOTIFY rxToneChanged)
     Q_PROPERTY(bool rxToneCarrier READ rxToneCarrier NOTIFY rxToneChanged)
-    Q_PROPERTY(QString rxToneConfiguredText READ rxToneConfiguredText NOTIFY rxToneChanged)
+    /* Its own signal: configuration, not something received, so a received-tone change never
+       announces it and a policy change (#527) never announces the received tone. */
+    Q_PROPERTY(QString rxToneConfiguredText READ rxToneConfiguredText NOTIFY rxToneConfiguredTextChanged)
     Q_PROPERTY(bool syncedHere READ syncedHere NOTIFY tunerChanged)
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
     Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
@@ -1177,6 +1179,7 @@ class MetricsModel : public QObject {
     void controlChanged();
     void scanTimingChanged();
     void rxToneChanged();
+    void rxToneConfiguredTextChanged();
     void uiMessageChanged();
 
   private:
@@ -1370,12 +1373,12 @@ class MetricsModel : public QObject {
                    && scan_visit_remaining_ds == other.scan_visit_remaining_ds;
         }
 
+        /* The received group only; the configured text has its own signal and comparison. */
         bool
         rxToneEquals(const View& other) const {
             return rx_tone_visible == other.rx_tone_visible && rx_tone_status == other.rx_tone_status
                    && rx_tone_text == other.rx_tone_text && rx_tone_kind == other.rx_tone_kind
-                   && rx_tone_tenths_hz == other.rx_tone_tenths_hz && rx_tone_carrier == other.rx_tone_carrier
-                   && rx_tone_configured_text == other.rx_tone_configured_text;
+                   && rx_tone_tenths_hz == other.rx_tone_tenths_hz && rx_tone_carrier == other.rx_tone_carrier;
         }
 
         bool
