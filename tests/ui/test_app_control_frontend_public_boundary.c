@@ -9,6 +9,7 @@
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/app_control/p25_network.h>
+#include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/squelch_view.h>
@@ -61,6 +62,7 @@ main(void) {
     (void)&dsd_app_get_latest_opts_snapshot;
     (void)&dsd_app_frontend_get_metrics_for_snapshot;
     (void)&dsd_app_trunk_scan_validate_targets_csv;
+    (void)&dsd_app_rx_tone_view;
     (void)&dsd_app_scan_timing_view;
     (void)sizeof(dsd_app_squelch_view);
     (void)&dsd_app_squelch_view_get;
