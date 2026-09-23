@@ -13,7 +13,9 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
@@ -22,10 +24,17 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -94,12 +103,29 @@ lpf_f(dsd_state* state, float* input, int len) {
     (void)len;
 }
 
+/* The voice high-pass, stubbed to do to a sub-audible tone what the real 960 Hz one does:
+   take it out. It records what reached it first, so a test can prove the received-tone tap
+   read the block before this filter and left it untouched. */
+static float g_hpf_seen[960];
+static int g_hpf_seen_len = 0;
+static int g_hpf_removes_tone = 0;
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 hpf_f(dsd_state* state, float* input, int len) {
     (void)state;
-    (void)input;
-    (void)len;
+    g_hpf_seen_len = 0;
+    if (!input || len <= 0) {
+        return;
+    }
+    const int n = len < (int)(sizeof(g_hpf_seen) / sizeof(g_hpf_seen[0]))
+                      ? len
+                      : (int)(sizeof(g_hpf_seen) / sizeof(g_hpf_seen[0]));
+    DSD_MEMCPY(g_hpf_seen, input, (size_t)n * sizeof(float));
+    g_hpf_seen_len = n;
+    if (g_hpf_removes_tone) {
+        DSD_MEMSET(input, 0, (size_t)len * sizeof(float));
+    }
 }
 
 void
@@ -585,6 +611,162 @@ test_symbol_helper_rtl_cache_and_center_contract(void) {
 #endif
 }
 
+/* ---- Received-tone tap (issue #522) ----------------------------------------------------- */
+
+static uint32_t g_fake_rtl_generation = 1U;
+
+static unsigned int
+fake_rtl_output_rate_hz(void) {
+    return 48000U;
+}
+
+static int
+fake_rtl_output_kind(void) {
+    return 0; /* monitor audio */
+}
+
+static uint32_t
+fake_rtl_stream_generation(void) {
+    return g_fake_rtl_generation;
+}
+
+static void
+install_fake_rtl_hooks(int installed) {
+    dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof(hooks));
+    if (installed) {
+        hooks.output_rate_hz = fake_rtl_output_rate_hz;
+        hooks.output_kind = fake_rtl_output_kind;
+        hooks.stream_generation = fake_rtl_stream_generation;
+    }
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+}
+
+/* The analog FM monitor on 48 kHz PCM input, with the block power above the squelch. */
+static void
+init_analog_monitor_fixture(dsd_opts* opts, dsd_state* state) {
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->input_volume_multiplier = 1;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->use_hpf = 1;
+    opts->rtl_pwr = 1.0;
+    opts->rtl_squelch_level = 0.0;
+    opts->audio_gainA = 1.0f;
+    g_hpf_removes_tone = 1;
+}
+
+static double g_tone_phase = 0.0;
+
+static void
+fill_tone_block(float* block, unsigned int count, double hz, double amp) {
+    for (unsigned int i = 0; i < count; i++) {
+        block[i] = (float)(amp * cos(g_tone_phase));
+        g_tone_phase += 2.0 * M_PI * hz / 48000.0;
+        if (g_tone_phase > 2.0 * M_PI) {
+            g_tone_phase -= 2.0 * M_PI;
+        }
+    }
+}
+
+/* Feed @p blocks 20 ms blocks of a 100 Hz tone through the whole unsynced finalize step and
+   check each one reached the voice filters exactly as it went in. */
+static void
+feed_tone_blocks(dsd_opts* opts, dsd_state* state, int blocks) {
+    float block[960];
+    for (int b = 0; b < blocks; b++) {
+        fill_tone_block(block, 960U, 100.0, 3000.0);
+        assert(dsd_symbol_test_finalize_unsynced_analog_block(opts, state, block, 960U) == 960U);
+        assert(g_hpf_seen_len == 960);
+        assert(memcmp(g_hpf_seen, block, sizeof(block)) == 0);
+    }
+}
+
+static int
+rx_tone_locked_on_100(const dsd_state* state) {
+    return state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+           && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_CTCSS && state->analog_rx.ctcss_tenths_hz == 1000;
+}
+
+static void
+test_rx_tone_tap_reads_raw_block_before_voice_filters(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+
+    /* 600 ms of a 100 Hz tone: the voice high-pass removes all of it from the audio, yet
+       the tap, which reads the block before that filter, locks on it. */
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+    assert(state.analog_rx.carrier_open == 1);
+    assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_OFF);
+    /* What the voice filter left behind is silence: the tone never reached the audio path,
+       so the lock can only have come from the raw block. */
+    for (unsigned int i = 0; i < 960U; i++) {
+        assert(state.analog_out_f[i] == 0.0f);
+    }
+
+    /* Detection off (a digital mode): the same blocks reach the filters byte for byte, so
+       the tap's presence changes nothing about the audio either way. */
+    opts.analog_only = 0;
+    feed_tone_blocks(&opts, &state, 2);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
+test_rx_tone_clears_on_unannounced_retune(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    float block[960];
+
+    /* RTL input: a manual or UDP-driven retune shows up only as a new stream generation. */
+    install_fake_rtl_hooks(1);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+    uint32_t generation = state.analog_rx.generation;
+    g_fake_rtl_generation++;
+    fill_tone_block(block, 960U, 100.0, 3000.0);
+    (void)dsd_symbol_test_finalize_unsynced_analog_block(&opts, &state, block, 960U);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_IDLE);
+    assert(state.analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE);
+    assert(state.analog_rx.ctcss_tenths_hz == 0);
+    assert(state.analog_rx.generation != generation);
+    /* The new channel's own tone locks again from scratch. */
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+
+    /* PCM input under rigctl: no stream generation exists, the trunk-tuning one moves. */
+    install_fake_rtl_hooks(0);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+    generation = state.analog_rx.generation;
+    dsd_trunk_tuning_generation_advance();
+    fill_tone_block(block, 960U, 100.0, 3000.0);
+    (void)dsd_symbol_test_finalize_unsynced_analog_block(&opts, &state, block, 960U);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_IDLE);
+    assert(state.analog_rx.ctcss_tenths_hz == 0);
+    assert(state.analog_rx.generation != generation);
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+
+    /* An announced reset (scan row, target, mode change, stop) clears it at once. */
+    generation = state.analog_rx.generation;
+    dsd_analog_rx_reset(&state);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE);
+    assert(state.analog_rx.carrier_open == 0);
+    assert(state.analog_rx.ctcss_tenths_hz == 0);
+    assert(state.analog_rx.generation != generation);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -601,6 +783,8 @@ main(void) {
     test_symbol_helper_analog_i16_conversion_contract();
     test_symbol_matched_filter_uses_active_nxdn_variant();
     test_symbol_helper_rtl_cache_and_center_contract();
+    test_rx_tone_tap_reads_raw_block_before_voice_filters();
+    test_rx_tone_clears_on_unannounced_retune();
     return 0;
 }
 

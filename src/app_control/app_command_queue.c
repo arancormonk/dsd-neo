@@ -34,6 +34,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/channel_scan.h>
@@ -1224,6 +1225,11 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         }
         int rc = svc_rtl_set_freq(opts, state, v);
         result = ui_cmd_apply_status_from_tune_rc(rc);
+        if (rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) {
+            /* A new channel: the tone heard on the old one goes now, not when the analog tap
+               next notices the stream moved (issue #522). */
+            dsd_analog_rx_reset(state);
+        }
         const int stop_scanner = ui_cmd_leave_typed_scan_after_tune(opts, state, rc);
         if (rc == 0) {
             ui_set_toast(state, 3, "Applied: RTL frequency -> %u Hz%s", v, stop_scanner ? " (scanner stopped)" : "");
@@ -1288,6 +1294,7 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
         /* Only after the tune is accepted, matching how trunk_tuning.c and the
          * manual return-to-CC path order this — never on the failure path. */
         dsd_frame_sync_reset_mod_state();
+        dsd_analog_rx_reset(state);
         reset_call_tracking(opts, state, 1);
         if (rc == 0) {
             ui_set_toast(state, 3, "Applied: tuned -> %u Hz", v);

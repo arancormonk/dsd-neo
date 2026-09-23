@@ -443,6 +443,53 @@ struct dsd_scan_timing_publication {
     uint8_t conventional; /**< 1 = conventional / -Y row, so hold_ms means something */
 };
 
+/** Which sub-audible signalling the analog receiver has identified (issue #522). DCS is
+ * reserved for #523; this build publishes NONE or CTCSS. */
+typedef enum {
+    DSD_ANALOG_TONE_KIND_NONE = 0,
+    DSD_ANALOG_TONE_KIND_CTCSS = 1,
+    DSD_ANALOG_TONE_KIND_DCS = 2,
+} dsd_analog_tone_kind;
+
+/** Where received-tone detection stands (issue #522). INACTIVE: the NFM monitor is not
+ * running, so nothing is detected; IDLE: detection runs but there is no carrier; ACQUIRING:
+ * carrier present, no verdict yet; LOCKED: a supported tone is confirmed; NONE: carrier
+ * present and no supported tone found (or the tone was lost). */
+typedef enum {
+    DSD_ANALOG_TONE_STATE_INACTIVE = 0,
+    DSD_ANALOG_TONE_STATE_IDLE = 1,
+    DSD_ANALOG_TONE_STATE_ACQUIRING = 2,
+    DSD_ANALOG_TONE_STATE_LOCKED = 3,
+    DSD_ANALOG_TONE_STATE_NONE = 4,
+} dsd_analog_tone_state;
+
+/** Receive-policy verdict on the received tone. Reserved for #527: detection never gates
+ * audio, so this build always publishes OFF. */
+typedef enum {
+    DSD_ANALOG_TONE_GATE_OFF = 0,
+    DSD_ANALOG_TONE_GATE_PENDING = 1,
+    DSD_ANALOG_TONE_GATE_ALLOWED = 2,
+    DSD_ANALOG_TONE_GATE_REJECTED = 3,
+} dsd_analog_tone_gate;
+
+/** What the analog receiver hears below the voice band, for every frontend (issue #522).
+ * Written only by the DSP tap on the decoder thread (src/dsp/analog_rx.c). Plain int
+ * scalars: it rides the vertex_ks_count..ui_msg snapshot copy range (ui_snapshot.c static
+ * assert), so it must never grow a pointer, and it holds no float, so the semgrep float-field
+ * list does not change. The detector's working state lives in DSD_STATE_EXT_DSP_ANALOG_RX. */
+struct dsd_analog_rx_publication {
+    int carrier_open;    /**< 1 while a carrier is open, held through the 200 ms hangover */
+    int tone_kind;       /**< dsd_analog_tone_kind; NONE unless tone_state is LOCKED */
+    int tone_state;      /**< dsd_analog_tone_state */
+    int ctcss_tenths_hz; /**< locked CTCSS tone in tenths of a hertz (1000 = 100.0 Hz); 0 = none */
+    int dcs_code;        /**< DCS code as its octal value (023 octal = 19); reserved for #523 */
+    int dcs_inverted;    /**< 1 = inverted DCS polarity; reserved for #523 */
+    int gate;            /**< dsd_analog_tone_gate; always OFF until #527 */
+    /** Bumped on every reset (retune, row or target change, mode change, stop, carrier
+     * hangover), so a reader can tell a new reception from the one it last saw. */
+    uint32_t generation;
+};
+
 // dsd_state is a C aggregate, not a C++ class: it is allocated once and zeroed by
 // initState() before anything reads it, and C code — which is most of its users —
 // has no constructors to write. A C++ TU that includes this header would otherwise
@@ -1754,6 +1801,9 @@ struct dsd_state {
      * --trunk-scan coordinator for its parked target, or by the -Y timing tick when trunk
      * scan is off; the two never both write it. Rides the vertex_ks_count..ui_msg range. */
     dsd_scan_timing_publication scan_timing;
+    /* Received sub-audible tone (issue #522), published by the analog tap for every frontend.
+     * Rides the vertex_ks_count..ui_msg range; see dsd_analog_rx_publication. */
+    dsd_analog_rx_publication analog_rx;
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];

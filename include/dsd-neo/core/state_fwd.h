@@ -21,6 +21,7 @@ extern "C" {
 typedef struct dsd_state dsd_state;
 typedef struct Event_History_I Event_History_I;
 typedef struct dsd_scan_timing_publication dsd_scan_timing_publication;
+typedef struct dsd_analog_rx_publication dsd_analog_rx_publication;
 
 #ifdef __cplusplus
 }

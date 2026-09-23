@@ -30,6 +30,7 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
@@ -450,6 +451,9 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
     frame_sync_seed_p25_cqpsk_level_windows(opts, state);
+    /* Every caller is a boundary a received tone must not survive: a scan row or target
+       change, a decode-mode change, a scope resume (issue #522). */
+    dsd_analog_rx_reset(state);
 }
 
 #ifdef USE_RADIO

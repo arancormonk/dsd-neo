@@ -102,6 +102,27 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     state->profile_proof_valid = 0;
     state->symbol_history_count = 0;
     state->sps_hunt_counter = 0;
+    /* The real reset also forgets the received tone (issue #522; pinned by
+       FRAME_SYNC_INTERNAL_HELPERS). Mirrored here so a commit that stopped calling it, or
+       that seeded the tone again afterwards, shows up in the row assertions. */
+    const uint32_t generation = state->analog_rx.generation + 1U;
+    DSD_MEMSET(&state->analog_rx, 0, sizeof(state->analog_rx));
+    state->analog_rx.generation = generation;
+}
+
+/* A tone the previous row left on the publication, as the analog tap would. */
+static void
+seed_received_tone(dsd_state* state) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1000;
+}
+
+static int
+received_tone_cleared(const dsd_state* state) {
+    return state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED && state->analog_rx.ctcss_tenths_hz == 0
+           && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE && state->analog_rx.carrier_open == 0;
 }
 
 /* How many times the leave dropped the decoder's part-collected analog monitor block. */
@@ -836,10 +857,15 @@ main(void) {
     assert(state->synctype == DSD_SYNC_NONE);
     const uint64_t old_generation = dsd_trunk_tuning_generation();
     assert(!dsd_trunk_tuning_frame_is_dispatchable(old_generation, 1));
+    /* The outgoing row's tone is still on the publication while the tune is pending ... */
+    seed_received_tone(state);
+    const uint32_t tone_generation = state->analog_rx.generation;
     dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
     state->synctype = DSD_SYNC_P25P1_POS;
     assert(!dsd_engine_channel_scan_service_sync(opts, state));
     assert(state->lcn_freq_roll == 1 && opts->frame_nxdn48 == 1 && reset_count == 1);
+    /* ... and the row commit takes it away: the new row cannot inherit it (issue #522). */
+    assert(received_tone_cleared(state) && state->analog_rx.generation != tone_generation);
     assert(!dsd_trunk_tuning_frame_is_dispatchable(old_generation, 1));
     expected_nxdn = 0;
     tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
@@ -851,8 +877,10 @@ main(void) {
     assert(dsd_engine_channel_scan_step(opts, state) == -1);
     assert(state->lcn_freq_roll == 1);
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    seed_received_tone(state);
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
     assert(state->lcn_freq_roll == 2 && opts->frame_p25p1 && opts->frame_p25p2 && !opts->frame_dmr);
+    assert(received_tone_cleared(state));
     const int before_zero = tunes;
     state->scan_visit_since_m = -1.0;
     assert(dsd_engine_channel_scan_step(opts, state) == 0);

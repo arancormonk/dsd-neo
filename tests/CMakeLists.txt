@@ -811,6 +811,19 @@ dsd_neo_add_public_header_smoke_test(
 )
 
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_analog_rx
+  HEADERS_PUBLIC_DSP_ANALOG_RX
+  dsd-neo/dsp/analog_rx.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_analog_rx_cxx
+  HEADERS_PUBLIC_DSP_ANALOG_RX_CXX
+  dsd-neo/dsp/analog_rx.h
+  CXX
+)
+
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_io_m17_udp
   HEADERS_PUBLIC_IO_M17_UDP
   dsd-neo/io/m17_udp.h
@@ -7489,6 +7502,21 @@ target_include_directories(
 )
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_firdes ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME DSP_FIRDES COMMAND dsd-neo_test_dsp_firdes)
+
+# CTCSS detection (issue #522) through the pure analog receive core, in sample time: every
+# tone's lock bound at four rates and two SNRs, adjacent and unsupported frequencies, loss
+# and reverse burst, speech and noise that must never lock, and scale invariance.
+add_executable(dsd-neo_test_dsp_analog_ctcss dsp/test_dsp_analog_ctcss.c)
+target_include_directories(
+    dsd-neo_test_dsp_analog_ctcss
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${PROJECT_SOURCE_DIR}/tests/dsp
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_analog_ctcss ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME DSP_ANALOG_CTCSS COMMAND dsd-neo_test_dsp_analog_ctcss)
+set_tests_properties(DSP_ANALOG_CTCSS PROPERTIES TIMEOUT 300)
 
 add_executable(dsd-neo_test_dsp_fsk_modem dsp/test_fsk_modem.c)
 target_include_directories(

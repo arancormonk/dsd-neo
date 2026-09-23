@@ -153,6 +153,24 @@ expect_true(const char* tag, int cond) {
     return 0;
 }
 
+/* A tone the receiver locked before the command, as the analog tap publishes it. */
+static void
+seed_received_tone(dsd_state* state) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1000;
+}
+
+static int
+expect_received_tone_cleared(const char* tag, const dsd_state* state, uint32_t seeded_generation) {
+    const int cleared = state->analog_rx.tone_state != DSD_ANALOG_TONE_STATE_LOCKED
+                        && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE
+                        && state->analog_rx.ctcss_tenths_hz == 0 && state->analog_rx.carrier_open == 0
+                        && state->analog_rx.generation != seeded_generation;
+    return expect_true(tag, cleared);
+}
+
 static int
 enc_lockout_inert(const dsd_state* state) {
     return state != NULL && dsd_enc_lockout_active_count(state) == 0;
@@ -1659,6 +1677,58 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
 }
 #endif
 
+#ifdef USE_RADIO
+/*
+ * A frequency change from the menu or a spectrum tap is a new channel: the tone heard on
+ * the old one must not stay on screen (issue #522). Both commands clear it once the tune is
+ * accepted -- pending included, since the hardware is already moving -- and a refused tune
+ * leaves the receiver, and so its tone, where they were. These paths do not run the
+ * acquisition reset, so they clear it themselves rather than waiting for the tap to notice.
+ */
+static int
+test_retune_commands_clear_received_tone(void) {
+    static const struct {
+        int cmd;
+        int tune_result;
+        int clears;
+        const char* tag;
+    } cases[] = {
+        {DSD_APP_CMD_RTL_SET_FREQ, RTL_STREAM_TUNE_OK, 1, "rtl set freq applied"},
+        {DSD_APP_CMD_RTL_SET_FREQ, RTL_STREAM_TUNE_TIMEOUT, 1, "rtl set freq pending"},
+        {DSD_APP_CMD_RTL_SET_FREQ, RTL_STREAM_TUNE_FAILED, 0, "rtl set freq refused"},
+        {DSD_APP_CMD_MANUAL_TUNE, RTL_STREAM_TUNE_OK, 1, "manual tune applied"},
+        {DSD_APP_CMD_MANUAL_TUNE, RTL_STREAM_TUNE_TIMEOUT, 1, "manual tune pending"},
+        {DSD_APP_CMD_MANUAL_TUNE, RTL_STREAM_TUNE_FAILED, 0, "manual tune refused"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        init_test_context(&opts, &state);
+        opts.trunk_enable = 0;
+        opts.scanner_mode = 0;
+        seed_received_tone(&state);
+        const uint32_t seeded = state.analog_rx.generation;
+        reset_io_control_tune_stub(cases[i].tune_result);
+        rc |=
+            expect_int(cases[i].tag, dsd_app_command_set_u32(cases[i].cmd, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_int(cases[i].tag, g_io_control_tune_calls, 1);
+        if (cases[i].clears) {
+            rc |= expect_received_tone_cleared(cases[i].tag, &state, seeded);
+        } else {
+            rc |= expect_true(cases[i].tag, state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                                && state.analog_rx.ctcss_tenths_hz == 1000
+                                                && state.analog_rx.generation == seeded);
+        }
+        freeState(&state);
+    }
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+#endif
+
 /*
  * Releasing the tuner is how a frontend says "stop moving this on your own"
  * without knowing which of the two owners is active — so it has to be an
@@ -1740,6 +1810,25 @@ test_tuner_release(void) {
  * the state it is already on must cost nothing — a segmented control re-sends
  * itself whenever the engine publishes a frame it did not cause.
  */
+/* A decode-mode change is a boundary the received tone (issue #522) must not cross: it goes
+   through the acquisition reset, which forgets the tone. */
+static int
+test_decode_mode_change_clears_received_tone(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    seed_received_tone(&state);
+    const uint32_t seeded = state.analog_rx.generation;
+    rc |= expect_int("tone mode change queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tone mode change drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_received_tone_cleared("decode mode change clears the received tone", &state, seeded);
+    freeState(&state);
+    return rc;
+}
+
 static int
 test_modulation_and_decode_mode_setters(void) {
     int rc = 0;
@@ -5321,6 +5410,7 @@ main(void) {
     rc |= test_io_and_state_commands();
     rc |= test_compact_visualizer_toast();
     rc |= test_modulation_and_decode_mode_setters();
+    rc |= test_decode_mode_change_clears_received_tone();
     rc |= test_trunk_set();
     rc |= test_scan_voice_gate_commands();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -5332,6 +5422,7 @@ main(void) {
     rc |= test_channel_cycle_hands_p25_sm_back_to_cc();
 #ifdef USE_RADIO
     rc |= test_manual_tune_trunking_gate_and_reacquisition();
+    rc |= test_retune_commands_clear_received_tone();
 #endif
     rc |= test_tuner_release();
     rc |= test_scan_hold_avoid_commands();

@@ -17,6 +17,10 @@ int dsd_symbol_test_adjust_timing_index(int samples_per_symbol, int symbol_cente
 float dsd_symbol_test_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample,
                                            int rtl_symbol_rate_output, int cqpsk_symbol_rate);
 unsigned int dsd_symbol_test_convert_analog_block_to_i16(const float* input, short* output, unsigned int count);
+/* Fill the unsynced analog block with @p input and run the whole finalize step on it: input
+   power, raw WAV, the received-tone tap, the voice filters and the monitor output. */
+unsigned int dsd_symbol_test_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, const float* input,
+                                                            unsigned int count);
 #ifdef USE_RADIO
 int dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]);
 int dsd_symbol_test_auto_center_step_direction(int e_ema, int deadband, int* run_dir, int* run_len, int* dir_out);

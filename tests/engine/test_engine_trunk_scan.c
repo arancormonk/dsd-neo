@@ -6980,6 +6980,72 @@ test_target_keys_survive_failed_alternate_retune(void) {
     return test_rc;
 }
 
+/* --- Received tone: a target switch never carries a tone across (#522) --- */
+
+static void
+seed_received_tone(dsd_state* state, int tenths) {
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = tenths;
+}
+
+static int
+expect_received_tone_cleared(const dsd_state* state, const char* stage, uint32_t seeded_generation) {
+    if (state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED || state->analog_rx.ctcss_tenths_hz != 0
+        || state->analog_rx.tone_kind != DSD_ANALOG_TONE_KIND_NONE || state->analog_rx.carrier_open != 0
+        || state->analog_rx.generation == seeded_generation) {
+        DSD_FPRINTF(stderr, "received tone survived %s: state=%d tone=%d generation=%u\n", stage,
+                    state->analog_rx.tone_state, state->analog_rx.ctcss_tenths_hz,
+                    (unsigned)state->analog_rx.generation);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * The per-target snapshot is selective, so an inline publication would ride along with
+ * whatever target is parked. A switch has to forget the tone heard on the outgoing target,
+ * and switching back must not bring that target's old tone back with its other state.
+ */
+static int
+test_target_switch_clears_received_tone(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0;
+
+    seed_received_tone(&state, 1000);
+    uint32_t seeded = state.analog_rx.generation;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rx tone first switch", 1U);
+    test_rc |= expect_received_tone_cleared(&state, "the switch to target b", seeded);
+
+    seed_received_tone(&state, 1318);
+    seeded = state.analog_rx.generation;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rx tone switch back", 0U);
+    test_rc |= expect_received_tone_cleared(&state, "the switch back to target a", seeded);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /* --- P25 band plan: peer IDEN sharing, per-target plan column, snapshot, export (#402) --- */
 
 static const unsigned long long k_sys_a_wacn = 0xBEE00ULL;
@@ -9914,6 +9980,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_target_squelch_threshold_off_inherit);
     rc |= run_with_default_tune_hook(test_target_squelch_restored_on_rollback);
     rc |= run_with_default_tune_hook(test_target_squelch_warns_once_per_target_on_pcm_input);
+    /* Issue #522 */
+    rc |= run_with_default_tune_hook(test_target_switch_clears_received_tone);
     return rc;
 }
 
@@ -9923,13 +9991,18 @@ dsd_engine_reset_no_carrier_state(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
-/* Coordinator tests stub DSP; acquisition contents are covered by FRAME_SYNC_INTERNAL_HELPERS. */
+/* Coordinator tests stub DSP; acquisition contents are covered by FRAME_SYNC_INTERNAL_HELPERS.
+   The received-tone reset is mirrored from the real function (issue #522), so a switch that
+   stopped calling it, or restored a target's tone after it, shows up here. */
 void
 dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int forget) {
     (void)opts;
     (void)forget;
     state->profile_proof_valid = 0;
     state->sps_hunt_counter = 0;
+    const uint32_t generation = state->analog_rx.generation + 1U;
+    DSD_MEMSET(&state->analog_rx, 0, sizeof(state->analog_rx));
+    state->analog_rx.generation = generation;
 }
 
 /* The channel-scan leave's analog monitor block drop; covered by ENGINE_CHANNEL_SCAN and APP_COMMAND_QUEUE. */

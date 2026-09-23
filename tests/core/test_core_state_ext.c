@@ -11,6 +11,11 @@
 
 static int s_cleanup_calls = 0;
 
+/* Reserved IDs never move (state_ext.h): the analog receiver's slot (issue #522) is pinned
+ * here so a renumbering fails the build, not a frontend. */
+_Static_assert(DSD_STATE_EXT_DSP_ANALOG_RX == 9, "DSP analog receive owns state_ext slot 9");
+_Static_assert((int)DSD_STATE_EXT_DSP_ANALOG_RX < (int)DSD_STATE_EXT_MAX, "slot 9 is inside the table");
+
 static void
 test_cleanup_free(void* ptr) {
     s_cleanup_calls++;
@@ -101,6 +106,30 @@ main(void) {
         return 12;
     }
     free(p3);
+
+    /* The analog slot behaves like every other slot: owned, replaced and freed with the rest. */
+    s_cleanup_calls = 0;
+    void* analog = malloc(1);
+    if (!analog) {
+        free(state);
+        return 13;
+    }
+    if (dsd_state_ext_set(state, DSD_STATE_EXT_DSP_ANALOG_RX, analog, test_cleanup_free) != 0) {
+        free(analog);
+        free(state);
+        return 14;
+    }
+    if (dsd_state_ext_get_const(state, DSD_STATE_EXT_DSP_ANALOG_RX) != analog
+        || dsd_state_ext_get(state, DSD_STATE_EXT_CORE_SOURCE_ALIAS) != NULL) {
+        dsd_state_ext_free_all(state);
+        free(state);
+        return 15;
+    }
+    dsd_state_ext_free_all(state);
+    if (s_cleanup_calls != 1 || dsd_state_ext_get(state, DSD_STATE_EXT_DSP_ANALOG_RX) != NULL) {
+        free(state);
+        return 16;
+    }
 
     dsd_state_ext_free_all(NULL);
 

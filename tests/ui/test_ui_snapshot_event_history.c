@@ -138,6 +138,14 @@ assert_render_fields(const dsd_state* snap) {
     assert(snap->scan_timing.dwell_ms == 3000U);
     assert(snap->scan_timing.hold_ms == 2000U);
     assert(snap->scan_timing.hang_ms == 7000U);
+    /* The received-tone publication (issue #522) rides the same range: every frontend reads
+       the tone from its snapshot, never from the detector. */
+    assert(snap->analog_rx.carrier_open == 1);
+    assert(snap->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED);
+    assert(snap->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_CTCSS);
+    assert(snap->analog_rx.ctcss_tenths_hz == 1318);
+    assert(snap->analog_rx.gate == DSD_ANALOG_TONE_GATE_OFF);
+    assert(snap->analog_rx.generation == 41U);
 }
 
 static void
@@ -235,6 +243,11 @@ main(void) {
     state->scan_timing.dwell_ms = 3000U;
     state->scan_timing.hold_ms = 2000U;
     state->scan_timing.hang_ms = 7000U;
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1318;
+    state->analog_rx.generation = 41U;
 
     assert(dsd_trunk_cc_candidates_add(state, 851006250L, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);
     assert(dsd_trunk_cc_candidates_add(state, 852006250L, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) == 1);

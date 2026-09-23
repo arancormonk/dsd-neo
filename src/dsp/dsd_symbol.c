@@ -26,6 +26,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
@@ -77,6 +78,8 @@ int dsd_symbol_test_adjust_timing_index(int samples_per_symbol, int symbol_cente
 float dsd_symbol_test_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample,
                                            int rtl_symbol_rate_output, int cqpsk_symbol_rate);
 unsigned int dsd_symbol_test_convert_analog_block_to_i16(const float* input, short* output, unsigned int count);
+unsigned int dsd_symbol_test_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, const float* input,
+                                                            unsigned int count);
 #ifdef USE_RADIO
 int dsd_symbol_test_rtl_cache_and_center_contract(int out_values[10]);
 int dsd_symbol_test_auto_center_step_direction(int e_ema, int deadband, int* run_dir, int* run_len, int* dir_out);
@@ -1197,10 +1200,32 @@ static inline void
 symbol_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, unsigned int analog_block) {
     symbol_update_unsynced_input_power(opts, state, analog_block);
     symbol_write_unsynced_raw_wav(opts, state, analog_block);
+    /* Received-tone detection (issue #522) reads the block here, while it is still raw: the
+       voice filters below run in place, and hpf_f alone takes out everything a CTCSS tone
+       lives in. It only reads, so the audio that follows is unchanged. */
+    dsd_analog_rx_tap(opts, state, state->analog_out_f, analog_block);
     symbol_apply_unsynced_filters(opts, state, analog_block);
     symbol_output_unsynced_analog(opts, state, analog_block);
     symbol_reset_analog_buffers(state);
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+unsigned int
+dsd_symbol_test_finalize_unsynced_analog_block(dsd_opts* opts, dsd_state* state, const float* input,
+                                               unsigned int count) {
+    if (!opts || !state || !input) {
+        return 0U;
+    }
+    const unsigned int cap = (unsigned int)(sizeof(state->analog_out_f) / sizeof(state->analog_out_f[0]));
+    const unsigned int n = count < cap ? count : cap;
+    for (unsigned int i = 0; i < n; i++) {
+        state->analog_out_f[i] = input[i];
+    }
+    state->analog_sample_counter = (int)n;
+    symbol_finalize_unsynced_analog_block(opts, state, n);
+    return n;
+}
+#endif
 
 static inline void
 symbol_process_unsynced_analog(dsd_opts* opts, dsd_state* state, unsigned int analog_out_cap, float sample) {

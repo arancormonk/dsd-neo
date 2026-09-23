@@ -11,7 +11,9 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
@@ -33,6 +35,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -632,6 +638,111 @@ test_visit_cap_scanner_hops(void) {
     state->rtl_ctx = NULL;
     free_test_runtime(opts, state);
     dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+#endif
+
+/*
+ * The received tone (issue #522) has to survive noCarrier(): in analog mode it runs on every
+ * no-sync pass, about every 375 ms, and a reset there would keep any tone from ever locking.
+ * Locks one through the real tap, then checks the publication and the detector behind it
+ * come out of repeated no-carrier passes untouched.
+ */
+static void
+feed_rx_tone(dsd_opts* opts, dsd_state* state, int blocks) {
+    static double phase = 0.0;
+    float block[960];
+    for (int b = 0; b < blocks; b++) {
+        for (int i = 0; i < 960; i++) {
+            block[i] = (float)(3000.0 * cos(phase));
+            phase += 2.0 * M_PI * 100.0 / 48000.0;
+        }
+        dsd_analog_rx_tap(opts, state, block, 960U);
+    }
+}
+
+static int
+test_rx_tone_survives_no_carrier(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->scanner_mode = 0;
+    opts->trunk_enable = 0;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->analog_only = 1;
+    opts->monitor_input_audio = 1;
+    opts->rtl_pwr = 1.0;
+    opts->rtl_squelch_level = 0.0;
+    feed_rx_tone(opts, state, 30);
+    rc |= expect_true("rx-tone-locked-before-no-carrier", state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                                              && state->analog_rx.ctcss_tenths_hz == 1000);
+    const uint32_t generation = state->analog_rx.generation;
+    const void* detector = dsd_state_ext_get_const(state, DSD_STATE_EXT_DSP_ANALOG_RX);
+    for (int pass = 0; pass < 3; pass++) {
+        noCarrier(opts, state);
+        dsd_engine_reset_no_carrier_state(opts, state);
+    }
+    rc |= expect_true("rx-tone-survives-no-carrier", state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                                         && state->analog_rx.ctcss_tenths_hz == 1000
+                                                         && state->analog_rx.generation == generation);
+    rc |= expect_true("rx-tone-detector-survives-no-carrier",
+                      detector != NULL && dsd_state_ext_get_const(state, DSD_STATE_EXT_DSP_ANALOG_RX) == detector);
+    /* And the next block carries on from the same lock rather than starting over. */
+    feed_rx_tone(opts, state, 1);
+    rc |= expect_true("rx-tone-continues-after-no-carrier", state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                                                && state->analog_rx.generation == generation);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/* The legacy untyped -Y step never runs the acquisition reset the typed rows do, so it
+   clears the received tone itself: a new channel must not inherit the old one's. */
+static int
+test_rx_tone_resets_on_legacy_scan_step(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_lcn_freq[0] = 946012500;
+    state->trunk_lcn_freq[1] = 947012500;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+
+    /* A fresh hangtime: noCarrier() runs but does not step, and the tone stays. */
+    state->analog_rx.carrier_open = 1;
+    state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_LOCKED;
+    state->analog_rx.tone_kind = DSD_ANALOG_TONE_KIND_CTCSS;
+    state->analog_rx.ctcss_tenths_hz = 1318;
+    const uint32_t generation = state->analog_rx.generation;
+    state->last_cc_sync_time = time(NULL);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("rx-tone-no-step-keeps-tone",
+                      g_rtl_tune_calls == 0 && state->lcn_freq_roll == 0 && state->analog_rx.ctcss_tenths_hz == 1318);
+
+    /* The hangtime runs out: the step retunes and the tone is gone. */
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rx-tone-step-retuned", g_rtl_tune_calls == 1 && state->lcn_freq_roll == 1);
+    rc |= expect_true("rx-tone-step-clears-tone", state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE
+                                                      && state->analog_rx.tone_kind == DSD_ANALOG_TONE_KIND_NONE
+                                                      && state->analog_rx.ctcss_tenths_hz == 0
+                                                      && state->analog_rx.carrier_open == 0
+                                                      && state->analog_rx.generation != generation);
+    free_test_runtime(opts, state);
     return rc;
 }
 #endif
@@ -2310,7 +2421,9 @@ main(void) {
 
     free_test_runtime(opts, state);
 
+    rc |= test_rx_tone_survives_no_carrier();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+    rc |= test_rx_tone_resets_on_legacy_scan_step();
     rc |= test_typed_scan_tune_boundaries();
     rc |= test_visit_cap_scanner_hops();
     rc |= test_trunk_cache_with_mode_metadata();
