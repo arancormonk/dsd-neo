@@ -421,9 +421,9 @@ resamples to 48 kHz in the frequency domain. The synthetics regenerate offline a
 
 The whole analog effort (issue #518) stays within 5 MB of new fixture bytes. The six fixtures here take 2.4 MB, which
 leaves about 2.6 MB. A 48 kHz cu8 fixture takes 96 kB a second, so keep each later synthetic fixture to 2 s
-(192 kB) or less: the ones reserved so far (four for #522, three for #523, two for #524) then take at most 1.7 MB,
-and #521's attenuated copy of `nxdn48` 0.58 MB, about 2.3 MB in all. A pull request that adds analog fixtures states
-the running total.
+(192 kB) or less: the ones reserved so far (four for #522, three for #523, two for #524) then take at most 1.7 MB;
+adding the 0.58 MB `nxdn48_attenuated` that #521 committed gives about 2.3 MB in all. A pull request that adds analog
+fixtures states the running total.
 
 #### Tone and code labels
 
