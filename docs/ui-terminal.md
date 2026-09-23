@@ -636,15 +636,15 @@ channel line and in compact view too:
 | Rx tone: CTCSS 100.0 Hz
 ```
 
-It reads `CTCSS 100.0 Hz` once a supported tone is confirmed, `detecting` while a carrier is being evaluated,
-`none` when the carrier carries no supported tone (or the tone was lost), and `—` when there is no carrier (`-` on a
-terminal without UTF-8). The line is shown exactly while detection runs, so it is absent outside the analog FM monitor,
-while an RTL stream is not yet outputting monitor audio, and at an input rate detection cannot use (below 2400 Hz or
-above 320 kHz). This is only what is received; it never reflects a tone filter setting, and it clears on a retune, a
-manual channel cycle, a scan row or target change, a mode change, an input switch and stop. The
-same text comes from the shared app-control view the Qt/Android monitor uses, so both always agree. Supported tones,
-timing and the requirements on externally demodulated audio are in the
-[CLI guide](cli.md#received-tone-ctcss-on-the-analog-monitor).
+It reads `CTCSS 100.0 Hz` once a supported tone is confirmed, `detecting` while a carrier is being evaluated, `none`
+when the carrier carries no supported tone (or the tone was lost), and `—` when there is no carrier (`-` on a terminal
+without UTF-8), including while a stdin, UDP or TCP stream has stopped delivering audio for about half a second. The
+line is shown exactly while detection runs, so it is absent outside the analog FM monitor, while an RTL stream is not
+yet outputting monitor audio, and at an input rate detection cannot use (below 2400 Hz or above 320 kHz). This is only
+what is received; it never reflects a tone filter setting, and it clears on a retune, a manual channel cycle, a scan row
+or target change, a mode change, an input switch and stop. The same text comes from the shared app-control view the
+Qt/Android monitor uses, so both always agree. Supported tones, timing and the requirements on externally demodulated
+audio are in the [CLI guide](cli.md#received-tone-ctcss-on-the-analog-monitor).
 
 ## Compact View
 

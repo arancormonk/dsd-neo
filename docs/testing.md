@@ -288,38 +288,71 @@ app-control modulation path already did not; `FRAME_SYNC_INTERNAL_HELPERS` pins 
 control.
 
 The detector's own bounds are pinned in sample time by `DSP_ANALOG_CTCSS`, through the pure receive core
-(`src/dsp/analog_rx_internal.h`) and seeded generators in `tests/dsp/analog_tone_synth.h`: all 50 tones at four input
-rates and at +10 and 0 dB in-band tone-to-noise lock within 400 ms of an onset placed anywhere inside a hop, and the
-test prints the p50/p95/worst lock times; tones off their table value by transmitter encoder error lock on that value
--- 0.2 and 0.35 Hz off within 400 ms at +10 dB, 0.2 Hz off at 0 dB within 400 ms on at least 95% of starts and all
-within 600 ms -- and the exact tone at 0 dB on a second set of seeds holds 98% of starts to 400 ms and all to 500 ms
-(each row prints its share and p50/p95/worst; the lock gate is 0.5 Hz, so encoder error trades against lock time);
-under transmitter-filtered speech 10 dB above the tone every tone locks within
-500 ms (the p50/p95/worst are printed too); 67.0/69.3/71.9 Hz are each identified; off-table tones never lock down to
-0 dB in-band (150.0 Hz, and 68.2, 161.0 and 166.7 Hz between two table tones), nor do 100.85 and 100.9 Hz, just outside
-the snap gate of 100.0, at +10 and +20 dB; a locked tone that moves off the table is dropped within 450 ms (one window
-plus four failing hops) and nothing locks in its place; no DCS code locks -- every rotation class of the Golay (23,12)
-code, forward and bit-reversed, which is every periodic DCS waveform in either polarity, plus the nearest words at every
-rate, clean and at +10 dB; a carrier with no tone reads `detecting` until 500 ms of it and `none` by the next hop, and a
-tone that starts after that verdict still locks within the lock bound; the tone is dropped within 350 ms of stopping and
-within 150 ms of a reverse burst; the verdict, the no-tone one included, is identical at the three input scales and for
-any block size; the front end runs from 2400 Hz up to its 320 kHz limit and reports itself unavailable outside it; and a
-minute each of unfiltered speech, transmitter-filtered speech and noise never locks. The speech model is source-filter
-speech with a jittering, drifting, wobbling fundamental in 85-255 Hz. Those minutes are fixed seeds, because no 250 ms
-detector can promise zero talk-off for every voice: over two hours of seeds the unfiltered model locked a tone once (at
-233.6 Hz, where a high voice with weak harmonics holds near a table tone), and the transmitter-filtered model never.
+(`src/dsp/analog_rx_internal.h`) and seeded generators in `tests/dsp/analog_tone_synth.h`. Every figure it asserts
+holds for its fixed seeds, and each row prints its measured share and p50/p95/worst for the PR evidence:
+
+- Lock: all 50 tones at four input rates, at +10 and 0 dB in-band tone-to-noise, lock within 400 ms of an onset placed
+  anywhere inside a hop. Tones off their table value by transmitter encoder error lock on that value: 0.2 and 0.35 Hz
+  off within 400 ms at +10 dB, and the exact tone at 0 dB on a second seed set within 400 ms too; 0.2 Hz off at 0 dB,
+  97% of the starts lock within 400 ms and the slowest at 469 ms (the row asserts at least 95% and 500 ms). The lock
+  gate is 0.5 Hz, so encoder error trades against lock time. Under transmitter-filtered speech 10 dB above the tone
+  every tone locks within 500 ms and holds that one lock to the end of the run; a tone held 15 s at 0 dB, at each rate,
+  locks once and is never lost.
+- Rejection: 67.0/69.3/71.9 Hz are each identified; off-table tones lock nothing over 3 s runs down to 0 dB in-band
+  (150.0 Hz, and 68.2, 161.0 and 166.7 Hz between two table tones), nor do 100.85 and 100.9 Hz, just outside the snap
+  gate of 100.0, at +10 and +20 dB; a locked tone that moves off the table is dropped within 450 ms (one window plus
+  four failing hops) and nothing locks in its place; no DCS code locks -- every rotation class of the Golay (23,12)
+  code, forward and bit-reversed, which is every periodic DCS waveform in either polarity, plus the nearest words at
+  every rate, clean and at +10 dB; and a minute each of unfiltered speech, transmitter-filtered speech and noise never
+  locks. The speech model is source-filter speech with a jittering, drifting, wobbling fundamental in 85-255 Hz.
+- Loss and verdicts: every tone at every rate is dropped after it stops under a live carrier, at +10 dB 99% of the
+  stops within 350 ms and all within 386 ms, at 0 dB 98% within 350 ms and all within 476 ms (the rows assert 98% and
+  400 ms, 97% and 500 ms); every tone at every rate is dropped within 150 ms of a reverse burst at +10 dB; a carrier
+  with no tone reads `detecting` until 500 ms of it and `none` by the next hop, and a tone that starts after that
+  verdict still locks within the lock bound; the verdict, the no-tone one included, is identical at the three input
+  scales and for any block size; the front end runs from 2400 Hz up to its 320 kHz limit and reports itself
+  unavailable outside it.
+
+Fixed seeds say what the detector does on those seeds, not how often it misses in the long run. The long-run figures
+below come from wider seed sweeps run offline over the same generators and the same core (x86-64 at -O0 and -O2 give
+identical results), and they are the numbers the user guide quotes:
+
+- Lock, 10,000 starts each (every tone at every rate, onset anywhere in a hop): at +10 dB, 1 start beyond 400 ms
+  (443 ms); at 0 dB, 0.97% beyond 400 ms (the slowest 615 ms); 0.35 Hz off at +10 dB, 0.04% (424 ms); 0.2 Hz off at
+  0 dB, 3.4% (677 ms).
+- Loss, 4,000 stops each: 2.0% beyond 350 ms at +10 dB (the slowest 515 ms) and 1.25% at 0 dB (494 ms), and about 2%
+  at +60 dB too: what is left after the stop is noise, and at the locked bin noise alone clears the 0.15 hold threshold
+  on about one hop in eighty, whatever its level, which restarts the four-hop count. Making the hold stricter once a hop
+  has failed cuts that tail to about 0.4%, but a held tone at -3 dB then drops 7 to 45 times as often, so the hold
+  stays as it is. Reverse burst: none of 4,000 beyond 150 ms at +10 dB (123 ms); at 0 dB 6% beyond 150 ms (256 ms) and
+  2% missed, where the carrier drop that follows ends the lock.
+- Off-table tones, two hours of continuous carrier at 0 dB each, at 48 kHz and 8 kHz: 150.0 Hz never locked; 68.2 Hz
+  locked a neighbour 20 and 25 times, 161.0 Hz 5 and 5, 166.7 Hz 6 and 4, each for 200-260 ms; at +3, +6 and +10 dB,
+  68.2 and 161.0 Hz never locked in two hours.
+- Holds, 200 runs of 20 s: at 0 and +3 dB a held tone never dropped. Under transmitter-filtered speech 10 dB above the
+  tone, 300 runs of 20 s: 4 drops, all on 250.3 and 254.1 Hz, each reading `none` for 340-740 ms before the same tone
+  locked again.
+- Talk-off: over two hours of seeds the unfiltered speech model locked a tone once (at 233.6 Hz, where a high voice with
+  weak harmonics holds near a table tone), and the transmitter-filtered model never.
+
 Retune clearing is covered where each path lives: `DSP_SYMBOL_REPLAY` (the tap reads the raw block before the voice
 high-pass removes the tone, leaves the audio byte-identical, clears on an RTL stream-generation or
-trunk-tuning-generation move, and publishes an unusable input rate as unavailable without resetting block after
-block), `FRAME_SYNC_INTERNAL_HELPERS` (the acquisition reset), `ENGINE_NO_CARRIER_RESET` (survives `noCarrier()`,
-cleared by the legacy `-Y` step -- on RTL, by rigctl on PCM input in radio-off builds too, and by a failed step whose
-rigctl leg already moved the radio -- and kept by a refused one), `ENGINE_CLEANUP_AUDIO` (engine stop frees the
-detector and moves the generation on), `ENGINE_CHANNEL_SCAN`/`ENGINE_TRUNK_SCAN` (row commit and target switch),
-`DSP_WAV_INPUT_EOF` (the switch to live Pulse input when a WAV file ends) and `APP_COMMAND_QUEUE` (decode-mode
-change, `RTL_SET_FREQ`, `MANUAL_TUNE`, a manual channel cycle and scan avoid by rigctl on PCM input, accepted,
-pending or refused; switching to WAV, Pulse, a named Pulse source, UDP or symbol-stream input, replay and
-stop-playback; and a config apply, which clears the tone when it moves the input and keeps it, generation included,
-when it changes an unrelated setting). All of these bounds come from synthetic signals.
+trunk-tuning-generation move and on a change between two usable input rates, publishes an unusable input rate as
+unavailable without resetting block after block, and on a UDP stream whose producer pauses -- driven on an injected
+clock -- stamps the deadline the frontends age the row against and starts a new reception after the pause, never
+showing the previous channel's tone), `FRAME_SYNC_INTERNAL_HELPERS` (the acquisition reset),
+`ENGINE_NO_CARRIER_RESET` (survives `noCarrier()`, cleared by the legacy `-Y` step -- on RTL, by rigctl on PCM input in
+radio-off builds too, and by a failed step whose rigctl leg already moved the radio -- and kept by a refused one),
+`ENGINE_CLEANUP_AUDIO` (engine stop frees the detector and moves the generation on),
+`ENGINE_CHANNEL_SCAN`/`ENGINE_TRUNK_SCAN` (row commit and target switch), `DSP_WAV_INPUT_EOF` (the switch to live
+Pulse input when a WAV file ends), `APP_CONTROL_RX_TONE_VIEW`, `UI_NCURSES_PRINTER_HELPERS` and
+`UI_QT_METRICS_MODEL` (a paused stream's publication reads no carrier past its deadline on the caller's clock) and
+`APP_COMMAND_QUEUE` (decode-mode change, `RTL_SET_FREQ`, `MANUAL_TUNE`, a manual channel cycle and scan avoid by
+rigctl on PCM input, accepted, pending or refused; switching to WAV, Pulse, a named Pulse source, UDP or
+symbol-stream input, replay and stop-playback, including a stop whose Pulse open fails; TCP connect and reconnect,
+accepted or refused; and a config apply, which clears the tone when it moves the input and keeps it, generation
+included, when it changes an unrelated setting). The TCP and failed-Pulse cases stub the connect and the open through
+the Linux `--wrap` seam, so they run only where that seam exists. All of these bounds come from synthetic signals.
 
 Known gaps and caveats:
 
