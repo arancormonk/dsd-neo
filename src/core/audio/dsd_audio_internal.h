@@ -7,10 +7,17 @@
 #define DSD_NEO_SRC_CORE_AUDIO_DSD_AUDIO_INTERNAL_H
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 
 #include <sndfile.h>
 
 void dsd_audio_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context);
+
+/* Mono output verdict for the active slot 0 call, shared by the short mono path
+ * and the legacy short output: the talkgroup gate plus the live P25 Phase 1
+ * crypto and reverse-mute rule the float and stereo paths apply. 1 = muted. */
+int dsd_audio_mono_output_muted(const dsd_opts* opts, const dsd_state* state);
 
 static inline int
 dsd_audio_input_type_uses_async_output(int audio_in_type, int playfiles, const char* audio_in_dev, int m17decoderip) {

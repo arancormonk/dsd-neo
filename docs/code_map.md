@@ -226,6 +226,13 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   consumer that judges a live call on its policy target also calls `dsd_tg_policy_apply_ota_final_blocks()` with
   the over-the-air target: the audio/record/P25p2 media gates, the row-edit release in app-control and the Qt block
   label. User blocks (Lock out, Avoid TG, Skip) are written against the over-the-air target.
+- API note (audio output and WAV gates, `<dsd-neo/core/audio.h>`): every voice output path applies the talkgroup
+  gate (`dsd_audio_group_gate_mono()`/`_dual()`). The short mono path and the legacy short output that SDRTrunk JSON
+  playback uses share `dsd_audio_mono_output_muted()` (module-private, `src/core/audio/dsd_audio_internal.h`), the
+  same gate plus live P25 Phase 1 crypto and reverse-mute rule as the float and stereo paths. Per-call WAV writers
+  use `dsd_audio_record_gate_mono()` (DMR slot crypto plus policy), or `dsd_audio_record_policy_gate_slot()` (policy
+  alone, on the slot the protocol publishes) where the decode path settles crypto without setting the DMR slot
+  flags: X2-TDMA, D-STAR and SDRTrunk JSON playback.
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime

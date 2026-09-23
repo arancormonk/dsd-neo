@@ -811,6 +811,12 @@ playSynthesizedVoice(dsd_opts* opts, dsd_state* state) {
         goto end_psv;
     }
 
+    // A muted call's pending samples are dropped, as on every other output path.
+    if (dsd_audio_mono_output_muted(opts, state)) {
+        state->audio_out_idx = 0;
+        goto end_psv;
+    }
+
     if (state->audio_out_idx > opts->delay) {
         if (opts->audio_out == 1 && opts->audio_out_type == 1) {
             ssize_t written = dsd_write(opts->audio_out_fd, (state->audio_out_buf_p - state->audio_out_idx),
