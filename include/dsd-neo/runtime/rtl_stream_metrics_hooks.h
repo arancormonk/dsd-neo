@@ -47,6 +47,10 @@ typedef struct {
     int (*apply_demod_profile)(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps);
     /** Channel squelch threshold in mean-power units (rtl_squelch_level's); 0 switches it off. */
     void (*set_channel_squelch)(double mean_power);
+    /* Receive family / analog profile request (dsd_rx_family, dsd_analog_demod, width in Hz; 0 = default). */
+    int (*apply_analog_profile)(int family, int kind, int width_hz);
+    /* Published analog profile; returns 1 while the analog family is active. */
+    int (*analog_profile)(int* out_kind, int* out_width_hz, int* out_lpf_on);
 } dsd_rtl_stream_metrics_hooks;
 
 typedef enum DSD_ATTR_PACKED dsd_rtl_stream_channel_profile {
@@ -82,6 +86,24 @@ int dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int symbol
  * when forwarded and -1 when no radio backend is installed.
  */
 int dsd_rtl_stream_metrics_hook_set_channel_squelch(double mean_power);
+/**
+ * @brief Ask the RTL front end for a receive family and, for analog, a demodulator kind and channel width.
+ *
+ * Queued for the demod thread; switching family re-applies that family's fresh-open defaults. Leaving analog expects
+ * the digital symbol profile to follow through dsd_rtl_stream_metrics_hook_apply_demod_profile().
+ *
+ * @param family   dsd_rx_family (runtime/analog_channel.h).
+ * @param kind     dsd_analog_demod for the analog family.
+ * @param width_hz Explicit analog channel width in Hz, 0 for the kind's default.
+ * @return 0 when accepted, -1 when refused or when no RTL front end is installed.
+ */
+int dsd_rtl_stream_metrics_hook_apply_analog_profile(int family, int kind, int width_hz);
+/**
+ * @brief Read the published analog receive profile.
+ *
+ * @return 1 while the analog family is active (outputs filled), 0 otherwise (outputs zeroed).
+ */
+int dsd_rtl_stream_metrics_hook_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on);
 int dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active);
 int dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire(void);
 int dsd_rtl_stream_metrics_hook_cqpsk_timing_bias(void);

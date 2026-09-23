@@ -103,6 +103,34 @@ dsd_rtl_stream_metrics_hook_set_channel_squelch(double mean_power) {
 }
 
 int
+dsd_rtl_stream_metrics_hook_apply_analog_profile(int family, int kind, int width_hz) {
+    if (g_rtl_stream_metrics_hooks.apply_analog_profile) {
+        return g_rtl_stream_metrics_hooks.apply_analog_profile(family, kind, width_hz);
+    }
+    (void)family;
+    (void)kind;
+    (void)width_hz;
+    return -1;
+}
+
+int
+dsd_rtl_stream_metrics_hook_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    if (g_rtl_stream_metrics_hooks.analog_profile) {
+        return g_rtl_stream_metrics_hooks.analog_profile(out_kind, out_width_hz, out_lpf_on) > 0 ? 1 : 0;
+    }
+    if (out_kind) {
+        *out_kind = 0;
+    }
+    if (out_width_hz) {
+        *out_width_hz = 0;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = 0;
+    }
+    return 0;
+}
+
+int
 dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
     if (g_rtl_stream_metrics_hooks.cqpsk_status) {
         return g_rtl_stream_metrics_hooks.cqpsk_status(out_cqpsk_enable, out_cqpsk_timing_active);
