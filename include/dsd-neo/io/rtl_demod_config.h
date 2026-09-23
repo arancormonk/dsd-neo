@@ -106,6 +106,19 @@ int rtl_demod_analog_requested_width_hz(int kind, int explicit_width_hz);
 int rtl_demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz, char* err, size_t err_size);
 
 /**
+ * Check an analog channel against a rate chain that decimates after the demodulator.
+ *
+ * An I/Q replay sidecar may set post_downsample above 1: the channel filter then runs at @p rate_out_hz x
+ * @p post_downsample, while the analog design and rtl_demod_check_analog_channel() work at @p rate_out_hz, so a
+ * requested width would be neither applied nor refused. Such a width (explicit, or the AM default) is refused; the
+ * unset NFM default keeps the legacy design, and @p post_downsample <= 1 (every live source) always passes.
+ *
+ * @return 0 when the stream may run it, -1 with an actionable message in @p err otherwise.
+ */
+int rtl_demod_check_analog_post_decimation(int kind, int explicit_width_hz, int rate_out_hz, int post_downsample,
+                                           char* err, size_t err_size);
+
+/**
  * Put @p demod on the analog channel for @p kind at its current rates.
  *
  * Marks the analog family, selects the WIDE profile, and sets the channel width: a requested width (explicit, or the
@@ -129,7 +142,8 @@ int rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int expl
 int rtl_demod_refresh_analog_channel_for_rate(struct demod_state* demod, char* err, size_t err_size);
 
 /**
- * Validate and apply the analog channel @p opts ask for once rate_out is final (stream start). No-op outside the
+ * Validate and apply the analog channel @p opts ask for once rate_out is final (stream start): the checks of
+ * rtl_demod_check_analog_channel() at rate_out and of rtl_demod_check_analog_post_decimation(). No-op outside the
  * analog family (including the M17 encoder).
  *
  * @return 0 on success, -1 with the refusal text in @p err (the stream must not start).

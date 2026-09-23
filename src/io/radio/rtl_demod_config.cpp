@@ -1022,6 +1022,28 @@ rtl_demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz, cha
 }
 
 int
+rtl_demod_check_analog_post_decimation(int kind, int explicit_width_hz, int rate_out_hz, int post_downsample, char* err,
+                                       size_t err_size) {
+    demod_error_text(err, err_size, "");
+    if (post_downsample <= 1 || (explicit_width_hz <= 0 && kind == DSD_ANALOG_DEMOD_FM)) {
+        /* No post-demod decimation, or the unset NFM default, which keeps the legacy design at every rate chain. */
+        return 0;
+    }
+    if (err && err_size > 0U) {
+        char width_text[DSD_ANALOG_WIDTH_TEXT_MAX];
+        (void)dsd_analog_width_format(rtl_demod_analog_requested_width_hz(kind, explicit_width_hz), width_text,
+                                      sizeof width_text);
+        DSD_SNPRINTF(err, err_size,
+                     "%s bandwidth %s cannot be applied to this I/Q replay: post_downsample %d runs the channel filter "
+                     "at %d Hz, not the %d Hz demod rate; drop the explicit bandwidth or use a capture with "
+                     "post_downsample 1",
+                     dsd_analog_demod_label(kind), width_text, post_downsample, rate_out_hz * post_downsample,
+                     rate_out_hz);
+    }
+    return -1;
+}
+
+int
 rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int explicit_width_hz) {
     if (!demod) {
         return 0;
@@ -1082,7 +1104,10 @@ rtl_demod_finalize_analog_channel(struct demod_state* demod, const dsd_opts* opt
     }
     const int kind = opts->analog_demod;
     const int explicit_width_hz = dsd_opts_analog_width_hz(opts);
-    if (rtl_demod_check_analog_channel(kind, explicit_width_hz, demod->rate_out, err, err_size) != 0) {
+    if (rtl_demod_check_analog_channel(kind, explicit_width_hz, demod->rate_out, err, err_size) != 0
+        || rtl_demod_check_analog_post_decimation(kind, explicit_width_hz, demod->rate_out, demod->post_downsample, err,
+                                                  err_size)
+               != 0) {
         return -1;
     }
     (void)rtl_demod_apply_analog_channel(demod, kind, explicit_width_hz);

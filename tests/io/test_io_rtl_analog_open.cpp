@@ -13,6 +13,10 @@
  * (post_downsample 1): the channel filter runs at the demod rate it is designed
  * for, which a post_downsample above 1 would break.
  *
+ * - a sidecar with post_downsample 3: the channel filter runs at three times
+ *   the demod rate the width would be designed and checked at, so an explicit
+ *   width fails the start with an actionable message, while the unset default
+ *   keeps the legacy design and starts.
  * - demod_rate 16000 with the unset default: 16 kHz does not fit, so the legacy
  *   WIDE design takes over and the channel is published as DSP-limited at the
  *   width the rate leaves (not the 16 kHz picked for the 48 kHz bandwidth).
@@ -216,6 +220,23 @@ main(void) {
     rc |= expect_int("explicit 16 kHz at 16000 Hz refused", r.start_rc != 0, 1);
     rc |= expect_int("refusal carries the validator text",
                      std::strstr(g_errors, "NFM bandwidth 16 kHz does not fit the 16 kHz DSP rate") != NULL, 1);
+
+    /* 1536000 / 32 / 3 = 16000 Hz after a post-demod decimation of 3: the channel filter runs at 48 kHz. 12.5 kHz
+     * fits a 16 kHz rate, so only the post-decimation rule stands between it and a filter designed for the wrong
+     * rate. */
+    const ReplayRate post3 = {1536000U, 32U, 3U, 16000U};
+    g_errors[0] = '\0';
+    rc |= open_analog_replay(post3, "dsdneo_analog_open_post3", 12500, &r);
+    rc |= expect_int("explicit width with post_downsample 3 refused", r.start_rc != 0, 1);
+    rc |= expect_int("post-decimation refusal names the cause",
+                     std::strstr(g_errors, "NFM bandwidth 12.5 kHz cannot be applied to this I/Q replay: "
+                                           "post_downsample 3 runs the channel filter at 48000 Hz")
+                         != NULL,
+                     1);
+    g_errors[0] = '\0';
+    rc |= open_analog_replay(post3, "dsdneo_analog_open_post3_default", 0, &r);
+    rc |= expect_int("default with post_downsample 3 still starts", r.start_rc, 0);
+    rc |= expect_int("default with post_downsample 3 is the analog family", r.family, 1);
 
     if (rc == 0) {
         std::printf("IO_RTL_ANALOG_OPEN: OK\n");

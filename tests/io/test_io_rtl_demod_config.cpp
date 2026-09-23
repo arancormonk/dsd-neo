@@ -1371,6 +1371,56 @@ expect_unset_default_rule_keyed_on_nfm(void) {
     return rc;
 }
 
+/*
+ * An I/Q replay whose sidecar decimates after the demodulator runs the channel filter at rate_out x post_downsample,
+ * not at the rate_out a width is designed and checked at: a requested width is refused there with the cause and the
+ * fix, while the unset NFM default and every post_downsample-1 chain pass.
+ */
+static int
+expect_post_decimation_rule(void) {
+    int rc = 0;
+    char err[DSD_ANALOG_ERROR_TEXT_MAX] = {0};
+    rc |=
+        expect_int_eq("no post decimation passes",
+                      rtl_demod_check_analog_post_decimation(DSD_ANALOG_DEMOD_FM, 12500, 16000, 1, err, sizeof err), 0);
+    rc |= expect_int_eq("unset NFM default passes post decimation",
+                        rtl_demod_check_analog_post_decimation(DSD_ANALOG_DEMOD_FM, 0, 16000, 3, err, sizeof err), 0);
+    rc |= expect_int_eq("explicit width refused under post decimation",
+                        rtl_demod_check_analog_post_decimation(DSD_ANALOG_DEMOD_FM, 12500, 16000, 3, err, sizeof err),
+                        -1);
+    if (!std::strstr(err, "NFM bandwidth 12.5 kHz cannot be applied to this I/Q replay: post_downsample 3 runs the "
+                          "channel filter at 48000 Hz, not the 16000 Hz demod rate")
+        || !std::strstr(err, "use a capture with post_downsample 1")) {
+        DSD_FPRINTF(stderr, "post-decimation message: %s\n", err);
+        rc = 1;
+    }
+    rc |= expect_int_eq("unset AM default is a requested width",
+                        rtl_demod_check_analog_post_decimation(DSD_ANALOG_DEMOD_AM, 0, 16000, 2, err, sizeof err), -1);
+
+    /* The stream-start finalize applies the same rule against the stream's own chain. */
+    set_channel_lpf_env(NULL);
+    demod_state* demod = static_cast<demod_state*>(std::calloc(1, sizeof(*demod)));
+    output_state output;
+    DSD_MEMSET(&output, 0, sizeof(output));
+    output.rate = 48000;
+    static dsd_opts opts;
+    make_analog_opts(&opts);
+    opts.analog_nfm_bandwidth_hz = 12500;
+    rtl_demod_init_for_mode(demod, &output, &opts, 48000);
+    rtl_demod_config_from_env_and_opts(demod, &opts);
+    rtl_demod_select_defaults_for_mode(demod, &opts, &output);
+    demod->post_downsample = 3;
+    demod->rate_out = 16000;
+    rc |= expect_int_eq("finalize refuses a width under post decimation",
+                        rtl_demod_finalize_analog_channel(demod, &opts, err, sizeof err), -1);
+    opts.analog_nfm_bandwidth_hz = 0;
+    rc |= expect_int_eq("finalize keeps the default under post decimation",
+                        rtl_demod_finalize_analog_channel(demod, &opts, err, sizeof err), 0);
+    rtl_demod_cleanup(demod);
+    std::free(demod);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1549,6 +1599,7 @@ main(void) {
     rc |= expect_m17_encoder_unchanged();
     rc |= expect_analog_am_refused();
     rc |= expect_unset_default_rule_keyed_on_nfm();
+    rc |= expect_post_decimation_rule();
 
     rc |= expect_live_symbol_status();
     rc |= expect_cqpsk_toggle_clears_output_contract_backlog();

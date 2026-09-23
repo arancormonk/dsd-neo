@@ -1756,6 +1756,7 @@ static std::atomic<int> g_pub_ted_sps_override{0};
 static std::atomic<int> g_pub_cqpsk_enable{0};
 static std::atomic<int> g_pub_ted_bias_q14{0};
 static std::atomic<int> g_pub_rate_out{48000};
+static std::atomic<int> g_pub_post_downsample{1};
 /* Analog receive profile as frontends see it: whether the analog family is active, its demodulator kind, the
  * effective channel width (the configured width while the width-driven filter runs, otherwise the width the DSP
  * rate leaves), and whether the width-driven filter is what sets it. */
@@ -7369,6 +7370,7 @@ rtl_stream_publish_demod_profile_snapshot(void) {
     g_pub_ted_sps.store(demod.ted_sps, std::memory_order_relaxed);
     g_pub_ted_sps_override.store(demod.ted_sps_override, std::memory_order_relaxed);
     g_pub_rate_out.store(demod.rate_out, std::memory_order_relaxed);
+    g_pub_post_downsample.store(demod.post_downsample, std::memory_order_relaxed);
 }
 
 /* The getters below read the published mirrors rather than demod fields: the
@@ -8119,7 +8121,16 @@ rtl_stream_analog_request_valid(int family, int kind, int width_hz) {
     }
     char err[DSD_ANALOG_ERROR_TEXT_MAX];
     const int rate_hz = g_stream ? g_pub_rate_out.load(std::memory_order_relaxed) : 0;
-    return rtl_demod_check_analog_channel(kind, width_hz, rate_hz, err, sizeof err) == 0 ? 1 : 0;
+    if (rtl_demod_check_analog_channel(kind, width_hz, rate_hz, err, sizeof err) != 0) {
+        return 0;
+    }
+    if (rate_hz > 0
+        && rtl_demod_check_analog_post_decimation(
+               kind, width_hz, rate_hz, g_pub_post_downsample.load(std::memory_order_relaxed), err, sizeof err)
+               != 0) {
+        return 0;
+    }
+    return 1;
 }
 
 extern "C" int
