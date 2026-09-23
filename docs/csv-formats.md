@@ -269,10 +269,11 @@ argument must not start with `-`; use `./-name.csv` for a filename that starts w
 `--squelch-db`, whose value is negative: a following token that reads as a negative number, a minus sign and a digit
 followed only by digits, `.`, `e`, `E`, `+` or `-` (`--squelch-db -60`), is its value, while anything else starting
 with `-` (`--squelch-db --strict-crc`) is still refused as a missing value. A malformed number such as
-`--squelch-db -5.5` is therefore reported as an out-of-range value, the same as `--squelch-db=-5.5`.
-`--squelch-db=-60` also works. CSV commas remain
-field separators, including inside quotes. Unknown switches, positional text, malformed quotes and duplicate
-settings are errors. Diagnostics name the row and option without repeating raw option text or key values.
+`--squelch-db -5.5` is therefore reported as an out-of-range value, the same as `--squelch-db=-5.5`. The digit
+switches `-0`, `-1` and `-4` read as numbers there too: `--squelch-db -4` sets -4 dB and is never the `-4` switch.
+`--squelch-db=-60` also works. CSV commas remain field separators, including inside quotes. Unknown switches,
+positional text, malformed quotes and duplicate settings are errors. Diagnostics name the row and option without
+repeating raw option text or key values.
 
 File paths resolve relative to the containing CSV. Key-file paths (`-K`, `-k` and the legacy columns) are
 limited to 2047 bytes for channel maps and 1023 bytes for trunk targets, after resolution and excluding the

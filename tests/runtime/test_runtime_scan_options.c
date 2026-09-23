@@ -98,6 +98,16 @@ check_squelch_option(void) {
     assert(dsd_scan_options_parse("-4 --squelch-db -4", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
     assert(parsed.values.present == (DSD_SCAN_OPT_FORCE | DSD_SCAN_OPT_SQUELCH));
     assert(parsed.values.force == 1 && parsed.values.squelch_db == -4);
+    /* -0 and -1 are switches as well and read the same way after --squelch-db: values, so the
+     * key that would follow -1 is a stray positional argument. */
+    DSD_MEMSET(&parsed, 0, sizeof(parsed));
+    assert(dsd_scan_options_parse("--squelch-db -0", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_SQUELCH && parsed.values.squelch_db == 0);
+    DSD_MEMSET(&parsed, 0, sizeof(parsed));
+    assert(dsd_scan_options_parse("--squelch-db -1", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) == 0);
+    assert(parsed.values.present == DSD_SCAN_OPT_SQUELCH && parsed.values.squelch_db == -1);
+    assert(dsd_scan_options_parse("--squelch-db -1 0123456789", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error))
+           < 0);
     /* -4 is not a P25 switch, but as a squelch value it is fine on a P25 row. */
     assert(dsd_scan_options_parse("--squelch-db -4", DSD_SCAN_MODE_P25, 0, &parsed, error, sizeof(error)) == 0);
     assert(dsd_scan_options_parse("-4", DSD_SCAN_MODE_P25, 0, &parsed, error, sizeof(error)) < 0);

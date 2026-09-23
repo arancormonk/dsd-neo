@@ -37,8 +37,10 @@ struct scan_option_spec {
     /* The separate-token value may be a negative number: a minus sign, a digit, then only
      * number characters (^-[0-9][0-9.eE+-]*$), so -60 is taken and a malformed -5.5 reaches the
      * setter's own diagnostic. Every other switch refuses a following token that starts with
-     * '-', and no switch is spelled -<digit><more>, so a missing value can never swallow the
-     * next switch; this flag narrows that rule for one numeric switch only. */
+     * '-', so a missing value never swallows the next switch; this flag narrows that rule for
+     * one numeric switch only. The digit switches -0, -1 and -4 match the pattern, so after this
+     * switch they are read as its value (0, -1 and -4 dB), never as switches; every other
+     * switch-like token is still refused as a missing value. */
     int signed_numeric;
     /* Fixed explanation for an invalid value; NULL reads "invalid value". */
     const char* hint;
