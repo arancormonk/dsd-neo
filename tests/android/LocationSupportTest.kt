@@ -7,6 +7,7 @@ import android.location.Location
 import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
@@ -21,8 +22,10 @@ private fun request(activity: Activity, id: Long) {
 
 private fun geocodeResult(): JSONObject {
     val queue = LocationSupport::class.java.getDeclaredField("worker").apply { isAccessible = true }.get(LocationSupport)
-    val task = queue.javaClass.getDeclaredField("current").apply { isAccessible = true }.get(queue) as FutureTask<*>
-    task.get(5, TimeUnit.SECONDS)
+    // A cached fix starts the geocoder inside request()'s drain, which may already have
+    // run its completion and retired the task; the result checks below still apply.
+    val task = queue.javaClass.getDeclaredField("current").apply { isAccessible = true }.get(queue) as FutureTask<*>?
+    task?.get(5, TimeUnit.SECONDS)
     Handler.drain()
     return JSONObject(LocationSupport.pollResult()).also {
         check(it.optBoolean("fixOk") && it.optBoolean("geocodeOk"))
@@ -68,6 +71,22 @@ private fun recentCacheAvoidsThrottledRequest() {
         check(result.optLong("fixAtMs") == cached.time) { "cached fix must retain its original timestamp" }
     }
     Build.VERSION.SDK_INT = 30
+}
+
+private fun cachedFixCompletesInsideRequestDrain() {
+    val activity = Activity()
+    activity.manager.lastKnown[LocationManager.NETWORK_PROVIDER] = Location()
+    LocationSupport.requestCurrentLocation(activity, 30)
+    // Queued behind the request, this holds the drain until the cache-started geocoder posts its completion.
+    Handler(Looper.getMainLooper()).post {
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (Handler.pending.isEmpty()) {
+            check(System.nanoTime() < deadline) { "cached geocode did not complete" }
+            Thread.sleep(1)
+        }
+    }
+    Handler.drain()
+    check(geocodeResult().optLong("id") == 30L)
 }
 
 private fun invalidCacheFallsBackToFreshFix() {
@@ -222,6 +241,7 @@ fun main() {
         permissionAndTeardown()
         slowPermissionGrant()
         recentCacheAvoidsThrottledRequest()
+        cachedFixCompletesInsideRequestDrain()
         invalidCacheFallsBackToFreshFix()
         alternateProviderAndRetiredCallbacks()
         legacyLiveFixAndCancellation()
