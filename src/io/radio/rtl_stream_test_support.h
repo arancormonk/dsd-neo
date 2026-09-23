@@ -233,6 +233,8 @@ typedef struct rtl_stream_test_digital_request {
     int levels;
     int channel_profile;
     int ted_sps;
+    /* 1: the demod thread reaches a block boundary between the family request and the symbol profile request. */
+    int boundary_between_requests;
 } rtl_stream_test_digital_request;
 
 typedef struct rtl_stream_test_family_switch_result {
@@ -243,6 +245,7 @@ typedef struct rtl_stream_test_family_switch_result {
     int analog_request_rc;
     int digital_request_rc;
     int analog_deferred_until_consume; /* 1 when the live request left demod state alone until consumed */
+    int digital_held_until_profile;    /* 1 when a boundary before the symbol profile left the analog family in place */
     uint32_t generation_before;
     uint32_t generation_after_analog;
     uint32_t generation_after_digital;

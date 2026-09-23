@@ -90,7 +90,8 @@ int dsd_rtl_stream_metrics_hook_set_channel_squelch(double mean_power);
  * @brief Ask the RTL front end for a receive family and, for analog, a demodulator kind and channel width.
  *
  * Queued for the demod thread; switching family re-applies that family's fresh-open defaults. Leaving analog expects
- * the digital symbol profile to follow through dsd_rtl_stream_metrics_hook_apply_demod_profile().
+ * the digital symbol profile to follow through dsd_rtl_stream_metrics_hook_apply_demod_profile(), and the switch waits
+ * for it so both land at the same demod block boundary.
  *
  * @param family   dsd_rx_family (runtime/analog_channel.h).
  * @param kind     dsd_analog_demod for the analog family.

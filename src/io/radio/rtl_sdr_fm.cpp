@@ -8162,6 +8162,14 @@ rtl_stream_consume_demod_profile_request(void) {
     {
         std::lock_guard<std::mutex> lock(g_profile_req_m);
         g_profile_req_pending.store(0, std::memory_order_relaxed);
+        if (g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL && !g_profile_req_has_demod && demod.analog_family) {
+            /* Leaving analog lands on the symbol profile queued with it, which decides the digital resampler and the
+               output rate committed at the switch. Callers queue that profile as a second request right after the
+               family (svc_publish_symbol_profile(), the channel-scan leave), and this block boundary fell between
+               the two: keep the family request queued until its profile arrives and re-arms the consume, rather than
+               switching for the analog monitor's placeholder profile. */
+            return;
+        }
         has_demod = g_profile_req_has_demod;
         analog_family = g_profile_req_analog_family;
         analog_kind = g_profile_req_analog_kind;
@@ -10508,6 +10516,10 @@ family_test_switch_to_digital(dsd_opts* stream_opts, const dsd_opts* digital_opt
         rtl_stream_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, req->cqpsk_enable, req->symbol_rate_hz);
     *stream_opts = *digital_opts;
     int rc = rtl_stream_request_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    if (req->boundary_between_requests) {
+        family_test_demod_thread_boundary();
+        out->digital_held_until_profile = demod.analog_family ? 1 : 0;
+    }
     rc |= rtl_stream_request_demod_profile(req->cqpsk_enable, req->symbol_rate_hz, req->levels, req->channel_profile,
                                            req->ted_sps, 0);
     out->digital_request_rc = rc;

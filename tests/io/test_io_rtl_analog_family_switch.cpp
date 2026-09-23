@@ -17,6 +17,9 @@
  * dsd_rtl_stream_open() (see family_test_seed_open()), including at a demod rate
  * the device forces, where the digital resampler follows the symbol profile.
  *
+ * Leaving analog lands on the symbol profile queued after the family request,
+ * even when the demod thread reaches a block boundary between the two requests.
+ *
  * A width-only change on a running analog stream stays inside the family: it
  * drops the channel plan and the channel/half-band histories and nothing else.
  */
@@ -212,6 +215,9 @@ run_case(const family_case& c, int rate_hz, int forced_rate_out_hz, int nfm_widt
     rc |= expect_int("digital switch bumps the generation", r.generation_after_digital != r.generation_after_analog, 1);
     rc |= expect_int("digital switch clears the ring", (int)r.used_after_digital, 0);
     rc |= expect_int("analog profile withdrawn", r.published_after_digital_rc, 0);
+    if (c.request.boundary_between_requests) {
+        rc |= expect_int("digital family waits for its symbol profile", r.digital_held_until_profile, 1);
+    }
     /* The decoder sets symbol timing before a deferred switch lands, from this prediction. */
     rc |=
         expect_int("predicted analog output rate", (int)r.predicted_analog_output_rate, r.switched_analog.output_rate);
@@ -281,11 +287,11 @@ int
 main(void) {
     dsd_neo_config_init();
     const family_case cases[] = {
-        {"P25 C4FM", p25_c4fm, {0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_P25_C4FM, 10}},
-        {"P25 CQPSK", p25_cqpsk, {1, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK, 10}},
-        {"DMR", dmr, {0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_12K5, 10}},
-        {"NXDN48", nxdn48, {0, 2400, 4, RTL_STREAM_CHANNEL_PROFILE_6K25, 20}},
-        {"dPMR", dpmr, {0, 2400, 4, RTL_STREAM_CHANNEL_PROFILE_6K25, 20}},
+        {"P25 C4FM", p25_c4fm, {0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_P25_C4FM, 10, 0}},
+        {"P25 CQPSK", p25_cqpsk, {1, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK, 10, 0}},
+        {"DMR", dmr, {0, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_12K5, 10, 0}},
+        {"NXDN48", nxdn48, {0, 2400, 4, RTL_STREAM_CHANNEL_PROFILE_6K25, 20, 0}},
+        {"dPMR", dpmr, {0, 2400, 4, RTL_STREAM_CHANNEL_PROFILE_6K25, 20, 0}},
     };
     int rc = 0;
     for (const family_case& c : cases) {
@@ -315,6 +321,22 @@ main(void) {
     family_case dpmr60 = cases[4];
     dpmr60.request.ted_sps = 25;
     rc |= run_case(dpmr60, 48000, 60000, 0);
+
+    /* The family request and its symbol profile are two requests, and the demod thread can reach a block boundary
+     * between them. The switch must still land on the profile: at 60 kHz a 4800 sym/s placeholder would resample a
+     * 2400 sym/s stream to 48 kHz, and at 78125 Hz it would resample a CQPSK stream that never resamples. */
+    family_case nxdn60_split = nxdn60;
+    nxdn60_split.request.boundary_between_requests = 1;
+    rc |= run_case(nxdn60_split, 48000, 60000, 0);
+    family_case dpmr60_split = dpmr60;
+    dpmr60_split.request.boundary_between_requests = 1;
+    rc |= run_case(dpmr60_split, 48000, 60000, 0);
+    family_case cqpsk78_split = cqpsk78;
+    cqpsk78_split.request.boundary_between_requests = 1;
+    rc |= run_case(cqpsk78_split, 48000, 78125, 0);
+    family_case dmr48_split = cases[2];
+    dmr48_split.request.boundary_between_requests = 1;
+    rc |= run_case(dmr48_split, 48000, 0, 0);
 
     rtl_stream_test_family_switch_result r;
     DSD_MEMSET(&r, 0, sizeof r);
