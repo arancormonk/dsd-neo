@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/**
+ * @file
+ * @brief Sub-audible signalling tables and text shared by the detectors, the views and the policy.
+ *
+ * CTCSS (issue #522): the standard 50-tone EIA/TIA table, 67.0-254.1 Hz, held in tenths of a
+ * hertz so every consumer compares integers. 150.0 Hz is deliberately not in the table: it is
+ * 1.4 Hz from 151.4 Hz, and a detector that snapped it would report the wrong tone.
+ *
+ * The tables live in runtime rather than DSP because the frontends format these values and the
+ * receive policy (#527) parses them, and neither may depend on the DSP module.
+ */
+
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_ANALOG_TONES_H_
+#define DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_ANALOG_TONES_H_
+
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** @brief Number of supported CTCSS tones (the standard 50-tone table). */
+enum { DSD_CTCSS_TONE_COUNT = 50 };
+
+/** @brief Longest text dsd_ctcss_format_label() writes, terminator included ("CTCSS 254.1 Hz"). */
+enum { DSD_CTCSS_LABEL_SIZE = 24 };
+
+/** @brief Number of supported CTCSS tones; always DSD_CTCSS_TONE_COUNT. */
+int dsd_ctcss_tone_count(void);
+
+/**
+ * @brief The supported tone at @p index, in tenths of a hertz.
+ *
+ * The table is ascending, so index 0 is 67.0 Hz (670) and the last index is 254.1 Hz (2541).
+ *
+ * @return The tone in tenths of a hertz, or -1 when @p index is out of range.
+ */
+int dsd_ctcss_tone_tenths(int index);
+
+/**
+ * @brief Table index of the supported tone @p tenths_hz.
+ *
+ * @return The index, or -1 when @p tenths_hz is not a supported tone (150.0 Hz included).
+ */
+int dsd_ctcss_tone_index(int tenths_hz);
+
+/**
+ * @brief Write a tone value as "100.0" (one decimal, no unit).
+ *
+ * Accepts any value from 0.1 Hz to 999.9 Hz, supported or not, so a caller can also name a
+ * frequency it is rejecting.
+ *
+ * @return Characters written (terminator excluded), or -1 for a NULL/too-small buffer or a
+ *         value outside 1..9999 tenths. The buffer holds an empty string on failure.
+ */
+int dsd_ctcss_format(int tenths_hz, char* buf, size_t buf_size);
+
+/**
+ * @brief Write the display and log label for a received tone, "CTCSS 100.0 Hz".
+ *
+ * @return Characters written (terminator excluded), or -1 as for dsd_ctcss_format().
+ */
+int dsd_ctcss_format_label(int tenths_hz, char* buf, size_t buf_size);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_ANALOG_TONES_H_ */

@@ -420,6 +420,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_analog_tones
+  HEADERS_PUBLIC_RUNTIME_ANALOG_TONES
+  dsd-neo/runtime/analog_tones.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_analog_tones_cxx
+  HEADERS_PUBLIC_RUNTIME_ANALOG_TONES_CXX
+  dsd-neo/runtime/analog_tones.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_input_spec
   HEADERS_PUBLIC_RUNTIME_INPUT_SPEC
   dsd-neo/runtime/input_spec.h
@@ -3471,6 +3483,18 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_runtime_freq_parse PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_FREQ_PARSE COMMAND dsd-neo_test_runtime_freq_parse)
+
+# The CTCSS table and its text (issue #522), shared by the detector, the views and the policy.
+add_executable(
+    dsd-neo_test_runtime_analog_tones
+    runtime/test_runtime_analog_tones.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_analog_tones
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_runtime_analog_tones PRIVATE dsd-neo_runtime)
+add_test(NAME RUNTIME_ANALOG_TONES COMMAND dsd-neo_test_runtime_analog_tones)
 
 add_executable(
     dsd-neo_test_runtime_bootstrap_audio

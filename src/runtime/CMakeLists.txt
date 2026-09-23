@@ -17,6 +17,7 @@ target_sources(
         config_expand.c
         control_pump.c
         freq_parse.c
+        analog_tones.c
         input_spec.c
         airspy_config.c
         input_level.c
