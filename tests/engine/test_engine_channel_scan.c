@@ -361,11 +361,13 @@ squelch_level_is(double level, double db) {
     return fabs(level - expected) <= 1e-9 * fmax(fabs(level), fabs(expected));
 }
 
-/* Three rows in succession -- a threshold, an explicit off and one that inherits -- with the
- * channel power held between the configured default and the row threshold. The RTL demod hears
- * each row's level through the runtime hook, and the analog monitor's gate (which reads
- * dsd_opts) flips with it. A manual step, an operator edit beneath a row and the scan teardown
- * each leave the configured default where the operator put it. */
+/* Rows in succession -- a threshold, the same threshold again, an explicit off and one that
+ * inherits. The RTL demod hears each row's level through the runtime hook, once per change and
+ * never the configured default in between; dsd_opts carries the same level for the gates that
+ * read it. The DECODE_IQ_SCAN_NXDN48_SQUELCH_* replays put a row's level through the real demod
+ * gate, and ENGINE_SCAN_SQUELCH_GATE the frame-sync gate through trunk-scan targets. A manual
+ * step, an operator edit beneath a row and the scan teardown each leave the configured default
+ * where the operator put it. */
 static void
 test_row_squelch_threshold_off_inherit(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -376,14 +378,13 @@ test_row_squelch_threshold_off_inherit(void) {
     opts->wav_sample_rate = 48000;
     opts->frame_dstar = 1;
     opts->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
-    opts->rtl_pwr = dsd_squelch_level_from_sql(-70.0);
     state->samplesPerSymbol = 10;
-    state->lcn_freq_count = 3;
-    for (int row = 0; row < 3; row++) {
+    state->lcn_freq_count = 4;
+    for (int row = 0; row < 4; row++) {
         *dsd_state_trunk_lcn_slot(state, row) = 150000000;
     }
-    const int row_db[] = {-60, 0};
-    for (int row = 0; row < 2; row++) {
+    const int row_db[] = {-60, -60, 0};
+    for (int row = 0; row < 3; row++) {
         dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
         assert(profile);
         profile->values.present = DSD_SCAN_OPT_SQUELCH;
@@ -398,28 +399,27 @@ test_row_squelch_threshold_off_inherit(void) {
     expected_nxdn = 0;
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
 
-    /* At the configured -80 dB the -70 dB channel opens the gate. */
-    assert(dsd_squelch_opens(opts->rtl_pwr, opts->rtl_squelch_level));
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
     assert(state->lcn_freq_roll == 1 && squelch_level_is(opts->rtl_squelch_level, -60.0));
     assert(g_squelch_pushes == 1 && squelch_level_is(g_squelch_pushed, -60.0));
-    assert(!dsd_squelch_opens(opts->rtl_pwr, opts->rtl_squelch_level));
+
+    /* The same threshold on the next row: nothing for the demod to hear. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->lcn_freq_roll == 2 && squelch_level_is(opts->rtl_squelch_level, -60.0));
+    assert(g_squelch_pushes == 1);
 
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
-    assert(state->lcn_freq_roll == 2 && dsd_squelch_is_off(opts->rtl_squelch_level));
-    assert(dsd_squelch_is_off(g_squelch_pushed));
-    assert(dsd_squelch_opens(opts->rtl_pwr, opts->rtl_squelch_level));
+    assert(state->lcn_freq_roll == 3 && dsd_squelch_is_off(opts->rtl_squelch_level));
+    assert(g_squelch_pushes == 2 && dsd_squelch_is_off(g_squelch_pushed));
 
     assert(dsd_engine_channel_scan_step(opts, state) == 1);
-    assert(state->lcn_freq_roll == 3 && squelch_level_is(opts->rtl_squelch_level, -80.0));
-    assert(squelch_level_is(g_squelch_pushed, -80.0));
-    assert(dsd_squelch_opens(opts->rtl_pwr, opts->rtl_squelch_level));
+    assert(state->lcn_freq_roll == 4 && squelch_level_is(opts->rtl_squelch_level, -80.0));
+    assert(g_squelch_pushes == 3 && squelch_level_is(g_squelch_pushed, -80.0));
 
-    /* A manual step wraps to the threshold row and closes the gate again. */
+    /* A manual step wraps to the threshold row. */
     assert(dsd_engine_channel_scan_step_manual(opts, state) == 1);
     assert(state->lcn_freq_roll == 1 && squelch_level_is(opts->rtl_squelch_level, -60.0));
-    assert(squelch_level_is(g_squelch_pushed, -60.0));
-    assert(!dsd_squelch_opens(opts->rtl_pwr, opts->rtl_squelch_level));
+    assert(g_squelch_pushes == 4 && squelch_level_is(g_squelch_pushed, -60.0));
 
     /* The operator edits the default beneath the row: the row keeps its threshold, and the
      * demod is re-told the row's level after the edit, not left on the new default. */
@@ -432,11 +432,10 @@ test_row_squelch_threshold_off_inherit(void) {
     assert(g_squelch_pushes == before_edit + 1 && squelch_level_is(g_squelch_pushed, -60.0));
     assert(squelch_level_is(dsd_scan_mode_configured_view(state)->rtl_squelch_level, -75.0));
 
-    /* Teardown hands back the edited default, pushed, with the gate following it. */
+    /* Teardown hands back the edited default, pushed once. */
     dsd_engine_channel_scan_leave(opts, state);
     assert(squelch_level_is(opts->rtl_squelch_level, -75.0));
-    assert(squelch_level_is(g_squelch_pushed, -75.0));
-    assert(dsd_squelch_opens(opts->rtl_pwr, opts->rtl_squelch_level));
+    assert(g_squelch_pushes == before_edit + 2 && squelch_level_is(g_squelch_pushed, -75.0));
     /* An RTL input gates acquisition itself, so nothing needed saying. */
     assert(g_squelch_warnings == 0);
 
@@ -448,9 +447,10 @@ test_row_squelch_threshold_off_inherit(void) {
     tunes = reset_count = 0;
 }
 
-/* On a PCM input the row threshold still gates the analog monitor and the carrier stamp through
- * rtl_pwr, but there is no demodulator to gate digital acquisition: the scan says so once per
- * affected row when it starts (and again for a newly imported map), never per visit. */
+/* On a PCM input the row threshold still lands in dsd_opts, where the analog monitor and the
+ * carrier stamp read it against rtl_pwr, but there is no demodulator to gate digital acquisition:
+ * the scan says so once per affected row when it starts (and again for a newly imported map),
+ * never per visit. */
 static void
 test_row_squelch_warns_once_per_row_on_pcm_input(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -461,7 +461,6 @@ test_row_squelch_warns_once_per_row_on_pcm_input(void) {
     opts->wav_sample_rate = 48000;
     opts->frame_dstar = 1;
     opts->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
-    opts->rtl_pwr = dsd_squelch_level_from_sql(-70.0);
     state->samplesPerSymbol = 10;
     state->lcn_freq_count = 3;
     for (int row = 0; row < 3; row++) {
@@ -482,9 +481,9 @@ test_row_squelch_warns_once_per_row_on_pcm_input(void) {
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     for (int visit = 0; visit < 6; visit++) {
         assert(dsd_engine_channel_scan_step(opts, state) == 1);
-        /* The PCM monitor gate follows the row even though nothing is pushed. */
+        /* The row's level is in force even though nothing is pushed. */
         const int row = (state->lcn_freq_roll + 2) % 3;
-        assert(dsd_squelch_opens(opts->rtl_pwr, opts->rtl_squelch_level) == (row == 1));
+        assert(squelch_level_is(opts->rtl_squelch_level, row == 1 ? -80.0 : -60.0));
     }
     assert(g_squelch_warnings == 2 && g_squelch_pushes == 0);
     assert(strstr(g_squelch_warning_rows[0], "Scan channel 1 ") != NULL);

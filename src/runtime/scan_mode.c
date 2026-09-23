@@ -21,6 +21,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* What the RTL demodulator holds while a row change is in progress. dsd_scan_mode_enter() leaves
+ * the push to the dsd_scan_mode_options() call that completes the row, so one transition hands
+ * the demod at most one level (a -60 dB row followed by another -60 dB row hands it none). */
+typedef enum {
+    SCAN_SQUELCH_SETTLED = 0, /* the demod holds what dsd_opts held before this entry point */
+    SCAN_SQUELCH_ENTERED,     /* a row was entered; the demod still holds squelch_entered_from */
+    SCAN_SQUELCH_UNKNOWN,     /* entered while suspended: a command may have pushed anything */
+} scan_squelch_pending;
+
 typedef struct {
     dsd_scan_settings configured;
     dsd_scan_settings effective;
@@ -29,6 +38,8 @@ typedef struct {
     dsdneoUserDecodeMode configured_mode;
     int suspended;
     dsd_scan_option_values options;
+    double squelch_entered_from;
+    scan_squelch_pending squelch_pending;
 } scan_scope;
 
 static const char* const mode_names[] = {"", "p25", "dmr", "nxdn96", "nxdn48", "dpmr", "dstar", "ysf", "m17"};
@@ -489,12 +500,19 @@ scan_squelch_push(const dsd_opts* opts) {
     }
 }
 
-/* A suspended scope already holds the configured values in dsd_opts, while the demod was last
- * told the row's threshold (suspend does not push; resume does). An entry point that runs on a
- * suspended scope therefore cannot judge "changed" from dsd_opts and always pushes. */
+/* Push the level now in force when it differs from what the demod holds: `held` (dsd_opts before
+ * this entry point), or the level from before a pending enter. A suspended scope already holds
+ * the configured values in dsd_opts, while the demod was last told the row's threshold (suspend
+ * does not push; resume does), so after an entry point that found the scope suspended the demod
+ * level is unknown and the push is unconditional. */
 static void
-scan_squelch_push_if_changed(const dsd_opts* opts, double before, int was_suspended) {
-    if (was_suspended || scan_squelch_changed(before, opts->rtl_squelch_level)) {
+scan_squelch_settle(scan_scope* scope, const dsd_opts* opts, double held) {
+    const scan_squelch_pending pending = scope->squelch_pending;
+    scope->squelch_pending = SCAN_SQUELCH_SETTLED;
+    if (pending == SCAN_SQUELCH_ENTERED) {
+        held = scope->squelch_entered_from;
+    }
+    if (pending == SCAN_SQUELCH_UNKNOWN || scan_squelch_changed(held, opts->rtl_squelch_level)) {
         scan_squelch_push(opts);
     }
 }
@@ -520,7 +538,7 @@ dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_va
         scan_settings_restore_row_opts(&scope->configured, opts);
         state->M = scope->configured.force_key;
         scan_options_apply(opts, state, &scope->options);
-        scan_squelch_push_if_changed(opts, squelch_before, 0);
+        scan_squelch_settle(scope, opts, squelch_before);
     }
     return 0;
 }
@@ -562,7 +580,15 @@ dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode) {
     scope->mode = mode;
     scope->suspended = 0;
     scan_scope_apply(opts, state, scope);
-    scan_squelch_push_if_changed(opts, squelch_before, was_suspended);
+    /* No push here: the row's own options follow, and dsd_scan_mode_options() pushes the net
+     * change once. A transition already pending keeps its origin, since the demod has heard
+     * nothing since. */
+    if (was_suspended) {
+        scope->squelch_pending = SCAN_SQUELCH_UNKNOWN;
+    } else if (scope->squelch_pending == SCAN_SQUELCH_SETTLED) {
+        scope->squelch_entered_from = squelch_before;
+        scope->squelch_pending = SCAN_SQUELCH_ENTERED;
+    }
     return 0;
 }
 
@@ -585,12 +611,13 @@ dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state) {
         return;
     }
     const double squelch_before = opts->rtl_squelch_level;
-    const int was_suspended = scope->suspended;
-    if (!was_suspended) {
+    if (scope->suspended) {
+        scope->squelch_pending = SCAN_SQUELCH_UNKNOWN;
+    } else {
         dsd_scan_settings_restore(&scope->configured, opts, state);
     }
+    scan_squelch_settle(scope, opts, squelch_before);
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_RUNTIME_SCAN_MODE, NULL, NULL);
-    scan_squelch_push_if_changed(opts, squelch_before, was_suspended);
 }
 
 int
@@ -643,8 +670,9 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
         dsd_scan_settings_restore(&scope->effective, opts, state);
     }
     /* Unconditional: the command that ran while suspended may have pushed the configured
-     * default straight to the demod (CONFIG_APPLY, the squelch setter), so a comparison with
-     * the pre-suspend value would leave the row's threshold behind. */
+     * default straight to the demod (CONFIG_APPLY does), so a comparison with the pre-suspend
+     * value would leave the row's threshold behind. */
+    scope->squelch_pending = SCAN_SQUELCH_SETTLED;
     scan_squelch_push(opts);
     return unchanged ? 0 : 1;
 }
@@ -707,6 +735,28 @@ const dsd_scan_option_values*
 dsd_scan_mode_row_options(const dsd_state* state) {
     const scan_scope* scope = scan_scope_get(state);
     return scope ? &scope->options : NULL;
+}
+
+int
+dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, double level) {
+    if (!opts) {
+        return -1;
+    }
+    scan_scope* scope = state ? scan_scope_get(state) : NULL;
+    /* Suspended or absent, dsd_opts holds the configured values and resume recaptures them. */
+    if (scope && !scope->suspended) {
+        scope->configured.rtl_squelch_level = level;
+        if (scope->options.present & DSD_SCAN_OPT_SQUELCH) {
+            return 0;
+        }
+        /* The caller hands this level to the demod, so a row change still waiting for its
+         * options judges against it. */
+        if (scope->squelch_pending == SCAN_SQUELCH_ENTERED) {
+            scope->squelch_entered_from = level;
+        }
+    }
+    opts->rtl_squelch_level = level;
+    return 1;
 }
 
 void

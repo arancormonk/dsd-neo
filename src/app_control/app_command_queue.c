@@ -1392,14 +1392,14 @@ ui_cmd_handle_rtl_set_sql_db(dsd_opts* opts, dsd_state* state, const struct dsd_
     double d = 0.0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_double_payload(c, &d)) {
-        int rc = svc_rtl_set_sql_db(opts, d);
+        int rc = svc_rtl_set_sql_db(opts, state, d);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
             /* Report the threshold that was stored rather than the number that was
              * asked for: a request of 0 dB switches the squelch off, and echoing
              * "0.0 dB" would describe a gate at full scale instead. The command edits
-             * the configured default (it runs with the scan scope suspended), so when a
-             * scan row overrides the squelch the notice says the row still wins. */
+             * the configured default, so when a scan row overrides the squelch the
+             * notice says the row still wins. */
             dsd_app_squelch_view view;
             char notice[96];
             (void)dsd_app_squelch_view_get(opts, state, &view);
@@ -5203,12 +5203,11 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
         DSD_APP_CMD_INV_M17_TOGGLE,
         DSD_APP_CMD_INPUT_MONITOR_TOGGLE,
         DSD_APP_CMD_CONFIG_APPLY,
-        /* Squelch is a row option (--squelch-db): the setter edits the configured default
-         * beneath an override, and Airspy edits restore tuning (squelch included) and may
-         * reopen the stream. Enabling an input rewrites no squelch and stays unscoped, so the
-         * stream it opens starts on the threshold in force. */
-        DSD_APP_CMD_RTL_SET_SQL_DB,
-        DSD_APP_CMD_AIRSPY_SET,
+        /* Squelch is a row option (--squelch-db), but its commands stay unscoped. The setter
+         * edits the configured default through dsd_scan_mode_set_configured_squelch(), which
+         * touches no acquisition setting, so a squelch nudge can never read as a decoder change
+         * that ends the call. AIRSPY_SET and the input enables rewrite no squelch, and a stream
+         * they reopen has to start on the row's acquisition and threshold, the ones in force. */
     };
     if (!c) {
         return 0;

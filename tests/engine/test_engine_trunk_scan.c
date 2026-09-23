@@ -9544,27 +9544,34 @@ static const char k_squelch_targets_header[] =
     "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
 static int g_target_squelch_pushes;
 static double g_target_squelch_pushed = -1.0;
+/* Every level handed to the demod, oldest first (capped; the count keeps going). */
+static double g_target_squelch_history[16];
 
 static void
 record_target_squelch(double mean_power) {
+    if (g_target_squelch_pushes < (int)(sizeof g_target_squelch_history / sizeof g_target_squelch_history[0])) {
+        g_target_squelch_history[g_target_squelch_pushes] = mean_power;
+    }
     g_target_squelch_pushes++;
     g_target_squelch_pushed = mean_power;
 }
 
-/* What a target visit leaves in force: the level in dsd_opts (read by the analog monitor gate),
- * the level the RTL demodulator was last handed, and whether the fixed channel power opens the
- * gate at that level. `db` 0 means off. */
 static int
-expect_target_squelch(const dsd_opts* opts, const char* stage, int db, int gate_open) {
+target_squelch_level_is(double level, int db) {
     const double want = dsd_squelch_level_from_sql((double)db);
-    const double tolerance = 1e-9 * fmax(fabs(want), fabs(opts->rtl_squelch_level));
-    const int level_ok = fabs(opts->rtl_squelch_level - want) <= tolerance;
-    const int pushed_ok =
-        fabs(g_target_squelch_pushed - want) <= 1e-9 * fmax(fabs(want), fabs(g_target_squelch_pushed));
-    const int gate = dsd_squelch_opens(opts->rtl_pwr, opts->rtl_squelch_level);
-    if (!level_ok || !pushed_ok || gate != gate_open) {
-        DSD_FPRINTF(stderr, "target squelch after %s: level %.3g pushed %.3g gate %d, want %d dB gate %d\n", stage,
-                    opts->rtl_squelch_level, g_target_squelch_pushed, gate, db, gate_open);
+    return fabs(level - want) <= 1e-9 * fmax(fabs(want), fabs(level));
+}
+
+/* What a target visit leaves in force: the level in dsd_opts (read by every squelch gate), the
+ * level the RTL demodulator was last handed, and how many levels it has been handed so far.
+ * `db` 0 means off. ENGINE_SCAN_SQUELCH_GATE drives the production frame-sync gate through
+ * the same targets. */
+static int
+expect_target_squelch(const dsd_opts* opts, const char* stage, int db, int pushes) {
+    if (!target_squelch_level_is(opts->rtl_squelch_level, db) || !target_squelch_level_is(g_target_squelch_pushed, db)
+        || g_target_squelch_pushes != pushes) {
+        DSD_FPRINTF(stderr, "target squelch after %s: level %.3g pushed %.3g (%d pushes), want %d dB (%d pushes)\n",
+                    stage, opts->rtl_squelch_level, g_target_squelch_pushed, g_target_squelch_pushes, db, pushes);
         return 1;
     }
     return 0;
@@ -9580,7 +9587,6 @@ squelch_targets_init(const char* body, dsd_opts* opts, dsd_state* state, char* d
     }
     reset_scan_opts_state(opts, state);
     opts->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
-    opts->rtl_pwr = dsd_squelch_level_from_sql(-70.0);
     DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
     const dsd_rtl_stream_metrics_hooks hooks = {.set_channel_squelch = record_target_squelch};
     dsd_rtl_stream_metrics_hooks_set(&hooks);
@@ -9596,10 +9602,10 @@ squelch_targets_init(const char* body, dsd_opts* opts, dsd_state* state, char* d
     return 0;
 }
 
-/* A threshold target (trunked), an explicit off target and an inheriting target (both
- * conventional) in succession with the channel power held between the default and the
- * threshold: the demod is handed each target's level and the monitor gate flips with it. A
- * manual advance, an operator edit and shutdown leave the configured default in force. */
+/* A threshold target (trunked), the same threshold on a conventional target, an explicit off
+ * target and an inheriting target in succession: the demod is handed each target's level once
+ * per change, never the configured default in between. A manual advance, an operator edit and
+ * shutdown leave the configured default in force. */
 static int
 test_target_squelch_threshold_off_inherit(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -9607,6 +9613,7 @@ test_target_squelch_threshold_off_inherit(void) {
     static dsd_opts opts;
     static dsd_state state;
     if (squelch_targets_init("thr,p25-trunk,851000000,,250,,,--squelch-db -60\n"
+                             "same,dmr-conventional,460000000,,250,,,--squelch-db -60\n"
                              "off,dmr-conventional,461000000,,250,,,--squelch-db 0\n"
                              "inh,nxdn48-conventional,461556250,,250,,\n",
                              &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
@@ -9614,41 +9621,44 @@ test_target_squelch_threshold_off_inherit(void) {
         return 1;
     }
     int test_rc = expect_active_target(&state, "squelch init", 0U);
-    test_rc |= expect_target_squelch(&opts, "threshold target", -60, 0);
+    test_rc |= expect_target_squelch(&opts, "threshold target", -60, 1);
 
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_active_target(&state, "rotation to off target", 1U);
-    test_rc |= expect_target_squelch(&opts, "off target", 0, 1);
+    test_rc |= expect_active_target(&state, "rotation to the same threshold", 1U);
+    test_rc |= expect_target_squelch(&opts, "same threshold target", -60, 1);
 
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_active_target(&state, "rotation to inheriting target", 2U);
-    test_rc |= expect_target_squelch(&opts, "inheriting target", -80, 1);
+    test_rc |= expect_active_target(&state, "rotation to off target", 2U);
+    test_rc |= expect_target_squelch(&opts, "off target", 0, 2);
+
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation to inheriting target", 3U);
+    test_rc |= expect_target_squelch(&opts, "inheriting target", -80, 3);
 
     test_rc |=
         expect_control_rc("advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
     test_rc |= expect_active_target(&state, "manual advance", 0U);
-    test_rc |= expect_target_squelch(&opts, "manual advance", -60, 0);
+    test_rc |= expect_target_squelch(&opts, "manual advance", -60, 4);
 
     /* An operator edit beneath the target changes the default only, and the demod is re-told
      * the target's own level once the edit is done. */
-    const int pushes_before_edit = g_target_squelch_pushes;
     if (!dsd_scan_mode_suspend(&opts, &state)) {
         test_rc = 1;
     }
     opts.rtl_squelch_level = dsd_squelch_level_from_sql(-75.0);
     (void)dsd_scan_mode_resume(&opts, &state);
-    test_rc |= expect_target_squelch(&opts, "edit beneath the target", -60, 0);
+    test_rc |= expect_target_squelch(&opts, "edit beneath the target", -60, 5);
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(&state);
-    if (g_target_squelch_pushes != pushes_before_edit + 1 || !configured
-        || fabs(configured->rtl_squelch_level - dsd_squelch_level_from_sql(-75.0)) > 1e-15) {
+    if (!configured || !target_squelch_level_is(configured->rtl_squelch_level, -75)) {
         DSD_FPRINTF(stderr, "operator squelch edit beneath a target did not stay on the default\n");
         test_rc = 1;
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    test_rc |= expect_target_squelch(&opts, "shutdown", -75, 1);
+    test_rc |= expect_target_squelch(&opts, "shutdown", -75, 6);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
@@ -9656,7 +9666,7 @@ test_target_squelch_threshold_off_inherit(void) {
 }
 
 /* Every alternate fails to retune, so the advance rolls back onto the original target: its
- * own threshold has to come back with it, not the last failed alternate's or the default. */
+ * own threshold has to come back with it, not the failed alternate's or the default. */
 static int
 test_target_squelch_restored_on_rollback(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -9669,16 +9679,26 @@ test_target_squelch_restored_on_rollback(void) {
         != 0) {
         return 1;
     }
-    int test_rc = expect_target_squelch(&opts, "rollback init", -60, 0);
+    int test_rc = expect_target_squelch(&opts, "rollback init", -60, 1);
+    const int tunes_before = g_counting_tune_to_cc_calls;
     g_counting_tune_to_cc_failures_remaining = 2;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
+    /* The alternate was really tried: it was retuned, and the demod was handed its level
+     * (off) before the rollback handed back the original's threshold. */
+    if (g_counting_tune_to_cc_calls < tunes_before + 1 || g_target_squelch_pushes != 3
+        || !dsd_squelch_is_off(g_target_squelch_history[1])
+        || !target_squelch_level_is(g_target_squelch_history[2], -60)) {
+        DSD_FPRINTF(stderr, "rollback did not visit the alternate: %d tunes (from %d), %d pushes\n",
+                    g_counting_tune_to_cc_calls, tunes_before, g_target_squelch_pushes);
+        test_rc = 1;
+    }
     test_rc |= expect_active_target(&state, "rollback", 0U);
-    test_rc |= expect_target_squelch(&opts, "rollback", -60, 0);
+    test_rc |= expect_target_squelch(&opts, "rollback", -60, 3);
     g_counting_tune_to_cc_failures_remaining = 0;
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
-    test_rc |= expect_target_squelch(&opts, "rollback shutdown", -80, 1);
+    test_rc |= expect_target_squelch(&opts, "rollback shutdown", -80, 4);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);

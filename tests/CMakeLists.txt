@@ -5129,6 +5129,31 @@ add_test(
     COMMAND dsd-neo_test_engine_dmr_cc_recovery
 )
 
+# Per-target squelch overrides (issue #521) observed through the production frame-sync power
+# gate: the real trunk scan coordinator moves between targets while the channel power is held.
+add_executable(
+    dsd-neo_test_engine_scan_squelch_gate
+    engine/test_engine_scan_squelch_gate.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
+    ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+)
+target_include_directories(
+    dsd-neo_test_engine_scan_squelch_gate
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp ${PROJECT_SOURCE_DIR}/src/engine
+)
+target_compile_definitions(
+    dsd-neo_test_engine_scan_squelch_gate
+    PRIVATE DSD_NEO_TEST_HOOKS DSD_TRUNK_SCAN_TEST_CLOCK=1
+)
+target_link_libraries(
+    dsd-neo_test_engine_scan_squelch_gate
+    PRIVATE dsd-neo_app_control dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME ENGINE_SCAN_SQUELCH_GATE
+    COMMAND dsd-neo_test_engine_scan_squelch_gate
+)
+
 add_executable(
     dsd-neo_test_engine_scan_voice_gate
     test_support/scan_group_stubs.c
@@ -5388,7 +5413,9 @@ if(
     )
     target_link_options(
         dsd-neo_test_app_command_queue
-        PRIVATE "LINKER:--wrap=rtl_stream_create"
+        PRIVATE
+            "LINKER:--wrap=rtl_stream_create"
+            "LINKER:--wrap=rtl_stream_set_channel_squelch"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
