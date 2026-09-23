@@ -70,6 +70,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`
   - `sql` is a power squelch in dB and is **off** when set to `0`, which is what the examples above use. The startup
     banner and the terminal input line say so (`SQ=off`, `SQL: off`). Give a negative value (`-60`) to gate on power.
+    A `-Y` channel-map row or `--trunk-scan` target can replace it while that row is on air with `--squelch-db <dB>`
+    in its `options` column (whole dB, `-100..0`, `0` = off, omitted = inherit this value); see
+    `docs/csv-formats.md`.
 - RTL‑TCP: `-i rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]`
 - SoapySDR: `-i soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]]`
 - TCP raw PCM16LE input (mono): `-i tcp[:host:port]` (bare `tcp` connects to `localhost:7355`; sample rate uses `-s`, default 48000)
@@ -682,6 +685,10 @@ cache file. Direct frequency changes are disabled during `--trunk-scan`, whose t
 - A `sql` value that is not a number leaves the squelch as it was rather than switching it off. A disabled squelch is
   reported as `off` everywhere it is shown — the startup banner, the terminal input line, the DSP panel — so it is
   never mistaken for a threshold gating at the −120 dB display floor.
+- A scan row or target may carry its own `--squelch-db`. It uses these same dB units but only the
+  negative and `0` forms: the linear positive form is refused there. While the row is on air it replaces this
+  threshold; leaving it, or stopping the scan, restores this one. The squelch menu and Qt panel still edit this
+  configured value, and a save writes it, never the row's.
 - For DMR data/LRRP on direct RTL input, use `bw=48` when possible, or at least `bw=24`; lower basebands may still decode voice but corrupt data PDUs.
 - Note: For EDACS analog voice follow, `sql <= 0` now uses a bounded fallback watchdog to avoid indefinite VC hold when no release marker is detected.
 - RTL USB, RTL-TCP, SoapySDR, and IQ replay digital decode run in the symbol domain. The digital decoder receives one

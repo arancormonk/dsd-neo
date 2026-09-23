@@ -9,6 +9,7 @@
 
 #include <curses.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
@@ -58,12 +59,16 @@ ui_print_kv_line(const char* label, const char* fmt, ...) {
 }
 
 static void
-dsp_status_print_squelch(const dsd_opts* opts) {
+dsp_status_print_squelch(const dsd_opts* opts, const dsd_state* state) {
     if (!opts) {
         return;
     }
-    char status[64];
-    if (ui_dsp_format_squelch_status(opts->rtl_pwr, opts->rtl_squelch_level, status, sizeof(status)) == 0) {
+    /* The threshold in force, marked when a scan row or target set it (issue #521). */
+    dsd_app_squelch_view view;
+    const int row_override = dsd_app_squelch_view_get(opts, state, &view) == 0 && view.row_override;
+    char status[72];
+    if (ui_dsp_format_squelch_status(opts->rtl_pwr, opts->rtl_squelch_level, row_override, status, sizeof(status))
+        == 0) {
         ui_print_kv_line("Squelch", "%s", status);
     }
 }
@@ -158,7 +163,7 @@ print_dsp_status(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RTLSDR
     dsp_status_print_front_and_path(&snap);
 #endif
-    dsp_status_print_squelch(opts);
+    dsp_status_print_squelch(opts, state);
 #ifdef USE_RTLSDR
     if (snap.cq) {
         dsp_status_print_cqpsk_metrics(&snap);

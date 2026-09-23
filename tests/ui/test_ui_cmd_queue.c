@@ -19,6 +19,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -37,11 +38,13 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -156,8 +159,8 @@ enc_lockout_inert(const dsd_state* state) {
 
 static int
 expect_str(const char* tag, const char* got, const char* want) {
-    if (strcmp(got, want) != 0) {
-        DSD_FPRINTF(stderr, "%s: got \"%s\" want \"%s\"\n", tag, got, want);
+    if (!got || !want || strcmp(got, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: got \"%s\" want \"%s\"\n", tag, got ? got : "(null)", want ? want : "(null)");
         return 1;
     }
     return 0;
@@ -4141,6 +4144,9 @@ test_config_refuses_scanner_under_trunk_scan(void) {
 
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 static int g_config_rtl_creates;
+/* The threshold a stream would open with: rtl_demod_config copies it into the demod. */
+static double g_config_rtl_create_squelch = -1.0;
+static int g_config_rtl_create_frame_p25p1 = -1;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
@@ -4148,7 +4154,8 @@ int __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx);
 
 int
 __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
-    (void)opts;
+    g_config_rtl_create_squelch = opts ? opts->rtl_squelch_level : -1.0;
+    g_config_rtl_create_frame_p25p1 = opts ? opts->frame_p25p1 : -1;
     *out_ctx = NULL;
     ++g_config_rtl_creates;
     return -1;
@@ -4177,6 +4184,208 @@ test_config_rtl_restart_under_policy_guard(void) {
     rc |= expect_int("RTL restart config completes without nesting", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("RTL restart config reached stream creation", g_config_rtl_creates, 1);
     rc |= expect_true("failed RTL restart leaves no stream", state.rtl_ctx == NULL && opts.rtl_started == 0);
+    freeState(&state);
+    return rc;
+}
+#endif
+
+/* --- Issue #521: squelch edits beneath a row or target that overrides it --- */
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/* The level the RTL demodulator was last handed, by the scan scope (runtime hook) or by a
+ * command (rtl_stream_set_channel_squelch, wrapped below); the last writer wins, as it does in
+ * the demod. */
+static int g_cmd_squelch_pushes;
+static double g_cmd_squelch_pushed = -1.0;
+
+static void
+record_cmd_squelch_push(double mean_power) {
+    g_cmd_squelch_pushes++;
+    g_cmd_squelch_pushed = mean_power;
+}
+
+// GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+void __wrap_rtl_stream_set_channel_squelch(float level);
+
+void
+__wrap_rtl_stream_set_channel_squelch(float level) {
+    record_cmd_squelch_push((double)level);
+}
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+
+/* The demod keeps a float, so a command's push is compared at float precision. */
+static int
+expect_squelch_db(const char* tag, double level, double db) {
+    const double want = dsd_squelch_level_from_sql(db);
+    return expect_true(tag, fabs(level - want) <= 1e-6 * fmax(fabs(level), fabs(want)));
+}
+
+static double
+configured_squelch(const dsd_state* state) {
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    return configured ? configured->rtl_squelch_level : -1.0;
+}
+
+static void
+init_squelch_row_context(dsd_opts* opts, dsd_state* state) {
+    init_test_context(opts, state);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->audio_out_type = 9;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof(opts->audio_in_dev), "rtl:0:851375000:22:0:24:-80:2");
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.set_channel_squelch = record_cmd_squelch_push};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_cmd_squelch_pushes = 0;
+    g_cmd_squelch_pushed = -1.0;
+}
+
+/* Every squelch editor edits the configured default, never the row's value; the row keeps its
+ * threshold in dsd_opts and in the demod, a shadowed edit says so, and a save writes only the
+ * default. Airspy edits and the input enables are not scoped: a stream they open starts on the
+ * row's acquisition and threshold, the ones in force. */
+static int
+test_squelch_commands_edit_the_configured_default(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_squelch_row_context(&opts, &state);
+    int rc = expect_int("squelch row entered", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_SQUELCH;
+    row.squelch_db = -60;
+    rc |= expect_int("squelch row installed", dsd_scan_mode_options(&opts, &state, &row), 0);
+    rc |= expect_int("squelch row pushed once", g_cmd_squelch_pushes, 1);
+    rc |= expect_squelch_db("squelch row demod level", g_cmd_squelch_pushed, -60.0);
+    const int row_frame_p25p1 = opts.frame_p25p1;
+    rc |= expect_true("the DMR row differs from the configured decoder set",
+                      dsd_scan_mode_configured_view(&state)->frame_p25p1 != row_frame_p25p1);
+
+    /* A shadowed edit reaches the default alone: the demod keeps the row's threshold and hears
+     * nothing, since nothing it gates on changed. */
+    g_cmd_squelch_pushes = 0;
+    rc |= expect_true("shadowed squelch queued", dsd_app_command_set_double(DSD_APP_CMD_RTL_SET_SQL_DB, -75.0) > 0);
+    rc |= expect_int("shadowed squelch drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_squelch_db("shadowed squelch keeps the row", opts.rtl_squelch_level, -60.0);
+    rc |= expect_squelch_db("shadowed squelch edits the default", configured_squelch(&state), -75.0);
+    rc |= expect_int("shadowed squelch leaves the demod alone", g_cmd_squelch_pushes, 0);
+    rc |= expect_squelch_db("shadowed squelch demod level", g_cmd_squelch_pushed, -60.0);
+    rc |= expect_str("shadowed squelch toast", state.ui_msg,
+                     "Default squelch -75.0 dB; this channel overrides it (-60.0 dB)");
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    rc |= expect_int("save keeps the user default", saved.rtl_sql, -75);
+
+    /* No override on air: the edit applies to what is in force, and the toast says just that. */
+    rc |= expect_int("row squelch cleared", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    rc |= expect_squelch_db("cleared row hands back the edited default", g_cmd_squelch_pushed, -75.0);
+    rc |= expect_true("plain squelch queued", dsd_app_command_set_double(DSD_APP_CMD_RTL_SET_SQL_DB, -70.0) > 0);
+    rc |= expect_int("plain squelch drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_squelch_db("plain squelch in force", opts.rtl_squelch_level, -70.0);
+    rc |= expect_squelch_db("plain squelch edits the default", configured_squelch(&state), -70.0);
+    rc |= expect_squelch_db("plain squelch demod level", g_cmd_squelch_pushed, -70.0);
+    rc |= expect_str("plain squelch toast", state.ui_msg, "Applied: RTL squelch -> -70.0 dB");
+    rc |= expect_int("row squelch reinstalled", dsd_scan_mode_options(&opts, &state, &row), 0);
+    rc |= expect_squelch_db("reinstalled row demod level", g_cmd_squelch_pushed, -60.0);
+
+    /* AIRSPY_SET rewrites no squelch and stays unscoped: the stream it reopens starts on the
+     * row's threshold and decoder set, not the configured baseline. */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "airspy");
+    g_config_rtl_creates = 0;
+    dsd_app_airspy_setting_payload edit;
+    DSD_MEMSET(&edit, 0, sizeof edit);
+    DSD_SNPRINTF(edit.key, sizeof edit.key, "%s", "airspy_bias_tee");
+    DSD_SNPRINTF(edit.value, sizeof edit.value, "%s", "on");
+    rc |= expect_true("airspy edit queued", dsd_app_command_submit(DSD_APP_CMD_AIRSPY_SET, &edit, sizeof edit) > 0);
+    rc |= expect_int("airspy edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("airspy edit reopened the stream", g_config_rtl_creates >= 1);
+    rc |= expect_squelch_db("airspy reopen opens on the row", g_config_rtl_create_squelch, -60.0);
+    rc |= expect_int("airspy reopen keeps the row's decoder set", g_config_rtl_create_frame_p25p1, row_frame_p25p1);
+    rc |= expect_squelch_db("airspy edit keeps the row", opts.rtl_squelch_level, -60.0);
+    rc |= expect_squelch_db("airspy edit keeps the default", configured_squelch(&state), -70.0);
+    rc |= expect_squelch_db("airspy edit demod level", g_cmd_squelch_pushed, -60.0);
+
+    /* Enabling an input does not rewrite the squelch either: the stream it opens starts on the
+     * row's level, the one in force, and the default stays put. The Airspy enable rewrites the
+     * device spec first, so it gets its own step. */
+    g_config_rtl_creates = 0;
+    rc |= expect_true("airspy enable input queued", post_empty(DSD_APP_CMD_AIRSPY_ENABLE_INPUT) > 0);
+    rc |= expect_int("airspy enable input drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("airspy enable input selects the Airspy", opts.audio_in_dev, "airspy");
+    rc |= expect_true("airspy enable input opened a stream", g_config_rtl_creates >= 1);
+    rc |= expect_squelch_db("airspy enable input opens on the row", g_config_rtl_create_squelch, -60.0);
+    rc |= expect_squelch_db("airspy enable input keeps the row", opts.rtl_squelch_level, -60.0);
+    rc |= expect_squelch_db("airspy enable input keeps the default", configured_squelch(&state), -70.0);
+
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "rtl:0:851375000:22:0:24:-70:2");
+    g_config_rtl_creates = 0;
+    rc |= expect_true("enable input queued", post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT) > 0);
+    rc |= expect_int("enable input drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("enable input opened a stream", g_config_rtl_creates >= 1);
+    rc |= expect_squelch_db("enable input opens on the row", g_config_rtl_create_squelch, -60.0);
+    rc |= expect_squelch_db("enable input keeps the default", configured_squelch(&state), -70.0);
+
+    /* CONFIG_APPLY pushes its own default while suspended; the row's level comes back after. */
+    dsdneoUserConfig cfg = {0};
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_device = 0;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof(cfg.rtl_freq), "851.375M");
+    cfg.rtl_gain = 22;
+    cfg.rtl_bw_khz = 24;
+    cfg.rtl_sql = -65;
+    cfg.rtl_volume = 2;
+    g_cmd_squelch_pushes = 0;
+    rc |= expect_true("squelch config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("squelch config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_squelch_db("config keeps the row", opts.rtl_squelch_level, -60.0);
+    rc |= expect_squelch_db("config edits the default", configured_squelch(&state), -65.0);
+    rc |= expect_true("config re-pushes the row", g_cmd_squelch_pushes >= 1);
+    rc |= expect_squelch_db("config demod level", g_cmd_squelch_pushed, -60.0);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &saved);
+    rc |= expect_int("save after config keeps the user default", saved.rtl_sql, -65);
+
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_squelch_db("leave restores the default", opts.rtl_squelch_level, -65.0);
+    rc |= expect_squelch_db("leave pushes the default", g_cmd_squelch_pushed, -65.0);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    freeState(&state);
+    return rc;
+}
+
+/* A squelch nudge is not a decoder change. Frame sync writes the detected Phase 2 polarity into
+ * dsd_opts while a P25 row is on air; had the setter suspended and re-applied the scope, that
+ * live value would read as an acquisition change and end the followed call. */
+static int
+test_squelch_edit_keeps_live_acquisition(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_squelch_row_context(&opts, &state);
+    int rc = expect_int("p25 row entered", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_P25), 0);
+    rc |= expect_int("p25 row options", dsd_scan_mode_options(&opts, &state, NULL), 0);
+    rc |= expect_int("p25 row polarity from the preset", opts.inverted_p2, 0);
+    for (int shadowed = 0; shadowed <= 1; shadowed++) {
+        if (shadowed) {
+            dsd_scan_option_values row = {0};
+            row.present = DSD_SCAN_OPT_SQUELCH;
+            row.squelch_db = -60;
+            rc |= expect_int("p25 row squelch", dsd_scan_mode_options(&opts, &state, &row), 0);
+        }
+        opts.inverted_p2 = 1;
+        opts.trunk_is_tuned = 1;
+        state.trunk_vc_freq[0] = 851012500;
+        const double db = shadowed ? -75.0 : -70.0;
+        rc |= expect_true("live squelch queued", dsd_app_command_set_double(DSD_APP_CMD_RTL_SET_SQL_DB, db) > 0);
+        rc |= expect_int("live squelch drained", dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_squelch_db("live squelch edits the default", configured_squelch(&state), db);
+        rc |= expect_squelch_db("live squelch level in force", opts.rtl_squelch_level, shadowed ? -60.0 : db);
+        rc |= expect_int("live squelch keeps the detected polarity", opts.inverted_p2, 1);
+        rc |= expect_int("live squelch keeps the followed call", opts.trunk_is_tuned, 1);
+        rc |= expect_true("live squelch keeps the voice channel", state.trunk_vc_freq[0] == 851012500);
+        rc |= expect_int("live squelch is not an acquisition change", dsd_scan_mode_active(&state), DSD_SCAN_MODE_P25);
+    }
+    dsd_scan_mode_leave(&opts, &state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
     freeState(&state);
     return rc;
 }
@@ -4327,6 +4536,8 @@ main(void) {
     rc |= test_config_keeps_trunk_scan_lifecycle();
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= test_config_rtl_restart_under_policy_guard();
+    rc |= test_squelch_commands_edit_the_configured_default();
+    rc |= test_squelch_edit_keeps_live_acquisition();
 #endif
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_dmr_policy_command_ticks_owner(DSD_APP_CMD_LOCKOUT_SLOT);

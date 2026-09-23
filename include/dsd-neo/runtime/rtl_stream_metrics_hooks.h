@@ -45,6 +45,8 @@ typedef struct {
     int (*stream_active)(void);
     int (*input_level)(dsd_input_level_snapshot* out);
     int (*apply_demod_profile)(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps);
+    /** Channel squelch threshold in mean-power units (rtl_squelch_level's); 0 switches it off. */
+    void (*set_channel_squelch)(double mean_power);
 } dsd_rtl_stream_metrics_hooks;
 
 typedef enum DSD_ATTR_PACKED dsd_rtl_stream_channel_profile {
@@ -72,6 +74,14 @@ int dsd_rtl_stream_metrics_hook_input_level(dsd_input_level_snapshot* out);
  */
 int dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels,
                                                     int channel_profile, int ted_sps);
+/**
+ * @brief Hand the demodulator's channel squelch a new threshold.
+ *
+ * Scan rows and targets that override the squelch (issue #521) reach the RTL demodulator
+ * only through this hook; the engine maps it to rtl_stream_set_channel_squelch(). Returns 0
+ * when forwarded and -1 when no radio backend is installed.
+ */
+int dsd_rtl_stream_metrics_hook_set_channel_squelch(double mean_power);
 int dsd_rtl_stream_metrics_hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active);
 int dsd_rtl_stream_metrics_hook_request_cqpsk_reacquire(void);
 int dsd_rtl_stream_metrics_hook_cqpsk_timing_bias(void);

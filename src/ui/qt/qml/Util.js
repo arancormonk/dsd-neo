@@ -416,3 +416,11 @@ function decryptionProtocol(flags) {
     if (value.indexOf("-fy") >= 0) return "ysf"
     return "mixed"
 }
+
+// A scan row's or target's own squelch (--squelch-db), for the channel-map review and the
+// target preview. Absent inherits the session's default; 0 is off.
+function squelchSummary(db) {
+    if (db === undefined || db === null)
+        return qsTr("Squelch: inherit")
+    return db === 0 ? qsTr("Squelch: off") : qsTr("Squelch: %1 dB").arg(db)
+}

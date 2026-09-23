@@ -49,11 +49,25 @@ ModalSheet {
     readonly property bool airspyActive: metrics.airspy !== undefined && metrics.airspy.gain_mode !== undefined
     readonly property int gainDb: isNaN(pendingGain) ? metrics.tunerGainDb : pendingGain
     readonly property int ppm: isNaN(pendingPpm) ? metrics.ppm : pendingPpm
-    readonly property real squelchDb: isNaN(pendingSquelch) ? metrics.squelchDb : pendingSquelch
+    // A scan row or target can carry its own squelch (--squelch-db). While it is on
+    // air the readout is the row's, and the buttons edit the configured default
+    // beneath it: an edit made to the row would be gone the moment the scanner
+    // moved on. Whether each level is off is the engine's decision, not the sign
+    // of its dB reading: a full-scale default also reads 0 dB and gates everything.
+    readonly property bool squelchRowOverride: metrics.squelchRowOverride === true
+    readonly property real baseSquelchDb: squelchRowOverride ? metrics.configuredSquelchDb : metrics.squelchDb
+    readonly property bool baseSquelchOff: squelchRowOverride
+        ? metrics.configuredSquelchOff : metrics.squelchOff
+    readonly property real squelchDb: isNaN(pendingSquelch) ? baseSquelchDb : pendingSquelch
     // Off is a state of its own, not a very low threshold: squelchDb bottoms out
     // at the -120 dB display floor either way. A pending request speaks for
     // itself, since 0 is what the engine reads as "switch it off".
-    readonly property bool squelchOff: isNaN(pendingSquelch) ? metrics.squelchOff : pendingSquelch >= 0
+    readonly property bool squelchOff: isNaN(pendingSquelch) ? baseSquelchOff : pendingSquelch >= 0
+    // The threshold in force comes first; with a row override that is the row's,
+    // and the default being edited is named below it.
+    readonly property string squelchReading: squelchRowOverride
+        ? squelchText(metrics.effectiveSquelchOff, metrics.effectiveSquelchDb)
+        : squelchText(squelchOff, squelchDb)
 
     // 0 dB is the tuner's automatic gain, not silence — worth saying, because
     // "0" next to a signal that vanished reads as a mistake otherwise.
@@ -64,6 +78,11 @@ ModalSheet {
         // Android the service may have been driven from elsewhere since.
         forgetRequests();
         visible = true;
+    }
+
+    /** A squelch reading as the panel prints it. */
+    function squelchText(off, db) {
+        return off ? qsTr("off") : Math.round(db) + " dB";
     }
 
     /** Drop every outstanding request and go back to reading the engine. */
@@ -224,7 +243,10 @@ ModalSheet {
                 objectName: "radioSquelchValue"
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
-                text: sheet.squelchOff ? qsTr("off") : Math.round(sheet.squelchDb) + " dB"
+                text: sheet.squelchReading
+                // Read aloud as the terminal prints it, row note and default included.
+                Accessible.role: Accessible.StaticText
+                Accessible.name: sheet.squelchRowOverride ? metrics.squelchReadout : sheet.squelchReading
                 color: Theme.textPrimary
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(14)
@@ -242,6 +264,41 @@ ModalSheet {
                 text: "+"
                 accessibleName: qsTr("Increase Squelch")
                 onClicked: sheet.stepSquelch(5)
+            }
+        }
+        // Shown only while the row on air overrides the squelch: says the row owns the
+        // reading above, and which default the buttons are changing.
+        Row {
+            objectName: "radioSquelchRowNote"
+            visible: sheet.squelchRowOverride
+            spacing: 8
+            Rectangle {
+                objectName: "radioSquelchRowBadge"
+                implicitWidth: rowBadge.implicitWidth + 14
+                implicitHeight: Math.max(20, rowBadge.implicitHeight + 8)
+                anchors.verticalCenter: parent.verticalCenter
+                radius: 5
+                color: "transparent"
+                border.width: 1
+                border.color: Theme.controlBorder
+
+                Text {
+                    id: rowBadge
+                    anchors.centerIn: parent
+                    text: qsTr("row")
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(10)
+                    font.letterSpacing: 1
+                    color: Theme.cyan
+                }
+            }
+            Text {
+                objectName: "radioSquelchDefault"
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("default %1").arg(sheet.squelchText(sheet.squelchOff, sheet.squelchDb))
+                color: Theme.textSecondary
+                font.family: Theme.mono
+                font.pixelSize: Theme.fontSize(12)
             }
         }
     }

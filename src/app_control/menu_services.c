@@ -32,6 +32,7 @@
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1009,7 +1010,7 @@ svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz) {
 }
 
 int
-svc_rtl_set_sql_db(dsd_opts* opts, double dB) {
+svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB) {
     if (!opts) {
         return -1;
     }
@@ -1017,9 +1018,14 @@ svc_rtl_set_sql_db(dsd_opts* opts, double dB) {
      * signal there is. Spending that value on "off" instead gives both UIs a way
      * to switch the squelch off, and matches what 0 already means in the `sql`
      * CLI field and the rtl_sql config key. */
-    opts->rtl_squelch_level = (dB >= 0.0) ? 0.0 : dsd_squelch_level_from_sql(dB);
-    /* Sync the demod state for channel-based squelching */
-    rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
+    const double level = (dB >= 0.0) ? 0.0 : dsd_squelch_level_from_sql(dB);
+    /* The operator edits the configured default. A scan row or target that overrides the
+     * squelch (--squelch-db) keeps its own threshold, in dsd_opts and in the demod, until the
+     * scanner leaves it. */
+    if (dsd_scan_mode_set_configured_squelch(opts, state, level) == 1) {
+        /* Sync the demod state for channel-based squelching */
+        rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
+    }
     return 0;
 }
 

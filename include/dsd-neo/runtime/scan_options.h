@@ -37,6 +37,8 @@ enum {
     DSD_SCAN_OPT_KEY_PROFILE_REF = 1U << 19,
     /** The row caps how long one scan-target visit may last (issue #507). */
     DSD_SCAN_OPT_MAX_VISIT = 1U << 20,
+    /** The row sets its own squelch threshold (--squelch-db, issue #521). */
+    DSD_SCAN_OPT_SQUELCH = 1U << 21,
     DSD_SCAN_OPT_DIRECT = DSD_SCAN_OPT_BP | DSD_SCAN_OPT_HYTERA | DSD_SCAN_OPT_SCALAR | DSD_SCAN_OPT_SCRAMBLER,
     DSD_SCAN_OPT_FILES = DSD_SCAN_OPT_HEX_FILE | DSD_SCAN_OPT_DEC_FILE
 };
@@ -58,6 +60,8 @@ typedef struct {
     int hold_ms;
     /** 0 = explicit per-row disable */
     int max_visit_ms;
+    /** Whole dB from -100 to 0 in the rtl_sql convention; 0 = explicit per-row off. */
+    int squelch_db;
     int mute_dmr;
     int tune_data_calls;
     int tune_enc_calls;

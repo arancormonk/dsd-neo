@@ -233,8 +233,13 @@ int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz);
  * Negative values are a threshold in dB. Zero or above switches the squelch off,
  * the same meaning 0 carries in the `sql` field of an input string and in the
  * `rtl_sql` config key; a 0 dB threshold is full scale and would never open.
+ * The value is the configured default: while a scan row or target overrides the
+ * squelch, the row's threshold stays in force (dsd_scan_mode_set_configured_squelch()).
+ * @p state may be NULL when no scan scope can exist. Although @p state is const, the
+ * call writes the scan scope attached to it: call it only on the decoder thread with
+ * the live state, never with a frontend snapshot (dsd_app_get_latest_snapshot()).
  */
-int svc_rtl_set_sql_db(dsd_opts* opts, double dB);
+int svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB);
 /** @brief Set RTL monitor/non-symbol gain multiplier (clamped to 0–3). */
 int svc_rtl_set_volume_mult(dsd_opts* opts, int mult);
 /** @brief Toggle RTL bias tee (applied live when stream active). */

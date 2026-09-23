@@ -44,7 +44,9 @@ int dsd_csv_channel_path_columns(char* header, int columns[3]);
 int dsd_csv_channel_has_slot(const char* channel);
 
 /** Nonsecret configured row scope. Inherited fields use -1; key_source is
- * 0 inherit, 1 direct, 2 collection, 3 explicitly empty. No key bytes or paths. */
+ * 0 inherit, 1 direct, 2 collection, 3 explicitly empty. No key bytes or paths.
+ * squelch_db is meaningful only with squelch_db_set (whole dB, 0 = off); -1 is a real
+ * threshold there, so an inheriting row says so through squelch_db_set = 0. */
 typedef struct {
     size_t index;
     uint64_t frequency_hz;
@@ -54,6 +56,8 @@ typedef struct {
     int key_source;
     int force;
     int dmr_mapping_count;
+    int squelch_db_set;
+    int squelch_db;
 } dsd_csv_channel_profile;
 
 typedef void (*dsd_csv_channel_profile_cb)(const dsd_csv_channel_profile* row, void* context);

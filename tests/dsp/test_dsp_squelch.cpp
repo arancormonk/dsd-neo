@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <stdio.h>
@@ -22,6 +23,41 @@ all_zero(const float* x, int n) {
         }
     }
     return 1;
+}
+
+/* Issue #521: a scan row's --squelch-db reaches the demod as dsd_squelch_level_from_sql() of
+ * its whole-dB value. With the channel held at -50 dB, a -60 dB row passes it, a -40 dB row
+ * closes on it, and a row that switches the squelch off (0) passes it again. */
+static int
+row_thresholds_gate_a_fixed_channel(demod_state* s) {
+    const int pairs = 200;
+    static float buf[(size_t)200 * 2];
+    const float amplitude = 0.0031622776f; /* amplitude^2 = 1e-5 = -50 dB */
+
+    const struct {
+        int db;
+        int squelched;
+    } rows[] = {{-60, 0}, {-40, 1}, {0, 0}, {-100, 0}};
+
+    for (size_t r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
+        for (int n = 0; n < pairs; n++) {
+            float sign = (n & 1) ? -1.0f : 1.0f;
+            buf[(size_t)(2 * n) + 0] = sign * amplitude;
+            buf[(size_t)(2 * n) + 1] = sign * amplitude;
+        }
+        s->lowpassed = buf;
+        s->lp_len = pairs * 2;
+        s->channel_pwr = 0.0f;
+        s->channel_squelch_level.store((float)dsd_squelch_level_from_sql((double)rows[r].db),
+                                       std::memory_order_relaxed);
+        full_demod(s);
+        if (s->channel_squelched != rows[r].squelched) {
+            DSD_FPRINTF(stderr, "squelch: row %d dB against a -50 dB channel: squelched=%d, want %d (pwr=%.3g)\n",
+                        rows[r].db, s->channel_squelched, rows[r].squelched, s->channel_pwr);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 int
@@ -82,6 +118,11 @@ main(void) {
     if (s->channel_squelched) {
         DSD_FPRINTF(stderr, "squelch: above threshold but channel_squelched is set (pwr=%.6f, thr=%.6f)\n",
                     s->channel_pwr, s->channel_squelch_level.load(std::memory_order_relaxed));
+        free(s);
+        return 1;
+    }
+
+    if (row_thresholds_gate_a_fixed_channel(s) != 0) {
         free(s);
         return 1;
     }

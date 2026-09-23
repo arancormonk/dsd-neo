@@ -620,6 +620,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/scan_timing_view.h
   CXX
 )
+# Issue #521: the shared squelch readout.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_squelch_view
+  HEADERS_PUBLIC_APP_CONTROL_SQUELCH_VIEW
+  dsd-neo/app_control/squelch_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_squelch_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_SQUELCH_VIEW_CXX
+  dsd-neo/app_control/squelch_view.h
+  CXX
+)
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_commands
   HEADERS_PUBLIC_APP_CONTROL_COMMANDS
@@ -2033,6 +2046,21 @@ add_test(
     COMMAND dsd-neo_test_app_control_scan_timing_view
 )
 
+# Issue #521: effective squelch first, "(row; default X)" while a scan row overrides it.
+add_executable(
+    dsd-neo_test_app_control_squelch_view
+    ui/test_app_control_squelch_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_squelch_view
+    PRIVATE dsd-neo_core dsd-neo_runtime ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(
+    NAME APP_CONTROL_SQUELCH_VIEW
+    COMMAND dsd-neo_test_app_control_squelch_view
+)
+
 add_executable(
     dsd-neo_test_app_control_notification_status
     ui/test_app_control_notification_status.c
@@ -2100,12 +2128,13 @@ if(DSD_ENABLE_TERMINAL_UI)
         COMMAND dsd-neo_test_ui_ncurses_p25_display_helpers
     )
 
-    # The shared scan-timing view comes in as a source rather than a stub: the Scan Timing
-    # goldens are only worth anything if they run through the real display table.
+    # The shared scan-timing and squelch views come in as sources rather than stubs: the Scan
+    # Timing and SQL goldens are only worth anything if they run through the real display rules.
     add_executable(
         dsd-neo_test_ui_ncurses_printer_helpers
         ui/test_ui_ncurses_printer_helpers.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
     )
     target_compile_definitions(
         dsd-neo_test_ui_ncurses_printer_helpers
@@ -2790,6 +2819,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_metrics_model
@@ -4124,6 +4154,10 @@ target_link_libraries(
     dsd-neo_test_core_csv_import
     PRIVATE dsd-neo_core dsd-neo_proto_dmr
 )
+target_compile_definitions(
+    dsd-neo_test_core_csv_import
+    PRIVATE "DSD_NEO_TEST_EXAMPLES_DIR=\"${PROJECT_SOURCE_DIR}/examples\""
+)
 add_test(NAME CORE_CSV_IMPORT COMMAND dsd-neo_test_core_csv_import)
 
 add_executable(dsd-neo_test_core_channel_modes core/test_core_channel_modes.c)
@@ -5095,6 +5129,88 @@ add_test(
     COMMAND dsd-neo_test_engine_dmr_cc_recovery
 )
 
+# Per-target squelch overrides (issue #521) observed through the production frame-sync power
+# gate: the real trunk scan coordinator moves between targets while the channel power is held.
+add_executable(
+    dsd-neo_test_engine_scan_squelch_gate
+    engine/test_engine_scan_squelch_gate.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
+    ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+)
+target_include_directories(
+    dsd-neo_test_engine_scan_squelch_gate
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp ${PROJECT_SOURCE_DIR}/src/engine
+)
+target_compile_definitions(
+    dsd-neo_test_engine_scan_squelch_gate
+    PRIVATE DSD_NEO_TEST_HOOKS DSD_TRUNK_SCAN_TEST_CLOCK=1
+)
+target_link_libraries(
+    dsd-neo_test_engine_scan_squelch_gate
+    PRIVATE dsd-neo_app_control dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(
+    NAME ENGINE_SCAN_SQUELCH_GATE
+    COMMAND dsd-neo_test_engine_scan_squelch_gate
+)
+
+# The same gate through the conventional -Y scanner's rows (issue #521). Only the tune and the
+# engine's no-carrier reset are stubbed; the scanner and the frame-sync power gate are real.
+add_executable(
+    dsd-neo_test_engine_channel_scan_squelch_gate
+    engine/test_engine_channel_scan_squelch_gate.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
+    ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+)
+target_include_directories(
+    dsd-neo_test_engine_channel_scan_squelch_gate
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_compile_definitions(
+    dsd-neo_test_engine_channel_scan_squelch_gate
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    # Stubbing the engine's tune and reset keeps engine.c out of the early link, so the
+    # librtlsdr and Codec2 references only arrive with the radio and core archives. Group
+    # every static provider ahead of ${LIBS}: linkers that default to --as-needed
+    # (Debian/Ubuntu) otherwise drop those libraries before anything references them.
+    target_link_libraries(
+        dsd-neo_test_engine_channel_scan_squelch_gate
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_app_control
+            dsd-neo_engine
+            dsd-neo_dispatch
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    # Link with --as-needed everywhere so a local Linux build catches an ordering regression.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(
+            dsd-neo_test_engine_channel_scan_squelch_gate
+            PRIVATE "LINKER:--as-needed"
+        )
+    endif()
+else()
+    target_link_libraries(
+        dsd-neo_test_engine_channel_scan_squelch_gate
+        PRIVATE
+            dsd-neo_app_control
+            dsd-neo_engine
+            dsd-neo_dsp
+            dsd-neo_io_control
+            ${LIBS}
+            dsd-neo_test_support
+    )
+endif()
+add_test(
+    NAME ENGINE_CHANNEL_SCAN_SQUELCH_GATE
+    COMMAND dsd-neo_test_engine_channel_scan_squelch_gate
+)
+
 add_executable(
     dsd-neo_test_engine_scan_voice_gate
     test_support/scan_group_stubs.c
@@ -5354,7 +5470,9 @@ if(
     )
     target_link_options(
         dsd-neo_test_app_command_queue
-        PRIVATE "LINKER:--wrap=rtl_stream_create"
+        PRIVATE
+            "LINKER:--wrap=rtl_stream_create"
+            "LINKER:--wrap=rtl_stream_set_channel_squelch"
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
@@ -10744,6 +10862,71 @@ if(DSD_HAS_RADIO)
             PROPERTIES LABELS iq-decode TIMEOUT 120
         )
     endforeach()
+
+    # Issue #521: a row's --squelch-db gates the demodulator end to end. nxdn48_attenuated is
+    # nxdn48 replayed 20 dB down (tools/build_iq_fixtures.py --derived-only). Measured post-LPF
+    # channel power (demod channel_pwr, fast replay): the leading 0.8 s is digital silence and
+    # the signal-bearing replay block reads -25.8 dB (nxdn48 itself: -5.8 dB). Every threshold
+    # below sits at least 10 dB from that: -10 dB closes the row, -40 dB and off open it. The
+    # host's DSD_NEO_SCAN_REPLAY_DEFAULT_SQL_DB sets the configured default the row overrides
+    # (I/Q replay has no other way to take one), so OPEN and OFF prove the row -- not the
+    # default -- opened the gate, and INHERIT proves a row without the switch keeps the default.
+    function(
+        dsd_neo_add_scan_squelch_test
+        name
+        options
+        default_db
+        expected
+        rejected
+    )
+        set(csv
+            "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_nxdn48_squelch_${name}.csv"
+        )
+        file(
+            WRITE "${csv}"
+            "channel,frequency_hz,mode,options\n1,150000000,nxdn48,${options}\n"
+        )
+        add_test(
+            NAME DECODE_IQ_SCAN_NXDN48_SQUELCH_${name}
+            COMMAND
+                ${CMAKE_COMMAND}
+                -DDSD_BIN=$<TARGET_FILE:dsd-neo_test_scan_mode_replay>
+                "-DMODE=-f1 -C ${csv}"
+                -DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/nxdn48_attenuated.iq.json
+                "-DEXPECTED=${expected}" "-DNOT_EXPECTED=${rejected}" -P
+                ${PROJECT_SOURCE_DIR}/tests/iq_decode_check.cmake
+        )
+        set_tests_properties(
+            DECODE_IQ_SCAN_NXDN48_SQUELCH_${name}
+            PROPERTIES LABELS iq-decode TIMEOUT 120
+        )
+        if(NOT default_db STREQUAL "")
+            set_tests_properties(
+                DECODE_IQ_SCAN_NXDN48_SQUELCH_${name}
+                PROPERTIES
+                    ENVIRONMENT
+                        "DSD_NEO_SCAN_REPLAY_DEFAULT_SQL_DB=${default_db}"
+            )
+        endif()
+    endfunction()
+    # The reject cases require the host's banner and then the engine's end-of-run summary, so a
+    # replay that stopped before the signal-bearing block cannot pass on the banner alone.
+    dsd_neo_add_scan_squelch_test(
+        CLOSED
+        "--squelch-db -10"
+        ""
+        "squelch -10.0 dB \\(row\\).*Total audio errors: "
+        "Src=901"
+    )
+    dsd_neo_add_scan_squelch_test(OPEN "--squelch-db -40" -10 "Src=901" "")
+    dsd_neo_add_scan_squelch_test(OFF "--squelch-db 0" -10 "Src=901" "")
+    dsd_neo_add_scan_squelch_test(
+        INHERIT
+        ""
+        -10
+        "squelch -10.0 dB.*Total audio errors: "
+        "Src=901|\\(row\\)"
+    )
 endif()
 
 # The validation facade must exercise the real CSV parser and its cleanup path.
@@ -10754,6 +10937,10 @@ add_executable(
 target_link_libraries(
     dsd-neo_test_app_control_trunk_scan_validate
     PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+)
+target_compile_definitions(
+    dsd-neo_test_app_control_trunk_scan_validate
+    PRIVATE "DSD_NEO_TEST_EXAMPLES_DIR=\"${PROJECT_SOURCE_DIR}/examples\""
 )
 add_test(
     NAME APP_CONTROL_TRUNK_SCAN_VALIDATE

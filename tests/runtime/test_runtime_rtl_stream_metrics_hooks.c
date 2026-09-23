@@ -5,6 +5,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/input_level.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -94,6 +95,15 @@ fake_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int c
     g_apply_symbol_channel_profile = channel_profile;
     g_apply_ted_sps = ted_sps;
     return 8;
+}
+
+static int g_set_channel_squelch_calls = 0;
+static double g_set_channel_squelch_level = -1.0;
+
+static void
+fake_set_channel_squelch(double mean_power) {
+    g_set_channel_squelch_calls++;
+    g_set_channel_squelch_level = mean_power;
 }
 
 static int
@@ -233,6 +243,9 @@ main(void) {
     assert(input_level.source == DSD_INPUT_LEVEL_SOURCE_UNKNOWN);
     assert(input_level.sample_count == 0U);
     assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 6000, 4, 5, 8) == -1);
+    /* A scan row's squelch has nowhere to go without an installed demodulator (issue #521). */
+    assert(dsd_rtl_stream_metrics_hook_set_channel_squelch(1e-6) == -1);
+    assert(g_set_channel_squelch_calls == 0);
 
     int cqpsk = -1;
     int timing = -1;
@@ -297,6 +310,7 @@ main(void) {
     hooks.stream_generation = fake_stream_generation;
     hooks.stream_active = fake_stream_active;
     hooks.apply_demod_profile = fake_apply_demod_profile;
+    hooks.set_channel_squelch = fake_set_channel_squelch;
     hooks.cqpsk_status = fake_cqpsk_status;
     hooks.request_cqpsk_reacquire = fake_cqpsk_reacquire;
     hooks.cqpsk_timing_bias = fake_cqpsk_timing_bias;
@@ -344,6 +358,10 @@ main(void) {
     assert(g_apply_symbol_levels == 4);
     assert(g_apply_symbol_channel_profile == 5);
     assert(g_apply_ted_sps == 8);
+
+    assert(dsd_rtl_stream_metrics_hook_set_channel_squelch(1e-6) == 0);
+    assert(g_set_channel_squelch_calls == 1);
+    assert(fabs(g_set_channel_squelch_level - 1e-6) < 1e-12);
 
     // Out-parameter hooks must report both call counts and returned values.
     cqpsk = timing = 0;

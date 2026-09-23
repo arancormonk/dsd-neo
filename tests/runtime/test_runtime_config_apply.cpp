@@ -38,6 +38,9 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
 #include <math.h>
@@ -647,6 +650,70 @@ test_config_reapply_converts_rtl_squelch_from_db(void) {
     rc |= expect_float_near("config re-apply of rtl_sql 0 opens the demod gate", g_wrap_last_channel_squelch, 0.0f,
                             1e-9f);
 
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+/* The engine maps the runtime squelch hook onto the same demod setter the config path calls. */
+static void
+forward_row_squelch_to_demod(double mean_power) {
+    (void)rtl_stream_set_channel_squelch((float)mean_power);
+}
+
+/*
+ * Issue #521: a config applied while a scan row overrides the squelch edits the configured
+ * default. The apply pushes that default to the demod while the scope is suspended; resume has
+ * to hand the demod the row's threshold again, and a save taken afterwards writes the default.
+ */
+static int
+test_config_reapply_under_row_squelch_keeps_the_row(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:851375000:22:0:24:-80:2");
+    dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.set_channel_squelch = forward_row_squelch_to_demod;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    int rc = expect_true("row squelch scope", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    dsd_scan_option_values row;
+    DSD_MEMSET(&row, 0, sizeof row);
+    row.present = DSD_SCAN_OPT_SQUELCH;
+    row.squelch_db = -60;
+    rc |= expect_true("row squelch installed", dsd_scan_mode_options(opts, state, &row) == 0);
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_device = 0;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "460.125M");
+    cfg.rtl_gain = 22;
+    cfg.rtl_bw_khz = 24;
+    cfg.rtl_sql = -50;
+    cfg.rtl_volume = 2;
+    g_wrap_last_channel_squelch = -1.0f;
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
+    rc |= expect_true("config under a row edits the default",
+                      configured && fabs(configured->rtl_squelch_level - pow(10.0, -5.0)) < 1e-12);
+    rc |= expect_true("config under a row keeps the row in force", fabs(opts->rtl_squelch_level - 1e-6) < 1e-15);
+    rc |=
+        expect_float_near("config under a row leaves the demod on the row", g_wrap_last_channel_squelch, 1e-6f, 1e-12f);
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(opts, state, &saved);
+    rc |= expect_true("save under a row writes the default", saved.rtl_sql == -50);
+
+    dsd_scan_mode_leave(opts, state);
+    rc |= expect_float_near("leaving the row hands the demod the default", g_wrap_last_channel_squelch, 1e-5f, 1e-11f);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
     free_test_runtime(&runtime);
     return rc;
 }
@@ -2974,6 +3041,7 @@ main(void) {
     rc |= test_ui_rtl_setting_commands_stage_without_live_restart();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_config_reapply_converts_rtl_squelch_from_db();
+    rc |= test_config_reapply_under_row_squelch_keeps_the_row();
 #endif
 #endif
     return rc ? 1 : 0;

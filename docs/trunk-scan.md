@@ -37,7 +37,7 @@ Example:
 ```csv
 id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gain,options,p25_bandplan_csv
 county-p25,p25-trunk,851012500,,3000,,P25 control channel,cqpsk,18,,p25_bandplan.csv
-field-p25,p25-conventional,851500000,,1500,1200,one-frequency P25,c4fm,,,
+field-p25,p25-conventional,851500000,,1500,1200,one-frequency P25,c4fm,,--squelch-db -55,
 city-dmr,dmr-trunk,456318750,dmr_t3_chan.csv,3000,,DMR Tier III control channel,auto,,,
 plant-dmr,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto,--no-force-key,
 site-nxdn,nxdn-trunk,461037500,,3000,,NXDN Type-C control channel,auto,,,
@@ -49,7 +49,8 @@ field-nxdn48,nxdn48-conventional,461556250,,1500,1200,one-frequency NXDN48 (6.25
 The repository includes a starter file at `examples/trunk_scan_targets.csv`. Companion paths in these examples
 refer to files in `examples/`; replace the illustrative frequencies, keys and band plan with your system's values.
 Omitted scoped settings inherit the outer CLI/configuration; the DMR conventional example uses
-`--no-force-key` to disable inherited privacy forcing without changing other settings.
+`--no-force-key` to disable inherited privacy forcing without changing other settings, and the P25 conventional
+example sets its own squelch with `--squelch-db -55` while every other target keeps the configured one.
 
 Column behavior:
 
@@ -534,6 +535,18 @@ outright, including a row `0`, which exempts that target while the global cap st
 without it inherits the global. Accepted values are `0` or `1000..3600000`, the same bounds as the CLI switch. Saving
 configuration while a target is parked records the configured global, not the parked target's override.
 
+`--squelch-db <dB>` is accepted on every target type as well. It sets the squelch while the target is
+parked: whole dB from `-100` to `0`, the units of `[input] rtl_sql`, where `0` switches the squelch off for that
+target and omitting the switch inherits the configured default. Advancing to the next target, a failed retune that
+rolls back to the original, and shutdown each restore the right value: the incoming target's own, the original
+target's own, or the configured default. On an RTL-family input the threshold gates the demodulator; on a
+`p25-trunk`, `dmr-trunk` or `nxdn*-trunk` target that includes the control channel, so a threshold above the control
+channel's level makes the whole system look dead. With rigctl tuning a PCM, UDP or TCP audio source the value
+cannot gate digital acquisition: it only gates the analog input monitor (`-8`, with audio output on) and the carrier
+activity that monitor stamps, and scan start logs a warning naming each such target. Terminal, Qt
+and Android show the target's threshold with the configured default beside it; the squelch controls and Config->Save
+work on the configured default.
+
 A row that names key material in `options` (`-b`, `-H`, `-1`, `-R`, `-K`, `-k`) may still fill the legacy key
 columns for the other families; the merge rejects a column that duplicates an option. Optional header names,
 including `options` and its `relevant_CLI_switches` alias, match ASCII case-insensitively.
@@ -565,7 +578,7 @@ review the target preview, name the list, select its receiver settings, and Save
 The list's Play button starts the imported CSV directly.
 
 The CSV stays authoritative. Its target IDs, order, columns and supported `options`
-are preserved; the preview shows inherited timing separately from explicit values.
+are preserved; the preview shows inherited timing and squelch separately from explicit values.
 An explicit target option overrides the corresponding session default, and leaving
 the target restores the baseline. For example, a target can use `--enc-follow`,
 `--no-force-key`, or its own `--scan-max-visit-ms`. The manual editor's restriction
@@ -601,7 +614,8 @@ Extra decoder arguments containing `-t` still take precedence. Voice/sync-loss h
 is separate from idle dwell on every target and the activity hold on conventional targets.
 The editor does not model the per-visit cap: put `--scan-max-visit-ms <ms>` in Extra decoder
 arguments to cap every target in the session, or import a target CSV whose `options`
-cells cap individual targets.
+cells cap individual targets. Per-target squelch is likewise CSV-only: import a target CSV
+whose `options` cells carry `--squelch-db <dB>`.
 The older channel-scanning mode enabled with `-Y` instead uses `-t` as its dwell
 timer, so changing the app default or a saved-system hang-time override also
 changes that mode's rotation timing.

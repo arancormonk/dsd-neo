@@ -1465,7 +1465,11 @@ rtl_set_sql(void* v) {
     /* Offer 0 for a squelch that is off rather than pwr_to_dB()'s -120 floor:
      * accepting the value shown must not turn a disabled squelch into a real
      * threshold. 0 is also how the `sql` CLI field and rtl_sql spell "off". */
-    const double shown = dsd_squelch_is_off(c->opts->rtl_squelch_level) ? 0.0 : pwr_to_dB(c->opts->rtl_squelch_level);
+    /* The command edits the configured default: a scan row overriding the squelch (issue #521)
+     * keeps its own threshold, so offer the default rather than the row's value. */
+    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(dsd_app_get_latest_snapshot());
+    const double level = configured ? configured->rtl_squelch_level : c->opts->rtl_squelch_level;
+    const double shown = dsd_squelch_is_off(level) ? 0.0 : pwr_to_dB(level);
     ui_prompt_open_double_async("Squelch (dB; 0 = off)", shown, cb_rtl_sql, c);
 }
 

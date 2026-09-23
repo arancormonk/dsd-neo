@@ -381,7 +381,13 @@ samples measured before demodulation. The line is advisory only; DSD-neo never c
 filtering automatically.
 
 The default RTL input line shows the SQL threshold, reading `off` when the squelch is disabled, but does not
-duplicate channel power. Enable the DSP panel when you
+duplicate channel power. While a scan row or target overrides the squelch with `--squelch-db`, the line shows the
+row's threshold first and the configured default beside it: `SQL: -60.0 dB (row; default -80.0 dB)`. The
+`Squelch (dB)...` prompt always offers and edits that configured default; if a row is overriding it, the change
+takes effect when the scanner leaves the row, and the toast says so
+(`Default squelch -75.0 dB; this channel overrides it (-60.0 dB)`). The M17 VOX `SQL:` field on a non-RTL input
+reads the same way after the measured power, and the DSP panel's `Squelch` line marks a row's threshold with
+`(row)`. Enable the DSP panel when you
 need to inspect post-channel-filter squelch power. `RF Level` and `Squelch` are measured at different stages and are not
 expected to match exactly.
 

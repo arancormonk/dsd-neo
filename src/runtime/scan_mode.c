@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -14,10 +15,20 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* What the RTL demodulator holds while a row change is in progress. dsd_scan_mode_enter() leaves
+ * the push to the dsd_scan_mode_options() call that completes the row, so one transition hands
+ * the demod at most one level (a -60 dB row followed by another -60 dB row hands it none). */
+typedef enum {
+    SCAN_SQUELCH_SETTLED = 0, /* the demod holds what dsd_opts held before this entry point */
+    SCAN_SQUELCH_ENTERED,     /* a row was entered; the demod still holds squelch_entered_from */
+    SCAN_SQUELCH_UNKNOWN,     /* entered while suspended: a command may have pushed anything */
+} scan_squelch_pending;
 
 typedef struct {
     dsd_scan_settings configured;
@@ -27,6 +38,8 @@ typedef struct {
     dsdneoUserDecodeMode configured_mode;
     int suspended;
     dsd_scan_option_values options;
+    double squelch_entered_from;
+    scan_squelch_pending squelch_pending;
 } scan_scope;
 
 static const char* const mode_names[] = {"", "p25", "dmr", "nxdn96", "nxdn48", "dpmr", "dstar", "ysf", "m17"};
@@ -82,6 +95,7 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
         return;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
+    out->rtl_squelch_level = opts->rtl_squelch_level;
     out->force_key = state->M;
     out->aggressive_framesync = opts->aggressive_framesync;
     out->dmr_crc_relaxed_default = opts->dmr_crc_relaxed_default;
@@ -141,6 +155,7 @@ _Static_assert(sizeof(((dsd_scan_settings*)0)->group_in_file) == sizeof(((dsd_op
 
 static void
 scan_settings_restore_row_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
+    opts->rtl_squelch_level = saved->rtl_squelch_level;
     opts->aggressive_framesync = saved->aggressive_framesync;
     opts->dmr_crc_relaxed_default = saved->dmr_crc_relaxed_default;
     opts->scan_voice_only = saved->scan_voice_only;
@@ -160,6 +175,7 @@ scan_settings_restore_row_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
  * or interrupt a parked row, so they travel beside the comparison, not through it. */
 static void
 scan_settings_copy_row_opts(dsd_scan_settings* dst, const dsd_scan_settings* src) {
+    dst->rtl_squelch_level = src->rtl_squelch_level;
     dst->force_key = src->force_key;
     dst->aggressive_framesync = src->aggressive_framesync;
     dst->dmr_crc_relaxed_default = src->dmr_crc_relaxed_default;
@@ -352,47 +368,152 @@ scan_scope_apply_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* sco
     scan_scope_apply_timing(opts, state, profile);
 }
 
+typedef void (*scan_option_applier)(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values);
+
+static void
+scan_option_apply_force(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)opts;
+    state->M = values->force;
+}
+
+static void
+scan_option_apply_crc(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    opts->aggressive_framesync = (short)values->strict_crc;
+    opts->dmr_crc_relaxed_default = (uint8_t)!values->strict_crc;
+}
+
+static void
+scan_option_apply_voice(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    opts->scan_voice_only = values->voice_only;
+}
+
+static void
+scan_option_apply_qualify(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    opts->scan_voice_qualify_ms = values->qualify_ms;
+}
+
+static void
+scan_option_apply_hold(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    opts->scan_voice_hold_ms = values->hold_ms;
+}
+
+static void
+scan_option_apply_max_visit(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    opts->scan_max_visit_ms = values->max_visit_ms;
+}
+
+static void
+scan_option_apply_mute_dmr(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    opts->dmr_mute_encL = values->mute_dmr;
+    opts->dmr_mute_encR = values->mute_dmr;
+}
+
+static void
+scan_option_apply_mute_p25(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    (void)values;
+    /* Direct option text arms decryption; undecodable P25 audio stays muted. */
+    opts->unmute_encrypted_p25 = 0;
+}
+
+static void
+scan_option_apply_data(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    opts->trunk_tune_data_calls = values->tune_data_calls;
+}
+
+static void
+scan_option_apply_p25_candidates(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    (void)values;
+    opts->p25_prefer_candidates = 1;
+}
+
+static void
+scan_option_apply_enc(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    opts->trunk_tune_enc_calls = values->tune_enc_calls;
+}
+
+static void
+scan_option_apply_group(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    DSD_MEMCPY(opts->group_in_file, values->group_file, sizeof(opts->group_in_file));
+}
+
+static void
+scan_option_apply_squelch(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
+    (void)state;
+    /* The rtl_sql conversion every other squelch entry point uses: 0 is off. */
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)values->squelch_db);
+}
+
+/* One applier per row option that lands in dsd_opts/dsd_state. A new row option adds a row
+ * here, never a branch: the lookup stays flat however many options the grammar grows. */
+static const struct {
+    uint32_t field;
+    scan_option_applier apply;
+} scan_option_appliers[] = {
+    {DSD_SCAN_OPT_FORCE, scan_option_apply_force},
+    {DSD_SCAN_OPT_CRC, scan_option_apply_crc},
+    {DSD_SCAN_OPT_VOICE, scan_option_apply_voice},
+    {DSD_SCAN_OPT_QUALIFY, scan_option_apply_qualify},
+    {DSD_SCAN_OPT_HOLD, scan_option_apply_hold},
+    {DSD_SCAN_OPT_MAX_VISIT, scan_option_apply_max_visit},
+    {DSD_SCAN_OPT_MUTE_DMR, scan_option_apply_mute_dmr},
+    {DSD_SCAN_OPT_MUTE_P25, scan_option_apply_mute_p25},
+    {DSD_SCAN_OPT_DATA, scan_option_apply_data},
+    {DSD_SCAN_OPT_P25_CANDIDATES, scan_option_apply_p25_candidates},
+    {DSD_SCAN_OPT_ENC, scan_option_apply_enc},
+    {DSD_SCAN_OPT_GROUP, scan_option_apply_group},
+    {DSD_SCAN_OPT_SQUELCH, scan_option_apply_squelch},
+};
+
 static void
 scan_options_apply(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values) {
-    const uint32_t present = values->present;
-    if (present & DSD_SCAN_OPT_FORCE) {
-        state->M = values->force;
+    for (size_t i = 0; i < sizeof(scan_option_appliers) / sizeof(scan_option_appliers[0]); i++) {
+        if (values->present & scan_option_appliers[i].field) {
+            scan_option_appliers[i].apply(opts, state, values);
+        }
     }
-    if (present & DSD_SCAN_OPT_CRC) {
-        opts->aggressive_framesync = (short)values->strict_crc;
-        opts->dmr_crc_relaxed_default = (uint8_t)!values->strict_crc;
+}
+
+/* Squelch levels are mean powers spanning many decades (-100 dB is 1e-10), so "changed" is a
+ * relative test; off (0.0) differs from every real threshold. */
+static int
+scan_squelch_changed(double before, double after) {
+    return fabs(after - before) > 1e-9 * fmax(fabs(before), fabs(after));
+}
+
+/* Hand the RTL demodulator the squelch now in force. Only the scope's entry points call this:
+ * prepare and scan_scope_apply() also run on temporary scopes and never reach the hardware. */
+static void
+scan_squelch_push(const dsd_opts* opts) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        (void)dsd_rtl_stream_metrics_hook_set_channel_squelch(opts->rtl_squelch_level);
     }
-    if (present & DSD_SCAN_OPT_VOICE) {
-        opts->scan_voice_only = values->voice_only;
+}
+
+/* Push the level now in force when it differs from what the demod holds: `held` (dsd_opts before
+ * this entry point), or the level from before a pending enter. A suspended scope already holds
+ * the configured values in dsd_opts, while the demod was last told the row's threshold (suspend
+ * does not push; resume does), so after an entry point that found the scope suspended the demod
+ * level is unknown and the push is unconditional. */
+static void
+scan_squelch_settle(scan_scope* scope, const dsd_opts* opts, double held) {
+    const scan_squelch_pending pending = scope->squelch_pending;
+    scope->squelch_pending = SCAN_SQUELCH_SETTLED;
+    if (pending == SCAN_SQUELCH_ENTERED) {
+        held = scope->squelch_entered_from;
     }
-    if (present & DSD_SCAN_OPT_QUALIFY) {
-        opts->scan_voice_qualify_ms = values->qualify_ms;
-    }
-    if (present & DSD_SCAN_OPT_HOLD) {
-        opts->scan_voice_hold_ms = values->hold_ms;
-    }
-    if (present & DSD_SCAN_OPT_MAX_VISIT) {
-        opts->scan_max_visit_ms = values->max_visit_ms;
-    }
-    if (present & DSD_SCAN_OPT_MUTE_DMR) {
-        opts->dmr_mute_encL = values->mute_dmr;
-        opts->dmr_mute_encR = values->mute_dmr;
-    }
-    if (present & DSD_SCAN_OPT_MUTE_P25) {
-        /* Direct option text arms decryption; undecodable P25 audio stays muted. */
-        opts->unmute_encrypted_p25 = 0;
-    }
-    if (present & DSD_SCAN_OPT_DATA) {
-        opts->trunk_tune_data_calls = values->tune_data_calls;
-    }
-    if (present & DSD_SCAN_OPT_P25_CANDIDATES) {
-        opts->p25_prefer_candidates = 1;
-    }
-    if (present & DSD_SCAN_OPT_ENC) {
-        opts->trunk_tune_enc_calls = values->tune_enc_calls;
-    }
-    if (present & DSD_SCAN_OPT_GROUP) {
-        DSD_MEMCPY(opts->group_in_file, values->group_file, sizeof(opts->group_in_file));
+    if (pending == SCAN_SQUELCH_UNKNOWN || scan_squelch_changed(held, opts->rtl_squelch_level)) {
+        scan_squelch_push(opts);
     }
 }
 
@@ -413,9 +534,11 @@ dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_va
         scope->options = *values;
     }
     if (!scope->suspended) {
+        const double squelch_before = opts->rtl_squelch_level;
         scan_settings_restore_row_opts(&scope->configured, opts);
         state->M = scope->configured.force_key;
         scan_options_apply(opts, state, &scope->options);
+        scan_squelch_settle(scope, opts, squelch_before);
     }
     return 0;
 }
@@ -450,11 +573,22 @@ dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode) {
     if (!scope) {
         return -1;
     }
+    const double squelch_before = opts->rtl_squelch_level;
+    const int was_suspended = scope->suspended;
     DSD_MEMSET(&scope->options, 0, sizeof(scope->options));
     scope->modulation = 0;
     scope->mode = mode;
     scope->suspended = 0;
     scan_scope_apply(opts, state, scope);
+    /* No push here: the row's own options follow, and dsd_scan_mode_options() pushes the net
+     * change once. A transition already pending keeps its origin, since the demod has heard
+     * nothing since. */
+    if (was_suspended) {
+        scope->squelch_pending = SCAN_SQUELCH_UNKNOWN;
+    } else if (scope->squelch_pending == SCAN_SQUELCH_SETTLED) {
+        scope->squelch_entered_from = squelch_before;
+        scope->squelch_pending = SCAN_SQUELCH_ENTERED;
+    }
     return 0;
 }
 
@@ -476,9 +610,13 @@ dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state) {
     if (!scope || !opts) {
         return;
     }
-    if (!scope->suspended) {
+    const double squelch_before = opts->rtl_squelch_level;
+    if (scope->suspended) {
+        scope->squelch_pending = SCAN_SQUELCH_UNKNOWN;
+    } else {
         dsd_scan_settings_restore(&scope->configured, opts, state);
     }
+    scan_squelch_settle(scope, opts, squelch_before);
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_RUNTIME_SCAN_MODE, NULL, NULL);
 }
 
@@ -527,11 +665,16 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
      * without treating them as an acquisition change or replacing live timing. */
     scope->effective.monitor_input_audio = opts->monitor_input_audio;
     scan_settings_copy_row_opts(&scope->effective, &effective);
-    if (dsd_scan_settings_equal(&scope->effective, &effective, 0)) {
+    const int unchanged = dsd_scan_settings_equal(&scope->effective, &effective, 0);
+    if (unchanged) {
         dsd_scan_settings_restore(&scope->effective, opts, state);
-        return 0;
     }
-    return 1;
+    /* Unconditional: the command that ran while suspended may have pushed the configured
+     * default straight to the demod (CONFIG_APPLY does), so a comparison with the pre-suspend
+     * value would leave the row's threshold behind. */
+    scope->squelch_pending = SCAN_SQUELCH_SETTLED;
+    scan_squelch_push(opts);
+    return unchanged ? 0 : 1;
 }
 
 void
@@ -586,6 +729,34 @@ uint32_t
 dsd_scan_mode_option_fields(const dsd_state* state) {
     const scan_scope* scope = scan_scope_get(state);
     return scope ? scope->options.present : 0;
+}
+
+const dsd_scan_option_values*
+dsd_scan_mode_row_options(const dsd_state* state) {
+    const scan_scope* scope = scan_scope_get(state);
+    return scope ? &scope->options : NULL;
+}
+
+int
+dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, double level) {
+    if (!opts) {
+        return -1;
+    }
+    scan_scope* scope = state ? scan_scope_get(state) : NULL;
+    /* Suspended or absent, dsd_opts holds the configured values and resume recaptures them. */
+    if (scope && !scope->suspended) {
+        scope->configured.rtl_squelch_level = level;
+        if (scope->options.present & DSD_SCAN_OPT_SQUELCH) {
+            return 0;
+        }
+        /* The caller hands this level to the demod, so a row change still waiting for its
+         * options judges against it. */
+        if (scope->squelch_pending == SCAN_SQUELCH_ENTERED) {
+            scope->squelch_entered_from = level;
+        }
+    }
+    opts->rtl_squelch_level = level;
+    return 1;
 }
 
 void

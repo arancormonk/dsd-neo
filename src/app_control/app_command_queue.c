@@ -9,6 +9,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
@@ -1391,15 +1392,19 @@ ui_cmd_handle_rtl_set_sql_db(dsd_opts* opts, dsd_state* state, const struct dsd_
     double d = 0.0;
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && ui_cmd_parse_double_payload(c, &d)) {
-        int rc = svc_rtl_set_sql_db(opts, d);
+        int rc = svc_rtl_set_sql_db(opts, state, d);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
             /* Report the threshold that was stored rather than the number that was
              * asked for: a request of 0 dB switches the squelch off, and echoing
-             * "0.0 dB" would describe a gate at full scale instead. */
-            char sql[24];
-            (void)dsd_squelch_format(opts->rtl_squelch_level, " dB", sql, sizeof sql);
-            ui_set_toast(state, 3, "Applied: RTL squelch -> %s", sql);
+             * "0.0 dB" would describe a gate at full scale instead. The command edits
+             * the configured default, so when a scan row overrides the squelch the
+             * notice says the row still wins. */
+            dsd_app_squelch_view view;
+            char notice[96];
+            (void)dsd_app_squelch_view_get(opts, state, &view);
+            (void)dsd_app_squelch_view_edit_notice(&view, notice, sizeof notice);
+            ui_set_toast(state, 3, "%s", notice);
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: squelch control not available on active backend");
         } else {
@@ -5198,6 +5203,11 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
         DSD_APP_CMD_INV_M17_TOGGLE,
         DSD_APP_CMD_INPUT_MONITOR_TOGGLE,
         DSD_APP_CMD_CONFIG_APPLY,
+        /* Squelch is a row option (--squelch-db), but its commands stay unscoped. The setter
+         * edits the configured default through dsd_scan_mode_set_configured_squelch(), which
+         * touches no acquisition setting, so a squelch nudge can never read as a decoder change
+         * that ends the call. AIRSPY_SET and the input enables rewrite no squelch, and a stream
+         * they reopen has to start on the row's acquisition and threshold, the ones in force. */
     };
     if (!c) {
         return 0;

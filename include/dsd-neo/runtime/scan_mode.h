@@ -39,6 +39,9 @@ typedef enum {
  * The leading block holds the row-scoped nonsecret options (see scan_options.h); they are
  * captured and restored with the rest but excluded from dsd_scan_settings_equal(). */
 typedef struct {
+    /** dsd_opts::rtl_squelch_level (mean power; 0 = off). First so the struct has no padding.
+     * A double: compare it with a tolerance, never ==. */
+    double rtl_squelch_level;
     int force_key;
     int aggressive_framesync;
     int dmr_crc_relaxed_default;
@@ -119,7 +122,19 @@ int dsd_scan_mode_enter(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode);
  * No allocation. Returns -1 without touching anything when no scan scope is owned (call
  * dsd_scan_mode_enter()/dsd_scan_mode_begin() first), else 0. While the scope is suspended the
  * values are only recorded and take effect at dsd_scan_mode_resume(); they are reapplied over the
- * refreshed baseline after every operator update. */
+ * refreshed baseline after every operator update.
+ *
+ * Squelch (DSD_SCAN_OPT_SQUELCH) is the one row option with hardware behind it. The effective
+ * level reaches the RTL demodulator through the runtime metrics hook, and only when the input is
+ * AUDIO_IN_RTL. enter never pushes: the options call that completes the row pushes once when the
+ * level differs from the one the demod held before enter, so a row change hands the demod at most
+ * one level and never the configured default in between. Every caller of dsd_scan_mode_enter()
+ * must therefore follow it with this call (NULL for a row without options); until it does, the
+ * demod keeps the outgoing level. options on its own and leave push when the level changed.
+ * resume, and a leave that finds the scope suspended, always push, because the command that ran
+ * while suspended may have pushed the configured default itself (or the demod still holds the
+ * row's). After an enter that found the scope suspended, the options call that completes the row
+ * pushes unconditionally for the same reason. prepare never pushes. */
 int dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values);
 /** Restore the exact configured baseline and release the scope. */
 void dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state);
@@ -142,6 +157,22 @@ void dsd_scan_mode_configured(const dsd_opts* opts, const dsd_state* state, dsd_
 const dsd_scan_settings* dsd_scan_mode_configured_view(const dsd_state* state);
 /** Nonsecret row-option mask, also available on a held frontend snapshot. */
 uint32_t dsd_scan_mode_option_fields(const dsd_state* state);
+/** Borrow the installed nonsecret row options (fields meaningful per their `present` bits), or
+ * NULL without a scope. Unlike the configured view it stays valid while suspended, so a command
+ * editing a configured default can tell whether the row on air shadows it. Decoder thread or a
+ * consumer-owned snapshot only; invalidated by scope updates. */
+const dsd_scan_option_values* dsd_scan_mode_row_options(const dsd_state* state);
+/** Edit the configured squelch default (a dsd_opts::rtl_squelch_level mean power, 0 = off) without
+ * suspending the scope, so no acquisition setting is compared or reset. Without a scope, or while
+ * one is suspended, dsd_opts holds the configured values and takes the level. Under a live scope
+ * the configured baseline takes it, and dsd_opts does too unless the installed row options
+ * override the squelch. Nothing is pushed. Returns 1 when the level is now in force in dsd_opts
+ * (the caller hands it to the demod), 0 when a row override shadows it, -1 without opts. It writes
+ * the scan scope attached to @p state; the pointer is const only because that scope lives in the
+ * state's extension slot, as with dsd_scan_mode_target_modulation(). Call it only on the decoder
+ * thread with the live state, never with a frontend snapshot (dsd_app_get_latest_snapshot()): it
+ * would edit the snapshot's scope copy while frontends read it, and the live scope would not change. */
+int dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, double level);
 /** Deep-copy scalar scope metadata for frontend snapshots. No live extension pointer is shared. */
 void dsd_scan_mode_copy_snapshot(dsd_state* dst, const dsd_state* src);
 /** Current class profile; combined P25 and inherited settings follow the active hunt index. */

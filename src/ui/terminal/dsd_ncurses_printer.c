@@ -22,6 +22,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
+#include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -426,8 +427,12 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         ui_print_rtl_gain_field(opts);
         printw(" Mon: %iX;", opts->rtl_volume_multiplier);
         ui_print_rtl_ppm_field(opts);
-        char sql[24];
-        (void)dsd_squelch_format(opts->rtl_squelch_level, " dB", sql, sizeof sql);
+        /* The shared readout: the threshold in force, plus "(row; default X)" while a scan row
+         * or target overrides it (issue #521). */
+        dsd_app_squelch_view squelch;
+        char sql[72];
+        (void)dsd_app_squelch_view_get(opts, state, &squelch);
+        (void)dsd_app_squelch_view_format(&squelch, sql, sizeof sql);
         printw(" SQL: %s;", sql);
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
@@ -628,9 +633,12 @@ ui_render_m17_encoder_status(const dsd_opts* opts, const dsd_state* state) {
         }
         if (opts->audio_in_type != AUDIO_IN_RTL && state->m17_vox == 1) {
             /* Measured power then threshold: the first is always a reading, the
-             * second says "off" when it is not gating. */
-            char vox_sql[24];
-            (void)dsd_squelch_format(opts->rtl_squelch_level, " dB", vox_sql, sizeof vox_sql);
+             * second says "off" when it is not gating. A scan row can override the
+             * threshold on this input too, so it reads like the RTL line's SQL. */
+            dsd_app_squelch_view vox_view;
+            char vox_sql[72];
+            (void)dsd_app_squelch_view_get(opts, state, &vox_view);
+            (void)dsd_app_squelch_view_format(&vox_view, vox_sql, sizeof vox_sql);
             printw(" SQL: %.1f : %s;", pwr_to_dB(opts->rtl_pwr), vox_sql);
         }
         printw("\n");

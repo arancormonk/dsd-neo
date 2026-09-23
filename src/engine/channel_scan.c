@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -39,6 +40,9 @@ typedef struct {
     dsd_scan_settings configured;
     dsd_scan_key_change keys;
     uint64_t key_epoch;
+    /* The map generation whose row squelch was last checked against the input (issue #521). */
+    uint64_t squelch_checked_map;
+    int squelch_checked;
 } channel_scan;
 
 static void
@@ -189,6 +193,32 @@ channel_scan_next_row(const dsd_state* state) {
     return row;
 }
 
+/* A row squelch gates the RTL demodulator. Any other input has no demodulator for it to gate, so
+ * it cannot gate digital acquisition; the threshold in dsd_opts only reaches the analog input
+ * monitor (-8, with audio output on) and the carrier activity that monitor stamps. Say so once
+ * per affected row when a scan (or a newly imported map) starts. */
+static void
+channel_scan_check_row_squelch(const dsd_opts* opts, const dsd_state* state, channel_scan* scan) {
+    if (scan->squelch_checked && scan->squelch_checked_map == state->trunk_chan_map_seq) {
+        return;
+    }
+    scan->squelch_checked = 1;
+    scan->squelch_checked_map = state->trunk_chan_map_seq;
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        return;
+    }
+    for (int row = 0; row < state->lcn_freq_count; row++) {
+        const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
+        if (profile && (profile->values.present & DSD_SCAN_OPT_SQUELCH)) {
+            LOG_WARN("WARNING: Scan channel %d (%.6lf MHz): --squelch-db %d cannot gate digital acquisition "
+                     "without a radio input; here it gates only the analog input monitor (-8) and the carrier "
+                     "activity it stamps.\n",
+                     row + 1, (double)*dsd_state_trunk_lcn_slot_const(state, row) / 1000000.0,
+                     profile->values.squelch_db);
+        }
+    }
+}
+
 static int
 channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     channel_scan* scan = channel_scan_get(state);
@@ -210,6 +240,7 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
         }
         (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, scan, channel_scan_free);
     }
+    channel_scan_check_row_squelch(opts, state, scan);
     scan->row = row;
     scan->mode = dsd_channel_mode_get(state, (size_t)row);
     scan->map_sequence = state->trunk_chan_map_seq;
