@@ -2128,12 +2128,13 @@ if(DSD_ENABLE_TERMINAL_UI)
         COMMAND dsd-neo_test_ui_ncurses_p25_display_helpers
     )
 
-    # The shared scan-timing view comes in as a source rather than a stub: the Scan Timing
-    # goldens are only worth anything if they run through the real display table.
+    # The shared scan-timing and squelch views come in as sources rather than stubs: the Scan
+    # Timing and SQL goldens are only worth anything if they run through the real display rules.
     add_executable(
         dsd-neo_test_ui_ncurses_printer_helpers
         ui/test_ui_ncurses_printer_helpers.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
     )
     target_compile_definitions(
         dsd-neo_test_ui_ncurses_printer_helpers
@@ -2818,6 +2819,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_metrics_model
@@ -4151,6 +4153,10 @@ target_include_directories(
 target_link_libraries(
     dsd-neo_test_core_csv_import
     PRIVATE dsd-neo_core dsd-neo_proto_dmr
+)
+target_compile_definitions(
+    dsd-neo_test_core_csv_import
+    PRIVATE "DSD_NEO_TEST_EXAMPLES_DIR=\"${PROJECT_SOURCE_DIR}/examples\""
 )
 add_test(NAME CORE_CSV_IMPORT COMMAND dsd-neo_test_core_csv_import)
 
@@ -10782,6 +10788,10 @@ add_executable(
 target_link_libraries(
     dsd-neo_test_app_control_trunk_scan_validate
     PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+)
+target_compile_definitions(
+    dsd-neo_test_app_control_trunk_scan_validate
+    PRIVATE "DSD_NEO_TEST_EXAMPLES_DIR=\"${PROJECT_SOURCE_DIR}/examples\""
 )
 add_test(
     NAME APP_CONTROL_TRUNK_SCAN_VALIDATE

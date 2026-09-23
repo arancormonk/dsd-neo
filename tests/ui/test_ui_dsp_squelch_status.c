@@ -49,6 +49,20 @@ test_squelch_status_open_at_threshold(void) {
     assert(strcmp(out, "Open ch:-40.0 dB sql:-40.0 dB") == 0);
 }
 
+/* Issue #521: a scan row's --squelch-db reaches rtl_squelch_level through
+ * dsd_squelch_level_from_sql(), and the DSP panel gates and prints it like any other
+ * threshold -- including a row that switches the squelch off. */
+static void
+test_squelch_status_row_thresholds(void) {
+    char out[64];
+    assert(ui_dsp_format_squelch_status(dB_to_pwr(-70.0), dsd_squelch_level_from_sql(-60.0), out, sizeof(out)) == 0);
+    assert(strcmp(out, "Closed ch:-70.0 dB sql:-60.0 dB") == 0);
+    assert(ui_dsp_format_squelch_status(dB_to_pwr(-70.0), dsd_squelch_level_from_sql(-100.0), out, sizeof(out)) == 0);
+    assert(strcmp(out, "Open ch:-70.0 dB sql:-100.0 dB") == 0);
+    assert(ui_dsp_format_squelch_status(dB_to_pwr(-70.0), dsd_squelch_level_from_sql(0.0), out, sizeof(out)) == 0);
+    assert(strcmp(out, "Open ch:-70.0 dB sql:off") == 0);
+}
+
 static void
 test_squelch_status_rejects_missing_output(void) {
     assert(ui_dsp_format_squelch_status(dB_to_pwr(-20.0), dB_to_pwr(-30.0), NULL, 0U) != 0);
@@ -61,6 +75,7 @@ main(void) {
     test_squelch_status_open_when_disabled();
     test_squelch_status_reports_power_while_disabled();
     test_squelch_status_open_at_threshold();
+    test_squelch_status_row_thresholds();
     test_squelch_status_rejects_missing_output();
     return 0;
 }

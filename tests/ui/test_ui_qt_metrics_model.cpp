@@ -36,6 +36,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -939,6 +940,38 @@ main(int argc, char** argv) {
     model.refresh(&opts, &state);
     expect("modulation control keeps configured C4FM", model.modulation() == 0);
     dsd_scan_mode_leave(&opts, &state);
+
+    /* Issue #521: a row overriding the squelch. The panel pairs what is in force with the
+     * configured default its buttons edit, and says a row is responsible. 0 dB means off. */
+    opts.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
+    model.refresh(&opts, &state);
+    expect("no scope: effective and configured agree", std::fabs(model.effectiveSquelchDb() - (-80.0)) < 1e-6
+                                                           && std::fabs(model.configuredSquelchDb() - (-80.0)) < 1e-6);
+    expect("no scope: no row badge", !model.squelchRowOverride());
+    expect("row squelch scope", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR) == 0);
+    dsd_scan_option_values squelch_row{};
+    squelch_row.present = DSD_SCAN_OPT_SQUELCH;
+    squelch_row.squelch_db = -60;
+    expect("row squelch installed", dsd_scan_mode_options(&opts, &state, &squelch_row) == 0);
+    model.refresh(&opts, &state);
+    expect("row squelch is in force", std::fabs(model.effectiveSquelchDb() - (-60.0)) < 1e-6);
+    expect("the default stays configured", std::fabs(model.configuredSquelchDb() - (-80.0)) < 1e-6);
+    expect("a row override is flagged", model.squelchRowOverride());
+    expect("the effective squelch still drives squelchDb", std::fabs(model.squelchDb() - (-60.0)) < 1e-6);
+    squelch_row.squelch_db = 0;
+    expect("row squelch off installed", dsd_scan_mode_options(&opts, &state, &squelch_row) == 0);
+    model.refresh(&opts, &state);
+    expect("a row that switches the squelch off reads 0", std::fabs(model.effectiveSquelchDb()) < 1e-9);
+    expect("an off row is still an override", model.squelchRowOverride() && model.squelchOff());
+    /* A non-radio session has no squelch panel to feed. */
+    opts.audio_in_type = AUDIO_IN_WAV;
+    model.refresh(&opts, &state);
+    expect("non-radio input publishes no squelch override", !model.squelchRowOverride());
+    opts.audio_in_type = AUDIO_IN_RTL;
+    dsd_scan_mode_leave(&opts, &state);
+    model.refresh(&opts, &state);
+    expect("leaving the row clears the badge", !model.squelchRowOverride());
+    expect("leaving the row restores the default", std::fabs(model.effectiveSquelchDb() - (-80.0)) < 1e-6);
 
     /* Every flag combination must mean the same thing inside a scope. */
     for (int flags = 0; flags < 8; flags++) {

@@ -27,6 +27,7 @@
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
+#include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
@@ -711,6 +712,23 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
     next.squelch_db = next.radio_input ? pwr_to_dB(opts_snapshot->rtl_squelch_level) : 0.0;
     next.squelch_off = next.radio_input && dsd_squelch_is_off(opts_snapshot->rtl_squelch_level);
     next.ppm = next.radio_input ? opts_snapshot->rtlsdr_ppm_error : 0;
+    fillSquelchOverride(next, opts_snapshot, snapshot);
+}
+
+/* Issue #521: the configured/effective pair and the row badge come from the same app_control
+ * view the terminal's SQL readout uses, so the two frontends cannot disagree about a row. */
+void
+MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+    dsd_app_squelch_view squelch{};
+    if (!next.radio_input || dsd_app_squelch_view_get(opts_snapshot, snapshot, &squelch) != 0) {
+        next.configured_squelch_db = 0.0;
+        next.effective_squelch_db = 0.0;
+        next.squelch_row_override = false;
+        return;
+    }
+    next.configured_squelch_db = dsd_app_squelch_db_or_off(squelch.configured_level);
+    next.effective_squelch_db = dsd_app_squelch_db_or_off(squelch.effective_level);
+    next.squelch_row_override = squelch.row_override != 0U;
 }
 
 void

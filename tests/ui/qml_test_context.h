@@ -1946,6 +1946,10 @@ class Setup : public QObject {
         metrics[QStringLiteral("tunerGainDb")] = 30;
         metrics[QStringLiteral("squelchDb")] = -120.0;
         metrics[QStringLiteral("squelchOff")] = false;
+        // #521: a scan row's own squelch. 0 is off in these two, as in rtl_sql.
+        metrics[QStringLiteral("configuredSquelchDb")] = -120.0;
+        metrics[QStringLiteral("effectiveSquelchDb")] = -120.0;
+        metrics[QStringLiteral("squelchRowOverride")] = false;
         metrics[QStringLiteral("ppm")] = 0;
         m_metrics = metrics;
         m_engine = engine;

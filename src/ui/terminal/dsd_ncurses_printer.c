@@ -22,6 +22,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
+#include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -426,8 +427,12 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         ui_print_rtl_gain_field(opts);
         printw(" Mon: %iX;", opts->rtl_volume_multiplier);
         ui_print_rtl_ppm_field(opts);
-        char sql[24];
-        (void)dsd_squelch_format(opts->rtl_squelch_level, " dB", sql, sizeof sql);
+        /* The shared readout: the threshold in force, plus "(row; default X)" while a scan row
+         * or target overrides it (issue #521). */
+        dsd_app_squelch_view squelch;
+        char sql[72];
+        (void)dsd_app_squelch_view_get(opts, state, &squelch);
+        (void)dsd_app_squelch_view_format(&squelch, sql, sizeof sql);
         printw(" SQL: %s;", sql);
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);

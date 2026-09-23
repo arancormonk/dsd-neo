@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/dmr_key_map.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
@@ -673,8 +674,111 @@ test_empty_group_avoid_scopes(void) {
     free(state);
 }
 
+/* --- Issue #521: per-row squelch in channel maps --- */
+
+typedef struct {
+    size_t count;
+    int squelch_set[4];
+    int squelch_db[4];
+} squelch_preview;
+
+static void
+collect_squelch_preview(const dsd_csv_channel_profile* row, void* context) {
+    squelch_preview* preview = (squelch_preview*)context;
+    if (preview->count < 4) {
+        preview->squelch_set[preview->count] = row->squelch_db_set;
+        preview->squelch_db[preview->count] = row->squelch_db;
+    }
+    preview->count++;
+}
+
+/* Import the map at `path` with stderr captured; return csvChanImport's result. */
+static int
+import_capturing(dsd_opts* opts, dsd_state* state, const char* path, char* log, size_t log_size) {
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", path);
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "scan_squelch") == 0);
+    const int rc = csvChanImport(opts, state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    assert(dsd_test_capture_stderr_read(&cap, log, log_size) == 0);
+    return rc;
+}
+
+/* A threshold row, an explicit off row, an inheriting row and a blank-mode row all load;
+ * the preview a frontend shows reports each row's own value (and nothing for the inheriting
+ * row); and every malformed spelling is refused with a diagnostic naming its row. */
+static void
+test_squelch_rows_import_and_preview(void) {
+    char path[1024];
+    int fd = dsd_test_mkstemp(path, sizeof(path), "dsd_scan_squelch");
+    assert(fd >= 0);
+    dsd_close(fd);
+    write_file(path, "channel,frequency_hz,mode,options\n"
+                     "1,150000000,dmr,--squelch-db -60\n"
+                     "2,150000001,nxdn48,--squelch-db=0\n"
+                     "3,150000002,p25,\n"
+                     "4,150000003,,--squelch-db -100 --scan-max-visit-ms 5000\n");
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    char log[4096];
+    assert(import_capturing(opts, state, path, log, sizeof(log)) == 0);
+    assert(state->lcn_freq_count == 4);
+    const dsd_scan_row_profile* row = dsd_channel_profile_get(state, 0);
+    assert(row && (row->values.present & DSD_SCAN_OPT_SQUELCH) && row->values.squelch_db == -60);
+    row = dsd_channel_profile_get(state, 1);
+    assert(row && (row->values.present & DSD_SCAN_OPT_SQUELCH) && row->values.squelch_db == 0);
+    assert(dsd_channel_profile_get(state, 2) == NULL);
+    row = dsd_channel_profile_get(state, 3);
+    assert(row && row->values.squelch_db == -100 && dsd_channel_mode_get(state, 3) == DSD_SCAN_MODE_INHERIT);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+
+    squelch_preview preview = {0};
+    assert(dsd_csv_inspect_channel_profiles(path, &preview, collect_squelch_preview) == 0);
+    assert(preview.count == 4);
+    assert(preview.squelch_set[0] && preview.squelch_db[0] == -60);
+    assert(preview.squelch_set[1] && preview.squelch_db[1] == 0);
+    assert(!preview.squelch_set[2]);
+    assert(preview.squelch_set[3] && preview.squelch_db[3] == -100);
+
+    const struct {
+        const char* cell;
+        const char* reason;
+    } bad[] = {{"--squelch-db 5", "--squelch-db: expects whole dB from -100 to 0 (0 = off)"},
+               {"--squelch-db -101", "--squelch-db: expects whole dB from -100 to 0 (0 = off)"},
+               {"--squelch-db -5.5", "--squelch-db: requires a valid argument"},
+               {"--squelch-db", "--squelch-db: requires a valid argument"},
+               {"--squelch-db -60 --squelch-db -50", "--squelch-db: duplicate option"}};
+
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char body[256];
+        DSD_SNPRINTF(body, sizeof(body),
+                     "channel,frequency_hz,mode,options\n1,150000000,dmr,--squelch-db -60\n2,150000001,dmr,%s\n",
+                     bad[i].cell);
+        write_file(path, body);
+        DSD_MEMSET(state, 0, sizeof(*state));
+        assert(import_capturing(opts, state, path, log, sizeof(log)) != 0);
+        char want[192];
+        DSD_SNPRINTF(want, sizeof(want), "row 3: %s", bad[i].reason);
+        if (!strstr(log, want)) {
+            DSD_FPRINTF(stderr, "missing row diagnostic '%s' in:\n%s\n", want, log);
+            assert(0);
+        }
+        dsd_state_trunk_lcn_free(state);
+        dsd_state_ext_free_all(state);
+    }
+    free(state);
+    free(opts);
+    {
+        const int removed = remove(path);
+        assert(removed == 0);
+    }
+}
+
 int
 main(void) {
+    test_squelch_rows_import_and_preview();
     test_move_unwinds_both_group_scopes();
     test_slotless_options_validate_files();
     test_legacy_hex_widths();

@@ -26,6 +26,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <cmath>
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -176,6 +177,10 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int tunerGainDb READ tunerGainDb NOTIFY controlChanged)
     Q_PROPERTY(double squelchDb READ squelchDb NOTIFY controlChanged)
     Q_PROPERTY(bool squelchOff READ squelchOff NOTIFY controlChanged)
+    /* #521: a scan row's --squelch-db. rtl_sql convention: 0 is off, otherwise dB. */
+    Q_PROPERTY(double configuredSquelchDb READ configuredSquelchDb NOTIFY controlChanged)
+    Q_PROPERTY(double effectiveSquelchDb READ effectiveSquelchDb NOTIFY controlChanged)
+    Q_PROPERTY(bool squelchRowOverride READ squelchRowOverride NOTIFY controlChanged)
     Q_PROPERTY(int ppm READ ppm NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
 
@@ -497,6 +502,29 @@ class MetricsModel : public QObject {
     bool
     squelchOff() const {
         return m_view.squelch_off;
+    }
+
+    /**
+     * @brief The configured squelch default, which the panel's buttons edit (issue #521).
+     *
+     * In the rtl_sql convention: 0 when off, otherwise the threshold in dB. Equal to
+     * effectiveSquelchDb() unless a scan row or target overrides the squelch.
+     */
+    double
+    configuredSquelchDb() const {
+        return m_view.configured_squelch_db;
+    }
+
+    /** @brief The squelch in force on the row on air; 0 when off, otherwise dB. */
+    double
+    effectiveSquelchDb() const {
+        return m_view.effective_squelch_db;
+    }
+
+    /** @brief Whether the row or target on air sets its own squelch (--squelch-db). */
+    bool
+    squelchRowOverride() const {
+        return m_view.squelch_row_override;
     }
 
     /**
@@ -1138,6 +1166,8 @@ class MetricsModel : public QObject {
         double cfo_hz = 0.0;
         double center_freq_hz = 0.0;
         double squelch_db = 0.0;
+        double configured_squelch_db = 0.0;
+        double effective_squelch_db = 0.0;
         qulonglong held_tg = 0;
         qulonglong temporary_tg_avoid_count = 0;
         qulonglong call_skip_count = 0;
@@ -1171,6 +1201,7 @@ class MetricsModel : public QObject {
         bool synced_here = false;
         bool trunkable_sync = false;
         bool squelch_off = false;
+        bool squelch_row_override = false;
         bool audio_muted = false;
         bool tuner_controlled = false;
         bool trunking_enabled = false;
@@ -1247,7 +1278,16 @@ class MetricsModel : public QObject {
         radioControlsEqual(const View& other) const {
             return modulation == other.modulation && tuner_gain_db == other.tuner_gain_db
                    && squelch_db == other.squelch_db && squelch_off == other.squelch_off && ppm == other.ppm
-                   && airspy == other.airspy;
+                   && airspy == other.airspy && squelchOverrideEquals(other);
+        }
+
+        /* The configured/effective pair is whole-dB configuration, not a measurement, so a
+         * difference below a millionth of a dB is the same setting. */
+        bool
+        squelchOverrideEquals(const View& other) const {
+            return std::fabs(configured_squelch_db - other.configured_squelch_db) < 1e-6
+                   && std::fabs(effective_squelch_db - other.effective_squelch_db) < 1e-6
+                   && squelch_row_override == other.squelch_row_override;
         }
 
         bool
@@ -1283,6 +1323,8 @@ class MetricsModel : public QObject {
 
     /** @brief Fill in sync state and the live decoder/front-end settings. */
     void fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m);
+    /** @brief The configured/effective squelch pair and the row badge (#521). */
+    static void fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief Listening settings, talkgroup Hold, and lockout state from the held snapshot. */
     static void fillListeningControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief Scan hold and avoids (#380), read from whichever rotation is running. */

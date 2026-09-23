@@ -662,6 +662,8 @@ appendChannelProfile(const dsd_csv_channel_profile* row, void* context) {
                              {"keySource", row->key_source},
                              {"force", row->force},
                              {"mappings", row->dmr_mapping_count},
+                             /* #521: invalid (not 0 or -1) when the row inherits the squelch. */
+                             {"squelchDb", row->squelch_db_set ? QVariant(row->squelch_db) : QVariant()},
                              {"profileRef", QString::fromUtf8(row->profile_ref)}});
 }
 
@@ -718,6 +720,8 @@ appendTargetPreview(const dsd_app_scan_csv_target* target, void* context) {
                     {"dwellMs", target->dwell_ms},
                     {"holdMs", target->hold_ms},
                     {"gainDb", target->gain_db},
+                    /* #521: invalid (not 0 or -1) when the target inherits the squelch. */
+                    {"squelchDb", target->squelch_db_set ? QVariant(target->squelch_db) : QVariant()},
                     {"modulation", QString::fromUtf8(target->modulation)}});
 }
 } // namespace

@@ -1522,6 +1522,8 @@ csv_describe_channel_profile(const dsd_state* state, int index, dsd_csv_channel_
     const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)index);
     out->force = profile && (profile->values.present & DSD_SCAN_OPT_FORCE) ? profile->values.force : -1;
     out->dmr_mapping_count = profile && (profile->values.present & DSD_SCAN_OPT_DMR_MAP) ? profile->dmr_map.count : -1;
+    out->squelch_db_set = profile && (profile->values.present & DSD_SCAN_OPT_SQUELCH) ? 1 : 0;
+    out->squelch_db = out->squelch_db_set ? profile->values.squelch_db : 0;
 }
 
 int
