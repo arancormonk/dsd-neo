@@ -1804,12 +1804,6 @@ test_tuner_release(void) {
 }
 #endif
 
-/*
- * Modulation and decode mode as setters rather than toggles. A panel showing
- * both choices has to be able to ask for the one it is not on, and re-asserting
- * the state it is already on must cost nothing — a segmented control re-sends
- * itself whenever the engine publishes a frame it did not cause.
- */
 /* A decode-mode change is a boundary the received tone (issue #522) must not cross: it goes
    through the acquisition reset, which forgets the tone. */
 static int
@@ -1829,6 +1823,51 @@ test_decode_mode_change_clears_received_tone(void) {
     return rc;
 }
 
+/* A new audio input is a new receiver: the tone the old input carried goes when the input
+   switches (issue #522), not when the detector next loses it -- which, between two inputs at
+   the same rate, nothing else would tell it to. */
+static int
+test_input_switch_clears_received_tone(void) {
+    static const struct {
+        int cmd;
+        const char* value; /**< string payload, or NULL for none */
+        const char* tag;
+    } cases[] = {
+        {DSD_APP_CMD_INPUT_WAV_SET, "input.wav", "wav input clears the received tone"},
+        {DSD_APP_CMD_INPUT_SET_PULSE, NULL, "pulse input clears the received tone"},
+        {DSD_APP_CMD_UDP_INPUT_CFG, NULL, "udp input clears the received tone"},
+        {DSD_APP_CMD_INPUT_SYM_STREAM_SET, "symbols.f32", "symbol stream input clears the received tone"},
+    };
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        init_test_context(&opts, &state);
+        seed_received_tone(&state);
+        const uint32_t seeded = state.analog_rx.generation;
+        int queued = 0;
+        if (cases[i].cmd == DSD_APP_CMD_UDP_INPUT_CFG) {
+            queued = post_host_port(cases[i].cmd, "0.0.0.0", 7355);
+        } else if (cases[i].value) {
+            queued = post_string(cases[i].cmd, cases[i].value);
+        } else {
+            queued = post_empty(cases[i].cmd);
+        }
+        rc |= expect_int(cases[i].tag, queued, DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(cases[i].tag, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_received_tone_cleared(cases[i].tag, &state, seeded);
+        freeState(&state);
+    }
+    return rc;
+}
+
+/*
+ * Modulation and decode mode as setters rather than toggles. A panel showing
+ * both choices has to be able to ask for the one it is not on, and re-asserting
+ * the state it is already on must cost nothing — a segmented control re-sends
+ * itself whenever the engine publishes a frame it did not cause.
+ */
 static int
 test_modulation_and_decode_mode_setters(void) {
     int rc = 0;
@@ -5411,6 +5450,7 @@ main(void) {
     rc |= test_compact_visualizer_toast();
     rc |= test_modulation_and_decode_mode_setters();
     rc |= test_decode_mode_change_clears_received_tone();
+    rc |= test_input_switch_clears_received_tone();
     rc |= test_trunk_set();
     rc |= test_scan_voice_gate_commands();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
