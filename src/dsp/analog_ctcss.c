@@ -286,10 +286,11 @@ ctcss_refine_advance(const dsd_analog_ctcss* det, int bin, double coarse, ctcss_
  *
  * What the tone does not explain in a sub-block is treated as noise across the sub-audible
  * band; its share in the tone's correlator bin sets how far that sub-block's phase may
- * wander, from 1 / (2 SNR) for a strong tone up to a uniformly random phase for none. A tone in noise scores about 1 (a reduced chi-square with three degrees of
- * freedom), whatever the SNR. A voice fundamental that dominates the band but drifts,
- * jitters or wobbles in pitch scores far higher: its phase wanders more than the little
- * energy it leaves unexplained can account for.
+ * wander, from 1 / (2 SNR) for a strong tone up to a uniformly random phase for none. A tone
+ * in noise scores about 1 (a reduced chi-square with three degrees of freedom), whatever the
+ * SNR. A voice fundamental that dominates the band but drifts, jitters or wobbles in pitch
+ * scores far higher: its phase wanders more than the little energy it leaves unexplained can
+ * account for.
  */
 static double
 ctcss_fit_chi2(const dsd_analog_ctcss* det, int bin, const ctcss_fit* fit) {

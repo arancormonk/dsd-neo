@@ -198,25 +198,33 @@ samples_to_ms(double fs, int64_t samples) {
 
 static dsd_analog_rx_core g_core;
 
-/* Lock time of one tone, measured from its onset, with the onset landing anywhere inside a
-   hop. Returns -1 if it never locked; asserts it never locked anything else. */
+/* Lock time of a tone at @p hz that should read as the table tone @p expect_tenths, measured
+   from its onset, with the onset landing anywhere inside a hop and the run lasting
+   @p watch_ms past it. Returns -1 if it never locked; asserts it never locked anything else. */
 static double
-lock_time_ms(int fs, double hz, double snr_db, uint64_t seed, int onset_offset_ms) {
+lock_time_as_ms(int fs, double hz, int expect_tenths, double snr_db, uint64_t seed, int onset_offset_ms,
+                double watch_ms) {
     dsd_analog_rx_core_init(&g_core);
     signal_src src;
     signal_init(&src, fs, seed, hz, snr_db);
     src.tone_on = ms_to_samples(fs, 300.0 + onset_offset_ms);
     const int block = fs / 1000 > 0 ? fs / 1000 : 1;
-    const int64_t total = src.tone_on + ms_to_samples(fs, LOCK_BOUND_MS + 150.0);
-    const run_result r = run_signal(&g_core, &src, total, block, (int)lround(hz * 10.0));
+    const int64_t total = src.tone_on + ms_to_samples(fs, watch_ms);
+    const run_result r = run_signal(&g_core, &src, total, block, expect_tenths);
     if (r.first_wrong >= 0) {
-        DSD_FPRINTF(stderr, "wrong lock: fs=%d hz=%.1f snr=%.0f seed=%llu\n", fs, hz, snr_db, (unsigned long long)seed);
+        DSD_FPRINTF(stderr, "wrong lock: fs=%d hz=%.2f snr=%.0f seed=%llu\n", fs, hz, snr_db, (unsigned long long)seed);
     }
     assert(r.first_wrong < 0);
     if (r.first_lock < 0) {
         return -1.0;
     }
     return samples_to_ms(fs, r.first_lock - src.tone_on);
+}
+
+/* Lock time of a tone exactly on its table value. */
+static double
+lock_time_ms(int fs, double hz, double snr_db, uint64_t seed, int onset_offset_ms) {
+    return lock_time_as_ms(fs, hz, (int)lround(hz * 10.0), snr_db, seed, onset_offset_ms, LOCK_BOUND_MS + 150.0);
 }
 
 static int
@@ -258,6 +266,60 @@ test_every_tone_locks_within_bound(void) {
         char what[64];
         DSD_SNPRINTF(what, sizeof(what), "CTCSS lock at %+.0f dB in-band", snrs[si]);
         report_timings(what, times, count);
+    }
+}
+
+/*
+ * Transmitter encoder error: a tone a little off its table value still locks on that value.
+ * Every tone at every rate, alternately above and below the table value, with its own seeds
+ * (not the ones test_every_tone_locks_within_bound uses). A lock needs estimates within
+ * 0.5 Hz of the table value (k_acquire_snap_hz in analog_ctcss.c: the frequency hysteresis
+ * that keeps 68.2 Hz off 69.3), so the further off a tone sits the more of the 0 dB estimate
+ * scatter (about 0.19 Hz RMS) pushes a hop past that gate and the later it locks. Each row
+ * bounds the share of starts that miss the 400 ms lock bound and the worst lock time; the
+ * last row is the exact tone at 0 dB on these seeds, the tail the pinned seeds above do not
+ * show. Prints p50/p95/worst for the PR evidence.
+ */
+static void
+test_off_nominal_tones_lock(void) {
+    static const struct {
+        double offset_hz;
+        double snr_db;
+        int min_within_bound_pct; /**< share of starts that lock within LOCK_BOUND_MS */
+        int worst_ms;             /**< every start locks within this */
+    } rows[] = {
+        {0.20, 10.0, 100, LOCK_BOUND_MS},
+        {0.35, 10.0, 99, 500},
+        {0.20, 0.0, 95, 600},
+        {0.0, 0.0, 98, 500},
+    };
+
+    static double times[DSD_CTCSS_TONE_COUNT * RATE_COUNT];
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        int count = 0;
+        int within = 0;
+        for (int ri = 0; ri < RATE_COUNT; ri++) {
+            for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
+                const int tenths = dsd_ctcss_tone_tenths(k);
+                const double sign = (k + ri) % 2 == 0 ? 1.0 : -1.0;
+                const double hz = ((double)tenths / 10.0) + (sign * rows[row].offset_hz);
+                const uint64_t seed = (3000017ULL * (uint64_t)(k + 1)) + ((uint64_t)ri * 7919ULL) + (uint64_t)row;
+                const double t = lock_time_as_ms(k_rates[ri], hz, tenths, rows[row].snr_db, seed, (k * 11) % 50,
+                                                 rows[row].worst_ms + 50.0);
+                if (t < 0.0 || t > (double)rows[row].worst_ms) {
+                    DSD_FPRINTF(stderr, "slow off-nominal lock: fs=%d hz=%.2f snr=%.0f -> %.0f ms\n", k_rates[ri], hz,
+                                rows[row].snr_db, t);
+                }
+                assert(t >= 0.0 && t <= (double)rows[row].worst_ms);
+                within += t <= (double)LOCK_BOUND_MS ? 1 : 0;
+                times[count++] = t;
+            }
+        }
+        char what[96];
+        DSD_SNPRINTF(what, sizeof(what), "CTCSS lock %.2f Hz off the table at %+.0f dB in-band (%d%% within %d ms)",
+                     rows[row].offset_hz, rows[row].snr_db, (100 * within) / count, LOCK_BOUND_MS);
+        report_timings(what, times, count);
+        assert(100 * within >= rows[row].min_within_bound_pct * count);
     }
 }
 
@@ -781,6 +843,7 @@ main(void) {
     test_reverse_burst_drops_fast();
     test_tone_under_voice_locks();
     test_every_tone_locks_within_bound();
+    test_off_nominal_tones_lock();
     test_speech_and_noise_never_lock();
     return 0;
 }
