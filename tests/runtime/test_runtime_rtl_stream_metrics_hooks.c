@@ -206,6 +206,50 @@ fake_input_level(dsd_input_level_snapshot* out) {
     return -9;
 }
 
+/* An analog profile hook that fills its outputs even when it reports no analog family. */
+static int g_analog_profile_result = 0;
+
+static int
+fake_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    if (out_kind) {
+        *out_kind = 7;
+    }
+    if (out_width_hz) {
+        *out_width_hz = 12500;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = 1;
+    }
+    return g_analog_profile_result;
+}
+
+static void
+test_analog_profile_outputs(void) {
+    int kind = -1;
+    int width_hz = -1;
+    int lpf_on = -1;
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    assert(dsd_rtl_stream_metrics_hook_analog_profile(&kind, &width_hz, &lpf_on) == 0);
+    assert(kind == 0 && width_hz == 0 && lpf_on == 0);
+
+    dsd_rtl_stream_metrics_hooks hooks = {0};
+    hooks.analog_profile = fake_analog_profile;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    g_analog_profile_result = 1;
+    assert(dsd_rtl_stream_metrics_hook_analog_profile(&kind, &width_hz, &lpf_on) == 1);
+    assert(kind == 7 && width_hz == 12500 && lpf_on == 1);
+    /* A hook reporting no analog family leaves nothing behind in the outputs. */
+    g_analog_profile_result = 0;
+    assert(dsd_rtl_stream_metrics_hook_analog_profile(&kind, &width_hz, &lpf_on) == 0);
+    assert(kind == 0 && width_hz == 0 && lpf_on == 0);
+    g_analog_profile_result = -3;
+    kind = width_hz = lpf_on = -1;
+    assert(dsd_rtl_stream_metrics_hook_analog_profile(&kind, &width_hz, &lpf_on) == 0);
+    assert(kind == 0 && width_hz == 0 && lpf_on == 0);
+    assert(dsd_rtl_stream_metrics_hook_analog_profile(NULL, NULL, NULL) == 0);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 int
 main(void) {
     /*
@@ -213,6 +257,8 @@ main(void) {
      * built-in symbol-cache counter. Then install a full fake hook table and
      * assert that every wrapper forwards calls, return values, and out-params.
      */
+
+    test_analog_profile_outputs();
 
     // Default behavior with hooks unset.
     dsd_rtl_stream_metrics_hooks_set(NULL);

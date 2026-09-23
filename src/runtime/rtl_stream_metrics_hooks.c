@@ -115,8 +115,10 @@ dsd_rtl_stream_metrics_hook_apply_analog_profile(int family, int kind, int width
 
 int
 dsd_rtl_stream_metrics_hook_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
-    if (g_rtl_stream_metrics_hooks.analog_profile) {
-        return g_rtl_stream_metrics_hooks.analog_profile(out_kind, out_width_hz, out_lpf_on) > 0 ? 1 : 0;
+    /* Outputs are zeroed whenever this returns 0, whatever an installed hook left in them. */
+    if (g_rtl_stream_metrics_hooks.analog_profile
+        && g_rtl_stream_metrics_hooks.analog_profile(out_kind, out_width_hz, out_lpf_on) > 0) {
+        return 1;
     }
     if (out_kind) {
         *out_kind = 0;
