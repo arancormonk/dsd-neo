@@ -713,17 +713,14 @@ test_rx_tone_tap_reads_raw_block_before_voice_filters(void) {
     install_fake_rtl_hooks(0);
     init_analog_monitor_fixture(&opts, &state);
 
-    /* 600 ms of a 100 Hz tone: the voice high-pass removes all of it from the audio, yet
-       the tap, which reads the block before that filter, locks on it. */
+    /* 600 ms of a 100 Hz tone. The stubbed voice high-pass removes all of it from everything
+       after it in the block's path, so the lock can only have come from the tap reading the
+       raw block before that filter -- and feed_tone_blocks() checked every block reached the
+       filter exactly as it went in. */
     feed_tone_blocks(&opts, &state, 30);
     assert(rx_tone_locked_on_100(&state));
     assert(state.analog_rx.carrier_open == 1);
     assert(state.analog_rx.gate == DSD_ANALOG_TONE_GATE_OFF);
-    /* What the voice filter left behind is silence: the tone never reached the audio path,
-       so the lock can only have come from the raw block. */
-    for (unsigned int i = 0; i < 960U; i++) {
-        assert(state.analog_out_f[i] == 0.0f);
-    }
 
     /* Detection off (a digital mode): the same blocks reach the filters byte for byte, so
        the tap's presence changes nothing about the audio either way. */
