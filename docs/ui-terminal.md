@@ -637,11 +637,13 @@ channel line and in compact view too:
 ```
 
 It reads `CTCSS 100.0 Hz` once a supported tone is confirmed, `detecting` while a carrier is being evaluated,
-`none` when the carrier carries no supported tone (or the tone was lost), and `—` when there is no carrier. The
-line is absent outside the analog FM monitor. This is only what is received; it never reflects a tone filter setting,
-and it clears on a retune, a scan row or target change, a mode change and stop. The same text comes from the shared
-app-control view the Qt/Android monitor uses, so both always agree. Supported tones, timing and the requirements on
-externally demodulated audio are in the [CLI guide](cli.md#received-tone-ctcss-on-the-analog-monitor).
+`none` when the carrier carries no supported tone (or the tone was lost), and `—` when there is no carrier (`-` on a
+terminal without UTF-8). The line is shown exactly while detection runs, so it is absent outside the analog FM monitor
+and while an RTL stream is not yet outputting monitor audio. This is only what is received; it never reflects a tone
+filter setting, and it clears on a retune, a scan row or target change, a mode change, an input switch and stop. The
+same text comes from the shared app-control view the Qt/Android monitor uses, so both always agree. Supported tones,
+timing and the requirements on externally demodulated audio are in the
+[CLI guide](cli.md#received-tone-ctcss-on-the-analog-monitor).
 
 ## Compact View
 
