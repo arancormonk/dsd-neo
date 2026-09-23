@@ -318,7 +318,7 @@ typedef struct {
 } analog_rx_session;
 
 static analog_rx_session*
-analog_rx_session_get(dsd_state* state) {
+analog_rx_session_get(const dsd_state* state) {
     return DSD_STATE_EXT_GET_AS(analog_rx_session, state, DSD_STATE_EXT_DSP_ANALOG_RX);
 }
 

@@ -30,7 +30,6 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -672,6 +671,22 @@ fill_tone_block(float* block, unsigned int count, double hz, double amp) {
     }
 }
 
+/* Bit-for-bit equality of two sample blocks: the tap must hand the voice filters the very
+   samples it was given, so no tolerance applies. */
+static int
+same_sample_bits(const float* a, const float* b, int count) {
+    for (int i = 0; i < count; i++) {
+        uint32_t a_bits = 0U;
+        uint32_t b_bits = 0U;
+        DSD_MEMCPY(&a_bits, &a[i], sizeof(a_bits));
+        DSD_MEMCPY(&b_bits, &b[i], sizeof(b_bits));
+        if (a_bits != b_bits) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* Feed @p blocks 20 ms blocks of a 100 Hz tone through the whole unsynced finalize step and
    check each one reached the voice filters exactly as it went in. */
 static void
@@ -681,7 +696,7 @@ feed_tone_blocks(dsd_opts* opts, dsd_state* state, int blocks) {
         fill_tone_block(block, 960U, 100.0, 3000.0);
         assert(dsd_symbol_test_finalize_unsynced_analog_block(opts, state, block, 960U) == 960U);
         assert(g_hpf_seen_len == 960);
-        assert(memcmp(g_hpf_seen, block, sizeof(block)) == 0);
+        assert(same_sample_bits(g_hpf_seen, block, 960));
     }
 }
 

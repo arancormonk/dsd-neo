@@ -10,7 +10,6 @@
  */
 
 #include <assert.h>
-#include <stddef.h>
 #include <string.h>
 
 #include <dsd-neo/runtime/analog_tones.h>
@@ -20,11 +19,12 @@ static const int k_expected_tenths[] = {
     1188, 1230, 1273, 1318, 1365, 1413, 1462, 1514, 1567, 1598, 1622, 1655, 1679, 1713, 1738, 1773, 1799,
     1835, 1862, 1899, 1928, 1966, 1995, 2035, 2065, 2107, 2181, 2257, 2291, 2336, 2418, 2503, 2541,
 };
+_Static_assert((int)(sizeof(k_expected_tenths) / sizeof(k_expected_tenths[0])) == DSD_CTCSS_TONE_COUNT,
+               "the expected table lists every standard tone");
 
 static void
 test_table(void) {
     assert(dsd_ctcss_tone_count() == DSD_CTCSS_TONE_COUNT);
-    assert((int)(sizeof(k_expected_tenths) / sizeof(k_expected_tenths[0])) == DSD_CTCSS_TONE_COUNT);
     for (int i = 0; i < DSD_CTCSS_TONE_COUNT; i++) {
         assert(dsd_ctcss_tone_tenths(i) == k_expected_tenths[i]);
         assert(dsd_ctcss_tone_index(k_expected_tenths[i]) == i);

@@ -35,6 +35,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "analog_rx_internal.h"
 
