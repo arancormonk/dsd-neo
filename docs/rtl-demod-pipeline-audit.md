@@ -118,7 +118,10 @@ Enable rule and validation:
   only the kind, range and environment rules apply, and the next start decides.
 - The design uses `rate_out`, which is the complex rate the channel filter runs
   at only while `post_downsample` is 1. Live sources always run that way; only
-  IQ replay sidecars can set a larger post-demod decimation.
+  IQ replay sidecars can set a larger post-demod decimation, and there a
+  requested width (explicit, or the AM default) is refused at start and on
+  every runtime request, since the filter would run at `rate_out` x
+  `post_downsample`. The unset NFM default keeps the legacy design.
 - Device-forced rates above ~51.4 kHz (for example Airspy at 2.5 MS/s, demod
   rate 78,125 Hz) used to fall back to the 63-tap prototype designed for 24 kHz.
   They now get a real design (219 taps at 78,125 Hz).
@@ -136,7 +139,8 @@ Enable rule and validation:
   is resolved again for that rate: the unset default moves between the 16 kHz
   design and the legacy WIDE design, and an explicit width the new rate cannot
   realize is logged with the validator's text and runs unfiltered (DSP-limited)
-  rather than being clamped.
+  rather than being clamped. This applies only while the monitor output runs:
+  CQPSK toggled on under `-fA` keeps its P25 CQPSK profile filter.
 
 ### Live Switching
 
@@ -151,11 +155,14 @@ demod profile queued with it:
   demodulator, de-emphasis, channel filter, resampler), carrier and timing loops
   restarted as on an open (Costas, band-edge FLL, Gardner TED), a cleared output
   ring and a bumped output generation. The digital symbol profile follows as a
-  demod profile request, and it decides the CQPSK family. The digital resampler
-  (and so the output rate) is decided for that profile, as an open of it would
-  decide it: at a forced rate such as 78,125 Hz CQPSK never resamples and a
-  2400 sym/s profile at 60 kHz needs no resampling, where the analog monitor's
-  4800 sym/s placeholder would have resampled both to 48 kHz;
+  demod profile request, and it decides the CQPSK family. The family request
+  waits for that profile: when the demod thread reaches a block boundary between
+  the two requests, it keeps the family request queued, so both apply at one
+  boundary. The digital resampler (and so the output rate) is decided for that
+  profile, as an open of it would decide it: at a forced rate such as 78,125 Hz
+  CQPSK never resamples and a 2400 sym/s profile at 60 kHz needs no resampling,
+  where the analog monitor's 4800 sym/s placeholder would have resampled both to
+  48 kHz;
 - FM <-> AM: demodulator and de-emphasis swap with a monitor-state reset (AM is
   refused until the front end can demodulate it).
 
@@ -163,12 +170,16 @@ Toggling CQPSK on under `-fA` leaves the analog family flag set but takes the
 output off the monitor, so that stream keeps its P25 CQPSK profile filter and
 publishes no analog profile.
 
-Retune profiles carry the same fields bound to their target frequency; an
-analog one applies no symbol profile, CQPSK toggle or timing queued for the
-same target. Because
-the switch lands after the requesting command returns,
-`rtl_stream_output_rate_for_family()` predicts the output rate a pending switch
-will produce; the decoder uses it to set symbol timing when leaving analog.
+Retune profiles carry the same fields bound to their target frequency; an analog
+one applies no symbol profile, CQPSK toggle or timing queued for the same
+target. Its width is checked again when the retune lands, against the demod rate
+then in force (a profile queued with no stream running was checked only against
+the kind and range rules). A width that rate cannot realize is refused with the
+validator's text, logged once per kind, width and rate, and the front end keeps
+its receive profile. Because the switch lands after the requesting command
+returns, `rtl_stream_output_rate_for_family()` predicts the output rate a
+pending switch will produce; the decoder uses it to set symbol timing when
+leaving analog.
 
 ### Output Scale
 
