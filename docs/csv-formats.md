@@ -213,6 +213,7 @@ Options are parsed once when the list is loaded. They are a restricted argument 
 | `--scan-voice-only`, `--no-scan-voice-only` | Enable/disable the conventional voice gate. |
 | `--scan-voice-qualify-ms`, `--scan-voice-hold-ms` | Conventional voice-gate intervals, `100..600000` milliseconds. |
 | `--scan-max-visit-ms <ms>` | Maximum time on this row or target per visit; `0` disables the cap for it, otherwise `1000..3600000` milliseconds. All modes, and every trunk-target type. |
+| `--squelch-db <dB>` | This row's or target's squelch threshold, in whole dB from `-100` to `0`, the same units as `[input] rtl_sql` and the `sql` field of `-i rtl:`; `0` switches the squelch off for this row alone. All modes, and every trunk-target type. |
 
 Protocol-specific options require a declared `mode`; trunk targets use their `type`. A channel map whose rows carry
 `options` but no `mode` still runs through the typed scanner (blank rows inherit the configured decoder), since the
@@ -222,6 +223,19 @@ legacy `-Y` scanner applies row keys but not row options, so a legacy list alway
 columns while the gate is on (see `docs/trunk-scan.md`). `--scan-max-visit-ms` is the one scan-timing switch
 trunk-system targets do accept, since the per-visit cap applies to every target type. Input/output, frontend
 selection, decoder flags and scanner-wide `-t` are not accepted in `options`.
+
+`--squelch-db` sets the channel squelch while the row or target is on air and restores the configured default
+when the scanner moves on or stops. A row that omits it inherits the default (`[input] rtl_sql`, the `sql` field of
+`-i rtl:...`, or whatever the squelch control last set); `0` switches the squelch off for that row only; any other
+value is a threshold in dB. Positive numbers (the legacy linear form some CLI inputs accept), values below `-100` and
+fractional dB are rejected with a row diagnostic. On an RTL-SDR, rtl_tcp, SoapySDR or Airspy input the threshold
+gates the demodulator, so a row set well above its signal level decodes nothing: on a trunk-system target it gates
+the control channel too, and a high threshold there makes the whole system look dead. On any other input (rigctl
+tuning a PCM, UDP or TCP audio source) there is no demodulator for it to gate: it still gates the analog monitor
+audio and the carrier-activity check, and scan start logs one warning per affected row or target. Frontends show
+the value in force first and, while a row overrides it, the configured default beside it
+(`SQL: -60.0 dB (row; default -80.0 dB)`). The squelch controls and Config->Save work on the configured default,
+never the row's value; a squelch edit made while a row overrides it says so.
 
 Omitted settings inherit the outer CLI/configuration, including forcing. Use `--no-force-key` on a normal mixed
 clear/BP channel when forcing is configured globally. `-b 1` with normal signalling processes clear and BP calls;
@@ -249,7 +263,10 @@ Separate switches with whitespace; quote an argument with single or double quote
 Backslashes are literal, so `-G "C:\Radio Lists\groups.csv"` works without shell escaping. Hex keys may
 include an optional `0x` prefix and whitespace inside a quoted argument. Long switches that take an argument
 also accept `--name=value`; argument-free switches reject it (for example, `--scan-voice-only=yes`). An
-argument must not start with `-`; use `./-name.csv` for a filename that starts with a dash. CSV commas remain
+argument must not start with `-`; use `./-name.csv` for a filename that starts with a dash. The one exception is
+`--squelch-db`, whose value is negative: a following token made only of a minus sign and digits (`--squelch-db -60`)
+is its value, while anything else starting with `-` (`--squelch-db --strict-crc`) is still refused as a missing
+value. `--squelch-db=-60` also works. CSV commas remain
 field separators, including inside quotes. Unknown switches, positional text, malformed quotes and duplicate
 settings are errors. Diagnostics name the row and option without repeating raw option text or key values.
 

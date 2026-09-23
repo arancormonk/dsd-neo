@@ -134,6 +134,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   label; consumers use their published snapshot, and persistence uses the exact configured preset (including custom sets).
   `dsd_scan_mode_apply_modulation()` owns target flags/locks for both entry and scope updates. Inherited profiles use the
   restored SPS hunt index, so AUTO's saved timing and the frontend's rate/levels agree after leaving a row.
+  `dsd_scan_mode_row_options()` borrows the installed nonsecret row options (valid while suspended and on held
+  snapshots). Row options are applied through a per-field table (`scan_option_appliers[]`), and the row squelch is
+  pushed to the RTL demodulator from the scope's entry points only (see Scoped scan options).
 - Engine `channel_scan.c` (extension slot 7) stages typed `-Y` entries for automatic, manual, and avoid stepping through
   tracked tuning. It commits mode/keys only after success and retains generation protection across pending requests.
   Configuration edits retry pending tunes on a later service pass; live output-rate changes do not trigger another tune.
@@ -364,6 +367,11 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   views only difference it against the caller's monotonic clock, which is what keeps the terminal row, the Qt panel
   and the Android app from drifting on what "suspended" or "hold" means. Tests: `APP_CONTROL_CALL_VIEW`,
   `APP_CONTROL_SCAN_TIMING_VIEW`, and the terminal goldens in `UI_NCURSES_PRINTER_HELPERS`.
+  `include/dsd-neo/app_control/squelch_view.h` and `src/app_control/squelch_view.c` (issue #521) pair the squelch in
+  force with the configured default and say whether a scan row overrides it: the terminal SQL field
+  (`-60.0 dB (row; default -80.0 dB)`), Qt's `configuredSquelchDb`/`effectiveSquelchDb`/`squelchRowOverride`, and
+  the shadowed-edit toast all come from it. It reads the row's value from `dsd_scan_mode_row_options()`, so it is
+  also right on the decoder thread while a command has the scope suspended. Test: `APP_CONTROL_SQUELCH_VIEW`.
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;
@@ -770,6 +778,28 @@ External dependencies (resolved via CMake):
   and releases the SM guard before the engine advances, so cleanup cannot overwrite the next target's state.
 - App-control scopes force/CRC/voice configuration commands and group imports, while live row policy mutations stay
   with the active context. Configuration export reads saved group paths and voice settings from the configured scope.
+- `DSD_SCAN_OPT_SQUELCH` (`--squelch-db`, issue #521) is the one row option with hardware behind it. The parser
+  accepts whole dB `-100..0` (0 = off) on every class and target type (`ANY_MODES`, not the `DIGITAL_MODES` of the
+  protocol switches); its spec sets `signed_numeric`, the single exception to "a following `-` token is a missing
+  value", applied in `option_argument()` so the parser and `dsd_scan_options_visit_files()` agree. The level lives in
+  `dsd_scan_settings::rtl_squelch_level` (a double, first in the struct, compared with a tolerance) beside the other
+  row options, outside `dsd_scan_settings_equal()`. `dsd_scan_mode_enter/options/leave` push it through the runtime
+  metrics hook `set_channel_squelch` when it changed and the input is `AUDIO_IN_RTL`; `dsd_scan_mode_resume` always
+  re-pushes it, because a command run while suspended (`RTL_SET_SQL_DB`, `CONFIG_APPLY`) may have pushed the
+  configured default itself. `dsd_scan_mode_prepare` and `scan_scope_apply` never push. `RTL_SET_SQL_DB` and
+  `AIRSPY_SET` are scoped commands; `RTL_ENABLE_INPUT`/`AIRSPY_ENABLE_INPUT` rewrite no squelch and stay unscoped, so
+  the stream they open starts on the threshold in force. Saves read `rtl_sql` from `dsd_scan_mode_configured_view()`.
+  On non-radio inputs the level still feeds `dsd_squelch_opens()` (the analog monitor/carrier gate); channel and
+  trunk scan start warn once per affected row or target.
+- Adding a row option: add the `DSD_SCAN_OPT_*` bit (reserved values only), a `dsd_scan_option_values` field and a
+  `specifications[]` row with its setter in `runtime/scan_options.c` (use `ANY_MODES` only for options that mean the
+  same on every class); add a `scan_option_appliers[]` row in `runtime/scan_mode.c`; if it lands in `dsd_opts`, add
+  the field to the leading row block of `dsd_scan_settings` and to `scan_settings_restore_row_opts()` and
+  `scan_settings_copy_row_opts()` (not the equality list, unless it changes acquisition). If the value also lives in
+  hardware, push it through a runtime hook from the scope's entry points (`enter`, `options`, `leave`, and always
+  after `resume`), never from `prepare`. Saves and editors read the configured view; frontends get their text from an
+  app_control view. Extend `csv_describe_channel_profile()` and `trunk_scan_document.cpp`'s `describe()` for
+  previews, `docs/csv-formats.md`, and the examples the CSV import tests parse.
 
 ### Android foundation integration contracts
 
