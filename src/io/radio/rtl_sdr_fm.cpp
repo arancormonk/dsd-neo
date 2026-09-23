@@ -8020,9 +8020,7 @@ rtl_stream_active_output(void) {
 static void
 rtl_stream_commit_family_switch(int output_rate) {
     struct output_state* outp = rtl_stream_active_output();
-    if (outp->rate != output_rate) {
-        outp->rate = output_rate;
-    }
+    outp->rate = output_rate;
     demod.costas_reset_pending = 1;
     rtl_stream_invalidate_fsk_phase_cfo_snapshot();
     rtl_stream_clear_output_ring(outp, 1);
