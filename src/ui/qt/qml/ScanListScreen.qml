@@ -2,6 +2,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Window
+import "Util.js" as Util
 
 Rectangle {
     id: screen
@@ -35,13 +36,6 @@ Rectangle {
             return NaN;
         var value = Number(text);
         return isFinite(value) && value >= bottom && value <= top ? value : NaN;
-    }
-
-    // A target's own squelch (--squelch-db). Absent inherits the list's; 0 is off.
-    function squelchSummary(db) {
-        if (db === undefined || db === null)
-            return qsTr("Squelch: inherit");
-        return db === 0 ? qsTr("Squelch: off") : qsTr("Squelch: %1 dB").arg(db);
     }
 
     function frequencyValid(text) {
@@ -691,7 +685,7 @@ Rectangle {
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap
                         color: Theme.textPrimary
-                        text: modelData.id + " · " + modelData.type + " · " + modelData.frequency + " MHz\n" + qsTr("Dwell: %1 · Hold: %2 · Modulation: %3 · Gain: %4").arg(modelData.dwellMs < 0 ? qsTr("inherit") : modelData.dwellMs + " ms").arg(modelData.holdMs < 0 ? qsTr("inherit") : modelData.holdMs + " ms").arg(modelData.modulation || qsTr("inherit")).arg(modelData.gainDb < 0 ? qsTr("inherit") : modelData.gainDb === 0 ? qsTr("auto") : modelData.gainDb + " dB") + " · " + screen.squelchSummary(modelData.squelchDb)
+                        text: modelData.id + " · " + modelData.type + " · " + modelData.frequency + " MHz\n" + qsTr("Dwell: %1 · Hold: %2 · Modulation: %3 · Gain: %4").arg(modelData.dwellMs < 0 ? qsTr("inherit") : modelData.dwellMs + " ms").arg(modelData.holdMs < 0 ? qsTr("inherit") : modelData.holdMs + " ms").arg(modelData.modulation || qsTr("inherit")).arg(modelData.gainDb < 0 ? qsTr("inherit") : modelData.gainDb === 0 ? qsTr("auto") : modelData.gainDb + " dB") + " · " + Util.squelchSummary(modelData.squelchDb)
                     }
                 }
             }
