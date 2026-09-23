@@ -2884,8 +2884,9 @@ trunk_scan_warn_ignored_target_gain(const dsd_opts* opts, const dsd_state* state
 }
 
 /* A target squelch gates the RTL demodulator. With rigctl tuning a PCM input there is no
- * demodulator for it to gate, only the analog monitor and the carrier activity stamp, which read
- * the same threshold from dsd_opts. Say so once per affected target when the scan starts. */
+ * demodulator for it to gate, so it cannot gate digital acquisition; the threshold in dsd_opts
+ * only reaches the analog input monitor (-8, with audio output on) and the carrier activity that
+ * monitor stamps. Say so once per affected target when the scan starts. */
 static void
 trunk_scan_warn_target_squelch(const dsd_opts* opts, const dsd_trunk_scan_target_list* list) {
     if (!opts || !list || opts->audio_in_type == AUDIO_IN_RTL) {
@@ -2894,8 +2895,9 @@ trunk_scan_warn_target_squelch(const dsd_opts* opts, const dsd_trunk_scan_target
     for (size_t i = 0; i < list->count; i++) {
         const dsd_trunk_scan_target* target = &list->targets[i];
         if (target->row_options.present & DSD_SCAN_OPT_SQUELCH) {
-            LOG_WARN("WARNING: Trunk scan target '%s': --squelch-db %d gates only the analog monitor and carrier "
-                     "activity on this input; it cannot gate digital acquisition without a radio input.\n",
+            LOG_WARN("WARNING: Trunk scan target '%s': --squelch-db %d cannot gate digital acquisition without a "
+                     "radio input; here it gates only the analog input monitor (-8) and the carrier activity it "
+                     "stamps.\n",
                      target->id, target->row_options.squelch_db);
         }
     }

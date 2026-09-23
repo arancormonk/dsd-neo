@@ -9753,8 +9753,8 @@ count_target_squelch_warnings(int audio_in_type, int* out_count, char* buf, size
     return 0;
 }
 
-/* A rigctl + PCM scan still gates the monitor audio and carrier activity on the target's
- * threshold, but cannot gate digital acquisition: one warning per affected target, none on RTL. */
+/* A rigctl + PCM scan cannot gate digital acquisition on the target's threshold; only the analog
+ * input monitor (-8) and its carrier stamp read it: one warning per affected target, none on RTL. */
 static int
 test_target_squelch_warns_once_per_target_on_pcm_input(void) {
     char buf[4096];

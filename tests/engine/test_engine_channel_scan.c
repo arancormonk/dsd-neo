@@ -447,10 +447,10 @@ test_row_squelch_threshold_off_inherit(void) {
     tunes = reset_count = 0;
 }
 
-/* On a PCM input the row threshold still lands in dsd_opts, where the analog monitor and the
- * carrier stamp read it against rtl_pwr, but there is no demodulator to gate digital acquisition:
- * the scan says so once per affected row when it starts (and again for a newly imported map),
- * never per visit. */
+/* On a PCM input the row threshold still lands in dsd_opts, where the analog input monitor (-8)
+ * and its carrier stamp read it against rtl_pwr, but there is no demodulator to gate digital
+ * acquisition: the scan says so once per affected row when it starts (and again for a newly
+ * imported map), never per visit. */
 static void
 test_row_squelch_warns_once_per_row_on_pcm_input(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));

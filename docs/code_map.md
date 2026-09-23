@@ -800,11 +800,12 @@ External dependencies (resolved via CMake):
   as a decoder change that ends the call) and leaves `dsd_opts` and the demod on the row's value while a row
   overrides it. `AIRSPY_SET` and `RTL_ENABLE_INPUT`/`AIRSPY_ENABLE_INPUT` rewrite no squelch and stay unscoped, so
   a stream they reopen starts on the row's acquisition and threshold, the ones in force. Saves read `rtl_sql` from
-  `dsd_scan_mode_configured_view()`. On non-radio inputs the level still feeds `dsd_squelch_opens()` (the analog
-  monitor/carrier gate); channel and trunk scan start warn once per affected row or target. Tests:
-  `RUNTIME_SCAN_MODE`, `ENGINE_CHANNEL_SCAN`, `ENGINE_TRUNK_SCAN` (levels and pushes per row and target),
-  `ENGINE_SCAN_SQUELCH_GATE` (targets through the production frame-sync power gate), `APP_COMMAND_QUEUE`, and the
-  `DECODE_IQ_SCAN_NXDN48_SQUELCH_*` replays (a row through the real demod gate).
+  `dsd_scan_mode_configured_view()`. On non-radio inputs nothing gates digital acquisition; the level only reaches
+  the unsynced analog input monitor in `dsd_symbol.c` (`-8`, with audio output on) and the carrier activity it
+  stamps. Channel and trunk scan start warn once per affected row or target. Tests: `RUNTIME_SCAN_MODE`,
+  `ENGINE_CHANNEL_SCAN`, `ENGINE_TRUNK_SCAN` (levels and pushes per row and target), `ENGINE_SCAN_SQUELCH_GATE` and
+  `ENGINE_CHANNEL_SCAN_SQUELCH_GATE` (trunk-scan targets and `-Y` rows through the production frame-sync power gate),
+  `APP_COMMAND_QUEUE`, and the `DECODE_IQ_SCAN_NXDN48_SQUELCH_*` replays (a row through the real demod gate).
 - Adding a row option: add the `DSD_SCAN_OPT_*` bit (reserved values only), a `dsd_scan_option_values` field and a
   `specifications[]` row with its setter in `runtime/scan_options.c` (use `ANY_MODES` only for options that mean the
   same on every class); add a `scan_option_appliers[]` row in `runtime/scan_mode.c`; if it lands in `dsd_opts`, add

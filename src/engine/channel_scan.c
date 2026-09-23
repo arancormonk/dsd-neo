@@ -193,9 +193,10 @@ channel_scan_next_row(const dsd_state* state) {
     return row;
 }
 
-/* A row squelch gates the RTL demodulator. Any other input has no demodulator for it to gate,
- * only the analog monitor and the carrier activity stamp, which read the same threshold from
- * dsd_opts. Say so once per affected row when a scan (or a newly imported map) starts. */
+/* A row squelch gates the RTL demodulator. Any other input has no demodulator for it to gate, so
+ * it cannot gate digital acquisition; the threshold in dsd_opts only reaches the analog input
+ * monitor (-8, with audio output on) and the carrier activity that monitor stamps. Say so once
+ * per affected row when a scan (or a newly imported map) starts. */
 static void
 channel_scan_check_row_squelch(const dsd_opts* opts, const dsd_state* state, channel_scan* scan) {
     if (scan->squelch_checked && scan->squelch_checked_map == state->trunk_chan_map_seq) {
@@ -209,8 +210,9 @@ channel_scan_check_row_squelch(const dsd_opts* opts, const dsd_state* state, cha
     for (int row = 0; row < state->lcn_freq_count; row++) {
         const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)row);
         if (profile && (profile->values.present & DSD_SCAN_OPT_SQUELCH)) {
-            LOG_WARN("WARNING: Scan channel %d (%.6lf MHz): --squelch-db %d gates only the analog monitor and "
-                     "carrier activity on this input; it cannot gate digital acquisition without a radio input.\n",
+            LOG_WARN("WARNING: Scan channel %d (%.6lf MHz): --squelch-db %d cannot gate digital acquisition "
+                     "without a radio input; here it gates only the analog input monitor (-8) and the carrier "
+                     "activity it stamps.\n",
                      row + 1, (double)*dsd_state_trunk_lcn_slot_const(state, row) / 1000000.0,
                      profile->values.squelch_db);
         }

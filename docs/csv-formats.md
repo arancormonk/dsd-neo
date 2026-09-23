@@ -231,8 +231,9 @@ value is a threshold in dB. Positive numbers (the legacy linear form some CLI in
 fractional dB are rejected with a row diagnostic. On an RTL-SDR, rtl_tcp, SoapySDR or Airspy input the threshold
 gates the demodulator, so a row set well above its signal level decodes nothing: on a trunk-system target it gates
 the control channel too, and a high threshold there makes the whole system look dead. On any other input (rigctl
-tuning a PCM, UDP or TCP audio source) there is no demodulator for it to gate: it still gates the analog monitor
-audio and the carrier-activity check, and scan start logs one warning per affected row or target. Frontends show
+tuning a PCM, UDP or TCP audio source) there is no demodulator for it to gate, so it cannot gate digital
+acquisition: it only gates the analog input monitor (`-8`, with audio output on) and the carrier activity that
+monitor stamps, and scan start logs one warning per affected row or target. Frontends show
 the value in force first and, while a row overrides it, the configured default beside it
 (`SQL: -60.0 dB (row; default -80.0 dB)`); the Qt/Android channel-map review and target preview list each row's
 squelch, or `inherit`. The squelch controls and Config->Save work on the configured default, never the row's value;

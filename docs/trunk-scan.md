@@ -541,8 +541,9 @@ target and omitting the switch inherits the configured default. Advancing to the
 rolls back to the original, and shutdown each restore the right value: the incoming target's own, the original
 target's own, or the configured default. On an RTL-family input the threshold gates the demodulator; on a
 `p25-trunk`, `dmr-trunk` or `nxdn*-trunk` target that includes the control channel, so a threshold above the control
-channel's level makes the whole system look dead. With rigctl tuning a PCM, UDP or TCP audio source the value only
-gates the analog monitor and carrier activity, and scan start logs a warning naming each such target. Terminal, Qt
+channel's level makes the whole system look dead. With rigctl tuning a PCM, UDP or TCP audio source the value
+cannot gate digital acquisition: it only gates the analog input monitor (`-8`, with audio output on) and the carrier
+activity that monitor stamps, and scan start logs a warning naming each such target. Terminal, Qt
 and Android show the target's threshold with the configured default beside it; the squelch controls and Config->Save
 work on the configured default.
 

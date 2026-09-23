@@ -394,7 +394,7 @@ test_squelch_row_override_scope(void) {
     assert(g_squelch_pushes == before_suspended_enter + 1);
 
     /* A PCM input has no demodulator to push to, but the row still owns the threshold the
-     * analog monitor and carrier stamp read from dsd_opts. */
+     * analog input monitor (-8) and its carrier stamp read from dsd_opts. */
     const int before_pcm = g_squelch_pushes;
     o->audio_in_type = AUDIO_IN_WAV;
     assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_DMR) == 0);
