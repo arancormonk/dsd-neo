@@ -647,7 +647,9 @@ test_visit_cap_scanner_hops(void) {
 }
 #endif
 
-/* A tone the analog tap published before the step. */
+#if defined(DSD_NEO_TEST_RTL_WRAP)
+/* A tone the analog tap published before the step. Every case that uses these helpers needs
+   the RTL wrap, so they share its guard; without it they would be unused functions. */
 static void
 seed_rx_tone_publication(dsd_state* state, int tenths) {
     state->analog_rx.carrier_open = 1;
@@ -663,7 +665,6 @@ rx_tone_publication_cleared(const dsd_state* state, uint32_t seeded_generation) 
            && state->analog_rx.carrier_open == 0 && state->analog_rx.generation != seeded_generation;
 }
 
-#if defined(DSD_NEO_TEST_RTL_WRAP)
 /* The legacy -Y step by rigctl on PCM input, the one radio-off builds have: a hop that lands
    clears the received tone (issue #522), and a refused one leaves the receiver -- and so its
    tone -- where they were. */

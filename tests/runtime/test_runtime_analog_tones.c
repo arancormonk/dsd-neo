@@ -15,8 +15,14 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+
+/* src/runtime/analog_tones.c may not include the IO header, so it mirrors the monitor-audio
+   output kind as a bare 0. Pin the mirror here, where the IO names are in reach: reordering
+   the IO enum must fail this build, not silently point detection at the wrong output. */
+_Static_assert(RTL_STREAM_OUTPUT_AUDIO_MONITOR == 0, "analog_tones.c mirrors the IO monitor-audio output kind");
 
 static const int k_expected_tenths[] = {
     670,  693,  719,  744,  770,  797,  825,  854,  885,  915,  948,  974,  1000, 1035, 1072, 1109, 1148,
@@ -93,7 +99,7 @@ test_format(void) {
     assert(dsd_ctcss_format(1000, buf, 0) == -1);
 }
 
-static int g_fake_output_kind = 0;
+static int g_fake_output_kind = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
 
 static int
 fake_output_kind(void) {
@@ -129,13 +135,13 @@ test_detection_active(void) {
     assert(dsd_analog_tone_detection_active(opts) == 1);
     const dsd_rtl_stream_metrics_hooks hooks = {.output_kind = fake_output_kind};
     dsd_rtl_stream_metrics_hooks_set(&hooks);
-    g_fake_output_kind = 0;
+    g_fake_output_kind = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
     assert(dsd_analog_tone_detection_active(opts) == 1);
-    g_fake_output_kind = 1; /* FSK discriminator samples: a digital family */
+    g_fake_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR; /* a digital family */
     assert(dsd_analog_tone_detection_active(opts) == 0);
-    g_fake_output_kind = 2; /* CQPSK symbols */
+    g_fake_output_kind = RTL_STREAM_OUTPUT_SYMBOL_CQPSK;
     assert(dsd_analog_tone_detection_active(opts) == 0);
-    g_fake_output_kind = 0;
+    g_fake_output_kind = RTL_STREAM_OUTPUT_AUDIO_MONITOR;
 
     /* Not the analog FM monitor: digital decoding, or analog without the input monitored. */
     opts->analog_only = 0;
