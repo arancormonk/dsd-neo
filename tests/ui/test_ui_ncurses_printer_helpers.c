@@ -482,7 +482,8 @@ dsd_synctype_to_string(int synctype) { // NOLINT(misc-use-internal-linkage)
 }
 
 static dsd_scan_mode g_scan_mode_active = DSD_SCAN_MODE_INHERIT;
-/* Issue #521: the scan scope as the shared squelch view sees it. */
+/* Issue #521: the scan scope as the shared squelch view sees it. Like the other link stubs
+ * here, these replace the runtime definitions at link time, so they keep external linkage. */
 static const dsd_scan_option_values* g_scan_row_options;
 static const dsd_scan_settings* g_scan_configured;
 
@@ -805,12 +806,13 @@ test_rtl_and_soapy_input_source_rendering(void) {
     assert_capture_contains(" SQL: off;");
 
     /* Issue #521: while a scan row overrides the squelch, the line leads with the threshold in
-     * force and names the configured default beside it -- the text every frontend shows. */
-    dsd_scan_option_values row;
+     * force and names the configured default beside it -- the text every frontend shows.
+     * The stubs hand these back by pointer, so they need static storage. */
+    static dsd_scan_option_values row;
     DSD_MEMSET(&row, 0, sizeof(row));
     row.present = DSD_SCAN_OPT_SQUELCH;
     row.squelch_db = -60;
-    dsd_scan_settings configured;
+    static dsd_scan_settings configured;
     DSD_MEMSET(&configured, 0, sizeof(configured));
     configured.rtl_squelch_level = dsd_squelch_level_from_sql(-80.0);
     g_scan_row_options = &row;
