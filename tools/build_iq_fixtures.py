@@ -268,6 +268,30 @@ DPMR_SYNTH_FRAME_REPEATS = 30
 DPMR_SYNTH_NOISE_SIGMA = 0.02
 DPMR_DIBIT_TO_LEVEL = {1: 3.0, 0: 1.0, 2: -1.0, 3: -3.0}
 
+# Synthetic analog NFM carrying a CTCSS tone, for received-tone detection (issue #522).
+#
+# Each is an FM signal built through remodulate(): voice-band audio (noise band-limited to
+# 300-3000 Hz and gated into syllables, the way a transmitter's voice filter leaves speech)
+# plus a sub-audible sine at a usual CTCSS deviation, with receiver noise added at baseband.
+# The voice peaks near 4 kHz of deviation, inside a 12.5 kHz NFM channel; the tone sits at
+# 600 Hz, the usual 10-15% of system deviation. The tone runs from the start and, for the
+# drop case, stops partway while the carrier and the voice carry on. Deterministic from the
+# seed; replayed under -fA, the "Received tone:" log line is what DECODE_IQ_ANALOG_* assert.
+#
+# name, seed, duration_s, tone_hz (None = no tone), tone_stop_s (None = never)
+ANALOG_CTCSS_SYNTH = [
+    ("nfm_ctcss_synth_1000", 5221000, 2.0, 100.0, None),
+    ("nfm_ctcss_synth_670", 5220670, 2.0, 67.0, None),
+    ("nfm_ctcss_synth_drop", 5221001, 2.5, 100.0, 1.2),
+    ("nfm_notone_synth", 5220000, 2.0, None, None),
+]
+ANALOG_SYNTH_TONE_DEVIATION_HZ = 600.0
+ANALOG_SYNTH_VOICE_PEAK_DEVIATION_HZ = 4000.0
+ANALOG_SYNTH_VOICE_BAND_HZ = (300.0, 3000.0)
+ANALOG_SYNTH_SYLLABLE_S = (0.08, 0.35)
+ANALOG_SYNTH_GAP_LEVEL = 0.2
+ANALOG_SYNTH_NOISE_SIGMA = 0.05
+
 METADATA_TEMPLATE = """{{
   "format": "dsd-neo-iq",
   "version": 1,
@@ -646,6 +670,66 @@ def build_attenuated(out_dir):
     return total
 
 
+def analog_voice_band(rng, count):
+    """Voice-band audio: noise limited to 300-3000 Hz, louder in syllables than between them.
+
+    The level never drops to silence (the gaps keep a breath-noise floor) and the first
+    syllable starts at full level: the replay harness has been seen to end a run early when
+    the monitor audio opens with near-silence, which would starve the no-tone verdict.
+    """
+    spectrum = np.fft.rfft(rng.normal(0.0, 1.0, count))
+    freqs = np.fft.rfftfreq(count, 1.0 / SAMPLE_RATE_HZ)
+    low, high = ANALOG_SYNTH_VOICE_BAND_HZ
+    spectrum[(freqs < low) | (freqs > high)] = 0.0
+    voice = np.fft.irfft(spectrum, count)
+    gate = np.full(count, ANALOG_SYNTH_GAP_LEVEL)
+    pos = 0
+    speaking = True
+    while pos < count:
+        length = int(rng.uniform(*ANALOG_SYNTH_SYLLABLE_S) * SAMPLE_RATE_HZ)
+        if speaking:
+            end = min(pos + length, count)
+            gate[pos:end] = 1.0
+        pos += length
+        speaking = not speaking
+    # Soften the syllable edges over 20 ms so the audio has no clicks.
+    edge = int(0.02 * SAMPLE_RATE_HZ)
+    gate = np.convolve(gate, np.ones(edge) / edge, mode="same")
+    gate[: edge // 2] = 1.0
+    voice *= gate
+    peak = np.percentile(np.abs(voice), 99.5)
+    return voice / peak if peak > 0.0 else voice
+
+
+def analog_ctcss_signal(seed, duration_s, tone_hz, tone_stop_s):
+    """Complex baseband NFM: voice-band audio plus an optional CTCSS tone, with receiver noise."""
+    rng = np.random.default_rng(seed)
+    count = int(round(duration_s * SAMPLE_RATE_HZ))
+    deviation_hz = ANALOG_SYNTH_VOICE_PEAK_DEVIATION_HZ * analog_voice_band(rng, count)
+    if tone_hz is not None:
+        t = np.arange(count) / SAMPLE_RATE_HZ
+        tone = ANALOG_SYNTH_TONE_DEVIATION_HZ * np.cos(2.0 * math.pi * tone_hz * t + rng.uniform(0.0, 2.0 * math.pi))
+        if tone_stop_s is not None:
+            tone[int(round(tone_stop_s * SAMPLE_RATE_HZ)) :] = 0.0
+        deviation_hz = deviation_hz + tone
+    # remodulate() maps the 99.5th percentile of |audio| to `deviation` (a fraction of Nyquist);
+    # asking for exactly that percentile in Hz keeps every deviation above as stated.
+    centered = deviation_hz - np.mean(deviation_hz)
+    samples = remodulate(deviation_hz, np.percentile(np.abs(centered), 99.5) / (SAMPLE_RATE_HZ / 2.0))
+    noise = rng.normal(0.0, ANALOG_SYNTH_NOISE_SIGMA, count) + 1j * rng.normal(0.0, ANALOG_SYNTH_NOISE_SIGMA, count)
+    return samples + noise
+
+
+def build_analog_synth(out_dir):
+    """Write the synthetic NFM fixtures for received-tone detection (#522)."""
+    total = 0
+    for name, seed, duration_s, tone_hz, tone_stop_s in ANALOG_CTCSS_SYNTH:
+        written = write_fixture(out_dir, name, analog_ctcss_signal(seed, duration_s, tone_hz, tone_stop_s))
+        total += written
+        print(f"{name:28s} synth   {written // 1024:6d} KiB")
+    return total
+
+
 def build_derived(out_dir):
     total = 0
     for name, source, delay_samples, amp2, cfo_hz, phase2 in DERIVED_SIMULCAST:
@@ -727,6 +811,7 @@ def derived_fixture_names():
         + [entry[0] for entry in DERIVED_NOISE]
         + [DPMR_SYNTH_NAME]
         + [entry[0] for entry in NFM_SYNTH]
+        + [entry[0] for entry in ANALOG_CTCSS_SYNTH]
     )
 
 
@@ -772,6 +857,7 @@ def main():
         total += build_noise(args.out)
         total += build_dpmr_synth(args.out)
         total += build_nfm_synth(args.out)
+        total += build_analog_synth(args.out)
     else:
         for name in derived_fixture_names():
             if name in args.only:

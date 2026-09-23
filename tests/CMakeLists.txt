@@ -11012,6 +11012,42 @@ if(DSD_HAS_RADIO)
         "Src=[0-9]"
     )
 
+    # Received-tone detection on the analog FM monitor (issue #522): synthetic NFM with voice
+    # and a CTCSS tone, replayed under -fA with -o null, so detection is shown to run with no
+    # audio output and no tone policy at all. Each asserts the "Received tone:" log line and
+    # that no other tone was ever reported. CMake regexes have no negative lookahead, so
+    # "any other tone" is spelled out as every value that is not the expected one.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_CTCSS_1000
+        nfm_ctcss_synth_1000
+        -fA
+        "Received tone: CTCSS 100\\.0 Hz"
+        "Received tone: (none|CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|CTCSS 100\\.[1-9] Hz)"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_CTCSS_670
+        nfm_ctcss_synth_670
+        -fA
+        "Received tone: CTCSS 67\\.0 Hz"
+        "Received tone: (none|CTCSS ([0-9]|[0-57-9][0-9]|6[0-689]|[0-9][0-9][0-9])\\.[0-9] Hz|CTCSS 67\\.[1-9] Hz)"
+    )
+    # The tone stops at 1.2 s while the carrier and voice carry on: 100.0, then none.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_CTCSS_DROP
+        nfm_ctcss_synth_drop
+        -fA
+        "Received tone: CTCSS 100\\.0 Hz.*Received tone: none"
+        "Received tone: CTCSS ([0-9]|[0-9][0-9]|[02-9][0-9][0-9]|1[1-9][0-9]|10[1-9])\\.[0-9] Hz|Received tone: CTCSS 100\\.[1-9] Hz"
+    )
+    # Voice with no tone: positively "none", and never a tone.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_ANALOG_CTCSS_NOTONE
+        nfm_notone_synth
+        -fA
+        "Received tone: none"
+        "Received tone: CTCSS"
+    )
+
     # Restart safety: bootstrap + engine lifecycle twice inside one process, the
     # shape an embedding host (Android service, GUI shell) uses. Lives here
     # because it replays an I/Q fixture and therefore needs the radio pipeline.
