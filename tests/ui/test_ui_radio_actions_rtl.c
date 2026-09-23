@@ -11,6 +11,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/rtl_stream_fwd.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "command_dispatch.h"
@@ -155,7 +156,7 @@ test_p25p2_toggle_applies_rtl_profile_before_lock(void) {
 
     rc |= expect_int("p25p2 qpsk dispatch", dispatch_one(&opts, &state, &cmd), 1);
     rc |= expect_int("p25p2 qpsk request call", g_request_calls, 1);
-    rc |= expect_int("p25p2 qpsk asks for the digital family", g_analog_family, 0 /* DSD_RX_FAMILY_DIGITAL */);
+    rc |= expect_int("p25p2 qpsk asks for the digital family", g_analog_family, DSD_RX_FAMILY_DIGITAL);
     rc |= expect_int("p25p2 qpsk family before profile", g_analog_order > 0 && g_analog_order < g_request_order, 1);
     rc |= expect_int("p25p2 qpsk family", g_request_cqpsk, 1);
     rc |= expect_int("p25p2 qpsk profile rate", g_request_rate, 6000);
@@ -366,8 +367,8 @@ test_mod_set_under_analog_keeps_the_analog_profile(void) {
 
     rc |= expect_int("analog mod set dispatch", dispatch_one(&opts, &state, &cmd), 1);
     rc |= expect_int("analog mod set asks for the analog profile", g_analog_calls, 1);
-    rc |= expect_int("analog family", g_analog_family, 1 /* DSD_RX_FAMILY_ANALOG */);
-    rc |= expect_int("FM kind", g_analog_kind, 0 /* DSD_ANALOG_DEMOD_FM */);
+    rc |= expect_int("analog family", g_analog_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("FM kind", g_analog_kind, DSD_ANALOG_DEMOD_FM);
     rc |= expect_int("configured width", g_analog_width_hz, 12500);
     rc |= expect_int("no digital symbol profile", g_request_calls, 0);
 
