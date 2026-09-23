@@ -541,18 +541,31 @@ design_channel_lpf_taps(int rate_hz, int profile, float* taps, int max_taps) {
 }
 
 static int
-bench_one_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, int profile) {
+bench_channel_lpf_taps(const BenchOptions& opts, const char* name, const BenchMeta& meta, const float* designed,
+                       int taps_len, uint32_t seed) {
     constexpr int kPairs = 4096;
     constexpr int kInLen = kPairs * 2;
-    constexpr int kMaxTaps = 144;
 
     std::vector<float> in(kInLen);
     std::vector<float> out(kInLen);
-    std::vector<float> hist_i(kMaxTaps - 1, 0.0f);
-    std::vector<float> hist_q(kMaxTaps - 1, 0.0f);
-    std::vector<float> taps(kMaxTaps);
-    fill_noise(&in, (uint32_t)rate_hz ^ (uint32_t)(profile * 2654435761u));
+    std::vector<float> hist_i((size_t)taps_len - 1U, 0.0f);
+    std::vector<float> hist_q((size_t)taps_len - 1U, 0.0f);
+    std::vector<float> taps(designed, designed + taps_len);
+    fill_noise(&in, seed);
 
+    return run_case(
+        opts, name, "pair", (double)kPairs,
+        [&]() -> float {
+            simd_fir_complex_apply(in.data(), kInLen, out.data(), hist_i.data(), hist_q.data(), taps.data(), taps_len);
+            return out[0] + out[kInLen - 1] + hist_i[0] + hist_q[0];
+        },
+        &meta);
+}
+
+static int
+bench_one_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, int profile) {
+    constexpr int kMaxTaps = 144;
+    std::vector<float> taps(kMaxTaps);
     int taps_len = design_channel_lpf_taps(rate_hz, profile, taps.data(), kMaxTaps);
     if (taps_len <= 0) {
         DSD_FPRINTF(stderr, "channel LPF design failed for %s\n", name);
@@ -564,14 +577,27 @@ bench_one_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, i
     meta.profile = channel_profile_name(profile);
     meta.tap_count = taps_len;
     meta.variant = "blackman";
+    return bench_channel_lpf_taps(opts, name, meta, taps.data(), taps_len,
+                                  (uint32_t)rate_hz ^ (uint32_t)(profile * 2654435761u));
+}
 
-    return run_case(
-        opts, name, "pair", (double)kPairs,
-        [&]() -> float {
-            simd_fir_complex_apply(in.data(), kInLen, out.data(), hist_i.data(), hist_q.data(), taps.data(), taps_len);
-            return out[0] + out[kInLen - 1] + hist_i[0] + hist_q[0];
-        },
-        &meta);
+/* The analog channel filter is designed from its width and may use the full 288-tap capacity, which device-forced
+ * rates above ~51.4 kHz need (78125 Hz: 219 taps; 96000 Hz: 269 taps). */
+static int
+bench_one_analog_channel_lpf(const BenchOptions& opts, const char* name, int rate_hz, int width_hz) {
+    std::vector<float> taps(DSD_CHANNEL_LPF_MAX_TAPS);
+    const int taps_len = dsd_channel_lpf_design_analog(rate_hz, width_hz, taps.data(), DSD_CHANNEL_LPF_MAX_TAPS);
+    if (taps_len <= 0) {
+        DSD_FPRINTF(stderr, "analog channel LPF design failed for %s\n", name);
+        return 0;
+    }
+
+    BenchMeta meta;
+    meta.rate_hz = rate_hz;
+    meta.profile = "analog";
+    meta.tap_count = taps_len;
+    meta.variant = "blackman";
+    return bench_channel_lpf_taps(opts, name, meta, taps.data(), taps_len, (uint32_t)rate_hz ^ (uint32_t)width_hz);
 }
 
 static int
@@ -585,6 +611,9 @@ bench_channel_lpf(const BenchOptions& opts) {
     ran += bench_one_channel_lpf(opts, "channel_lpf_48k_6k25", 48000, DSD_CH_LPF_PROFILE_6K25);
     ran += bench_one_channel_lpf(opts, "channel_lpf_24k_12k5", 24000, DSD_CH_LPF_PROFILE_12K5);
     ran += bench_one_channel_lpf(opts, "channel_lpf_48k_12k5", 48000, DSD_CH_LPF_PROFILE_12K5);
+    ran += bench_one_analog_channel_lpf(opts, "channel_lpf_48k_analog_16k", 48000, 16000);
+    ran += bench_one_analog_channel_lpf(opts, "channel_lpf_78k_analog_16k", 78125, 16000);
+    ran += bench_one_analog_channel_lpf(opts, "channel_lpf_96k_analog_25k", 96000, 25000);
     return ran;
 }
 
