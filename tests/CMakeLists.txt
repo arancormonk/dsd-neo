@@ -10883,11 +10883,13 @@ if(DSD_HAS_RADIO)
             )
         endif()
     endfunction()
+    # The reject cases require the host's banner and then the engine's end-of-run summary, so a
+    # replay that stopped before the signal-bearing block cannot pass on the banner alone.
     dsd_neo_add_scan_squelch_test(
         CLOSED
         "--squelch-db -10"
         ""
-        "squelch -10.0 dB \\(row\\)"
+        "squelch -10.0 dB \\(row\\).*Total audio errors: "
         "Src=901"
     )
     dsd_neo_add_scan_squelch_test(OPEN "--squelch-db -40" -10 "Src=901" "")
@@ -10896,7 +10898,7 @@ if(DSD_HAS_RADIO)
         INHERIT
         ""
         -10
-        "squelch -10.0 dB"
+        "squelch -10.0 dB.*Total audio errors: "
         "Src=901|\\(row\\)"
     )
 endif()
