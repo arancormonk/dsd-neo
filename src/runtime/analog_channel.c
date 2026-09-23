@@ -16,6 +16,7 @@
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /* RTL DSP bandwidths a user can select (rtl_bw_khz), in kHz, ascending. */
 static const int kRtlDspBandwidthsKhz[] = {4, 6, 8, 12, 16, 24, 48};
@@ -148,8 +149,11 @@ dsd_analog_width_parse(int kind, const char* text, int* out_width_hz, char* err,
     int value = 0;
     if (!analog_text_is_digits(text) || dsd_parse_int_strict(text, 10, 0, INT_MAX, &value) != 0) {
         if (want_text) {
-            DSD_SNPRINTF(err, err_size, "%s bandwidth must be a whole number of Hz from %d to %d (got \"%s\")", label,
-                         min_hz, max_hz, text ? text : "");
+            /* Echo a bounded prefix of the input so the message always fits DSD_ANALOG_ERROR_TEXT_MAX. */
+            const char* shown = text ? text : "";
+            const char* more = strlen(shown) > (size_t)DSD_ANALOG_PARSE_ECHO_MAX ? "..." : "";
+            DSD_SNPRINTF(err, err_size, "%s bandwidth must be a whole number of Hz from %d to %d (got \"%.*s%s\")",
+                         label, min_hz, max_hz, DSD_ANALOG_PARSE_ECHO_MAX, shown, more);
         }
         return -1;
     }

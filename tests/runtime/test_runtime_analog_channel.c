@@ -124,6 +124,19 @@ test_parse(void) {
     expect_int("bad kind", dsd_analog_width_parse(5, "12500", &width, err, sizeof err), -1);
     /* A missing error buffer must not stop validation. */
     expect_int("no error buffer", dsd_analog_width_parse(DSD_ANALOG_DEMOD_FM, "99", &width, NULL, 0), -1);
+
+    /* Arbitrarily long input (a CLI argument or INI value) is echoed as a bounded prefix, so the message still fits
+     * DSD_ANALOG_ERROR_TEXT_MAX whole: it ends with the closing quote and parenthesis, not mid-input. */
+    static char long_text[600];
+    DSD_MEMSET(long_text, 'x', sizeof long_text - 1U);
+    long_text[sizeof long_text - 1U] = '\0';
+    expect_int("reject long input", dsd_analog_width_parse(DSD_ANALOG_DEMOD_FM, long_text, &width, err, sizeof err),
+               -1);
+    const size_t err_len = strlen(err);
+    expect_int("long input message fits", err_len < sizeof err - 1U, 1);
+    expect_int("long input message complete", err_len >= 2U && strcmp(err + err_len - 2U, "\")") == 0, 1);
+    expect_contains("long input marked as cut", err, "xxx...\")");
+    expect_contains("long input message still names the range", err, "8000 to 25000");
 }
 
 static void

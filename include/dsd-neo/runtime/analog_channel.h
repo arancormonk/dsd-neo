@@ -12,6 +12,9 @@
  * Blackman transition outside it. It is neither the tuner bandwidth nor the audio bandwidth. A width of 16000 Hz
  * reproduces the historical analog (WIDE) channel filter exactly.
  *
+ * The transition is the window-method design parameter, not a stopband guarantee: the response is about -0.3 dB at
+ * width/2, about -30 dB at width/2 + 1200 Hz, and -50 dB or better only from about width/2 + 1450 Hz.
+ *
  * Everything here is pure integer arithmetic so that runtime callers can validate a width without linking the DSP
  * module. `src/dsp/demod_pipeline.cpp` static-asserts its design constants against the ones below, so the validator
  * and the filter it describes cannot drift apart.
@@ -59,6 +62,8 @@ typedef enum dsd_rx_family {
 #define DSD_ANALOG_WIDTH_TEXT_MAX                24
 /** @brief Buffer size that holds every validator/parser message untruncated. */
 #define DSD_ANALOG_ERROR_TEXT_MAX                256
+/** @brief Longest prefix of rejected input the parser echoes (longer input is shown with a trailing "..."). */
+#define DSD_ANALOG_PARSE_ECHO_MAX                32
 
 /** @brief Return 1 for DSD_ANALOG_DEMOD_FM or DSD_ANALOG_DEMOD_AM, else 0. */
 int dsd_analog_demod_is_valid(int kind);
