@@ -14,6 +14,10 @@
 #include "dsd-neo/io/iq_types.h"
 #include "test_support.h"
 
+#ifndef DSD_NEO_TEST_IQ_FIXTURE_DIR
+#error "DSD_NEO_TEST_IQ_FIXTURE_DIR must name tests/fixtures/iq"
+#endif
+
 static int
 expect_true(const char* label, int cond) {
     if (!cond) {
@@ -1325,9 +1329,92 @@ test_replay_read_partial_eof_and_rewind(void) {
     return rc;
 }
 
+typedef struct {
+    const char* name;
+    double duration_s;
+} committed_analog_fixture;
+
+/* The analog fixtures from issue #518 reach the decoder only through this parser, both in the DECODE_IQ_ANALOG_*
+ * cases and in replay_ab.sh runs, so every sidecar tools/build_iq_fixtures.py writes for them must open for
+ * replay, describe the 48 kHz cu8 layout the builder produces, and cover exactly the bytes on disk. */
+static int
+check_committed_analog_fixture(const committed_analog_fixture* fixture) {
+    char meta[1024];
+    char leaf[128];
+    char err[256];
+    int rc = 0;
+    DSD_SNPRINTF(leaf, sizeof(leaf), "%s.iq.json", fixture->name);
+    if (path_join(meta, sizeof(meta), DSD_NEO_TEST_IQ_FIXTURE_DIR, leaf) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture path too long\n", fixture->name);
+        return 1;
+    }
+
+    dsd_iq_replay_config cfg;
+    dsd_iq_replay_source* src = NULL;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    int prc = dsd_iq_replay_open(meta, &cfg, &src, err, sizeof(err));
+    if (prc != DSD_IQ_OK || src == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: %s: replay open rc=%d err=%s\n", fixture->name, prc, err);
+        dsd_iq_replay_config_clear(&cfg);
+        return 1;
+    }
+    rc |= expect_int(fixture->name, (int)cfg.format, (int)DSD_IQ_FORMAT_CU8);
+    rc |= expect_u32("analog fixture sample rate", cfg.sample_rate_hz, 48000U);
+    rc |= expect_u32("analog fixture demod rate", cfg.demod_rate_hz, 48000U);
+    rc |= expect_int("analog fixture dsp bandwidth", cfg.rtl_dsp_bw_khz, 48);
+    rc |= expect_int("analog fixture has no retunes", cfg.contains_retunes, 0);
+    rc |= expect_true("analog fixture holds whole I/Q pairs", cfg.data_bytes > 0U && (cfg.data_bytes % 2U) == 0U);
+
+    FILE* fp = dsd_fopen_existing_regular_file(cfg.data_path, "rb");
+    rc |= expect_true("analog fixture data file opens", fp != NULL);
+    if (fp != NULL) {
+        uint64_t on_disk = 0U;
+        uint8_t chunk[4096];
+        size_t n = 0U;
+        while ((n = fread(chunk, 1U, sizeof(chunk), fp)) > 0U) {
+            on_disk += (uint64_t)n;
+        }
+        fclose(fp);
+        rc |= expect_u64("analog fixture data_bytes matches file", cfg.data_bytes, on_disk);
+    }
+
+    double seconds = dsd_iq_replay_estimate_duration_seconds(cfg.data_bytes, cfg.format, cfg.sample_rate_hz);
+    double delta = seconds - fixture->duration_s;
+    if (delta < -0.01 || delta > 0.01) {
+        DSD_FPRINTF(stderr, "FAIL: %s: duration %.4f s, expected %.4f s\n", fixture->name, seconds,
+                    fixture->duration_s);
+        rc = 1;
+    }
+
+    uint8_t first[2] = {0, 0};
+    size_t got = 0U;
+    rc |= expect_int("analog fixture first read", dsd_iq_replay_read(src, first, sizeof(first), &got), DSD_IQ_OK);
+    rc |= expect_u64("analog fixture first read size", got, sizeof(first));
+    dsd_iq_replay_close(src);
+    dsd_iq_replay_config_clear(&cfg);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "FAIL: committed analog fixture %s\n", fixture->name);
+    }
+    return rc;
+}
+
+static int
+test_committed_analog_fixture_sidecars_open(void) {
+    static const committed_analog_fixture fixtures[] = {
+        {"am_airband_real", 8.0}, {"nfm_ctcss_real", 6.0}, {"nfm_dcs_real_a", 4.0},
+        {"nfm_dcs_real_b", 4.0},  {"nfm_tone_synth", 1.5}, {"nfm_adjacent_synth", 1.5},
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
+        rc |= check_committed_analog_fixture(&fixtures[i]);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_committed_analog_fixture_sidecars_open();
     rc |= test_metadata_round_trip_capture_open_close();
     rc |= test_metadata_v2_events_round_trip();
     rc |= test_metadata_reuse_after_explicit_clear();

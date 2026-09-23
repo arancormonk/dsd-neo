@@ -9609,6 +9609,13 @@ target_link_libraries(
     dsd-neo_test_io_iq_metadata
     PRIVATE dsd-neo_io_iq dsd-neo_platform dsd-neo_test_support
 )
+# Also opens the committed analog fixture sidecars (issue #518), which replay in
+# radio builds but must parse everywhere.
+target_compile_definitions(
+    dsd-neo_test_io_iq_metadata
+    PRIVATE
+        "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+)
 add_test(NAME IO_IQ_METADATA COMMAND dsd-neo_test_io_iq_metadata)
 
 add_executable(dsd-neo_test_io_iq_capture_writer io/test_io_iq_capture_writer.c)
