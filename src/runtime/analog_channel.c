@@ -14,7 +14,6 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <limits.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 

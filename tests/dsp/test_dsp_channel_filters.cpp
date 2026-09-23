@@ -6,6 +6,7 @@
 /* Unit tests for channel filters: RRC input filters (DC preservation) and the
  * width-driven analog channel low-pass. */
 
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
