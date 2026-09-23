@@ -9,8 +9,9 @@
 # scored replay and not from startup, (5) no match for the optional NOT_EXPECTED
 # regex (a bound that must keep holding), and (6) no sanitizer report.
 #
-# Expected -D inputs: DSD_BIN, MODE, FIXTURE, EXPECTED; optional EXPECTED_RC and
-# NOT_EXPECTED.
+# Expected -D inputs: DSD_BIN, MODE, FIXTURE, EXPECTED; optional EXPECTED_RC,
+# NOT_EXPECTED and TRAILING. MODE goes before "--iq-replay FIXTURE -o null" and
+# TRAILING after it, so a host option can be the last argument on the command line.
 foreach(_var DSD_BIN MODE FIXTURE EXPECTED)
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "analog_replay_fail_check: missing -D${_var}")
@@ -21,11 +22,15 @@ if(NOT DEFINED EXPECTED_RC)
 endif()
 
 separate_arguments(_mode_args UNIX_COMMAND "${MODE}")
+set(_trailing_args)
+if(DEFINED TRAILING)
+    separate_arguments(_trailing_args UNIX_COMMAND "${TRAILING}")
+endif()
 
 execute_process(
     COMMAND
         "${DSD_BIN}" --frontend none ${_mode_args} --iq-replay "${FIXTURE}" -o
-        null
+        null ${_trailing_args}
     RESULT_VARIABLE _rc
     OUTPUT_VARIABLE _out
     ERROR_VARIABLE _err

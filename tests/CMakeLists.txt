@@ -11051,9 +11051,10 @@ if(DSD_HAS_RADIO)
     # analog_replay_fail_check.cmake, which requires the host's exit code (1 for a
     # missed bound), the named ANALOG AUDIO FAIL line and no ANALOG AUDIO OK. Without
     # them a host whose checks never fired would pass every case above.
-    # dsd_neo_add_analog_replay_fail_test(name fixture mode expected [rc [not_expected]])
-    # rc defaults to 1 (pass "" to keep it); not_expected is a regex that must not
-    # appear, such as a bound that has to keep holding.
+    # dsd_neo_add_analog_replay_fail_test(name fixture mode expected [rc [not_expected [trailing]]])
+    # rc defaults to 1; not_expected is a regex that must not appear, such as a bound
+    # that has to keep holding; trailing goes after "-o null", so a host option can be
+    # the last argument. Pass "" to leave an optional argument at its default.
     function(
         dsd_neo_add_analog_replay_fail_test
         test_name
@@ -11066,8 +11067,12 @@ if(DSD_HAS_RADIO)
             set(_rc_arg "-DEXPECTED_RC=${ARGV4}")
         endif()
         set(_not_expected_arg)
-        if(ARGC GREATER 5)
+        if(ARGC GREATER 5 AND NOT "${ARGV5}" STREQUAL "")
             set(_not_expected_arg "-DNOT_EXPECTED=${ARGV5}")
+        endif()
+        set(_trailing_arg)
+        if(ARGC GREATER 6 AND NOT "${ARGV6}" STREQUAL "")
+            set(_trailing_arg "-DTRAILING=${ARGV6}")
         endif()
         add_test(
             NAME ${test_name}
@@ -11076,7 +11081,8 @@ if(DSD_HAS_RADIO)
                 "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
                 "-DMODE=${mode}"
                 "-DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${fixture}.iq.json"
-                "-DEXPECTED=${expected}" ${_rc_arg} ${_not_expected_arg} -P
+                "-DEXPECTED=${expected}" ${_rc_arg} ${_not_expected_arg}
+                ${_trailing_arg} -P
                 "${CMAKE_CURRENT_SOURCE_DIR}/analog_replay_fail_check.cmake"
         )
         set_tests_properties(
@@ -11132,6 +11138,19 @@ if(DSD_HAS_RADIO)
         "-fA --analog-min-snr-db 2O"
         "--analog-min-snr-db: invalid value '2O'"
         2
+    )
+    # A host option as the very last argument, with no value after it, also stops
+    # the host with exit 2 rather than being dropped or reading past the end of argv.
+    # It has to trail "-o null": inside the mode it would take "--iq-replay" as its
+    # value and fail as an invalid value instead.
+    dsd_neo_add_analog_replay_fail_test(
+        DECODE_IQ_ANALOG_NEG_MISSING_VALUE
+        nfm_tone_synth
+        "-fA"
+        "analog replay: --analog-min-snr-db needs a value"
+        2
+        ""
+        "--analog-min-snr-db"
     )
 endif()
 
