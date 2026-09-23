@@ -216,6 +216,15 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   direction the export uses. Every core CSV importer shares its token helpers through the module-private
   `src/core/file/csv_parse_internal.h`; the channel map's key column accepts decimal, `0x` hex and `<iden>-<chan>`
   spellings there.
+- State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5, 8, 10 and 11;
+  runtime 6; DSP 9 (`DSD_STATE_EXT_DSP_ANALOG_RX`, taken from the core range as runtime took 6 from the engine's), the
+  analog receive working state. `CORE_STATE_EXT` pins slot 9.
+- API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issue #522) is the
+  received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
+  `ctcss_tenths_hz`, `dcs_code` and `dcs_inverted` reserved for #523, `gate` reserved for #527 and always OFF, and a
+  `generation` bumped by every reset). It rides the `vertex_ks_count..ui_msg` snapshot range beside `scan_timing`,
+  pinned by a `_Static_assert` in `ui_snapshot.c`; no float, so the semgrep float-field list is unchanged. Only the
+  DSP tap writes it.
 - API note: source ID aliases live in the opaque store declared by `<dsd-neo/core/source_alias.h>` and
   implemented in `src/core/util/source_alias.c`, attached to state extension slot 8
   (`DSD_STATE_EXT_CORE_SOURCE_ALIAS`). `dsd_source_alias_store_create()`/`dsd_source_alias_store_append()` build
@@ -306,6 +315,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     (`analog_family_active`) and the output rate a family switch lands on (`output_rate_for_family`); the engine
     installs `rtl_stream_request_analog_profile()`, `rtl_stream_get_analog_profile()`,
     `rtl_stream_analog_family_active()` and `rtl_stream_output_rate_for_family()` behind them.
+  - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
+    the standard 50-tone CTCSS table in tenths of a hertz (150.0 Hz deliberately absent), index lookup and the
+    `100.0` / `CTCSS 100.0 Hz` formatters (issue #522). Runtime owns it because the frontends format these values and
+    the receive policy parses them, and neither may depend on DSP. `RUNTIME_ANALOG_TONES` pins the table value by
+    value
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in
@@ -456,6 +470,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   stepper reading, a `row` badge and `default X`, and uses `squelchReadout` as the reading's accessible name. It
   reads the row's value from `dsd_scan_mode_row_options()`, so it is also right on the decoder thread while a command
   has the scope suspended. Test: `APP_CONTROL_SQUELCH_VIEW`.
+  `include/dsd-neo/app_control/rx_tone_view.h` and `src/app_control/rx_tone_view.c` fold `dsd_state::analog_rx` into
+  the received-tone text (issue #522): hidden unless the analog FM monitor runs (`analog_only` with
+  `monitor_input_audio`, decided from the options so a reset does not blink the row), then `CTCSS 100.0 Hz`,
+  `detecting`, `none` or an em dash. A locked value this build cannot name (an unsupported frequency, DCS until #523)
+  reads `detecting`, never a value. The same view carries `configured_text`, the configured tone policy, which reads
+  `off` until #527 and is never derived from the received tone. Tests: `APP_CONTROL_RX_TONE_VIEW`, the terminal
+  goldens, `UI_QT_METRICS_MODEL`.
 - Decode quality: `include/dsd-neo/app_control/p25_metrics.h` and `src/app_control/p25_metrics.c`
   copy FEC ok percentages, populated P25 voice-error averages, and non-P25 last-frame
   errors from the caller's held snapshot. The core vocoder maintains ring counts;
@@ -475,6 +496,39 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 - `symbol_timing_debug.c`: measures the sub-symbol offset the decoder's symbol grid settled on and reports it once
   per accepted frame sync, behind `DSD_NEO_DEBUG_SYMBOL_TIMING` (see `docs/cli.md`). The sample trace it correlates
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
+- Received-tone detection (issue #522), public entry points in `include/dsd-neo/dsp/analog_rx.h`:
+  `dsd_analog_rx_tap()` and `dsd_analog_rx_reset()`. `dsd_symbol.c` taps each unsynced analog block in
+  `symbol_finalize_unsynced_analog_block()` after the raw WAV write and before `symbol_apply_unsynced_filters()`: the
+  in-place `hpf_f` (960 Hz) and `pbf_f` there would remove every CTCSS tone. One decoder-thread tap covers RTL and PCM,
+  sees only live (not seam-replayed) samples, only reads the block, and runs whatever `audio_out` says. It is active
+  only for the analog FM monitor (`analog_only && monitor_input_audio`, on PCM input or on RTL with an AUDIO_MONITOR
+  output kind); the rate comes from the RTL output-rate hook or `dsd_opts_current_input_timing_rate()`.
+  - `src/dsp/analog_rx.c` holds the pure core behind the module-private `src/dsp/analog_rx_internal.h` (no `dsd_state`,
+    no clock, so `DSP_ANALOG_CTCSS` drives it in sample time): the shared sub-audible front end (stage 1 a Blackman
+    FIR decimating by `floor(fs / 2400)`, evaluated only when an output is due; stage 2 a Blackman LPF at the ~2.4 kHz
+    rate, 290 Hz cutoff, 60 Hz transition; a 10 Hz DC blocker), the per-block carrier test (the caller's squelch
+    reading plus an absolute mean-square floor that only rejects zeroed or squelched blocks) with the 200 ms
+    sample-time hangover (`DSD_ANALOG_CARRIER_HANGOVER_MS`), and the detector plug-in table
+    (`dsd_analog_rx_detector_ops`: configure/reset/process/report over the band stream and a time-aligned stage-1
+    "wide" stream). It also holds the decoder-thread glue: the working state in `DSD_STATE_EXT_DSP_ANALOG_RX` (slot 9,
+    heap, never deep-copied), the publication `dsd_state::analog_rx`, and the `Received tone:` LOG_INFO line on each
+    change of verdict (a new reception logs again after the carrier drops).
+  - `src/dsp/analog_ctcss.c` is the CTCSS detector: one continuously running phasor per table tone, 50 ms sub-blocks
+    with absolute phase in a 250 ms window, one hop per sub-block. Each hop fits every bin's sub-block phases (a
+    pulse-pair estimate refined by weighted least squares), snaps the fine estimate to the table within +/-0.8 Hz,
+    rejects aliases (an estimate more than 5 Hz from its bin) and scores rho, the share of the sub-audible band energy
+    the tone explains. A tone locks after two consecutive hops qualify it (rho >= 0.35, a phase fit whose reduced
+    chi-square against the band's own noise stays under 6, estimates within 0.5 Hz of each other, and less than 0.08
+    of phase-locked second and third harmonic power: a voice fundamental has harmonics, a tone does not); it holds
+    while the newest 100 ms keep rho >= 0.15 at the locked frequency, and is lost after four failing hops or at once on
+    a reverse burst (a >100 degree phase jump between strong sub-blocks). No carrier for 500 ms of evaluation reads
+    `NONE`. Every threshold is a ratio, so the RTL live (~1/pi), replay and int16 PCM scales read the same.
+  - Invariant: resets never happen in `noCarrier()` / `dsd_engine_reset_no_carrier_state()` (they run every ~375 ms in
+    analog mode and would stop any tone locking). They happen in `dsd_frame_sync_reset_acquisition()` (row commit and
+    leave, trunk-scan target switch, decode-mode change, scope resume, RR apply), on an RTL stream-generation or
+    `dsd_trunk_tuning_generation()` move seen by the tap (the block is discarded), at the legacy untyped `-Y` step and
+    at engine stop (`engine.c`), on accepted `RTL_SET_FREQ` / `MANUAL_TUNE` commands (`app_command_queue.c`), and
+    after the carrier hangover. Every reset bumps `analog_rx.generation`.
 - `dsd_filters.c` owns the per-protocol matched filters, selected by kind rather than by calling one of four
   wrappers, because the symbol grid has to know when the stream it samples changes identity. It reads the raw
   discriminator until a sync names a protocol and the filter's output afterwards, and that output describes the
@@ -837,6 +891,13 @@ Qt Quick frontend (`src/ui/qt`):
 - After the session's first decoder redraw, `UiController` refreshes live metrics on every timer tick so scan
   countdowns and the sync-loss hold continue aging if input stalls. History, network and policy models still
   refresh on decoder redraws; session lifecycle clears live metrics and prevents stale snapshots from restoring them.
+- Received tone (issue #522): `MetricsModel` publishes the `rxTone*` group (`rxToneVisible`, `rxToneStatus`,
+  `rxToneText`, `rxToneKind`, `rxToneTenthsHz`, `rxToneCarrier`, `rxToneConfiguredText`) with its own
+  `rxToneChanged` signal, filled from `app_control/rx_tone_view` in `fillRxToneView()` and returned to unknown by
+  `clear()` on stop. `qml/MonitorScreen.qml` shows it as the `RECEIVED TONE` row (`monitorRxTone`) and reserves a
+  hidden `TONE FILTER` row (`monitorToneFilter`) bound only to `rxToneConfiguredText`, so the configured policy
+  (#527) can never be mistaken for, or feed, the received tone. The terminal shows the same view as the Call Info
+  `Rx tone:` line (`ui_format_rx_tone_line()`, compact view included). The Android notification is unchanged.
 - `dsd_app_lead_slot()` in `app_control/call_view.c` selects the earliest exact start among identified active
   calls for the Monitor hero, its quality row and the Android notification. Later calls on the other slot do not
   displace it. Exact ties prefer the lower slot; when no call is active, the lowest ended slot wins. An earlier

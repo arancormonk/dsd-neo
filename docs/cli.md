@@ -470,6 +470,37 @@ Notes
   console diagnostics are suppressed.
 - P25p2 on a single frequency may require `-X` (below) if MAC_SIGNAL is missing.
 
+### Received tone (CTCSS) on the analog monitor
+
+While the passive analog monitor runs (`-fA`, which enables input monitoring), DSD-neo listens below the voice band
+for a CTCSS (PL) tone and reports what it hears. Detection only reports: it never mutes or gates audio, it needs no
+tone setting, and it runs with `-o null` too.
+
+- Supported tones: the standard 50-tone EIA/TIA table, 67.0-254.1 Hz (67.0, 69.3, 71.9 ... 250.3, 254.1). 150.0 Hz is
+  not supported and is never reported as 151.4 Hz; any other frequency within the sub-audible band, such as 68.2 Hz,
+  reads as no tone rather than as its nearest neighbour.
+- What is shown: the terminal's Call Info section carries an `Rx tone:` line (compact view too), and the Qt/Android
+  monitor a `RECEIVED TONE` row. Both read `CTCSS 100.0 Hz` once a tone is confirmed, `detecting` while a carrier is
+  being evaluated, `none` when the carrier carries no supported tone, and an em dash with no carrier. The log prints
+  `Received tone: CTCSS 100.0 Hz` or `Received tone: none` whenever that verdict changes.
+- Timing, in sample time: a tone at or above 0 dB in-band tone-to-noise (0-290 Hz) is confirmed within 400 ms of its
+  start; a tone that stops while the carrier stays up is dropped within 350 ms, and within 150 ms when the transmitter
+  sends a reverse burst (the end-of-message phase flip). A carrier with no tone is called `none` after 500 ms.
+- The received tone is forgotten when the receiver moves or the session changes: a frequency set from a frontend or a
+  spectrum tap, any other retune the RTL stream or the tuning hooks report (UDP retune, rigctl-driven tuning), a
+  `-Y` scan step, a scan row or trunk-scan target change, a decode-mode change, stop, and 200 ms without carrier. The
+  frequent no-carrier cleanup between syncs does not clear it.
+- Where it runs: analog-only decoding with input monitoring, on PCM inputs (TCP, UDP, Pulse, WAV, stdin) or on an
+  RTL-family stream that outputs monitor audio. It does not run for the `-8` source monitor during digital decoding,
+  or for EDACS analog voice. The decimated band needs an input rate of at least 2400 Hz; below that detection logs once
+  that it is inactive.
+- Externally demodulated audio (PCM inputs): the tone has to survive the producer. Feed the discriminator or
+  flat audio with nothing below 300 Hz removed -- no voice high-pass, no de-emphasis that rolls off the low end -- and
+  prefer 48 kHz. Sound cards and receivers that high-pass their audio output remove CTCSS before DSD-neo sees it.
+- Talk-off: a voice whose fundamental holds within 0.8 Hz of a table tone for a third of a second, with weak
+  harmonics, is indistinguishable from that tone in the time allowed and can be reported briefly. It is rare on
+  transmitted voice (which the transmitter high-passes at 300 Hz) and most likely near the top of the table.
+
 ## Mode Tweaks & Advanced
 
 - Inversions: `-xx` X2 non‑inverted, `-xr` DMR inverted, `-xd` dPMR inverted, `-xz` M17 inverted

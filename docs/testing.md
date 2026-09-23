@@ -267,6 +267,38 @@ cannot see this: the same build scores anywhere from 57 to 94 NXDN48 syncs run t
 than the effect. Decode *volume* under the hunt is not covered by the `iq-decode` suite, which asks only whether a
 build still decodes.
 
+#### Received tone (CTCSS) on the analog monitor
+
+`DECODE_IQ_ANALOG_CTCSS_1000`, `_670`, `_DROP` and `_NOTONE` (issue #522) replay synthetic NFM under `-fA -o null`, so
+they also show detection needs neither audio output nor a tone policy. The fixtures (`nfm_ctcss_synth_1000`,
+`nfm_ctcss_synth_670`, `nfm_ctcss_synth_drop`, `nfm_notone_synth`) are built offline by
+`python3 tools/build_iq_fixtures.py --derived-only`: voice-band audio (noise limited to 300-3000 Hz, gated into
+syllables) plus a 600 Hz-deviation sine at the named tone, through the existing `remodulate()`, with receiver noise
+added at baseband. Each asserts the `Received tone:` log line and, as its negative half, that no other tone was ever
+reported; CMake regexes have no negative lookahead, so "any other tone" is spelled out as every value that is not the
+expected one. The drop fixture stops its tone at 1.2 s under a live carrier and must log `CTCSS 100.0 Hz` then `none`.
+The voice never falls silent in these fixtures, and that is deliberate: some `-fA` replays that open on near-silent
+monitor audio end after a few hundred samples, which leaves the 500 ms no-tone verdict unreached. The tone-bearing
+fixtures were not affected, but the no-tone case failed that way about half the time before its audio started at full
+level.
+
+The detector's own bounds are pinned in sample time by `DSP_ANALOG_CTCSS`, through the pure receive core
+(`src/dsp/analog_rx_internal.h`) and seeded generators in `tests/dsp/analog_tone_synth.h`: all 50 tones at four input
+rates and at +10 and 0 dB in-band tone-to-noise lock within 400 ms of an onset placed anywhere inside a hop, and the
+test prints the p50/p95/worst lock times; 67.0/69.3/71.9 Hz are each identified; 150.0 and 68.2 Hz never lock; the tone
+is dropped within 350 ms of stopping and within 150 ms of a reverse burst; the verdict is identical at the three input
+scales and for any block size; and a minute each of unfiltered speech, transmitter-filtered speech and noise never
+locks. The speech model is source-filter speech with a jittering, drifting, wobbling fundamental in 85-255 Hz. Those
+minutes are fixed seeds, because no 250 ms detector can promise zero talk-off for every voice: over an hour of seeds
+the unfiltered model locks a tone about four times (every one at 229 Hz or above, where a high voice with weak
+harmonics holds near a table tone), and the transmitter-filtered model about once. Retune clearing is covered where
+each path lives: `DSP_SYMBOL_REPLAY` (the tap reads the raw block before the voice high-pass removes the tone, leaves
+the audio byte-identical, and clears on an RTL stream-generation or trunk-tuning-generation move),
+`FRAME_SYNC_INTERNAL_HELPERS` (the acquisition reset), `ENGINE_NO_CARRIER_RESET` (survives `noCarrier()`, cleared by
+the legacy `-Y` step), `ENGINE_CHANNEL_SCAN`/`ENGINE_TRUNK_SCAN` (row commit and target switch) and
+`APP_COMMAND_QUEUE` (decode-mode change, `RTL_SET_FREQ`, `MANUAL_TUNE`). Real-capture CTCSS validation with the
+analog A/B metric lands with the real excerpts.
+
 Known gaps and caveats:
 
 - **ProVoice** and **X2-TDMA** have no usable public sample and are untested here.

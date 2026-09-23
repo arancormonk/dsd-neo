@@ -627,6 +627,22 @@ scan is not running, and nothing at all when neither scanner is running or the r
 Input Output row it repeats: a target is a whole system, and "channel" already means a channel number lower in Call
 Info. Event history rows carry the same label as a bracketed prefix — see "Event History Rows" below.
 
+## Received Tone
+
+While the analog FM monitor runs (`-fA`), Call Info carries the sub-audible tone the receiver hears, under the
+channel line and in compact view too:
+
+```
+| Rx tone: CTCSS 100.0 Hz
+```
+
+It reads `CTCSS 100.0 Hz` once a supported tone is confirmed, `detecting` while a carrier is being evaluated,
+`none` when the carrier carries no supported tone (or the tone was lost), and `—` when there is no carrier. The
+line is absent outside the analog FM monitor. This is only what is received; it never reflects a tone filter setting,
+and it clears on a retune, a scan row or target change, a mode change and stop. The same text comes from the shared
+app-control view the Qt/Android monitor uses, so both always agree. Supported tones, timing and the requirements on
+externally demodulated audio are in the [CLI guide](cli.md#received-tone-ctcss-on-the-analog-monitor).
+
 ## Compact View
 
 Press `c` (or use Menu -> Display -> Compact view) to collapse the main screen to a scanner-style
@@ -635,8 +651,8 @@ layout. While active, the header shows a `Compact (c)` indicator and the frame r
 - the header banner and any transient status toast;
 - a condensed `Status` block: decoder mode, demod/symbol rate, tuner Busy/Free (when trunking), SNR meter,
   input level, output mute state, and slot on/off states;
-- the full Call Info section (the `Channel:`/`Target:` line while scanning, per-slot TGT/SRC, active channels,
-  tuned frequency, TG HOLD);
+- the full Call Info section (the `Channel:`/`Target:` line while scanning, the `Rx tone:` line on the analog
+  monitor, per-slot TGT/SRC, active channels, tuned frequency, TG HOLD);
 - the event history, which expands into the freed rows.
 
 Suppressed while compact: the Input Output section, visual aids (including any enabled visualizers — their
