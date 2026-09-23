@@ -520,3 +520,12 @@ dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* al
     *allow_out = allow;
     return 0;
 }
+
+int
+dsd_audio_record_policy_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot, int* allow_out) {
+    if (!opts || !state || !allow_out || slot < 0 || slot > 1) {
+        return -1;
+    }
+    *allow_out = !dsd_audio_record_policy_blocks(opts, state, slot);
+    return 0;
+}

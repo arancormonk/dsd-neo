@@ -206,6 +206,16 @@ int dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsi
                               int encL_in, int encR_in, int* encL_out, int* encR_out);
 /** @brief Mono per-call WAV gate combining decrypt state with TG/allow-list/TG-hold policy. */
 int dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* allow_out);
+/**
+ * @brief WAV gate for TG/allow-list/TG-hold policy alone, on the call in @p slot.
+ *
+ * For writers whose decode path settles crypto itself and never sets the DMR
+ * slot encryption flags dsd_audio_record_gate_mono() reads: X2-TDMA, D-STAR and
+ * SDRTrunk JSON playback. The caller names the slot its protocol publishes on,
+ * since currentslot can be left over from another protocol's TDMA decode. A slot
+ * with no active call is allowed.
+ */
+int dsd_audio_record_policy_gate_slot(const dsd_opts* opts, const dsd_state* state, int slot, int* allow_out);
 
 /**
  * @brief Key material the DMR/P25 voice ALGID @p algid requires.

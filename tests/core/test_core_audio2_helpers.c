@@ -1341,6 +1341,8 @@ test_mono_short_voice_honors_talkgroup_gate(void) {
     rc |=
         expect_int("mono gate call observed", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
     state->synctype = DSD_SYNC_P25P1_POS;
+    // A live Phase 1 call reaches this path only once it classified clear or decryptable.
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
 
     for (size_t sink = 0; sink < sizeof(sinks) / sizeof(sinks[0]); sink++) {
         opts->audio_out_type = sinks[sink];
@@ -1371,6 +1373,53 @@ test_mono_short_voice_honors_talkgroup_gate(void) {
     reset_gate_capture();
     g_audio_write_channels = 2;
     dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* Reverse mute (-q) silences clear live P25 Phase 1 audio on the short mono
+ * path as on the float and stereo paths, while SDRTrunk JSON playback keeps
+ * bypassing the live crypto state. */
+static int
+test_mono_short_voice_honors_p25_reverse_mute(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+
+    static const struct {
+        const char* tag;
+        int reverse_mute;
+        int mbe_file_type;
+        int want_writes;
+    } cases[] = {
+        {"reverse mute silences clear live P25 mono", 1, 0, 0},
+        {"clear live P25 mono plays without reverse mute", 0, 0, 1},
+        {"sdrtrunk json P25 mono bypasses live reverse mute", 1, 3, 1},
+    };
+
+    int rc = 0;
+    opts->audio_out = 1;
+    opts->audio_out_type = 8;
+    opts->slot1_on = 1;
+    opts->floating_point = 0;
+    opts->pulse_digi_out_channels = 1;
+    g_audio_write_channels = 1;
+    state->synctype = DSD_SYNC_P25P1_POS;
+    state->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    reset_gate_capture();
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        opts->reverse_mute = cases[c].reverse_mute;
+        state->mbe_file_type = cases[c].mbe_file_type;
+        for (size_t i = 0; i < 160U; i++) {
+            state->s_l[i] = (short)(i + 1U);
+        }
+        state->audio_out_idx = 160;
+        reset_sink_capture();
+        playSynthesizedVoiceMS(opts, state);
+        rc |= expect_int(cases[c].tag, g_udp_blast_calls, cases[c].want_writes);
+    }
+    g_audio_write_channels = 2;
     free(state);
     free(opts);
     return rc;
@@ -1523,6 +1572,7 @@ main(void) {
     rc |= test_audio_gate_target_preserves_p25_ota_identity();
     rc |= test_mono_voice_preserves_samples_in_configured_output();
     rc |= test_mono_short_voice_honors_talkgroup_gate();
+    rc |= test_mono_short_voice_honors_p25_reverse_mute();
     rc |= test_ss3_hold_respects_policy_mute();
     rc |= test_silent_s16_helper();
     return rc;

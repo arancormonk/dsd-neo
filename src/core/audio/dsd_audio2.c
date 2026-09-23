@@ -331,6 +331,11 @@ dsd_fdma_apply_group_gate(const dsd_opts* opts, const dsd_state* state, unsigned
     return muted;
 }
 
+int
+dsd_audio_mono_output_muted(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_fdma_apply_group_gate(opts, state, dsd_audio_call_target(state, 0U), 0);
+}
+
 static int
 p25p2_s16_frames_have_audio(short frames[18][160]) {
     for (int j = 0; j < 18; j++) {
@@ -1144,10 +1149,9 @@ playSynthesizedVoiceMS(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(mono_samp, 0, len * sizeof(short));
 
     // Crypto is settled before samples reach s_l (the MBE post-processing only
-    // fills it for audible calls), but the talkgroup gate is not, so apply it
-    // here as every other output path does.
-    int muted = 0;
-    (void)dsd_audio_group_gate_mono(opts, state, dsd_audio_call_target(state, 0U), 0, &muted);
+    // fills it for audible calls), but the talkgroup gate and reverse mute are
+    // not, so apply them here as the float and stereo paths do.
+    const int muted = dsd_audio_mono_output_muted(opts, state);
 
     if (opts->slot1_on != 0 && !muted) {
         dsd_load_short_mono_samples(mono_samp, len, state->s_l, &state->audio_out_buf_p);

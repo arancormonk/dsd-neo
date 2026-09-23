@@ -1332,10 +1332,14 @@ run_decode_audio_output_path(dsd_opts* opts, dsd_state* state) {
     if (opts->floating_point == 0) {
         processAudio(opts, state);
     }
-    if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
+    // Playback settles crypto itself (decode_audio_is_allowed), so its WAVs
+    // answer to the replayed call's talkgroup policy alone; the call is on slot 0.
+    int record = 0;
+    (void)dsd_audio_record_policy_gate_slot(opts, state, 0, &record);
+    if (record && opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
         writeSynthesizedVoice(opts, state);
     }
-    if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
+    if (record && opts->wav_out_f != NULL && opts->static_wav_file == 1) {
         writeSynthesizedVoiceMS(opts, state);
     }
 

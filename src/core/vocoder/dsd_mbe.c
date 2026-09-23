@@ -1713,16 +1713,25 @@ mbe_post_allow_stereo_slot_wav(const dsd_opts* opts, const dsd_state* state, int
     return (dsd_audio_record_gate_mono(opts, state, &allow_wav) == 0 && allow_wav) ? 1 : 0;
 }
 
+// X2-TDMA and D-STAR never classify crypto into the DMR slot flags the full
+// record gate reads, so their WAV answers to the talkgroup policy alone.
+static int
+mbe_post_allow_policy_wav(const dsd_opts* opts, const dsd_state* state, int slot) {
+    int allow_wav = 0;
+    return (dsd_audio_record_policy_gate_slot(opts, state, slot, &allow_wav) == 0 && allow_wav) ? 1 : 0;
+}
+
 static void
 mbe_post_wav_outputs(dsd_opts* opts, dsd_state* state) {
     if (DSD_SYNC_IS_X2TDMA(state->synctype)) {
-        if (opts->wav_out_f != NULL) {
+        if (opts->wav_out_f != NULL && mbe_post_allow_policy_wav(opts, state, state->currentslot == 1 ? 1 : 0)) {
             writeSynthesizedVoice(opts, state);
         }
         return;
     }
     if (DSD_SYNC_IS_DSTAR(state->synctype)) {
-        if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
+        // D-STAR publishes on slot 0 whatever slot a TDMA decode left current.
+        if (opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1 && mbe_post_allow_policy_wav(opts, state, 0)) {
             writeSynthesizedVoice(opts, state);
         }
         return;
@@ -1760,13 +1769,17 @@ mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_c
 }
 
 // Each file replays its own traffic. An SDRTrunk JSON export leaves its last
-// call open at EOF, and a raw .imb/.amb/.dmb that follows publishes no identity
-// of its own, so the talkgroup gate would judge it on the previous file's call.
+// call open and its protocol set at EOF, and a raw .imb/.amb/.dmb that follows
+// publishes neither, so the output gates would judge it on the previous file's
+// talkgroup, or as an unclassified live P25 call. Start each file as a fresh
+// -r run does: no call and no protocol.
 static void
 mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state) {
     if (dsd_call_state_end(state, 0U, 0.0) > 0) {
         dsd_event_sync_slot(opts, state, 0U);
     }
+    state->synctype = DSD_SYNC_NONE;
+    state->lastsynctype = DSD_SYNC_NONE;
 }
 
 void
