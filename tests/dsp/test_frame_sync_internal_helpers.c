@@ -2968,6 +2968,49 @@ test_analog_family_never_auto_switches_modulation(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/*
+ * The analog monitor has no symbol clock: whatever the modulation votes decide while it runs,
+ * the RTL front end must not be handed a symbol profile. A CQPSK one turns the stream's
+ * monitor audio into symbols, which silenced the monitor and received-tone detection with it
+ * (issue #522: a -fA replay that opened on quiet audio decoded nothing at all). The same votes
+ * on a digital session are the control: there they do reach the front end.
+ */
+static void
+test_analog_monitor_never_requests_rtl_symbol_profiles(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+
+    for (int analog = 1; analog >= 0; analog--) {
+        int lastt = 24;
+        reset(&opts, &state);
+        if (analog) {
+            opts.analog_only = 1;
+            opts.monitor_input_audio = 1;
+        } else {
+            opts.frame_p25p1 = 1;
+        }
+        opts.audio_in_type = AUDIO_IN_RTL;
+        state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+        state.carrier = 1;
+        dsd_frame_sync_reset_mod_state();
+        set_fake_snr(-100.0, 4.0, -100.0, 12.0);
+        install_fake_snr_hooks();
+        reset_fake_profile_capture();
+
+        frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
+        lastt = 24;
+        frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
+        if (analog) {
+            assert(g_profile_set_calls == 0);
+        } else {
+            assert(state.rf_mod == 1);
+            assert(g_profile_set_calls == 1 && g_profile_cqpsk == 1);
+        }
+        dsd_rtl_stream_metrics_hooks_set(NULL);
+    }
+}
+
 static void
 test_hamming_override_can_select_qpsk(void) {
     static dsd_opts opts;
@@ -3145,6 +3188,7 @@ main(void) {
     test_modulation_snr_fallback_votes_and_dwell();
     test_modulation_cli_lock_prevents_votes();
     test_analog_family_never_auto_switches_modulation();
+    test_analog_monitor_never_requests_rtl_symbol_profiles();
     test_hamming_override_can_select_qpsk();
     test_p25_trunk_tick_recency();
 #endif

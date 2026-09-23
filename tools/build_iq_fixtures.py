@@ -673,9 +673,8 @@ def build_attenuated(out_dir):
 def analog_voice_band(rng, count):
     """Voice-band audio: noise limited to 300-3000 Hz, louder in syllables than between them.
 
-    The level never drops to silence (the gaps keep a breath-noise floor) and the first
-    syllable starts at full level: the replay harness has been seen to end a run early when
-    the monitor audio opens with near-silence, which would starve the no-tone verdict.
+    The level never drops to silence (the gaps keep a breath-noise floor), and the first
+    syllable starts at full level rather than fading in.
     """
     spectrum = np.fft.rfft(rng.normal(0.0, 1.0, count))
     freqs = np.fft.rfftfreq(count, 1.0 / SAMPLE_RATE_HZ)

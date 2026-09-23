@@ -145,6 +145,14 @@ rtl_maybe_apply_demod_profile(const dsd_opts* opts, const dsd_state* state, cons
     if (!opts || !state || !profile || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
         return;
     }
+    /* The analog monitor has no symbol clock, and its front end answers for itself with the
+       wide profile. A symbol profile from the hunt would turn the stream's monitor audio into
+       CQPSK symbols, or narrow it to a digital channel: the monitor, and received-tone detection
+       with it, would go quiet until the mode changed. app_control/symbol_profile.c refuses the
+       same request for the same reason. */
+    if (opts->analog_only) {
+        return;
+    }
     const int ted_sps =
         dsd_opts_compute_sps_rate(opts, profile->symbol_rate_hz, frame_sync_current_demod_rate(opts, state));
     (void)dsd_rtl_stream_metrics_hook_apply_demod_profile(state->rf_mod == 1, profile->symbol_rate_hz, profile->levels,
