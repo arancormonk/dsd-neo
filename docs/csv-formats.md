@@ -234,8 +234,9 @@ the control channel too, and a high threshold there makes the whole system look 
 tuning a PCM, UDP or TCP audio source) there is no demodulator for it to gate: it still gates the analog monitor
 audio and the carrier-activity check, and scan start logs one warning per affected row or target. Frontends show
 the value in force first and, while a row overrides it, the configured default beside it
-(`SQL: -60.0 dB (row; default -80.0 dB)`). The squelch controls and Config->Save work on the configured default,
-never the row's value; a squelch edit made while a row overrides it says so.
+(`SQL: -60.0 dB (row; default -80.0 dB)`); the Qt/Android channel-map review and target preview list each row's
+squelch, or `inherit`. The squelch controls and Config->Save work on the configured default, never the row's value;
+a squelch edit made while a row overrides it says so.
 
 Omitted settings inherit the outer CLI/configuration, including forcing. Use `--no-force-key` on a normal mixed
 clear/BP channel when forcing is configured globally. `-b 1` with normal signalling processes clear and BP calls;
@@ -264,9 +265,11 @@ Backslashes are literal, so `-G "C:\Radio Lists\groups.csv"` works without shell
 include an optional `0x` prefix and whitespace inside a quoted argument. Long switches that take an argument
 also accept `--name=value`; argument-free switches reject it (for example, `--scan-voice-only=yes`). An
 argument must not start with `-`; use `./-name.csv` for a filename that starts with a dash. The one exception is
-`--squelch-db`, whose value is negative: a following token made only of a minus sign and digits (`--squelch-db -60`)
-is its value, while anything else starting with `-` (`--squelch-db --strict-crc`) is still refused as a missing
-value. `--squelch-db=-60` also works. CSV commas remain
+`--squelch-db`, whose value is negative: a following token that reads as a negative number, a minus sign and a digit
+followed only by digits, `.`, `e`, `E`, `+` or `-` (`--squelch-db -60`), is its value, while anything else starting
+with `-` (`--squelch-db --strict-crc`) is still refused as a missing value. A malformed number such as
+`--squelch-db -5.5` is therefore reported as an out-of-range value, the same as `--squelch-db=-5.5`.
+`--squelch-db=-60` also works. CSV commas remain
 field separators, including inside quotes. Unknown switches, positional text, malformed quotes and duplicate
 settings are errors. Diagnostics name the row and option without repeating raw option text or key values.
 

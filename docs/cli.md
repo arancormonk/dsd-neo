@@ -685,7 +685,7 @@ cache file. Direct frequency changes are disabled during `--trunk-scan`, whose t
 - A `sql` value that is not a number leaves the squelch as it was rather than switching it off. A disabled squelch is
   reported as `off` everywhere it is shown — the startup banner, the terminal input line, the DSP panel — so it is
   never mistaken for a threshold gating at the −120 dB display floor.
-- A scan row or target may carry its own `--squelch-db` (issue #521). It uses these same dB units but only the
+- A scan row or target may carry its own `--squelch-db`. It uses these same dB units but only the
   negative and `0` forms: the linear positive form is refused there. While the row is on air it replaces this
   threshold; leaving it, or stopping the scan, restores this one. The squelch menu and Qt panel still edit this
   configured value, and a save writes it, never the row's.

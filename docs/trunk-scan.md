@@ -535,7 +535,7 @@ outright, including a row `0`, which exempts that target while the global cap st
 without it inherits the global. Accepted values are `0` or `1000..3600000`, the same bounds as the CLI switch. Saving
 configuration while a target is parked records the configured global, not the parked target's override.
 
-`--squelch-db <dB>` (issue #521) is accepted on every target type as well. It sets the squelch while the target is
+`--squelch-db <dB>` is accepted on every target type as well. It sets the squelch while the target is
 parked: whole dB from `-100` to `0`, the units of `[input] rtl_sql`, where `0` switches the squelch off for that
 target and omitting the switch inherits the configured default. Advancing to the next target, a failed retune that
 rolls back to the original, and shutdown each restore the right value: the incoming target's own, the original
@@ -577,7 +577,7 @@ review the target preview, name the list, select its receiver settings, and Save
 The list's Play button starts the imported CSV directly.
 
 The CSV stays authoritative. Its target IDs, order, columns and supported `options`
-are preserved; the preview shows inherited timing separately from explicit values.
+are preserved; the preview shows inherited timing and squelch separately from explicit values.
 An explicit target option overrides the corresponding session default, and leaving
 the target restores the baseline. For example, a target can use `--enc-follow`,
 `--no-force-key`, or its own `--scan-max-visit-ms`. The manual editor's restriction
