@@ -1,8 +1,10 @@
 # RTL Demod Pipeline Audit
 
-This note documents the RTL-family digital demod path and the contracts that keep
-clean samples and symbols flowing into the decoder. It covers RTL USB, RTL-TCP,
-SoapySDR, and IQ replay; all four sources feed the same direct-output contracts.
+This note documents the RTL-family demod paths and the contracts that keep
+clean samples and symbols flowing into the decoder, and clean audio into the
+analog monitor. It covers RTL USB, RTL-TCP, SoapySDR, Airspy, and IQ replay; all
+of them feed the same direct-output contracts. The analog monitor path is
+described under [Analog Monitor Path](#analog-monitor-path).
 
 ## Source-To-Slicer Path
 
@@ -60,6 +62,94 @@ SoapySDR, and IQ replay; all four sources feed the same direct-output contracts.
 - FSK discriminator output uses `getSymbol()` sample-domain timing. That path
   needs capture bandwidth wide enough to avoid shaving deviation energy.
 
+## Analog Monitor Path
+
+`-fA` runs the RTL front end in the analog receive family: `AUDIO_MONITOR`
+output, the FM discriminator (`dsd_fm_demod`), de-emphasis, and the monitor
+resampler to 48 kHz. The M17 encoder shares that output kind but is not the
+analog family, so none of the rules below apply to it.
+
+Per block: half-band decimation, channel LPF, carrier squelch, FM
+discrimination, de-emphasis, optional audio LPF, DC block, and the squelch
+envelope.
+
+### Channel Width
+
+The analog channel filter is designed from a full RF channel width `W`: the
+cutoff is `W/2 + 600 Hz` with a fixed 1200 Hz Blackman transition outside the
+protected passband (about -0.3 dB at `W/2`, -30 dB at `W/2 + 1200 Hz`, -50 dB
+from about `W/2 + 1450 Hz`). The width is neither the tuner bandwidth nor the
+audio bandwidth. `W = 16000` runs the same design call as the historical WIDE
+profile, so its taps are bit-identical wherever that design succeeded.
+
+A width is realizable at DSP rate `R` only when `W/2 + 600 <= 0.45 x R` and the
+Blackman tap count `74 x R / 26400` (odd) fits the 288-tap analog capacity:
+
+| DSP rate | Largest width |
+| ---: | ---: |
+| 48 kHz | 42 kHz |
+| 24 kHz | 20.4 kHz |
+| 16 kHz | 13.2 kHz |
+| 12 kHz | 9.6 kHz |
+| 8 kHz | 6 kHz |
+| 6 kHz | 4.2 kHz |
+| above ~102.7 kHz | none (tap capacity) |
+
+There is no Nyquist clamp and no fallback prototype on this path: an
+unrealizable width is refused with a message naming the width, the DSP rate,
+the largest width it fits and the RTL DSP bandwidths that would fit. Digital
+profiles are unchanged (144-tap cap and 63-tap fallback).
+
+Enable rule and validation:
+
+- The unset default (16 kHz NFM) keeps the historical rule: the channel LPF is
+  on from a 20 kHz `rate_in`, or as `DSD_NEO_CHANNEL_LPF` says. Where the rate
+  cannot fit 16 kHz, the legacy WIDE design stays in charge instead of failing,
+  and frontends see the channel as DSP-limited.
+- An explicit width turns the channel LPF on. With `DSD_NEO_CHANNEL_LPF=0` it
+  is refused.
+- The check that counts runs at stream start once the rate chain is final,
+  including a rate the device forced; a refusal fails the start.
+- Device-forced rates above ~51.4 kHz (for example Airspy at 2.5 MS/s, demod
+  rate 78,125 Hz) used to fall back to the 63-tap prototype designed for 24 kHz.
+  They now get a real design (219 taps at 78,125 Hz).
+
+### State Hygiene
+
+- De-emphasis and audio-LPF coefficients are recomputed from stored settings
+  (`deemph_tau_us`, `audio_lpf_cutoff_hz`) every time the rate chain is
+  finalized, so they follow the rate the device actually delivers. At unforced
+  rates this is bit-identical.
+- A retune on the analog monitor resets the de-emphasis, DC, audio-LPF and
+  squelch-envelope state and the channel, half-band and resampler histories to
+  their fresh-open values.
+
+### Live Switching
+
+`rtl_stream_request_analog_profile()` queues a receive-family request (family,
+analog kind, width) that the demod thread applies between blocks, ahead of any
+demod profile queued with it:
+
+- width-only change: new filter plan from empty histories;
+- analog <-> digital: the new family's fresh-open defaults (output kind,
+  demodulator, de-emphasis, channel filter, resampler), a cleared output ring and
+  a bumped output generation. The digital symbol profile follows as a demod
+  profile request;
+- FM <-> AM: demodulator and de-emphasis swap with a monitor-state reset (AM is
+  refused until the front end can demodulate it).
+
+Retune profiles carry the same fields bound to their target frequency. Because
+the switch lands after the requesting command returns,
+`rtl_stream_output_rate_for_family()` predicts the output rate a pending switch
+will produce; the decoder uses it to set symbol timing when leaving analog.
+
+### Output Scale
+
+Live radio sets `output_scale = 1/pi` in `optimal_settings()`; IQ replay never
+calls it and leaves the discriminator output unscaled, so replayed FM audio is
+about pi times louder than live. Digital replay baselines depend on the replay
+scale, and ratio-based audio metrics are invariant to it, so it is left as is.
+
 ## Regression Coverage
 
 - `IO_RTL_DEMOD_CONFIG` validates the full mode matrix at 48 kHz and key 24 kHz
@@ -71,13 +161,26 @@ SoapySDR, and IQ replay; all four sources feed the same direct-output contracts.
   through `full_demod()` and checks the direct-output contracts.
 - `DSP_FSK_MODEM` covers discriminator count, sign, centering, scale, and reset
   behavior.
-- `DSP_DEMOD_MISC` checks channel LPF protected-edge gain for every LPF profile.
+- `DSP_DEMOD_MISC` checks channel LPF protected-edge gain for every LPF profile,
+  the analog width's protected edge, and plan-cache invalidation on a width
+  change.
+- `DSP_CHANNEL_FILTERS` pins the 16 kHz analog taps to the WIDE taps at 24000,
+  46875 and 48000 Hz, checks the passband/stopband of each width, the 288-tap
+  design at forced rates, and that unrealizable widths fail rather than clamp.
+- `RUNTIME_ANALOG_CHANNEL` covers the width ranges, parser and validator text
+  across DSP rates.
+- `IO_RTL_DEMOD_CONFIG` covers the analog enable rule at 12/16/24/48 kHz, the
+  explicit-width and `DSD_NEO_CHANNEL_LPF=0` cases, the unchanged M17 encoder, and
+  the AM refusal; `IO_RTL_RETUNE_PREPARE` covers the analog retune resets, the
+  coefficient refresh after a forced rate change, and analog retune profiles;
+  `IO_RTL_ANALOG_FAMILY_SWITCH` checks that digital -> analog -> digital ends on
+  a fresh open for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR.
 
 Run the focused audit checks with:
 
 ```bash
 ctest --preset dev-debug --output-on-failure \
-  -R '^(IO_RTL_DEMOD_CONFIG|RTL_SYMBOL_PIPELINE|DSP_FSK_MODEM|DSP_DEMOD_MISC)$'
+  -R '^(IO_RTL_DEMOD_CONFIG|RTL_SYMBOL_PIPELINE|DSP_FSK_MODEM|DSP_DEMOD_MISC|DSP_CHANNEL_FILTERS|IO_RTL_ANALOG_FAMILY_SWITCH)$'
 ```
 
 For release readiness, run the full suite:
@@ -92,3 +195,8 @@ ctest --preset dev-debug --output-on-failure
   signals once representative captures are available.
 - Any future change to channel LPF cutoffs, default RTL DSP bandwidth, CQPSK
   loop gains, or FSK normalization must update the mode matrix tests first.
+- The live (1/pi) versus replay (unscaled) analog output scale difference is
+  documented above and left in place; aligning it needs new digital replay
+  baselines.
+- The forced-rate analog channel filter (Airspy 2.5 MS/s -> 78,125 Hz) needs a
+  hardware listen check.
