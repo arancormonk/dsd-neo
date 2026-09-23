@@ -248,6 +248,10 @@ ctcss_refine_advance(const dsd_analog_ctcss* det, int bin, double coarse, ctcss_
     fit->advance = coarse;
     fit->residual = M_PI;
     if (!(sw > 0.0)) {
+        /* An empty bin has nothing to fit: every sub-block counts as fully unexplained. */
+        for (int j = 0; j < DSD_ANALOG_CTCSS_WINDOW; j++) {
+            fit->err[j] = M_PI;
+        }
         return;
     }
     const double jm = swj / sw;

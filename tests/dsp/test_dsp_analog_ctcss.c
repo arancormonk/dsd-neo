@@ -508,8 +508,36 @@ test_unusable_rate(void) {
     assert(g_core.fe.active == 1 && g_core.fe.decim == 3);
 }
 
+/* A window of silence fed straight to the detector leaves every correlator bin empty. The
+   fit then has nothing to explain, and the hop must still come out fully defined: every
+   sub-block unexplained, so the chi-square is at least what uniformly random phases give
+   (pi^2 against a variance of at most pi^2 / 3 in each of the window's sub-blocks). */
+static void
+test_silent_window_is_defined_and_rejected(void) {
+    static dsd_analog_ctcss det;
+    const double rate_hz = 2400.0;
+    const int sub_len = (int)lround(rate_hz * (double)DSD_ANALOG_CTCSS_SUBBLOCK_MS / 1000.0);
+    float silence[120];
+    assert(sub_len == 120);
+    DSD_MEMSET(silence, 0, sizeof(silence));
+    dsd_analog_ctcss_ops.configure(&det, rate_hz);
+    for (int s = 0; s < 2 * DSD_ANALOG_CTCSS_WINDOW; s++) {
+        dsd_analog_ctcss_ops.process(&det, silence, silence, sub_len, 0);
+    }
+    const dsd_analog_ctcss_hop* hop = dsd_analog_ctcss_last_hop(&det);
+    assert(hop->evaluated == 1);
+    assert(fabs(hop->rho) < 1e-12);
+    assert(fabs(hop->residual - M_PI) < 1e-12);
+    const double random_phase_chi2 = 3.0 * (double)DSD_ANALOG_CTCSS_WINDOW / (double)(DSD_ANALOG_CTCSS_WINDOW - 2);
+    assert(isfinite(hop->chi2) && hop->chi2 >= random_phase_chi2 - 1e-9);
+    dsd_analog_rx_report report;
+    dsd_analog_ctcss_ops.report(&det, &report);
+    assert(report.state != DSD_ANALOG_TONE_STATE_LOCKED && report.kind == DSD_ANALOG_TONE_KIND_NONE);
+}
+
 int
 main(void) {
+    test_silent_window_is_defined_and_rejected();
     test_unusable_rate();
     test_carrier_hangover();
     test_block_size_does_not_move_the_verdict();
