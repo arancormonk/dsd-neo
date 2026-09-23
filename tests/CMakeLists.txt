@@ -11050,6 +11050,14 @@ if(DSD_HAS_RADIO)
         "Received tone: none"
         "Received tone: CTCSS"
     )
+    # Analog monitor cases like the audio checks further down, so -L analog runs them too.
+    set_tests_properties(
+        DECODE_IQ_ANALOG_CTCSS_1000
+        DECODE_IQ_ANALOG_CTCSS_670
+        DECODE_IQ_ANALOG_CTCSS_DROP
+        DECODE_IQ_ANALOG_CTCSS_NOTONE
+        PROPERTIES LABELS "iq-decode;analog"
+    )
 
     # Restart safety: bootstrap + engine lifecycle twice inside one process, the
     # shape an embedding host (Android service, GUI shell) uses. Lives here
