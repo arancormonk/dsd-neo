@@ -712,16 +712,21 @@ test_carrier_hangover(void) {
     assert(after.generation != before.generation);
 }
 
-/* Below 2.4 kHz there is no sub-audible band to keep: detection says so and stays out. */
+/* Below 2.4 kHz there is no sub-audible band to keep: detection says so and stays out. A core
+   that has seen no block yet is INACTIVE; one designed for an unusable rate is UNAVAILABLE. */
 static void
 test_unusable_rate(void) {
     float block[100];
     DSD_MEMSET(block, 0, sizeof(block));
     block[0] = 1.0f;
     dsd_analog_rx_core_init(&g_core);
+    assert(observe(&g_core).state == DSD_ANALOG_TONE_STATE_INACTIVE);
     assert(dsd_analog_rx_core_process(&g_core, block, 100, 2000, 1) == 0);
     const observation o = observe(&g_core);
-    assert(o.state == DSD_ANALOG_TONE_STATE_INACTIVE);
+    assert(o.state == DSD_ANALOG_TONE_STATE_UNAVAILABLE && o.carrier == 0);
+    /* A reset keeps the rate design, and with it the verdict. */
+    dsd_analog_rx_core_reset(&g_core);
+    assert(observe(&g_core).state == DSD_ANALOG_TONE_STATE_UNAVAILABLE);
     /* A usable rate afterwards redesigns and runs. */
     assert(dsd_analog_rx_core_process(&g_core, block, 100, 8000, 1) == 1);
     assert(g_core.fe.active == 1 && g_core.fe.decim == 3);
@@ -730,7 +735,7 @@ test_unusable_rate(void) {
     assert(dsd_analog_rx_core_process(&g_core, block, 100, DSD_ANALOG_RX_MAX_RATE_HZ, 1) == 1);
     assert(g_core.fe.active == 1 && g_core.fe.n1 > 0);
     assert(dsd_analog_rx_core_process(&g_core, block, 100, 384000, 1) == 0);
-    assert(observe(&g_core).state == DSD_ANALOG_TONE_STATE_INACTIVE);
+    assert(observe(&g_core).state == DSD_ANALOG_TONE_STATE_UNAVAILABLE);
 }
 
 /* A window of silence fed straight to the detector leaves every correlator bin empty. The

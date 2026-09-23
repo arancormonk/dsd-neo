@@ -44,9 +44,11 @@ void dsd_analog_rx_tap(const dsd_opts* opts, dsd_state* state, const float* bloc
 /**
  * @brief Forget the received tone: clears the publication and every detector's state.
  *
- * Call on retune, scan row or target change, decode-mode change and stop, so a new channel
- * never inherits the previous channel's tone. Not for the frequent no-carrier cleanup: that
- * runs every few hundred milliseconds in analog mode and would keep a tone from ever locking.
+ * Call on retune, scan row or target change, input switch, decode-mode change and stop, so a
+ * new channel never inherits the previous channel's tone. Not for the frequent no-carrier
+ * cleanup: that runs every few hundred milliseconds in analog mode and would keep a tone from
+ * ever locking. Afterwards the publication reads INACTIVE until the tap processes the next
+ * block.
  */
 void dsd_analog_rx_reset(dsd_state* state);
 

@@ -57,7 +57,8 @@ rx_tone_fill_status(dsd_app_rx_tone* out, const dsd_analog_rx_publication* pub) 
             rx_tone_set_text(out, "none");
             return;
         default:
-            /* INACTIVE, IDLE, or a state from a newer decoder: nothing heard to report. */
+            /* INACTIVE (nothing processed since a reset), IDLE, or a state from a newer
+               decoder: nothing heard to report. */
             out->status = DSD_APP_RX_TONE_NO_CARRIER;
             rx_tone_set_text(out, RX_TONE_NO_CARRIER_TEXT);
             return;
@@ -74,13 +75,16 @@ dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, dsd_app_rx_to
         return -1;
     }
     /* The tap's own question (runtime/analog_tones.h), so the row is on screen exactly while
-       detection listens. Not the publication's state: right after a reset it reads INACTIVE
-       until the next block, and the row should not blink off and on across every retune. */
-    if (!dsd_analog_tone_detection_active(opts)) {
+       detection listens. Not INACTIVE in the publication: right after a reset it reads that
+       until the next block, and the row should not blink off and on across every retune. The
+       one publication state that hides it is UNAVAILABLE, an input rate the front end cannot
+       use: detection is on but hears nothing (the log says so once), and an em dash would
+       claim there is no carrier. */
+    const dsd_analog_rx_publication* pub = &state->analog_rx;
+    if (!dsd_analog_tone_detection_active(opts) || pub->tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE) {
         out->status = DSD_APP_RX_TONE_HIDDEN;
         return 0;
     }
-    const dsd_analog_rx_publication* pub = &state->analog_rx;
     out->visible = 1U;
     out->carrier_open = pub->carrier_open ? 1U : 0U;
     out->generation = pub->generation;

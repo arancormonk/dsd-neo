@@ -21,6 +21,7 @@
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/io/rigctl_client.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -621,7 +622,7 @@ fake_rtl_output_rate_hz(void) {
 
 static int
 fake_rtl_output_kind(void) {
-    return 0; /* monitor audio */
+    return RTL_STREAM_OUTPUT_AUDIO_MONITOR;
 }
 
 static uint32_t
@@ -779,6 +780,51 @@ test_rx_tone_clears_on_unannounced_retune(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/*
+ * An input rate the sub-audible front end cannot use (here a 384 kHz WAV): the tap publishes
+ * UNAVAILABLE, so the frontends leave the row out instead of reading "no carrier" over a
+ * strong carrier. A reset reads INACTIVE only until the next block, and the tap does not reset
+ * itself block after block -- nor once detection is switched off, when it reads INACTIVE once
+ * and then stays put.
+ */
+static void
+test_rx_tone_unusable_rate_is_unavailable(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    install_fake_rtl_hooks(0);
+    init_analog_monitor_fixture(&opts, &state);
+    opts.wav_sample_rate = 384000;
+    feed_tone_blocks(&opts, &state, 3);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE);
+    assert(state.analog_rx.carrier_open == 0 && state.analog_rx.ctcss_tenths_hz == 0);
+    uint32_t generation = state.analog_rx.generation;
+    feed_tone_blocks(&opts, &state, 3);
+    assert(state.analog_rx.generation == generation);
+
+    dsd_analog_rx_reset(&state);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE);
+    assert(state.analog_rx.generation != generation);
+    generation = state.analog_rx.generation;
+    feed_tone_blocks(&opts, &state, 1);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_UNAVAILABLE);
+    assert(state.analog_rx.generation == generation);
+
+    opts.analog_only = 0;
+    feed_tone_blocks(&opts, &state, 1);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE);
+    generation = state.analog_rx.generation;
+    feed_tone_blocks(&opts, &state, 3);
+    assert(state.analog_rx.tone_state == DSD_ANALOG_TONE_STATE_INACTIVE);
+    assert(state.analog_rx.generation == generation);
+
+    /* Back on at a usable rate, detection runs again. */
+    opts.analog_only = 1;
+    opts.wav_sample_rate = 48000;
+    feed_tone_blocks(&opts, &state, 30);
+    assert(rx_tone_locked_on_100(&state));
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     exitflag = 0;
@@ -797,6 +843,7 @@ main(void) {
     test_symbol_helper_rtl_cache_and_center_contract();
     test_rx_tone_tap_reads_raw_block_before_voice_filters();
     test_rx_tone_clears_on_unannounced_retune();
+    test_rx_tone_unusable_rate_is_unavailable();
     return 0;
 }
 

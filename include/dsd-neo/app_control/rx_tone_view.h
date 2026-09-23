@@ -27,7 +27,7 @@ extern "C" {
 
 /** @brief What the received-tone row says. Values are stable for QML consumers. */
 enum {
-    DSD_APP_RX_TONE_HIDDEN = 0,     /**< The analog FM monitor is not running: render nothing. */
+    DSD_APP_RX_TONE_HIDDEN = 0,     /**< Detection is not running, or cannot at this input rate: render nothing. */
     DSD_APP_RX_TONE_NO_CARRIER = 1, /**< Detection runs but there is no carrier: an em dash. */
     DSD_APP_RX_TONE_DETECTING = 2,  /**< Carrier present, no verdict yet: "detecting". */
     DSD_APP_RX_TONE_LOCKED = 3,     /**< A supported tone is confirmed: its value. */
@@ -45,7 +45,7 @@ enum { DSD_APP_RX_TONE_TEXT_SIZE = 32 };
  * received tone. Both are UTF-8 and always terminated.
  */
 typedef struct {
-    uint8_t visible;                      /**< 1 = the analog FM monitor is running, so the row belongs on screen. */
+    uint8_t visible;                      /**< 1 = detection runs, so the row belongs on screen. */
     uint8_t status;                       /**< One of the DSD_APP_RX_TONE_* values. */
     uint8_t kind;                         /**< dsd_analog_tone_kind of a locked tone; 0 otherwise. */
     uint8_t carrier_open;                 /**< 1 while a carrier is open (held through the short hangover). */

@@ -336,6 +336,11 @@ dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publica
     }
     out->generation = core->resets;
     if (!core->fe.active) {
+        /* Designed for a rate the front end cannot use: detection is on but hears nothing.
+           An unconfigured core (no block yet) is still INACTIVE. */
+        if (core->fe.in_rate_hz != 0) {
+            out->tone_state = DSD_ANALOG_TONE_STATE_UNAVAILABLE;
+        }
         return;
     }
     out->carrier_open = core->carrier_open;
@@ -483,7 +488,8 @@ dsd_analog_rx_reset(dsd_state* state) {
     dsd_analog_rx_core_reset(&session->core);
     session->log_key = ANALOG_RX_LOG_UNSET;
     dsd_analog_rx_core_publish(&session->core, &state->analog_rx);
-    /* Nothing has been heard since the reset, whatever the front end's design says. */
+    /* Nothing has been processed since the reset, whatever the front end's design says; at an
+       unusable rate the next block publishes UNAVAILABLE again. */
     state->analog_rx.tone_state = DSD_ANALOG_TONE_STATE_INACTIVE;
 }
 

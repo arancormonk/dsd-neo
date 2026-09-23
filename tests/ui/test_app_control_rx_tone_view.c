@@ -5,8 +5,8 @@
 
 /*
  * The received-tone text every frontend shows (issue #522): one phrase per detection state,
- * hidden whenever the analog FM monitor is not running, and the configured policy carried as
- * separate text that the received tone never feeds.
+ * hidden whenever detection is not running or cannot run at the input rate, and the
+ * configured policy carried as separate text that the received tone never feeds.
  */
 
 #include <assert.h>
@@ -16,6 +16,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -109,7 +110,7 @@ test_states_and_formats(void) {
 /* An RTL stream whose output is CQPSK symbols rather than monitor audio. */
 static int
 fake_symbol_output_kind(void) {
-    return 2;
+    return RTL_STREAM_OUTPUT_SYMBOL_CQPSK;
 }
 
 static void
@@ -139,6 +140,12 @@ test_hidden_outside_the_fm_monitor(void) {
     assert_view(&opts, state, DSD_APP_RX_TONE_HIDDEN, "");
     dsd_rtl_stream_metrics_hooks_set(NULL);
     assert_view(&opts, state, DSD_APP_RX_TONE_LOCKED, "CTCSS 100.0 Hz");
+
+    /* The FM monitor at an input rate the front end cannot use (a 384 kHz or sub-2400 Hz
+       input): detection is on but hears nothing, so the row is left out rather than showing
+       an em dash that would claim there is no carrier. */
+    publish(state, 0, DSD_ANALOG_TONE_STATE_UNAVAILABLE, 0, 0);
+    assert_view(&opts, state, DSD_APP_RX_TONE_HIDDEN, "");
     free(state);
 }
 

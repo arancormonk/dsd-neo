@@ -451,16 +451,23 @@ typedef enum {
     DSD_ANALOG_TONE_KIND_DCS = 2,
 } dsd_analog_tone_kind;
 
-/** Where received-tone detection stands (issue #522). INACTIVE: the NFM monitor is not
- * running, so nothing is detected; IDLE: detection runs but there is no carrier; ACQUIRING:
- * carrier present, no verdict yet; LOCKED: a supported tone is confirmed; NONE: carrier
- * present and no supported tone found (or the tone was lost). */
+/** Where received-tone detection stands (issue #522).
+ * INACTIVE: nothing has been processed since the last reset (a retune, row or target change,
+ * input switch, mode change or stop), or detection is not running at all. It does not by
+ * itself mean detection is off: whether detection runs is dsd_analog_tone_detection_active()
+ * (runtime/analog_tones.h), which frontends and receive policy ask instead.
+ * IDLE: detection runs but there is no carrier. ACQUIRING: carrier present, no verdict yet.
+ * LOCKED: a supported tone is confirmed. NONE: carrier present and no supported tone found
+ * (or the tone was lost). UNAVAILABLE: detection is on, but the input rate is one the
+ * sub-audible front end cannot use (below 2400 Hz or above 320 kHz), so nothing can be
+ * detected until the rate changes. */
 typedef enum {
     DSD_ANALOG_TONE_STATE_INACTIVE = 0,
     DSD_ANALOG_TONE_STATE_IDLE = 1,
     DSD_ANALOG_TONE_STATE_ACQUIRING = 2,
     DSD_ANALOG_TONE_STATE_LOCKED = 3,
     DSD_ANALOG_TONE_STATE_NONE = 4,
+    DSD_ANALOG_TONE_STATE_UNAVAILABLE = 5,
 } dsd_analog_tone_state;
 
 /** Receive-policy verdict on the received tone. Reserved for #527: detection never gates
@@ -485,8 +492,9 @@ struct dsd_analog_rx_publication {
     int dcs_code;        /**< DCS code as its octal value (023 octal = 19); reserved for #523 */
     int dcs_inverted;    /**< 1 = inverted DCS polarity; reserved for #523 */
     int gate;            /**< dsd_analog_tone_gate; always OFF until #527 */
-    /** Bumped on every reset (retune, row or target change, mode change, stop, carrier
-     * hangover), so a reader can tell a new reception from the one it last saw. */
+    /** Bumped on every reset (retune, row or target change, input switch, mode change, stop,
+     * input-rate change, carrier hangover), so a reader can tell a new reception from the one
+     * it last saw. */
     uint32_t generation;
 };
 
