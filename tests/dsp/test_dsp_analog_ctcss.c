@@ -275,10 +275,12 @@ test_every_tone_locks_within_bound(void) {
  * (not the ones test_every_tone_locks_within_bound uses). A lock needs estimates within
  * 0.5 Hz of the table value (k_acquire_snap_hz in analog_ctcss.c: the frequency hysteresis
  * that keeps 68.2 Hz off 69.3), so the further off a tone sits the more of the 0 dB estimate
- * scatter (about 0.19 Hz RMS) pushes a hop past that gate and the later it locks. Each row
- * bounds the share of starts that miss the 400 ms lock bound and the worst lock time; the
- * last row is the exact tone at 0 dB on these seeds, the tail the pinned seeds above do not
- * show. Prints p50/p95/worst for the PR evidence.
+ * scatter (about 0.19 Hz RMS) pushes a hop past that gate and the later it locks. Each row is
+ * a floor on the share of these 200 starts that lock within the 400 ms bound and a ceiling on
+ * the slowest, set at what these seeds do (the printed shares and times); the last row is the
+ * exact tone at 0 dB on a second seed set. These are pinned seeds, not the long-run rate: over
+ * 10,000 seeded starts at 0 dB, 1% of exact tones and 3% of tones 0.2 Hz off take longer than
+ * 400 ms (docs/testing.md). Prints p50/p95/worst for the PR evidence.
  */
 static void
 test_off_nominal_tones_lock(void) {
@@ -289,9 +291,9 @@ test_off_nominal_tones_lock(void) {
         int worst_ms;             /**< every start locks within this */
     } rows[] = {
         {0.20, 10.0, 100, LOCK_BOUND_MS},
-        {0.35, 10.0, 99, 500},
-        {0.20, 0.0, 95, 600},
-        {0.0, 0.0, 98, 500},
+        {0.35, 10.0, 100, LOCK_BOUND_MS},
+        {0.20, 0.0, 95, 500},
+        {0.0, 0.0, 100, LOCK_BOUND_MS},
     };
 
     static double times[DSD_CTCSS_TONE_COUNT * RATE_COUNT];
@@ -336,11 +338,13 @@ test_adjacent_low_tones_are_distinguished(void) {
 }
 
 /*
- * Off-table tones never lock anything, down to 0 dB in-band. 150.0 Hz sits 1.4 Hz from 151.4;
- * 68.2, 161.0 and 166.7 Hz sit 1.1-1.2 Hz from the table tone on either side, where a 0 dB
- * estimate strays past the 0.8 Hz snap gate on several percent of hops but only rarely past
- * the 0.5 Hz one a lock needs. 100.85 and 100.9 Hz sit just outside the snap gate of 100.0,
- * where only a clean signal's estimate is steady enough to tell.
+ * Off-table tones lock nothing over these 3 s runs, down to 0 dB in-band. 150.0 Hz sits 1.4 Hz
+ * from 151.4; 68.2, 161.0 and 166.7 Hz sit 1.1-1.2 Hz from the table tone on either side, where
+ * a 0 dB estimate strays past the 0.8 Hz snap gate on several percent of hops but only rarely
+ * past the 0.5 Hz one a lock needs -- rarely, not never: over two hours of a 0 dB carrier,
+ * 68.2 Hz reads as a neighbour for about 200 ms some ten times an hour (docs/testing.md), and
+ * from 3 dB up it did not happen at all. 100.85 and 100.9 Hz sit just outside the snap gate of
+ * 100.0, where only a clean signal's estimate is steady enough to tell.
  */
 static void
 test_unsupported_frequencies_never_lock(void) {
@@ -568,10 +572,12 @@ test_speech_and_noise_never_lock(void) {
 /*
  * A tone under a transmitter's voice (speech through a 300 Hz high-pass, 10 dB above the
  * tone): every tone locks on its value within 500 ms of its start, the voice never reads as
- * another tone, and once locked the voice does not knock it out. Slower than the noise bound
- * although the voice's long-run share of the sub-audible band is 12-14 dB below the tone: a
- * high voice's fundamental still leaks through the high-pass in bursts, right where the
- * tone is. Prints the p50/p95/worst lock times for the PR evidence.
+ * another tone, and on these seeds, once locked, the voice never knocks the lock out. Slower
+ * than the noise bound although the voice's long-run share of the sub-audible band is 12-14 dB
+ * below the tone: a high voice's fundamental still leaks through the high-pass in bursts,
+ * right where the tone is -- which is also why, over 100 minutes of this speech, the two
+ * highest table tones lost their lock briefly four times (docs/testing.md). Prints the
+ * p50/p95/worst lock times for the PR evidence.
  */
 static void
 test_tone_under_voice_locks(void) {
@@ -596,55 +602,88 @@ test_tone_under_voice_locks(void) {
             DSD_FPRINTF(stderr, "slow lock under voice: hz=%.1f -> %.0f ms\n", hz, times[k]);
         }
         assert(times[k] <= (double)VOICE_LOCK_BOUND_MS);
+        /* One lock, held to the end: the voice never read as a drop. */
+        assert(r.locks == 1 && r.first_unlocked < 0);
         assert(r.final_state == DSD_ANALOG_TONE_STATE_LOCKED);
     }
     report_timings("CTCSS lock under voice 10 dB above the tone", times, DSD_CTCSS_TONE_COUNT);
 }
 
-/* The tone stops while the carrier (noise) carries on: the lock is gone within 350 ms. */
+/*
+ * The tone stops while the carrier (noise) carries on: every tone at every rate, at +10 and
+ * 0 dB in-band. The lock needs four failing hops, and a hop fails once the newest 100 ms no
+ * longer carry the tone, so a stop is normally dropped 250-315 ms later. What is left after
+ * the stop is noise, and at the locked bin noise alone clears the hold threshold on about one
+ * hop in eighty, whatever its level; such a hop restarts the count, so a few stops in a
+ * hundred take longer. Each row is a floor on the share of these 200 stops dropped within
+ * 350 ms and a ceiling on the slowest, set at what these seeds do; the long-run shares are in
+ * docs/testing.md. Prints p50/p95/worst for the PR evidence.
+ */
 static void
 test_tone_loss_within_bound(void) {
-    double times[RATE_COUNT * DSD_CTCSS_TONE_COUNT];
-    int count = 0;
-    for (int ri = 0; ri < RATE_COUNT; ri++) {
-        for (int k = 3; k < DSD_CTCSS_TONE_COUNT; k += 11) {
-            const int fs = k_rates[ri];
-            const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
-            dsd_analog_rx_core_init(&g_core);
-            signal_src src;
-            signal_init(&src, fs, 90210ULL + (uint64_t)(k * 31 + ri), hz, 10.0);
-            src.tone_on = 0;
-            src.tone_off = ms_to_samples(fs, 1000.0 + (double)((k * 11) % 50));
-            const run_result r =
-                run_signal(&g_core, &src, src.tone_off + ms_to_samples(fs, 800.0), fs / 1000, (int)lround(hz * 10.0));
-            assert(r.first_lock >= 0 && r.first_lock < src.tone_off);
-            assert(r.first_unlocked > src.tone_off);
-            const double loss_ms = samples_to_ms(fs, r.first_unlocked - src.tone_off);
-            if (loss_ms > (double)LOSS_BOUND_MS) {
-                DSD_FPRINTF(stderr, "slow loss: fs=%d hz=%.1f -> %.0f ms\n", fs, hz, loss_ms);
+    static const struct {
+        double snr_db;
+        int min_within_bound_pct; /**< share of stops dropped within LOSS_BOUND_MS */
+        int worst_ms;             /**< every stop is dropped within this */
+    } rows[] = {
+        {10.0, 98, 400},
+        {0.0, 97, 500},
+    };
+
+    static double times[RATE_COUNT * DSD_CTCSS_TONE_COUNT];
+    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
+        int count = 0;
+        int within = 0;
+        for (int ri = 0; ri < RATE_COUNT; ri++) {
+            for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
+                const int fs = k_rates[ri];
+                const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
+                dsd_analog_rx_core_init(&g_core);
+                signal_src src;
+                signal_init(&src, fs, 90210ULL + (uint64_t)(k * 31 + ri) + (uint64_t)row * 104729ULL, hz,
+                            rows[row].snr_db);
+                src.tone_on = 0;
+                src.tone_off = ms_to_samples(fs, 1000.0 + (double)((k * 11) % 50));
+                const run_result r = run_signal(&g_core, &src, src.tone_off + ms_to_samples(fs, 800.0), fs / 1000,
+                                                (int)lround(hz * 10.0));
+                assert(r.first_lock >= 0 && r.first_lock < src.tone_off);
+                assert(r.first_unlocked > src.tone_off);
+                const double loss_ms = samples_to_ms(fs, r.first_unlocked - src.tone_off);
+                if (loss_ms > (double)rows[row].worst_ms) {
+                    DSD_FPRINTF(stderr, "slow loss: fs=%d hz=%.1f snr=%.0f -> %.0f ms\n", fs, hz, rows[row].snr_db,
+                                loss_ms);
+                }
+                assert(loss_ms <= (double)rows[row].worst_ms);
+                within += loss_ms <= (double)LOSS_BOUND_MS ? 1 : 0;
+                /* Carrier still up, no tone: "none", positively. */
+                assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
+                times[count++] = loss_ms;
             }
-            assert(loss_ms <= (double)LOSS_BOUND_MS);
-            /* Carrier still up, no tone: "none", positively. */
-            assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
-            times[count++] = loss_ms;
         }
+        char what[96];
+        DSD_SNPRINTF(what, sizeof(what), "CTCSS loss after the tone stops at %+.0f dB in-band (%d%% within %d ms)",
+                     rows[row].snr_db, (100 * within) / count, LOSS_BOUND_MS);
+        report_timings(what, times, count);
+        assert(100 * within >= rows[row].min_within_bound_pct * count);
     }
-    report_timings("CTCSS loss after the tone stops", times, count);
 }
 
 /* A reverse burst -- the transmitter flipping its tone's phase before it unkeys -- ends the
-   lock within 150 ms, without waiting for the tone to stop. */
+   lock within 150 ms, without waiting for the tone to stop: every tone at every rate at
+   +10 dB in-band. Nearer 0 dB a sub-block is too noisy to serve as the phase reference on
+   every hop, and a burst can be caught late or missed, when the carrier drop that follows
+   ends the lock instead (docs/testing.md). */
 static void
 test_reverse_burst_drops_fast(void) {
-    double times[RATE_COUNT * DSD_CTCSS_TONE_COUNT];
+    static double times[RATE_COUNT * DSD_CTCSS_TONE_COUNT];
     int count = 0;
     for (int ri = 0; ri < RATE_COUNT; ri++) {
-        for (int k = 5; k < DSD_CTCSS_TONE_COUNT; k += 9) {
+        for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
             const int fs = k_rates[ri];
             const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
             dsd_analog_rx_core_init(&g_core);
             signal_src src;
-            signal_init(&src, fs, 8675309ULL + (uint64_t)(k * 13 + ri), hz, 20.0);
+            signal_init(&src, fs, 8675309ULL + (uint64_t)(k * 13 + ri), hz, 10.0);
             src.tone_on = 0;
             src.flip_at = ms_to_samples(fs, 1000.0 + (double)((k * 17) % 50));
             const run_result r =
@@ -660,6 +699,25 @@ test_reverse_burst_drops_fast(void) {
         }
     }
     report_timings("CTCSS loss on a reverse burst", times, count);
+}
+
+/* A held tone at 0 dB in-band stays held: one lock per 15 s run and never lost, at every
+   rate (over 4,000 s of such holds the lock never dropped; docs/testing.md). */
+static void
+test_lock_holds_at_0db(void) {
+    for (int ri = 0; ri < RATE_COUNT; ri++) {
+        const int fs = k_rates[ri];
+        const int k = 4 + (ri * 13);
+        const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
+        dsd_analog_rx_core_init(&g_core);
+        signal_src src;
+        signal_init(&src, fs, 7700001ULL + (uint64_t)(ri * 131), hz, 0.0);
+        src.tone_on = 0;
+        const run_result r = run_signal(&g_core, &src, ms_to_samples(fs, 15000.0), fs / 50, (int)lround(hz * 10.0));
+        assert(r.first_wrong < 0 && r.first_lock >= 0);
+        assert(r.locks == 1 && r.first_unlocked < 0);
+        assert(r.final_state == DSD_ANALOG_TONE_STATE_LOCKED);
+    }
 }
 
 /* Every metric is a ratio, so the RTL live scale (about 1/pi), the unscaled replay and
@@ -842,6 +900,7 @@ main(void) {
     test_tone_loss_within_bound();
     test_reverse_burst_drops_fast();
     test_tone_under_voice_locks();
+    test_lock_holds_at_0db();
     test_every_tone_locks_within_bound();
     test_off_nominal_tones_lock();
     test_speech_and_noise_never_lock();
