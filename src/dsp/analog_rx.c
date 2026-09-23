@@ -23,6 +23,7 @@
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include "analog_rx_internal.h"
@@ -33,9 +34,9 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-/* Front-end design (issue #522): stage 2 keeps 0-290 Hz with a 60 Hz Blackman transition,
-   about 28 ms of delay at 2.4 kHz; stage 1 only has to stop what would fold into that band. */
-static const double k_band_hz = 290.0;
+/* Front-end design (issue #522): stage 2 keeps 0-DSD_ANALOG_RX_BAND_HZ with a 60 Hz Blackman
+   transition, about 28 ms of delay at 2.4 kHz; stage 1 only has to stop what would fold into
+   that band. */
 static const double k_stage2_transition_hz = 60.0;
 static const double k_dc_corner_hz = 10.0;
 
@@ -65,12 +66,13 @@ fe_design_stage1(dsd_analog_subaudible_fe* fe) {
         fe->n1 = 0;
         return 1;
     }
-    /* Anything within k_band_hz of a multiple of the output rate folds into the band, so the
-       stop band has to start by out_rate - k_band_hz while the pass band only reaches
-       k_band_hz. firdes sizes a Blackman design from the requested transition assuming its
-       full attenuation is reached there, but the window only gets there over about 1.65 times
-       that width; asking for 0.6 of the gap puts the real -74 dB edge inside it. */
-    const double transition = 0.6 * (fe->out_rate_hz - (2.0 * k_band_hz));
+    /* Anything within DSD_ANALOG_RX_BAND_HZ of a multiple of the output rate folds into the
+       band, so the stop band has to start by out_rate - DSD_ANALOG_RX_BAND_HZ while the pass
+       band only reaches DSD_ANALOG_RX_BAND_HZ. firdes sizes a Blackman design from the
+       requested transition assuming its full attenuation is reached there, but the window only
+       gets there over about 1.65 times that width; asking for 0.6 of the gap puts the real
+       -74 dB edge inside it. */
+    const double transition = 0.6 * (fe->out_rate_hz - (2.0 * DSD_ANALOG_RX_BAND_HZ));
     fe->n1 = dsd_firdes_low_pass(1.0, (double)fe->in_rate_hz, fe->out_rate_hz / 2.0, transition, DSD_WIN_BLACKMAN,
                                  fe->taps1, DSD_ANALOG_RX_STAGE1_MAX_TAPS);
     return fe->n1 > 0;
@@ -83,7 +85,7 @@ dsd_analog_subaudible_fe_configure(dsd_analog_subaudible_fe* fe, int rate_hz) {
     }
     DSD_MEMSET(fe, 0, sizeof(*fe));
     fe->in_rate_hz = rate_hz;
-    if (rate_hz < DSD_ANALOG_RX_MIN_RATE_HZ) {
+    if (rate_hz < DSD_ANALOG_RX_MIN_RATE_HZ || rate_hz > DSD_ANALOG_RX_MAX_RATE_HZ) {
         return 0;
     }
     fe->decim = rate_hz / DSD_ANALOG_RX_TARGET_RATE_HZ;
@@ -91,8 +93,8 @@ dsd_analog_subaudible_fe_configure(dsd_analog_subaudible_fe* fe, int rate_hz) {
     if (!fe_design_stage1(fe)) {
         return 0;
     }
-    fe->n2 = dsd_firdes_low_pass(1.0, fe->out_rate_hz, k_band_hz, k_stage2_transition_hz, DSD_WIN_BLACKMAN, fe->taps2,
-                                 DSD_ANALOG_RX_STAGE2_MAX_TAPS);
+    fe->n2 = dsd_firdes_low_pass(1.0, fe->out_rate_hz, DSD_ANALOG_RX_BAND_HZ, k_stage2_transition_hz, DSD_WIN_BLACKMAN,
+                                 fe->taps2, DSD_ANALOG_RX_STAGE2_MAX_TAPS);
     if (fe->n2 <= 0) {
         return 0;
     }
@@ -181,6 +183,29 @@ dsd_analog_subaudible_fe_process(dsd_analog_subaudible_fe* fe, const float* in, 
  * Core: front end + detectors + carrier hangover
  * ---------------------------------------------------------------------------------------- */
 
+/* The detectors the core runs, in the order their reports are merged. A detector is its ops
+   and the core member holding its working state; the DCS detector (#523) adds a row here. */
+typedef struct {
+    const dsd_analog_rx_detector_ops* ops;
+    size_t ctx_offset;
+} analog_rx_detector_slot;
+
+static const analog_rx_detector_slot k_detectors[] = {
+    {&dsd_analog_ctcss_ops, offsetof(dsd_analog_rx_core, ctcss)},
+};
+
+enum { ANALOG_RX_DETECTOR_COUNT = (int)(sizeof(k_detectors) / sizeof(k_detectors[0])) };
+
+static void*
+core_detector(dsd_analog_rx_core* core, int i) {
+    return (char*)core + k_detectors[i].ctx_offset;
+}
+
+static const void*
+core_detector_const(const dsd_analog_rx_core* core, int i) {
+    return (const char*)core + k_detectors[i].ctx_offset;
+}
+
 void
 dsd_analog_rx_core_init(dsd_analog_rx_core* core) {
     if (!core) {
@@ -195,7 +220,9 @@ dsd_analog_rx_core_reset(dsd_analog_rx_core* core) {
         return;
     }
     dsd_analog_subaudible_fe_clear(&core->fe);
-    dsd_analog_ctcss_ops.reset(&core->ctcss);
+    for (int i = 0; i < ANALOG_RX_DETECTOR_COUNT; i++) {
+        k_detectors[i].ops->reset(core_detector(core, i));
+    }
     core->carrier_open = 0;
     core->closed_samples = 0;
     core->resets++;
@@ -204,7 +231,9 @@ dsd_analog_rx_core_reset(dsd_analog_rx_core* core) {
 static void
 core_configure(dsd_analog_rx_core* core, int rate_hz) {
     if (dsd_analog_subaudible_fe_configure(&core->fe, rate_hz)) {
-        dsd_analog_ctcss_ops.configure(&core->ctcss, core->fe.out_rate_hz);
+        for (int i = 0; i < ANALOG_RX_DETECTOR_COUNT; i++) {
+            k_detectors[i].ops->configure(core_detector(core, i), core->fe.out_rate_hz);
+        }
     }
     core->carrier_open = 0;
     core->closed_samples = 0;
@@ -228,7 +257,9 @@ core_feed(dsd_analog_rx_core* core, const float* block, int count, int freeze) {
         const int n = (count - start < slice) ? count - start : slice;
         const int produced = dsd_analog_subaudible_fe_process(&core->fe, block + start, n, core->scratch,
                                                               core->scratch_wide, DSD_ANALOG_RX_SCRATCH);
-        dsd_analog_ctcss_ops.process(&core->ctcss, core->scratch, core->scratch_wide, produced, freeze);
+        for (int i = 0; i < ANALOG_RX_DETECTOR_COUNT; i++) {
+            k_detectors[i].ops->process(core_detector(core, i), core->scratch, core->scratch_wide, produced, freeze);
+        }
     }
 }
 
@@ -271,6 +302,27 @@ dsd_analog_rx_core_process(dsd_analog_rx_core* core, const float* block, int cou
     return 1;
 }
 
+/* One verdict from every detector's: the first detector that locked names the tone; otherwise
+   the carrier is still being evaluated while any detector is, and carries no tone once every
+   detector has said so. */
+static void
+core_merge_reports(const dsd_analog_rx_core* core, dsd_analog_rx_report* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->state = DSD_ANALOG_TONE_STATE_NONE;
+    out->kind = DSD_ANALOG_TONE_KIND_NONE;
+    for (int i = 0; i < ANALOG_RX_DETECTOR_COUNT; i++) {
+        dsd_analog_rx_report report;
+        k_detectors[i].ops->report(core_detector_const(core, i), &report);
+        if (report.state == DSD_ANALOG_TONE_STATE_LOCKED) {
+            *out = report;
+            return;
+        }
+        if (report.state == DSD_ANALOG_TONE_STATE_ACQUIRING) {
+            out->state = DSD_ANALOG_TONE_STATE_ACQUIRING;
+        }
+    }
+}
+
 void
 dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publication* out) {
     if (!out) {
@@ -292,10 +344,12 @@ dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publica
         return;
     }
     dsd_analog_rx_report report;
-    dsd_analog_ctcss_ops.report(&core->ctcss, &report);
+    core_merge_reports(core, &report);
     out->tone_state = report.state;
     out->tone_kind = report.kind;
     out->ctcss_tenths_hz = report.ctcss_tenths_hz;
+    out->dcs_code = report.dcs_code;
+    out->dcs_inverted = report.dcs_inverted;
 }
 
 /* ------------------------------------------------------------------------------------------
@@ -309,8 +363,8 @@ typedef struct {
     dsd_analog_rx_core core;
     uint32_t rtl_generation;
     uint64_t tune_generation;
-    int log_key;         /**< ANALOG_RX_LOG_* or the logged tone in tenths of a hertz */
-    int low_rate_logged; /**< the unusable rate already reported, so it is said once */
+    int log_key;              /**< ANALOG_RX_LOG_* or the logged tone in tenths of a hertz */
+    int unusable_rate_logged; /**< the unusable rate already reported, so it is said once */
 } analog_rx_session;
 
 static analog_rx_session*
@@ -400,11 +454,18 @@ analog_rx_generation_moved(const dsd_opts* opts, analog_rx_session* session) {
 
 static void
 analog_rx_log_unusable_rate(analog_rx_session* session, int rate_hz) {
-    if (session->low_rate_logged == rate_hz) {
+    if (session->unusable_rate_logged == rate_hz) {
         return;
     }
-    session->low_rate_logged = rate_hz;
-    LOG_WARN("Received tone detection inactive: %d Hz input is below %d Hz\n", rate_hz, DSD_ANALOG_RX_MIN_RATE_HZ);
+    session->unusable_rate_logged = rate_hz;
+    if (rate_hz < DSD_ANALOG_RX_MIN_RATE_HZ) {
+        LOG_WARN("Received tone detection inactive: %d Hz input is below %d Hz\n", rate_hz, DSD_ANALOG_RX_MIN_RATE_HZ);
+    } else if (rate_hz > DSD_ANALOG_RX_MAX_RATE_HZ) {
+        LOG_WARN("Received tone detection inactive: %d Hz input is above the %d Hz the front end supports\n", rate_hz,
+                 DSD_ANALOG_RX_MAX_RATE_HZ);
+    } else {
+        LOG_WARN("Received tone detection inactive: no front-end filter design for a %d Hz input\n", rate_hz);
+    }
 }
 
 void

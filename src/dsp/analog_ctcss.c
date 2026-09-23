@@ -19,16 +19,20 @@
  *   3. measures rho, the share of the sub-audible band energy the tone explains, with the
  *      window made coherent at the fine estimate,
  *
- * and keeps the best qualifying bin. Qualifying means rho >= 0.35, a fine estimate within 5 Hz
- * of its bin (50 ms sub-blocks alias beyond 10 Hz), a phase fit that is actually linear against
- * the noise the band carries (reduced chi-square), and -- tested last, on the winner only --
- * no harmonics phase-locked to it, which is what a voice fundamental has and a tone has not.
+ * and keeps the best qualifying bin. Qualifying means rho >= 0.35, a fine estimate within
+ * 0.5 Hz of the table tone it snapped to and within 5 Hz of its bin (50 ms sub-blocks alias
+ * beyond 10 Hz), a phase fit that is actually linear against the noise the band carries
+ * (reduced chi-square), and -- tested last, on the winner only -- no harmonics phase-locked
+ * to it, which is what a voice fundamental has and a tone has not.
  *
- * Hysteresis: a tone locks after two consecutive hops qualify it with estimates within 0.5 Hz
- * of each other; it holds while the newest 100 ms still carry rho >= 0.15 at the locked
- * frequency, and is lost after four failing hops or at once on a reverse burst (the
- * transmitter's end-of-message phase flip). Everything is measured in samples, so the bounds
- * hold in sample time at any input rate.
+ * Hysteresis, in level and in frequency: a tone locks after two consecutive hops qualify it
+ * with estimates within 0.5 Hz of each other and of the table value; it holds while its own
+ * bin's estimate stays within the 0.8 Hz snap gate and the newest 100 ms still carry
+ * rho >= 0.15 at the locked frequency, and is lost after four failing hops or at once on a
+ * reverse burst (the transmitter's end-of-message phase flip). The frequency check on every
+ * held hop is what keeps an off-table tone that one noisy pair of hops snapped to a neighbour
+ * from being reported as that neighbour for as long as it lasts. Everything is measured in
+ * samples, so the bounds hold in sample time at any input rate.
  */
 
 #include <dsd-neo/core/safe_api.h>
@@ -46,7 +50,14 @@
 /* Hysteresis and qualification thresholds. Ratios only: nothing here depends on scale. */
 static const double k_acquire_rho = 0.35;
 static const double k_hold_rho = 0.15;
+/* The snap gate: a locked tone holds while its own bin's fine estimate stays this close to the
+   table value. */
 static const double k_snap_hz = 0.8;
+/* Frequency hysteresis: a tone only locks from estimates this close to the table value. At
+   0 dB in-band the 250 ms estimate scatters by about 0.19 Hz (RMS), so an off-table tone such
+   as 68.2 Hz, 1.1 Hz from 69.3, reaches the 0.8 Hz snap gate on several percent of hops but
+   this one on well under one in a thousand, while a table tone misses it on about 1%. */
+static const double k_acquire_snap_hz = 0.5;
 /* Weighted RMS phase residual (radians) above which the window is not one steady tone,
    whatever the noise: a tone at 0 dB in-band SNR fits to about 0.15 rad. */
 static const double k_max_residual_rad = 0.5;
@@ -62,8 +73,6 @@ static const double k_min_phase_var = 0.0025;
 static const double k_max_phase_var = M_PI * M_PI / 3.0;
 /* Largest offset between a fine estimate and the bin it came from that is not an alias. */
 static const double k_max_bin_offset_hz = 5.0;
-/* Sub-audible band the noise is assumed to fill: the front end's stage-2 cutoff. */
-static const double k_band_hz = 290.0;
 /* Consecutive hops share 200 of their 250 ms, so a steady tone's two estimates agree well
    inside half a hertz even at 0 dB; a pitch that is still moving does not. */
 static const double k_stable_hz = 0.5;
@@ -284,7 +293,8 @@ ctcss_refine_advance(const dsd_analog_ctcss* det, int bin, double coarse, ctcss_
  */
 static double
 ctcss_fit_chi2(const dsd_analog_ctcss* det, int bin, const ctcss_fit* fit) {
-    const double noise_bin_gain = det->rate_hz / (2.0 * k_band_hz);
+    /* The noise is assumed to fill the sub-audible band up to the front end's cutoff. */
+    const double noise_bin_gain = det->rate_hz / (2.0 * DSD_ANALOG_RX_BAND_HZ);
     double chi2 = 0.0;
     for (int j = 0; j < DSD_ANALOG_CTCSS_WINDOW; j++) {
         const double bin_power = ctcss_mag2(ctcss_ring_at(det, j, bin));
@@ -363,8 +373,9 @@ ctcss_hop_qualifies(const dsd_analog_ctcss_hop* hop) {
        below a bin reads as 9.3 Hz above it. The table is dense enough that every supported
        tone is within 4.1 Hz of its nearest bin, so an estimate further than 5 Hz from the bin
        that produced it is an alias, never a tone. */
-    return hop->snapped >= 0 && fabs(hop->est_hz - ctcss_tone_hz(hop->best_index)) <= k_max_bin_offset_hz
-           && hop->rho >= k_acquire_rho && hop->residual <= k_max_residual_rad && hop->chi2 <= k_max_chi2;
+    return hop->snapped >= 0 && fabs(hop->est_hz - ctcss_tone_hz(hop->snapped)) <= k_acquire_snap_hz
+           && fabs(hop->est_hz - ctcss_tone_hz(hop->best_index)) <= k_max_bin_offset_hz && hop->rho >= k_acquire_rho
+           && hop->residual <= k_max_residual_rad && hop->chi2 <= k_max_chi2;
 }
 
 /**
@@ -590,13 +601,17 @@ ctcss_step_locked(dsd_analog_ctcss* det, dsd_analog_ctcss_hop* hop) {
         ctcss_lock(det, det->cand, hop->est_hz);
         return;
     }
+    /* The locked bin's own estimate, every hop: once locked, a tone is only held while it still
+       sits on the table value it locked to. Without this an off-table tone that locked on one
+       noisy pair of hops would keep reporting its neighbour for as long as it stayed coherent. */
+    dsd_analog_ctcss_hop own;
+    ctcss_measure_bin(det, det->locked, &own);
+    const int on_tone = fabs(own.est_hz - ctcss_tone_hz(det->locked)) <= k_snap_hz;
     const double advance = ctcss_advance_for(det, det->locked, det->locked_hz);
     hop->recent_rho = ctcss_rho(det, det->locked, advance, DSD_ANALOG_CTCSS_WINDOW - 2, 2);
-    if (hop->recent_rho >= k_hold_rho && !other) {
+    if (on_tone && hop->recent_rho >= k_hold_rho && !other) {
         det->fail_run = 0;
-        if (det->cand == det->locked) {
-            det->locked_hz = hop->est_hz;
-        }
+        det->locked_hz = own.est_hz;
         return;
     }
     if (++det->fail_run >= DSD_ANALOG_CTCSS_LOSE_HOPS) {
@@ -673,12 +688,14 @@ ctcss_process(void* ctx, const float* band, const float* wide, int count, int fr
         ctcss_accumulate(det, (double)band[i]);
         det->wide[det->wide_pos] = wide ? wide[i] : band[i];
         det->wide_pos = (det->wide_pos + 1) % det->wide_len;
+        /* Counted per sample, before the hop it may close, so the no-tone verdict lands on the
+           same hop however the input was cut into blocks. */
+        if (!freeze) {
+            det->open_samples++;
+        }
         if (++det->sub_fill >= det->sub_len) {
             ctcss_close_subblock(det, freeze);
         }
-    }
-    if (!freeze) {
-        det->open_samples += count;
     }
 }
 

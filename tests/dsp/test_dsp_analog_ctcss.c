@@ -29,8 +29,13 @@
 /* The bounds under test (docs/cli.md "Received tone"). */
 enum {
     LOCK_BOUND_MS = 400,
+    VOICE_LOCK_BOUND_MS = 500,
     LOSS_BOUND_MS = 350,
     BURST_LOSS_BOUND_MS = 150,
+    HOP_MS = DSD_ANALOG_CTCSS_SUBBLOCK_MS,
+    /* A locked tone that moves off the table is dropped once the window has filled with the
+       new frequency and four more hops have failed. */
+    MOVED_OFF_BOUND_MS = (DSD_ANALOG_CTCSS_WINDOW + DSD_ANALOG_CTCSS_LOSE_HOPS) * DSD_ANALOG_CTCSS_SUBBLOCK_MS,
 };
 
 static const int k_rates[] = {8000, 44100, 48000, 78125};
@@ -70,9 +75,13 @@ struct signal_src {
     synth_rng rng;
     synth_tone tone;
     double noise_sigma;
-    int64_t tone_on;     /**< first sample carrying the tone */
-    int64_t tone_off;    /**< first sample without it (INT64_MAX = never) */
-    int64_t flip_at;     /**< reverse burst: the tone's phase flips by pi here (INT64_MAX = never) */
+    int64_t tone_on;  /**< first sample carrying the tone */
+    int64_t tone_off; /**< first sample without it (INT64_MAX = never) */
+    int64_t flip_at;  /**< reverse burst: the tone's phase flips by pi here (INT64_MAX = never) */
+    int64_t move_at;  /**< the tone moves to move_hz here, phase-continuous (INT64_MAX = never) */
+    double move_hz;
+    synth_dcs dcs; /**< DCS signalling instead of a tone, when dcs_on */
+    int dcs_on;
     double scale;        /**< input scale: 1, 1/pi, 32768 */
     synth_speech speech; /**< optional voice */
     synth_voice_hpf voice_hpf;
@@ -85,6 +94,12 @@ signal_next(signal_src* src, int64_t n) {
     double v = src->noise_sigma > 0.0 ? src->noise_sigma * synth_gauss(&src->rng) : 0.0;
     if (n == src->flip_at) {
         src->tone.phase += M_PI;
+    }
+    if (n == src->move_at) {
+        src->tone.hz = src->move_hz;
+    }
+    if (src->dcs_on) {
+        v += synth_dcs_next(&src->dcs);
     }
     if (n >= src->tone_on && n < src->tone_off) {
         v += synth_tone_next(&src->tone);
@@ -113,6 +128,7 @@ signal_init(signal_src* src, double fs, uint64_t seed, double tone_hz, double sn
     src->tone_on = INT64_MAX;
     src->tone_off = INT64_MAX;
     src->flip_at = INT64_MAX;
+    src->move_at = INT64_MAX;
     src->scale = 1.0;
 }
 
@@ -121,6 +137,8 @@ typedef struct {
     int64_t first_lock;     /**< first block end at which the expected tone was locked */
     int64_t first_wrong;    /**< first block end at which any other tone was locked */
     int64_t first_unlocked; /**< first block end, after first_lock, without the lock */
+    int64_t first_none;     /**< first block end at which the verdict read NONE */
+    int64_t last_acquiring; /**< last block end, before first_none, still reading ACQUIRING */
     int64_t locks;          /**< transitions into LOCKED */
     int final_state;
 } run_result;
@@ -132,7 +150,7 @@ typedef struct {
  */
 static run_result
 run_signal(dsd_analog_rx_core* core, signal_src* src, int64_t total, int block, int expect_tenths) {
-    run_result r = {-1, -1, -1, 0, 0};
+    run_result r = {-1, -1, -1, -1, -1, 0, 0};
     float buf[4096];
     assert(block > 0 && block <= (int)(sizeof(buf) / sizeof(buf[0])));
     int prev_locked = 0;
@@ -155,6 +173,12 @@ run_signal(dsd_analog_rx_core* core, signal_src* src, int64_t total, int block, 
         }
         if (!locked && r.first_lock >= 0 && r.first_unlocked < 0) {
             r.first_unlocked = n + m;
+        }
+        if (o.state == DSD_ANALOG_TONE_STATE_NONE && r.first_none < 0) {
+            r.first_none = n + m;
+        }
+        if (o.state == DSD_ANALOG_TONE_STATE_ACQUIRING && r.first_none < 0) {
+            r.last_acquiring = n + m;
         }
         prev_locked = locked;
         r.final_state = o.state;
@@ -249,25 +273,195 @@ test_adjacent_low_tones_are_distinguished(void) {
     }
 }
 
-/* 150.0 Hz (1.4 Hz from 151.4) and 68.2 Hz (between 67.0 and 69.3) are not supported
-   tones: seconds of either, clean or at +10 dB, never lock anything. */
+/*
+ * Off-table tones never lock anything, down to 0 dB in-band. 150.0 Hz sits 1.4 Hz from 151.4;
+ * 68.2, 161.0 and 166.7 Hz sit 1.1-1.2 Hz from the table tone on either side, where a 0 dB
+ * estimate strays past the 0.8 Hz snap gate on several percent of hops but only rarely past
+ * the 0.5 Hz one a lock needs. 100.85 and 100.9 Hz sit just outside the snap gate of 100.0,
+ * where only a clean signal's estimate is steady enough to tell.
+ */
 static void
 test_unsupported_frequencies_never_lock(void) {
-    static const double freqs[] = {150.0, 68.2};
-    static const double snrs[] = {60.0, 10.0};
-    for (int f = 0; f < 2; f++) {
-        for (int s = 0; s < 2; s++) {
+    static const double freqs[] = {150.0, 68.2, 161.0, 166.7};
+    static const double snrs[] = {60.0, 10.0, 3.0, 0.0};
+    for (int f = 0; f < 4; f++) {
+        for (int s = 0; s < 4; s++) {
             for (int ri = 0; ri < RATE_COUNT; ri++) {
                 dsd_analog_rx_core_init(&g_core);
                 signal_src src;
                 signal_init(&src, k_rates[ri], 777ULL + (uint64_t)(f * 10 + s), freqs[f], snrs[s]);
                 src.tone_on = 0;
                 const run_result r = run_signal(&g_core, &src, ms_to_samples(k_rates[ri], 3000.0), k_rates[ri] / 50, 0);
+                if (r.locks != 0) {
+                    DSD_FPRINTF(stderr, "off-table lock: fs=%d hz=%.1f snr=%.0f\n", k_rates[ri], freqs[f], snrs[s]);
+                }
                 assert(r.locks == 0);
                 /* And they are positively rejected, not left pending. */
                 assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
             }
         }
+    }
+    static const double edges[] = {100.85, 100.9};
+    static const double edge_snrs[] = {20.0, 10.0};
+    for (int f = 0; f < 2; f++) {
+        for (int s = 0; s < 2; s++) {
+            for (int ri = 0; ri < RATE_COUNT; ri++) {
+                dsd_analog_rx_core_init(&g_core);
+                signal_src src;
+                signal_init(&src, k_rates[ri], 8080ULL + (uint64_t)(f * 10 + s), edges[f], edge_snrs[s]);
+                src.tone_on = 0;
+                const run_result r = run_signal(&g_core, &src, ms_to_samples(k_rates[ri], 3000.0), k_rates[ri] / 50, 0);
+                assert(r.locks == 0 && r.final_state == DSD_ANALOG_TONE_STATE_NONE);
+            }
+        }
+    }
+}
+
+/*
+ * A lock is only as good as its latest frequency: a locked table tone that moves off the
+ * table -- to the midpoint of its neighbours, phase-continuous and just as strong -- is
+ * dropped once the window has filled with the new frequency and four hops have failed, and
+ * nothing else locks in its place. Without the frequency check on held hops the old value
+ * stays on screen for as long as the new tone lasts.
+ */
+static void
+test_lock_follows_a_tone_off_the_table(void) {
+    static const double moves[][2] = {{69.3, 68.2}, {67.0, 68.2}, {162.2, 161.0}, {167.9, 166.7}};
+    static const double snrs[] = {60.0, 10.0};
+    for (int m = 0; m < 4; m++) {
+        for (int s = 0; s < 2; s++) {
+            for (int ri = 0; ri < RATE_COUNT; ri++) {
+                const int fs = k_rates[ri];
+                dsd_analog_rx_core_init(&g_core);
+                signal_src src;
+                signal_init(&src, fs, 4242ULL + (uint64_t)(m * 7 + s * 3 + ri), moves[m][0], snrs[s]);
+                src.tone_on = 0;
+                src.move_at = ms_to_samples(fs, 1000.0 + (double)(13 * m));
+                src.move_hz = moves[m][1];
+                const run_result r = run_signal(&g_core, &src, src.move_at + ms_to_samples(fs, 2000.0), fs / 1000,
+                                                (int)lround(moves[m][0] * 10.0));
+                assert(r.first_lock >= 0 && r.first_lock < src.move_at);
+                assert(r.first_unlocked > src.move_at);
+                const double lost_ms = samples_to_ms(fs, r.first_unlocked - src.move_at);
+                if (lost_ms > (double)MOVED_OFF_BOUND_MS) {
+                    DSD_FPRINTF(stderr, "held off-table: fs=%d %.1f->%.1f -> %.0f ms\n", fs, moves[m][0], moves[m][1],
+                                lost_ms);
+                }
+                assert(lost_ms <= (double)MOVED_OFF_BOUND_MS);
+                /* The one lock of the run was the real tone; the off-table one never locks. */
+                assert(r.locks == 1 && r.first_wrong < 0);
+                assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
+            }
+        }
+    }
+}
+
+/* The Golay (23,12) code's words, one per rotation class: every periodic waveform a DCS
+   transmitter can send, whatever its code (issue #523 decodes them). */
+enum { DCS_CLASS_MAX = 256 };
+
+static int
+dcs_rotation_classes(uint32_t* classes, int cap) {
+    int count = 0;
+    for (uint32_t m = 0; m < 4096U; m++) {
+        const uint32_t c = synth_dcs_canonical(synth_golay23_word(m));
+        int seen = 0;
+        for (int i = 0; i < count; i++) {
+            if (classes[i] == c) {
+                seen = 1;
+                break;
+            }
+        }
+        if (!seen) {
+            assert(count < cap);
+            classes[count++] = c;
+        }
+    }
+    return count;
+}
+
+static run_result
+run_dcs(int fs, uint32_t word, double snr_db, uint64_t seed) {
+    dsd_analog_rx_core_init(&g_core);
+    signal_src src;
+    signal_init(&src, fs, seed, 100.0, snr_db);
+    if (snr_db > 100.0) {
+        src.noise_sigma = 0.0;
+    }
+    src.dcs_on = 1;
+    src.dcs.fs = fs;
+    src.dcs.word = word;
+    src.dcs.amp = 0.1;
+    src.dcs.bit_phase = 0.0;
+    return run_signal(&g_core, &src, ms_to_samples(fs, 3000.0), fs / 50, 0);
+}
+
+/*
+ * DCS is never a CTCSS tone. A repeating 23-bit word at 134.4 bit/s is a line spectrum every
+ * 5.84 Hz, and several lines land within the snap gate of a table tone; a run of alternating
+ * bits is a 67.2 Hz square wave, 0.2 Hz from 67.0. Every rotation class of the code -- all
+ * 178 non-constant periodic waveforms, which covers every DCS code in both polarities, since
+ * a word's complement is a code word too -- sent forward and bit-reversed (the reciprocal
+ * generator's code), for 3 s at 8 kHz, never locks and is positively "no tone". The words
+ * that come nearest (the most rho at a snapped table tone) do the same at every rate, clean
+ * and at +10 dB, in both polarities.
+ */
+static void
+test_dcs_never_locks(void) {
+    static uint32_t classes[DCS_CLASS_MAX];
+    const uint32_t all_ones = (1U << SYNTH_DCS_BITS) - 1U;
+    const int count = dcs_rotation_classes(classes, DCS_CLASS_MAX);
+    /* 23 is prime: every non-constant word rotates through 23 distinct words. */
+    assert(count == 2 + ((4096 - 2) / SYNTH_DCS_BITS));
+    for (int i = 0; i < count; i++) {
+        if (classes[i] == 0U || classes[i] == all_ones) {
+            continue; /* a constant level: DC, which the front end removes */
+        }
+        for (int reversed = 0; reversed < 2; reversed++) {
+            const uint32_t word = reversed ? synth_dcs_reverse(classes[i]) : classes[i];
+            const run_result r = run_dcs(8000, word, 200.0, 1ULL);
+            if (r.locks != 0) {
+                DSD_FPRINTF(stderr, "DCS lock: word 0x%06X\n", (unsigned int)word);
+            }
+            assert(r.locks == 0 && r.final_state == DSD_ANALOG_TONE_STATE_NONE);
+        }
+    }
+    static const uint32_t nearest[] = {0x5D5530U, 0x5559E8U};
+    static const double snrs[] = {200.0, 10.0};
+    for (int w = 0; w < 2; w++) {
+        for (int inverted = 0; inverted < 2; inverted++) {
+            const uint32_t word = inverted ? (~nearest[w] & all_ones) : nearest[w];
+            for (int ri = 0; ri < RATE_COUNT; ri++) {
+                for (int s = 0; s < 2; s++) {
+                    const run_result r = run_dcs(k_rates[ri], word, snrs[s], 23ULL + (uint64_t)(w * 8 + ri * 2 + s));
+                    assert(r.locks == 0 && r.final_state == DSD_ANALOG_TONE_STATE_NONE);
+                }
+            }
+        }
+    }
+}
+
+/*
+ * No tone, bounded: a carrier with none reads "detecting" until 500 ms of it have been
+ * evaluated and "none" by the next hop, at every rate. "None" is a verdict, not a latch: a
+ * tone that starts after it -- a late encoder, a repeater that adds its tone after the
+ * kerchunk -- still locks on its value within the lock bound of its own start.
+ */
+static void
+test_no_tone_verdict_then_late_tone(void) {
+    for (int ri = 0; ri < RATE_COUNT; ri++) {
+        const int fs = k_rates[ri];
+        dsd_analog_rx_core_init(&g_core);
+        signal_src src;
+        signal_init(&src, fs, 5150ULL + (uint64_t)ri, 136.5, 10.0);
+        src.tone_on = ms_to_samples(fs, 1000.0);
+        const run_result r =
+            run_signal(&g_core, &src, src.tone_on + ms_to_samples(fs, LOCK_BOUND_MS + 150.0), fs / 1000, 1365);
+        assert(r.last_acquiring >= ms_to_samples(fs, 450.0));
+        assert(r.first_none > r.last_acquiring);
+        assert(samples_to_ms(fs, r.first_none) <= (double)(DSD_ANALOG_CTCSS_NO_TONE_MS + HOP_MS) + 1.0);
+        assert(r.first_wrong < 0 && r.first_lock > src.tone_on);
+        assert(samples_to_ms(fs, r.first_lock - src.tone_on) <= (double)LOCK_BOUND_MS);
     }
 }
 
@@ -309,11 +503,18 @@ test_speech_and_noise_never_lock(void) {
     assert(r.final_state == DSD_ANALOG_TONE_STATE_NONE);
 }
 
-/* A tone under a transmitter's voice (speech through a 300 Hz high-pass, 10 dB above the
-   tone): it still locks on the right value, and the voice never reads as another tone. */
+/*
+ * A tone under a transmitter's voice (speech through a 300 Hz high-pass, 10 dB above the
+ * tone): every tone locks on its value within 500 ms of its start, the voice never reads as
+ * another tone, and once locked the voice does not knock it out. Slower than the noise bound
+ * although the voice's long-run share of the sub-audible band is 12-14 dB below the tone: a
+ * high voice's fundamental still leaks through the high-pass in bursts, right where the
+ * tone is. Prints the p50/p95/worst lock times for the PR evidence.
+ */
 static void
 test_tone_under_voice_locks(void) {
-    for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k += 7) {
+    double times[DSD_CTCSS_TONE_COUNT];
+    for (int k = 0; k < DSD_CTCSS_TONE_COUNT; k++) {
         const double hz = (double)dsd_ctcss_tone_tenths(k) / 10.0;
         dsd_analog_rx_core_init(&g_core);
         signal_src src;
@@ -325,12 +526,17 @@ test_tone_under_voice_locks(void) {
            tone's 0.1 amplitude. */
         synth_speech_init(&src.speech, 48000, 999ULL + (uint64_t)k, 0.76);
         synth_voice_hpf_init(&src.voice_hpf, 48000);
-        const run_result r = run_signal(&g_core, &src, ms_to_samples(48000, 3000.0), 48, (int)lround(hz * 10.0));
+        const run_result r = run_signal(&g_core, &src, ms_to_samples(48000, 2500.0), 48, (int)lround(hz * 10.0));
         assert(r.first_wrong < 0);
-        assert(r.first_lock >= 0 && samples_to_ms(48000, r.first_lock - src.tone_on) <= 1500.0);
-        /* Once locked, the voice does not knock it out. */
+        assert(r.first_lock >= 0);
+        times[k] = samples_to_ms(48000, r.first_lock - src.tone_on);
+        if (times[k] > (double)VOICE_LOCK_BOUND_MS) {
+            DSD_FPRINTF(stderr, "slow lock under voice: hz=%.1f -> %.0f ms\n", hz, times[k]);
+        }
+        assert(times[k] <= (double)VOICE_LOCK_BOUND_MS);
         assert(r.final_state == DSD_ANALOG_TONE_STATE_LOCKED);
     }
+    report_timings("CTCSS lock under voice 10 dB above the tone", times, DSD_CTCSS_TONE_COUNT);
 }
 
 /* The tone stops while the carrier (noise) carries on: the lock is gone within 350 ms. */
@@ -438,6 +644,19 @@ test_block_size_does_not_move_the_verdict(void) {
     /* A 4096-sample block can only observe the lock up to one block late. */
     assert(hop_lock[0] == hop_lock[1] && hop_lock[0] == hop_lock[2]);
     assert(hop_lock[3] >= hop_lock[0] && hop_lock[3] <= hop_lock[0] + 2);
+
+    /* The no-tone verdict too: a carrier with no tone reads "none" on the same hop. */
+    int64_t hop_none[4];
+    for (int b = 0; b < 4; b++) {
+        dsd_analog_rx_core_init(&g_core);
+        signal_src src;
+        signal_init(&src, 48000, 271828ULL, 123.0, 10.0);
+        const run_result r = run_signal(&g_core, &src, ms_to_samples(48000, 1000.0), blocks[b], 1230);
+        assert(r.first_none >= 0 && r.locks == 0);
+        hop_none[b] = r.first_none / 2400;
+    }
+    assert(hop_none[0] == hop_none[1] && hop_none[0] == hop_none[2]);
+    assert(hop_none[3] >= hop_none[0] && hop_none[3] <= hop_none[0] + 2);
 }
 
 /* Carrier bookkeeping: a short fade keeps the tone, 200 ms without carrier forgets it. */
@@ -506,6 +725,12 @@ test_unusable_rate(void) {
     /* A usable rate afterwards redesigns and runs. */
     assert(dsd_analog_rx_core_process(&g_core, block, 100, 8000, 1) == 1);
     assert(g_core.fe.active == 1 && g_core.fe.decim == 3);
+    /* The front end's filters are sized up to DSD_ANALOG_RX_MAX_RATE_HZ, and above it the
+       core says so rather than running half a design. */
+    assert(dsd_analog_rx_core_process(&g_core, block, 100, DSD_ANALOG_RX_MAX_RATE_HZ, 1) == 1);
+    assert(g_core.fe.active == 1 && g_core.fe.n1 > 0);
+    assert(dsd_analog_rx_core_process(&g_core, block, 100, 384000, 1) == 0);
+    assert(observe(&g_core).state == DSD_ANALOG_TONE_STATE_INACTIVE);
 }
 
 /* A window of silence fed straight to the detector leaves every correlator bin empty. The
@@ -544,6 +769,9 @@ main(void) {
     test_scale_invariance();
     test_adjacent_low_tones_are_distinguished();
     test_unsupported_frequencies_never_lock();
+    test_lock_follows_a_tone_off_the_table();
+    test_dcs_never_locks();
+    test_no_tone_verdict_then_late_tone();
     test_tone_loss_within_bound();
     test_reverse_burst_drops_fast();
     test_tone_under_voice_locks();

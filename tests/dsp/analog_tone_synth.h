@@ -101,6 +101,87 @@ synth_tone_next(synth_tone* tone) {
 }
 
 /**
+ * @brief DCS signalling: one 23-bit word sent over and over as 134.4 bit/s NRZ.
+ *
+ * A DCS code word is a code word of the cyclic Golay (23,12) code, so the words the tests
+ * need are every multiple of a generator polynomial (synth_golay23_word()). Because the word
+ * repeats, a rotation of it is the same waveform shifted in time, and because the all-ones
+ * word is in the code, so is every word's complement: the inverted polarity.
+ */
+enum { SYNTH_DCS_BITS = 23 };
+
+#define SYNTH_DCS_BAUD          134.4
+
+/** @brief Golay (23,12) generator x^11 + x^10 + x^6 + x^5 + x^4 + x^2 + 1. */
+#define SYNTH_GOLAY23_GENERATOR 0xC75U
+
+/** @brief The code word m(x) * g(x) for a 12-bit message @p m: bit i is the coefficient of x^i. */
+static inline uint32_t
+synth_golay23_word(uint32_t m) {
+    uint32_t word = 0U;
+    for (int i = 0; i < 12; i++) {
+        if ((m >> i) & 1U) {
+            word ^= SYNTH_GOLAY23_GENERATOR << i;
+        }
+    }
+    return word & ((1U << SYNTH_DCS_BITS) - 1U);
+}
+
+/** @brief Rotate a 23-bit word left by @p k (0 <= k < 23). */
+static inline uint32_t
+synth_dcs_rotate(uint32_t word, int k) {
+    const uint32_t mask = (1U << SYNTH_DCS_BITS) - 1U;
+    if (k == 0) {
+        return word & mask;
+    }
+    return ((word << k) | (word >> (SYNTH_DCS_BITS - k))) & mask;
+}
+
+/** @brief The smallest rotation of @p word: one representative per periodic waveform. */
+static inline uint32_t
+synth_dcs_canonical(uint32_t word) {
+    uint32_t best = word;
+    for (int k = 1; k < SYNTH_DCS_BITS; k++) {
+        const uint32_t r = synth_dcs_rotate(word, k);
+        if (r < best) {
+            best = r;
+        }
+    }
+    return best;
+}
+
+/** @brief @p word with its bit order reversed: the same code under the reciprocal generator. */
+static inline uint32_t
+synth_dcs_reverse(uint32_t word) {
+    uint32_t out = 0U;
+    for (int i = 0; i < SYNTH_DCS_BITS; i++) {
+        if ((word >> i) & 1U) {
+            out |= 1U << (SYNTH_DCS_BITS - 1 - i);
+        }
+    }
+    return out;
+}
+
+/** @brief An NRZ DCS generator: bit 0 of the word first, +amp for a one and -amp for a zero. */
+typedef struct {
+    double fs;
+    uint32_t word;
+    double amp;
+    double bit_phase; /**< position in the word, in bits */
+} synth_dcs;
+
+static inline float
+synth_dcs_next(synth_dcs* dcs) {
+    const int bit = (int)dcs->bit_phase;
+    const double v = ((dcs->word >> bit) & 1U) ? dcs->amp : -dcs->amp;
+    dcs->bit_phase += SYNTH_DCS_BAUD / dcs->fs;
+    if (dcs->bit_phase >= (double)SYNTH_DCS_BITS) {
+        dcs->bit_phase -= (double)SYNTH_DCS_BITS;
+    }
+    return (float)v;
+}
+
+/**
  * @brief Speech-like audio: voiced phrases with a wandering fundamental, fricatives, pauses.
  *
  * Voiced segments are a glottal pulse train through a -12 dB/octave source tilt, three

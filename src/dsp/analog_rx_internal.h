@@ -15,10 +15,12 @@
  * Signal path (issue #522):
  *   raw block @ fs -> stage 1: polyphase Blackman FIR, decimate by D = floor(fs / 2400)
  *                  -> stage 2: Blackman LPF at fs/D, 290 Hz cutoff, 60 Hz transition
- *                  -> DC blocker -> every detector (CTCSS here, DCS in #523)
+ *                  -> DC blocker -> every detector in the core's table (CTCSS here, DCS in #523)
  * Detectors also get the stage-1 output delayed to line up with stage 2 (the "wide" stream,
  * about 0-1 kHz): the CTCSS detector uses it to see a voice fundamental's harmonics, which a
- * tone does not have.
+ * tone does not have. No full-band level is handed over: the carrier test reads the raw
+ * block's mean square before the front end, and a detector's thresholds are ratios against
+ * the band (and wide) energy it sees itself.
  * Every threshold a detector applies is a ratio against the sub-audible band energy, so the
  * RTL live (about +/-1/pi), replay (unscaled) and int16-scale PCM inputs all read the same.
  */
@@ -37,10 +39,25 @@ extern "C" {
 /** @brief Lowest input rate the front end accepts: below it there is no 2.4 kHz band to keep. */
 enum { DSD_ANALOG_RX_MIN_RATE_HZ = 2400 };
 
+/**
+ * @brief Highest input rate the front end accepts.
+ *
+ * Stage 1 needs about fs / 325 taps, and DSD_ANALOG_RX_STAGE1_MAX_TAPS holds a design up to
+ * about 333 kHz; the limit is a round figure below that, above every audio or RTL output rate
+ * in use (192 kHz WAV included).
+ */
+enum { DSD_ANALOG_RX_MAX_RATE_HZ = 320000 };
+
+/**
+ * @brief Top of the sub-audible band: stage 2's cutoff, and the band every detector assumes
+ * its noise fills.
+ */
+#define DSD_ANALOG_RX_BAND_HZ 290.0
+
 /** @brief Target decimated rate; the actual one is fs / floor(fs / 2400). */
 enum { DSD_ANALOG_RX_TARGET_RATE_HZ = 2400 };
 
-/** @brief Tap capacity of each front-end FIR: stage 1 needs about fs / 325 taps, so up to ~330 kHz input. */
+/** @brief Tap capacity of each front-end FIR: stage 1 needs about fs / 325 taps (see DSD_ANALOG_RX_MAX_RATE_HZ). */
 enum { DSD_ANALOG_RX_STAGE1_MAX_TAPS = 1023, DSD_ANALOG_RX_STAGE2_MAX_TAPS = 511 };
 
 /** @brief Decimated samples produced per detector hand-off. */
@@ -144,7 +161,7 @@ extern const dsd_analog_rx_detector_ops dsd_analog_ctcss_ops;
 /** @brief The shared sub-audible front end: two decimating/low-pass stages and a DC blocker. */
 typedef struct {
     int in_rate_hz; /**< design input rate; 0 = unconfigured */
-    int active;     /**< 0 when the rate is below DSD_ANALOG_RX_MIN_RATE_HZ or a design failed */
+    int active;     /**< 0 when the rate is outside the supported range or a design failed */
     int decim;
     double out_rate_hz;
     int n1;
@@ -212,7 +229,11 @@ int dsd_analog_rx_core_process(dsd_analog_rx_core* core, const float* block, int
  */
 void dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publication* out);
 
-/** @brief Design the front end for @p rate_hz; returns 1 when usable, 0 below 2400 Hz. */
+/**
+ * @brief Design the front end for @p rate_hz.
+ *
+ * @return 1 when usable, 0 outside DSD_ANALOG_RX_MIN_RATE_HZ..DSD_ANALOG_RX_MAX_RATE_HZ.
+ */
 int dsd_analog_subaudible_fe_configure(dsd_analog_subaudible_fe* fe, int rate_hz);
 
 /** @brief Clear the front end's filter history without redesigning it. */
