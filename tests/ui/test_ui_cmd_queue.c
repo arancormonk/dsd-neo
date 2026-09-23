@@ -41,6 +41,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -580,10 +581,12 @@ test_file_network_and_import_commands(void) {
     const unsigned char symbol_data[] = {0x12U, 0x34U, 0x56U, 0x78U};
     static const unsigned char key_data[] = "Key ID,Key\n1,12345\n";
 
-    remove(symbol_out);
-    remove(symbol_in);
-    remove(missing_csv);
-    remove(key_csv);
+    // DSP_OUT_SET creates ./DSP; run from a temp dir so no DSP folder is left where the binary was launched.
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_cmd_queue_files") != 0) {
+        DSD_FPRINTF(stderr, "temp working directory setup failed: %s\n", strerror(errno));
+        return 1;
+    }
 
     init_test_context(&opts, &state);
 
@@ -668,6 +671,8 @@ test_file_network_and_import_commands(void) {
     remove(symbol_out);
     remove(symbol_in);
     remove(key_csv);
+    rc |= expect_int("dsp output directory created in the working directory", dsd_test_rmdir("DSP"), 0);
+    rc |= expect_int("file command temp dir restored and emptied", dsd_test_temp_cwd_leave(&cwd), 0);
     freeState(&state);
     return rc;
 }

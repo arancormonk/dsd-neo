@@ -2153,6 +2153,13 @@ test_ui_import_and_dsp_output_commands_report_service_results(void) {
     if (alloc_test_runtime(&runtime) != 0) {
         return 1;
     }
+    // DSP_OUT_SET creates ./DSP; run from a temp dir so no DSP folder is left where the binary was launched.
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_queue_dsp_out") != 0) {
+        DSD_FPRINTF(stderr, "temp working directory setup failed: %s\n", strerror(errno));
+        free_test_runtime(&runtime);
+        return 1;
+    }
     dsd_opts* opts = runtime.opts;
     dsd_state* state = runtime.state;
     int rc = 0;
@@ -2192,6 +2199,8 @@ test_ui_import_and_dsp_output_commands_report_service_results(void) {
     rc |= expect_true("hex keys import records requested path", strcmp(opts->key_in_file, missing_hex) == 0);
     rc |= expect_true("hex keys import failure toast", strstr(state->ui_msg, "Failed: Keys (HEX) import") != NULL);
 
+    rc |= expect_int_eq("DSP output directory created in the working directory", dsd_test_rmdir("DSP"), 0);
+    rc |= expect_int_eq("DSP output temp dir restored and emptied", dsd_test_temp_cwd_leave(&cwd), 0);
     free_test_runtime(&runtime);
     return rc;
 }
