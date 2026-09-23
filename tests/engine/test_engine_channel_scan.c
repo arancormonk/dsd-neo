@@ -575,6 +575,21 @@ test_leave_restores_configured_receive_family(void) {
     assert(analog_restore_width_hz == 12500);
     assert(digital_restore_calls == 0);
 
+    /* The configured demodulator kind survives a typed row: the row's digital preset puts the kind back to FM, and
+     * leaving the row restores the configured kind together with that kind's width. */
+    opts->analog_demod = DSD_ANALOG_DEMOD_AM;
+    opts->analog_am_bandwidth_hz = 9000;
+    reset_frontend_records();
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    assert(opts->analog_only == 0 && opts->analog_demod == DSD_ANALOG_DEMOD_FM);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(opts->analog_demod == DSD_ANALOG_DEMOD_AM);
+    assert(analog_restore_calls == 1 && analog_restore_kind == DSD_ANALOG_DEMOD_AM);
+    assert(analog_restore_width_hz == 9000);
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    opts->analog_am_bandwidth_hz = 0;
+    opts->analog_nfm_bandwidth_hz = 12500;
+
     /* The unset default travels as 0, never as a resolved 16 kHz. */
     opts->analog_nfm_bandwidth_hz = 0;
     reset_frontend_records();
