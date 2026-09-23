@@ -482,8 +482,9 @@ dsd_synctype_to_string(int synctype) { // NOLINT(misc-use-internal-linkage)
 }
 
 static dsd_scan_mode g_scan_mode_active = DSD_SCAN_MODE_INHERIT;
-/* Issue #521: the scan scope as the shared squelch view sees it. Like the other link stubs
- * here, these replace the runtime definitions at link time, so they keep external linkage. */
+/* Issue #521: the scan scope as the shared squelch view sees it. The two stubs below replace
+ * the runtime definitions at link time, like the other link stubs here, so they keep external
+ * linkage; the pointers they hand back stay file-local. */
 static const dsd_scan_option_values* g_scan_row_options;
 static const dsd_scan_settings* g_scan_configured;
 
