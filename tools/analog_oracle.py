@@ -59,6 +59,7 @@ SUBAUDIBLE_LPF_HZ = 300.0
 CTCSS_TOLERANCE = 0.005
 CTCSS_MIN_PROMINENCE_DB = 10.0
 CTCSS_MIN_FLOOR_DB = 20.0
+POWER_FLOOR = 1e-30
 
 # The 50-tone EIA table (Hz). 150.0 Hz is deliberately absent.
 CTCSS_TONES = (
@@ -122,6 +123,11 @@ def discriminate(samples, rate_hz, offset_hz=0.0):
 
 # ---- CTCSS --------------------------------------------------------------------------------------------------------
 
+def power_ratio_db(numerator, denominator):
+    """10 log10(numerator / denominator), both floored, so an all-zero spectrum reads 0 dB rather than failing."""
+    return 10.0 * math.log10(max(numerator, POWER_FLOOR) / max(denominator, POWER_FLOOR))
+
+
 def ctcss_label(freq_hz, rate_hz):
     """Return a dict describing the CTCSS verdict for discriminator output freq_hz."""
     audio = freq_hz - np.mean(freq_hz)
@@ -135,12 +141,18 @@ def ctcss_label(freq_hz, rate_hz):
     peak = int(np.argmax(power))
     peak_hz = float(freqs[peak])
     others = power[np.abs(freqs - peak_hz) > 2.0]
-    prominence = 10.0 * math.log10(power[peak] / max(float(np.max(others)), 1e-30))
-    floor = 10.0 * math.log10(power[peak] / max(float(np.median(power)), 1e-30))
+    peak_power = float(power[peak])
+    prominence = power_ratio_db(peak_power, float(np.max(others)))
+    floor = power_ratio_db(peak_power, float(np.median(power)))
     deviation = 2.0 * spectrum[band][peak] / float(np.sum(window))
     matches = [tone for tone in CTCSS_TONES if abs(peak_hz - tone) <= CTCSS_TOLERANCE * tone]
-    result = {"peak_hz": peak_hz, "prominence_db": prominence, "floor_db": floor, "deviation_hz": deviation}
-    if prominence < CTCSS_MIN_PROMINENCE_DB or floor < CTCSS_MIN_FLOOR_DB:
+    result = {"peak_hz": peak_hz, "prominence_db": prominence, "floor_db": floor, "deviation_hz": deviation,
+              "silent": peak_power <= POWER_FLOOR}
+    if result["silent"]:
+        # A steady carrier or no signal at all: the discriminator output is silent.
+        result["label"] = None
+        result["why"] = "no sub-audible energy"
+    elif prominence < CTCSS_MIN_PROMINENCE_DB or floor < CTCSS_MIN_FLOOR_DB:
         result["label"] = None
         result["why"] = "no line stands clear of the sub-audible band"
     elif len(matches) != 1:
@@ -278,8 +290,12 @@ def describe(name, result):
     dcs = result["dcs"]
     lines = [f"{name}:"]
     tone = ctcss["label"] or f"none ({ctcss['why']})"
-    lines.append(f"  CTCSS  {tone}; strongest line {ctcss['peak_hz']:.2f} Hz, {ctcss['prominence_db']:.1f} dB over "
-                 f"the next, {ctcss['floor_db']:.1f} dB over the band median, ~{ctcss['deviation_hz']:.0f} Hz deviation")
+    if ctcss["silent"]:
+        # Nothing in the band to describe (see ctcss_label).
+        lines.append(f"  CTCSS  {tone}")
+    else:
+        lines.append(f"  CTCSS  {tone}; strongest line {ctcss['peak_hz']:.2f} Hz, {ctcss['prominence_db']:.1f} dB over "
+                     f"the next, {ctcss['floor_db']:.1f} dB over the band median, ~{ctcss['deviation_hz']:.0f} Hz deviation")
     code = dcs["label"] or f"none ({dcs['why']})"
     readings = ", ".join(dcs["readings"]) if dcs["readings"] else "-"
     lines.append(f"  DCS    {code}; needs {dcs['needed']} of {dcs['words']} words; repeating readings: {readings}")
@@ -359,6 +375,20 @@ def self_test():
         code = result["dcs"]["label"]
         check(f"{name}: CTCSS {tone}", tone == want_tone)
         check(f"{name}: DCS {code}", (code is None) if want_code is None else (code is not None and want_code in code))
+    # A steady carrier (constant cu8 bytes) and an all-zero input demodulate to an exactly silent
+    # discriminator: nothing to label, and nothing to fail on.
+    print("Unmodulated input (1 s, no noise):")
+    second = int(rate)
+    for name, samples in (("carrier alone", np.full(second, complex(1.0 / 255.0, 1.0 / 255.0))),
+                          ("no signal", np.zeros(second, dtype=complex))):
+        try:
+            result = label_samples(samples, rate)
+        except (ValueError, ZeroDivisionError, FloatingPointError) as exc:
+            check(f"{name}: labelled without error ({type(exc).__name__}: {exc})", False)
+            continue
+        tone = result["ctcss"]["label"]
+        code = result["dcs"]["label"]
+        check(f"{name}: CTCSS {tone}, DCS {code}", tone is None and code is None)
     print("self-test passed" if not failures else f"self-test FAILED ({len(failures)})")
     return 0 if not failures else 1
 

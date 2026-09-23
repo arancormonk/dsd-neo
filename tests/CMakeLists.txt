@@ -11087,12 +11087,14 @@ if(DSD_HAS_RADIO)
 
     # DECODE_IQ_ANALOG_NFM_ADJACENT's bound with the channel filter switched off:
     # the 12.5 kHz neighbour then reads about -8 dBc (-64.9 with the filter), so
-    # that bound is not vacuous. Also the one case spelling host options --opt=VALUE.
+    # that bound is not vacuous. The pattern needs the measured level, so a run
+    # that delivered no audio ("dBc not measured") does not count. Also the one
+    # case spelling host options --opt=VALUE.
     dsd_neo_add_analog_replay_fail_test(
         DECODE_IQ_ANALOG_NEG_ADJACENT_UNFILTERED
         nfm_adjacent_synth
         "-fA --analog-expect-tone-hz=1000 --analog-probe-max-dbc=12500:-40"
-        "ANALOG AUDIO FAIL: probe 12500[.]0 Hz dBc"
+        "ANALOG AUDIO FAIL: probe 12500[.]0 Hz dBc -?[0-9]+[.][0-9]+ [(]limit -40[.]00[)]"
     )
     set_tests_properties(
         DECODE_IQ_ANALOG_NEG_ADJACENT_UNFILTERED

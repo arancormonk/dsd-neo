@@ -110,15 +110,24 @@ def load_analog(rows: list[dict[str, str]]) -> dict[str, dict[int, dict[str, obj
     return columns
 
 
+def interval_text(diffs: list[float]) -> str:
+    """Mean of the per-repeat differences with its 95% interval. One pair gives a difference but says nothing about
+    the repeat-to-repeat spread, so its interval is n/a rather than a zero width that would read as exact."""
+    mean = statistics.fmean(diffs)
+    if len(diffs) < 2:
+        return f"{mean:+.2f} +/- n/a"
+    half = 1.96 * statistics.stdev(diffs) / math.sqrt(len(diffs))
+    return f"{mean:+.2f} +/- {half:.2f}"
+
+
 def paired(by_rep: dict[int, dict[str, object]], build: str, baseline: str) -> tuple[str, str]:
     """Mean per-repeat difference from the baseline with a 95% interval, and how many repeats differ."""
     diffs = [by_rep[r][build] - by_rep[r][baseline] for r in sorted(by_rep)
              if build in by_rep[r] and baseline in by_rep[r]]
     if build == baseline or not diffs:
         return "-", "-"
-    half = 1.96 * statistics.stdev(diffs) / math.sqrt(len(diffs)) if len(diffs) > 1 else 0.0
     differ = sum(1 for d in diffs if abs(d) > 1e-9)
-    return f"{statistics.fmean(diffs):+.2f} +/- {half:.2f}", f"{differ}/{len(diffs)}"
+    return interval_text(diffs), f"{differ}/{len(diffs)}"
 
 
 def analog_coverage(rows: list[dict[str, str]]) -> dict[str, set[int]]:
@@ -244,9 +253,10 @@ def report_analog(rows: list[dict[str, str]], baseline_arg: str | None) -> int:
     print("interval; 'differ' counts the repeats where the two builds disagreed at all. Run")
     print("the baseline against a copy of itself first: while the front end stays on the")
     print("monitor path, I/Q replay is sample-deterministic, so that control should read")
-    print("+0.00 +/- 0.00 with 0 differing repeats. Repeats that exited non-zero or left")
-    print("the monitor path (the host warned of CQPSK symbols) are not measurements of the")
-    print("build: they are left out of every column and counted in a warning above.")
+    print("+0.00 +/- 0.00 with 0 differing repeats. The interval needs at least two paired")
+    print("repeats and reads n/a with one. Repeats that exited non-zero or left the monitor")
+    print("path (the host warned of CQPSK symbols) are not measurements of the build: they")
+    print("are left out of every column and counted in a warning above.")
     print("Higher is better for tone_snr_db and inband_db, lower for clip, first_audible_ms")
     print("and tone_lock_ms, and lower for a probe that measures an interferer; whether")
     print("audible_ms or rms_dbfs should move depends on the case. 'n' counts the repeats")
@@ -263,9 +273,7 @@ def digital_row(by_rep: dict[int, dict[str, tuple[float, int, int]]], reps: list
              for r in reps if build in by_rep[r] and baseline in by_rep[r]]
     sd = statistics.stdev(vals) if len(vals) > 1 else 0.0
     if build != baseline and diffs:
-        mean_d = statistics.fmean(diffs)
-        half = 1.96 * statistics.stdev(diffs) / math.sqrt(len(diffs)) if len(diffs) > 1 else 0.0
-        paired_text = f"{mean_d:+.2f} +/- {half:.2f}"
+        paired_text = interval_text(diffs)
         better = f"{sum(1 for d in diffs if d < 0)}/{len(diffs)}"
     else:
         paired_text, better = "-", "-"
@@ -291,8 +299,9 @@ def report_digital(path: Path, baseline_arg: str | None) -> int:
         print(digital_row(by_rep, reps, build, baseline))
 
     print("\nPaired column is the mean per-repeat difference in errors per voice frame,")
-    print("with a 95% interval. Negative beats the baseline; an interval spanning 0 means")
-    print("the run did not resolve a difference. Watch the voice column too: a build that")
+    print("with a 95% interval (n/a with one paired repeat: the interval needs at least two")
+    print("paired repeats). Negative beats the baseline; an interval spanning 0 means the")
+    print("run did not resolve a difference. Watch the voice column too: a build that")
     print("decodes noticeably fewer frames is losing sync, whatever its error rate says.")
     return 0
 

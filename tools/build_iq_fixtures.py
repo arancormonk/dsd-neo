@@ -182,6 +182,12 @@ ANALOG_EXCERPTS = [
     ("nfm_squelch_real_a", "nfm_squelch_a_iq", 0.3, 4.0, 75.0),
     ("nfm_squelch_real_b", "nfm_squelch_b_iq", 0.5, 4.0, 72.0),
 ]
+# Names early plans gave excerpts that were renamed after the oracle labelled them; --only
+# answers them with the current name instead of quietly building nothing.
+RENAMED_FIXTURES = {
+    "nfm_dcs_real_a": "nfm_squelch_real_a",
+    "nfm_dcs_real_b": "nfm_squelch_real_b",
+}
 # Real samples read either side of each excerpt so the frequency-domain resampler's
 # circular edges fall outside the kept span.
 ANALOG_EXCERPT_PAD_S = 0.25
@@ -713,6 +719,30 @@ def build_upstream(args):
     return total
 
 
+def derived_fixture_names():
+    """Every fixture --derived-only writes; --only refuses these and names the right switch."""
+    return (
+        [entry[0] for entry in DERIVED_SIMULCAST]
+        + [entry[0] for entry in DERIVED_ATTENUATED]
+        + [entry[0] for entry in DERIVED_NOISE]
+        + [DPMR_SYNTH_NAME]
+        + [entry[0] for entry in NFM_SYNTH]
+    )
+
+
+def check_only_names(only):
+    """Refuse --only names that no table builds, so a typo or an old name fails instead of writing nothing."""
+    known = {entry[0] for entry in FIXTURES} | {entry[0] for entry in ANALOG_EXCERPTS} | set(derived_fixture_names())
+    for name in only:
+        if name in RENAMED_FIXTURES:
+            raise SystemExit(
+                f"{name} is now {RENAMED_FIXTURES[name]}: the capture carries no DCS "
+                "(docs/testing.md, Tone and code labels)"
+            )
+        if name not in known:
+            raise SystemExit(f"--only {name}: no such fixture")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", default=os.path.join("tests", "fixtures", "iq"))
@@ -728,6 +758,8 @@ def main():
         help="regenerate just the named fixture(s); other fixtures and their downloads are skipped",
     )
     args = parser.parse_args()
+    if args.only:
+        check_only_names(args.only)
 
     os.makedirs(args.out, exist_ok=True)
 
@@ -741,14 +773,7 @@ def main():
         total += build_dpmr_synth(args.out)
         total += build_nfm_synth(args.out)
     else:
-        derived = (
-            [entry[0] for entry in DERIVED_SIMULCAST]
-            + [entry[0] for entry in DERIVED_ATTENUATED]
-            + [entry[0] for entry in DERIVED_NOISE]
-            + [DPMR_SYNTH_NAME]
-            + [entry[0] for entry in NFM_SYNTH]
-        )
-        for name in derived:
+        for name in derived_fixture_names():
             if name in args.only:
                 raise SystemExit(f"{name} is a derived fixture; regenerate it with --derived-only")
     print(f"total {total // 1024} KiB in {args.out}")

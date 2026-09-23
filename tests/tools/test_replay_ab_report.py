@@ -198,7 +198,8 @@ class ReplayAbReport(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         line = metric_line(result.stdout, "tone_snr_db", "b")
         self.assertRegex(line, r"\s1/3\s+21\.50\s")
-        self.assertIn("+1.50 +/- 0.00", line)
+        # One usable pair is a difference but no interval.
+        self.assertIn("+1.50 +/- n/a", line)
         self.assertTrue(line.rstrip().endswith("1/1"), line)
         self.assertIn("warning: b: 2 of 3 repeats left out of the report: 1 exited non-zero (status 139); 1 ran off "
                       "the monitor path", result.stdout)
@@ -223,7 +224,7 @@ class ReplayAbReport(unittest.TestCase):
         write_summary(self.summary, rows, COLUMNS[:-2])
         result = report(self.summary, "--baseline", "a")
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("+1.00 +/- 0.00", metric_line(result.stdout, "tone_snr_db", "b"))
+        self.assertIn("+1.00 +/- n/a", metric_line(result.stdout, "tone_snr_db", "b"))
         self.assertNotIn("left out of the report", result.stdout)
 
     def test_digital_summary_still_reports_errors_per_voice_frame(self):
@@ -238,6 +239,24 @@ class ReplayAbReport(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("err/voice", result.stdout)
         self.assertIn("-1.00 +/- 0.00", result.stdout)
+
+    def test_single_pair_has_no_interval(self):
+        # One repeat cannot estimate the repeat-to-repeat spread, so neither report may print a zero-width interval
+        # for it (two identical differences, as in the A-vs-A control, do give a real +/- 0.00).
+        write_summary(self.summary, [analog_row("a", 1, "20.00"), analog_row("b", 1, "21.50")])
+        result = report(self.summary, "--baseline", "a")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("+1.50 +/- n/a", metric_line(result.stdout, "tone_snr_db", "b"))
+        self.assertIn("needs at least two paired repeats", " ".join(result.stdout.split()))
+
+        digital = [["before", "cap.json-fast", "1", "40", "20", "5"], ["after", "cap.json-fast", "1", "20", "20", "5"]]
+        write_summary(self.summary, digital, COLUMNS[:6])
+        result = report(self.summary, "--baseline", "before")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        after = [line for line in result.stdout.splitlines() if line.split()[:1] == ["after"]]
+        self.assertEqual(len(after), 1, result.stdout)
+        self.assertIn("-1.00 +/- n/a", after[0])
+        self.assertIn("needs at least two paired repeats", " ".join(result.stdout.split()))
 
     def test_analog_request_without_analog_rows_fails(self):
         write_summary(self.summary, [["a", "cap.json-fast", "1", "4", "2", "1"]], COLUMNS[:6])

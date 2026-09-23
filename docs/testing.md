@@ -373,7 +373,7 @@ a missed bound), the named `ANALOG AUDIO FAIL:` line, an `ANALOG METRIC:` line (
 
 | Case | Run | Must fail on |
 | --- | --- | --- |
-| `DECODE_IQ_ANALOG_NEG_ADJACENT_UNFILTERED` | `DECODE_IQ_ANALOG_NFM_ADJACENT`'s 12.5 kHz bound with `DSD_NEO_CHANNEL_LPF=0`, options spelled `--opt=VALUE` | the probe: about -8 dBc against -40 (-64.9 with the channel filter) |
+| `DECODE_IQ_ANALOG_NEG_ADJACENT_UNFILTERED` | `DECODE_IQ_ANALOG_NFM_ADJACENT`'s 12.5 kHz bound with `DSD_NEO_CHANNEL_LPF=0`, options spelled `--opt=VALUE` | the probe's measured level: about -8 dBc against -40 (-64.9 with the channel filter); "not measured" does not count |
 | `DECODE_IQ_ANALOG_NEG_AUDIBLE_NOT_SILENT` | the silence pattern (`--analog-max-audible-ms 0`, `--analog-min-total-ms 1400`) on `nfm_tone_synth` | audible ms, while the stream-time bound holds |
 | `DECODE_IQ_ANALOG_NEG_TONE_SNR` | a 60 dB tone SNR floor on `nfm_tone_synth` (25.9 dB) | tone SNR |
 | `DECODE_IQ_ANALOG_NEG_TONE_NOT_MEASURED` | an SNR bound without `--analog-expect-tone-hz` | tone SNR "not measured" |
@@ -442,7 +442,8 @@ labels synthetic CTCSS, DCS and no-tone signals. On the committed fixtures:
 So the two "unknown squelch" captures do not carry DCS, which is 134.4 bit/s in 23-bit words: they are no-false-lock
 material for CTCSS and DCS detectors, not accept cases. Issue #518's validation plan counted this recording as its
 NFM+DCS source, and early plans named the excerpts `nfm_dcs_real_a/_b`; they are named after their source instead,
-because they hold no DCS, and the corpus has no real DCS recording yet. A real DCS accept case needs another source.
+because they hold no DCS, and the corpus has no real DCS recording yet (`build_iq_fixtures.py --only` answers the old
+names with the new ones and refuses any name it does not build). A real DCS accept case needs another source.
 
 Every DCS waveform has two spellings, because inverting a DCS word gives another valid word: the oracle prints both
 (`D023N = D047I`, and `D023I = D047N` for the inverted waveform). A detector reports one canonical label per waveform,
@@ -638,12 +639,14 @@ which probe comes first), and gives the tone label each build settled on. A repe
 monitor path is left out of every column and counted in a per-build warning, even though the host prints its metrics
 before it exits: it measured a crash, a timeout or the modulation auto-switch, not the build. So give the host no
 `--analog-*` bounds in `--mode`, since a missed bound exits 1. Its `n` column counts the repeats in which a build
-measured that column. A build missing a column that another build measured gets an explicit `NA` row, and a build
-with no usable repeat (it crashed, timed out, left the monitor path, or is not an analog replay host) makes the report
-warn and exit 1, rather than leave the other builds' rows looking like a clean result. `TOOLS_REPLAY_AB_REPORT`
+measured that column. The paired interval needs at least two paired repeats and reads `n/a` with one (`--reps 1`, or
+every other repeat left out), in the digital report too, since one pair says nothing about the spread. A build missing
+a column that another build measured gets an explicit `NA` row, and a build with no usable repeat (it crashed, timed
+out, left the monitor path, or is not an analog replay host) makes the report warn and exit 1, rather than leave the
+other builds' rows looking like a clean result. `TOOLS_REPLAY_AB_REPORT`
 (`tests/tools/test_replay_ab_report.py`, stdlib only) covers the per-repeat pairing, the A-vs-A control, probe
-frequency keying, the coverage reporting, crashed and off-path repeats, the received-tone columns and the
-duplicate-name refusal.
+frequency keying, the coverage reporting, crashed and off-path repeats, the single-pair interval, the received-tone
+columns and the duplicate-name refusal.
 
 `tone` and `tone_lock_ms` come from the host's `ANALOG METRIC:` line and read `NA` until a tone detector publishes a
 received tone. The host defines the two fields and replay_ab.sh and the report pair them; the CTCSS detector (#522)
