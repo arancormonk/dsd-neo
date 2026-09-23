@@ -9,7 +9,9 @@
  * first applied at. An IQ replay stands in for a device that forces its rate:
  * the sidecar's demod rate differs from its rtl_bw_khz, so the provisional
  * choice made while the pipeline is configured is wrong until the rate chain
- * is final.
+ * is final. Like a live device, the fixtures have no post-demod decimation
+ * (post_downsample 1): the channel filter runs at the demod rate it is designed
+ * for, which a post_downsample above 1 would break.
  *
  * - demod_rate 16000 with the unset default: 16 kHz does not fit, so the legacy
  *   WIDE design takes over and the channel is published as DSP-limited at the
@@ -189,9 +191,10 @@ main(void) {
     int rc = 0;
     OpenResult r;
 
-    /* 1536000 / 32 / 3 = 16000 Hz: rate_in stays 48 kHz (the historical enable rule turns the filter on), but the
-     * demod rate cannot fit the 16 kHz default. */
-    const ReplayRate rate16k = {1536000U, 32U, 3U, 16000U};
+    /* 512000 / 32 = 16000 Hz: the options' 48 kHz DSP bandwidth made the historical enable decision (filter on) at
+     * configuration time, as it does before a live device settles on a lower rate, but the delivered demod rate
+     * cannot fit the 16 kHz default. */
+    const ReplayRate rate16k = {512000U, 32U, 1U, 16000U};
     rc |= open_analog_replay(rate16k, "dsdneo_analog_open_16k", 0, &r);
     rc |= expect_int("16 kHz default start", r.start_rc, 0);
     rc |= expect_int("16 kHz analog family published", r.family, 1);
