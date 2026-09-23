@@ -67,7 +67,10 @@ described under [Analog Monitor Path](#analog-monitor-path).
 `-fA` runs the RTL front end in the analog receive family: `AUDIO_MONITOR`
 output, the FM discriminator (`dsd_fm_demod`), de-emphasis, and the monitor
 resampler to 48 kHz. The M17 encoder shares that output kind but is not the
-analog family, so none of the rules below apply to it.
+analog family: the width-driven channel filter, its validation and live family
+switching do not apply to it, and it keeps the fixed WIDE/FM path. The State
+Hygiene rules key on the output kind, so they cover every monitor stream, the
+M17 encoder's included.
 
 Per block: half-band decimation, channel LPF, carrier squelch, FM
 discrimination, de-emphasis, optional audio LPF, DC block, and the squelch
@@ -120,9 +123,14 @@ Enable rule and validation:
   (`deemph_tau_us`, `audio_lpf_cutoff_hz`) every time the rate chain is
   finalized, so they follow the rate the device actually delivers. At unforced
   rates this is bit-identical.
-- A retune on the analog monitor resets the de-emphasis, DC, audio-LPF and
-  squelch-envelope state and the channel, half-band and resampler histories to
-  their fresh-open values.
+- A retune on any `AUDIO_MONITOR` stream resets the de-emphasis, DC, audio-LPF
+  and squelch-envelope state and the channel, half-band and resampler histories
+  to their fresh-open values.
+- When a retune leaves the stream on a different demod rate, the analog channel
+  is resolved again for that rate: the unset default moves between the 16 kHz
+  design and the legacy WIDE design, and an explicit width the new rate cannot
+  realize is logged with the validator's text and runs unfiltered (DSP-limited)
+  rather than being clamped.
 
 ### Live Switching
 
@@ -132,13 +140,20 @@ demod profile queued with it:
 
 - width-only change: new filter plan from empty histories;
 - analog <-> digital: the new family's fresh-open defaults (output kind,
-  demodulator, de-emphasis, channel filter, resampler), a cleared output ring and
-  a bumped output generation. The digital symbol profile follows as a demod
-  profile request;
+  demodulator, de-emphasis, channel filter, resampler), carrier and timing loops
+  restarted as on an open (Costas, band-edge FLL, Gardner TED), a cleared output
+  ring and a bumped output generation. The digital symbol profile follows as a
+  demod profile request, and it decides the CQPSK family;
 - FM <-> AM: demodulator and de-emphasis swap with a monitor-state reset (AM is
   refused until the front end can demodulate it).
 
-Retune profiles carry the same fields bound to their target frequency. Because
+Toggling CQPSK on under `-fA` leaves the analog family flag set but takes the
+output off the monitor, so that stream keeps its P25 CQPSK profile filter and
+publishes no analog profile.
+
+Retune profiles carry the same fields bound to their target frequency; an
+analog one applies no symbol profile, CQPSK toggle or timing queued for the
+same target. Because
 the switch lands after the requesting command returns,
 `rtl_stream_output_rate_for_family()` predicts the output rate a pending switch
 will produce; the decoder uses it to set symbol timing when leaving analog.
@@ -174,13 +189,15 @@ scale, and ratio-based audio metrics are invariant to it, so it is left as is.
   the AM refusal; `IO_RTL_RETUNE_PREPARE` covers the analog retune resets, the
   coefficient refresh after a forced rate change, and analog retune profiles;
   `IO_RTL_ANALOG_FAMILY_SWITCH` checks that digital -> analog -> digital ends on
-  a fresh open for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR.
+  a fresh open for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR, loop state included;
+  `IO_RTL_ANALOG_OPEN` opens IQ replays whose demod rate differs from their DSP
+  bandwidth and checks the start-time channel decision and refusal.
 
 Run the focused audit checks with:
 
 ```bash
 ctest --preset dev-debug --output-on-failure \
-  -R '^(IO_RTL_DEMOD_CONFIG|RTL_SYMBOL_PIPELINE|DSP_FSK_MODEM|DSP_DEMOD_MISC|DSP_CHANNEL_FILTERS|IO_RTL_ANALOG_FAMILY_SWITCH)$'
+  -R '^(IO_RTL_DEMOD_CONFIG|RTL_SYMBOL_PIPELINE|DSP_FSK_MODEM|DSP_DEMOD_MISC|DSP_CHANNEL_FILTERS|IO_RTL_ANALOG_FAMILY_SWITCH|IO_RTL_ANALOG_OPEN)$'
 ```
 
 For release readiness, run the full suite:

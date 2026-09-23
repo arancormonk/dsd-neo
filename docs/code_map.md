@@ -532,14 +532,27 @@ Notes:
     `DSD_NEO_CHANNEL_LPF` enable rule and falls back to the legacy WIDE design where the rate cannot fit 16 kHz.
   - De-emphasis and audio-LPF settings are stored in `demod_state` (`deemph_tau_us`, `audio_lpf_cutoff_hz`) and their
     coefficients recomputed every time the rate chain is finalized (`rtl_demod_refresh_audio_coefficients()`).
-  - A retune on `AUDIO_MONITOR` returns the de-emphasis, DC, audio-LPF and squelch-envelope state and the channel,
-    half-band and resampler histories to fresh-open values.
+  - A retune on `AUDIO_MONITOR` (the M17 encoder's monitor stream included) returns the de-emphasis, DC, audio-LPF
+    and squelch-envelope state and the channel, half-band and resampler histories to fresh-open values. A retune that
+    leaves the stream on another demod rate resolves the analog channel again for that rate
+    (`rtl_demod_refresh_analog_channel_for_rate()`, from `demod_state::analog_width_request_hz`): the unset default
+    moves between 16 kHz and the legacy WIDE design, and an explicit width the new rate cannot realize is kept (never
+    clamped), logged with the validator's text, and runs DSP-limited.
+  - The width-driven filter and the published analog profile follow `dsd_demod_analog_monitor_active()` (analog
+    family, `AUDIO_MONITOR` output, CQPSK off), so CQPSK toggled on under `-fA` keeps its P25 CQPSK profile filter.
   - Only the demod thread writes `demod_state` while the pipeline runs. Receive-family requests are queued and applied
-    between blocks; a retune profile's family fields apply under the reconfigure gate. Entering or leaving the analog
-    family re-applies that family's fresh-open defaults (`rtl_demod_enter_analog_family()`/`_digital_family()`),
-    clears the output ring and bumps the output generation; a width-only change redesigns the filter from empty
-    histories. Test: `IO_RTL_ANALOG_FAMILY_SWITCH` (digital → analog → digital equals a fresh open for P25 C4FM/CQPSK,
-    DMR, NXDN48 and dPMR), plus `IO_RTL_DEMOD_CONFIG` and `IO_RTL_RETUNE_PREPARE`.
+    between blocks; a retune profile's family fields apply under the reconfigure gate, and an analog one applies no
+    symbol profile, CQPSK toggle or timing queued for the same target. Entering or leaving the analog family
+    re-applies that family's fresh-open defaults (`rtl_demod_enter_analog_family()`/`_digital_family()`), restarts
+    the carrier and timing loops (Costas, band-edge FLL, Gardner TED) as an open does, clears the output ring and
+    bumps the output generation; a width-only change redesigns the filter from empty histories. The CQPSK family after
+    a switch to digital follows the symbol profile requested with it, as for any runtime mode change (a
+    `DSD_NEO_CQPSK` override applies at stream open). Tests: `IO_RTL_ANALOG_FAMILY_SWITCH` (digital → analog →
+    digital equals a fresh open, loop state included, for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR; the baselines run
+    the same demod configuration functions as `dsd_rtl_stream_open()`), `IO_RTL_ANALOG_OPEN` (the start-time check
+    against the rate an IQ replay delivers), plus `IO_RTL_DEMOD_CONFIG` and `IO_RTL_RETUNE_PREPARE`.
+  - `output_state::rate` (`<dsd-neo/runtime/ring.h>`) is atomic: the controller and demod threads write it and the
+    decoder and UI threads read it through `dsd_rtl_stream_output_rate()`.
 - Local audio output backends and audio device listing live in `dsd-neo_platform` (see `src/platform/audio_*.c`).
 - Network audio/input backends live in `src/io/audio_backends/` (`udp_input.c`, `tcp_input.c`, `udp_audio.c`,
   `m17_udp.c`, `udp_bind.c`).
