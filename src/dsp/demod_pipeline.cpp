@@ -519,13 +519,7 @@ channel_lpf_cutoff_for_profile(int profile) {
     }
 }
 
-/**
- * @brief Ensure channel LPF taps are generated for this demodulator state.
- *
- * Uses dsd_firdes_low_pass() which is a direct port of GNU Radio's firdes::low_pass().
- * Keeps absolute cutoffs in Hz constant across sample rates and avoids global
- * per-block profile dispatch.
- */
+/* Profile design for the digital and legacy paths: the 144-tap cap, with the 63-tap fallback when it fails. */
 static int
 channel_lpf_design_profile_plan(struct demod_state* d, int profile, int rate_out) {
     int taps_len = 0;
@@ -542,6 +536,14 @@ channel_lpf_design_profile_plan(struct demod_state* d, int profile, int rate_out
     return taps_len;
 }
 
+/**
+ * @brief Ensure channel LPF taps are generated for this demodulator state.
+ *
+ * Uses dsd_firdes_low_pass() which is a direct port of GNU Radio's firdes::low_pass().
+ * Keeps absolute cutoffs in Hz constant across sample rates and avoids global
+ * per-block profile dispatch. The plan is cached by (rate_out, profile, width): the analog
+ * family's width-driven design when it has a width, the profile design otherwise.
+ */
 static void
 channel_lpf_ensure_plan(struct demod_state* d) {
     if (!d) {

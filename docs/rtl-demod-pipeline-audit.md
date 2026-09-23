@@ -110,9 +110,15 @@ Enable rule and validation:
   cannot fit 16 kHz, the legacy WIDE design stays in charge instead of failing,
   and frontends see the channel as DSP-limited.
 - An explicit width turns the channel LPF on. With `DSD_NEO_CHANNEL_LPF=0` it
-  is refused.
+  is refused. The unset AM default is held to the same rules as an explicit
+  width (AM itself is refused until the front end can demodulate it).
 - The check that counts runs at stream start once the rate chain is final,
-  including a rate the device forced; a refusal fails the start.
+  including a rate the device forced; a refusal fails the start. A runtime
+  request is checked against the running stream's rate; with no stream running
+  only the kind, range and environment rules apply, and the next start decides.
+- The design uses `rate_out`, which is the complex rate the channel filter runs
+  at only while `post_downsample` is 1. Live sources always run that way; only
+  IQ replay sidecars can set a larger post-demod decimation.
 - Device-forced rates above ~51.4 kHz (for example Airspy at 2.5 MS/s, demod
   rate 78,125 Hz) used to fall back to the 63-tap prototype designed for 24 kHz.
   They now get a real design (219 taps at 78,125 Hz).
@@ -138,12 +144,18 @@ Enable rule and validation:
 analog kind, width) that the demod thread applies between blocks, ahead of any
 demod profile queued with it:
 
-- width-only change: new filter plan from empty histories;
+- width-only change: new filter plan from empty channel and half-band
+  histories, with the output ring, the generation and the monitor audio state
+  left alone (a request for the width already running changes nothing);
 - analog <-> digital: the new family's fresh-open defaults (output kind,
   demodulator, de-emphasis, channel filter, resampler), carrier and timing loops
   restarted as on an open (Costas, band-edge FLL, Gardner TED), a cleared output
   ring and a bumped output generation. The digital symbol profile follows as a
-  demod profile request, and it decides the CQPSK family;
+  demod profile request, and it decides the CQPSK family. The digital resampler
+  (and so the output rate) is decided for that profile, as an open of it would
+  decide it: at a forced rate such as 78,125 Hz CQPSK never resamples and a
+  2400 sym/s profile at 60 kHz needs no resampling, where the analog monitor's
+  4800 sym/s placeholder would have resampled both to 48 kHz;
 - FM <-> AM: demodulator and de-emphasis swap with a monitor-state reset (AM is
   refused until the front end can demodulate it).
 
@@ -189,15 +201,18 @@ scale, and ratio-based audio metrics are invariant to it, so it is left as is.
   the AM refusal; `IO_RTL_RETUNE_PREPARE` covers the analog retune resets, the
   coefficient refresh after a forced rate change, and analog retune profiles;
   `IO_RTL_ANALOG_FAMILY_SWITCH` checks that digital -> analog -> digital ends on
-  a fresh open for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR, loop state included;
-  `IO_RTL_ANALOG_OPEN` opens IQ replays whose demod rate differs from their DSP
-  bandwidth and checks the start-time channel decision and refusal.
+  a fresh open for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR, at unforced rates and at
+  forced 78,125 and 60,000 Hz rates, with loop state, monitor audio state and the
+  channel, half-band and resampler histories included, and covers width-only
+  changes and requests made with no stream running; `IO_RTL_ANALOG_OPEN` opens IQ
+  replays whose demod rate differs from their DSP bandwidth and checks the
+  start-time channel decision and refusal.
 
 Run the focused audit checks with:
 
 ```bash
 ctest --preset dev-debug --output-on-failure \
-  -R '^(IO_RTL_DEMOD_CONFIG|RTL_SYMBOL_PIPELINE|DSP_FSK_MODEM|DSP_DEMOD_MISC|DSP_CHANNEL_FILTERS|IO_RTL_ANALOG_FAMILY_SWITCH|IO_RTL_ANALOG_OPEN)$'
+  -R '^(IO_RTL_DEMOD_CONFIG|RTL_SYMBOL_PIPELINE|DSP_FSK_MODEM|DSP_DEMOD_MISC|DSP_CHANNEL_FILTERS|IO_RTL_ANALOG_FAMILY_SWITCH|IO_RTL_ANALOG_OPEN|RUNTIME_ANALOG_CHANNEL|IO_RTL_RETUNE_PREPARE)$'
 ```
 
 For release readiness, run the full suite:

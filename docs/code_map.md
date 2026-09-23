@@ -255,18 +255,22 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   M17 is outside talkgroup policy (callsign addresses). DMR and P25 Phase 2 MBE capture save in
   `mbe_finalize_slot_left/right()` before `mbe_post_left/right_audio()` recomputes the slot mute flags, so the
   first frame after a mute change (reverse mute included) follows the previous frame's state.
-- API note (analog receive options, `<dsd-neo/core/opts.h>`): `analog_demod` (`dsd_analog_demod`) is written only
-  by the decode presets: the analog preset selects FM and every other preset puts it back to FM.
+- API note (analog receive options, `<dsd-neo/core/opts.h>`): `analog_demod` (`dsd_analog_demod`) is set by the
+  decode presets (and restored with the scan-settings snapshot when a typed row is left); no width, CLI or menu code
+  writes it directly. The analog preset selects FM and every other preset puts it back to FM.
   `analog_nfm_bandwidth_hz`/`analog_am_bandwidth_hz` hold the configured channel widths, where 0 means the kind's
-  default rather than an explicit request (only an explicit width forces the channel filter on). The presets never
-  touch the widths. `dsd_opts_is_analog_family()` names the `-fA` receive family; the M17 encoder shares the analog
+  default rather than an explicit request. An explicit width, or the AM default, forces the channel filter on; only
+  the unset NFM default keeps the historical enable rule (`rtl_demod_analog_requested_width_hz()`). The presets
+  never touch the widths. `dsd_opts_is_analog_family()` names the `-fA` receive family; the M17 encoder shares the analog
   front end but is not part of it. `dsd_opts_analog_width_hz()` returns the explicit width for the active kind.
 - API note (runtime sink changes, `<dsd-neo/core/audio.h>`): `dsd_audio_ensure_analog_output()` and
   `dsd_audio_ensure_digital_output()` open the sink a new receive family writes to (the raw monitor stream; the
   digital voice stream, plus the raw stream for ProVoice and `-8`) with the parameters `openAudioOutput()` uses,
   when the session plays to an unmuted local device and the sink is not open. Idempotent, decoder thread only; a
-  failure is logged once and leaves that family silent. `DSD_APP_CMD_DECODE_MODE_SET` calls them. Test:
-  `CORE_AUDIO_ENSURE_OUTPUT`.
+  failure is logged once and leaves that family silent. `DSD_APP_CMD_DECODE_MODE_SET` and the RadioReference import
+  (both through `decode_mode_apply_value()`) call them, and so does `DSD_APP_CMD_CONFIG_APPLY` when its `[mode]`
+  moves the session between the analog and digital families. Tests: `CORE_AUDIO_ENSURE_OUTPUT`, `APP_COMMAND_QUEUE`,
+  `APP_CONTROL_RR_APPLY`.
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -285,7 +289,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     tap count fits the 288-tap analog capacity; the refusal names the width, the rate, the largest width that rate
     fits and the RTL DSP bandwidths that would fit. It is pure integer arithmetic so callers need not link the DSP;
     `src/dsp/demod_pipeline.cpp` static-asserts its design constants against the ones here. Tests:
-    `RUNTIME_ANALOG_CHANNEL`, `DSP_CHANNEL_FILTERS` (validator and design agree for every width and rate).
+    `RUNTIME_ANALOG_CHANNEL`, `DSP_CHANNEL_FILTERS` (validator and design agree across a width/rate grid; the
+    analog design gates on `dsd_analog_width_realizable()` itself).
   - The RTL metrics hook table (`include/dsd-neo/runtime/rtl_stream_metrics_hooks.h`) also carries the receive-family
     request (`apply_analog_profile`) and the published analog profile (`analog_profile`); the engine installs
     `rtl_stream_request_analog_profile()`/`rtl_stream_get_analog_profile()` behind them.
@@ -400,7 +405,9 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   onto the analog monitor. For a digital mode it requests the digital family before the symbol profile; while the
   front end is still analog it times the decoder with `rtl_stream_output_rate_for_family()`, because the switch lands
   on the demod thread after the command returns and the monitor's resampled rate is not the digital stream's.
-  `DSD_APP_CMD_DECODE_MODE_SET` also opens the new family's sink (`dsd_audio_ensure_*_output()`). Tests:
+  `DSD_APP_CMD_DECODE_MODE_SET` also opens the new family's sink (`dsd_audio_ensure_*_output()`).
+  `DSD_APP_CMD_CONFIG_APPLY` runs the same sink and publish sequence when its `[mode]` moves the session between the
+  analog and digital families (a digital-to-digital `[mode]` change keeps its earlier behaviour). Tests:
   `APP_COMMAND_QUEUE`, `APP_CONTROL_ACTIONS_RTL`.
 - Shared display decisions, so no frontend has to restate one: `include/dsd-neo/app_control/call_view.h` and
   `src/app_control/call_view.c` fold the canonical call state into a per-slot line, and
@@ -479,7 +486,8 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 
 - Receive family: `rtl_stream_request_analog_profile()` (family, analog kind, channel width; validated on the caller's
-  thread, applied on the demod thread ahead of any demod profile queued with it), `rtl_stream_get_analog_profile()`,
+  thread against the running stream's rate, or only for kind and range with no stream running, and applied on the
+  demod thread ahead of any demod profile queued with it), `rtl_stream_get_analog_profile()`,
   `rtl_stream_output_rate_for_family()` (the output rate a pending switch will produce), and
   `rtl_stream_prepare_retune_analog_profile_for_target()` (the same fields bound to a retune target).
 
@@ -547,8 +555,11 @@ Notes:
     the carrier and timing loops (Costas, band-edge FLL, Gardner TED) as an open does, clears the output ring and
     bumps the output generation; a width-only change redesigns the filter from empty histories. The CQPSK family after
     a switch to digital follows the symbol profile requested with it, as for any runtime mode change (a
-    `DSD_NEO_CQPSK` override applies at stream open). Tests: `IO_RTL_ANALOG_FAMILY_SWITCH` (digital → analog →
-    digital equals a fresh open, loop state included, for P25 C4FM/CQPSK, DMR, NXDN48 and dPMR; the baselines run
+    `DSD_NEO_CQPSK` override applies at stream open), and the digital resampler and output rate are decided for that
+    profile when the switch is made (`rtl_demod_enter_digital_family()` takes its CQPSK flag and symbol rate), so a
+    forced rate lands where an open of the profile would. Tests: `IO_RTL_ANALOG_FAMILY_SWITCH` (digital → analog →
+    digital equals a fresh open, loop state, monitor audio state and filter histories included, for P25 C4FM/CQPSK,
+    DMR, NXDN48 and dPMR at unforced and forced rates; width-only changes; requests with no stream; the baselines run
     the same demod configuration functions as `dsd_rtl_stream_open()`), `IO_RTL_ANALOG_OPEN` (the start-time check
     against the rate an IQ replay delivers), plus `IO_RTL_DEMOD_CONFIG` and `IO_RTL_RETUNE_PREPARE`.
   - `output_state::rate` (`<dsd-neo/runtime/ring.h>`) is atomic: the controller and demod threads write it and the
