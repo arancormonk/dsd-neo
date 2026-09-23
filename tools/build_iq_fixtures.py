@@ -142,6 +142,17 @@ DERIVED_SIMULCAST = [
     ("p25p1_cqpsk_cc_simulcast", "p25p1_cqpsk_cc", 3, 0.6, 1.5, 0.7),
 ]
 
+# A committed capture replayed at a lower level (issue #521). The per-row squelch cases need a
+# signal whose post-filter channel power sits well inside the -100..0 dB range --squelch-db
+# accepts, with room for a closed and an open threshold at least 10 dB either side of it; the
+# source fixtures are normalized close to full scale. Quantized without renormalizing, so the
+# attenuation is kept rather than scaled back up; the cu8 step stays far below the signal.
+#
+# name, source fixture, gain dB (relative to the source's own level)
+DERIVED_ATTENUATED = [
+    ("nxdn48_attenuated", "nxdn48", -20.0),
+]
+
 # Receiver noise with the squelch open -- no signal at all, which is what a scanner sits on
 # between transmissions. Protocols whose sync words are short enough for noise to reproduce
 # used to decode this into RANs and voice (issue #398), so it is committed as a reject
@@ -445,6 +456,20 @@ def build_dpmr_synth(out_dir):
     return written
 
 
+def build_attenuated(out_dir):
+    """Write the level-shifted replays of committed fixtures (issue #521)."""
+    total = 0
+    for name, source, gain_db in DERIVED_ATTENUATED:
+        samples = load_cu8_fixture(os.path.join(out_dir, source + ".iq"))
+        # to_cu8(normalize=False) scales by its default headroom; divide it back out so the
+        # written level is the source's own level plus gain_db.
+        scaled = samples * (10.0 ** (gain_db / 20.0)) / 0.9
+        written = write_fixture(out_dir, name, scaled, normalize=False)
+        total += written
+        print(f"{name:28s} derived {written // 1024:6d} KiB")
+    return total
+
+
 def build_derived(out_dir):
     total = 0
     for name, source, delay_samples, amp2, cfo_hz, phase2 in DERIVED_SIMULCAST:
@@ -454,6 +479,7 @@ def build_derived(out_dir):
         written = write_fixture(out_dir, name, impaired)
         total += written
         print(f"{name:28s} derived {written // 1024:6d} KiB")
+    total += build_attenuated(out_dir)
     return total
 
 
@@ -527,7 +553,8 @@ def main():
         total += build_noise(args.out)
         total += build_dpmr_synth(args.out)
     else:
-        for entry in DERIVED_SIMULCAST + [(n,) for n, _, _, _ in DERIVED_NOISE] + [(DPMR_SYNTH_NAME,)]:
+        derived = DERIVED_SIMULCAST + DERIVED_ATTENUATED + [(n,) for n, _, _, _ in DERIVED_NOISE] + [(DPMR_SYNTH_NAME,)]
+        for entry in derived:
             if entry[0] in args.only:
                 raise SystemExit(f"{entry[0]} is a derived fixture; regenerate it with --derived-only")
     print(f"total {total // 1024} KiB in {args.out}")

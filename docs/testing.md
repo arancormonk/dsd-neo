@@ -136,6 +136,15 @@ through the beat fading and frequency-selective ISI seen on real LSM simulcast
 systems. Derived fixtures regenerate offline from the committed sources:
 `python3 tools/build_iq_fixtures.py --derived-only` (no network or ffmpeg).
 
+`nxdn48_attenuated` is `nxdn48` replayed 20 dB down, for the per-row squelch cases
+(`DECODE_IQ_SCAN_NXDN48_SQUELCH_*`, issue #521). The source is normalized near full scale, so
+its channel power leaves no room for a closed threshold inside the `--squelch-db` range; 20 dB
+down, the signal-bearing replay block measures -25.8 dB post-filter and the cases pin
+thresholds at least 10 dB either side of it. The measurement is recorded beside the test
+registration; re-measure it there if the fixture or the channel filter changes. The
+`scan_mode_replay` host installs row zero's options and takes a configured squelch default from
+`DSD_NEO_SCAN_REPLAY_DEFAULT_SQL_DB`, because I/Q replay has no other way to set one.
+
 Fixture provenance and regeneration live in `tools/build_iq_fixtures.py`; see
 `THIRD_PARTY.md` for sample attribution. After regenerating a fixture, re-verify
 its decode margin (the original set still passed with ±45 counts of added

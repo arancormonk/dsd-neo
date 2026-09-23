@@ -10778,6 +10778,69 @@ if(DSD_HAS_RADIO)
             PROPERTIES LABELS iq-decode TIMEOUT 120
         )
     endforeach()
+
+    # Issue #521: a row's --squelch-db gates the demodulator end to end. nxdn48_attenuated is
+    # nxdn48 replayed 20 dB down (tools/build_iq_fixtures.py --derived-only). Measured post-LPF
+    # channel power (demod channel_pwr, fast replay): the leading 0.8 s is digital silence and
+    # the signal-bearing replay block reads -25.8 dB (nxdn48 itself: -5.8 dB). Every threshold
+    # below sits at least 10 dB from that: -10 dB closes the row, -40 dB and off open it. The
+    # host's DSD_NEO_SCAN_REPLAY_DEFAULT_SQL_DB sets the configured default the row overrides
+    # (I/Q replay has no other way to take one), so OPEN and OFF prove the row -- not the
+    # default -- opened the gate, and INHERIT proves a row without the switch keeps the default.
+    function(
+        dsd_neo_add_scan_squelch_test
+        name
+        options
+        default_db
+        expected
+        rejected
+    )
+        set(csv
+            "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_nxdn48_squelch_${name}.csv"
+        )
+        file(
+            WRITE "${csv}"
+            "channel,frequency_hz,mode,options\n1,150000000,nxdn48,${options}\n"
+        )
+        add_test(
+            NAME DECODE_IQ_SCAN_NXDN48_SQUELCH_${name}
+            COMMAND
+                ${CMAKE_COMMAND}
+                -DDSD_BIN=$<TARGET_FILE:dsd-neo_test_scan_mode_replay>
+                "-DMODE=-f1 -C ${csv}"
+                -DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/nxdn48_attenuated.iq.json
+                "-DEXPECTED=${expected}" "-DNOT_EXPECTED=${rejected}" -P
+                ${PROJECT_SOURCE_DIR}/tests/iq_decode_check.cmake
+        )
+        set_tests_properties(
+            DECODE_IQ_SCAN_NXDN48_SQUELCH_${name}
+            PROPERTIES LABELS iq-decode TIMEOUT 120
+        )
+        if(NOT default_db STREQUAL "")
+            set_tests_properties(
+                DECODE_IQ_SCAN_NXDN48_SQUELCH_${name}
+                PROPERTIES
+                    ENVIRONMENT
+                        "DSD_NEO_SCAN_REPLAY_DEFAULT_SQL_DB=${default_db}"
+            )
+        endif()
+    endfunction()
+    dsd_neo_add_scan_squelch_test(
+        CLOSED
+        "--squelch-db -10"
+        ""
+        "squelch -10.0 dB \\(row\\)"
+        "Src=901"
+    )
+    dsd_neo_add_scan_squelch_test(OPEN "--squelch-db -40" -10 "Src=901" "")
+    dsd_neo_add_scan_squelch_test(OFF "--squelch-db 0" -10 "Src=901" "")
+    dsd_neo_add_scan_squelch_test(
+        INHERIT
+        ""
+        -10
+        "squelch -10.0 dB"
+        "Src=901|\\(row\\)"
+    )
 endif()
 
 # The validation facade must exercise the real CSV parser and its cleanup path.
