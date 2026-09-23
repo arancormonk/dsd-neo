@@ -9,6 +9,10 @@
  * fresh digital configuration, the analog leg matches a fresh -fA open, the
  * output ring is cleared and the stream generation bumps at each switch, and a
  * request made while the stream runs waits for the demod thread to consume it.
+ * The session being left has its carrier and timing loops pulled well away from
+ * their start values first, so each switch has to reset them the way an open does.
+ * The fresh baselines run the same demodulator configuration functions as
+ * dsd_rtl_stream_open() (see family_test_seed_open()).
  */
 
 #include <cstdio>
@@ -63,6 +67,11 @@ expect_fields_equal(const char* label, const rtl_stream_test_demod_fields& got,
     FIELD(fsk_symbol_rate_hz);
     FIELD(fsk_levels);
     FIELD(fsk_channel_profile);
+    FIELD(costas_freq_urad);
+    FIELD(costas_phase_urad);
+    FIELD(fll_freq_urad);
+    FIELD(fll_phase_urad);
+    FIELD(ted_awaiting_init);
 #undef FIELD
     return rc;
 }
@@ -96,6 +105,11 @@ expect_analog_fields_equal(const char* label, const rtl_stream_test_demod_fields
     FIELD(resamp_l);
     FIELD(resamp_m);
     FIELD(output_rate);
+    FIELD(costas_freq_urad);
+    FIELD(costas_phase_urad);
+    FIELD(fll_freq_urad);
+    FIELD(fll_phase_urad);
+    FIELD(ted_awaiting_init);
 #undef FIELD
     return rc;
 }

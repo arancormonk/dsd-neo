@@ -206,6 +206,13 @@ typedef struct rtl_stream_test_demod_fields {
     int fsk_symbol_rate_hz;
     int fsk_levels;
     int fsk_channel_profile;
+    /* Carrier and timing loops, in micro-radians: a fresh open starts them from zero, and the Gardner TED waits to
+       initialise from the SPS on its first block. */
+    int costas_freq_urad;
+    int costas_phase_urad;
+    int fll_freq_urad;
+    int fll_phase_urad;
+    int ted_awaiting_init;
 } rtl_stream_test_demod_fields;
 
 /* What svc_publish_symbol_profile() queues for a digital mode after the family request. */
@@ -258,11 +265,16 @@ typedef struct rtl_stream_test_audio_reset_result {
     float deemph_a_after;
     float audio_lpf_alpha_before;
     float audio_lpf_alpha_after;
+    int channel_lpf_width_before;
+    int channel_lpf_width_after;
+    int channel_lpf_enable_after;
+    int published_width_after;
+    int published_lpf_on_after;
 } rtl_stream_test_audio_reset_result;
 
-/* Seed an analog monitor at @p rate_before_hz with stale filter state and run the retune finalize path after the
- * device settled on @p rate_after_hz (75 us de-emphasis, 3 kHz audio LPF). */
-int rtl_stream_test_audio_monitor_retune(int rate_before_hz, int rate_after_hz,
+/* Seed an analog monitor at @p rate_before_hz (NFM width @p nfm_width_hz, 0 = default) with stale filter state and
+ * run the retune finalize path after the device settled on @p rate_after_hz (75 us de-emphasis, 3 kHz audio LPF). */
+int rtl_stream_test_audio_monitor_retune(int rate_before_hz, int rate_after_hz, int nfm_width_hz,
                                          rtl_stream_test_audio_reset_result* out);
 
 typedef struct rtl_stream_test_retune_analog_result {
@@ -277,14 +289,17 @@ typedef struct rtl_stream_test_retune_analog_result {
     int applied_width_hz;
     int applied_output_kind;
     int applied_lpf_enable;
+    int applied_cqpsk_enable;
+    int applied_demod_is_fm;
     int other_target_left_alone;
 } rtl_stream_test_retune_analog_result;
 
 /* Queue an analog profile for @p target_hz on a digital stream, take it the way the controller does, finalize the
  * retune with it, and report what the profile carried and what the demodulator ended on. A second profile bound to a
- * different frequency must not apply. */
+ * different frequency must not apply. With @p with_cqpsk_symbol_profile a P25 CQPSK symbol profile is queued for the
+ * same target first, the combined shape the retune-profile API documents. */
 int rtl_stream_test_retune_analog_profile(uint32_t target_hz, int family, int kind, int width_hz,
-                                          rtl_stream_test_retune_analog_result* out);
+                                          int with_cqpsk_symbol_profile, rtl_stream_test_retune_analog_result* out);
 
 typedef struct rtl_stream_test_replay_state {
     int replay_input_eof;

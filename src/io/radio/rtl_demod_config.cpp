@@ -514,6 +514,7 @@ demod_apply_channel_lpf_defaults(struct demod_state* demod, const dsd_opts* opts
     demod->analog_family = 0;
     demod->analog_demod = DSD_ANALOG_DEMOD_FM;
     demod->channel_lpf_width_hz = 0;
+    demod->analog_width_request_hz = 0;
     if (dsd_opts_is_analog_family(opts)) {
         /* Provisional: rate_out is not final yet. rtl_demod_finalize_analog_channel() settles it. */
         (void)rtl_demod_apply_analog_channel(demod, opts->analog_demod, dsd_opts_analog_width_hz(opts));
@@ -977,8 +978,8 @@ rtl_demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz, cha
     }
     if (kind == DSD_ANALOG_DEMOD_AM) {
         demod_error_text(err, err_size,
-                         "AM reception is not available on the radio front end yet; -fA monitors audio that was "
-                         "already demodulated");
+                         "AM reception is not available on the radio front end yet; the analog monitor demodulates "
+                         "NFM only");
         return -1;
     }
     if (explicit_width_hz <= 0) {
@@ -1014,6 +1015,7 @@ rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int explicit
 
     demod->analog_family = 1;
     demod->analog_demod = analog_kind;
+    demod->analog_width_request_hz = explicit_width_hz > 0 ? explicit_width_hz : 0;
     demod->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
     if (explicit_width_hz > 0) {
         /* An explicit width is a request for that filter: it turns the channel LPF on. */
@@ -1029,6 +1031,23 @@ rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int explicit
             || prev_profile != demod->channel_lpf_profile)
                ? 1
                : 0;
+}
+
+int
+rtl_demod_refresh_analog_channel_for_rate(struct demod_state* demod, char* err, size_t err_size) {
+    demod_error_text(err, err_size, "");
+    if (!demod || !demod->analog_family) {
+        return 0;
+    }
+    const int explicit_width_hz = demod->analog_width_request_hz;
+    int rc = 0;
+    if (explicit_width_hz > 0
+        && dsd_analog_width_check(demod->analog_demod, explicit_width_hz, demod->rate_out, err, err_size) != 0) {
+        /* Kept as requested: never clamped and never swapped for another design. */
+        rc = -1;
+    }
+    (void)rtl_demod_apply_analog_channel(demod, demod->analog_demod, explicit_width_hz);
+    return rc;
 }
 
 int
@@ -1164,11 +1183,42 @@ rtl_demod_reset_resampler_state(struct demod_state* demod) {
     }
 }
 
+/* A fresh open starts the carrier and timing loops from nothing: Costas and the band-edge FLL at zero frequency and
+ * phase with empty delay lines, the Gardner TED uninitialised (it seeds itself from the SPS on its first block), and
+ * the CQPSK differential and AGC state at their open values. A family switch carries none of the old session's
+ * loop state over. */
+static void
+demod_family_switch_reset_loops(struct demod_state* demod) {
+    ted_init_state(&demod->ted_state);
+    demod->ted_mu = 0.0f;
+    dsd_costas_loop_state_t* cl = &demod->costas_state;
+    cl->phase = 0.0f;
+    cl->freq = 0.0f;
+    cl->error = 0.0f;
+    cl->error_smooth = 0.0f;
+    cl->initialized = 0;
+    demod->costas_err_avg_q14 = 0;
+    demod->costas_err_raw_avg_q14 = 0;
+    demod->costas_conf_avg_q14 = 0;
+    demod->costas_zero_conf_pct = 0;
+    demod->costas_reset_pending = 0;
+    dsd_fll_band_edge_state_t* fll = &demod->fll_band_edge_state;
+    fll->freq = 0.0f;
+    fll->phase = 0.0f;
+    fll->delay_idx = 0;
+    DSD_MEMSET(fll->delay_r, 0, sizeof(fll->delay_r));
+    DSD_MEMSET(fll->delay_i, 0, sizeof(fll->delay_i));
+    demod->cqpsk_diff_prev_r = 1.0f;
+    demod->cqpsk_diff_prev_j = 0.0f;
+    demod->cqpsk_agc_avg = 1.0f;
+}
+
 static void
 demod_family_switch_reset(struct demod_state* demod) {
     rtl_demod_reset_audio_monitor_state(demod);
     rtl_demod_clear_filter_histories(demod);
     rtl_demod_reset_resampler_state(demod);
+    demod_family_switch_reset_loops(demod);
     /* Force a fresh channel-filter plan for the new family. */
     demod->channel_lpf_plan_taps_len = 0;
     demod->channel_lpf_plan_width_hz = 0;
@@ -1221,6 +1271,7 @@ rtl_demod_enter_digital_family(struct demod_state* demod, struct output_state* o
     demod->analog_family = 0;
     demod->analog_demod = DSD_ANALOG_DEMOD_FM;
     demod->channel_lpf_width_hz = 0;
+    demod->analog_width_request_hz = 0;
     demod->cqpsk_enable = 0;
     demod->output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     demod->ted_enabled = 0;

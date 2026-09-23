@@ -248,6 +248,46 @@ test_unrealizable_width(demod_state* s) {
     return 0;
 }
 
+/* CQPSK toggled on under -fA keeps the analog family flag but no longer produces monitor audio, so its channel filter
+ * is the P25 CQPSK profile design, not the analog width. */
+static int
+test_cqpsk_under_analog_family_keeps_profile(demod_state* s) {
+    static float profile[DSD_CHANNEL_LPF_MAX_TAPS];
+    static float toggled[DSD_CHANNEL_LPF_MAX_TAPS];
+    int profile_len = 0;
+    design_plan(s, 48000, DSD_CH_LPF_PROFILE_P25_CQPSK, 0, profile, &profile_len);
+
+    DSD_MEMSET(s, 0, sizeof(*s));
+    s->rate_in = 48000;
+    s->rate_out = 48000;
+    s->mode_demod = &raw_demod;
+    s->lowpassed = s->input_cb_buf;
+    s->lp_len = 1024;
+    s->channel_lpf_enable = 1;
+    s->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
+    s->analog_family = 1;
+    s->channel_lpf_width_hz = 12500;
+    s->cqpsk_enable = 1;
+    s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
+    if (dsd_demod_analog_monitor_active(s)) {
+        DSD_FPRINTF(stderr, "CQPSK output reported as the analog monitor\n");
+        return 1;
+    }
+    /* Squelched: the block designs its channel plan, then emits zero symbols without running the CQPSK loops. */
+    s->channel_squelch_level.store(1.0f);
+    full_demod(s);
+    const int toggled_len = s->channel_lpf_plan_taps_len;
+    DSD_MEMCPY(toggled, s->channel_lpf_plan_taps, (size_t)(toggled_len > 0 ? toggled_len : 0) * sizeof(float));
+    if (profile_len <= 0 || toggled_len != profile_len
+        || std::memcmp(profile, toggled, (size_t)profile_len * sizeof(float)) != 0
+        || s->channel_lpf_plan_width_hz != 0) {
+        DSD_FPRINTF(stderr, "CQPSK under the analog family designed %d taps (width %d), want the %d-tap profile\n",
+                    toggled_len, s->channel_lpf_plan_width_hz, profile_len);
+        return 1;
+    }
+    return 0;
+}
+
 /* The runtime validator mirrors the DSP design constants. */
 static int
 test_runtime_mirror(void) {
@@ -293,6 +333,7 @@ main(void) {
     rc |= test_width_response();
     rc |= test_forced_rate_capacity(s);
     rc |= test_unrealizable_width(s);
+    rc |= test_cqpsk_under_analog_family_keeps_profile(s);
     rc |= test_runtime_mirror();
     std::free(s);
     return rc;

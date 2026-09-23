@@ -108,6 +108,16 @@ int rtl_demod_check_analog_channel(int kind, int explicit_width_hz, int rate_hz,
 int rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int explicit_width_hz);
 
 /**
+ * Resolve the analog channel again after rate_out changed under a running stream (a retune the device settled on
+ * another rate). The unset default moves between the default width and the legacy WIDE design as the new rate
+ * allows. An explicit width stays as requested even when the new rate cannot realize it: the channel then has no
+ * width-driven plan and runs DSP-limited. No-op outside the analog family.
+ *
+ * @return 0, or -1 with the validator's text in @p err when the explicit width no longer fits the rate.
+ */
+int rtl_demod_refresh_analog_channel_for_rate(struct demod_state* demod, char* err, size_t err_size);
+
+/**
  * Validate and apply the analog channel @p opts ask for once rate_out is final (stream start). No-op outside the
  * analog family (including the M17 encoder).
  *

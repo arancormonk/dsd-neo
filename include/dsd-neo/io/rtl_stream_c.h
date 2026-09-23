@@ -292,7 +292,8 @@ int rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf
  * @param family         dsd_rx_family.
  * @param cqpsk_enable   Non-zero for the CQPSK symbol output (digital family only).
  * @param symbol_rate_hz Digital symbol rate, which decides the digital resampling policy.
- * @return Predicted output rate in Hz, or 0 before any stream has published a rate.
+ * @return Predicted output rate in Hz, derived from the last published demod rate (48000 until a stream has opened
+ *         and published its own), or 0 when that rate is not positive.
  */
 unsigned int rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
 
@@ -328,7 +329,7 @@ void rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t target_freq
 
 /** @brief Receive family, analog demodulator and channel width to apply at a retune. */
 typedef struct rtl_stream_retune_analog_profile {
-    int family;   /**< dsd_rx_family to switch to; negative leaves the family unchanged. */
+    int family;   /**< dsd_rx_family to switch to: DSD_RX_FAMILY_DIGITAL or DSD_RX_FAMILY_ANALOG. */
     int kind;     /**< dsd_analog_demod (analog family only). */
     int width_hz; /**< Explicit analog channel width in Hz; 0 selects the kind's default. */
 } rtl_stream_retune_analog_profile;
@@ -339,7 +340,8 @@ typedef struct rtl_stream_retune_analog_profile {
  * Applied at the same retune boundary as the symbol profile and before it. Queue any symbol profile for the target
  * first (rtl_stream_prepare_retune_profile_for_target_with_gain() replaces the whole queued profile); with none
  * queued for this target, an analog-only profile is queued that leaves the CQPSK family, symbol profile and timing
- * alone.
+ * alone. A DSD_RX_FAMILY_DIGITAL switch then applies the queued symbol profile; a DSD_RX_FAMILY_ANALOG switch
+ * applies none of it (the analog family has no symbol clock), only the gain profile.
  *
  * @return 0 when attached; -1 when refused (same rules as rtl_stream_request_analog_profile()).
  */

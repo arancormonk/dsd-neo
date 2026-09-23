@@ -18,7 +18,9 @@
 #include <dsd-neo/platform/threading.h>
 
 struct output_state {
-    int rate = 0;
+    /* Sample rate of the ring's contents. Written by the controller and demod threads (rate-chain finalize, family
+       switch) and read by the decoder and UI threads through dsd_rtl_stream_output_rate(). */
+    std::atomic<int> rate{0};
     float* buffer = nullptr;
     size_t capacity = 0;
     std::atomic<size_t> head{0U};

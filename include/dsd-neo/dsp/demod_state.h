@@ -184,6 +184,10 @@ struct demod_state {
     /* Full RF channel width in Hz the analog filter protects (cutoff W/2 + 600 Hz, 1200 Hz transition).
        0 keeps the profile design, including the legacy WIDE design for an unset default the rate cannot fit. */
     int channel_lpf_width_hz;
+    /* The explicit analog width the stream was asked for (0 = the kind's default), kept so a later rate change can
+       resolve the channel again: the unset default between 16 kHz and the legacy WIDE design, and an explicit
+       width against the new rate. */
+    int analog_width_request_hz;
     float channel_pwr; /* mean power (RMS^2 proxy) measured after channel LPF */
     /* Squelch threshold (linear power); 0 = disabled. Written from the control thread
      * (config apply, menus) while the demod thread reads it per block. */
@@ -285,5 +289,15 @@ struct demod_state {
 };
 
 // NOLINTEND(clang-analyzer-optin.performance.Padding)
+
+/*
+ * Whether the analog family's monitor audio is what the demodulator produces. The width-driven channel filter and
+ * the published analog profile describe that path only: a CQPSK toggle under -fA moves the output to symbols without
+ * leaving the family, and that output keeps its profile filter.
+ */
+static inline int
+dsd_demod_analog_monitor_active(const struct demod_state* d) {
+    return (d && d->analog_family && d->output_kind == DSD_DEMOD_OUTPUT_AUDIO_MONITOR && !d->cqpsk_enable) ? 1 : 0;
+}
 
 #endif /* DSD_NEO_INCLUDE_DSD_NEO_DSP_DEMOD_STATE_H_ */

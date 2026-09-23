@@ -294,7 +294,7 @@ expect_output_kind(const char* label, const dsd_opts& opts, int want_kind, int w
 
     rtl_demod_maybe_update_resampler_after_rate_change(demod, &output, 48000);
     if ((is_fsk_output_kind(want_kind) || want_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) && output.rate != 48000U) {
-        DSD_FPRINTF(stderr, "%s: symbol output changed public output rate to %u\n", label, output.rate);
+        DSD_FPRINTF(stderr, "%s: symbol output changed public output rate to %u\n", label, output.rate.load());
         rc = 1;
     }
 
@@ -388,7 +388,7 @@ expect_configured_mode(const char* label, const dsd_opts& opts, int rtl_dsp_bw_h
         rc = 1;
     }
     if ((is_fsk_output_kind(want_kind) || want_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) && output.rate != rtl_dsp_bw_hz) {
-        DSD_FPRINTF(stderr, "%s: symbol output changed public output rate to %u\n", label, output.rate);
+        DSD_FPRINTF(stderr, "%s: symbol output changed public output rate to %u\n", label, output.rate.load());
         rc = 1;
     }
 
