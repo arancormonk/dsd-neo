@@ -5170,16 +5170,42 @@ target_compile_definitions(
     dsd-neo_test_engine_channel_scan_squelch_gate
     PRIVATE DSD_NEO_TEST_HOOKS
 )
-target_link_libraries(
-    dsd-neo_test_engine_channel_scan_squelch_gate
-    PRIVATE
-        dsd-neo_app_control
-        dsd-neo_engine
-        dsd-neo_dsp
-        dsd-neo_io_control
-        ${LIBS}
-        dsd-neo_test_support
-)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    # Stubbing the engine's tune and reset keeps engine.c out of the early link, so the
+    # librtlsdr and Codec2 references only arrive with the radio and core archives. Group
+    # every static provider ahead of ${LIBS}: linkers that default to --as-needed
+    # (Debian/Ubuntu) otherwise drop those libraries before anything references them.
+    target_link_libraries(
+        dsd-neo_test_engine_channel_scan_squelch_gate
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_app_control
+            dsd-neo_engine
+            dsd-neo_dispatch
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    # Link with --as-needed everywhere so a local Linux build catches an ordering regression.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(
+            dsd-neo_test_engine_channel_scan_squelch_gate
+            PRIVATE "LINKER:--as-needed"
+        )
+    endif()
+else()
+    target_link_libraries(
+        dsd-neo_test_engine_channel_scan_squelch_gate
+        PRIVATE
+            dsd-neo_app_control
+            dsd-neo_engine
+            dsd-neo_dsp
+            dsd-neo_io_control
+            ${LIBS}
+            dsd-neo_test_support
+    )
+endif()
 add_test(
     NAME ENGINE_CHANNEL_SCAN_SQUELCH_GATE
     COMMAND dsd-neo_test_engine_channel_scan_squelch_gate
