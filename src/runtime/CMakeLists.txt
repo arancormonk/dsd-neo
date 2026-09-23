@@ -5,6 +5,7 @@ target_sources(
     dsd-neo_runtime
     PRIVATE
         state_ext.c
+        analog_channel.c
         config.cpp
         config_user.cpp
         config_user_loader.cpp

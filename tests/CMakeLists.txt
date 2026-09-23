@@ -324,6 +324,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_analog_channel
+  HEADERS_PUBLIC_RUNTIME_ANALOG_CHANNEL
+  dsd-neo/runtime/analog_channel.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_analog_channel_cxx
+  HEADERS_PUBLIC_RUNTIME_ANALOG_CHANNEL_CXX
+  dsd-neo/runtime/analog_channel.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_bootstrap
   HEADERS_PUBLIC_RUNTIME_BOOTSTRAP
   dsd-neo/runtime/bootstrap.h
@@ -5286,6 +5298,23 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_runtime_decode_mode PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_DECODE_MODE COMMAND dsd-neo_test_runtime_decode_mode)
+
+add_executable(
+    dsd-neo_test_runtime_analog_channel
+    runtime/test_runtime_analog_channel.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_analog_channel
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_analog_channel
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_ANALOG_CHANNEL
+    COMMAND dsd-neo_test_runtime_analog_channel
+)
 
 add_executable(
     dsd-neo_test_runtime_config_env
