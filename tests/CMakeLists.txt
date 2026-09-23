@@ -5154,6 +5154,37 @@ add_test(
     COMMAND dsd-neo_test_engine_scan_squelch_gate
 )
 
+# The same gate through the conventional -Y scanner's rows (issue #521). Only the tune and the
+# engine's no-carrier reset are stubbed; the scanner and the frame-sync power gate are real.
+add_executable(
+    dsd-neo_test_engine_channel_scan_squelch_gate
+    engine/test_engine_channel_scan_squelch_gate.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
+    ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+)
+target_include_directories(
+    dsd-neo_test_engine_channel_scan_squelch_gate
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_compile_definitions(
+    dsd-neo_test_engine_channel_scan_squelch_gate
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_engine_channel_scan_squelch_gate
+    PRIVATE
+        dsd-neo_app_control
+        dsd-neo_engine
+        dsd-neo_dsp
+        dsd-neo_io_control
+        ${LIBS}
+        dsd-neo_test_support
+)
+add_test(
+    NAME ENGINE_CHANNEL_SCAN_SQUELCH_GATE
+    COMMAND dsd-neo_test_engine_channel_scan_squelch_gate
+)
+
 add_executable(
     dsd-neo_test_engine_scan_voice_gate
     test_support/scan_group_stubs.c
