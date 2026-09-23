@@ -145,25 +145,27 @@ test_width_response(void) {
             DSD_FPRINTF(stderr, "width %d did not design at 48 kHz\n", w);
             return 1;
         }
-        const double half = (double)w * 0.5;
-        for (double f = 0.0; f <= half; f += 25.0) {
-            const double db = tap_response_db(taps, len, rate, f);
+        /* Every width here is even, so W/2 is a whole number of Hz and the 25 Hz grid lands on it exactly. */
+        const int half_hz = w / 2;
+        const int nyquist_hz = (int)rate / 2;
+        for (int f_hz = 0; f_hz <= half_hz; f_hz += 25) {
+            const double db = tap_response_db(taps, len, rate, (double)f_hz);
             if (db < -1.0) {
-                DSD_FPRINTF(stderr, "width %d passband %.0f Hz at %.2f dB (< -1 dB)\n", w, f, db);
+                DSD_FPRINTF(stderr, "width %d passband %d Hz at %.2f dB (< -1 dB)\n", w, f_hz, db);
                 return 1;
             }
         }
-        for (double f = half + 1200.0; f <= rate * 0.5; f += 25.0) {
-            const double db = tap_response_db(taps, len, rate, f);
+        for (int f_hz = half_hz + 1200; f_hz <= nyquist_hz; f_hz += 25) {
+            const double db = tap_response_db(taps, len, rate, (double)f_hz);
             if (db > -29.0) {
-                DSD_FPRINTF(stderr, "width %d skirt %.0f Hz at %.2f dB (> -29 dB)\n", w, f, db);
+                DSD_FPRINTF(stderr, "width %d skirt %d Hz at %.2f dB (> -29 dB)\n", w, f_hz, db);
                 return 1;
             }
         }
-        for (double f = half + 1500.0; f <= rate * 0.5; f += 25.0) {
-            const double db = tap_response_db(taps, len, rate, f);
+        for (int f_hz = half_hz + 1500; f_hz <= nyquist_hz; f_hz += 25) {
+            const double db = tap_response_db(taps, len, rate, (double)f_hz);
             if (db > -50.0) {
-                DSD_FPRINTF(stderr, "width %d stopband %.0f Hz at %.2f dB (> -50 dB)\n", w, f, db);
+                DSD_FPRINTF(stderr, "width %d stopband %d Hz at %.2f dB (> -50 dB)\n", w, f_hz, db);
                 return 1;
             }
         }

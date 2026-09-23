@@ -12,13 +12,11 @@
  */
 
 #include <cstdio>
-#include <cstring>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
-#include <stdint.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
 
@@ -102,11 +100,15 @@ expect_analog_fields_equal(const char* label, const rtl_stream_test_demod_fields
     return rc;
 }
 
+namespace {
+
 struct family_case {
     const char* name;
     void (*configure)(dsd_opts*);
     rtl_stream_test_digital_request request;
 };
+
+} // namespace
 
 static void
 p25_c4fm(dsd_opts* o) {
