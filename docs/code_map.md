@@ -222,9 +222,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issue #522) is the
   received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `dcs_code` and `dcs_inverted` reserved for #523, `gate` reserved for #527 and always OFF, and a
-  `generation` bumped by every reset). It rides the `vertex_ks_count..ui_msg` snapshot range beside `scan_timing`,
-  pinned by a `_Static_assert` in `ui_snapshot.c`; no float, so the semgrep float-field list is unchanged. Only the
-  DSP tap writes it.
+  `generation` bumped by every reset, input switch and input-rate change). It rides the `vertex_ks_count..ui_msg`
+  snapshot range beside `scan_timing`, pinned by a `_Static_assert` in `ui_snapshot.c`; no float, so the semgrep
+  float-field list is unchanged. Only the DSP tap writes it. `tone_state` INACTIVE means nothing has been processed
+  since the last reset, or detection is not running; it is not the "detection off" signal. Whether detection runs is
+  `dsd_analog_tone_detection_active()` (runtime), which frontends and receive policy ask instead. UNAVAILABLE means
+  detection is on but the input rate is one the front end cannot use.
 - API note: source ID aliases live in the opaque store declared by `<dsd-neo/core/source_alias.h>` and
   implemented in `src/core/util/source_alias.c`, attached to state extension slot 8
   (`DSD_STATE_EXT_CORE_SOURCE_ALIAS`). `dsd_source_alias_store_create()`/`dsd_source_alias_store_append()` build
@@ -475,8 +478,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
   has the scope suspended. Test: `APP_CONTROL_SQUELCH_VIEW`.
   `include/dsd-neo/app_control/rx_tone_view.h` and `src/app_control/rx_tone_view.c` fold `dsd_state::analog_rx` into
   the received-tone text (issue #522): hidden unless `dsd_analog_tone_detection_active()` says the tap listens
-  (decided from the options and the RTL output kind, not from the publication, so a reset does not blink the row),
-  then `CTCSS 100.0 Hz`, `detecting`, `none` or an em dash (the terminal prints a hyphen without UTF-8). A locked
+  (decided from the options and the RTL output kind, not from INACTIVE in the publication, so a reset does not blink
+  the row) and hidden while the publication reads UNAVAILABLE (an input rate the front end cannot use, where an em
+  dash would claim no carrier), then `CTCSS 100.0 Hz`, `detecting`, `none` or an em dash (the terminal prints a
+  hyphen without UTF-8). A locked
   value this build cannot name (an unsupported frequency, DCS until #523) reads `detecting`, never a value. The same
   view carries `configured_text`, the configured tone policy, which reads `off` until #527 and is never derived from
   the received tone. Tests: `APP_CONTROL_RX_TONE_VIEW`, the terminal goldens, `UI_QT_METRICS_MODEL`.
@@ -521,7 +526,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     mean square, and each detector's thresholds are ratios against the energy it sees. Reports merge in table order: the
     first LOCKED report names the tone; otherwise the verdict is ACQUIRING while any detector still is, and NONE once
     all have said so. The front end accepts 2400 Hz up to `DSD_ANALOG_RX_MAX_RATE_HZ` (320 kHz, below the ~333 kHz its
-    tap budget can design) and logs which side of that range an unusable rate is on. It also holds the decoder-thread
+    tap budget can design), logs which side of that range an unusable rate is on and publishes UNAVAILABLE there
+    (after a reset, from the next block on). The core, not a
+    detector, owns the absolute floor and the carrier test; `process(band, wide, count, freeze)` is the whole
+    interface a detector gets. It also holds the decoder-thread
     glue: the working state in `DSD_STATE_EXT_DSP_ANALOG_RX` (slot 9, heap, never deep-copied), the publication
     `dsd_state::analog_rx`, and the `Received tone:` LOG_INFO line on each change of verdict (a new reception logs again
     after the carrier drops).
@@ -537,7 +545,10 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     once on a reverse burst (a >100 degree phase jump between strong sub-blocks). The two frequency gates are
     hysteresis: at 0 dB the estimate scatters by about 0.19 Hz, so an off-table tone 1.1 Hz from a neighbour reaches
     the 0.8 Hz gate on several percent of hops but the 0.5 Hz one almost never, and the per-hop check drops a lock the
-    tone has moved away from. A carrier with no lock after 500 ms of evaluation reads `NONE`, on the first hop after
+    tone has moved away from. The price of the tighter acquisition gate is tolerance of transmitter encoder error:
+    `DSP_ANALOG_CTCSS` pins tones 0.2 and 0.35 Hz off their table value locking within 400 ms at +10 dB, and 0.2 Hz
+    off at 0 dB within 400 ms on at least 95% of starts (all within 600 ms). From about 0.5 Hz off a tone locks late
+    or not at all. A carrier with no lock after 500 ms of evaluation reads `NONE`, on the first hop after
     it however the input is blocked (carrier time is counted per sample), and a tone that starts later still locks.
     Every threshold is a ratio, so the RTL live (~1/pi), replay and int16 PCM scales read the same.
   - Invariant: resets never happen in `noCarrier()` / `dsd_engine_reset_no_carrier_state()` (they run every ~375 ms in
@@ -545,9 +556,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
     leave, trunk-scan target switch, decode-mode change, scope resume, RR apply), on an RTL stream-generation or
     `dsd_trunk_tuning_generation()` move seen by the tap (the block is discarded), at the legacy untyped `-Y` step
     (also when the step failed after its rigctl leg moved the radio) and at engine stop (`engine.c`), on accepted
-    `RTL_SET_FREQ` / `MANUAL_TUNE` commands and on every input switch (`ui_input_switched()` and the config apply's
-    input comparison in `app_command_queue.c`), and after the carrier hangover. Every reset bumps
-    `analog_rx.generation`.
+    `RTL_SET_FREQ` / `MANUAL_TUNE` commands, on every tune `request_manual_tune()` accepts (manual channel cycle and
+    scan avoid on an untyped list, candidate cycle, return-to-CC, lockout and skip: `io_control_set_freq()` moves a
+    rigctl radio without advancing the trunk-tuning generation), on every input switch (`ui_input_switched()`,
+    stop-playback even when the Pulse open fails, and the config apply's input comparison in
+    `app_command_queue.c`), when the symbol path falls back to Pulse at the end of a WAV file or after a lost TCP
+    connection (`symbol_open_pulse_input_and_reconfigure_output()` in `dsd_symbol.c`), and after the carrier
+    hangover. Every reset bumps `analog_rx.generation`.
 - `dsd_filters.c` owns the per-protocol matched filters, selected by kind rather than by calling one of four
   wrappers, because the symbol grid has to know when the stream it samples changes identity. It reads the raw
   discriminator until a sync names a protocol and the filter's output afterwards, and that output describes the
