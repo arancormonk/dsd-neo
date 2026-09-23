@@ -37,6 +37,7 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -4391,6 +4392,170 @@ test_squelch_edit_keeps_live_acquisition(void) {
 }
 #endif
 
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP)
+/* The RTL receive-family requests and sink helpers a decode-mode change makes, recorded instead of run. */
+static int g_rx_sequence;
+static int g_analog_req_calls;
+static int g_analog_req_family;
+static int g_analog_req_kind;
+static int g_analog_req_width_hz;
+static int g_analog_req_order;
+static int g_demod_req_calls;
+static int g_demod_req_order;
+static int g_demod_req_rate;
+static int g_demod_req_ted_sps;
+static int g_ensure_analog_calls;
+static int g_ensure_digital_calls;
+static int g_fake_analog_active;
+static unsigned int g_fake_digital_rate;
+
+// GNU ld --wrap entry points must keep the reserved __wrap_* symbol name.
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+int __wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz);
+int __wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                            int ted_sps, int ted_sps_is_override);
+int __wrap_rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on);
+unsigned int __wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz);
+int __wrap_dsd_audio_ensure_analog_output(dsd_opts* opts);
+int __wrap_dsd_audio_ensure_digital_output(dsd_opts* opts);
+
+int
+__wrap_rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
+    g_analog_req_calls++;
+    g_analog_req_family = family;
+    g_analog_req_kind = kind;
+    g_analog_req_width_hz = width_hz;
+    g_analog_req_order = ++g_rx_sequence;
+    return 0;
+}
+
+int
+__wrap_rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                        int ted_sps, int ted_sps_is_override) {
+    (void)cqpsk_enable;
+    (void)levels;
+    (void)channel_profile;
+    (void)ted_sps_is_override;
+    g_demod_req_calls++;
+    g_demod_req_rate = symbol_rate_hz;
+    g_demod_req_ted_sps = ted_sps;
+    g_demod_req_order = ++g_rx_sequence;
+    return 0;
+}
+
+int
+__wrap_rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    if (out_kind) {
+        *out_kind = 0;
+    }
+    if (out_width_hz) {
+        *out_width_hz = g_fake_analog_active ? 16000 : 0;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = g_fake_analog_active;
+    }
+    return g_fake_analog_active;
+}
+
+unsigned int
+__wrap_rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+    (void)family;
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    return g_fake_digital_rate;
+}
+
+int
+__wrap_dsd_audio_ensure_analog_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_analog_calls++;
+    return 0;
+}
+
+int
+__wrap_dsd_audio_ensure_digital_output(dsd_opts* opts) {
+    (void)opts;
+    g_ensure_digital_calls++;
+    return 0;
+}
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+
+static void
+reset_rx_family_wrap(void) {
+    g_rx_sequence = 0;
+    g_analog_req_calls = g_analog_req_family = g_analog_req_kind = g_analog_req_width_hz = g_analog_req_order = 0;
+    g_demod_req_calls = g_demod_req_order = g_demod_req_rate = g_demod_req_ted_sps = 0;
+    g_ensure_analog_calls = g_ensure_digital_calls = 0;
+}
+
+/*
+ * DECODE_MODE_SET Analog on a live digital RTL session has to move the front end
+ * onto the analog family (it used to publish nothing for analog, leaving the RTL
+ * stream on the old digital demodulator) and open the monitor's raw sink. Going
+ * back to a digital mode asks for the digital family before its symbol profile,
+ * and times the decoder for the rate the digital stream will run at -- not the
+ * analog monitor's resampled rate it is still reading when the command runs.
+ */
+static int
+test_decode_mode_set_switches_rtl_receive_family(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    int rc = 0;
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    rc |= expect_int("dmr start queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("dmr start drained", dsd_app_drain_cmds(&opts, &state), 1);
+
+    reset_rx_family_wrap();
+    rc |= expect_int("analog queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("analog drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("analog preset applied", opts.analog_only, 1);
+    rc |= expect_int("analog profile published", g_analog_req_calls, 1);
+    rc |= expect_int("analog family requested", g_analog_req_family, DSD_RX_FAMILY_ANALOG);
+    rc |= expect_int("FM requested", g_analog_req_kind, DSD_ANALOG_DEMOD_FM);
+    rc |= expect_int("default width travels as 0", g_analog_req_width_hz, 0);
+    rc |= expect_int("no symbol profile for analog", g_demod_req_calls, 0);
+    rc |= expect_int("raw sink ensured", g_ensure_analog_calls, 1);
+    rc |= expect_int("digital sink not asked for", g_ensure_digital_calls, 0);
+
+    /* Back to DMR while the front end still runs the analog monitor at a 24 kHz DSP rate. */
+    reset_rx_family_wrap();
+    g_fake_analog_active = 1;
+    g_fake_digital_rate = 24000U;
+    rc |= expect_int("dmr queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("dmr drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("family request made", g_analog_req_calls, 1);
+    rc |= expect_int("digital family requested", g_analog_req_family, DSD_RX_FAMILY_DIGITAL);
+    rc |= expect_int("symbol profile follows", g_demod_req_calls, 1);
+    rc |= expect_int("family before profile", g_analog_req_order < g_demod_req_order, 1);
+    rc |= expect_int("decoder timed for the digital rate", state.samplesPerSymbol, 5);
+    rc |= expect_int("front end timed for the digital rate", g_demod_req_ted_sps, 5);
+    rc |= expect_int("digital sink ensured", g_ensure_digital_calls, 1);
+    rc |= expect_int("raw sink not asked for", g_ensure_analog_calls, 0);
+
+    /* A configured width travels with the next analog request. */
+    reset_rx_family_wrap();
+    g_fake_analog_active = 0;
+    opts.analog_nfm_bandwidth_hz = 12500;
+    rc |= expect_int("analog again queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("analog again drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("configured width requested", g_analog_req_width_hz, 12500);
+
+    g_fake_digital_rate = 0U;
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+#endif
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 static int g_dmr_policy_returns;
 
@@ -4538,6 +4703,9 @@ main(void) {
     rc |= test_config_rtl_restart_under_policy_guard();
     rc |= test_squelch_commands_edit_the_configured_default();
     rc |= test_squelch_edit_keeps_live_acquisition();
+#endif
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_ANALOG_WRAP)
+    rc |= test_decode_mode_set_switches_rtl_receive_family();
 #endif
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_dmr_policy_command_ticks_owner(DSD_APP_CMD_LOCKOUT_SLOT);

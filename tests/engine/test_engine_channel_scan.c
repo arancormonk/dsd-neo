@@ -22,6 +22,7 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_tuning.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
@@ -503,9 +504,110 @@ test_row_squelch_warns_once_per_row_on_pcm_input(void) {
     tunes = reset_count = 0;
 }
 
+/* ---- #518 analog receive core: the leave path restores the configured receive family ---- */
+
+static int frontend_sequence;
+static int analog_restore_calls;
+static int analog_restore_family;
+static int analog_restore_kind;
+static int analog_restore_width_hz;
+static int analog_restore_order;
+static int digital_restore_calls;
+static int digital_restore_order;
+
+static int
+record_analog_restore(int family, int kind, int width_hz) {
+    analog_restore_calls++;
+    analog_restore_family = family;
+    analog_restore_kind = kind;
+    analog_restore_width_hz = width_hz;
+    analog_restore_order = ++frontend_sequence;
+    return 0;
+}
+
+static int
+record_digital_restore(int cqpsk, int rate, int levels, int filter, int sps) {
+    (void)cqpsk;
+    (void)rate;
+    (void)levels;
+    (void)filter;
+    (void)sps;
+    digital_restore_calls++;
+    digital_restore_order = ++frontend_sequence;
+    return 0;
+}
+
+static void
+reset_frontend_records(void) {
+    frontend_sequence = 0;
+    analog_restore_calls = analog_restore_family = analog_restore_kind = analog_restore_width_hz = 0;
+    analog_restore_order = digital_restore_calls = digital_restore_order = 0;
+}
+
+/*
+ * Leaving a typed row under -fA puts the front end back on the configured analog
+ * profile -- family, demodulator and channel width -- rather than a hard-coded
+ * WIDE digital profile that leaves the RTL stream on the row's digital family.
+ * A digital session gets the digital family first, then its symbol profile.
+ */
+static void
+test_leave_restores_configured_receive_family(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->samplesPerSymbol = 10;
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    opts->analog_nfm_bandwidth_hz = 12500;
+    const dsd_rtl_stream_metrics_hooks hooks = {.apply_demod_profile = record_digital_restore,
+                                                .apply_analog_profile = record_analog_restore};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    reset_frontend_records();
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    assert(opts->analog_only == 0 && opts->frame_dmr == 1);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(opts->analog_only == 1 && dsd_opts_is_analog_family(opts));
+    assert(analog_restore_calls == 1);
+    assert(analog_restore_family == DSD_RX_FAMILY_ANALOG);
+    assert(analog_restore_kind == DSD_ANALOG_DEMOD_FM);
+    assert(analog_restore_width_hz == 12500);
+    assert(digital_restore_calls == 0);
+
+    /* The unset default travels as 0, never as a resolved 16 kHz. */
+    opts->analog_nfm_bandwidth_hz = 0;
+    reset_frontend_records();
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 1 && analog_restore_width_hz == 0);
+
+    /* A digital session: digital family first, then the symbol profile it runs on. */
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    reset_frontend_records();
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NXDN48) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 1 && analog_restore_family == DSD_RX_FAMILY_DIGITAL);
+    assert(digital_restore_calls == 1 && analog_restore_order < digital_restore_order);
+
+    /* Off RTL nothing is asked of the front end. */
+    opts->audio_in_type = AUDIO_IN_WAV;
+    reset_frontend_records();
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25) == 0);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(analog_restore_calls == 0 && digital_restore_calls == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
+    test_leave_restores_configured_receive_family();
     test_option_commit_boundary();
     test_option_only_rows_and_policy_edits();
     test_row_max_visit_override_and_inherit();

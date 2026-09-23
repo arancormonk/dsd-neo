@@ -20,6 +20,7 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_tuning.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -320,6 +321,28 @@ dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* Put the RTL front end back on the configured receive family. Under -fA that is the configured analog profile
+ * (demodulator and channel width, 0 meaning the default); otherwise the digital family and the symbol profile the
+ * restored decoder runs on, in that order, so the demod thread switches family before it applies the profile. */
+static void
+channel_scan_restore_frontend(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
+    }
+    if (dsd_opts_is_analog_family(opts)) {
+        (void)dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_ANALOG, opts->analog_demod,
+                                                               dsd_opts_analog_width_hz(opts));
+        return;
+    }
+    const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
+    const int filter = opts->analog_only || !dsd_opts_has_digital_decode_mode(opts)
+                           ? DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE
+                           : dsd_rtl_channel_profile_for(opts, profile.symbol_rate_hz, profile.levels, state->rf_mod);
+    (void)dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
+    (void)dsd_rtl_stream_metrics_hook_apply_demod_profile(state->rf_mod == 1, profile.symbol_rate_hz, profile.levels,
+                                                          filter, state->samplesPerSymbol);
+}
+
 void
 dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -336,14 +359,6 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
     dsd_scan_mode_leave(opts, state);
     if (active) {
         dsd_frame_sync_reset_acquisition(opts, state, opts->trunk_scan_enabled != 1);
-        if (opts->audio_in_type == AUDIO_IN_RTL) {
-            const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
-            const int filter =
-                opts->analog_only || !dsd_opts_has_digital_decode_mode(opts)
-                    ? DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE
-                    : dsd_rtl_channel_profile_for(opts, profile.symbol_rate_hz, profile.levels, state->rf_mod);
-            (void)dsd_rtl_stream_metrics_hook_apply_demod_profile(state->rf_mod == 1, profile.symbol_rate_hz,
-                                                                  profile.levels, filter, state->samplesPerSymbol);
-        }
+        channel_scan_restore_frontend(opts, state);
     }
 }

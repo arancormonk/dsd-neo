@@ -28,6 +28,13 @@ static int g_request_channel_profile;
 static int g_request_ted_sps;
 static int g_request_ted_override;
 static int g_lock_at_request;
+static int g_sequence;
+static int g_request_order;
+static int g_analog_calls;
+static int g_analog_family;
+static int g_analog_kind;
+static int g_analog_width_hz;
+static int g_analog_order;
 
 int
 rtl_stream_adjust_ppm(dsd_opts* opts, int delta) {
@@ -54,7 +61,41 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
     g_request_ted_sps = ted_sps;
     g_request_ted_override = ted_sps_is_override;
     g_lock_at_request = g_profile_opts ? g_profile_opts->mod_cli_lock : -1;
+    g_request_order = ++g_sequence;
     return 0;
+}
+
+int
+rtl_stream_request_analog_profile(int family, int kind, int width_hz) {
+    g_analog_calls++;
+    g_analog_family = family;
+    g_analog_kind = kind;
+    g_analog_width_hz = width_hz;
+    g_analog_order = ++g_sequence;
+    return 0;
+}
+
+/* The front end is digital throughout these tests. */
+int
+rtl_stream_get_analog_profile(int* out_kind, int* out_width_hz, int* out_lpf_on) {
+    if (out_kind) {
+        *out_kind = 0;
+    }
+    if (out_width_hz) {
+        *out_width_hz = 0;
+    }
+    if (out_lpf_on) {
+        *out_lpf_on = 0;
+    }
+    return 0;
+}
+
+unsigned int
+rtl_stream_output_rate_for_family(int family, int cqpsk_enable, int symbol_rate_hz) {
+    (void)family;
+    (void)cqpsk_enable;
+    (void)symbol_rate_hz;
+    return 48000U;
 }
 
 static int
@@ -87,6 +128,13 @@ reset_profile_capture(const dsd_opts* opts) {
     g_request_ted_sps = -2;
     g_request_ted_override = -1;
     g_lock_at_request = -1;
+    g_sequence = 0;
+    g_request_order = 0;
+    g_analog_calls = 0;
+    g_analog_family = -1;
+    g_analog_kind = -1;
+    g_analog_width_hz = -1;
+    g_analog_order = 0;
 }
 
 static int
@@ -107,6 +155,8 @@ test_p25p2_toggle_applies_rtl_profile_before_lock(void) {
 
     rc |= expect_int("p25p2 qpsk dispatch", dispatch_one(&opts, &state, &cmd), 1);
     rc |= expect_int("p25p2 qpsk request call", g_request_calls, 1);
+    rc |= expect_int("p25p2 qpsk asks for the digital family", g_analog_family, 0 /* DSD_RX_FAMILY_DIGITAL */);
+    rc |= expect_int("p25p2 qpsk family before profile", g_analog_order > 0 && g_analog_order < g_request_order, 1);
     rc |= expect_int("p25p2 qpsk family", g_request_cqpsk, 1);
     rc |= expect_int("p25p2 qpsk profile rate", g_request_rate, 6000);
     rc |= expect_int("p25p2 qpsk profile levels", g_request_levels, 4);
@@ -286,9 +336,54 @@ test_p25p2_toggle_ignores_non_rtl_input(void) {
     return rc;
 }
 
+/*
+ * The analog monitor has no symbol profile: a modulation change under -fA asks
+ * the front end for the configured analog profile (the channel width included)
+ * and never for a digital symbol profile that would narrow the monitor audio.
+ */
+static int
+test_mod_set_under_analog_keeps_the_analog_profile(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    struct dsd_app_command cmd;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&cmd, 0, sizeof(cmd));
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.analog_only = 1;
+    opts.monitor_input_audio = 1;
+    opts.analog_nfm_bandwidth_hz = 12500;
+    opts.mod_qpsk = 1;
+    state.rf_mod = 1;
+    state.rtl_ctx = (RtlSdrContext*)&state;
+    const int32_t want_c4fm = 0;
+    cmd.id = DSD_APP_CMD_MOD_SET;
+    cmd.n = (int)sizeof want_c4fm;
+    DSD_MEMCPY(cmd.data, &want_c4fm, sizeof want_c4fm);
+    reset_profile_capture(&opts);
+
+    rc |= expect_int("analog mod set dispatch", dispatch_one(&opts, &state, &cmd), 1);
+    rc |= expect_int("analog mod set asks for the analog profile", g_analog_calls, 1);
+    rc |= expect_int("analog family", g_analog_family, 1 /* DSD_RX_FAMILY_ANALOG */);
+    rc |= expect_int("FM kind", g_analog_kind, 0 /* DSD_ANALOG_DEMOD_FM */);
+    rc |= expect_int("configured width", g_analog_width_hz, 12500);
+    rc |= expect_int("no digital symbol profile", g_request_calls, 0);
+
+    /* The M17 encoder under -fA stays out of both. */
+    opts.m17encoder = 1;
+    reset_profile_capture(&opts);
+    rc |= expect_int("encoder mod set dispatch", dispatch_one(&opts, &state, &cmd), 1);
+    rc |= expect_int("encoder: no analog request", g_analog_calls, 0);
+    rc |= expect_int("encoder: no symbol profile", g_request_calls, 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_mod_set_under_analog_keeps_the_analog_profile();
     rc |= test_p25p2_toggle_applies_rtl_profile_before_lock();
     rc |= test_generic_toggle_restores_rtl_after_p25p2_helper();
     rc |= test_mod_set_takes_symbol_profile_from_the_decoded_mode();

@@ -53,6 +53,27 @@ void dsd_drain_audio_output(dsd_opts* opts);
 /** @brief Reopen local output streams when the active input changes async/sync output policy. */
 int dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts);
 
+/**
+ * @brief Make sure the analog monitor's raw output sink is open (decoder thread only).
+ *
+ * For a runtime switch into the analog family: opens `audio_raw_out` with the parameters openAudioOutput() uses when
+ * the session writes to an unmuted local audio device and the sink is not open yet. Idempotent. A failure is logged
+ * once and leaves the sink closed, so analog audio stays silent.
+ *
+ * @return 0 when the sink is open or not needed, -1 when it could not be opened (or @p opts is NULL).
+ */
+int dsd_audio_ensure_analog_output(dsd_opts* opts);
+
+/**
+ * @brief Make sure the digital voice output sink is open (decoder thread only).
+ *
+ * The digital counterpart of dsd_audio_ensure_analog_output(): opens `audio_out_stream`, plus the raw sink when
+ * ProVoice or the source-audio monitor needs it, exactly as openAudioOutput() would for the current options.
+ *
+ * @return 0 when the sinks are open or not needed, -1 when one could not be opened (or @p opts is NULL).
+ */
+int dsd_audio_ensure_digital_output(dsd_opts* opts);
+
 /** @brief Write synthesized mono voice samples for slot 1. */
 void writeSynthesizedVoice(dsd_opts* opts, dsd_state* state);
 /** @brief Write synthesized mono voice samples for slot 2. */

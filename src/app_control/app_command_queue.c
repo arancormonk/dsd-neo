@@ -3686,6 +3686,13 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
     }
     opts->pulse_digi_out_channels = audio_channels;
     opts->pulse_digi_rate_out = audio_rate;
+    /* The session's sinks were opened for the mode it started in: an analog start has no digital voice stream and
+       a digital one no raw monitor stream. Open whichever the new mode writes to, if it is missing. */
+    if (opts->analog_only) {
+        (void)dsd_audio_ensure_analog_output(opts);
+    } else {
+        (void)dsd_audio_ensure_digital_output(opts);
+    }
     /* The presets write symbol timing for a 48 kHz input, and on an RTL front end
        the demod output rate is whatever the capture rate decimates to, so the
        timing has to be recomputed at the live rate or the decoder is put on the
